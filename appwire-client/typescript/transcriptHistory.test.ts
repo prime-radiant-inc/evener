@@ -540,6 +540,64 @@ for (const entryPoint of ["response", "model"] as const) {
   });
 }
 
+// A live daemon can answer a read with NO transcript items while this client
+// holds a window for the thread: the hub fills that window from the saved index
+// ("live-read-empty") and still stamps the daemon's own boot generation, live
+// thread envelope and complete model-control snapshot. That read is not a
+// daemonless saved view — "no transcript items from a live daemon" is not "no
+// authority from a live daemon". A pane whose authority a reconnect retired
+// must accept the snapshot and reach the enabled picker instead of staying
+// `uninitialized` with its picker disabled.
+for (const entryPoint of ["response", "model"] as const) {
+  test(`${entryPoint} live-read-empty keeps the live daemon's model-control authority`, () => {
+    const liveRead = {
+      ...historyRead(),
+      thread: testThread({ turns: [positionedFragmentTurn("turn_live", [["item_live", 1]])] }),
+      bootGeneration: "boot-1",
+      servedFrom: "live-daemon",
+      asOf: "2026-11-08T00:00:00Z",
+    };
+    const loaded = hydrateThread(liveRead, "ref_t", 1000);
+    const retired = reduceModelControl(loaded, { kind: "connectionRetired" });
+    expect(retired.model.modelControlState.kind).toBe("uninitialized");
+    const emptyWindow = {
+      ...historyRead(),
+      thread: testThread({
+        turns: [],
+        evener: {
+          ref: "ref_t",
+          instanceId: "thr_ref_t",
+          capabilities: { ...CAPABILITIES, modelControlVersion: 1 },
+          modelControl: {
+            authority: { instanceId: "thr_ref_t", bootGeneration: "boot-1" },
+            revision: 3,
+            active: {
+              modelProvider: "anthropic",
+              model: "claude-sonnet-4-5",
+              reasoningEffortLevels: ["low", "high"],
+              supportsReasoning: true,
+            },
+          },
+        },
+      }),
+      // The live daemon's own generation, with the window served from the
+      // saved index: exactly the shape cmd/evener-hub's thread/read stamps.
+      bootGeneration: "boot-1",
+      servedFrom: "saved-index",
+      fallbackReason: "live-read-empty",
+      asOf: "2026-11-08T00:00:01Z",
+    };
+    const next =
+      entryPoint === "response"
+        ? applyReadResponse(retired.model, emptyWindow, 1001)
+        : applyReadModel(retired.model, hydrateThread(emptyWindow, "ref_t", 1001));
+    expect(next.modelControlState.kind).toBe("ready");
+    expect(modelPickCanSend(next)).toBe(true);
+    // The saved-index rule still governs the items: the loaded window survives.
+    expect(next.turns.flatMap((turn) => turn.items).map((item) => item.id)).toContain("item_live");
+  });
+}
+
 for (const recovery of ["invalidated", "failed"] as const) {
   test(`accepted saved fallback recovers ${recovery} history and resumes live notifications`, () => {
     const latest = positionedFragmentTurn("turn_latest", [["held-newer", 9]], { version: 9 });

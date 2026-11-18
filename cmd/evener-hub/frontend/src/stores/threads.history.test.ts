@@ -146,6 +146,80 @@ describe("versioned history: request generations", () => {
   });
 });
 
+// applyReadResponse reports a rejected read by returning the base model by
+// reference. A buffered thread/model/controlChanged frame is replayed onto that
+// response before the store decides, and the replay allocates a new model even
+// for a duplicate revision — so an identity check taken after the replay reads
+// the rejection as acceptance and lets a stale response reconcile mutation
+// state. The read's own acceptance must be recorded before the replay.
+describe("versioned history: a rejected read stays rejected across replay", () => {
+  test("a buffered duplicate-revision frame does not promote a discarded read", async () => {
+    const fake = connectReadyFakeClient();
+    const authority = { instanceId: "daemon-a", bootGeneration: "1" };
+    const snapshot = {
+      authority,
+      revision: 3,
+      active: {
+        modelProvider: "anthropic",
+        model: "claude-sonnet-4-5",
+        reasoningEffortLevels: ["low", "high"],
+        supportsReasoning: true,
+      },
+    };
+    // The first read establishes live model-control authority, so the later
+    // frame has a held revision to duplicate.
+    fake.on("thread/read", () => ({
+      ...read("initial", { length: 100 }),
+      thread: {
+        ...read("initial", { length: 100 }).thread,
+        evener: {
+          ref: REF,
+          instanceId: "daemon-a",
+          capabilities: { ...CAPABILITIES, modelControlVersion: 1 },
+          queue: { revision: 0 },
+          modelControl: snapshot,
+        },
+      },
+    }));
+    await threadsStore.getState().ensureThread(REF);
+    expect(threadsStore.getState().threads.get(REF)?.modelControlState.kind).toBe("ready");
+
+    // The refresh answers from the SAME incarnation with a SHORTER snapshot:
+    // identityDisposition discards it (identity.length < held.length).
+    let resolveRead: ((response: ThreadReadResponse) => void) | undefined;
+    fake.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((resolve) => {
+          resolveRead = resolve;
+        }),
+    );
+    const refresh = threadsStore.getState().refreshThread(REF);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    // A duplicate revision of the SAME snapshot authority is buffered while
+    // that read is in flight. Its replay allocates a new model object.
+    fake.emitNotification({
+      method: "thread/model/controlChanged",
+      params: { ref: REF, threadId: THREAD_ID, modelControl: snapshot },
+    } as AnyNotification);
+
+    // mutationStateAuthoritative: true is what makes a rejected response
+    // dangerous — it is the flag that would put the ref into
+    // mutationSnapshotRefs.
+    const stale = read("stale", { length: 50 });
+    stale.thread.evener.mutationStateAuthoritative = true;
+    resolveRead?.({ ...stale, requestGeneration: 2 });
+    await refresh;
+
+    // The discarded read must not have published its own response.
+    expect(modelName()).toBe("initial");
+    // Nor gained mutation-state authority from it.
+    expect(threadsStore.getState().mutationSnapshotRefs.has(REF)).toBe(false);
+  });
+});
+
 describe("versioned history: resync", () => {
   test("a resync push with a higher epoch re-reads and replaces", async () => {
     const fake = connectReadyFakeClient();

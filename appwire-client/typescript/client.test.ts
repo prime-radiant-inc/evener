@@ -285,9 +285,10 @@ describe("AppwireClient", () => {
       result: { ...FAKE_INITIALIZE_RESULT, protocolVersion: "evener-appwire-v7" },
     });
 
-    await expect(connecting).rejects.toThrow(
-      "AppwireClient: expected protocol evener-appwire-v8, received evener-appwire-v7",
-    );
+    // Assert the behavior, not the client's own copy: the handshake rejects,
+    // and the rejection is terminal for the protocol reason (the typed
+    // signal the reconnect logic reads).
+    await expect(connecting).rejects.toThrow();
     expect(client.terminalReason).toBe("protocol");
   });
 

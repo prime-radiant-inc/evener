@@ -156,6 +156,36 @@ describe("explicit model-control state", () => {
     expect(result.model.reasoningEffortLevels).toEqual([]);
   });
 
+  // The model-level `reasoningEffortLevels` above is the display copy. The
+  // `ready` snapshot keeps its own copy under a `string[]` type, and that is
+  // what a direct SDK consumer reads: a null left there throws on `.length`
+  // or iteration. Normalizing the snapshot when it enters also keeps revision
+  // comparison honest — an explicit empty-array carrier for the SAME revision
+  // is the same content, not a conflict.
+  test("a tolerated null ladder is normalized on the snapshot itself", () => {
+    const current = snapshot(1);
+    current.active.reasoningEffortLevels = null as unknown as string[];
+
+    const result = reduceModelControl(model(), {
+      kind: "readAccepted",
+      version: 1,
+      snapshot: current,
+      authority: AUTHORITY,
+    });
+
+    expect(result.model.modelControlState.kind).toBe("ready");
+    if (result.model.modelControlState.kind !== "ready") throw new Error("expected ready");
+    expect(result.model.modelControlState.snapshot.active.reasoningEffortLevels).toEqual([]);
+    expect(() => result.model.modelControlState.kind === "ready").not.toThrow();
+
+    const carried = reduceModelControl(result.model, {
+      kind: "snapshot",
+      source: "notification",
+      snapshot: snapshot(1, { levels: [] }),
+    });
+    expect(carried).toMatchObject({ decision: "duplicate", replacementReadRequired: false });
+  });
+
   test.each([
     ["absent", undefined],
     ["legacy", 0],

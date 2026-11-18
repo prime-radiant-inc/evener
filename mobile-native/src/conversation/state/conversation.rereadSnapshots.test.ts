@@ -7,10 +7,11 @@ import type {
 	ModelControlSnapshot,
 	MutationReceipt,
 	Thread,
+	ThreadHistoryReadResponse,
 	ThreadItem,
 	ThreadReadResponse,
 } from "@evener/appwire-client";
-import { modelControlDisplay, WireError } from "@evener/appwire-client";
+import { hydrateThread, modelControlDisplay, modelPickCanSend, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { describe, expect, it, vi } from "vitest";
 import type { MobileConversation, MobileTimelineItem } from "../../projectedRows";
@@ -111,6 +112,78 @@ function modelControlReadResponse(snapshot: ModelControlSnapshot): ThreadReadRes
 
 describe("ConversationStore", () => {
 	describe("model-control snapshots", () => {
+		// A daemon that exits while the sheet shows an accepted-but-pending pick
+		// takes that authority with it. Dropping the service binding is the moment
+		// the store knows the daemon is gone, so the retained conversation must
+		// stop advertising the pending selection there — otherwise the reconnect's
+		// same-session saved fallback preserves the held `ready` state and the
+		// sheet keeps showing a model change the departed daemon never applied.
+		// The transcript rows and the canonical active display must survive.
+		it("suspend retires the pending pick while keeping the rows and active display", async () => {
+			const service = new FakeConversationService();
+			const store = createConversationStore();
+			const held = modelControl(2, MODEL_AUTHORITY_A, "claude-sonnet-5", {
+				model: "gpt-5.5",
+				lifecycle: "pending",
+			});
+			const heldConversation = modelConversation(held);
+			service.readProjectionResult = {
+				conversation: makeConversation({ ...heldConversation, turns: heldConversation.turns }, true),
+				olderCursor: null,
+			};
+			await store.getState().openProjected(service, "ref-1");
+			const opened = store.getState().conversation;
+			expect(opened).not.toBeNull();
+			if (opened === null) throw new Error("expected an opened conversation");
+			expect(modelControlDisplay(opened)).toEqual({
+				modelProvider: "openai",
+				model: "gpt-5.5",
+			});
+
+			store.getState().suspendProjected();
+
+			const suspended = store.getState().conversation;
+			expect(suspended).not.toBeNull();
+			if (suspended === null) throw new Error("expected a retained conversation");
+			expect(suspended.modelControlState.kind).toBe("uninitialized");
+			// The pending selection is gone; the canonical active display stays.
+			expect(modelControlDisplay(suspended)).toEqual({ modelProvider: "anthropic", model: "claude-sonnet-5" });
+			// The transcript the suspend retained is the one that was on screen.
+			expect(suspended.turns).toEqual(opened.turns);
+
+			// The reconnect answers from the saved index for the same session and
+			// advertises a shut-down thread the hub would resume on a pick.
+			const savedThread = makeThread({
+				status: { type: "ended" },
+				evener: {
+					ref: "ref-1",
+					capabilities: { ...ALL_TRUE_CAPS, changeModel: true },
+					queue: { revision: 0 },
+				},
+			});
+			const savedFallback = projectConversation(
+				hydrateThread(
+					{
+						bootGeneration: "daemonless",
+						thread: savedThread,
+						servedFrom: "saved-index",
+						fallbackReason: "live-read-failed",
+						asOf: "2026-11-08T00:00:01Z",
+					} as ThreadHistoryReadResponse,
+					"ref-1",
+					0,
+				),
+			);
+			service.readProjectionResult = { conversation: savedFallback, olderCursor: null };
+			await store.getState().resumeProjected(service, "ref-1");
+
+			const resumed = store.getState().conversation;
+			expect(resumed).not.toBeNull();
+			if (resumed === null) throw new Error("expected a resumed conversation");
+			expect(resumed.modelControlState.kind).toBe("unsupported");
+			expect(modelPickCanSend(resumed)).toBe(true);
+		});
+
 		it("adopts a live whole-snapshot update through the shared notification reducer", async () => {
 			const service = new FakeConversationService();
 			const store = createConversationStore();

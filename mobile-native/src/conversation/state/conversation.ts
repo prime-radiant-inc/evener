@@ -1708,6 +1708,36 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				boundService = null;
 				boundProjected = false;
 				retireMutationAttempt();
+				// Dropping the service binding drops the daemon behind it, so the
+				// authority that binding established cannot outlive it. Retiring
+				// model control here is what stops a pending pick from being shown as
+				// still held after the daemon exits: the held `ready` snapshot (and
+				// the `desired` selection it carries) describes a daemon that is no
+				// longer running, and the reconnect's saved fallback would otherwise
+				// preserve that state — the picker showing a model change the departed
+				// daemon never applied. `connectionRetired` keeps the transcript rows
+				// and the canonical active display, which are exactly what must
+				// survive a suspend, and retires everything that is authority.
+				// `items` is the row projection of the turns this retire leaves
+				// untouched, so it is carried over by reference exactly as the
+				// live model-control publish above does.
+				//
+				// Only a state that HOLDS authority is retired. `ready` and
+				// `recovering` each keep a display a live daemon once stood behind;
+				// `uninitialized` and `unsupported` hold none, and retiring them
+				// would take away nothing while turning a cold `unsupported` — the
+				// one state a pick resolves by resuming — back into `uninitialized`,
+				// disabling the picker if that reconnect fails. Keeping the object by
+				// reference also spares a suspend from re-rendering a pane that has
+				// nothing to re-render.
+				const kind = state.conversation?.modelControlState.kind;
+				const retired =
+					state.conversation === null || (kind !== "ready" && kind !== "recovering")
+						? state.conversation
+						: {
+								...reduceModelControl(state.conversation, { kind: "connectionRetired" }).model,
+								items: state.conversation.items,
+							};
 				set({
 					status: "opening",
 					error: null,
@@ -1716,6 +1746,7 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					failedSubmission: null,
 					loadingOlder: false,
 					conversationGeneration: conversationGen,
+					conversation: retired,
 				});
 			},
 

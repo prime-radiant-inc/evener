@@ -4419,6 +4419,14 @@ interface ThreadHydration {
   fixtureNotifications: ReceivedTranscriptUpdate[];
   discardHeldHistory?: true;
   modelControlRecoveryRequired?: true;
+  // Whether the reducer ACCEPTED this read, decided on the model the read
+  // itself produced — before any buffered notification was replayed onto it.
+  // applyReadResponse signals "discard" by returning the base model by
+  // reference, and a replay manufactures a new object, so an identity check
+  // taken after the replay cannot see a rejection. A rejected read must not
+  // reach publication or mutation-state reconciliation, however legitimate
+  // the frames folded onto its response were.
+  readAccepted: boolean;
 }
 
 // The two hydration lifecycles read a ref the same way and differ in these
@@ -4591,6 +4599,14 @@ async function readThreadHydration(
           )
         : applyReadResponse(pending.baseModel, response, now, frontier)
       : hydrateThread(response, ref, now, frontier);
+  // Record acceptance HERE, against the model this read produced, and before
+  // any buffered frame is replayed onto it. applyReadResponse reports a
+  // discarded response by handing back pending.baseModel BY REFERENCE; the
+  // replay below (replayQuarantinedModelControl) allocates a new model even
+  // for a duplicate revision, so the later identity check would read that
+  // disagreement as acceptance and give the rejected read's raw response
+  // transcript and mutation-state authority.
+  const readAccepted = !isDiscardedReadResult(pending, hydrated);
   // The response cut retires buffered input from the legacy hydrator because
   // its snapshot is authoritative for that route. The entry repository also
   // receives this input, but only comparable versions may supersede the read:
@@ -4609,6 +4625,7 @@ async function readThreadHydration(
     model: cutModel,
     response,
     fixtureNotifications,
+    readAccepted,
     ...(discardHeldHistory ? { discardHeldHistory: true } : {}),
     ...(replayedModelControl.replacementReadRequired ? { modelControlRecoveryRequired: true } : {}),
   };
@@ -7943,7 +7960,7 @@ async function refreshTrackedThreadNow(
       unwindStopCanceledRefresh(ref, pending.attempt);
       throw error;
     }
-    if (isDiscardedReadResult(pending, result.model)) return pending.baseModel ?? null;
+    if (!result.readAccepted) return pending.baseModel ?? null;
     return publishAndReconcileThreadHydration(
       ref,
       pending,
@@ -7999,7 +8016,7 @@ async function refreshWatchedThread(
   // Same as refreshTrackedThread: publishWatchedHydration re-decides this.
   const hydration = readThreadHydration(client, ref, Date.now(), pending, { kind: "watched", includeTurns }).then(
     (result) =>
-      isDiscardedReadResult(pending, result.model)
+      !result.readAccepted
         ? (pending.baseModel ?? null)
         : publishWatchedHydration(ref, pending, result, includeTurns, generation),
   );

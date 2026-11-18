@@ -1,3 +1,4 @@
+import { DAEMONLESS_BOOT_GENERATION } from "./bootGeneration";
 import { isModelControlAuthorityStale, mutationErrorData, WireError } from "./errors";
 import type { ThreadModel } from "./model";
 import { sameJsonValue } from "./plainObject";
@@ -121,6 +122,18 @@ export function coldSessionCanResume(model: Pick<ThreadModel, "capabilities" | "
   return model.capabilities?.changeModel === true && SHUT_DOWN_STATUSES.has(model.status.type);
 }
 
+// Whether a read's boot generation names a running daemon. A saved view is
+// daemonless ("daemonless", or absent before any v6 read). But the hub also
+// fills a LIVE daemon's empty window from the saved index — servedFrom
+// "saved-index" with fallbackReason "live-read-empty" — and still stamps that
+// daemon's own generation and live thread envelope. "No transcript items from
+// a live daemon" is not "no authority from a live daemon": such a read carries
+// model-control authority and must be evaluated from its own envelope, not
+// skipped as a saved view.
+export function readNamesLiveDaemon(bootGeneration: string | undefined): boolean {
+  return bootGeneration !== undefined && bootGeneration !== "" && bootGeneration !== DAEMONLESS_BOOT_GENERATION;
+}
+
 // Whether a saved-view read leaves held model control alone. It normally does:
 // a saved view authors no model-control authority of its own (a daemonless boot
 // cannot speak for one), so a client that held authority keeps it, and a pane
@@ -143,6 +156,21 @@ export function savedReadKeepsHeldModelControl(
 ): boolean {
   if (held.modelControlState.kind === "ready") return true;
   return !coldSessionCanResume(read);
+}
+
+// A read may report a null effort ladder for a model that has none. `null` is
+// not a value the `string[]` snapshot type can carry: a caller reading
+// `.length` or iterating the published ladder would throw. Normalization
+// therefore happens where the snapshot ENTERS, not at each project/compare
+// site, so the stored `ready` snapshot and every later revision comparison
+// see the same `[]` a carrier sends explicitly — otherwise an empty-array
+// carrier for the same revision would read as a conflict against a held null.
+// Only the read path tolerates null; validateThreadModelSetResponse below
+// still requires an array from a model-set reply.
+function normalizedSnapshot(snapshot: ModelControlSnapshot): ModelControlSnapshot {
+  const levels = snapshot.active.reasoningEffortLevels as unknown;
+  if (Array.isArray(levels)) return snapshot;
+  return { ...snapshot, active: { ...snapshot.active, reasoningEffortLevels: [] } };
 }
 
 export function projectModelControlSnapshot(model: ThreadModel, snapshot: ModelControlSnapshot): ThreadModel {
@@ -204,6 +232,9 @@ function reduceRevision(
 }
 
 export function reduceModelControl(model: ThreadModel, input: ModelControlInput): ModelControlReduction {
+  if (input.kind === "readAccepted" && input.snapshot)
+    input = { ...input, snapshot: normalizedSnapshot(input.snapshot) };
+  if (input.kind === "snapshot") input = { ...input, snapshot: normalizedSnapshot(input.snapshot) };
   if (input.kind === "connectionRetired") {
     const display = canonicalDisplay(model);
     return {

@@ -7,7 +7,12 @@ import { compareBootGeneration } from "./bootGeneration";
 import { historyFallback, historyReplacesWindow, historyServingFacts } from "./historyServing";
 import type { HistoryState, ItemModel, OlderFrontier, ThreadModel, TurnModel } from "./model";
 import { comparePositions, SYSTEM_PRELUDE_TURN_ID } from "./model";
-import { reduceModelControl, restoreHeldModelControl, savedReadKeepsHeldModelControl } from "./modelControl";
+import {
+  readNamesLiveDaemon,
+  reduceModelControl,
+  restoreHeldModelControl,
+  savedReadKeepsHeldModelControl,
+} from "./modelControl";
 import { frontierFromCursor, olderFrontierOf, withOlderFrontier } from "./olderFrontier";
 
 export { comparePositions } from "./model";
@@ -1075,7 +1080,13 @@ export function applyReadResponse<M extends ThreadModel>(
       next = mergeVersionedPage(next, next.history, deferred, false);
     }
   }
-  if (historyFallback(resp) && savedReadKeepsHeldModelControl(model, next))
+  // The saved-index rules govern which TRANSCRIPT ITEMS this read may merge. They
+  // say nothing about model-control authority: a live daemon whose window came
+  // from the saved index (fallbackReason "live-read-empty") still names its own
+  // boot generation and carries a complete snapshot, and skipping that snapshot
+  // would leave a pane that retired authority during reconnect stuck in
+  // `uninitialized` with its picker disabled.
+  if (historyFallback(resp) && !readNamesLiveDaemon(resp.bootGeneration) && savedReadKeepsHeldModelControl(model, next))
     return publicModel<M>(restoreHeldModelControl(next, model));
   const input = modelControlReadInput(resp);
   const controlBase = input.version === 1 ? restoreHeldModelControl(next, model) : next;
@@ -1254,7 +1265,10 @@ export function applyReadModel<M extends ThreadModel>(
       next = mergeVersionedPage(next, next.history, deferred, false);
     }
   }
-  if (fallback && savedReadKeepsHeldModelControl(model, next))
+  // Same split as applyReadResponse above: the saved view's rules govern the
+  // items it merges, while model-control authority comes from this read's own
+  // envelope whenever that envelope names a live daemon.
+  if (fallback && !readNamesLiveDaemon(freshHistory?.bootGeneration) && savedReadKeepsHeldModelControl(model, next))
     return publicModel<M>(restoreHeldModelControl(next, model));
   const input = hydratedModelControlReadInput(fresh);
   const controlBase = input.version === 1 ? restoreHeldModelControl(next, model) : next;

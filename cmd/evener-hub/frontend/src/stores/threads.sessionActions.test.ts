@@ -2866,9 +2866,9 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     const fake = connectFakeClient();
     fake.emitStateChange("reconnecting");
 
-    await expect(threadsStore.getState().setReasoningEffort("ref_a", "high")).rejects.toThrow(
-      /cannot call "thread\/reasoning-effort\/set" while state is "reconnecting"/,
-    );
+    // The behavior is the rejection plus zero dispatched calls; the client's
+    // own "cannot call ... while ..." wording is copy, not an oracle.
+    await expect(threadsStore.getState().setReasoningEffort("ref_a", "high")).rejects.toThrow();
     expect(fake.calls).toHaveLength(0); // never sent - the real client never reaches socket.send() either
   });
 });
