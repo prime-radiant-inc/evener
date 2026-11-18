@@ -30,7 +30,47 @@ func StrictifyJSONSchema(in map[string]any) map[string]any {
 		cp = map[string]any{}
 	}
 	strictifyJSONSchemaInPlace(cp)
+	supplyDerivedTypes(cp)
 	return cp
+}
+
+// supplyDerivedTypes states the explicit type implied by a closed scalar value
+// set on every node that carries one. A provider enforcing the strict subset
+// requires a type on every node, and StrictExpressible certifies a typeless
+// enum or const node only because that type can be supplied without changing
+// the accepted set. The walk therefore has to reach every such node, including
+// the ones strictifyJSONSchemaInPlace never descends into — a child of a
+// nullable object, say — because the certification covers those too.
+func supplyDerivedTypes(m map[string]any) {
+	if m == nil {
+		return
+	}
+	if _, has := m["type"]; !has {
+		if name, ok := derivedScalarType(m); ok {
+			m["type"] = name
+		}
+	}
+	if props, ok := m["properties"].(map[string]any); ok {
+		for _, child := range props {
+			if childMap, ok := child.(map[string]any); ok {
+				supplyDerivedTypes(childMap)
+			}
+		}
+	}
+	if items, ok := m["items"].(map[string]any); ok {
+		supplyDerivedTypes(items)
+	}
+	for _, comb := range []string{"anyOf", "oneOf", "allOf"} {
+		arr, ok := m[comb].([]any)
+		if !ok {
+			continue
+		}
+		for _, it := range arr {
+			if child, ok := it.(map[string]any); ok {
+				supplyDerivedTypes(child)
+			}
+		}
+	}
 }
 
 // StrictExpressible reports whether schema can be projected into OpenAI
@@ -307,13 +347,82 @@ func constrainsSomething(m map[string]any, isObject, isArray bool) bool {
 		// modeledKeywords rather than listed again here: a keyword the table
 		// does not carry scores notCovered, which does not equal readableByWalk,
 		// so it cannot certify a node.
-		for keyword := range m {
-			if modeledKeywords[keyword] == readableByWalk {
-				return true
-			}
+		if !certifiedByReadableKeyword(m) {
+			return false
 		}
-		return false
+		// A provider enforcing the strict subset also requires an explicit type
+		// on every node. A closed value set whose members all share one scalar
+		// type supplies that type without changing the set, and the projection
+		// states it; anything else would have to guess, so it is refused.
+		_, typed := derivedScalarType(m)
+		return typed
 	}
+}
+
+// certifiedByReadableKeyword reports whether the node carries a keyword whose
+// accepted set this file can read. It is the derived form of "a keyword the
+// rewrite does not model cannot certify a node": the answer comes from the
+// coverage table, so a keyword added to the rewrite without a readable class
+// cannot acquire the power to certify.
+func certifiedByReadableKeyword(m map[string]any) bool {
+	for keyword := range m {
+		if modeledKeywords[keyword] == readableByWalk {
+			return true
+		}
+	}
+	return false
+}
+
+// derivedScalarType returns the JSON type implied by a node's closed value set
+// when every member is a non-null scalar of one type: {"const": "fixed"} and
+// {"enum": ["a", "b"]} both imply "string". The projection states that type,
+// which a strict-enforcing provider requires on every node, and the accepted
+// set is unchanged because every member already has that type.
+//
+// Anything else reports false rather than guessing. A mixed set, a container
+// value, or a set containing null cannot be named by one type without dropping
+// or widening a member, and a node typed from a guess is exactly the
+// certification this gate exists to withhold.
+func derivedScalarType(m map[string]any) (string, bool) {
+	if _, has := m["type"]; has {
+		return "", false
+	}
+	var values []any
+	switch {
+	case m["const"] != nil:
+		values = []any{m["const"]}
+	case m["enum"] != nil:
+		list, ok := m["enum"].([]any)
+		if !ok {
+			return "", false
+		}
+		values = list
+	default:
+		return "", false
+	}
+	if len(values) == 0 {
+		return "", false
+	}
+	name := ""
+	for _, value := range values {
+		var this string
+		switch value.(type) {
+		case string:
+			this = "string"
+		case bool:
+			this = "boolean"
+		case float64, int, int64:
+			this = "number"
+		default:
+			return "", false
+		}
+		if name == "" {
+			name = this
+		} else if name != this {
+			return "", false
+		}
+	}
+	return name, true
 }
 
 // requiredNamesDeclared reports whether every name in required is a declared

@@ -1057,6 +1057,114 @@ func TestProjectionPreservesATypedNilMapInAnEnum(t *testing.T) {
 	}
 }
 
+// A provider enforcing the strict subset requires an explicit type on every
+// node, and TestManagerProviderSchemasHaveExplicitTypes records that
+// requirement from a live rejection. A closed value set whose members all share
+// one scalar type supplies that type without changing the set, so the gate
+// certifies it and the projection states it.
+//
+// The invariant is the accepted set, not the presence of the keyword: for each
+// shape below the advertised schema and the emitted one must accept exactly the
+// same values. A projection that widened, narrowed or dropped a member would
+// fail here even though the type was supplied.
+func TestProjectionStatesTheTypeAClosedValueSetImplies(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		closed map[string]any
+		accept map[string]any
+		reject map[string]any
+		want   string
+	}{
+		{
+			name:   "const in a required position",
+			closed: map[string]any{"const": "fixed"},
+			accept: map[string]any{"payload": "fixed"},
+			reject: map[string]any{"payload": "other"},
+			want:   "string",
+		},
+		{
+			name:   "enum in a required position",
+			closed: map[string]any{"enum": []any{"a", "b"}},
+			accept: map[string]any{"payload": "b"},
+			reject: map[string]any{"payload": "c"},
+			want:   "string",
+		},
+		{
+			// The rewrite never descends into a nullable object's properties,
+			// so this node keeps whatever it advertises. The gate still
+			// certifies it, which means the projection has to reach it too.
+			name:   "const under a nullable object",
+			closed: map[string]any{"const": "fixed"},
+			accept: map[string]any{"payload": "fixed"},
+			reject: map[string]any{"payload": "other"},
+			want:   "string",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			schema := map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties":           map[string]any{"payload": tc.closed},
+				"required":             []string{"payload"},
+			}
+			if !StrictExpressible(schema) {
+				t.Fatal("a closed value set implying one scalar type must be certifiable")
+			}
+			if !schemaAccepts(t, schema, tc.accept) {
+				t.Fatalf("the advertised schema rejects %v, one of its own values", tc.accept)
+			}
+			if schemaAccepts(t, schema, tc.reject) {
+				t.Fatalf("the advertised schema accepts %v, which its value set excludes", tc.reject)
+			}
+
+			emitted := StrictifyJSONSchema(schema)
+			payload := emitted["properties"].(map[string]any)["payload"].(map[string]any)
+			if payload["type"] != tc.want {
+				t.Fatalf("the emitted argument has type %#v, want %q: a strict-enforcing provider rejects a node with no explicit type, which fails the whole request", payload["type"], tc.want)
+			}
+			// Supplying the type must not change the accepted set.
+			if !schemaAccepts(t, emitted, tc.accept) {
+				t.Fatalf("the emitted schema rejects %v, which the advertised schema accepts", tc.accept)
+			}
+			if schemaAccepts(t, emitted, tc.reject) {
+				t.Fatalf("the emitted schema accepts %v, which the advertised schema rejects", tc.reject)
+			}
+		})
+	}
+}
+
+// A value set this package cannot name with one type is not certifiable: the
+// projection would have to guess the type, and a guess is exactly what the gate
+// withholds. Mixed scalars, container values, null and an empty set all take
+// that path, and the tool goes out non-strict with the schema it advertised.
+func TestMixedValueSetIsNotCertified(t *testing.T) {
+	t.Parallel()
+	refused := map[string]map[string]any{
+		"mixed scalars": {"enum": []any{"a", 1.0}},
+		"null member":   {"enum": []any{"a", nil}},
+		"container":     {"const": map[string]any{"a": "b"}},
+		"empty set":     {"enum": []any{}},
+	}
+	for name, argument := range refused {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			schema := map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties":           map[string]any{"payload": argument},
+				"required":             []string{"payload"},
+			}
+			if StrictExpressible(schema) {
+				t.Fatalf("a value set with no single scalar type must not be certified: %#v", argument)
+			}
+		})
+	}
+}
+
 // A schema StrictExpressible accepts must survive the projection with its
 // declared required set intact, so the predicate and the rewrite agree.
 func TestStrictExpressibleAgreesWithTheProjection(t *testing.T) {
