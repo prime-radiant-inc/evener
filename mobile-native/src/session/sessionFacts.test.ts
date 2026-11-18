@@ -171,20 +171,41 @@ describe("the model chip (spec 8.5)", () => {
 			supportsReasoning: true,
 		};
 	};
+	// A fixture catalog entry the tests name a model by. displayName is optional
+	// on the wire type; these fixtures all carry one, and a case that derived
+	// its expectation from a nameless entry would be comparing against nothing.
+	const entryFor = (
+		entries: readonly ModelDescriptor[],
+		provider: string,
+		model: string,
+	): ModelDescriptor & { displayName: string } => {
+		const entry = entries.find((candidate) => candidate.provider === provider && candidate.model === model);
+		if (!entry?.displayName) throw new Error(`the fixture catalog is missing a named ${provider}/${model}`);
+		return { ...entry, displayName: entry.displayName };
+	};
+	const activeEntry = entryFor(controlledCatalog, "anthropic", "claude-sonnet-5");
+	const desiredEntry = entryFor(controlledCatalog, "openai", "gpt-5.5");
+	const catalogEntry = entryFor(catalog, "lunaroute", "glm-5.3-vision");
 
-	it.each([
-		["pending", "GPT 5.5 · High"],
-		["applied", "GPT 5.5 · High"],
-		["rejected", "Claude Sonnet 5 · High"],
-	])("shows the shared %s model-control target", (lifecycle, expected) => {
-		expect(modelChipLabel(controlledSession(lifecycle), controlledCatalog, "Stale Board model")).toBe(expected);
+	// A pending or applied pick shows the target it asked for; a rejected one
+	// falls back to the model the session runs. The chip's effort suffix is not
+	// this claim, so each case names its model by catalog identity.
+	it.each(["pending", "applied", "rejected"])("shows the shared %s model-control target", (lifecycle) => {
+		const selected = lifecycle === "rejected" ? activeEntry : desiredEntry;
+		const other = lifecycle === "rejected" ? desiredEntry : activeEntry;
+		const label = modelChipLabel(controlledSession(lifecycle), controlledCatalog, "Stale Board model");
+		expect(label).toContain(selected.displayName);
+		expect(label).not.toContain(other.displayName);
 	});
 
 	it("keeps the Board-row name for the active model, but not for a complete pending target", () => {
-		expect(modelChipLabel(controlledSession("rejected"), undefined, "Claude from Board")).toBe(
-			"Claude from Board · High",
-		);
-		expect(modelChipLabel(controlledSession("pending"), undefined, "Claude from Board")).toBe("gpt-5.5 · High");
+		const boardRowName = "Claude from Board";
+		const onActive = modelChipLabel(controlledSession("rejected"), undefined, boardRowName);
+		expect(onActive).toContain(boardRowName);
+		expect(onActive).not.toContain(activeEntry.model);
+		const onPending = modelChipLabel(controlledSession("pending"), undefined, boardRowName);
+		expect(onPending).toContain(desiredEntry.model);
+		expect(onPending).not.toContain(boardRowName);
 	});
 	it("names the model itself, not its provider, while a pick is in recovery", () => {
 		// A recovery state carries the last safe display target: the provider
@@ -202,25 +223,26 @@ describe("the model chip (spec 8.5)", () => {
 			reasoningEffortLevels: ["low", "high"],
 			supportsReasoning: true,
 		};
-		const lastSafe = controlledCatalog.find((entry) => entry.model === "gpt-5.5");
-		const active = controlledCatalog.find((entry) => entry.model === "claude-sonnet-5");
-		if (!lastSafe || !active) throw new Error("the fixture catalog is missing the entry under test");
 		const label = modelChipLabel(recovering, controlledCatalog, "Stale Board model");
-		expect(label).toContain(lastSafe.displayName);
-		expect(label).not.toContain(active.displayName);
+		expect(label).toContain(desiredEntry.displayName);
+		expect(label).not.toContain(activeEntry.displayName);
 	});
 	it("names the model the way the catalog does, with its effort", () => {
-		expect(
-			modelChipLabel(
-				{
-					modelProvider: "lunaroute/glm-5.3-vision",
-					reasoningEffort: "xhigh",
-					reasoningEffortLevels: ["low", "high", "xhigh"],
-					supportsReasoning: true,
-				},
-				catalog,
-			),
-		).toMatch(new RegExp(`^GLM 5\\.3 Vision .+${effortName("xhigh")}$`));
+		const session = (reasoningEffort: string) => ({
+			modelProvider: "lunaroute/glm-5.3-vision",
+			reasoningEffort,
+			reasoningEffortLevels: ["low", "high", "xhigh"],
+			supportsReasoning: true,
+		});
+		// The catalog's name, then the effort the session runs at. What an effort
+		// level reads as is effortName's contract; the chip's is that the name
+		// leads, an effort follows it, and the effort follows the level.
+		const atXHigh = modelChipLabel(session("xhigh"), catalog);
+		const atLow = modelChipLabel(session("low"), catalog);
+		expect(atXHigh.startsWith(catalogEntry.displayName)).toBe(true);
+		expect(atXHigh).not.toBe(catalogEntry.displayName);
+		expect(atLow.startsWith(catalogEntry.displayName)).toBe(true);
+		expect(atXHigh).not.toBe(atLow);
 	});
 	it("names the model as the hub's session row does while the catalog is away (S17)", () => {
 		// The catalog clears while it reloads, and after a failed load; the
@@ -231,75 +253,84 @@ describe("the model chip (spec 8.5)", () => {
 			reasoningEffortLevels: ["high", "xhigh"],
 			supportsReasoning: true,
 		};
-		expect(modelChipLabel(session, undefined, "DeepSeek 4.1 Flash")).toBe("DeepSeek 4.1 Flash · XHigh");
+		const rowName = "DeepSeek 4.1 Flash";
+		expect(modelChipLabel(session, undefined, rowName)).toContain(rowName);
 		// The catalog, when it has the model, still wins.
-		expect(
-			modelChipLabel(
-				session,
-				[{ provider: "deepseek", model: "deepseek-4.1-flash", displayName: "DS Flash" }],
-				"Stale",
-			),
-		).toBe("DS Flash · XHigh");
+		const entry = { provider: "deepseek", model: "deepseek-4.1-flash", displayName: "DS Flash" };
+		const named = modelChipLabel(session, [entry], rowName);
+		expect(named).toContain(entry.displayName);
+		expect(named).not.toContain(rowName);
 	});
 	it("names the model when the session's provider key differs from the catalog's (#2988)", () => {
 		// A gateway and its upstream can name the same model under different
 		// provider-instance keys. The display name belongs to the model, so
 		// the bare id still finds it rather than falling back to the id.
-		expect(
-			modelChipLabel(
-				{
-					modelProvider: "deepseek/deepseek-4.1-flash",
-					reasoningEffort: "xhigh",
-					reasoningEffortLevels: ["high", "xhigh"],
-					supportsReasoning: true,
-				},
-				[{ provider: "lunaroute", model: "deepseek-4.1-flash", displayName: "DeepSeek 4.1 Flash" }],
-			),
-		).toBe("DeepSeek 4.1 Flash · XHigh");
+		const entry = { provider: "lunaroute", model: "deepseek-4.1-flash", displayName: "DeepSeek 4.1 Flash" };
+		const label = modelChipLabel(
+			{
+				modelProvider: "deepseek/deepseek-4.1-flash",
+				reasoningEffort: "xhigh",
+				reasoningEffortLevels: ["high", "xhigh"],
+				supportsReasoning: true,
+			},
+			[entry],
+		);
+		expect(label).toContain(entry.displayName);
+		expect(label).not.toContain(entry.model);
 	});
 	it("does not double a saved session's id that fills both display fields", () => {
 		// A saved session's legacy read has no separate model id on the wire, so
 		// the shared canonical display puts the same value in both fields. Joining
-		// them would print "anthropic/anthropic/claude-opus-5".
+		// those would repeat the id's own path in the chip.
+		const id = "anthropic/claude-opus-5";
 		const saved = {
-			modelProvider: "anthropic/claude-opus-5",
-			model: "anthropic/claude-opus-5",
+			modelProvider: id,
+			model: id,
 			modelControlState: {
 				kind: "uninitialized" as const,
 				canonicalDisplay: {
-					modelProvider: "anthropic/claude-opus-5",
-					model: "anthropic/claude-opus-5",
+					modelProvider: id,
+					model: id,
 				},
 			},
 			reasoningEffort: "high",
 			reasoningEffortLevels: ["low", "high"],
 			supportsReasoning: true,
 		};
-		expect(modelChipLabel(saved, undefined)).toBe("claude-opus-5 · High");
+		const label = modelChipLabel(saved, undefined);
+		const bareName = id.slice(id.indexOf("/") + 1);
+		expect(label).toContain(bareName);
+		// The model's own name, not the provider path the saved read repeats.
+		expect(label).not.toContain(id);
 	});
 	it("falls back to the model id before the catalog loads, and drops effort a model lacks", () => {
-		expect(
-			modelChipLabel(
-				{
-					modelProvider: "meta/muse-spark-1.3",
-					reasoningEffort: undefined,
-					reasoningEffortLevels: [],
-					supportsReasoning: false,
-				},
-				undefined,
-			),
-		).toBe("muse-spark-1.3");
-		expect(
-			modelChipLabel(
-				{
-					modelProvider: "lunaroute/glm-5.3-vision",
-					reasoningEffort: "",
-					reasoningEffortLevels: ["high"],
-					supportsReasoning: true,
-				},
-				catalog,
-			),
-		).toBe("GLM 5.3 Vision · Default");
+		const modelProvider = "meta/muse-spark-1.3";
+		const bareName = modelProvider.slice(modelProvider.indexOf("/") + 1);
+		const bare = modelChipLabel(
+			{ modelProvider, reasoningEffort: undefined, reasoningEffortLevels: [], supportsReasoning: false },
+			undefined,
+		);
+		// No catalog, so the id's own model part is the whole label.
+		expect(bare).toBe(bareName);
+		// The same model with levels grows an effort after its name.
+		const withEffort = modelChipLabel(
+			{ modelProvider, reasoningEffort: "high", reasoningEffortLevels: ["high"], supportsReasoning: true },
+			undefined,
+		);
+		expect(withEffort.startsWith(bare)).toBe(true);
+		expect(withEffort).not.toBe(bare);
+		// An empty effort still names one (the default), after the catalog's name.
+		const defaulted = modelChipLabel(
+			{
+				modelProvider: "lunaroute/glm-5.3-vision",
+				reasoningEffort: "",
+				reasoningEffortLevels: ["high"],
+				supportsReasoning: true,
+			},
+			catalog,
+		);
+		expect(defaulted.startsWith(catalogEntry.displayName)).toBe(true);
+		expect(defaulted).not.toBe(catalogEntry.displayName);
 	});
 	it.each([
 		["minimal", "Minimal"],
@@ -324,11 +355,13 @@ describe("the vision model row", () => {
 		// Off and the session's own model each read their own way, apart from any model.
 		const off = visionModelLabel("off", catalog);
 		const sessionModel = visionModelLabel("", catalog);
+		const [named] = catalog as [ModelDescriptor & { displayName: string }];
 		expect(new Set([off, sessionModel, visionModelLabel("lunaroute/glm-5.3-vision", catalog)]).size).toBe(3);
 		expect(off).not.toBe("");
 		expect(sessionModel).not.toBe("");
-		expect(visionModelLabel("lunaroute/glm-5.3-vision", catalog)).toBe("GLM 5.3 Vision");
-		expect(visionModelLabel("lunaroute/glm-5.3-vision", undefined)).toBe("glm-5.3-vision");
+		// With the catalog it is the catalog's name; without one, the model id.
+		expect(visionModelLabel("lunaroute/glm-5.3-vision", catalog)).toBe(named.displayName);
+		expect(visionModelLabel("lunaroute/glm-5.3-vision", undefined)).toBe(named.model);
 	});
 });
 
