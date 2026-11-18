@@ -87,9 +87,11 @@ round on. Read the session ref off the resulting `/s/local:<SID>` path.
 1. **[browser-free] Confirm the session is live with a turn in flight** (the
    precondition for the interrupt half of this card). Dial
    `ws://127.0.0.1:$PORT/rpc` with `Authorization: Bearer $TOKEN`,
-   `initialize` (protocolVersion `evener-appwire-v2` — see "Driving AppWire
-   directly" in `docs/developing-evener/agentic-testing.md`; frames carry no
-   `jsonrpc` field), then call:
+   `initialize` (protocolVersion `evener-appwire-v8`, the value of
+   `appwire.ProtocolVersion` in the checkout under test — a handshake
+   announcing any other version is refused; see "Driving AppWire directly" in
+   `docs/developing-evener/agentic-testing.md`; frames carry no `jsonrpc`
+   field), then call:
    ```json
    {"id":3,"method":"thread/read","params":{"ref":"local:<SID>","includeTurns":false}}
    ```

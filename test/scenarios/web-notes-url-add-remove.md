@@ -80,9 +80,11 @@ ref off the resulting `/s/local:<SID>` path, and wait for `idle` (poll `thread/r
 
 1. **[browser-free] Confirm the adds landed — the exact store proof.** Dial
    `ws://127.0.0.1:$PORT/rpc` with `Authorization: Bearer $TOKEN`,
-   `initialize` (protocolVersion `evener-appwire-v2` — see "Driving AppWire
-   directly" in `docs/developing-evener/agentic-testing.md`; frames carry no
-   `jsonrpc` field), then call:
+   `initialize` (protocolVersion `evener-appwire-v8`, the value of
+   `appwire.ProtocolVersion` in the checkout under test — a handshake
+   announcing any other version is refused; see "Driving AppWire directly" in
+   `docs/developing-evener/agentic-testing.md`; frames carry no `jsonrpc`
+   field), then call:
    ```json
    {"id":3,"method":"thread/read","params":{"ref":"local:<SID>","includeTurns":true}}
    ```

@@ -34,16 +34,33 @@ a request that carries no model-control authority.
 - `superpowers-chrome:browsing` with multi-tab support, and a real SPA bundle
   (`make build-web`).
 - A session spawned on model A (e.g. `openai/gpt-5.5`), idle. Capture `SID`.
-- For the browser-free steps, a bearer `$TOKEN` for `/rpc`. Read the session's
-  authority first; the request in step 4 must echo it:
-  ```javascript
-  // docs/developing-evener/agentic-testing.md, "AppWire over /rpc"
-  const read = await rpc("thread/read", { ref: "local:<SID>" });
-  const auth = read.thread.evener.modelControl.authority;  // {instanceId, bootGeneration}
+- For the browser-free steps, a socket at `ws://127.0.0.1:$PORT/rpc` with
+  `Authorization: Bearer $TOKEN`, driven the way
+  `docs/developing-evener/agentic-testing.md`'s "Driving AppWire directly"
+  describes: `initialize` before anything else, and every frame is
+  `{"id":N,"method":…,"params":{…}}` with **no `jsonrpc` field** (that field
+  is rejected and the socket closes). The announced version is the one this
+  hub accepts, `appwire.ProtocolVersion` in `appwire/types_protocol.go`; the
+  handshake compares it exactly, so copy it from the checkout under test
+  rather than from an older card:
+  ```json
+  {"id":1,"method":"initialize",
+   "params":{"protocolVersion":"evener-appwire-v8",
+             "clientInfo":{"name":"scenario","version":"0"},
+             "capabilities":{"experimentalApi":false}}}
   ```
-  `read.thread.evener.capabilities.modelControlVersion` must be `1` for this
-  card; a session on an older daemon answers without it and refuses the
-  mutation, which is out of scope here.
+  Read the session's authority before any pick; step 4's request must echo
+  it. Send, and take the reply whose `id` is `2` — notifications for other
+  threads are interleaved with your own replies:
+  ```json
+  {"id":2,"method":"thread/read","params":{"ref":"local:<SID>","includeTurns":false}}
+  ```
+  From that reply's `result.thread.evener`:
+  - `modelControl.authority` is `{instanceId, bootGeneration}` — what step 4's
+    `expectedInstanceId` and `expectedBootGeneration` echo.
+  - `capabilities.modelControlVersion` must be `1` for this card; a session on
+    an older daemon answers without it and refuses the mutation, which is out
+    of scope here.
 
 ## Steps
 
@@ -102,17 +119,16 @@ a request that carries no model-control authority.
    It is accepted the same way.
 
 7. **[browser-free] The pick lands.** Wait for the queue to fully drain to
-   `idle`, then read the session again:
-   ```javascript
-   const after = await rpc("thread/read", { ref: "local:<SID>" });
-   ({
-     live: after.thread.modelProvider,
-     activeModel: after.thread.evener.modelControl.active.model,
-     desired: after.thread.evener.modelControl.desired,
-   })
+   `idle`, then read the session again on the same socket:
+   ```json
+   {"id":9,"method":"thread/read","params":{"ref":"local:<SID>","includeTurns":false}}
    ```
-   The active model is the last accepted pick — the newest request sequence
-   wins, so an earlier queued pick that a later one superseded never applies.
+   Take the reply whose `id` is `9`, and read from its `result.thread`:
+   `modelProvider` (the live model), `evener.modelControl.active.model` (the
+   model the daemon runs), and `evener.modelControl.desired` (the desired
+   record). The active model is the last accepted pick — the newest request
+   sequence wins, so an earlier queued pick that a later one superseded never
+   applies.
 
 8. **[browser-free] A request with no authority is refused before admission.**
    Re-issue step 4's payload with `expectedBootGeneration` removed. The wire

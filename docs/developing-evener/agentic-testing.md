@@ -521,10 +521,15 @@ malformed request. Send:
 
 ```json
 {"id": 1, "method": "initialize",
- "params": {"protocolVersion": "evener-appwire-v6",
+ "params": {"protocolVersion": "evener-appwire-v8",
             "clientInfo": {"name": "scenario", "version": "0"},
             "capabilities": {"experimentalApi": false}}}
 ```
+
+The handshake compares that version exactly (`appwire.ProtocolVersion`,
+`appwire/types_protocol.go`; compared at `internal/appserver/server.go`), and
+refuses a client that announces any other one. Take the value from that
+constant in the checkout under test.
 
 Notifications for other threads arrive interleaved with your responses,
 so match on `id` rather than reading the next frame and hoping.
