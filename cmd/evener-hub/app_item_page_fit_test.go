@@ -848,28 +848,26 @@ func TestPackTranscriptWindowOmitStampsBeforeWithholdingATurn(t *testing.T) {
 	}
 }
 
-// TestPackTranscriptWindowStrippedPageRespectsItsFollowUps pins the decision
-// the page-level strip branch has to make. The branch is reached only when
-// every turn fits its own budget but the page does not; it strips the call
-// lists, and then must confirm the page it is about to return survives the
-// response cap the Manager enforces. The content budget it just cleared does
-// not include the per-turn recovery follow-ups, which echo the request and can
-// carry a page that fits its budget past the cap. When they do, withholding
-// turns is the only honest answer: the Manager then gets a smaller page and a
-// continuation instead of a refusal with nothing in it.
+// TestPackTranscriptWindowStrippedPageRespectsItsFollowUps constructs the three
+// sizes the page-level strip branch has to reconcile. With the call lists the
+// page is over its window budget, so the branch is reached. Without them it
+// fits that budget. Its recovery follow-ups echo the request once per
+// cursor-bearing turn, and with a long ref those alone carry the envelope past
+// the 256 KiB response cap. The budget is a content measure and does not see
+// them, so returning the stripped page on the budget test hands the Manager a
+// page the final cap refuses - with the call lists already gone, and without
+// ever trying the smaller window that would have fitted.
 //
-// The sizes here are constructed rather than searched for. The serving path is
-// exercised end to end, and the assertions are the relationships the fix
-// creates: what is served fits the cap, served bodies are intact, and withheld
-// turns stay recoverable.
+// The ref is the lever precisely because it is echoed by each follow-up and by
+// nothing in the page content, so the three sizes can be chosen independently.
 func TestPackTranscriptWindowStrippedPageRespectsItsFollowUps(t *testing.T) {
-	ref := strings.Repeat("r", 8000)
 	const (
-		turnCount = 4
-		itemCount = 12
-		itemBytes = 4600
+		turnCount = 2
+		itemCount = 11
+		itemBytes = 10000
 		callCount = 60
 	)
+	bookkeeping := strings.Repeat("r", 30000)
 	var candidates []appitempaging.TranscriptItemCandidate
 	for t := 0; t < turnCount; t++ {
 		turnID := fmt.Sprintf("turn-%02d", t)
@@ -884,7 +882,7 @@ func TestPackTranscriptWindowStrippedPageRespectsItsFollowUps(t *testing.T) {
 				ID:   fmt.Sprintf("%s-i%02d", turnID, j),
 				Text: strings.Repeat("b", itemBytes),
 				Observation: &appwire.SessionObservationMetadata{
-					Ref:              ref,
+					Ref:              "local:thread",
 					TurnID:           turnID,
 					AnswerToTurnIDs:  []string{turnID},
 					ResolvedAskCalls: calls,
@@ -906,7 +904,7 @@ func TestPackTranscriptWindowStrippedPageRespectsItsFollowUps(t *testing.T) {
 		WindowBudgetBytes: transcriptWindowMaximumContentBudget,
 		MessageBytes:      itemBytes * 2,
 	})
-	configureTranscriptWindowResponseFit(&options, appwire.ThreadTurnsListParams{Ref: ref, ItemLimit: appwire.TranscriptItemPageLimit})
+	configureTranscriptWindowResponseFit(&options, appwire.ThreadTurnsListParams{Ref: bookkeeping, ItemLimit: appwire.TranscriptItemPageLimit})
 	got, err := packThreadTurnsWindowItemCandidates(testWindowCandidateResult(candidates), nil, options)
 	if err != nil {
 		t.Fatalf("pack over-budget window: %v", err)
@@ -914,16 +912,16 @@ func TestPackTranscriptWindowStrippedPageRespectsItsFollowUps(t *testing.T) {
 	versioned := appwire.HistoryTurnsResponse(got)
 	served, err := json.Marshal(appwire.SessionOperationResponse{
 		Turns:     &versioned,
-		FollowUps: transcriptReadFollowUps(appwire.ThreadTurnsListParams{Ref: ref}, got),
+		FollowUps: transcriptReadFollowUps(appwire.ThreadTurnsListParams{Ref: bookkeeping}, got),
 	})
 	if err != nil {
 		t.Fatalf("marshal served page: %v", err)
 	}
 	if len(served) > managerReadMaxJSONBytes {
-		t.Fatalf("served page = %d bytes, Manager cap %d: the Manager gets nothing", len(served), managerReadMaxJSONBytes)
+		t.Fatalf("served page = %d bytes, Manager cap %d: the Manager gets no page at all", len(served), managerReadMaxJSONBytes)
 	}
-	// A served turn keeps its bodies; only optional metadata or a whole
-	// withheld turn may go.
+	// Bodies survive what is served; only optional metadata or whole withheld
+	// turns may go.
 	for _, turn := range got.Data {
 		for _, item := range turn.Items {
 			if len(item.Text) != itemBytes {
@@ -931,6 +929,7 @@ func TestPackTranscriptWindowStrippedPageRespectsItsFollowUps(t *testing.T) {
 			}
 		}
 	}
+	// Whatever was withheld stays recoverable.
 	if got.Window != nil && got.Window.WithheldTurns > 0 && got.Window.ContinuationCursor == "" {
 		t.Fatal("withheld turns without a continuation cursor: the reader cannot recover")
 	}
