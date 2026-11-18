@@ -490,6 +490,12 @@ export interface ThreadModel {
   // by the next quota wait (which retires its own turn) and never read for
   // anything but the stale-event comparison.
   retiredQuotaTurn?: string;
+  // The stamp of the quota wait the wake ended, held independently of the
+  // retry chip: the chip can change to an ordinary backoff or clear while a
+  // read that captured the ended wait is still in flight, and this record is
+  // what keeps that read from restoring its deadline. Cleared by the next
+  // wait's announcement, which owns the stale-event rule from there on.
+  quotaWaitEndedAt?: number;
   // Wave 5 T1: the following are all sourced from thread.evener
   // (appwire/types_thread.go's EvenerThread) and are SNAPSHOT-ONLY -
   // hydrateThread populates them, and applyNotification updates them ONLY

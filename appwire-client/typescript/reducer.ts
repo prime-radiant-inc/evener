@@ -668,6 +668,24 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
           params.errorClass === "quota_exceeded" && params.delayMs > 0
             ? (params.waitStartedAt ?? now) + params.delayMs
             : undefined,
+        // The wait's stamp travels with its deadline, whichever route
+        // learned the wait: a live announcement installs its OWN stamp, so
+        // a read captured before THIS wait began cannot pass the freshness
+        // rule against a stamp some earlier wait's snapshot left behind
+        // (a pane can live through two waits of one turn), and the wake
+        // clears the pair together so no ended wait keeps a live stamp.
+        quotaWaitStartedAt:
+          params.errorClass === "quota_exceeded" && params.delayMs > 0 ? (params.waitStartedAt ?? now) : undefined,
+        // The wake records the ended wait's stamp independently of the chip:
+        // the resumed request's first ordinary retry replaces the chip, and
+        // this is the evidence that survives to refuse a read that captured
+        // the ended wait while it still stood.
+        quotaWaitEndedAt:
+          params.errorClass === "quota_exceeded" && params.delayMs === 0
+            ? (params.waitStartedAt ?? model.quotaWaitStartedAt)
+            : params.errorClass === "quota_exceeded" && params.delayMs > 0
+              ? undefined
+              : model.quotaWaitEndedAt,
         // A newly recorded wait owns the stale-event rule from here on; the
         // turn the last boundary retired no longer names one.
         retiredQuotaTurn:

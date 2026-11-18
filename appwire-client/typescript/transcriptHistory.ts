@@ -964,22 +964,50 @@ function quotaWaitStampsCorrelate(
 }
 
 // quotaReadPredatesWait reports whether the read's serving cut names an
-// instant before the wait the model holds began: the read was in flight
+// instant before the pane learned the wait it holds: the read was in flight
 // before the live announcement landed (the same running turn, no failure
 // summary), so its absent field is a stale cut's silence, not a statement
-// the wait ended. The cut instant (servingFacts.asOf) is compared against
-// the wait's daemon-issued start stamp; a read without a cut instant, or a
-// wait without a stamp, keeps the existing rules - the stamp postdates the
-// base revision, so a pre-stamp source never reaches here with one anyway.
+// the wait ended. The comparison runs against the LATER of the wait's
+// daemon-issued start stamp and the announcement's pane receipt: the
+// session's live wait predates the envelope's projection of it, so a cut
+// can clear the stamp comparison while the summary the cut sampled was
+// still empty - the announcement's receipt is the ordering evidence that
+// survives that window, because a read in flight when the announcement
+// landed was cut before the announcement reached the pane. A read without
+// a cut instant, or a model without the announcement's receipt, keeps the
+// existing rules.
 function quotaReadPredatesWait(
   read: Pick<ThreadModel, "servingFacts">,
   model: Pick<ThreadModel, "quotaWaitStartedAt" | "modelRetry">,
 ): boolean {
   const asOf = read.servingFacts?.asOf;
-  const waitStartedAt = model.quotaWaitStartedAt ?? model.modelRetry?.waitStartedAt;
-  if (asOf === undefined || waitStartedAt === undefined) return false;
+  if (asOf === undefined) return false;
   const cutMs = Date.parse(asOf);
-  return Number.isFinite(cutMs) && cutMs < waitStartedAt;
+  if (!Number.isFinite(cutMs)) return false;
+  const waitStartedAt = model.quotaWaitStartedAt ?? model.modelRetry?.waitStartedAt;
+  const learnedAt =
+    waitStartedAt !== undefined && model.modelRetry?.receivedAt !== undefined
+      ? Math.max(waitStartedAt, model.modelRetry.receivedAt)
+      : (waitStartedAt ?? model.modelRetry?.receivedAt);
+  if (learnedAt === undefined) return false;
+  return cutMs < learnedAt;
+}
+
+// quotaWaitEndedOnModel reports whether the wait the read names by stamp is
+// one the pane watched end: the wake recorded its stamp independently of
+// the chip, so the read's deadline for THAT wait never installs - not over
+// the ordinary backoff the resumed request can carry, not over anything
+// else. A read naming any other wait (a later wait of the same turn, or a
+// pre-stamp legacy source) keeps the existing rules.
+function quotaWaitEndedOnModel(
+  read: Pick<ThreadModel, "quotaWaitStartedAt">,
+  model: Pick<ThreadModel, "quotaWaitEndedAt">,
+): boolean {
+  return (
+    model.quotaWaitEndedAt !== undefined &&
+    read.quotaWaitStartedAt !== undefined &&
+    model.quotaWaitEndedAt === read.quotaWaitStartedAt
+  );
 }
 
 // quotaWaitWakeRecorded reports whether the model carries the zero-delay
@@ -1130,9 +1158,10 @@ export function applyReadResponse<M extends ThreadModel>(
   // retry the live announcement recorded.
   const readPredatesWait = quotaReadPredatesWait(fields, model);
   const wakeSuppressesDeadline = quotaWaitWakeRecorded(fields, model);
+  const readNamesEndedWait = quotaWaitEndedOnModel(fields, model);
   const clearedQuotaWait =
     (fields.quotaResumesAt === undefined && (quotaSnapshotAuthoritative || waitTurnReplaced) && !readPredatesWait) ||
-    (fields.quotaResumesAt !== undefined && wakeSuppressesDeadline)
+    (fields.quotaResumesAt !== undefined && (wakeSuppressesDeadline || readNamesEndedWait))
       ? { quotaResumesAt: undefined }
       : {};
   // The report-capability evidence is sticky: a source that once reported a
@@ -1388,12 +1417,13 @@ export function applyReadModel<M extends ThreadModel>(
   // live announcement recorded.
   const readPredatesWait = quotaReadPredatesWait(fresh, model);
   const wakeSuppressesDeadline = quotaWaitWakeRecorded(fresh, model);
+  const readNamesEndedWait = quotaWaitEndedOnModel(fresh, model);
   const clearedQuotaWait =
     (fresh.quotaResumesAt === undefined &&
       (quotaSnapshotAuthoritative || waitTurnReplaced) &&
       model.quotaResumesAt !== undefined &&
       !readPredatesWait) ||
-    (fresh.quotaResumesAt !== undefined && wakeSuppressesDeadline)
+    (fresh.quotaResumesAt !== undefined && (wakeSuppressesDeadline || readNamesEndedWait))
       ? { quotaResumesAt: undefined }
       : {};
   // Same cross-turn, wait-stamp and moved-deadline rules as applyReadResponse:

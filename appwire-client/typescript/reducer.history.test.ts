@@ -416,6 +416,48 @@ test("a read cut before the wait keeps the live-recorded wait; a fresh authorita
   const cleared = applyReadModel(kept, fresh);
   expect(cleared.quotaResumesAt).toBeUndefined();
   expect(cleared.modelRetry).toBeUndefined();
+
+  // The envelope-lag window: the session stamps the wait, the announcement's
+  // event is still in flight to the projection, and the read's cut falls in
+  // that gap - after the wait began, before the projection refreshed the
+  // envelope - so the snapshot carries no summary while the cut clears the
+  // daemon-stamp comparison. The read response arrives after the
+  // announcement reached the pane (the pane was already subscribed), and
+  // the projection always precedes the announcement's transit, so the
+  // announcement's pane receipt postdates the cut: comparing the cut
+  // against the receipt - not the stamp alone - is what keeps the
+  // countdown. The projection's own ordering evidence is the receipt the
+  // pane stamped when the announcement landed.
+  const reannounced = applyNotification(
+    cleared,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: THREAD_ID,
+        ref: REF,
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: 60 * 60_000,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 1,
+        waitStartedAt: waitStartedAt + 30_000,
+      },
+    } as AnyNotification,
+    // Epoch-scale receipt, the shape a real pane stamps: the announcement
+    // reached the pane after the lagging read's cut sampled the envelope.
+    waitStartedAt + 50_000,
+  );
+  expect(reannounced.quotaResumesAt).toBe(waitStartedAt + 30_000 + 60 * 60_000);
+  const stillLagging = hydrateThread(
+    read([turn("turn_1", 1)], { activeTurnId: "turn_1", asOf: new Date(waitStartedAt + 40_000).toISOString() }),
+    REF,
+    NOW + 5,
+  );
+  const preserved = applyReadModel(reannounced, stillLagging);
+  expect(preserved.quotaResumesAt).toBe(waitStartedAt + 30_000 + 60 * 60_000);
+  expect(preserved.modelRetry?.errorClass).toBe("quota_exceeded");
 });
 
 // A legacy ROOT daemon predates the capability bit but its reads always
@@ -853,6 +895,278 @@ test("a read names the same wait by its stamp, not its deadline: elapsed time su
   );
   const restarted = applyReadModel(merged, newWait);
   expect(restarted.quotaResumesAt).toBe(resumesAt + 30 * 60_000);
+
+  // A pane can live through two waits of one turn: it hydrated during the
+  // first, a queued message woke it, and the same turn hit the limit again.
+  // The second announcement moves the deadline, but the model's wait stamp
+  // still named the FIRST wait if the live path left it stale - and the
+  // round-17 freshness rule would then read a read captured between the
+  // two waits as current and erase the second countdown. The live path
+  // pairs the stamp with the deadline: each announcement installs its own
+  // stamp, and the read between the waits predates it and preserves the
+  // second wait. The wake clears the pair together.
+  const secondWaitAt = waitStartedAt + 2 * 60 * 60_000;
+  const secondAnnounced = applyNotification(
+    restarted,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: THREAD_ID,
+        ref: REF,
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: 90 * 60_000,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 1 * 60_000,
+        attemptCap: 1,
+        waitStartedAt: secondWaitAt,
+      },
+    } as AnyNotification,
+    NOW + 6,
+  );
+  expect(secondAnnounced.quotaResumesAt).toBe(secondWaitAt + 90 * 60_000);
+  // A read cut between the two waits (its cut names an instant after the
+  // first wait, before the second began) carries no summary: it must not
+  // erase the SECOND countdown.
+  const betweenWaits = hydrateThread(
+    read([turn("turn_1", 1)], {
+      activeTurnId: "turn_1",
+      asOf: new Date(waitStartedAt + 30 * 60_000).toISOString(),
+    }),
+    REF,
+    NOW + 7,
+  );
+  const kept = applyReadModel(secondAnnounced, betweenWaits);
+  expect(kept.quotaResumesAt).toBe(secondWaitAt + 90 * 60_000);
+  expect(kept.modelRetry?.errorClass).toBe("quota_exceeded");
+  // The second wait's own wake clears the pair together.
+  const secondWake = applyNotification(
+    kept,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: THREAD_ID,
+        ref: REF,
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: 0,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 1 * 60_000,
+        attemptCap: 1,
+        waitStartedAt: secondWaitAt,
+      },
+    } as AnyNotification,
+    NOW + 8,
+  );
+  expect(secondWake.quotaResumesAt).toBeUndefined();
+});
+
+// Two waits of one turn, learned live both times, with a read captured
+// between them: the pane hydrated during the FIRST wait (so the model's
+// wait stamp is the first wait's own snapshot stamp), a queued message
+// woke it, and the same turn hit the limit again. The second announcement
+// installs the second deadline, but the model's wait stamp still named the
+// first wait - the live path never moved it - so the freshness rule read a
+// between-waits read as current and erased the second countdown. The live
+// path pairs the stamp with the deadline: the second announcement installs
+// its OWN stamp, the between-waits cut predates it, and the second
+// countdown survives until its own wake or a fresh cut clears it.
+test("a second wait's announcement installs its own stamp, so a between-waits read cannot erase it", () => {
+  const firstWaitAt = 4_000_000_000;
+  const secondWaitAt = firstWaitAt + 2 * 60 * 60_000;
+  // The pane hydrated during the first wait: the read carried the first
+  // wait's stamp.
+  let model = hydrateThread(
+    read([turn("turn_1", 1)], {
+      activeTurnId: "turn_1",
+      quotaWaitResumesAt: firstWaitAt + 60 * 60_000,
+      quotaWaitStartedAt: firstWaitAt,
+    }),
+    REF,
+    NOW,
+  );
+  expect(model.quotaResumesAt).toBe(firstWaitAt + 60 * 60_000);
+  // The first wait's wake (a queued message), then the second wait's
+  // announcement.
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: THREAD_ID,
+        ref: REF,
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: 0,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5 * 60_000,
+        attemptCap: 1,
+        waitStartedAt: firstWaitAt,
+      },
+    } as AnyNotification,
+    NOW + 1,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: THREAD_ID,
+        ref: REF,
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: 90 * 60_000,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 1 * 60_000,
+        attemptCap: 1,
+        waitStartedAt: secondWaitAt,
+      },
+    } as AnyNotification,
+    NOW + 2,
+  );
+  expect(model.quotaResumesAt).toBe(secondWaitAt + 90 * 60_000);
+  // The between-waits read: its cut falls after the first wait began and
+  // before the second did, and it carries no summary. It must not erase
+  // the second countdown.
+  const betweenWaits = hydrateThread(
+    read([turn("turn_1", 1)], {
+      activeTurnId: "turn_1",
+      asOf: new Date(firstWaitAt + 30 * 60_000).toISOString(),
+    }),
+    REF,
+    NOW + 3,
+  );
+  const kept = applyReadModel(model, betweenWaits);
+  expect(kept.quotaResumesAt).toBe(secondWaitAt + 90 * 60_000);
+  expect(kept.modelRetry?.errorClass).toBe("quota_exceeded");
+  // A FRESH cut - after the second wait's wake ended it - still clears.
+  const woken = applyNotification(
+    kept,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: THREAD_ID,
+        ref: REF,
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: 0,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 1 * 60_000,
+        attemptCap: 1,
+        waitStartedAt: secondWaitAt,
+      },
+    } as AnyNotification,
+    NOW + 4,
+  );
+  const freshRead = hydrateThread(
+    read([turn("turn_1", 1)], {
+      activeTurnId: "turn_1",
+      asOf: new Date(secondWaitAt + 3 * 60 * 60_000).toISOString(),
+    }),
+    REF,
+    NOW + 5,
+  );
+  const cleared = applyReadModel(woken, freshRead);
+  expect(cleared.quotaResumesAt).toBeUndefined();
+  expect(cleared.modelRetry).toBeUndefined();
+});
+
+// The wait's end outlives the chip: a pane whose remote read captured a
+// wait, whose queued wake arrived, and whose resumed request then hit an
+// ordinary rate limit holds the ordinary retry in the chip - but a read
+// captured while the wait still stood can still be in flight, and with the
+// wake's evidence living only in the chip the merge read the stale read's
+// deadline as current and reinstalled the countdown over the live
+// backoff. The ended wait's stamp is retained independently of the chip,
+// so a read naming THAT wait cannot restore its deadline however the chip
+// reads; a later wait in the same turn still installs.
+test("a read cannot restore a wait the wake ended, even after an ordinary retry replaced the chip", () => {
+  const waitStartedAt = 4_000_000_000;
+  const resumesAt = waitStartedAt + 90 * 60_000;
+  // The remote read captured the wait and is in flight.
+  let model = hydrateThread(
+    read([turn("turn_1", 1)], {
+      activeTurnId: "turn_1",
+      quotaWaitResumesAt: resumesAt,
+      quotaWaitStartedAt: waitStartedAt,
+    }),
+    REF,
+    NOW,
+  );
+  // The wake arrives (a queued message woke the call), then the resumed
+  // request hits an ordinary rate limit: the chip now carries the ordinary
+  // retry, and the wake's evidence is gone from it.
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: THREAD_ID,
+        ref: REF,
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: 0,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5 * 60_000,
+        attemptCap: 1,
+        waitStartedAt,
+      },
+    } as AnyNotification,
+    NOW + 1,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: THREAD_ID,
+        ref: REF,
+        turnId: "turn_1",
+        attempt: 2,
+        maxAttempts: 5,
+        delayMs: 30_000,
+        errorClass: "rate_limit",
+        groupElapsedMs: 6 * 60_000,
+        attemptCap: 5,
+      },
+    } as AnyNotification,
+    NOW + 2,
+  );
+  expect(model.quotaResumesAt).toBeUndefined();
+  expect(model.modelRetry?.errorClass).toBe("rate_limit");
+  // The in-flight read lands: it captured the wait that ended. Its deadline
+  // must not reinstall over the ordinary backoff.
+  const staleWaitRead = hydrateThread(
+    read([turn("turn_1", 1)], {
+      activeTurnId: "turn_1",
+      quotaWaitResumesAt: resumesAt,
+      quotaWaitStartedAt: waitStartedAt,
+    }),
+    REF,
+    NOW + 3,
+  );
+  const kept = applyReadModel(model, staleWaitRead);
+  expect(kept.quotaResumesAt).toBeUndefined();
+  expect(kept.modelRetry?.errorClass).toBe("rate_limit");
+  // A LATER wait in the same turn still installs its own countdown.
+  const laterWaitAt = waitStartedAt + 2 * 60 * 60_000;
+  const laterWait = hydrateThread(
+    read([turn("turn_1", 1)], {
+      activeTurnId: "turn_1",
+      quotaWaitResumesAt: laterWaitAt + 60 * 60_000,
+      quotaWaitStartedAt: laterWaitAt,
+    }),
+    REF,
+    NOW + 4,
+  );
+  const installed = applyReadModel(kept, laterWait);
+  expect(installed.quotaResumesAt).toBe(laterWaitAt + 60 * 60_000);
 });
 
 function page(turns: Turn[], options: Snapshot & { authoritative?: boolean } = {}): ThreadTurnsListResponse {
