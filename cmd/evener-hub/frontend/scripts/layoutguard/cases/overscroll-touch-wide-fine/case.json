@@ -1,0 +1,18 @@
+{
+  "name": "overscroll-touch-wide-fine",
+  "description": "the same wide width on a fine-pointer desktop window keeps the browser's own document gestures: html computes overscroll-behavior: auto and html/body overflow stay visible, so the desktop lock stays with the phone layout and the coarse-pointer arm never reaches a window with no touch screen",
+  "viewport": { "width": 1280, "height": 800 },
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "shell/AppShell.module.css",
+    "shell/DockHost.module.css",
+    "widgets/panescaffold/panescaffold.module.css"
+  ],
+  "mutation": {
+    "declaration": "styles/global.css: the document gesture lock moved out of its media query to a top-level html rule",
+    "verified": "2026-11-17",
+    "expect": "fail",
+    "note": "Fails: html computes overscroll-behavior: none on a fine-pointer desktop window, so the lock escapes the phone and touching surfaces it was scoped to."
+  }
+}

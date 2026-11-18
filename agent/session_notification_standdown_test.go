@@ -390,10 +390,7 @@ func TestNotificationStandDownWarnsOncePerStorageEpisode(t *testing.T) {
 func TestNotificationStandDownDoesNotSpendAnOwedCompletionsRetry(t *testing.T) {
 	t.Parallel()
 	const jobA = "job_owed_across_stand_down"
-	adapter := &fakeAdapter{
-		name:  "openai",
-		steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return agenttest.FinalResponse("handled it") }},
-	}
+	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("handled it") })
 	// The first turn's request and its post-compaction retry are both refused.
 	h := newStandDownHarness(t, withClient(admissionRefusingClient(adapter, func(call int) bool { return call < 2 })))
 	enqueueCompletedJobNotification(t, h.sess, jobA)

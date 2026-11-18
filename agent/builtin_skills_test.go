@@ -88,17 +88,12 @@ func TestEmbeddedSkills_ProjectShadowsEmbedded(t *testing.T) {
 	comm := communicateCall("c1", "done")
 
 	var capturedSystem string
-	f := &fakeAdapter{
-		name: "anthropic",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				if len(req.Messages) > 0 && req.Messages[0].Role == llm.RoleSystem {
-					capturedSystem = req.Messages[0].Text()
-				}
-				return agenttest.ToolCallResponse(comm)
-			},
-		},
-	}
+	f := newFakeAdapter("anthropic", func(req llm.Request) llm.Response {
+		if len(req.Messages) > 0 && req.Messages[0].Role == llm.RoleSystem {
+			capturedSystem = req.Messages[0].Text()
+		}
+		return agenttest.ToolCallResponse(comm)
+	})
 	c.Register(f)
 
 	// Anthropic profile renders skills in system prompt, so we can verify shadowing.
@@ -127,26 +122,20 @@ func TestEmbeddedSkills_UseSkillWithProjectSkill(t *testing.T) {
 	comm := communicateCall("c1", "done")
 
 	var skillResultContent string
-	f := &fakeAdapter{
-		name: "anthropic",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(skill) },
-			func(req llm.Request) llm.Response {
-				for _, msg := range req.Messages {
-					for _, part := range msg.Content {
-						if part.Kind == llm.ContentToolResult {
-							if content, ok := part.ToolResult.Content.(string); ok {
-								if strings.Contains(content, "Skill body content") {
-									skillResultContent = content
-								}
-							}
+	f := newFakeAdapter("anthropic", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(skill) }, func(req llm.Request) llm.Response {
+		for _, msg := range req.Messages {
+			for _, part := range msg.Content {
+				if part.Kind == llm.ContentToolResult {
+					if content, ok := part.ToolResult.Content.(string); ok {
+						if strings.Contains(content, "Skill body content") {
+							skillResultContent = content
 						}
 					}
 				}
-				return agenttest.ToolCallResponse(comm)
-			},
-		},
-	}
+			}
+		}
+		return agenttest.ToolCallResponse(comm)
+	})
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withProfile(newAnthropicProfile("claude-test")), withDir(root), withConfig(SessionConfig{}))
@@ -174,22 +163,16 @@ func TestEmbeddedSkills_UseSkillUnknownReturnsError(t *testing.T) {
 	comm := communicateCall("c1", "done")
 
 	var skillResultIsError bool
-	f := &fakeAdapter{
-		name: "anthropic",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(skill) },
-			func(req llm.Request) llm.Response {
-				for _, msg := range req.Messages {
-					for _, part := range msg.Content {
-						if part.Kind == llm.ContentToolResult && part.ToolResult != nil {
-							skillResultIsError = part.ToolResult.IsError
-						}
-					}
+	f := newFakeAdapter("anthropic", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(skill) }, func(req llm.Request) llm.Response {
+		for _, msg := range req.Messages {
+			for _, part := range msg.Content {
+				if part.Kind == llm.ContentToolResult && part.ToolResult != nil {
+					skillResultIsError = part.ToolResult.IsError
 				}
-				return agenttest.ToolCallResponse(comm)
-			},
-		},
-	}
+			}
+		}
+		return agenttest.ToolCallResponse(comm)
+	})
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withProfile(newAnthropicProfile("claude-test")), withDir(root), withConfig(SessionConfig{}))

@@ -31,7 +31,7 @@ func TestCovNormalizeAskUserArgs(t *testing.T) {
 			},
 		},
 	}
-	out, err := normalizeAskUserArgs(batch)
+	out, err := NormalizeAskUserArgs(batch)
 	if err != nil {
 		t.Fatalf("batch form: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestCovNormalizeAskUserArgs(t *testing.T) {
 			},
 		},
 	}
-	out, err = normalizeAskUserArgs(shorthand)
+	out, err = NormalizeAskUserArgs(shorthand)
 	if err != nil {
 		t.Fatalf("shorthand form: %v", err)
 	}
@@ -112,7 +112,7 @@ func TestCovNormalizeAskUserArgs(t *testing.T) {
 			map[string]any{"question": "q", "options": []any{}},
 		},
 	}
-	out, err = normalizeAskUserArgs(minimal)
+	out, err = NormalizeAskUserArgs(minimal)
 	if err != nil {
 		t.Fatalf("minimal shorthand: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestCovNormalizeAskUserArgs(t *testing.T) {
 		"intent":      "clarify option choice",
 		"extra_field": "preserved",
 	}
-	out, err = normalizeAskUserArgs(withExtra)
+	out, err = NormalizeAskUserArgs(withExtra)
 	if err != nil {
 		t.Fatalf("shorthand with extra fields: %v", err)
 	}
@@ -169,9 +169,9 @@ func TestCovNormalizeAskUserArgs(t *testing.T) {
 	}
 	for _, tc := range invalid {
 		t.Run(tc.name, func(t *testing.T) {
-			got, err := normalizeAskUserArgs(tc.args)
+			got, err := NormalizeAskUserArgs(tc.args)
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("normalizeAskUserArgs() = (%#v, %v), want nil and error containing %q", got, err, tc.want)
+				t.Fatalf("NormalizeAskUserArgs() = (%#v, %v), want nil and error containing %q", got, err, tc.want)
 			}
 			if got != nil {
 				t.Fatalf("invalid arguments returned %#v, want nil", got)

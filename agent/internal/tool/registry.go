@@ -323,11 +323,6 @@ func NormalizeAskUserArgs(args map[string]any) (map[string]any, error) {
 	return nil, errors.New(errorMsg)
 }
 
-// normalizeAskUserArgs is an unexported alias for NormalizeAskUserArgs.
-func normalizeAskUserArgs(args map[string]any) (map[string]any, error) {
-	return NormalizeAskUserArgs(args)
-}
-
 // TruncationReason names the registry output limit that shortened a result.
 type TruncationReason string
 

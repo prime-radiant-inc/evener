@@ -1,0 +1,18 @@
+{
+  "name": "overscroll-touch-wide",
+  "description": "a wide touch screen (an iPad in landscape, a touch laptop - above the 899px phone breakpoint, coarse pointer) keeps the desktop layout's document scrolling but loses the browser's document gestures: html computes overscroll-behavior: none while html/body overflow stay visible, the desktop shell still fits the viewport, and the pane body still scrolls",
+  "viewport": { "width": 1280, "height": 800, "touch": true },
+  "cssFiles": [
+    "styles/global.css",
+    "styles/tokens.css",
+    "shell/AppShell.module.css",
+    "shell/DockHost.module.css",
+    "widgets/panescaffold/panescaffold.module.css"
+  ],
+  "mutation": {
+    "declaration": "styles/global.css: the document gesture lock's media query reverted to @media (max-width: 899px) alone (the (any-pointer: coarse) arm removed)",
+    "verified": "2026-11-17",
+    "expect": "fail",
+    "note": "Fails: html computes overscroll-behavior: auto at 1280px with a coarse pointer, so a wide touch screen keeps pull-to-refresh and page bounce."
+  }
+}

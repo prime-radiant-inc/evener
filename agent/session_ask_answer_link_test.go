@@ -99,7 +99,7 @@ func TestAskUser_AnswerLinkDurableAdmission(t *testing.T) {
 				meta, dir := sess.Meta(), sess.stateDir
 				sess.Close()
 				client := llm.NewClient()
-				client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "answer received") }}})
+				client.Register(newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "answer received") }))
 				restored, err := RestoreSessionFromMeta(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
 				if err != nil {
 					t.Fatal(err)
@@ -235,7 +235,7 @@ func TestAskUser_AnswerLinkSteeringAdmission(t *testing.T) {
 				meta, dir := sess.Meta(), sess.stateDir
 				sess.Close()
 				client := llm.NewClient()
-				client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "retry received") }}})
+				client.Register(newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "retry received") }))
 				restored, err := RestoreSessionFromMeta(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), meta, dir)
 				if err != nil {
 					t.Fatal(err)

@@ -115,6 +115,74 @@ func TestColdRebuildSidecarsAreReproducible(t *testing.T) {
 	}
 }
 
+// TestColdRebuildDoesNotHeapAllocateEachDecodedEntry pins the cost the scan
+// pays per line rather than per byte: scan decodes one entry into a local, and
+// the builder used to retain that local's address as its cached awaiting
+// assistant turn, which put a whole decoded entry on the heap for every line of
+// a cold rebuild.
+//
+// The fixture is many tiny entries, so per-line overhead dominates what the
+// decode and the projection legitimately spend per byte, and the gate is bytes
+// per entry rather than a total: it stays put when the fixture size, the record
+// size or the runtime's size classes move.
+func TestColdRebuildDoesNotHeapAllocateEachDecodedEntry(t *testing.T) {
+	if raceDetectorEnabled {
+		// The ceiling below is one plain-lane measurement. The detector
+		// inflates every allocation by an amount this lane has not sampled, so
+		// it would either fail a healthy -race run or sit so high it could not
+		// catch the regression it exists for. The plain lane carries the check;
+		// coldRebuildMaxRatio's split shows what a sampled -race bound costs.
+		t.Skip("the per-entry ceiling is measured on the plain lane only")
+	}
+	lines := make([]fixtureLine, 0, tinyEntryLines)
+	for i := range tinyEntryLines {
+		if i%2 == 0 {
+			lines = append(lines, entryLine(user("q")))
+		} else {
+			lines = append(lines, entryLine(assistant(text("a"))))
+		}
+	}
+	path := writeFixture(t, fixture{header: scanBufferHeader(), lines: lines})
+	x := openIndex(t, path, t.TempDir())
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	if err := x.Rebuild(info.Size()); err != nil {
+		t.Fatal(err)
+	}
+	runtime.ReadMemStats(&after)
+
+	if x.meta.Entries != uint64(tinyEntryLines) {
+		t.Fatalf("rebuild covered %d entries, want %d", x.meta.Entries, tinyEntryLines)
+	}
+	allocated := after.TotalAlloc - before.TotalAlloc
+	perEntry := float64(allocated) / float64(x.meta.Entries)
+	t.Logf("rebuild of %d tiny entries (%d bytes) allocated %d bytes (%.0f per entry, ceiling %.0f)",
+		x.meta.Entries, info.Size(), allocated, perEntry, tinyEntryMaxBytesPerEntry)
+	if perEntry >= tinyEntryMaxBytesPerEntry {
+		t.Fatalf("cold rebuild allocated %.0f bytes per entry over %d tiny entries, want under %.0f",
+			perEntry, x.meta.Entries, tinyEntryMaxBytesPerEntry)
+	}
+	assertAllWindows(t, x, path)
+}
+
+const (
+	// tinyEntryLines sizes the fixture so the per-line cost dominates: each
+	// line is a few dozen bytes, far below the decoded entry it becomes.
+	tinyEntryLines = 4000
+
+	// tinyEntryMaxBytesPerEntry is measured, not guessed: the same fixture
+	// spent 3565 bytes per entry while the builder retained the scanned
+	// entry's address — a decoded entry of about 1.3KB on the heap for every
+	// line — and 2670 once it kept a copy. 3100 sits between them, 16% above
+	// the fixed figure and 13% below the regressed one.
+	tinyEntryMaxBytesPerEntry = 3100.0
+)
+
 // rebuildSidecarDigests rebuilds the transcript in a fresh directory and
 // describes each sidecar by name, byte length and content hash.
 func rebuildSidecarDigests(t *testing.T, path string) string {
@@ -128,14 +196,32 @@ func rebuildSidecarDigests(t *testing.T, path string) string {
 	if err := x.Rebuild(info.Size()); err != nil {
 		t.Fatal(err)
 	}
+	return sidecarDigests(t, x)
+}
+
+// sidecarDigests describes each file holding index content by name, byte
+// length and content hash, so two builds of one transcript can be compared
+// byte for byte. The turn-slot table is left out: its generation names carry
+// random suffixes by design, and its content is derived from the turns these
+// files already digest. The update log is read from the file its meta names,
+// because a rebuild past updateLogRecords cuts it to a new file and removes
+// the one it replaced, and it is reported under the stable label updatesFile
+// so the cut's random suffix does not move the digest text.
+func sidecarDigests(tb testing.TB, x *Index) string {
+	tb.Helper()
 	var out bytes.Buffer
-	for _, name := range []string{itemsFile, turnsFile, stringsFile, updatesFile} {
-		data, err := os.ReadFile(filepath.Join(x.dir, x.build, name))
+	for _, f := range []struct{ label, name string }{
+		{itemsFile, itemsFile},
+		{turnsFile, turnsFile},
+		{stringsFile, stringsFile},
+		{updatesFile, x.meta.updatesFileName()},
+	} {
+		data, err := os.ReadFile(filepath.Join(x.dir, x.build, f.name))
 		if err != nil {
-			t.Fatal(err)
+			tb.Fatal(err)
 		}
 		sum := sha256.Sum256(data)
-		fmt.Fprintf(&out, "%s %d %s\n", name, len(data), hex.EncodeToString(sum[:]))
+		fmt.Fprintf(&out, "%s %d %s\n", f.label, len(data), hex.EncodeToString(sum[:]))
 	}
 	return out.String()
 }

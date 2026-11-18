@@ -1,2 +1,3 @@
 golangci-lint 2.15.0
 gitleaks 8.30.1
+pytest 9.1.1

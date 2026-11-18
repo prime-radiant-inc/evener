@@ -17,8 +17,9 @@
 // widgets/cadence). These are session-level thresholds only.
 
 import { isStuck, RUNNING_QUIET_AFTER_MS } from "@evener/appwire-client";
+import { waitingForQuotaText } from "@evener/appwire-client/state/navigation";
 
-export type LivenessLevel = "none" | "quiet" | "stalled" | "waiting" | "retrying";
+export type LivenessLevel = "none" | "quiet" | "stalled" | "waiting" | "retrying" | "quota";
 
 export interface LivenessInfo {
   level: LivenessLevel;
@@ -87,6 +88,17 @@ export interface RetryWait {
 }
 
 /**
+ * A model call waiting out a provider usage limit that named its reset, as the
+ * line renders it. Like RetryWait, the caller (LivenessLine.tsx) does the
+ * narrowing: ThreadModel.quotaResumesAt is an ISO instant and this type's one
+ * field is the distance to it, already decided against the shared countdown
+ * rule so that a wait whose instant has passed is absent rather than negative.
+ */
+export interface QuotaWait {
+  remainingMs: number;
+}
+
+/**
  * Names the retry's cause for the reader. Only rate limiting gets its own
  * phrasing: it is the one the reader can act on (wait, or switch model), and it
  * is overwhelmingly the common case - one session logged 91 of them in four
@@ -96,7 +108,13 @@ export interface RetryWait {
  * Jesse 2026-08-08 rendering note) character for character.
  */
 export function formatRetryCause(errorClass?: string): string {
-  return errorClass === "rate_limit" ? "rate limited" : "provider error";
+  if (errorClass === "rate_limit") return "rate limited";
+  // A usage limit is not a provider fault the reader should read as one: the
+  // call is waiting for an allowance to return, which the line says with its
+  // own level (describeLiveness's quota branch) rather than through this
+  // cause alone.
+  if (errorClass === "quota_exceeded") return "usage limit";
+  return "provider error";
 }
 
 /**
@@ -159,8 +177,19 @@ export function describeLiveness(
   active: boolean,
   runningSubagents: number,
   retry?: RetryWait,
+  quotaWait?: QuotaWait,
 ): LivenessInfo {
   if (!active) return { level: "none", text: null };
+  // A call waiting out a usage limit that named its reset is the one wait this
+  // line can state outright: the session is working, the daemon said when it
+  // resumes, and that instant came from the read, so it survives a reload the
+  // retry notification beside it cannot. It goes FIRST, ahead of every
+  // silence-derived level, and takes no part in the quiet gate: a wait of six
+  // hours is not 20 seconds of unexplained silence, and counting it in seconds
+  // (as the retry line's delay does) would read as a wedged session. Past the
+  // instant the wait is over, so it stops explaining anything and the ordinary
+  // decision below applies until the next read settles the status.
+  if (quotaWait) return { level: "quota", text: waitingForQuotaText(quotaWait.remainingMs) };
   // See this function's own doc comment above (kata gw2c): a retry past its
   // first attempt is known information, not an inference from silence, so
   // it bypasses the ordinary quiet gate below rather than waiting on it.

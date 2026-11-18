@@ -27,9 +27,7 @@ const compactedAttentionText = `<delegate-notification delegate_id="dlg_worker" 
 // main model records its requests and answers each with a final report.
 func newCompactableSession(t *testing.T, configure ...func(*SessionConfig)) (*Session, *fakeAdapter) {
 	t.Helper()
-	main := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("answered the update") },
-	}}
+	main := newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("answered the update") })
 	client := llm.NewClient()
 	client.Register(main)
 	client.Register(&agenttest.ScriptedAdapter{Provider: "compact-cheap", Responder: func(llm.Request) llm.Response {
@@ -744,7 +742,7 @@ func TestRootDelegateAttentionCoveredMidTurnFoldsAwayWhileUncoveredSurvives(t *t
 	}
 
 	var round1SawCovered, round2SawSummary, round2SawCovered, round2SawUncovered bool
-	main.steps = []func(llm.Request) llm.Response{
+	main.setSteps([]func(llm.Request) llm.Response{
 		func(req llm.Request) llm.Response {
 			round1SawCovered = requestMessagesContainText(req.Messages, "EARLY_COVERED_ITEM")
 			if _, err := sess.appendDelegateNotificationDurably(uncoveredID, uncoveredText); err != nil {
@@ -767,7 +765,7 @@ func TestRootDelegateAttentionCoveredMidTurnFoldsAwayWhileUncoveredSurvives(t *t
 			round2SawUncovered = requestMessagesContainText(req.Messages, "LATE_UNCOVERED_ITEM")
 			return agenttest.ToolCallResponse(communicateCall("finish-turn", "all caught up"))
 		},
-	}
+	})
 
 	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatalf("notification turn: %v", err)
@@ -951,7 +949,7 @@ func TestRootDelegateAttentionMidTurnFoldRestoresWhenUnionFoldReadFails(t *testi
 		t.Fatalf("arm attention: %v", err)
 	}
 
-	main.steps = []func(llm.Request) llm.Response{
+	main.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response {
 			seedNumberedSessionHistory(t, sess, 12)
 			return agenttest.ToolCallResponse(llm.ToolCallData{
@@ -969,7 +967,7 @@ func TestRootDelegateAttentionMidTurnFoldRestoresWhenUnionFoldReadFails(t *testi
 			wakeSawCovered = requestMessagesContainText(req.Messages, "MID_TURN_UNION_READ_FAIL")
 			return agenttest.ToolCallResponse(communicateCall("wake-done", "consumed on wake"))
 		},
-	}
+	})
 
 	if _, err := sess.ProcessInput(context.Background(), "run user turn", nil); err != nil {
 		t.Fatalf("ProcessInput: %v", err)

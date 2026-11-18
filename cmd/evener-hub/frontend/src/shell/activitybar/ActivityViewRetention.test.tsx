@@ -1,4 +1,4 @@
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { MotionProvider } from "../../motion";
 import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
@@ -201,7 +201,7 @@ test("an unseen child keeps the ongoing inspection open after an immediate reloa
   expect(activitySidebarStore.getState()).toMatchObject({ open: true, tab: "jobs", ref: otherRef });
 });
 
-test("inactive agent disclosure and locally revealed rows survive reload without copying another session", async () => {
+test("expanded inactive history reveals every downloaded row and survives reload without copying another session", async () => {
   const makeClient = () => {
     const client = activityClient();
     client.on("evener/thread/activity/read", ({ ref, scope }) => ({
@@ -231,8 +231,10 @@ test("inactive agent disclosure and locally revealed rows survive reload without
   activitySidebarStore.getState().openWith("agents");
   mount();
   fireEvent.click(await screen.findByText("21 inactive subagents"));
-  fireEvent.click(screen.getByRole("button", { name: /Show 1 more/ }));
   expect(screen.getByRole("button", { name: /Finished check 20/ })).toBeTruthy();
+  const history = screen.getByTestId("activity-sidebar").querySelector<HTMLElement>("details > div");
+  if (!history) throw new Error("expanded inactive history missing");
+  expect(within(history).getAllByRole("button")).toHaveLength(21);
   fireEvent.click(screen.getByRole("radio", { name: "About" }));
   await screen.findByText("owner");
   fireEvent.click(screen.getByRole("radio", { name: /Agents/ }));

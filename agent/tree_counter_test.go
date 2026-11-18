@@ -138,14 +138,7 @@ func TestTreeCounterSharedAcrossTree(t *testing.T) {
 func TestDriveAtCapacityDoesNotLaunchOrSettle(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(_ llm.Request) llm.Response { return agenttest.FinalResponse("coordinator idle") },
-			// A drive turn would consume step 1. At capacity it must never run.
-			func(_ llm.Request) llm.Response { return agenttest.FinalResponse("must not run") },
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(_ llm.Request) llm.Response { return agenttest.FinalResponse("coordinator idle") }, func(_ llm.Request) llm.Response { return agenttest.FinalResponse("must not run") }))
 	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, StateDir: t.TempDir()}))
 
 	coord := sess.createDelegate(context.Background(), delegateArgs{
@@ -370,16 +363,10 @@ func TestDriveTurnReservesFromDriveCounter(t *testing.T) {
 	release := make(chan struct{})
 	var releaseOnce sync.Once
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(_ llm.Request) llm.Response { return agenttest.FinalResponse("coordinator idle") },
-			func(_ llm.Request) llm.Response {
-				<-release
-				return agenttest.FinalResponse("drive done")
-			},
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(_ llm.Request) llm.Response { return agenttest.FinalResponse("coordinator idle") }, func(_ llm.Request) llm.Response {
+		<-release
+		return agenttest.FinalResponse("drive done")
+	}))
 	t.Cleanup(func() { releaseOnce.Do(func() { close(release) }) })
 	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, StateDir: t.TempDir()}))
 
@@ -492,13 +479,7 @@ func TestDriveRedriveIsPaced(t *testing.T) {
 	t.Cleanup(func() { driveRedriveMinInterval = old })
 
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(_ llm.Request) llm.Response { return agenttest.FinalResponse("coordinator idle") },
-			func(_ llm.Request) llm.Response { return agenttest.FinalResponse("drive done") },
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(_ llm.Request) llm.Response { return agenttest.FinalResponse("coordinator idle") }, func(_ llm.Request) llm.Response { return agenttest.FinalResponse("drive done") }))
 	sess := newSession(t, withClient(c), withConfig(SessionConfig{MaxSubagentDepth: 2, StateDir: t.TempDir()}))
 
 	coord := sess.createDelegate(context.Background(), delegateArgs{

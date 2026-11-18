@@ -128,24 +128,31 @@ func trender_entryLinesAreProjection(renderedEntries, fileLines []string) bool {
 	return trender_isSubsequence(want, have)
 }
 
-// trender_isOmittedKind reports whether a JSONL entry line carries a turn kind
-// publicTranscriptLine refuses to render (TurnKind.PublicTranscript). A line that
-// is not a decodable entry is not one, which leaves it to the ordinary
-// comparison.
+// trender_isOmittedKind reports whether a JSONL entry line is a turn the public
+// projection leaves out: a kind TurnKind.PublicTranscript excludes, or a
+// compaction fold copy, which holds no public position because its original
+// already supplied it. A line that is not a decodable entry is not one, which
+// leaves it to the ordinary comparison.
 func trender_isOmittedKind(line string) bool {
 	var entry map[string]json.RawMessage
 	if err := json.Unmarshal([]byte(line), &entry); err != nil {
 		return false
 	}
-	var turn map[string]json.RawMessage
+	// Classify through a type with the transcript's own field names, never a map
+	// lookup: encoding/json matches names case-insensitively and takes the last
+	// occurrence, so a turn spelling kind or original_ordinal twice in different
+	// cases is classified one way here and another way by the strict decode.
+	var turn struct {
+		Kind            *schema.TurnKind `json:"kind"`
+		OriginalOrdinal *uint64          `json:"original_ordinal"`
+	}
 	if err := json.Unmarshal(entry["turn"], &turn); err != nil {
 		return false
 	}
-	var kind schema.TurnKind
-	if err := json.Unmarshal(turn["kind"], &kind); err != nil {
+	if turn.Kind == nil {
 		return false
 	}
-	return !kind.PublicTranscript()
+	return !turn.Kind.PublicTranscript() || turn.OriginalOrdinal != nil
 }
 
 // trender_canonicalEntry re-encodes one JSONL line into the form the projection
@@ -228,6 +235,8 @@ func TestTrenderEntryLinesAreProjection(t *testing.T) {
 	resolution := `{"kind":"entry","seq":%d,"turn":{"kind":"ATTENTION_RESOLUTION"}}`
 	// Transcript-only kinds are omitted the same way.
 	communicate := `{"kind":"entry","seq":%d,"turn":{"kind":"COMMUNICATE"}}`
+	// A fold copy carries its original's kind, so the kind alone cannot omit it.
+	foldCopy := `{"kind":"entry","seq":%d,"turn":{"kind":"USER_INPUT","original_ordinal":0}}`
 	at := func(tmpl string, seq int) string { return fmt.Sprintf(tmpl, seq) }
 
 	tests := []struct {
@@ -284,6 +293,23 @@ func TestTrenderEntryLinesAreProjection(t *testing.T) {
 		{
 			name:     "attention resolution omitted by the render",
 			file:     []string{trenderHeader, at(entryA, 0), at(resolution, 1), at(entryB, 2)},
+			rendered: []string{at(entryA, 0), at(entryB, 1)},
+			want:     true,
+		},
+		{
+			// The other leak this oracle could not see: a copy's kind is public,
+			// so leaving it among the candidates let a render that emitted the
+			// copy match its source line and satisfy the subsequence check. The
+			// rendered line is the copy's own canonical form, ordinal included,
+			// so it can only match the source line the copy contributed.
+			name:     "fold copy emitted by the render",
+			file:     []string{trenderHeader, at(entryA, 0), at(foldCopy, 1)},
+			rendered: []string{at(entryA, 0), at(foldCopy, 1)},
+			want:     false,
+		},
+		{
+			name:     "fold copy omitted by the render",
+			file:     []string{trenderHeader, at(entryA, 0), at(foldCopy, 1), at(entryB, 2)},
 			rendered: []string{at(entryA, 0), at(entryB, 1)},
 			want:     true,
 		},

@@ -79,12 +79,7 @@ func TestProviderInstance_RenamedOpenAI_IdentityAndBehavior(t *testing.T) {
 	c := llm.NewClient()
 	// The fake adapter must be registered under the instance NAME ("work")
 	// because that is what req.Provider is set to by the session main loop.
-	f := &fakeAdapter{
-		name: "work",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("hello from work") },
-		},
-	}
+	f := newFakeAdapter("work", func(req llm.Request) llm.Response { return agenttest.FinalResponse("hello from work") })
 	c.Register(f)
 
 	renamedProfile := namedOpenAIInstanceProfile("work", "gpt-5.2")

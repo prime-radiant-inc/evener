@@ -140,29 +140,15 @@ func TestSession_TaskEffortOverride_AppliesPerRoundOnly(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			// req0 (expect max): create both tasks.
-			func(req llm.Request) llm.Response {
-				return taskEffortToolCall("c1", `{"add":[{"type":"implement","description":"cheap step","prompt":"do cheap thing","reasoning_effort":"low"},{"type":"implement","description":"hard step","prompt":"do hard thing","reasoning_effort":"high"}]}`)
-			},
-			// req1 (expect max, nothing in progress yet): start task 1.
-			func(req llm.Request) llm.Response {
-				return taskEffortToolCall("c2", `{"update":[{"id":1,"status":"in_progress"}]}`)
-			},
-			// req2 (expect low, task 1 in progress): finish task 1 -> auto-advance starts task 2.
-			func(req llm.Request) llm.Response {
-				return taskEffortToolCall("c3", `{"update":[{"id":1,"status":"done"}]}`)
-			},
-			// req3 (expect high, task 2 in progress): finish task 2.
-			func(req llm.Request) llm.Response {
-				return taskEffortToolCall("c4", `{"update":[{"id":2,"status":"done"}]}`)
-			},
-			// req4 (expect max again: no task in progress).
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return taskEffortToolCall("c1", `{"add":[{"type":"implement","description":"cheap step","prompt":"do cheap thing","reasoning_effort":"low"},{"type":"implement","description":"hard step","prompt":"do hard thing","reasoning_effort":"high"}]}`)
+	}, func(req llm.Request) llm.Response {
+		return taskEffortToolCall("c2", `{"update":[{"id":1,"status":"in_progress"}]}`)
+	}, func(req llm.Request) llm.Response {
+		return taskEffortToolCall("c3", `{"update":[{"id":1,"status":"done"}]}`)
+	}, func(req llm.Request) llm.Response {
+		return taskEffortToolCall("c4", `{"update":[{"id":2,"status":"done"}]}`)
+	}, func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") })
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, fullLadderProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -260,9 +246,7 @@ func TestSession_RestoreTaskEffortMigration_ReachesProviderSafely(t *testing.T) 
 				t.Fatalf("install legacy task JSON: %v", err)
 			}
 
-			adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-				func(llm.Request) llm.Response { return agenttest.FinalResponse("resumed") },
-			}}
+			adapter := newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("resumed") })
 			client := llm.NewClient()
 			client.Register(adapter)
 			restoredProfile := withTestSessionNamer(client, profile)
@@ -306,22 +290,15 @@ func TestSession_TaskListRejectsInvalidEffortBeforeActivatingTask(t *testing.T) 
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				requireTaskEffortSchemaLevel(t, req, "update", "ultra")
-				return taskEffortToolCall("c1", `{"add":[{"type":"implement","description":"first guard","prompt":"keep the first request valid","reasoning_effort":"high"},{"type":"implement","description":"second guard","prompt":"keep the second request valid","reasoning_effort":"low"}]}`)
-			},
-			func(req llm.Request) llm.Response {
-				return taskEffortToolCall("c2", `{"update":[{"id":1,"status":"done","reasoning_effort":"max"},{"id":2,"status":"in_progress","reasoning_effort":"ultra"}]}`)
-			},
-			func(req llm.Request) llm.Response {
-				requireTaskHandlerError(t, req, "c2")
-				return agenttest.FinalResponse("done")
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		requireTaskEffortSchemaLevel(t, req, "update", "ultra")
+		return taskEffortToolCall("c1", `{"add":[{"type":"implement","description":"first guard","prompt":"keep the first request valid","reasoning_effort":"high"},{"type":"implement","description":"second guard","prompt":"keep the second request valid","reasoning_effort":"low"}]}`)
+	}, func(req llm.Request) llm.Response {
+		return taskEffortToolCall("c2", `{"update":[{"id":1,"status":"done","reasoning_effort":"max"},{"id":2,"status":"in_progress","reasoning_effort":"ultra"}]}`)
+	}, func(req llm.Request) llm.Response {
+		requireTaskHandlerError(t, req, "c2")
+		return agenttest.FinalResponse("done")
+	})
 	c.Register(f)
 
 	// Model metadata is an external boundary and may advertise a stale level.
@@ -359,19 +336,13 @@ func TestSession_TaskListRejectsInvalidEffortBeforeAppendingTask(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				requireTaskEffortSchemaLevel(t, req, "add", "ultra")
-				return taskEffortToolCall("c1", `{"add":[{"type":"implement","description":"valid step","prompt":"must roll back with the batch","reasoning_effort":"high"},{"type":"implement","description":"poisoned step","prompt":"must not persist","reasoning_effort":"ultra"}]}`)
-			},
-			func(req llm.Request) llm.Response {
-				requireTaskHandlerError(t, req, "c1")
-				return agenttest.FinalResponse("done")
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		requireTaskEffortSchemaLevel(t, req, "add", "ultra")
+		return taskEffortToolCall("c1", `{"add":[{"type":"implement","description":"valid step","prompt":"must roll back with the batch","reasoning_effort":"high"},{"type":"implement","description":"poisoned step","prompt":"must not persist","reasoning_effort":"ultra"}]}`)
+	}, func(req llm.Request) llm.Response {
+		requireTaskHandlerError(t, req, "c1")
+		return agenttest.FinalResponse("done")
+	})
 	c.Register(f)
 	profile := withEffortLevels(provider.NewOpenAIProfile("gpt-5.2"),
 		"minimal", "low", "medium", "high", "xhigh", "max", "ultra")
@@ -400,19 +371,11 @@ func TestSession_TaskEffortInherit_KeepsSessionEffort(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return taskEffortToolCall("c1", `{"add":[{"type":"implement","description":"a step","prompt":"do the thing","reasoning_effort":"inherit"}]}`)
-			},
-			func(req llm.Request) llm.Response {
-				return taskEffortToolCall("c2", `{"update":[{"id":1,"status":"in_progress"}]}`)
-			},
-			// req2: task 1 in progress with effort "inherit" -> session effort.
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return taskEffortToolCall("c1", `{"add":[{"type":"implement","description":"a step","prompt":"do the thing","reasoning_effort":"inherit"}]}`)
+	}, func(req llm.Request) llm.Response {
+		return taskEffortToolCall("c2", `{"update":[{"id":1,"status":"in_progress"}]}`)
+	}, func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") })
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, fullLadderProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -456,21 +419,11 @@ func TestSession_LoopDetectEscalation_WinsOverLowerTaskEffort(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return taskEffortToolCall("c1", `{"add":[{"type":"implement","description":"cheap step","prompt":"do cheap thing","reasoning_effort":"low"}]}`)
-			},
-			func(req llm.Request) llm.Response {
-				return taskEffortToolCall("c2", `{"update":[{"id":1,"status":"in_progress"}]}`)
-			},
-			// req2: task low in progress, no escalation yet -> low.
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("still working") },
-			// req3 (second input, after escalation): cfg high beats task low.
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return taskEffortToolCall("c1", `{"add":[{"type":"implement","description":"cheap step","prompt":"do cheap thing","reasoning_effort":"low"}]}`)
+	}, func(req llm.Request) llm.Response {
+		return taskEffortToolCall("c2", `{"update":[{"id":1,"status":"in_progress"}]}`)
+	}, func(req llm.Request) llm.Response { return agenttest.FinalResponse("still working") }, func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") })
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, fullLadderProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -534,12 +487,7 @@ func TestSession_TaskEffortSurvivesCompaction(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") })
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, fullLadderProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -583,13 +531,7 @@ func TestSession_TaskEffortSurvivesResumeWithoutClobberingConfig(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	c := llm.NewClient()
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("before resume") },
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("after resume") },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("before resume") }, func(req llm.Request) llm.Response { return agenttest.FinalResponse("after resume") })
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, fullLadderProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(stateDir), SessionConfig{
@@ -652,13 +594,7 @@ func TestSession_LoopDetectEscalationSurvivesResume(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	c := llm.NewClient()
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("before escalation") },
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("after resume") },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("before escalation") }, func(req llm.Request) llm.Response { return agenttest.FinalResponse("after resume") })
 	c.Register(f)
 	sess, err := NewSession(c, withTestSessionNamer(c, fullLadderProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(stateDir), SessionConfig{
 		ReasoningEffort: "medium",
@@ -738,13 +674,7 @@ tasks:
 EFF_AGENT_ROLE`)
 
 	c := llm.NewClient()
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			// req0: template task 1 (low) is auto-started at init.
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") })
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, fullLadderProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(root), SessionConfig{

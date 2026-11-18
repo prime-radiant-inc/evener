@@ -56,7 +56,7 @@ func TestTranscriptAuthorshipParentInputs(t *testing.T) {
 	})
 	t.Run("create and completed send", func(t *testing.T) {
 		root, client, _ := newDelegateResourceBootstrapSession(t)
-		client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return agenttest.FinalResponse("authorship-answer") }}})
+		client.Register(newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("authorship-answer") }))
 		result := root.createDelegate(context.Background(), delegateArgs{Task: "authorship-input", Name: "named-child", DelegationAllowance: new(0)})
 		if result.Err != nil {
 			t.Fatal(result.Err)
@@ -188,7 +188,7 @@ func TestTranscriptAuthorshipNestedParent(t *testing.T) {
 		// fails provider resolution, and the two scripted OpenAI replies below
 		// stay reserved for the leaf's turns.
 		registerTestSessionNamer(c)
-		c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return agenttest.FinalResponse("nested-answer") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("nested-second-answer") }}})
+		c.Register(newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("nested-answer") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("nested-second-answer") }))
 		return c
 	}
 	middle.mu.Unlock()
@@ -582,7 +582,7 @@ func TestTranscriptAuthorshipInternalNudgeAndExplicitHuman(t *testing.T) {
 
 func TestTranscriptAuthorshipQueuedExecution(t *testing.T) {
 	s, client, _ := newDelegateResourceBootstrapSession(t)
-	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response { return agenttest.FinalResponse("first answer") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("second answer") }}})
+	client.Register(newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("first answer") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("second answer") }))
 	s.SetClientMutationStartWakeFunc(func() {})
 	if _, err := s.AcceptClientMutationStart(appwire.TurnStartParams{ClientMutationID: "first", Input: []appwire.InputItem{{Type: "text", Text: "first"}}}); err != nil {
 		t.Fatal(err)
