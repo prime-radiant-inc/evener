@@ -153,6 +153,29 @@ test("retries unresolved history after one second without losing cache", async (
   await observed((snapshot) => snapshot.windows.older !== null && snapshot.outputError === null);
 });
 
+test("a failing history page does not starve the tail a refresh asked for", async () => {
+  await initial();
+  // A page is queued and takes the one output slot.
+  reader.demand({ direction: "backward", boundaryBytes: 100, limitBytes: 105 }, "start");
+  const history = await peer.request(OUTPUT, 1);
+  expect(history.params.beforeBytes).toBe(100);
+  // The person presses Refresh while that page is in flight, so a tail is
+  // owed. The page then fails.
+  reader.refresh();
+  peer.fail(history, "temporary output failure");
+  await observed((snapshot) => snapshot.outputError !== null);
+  // The failing page must not keep winning the slot: the tail is the work that
+  // was asked for, and it has to be ATTEMPTED on the next wakeup.
+  await vi.advanceTimersByTimeAsync(1000);
+  const tail = await peer.request(OUTPUT, 2);
+  expect(tail.params.beforeBytes).toBeUndefined();
+  peer.reply(tail, page());
+  const served = await observed((snapshot) => snapshot.outputError === null && snapshot.windows.live !== null);
+  // The page's cached bytes and its boundary survive, so the demand retries
+  // rather than being discarded with the failure.
+  expect(served.pendingDemand?.boundaryBytes).toBe(100);
+});
+
 test("a latest reply to a history request preserves bytes and retries without a tight loop", async () => {
   const first = await initial();
   reader.demand({ direction: "backward", boundaryBytes: 100, limitBytes: 105 }, "start");

@@ -3,8 +3,10 @@ package jobstore
 import (
 	"context"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +17,91 @@ import (
 // constant keeps the fixtures honest about what they prove.
 func diagTime() time.Time {
 	return time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+}
+
+// TestScanEventsWithDiagnostics_OpenFailureIsNotCorruption pins the difference
+// between "these bytes are damaged" and "these bytes could not be reached".
+// Corrupt is what a caller reports as journal_scan_incomplete, which tells a
+// client the history stopped at a bad line and the prefix is all that survives.
+// An open or read failure establishes nothing about the bytes, and saying the
+// journal is corrupt would describe damage nobody observed — while also hiding
+// the real fact, which is that the journal could not be consulted.
+//
+// Not parallel: overrides the scan open seam.
+func TestScanEventsWithDiagnostics_OpenFailureIsNotCorruption(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "jobs.jsonl")
+	if err := os.WriteFile(path, []byte(`{"kind":"job_started","seq":1,"job_id":"job_A"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	origOpen := openScanEventsFile
+	openScanEventsFile = func(string) (io.ReadSeekCloser, error) {
+		return nil, errors.New("permission denied")
+	}
+	t.Cleanup(func() { openScanEventsFile = origOpen })
+
+	events, diagnostics, err := ScanEventsWithDiagnostics(context.Background(), path, ScanLimits{})
+	if err == nil {
+		t.Fatal("err = nil, want the open failure reported")
+	}
+	if len(events) != 0 {
+		t.Fatalf("got %d events, want none: no scan happened", len(events))
+	}
+	if diagnostics.Corrupt {
+		t.Fatal("ReadDiagnostics.Corrupt = true for a journal that could not be OPENED: " +
+			"nothing was read, so nothing about the bytes is known")
+	}
+	if diagnostics.TornTail {
+		t.Fatal("ReadDiagnostics.TornTail = true for a journal that could not be opened")
+	}
+}
+
+// TestScanEventsWithDiagnostics_CorruptJournalIsClassified pins the other side:
+// a line that will not decode IS damage to the bytes, and the caller has to be
+// able to tell it from the open failure above, because the two produce different
+// wire diagnostics and the client acts on them differently.
+func TestScanEventsWithDiagnostics_CorruptJournalIsClassified(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "jobs.jsonl")
+	content := `{"kind":"job_started","seq":1,"job_id":"job_A","type":"shell"}` + "\n" + "{this is not json}\n"
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	events, diagnostics, err := ScanEventsWithDiagnostics(context.Background(), path, ScanLimits{})
+	if err == nil {
+		t.Fatal("err = nil, want the malformed line reported")
+	}
+	if len(events) != 1 {
+		t.Fatalf("got %d events, want the decoded prefix returned alongside the error", len(events))
+	}
+	if !diagnostics.Corrupt {
+		t.Fatal("ReadDiagnostics.Corrupt = false for a journal whose line will not decode: " +
+			"the caller cannot report the damage it just found")
+	}
+}
+
+// TestScanEventsWithDiagnostics_LineTooLongIsCorruption: an over-long line is
+// damage to the bytes, not an access failure, and the scan reports it as such.
+// The two errors stay distinguishable at the same time: ErrLineTooLong still
+// matches, because callers documented against it depend on that.
+func TestScanEventsWithDiagnostics_LineTooLongIsCorruption(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "jobs.jsonl")
+	if err := os.WriteFile(path, []byte(strings.Repeat("x", 4096)+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, diagnostics, err := ScanEventsWithDiagnostics(context.Background(), path, ScanLimits{MaxLineBytes: 128})
+	if !errors.Is(err, ErrLineTooLong) {
+		t.Fatalf("err = %v, want ErrLineTooLong", err)
+	}
+	if !diagnostics.Corrupt {
+		t.Fatal("ReadDiagnostics.Corrupt = false for an over-long line: that is damage to the bytes")
+	}
 }
 
 // TestScanEventsWithDiagnostics_ReportsTornTail is the integrity-contract test
@@ -65,6 +152,45 @@ func TestScanEventsWithDiagnostics_CleanJournalHasNoTornTail(t *testing.T) {
 	}
 	if diagnostics.TornTail {
 		t.Fatal("ReadDiagnostics.TornTail = true for a journal ending on a complete record")
+	}
+}
+
+// TestScanEventsWithDiagnostics_BlankTailIsNotTorn: bytes the writer cannot
+// have started an event with are not a half-written event. The job journal
+// writer begins every record with a JSON object, so a trailing newline-less run
+// of spaces or tabs is not the beginning of the next record — it is the gap
+// before one. Calling it torn would report a durable-looking interruption to a
+// journal that is whole and still appendable, and callers act on the
+// distinction: a torn tail means "the finish may be missing", a clean boundary
+// means "an append would land on the next read".
+func TestScanEventsWithDiagnostics_BlankTailIsNotTorn(t *testing.T) {
+	t.Parallel()
+	for name, tail := range map[string]string{
+		"spaces": "   ",
+		"tabs":   "\t\t",
+		"mixed":  " \t ",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			dir := t.TempDir()
+			path := filepath.Join(dir, "jobs.jsonl")
+			content := `{"kind":"job_started","seq":1,"job_id":"job_A","type":"shell"}` + "\n" + tail
+			if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			events, diagnostics, err := ScanEventsWithDiagnostics(context.Background(), path, ScanLimits{})
+			if err != nil {
+				t.Fatalf("ScanEventsWithDiagnostics: %v", err)
+			}
+			if diagnostics.TornTail {
+				t.Fatalf("ReadDiagnostics.TornTail = true for a whitespace-only tail %q: %q cannot be the start of "+
+					"an event, so the journal reached a clean boundary", tail, tail)
+			}
+			if len(events) != 1 {
+				t.Fatalf("got %d events, want the one complete start event", len(events))
+			}
+		})
 	}
 }
 

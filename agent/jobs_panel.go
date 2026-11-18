@@ -818,14 +818,20 @@ func readSessionJobJournal(stateDir, sessionID, jobID string) (sessionJobRecordR
 	events, readDiagnostics, scanErr := jobstore.ScanEventsWithDiagnostics(context.Background(), path, jobstore.ScanLimits{})
 	// A torn tail is not an error at all: the scan reached a clean boundary and
 	// the unterminated append rides the diagnostic.
-	// CleanBoundary and ScanIncomplete are mutually exclusive for one journal, for
-	// the same reason TornTail and ScanIncomplete are: ScanEventsWithDiagnostics
-	// returns an error only from the durable-corruption path, which stops before
-	// any boundary. A nil error therefore means the scan read to the end of the
-	// file and could be appended to.
+	// TornTail and ScanIncomplete are mutually exclusive for one journal: the scan
+	// sets a torn tail on the unterminated-final-line break, which returns no
+	// error, and reports damage only from the paths that stop before a boundary.
+	//
+	// ScanIncomplete reads the scan's CLASSIFIED damage, not "an error happened".
+	// A journal that passes validation and then cannot be OPENED is an access
+	// failure, and reporting journal_scan_incomplete for it would tell a client
+	// the history is corrupt when nothing was read; the caller's owner_unavailable
+	// is that truth. CleanBoundary is the plain "the scan completed" reading,
+	// because a scan that ran to the end is the only one that leaves an append
+	// landable.
 	diagnostics := sessionJobRecordDiagnostics{
 		TornTail:       readDiagnostics.TornTail,
-		ScanIncomplete: scanErr != nil,
+		ScanIncomplete: readDiagnostics.Corrupt,
 		CleanBoundary:  scanErr == nil,
 	}
 	recs, foldErr := jobstore.FoldChecked(events)
@@ -920,6 +926,37 @@ func ownerClaimContradicts(rec *jobstore.JobRecord) bool {
 	return encoded != "" && encoded != rec.OwnerSessionID
 }
 
+// jobRecordForProjection returns the record to project onto the wire, with the
+// launch facts withheld from one whose owner claim contradicts the validated
+// identifier.
+//
+// Such a record was folded from a start that described some other session's
+// launch. Its STATUS is still this job's best surviving evidence — the prefix it
+// came from is what proved the scope the row is served under — but the facts
+// that start declared about WHAT WAS LAUNCHED are another job's, and a pane that
+// showed them would label this job's recovered output with the wrong command.
+// The fields withheld are the ones preserveLaunchFields refuses to COPY from a
+// contradictory start, so there is one rule about what a contradiction may say:
+// that guard keeps it out of another record, this keeps it off the wire. Both
+// consult ownerClaimContradicts rather than a second predicate.
+//
+// StartedAt, OutputPath and the byte counts are deliberately KEPT. They are
+// facts about this job's run and its bytes, not about which command produced
+// them: the output reader ignores a contradictory path anyway, HasOutput is
+// true either way, and blanking StartedAt would tell the pane the job has no
+// start time when its own event carries one.
+func jobRecordForProjection(rec *jobstore.JobRecord) *jobstore.JobRecord {
+	if rec == nil || !ownerClaimContradicts(rec) {
+		return rec
+	}
+	withheld := rec.Clone()
+	withheld.Type = ""
+	withheld.Command = ""
+	withheld.Task = ""
+	withheld.Description = ""
+	return withheld
+}
+
 // routingJobSession names the session whose directory holds a record's own
 // artifacts — its default-named output log. It is an INTERNAL path question, not
 // the wire's OwnerRef, and it answers with the same authority rule the record's
@@ -987,10 +1024,11 @@ func fencedSessions(jobID string, read sessionJobRecordRead, requested string) [
 // session that originally ran the job. Nothing in the claim-derived fence names
 // that session, so the path is asked directly, by directory.
 //
-// The decision is made on the DIRECTORY SHAPE under the state root, and the
-// session name is validated before it is returned: a path whose second component
-// is not a session id names no session, and handing such a name to the fence
-// would consult a deletion record for something that cannot have one. A
+// The decision is made on the DIRECTORY SHAPE under the state root, compared by
+// FILESYSTEM IDENTITY rather than by spelling (see the walk below), and the
+// session name is validated before it is returned: a path whose child of the
+// root is not a session id names no session, and handing such a name to the
+// fence would consult a deletion record for something that cannot have one. A
 // launcher-chosen path outside every session work directory names none either,
 // which is the honest answer — no session's deletion governs those bytes.
 func jobOutputPathSession(stateDir, path string) string {
@@ -1006,15 +1044,50 @@ func jobOutputPathSession(stateDir, path string) string {
 	if strings.TrimSpace(stateDir) == "" {
 		sessionsRoot = filepath.Join(os.TempDir(), "evener-jobs")
 	}
-	rel, err := filepath.Rel(sessionsRoot, filepath.Clean(path))
-	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+	// Identity, not spelling. The opener resolves the same file through an alias
+	// — a state home reached by a symlink, which the layout prefix allows above
+	// the bucket — so a path written under the alias and a root spelled the
+	// physical way name the same directory while comparing unequal LEXICALLY.
+	// filepath.Rel alone therefore misses the session that owns the bytes, and
+	// both fence consults omit it. Walk up from the path comparing each ancestor
+	// to the root by os.SameFile, and read the session name from the child one
+	// level down from whichever ancestor matched.
+	//
+	// No-follow checks within the state layout are untouched: this decides WHICH
+	// session a path belongs to, not whether the path may be read. The anchor
+	// that permits an alias is the same one localJobTrustedRoot and
+	// symlinkErrorDeep already use.
+	sessionsInfo, err := os.Stat(sessionsRoot)
+	if err != nil {
+		// The root does not exist, so no path can be inside it by identity. Fall
+		// through to nothing rather than guessing from a spelling.
 		return ""
 	}
-	sessionID, _, _ := strings.Cut(rel, string(filepath.Separator))
-	if sessionID == "" || !hintIsSessionID(sessionID) {
-		return ""
+	candidate := filepath.Dir(filepath.Clean(path))
+	child := ""
+	for {
+		info, statErr := os.Stat(candidate)
+		if statErr == nil && os.SameFile(sessionsInfo, info) {
+			// The matched root identifies the CONTAINER; the session is the
+			// directory one level below it, which is the child this walk last
+			// came through. Reading the name off that child is what makes the
+			// answer independent of how the path was spelled.
+			if child == "" {
+				return ""
+			}
+			sessionID := filepath.Base(child)
+			if !hintIsSessionID(sessionID) {
+				return ""
+			}
+			return sessionID
+		}
+		parent := filepath.Dir(candidate)
+		if parent == candidate {
+			return ""
+		}
+		child = candidate
+		candidate = parent
 	}
-	return sessionID
 }
 
 // jobReadError translates the reader's structural sentinels into the wire
@@ -1178,7 +1251,7 @@ func LoadSessionJobGet(stateDir, sessionID, jobID string, fence OwnerDeletionFen
 		return JobActivityJob{}, false, nil
 	}
 	ownerRef := appwire.Ref{SourceID: "local", ThreadID: sessionID}.String()
-	job := projectActivityJob(read.record, ownerRef)
+	job := projectActivityJob(jobRecordForProjection(read.record), ownerRef)
 	job.Diagnostics = jobRecordDiagnosticCodes(read.diagnostics)
 	job.StatusUnconfirmed = statusUnconfirmedOnWire(read)
 	job.StatusRecheckable = statusRecheckableOnWire(read)

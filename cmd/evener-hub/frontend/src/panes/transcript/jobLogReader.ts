@@ -589,6 +589,18 @@ export class JobLogReader {
           this.liveRetryOwed = !unconfirmed;
           if (unconfirmed) this.liveDueAt = Number.POSITIVE_INFINITY;
           else this.liveDueAt = Date.now();
+        } else if (this.tailOwed()) {
+          // A FAILED history attempt still used the slot. Until it is recorded
+          // as having had its turn, the next pump selects it again: the demand
+          // is still pending, the tail is still owed, and `liveDue &&
+          // historyServedSinceLive` is what lets the tail win the slot. Without
+          // this a page that keeps failing starves the read a person asked for,
+          // and the pane keeps stale output until they press Refresh again.
+          //
+          // The demand is NOT discarded: its cached bytes and boundary stay
+          // published, so it retries after the tail has had its attempt and
+          // scrolling still lands where the person scrolled to.
+          this.historyServedSinceLive = true;
         }
         this.nextReadAt = Date.now() + READ_INTERVAL_MS;
         const bounds = jobOutputPrunedBounds(error);

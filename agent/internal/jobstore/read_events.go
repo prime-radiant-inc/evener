@@ -71,6 +71,14 @@ type ReadDiagnostics struct {
 	// append that will never finish. The events before it are returned
 	// normally; the torn line is not part of them.
 	TornTail bool
+	// Corrupt is set when the scan stopped at a line it could not decode: the
+	// journal itself is damaged, and the events before that line are a decoded
+	// prefix rather than the whole history. It is the diagnostic counterpart of
+	// the parse error, and it exists so a caller that reports integrity can say
+	// "this journal is damaged" without also saying it about a journal it could
+	// not open at all — an unreadable file is a fact about access, not about the
+	// bytes.
+	Corrupt bool
 }
 
 // ReadEvents reads and decodes every event from a jobs.jsonl file WITHOUT
@@ -162,10 +170,17 @@ func ScanEventsFrom(ctx context.Context, path string, fromOffset int64, limits S
 
 // ScanEventsFromWithDiagnostics is ScanEventsFrom plus the scan's diagnostics:
 // whether it stopped at a torn trailing line instead of at a clean record
-// boundary. Every other outcome (clean EOF, a hard parse error, a limit, a
-// cancellation) leaves ReadDiagnostics at its zero value — a limit is already
-// reported by the error, and a torn tail is reported in addition to the events
-// the scan did keep.
+// boundary, and whether it stopped at a line it could not decode. Those are
+// different outcomes with different consequences — a torn tail is an append that
+// has not finished, a corrupt line is permanent damage — so they are reported
+// separately rather than folded into one flag.
+//
+// A clean EOF, a limit, a cancellation, and every failure to REACH the file
+// (open, seek, a read error, the missing-file case) leave ReadDiagnostics at its
+// zero value — a limit is already reported by the error, and the file-level
+// failures establish nothing about the bytes, so reporting damage for them would
+// describe something no scan observed. A torn tail or Corrupt is reported in
+// addition to the events the scan did keep.
 func ScanEventsFromWithDiagnostics(ctx context.Context, path string, fromOffset int64, limits ScanLimits) ([]Event, int64, ReadDiagnostics, error) {
 	f, err := openScanEventsFile(path)
 	if err != nil {
@@ -214,7 +229,10 @@ func ScanEventsFromWithDiagnostics(ctx context.Context, path string, fromOffset 
 		line, terminated, consumed, readErr := linecap.ReadLine(ctx, reader, maxLineBytes)
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
 			if errors.Is(readErr, linecap.ErrTooLong) {
-				return nil, 0, ReadDiagnostics{}, fmt.Errorf("%w: %s line %d", ErrLineTooLong, path, lineNum+1)
+				// A single line this long is damage to the bytes, the same
+				// category as a line that will not decode — not a failure to
+				// reach the file.
+				return nil, 0, ReadDiagnostics{Corrupt: true}, fmt.Errorf("%w: %s line %d", ErrLineTooLong, path, lineNum+1)
 			}
 			return nil, 0, ReadDiagnostics{}, fmt.Errorf("jobstore: read %s: %w", path, readErr)
 		}
@@ -238,12 +256,13 @@ func ScanEventsFromWithDiagnostics(ctx context.Context, path string, fromOffset 
 		}
 		if len(bytes.TrimSpace(line)) == 0 {
 			if !terminated {
-				// A whitespace-only final line with no newline is the same
-				// in-flight append a torn record is: bytes landed, the line
-				// did not finish. Report it as torn rather than as a clean
-				// boundary, so a caller cannot mistake a half-written append
-				// for a complete read.
-				diagnostics.TornTail = true
+				// A blank or whitespace-only tail is not a record that failed to
+				// finish: the writer starts every event with a JSON object, so
+				// these bytes cannot be the beginning of one. Treat it as a clean
+				// boundary, exactly as a terminated blank line is, because
+				// reporting it as torn would turn a readable journal into
+				// "unavailable" and mark an intact running row unconfirmed for a
+				// newline that has not landed yet.
 				break
 			}
 			offset += consumed
@@ -266,6 +285,7 @@ func ScanEventsFromWithDiagnostics(ctx context.Context, path string, fromOffset 
 			// journal hold a start for job X?) can use them, and a caller that
 			// treats any error as fatal ignores them as before. offset stays 0
 			// because the scan did NOT reach a resumable record boundary.
+			diagnostics.Corrupt = true
 			return events, 0, diagnostics, fmt.Errorf("jobstore: parse event line %d in %s: %w", lineNum, path, err)
 		}
 		// A successful decode makes this record complete and final

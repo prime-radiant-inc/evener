@@ -1497,6 +1497,122 @@ func TestLoadSessionJobOutputPageIgnoresContradictoryRecordsOutputPath(t *testin
 	}
 }
 
+// TestLoadSessionJobGetWithholdsCommandFromContradictoryFallbackStart pins the
+// METADATA half of the owner-claim rule, and it is the site the output reader
+// cannot cover. A damaged ancestor journal's decoded prefix holds a start naming
+// an owner the job ID contradicts, and the encoded owner's journal holds no
+// usable record, so that prefix is served as flagged fallback — correct, since
+// it is the only evidence left and it proved scope. The output reader already
+// refuses its explicit path and serves the encoded owner's default log. What it
+// cannot do is stop the same start's COMMAND reaching the pane, and the pane
+// labels the recovered output with whatever command it is given: a reader would
+// see this job's bytes under another job's command line.
+//
+// So the launch facts a contradiction declared are withheld from the
+// projection, while everything about state — status, the flagged-fallback
+// diagnostics, the requested ref — still travels.
+func TestLoadSessionJobGetWithholdsCommandFromContradictoryFallbackStart(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	requestedSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	claimingSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 19, 11, 0, 0, 0, time.UTC)
+
+	// The ancestor's journal: a start claiming another owner and carrying that
+	// other job's command, then durable corruption so the prefix is all there is.
+	writeJobJournalLines(t, jobsDir(stateDir, requestedSession),
+		`{"kind":"job_started","seq":1,"ts":"`+started.Format(time.RFC3339)+
+			`","job_id":"`+jobID+`","type":"shell","status":"running","owner_session_id":"`+claimingSession+
+			`","visible_to_session_id":"`+requestedSession+
+			`","started_at":"`+started.Format(time.RFC3339)+
+			`","command":"make foreign-build"}`+"\n",
+		"{this is not json}\n",
+	)
+	// The encoded owner's journal is absent, so the prefix is the fallback.
+	writeJobJournalLines(t, jobsDir(stateDir, ownerSession), "")
+
+	job, found, err := LoadSessionJobGet(stateDir, requestedSession, jobID, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the flagged fallback row")
+	}
+	if job.Command != "" {
+		t.Fatalf("command = %q, want it withheld: the start that carried it names an owner the job ID contradicts, "+
+			"so the pane would label this job's output with another job's command", job.Command)
+	}
+	if strings.Contains(job.Description, "foreign-build") {
+		t.Fatalf("description = %q, want the contradictory start's command kept out of the description too: "+
+			"the pane falls back to it for the title", job.Description)
+	}
+	// The state that made this row servable is untouched: the fallback is still
+	// reported, and the requested ref still matches what the caller asked for.
+	for _, want := range []string{"forwarded_fallback", "owner_unavailable", "journal_scan_incomplete"} {
+		if !slices.Contains(job.Diagnostics, want) {
+			t.Fatalf("Diagnostics = %v, want %q preserved on the fallback row", job.Diagnostics, want)
+		}
+	}
+	wantRef := (appwire.Ref{SourceID: "local", ThreadID: requestedSession}).String()
+	if job.OwnerRef != wantRef {
+		t.Fatalf("OwnerRef = %q, want %q: withholding launch facts must not change which ref answers", job.OwnerRef, wantRef)
+	}
+	if job.Status != string(jobstore.StatusRunning) {
+		t.Fatalf("status = %q, want %q: the prefix still states the job's status", job.Status, jobstore.StatusRunning)
+	}
+	if job.StartedAt != started.Format(time.RFC3339) {
+		t.Fatalf("startedAt = %q, want %q: the run's start time is this job's own fact, not the command's",
+			job.StartedAt, started.Format(time.RFC3339))
+	}
+}
+
+// TestLoadSessionJobGetKeepsCommandFromAgreeingFallbackStart is the counter-case
+// for the projection guard: a fallback start that names the ENCODED owner, or
+// names nobody at all, described this job's launch, so its command is this job's
+// command. Without it the guard could widen to withholding every fallback's
+// launch facts, and the pane would lose the command for every recovered job.
+func TestLoadSessionJobGetKeepsCommandFromAgreeingFallbackStart(t *testing.T) {
+	t.Parallel()
+	for name, claim := range map[string]string{
+		"agreeing":  `,"owner_session_id":"OWNER"`,
+		"claimless": "",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			stateDir := t.TempDir()
+			requestedSession := identifier.MustNewSessionID()
+			ownerSession := identifier.MustNewSessionID()
+			jobID := identifier.MustNewJobID(ownerSession)
+			started := time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
+			claimField := strings.ReplaceAll(claim, "OWNER", ownerSession)
+
+			writeJobJournalLines(t, jobsDir(stateDir, requestedSession),
+				`{"kind":"job_started","seq":1,"ts":"`+started.Format(time.RFC3339)+
+					`","job_id":"`+jobID+`","type":"shell","status":"running"`+claimField+
+					`,"visible_to_session_id":"`+requestedSession+
+					`","started_at":"`+started.Format(time.RFC3339)+
+					`","command":"make this-jobs-build"}`+"\n",
+				"{this is not json}\n",
+			)
+			writeJobJournalLines(t, jobsDir(stateDir, ownerSession), "")
+
+			job, found, err := LoadSessionJobGet(stateDir, requestedSession, jobID, nil)
+			if err != nil {
+				t.Fatalf("LoadSessionJobGet: %v", err)
+			}
+			if !found {
+				t.Fatal("found = false, want the fallback row")
+			}
+			if job.Command != "make this-jobs-build" {
+				t.Fatalf("command = %q, want %q: a start that claims this job's owner, or claims none, "+
+					"carries this job's launch facts", job.Command, "make this-jobs-build")
+			}
+		})
+	}
+}
+
 // TestLoadSessionJobOutputPageHonorsAgreeingRecordsOutputPath is the other
 // direction of the owner-claim rule, and it is what keeps the guard from
 // becoming a blanket distrust of explicit paths. The scoped start names the same
