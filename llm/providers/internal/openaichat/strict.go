@@ -159,6 +159,15 @@ func supplyDerivedTypes(m map[string]any, dialect schemaDialect) {
 	if m == nil {
 		return
 	}
+	// $schema may be declared again at an embedded schema resource, and it
+	// governs the keywords below that node. A const under a draft-4 resource
+	// asserts nothing, so the outer dialect must not be applied through it.
+	// The gate already refuses a node carrying $schema, so this only ever
+	// reaches the non-strict supply, where it is the whole point: stating a
+	// type there would narrow what the advertised schema accepts.
+	if _, has := m["$schema"]; has {
+		dialect = dialectOf(m)
+	}
 	if _, has := m["type"]; !has {
 		if name, ok := derivedScalarType(m, dialect); ok {
 			m["type"] = name
@@ -519,9 +528,26 @@ func certifiedByReadableKeyword(m map[string]any) bool {
 // of a numeric element type is read even though it is not listed here: the
 // reflected range covers every slice whose elements are scalars this file can
 // name. A shape that is not a slice at all is unreadable and infers nothing.
+//
+// A value with its own JSON representation is read from that representation
+// and not from its Go kind. json.RawMessage is a []byte whose encoder output is
+// the JSON it holds, so reading its bytes as elements would state "number"
+// beside an array of strings and leave a schema accepting nothing the
+// advertised one accepted.
 func enumMembers(raw any) ([]any, bool) {
 	if list, ok := raw.([]any); ok {
 		return list, true
+	}
+	if marshaler, ok := raw.(json.Marshaler); ok {
+		encoded, err := marshaler.MarshalJSON()
+		if err != nil {
+			return nil, false
+		}
+		var decoded []any
+		if err := json.Unmarshal(encoded, &decoded); err != nil {
+			return nil, false
+		}
+		return decoded, true
 	}
 	rv := reflect.ValueOf(raw)
 	if !rv.IsValid() || rv.Kind() != reflect.Slice {
@@ -832,6 +858,20 @@ func deepCopyAny(v any) any {
 		// returned here is indistinguishable from a nil map to every caller of
 		// this function: a map read from a nil interface panics either way, and
 		// StrictifyJSONSchema handles the root with a comma-ok assertion.
+		if x == nil {
+			return nil
+		}
+		out := make(map[string]any, len(x))
+		for k, vv := range x {
+			out[k] = deepCopyAny(vv)
+		}
+		return out
+	case map[string]map[string]any:
+		// A Go builder writes properties as map[string]map[string]any, and the
+		// default arm would return that map itself: the copy would share the
+		// children with the caller, so supplying a type inside one would mutate
+		// the caller's schema. Normalising to map[string]any here is what makes
+		// the copy independent and lets the walk reach each child.
 		if x == nil {
 			return nil
 		}

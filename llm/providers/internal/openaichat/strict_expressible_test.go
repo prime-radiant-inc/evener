@@ -1813,3 +1813,116 @@ func TestEnumIsReadInEveryDialect(t *testing.T) {
 		}
 	}
 }
+
+// A value the encoder renders as JSON need not be a Go slice of the members it
+// renders. json.RawMessage is a []byte, so reading its elements as numbers
+// would state type "number" beside a JSON array of strings and leave a schema
+// accepting nothing the advertised one accepted. Inference has to read what the
+// encoder sends, not the Go spelling.
+func TestSupplyDerivedTypesReadsTheJSONAnEnumEncodes(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct {
+		enum any
+		want string
+		args string
+	}{
+		"json.RawMessage array of strings": {
+			enum: json.RawMessage(`["fast","safe"]`),
+			want: "string",
+			args: `{"mode":"fast"}`,
+		},
+		"json.RawMessage array of numbers": {
+			enum: json.RawMessage(`[1,2]`),
+			want: "number",
+			args: `{"mode":1}`,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			emitted := SupplyDerivedTypes(map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties":           map[string]any{"mode": map[string]any{"enum": tc.enum}},
+				"required":             []string{"mode"},
+			})
+			mode := emitted["properties"].(map[string]any)["mode"].(map[string]any)
+			if mode["type"] != tc.want {
+				t.Fatalf("emitted argument type = %#v, want %q: the type must describe the JSON the encoder sends, not the Go element type", mode["type"], tc.want)
+			}
+			var args map[string]any
+			if err := json.Unmarshal([]byte(tc.args), &args); err != nil {
+				t.Fatalf("build args: %v", err)
+			}
+			if !schemaAccepts(t, emitted, args) {
+				t.Fatalf("the emitted schema rejects %s, a member the advertised enum lists", tc.args)
+			}
+		})
+	}
+}
+
+// properties reaches this package either as the decoded map[string]any or as a
+// Go builder's map[string]map[string]any. The walk must reach the children of
+// both, or the same typeless enum is supplied a type on one path and left
+// typeless on the other — and a provider enforcing the strict subset rejects
+// the whole request over the one it misses.
+func TestSupplyDerivedTypesWalksTypedPropertyMaps(t *testing.T) {
+	t.Parallel()
+	typed := map[string]map[string]any{
+		"mode": {"enum": []string{"fast", "safe"}},
+	}
+	emitted := SupplyDerivedTypes(map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           typed,
+		"required":             []string{"mode"},
+	})
+	props, ok := emitted["properties"].(map[string]any)
+	if !ok {
+		t.Fatalf("emitted properties = %T, want a map the walk can carry the supplied type in", emitted["properties"])
+	}
+	mode, ok := props["mode"].(map[string]any)
+	if !ok {
+		t.Fatalf("emitted argument = %T, want a copied schema", props["mode"])
+	}
+	if got := mode["type"]; got != "string" {
+		t.Fatalf("emitted argument type = %#v, want \"string\": a typed properties map must be walked like a decoded one", got)
+	}
+	if _, mutated := typed["mode"]["type"]; mutated {
+		t.Fatal("the supply wrote through the caller's map instead of copying the child first")
+	}
+	if !schemaAccepts(t, emitted, map[string]any{"mode": "fast"}) {
+		t.Fatal("the emitted schema rejects a member of the advertised set")
+	}
+	if schemaAccepts(t, emitted, map[string]any{"mode": "slow"}) {
+		t.Fatal("the emitted schema accepts a value outside the advertised set")
+	}
+}
+
+// $schema may be declared again at an embedded schema resource, and it governs
+// the keywords below that node. A const under a draft-4 resource asserts
+// nothing: it accepts every value there, so the outer dialect must not state a
+// type for it.
+func TestSupplyDerivedTypesReadsAnEmbeddedDialect(t *testing.T) {
+	t.Parallel()
+	const draft4 = "http://json-schema.org/draft-04/schema#"
+	emitted := SupplyDerivedTypes(map[string]any{
+		"$schema":              "https://json-schema.org/draft/2020-12/schema",
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"payload": map[string]any{
+				"$schema": draft4,
+				"const":   "fixed",
+			},
+		},
+		"required": []string{"payload"},
+	})
+	payload := emitted["properties"].(map[string]any)["payload"].(map[string]any)
+	if _, has := payload["type"]; has {
+		t.Fatalf("emitted argument type = %#v, want none: const asserts nothing under draft 4, so stating a type would reject values the advertised schema accepts", payload["type"])
+	}
+	if payload["const"] != "fixed" {
+		t.Fatalf("emitted const = %#v, want it preserved", payload["const"])
+	}
+}
