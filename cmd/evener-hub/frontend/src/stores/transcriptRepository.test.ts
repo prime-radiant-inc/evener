@@ -1003,6 +1003,41 @@ it("does not repair a refused page extent beyond a bounded replacement's upper e
   }
 });
 
+// A discarded page certifies no range, even when it carries a hold hand-off.
+//
+// While the repository holds a history diagnostic, a page that identifies a
+// replacement is DISCARDED for content - but the shared merge still returns a
+// new model carrying the ownership change. Inferring acceptance from that
+// object identity wrote a coverage certificate and cursor for a range the page
+// never merged, and later paging then trusted the certificate and skipped the
+// missing turns entirely.
+it("does not certify a discarded page's range even though the hand-off returns a new model", async () => {
+  const { fixture, owner } = await repositoryWithPage();
+  expect(owner.getSnapshot()?.history?.failed).toBeUndefined();
+  // The read fails for boot "2", so the repository holds a diagnostic while
+  // boot 1's samples are retired.
+  owner.acceptReadFailure("thread history failed at entry 7", 0, { lifetime: 1, bootGeneration: "2" });
+  const failed = owner.getSnapshot();
+  expect(failed?.history?.failed).toBeDefined();
+  // A page of the source that now owns the sequence is discarded for content
+  // while its hand-off still returns a new model.
+  const page = updatedPage(130, [3, 5, 7], "discarded");
+  page.bootGeneration = "3";
+  const accepted = owner.acceptPage(page, {
+    lifetime: 1,
+    readId: "discarded-page",
+    boundary: "discarded-page",
+    authority: owner.getBaselineIdentity(),
+    before: { entry: 8, item: 0 },
+  });
+  await owner.settled().catch(() => {});
+  // Refused as content, so no certificate speaks for a range it never merged.
+  expect(accepted).toBe(false);
+  expect(await fixture.cache.getCoverage(historyKey, "page:discarded-page:discarded-page")).toBeUndefined();
+  // The diagnostic the repository held is still the one it publishes.
+  expect(owner.getSnapshot()?.history?.failed).toBe(failed?.history?.failed);
+});
+
 it("keeps coverage current when a delayed page is already covered by a newer committed page on this baseline", async () => {
   const { fixture, owner, reader } = await repositoryWithPage();
   const admission = entryWriteAdmissionFor(fixture.cache);

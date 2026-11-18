@@ -6199,7 +6199,18 @@ function carriedHydrationUpdates(
   // worktree-change resync with a bare "5" while its reads name that same
   // controller "5@root", so an ambiguous hint confirms nothing and the
   // buffered hold comes along. Only a confirmed replacement discards it.
-  return confirmedBootReplacement(owner, resyncBootGeneration, "resync") ? [] : carried;
+  if (!confirmedBootReplacement(owner, resyncBootGeneration, "resync")) return carried;
+  // A CONFIRMED replacement takes the buffered samples' HOLD - their sequence
+  // belongs to the replaced source's numbering - but not the updates
+  // themselves. Each update is the only copy of what it changed, and a
+  // terminal outcome buffered before the replacement's confirmation is the
+  // only record that the delegate finished. Dropping the whole buffer left the
+  // row showing "running" for the rest of the wait when the successor read
+  // then failed; the same field list the history-frame branch uses is what
+  // makes the strip and the discard agree.
+  return carried.map((buffered) =>
+    buffered.notification.method === "evener/delegate/updated" ? stripDelegateHold(buffered) : buffered,
+  );
 }
 
 function bufferPendingNotification(
@@ -6297,7 +6308,17 @@ function replayEntryHydrationNotifications(
     if (!adoptedRead && acceptedLive) continue;
     // The repository owns both recorded ingestion and later publications, so
     // the post-cut tail must join that owner, not a temporary store-only fold.
-    const accepted = repository.accept(update.notification, { lifetime });
+    //
+    // The retired-source check is the SAME one the watched replay runs, not a
+    // second rule: a buffered history frame from the source this failure just
+    // retired would otherwise fold its token back as the owner, and the
+    // replacement's own next frame would clear the live hold it published.
+    const accepted = repository.accept(
+      handOffBootGeneration === undefined
+        ? update.notification
+        : withoutRetiredSourceToken(update.notification, handOffBootGeneration),
+      { lifetime },
+    );
     // Refused recorded input can still invalidate authority. Preserve that
     // transition without counting the refused frame as accepted content.
     hydrated = repository.getSnapshot() ?? hydrated;

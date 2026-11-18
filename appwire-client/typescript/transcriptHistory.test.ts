@@ -1950,6 +1950,59 @@ test("a standalone daemon's bare history update retires the root-served hold", (
   expect(model.history?.holdOwner).toBe("1");
 });
 
+test("a saved-index fallback page records no hold owner and retires nothing", () => {
+  // The hub answers a fallback page from the transcript after a live read
+  // failed or came back empty, and the daemon may still be running the thread.
+  // Its `daemonless` token is no evidence that the owner was replaced, so
+  // treating it as authoritative records `daemonless` as the hold owner and
+  // keeps the samples - and the live daemon's next versioned update then reads
+  // as a takeover and clears a hold it is still sampling.
+  const held = mergeOlderItemPage(pageOrderingModel(), normalHistoryPage(120, []));
+  const withHold = {
+    ...held,
+    history: { ...held.history!, holdOwner: "7" },
+    delegates: [heldDelegate(900, 3)],
+  };
+  const fallbackPage: ThreadHistoryTurnsListResponse = {
+    ...normalHistoryPage(130, []),
+    bootGeneration: "daemonless",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: 130 },
+    servedFrom: "saved-index",
+    fallbackReason: "live-read-failed",
+  };
+
+  const merged = mergeOlderItemPage(withHold, fallbackPage);
+
+  // The saved content still merges, and the live daemon still owns its hold.
+  expect(holdOwnerOf(merged.history!)).toBe("7");
+  expect(merged.delegates?.[0]?.holdSequence).toBe(900);
+});
+
+test("a saved-index page WITHOUT fallback provenance may retire on daemonless", () => {
+  // The other direction: a saved page that is not a fallback names a definite
+  // absence, so it retires the previous owner's hold as any authoritative
+  // daemonless answer does.
+  const held = mergeOlderItemPage(pageOrderingModel(), normalHistoryPage(120, []));
+  const withHold = {
+    ...held,
+    history: { ...held.history!, holdOwner: "7" },
+    delegates: [heldDelegate(900, 3)],
+  };
+  const savedPage: ThreadHistoryTurnsListResponse = {
+    ...normalHistoryPage(130, []),
+    bootGeneration: "daemonless",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: 130 },
+    servedFrom: "saved-index",
+  };
+
+  const merged = mergeOlderItemPage(withHold, savedPage);
+
+  expect(holdOwnerOf(merged.history!)).toBe("daemonless");
+  expect(merged.delegates?.[0]?.holdSequence).toBeUndefined();
+});
+
 test("a deferred page from a replacement still retires the retired source's hold", () => {
   // Hold ownership is not decided by whether a page's CONTENT can be applied.
   // Here the history is invalidated and the page belongs to a different

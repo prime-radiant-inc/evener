@@ -907,6 +907,7 @@ export {
   invalidateHistory,
   issueLatestWindowRead,
   mergeOlderItemPage,
+  mergeOlderPage,
   mergeSavedViewPage,
   mergeTailTurns,
   mergeTranscriptItemVersioned,

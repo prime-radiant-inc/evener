@@ -17,7 +17,7 @@ import {
   invalidateHistory,
   itemIsIdentityOnly,
   itemTextPresence,
-  mergeOlderItemPage,
+  mergeOlderPage,
   mergeSavedViewPage,
   mergeTranscriptItemVersioned,
   mergeTranscriptReaderWindow,
@@ -1311,15 +1311,22 @@ export class TranscriptRepository {
     // A saved view's exhaustion is its own fact: an empty page ends it, any
     // other page (or a read that installs a new view) starts it again.
     this.#savedViewExhausted = savedPage && (response.data ?? []).length === 0;
-    const merged = savedPage ? mergeSavedViewPage(current, response) : mergeOlderItemPage(current, response);
+    const page = savedPage ? undefined : mergeOlderPage(current, response);
+    const merged = savedPage ? mergeSavedViewPage(current, response) : (page?.model ?? current);
     // A saved fallback page belongs to the saved projection: it cannot speak
     // for the live continuation, which stays available for recovery.
     const candidate =
       savedView && merged !== current
         ? { ...merged, olderCursor: current.olderCursor, olderFrontier: current.olderFrontier }
         : merged;
+    // A page's acceptance is the disposition the merge reports, never
+    // `candidate !== current`: a discarded page still hands off hold ownership
+    // and so returns a new model, and inferring acceptance from that identity
+    // certified a range the page never merged - later paging then trusted the
+    // certificate and skipped the missing turns entirely.
+    const applied = page === undefined ? candidate !== current : page.applied;
     // A discarded page leaves the model in place.
-    if (candidate === current) return false;
+    if (!applied && candidate === current) return false;
     // An invalidating/deferring page establishes no certified returned range,
     // so it may not carry coverage. But the shared reducer's invalidation is a
     // source-authority transition that belongs to this acceptance owner: adopt
@@ -1328,6 +1335,7 @@ export class TranscriptRepository {
     // fallback invalidates, and a later repository publication could push the
     // old valid authority back over that store-only invalidation.
     if (
+      !applied ||
       candidate.history?.invalidatedAtGeneration !== undefined ||
       (candidate.history?.deferredPages?.length ?? 0) > (current.history?.deferredPages?.length ?? 0)
     ) {

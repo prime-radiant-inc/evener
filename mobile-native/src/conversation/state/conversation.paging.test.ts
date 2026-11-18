@@ -3,7 +3,7 @@
 // conflict restore, and no auto-retry.
 
 import type { ThreadItem, ThreadTurnsListResponse, Turn } from "@evener/appwire-client";
-import { sessionTokens } from "@evener/appwire-client";
+import { ErrorTranscriptHistoryFailed, sessionTokens, WireError } from "@evener/appwire-client";
 import { describe, expect, it } from "vitest";
 import type { MobileConversation, MobileTimelineItem } from "../../projectedRows";
 import type { ConversationReadProjection } from "../services/conversation";
@@ -1715,6 +1715,83 @@ describe("ConversationStore", () => {
 			// Both turns still count (not just the fresh reread's own window), and
 			// the scope stays "loaded" because the fresh cursor is still present.
 			expect(sessionTokens(conv)).toEqual({ inputTokens: 560, outputTokens: 60, scope: "loaded" });
+		});
+	});
+
+	// RoboRev round 5 (Low): a structured read failure is the FIRST reply to
+	// name the replacement boot after a bootless resync. The catch path
+	// publishes the error and stops there, so without the shared hand-off the
+	// retired daemon's sequence stays in the model, where a larger one
+	// outranks the replacement's own updates for as long as the model lives.
+	// (The phone does not render the hold today, so the harm is latent; the
+	// ordering is still wrong, and the fix is the one rule every other fold
+	// already runs.) The hand-off retires only a CONFIRMED replacement and
+	// records the incoming owner, so the replacement's own wait survives —
+	// while the error, the visible turns and the paging cursor are untouched.
+	describe("a structured rehydrate failure publishes the hold hand-off", () => {
+		it("retires the retired boot's sequence and records the boot the failure names", async () => {
+			const service = new FakeConversationService();
+			service.readProjectionResult = makeReadProjectionResult(
+				makeThread({ turns: [makeTurn({ id: "t0", items: [] })] }),
+				ALL_TRUE_CAPS,
+				true,
+			);
+			const store = createConversationStore();
+			await store.getState().openProjected(service, "ref-1");
+			// The state a bootless resync leaves: history invalidated against the
+			// boot it awaited, and the delegate's hold still the retired daemon's
+			// sample (900, a sequence its own start numbered, which the
+			// replacement's first unheld frame cannot beat).
+			const held = store.getState().conversation!;
+			store.setState({
+				conversation: {
+					...held,
+					delegates: [
+						{
+							delegateId: "d1",
+							runGeneration: 1,
+							ownerSessionId: "session-1",
+							rootSessionId: "root",
+							childSessionId: "child-1",
+							transcriptRef: "ref-1",
+							type: "delegate",
+							lifecycle: "running",
+							phase: "running",
+							status: "running",
+							resumable: true,
+							needsAttention: false,
+							projectionRevision: 3,
+							drainHeldByJobs: true,
+							runningJobCount: 1,
+							holdSequence: 900,
+						},
+					],
+					history: held.history && { ...held.history, bootGeneration: "5@root" },
+				},
+				olderCursor: "cursor-1",
+			});
+			// The read fails, and the failure names the descendant's own daemon at
+			// boot 1: `5@root` and `1` confirm a replacement on an authoritative
+			// token, which is what makes the retired 900 retireable.
+			service.readProjectionBlock = Promise.reject(
+				new WireError("thread history failed at entry 7", -32603, {
+					evenerErrorInfo: ErrorTranscriptHistoryFailed,
+					bootGeneration: "1",
+				}),
+			);
+			await store.getState().rehydrate(service);
+
+			const published = store.getState().conversation!;
+			// Boot 1's hold can no longer lose to the retired daemon's 900...
+			expect(published.delegates?.[0]?.holdSequence).toBeUndefined();
+			// ...and boot 1 is the recorded owner, so its own next frame reads as
+			// an apply rather than as another replacement that clears its wait.
+			expect(published.history?.holdOwner).toBe("1");
+			// The failure still publishes, and nothing the read kept moved.
+			expect(store.getState().error).not.toBeNull();
+			expect(store.getState().latestReadState).toBe("error");
+			expect(published.turns.map((turn) => turn.id)).toEqual(["t0"]);
+			expect(store.getState().olderCursor).toBe("cursor-1");
 		});
 	});
 });

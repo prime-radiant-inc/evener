@@ -1881,6 +1881,99 @@ describe("useThreadsStore.ensureThread", () => {
     threadsStore.getState().releaseWatchedThread(ref);
   });
 
+  test("a named resync that confirms a replacement strips the buffered hold and keeps the terminal outcome", async () => {
+    // The sibling of the case above, one step earlier in the buffer's life: here
+    // the SUPERSEDING RESYNC is the first frame to confirm the replacement, so
+    // no history frame inside the buffer marks it. `carriedHydrationUpdates`
+    // returned an empty buffer for that case, which threw away every buffered
+    // update rather than the samples' hold: a terminal outcome that arrived
+    // while the read was pending then vanished, and when the successor read
+    // failed the delegate showed "running" for the rest of the wait.
+    const fake = connectReadyFakeClient();
+    const ref = "local:watched";
+    const threadId = `thr_${ref}`;
+    const initial = versionedReadResponse(
+      ref,
+      {
+        status: { type: "active" },
+        evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+      },
+      0,
+    );
+    const refused: Array<(error: Error) => void> = [];
+    let readCount = 0;
+    fake.on("thread/read", (params) => {
+      readCount += 1;
+      if (readCount === 1) return echoRead({ ...initial, bootGeneration: "1" }, params.requestGeneration);
+      return new Promise<ThreadReadResponse>((_resolve, reject) => {
+        refused.push(reject);
+      });
+    });
+
+    await threadsStore.getState().watchThread(ref, { includeTurns: true });
+    fake.emitNotification({
+      method: "evener/delegate/updated",
+      params: { threadId, ref, delegate: heldDelegateRow() },
+    });
+    await flushUntil(() => threadsStore.getState().watchedThreads.get(ref)?.delegates?.[0]?.holdSequence === 900);
+
+    // Bootless: retires nothing, starts the read from boot 1's model.
+    fake.emitNotification({
+      method: "evener/thread/resync",
+      params: { threadId, ref, epoch: 2 },
+    });
+    await flushUntil(() => refused.length === 1);
+
+    // A TERMINAL outcome arrives while that read is pending, so the buffer
+    // holds the only copy of the completed row.
+    fake.emitNotification({
+      method: "evener/delegate/updated",
+      params: {
+        threadId,
+        ref,
+        delegate: {
+          ...heldDelegateRow(),
+          holdSequence: 903,
+          projectionRevision: 9,
+          phase: "done",
+          status: "completed",
+          outcome: "success",
+          terminal: true,
+        },
+      },
+    });
+    await Promise.resolve();
+    // Non-vacuous: the published model still shows the running row, so the
+    // completed outcome exists only in the buffer.
+    expect(threadsStore.getState().watchedThreads.get(ref)?.delegates?.[0]?.terminal).toBe(false);
+
+    // A NAMED boot-2 resync supersedes the read and is itself the first frame
+    // to confirm the replacement.
+    fake.emitNotification({
+      method: "evener/thread/resync",
+      params: { threadId, ref, bootGeneration: "2", epoch: 3 },
+    });
+    await flushUntil(() => refused.length === 2);
+
+    // The successor read fails, so the buffer replay is the only publication.
+    refused[1]?.(
+      new WireError("thread history failed at entry 7", -32603, {
+        evenerErrorInfo: ErrorTranscriptHistoryFailed,
+        bootGeneration: "2",
+      }),
+    );
+    await flushUntil(() => threadsStore.getState().watchedThreads.get(ref)?.history?.failed !== undefined);
+    const published = threadsStore.getState().watchedThreads.get(ref)?.delegates?.[0];
+    // The completed outcome survived the carry...
+    expect(published?.terminal).toBe(true);
+    expect(published?.outcome).toBe("success");
+    expect(published?.projectionRevision).toBe(9);
+    // ...and the replaced source's hold did not.
+    expect(published?.holdSequence).toBeUndefined();
+
+    threadsStore.getState().releaseWatchedThread(ref);
+  });
+
   test("a failed read's own boot token retires the hold it identifies", async () => {
     // A daemon exit sends a bootless resync, so the browser correctly keeps the
     // hold while it reads. If that read then FAILS, the hub stamps the failure
@@ -2376,6 +2469,93 @@ describe("useThreadsStore.ensureThread", () => {
     // the departed daemon's sequence restored over a wait that is still live.
     expect(existingEntryRoute(ref)?.repository?.getSnapshot()?.delegates?.[0]?.holdSequence).toBe(1);
     expect(threadsStore.getState().threads.get(ref)?.delegates?.[0]?.holdSequence).toBe(1);
+
+    threadsStore.getState().releaseThread(ref);
+  });
+
+  // The entry-backed half of the retired-source rule: the replay that follows a
+  // structured failure must run the SAME neutralizer the watched path runs.
+  test("entry-backed replay cannot let the retired source reclaim the hold owner", async () => {
+    const fake = connectReadyFakeClient();
+    const ref = "ref_a";
+    const initial = versionedReadResponse(
+      ref,
+      {
+        status: { type: "active" },
+        evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+      },
+      0,
+    );
+    initial.bootGeneration = "5@root";
+    const refused: { reject: ((error: Error) => void) | null } = { reject: null };
+    let readCount = 0;
+    fake.on("thread/read", (params) => {
+      readCount += 1;
+      if (readCount === 1) return echoRead(initial, params.requestGeneration);
+      return new Promise<ThreadReadResponse>((_resolve, reject) => {
+        refused.reject = reject;
+      });
+    });
+    await threadsStore.getState().ensureThread(ref);
+
+    fake.emitNotification({
+      method: "evener/delegate/updated",
+      params: { threadId: "thr_ref_a", ref, delegate: { ...heldDelegateRow(), holdSequence: 901 } },
+    });
+    await flushUntil(() => existingEntryRoute(ref)?.repository?.getSnapshot()?.delegates?.[0]?.holdSequence === 901);
+
+    // Bootless: retires nothing, starts the tracked read.
+    fake.emitNotification({
+      method: "evener/thread/resync",
+      params: { threadId: "thr_ref_a", ref, epoch: 2 },
+    });
+    await flushUntil(() => refused.reject !== null);
+
+    // Buffered while that read is pending: the OUTGOING root's history frame,
+    // and then the replacement's live hold. The repository never accepted the
+    // root's frame as recorded content.
+    fake.emitNotification({
+      method: "history/updated",
+      params: {
+        threadId: "thr_ref_a",
+        ref,
+        bootGeneration: "5@root",
+        epoch: 3,
+        snapshot: { incarnation: "inc-1", length: 0 },
+        turns: [],
+        items: [],
+      },
+    });
+    fake.emitNotification({
+      method: "evener/delegate/updated",
+      params: {
+        threadId: "thr_ref_a",
+        ref,
+        delegate: { ...heldDelegateRow(), holdSequence: 1, projectionRevision: 4 },
+      },
+    });
+    await Promise.resolve();
+
+    // The read fails naming the descendant's standalone daemon.
+    refused.reject?.(
+      new WireError("thread history failed at entry 7", -32603, {
+        evenerErrorInfo: ErrorTranscriptHistoryFailed,
+        bootGeneration: "1",
+      }),
+    );
+    await flushUntil(() => existingEntryRoute(ref)?.repository?.getSnapshot()?.history?.failed !== undefined);
+
+    // Boot 1 speaks for itself. If the replayed "5@root" frame reclaimed the
+    // owner, this frame reads as another replacement and erases the live hold.
+    emitHistoryUpdatedFor(fake, ref, "thr_ref_a", {
+      bootGeneration: "1",
+      epoch: 1,
+      snapshot: { incarnation: "inc-2", length: 0 },
+      turns: [],
+      items: [],
+    });
+    await flushUntil(() => existingEntryRoute(ref)?.repository?.getSnapshot()?.history?.holdOwner === "1");
+    expect(existingEntryRoute(ref)?.repository?.getSnapshot()?.delegates?.[0]?.holdSequence).toBe(1);
 
     threadsStore.getState().releaseThread(ref);
   });

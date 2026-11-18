@@ -1,12 +1,28 @@
 // @vitest-environment node
 import { expect, test } from "vitest";
+import appwireBootGenerationGo from "../../appwire/boot_generation.go?raw";
 import {
   type BootGenerationAction,
   type BootTokenEvidence,
   compareBootGeneration,
   confirmedBootReplacement,
   DAEMONLESS_BOOT_GENERATION,
+  UNKNOWN_OWNER_BOOT_GENERATION,
 } from "./bootGeneration";
+import { goConstantValue } from "./testing/goConstants";
+
+// The client matches these tokens as bare literals, so a hub-side rename would
+// compile and silently misclassify every read that carries the new spelling.
+// Pinning the client's constants to appwire/boot_generation.go is what makes a
+// rename fail here instead (errors.test.ts's precedent).
+test("the boot-generation tokens are the daemon's own constants", () => {
+  expect(DAEMONLESS_BOOT_GENERATION).toBe(
+    goConstantValue(appwireBootGenerationGo, "DaemonlessBootGeneration", "appwire/boot_generation.go"),
+  );
+  expect(UNKNOWN_OWNER_BOOT_GENERATION).toBe(
+    goConstantValue(appwireBootGenerationGo, "UnknownOwnerBootGeneration", "appwire/boot_generation.go"),
+  );
+});
 
 // The table mirrors appwire/boot_generation_test.go's TestCompareBootGeneration
 // row for row: the client and the daemon must agree on every token pair.
@@ -132,6 +148,14 @@ const confirmEvidenceCases: Array<[held: string, incoming: string, evidence: Boo
   ["5@root", "5@root", "authoritative", false],
   ["3", "3", "authoritative", false],
   ["3", "4", "authoritative", true],
+  // unknown-owner names NO owner: it is a failed read whose serving daemon the
+  // hub never established, so it may neither retire a hold nor become one.
+  // Both directions, under either producer.
+  ["5@root", UNKNOWN_OWNER_BOOT_GENERATION, "authoritative", false],
+  ["5", UNKNOWN_OWNER_BOOT_GENERATION, "resync", false],
+  [UNKNOWN_OWNER_BOOT_GENERATION, "1", "authoritative", false],
+  [UNKNOWN_OWNER_BOOT_GENERATION, "1@root", "resync", false],
+  [UNKNOWN_OWNER_BOOT_GENERATION, UNKNOWN_OWNER_BOOT_GENERATION, "authoritative", false],
 ];
 
 test.each(confirmEvidenceCases)("confirmedBootReplacement(%j, %j, %s) is %s", (held, incoming, evidence, want) => {

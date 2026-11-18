@@ -36,12 +36,14 @@ import {
 	deriveSendQueueAvailability,
 	historyFallback,
 	historyServingFacts,
+	handOffReplacedSource,
 	isStaleCursorError,
 	mergeOlderItemPage,
 	mergeSavedViewPage,
 	notificationTargetsThread,
 	notificationTouchesTranscript,
 	sessionControls,
+	transcriptHistoryFailedBootGeneration,
 	WireError,
 } from "@evener/appwire-client";
 import type { PendingTurnEntry } from "@evener/appwire-client/state/mutation";
@@ -2144,9 +2146,21 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						entryMutationRev === mutationOwnerRev &&
 						entryErrorRev === errorOwnerRev
 					) {
+						// A structured history failure is the FIRST reply to name the
+						// replacement boot after a bootless resync. Without the shared
+						// hand-off the retired sequence stays in the model, where a
+						// larger one outranks the replacement's own updates. The
+						// hand-off retires only a CONFIRMED replacement and records the
+						// incoming owner, so the replacement's wait survives; the error,
+						// the visible turns and the paging cursor are untouched.
+						const failureOwner = transcriptHistoryFailedBootGeneration(err);
+						const held = get().conversation;
+						const handed =
+							failureOwner && held ? (handOffReplacedSource(held, failureOwner, "authoritative") ?? held) : held;
 						set({
 							error: err instanceof Error ? err.message : String(err),
 							latestReadState: "error",
+							...(handed && handed !== held ? { conversation: handed } : {}),
 						});
 					} else {
 						markLatest("error");

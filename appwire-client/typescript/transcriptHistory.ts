@@ -52,12 +52,30 @@ export function mergeSavedViewPage(model: ThreadModel, resp: ThreadTurnsListResp
   return model.history ? withDisplay(model, { ...model.history, turns }, model.overlay ?? {}) : { ...model, turns };
 }
 
-// mergeOlderItemPage folds one thread/turns/list backfill page into the model.
+// What a backfill page did to the model, separately from the model itself.
+//
+// `applied` is whether the page's CONTENT merged. It is NOT `model !== before`:
+// a discarded page can still hand off hold ownership, so it returns a new
+// model carrying an authoritative transition the caller must publish — while
+// contributing no content and, therefore, no coverage. A caller that inferred
+// acceptance from object identity would certify a range it never merged.
+export interface OlderPageMerge<M extends ThreadModel = ThreadModel> {
+  model: M;
+  applied: boolean;
+}
+
+// mergeOlderPage folds one thread/turns/list backfill page into the model.
 // A v6 page into a model holding versioned history merges by version under
 // the snapshot rules below; anything else takes the unversioned merge.
-export function mergeOlderItemPage(model: ThreadModel, resp: ThreadTurnsListResponse): ThreadModel {
+export function mergeOlderPage(model: ThreadModel, resp: ThreadTurnsListResponse): OlderPageMerge {
   if (model.history && resp.snapshot) return mergeVersionedPage(model, model.history, resp, true);
-  return mergeOlderItemPageWithFolds(model, resp).model;
+  return { model: mergeOlderItemPageWithFolds(model, resp).model, applied: true };
+}
+
+// mergeOlderItemPage is mergeOlderPage's model alone, for callers that fold a
+// page purely for its content.
+export function mergeOlderItemPage(model: ThreadModel, resp: ThreadTurnsListResponse): ThreadModel {
+  return mergeOlderPage(model, resp).model;
 }
 
 // ---------------------------------------------------------------------------
@@ -1154,7 +1172,7 @@ export function applyReadResponse<M extends ThreadModel>(
   );
   for (const deferred of held.deferredPages) {
     if (deferred.snapshot?.incarnation === history.incarnation) {
-      next = mergeVersionedPage(next, next.history, deferred, false);
+      next = mergeVersionedPage(next, next.history, deferred, false).model;
     }
   }
   return publicModel<M>(next);
@@ -1329,7 +1347,7 @@ export function applyReadModel<M extends ThreadModel>(
   );
   for (const deferred of held.deferredPages) {
     if (deferred.snapshot?.incarnation === history.incarnation) {
-      next = mergeVersionedPage(next, next.history, deferred, false);
+      next = mergeVersionedPage(next, next.history, deferred, false).model;
     }
   }
   return publicModel<M>(next);
@@ -1357,7 +1375,7 @@ function mergeVersionedPage<M extends ThreadModel>(
   held: HistoryState,
   resp: ThreadTurnsListResponse,
   takeCursor: boolean,
-): M {
+): OlderPageMerge<M> {
   // Hold OWNERSHIP is a different question from whether this page's content can
   // be applied. A page that is discarded or deferred still came from the source
   // named on its own frame, and an authoritative frame naming a different boot
@@ -1369,7 +1387,14 @@ function mergeVersionedPage<M extends ThreadModel>(
   // So run the hand-off first, and let each branch keep its own history: the
   // hold-only change is the model the branch would have returned, plus the
   // retire and the recorded owner.
-  const handed = handOffReplacedSource(model, resp.bootGeneration, "authoritative");
+  // A saved-index FALLBACK page is not the serving daemon's account of itself:
+  // the hub answered it from the transcript after a live read failed or came
+  // back empty, and the daemon may still be running the thread. Its
+  // `daemonless` token is therefore no evidence that the owner was replaced -
+  // recording it would make the live daemon's next versioned update read as a
+  // takeover and clear a hold it is still sampling. A saved-index page WITHOUT
+  // fallback provenance is authoritative and may retire as usual.
+  const handed = historyFallback(resp) ? undefined : handOffReplacedSource(model, resp.bootGeneration, "authoritative");
   // The hand-off may have recorded a new hold owner. Every branch that keeps
   // the held history must spread THAT history, or the branch's own history
   // literal silently drops the owner the hand-off just recorded - the same
@@ -1377,11 +1402,16 @@ function mergeVersionedPage<M extends ThreadModel>(
   const owned = handed?.history ?? held;
   switch (pageDisposition(held, resp)) {
     case "discard":
-      return handed ?? model;
+      // The page's content does not apply, so it certifies no range - but the
+      // hand-off is still an authoritative transition the caller must publish.
+      return { model: handed ?? model, applied: false };
     case "defer":
       return {
-        ...(handed ?? model),
-        history: { ...owned, deferredPages: [...held.deferredPages, resp] },
+        model: {
+          ...(handed ?? model),
+          history: { ...owned, deferredPages: [...held.deferredPages, resp] },
+        },
+        applied: false,
       };
     case "invalidate": {
       // A page of the incarnation it just announced waits for that
@@ -1395,8 +1425,11 @@ function mergeVersionedPage<M extends ThreadModel>(
       // the retire, decided against the model that still names the old owner.
       const retired = retireReplacedSourceHoldOnModel(model, resp.bootGeneration, "authoritative");
       return {
-        ...(retired ?? model),
-        history: deferred ? { ...history, deferredPages: [...history.deferredPages, resp] } : history,
+        model: {
+          ...(retired ?? model),
+          history: deferred ? { ...history, deferredPages: [...history.deferredPages, resp] } : history,
+        },
+        applied: false,
       };
     }
     case "merge": {
@@ -1430,25 +1463,28 @@ function mergeVersionedPage<M extends ThreadModel>(
       // held. pageDisposition still requires a page's length to be at least
       // held's to merge, comparing against that one true, latest-window
       // watermark - never one a page pushed forward.
-      return withDisplay(
-        next,
-        {
-          ...owned,
-          ...(observed
-            ? {
-                replacementScopes: observePageRange(
-                  held.replacementScopes,
-                  range[0],
-                  range[1],
-                  snapshot,
-                  servedCutOrdinal(fresh),
-                ),
-              }
-            : {}),
-          turns,
-        },
-        model.overlay ?? {},
-      );
+      return {
+        model: withDisplay(
+          next,
+          {
+            ...owned,
+            ...(observed
+              ? {
+                  replacementScopes: observePageRange(
+                    held.replacementScopes,
+                    range[0],
+                    range[1],
+                    snapshot,
+                    servedCutOrdinal(fresh),
+                  ),
+                }
+              : {}),
+            turns,
+          },
+          model.overlay ?? {},
+        ),
+        applied: true,
+      };
     }
   }
 }

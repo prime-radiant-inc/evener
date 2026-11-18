@@ -95,7 +95,15 @@ function applyHistoryUpdated<M extends ThreadModel>(model: M, params: HistoryUpd
   );
   const turns = mergeHistory(held.turns, fragment);
   if (turns === held.turns) return handed ?? live;
-  return withDisplay(handed ?? live, { ...held, turns }, model.overlay ?? {});
+  // Build the merged history from the HANDED-OFF model's history, not the
+  // pre-handoff one: `handed` is where this frame recorded its source as the
+  // hold owner, and spreading the pre-handoff history here would drop that
+  // record while keeping the retired samples cleared. The root that just took
+  // ownership would then compare against the boot it replaced on its own next
+  // content-bearing update, read it as another replacement, and clear the live
+  // hold it published — which emits no update of its own to restore it.
+  const base = (handed ?? live).history ?? held;
+  return withDisplay(handed ?? live, { ...base, turns }, model.overlay ?? {});
 }
 
 // Versioned resync invalidates history. A hub's epochless hint only requests

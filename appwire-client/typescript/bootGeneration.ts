@@ -9,6 +9,20 @@
 export const DAEMONLESS_BOOT_GENERATION = "daemonless";
 
 /**
+ * The boot generation the hub stamps on a FAILED history read whose serving
+ * daemon it never established (appwire.UnknownOwnerBootGeneration): the saved
+ * fallback that answered the read failed, and the evidence that made the
+ * fallback necessary named no owner.
+ *
+ * It is not a claim that no daemon runs, and it names no owner: a hold may not
+ * be retired on it and it may not become a hold owner. `confirmedBootReplacement`
+ * answers false for it in every direction, which is why it needs no special
+ * case there. The binding test (bootGeneration.test.ts) reads the Go constant,
+ * so a hub-side rename breaks there rather than silently misclassifying.
+ */
+export const UNKNOWN_OWNER_BOOT_GENERATION = "unknown-owner";
+
+/**
  * What a client does with a read response or history update, given the boot
  * generation it holds for the thread:
  * - `apply`: the same token as held; apply normally.

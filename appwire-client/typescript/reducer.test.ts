@@ -4657,6 +4657,85 @@ test("a failed history keeps the hold for a same-source frame", () => {
   expect(result.history?.failed).toBe(failure);
 });
 
+// RoboRev round 5 (Medium 4): the merged history must come from the HANDED-OFF
+// model. `withDisplay` was given the pre-handoff history, so a content-bearing
+// frame from the source that had just taken ownership dropped the `holdOwner`
+// it recorded a line earlier — and that same root's next frame then compared
+// against the boot it replaced, read as another replacement, and cleared the
+// live hold it published. An unchanged hold emits no update to restore it.
+test("a content-bearing frame carries the owner the same fold recorded", () => {
+  const base = testHydrateV6AtBoot("5");
+  const recorded: ThreadModel = {
+    ...base,
+    // The state a bootless-or-bare resync leaves: `awaited` already names boot
+    // 7, while the recorded OWNER is still boot 6, whose samples are live.
+    history: base.history && {
+      ...base.history,
+      bootGeneration: "5",
+      awaited: { bootGeneration: "7", epoch: 1 },
+      holdOwner: "6",
+    },
+  };
+  // Boot 7's own history/updated MERGES content: a turn new to the model
+  // makes the fold reach withDisplay instead of returning by reference.
+  let result = applyNotification(
+    recorded,
+    {
+      method: "history/updated",
+      params: {
+        threadId: base.threadId,
+        ref: base.ref,
+        bootGeneration: "7",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 2 },
+        turns: [fragmentTurn("t-new", ["i-new"])],
+        items: [],
+      },
+    },
+    2000,
+  );
+  // The fold recorded boot 7 as the hold owner. withDisplay was handed the
+  // PRE-handoff history, so that record is what it drops.
+  expect(result.history?.holdOwner).toBe("7");
+  // Boot 7 then publishes its own live hold.
+  result = applyNotification(
+    result,
+    delegateNotification(
+      "ref_t",
+      delegateInfo({
+        delegateId: "dlg_1",
+        projectionRevision: 4,
+        drainHeldByJobs: true,
+        holdSequence: 1,
+        runningJobCount: 1,
+        oldestRunningJobStartedAt: "2026-01-04T00:00:00Z",
+      }),
+    ),
+    3000,
+  );
+  expect(result.delegates?.[0]?.holdSequence).toBe(1);
+  // Boot 7's next content-bearing frame is therefore an apply, not another
+  // replacement that clears the wait this daemon is still holding.
+  result = applyNotification(
+    result,
+    {
+      method: "history/updated",
+      params: {
+        threadId: base.threadId,
+        ref: base.ref,
+        bootGeneration: "7",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 3 },
+        turns: [fragmentTurn("t-newer", ["i-newer"])],
+        items: [],
+      },
+    },
+    4000,
+  );
+  expect(result.delegates?.[0]?.holdSequence).toBe(1);
+  expect(result.delegates?.[0]?.drainHeldByJobs).toBe(true);
+});
+
 test("delegate/updated with same projectionRevision and later activity updates latestActivityAt", () => {
   const model = testHydrate();
   const dlg1 = delegateInfo({
