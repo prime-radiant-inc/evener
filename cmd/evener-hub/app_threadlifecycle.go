@@ -40,17 +40,14 @@ var (
 	hubParseModelRef   = cmdutil.ParseModelRef
 	hubRosterRefresh   = func(ctx context.Context, r *hubcore.Roster) error { return r.RefreshAndWait(ctx) }
 	hubRosterList      = func(r *hubcore.Roster) []hubcore.LiveEntry { return r.List() }
-	// rosterSnapshot reads ownership error, unconfirmed claims and live entries
-	// from ONE roster publication. A caller that needs those three facts to
-	// agree — "did the roster establish absence?" — must use this rather than
-	// three accessors, because a refresh landing between them can show no
-	// claims in the older publication and no live owner in the newer one.
+	// rosterOwnershipSnapshot reads ownership error, unconfirmed claims, live
+	// entries and the per-PID projection from ONE roster publication. A caller
+	// deciding whether a daemon owns a thread — "did the roster establish
+	// absence?" — must use this rather than several accessors, because a refresh
+	// landing between them can show no claims in the older publication and no
+	// live owner in the newer one. It carries the projection because Live dedupes
+	// by session; navigation reads Roster.Snapshot directly and needs neither.
 	// Tests replace it to drive that interleaving deterministically.
-	rosterSnapshot = func(r *hubcore.Roster) hubcore.RosterSnapshot { return r.Snapshot() }
-	// rosterOwnershipSnapshot adds the per-PID projection to that publication.
-	// It is a separate seam because the projection deep-copies every entry, and
-	// only the ownership question needs it: navigation snapshots stay on
-	// rosterSnapshot above.
 	rosterOwnershipSnapshot = func(r *hubcore.Roster) hubcore.OwnershipSnapshot { return r.OwnershipSnapshot() }
 	hubForkSession          = agent.ForkSession
 	hubForkSessionAt        = agent.ForkSessionAtUserTurn

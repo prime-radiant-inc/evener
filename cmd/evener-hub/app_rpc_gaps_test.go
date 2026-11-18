@@ -244,10 +244,12 @@ func TestPastFallbackReadsOneRosterPublication(t *testing.T) {
 		if len(beforeRefresh.Confirmed) != 2 {
 			t.Fatalf("fixture does not carry both processes in Confirmed: %+v", beforeRefresh.Confirmed)
 		}
-		// The newer one replaced that owner with an unverified claim.
-		afterRefresh := hubcore.OwnershipSnapshot{RosterSnapshot: hubcore.RosterSnapshot{
-			Unconfirmed: []rendezvous.Entry{{PID: 4242, ThreadID: sessionID}},
-		}}
+		// The newer one replaced that owner with an unverified claim. The
+		// unconfirmed list is assigned onto the embedded value rather than nested
+		// in it: Go cannot elide the type of an embedded field inside a keyed
+		// literal, and repeating the type trips modernize's embedlit.
+		var afterRefresh hubcore.OwnershipSnapshot
+		afterRefresh.Unconfirmed = []rendezvous.Entry{{PID: 4242, ThreadID: sessionID}}
 		original := rosterOwnershipSnapshot
 		t.Cleanup(func() { rosterOwnershipSnapshot = original })
 		publications := []hubcore.OwnershipSnapshot{beforeRefresh, afterRefresh}
@@ -570,19 +572,11 @@ func TestSuccessfulSavedFallbackTakesNoRosterSnapshot(t *testing.T) {
 	// A relay outage with no roster configured: the saved read succeeds, so
 	// nothing about ownership is ever asked.
 	sources.Add(&pastFallbackRelaySource{readErr: appwire.RetryableSessionUnavailable("relay connection ended before route publication")})
-	originalSnapshot := rosterSnapshot
 	originalOwnership := rosterOwnershipSnapshot
-	t.Cleanup(func() {
-		rosterSnapshot = originalSnapshot
-		rosterOwnershipSnapshot = originalOwnership
-	})
+	t.Cleanup(func() { rosterOwnershipSnapshot = originalOwnership })
 	snapshots := 0
-	// Both seams are counted: the ownership projection is the expensive one, and
-	// it must not be taken either when the saved read answers.
-	rosterSnapshot = func(r *hubcore.Roster) hubcore.RosterSnapshot {
-		snapshots++
-		return originalSnapshot(r)
-	}
+	// This is the seam the saved-history stamp reaches, so counting it observes
+	// the call a successful fallback must not make.
 	rosterOwnershipSnapshot = func(r *hubcore.Roster) hubcore.OwnershipSnapshot {
 		snapshots++
 		return originalOwnership(r)
