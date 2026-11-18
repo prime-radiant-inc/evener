@@ -21,6 +21,7 @@
 
 import type {
 	AnyNotification,
+	HistoryState,
 	InputItem,
 	MutationReceipt,
 	ThreadItemPosition,
@@ -544,6 +545,37 @@ function savedViewRecord(conversation: MobileConversation | null | undefined): S
 	const facts = conversation?.servingFacts;
 	if (facts?.servedFrom !== "saved-index" || facts.fallbackReason === undefined) return null;
 	return { identity: savedViewIdentity(conversation), exhausted: false };
+}
+
+/**
+ * The hold hand-off an invalidating page merge already decided, in the shape
+ * the phone store can publish without adopting the merge's history.
+ *
+ * A page that first confirms a new boot runs `invalidated()`, which records the
+ * incoming source as the hold owner, and then retires the outgoing source's
+ * samples. The phone's invalidate branch discards that merged model - it only
+ * schedules a reread - so without this the phone keeps the retired daemon's
+ * `holdSequence`, which can outrank the replacement's own updates while the
+ * reread is pending, and forever if it fails. The hold is not rendered on the
+ * phone today; it is still state that decides which sample wins.
+ *
+ * Only the two hold-bearing fields are taken: everything else the branch must
+ * keep (turns, cursor, the invalidated history it does not adopt) stays with
+ * the model already published.
+ */
+function handOffPageHold(
+	held: ThreadModel,
+	heldHistory: HistoryState,
+	merged: ThreadModel,
+	mergedHistory: HistoryState,
+): Partial<ThreadModel> | undefined {
+	const ownerChanged = mergedHistory.holdOwner !== heldHistory.holdOwner;
+	const delegatesChanged = merged.delegates !== held.delegates;
+	if (!ownerChanged && !delegatesChanged) return undefined;
+	return {
+		...(delegatesChanged ? { delegates: merged.delegates } : {}),
+		...(ownerChanged ? { history: { ...heldHistory, holdOwner: mergedHistory.holdOwner } } : {}),
+	};
 }
 
 export function trimBoundary(
@@ -2292,6 +2324,24 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 							// real epoch/incarnation to a newer one) entirely. Compare the
 							// signal that actually changes instead.
 							const newlyInvalidated = historyNewlyInvalidated(heldHistory, mergedHistory);
+							// The page's merge already decided the hold hand-off: a page
+							// that first confirms a new boot clears the outgoing source's
+							// samples and records the incoming owner on the model it
+							// returned. This branch DISCARDS that model and only schedules
+							// a reread, so without publishing the hand-off the phone keeps
+							// the retired daemon's sequence, which can outrank the
+							// replacement's own updates while the reread is pending - and
+							// forever if it fails.
+							//
+							// Only the hold-bearing fields move: the invalidated history and
+							// the pending incarnation are the reread's business, and
+							// installing them here would adopt a model this branch
+							// deliberately does not.
+							const retired =
+								heldHistory === undefined
+									? undefined
+									: handOffPageHold(currentConv, heldHistory, versionedMerge, mergedHistory);
+							if (retired) set({ conversation: { ...currentConv, ...retired } });
 							if (newlyInvalidated) {
 								requestRehydrate(currentConv.ref);
 							} else if (get().latestReadState === "ready") {

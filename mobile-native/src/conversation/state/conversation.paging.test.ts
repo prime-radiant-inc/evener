@@ -1325,6 +1325,80 @@ describe("ConversationStore", () => {
 			expect(service.readProjectionCalls.length).toBeGreaterThan(readsBefore);
 		});
 
+		// The invalidate branch DISCARDS the merged model and schedules a
+		// reread, so anything the merge decided must be published here or it is
+		// lost. A page is the first place an older page can confirm a new boot;
+		// the shared merge clears the outgoing source's hold samples and records
+		// the incoming owner on the model it returns. Keeping the retired
+		// daemon's `holdSequence` lets it outrank the replacement's own updates
+		// while the reread is pending - and forever if it fails.
+		it("a page that first confirms a new boot publishes the hold retirement and the incoming owner", async () => {
+			const { store, service } = await openVersioned([makeTurn({ id: "t0", items: [] })]);
+			const held = store.getState().conversation!;
+			store.setState({
+				conversation: {
+					...held,
+					// Boot 1's daemon owns a live hold at 900: a sequence its own
+					// start numbered, which a replacement's first sample cannot beat.
+					delegates: [
+						{
+							delegateId: "d1",
+							runGeneration: 1,
+							ownerSessionId: "session-1",
+							rootSessionId: "session-1",
+							childSessionId: "child-1",
+							transcriptRef: "ref-1",
+							type: "delegate",
+							lifecycle: "running",
+							phase: "running",
+							status: "running",
+							resumable: true,
+							needsAttention: false,
+							projectionRevision: 3,
+							drainHeldByJobs: true,
+							runningJobCount: 1,
+							holdSequence: 900,
+						},
+					],
+					history: held.history && {
+						...held.history,
+						invalidatedAtGeneration: 0,
+						awaited: { bootGeneration: "1", epoch: 1 },
+					},
+				},
+				olderCursor: "cursor-1",
+			});
+			const readsBefore = service.readProjectionCalls.length;
+			// The page names a DIFFERENT boot: boot 2 serving the thread as its own
+			// root. That is a confirmed replacement, so the page merge retires boot
+			// 1's 900 and records boot 2 as the owner.
+			service.olderItems = {
+				turnsPage: {
+					data: [wireTurn("t-old", 5, 1)],
+					nextCursor: "cursor-2",
+					bootGeneration: "2",
+					epoch: 1,
+					snapshot: { incarnation: "inc-1", length: 1 },
+				},
+				nextCursor: "cursor-2",
+			};
+			const result = await store.getState().loadOlder(service);
+			expect(result.status).toBe("ignored");
+			for (let i = 0; i < 40 && service.readProjectionCalls.length <= readsBefore; i++) {
+				await Promise.resolve();
+			}
+			// The reread the branch owes is still scheduled...
+			expect(service.readProjectionCalls.length).toBeGreaterThan(readsBefore);
+			// ...and the hand-off is published, not discarded with the merge.
+			const published = store.getState().conversation!;
+			expect(published.delegates?.[0]?.holdSequence).toBeUndefined();
+			expect(published.history?.holdOwner).toBe("2");
+			// Nothing else the branch keeps moved: the cursor stays put and the
+			// page's turns did not merge in.
+			expect(store.getState().olderCursor).toBe("cursor-1");
+			expect(published.turns.some((turn) => turn.id === "t-old")).toBe(false);
+		});
+
 		// RoboRev round 4 (Medium): mergeHistory (and withDisplay/displayTurns,
 		// which returns held.turns by reference when there is no live overlay)
 		// return the held `turns` array BY REFERENCE not just on a real discard,

@@ -6099,6 +6099,19 @@ function beginWatchedHydration(
 // a bootless one, and a token that cannot be interpreted all leave the daemon
 // that published them in charge, and the new read's buffer is the only place
 // its hold exists.
+//
+// KNOWN LIMIT, measured rather than assumed: the delegate delete below is
+// POSITIONAL because a buffered delegate frame names no publisher.
+// EvenerDelegateParams is {threadId, ref, delegate}, and `ref` names the
+// WORKSPACE, which a replacement keeps (server/appwire_identity.go's
+// PrepareAppIdentityForRef). An A/B experiment on identical frame order showed
+// no client-side predicate separates the two cases: retiring by the confirming
+// frame's own hand-off keeps the incoming source's live hold but lets a
+// departed daemon's 901 outrank the replacement ("expected 901 to be
+// undefined"), while deleting positionally retires the departed sample but
+// loses the live one ("expected undefined to be 1"). The separating fact is not
+// on the wire; attaching the publishing boot to evener/delegate/updated is
+// #6815, after which this delete becomes a filter on the frame's own publisher.
 function carriedHydrationUpdates(
   pending: PendingThreadHydration,
   resyncBootGeneration: string | undefined,
