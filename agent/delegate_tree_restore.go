@@ -76,6 +76,12 @@ type delegateReconcileEvidence struct {
 	stopRequestSeq  uint64
 	shells          map[string]shellRuntimeLossEvidence
 	attention       map[string][]string
+	// bound is the publication bound of the pass that collected this evidence,
+	// or nil for the session's ordinary path. It travels in the evidence
+	// because the evidence IS the pass's input: every publication this
+	// reconcile causes is made on it, so a deadline belongs to the pass that
+	// supplied it and an unrelated delegate's publications are unaffected.
+	bound context.Context
 }
 
 type delegateAttentionTransferPlan struct {
@@ -253,19 +259,10 @@ func (c *delegateTreeController) reconcileRequirementsLocked(stop *delegateStopS
 	return requirements
 }
 
+// Every publication this reconcile causes is made on evidence.bound, which is
+// the bound of the pass that collected the evidence.
 func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (result delegateMutationPlans, resultErr error) {
-	return c.reconcileBounded(evidence, nil)
-}
-
-// reconcileBounded is Reconcile on the publication bound of the pass calling it,
-// for a caller on the close-join critical path. Every publication this reconcile
-// causes — the plan updates, the wake warning — is made on that bound, so a
-// deadline belongs to the pass that supplied it and an unrelated delegate's
-// publications are unaffected.
-//
-// A nil bound is the session's ordinary delivery path, which is what Reconcile
-// above is, and takes it exactly as before.
-func (c *delegateTreeController) reconcileBounded(evidence delegateReconcileEvidence, bound context.Context) (result delegateMutationPlans, resultErr error) {
+	bound := evidence.bound
 	release, err := c.beginRetirementMutation()
 	if err != nil {
 		return delegateMutationPlans{}, err
@@ -275,7 +272,7 @@ func (c *delegateTreeController) reconcileBounded(evidence delegateReconcileEvid
 		// on the error paths too: a repair error still hands back the warnings
 		// and updates it settled. Result is the named return, so this covers
 		// all of them at one place instead of at each return.
-		result = stampBound(result, bound)
+		result = stampBound(bound, result)
 		if resultErr == nil && (len(result.updates) != 0 || len(result.deliveries) != 0 || len(result.attention) != 0 || len(result.shellRepairs) != 0 || result.attentionFinalization != nil) {
 			result.retirementRelease = release
 		} else {

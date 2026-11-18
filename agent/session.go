@@ -3310,6 +3310,14 @@ func (s *Session) surfaceTranscriptWarnings() {
 // sink, for the recordTurnTo callers that must not reach the hook dispatcher.
 func (s *Session) surfaceTranscriptWarningsTo(diag recordDiagnostics) {
 	s.drainTranscriptWarnings(diag.warn)
+	// An ordinary transcript write carries no bound, and announceFailClosedOn
+	// has no nil case: it sends on the context it is given. Route those through
+	// the unbounded announce so the ordinary path keeps its own backpressure
+	// behavior and never dereferences a nil context.
+	if diag.bound == nil {
+		s.announceFailClosed()
+		return
+	}
 	s.announceFailClosedOn(diag.bound)
 }
 

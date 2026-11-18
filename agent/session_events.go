@@ -959,6 +959,21 @@ func (s *Session) runNotificationHook(ctx context.Context, message, title string
 	if s.hookRunner == nil {
 		return
 	}
+	// The hook's OUTPUT publication is scoped to a caller that supplied a bound.
+	// A bound is a publication deadline handed in by a caller that has a stall
+	// budget of its own -- the delegate close drain is the only one. Every other
+	// dispatcher passes a context that merely tracks the session, and reusing
+	// that one as the publication bound turned a canceled session context into a
+	// delivery deadline: an ordinary hook finishing as Close cancels the session
+	// dropped its user message off a full buffer at once, even though the
+	// consumer frees a slot inside the close window the event was entitled to.
+	// So an unmarked dispatch keeps the session's existing publication path
+	// exactly as before, and only a marked one narrows to the dispatcher's
+	// deadline.
+	output := s.publicationContext()
+	if bounded, ok := publicationBound(ctx); ok {
+		output = bounded
+	}
 	input := s.hookInput(plugin.HookNotification)
 	input.Message = message
 	input.Reason = message
@@ -967,12 +982,27 @@ func (s *Session) runNotificationHook(ctx context.Context, message, title string
 	result := s.hookRunner.RunNotification(s.apiLogContext(ctx), input)
 	for _, m := range result.ModelContext {
 		if err := s.deliverHookContext(m); err != nil {
-			s.emitDiagnosticWarningContext(ctx, events.WarningData{Message: fmt.Sprintf("steering admission failed: %v", err)})
+			s.emitDiagnosticWarningContext(output, events.WarningData{Message: fmt.Sprintf("steering admission failed: %v", err)})
 		}
 	}
 	for _, m := range result.UserMessages {
-		s.deliverHookUserMessageContext(ctx, m)
+		s.deliverHookUserMessageContext(output, m)
 	}
+}
+
+// publicationContext is the session's ordinary publication path as a context:
+// whatever close budget it has published, or its own lifetime. It is what an
+// unmarked publication has always run on inside sendEventContext, named here so
+// the hook-output path can keep that behavior while a caller-supplied bound
+// narrows it.
+func (s *Session) publicationContext() context.Context {
+	s.closeCtxMu.RLock()
+	closeCtx := s.closeCtx
+	s.closeCtxMu.RUnlock()
+	if closeCtx != nil {
+		return closeCtx
+	}
+	return s.sessionContext()
 }
 
 // hookInput creates a hooks.Input with the session's ID, working directory, and

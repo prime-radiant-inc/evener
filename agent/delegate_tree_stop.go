@@ -881,7 +881,11 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 		if err != nil {
 			return err
 		}
-		plans, err := c.reconcileBounded(evidence, ctx)
+		// The evidence carries this pass's publication bound, so the reconcile
+		// it drives publishes on that bound and Reconcile stays the single
+		// controller entry point the dormancy inventory tracks.
+		evidence.bound = ctx
+		plans, err := c.Reconcile(evidence)
 		if plans.retirementRelease != nil {
 			retirementReleases = append(retirementReleases, plans.retirementRelease)
 		}

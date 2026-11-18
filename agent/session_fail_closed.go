@@ -250,15 +250,20 @@ func (s *Session) announceFailClosedOn(bound context.Context) {
 	if _, _, delivered := s.sendEventContext(bound, data, s.activeCausalProvenance()); delivered {
 		return
 	}
-	if s.failedClosed.announced.CompareAndSwap(true, false) {
-		held := data
-		if s.failedClosed.pending.CompareAndSwap(nil, &held) {
-			return
-		}
-		// Another retry already parked this diagnostic. Re-take the claim so the
-		// session still reports itself as announced to whoever arrives next.
-		s.failedClosed.announced.Store(true)
-	}
+	// Undelivered. Park the diagnostic and clear the claim, in that order:
+	// holding the copy first means no window exists in which the session reads
+	// unannounced with nothing pending, and the retry can always find it.
+	//
+	// A second failed attempt overwrites the pending copy rather than leaving
+	// the first one stranded. The earlier code re-took the claim when a copy
+	// was already parked, which marked the session announced while the retry
+	// then discarded that copy: two expired sends and a resumed consumer
+	// produced no diagnostic at all. Whichever payload is parked, the invariant
+	// is that a failed attempt leaves exactly one copy pending and the claim
+	// OPEN, so the retry still delivers.
+	held := data
+	s.failedClosed.pending.Store(&held)
+	s.failedClosed.announced.CompareAndSwap(true, false)
 }
 
 // retryCloseFailClosed publishes a fail-closed diagnostic a bounded send
@@ -266,6 +271,11 @@ func (s *Session) announceFailClosedOn(bound context.Context) {
 // the worktree cleanup has run. At-most-once is preserved by the announced
 // claim: this re-takes it before sending, so a concurrent ordinary announce
 // cannot publish a second copy, and a second retry finds nothing pending.
+//
+// The retry's own send is judged the same way the first one was: a send that
+// does not deliver releases the claim and puts the diagnostic back. Clearing
+// pending and then dropping the send would lose the announcement entirely --
+// the defect the claim-release exists to fix, one call later.
 func (s *Session) retryCloseFailClosed(ctx context.Context) {
 	held := s.failedClosed.pending.Swap(nil)
 	if held == nil {
@@ -276,7 +286,14 @@ func (s *Session) retryCloseFailClosed(ctx context.Context) {
 		// the one the session gets; this copy is dropped rather than duplicated.
 		return
 	}
-	s.sendEventOnContext(ctx, *held, s.activeCausalProvenance())
+	if _, _, delivered := s.sendEventContext(ctx, *held, s.activeCausalProvenance()); delivered {
+		return
+	}
+	// Undelivered: release the claim and hold the diagnostic again, so a later
+	// path can still announce it rather than the session going silent.
+	if s.failedClosed.announced.CompareAndSwap(true, false) {
+		s.failedClosed.pending.CompareAndSwap(nil, held)
+	}
 }
 
 // claimFailClosedDiagnostic reports the one announcement a failed-closed session

@@ -680,7 +680,7 @@ func (s *Session) armDelegateAttention(attentionID string) error {
 // the batch; the stop's batched acknowledgment retry is the caller that has
 // several IDs.
 func (s *Session) armDelegateAttentions(attentionIDs []string) error {
-	return s.armDelegateAttentionsBounded(nil, attentionIDs)
+	return s.armDelegateAttentionsBounded(context.Background(), attentionIDs)
 }
 
 // errDelegateAttentionArmSpent reports that a bounded arm could not take
@@ -766,7 +766,7 @@ func (s *Session) armDelegateAttentionsBounded(bound context.Context, attentionI
 // receiver once for the whole batch — the same single wake a one-ID arm's
 // caller gets — instead of once per ID.
 func (s *Session) armDelegateAttentionsOnce(attentionIDs []string) error {
-	return s.armDelegateAttentionsOnceBounded(nil, attentionIDs)
+	return s.armDelegateAttentionsOnceBounded(context.Background(), attentionIDs)
 }
 
 // armDelegateAttentionsOnceBounded is armDelegateAttentionsOnce on a caller's
@@ -804,8 +804,11 @@ func (s *Session) armDelegateAttentionsOnceBounded(bound context.Context, attent
 	if len(surviving) == 0 {
 		return nil
 	}
-	s.armRootDelegateAttentions(surviving)
-	return nil
+	// The cache below takes attentionMu a SECOND time in this call. Bounding
+	// only the pending-ID read would leave the wake parked on that second
+	// acquisition while an environment append holds the lock across its own
+	// blocked publish, which is the wait this whole change exists to remove.
+	return s.armRootDelegateAttentionsBounded(bound, surviving)
 }
 
 func (s *Session) armDelegateAttentionOnce(attentionID string) error {
@@ -832,7 +835,7 @@ func (s *Session) armDelegateAttentionOnce(attentionID string) error {
 // reports whether attentionID was still pending, so the caller decides how the
 // wake fires — once for a batch, or the single-ID arm's own notify.
 func (s *Session) armDelegateAttentionInController(attentionID string) (armed bool, err error) {
-	return s.armDelegateAttentionInControllerBounded(nil, attentionID)
+	return s.armDelegateAttentionInControllerBounded(context.Background(), attentionID)
 }
 
 // armDelegateAttentionInControllerBounded is armDelegateAttentionInController on
@@ -888,7 +891,7 @@ func (s *Session) hasPendingDelegateAttentionArmRetry() bool {
 }
 
 func (s *Session) pendingDelegateAttentionIDs() ([]string, error) {
-	return s.pendingDelegateAttentionIDsBounded(nil)
+	return s.pendingDelegateAttentionIDsBounded(context.Background())
 }
 
 // pendingDelegateAttentionIDsBounded is pendingDelegateAttentionIDs on a
@@ -1511,26 +1514,36 @@ func (s *Session) isRootDelegateAttentionReceiver() bool {
 // authority: an append/readback succeeds before admission here, and restart
 // replaces it from the receiver transcript fold.
 func (s *Session) armRootDelegateAttentions(attentionIDs []string) {
+	_ = s.armRootDelegateAttentionsBounded(context.Background(), attentionIDs)
+}
+
+// armRootDelegateAttentionsBounded is armRootDelegateAttentions on a caller's
+// bound. The cached IDs are never authority -- the append/readback succeeded
+// before admission -- so a wake that cannot take the lock in time skips the
+// cache and reports the skip rather than waiting out the close.
+func (s *Session) armRootDelegateAttentionsBounded(bound context.Context, attentionIDs []string) error {
 	if !s.isRootDelegateAttentionReceiver() || len(attentionIDs) == 0 {
-		return
+		return nil
 	}
 	ids := attentionIDs
 	if len(ids) == 1 {
 		if ids[0] == "" {
-			return
+			return nil
 		}
 	} else {
 		ids = appendUniqueStrings(nil, ids...)
 	}
 	if len(ids) == 0 {
-		return
+		return nil
 	}
 	// The parked rail derives from the durable holds
 	// (rootAttentionRailParked); read it before attentionMu so the store's
 	// state mutex never nests inside it. A fresh arm on a parked rail caches
 	// silently — the IDs wait for the re-engagement that clears the holds.
 	parked := s.rootAttentionRailParked()
-	s.attentionMu.Lock()
+	if !lockWithin(bound, &s.attentionMu) {
+		return errDelegateAttentionArmSpent
+	}
 	if s.rootAttentionWakeIDs == nil {
 		s.rootAttentionWakeIDs = make(map[string]struct{})
 	}
@@ -1545,6 +1558,7 @@ func (s *Session) armRootDelegateAttentions(attentionIDs []string) {
 	if shouldWake {
 		s.notify()
 	}
+	return nil
 }
 
 func (s *Session) hasPendingRootDelegateAttention() bool {

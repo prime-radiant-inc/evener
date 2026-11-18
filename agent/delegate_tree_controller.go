@@ -1410,7 +1410,7 @@ func (c *delegateTreeController) emitDelegateUpdate(plan delegateUpdatePlan) {
 // stampBound records the bound of the pass that produced these plans, so their
 // publications are made on that pass's deadline and an unrelated delegate's
 // publications are untouched. See delegateUpdatePlan.bound.
-func stampBound(plans delegateMutationPlans, bound context.Context) delegateMutationPlans {
+func stampBound(bound context.Context, plans delegateMutationPlans) delegateMutationPlans {
 	if bound == nil {
 		return plans
 	}

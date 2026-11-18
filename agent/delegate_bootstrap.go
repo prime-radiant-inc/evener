@@ -111,20 +111,42 @@ func (s *Session) emitDelegateUpdate(plan delegateUpdatePlan) {
 	// that teardown. A plan produced outside a pass carries no bound and takes
 	// the session's ordinary delivery path, exactly as before.
 	bound := plan.bound
-	bounded := bound != nil
+	// The bound is the PRODUCING pass's deadline, so it may only narrow a send to
+	// a session that supplied it. A resident delegate's teardown stamps a bound
+	// the live root it publishes to never supplied; applying that bound to the
+	// root turned the teardown's stall budget into the root's delivery deadline,
+	// and a full-but-temporary root stream then discarded the closure news and
+	// its activity invalidation outright. The lane is already off disk by then,
+	// so the durable record and the activity view disagree until the next read.
+	//
+	// A session that is itself closing did supply a bound of its own -- the close
+	// budget -- and bounding the send to it is exactly right: that is the stream
+	// the teardown's remaining removals share. So narrowing is decided per
+	// TARGET: bounded only where the target is closing too.
+	publishedBound := func(target *Session) (context.Context, bool) {
+		if bound == nil || target == nil {
+			return nil, false
+		}
+		target.closeCtxMu.RLock()
+		targetClosing := target.closeCtx != nil
+		target.closeCtxMu.RUnlock()
+		if targetClosing {
+			return bound, true
+		}
+		return nil, false
+	}
 	publish := func(target *Session, data events.DelegateUpdatedData, p *provenance.Causal) {
-		if bounded {
-			target.emitWithProvenanceContext(bound, data, p)
+		if b, ok := publishedBound(target); ok {
+			target.emitWithProvenanceContext(b, data, p)
 			return
 		}
 		target.emitWithProvenance(data, p)
 	}
-	// The activity invalidation is part of the same announcement and takes the
-	// same bound: it is a send on the root's stream, so leaving it unbounded
-	// would park the pass on the close budget that removal needs.
-	activityCtx := context.Background()
-	if bounded {
-		activityCtx = bound
+	// The activity invalidation is part of the same announcement and follows the
+	// same rule against this session, which is where it is sent.
+	activityCtx, activityBounded := publishedBound(s)
+	if !activityBounded {
+		activityCtx = context.Background()
 	}
 	now := s.sclock().Now().UTC()
 	rootID := s.delegateController.rootSessionID

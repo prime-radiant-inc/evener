@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"sync/atomic"
 	"testing"
@@ -118,7 +119,7 @@ func TestDelegateAttentionDeliveryArmsTheRootRetryForANonRootReceiver(t *testing
 		receiver.attentionMu.Unlock()
 	})
 	attentionID := delegateAttentionID(delegateDeliveryID("dlg_lane", 1))
-	if err := c.wakeDeliveryReceiver(nil, receiver, []string{attentionID}); err != nil {
+	if err := c.wakeDeliveryReceiver(context.Background(), receiver, []string{attentionID}); err != nil {
 		t.Fatalf("wake the non-root receiver: %v", err)
 	}
 	if got := notifies.Load(); got != 1 {
