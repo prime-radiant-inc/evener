@@ -1190,3 +1190,64 @@ test("a missing-image tag merged into a recovery row survives the reopen", async
     storage.close();
   }
 });
+
+// The high: a released tile survives a reopen and is STILL not sendable.
+//
+// The record stores its facts against the attachment id that existed when the
+// composition was written. Decoding a row mints a fresh id per tile, so every
+// reader that looks the stored id up afterwards finds nothing - and the tile
+// silently regains the markerless-image exemption, which lets the next Send
+// carry an image whose reference the person deleted. Identity has to be
+// assigned by the same step that reads the facts about it.
+test("a released tile stays ineligible after the row is reopened", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  try {
+    const original = await storage.enqueueIntent({
+      targetRef: "root",
+      threadId: "thread-a",
+      method: "turn/start",
+      payload: { ref: "root", input: [{ type: "text", text: "caption" }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "caption" }] },
+    });
+    await storage.transferToRecovery(original.clientMutationId, "rejected");
+    const row = await storage.getRecovery(original.clientMutationId);
+    if (!row) throw new Error("missing recovery fixture");
+
+    const source = createTestComposerSource("root");
+    try {
+      source.setActiveRecoveryId(row);
+      // A tile this composition owns whose reference the person deleted.
+      source.attachments.setState({
+        items: [{ id: "released", marker: 1, name: "kept.png", mediaType: "image/png", data: "KEPT", pending: false }],
+      });
+      source.updateText("caption with no reference");
+      await source.queueRecoveryPersistence(original.clientMutationId, "caption with no reference", [], []);
+      await source.flushRecoveryWrites();
+    } finally {
+      source.dispose();
+    }
+
+    // Reopen: the bytes come back, so the tile is on screen - and the text does
+    // not ask for them, so a Send must not carry them.
+    const reopened = createTestComposerSource("root");
+    try {
+      const saved = await storage.getRecovery(original.clientMutationId);
+      if (!saved) throw new Error("missing saved recovery row");
+      await expect(reopened.activateRecovery(saved)).resolves.toBe(true);
+      const items = reopened.attachments.getState().items;
+      const restored = items.find((item) => item.name === "kept.png");
+      if (!restored) throw new Error("the released tile's bytes did not survive the reopen");
+      const sendable = sendableAttachments(items, reopened.getSnapshot().text, {
+        foreign: reopened.getSnapshot().foreignImageIds,
+        restored: reopened.getSnapshot().restoredImageIds,
+      });
+      expect(sendable.map((item) => item.id)).toEqual([]);
+    } finally {
+      reopened.dispose();
+    }
+  } finally {
+    storage.close();
+  }
+});

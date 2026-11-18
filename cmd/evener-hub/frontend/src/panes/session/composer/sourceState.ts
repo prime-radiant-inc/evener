@@ -40,6 +40,7 @@ import {
   recoveryComposerDraft,
   recoveryDeclaredMarkers,
   recoveryImageReferencesUnavailable,
+  recoveryTileEligibility,
 } from "./recovery/recoveryDraft";
 import {
   materializeSelectionReferences,
@@ -492,15 +493,22 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     text: string,
     owned: readonly PendingAttachment[],
     priorAnchors: readonly number[],
+    // The exemptions this composition will carry, when they are being installed
+    // in the same breath as the record. A caller that is about to adopt must
+    // pass them: the record answers "may this tile ship", and adoption is what
+    // makes a restored tile shippable, so reading the state before adoption
+    // files every restored image ineligible and the next reopen then withholds
+    // the exemption the record invented.
+    sending?: { readonly restored: readonly string[]; readonly foreign: readonly string[] },
   ): CompositionImageRecord {
     const snapshot = state.getState();
     const sendableIds = new Set(
       sendableAttachments(owned, text, {
-        foreign: snapshot.foreignImageIds,
-        restored: snapshot.restoredImageIds,
+        foreign: sending?.foreign ?? snapshot.foreignImageIds,
+        restored: sending?.restored ?? snapshot.restoredImageIds,
       }).map((item) => item.id),
     );
-    const foreign = new Set(snapshot.foreignImageIds);
+    const foreign = new Set(sending?.foreign ?? snapshot.foreignImageIds);
     const spoken = new Set(markerNumbersIn(text));
     const tiles = owned
       .filter((item) => !foreign.has(item.id))
@@ -516,11 +524,17 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     // leaves the text. Both the returned record and the row's own prior list
     // are filtered the same way, so a stale entry cannot outlive its reference.
     const tileMarkers = new Set(tiles.filter((tile) => tile.hasBytes).map((tile) => tile.marker));
-    const anchors = [
-      ...new Set(
-        [...priorAnchors, ...adoptedUnbackedMarkers].filter((marker) => spoken.has(marker) && !tileMarkers.has(marker)),
-      ),
-    ].sort((left, right) => left - right);
+    // ONLY what the caller declares is an anchor. Reading
+    // `adoptedUnbackedMarkers` here as well looks harmless and is not: those
+    // tags belong to the LIVE composer, and a composition written by another
+    // path (a row whose prose says "[image 1]" literally) can use the same
+    // number as ordinary text. Carrying them turns that prose into a
+    // missing-image anchor, so a reopen refuses a send the row never needed to
+    // refuse. The adoption path passes its own computed anchors in; every other
+    // writer passes the row's stored ones.
+    const anchors = [...new Set(priorAnchors.filter((marker) => spoken.has(marker) && !tileMarkers.has(marker)))].sort(
+      (left, right) => left - right,
+    );
     return { anchors, tiles };
   }
 
@@ -669,7 +683,26 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   // The local tags surviving the merge are kept: a reference this composer
   // adopted before the row arrived is still an anchor with no bytes, and
   // replacing the set is what cleared that refusal.
-  function adoptRecoveredImageFacts(recovered: RecoveredComposerDraft, incomingRowId: string | null): void {
+  // The exemptions adopting `recovered` will install, computed without
+  // installing them.
+  //
+  // Split out because the DURABLE write needs the answer too, and it has to
+  // happen in the same step as the merge that makes the composition durable:
+  // a reader that waits for the editor to catch up leaves a window where the
+  // row holds merged text and no record of its images. Computing it twice
+  // would be the drift this whole PR is about, so both callers take it from
+  // here and `adoptRecoveredImageFacts` installs exactly this.
+  function recoveredImageFacts(
+    recovered: RecoveredComposerDraft,
+    incomingRowId: string | null,
+    // The row this composition will be stored as, when the caller computes
+    // these facts BEFORE the transaction that creates that ownership. Reading
+    // `activeRecoveryId` then answers with the row that is still active - or
+    // with nothing, which falls through to the LOCAL DRAFT's record and turns
+    // a staged tile's stored marker into an anchor the composition never had.
+    // Naming the target row keeps the answer about that row.
+    activeRowId?: string | null,
+  ): { restored: string[]; foreign: string[]; anchors: number[] } {
     // A row's own tags, read from the row that ARRIVED - not from whichever row
     // is active afterwards. Opening a second row merges its text into the row
     // already open and consumes the second, so "the active row's record" then
@@ -694,24 +727,52 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     // other pane's write replace this row's tags, dropping its missing
     // reference and letting its numbers block a different pane's literal text.
     // Restored here because this is the one point both open paths reach.
-    const rowId = state.getState().activeRecoveryId;
+    const rowId = activeRowId === undefined ? state.getState().activeRecoveryId : activeRowId;
+    // WHICH RECORD DESCRIBES THIS COMPOSITION.
+    //
+    // The row's own record, whenever there is a row: it was written with that
+    // row's composition, so its anchors are the ones the merged text inherits.
+    //
+    // The LOCAL DRAFT's record only while this source actually owns that
+    // draft. Otherwise the draft on disk is somebody else's work that this pane
+    // has not adopted, and its stored markers describe a composition this
+    // merge is not committing - reading them turns a staged tile's marker into
+    // an anchor the merge never had, and the row then refuses a send it should
+    // allow. A pane that opened a row and never touched the local draft is
+    // exactly that case.
     const recorded =
-      rowId === null ? readComposerDraftImageMarkers(ref) : (readCompositionImageRecord(rowId)?.anchors ?? []);
+      rowId !== null
+        ? (readCompositionImageRecord(rowId)?.anchors ?? [])
+        : ownsDraft()
+          ? readComposerDraftImageMarkers(ref)
+          : [];
     // Both sides of the merge keep their surviving tags. The active row is one
     // side; the row that just arrived is the other, and it is the only record
     // that can describe an anchor the incoming text brought with it.
-    adoptUnbackedImageMarkers([
-      ...adoptedUnbackedMarkers,
-      ...[...new Set(recorded)]
-        .filter((marker) => spoken.has(marker) && !restoredMarkers.has(marker))
-        .sort((left, right) => left - right),
-      ...[...new Set(incoming)]
-        .filter((marker) => spoken.has(marker) && !restoredMarkers.has(marker))
-        .sort((left, right) => left - right),
-      ...[...declared]
-        .filter((marker) => spoken.has(marker) && !restoredMarkers.has(marker))
-        .sort((left, right) => left - right),
-    ]);
+    // A marker the local draft's record said had bytes, when a tile THIS
+    // source still holds carries bytes under that number, is not a missing
+    // reference at all. The record states the definition itself - an anchor is
+    // a reference with NO bytes - but this filter only checked the row's own
+    // attachments, so a staged tile's stored marker stayed an "anchor" after
+    // the merge renumbered the tile out from under it. That turns the row's
+    // literal "[image 1]" into a refusal the composition never earned.
+    const backedMarkers = new Set(
+      operations.items.filter((item) => item.data !== undefined).map((item) => item.marker),
+    );
+    const anchors = [
+      ...new Set([
+        ...adoptedUnbackedMarkers,
+        ...[...new Set(recorded)]
+          .filter((marker) => spoken.has(marker) && !restoredMarkers.has(marker) && !backedMarkers.has(marker))
+          .sort((left, right) => left - right),
+        ...[...new Set(incoming)]
+          .filter((marker) => spoken.has(marker) && !restoredMarkers.has(marker))
+          .sort((left, right) => left - right),
+        ...[...declared]
+          .filter((marker) => spoken.has(marker) && !restoredMarkers.has(marker))
+          .sort((left, right) => left - right),
+      ]),
+    ].sort((left, right) => left - right);
     // Bytes the row restored that its own text does not name stay sendable:
     // the row carried them, and a resend consumes the row.
     //
@@ -744,28 +805,39 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     // treating a released tile as the markerless image a row is allowed to
     // resend.
     // Bytes the row kept but must NOT resend, answered by ATTACHMENT IDENTITY.
-    // The record carries every owned tile with its own `eligible` flag, so a
-    // tile the merge renumbers still answers for itself: the number is only
-    // the label it currently bears. Matching on the marker instead is what let
-    // an exclusion land on whichever tile later took that number.
-    const releasedIds = new Set((incomingRecord?.tiles ?? []).filter((tile) => !tile.eligible).map((tile) => tile.id));
+    //
+    // The ids must be the ones the RECOVERED TILES carry now, not the ones the
+    // record stored. Decoding a row mints a fresh id per tile, so reading
+    // `record.tiles[].id` here compares two different lifetimes of the same
+    // image and never matches - which silently turned every released tile back
+    // into an eligible one on reopen, and let Send carry an image whose
+    // reference the person had deleted. The decode already paired each stored
+    // eligibility with the id it minted, so this is a lookup, not a comparison.
+    const releasedIds = new Set(
+      [...recoveryTileEligibility(recovered)].filter(([, eligible]) => !eligible).map(([id]) => id),
+    );
     const live = new Set(operations.items.map((item) => item.id));
     const prior = state.getState();
-    state.setState({
-      restoredImageIds: [
-        ...new Set([
-          ...prior.restoredImageIds.filter((id) => live.has(id)),
-          ...recovered.attachments
-            .filter((item) => !releasedIds.has(item.id) && (referencesUnavailable || !spoken.has(item.marker)))
-            .map((item) => item.id),
-        ]),
-      ].sort(),
-      // A retained tile stays foreign while it is staged, whatever number the
-      // merge gives it. Retiring on absence is what clears it, not adoption:
-      // adopting a row must not silently re-enable bytes that belong to the
-      // composition it replaced.
-      foreignImageIds: prior.foreignImageIds.filter((id) => live.has(id)),
-    });
+    const restored = [
+      ...new Set([
+        ...prior.restoredImageIds.filter((id) => live.has(id)),
+        ...recovered.attachments
+          .filter((item) => !releasedIds.has(item.id) && (referencesUnavailable || !spoken.has(item.marker)))
+          .map((item) => item.id),
+      ]),
+    ].sort();
+    // A retained tile stays foreign while it is staged, whatever number the
+    // merge gives it. Retiring on absence is what clears it, not adoption:
+    // adopting a row must not silently re-enable bytes that belong to the
+    // composition it replaced.
+    const foreign = prior.foreignImageIds.filter((id) => live.has(id));
+    return { restored, foreign, anchors };
+  }
+
+  function adoptRecoveredImageFacts(recovered: RecoveredComposerDraft, incomingRowId: string | null): void {
+    const facts = recoveredImageFacts(recovered, incomingRowId);
+    adoptUnbackedImageMarkers(facts.anchors);
+    state.setState({ restoredImageIds: facts.restored, foreignImageIds: facts.foreign });
   }
 
   // The mount read is an adoption too: this source starts with an empty
@@ -1121,6 +1193,35 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
                 : [{ marker: item.marker, name: item.name, mediaType: item.mediaType, data: item.data }],
             );
           };
+          // The composition this transaction is about to make durable: the
+          // merge's tiles PLUS every tile this composition owns that the merge
+          // could not see. Computed here, before the write, because the write
+          // has to carry them - appending them to the editor afterwards leaves
+          // a window where the row holds the merged text and not the tiles, and
+          // closing the pane in that window loses bytes the person still had.
+          //
+          // Their numbers come from the same allocator as ingest: a retained
+          // tile may not take a number the final text spells or another tile
+          // bears, because those words are then a reference to it.
+          const mergedIdsBefore = new Set(merged.attachments.map((item) => item.id));
+          const reservedBefore = new Set<number>([
+            ...markerNumbersIn(merged.text),
+            ...merged.attachments.map((item) => item.marker),
+          ]);
+          const retainedBefore = operations.items
+            .filter(
+              (item) =>
+                !mergedIdsBefore.has(item.id) &&
+                item.data !== undefined &&
+                !state.getState().foreignImageIds.includes(item.id),
+            )
+            .map((item) => {
+              let marker = 1;
+              while (reservedBefore.has(marker)) marker += 1;
+              reservedBefore.add(marker);
+              return { ...item, marker };
+            });
+          const committedTiles = [...merged.attachments, ...retainedBefore];
           const ownerId = currentRecoveryId() ?? record.clientMutationId;
           const ownerLease = recoveryOwnerLeaseRef.current;
           const ownerRecord = ownerId === record.clientMutationId ? record : undefined;
@@ -1134,7 +1235,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
             ownerId,
             ref,
             merged.text,
-            durableAttachments(merged),
+            [...durableAttachments(merged), ...durableAttachments({ ...merged, attachments: retainedBefore })],
             restoredSkillNames(merged),
             merged.commandNames,
             merged.mentions,
@@ -1149,7 +1250,43 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
             },
             compositionOwnerId,
           );
-          if (!updated || disposed || recoveryReplacementEpochRef.current !== replacementEpoch) return false;
+          if (!updated) return false;
+          // The transaction has ALREADY merged this text and consumed the
+          // incoming row. Everything below is the live editor catching up, and
+          // none of it may decide whether the facts get recorded: a pane closed
+          // right here would otherwise leave the durable row holding a merged
+          // text with no record of its anchors, so a reopen would pass an
+          // incoming missing-image reference through as literal prose.
+          //
+          // The record names the exact composition the transaction committed,
+          // built from those tiles rather than from the store, which is what
+          // makes the write describe the revision it belongs to.
+          // The exemptions adoption will install, computed here so the record
+          // and the editor cannot disagree about who is shippable. Adoption
+          // below installs exactly these.
+          const adopted = recoveredImageFacts(recovered, record.clientMutationId, ownerId);
+          writeCompositionImageRecord(
+            ownerId,
+            compositionImageRecord(
+              merged.text,
+              committedTiles,
+              [
+                ...(readCompositionImageRecord(ownerId)?.anchors ?? []),
+                ...(readCompositionImageRecord(record.clientMutationId)?.anchors ?? []),
+                // The anchors this merge itself creates: an incoming missing
+                // reference is one, and the row has to carry it in the same
+                // transaction that merges its text.
+                ...adopted.anchors,
+              ],
+              // `adopted` supplies the exemptions this merge installs: an incoming missing reference is an anchor of the
+              // composition being committed, and the row must carry it in the
+              // same transaction that merges its text. Without it a close
+              // between the commit and the live editor catching up leaves the
+              // row holding "[image 1]" as prose.
+              adopted,
+            ),
+          );
+          if (disposed || recoveryReplacementEpochRef.current !== replacementEpoch) return false;
           recoveryOwnerLeaseRef.current = {
             clientMutationId: ownerId,
             compositionRevision: recoveryCompositionRevision(updated),
@@ -1214,37 +1351,31 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
               return { ...item, marker };
             });
           operations.replaceWithSettled([...latest.attachments, ...retained]);
-          adoptRecoveredImageFacts(recovered, record.clientMutationId);
-          // The record for the composition this row now owns. It is written
-          // AFTER adoption, and that order is the whole point: adoption is what
-          // installs `restoredImageIds`, so a record built before it answers
-          // "is this tile sendable" about a composition that does not exist
-          // yet. A restored image would be filed `eligible: false`, and the
-          // next reopen would then withhold its exemption by identity - the
-          // record would manufacture the very exclusion it is meant to
-          // withhold only for tiles a person actually released.
+          adoptUnbackedImageMarkers(adopted.anchors);
+          state.setState({ restoredImageIds: adopted.restored, foreignImageIds: adopted.foreign });
+          // The record was written by the transaction above, which is the step
+          // that makes this composition durable - so a pane closed between
+          // here and any later write cannot leave a row with text and no facts.
           //
-          // It is still written BEFORE the local draft that held these facts is
-          // cleared (the caller does that after this returns). In the other
-          // order the row keeps the merged text while the draft is gone, so a
-          // reopen has nothing naming its anchors and Send ships them as
-          // literal prose.
-          //
-          // Built from the composition as now installed, so every tile's
-          // eligibility is recorded against the marker it actually bears. A
-          // renumbering cannot strand an exclusion: the exclusion travels with
-          // the tile's identity, and the stored marker is only its current
-          // label.
-          //
-          // Both rows' anchors are folded in - the surviving row's (`ownerId`)
-          // and the consumed row's (`record.clientMutationId`), whose anchor
-          // the merged text just inherited. Reading only the survivor drops it.
+          // This second write exists only because `latest` may have re-merged
+          // against typing that landed while the transaction was in flight: a
+          // number the person is now looking at as prose must not be a
+          // reference to a restored tile. It uses the SAME computed exemptions
+          // and the same builder, so it can only ever move the record forward
+          // to the newer text - it cannot introduce a second opinion about who
+          // is shippable.
           writeCompositionImageRecord(
             ownerId,
-            compositionImageRecord(latest.text, operations.items, [
-              ...(readCompositionImageRecord(ownerId)?.anchors ?? []),
-              ...(readCompositionImageRecord(record.clientMutationId)?.anchors ?? []),
-            ]),
+            compositionImageRecord(
+              latest.text,
+              operations.items,
+              [
+                ...(readCompositionImageRecord(ownerId)?.anchors ?? []),
+                ...(readCompositionImageRecord(record.clientMutationId)?.anchors ?? []),
+                ...adopted.anchors,
+              ],
+              adopted,
+            ),
           );
           markRestore();
           committedRecoveryComposition = recoveryCompositionFingerprint({
