@@ -128,6 +128,7 @@ func TestReplayBlockFollowsRenderedChanges(t *testing.T) {
 	initial.ExecutionMode = OneShotMode
 	initial.AskUserState = QuestionsAvailable
 	initial.ResultEndReason = EndReasonAvailable
+	initial.ResultToolName = "report"
 	initial.KnowledgeCutoff = "2025-01"
 	initial.CommitTrailer = "Co-authored-by: Evener v1 (provider/m1) <child-a1@host>"
 	writer := NewTracker(State{})
@@ -142,6 +143,7 @@ func TestReplayBlockFollowsRenderedChanges(t *testing.T) {
 	changed.ExecutionMode = DaemonMode
 	changed.AskUserState = QuestionsUnavailable
 	changed.ResultEndReason = OmitEndReason
+	changed.ResultToolName = "submit_result"
 	changed.KnowledgeCutoff = ""
 	changed.CommitTrailer = ""
 	changed.OmitCommitTrailer = true

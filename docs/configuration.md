@@ -204,6 +204,8 @@ is confirmed outside a worktree, the next request clears that branch even if
 compaction removed every prior environment update. A catalog
 correction to the current model’s knowledge cutoff also appears there on
 resume. A fork receives its own session ID and commit attribution there.
+An aside’s reporting update names the currently registered result tool, including
+when its caller configured a different name from the one in the inherited prompt.
 Each request supplies the tools currently available. If `ask_user` availability
 changes, the first request also carries guidance for asking questions or
 making decisions independently. A change to the result tool's schema

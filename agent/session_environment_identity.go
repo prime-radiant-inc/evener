@@ -154,7 +154,8 @@ func (s *Session) setEnvironmentIdentity(snap *envctx.Snapshot, last envctx.Snap
 		snap.ParentSessionID = s.fork.parentID
 		snap.OrdinarySession = !s.cfg.Manager
 	}
-	if fork || last.ReportingAudience != "" {
+	if fork || last.ReportingAudience != "" || last.ResultToolName != "" {
+		snap.ResultToolName = s.resultToolName()
 		snap.ReportingAudience = envctx.ReportToCaller
 		if s.reportsToParent() {
 			snap.ReportingAudience = envctx.ReportToParent

@@ -51,6 +51,7 @@ func TestRestoreTakesTurnEndsProcessFromTheRestoringProcess(t *testing.T) {
 		interactiveAside bool
 		questionUpdate   string
 		resultTool       string
+		asideResultTool  string
 	}{
 		{name: "serve resuming a one-shot session", persisted: true, restorer: false},
 		{name: "one-shot resuming a serve session", persisted: false, restorer: true},
@@ -59,6 +60,7 @@ func TestRestoreTakesTurnEndsProcessFromTheRestoringProcess(t *testing.T) {
 		{name: "daemon resuming without recorded launch capabilities", legacy: true, questionUpdate: envctx.QuestionsUnavailable},
 		{name: "one-shot resuming without its attached responder", persisted: true, restorer: true, responder: true, questionUpdate: envctx.QuestionsUnavailable, resultTool: "submit_result"},
 		{name: "interactive aside of an unattended session", persisted: true, restorer: true, aside: true, interactiveAside: true, questionUpdate: envctx.QuestionsAvailable},
+		{name: "aside with a renamed result tool", aside: true, asideResultTool: "submit_result"},
 		{name: "interactive session keeping its question tool", interactive: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -81,6 +83,9 @@ func TestRestoreTakesTurnEndsProcessFromTheRestoringProcess(t *testing.T) {
 				if tt.resultTool != "" {
 					call.Name = tt.resultTool
 				}
+				if name := observed.State().Last.ResultToolName; name != "" {
+					call.Name = name
+				}
 				return agenttest.ToolCallResponse(call)
 			}}
 			parent := newSession(t, withStateDir(dir), withDir(cwd), withAdapter(adapter), withConfig(SessionConfig{
@@ -91,6 +96,7 @@ func TestRestoreTakesTurnEndsProcessFromTheRestoringProcess(t *testing.T) {
 			startup, _ := responsesInstructionsAndHistory(responsesPromptBody(t, launch, parent.profile.Resolved()))
 			var prior []any
 			wantAsk := tt.interactive || tt.responder
+			wantTool := parent.resultToolName()
 			var questionUpdates []string
 			var endReasonUpdates []string
 			check := func(req llm.Request, modes ...string) []any {
@@ -105,7 +111,7 @@ func TestRestoreTakesTurnEndsProcessFromTheRestoringProcess(t *testing.T) {
 				if hasAsk := slices.ContainsFunc(tools, func(def map[string]any) bool { return def["name"] == askUserToolName }); hasAsk != wantAsk {
 					t.Errorf("native ask_user tool present = %t, want %t", hasAsk, wantAsk)
 				}
-				resultIndex := slices.IndexFunc(tools, func(def map[string]any) bool { return def["name"] == parent.resultToolName() })
+				resultIndex := slices.IndexFunc(tools, func(def map[string]any) bool { return def["name"] == wantTool })
 				if resultIndex < 0 {
 					t.Fatal("native result tool is missing")
 				}
@@ -115,12 +121,16 @@ func TestRestoreTakesTurnEndsProcessFromTheRestoringProcess(t *testing.T) {
 					t.Errorf("native result tool accepts end_reason = %t, want %t", accepts, wantAsk)
 				}
 				var gotModes, questions, endReasons []string
+				guidedTool := parent.resultToolName()
 				for _, msg := range history {
 					var block envctx.Tracker
 					if !block.ReplayBlock(msg) {
 						continue
 					}
 					last := block.State().Last
+					if last.ResultToolName != "" {
+						guidedTool = last.ResultToolName
+					}
 					if last.ExecutionMode != "" {
 						gotModes = append(gotModes, last.ExecutionMode)
 					}
@@ -130,6 +140,9 @@ func TestRestoreTakesTurnEndsProcessFromTheRestoringProcess(t *testing.T) {
 					if last.ResultEndReason != "" {
 						endReasons = append(endReasons, last.ResultEndReason)
 					}
+				}
+				if guidedTool != wantTool {
+					t.Fatalf("model was directed to %q; the registered result tool is %q", guidedTool, wantTool)
 				}
 				if !slices.Equal(endReasons, endReasonUpdates) {
 					t.Errorf("native result-tool end_reason updates = %v, want %v", endReasons, endReasonUpdates)
@@ -147,6 +160,10 @@ func TestRestoreTakesTurnEndsProcessFromTheRestoringProcess(t *testing.T) {
 			if tt.aside {
 				var err error
 				cfg := parent.Meta().Config
+				if tt.asideResultTool != "" {
+					cfg.ResultToolName = tt.asideResultTool
+					wantTool = tt.asideResultTool
+				}
 				if tt.interactiveAside {
 					cfg.NonInteractive = false
 				}

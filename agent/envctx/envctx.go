@@ -37,6 +37,7 @@ type Snapshot struct {
 	ParentSessionID   string   `json:"parent_session_id,omitempty"`
 	OrdinarySession   bool     `json:"ordinary_session,omitempty"`
 	ReportingAudience string   `json:"reporting_audience,omitempty"`
+	ResultToolName    string   `json:"result_tool_name,omitempty"`
 	Model             string   `json:"model,omitempty"`
 	KnowledgeCutoff   string   `json:"knowledge_cutoff,omitempty"`
 	ExecutionMode     string   `json:"execution_mode,omitempty"` // set when a later observation supplies the job lifetime
@@ -66,6 +67,7 @@ type Tracker struct {
 const ordinaryRole = "session role: ordinary"
 const parentSessionPrefix = "parent session id: "
 const reportingAudiencePrefix = "reporting audience: "
+const resultToolPrefix = "result tool: "
 const ReportToCaller = "caller"
 const ReportToParent = "parent agent"
 const scratchDirPrefix = "writable scratch directory: "
@@ -155,6 +157,10 @@ func (t *Tracker) ReplayBlock(block string) bool {
 			t.st.Last.OrdinarySession = true
 		case line == reportingAudiencePrefix+ReportToCaller, line == reportingAudiencePrefix+ReportToParent:
 			t.st.Last.ReportingAudience = strings.TrimPrefix(line, reportingAudiencePrefix)
+		case strings.HasPrefix(line, resultToolPrefix):
+			if name, err := strconv.Unquote(strings.TrimPrefix(line, resultToolPrefix)); err == nil {
+				t.st.Last.ResultToolName = name
+			}
 		case strings.HasPrefix(line, "model: "):
 			if value, err := strconv.Unquote(strings.TrimPrefix(line, "model: ")); err == nil {
 				t.st.Last.Model = value
@@ -266,6 +272,10 @@ func (t *Tracker) RenderDiff(cur Snapshot) string {
 			lines = append(lines, reportingAudiencePrefix+ReportToParent,
 				"This is a delegate session. Direct progress and final reports to your parent agent through the result tool. Act on follow-up messages from that agent.")
 		}
+	}
+	if cur.ResultToolName != "" && cur.ResultToolName != prev.ResultToolName {
+		lines = append(lines, resultToolPrefix+strconv.Quote(cur.ResultToolName),
+			"Use this tool for progress and final reports. Its name supersedes the result-tool name in the startup instructions.")
 	}
 	if cur.Model != "" {
 		if cur.Model != prev.Model {
