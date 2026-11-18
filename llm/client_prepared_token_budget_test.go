@@ -486,17 +486,6 @@ func emitToolSchemas(t *testing.T, res registry.Resolved, baseline []ToolDefinit
 	return deriver.EmitToolSchemas(baseline, res, true)
 }
 
-// mustDispatchTarget resolves req's route through the client, so the test asks
-// the same question the dispatch path asks rather than constructing a stand-in.
-func mustDispatchTarget(t *testing.T, c *Client, req Request) dispatchTarget {
-	t.Helper()
-	target, err := c.dispatchTarget(req)
-	if err != nil {
-		t.Fatalf("dispatchTarget: %v", err)
-	}
-	return target
-}
-
 // TestARawToolCountIsRepricedToTheStrictForm covers the count that preparation
 // never measured.
 //
