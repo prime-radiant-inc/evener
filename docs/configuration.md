@@ -176,11 +176,17 @@ exact text in the transcript header. Every later request uses those bytes,
 including after a restart or upgrade. Edits to prompt files apply to newly
 started sessions. A fork or aside inherits its parent’s exact prompt. A
 delegate starts with its own role and permissions, including when
-`fork_context` copies the parent's conversation into the delegate.
+`fork_context` copies the parent's conversation into the delegate. A fork
+or `--resume-with` aside reports to its caller, even when its saved prompt
+came from a delegate. The first request identifies that audience in
+environment context. A delegate that inherits this update receives its own
+reporting audience there. It sends reports to its parent agent and receives
+follow-up instructions from that agent.
 
 Session metadata records the model’s knowledge cutoff, scratch directory,
-sandbox writable roots, execution mode and availability of `ask_user` when
-Evener renders the prompt. A fork or aside copies those facts with the prompt.
+sandbox writable roots, execution mode, availability of `ask_user` and
+whether the result tool accepts `end_reason` when Evener renders the prompt.
+A fork or aside copies those facts with the prompt.
 A delegate records its own launch facts. An empty value is distinct from a
 fact an older session never recorded. On restore or after compaction, retained
 environment updates in the conversation supersede the launch facts.
@@ -188,12 +194,15 @@ environment updates in the conversation supersede the launch facts.
 If a session switches models or working directories, its next request carries
 the new facts in conversation context. If the Git branch changed while the
 session was stopped, the first resumed request reports the newly observed
-branch, including when a job notification wakes the session. A catalog
+branch, including when a job notification wakes the session. An unborn HEAD
+or a failed Git probe keeps the last observed branch. When the directory
+is confirmed outside a worktree, the next request clears that branch. A catalog
 correction to the current model’s knowledge cutoff also appears there on
 resume. A fork receives its own session ID and commit attribution there.
 Each request supplies the tools currently available. If `ask_user` availability
 changes, the first request also carries guidance for asking questions or
-making decisions independently.
+making decisions independently. A change to the result tool's schema
+likewise tells the model when to include or omit `end_reason` on a final report.
 
 ### Commit provenance
 

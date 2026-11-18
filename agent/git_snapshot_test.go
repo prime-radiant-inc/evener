@@ -388,14 +388,26 @@ func TestSnapshotGitBranch_ReportsTheCheckedOutBranchAndNothingWithoutACommit(t 
 	defer env.Cleanup()
 
 	mustExec(t, env, dir, "git init")
-	if got := snapshotGitBranch(env, dir); got != "" {
-		t.Fatalf("branch before the first commit = %q, want none", got)
+	if got, known := snapshotGitBranch(env, dir); known || got != "" {
+		t.Fatalf("branch before the first commit = %q (known %t), want unknown", got, known)
 	}
 
 	mustExec(t, env, dir, "git config user.email test@test.com && git config user.name test")
 	mustExec(t, env, dir, "git checkout -b probe-branch && git commit --allow-empty -m initial")
-	if got := snapshotGitBranch(env, dir); got != "probe-branch" {
-		t.Fatalf("branch = %q, want probe-branch", got)
+	if got, known := snapshotGitBranch(env, dir); !known || got != "probe-branch" {
+		t.Fatalf("branch = %q (known %t), want probe-branch", got, known)
+	}
+	for _, fail := range []string{"rev-parse --abbrev-ref HEAD", "rev-parse --is-inside-work-tree"} {
+		for _, failure := range []execenv.ExecResult{{TimedOut: true}, {StdoutTruncated: true}, {ExitCode: 128}} {
+			answers := map[string]execenv.ExecResult{"rev-parse --is-inside-work-tree": {Stdout: "true"}, "rev-parse --abbrev-ref HEAD": {Stdout: "partial"}}
+			answers[fail] = failure
+			if got, known := snapshotGitBranch(truncationGitEnv{results: answers}, dir); known || got != "" {
+				t.Errorf("failed %s (%+v) returned %q, known %t", fail, failure, got, known)
+			}
+		}
+	}
+	if got, known := snapshotGitBranch(truncationGitEnv{errs: map[string]error{"rev-parse --is-inside-work-tree": context.DeadlineExceeded}}, dir); known || got != "" {
+		t.Errorf("expired Git probe returned %q, known %t", got, known)
 	}
 }
 

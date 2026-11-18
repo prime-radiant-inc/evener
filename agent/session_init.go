@@ -229,14 +229,14 @@ func (s *Session) initEnvContext(history []schema.Turn) {
 	if s.cfg.testOnly.envProbes != nil {
 		probes = *s.cfg.testOnly.envProbes
 	} else {
-		probes.GitBranch = func(cwd string) string {
+		probes.GitBranch = func(cwd string) (string, bool) {
 			// Mirrors initSessionState's own skipGitSnapshot gate around
 			// snapshotGit: tests below the git-snapshot layer must not shell
 			// out here either, and this probe runs on every user turn (unlike
 			// snapshotGit, which runs once at session launch), so honoring the
 			// same knob matters more, not less.
 			if s.cfg.testOnly.skipGitSnapshot {
-				return ""
+				return "", false
 			}
 			return snapshotGitBranch(s.currentEnv(), cwd)
 		}
@@ -1416,10 +1416,14 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if savedHeader == nil {
 		// The replacement prompt was rendered against the installed environment.
 		s.rehydrateEnvironmentContext(s.history)
-	} else if branch := s.envInfo.GitBranch; branch != "" && branch != s.envTracker.State().Last.GitBranch {
+	} else {
 		// A job can wake the restored session before a user input samples
 		// the checkout. Publish the observed change before that request.
-		s.worktreeContextPending = true
+		branch := s.envInfo.GitBranch
+		outside := !s.cfg.testOnly.skipGitSnapshot && !s.envInfo.IsGitRepo && !s.envInfo.GitSnapshotFailed
+		if (branch != "" || outside) && branch != s.envTracker.State().Last.GitBranch {
+			s.worktreeContextPending = true
+		}
 	}
 	// The restore twin of NewSession's post-init livelock release: the mint
 	// happened inside initSessionState, and any restore-replay failure below
@@ -1893,6 +1897,7 @@ func (s *Session) initSessionState(runSessionStartHooks bool, savedHeader *trans
 			WritableRoots:   new(s.workspaceWritableRoots),
 			TurnEndsProcess: new(s.cfg.TurnEndsProcess),
 			HasAskUser:      new(s.canInstructTool(askUserToolName)),
+			HasEndReason:    new(s.resultAcceptsEndReason()),
 		}
 		if warning != "" {
 			s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{Message: warning})

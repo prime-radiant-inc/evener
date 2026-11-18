@@ -98,6 +98,15 @@ func (s *Session) resultToolName() string {
 	return tool.DefaultResultToolName
 }
 
+// The registered result tool owns which arguments a turn-ending report accepts.
+func (s *Session) resultAcceptsEndReason() bool {
+	if s.reg == nil {
+		return false
+	}
+	result := s.reg.Get(s.resultToolName())
+	return result != nil && result.Schema != nil && result.Schema.Properties["end_reason"] != nil
+}
+
 // registerTool registers a custom tool at runtime.
 func (s *Session) registerTool(name, description string, params map[string]any, fn func(ctx context.Context, args any) (any, error)) {
 	// The registry synchronizes registration. The session lock protects the

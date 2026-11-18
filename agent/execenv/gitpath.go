@@ -99,14 +99,14 @@ func gitAnswered(ctx context.Context, err error) bool {
 // answer is one to remember (see gitRootCache.lookup): a structural resolution,
 // an absence the filesystem actually reported, and a verdict git itself returned
 // all are. A fork that never ran or never finished is not, and neither is a
-// filesystem that could not answer — see gitAnswered and hasGitEntryAncestor for
+// filesystem that could not answer — see gitAnswered and HasGitEntryAncestor for
 // the two classifications this composes.
 func gitRootUncached(ctx context.Context, env ExecutionEnvironment, cwd string) (root string, definitive bool) {
 	if _, ok := env.(*LocalExecutionEnvironment); ok {
 		if structural, ok := structuralWorktreeRoot(cwd); ok {
 			return structural, true
 		}
-		if present, known := hasGitEntryAncestor(cwd); !present {
+		if present, known := HasGitEntryAncestor(cwd); !present {
 			// A stat that failed for any reason other than absence leaves the
 			// question open, so answer empty for this call and cache nothing.
 			return "", known
@@ -214,12 +214,12 @@ func structuralWorktreeRoot(cwd string) (string, bool) {
 	}
 }
 
-// hasGitEntryAncestor reports whether cwd or an ancestor holds a ".git" entry.
+// HasGitEntryAncestor reports whether cwd or an ancestor holds a ".git" entry.
 // known says whether the walk actually established that: only ErrNotExist means
 // "there is nothing here". A stat that failed for any other reason — the
 // directory unreadable, the filesystem erroring — leaves the question open, and
 // the caller must not memoize an absence it never observed.
-func hasGitEntryAncestor(cwd string) (present, known bool) {
+func HasGitEntryAncestor(cwd string) (present, known bool) {
 	dir := filepath.Clean(cwd)
 	for {
 		_, err := os.Stat(filepath.Join(dir, ".git"))

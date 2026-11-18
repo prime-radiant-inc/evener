@@ -50,21 +50,41 @@ func TestRestoreTakesTurnEndsProcessFromTheRestoringProcess(t *testing.T) {
 		interactive      bool
 		interactiveAside bool
 		questionUpdate   string
+		resultTool       string
 	}{
 		{name: "serve resuming a one-shot session", persisted: true, restorer: false},
 		{name: "one-shot resuming a serve session", persisted: false, restorer: true},
 		{name: "one-shot resume-with a serve session", restorer: true, aside: true},
 		{name: "daemon resuming a daemon session"},
 		{name: "daemon resuming without recorded launch capabilities", legacy: true, questionUpdate: envctx.QuestionsUnavailable},
-		{name: "one-shot resuming without its attached responder", persisted: true, restorer: true, responder: true, questionUpdate: envctx.QuestionsUnavailable},
+		{name: "one-shot resuming without its attached responder", persisted: true, restorer: true, responder: true, questionUpdate: envctx.QuestionsUnavailable, resultTool: "submit_result"},
 		{name: "interactive aside of an unattended session", persisted: true, restorer: true, aside: true, interactiveAside: true, questionUpdate: envctx.QuestionsAvailable},
 		{name: "interactive session keeping its question tool", interactive: true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			dir, cwd := t.TempDir(), t.TempDir()
-			adapter := &agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response { return agenttest.FinalResponse("done") }}
+			adapter := &agenttest.ScriptedAdapter{Provider: "openai", Responder: func(req llm.Request) llm.Response {
+				// Follow the launch contract until the conversation supplies a new one.
+				var observed envctx.Tracker
+				for _, msg := range req.Messages {
+					observed.ReplayBlock(msg.Text())
+				}
+				accepts := tt.interactive || tt.responder
+				if state := observed.State().Last.ResultEndReason; state != "" {
+					accepts = state == envctx.EndReasonAvailable
+				}
+				report := map[string]any{"message": "done", "end_turn": true}
+				if accepts {
+					report["end_reason"] = "done"
+				}
+				call := communicateCallArgs("final-report", report)
+				if tt.resultTool != "" {
+					call.Name = tt.resultTool
+				}
+				return agenttest.ToolCallResponse(call)
+			}}
 			parent := newSession(t, withStateDir(dir), withDir(cwd), withAdapter(adapter), withConfig(SessionConfig{
-				TurnEndsProcess: tt.persisted, NonInteractive: !tt.interactive, AskResponderAttached: tt.responder,
+				TurnEndsProcess: tt.persisted, NonInteractive: !tt.interactive, AskResponderAttached: tt.responder, ResultToolName: tt.resultTool,
 			}))
 			sendOneUserInput(t, parent, "launch")
 			launch := adapter.Requests()[0]
@@ -72,6 +92,7 @@ func TestRestoreTakesTurnEndsProcessFromTheRestoringProcess(t *testing.T) {
 			var prior []any
 			wantAsk := tt.interactive || tt.responder
 			var questionUpdates []string
+			var endReasonUpdates []string
 			check := func(req llm.Request, modes ...string) []any {
 				t.Helper()
 				body := responsesPromptBody(t, req, parent.profile.Resolved())
@@ -84,7 +105,16 @@ func TestRestoreTakesTurnEndsProcessFromTheRestoringProcess(t *testing.T) {
 				if hasAsk := slices.ContainsFunc(tools, func(def map[string]any) bool { return def["name"] == askUserToolName }); hasAsk != wantAsk {
 					t.Errorf("native ask_user tool present = %t, want %t", hasAsk, wantAsk)
 				}
-				var gotModes, questions []string
+				resultIndex := slices.IndexFunc(tools, func(def map[string]any) bool { return def["name"] == parent.resultToolName() })
+				if resultIndex < 0 {
+					t.Fatal("native result tool is missing")
+				}
+				params := tools[resultIndex]["parameters"].(map[string]any)
+				props := params["properties"].(map[string]any)
+				if _, accepts := props["end_reason"]; accepts != wantAsk {
+					t.Errorf("native result tool accepts end_reason = %t, want %t", accepts, wantAsk)
+				}
+				var gotModes, questions, endReasons []string
 				for _, msg := range history {
 					var block envctx.Tracker
 					if !block.ReplayBlock(msg) {
@@ -97,6 +127,12 @@ func TestRestoreTakesTurnEndsProcessFromTheRestoringProcess(t *testing.T) {
 					if last.AskUserState != "" {
 						questions = append(questions, last.AskUserState)
 					}
+					if last.ResultEndReason != "" {
+						endReasons = append(endReasons, last.ResultEndReason)
+					}
+				}
+				if !slices.Equal(endReasons, endReasonUpdates) {
+					t.Errorf("native result-tool end_reason updates = %v, want %v", endReasons, endReasonUpdates)
 				}
 				if !slices.Equal(questions, questionUpdates) {
 					t.Errorf("native question availability updates = %v, want %v", questions, questionUpdates)
@@ -123,6 +159,11 @@ func TestRestoreTakesTurnEndsProcessFromTheRestoringProcess(t *testing.T) {
 			wantAsk = tt.interactive || tt.interactiveAside
 			if tt.questionUpdate != "" {
 				questionUpdates = []string{tt.questionUpdate}
+				if wantAsk {
+					endReasonUpdates = []string{"available"}
+				} else {
+					endReasonUpdates = []string{"omit"}
+				}
 			}
 			previous := new(tt.persisted)
 			if tt.legacy {
@@ -130,6 +171,7 @@ func TestRestoreTakesTurnEndsProcessFromTheRestoringProcess(t *testing.T) {
 				meta := loadMetaForTest(t, parent)
 				meta.PromptLaunch.TurnEndsProcess = nil
 				meta.PromptLaunch.HasAskUser = nil
+				meta.PromptLaunch.HasEndReason = nil
 				saved, err := os.ReadFile(schema.SessionTranscriptPath(dir, id))
 				if err != nil {
 					t.Fatal(err)
@@ -173,8 +215,12 @@ func TestRestoreTakesTurnEndsProcessFromTheRestoringProcess(t *testing.T) {
 					return req
 				}
 				check(beforeInput(), modes...)
+				beforeReport := len(adapter.Requests())
 				sendOneUserInput(t, sess, "continue")
 				requests := adapter.Requests()
+				if len(requests) != beforeReport+1 {
+					t.Fatalf("report needed %d model requests", len(requests)-beforeReport)
+				}
 				prior = check(requests[len(requests)-1], modes...)
 				if resume == 1 && !tt.aside {
 					seedNumberedSessionHistory(t, sess, 8)

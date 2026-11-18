@@ -100,7 +100,7 @@ func TestAskUser_DurableAdmissionEnvironmentPersistFailureMatchesRestore(t *test
 	sess := newDurableAdmissionAskSession(t, SessionConfig{
 		testOnly: testConfig{envProbes: &envctx.Probes{
 			Now:       func() time.Time { return time.Date(2026, 8, 6, 14, 0, 0, 0, time.UTC) },
-			GitBranch: func(string) string { return branch.Load().(string) },
+			GitBranch: func(string) (string, bool) { return branch.Load().(string), true },
 		}},
 	})
 	ctx := seedDurableAdmissionAsk(t, sess)

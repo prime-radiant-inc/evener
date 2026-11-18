@@ -111,6 +111,12 @@ func (s *Session) setEnvironmentIdentity(snap *envctx.Snapshot, last envctx.Snap
 		snap.ParentSessionID = s.fork.parentID
 		snap.OrdinarySession = !s.cfg.Manager
 	}
+	if fork || last.ReportingAudience != "" {
+		snap.ReportingAudience = envctx.ReportToCaller
+		if s.reportsToParent() {
+			snap.ReportingAudience = envctx.ReportToParent
+		}
+	}
 	snap.ScratchDir = installedScratchDir(s.env)
 	snap.WritableRoots = s.workspaceWritableRoots
 	cutoff := s.profile.KnowledgeCutoff()
@@ -140,6 +146,13 @@ func (s *Session) setEnvironmentIdentity(snap *envctx.Snapshot, last envctx.Snap
 		snap.AskUserState = envctx.QuestionsUnavailable
 		if canAsk {
 			snap.AskUserState = envctx.QuestionsAvailable
+		}
+	}
+	acceptsEndReason := s.resultAcceptsEndReason()
+	if launch := s.promptLaunch.HasEndReason; launch == nil || *launch != acceptsEndReason || last.ResultEndReason != "" {
+		snap.ResultEndReason = envctx.OmitEndReason
+		if acceptsEndReason {
+			snap.ResultEndReason = envctx.EndReasonAvailable
 		}
 	}
 }

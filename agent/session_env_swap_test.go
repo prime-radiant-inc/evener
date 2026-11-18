@@ -28,7 +28,7 @@ func TestSwapEnvAndRefresh_AppendsCurrentEnvironmentToStartupPromptHistory(t *te
 	var holdNextProbe atomic.Bool
 	probes := &envctx.Probes{
 		Now: func() time.Time { return envctxFixedTime },
-		GitBranch: func(cwd string) string {
+		GitBranch: func(cwd string) (string, bool) {
 			if holdNextProbe.CompareAndSwap(true, false) {
 				close(parked)
 				<-release
@@ -121,8 +121,10 @@ func TestWorktreeToolReportsWorkspaceOnNextModelRequest(t *testing.T) {
 	cfg := worktreeTestSessionConfig()
 	cfg.StateDir = t.TempDir()
 	cfg.testOnly.envProbes = &envctx.Probes{
-		Now:       func() time.Time { return envctxFixedTime },
-		GitBranch: func(cwd string) string { return strings.TrimSpace(wtGit(t, cwd, "symbolic-ref", "--short", "HEAD")) },
+		Now: func() time.Time { return envctxFixedTime },
+		GitBranch: func(cwd string) (string, bool) {
+			return strings.TrimSpace(wtGit(t, cwd, "symbolic-ref", "--short", "HEAD")), true
+		},
 	}
 	root := t.TempDir()
 	copyWorktreeBaseRepo(t, root)

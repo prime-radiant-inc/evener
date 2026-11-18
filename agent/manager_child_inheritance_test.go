@@ -145,6 +145,9 @@ func TestManagerForkAsideDoNotInheritRole(t *testing.T) {
 						if last := block.State().Last; last.SessionID != childID || last.ParentSessionID != parentID {
 							t.Errorf("cycle %d ordinary-role update does not identify both the parent and the launched child", cycle)
 						}
+						if block.State().Last.ReportingAudience != envctx.ReportToCaller || child.reportsToParent() {
+							t.Errorf("cycle %d ordinary child did not report to its caller", cycle)
+						}
 					}
 				}
 				if roleUpdates != 1 {
@@ -167,7 +170,11 @@ func TestDelegateManagerRoleNotInheritedOnCreateOrResume(t *testing.T) {
 	client := llm.NewClient()
 	requests := make(chan llm.Request, 8)
 	client.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { requests <- req; return agenttest.FinalResponse("child-result") }))
-	root := newSession(t, withClient(client), withConfig(SessionConfig{Manager: true, StateDir: t.TempDir(), MaxSubagentDepth: 1, testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true}}))
+	workspace := t.TempDir()
+	root := newSession(t, withClient(client), withDir(workspace), withConfig(SessionConfig{
+		Manager: true, StateDir: t.TempDir(), MaxSubagentDepth: 1, AgentsDocPath: filepath.Join(workspace, "personal.md"),
+		testOnly: testConfig{skipGitSnapshot: true, noSyncJobStore: true},
+	}))
 	defer root.Close()
 	result := root.createDelegate(context.Background(), delegateArgs{Task: "child-input", DelegationAllowance: new(0)})
 	if result.Err != nil {
@@ -219,4 +226,63 @@ func TestDelegateManagerRoleNotInheritedOnCreateOrResume(t *testing.T) {
 	if !root.Meta().Manager || !root.cfg.Manager {
 		t.Error("delegate changed root Manager role")
 	}
+	t.Run("resume-with from saved delegate", func(t *testing.T) {
+		source := root.getSub(result.ChildSessionID).sess
+		header, _, _, err := readTranscript(t.Context(), transcriptPath(root.stateDir, source.ID()), "")
+		if err != nil || header.SystemPrompt == "" || !source.reportsToParent() {
+			t.Fatalf("source delegate prompt or reporting role unavailable: %v", err)
+		}
+		asideID, err := AsideSessionWithConfig(root.stateDir, source.ID(), source.Meta().Config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		meta, err := schema.LoadSessionMeta(root.stateDir, asideID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		aside, err := RestoreSessionFromMetaWithConfig(client, root.profile, execenv.NewLocalExecutionEnvironment(workspace), meta, RestoreSessionConfig{
+			StateDir: root.stateDir, TurnEndsProcess: true, testOnly: testConfig{skipGitSnapshot: true, noSyncJobStore: true},
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(aside.Close)
+		captured := make(chan llm.Request, 2)
+		finish := func(req llm.Request) llm.Response { captured <- req; return agenttest.FinalResponse("result") }
+		client.Register(newFakeAdapter("openai", finish, finish))
+		check := func(s *Session, wantParent bool, wantAudiences ...string) string {
+			t.Helper()
+			var req llm.Request
+			select {
+			case req = <-captured:
+			case <-time.After(10 * time.Second): // TRIPWIRE: a local scripted request.
+				t.Fatal("session did not issue a request")
+			}
+			if s.reportsToParent() != wantParent {
+				t.Errorf("actual parent reporting = %v, want %v", s.reportsToParent(), wantParent)
+			}
+			prompt, history := responsesInstructionsAndHistory(responsesPromptBody(t, req, s.profile.Resolved()))
+			var audiences []string
+			for _, text := range history {
+				var block envctx.Tracker
+				if block.ReplayBlock(text) && block.State().Last.ReportingAudience != "" {
+					audiences = append(audiences, block.State().Last.ReportingAudience)
+				}
+			}
+			if !slices.Equal(audiences, wantAudiences) {
+				t.Errorf("outgoing reporting audiences in transcript order = %q, want %q", audiences, wantAudiences)
+			}
+			return prompt
+		}
+		sendOneUserInput(t, aside, "aside-input")
+		if prompt := check(aside, false, envctx.ReportToCaller); prompt != header.SystemPrompt {
+			t.Error("the aside changed the saved delegate prompt")
+		}
+		nested := aside.createDelegate(t.Context(), delegateArgs{Task: "context-assignment", ForkContext: true, DelegationAllowance: new(0)})
+		if nested.Err != nil {
+			t.Fatal(nested.Err)
+		}
+		child := aside.getSub(nested.ChildSessionID).sess
+		check(child, true, envctx.ReportToCaller, envctx.ReportToParent)
+	})
 }

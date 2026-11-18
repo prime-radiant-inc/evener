@@ -30,14 +30,17 @@ type Snapshot struct {
 	ScratchDir        string   `json:"scratch_dir,omitempty"`
 	WritableRoots     string   `json:"writable_roots,omitempty"`
 	GitBranch         string   `json:"git_branch,omitempty"` // "" outside a git repo
+	gitBranchUnknown  bool     // Applies to an observation, never to the retained state.
 	Pressure          Pressure `json:"pressure,omitzero"`
 	SessionID         string   `json:"session_id,omitempty"`
 	ParentSessionID   string   `json:"parent_session_id,omitempty"`
 	OrdinarySession   bool     `json:"ordinary_session,omitempty"`
+	ReportingAudience string   `json:"reporting_audience,omitempty"`
 	Model             string   `json:"model,omitempty"`
 	KnowledgeCutoff   string   `json:"knowledge_cutoff,omitempty"`
 	ExecutionMode     string   `json:"execution_mode,omitempty"` // set when a later observation supplies the job lifetime
 	AskUserState      string   `json:"ask_user_state,omitempty"`
+	ResultEndReason   string   `json:"result_end_reason,omitempty"`
 	CommitTrailer     string   `json:"commit_trailer,omitempty"`
 	OmitCommitTrailer bool     `json:"omit_commit_trailer,omitempty"` // explicit cancellation of a prior directive
 }
@@ -60,6 +63,9 @@ type Tracker struct {
 
 const ordinaryRole = "session role: ordinary"
 const parentSessionPrefix = "parent session id: "
+const reportingAudiencePrefix = "reporting audience: "
+const ReportToCaller = "caller"
+const ReportToParent = "parent agent"
 const scratchDirPrefix = "writable scratch directory: "
 const writableRootsPrefix = "writable roots: "
 const hostWritableRoots = writableRootsPrefix + "host filesystem permissions govern spawned commands"
@@ -69,6 +75,9 @@ const DaemonMode = "daemon"
 const askUserPrefix = "ask_user: "
 const QuestionsAvailable = "available"
 const QuestionsUnavailable = "unavailable"
+const resultEndReasonPrefix = "result tool end_reason: "
+const OmitEndReason = "omit"
+const EndReasonAvailable = "available"
 const commitTrailerPrefix = "For new commits in this session, use this trailer: "
 const omitCommitTrailer = "Omit the Co-authored-by trailer on new commits in this session."
 
@@ -133,6 +142,8 @@ func (t *Tracker) ReplayBlock(block string) bool {
 			t.st.Last.ParentSessionID = strings.TrimPrefix(line, parentSessionPrefix)
 		case line == ordinaryRole:
 			t.st.Last.OrdinarySession = true
+		case line == reportingAudiencePrefix+ReportToCaller, line == reportingAudiencePrefix+ReportToParent:
+			t.st.Last.ReportingAudience = strings.TrimPrefix(line, reportingAudiencePrefix)
 		case strings.HasPrefix(line, "model: "):
 			if value, err := strconv.Unquote(strings.TrimPrefix(line, "model: ")); err == nil {
 				t.st.Last.Model = value
@@ -145,6 +156,8 @@ func (t *Tracker) ReplayBlock(block string) bool {
 			t.st.Last.ExecutionMode = strings.TrimPrefix(line, executionModePrefix)
 		case line == askUserPrefix+QuestionsAvailable, line == askUserPrefix+QuestionsUnavailable:
 			t.st.Last.AskUserState = strings.TrimPrefix(line, askUserPrefix)
+		case line == resultEndReasonPrefix+OmitEndReason, line == resultEndReasonPrefix+EndReasonAvailable:
+			t.st.Last.ResultEndReason = strings.TrimPrefix(line, resultEndReasonPrefix)
 		case strings.HasPrefix(line, commitTrailerPrefix):
 			t.st.Last.CommitTrailer = strings.TrimPrefix(line, commitTrailerPrefix)
 			t.st.Last.OmitCommitTrailer = false
@@ -179,6 +192,10 @@ func pressureValue(line, name string) string {
 // is nothing to say. A non-empty return updates the tracker state, so the
 // caller must deliver the rendered block to the model.
 func (t *Tracker) RenderDiff(cur Snapshot) string {
+	if cur.gitBranchUnknown {
+		cur.GitBranch = t.st.Last.GitBranch
+		cur.gitBranchUnknown = false
+	}
 	first := !t.st.HasSent
 	if !first && cur == t.st.Last && !t.st.ScratchDirUnknown && !t.st.WritableRootsUnknown {
 		return ""
@@ -204,11 +221,12 @@ func (t *Tracker) RenderDiff(cur Snapshot) string {
 			lines = append(lines, writableRootsPrefix+strconv.Quote(cur.WritableRoots))
 		}
 	}
-	switch {
-	case cur.GitBranch != "":
-		add(cur.GitBranch != prev.GitBranch, "git branch: "+cur.GitBranch)
-	case prev.GitBranch != "":
-		lines = append(lines, "git branch: (not in a git repository)")
+	if cur.GitBranch != prev.GitBranch {
+		branch := cur.GitBranch
+		if branch == "" {
+			branch = "(not in a git repository)"
+		}
+		lines = append(lines, "git branch: "+branch)
 	}
 	// A fold can retain an identity update while dropping the first environment
 	// block. Refill the missing environment without repeating retained identity.
@@ -218,6 +236,16 @@ func (t *Tracker) RenderDiff(cur Snapshot) string {
 	if cur.OrdinarySession && (!prev.OrdinarySession || cur.SessionID != prev.SessionID || cur.ParentSessionID != prev.ParentSessionID) {
 		lines = append(lines, ordinaryRole, parentSessionPrefix+cur.ParentSessionID,
 			"This child was created without a Manager launch. Apply the startup rule for a newly created session and use the tools and arguments offered in this request.")
+	}
+	if cur.ReportingAudience != prev.ReportingAudience {
+		switch cur.ReportingAudience {
+		case ReportToCaller:
+			lines = append(lines, reportingAudiencePrefix+ReportToCaller,
+				"This is a root session. Direct progress and final reports to your human partner or caller through the result tool. Act on follow-up messages from that caller.")
+		case ReportToParent:
+			lines = append(lines, reportingAudiencePrefix+ReportToParent,
+				"This is a delegate session. Direct progress and final reports to your parent agent through the result tool. Act on follow-up messages from that agent.")
+		}
 	}
 	if cur.Model != "" {
 		if cur.Model != prev.Model {
@@ -245,6 +273,16 @@ func (t *Tracker) RenderDiff(cur Snapshot) string {
 		case QuestionsUnavailable:
 			lines = append(lines, askUserPrefix+QuestionsUnavailable,
 				"No one can answer through ask_user in this session. Use the task and available evidence to make decisions and continue. Report any assumptions that affect the result.")
+		}
+	}
+	if cur.ResultEndReason != prev.ResultEndReason {
+		switch cur.ResultEndReason {
+		case OmitEndReason:
+			lines = append(lines, resultEndReasonPrefix+OmitEndReason,
+				"Omit end_reason when calling the result tool. Use end_turn=true to deliver your final report.")
+		case EndReasonAvailable:
+			lines = append(lines, resultEndReasonPrefix+EndReasonAvailable,
+				"When ending your turn through the result tool, set end_reason to needs_response if your caller must act, waiting_on_work if pending work will wake you, or done when your work is complete.")
 		}
 	}
 	if cur.CommitTrailer != "" {

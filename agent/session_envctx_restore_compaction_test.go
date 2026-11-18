@@ -20,7 +20,7 @@ func TestRestoreEnvironmentReconcilesCompactionWithStaleMetadata(t *testing.T) {
 			branch, pressure := "work", "memory pressure: warn level"
 			probes := &envctx.Probes{
 				Now:       func() time.Time { return now },
-				GitBranch: func(string) string { return branch },
+				GitBranch: func(string) (string, bool) { return branch, true },
 				Memory:    func() string { return pressure },
 			}
 			dir := t.TempDir()

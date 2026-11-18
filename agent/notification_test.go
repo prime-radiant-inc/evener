@@ -4,7 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"reflect"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/envctx"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
@@ -161,18 +163,26 @@ func TestNotificationTurn_DrivesModelRequestWithReminder(t *testing.T) {
 func testRestoredNotificationWorkspace(t *testing.T) {
 	dir, stateDir := evalSyms(t, t.TempDir()), evalSyms(t, t.TempDir())
 	copyWorktreeBaseRepo(t, dir)
-	const launchBranch, observed, unborn = "launch-18", "observed-29", "unborn-57"
+	const launchBranch, observed, unborn, changed = "launch-18", "observed-29", "unborn-57", "changed-64"
 	gittest.Run(t, dir, "checkout", "-b", launchBranch)
+	probes := func(env execenv.ExecutionEnvironment) *envctx.Probes {
+		return &envctx.Probes{
+			Now:       func() time.Time { return envctxFixedTime },
+			GitBranch: func(cwd string) (string, bool) { return snapshotGitBranch(env, cwd) },
+		}
+	}
 	var probeCall string
 	adapter := &agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response {
 		if probeCall != "" {
 			id := probeCall
 			probeCall = ""
-			return agenttest.ToolCallResponse(llm.ToolCallData{ID: id, Name: "shell", Arguments: []byte(`{"command":"pwd\ngit branch --show-current"}`)})
+			return agenttest.ToolCallResponse(llm.ToolCallData{ID: id, Name: "shell", Arguments: []byte(`{"command":"pwd\nif test -e .git; then git branch --show-current; else echo outside; fi"}`)})
 		}
 		return agenttest.FinalResponse("ack")
 	}}
-	s := newSession(t, withDir(dir), withStateDir(stateDir), withEnvironmentSnapshot(), withAdapter(adapter))
+	initial := execenv.NewLocalExecutionEnvironment(dir)
+	s := newSession(t, withEnv(initial), withStateDir(stateDir), withEnvironmentSnapshot(), withAdapter(adapter),
+		withConfig(SessionConfig{testOnly: testConfig{envProbes: probes(initial)}}))
 	gittest.Run(t, dir, "checkout", "-b", observed)
 	sendOneUserInput(t, s, "begin")
 	prior := adapter.Requests()[0]
@@ -187,24 +197,49 @@ func testRestoredNotificationWorkspace(t *testing.T) {
 		t.Fatalf("launch request has %d workspace updates at %q on %q", blocks, last.Cwd, last.GitBranch)
 	}
 	for i, tc := range []struct {
-		git              []string
-		actual, reported string
-		blocks           int
+		git                         []string
+		actual, reported            string
+		blocks                      int
+		legacy, removeRepo, timeout bool
 	}{
-		{[]string{"checkout", launchBranch}, launchBranch, launchBranch, 2},
-		{nil, launchBranch, launchBranch, 2},
-		{[]string{"checkout", "--orphan", unborn}, unborn, launchBranch, 2},
-		{[]string{"commit", "--allow-empty", "-m", "first"}, unborn, unborn, 3},
+		{git: []string{"checkout", launchBranch}, actual: launchBranch, reported: launchBranch, blocks: 2},
+		{actual: launchBranch, reported: launchBranch, blocks: 2},
+		{git: []string{"checkout", "--orphan", unborn}, actual: unborn, reported: launchBranch, blocks: 3, legacy: true},
+		{actual: unborn, reported: launchBranch, blocks: 3},
+		{git: []string{"commit", "--allow-empty", "-m", "first"}, actual: unborn, reported: unborn, blocks: 4},
+		{git: []string{"checkout", "-b", changed}, actual: changed, reported: unborn, blocks: 4, timeout: true},
+		{actual: changed, reported: changed, blocks: 5},
+		{actual: "outside", blocks: 6, removeRepo: true},
+		{actual: "outside", blocks: 6},
 	} {
 		jobID := fmt.Sprintf("job_checkout_%d", i)
 		enqueueCompletedJobNotification(t, s, jobID)
 		s.Close()
+		if tc.legacy {
+			meta := loadMetaForTest(t, s)
+			meta.PromptLaunch = schema.PromptLaunchFacts{}
+			if err := schema.SaveSessionMetaForNewPrompt(nil, stateDir, meta); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if tc.removeRepo {
+			if err := os.Rename(filepath.Join(dir, ".git"), filepath.Join(t.TempDir(), "saved-git")); err != nil {
+				t.Fatal(err)
+			}
+		}
 		if tc.git != nil {
 			gittest.Run(t, dir, tc.git...)
 		}
 		env := execenv.NewLocalExecutionEnvironment(dir)
+		branchProbes := probes(env)
+		if tc.timeout {
+			branchProbes = probes(truncationGitEnv{
+				results: map[string]execenv.ExecResult{"rev-parse --is-inside-work-tree": {Stdout: "true"}},
+				errs:    map[string]error{"rev-parse --abbrev-ref HEAD": context.DeadlineExceeded},
+			})
+		}
 		resumed, err := RestoreSessionFromMetaWithConfig(s.client, s.profile, env, loadMetaForTest(t, s), RestoreSessionConfig{
-			StateDir: stateDir, testOnly: sharingHostProbe(testConfig{}),
+			StateDir: stateDir, testOnly: sharingHostProbe(testConfig{envProbes: branchProbes}),
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -224,9 +259,14 @@ func testRestoredNotificationWorkspace(t *testing.T) {
 		if result := toolResultTextForCall(reqs[1], id); !strings.Contains(result, dir+"\n"+tc.actual) {
 			t.Fatalf("shell did not report cwd %q and branch %q in %s", dir, tc.actual, result)
 		}
+		oldBody := responsesPromptBody(t, prior, s.profile.Resolved())
+		oldInput := oldBody["input"].([]any)
+		prefix := mustJSON(t, oldInput)
 		for _, req := range reqs {
-			if len(req.Messages) < len(prior.Messages) || !reflect.DeepEqual(req.Messages[:len(prior.Messages)], prior.Messages) {
-				t.Fatal("the notification or its tool continuation rewrote earlier provider messages")
+			newBody := responsesPromptBody(t, req, s.profile.Resolved())
+			newInput := newBody["input"].([]any)
+			if newBody["instructions"] != saved.Header.SystemPrompt || len(newInput) < len(oldInput) || mustJSON(t, newInput[:len(oldInput)]) != prefix {
+				t.Fatalf("step %d changed the earlier native request prefix", i)
 			}
 			if last, blocks := requestEnvironment(req); last.Cwd != dir || last.GitBranch != tc.reported || blocks != tc.blocks {
 				t.Errorf("step %d request has %d workspace updates at %q on %q, want %d at %q on %q", i, blocks, last.Cwd, last.GitBranch, tc.blocks, dir, tc.reported)
