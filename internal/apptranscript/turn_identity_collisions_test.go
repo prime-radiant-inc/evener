@@ -1465,3 +1465,153 @@ func TestReopenWithoutAnotherBatchKeepsTheCallAwaiting(t *testing.T) {
 			call.Status, appwire.TurnStatusInterrupted)
 	}
 }
+
+// TestFailureWithoutCompletionKeepsTheExecutionInProgress covers a process that
+// persisted a TURN_FAILURE and exited before its TURN_COMPLETION. The turn
+// never recorded an outcome, so it reads in progress, and the failure stays a
+// history item rather than becoming the turn's diagnostic. The index applies
+// the failure stamp to a legacy turn only: for a stamped execution its status
+// moves on TURN_COMPLETION and TURN_REOPEN alone (transcriptindex stampFold),
+// so replay must not let StampGroupedTurn's legacy failure rule decide it
+// (#1166 review).
+func TestFailureWithoutCompletionKeepsTheExecutionInProgress(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "failed_without_completion"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := func(turn schema.Turn, place transcript.Placement) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: place}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	w.BeginExecution("t_died", false)
+	record(schema.NewTurn(schema.TurnUserInput, llm.User("go")), transcript.PlaceSession)
+	record(schema.Turn{Kind: schema.TurnFailure, Error: &schema.TurnFailureInfo{
+		Message: "crashed",
+		Cause:   &schema.TurnFailureCause{Kind: "crashed"},
+	}}, transcript.PlaceSession)
+	// The process exited here: no TURN_COMPLETION for t_died.
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	var found *appwire.Turn
+	for i := range turns {
+		if turns[i].ID == "t_died" {
+			found = &turns[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("full read turns = %+v, want the execution's turn", shapesFromTurns(turns))
+	}
+	if found.Status != appwire.TurnStatusInProgress {
+		t.Errorf("execution status = %q, want %q: no completion recorded an outcome",
+			found.Status, appwire.TurnStatusInProgress)
+	}
+	if found.Error != nil {
+		t.Errorf("execution error = %+v, want none: the failure is history, not an outcome", found.Error)
+	}
+}
+
+// TestCompletionInterruptsOnlyTheReservedPart covers one assistant entry that
+// records two tool calls sharing a provider id, where the result settles the
+// first. A later completion ends the call the entry reserved — the first
+// recorded part — and leaves the second announcement its own item. The index
+// reserves the first part carrying an id and settles and interrupts only that
+// one (#1166 review).
+func TestCompletionInterruptsOnlyTheReservedPart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "duplicate_id_one_entry"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := func(turn schema.Turn, place transcript.Placement) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: place}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	call := func(args string) llm.ContentPart {
+		return llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+			ID: "call_twice", Name: "read_file", Arguments: json.RawMessage(args),
+		}}
+	}
+	w.BeginExecution("t_twice", false)
+	record(schema.NewTurn(schema.TurnUserInput, llm.User("go")), transcript.PlaceSession)
+	// One assistant entry announces the SAME id twice: two recorded parts, two
+	// items. The index reserves the first.
+	record(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{
+		Role: llm.RoleAssistant, Content: []llm.ContentPart{call(`{"path":"a"}`), call(`{"path":"b"}`)},
+	}}, transcript.PlaceSession)
+	// The result settles the FIRST reserved part; the second is never answered.
+	record(schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{
+		Role: llm.RoleTool,
+		Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
+			ToolCallID: "call_twice", Content: "ok",
+		}}},
+	}}, transcript.PlaceSession)
+	record(schema.Turn{Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnInterrupted}}, transcript.PlaceCompletion)
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	var settled, unreserved *appwire.ThreadItem
+	for _, turn := range turns {
+		if turn.ID != "t_twice" {
+			continue
+		}
+		for i := range turn.Items {
+			if turn.Items[i].CallID != "call_twice" {
+				continue
+			}
+			switch turn.Items[i].ArgumentsJSON {
+			case `{"path":"a"}`:
+				settled = &turn.Items[i]
+			case `{"path":"b"}`:
+				unreserved = &turn.Items[i]
+			}
+		}
+	}
+	if settled == nil {
+		t.Fatalf("full read turns = %+v, want the settled reserved part", shapesFromTurns(turns))
+	}
+	if unreserved == nil {
+		t.Fatalf("full read turns = %+v, want the second announcement kept as its own item", shapesFromTurns(turns))
+	}
+	// The result belongs to the first announcement, not the second: the
+	// reserved part completes and the other keeps its own arguments.
+	if settled.Status != appwire.TurnStatusCompleted {
+		t.Errorf("reserved part status = %q, want %q: the result settled it",
+			settled.Status, appwire.TurnStatusCompleted)
+	}
+	// The completion ends the call the entry RESERVED — the first recorded
+	// part. The second announcement is a distinct item and the index leaves it
+	// untouched, so it stays in progress rather than becoming interrupted
+	// (#1166 review).
+	if unreserved.Status == appwire.TurnStatusInterrupted {
+		t.Errorf("unreserved part status = %q, want it untouched: the completion ends the reserved part only",
+			unreserved.Status)
+	}
+	if unreserved.Status != appwire.TurnStatusInProgress {
+		t.Errorf("unreserved part status = %q, want %q: nothing answered it",
+			unreserved.Status, appwire.TurnStatusInProgress)
+	}
+}

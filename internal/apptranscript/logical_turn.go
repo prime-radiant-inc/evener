@@ -391,7 +391,15 @@ func (ex *turnExecution) interruptAwaitedCalls() {
 			if at < len(ex.mergedEntry) {
 				entry = ex.mergedEntry[at]
 			}
-			byCall[awaitKey{entry: entry, call: item.CallID}] = append(byCall[awaitKey{entry: entry, call: item.CallID}], at)
+			// Keep only the FIRST recorded part per call id: that is the item
+			// the index reserves for the call (transcriptindex build.go keeps
+			// the first part carrying an id), and the item a result settles. A
+			// second announcement of the same id in one entry stays its own
+			// item and is not what a completion ends (#1166 review).
+			key := awaitKey{entry: entry, call: item.CallID}
+			if _, seen := byCall[key]; !seen {
+				byCall[key] = []int{at}
+			}
 		}
 	}
 	// awaiting holds the announcing entry and its recorded part ids, so a
@@ -666,6 +674,19 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 				turn.Status = appwire.TurnStatusInProgress
 			}
 			StampGroupedTurn(&turn, ex.entries)
+			if ex.startsAnExecution() {
+				// StampGroupedTurn's failure stamp is the LEGACY rule: a
+				// TURN_FAILURE entry makes the turn failed. The index does not
+				// apply that to a stamped execution — stampFold changes an
+				// execution's status only on TURN_COMPLETION and TURN_REOPEN
+				// (internal/transcriptindex/build.go), so an execution that
+				// persisted a failure and then exited before its completion
+				// stays open, with the failure a history item and no turn-level
+				// diagnostic. Without this reset a crash in that window read
+				// failed here and in progress from the index (#1166 review).
+				turn.Status = appwire.TurnStatusInProgress
+				turn.Error = nil
+			}
 			stampExecutionControls(&turn, ex.controls)
 			// The diagnostic belongs to the attempt that ended the execution.
 			// A reopen clears the one StampGroupedTurn stamped, so when the
