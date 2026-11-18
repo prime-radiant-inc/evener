@@ -623,6 +623,50 @@ test("a higher-revision frame does not roll the hold back", async () => {
   expect(row?.runningJobCount).toBe(2);
 });
 
+// The clearing sample is also the one whose fields are missing: a cleared hold
+// omits its count and oldest start on the wire, so a merge that fills those
+// from the other side restores exactly the wait the sequence just rejected.
+// The frame below carries the higher revision, which makes it the durable
+// winner -- and therefore the loser whose fields must not leak anywhere.
+test("a delayed held frame cannot refill a cleared row's omitted hold fields", async () => {
+  const client = pushClient();
+  const context = pushContext();
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context,
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [
+      delegateRow({
+        projectionRevision: 4,
+        holdSequence: 12,
+        // Cleared: no hold, and the count and oldest start are absent.
+      }),
+    ],
+  }));
+  const { store } = await pushOwner(client);
+  expect(store.getSnapshot().delegates.rows[0]?.holdSequence).toBe(12);
+
+  // Sampled before the row's clear, but projected at a higher revision.
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({
+        projectionRevision: 5,
+        status: "running",
+        drainHeldByJobs: true,
+        holdSequence: 10,
+        runningJobCount: 2,
+        oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+      }),
+    ),
+  );
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row?.projectionRevision).toBe(5);
+  expect(row?.holdSequence).toBe(12);
+  expect(row?.drainHeldByJobs ?? false).toBe(false);
+  expect(row?.runningJobCount ?? 0).toBe(0);
+  expect(row?.oldestRunningJobStartedAt ?? "").toBe("");
+});
+
 // The inverse arrival order: a delegates refresh captures a running row just
 // before the drain starts, and its reply lands after the hold frame. At the
 // same revision the read used to clear the hold, and the row then missed the

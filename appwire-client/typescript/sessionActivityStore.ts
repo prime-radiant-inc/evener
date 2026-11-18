@@ -1611,7 +1611,13 @@ export function isValidActivityTimestamp(value: string): boolean {
  *
  * `previous` is undefined when the row's sample belongs to a retired epoch and
  * cannot be compared: the frame then supplies its own hold, as it does for
- * every durable field. */
+ * every durable field.
+ *
+ * The sample that wins supplies all four fields, taken from itself alone. A
+ * cleared sample omits the count and the oldest start (`omitempty`), so reading
+ * a missing field from the other side would restore exactly the wait the
+ * sequence just rejected -- and `row` is not a second source here, because the
+ * durable merge may already have made it the losing frame. */
 function joinDelegateHold(
   row: SessionDelegate,
   previous: SessionDelegate | undefined,
@@ -1619,29 +1625,24 @@ function joinDelegateHold(
 ): SessionDelegate {
   const currentSequence = previous?.holdSequence ?? 0;
   const frameSequence = frame.holdSequence ?? 0;
-  const newer =
-    currentSequence > frameSequence
-      ? {
-          drainHeldByJobs: previous?.drainHeldByJobs ?? row.drainHeldByJobs,
-          runningJobCount: previous?.runningJobCount ?? row.runningJobCount,
-          oldestRunningJobStartedAt: previous?.oldestRunningJobStartedAt ?? row.oldestRunningJobStartedAt,
-          holdSequence: previous?.holdSequence ?? row.holdSequence,
-        }
-      : {
-          drainHeldByJobs: frame.drainHeldByJobs,
-          runningJobCount: frame.runningJobCount,
-          oldestRunningJobStartedAt: frame.oldestRunningJobStartedAt,
-          holdSequence: frame.holdSequence,
-        };
+  if (previous !== undefined && currentSequence > frameSequence) {
+    return keepDelegateHold(row, previous);
+  }
   if (
-    (row.drainHeldByJobs ?? false) === (newer.drainHeldByJobs ?? false) &&
-    row.runningJobCount === newer.runningJobCount &&
-    row.oldestRunningJobStartedAt === newer.oldestRunningJobStartedAt &&
-    row.holdSequence === newer.holdSequence
+    (row.drainHeldByJobs ?? false) === (frame.drainHeldByJobs ?? false) &&
+    row.runningJobCount === frame.runningJobCount &&
+    row.oldestRunningJobStartedAt === frame.oldestRunningJobStartedAt &&
+    row.holdSequence === frame.holdSequence
   ) {
     return row;
   }
-  return { ...row, ...newer };
+  return {
+    ...row,
+    drainHeldByJobs: frame.drainHeldByJobs,
+    runningJobCount: frame.runningJobCount,
+    oldestRunningJobStartedAt: frame.oldestRunningJobStartedAt,
+    holdSequence: frame.holdSequence,
+  };
 }
 
 /** A row wearing the hold another row already carries, for the fields the
