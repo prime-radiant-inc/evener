@@ -197,8 +197,8 @@ func TestFallbackReplaysOnlyItsIssuersReasoning(t *testing.T) {
 			llm.ToolCallData{ID: "tool-b", Name: "missing_b", Arguments: []byte(`{}`)}), fallback.Protocol(), "fallback-73")),
 		fixedStep(withReasoningMarker(agenttest.FinalResponse("done"), fallback.Protocol(), "fallback-81")),
 		fixedStep(agenttest.FinalResponse("done")),
-		fixedStep(agenttest.FinalResponse("done")),
-		fixedStep(agenttest.FinalResponse("done")),
+		fixedStep(agenttest.FinalResponse("wire-model reply")),
+		fixedStep(agenttest.FinalResponse("deployment reply")),
 	)
 	// The profile used to assemble each request resolves on the same registry
 	// as the client dispatching it. A restart can load different wire IDs.

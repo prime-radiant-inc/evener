@@ -40,13 +40,13 @@ func (tc *ToolCallData) UnmarshalJSON(data []byte) error {
 	if len(record.ArgumentBytes) == 0 || len(tc.Arguments) == 0 || tc.RawArguments != "" {
 		return nil
 	}
-	var original []byte
-	if err := json.Unmarshal(record.ArgumentBytes, &original); err != nil || len(original) == 0 {
-		return nil
+	stored, err := json.Marshal(tc.Arguments)
+	if err != nil {
+		return err
 	}
-	encoded, err := json.Marshal(json.RawMessage(original))
-	if err == nil {
-		stored, err := json.Marshal(tc.Arguments)
+	var original []byte
+	if json.Unmarshal(record.ArgumentBytes, &original) == nil && len(original) != 0 {
+		encoded, err := json.Marshal(json.RawMessage(original))
 		if err == nil && bytes.Equal(encoded, stored) {
 			tc.Arguments = original
 		}
