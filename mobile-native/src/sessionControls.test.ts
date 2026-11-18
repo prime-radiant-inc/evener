@@ -1049,6 +1049,44 @@ describe("conversation-owned session controls", () => {
 			expect(await pick).toBe(false);
 		},
 	);
+	// The readback belongs to the live session and its transport, not to the
+	// reader's presence: a pane another screen covers still reads the new choice
+	// back, so the picker shows it on return. The announcement stays off, since
+	// nobody is looking at it.
+	it("reads a covered pick back without announcing it", async () => {
+		let inFront = true;
+		let refreshed = 0;
+		const sent = Promise.withResolvers<void>();
+		const ack = Promise.withResolvers<void>();
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => ({ data: [{ provider: "two", model: "next" }] }),
+				model: async () => {
+					sent.resolve();
+					await ack.promise;
+				},
+			}),
+			async () => {
+				refreshed++;
+			},
+			() => {},
+			// A covered pane: another screen is in front, while the session and its
+			// transport are live and still able to read it.
+			(scope) => (scope === "route" ? inFront : true),
+			() => null,
+			() => true,
+		);
+		await controls.loadModels();
+		const pick = controls.changeModel("two", "next");
+		await sent.promise;
+		inFront = false;
+		ack.resolve();
+		// The pick reads back so the picker shows the new choice on return, and
+		// says nothing to a reader who is not looking at it.
+		expect(await pick).toBe(false);
+		expect(refreshed).toBe(1);
+		expect(controls.getSnapshot()).toMatchObject({ pending: null, notice: null });
+	});
 	it("ignores a catalog that resolves after the controller is disposed", async () => {
 		let resolve!: (value: ModelListResponse) => void;
 		const controls = new SessionControls(

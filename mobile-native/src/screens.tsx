@@ -563,6 +563,18 @@ function ConversationScreenView({
 	} | null>(null);
 	const [commandPending, setCommandPending] = useState(false);
 	const commandBusy = useRef(false);
+	// Whether this view has been released. A settled action that outlives it is
+	// still the hub's to keep; the announcement belongs to a reader still
+	// attached to some view, and an unmounted one has nobody to tell. This is
+	// the "released" half of the presentation rule, which a covered pane is
+	// not: covering keeps the view mounted, and its reader is coming back.
+	const released = useRef(false);
+	useEffect(() => {
+		released.current = false;
+		return () => {
+			released.current = true;
+		};
+	}, []);
 	const projectLookup = useRef<AbortController | null>(null);
 	const { document, draft, imageSelection, imageState } = useComposerDraft({
 		hubId: route.params.hubId,
@@ -900,6 +912,20 @@ function ConversationScreenView({
 				if (scope === "session") {
 					return currentDestination.current.store === store && current.ref === route.params.ref;
 				}
+				// The destination answers "can this binding still read the session
+				// it dispatched to", so a ready transport and the same store decide
+				// it. A pane another screen covers keeps reading back: the picker
+				// has to show the new choice when the reader returns.
+				if (scope === "destination") {
+					return (
+						currentDestination.current.store === store &&
+						currentDestination.current.client === client &&
+						connectionReady.current &&
+						current.ref === route.params.ref
+					);
+				}
+				// Starting an action is a reader's question, so it keeps the route
+				// fence: a covered pane offers nothing to press.
 				if (
 					currentDestination.current.store !== store ||
 					currentDestination.current.client !== client ||
@@ -907,7 +933,6 @@ function ConversationScreenView({
 					!screenInFront(navigation, route.key)
 				)
 					return false;
-				if (scope === "destination") return current.ref === route.params.ref;
 				return (
 					current.status === "open" &&
 					current.conversationGeneration === bindingGeneration &&
@@ -1259,6 +1284,12 @@ function ConversationScreenView({
 						kind: "shut-down:offline",
 					};
 				const stopped = await controls.shutdown();
+				// Settlement already happened against the live binding: a stop the
+				// hub accepted is settled whichever view asked. The announcement
+				// needs a reader, so a released view says nothing rather than
+				// announcing a failure from a screen that no longer exists. A
+				// covered view still reports, because its reader is coming back.
+				if (released.current) return null;
 				return {
 					text: stopped ? "Session shut down" : "Couldn't shut down this session.",
 					kind: stopped ? "shut-down:stopped" : "shut-down:failed",

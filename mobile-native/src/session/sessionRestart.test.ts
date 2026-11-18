@@ -62,4 +62,30 @@ describe("one step of a restart", () => {
 		answer();
 		expect(await step).toBe("done");
 	});
+
+	// The stop was acknowledged, so the resume is owed. Another screen can cover
+	// the pane between the two steps; refusing the resume there leaves the
+	// daemon stopped with the restart unfinished, and nothing else sends it.
+	it("sends an owed resume while another screen covers the pane", async () => {
+		let sent = 0;
+		let inFront = true;
+		const made = new SessionControls(
+			{
+				forceStop: async () => {},
+				resume: async () => {
+					sent += 1;
+				},
+			} as unknown as ConstructorParameters<typeof SessionControls>[0],
+			async () => {},
+			() => {},
+			// Another screen is in front; the session and its binding are live.
+			(scope) => (scope === "session" ? true : inFront),
+			() => null,
+			() => true,
+		);
+		expect(await attemptControl(made, "forceStop")).toBe("done");
+		inFront = false;
+		expect(await attemptControl(made, "resume")).toBe("done");
+		expect(sent).toBe(1);
+	});
 });

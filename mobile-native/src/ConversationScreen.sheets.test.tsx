@@ -16,7 +16,7 @@ import type {
 } from "@react-navigation/native-stack";
 import type { ComponentProps, ReactElement, ReactNode } from "react";
 import { createElement } from "react";
-import { FlatList } from "react-native";
+import { AccessibilityInfo, FlatList } from "react-native";
 import { act } from "react-test-renderer";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { type Thread, WireError } from "@evener/appwire-client";
@@ -908,6 +908,33 @@ it("still reports a refused shutdown after another screen covers the pane", asyn
 
 	expect(markers(tree, "toast")).toEqual(["shut-down:failed"]);
 	await act(async () => tree.unmount());
+});
+
+it("says nothing about a shutdown that settles after its view is released", async () => {
+	const announce = vi.mocked(AccessibilityInfo.announceForAccessibility);
+	announce.mockClear();
+	let accept!: () => void;
+	const { tree } = mount(withCapabilities({ shutdown: true }), {
+		"thread/shutdown": () =>
+			new Promise<void>((done) => {
+				accept = done;
+			}),
+	});
+	await settle();
+
+	act(() => menuAction("Shut down").onPress());
+	const [confirm] = alertRequests;
+	act(() => confirm?.buttons?.[1]?.onPress?.());
+	await settle();
+
+	// The reader leaves: the view is released while the hub's reply is still out.
+	await act(async () => tree.unmount());
+	accept();
+	await settle();
+
+	// Nothing is announced from a screen that no longer exists. The hub took the
+	// stop either way; there is no reader here to tell.
+	expect(announce).not.toHaveBeenCalled();
 });
 
 it("says so when a shut down can't be confirmed (coordinator ruling: silence reads as success)", async () => {

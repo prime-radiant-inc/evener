@@ -207,8 +207,7 @@ describe("approval decisions", () => {
 			expect(controls.getSnapshot().pending).toBeNull();
 		},
 	);
-	it("tries a decision again after a failure, whether or not a re-read succeeded", async () => {
-		let refreshFails = true;
+	it("settles a decision the hub acknowledged when its readback fails", async () => {
 		let calls = 0;
 		const controls = new ApprovalControls(
 			{
@@ -221,20 +220,49 @@ describe("approval decisions", () => {
 			() => [pending],
 			() => true,
 			async () => {
+				// The receipt already said the hub took it, so its catch-up read
+				// failing leaves the decision settled rather than unconfirmed.
+				throw new Error("The read lost its connection.");
+			},
+		);
+		expect(await controls.resolve(pending, true)).toBe(true);
+		expect(calls).toBe(1);
+		expect(controls.getSnapshot()).toMatchObject({ pending: null, error: null });
+	});
+	it("tries a decision again after a failure, whether or not a re-read succeeded", async () => {
+		let dispatchFails = true;
+		let refreshFails = true;
+		let calls = 0;
+		const controls = new ApprovalControls(
+			{
+				request: async () => {
+					calls++;
+					if (dispatchFails) throw new Error("lost reply");
+					return {};
+				},
+			} as unknown as ConversationClientLike,
+			"local:s",
+			() => [pending],
+			() => true,
+			async () => {
 				if (refreshFails) throw new Error("offline");
 			},
 		);
-		await controls.resolve(pending, true);
+		// Nothing came back for this decision, so it stays unconfirmed and a
+		// press tries again.
+		expect(await controls.resolve(pending, true)).toBe(false);
 		expect(controls.getSnapshot().error).not.toBeNull();
 		await controls.refresh();
 		expect(controls.getSnapshot().error).not.toBeNull();
-		await controls.resolve(pending, false);
+		dispatchFails = false;
+		expect(await controls.resolve(pending, false)).toBe(true);
 		expect(calls).toBe(2);
+		// The receipt settled this one even though its readback could not run;
+		// the session's own read catches up.
+		expect(controls.getSnapshot().error).toBeNull();
 		refreshFails = false;
 		await controls.refresh();
 		expect(controls.getSnapshot().error).toBeNull();
-		await controls.resolve(pending, false);
-		expect(calls).toBe(3);
 	});
 	it("does not dispatch a card removed by the recovery read", async () => {
 		let values = [pending];

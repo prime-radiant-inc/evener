@@ -38,7 +38,12 @@ export class ApprovalControls {
 		this.state = state;
 		for (const listener of this.listeners) listener();
 	}
-	private async refreshAuthoritative() {
+	/** Reads the session again. `acknowledged` says the hub already took the
+	 * decision this read follows, so the read is catch-up: its failure leaves
+	 * the acknowledgement standing instead of reporting the decision as
+	 * unconfirmed. A read nobody's acknowledgement stands behind keeps the
+	 * uncertainty, because nothing else says what the hub did. */
+	private async refreshAuthoritative(acknowledged = false) {
 		if (this.disposed || !this.current()) return;
 		this.publish({ ...this.state, refreshing: true });
 		try {
@@ -47,22 +52,25 @@ export class ApprovalControls {
 			if (!this.current()) throw new Error("Session changed");
 			this.publish({ pending: null, refreshing: false, error: null });
 		} catch {
-			if (!this.disposed)
-				this.publish({
-					pending: null,
-					refreshing: false,
-					error: UNCONFIRMED,
-				});
+			if (this.disposed) return;
+			// A covered pane's decision still settled at the hub; its readback
+			// failing is not a reason to offer Allow and Deny again.
+			this.publish({
+				pending: null,
+				refreshing: false,
+				error: acknowledged ? null : UNCONFIRMED,
+			});
 		}
 	}
 	async refresh() {
 		if (this.disposed || !this.current() || this.state.pending !== null || this.state.refreshing) return;
 		await this.refreshAuthoritative();
 	}
-	/** Makes the decision at the hub. True when the hub took it and the
-	 * session's own read confirms it, whatever the reader is looking at now;
-	 * whether to announce it is the screen's question, since the pane that
-	 * asked may have been covered by the time the answer arrived. */
+	/** Makes the decision at the hub. True when the hub's receipt took it,
+	 * whatever the reader is looking at now and whatever the catch-up read
+	 * managed afterwards; whether to announce it is the screen's question,
+	 * since the pane that asked may have been covered by then. False means the
+	 * hub refused it, or nothing came back to say what it did. */
 	async resolve(displayed: SandboxEscalationRequested, approve: boolean): Promise<boolean> {
 		if (this.disposed || !this.current() || this.state.pending || this.state.refreshing) return false;
 		const pending = this.approvals().find((value) => value.escalationId === displayed.escalationId);
@@ -77,9 +85,14 @@ export class ApprovalControls {
 			if (!receipt || typeof receipt !== "object" || Array.isArray(receipt))
 				throw new Error("Malformed resolution receipt");
 			if (this.disposed) return false;
+			// The receipt is the hub's acknowledgement, and it is what settles this
+			// decision. The read that follows is catch-up: it brings the session's
+			// new state on screen, and a read that fails leaves the acknowledgement
+			// standing rather than turning an accepted decision into an unconfirmed
+			// one the reader is offered again.
 			if (!this.current()) throw new Error("Session changed");
-			await this.refreshAuthoritative();
-			return this.state.error === null;
+			await this.refreshAuthoritative(true);
+			return true;
 		} catch {
 			if (this.disposed) return false;
 			this.publish({

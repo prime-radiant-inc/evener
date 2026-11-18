@@ -191,9 +191,16 @@ export class SessionControls {
 		return this.run("setVisionModel", () => this.service.setVisionModel(`${provider}/${model}`));
 	}
 	private async run(kind: Operation, operation: () => Promise<void>): Promise<boolean> {
+		// A resume is the second half of a restart the reader already asked for:
+		// once the stop was acknowledged the resume is owed, so it is admitted on
+		// the session's binding even when another screen now covers the pane.
+		// Refusing it there would leave the daemon stopped with the restart
+		// unfinished and nothing left to retry it. Every other action is the
+		// reader's to start, so it keeps the route fence.
+		const owed = kind === "resume" ? this.isCurrent("session") : this.isCurrent();
 		if (
 			this.disposed ||
-			!this.isCurrent() ||
+			!owed ||
 			(kind !== "forceStop" && kind !== "resume" && !this.canMutate()) ||
 			this.state.pending
 		)
@@ -220,29 +227,28 @@ export class SessionControls {
 				// An acknowledged pick can outlive the binding that sent it: a
 				// re-render may dispose these controls, and a read can fail or wait
 				// out a reconnect. The acknowledgement, not the read, is the record
-				// that the change applied, so the follow-up read is best effort and
-				// one path serves every binding state. The reader still being on this
-				// session decides whether the change is announced; the transport
-				// decides only whether it can be read back. A reconnecting phone has
-				// not left the screen it is looking at, and its reconnect read is
-				// what brings the change on screen.
-				let stayed = this.isCurrent("route");
-				if (stayed) {
+				// that the change applied, so the follow-up read is best effort.
+				//
+				// The readback and the announcement answer different questions. The
+				// readback belongs to the live session and a ready transport: a pane
+				// another screen covers still has to show the new choice when the
+				// reader returns, and a pick that never reattaches its relay applies
+				// with nothing on screen to say so. Visibility decides only whether
+				// the change is announced, which is the reader's question.
+				if (this.isCurrent("destination")) {
 					// Readiness is a separate question from the reader's presence: a
 					// transport that is away reads nothing, and the session's own
 					// reconnect read catches the screen up afterwards.
-					if (this.isCurrent("destination")) {
-						try {
-							await this.refresh();
-						} catch {
-							// The screen's own read catches up; the pick applied regardless.
-						}
+					try {
+						await this.refresh();
+					} catch {
+						// The screen's own read catches up; the pick applied regardless.
 					}
-					// A read can outlast the reader's stay: whoever left while it ran
-					// is owed no confirmation on the screen they left, even when the
-					// read itself failed.
-					stayed = this.isCurrent("route");
 				}
+				// A read can outlast the reader's stay: whoever left while it ran
+				// is owed no confirmation on the screen they left, even when the
+				// read itself failed.
+				const stayed = this.isCurrent("route");
 				// Any still-live binding settles its action here, so its pending
 				// state never outlives the acknowledgement. The notice follows the
 				// reader's presence, which the return value also reports.
