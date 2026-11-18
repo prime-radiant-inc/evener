@@ -793,7 +793,10 @@ describe("conversation-owned session controls", () => {
 		expect(await controls.changeModel("two", "shared")).toBe(false);
 		const request = controls.changeModel("one", "shared");
 		expect(await controls.changeModel("two", "other")).toBe(false);
-		expect(applied).toEqual([["one", "shared"]]);
+		// The runner serializes on `pending`, which it sets before the first pick
+		// has an authority to dispatch under, so its frame reaches the wire a
+		// few ticks later. Wait for that frame rather than counting ticks.
+		await vi.waitFor(() => expect(applied).toEqual([["one", "shared"]]));
 		resolve();
 		expect(await request).toBe(true);
 		expect(reads).toBe(1);
