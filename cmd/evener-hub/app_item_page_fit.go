@@ -25,6 +25,15 @@ const (
 	transcriptWindowBudgetFloorBytes            = 16 << 10
 	transcriptWindowMeasuredEnvelopeMarginBytes = 32 << 10
 	transcriptWindowMaximumContentBudget        = managerReadMaxJSONBytes - transcriptWindowMeasuredEnvelopeMarginBytes
+	// transcriptReadStampLimitBytes bounds the per-call resolution stamp any
+	// bounded read carries (#6323). The stamp names the ask_user calls
+	// admission consumed, and a pending set can hold thousands of them: one
+	// short fenced reply carrying a 4,000-call stamp measured 392,912 bytes
+	// against the 256 KiB Manager cap, so the read was refused outright at any
+	// item limit. A healthy stamp is a few dozen bytes, so this limit is
+	// generous by orders of magnitude while keeping metadata from displacing
+	// the reply text it belongs to.
+	transcriptReadStampLimitBytes = 8 << 10
 )
 
 type transcriptWindowContinuationDirection string
@@ -1281,6 +1290,13 @@ func packItemCandidates[T any](
 	selectedStart := len(candidates) - len(selected)
 	for {
 		selected = append([]appitempaging.TranscriptItemCandidate(nil), candidates[selectedStart:]...)
+		// A per-call resolution stamp is metadata the size loop above cannot
+		// shrink by dropping items, because one reply carries it whole (#6323).
+		// Bound it here, on the default Manager read, so a page holding such a
+		// reply fits the cap instead of being refused outright.
+		for i := range selected {
+			selected[i].Item = boundTranscriptItemStamp(selected[i].Item, transcriptReadStampLimitBytes)
+		}
 		dropped := selectedStart
 		older := hasOlder || dropped > 0
 		olderCursor, cursorErr := packedOlderCursor(result, selected[0].Position, older)
@@ -1344,6 +1360,7 @@ func transcriptWindowBoundItem(item appwire.ThreadItem, previewBytes, messageByt
 		item.Output = transcriptWindowUTF8Prefix(item.Output, previewBytes)
 		truncated = true
 	}
+	item = boundTranscriptItemStamp(item, transcriptReadStampLimitBytes)
 	return item, bodyBytes, truncated
 }
 
@@ -1374,6 +1391,35 @@ func transcriptWindowItemBodyBytes(item appwire.ThreadItem) int {
 		size += len(encoded)
 	}
 	return size
+}
+
+// boundTranscriptItemStamp omits an oversized per-call resolution stamp as a
+// UNIT on a bounded read, keeping the reply and its turn links (#6323).
+//
+// The stamp is not a body: body trimming cannot shrink it, so a reply carrying
+// thousands of call pairs exceeds the whole Manager read cap no matter which
+// item limit the read asks for, and the read is refused with no data at all.
+// Dropping the call list returns that reply as an unstamped one, which is the
+// pre-stamp matching, so the read loses a recap it could not have attributed
+// anyway. answerToTurnIds and resolvedAskLegacyCount stay: both are small, and
+// both are still load-bearing.
+//
+// The observation is copied before editing. Bounding a read must not rewrite
+// the canonical item the caller retains, so the full stamp survives in the
+// projection every other read serves.
+func boundTranscriptItemStamp(item appwire.ThreadItem, limit int) appwire.ThreadItem {
+	observation := item.Observation
+	if observation == nil || len(observation.ResolvedAskCalls) == 0 {
+		return item
+	}
+	encoded, err := json.Marshal(observation.ResolvedAskCalls)
+	if err != nil || len(encoded) <= limit {
+		return item
+	}
+	bounded := *observation
+	bounded.ResolvedAskCalls = nil
+	item.Observation = &bounded
+	return item
 }
 
 func transcriptWindowItemHasBody(item appwire.ThreadItem) bool {
