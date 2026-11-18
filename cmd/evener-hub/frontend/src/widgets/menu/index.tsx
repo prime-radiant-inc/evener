@@ -201,24 +201,60 @@ const observeRow = (popup: HTMLElement, row: HTMLElement): RowObservation => ({
   portWidth: popup.offsetWidth,
 });
 
-/** Did `scroller` just get CLAMPED? A clamp is visible in one scroller's own
- * numbers: the offset this listener last saw for it was larger than the maximum
- * it now allows - it pointed past the end - and the offset it reports now is
- * exactly that new maximum, which is where a browser puts a scroll position it
- * had to pull back. Nothing about the window or the trigger is needed, which is
- * what makes this catch a container that grew while `innerHeight` stayed put.
+/** What one look at a scroller saw: how far it was scrolled, and where the
+ * trigger sat inside its content. */
+interface ScrollerRecord {
+  scrollTop: number;
+  /** The trigger's place in the scroller's CONTENT, not in the viewport: the
+   * trigger's rect top minus the scroller's own, with the offset added back. A
+   * scroller's screen position does not move while its own content scrolls, so
+   * a difference between two of these is a difference the content made. */
+  contentTop: number;
+}
+
+/** What a scroller that holds the trigger just did, read from its own numbers.
  *
- * Records the offset as it goes, so each call compares against the previous
- * one. A reader scrolling up normally lands anywhere below the maximum, and one
- * scrolling to the end lands ON the maximum with a previous offset that was
- * already legal - not a clamp, so `previous > maximum` is what separates them. */
-function wasClampedBy(scroller: Element, offsets: WeakMap<Element, number>): boolean {
+ * A `scroll` from it has three causes, and only the last one takes the trigger
+ * away from the reader:
+ *
+ * - a CLAMP: the offset the last look saw pointed past an end that then moved
+ *   up under it, and what is left is exactly the new maximum. The viewport or a
+ *   container grew, with no reader behind it. Nothing about the window is
+ *   needed, which is what makes this catch a container that grew while
+ *   `innerHeight` stayed put.
+ * - an ANCHORING adjustment: content arrived above the trigger, so the browser
+ *   moved the offset by the same amount it moved the trigger deeper into the
+ *   content. That is what holds the reader's view still while a live list grows
+ *   above them, and the trigger is exactly where they left it.
+ * - a SCROLL: the offset moved and the trigger's place in the content did not,
+ *   which is the trigger sliding out from under a popup fixed in the viewport's
+ *   coordinates. That is the reader leaving.
+ *
+ * The first two are a reader's scroll with nobody behind them, and both are
+ * read from the geometry rather than trusted from the event. A reader who
+ * scrolls up lands anywhere below the maximum, and one who scrolls to the end
+ * lands ON the maximum from an offset that was already legal - so `previous >
+ * maximum` is what separates a clamp from a reader. Each call records what it
+ * saw, so the next one compares against it. */
+function classifyScrollerScroll(
+  scroller: Element,
+  triggerEl: HTMLElement | null,
+  records: WeakMap<Element, ScrollerRecord>,
+): "clamp" | "anchoring" | "scrolled" {
+  if (triggerEl === null) return "scrolled";
   const now = scroller.scrollTop;
-  const previous = offsets.get(scroller);
-  offsets.set(scroller, now);
-  if (previous === undefined) return false;
+  const previous = records.get(scroller);
+  const contentTop = triggerEl.getBoundingClientRect().top - scroller.getBoundingClientRect().top + now;
+  records.set(scroller, { scrollTop: now, contentTop });
+  if (previous === undefined) return "scrolled";
   const maximum = scroller.scrollHeight - scroller.clientHeight;
-  return previous > maximum && now === maximum;
+  if (previous.scrollTop > maximum && now === maximum) return "clamp";
+  const moved = now - previous.scrollTop;
+  // The offset grew by exactly as much as the trigger moved deeper into the
+  // content: what changed is the content above the trigger, not the reader's
+  // place in it.
+  if (moved !== 0 && contentTop - previous.contentTop === moved) return "anchoring";
+  return "scrolled";
 }
 
 function itemAt(items: MenuEntry[], i: number): MenuEntry {
@@ -370,12 +406,16 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   const anchoredTriggerRef = useRef<{ left: number; top: number } | null>(null);
   const grewBeforeScrollRef = useRef(false);
   const lastViewportHeightRef = useRef(0);
-  // The scroll offset last seen for each scroller that holds the trigger. A
-  // clamp can be read from the scroller alone: its offset was beyond a maximum
-  // that then SHRANK under it, and what is left is exactly that new maximum.
-  // That is the case a window height cannot see at all - the rail's list grows
-  // when its Needs You chip disappears, with `innerHeight` untouched.
-  const scrollerOffsetsRef = useRef(new WeakMap<Element, number>());
+  // What each scroller that holds the trigger looked like at the last look: its
+  // offset, and where the trigger sat inside its content. Two numbers, because
+  // the offset alone cannot say who moved it. A clamp is the offset pulled back
+  // to a maximum that shrank under it - the case a window height cannot see at
+  // all, since the rail's list grows when its Needs You chip disappears with
+  // `innerHeight` untouched. An anchoring adjustment is the offset growing by
+  // exactly the amount the trigger moved deeper into the content, which is a
+  // live list growing above the reader. A reader's own scroll moves the offset
+  // and leaves the trigger where it was in the content.
+  const scrollerRecordsRef = useRef(new WeakMap<Element, ScrollerRecord>());
 
   /** Reveal the focused row if it is outside the popup's visible area, and do
    * nothing in every other case.
@@ -900,9 +940,14 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // first scroll of the trigger's own container could only be judged by the
     // rect, and a clamp that arrives as the very first event would be read as
     // the reader leaving.
-    const seeded = scrollerOffsetsRef.current;
-    for (let node: HTMLElement | null = triggerRef.current; node !== null; node = node.parentElement) {
-      if (isScrollContainer(node, ownerWindow)) seeded.set(node, node.scrollTop);
+    const seeded = scrollerRecordsRef.current;
+    const triggerEl = triggerRef.current;
+    for (let node: HTMLElement | null = triggerEl; node !== null; node = node.parentElement) {
+      if (!isScrollContainer(node, ownerWindow)) continue;
+      seeded.set(node, {
+        scrollTop: node.scrollTop,
+        contentTop: (triggerEl?.getBoundingClientRect().top ?? 0) - node.getBoundingClientRect().top + node.scrollTop,
+      });
     }
     function onScrollCapture(event: Event) {
       const target = event.target;
@@ -919,37 +964,35 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         target === ownerWindow ||
         (nodeType === 1 && rootRef.current !== null && (target as Element).contains(rootRef.current))
       ) {
-        // A clamp is the browser correcting an offset that a bigger scrollport
-        // made invalid, and it is read from the scroller's own geometry: the
-        // offset this listener last saw was beyond a maximum that then shrank,
-        // and the offset left now IS that new maximum. That covers a window
-        // that grew AND a container that grew with the window untouched - the
-        // rail's list getting taller when its Needs You chip goes away.
+        // A scroll this scroller emitted with nobody behind it - the browser
+        // correcting an offset a bigger scrollport made invalid, or holding the
+        // reader's view still while a live list grows above the trigger - is
+        // read from the geometry, never from the event. See
+        // classifyScrollerScroll for the three causes and how they separate.
         //
-        // A confirmed clamp re-anchors even when the trigger's rect changed: the
-        // correction moves the content the trigger sits in, so the trigger
-        // really does move, and the popup has to follow it. What it must not do
-        // is move OFF SCREEN - a clamp never carries the trigger out of the
+        // Either correction re-anchors even when the trigger's rect changed:
+        // the content the trigger sits in moved, so the trigger really does
+        // move, and the popup has to follow it. What neither may do is move the
+        // trigger OFF SCREEN - a correction never carries it out of the
         // viewport, so one that did is a reader's scroll however the numbers
-        // read. A scroll with no clamp behind it is the reader's as well, and
-        // growth alone is not a clamp.
+        // read.
         const anchored = anchoredTriggerRef.current;
         const rect = triggerRef.current?.getBoundingClientRect();
         const grew = grewBeforeScrollRef.current;
         grewBeforeScrollRef.current = false;
         const stayed =
           anchored !== null && rect !== undefined && rect.left === anchored.left && rect.top === anchored.top;
-        const clampedHere =
+        const cause =
           nodeType === 1 && target !== ownerWindow
-            ? wasClampedBy(target as Element, scrollerOffsetsRef.current)
-            : false;
+            ? classifyScrollerScroll(target as Element, triggerRef.current, scrollerRecordsRef.current)
+            : "scrolled";
         const stillOnScreen =
           rect !== undefined &&
           rect.top + rect.height > 0 &&
           rect.top < ownerWindow.innerHeight &&
           rect.left + rect.width > 0 &&
           rect.left < ownerWindow.innerWidth;
-        if (clampedHere && stillOnScreen) placeNowAndAfterLayout();
+        if (cause !== "scrolled" && stillOnScreen) placeNowAndAfterLayout();
         else if (stayed && grew) placeNowAndAfterLayout();
         else closeMenu();
       }
@@ -1085,10 +1128,16 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     const Mutations = ownerWindow.MutationObserver;
     const movedTheTrigger = (records: MutationRecord[]): boolean =>
       records.some((record) => {
-        // From the target ITSELF: an insertion into a scroller has that
-        // scroller as the record's target, and starting at its parent would
-        // walk right past the scroller that decides the answer.
-        for (let node: Element | null = record.target as Element; node !== null; node = node.parentElement) {
+        const target = record.target;
+        // A character-data record's target is a Text node, which has no
+        // parentElement of its own - and the text node is already INSIDE the
+        // box that lays it out, so the walk starts at its parent. Starting
+        // below it would skip the scroller that decides the answer.
+        const from = target.nodeType === 1 ? (target as Element) : (target.parentElement ?? null);
+        // From the node ITSELF: an insertion into a scroller has that scroller
+        // as the record's target, and starting at its parent would walk right
+        // past the scroller that decides the answer.
+        for (let node: Element | null = from; node !== null; node = node.parentElement) {
           if (!ancestorsOfTrigger.has(node) && isScrollContainer(node, ownerWindow)) return false;
         }
         return true;
@@ -1100,8 +1149,14 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
             if (movedTheTrigger(records)) placeAfterLayout();
           });
     if (mutations !== null && triggerEl !== null) {
+      // characterData, because a heading above the trigger can be RENAMED in
+      // place: another tab's session title gets longer, the text node's value
+      // changes with no node inserted or removed, the heading wraps, and the
+      // trigger moves down. The sizes of every observed box can stay identical,
+      // so there is no other notification this widget would receive.
       mutations.observe(scrollContainerOf(triggerEl, ownerWindow) ?? topLevelWrapperOf(triggerEl, ownerDocument), {
         childList: true,
+        characterData: true,
         subtree: true,
       });
     }

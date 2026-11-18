@@ -391,6 +391,106 @@ test("a scroller that grows with the window unchanged clamps without closing the
   }
 });
 
+// A scroller emits `scroll` when a LIVE list grows above the reader too, and
+// that one must not take the menu away. A row arriving in the rail's Live
+// section moves the pinned section - and the trigger inside it - deeper into
+// the rail's content, and the browser answers by moving the offset by the same
+// amount, which is what holds the reader's view still. The offset is inside
+// the valid range the whole time and no window ever grew, so neither a clamp
+// nor a resize explains it. What explains it is the geometry: the offset moved
+// by exactly as much as the trigger moved inside the content.
+test("a live row arriving above the trigger anchors the scroll and leaves the menu open", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  // The trigger's own screen position: the browser's adjustment exists to hold
+  // it still, so it does not move.
+  const triggerTop = 300;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  const { flush } = captureFrames();
+  try {
+    render(
+      <div data-testid="owning-scroller" style={{ overflowY: "auto" }}>
+        <Menu trigger="Actions" items={items()} />
+      </div>,
+    );
+    const scroller = screen.getByTestId("owning-scroller");
+    // The rail scrolled past Live: 300 of 300 available in a 200px box.
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 500 });
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 200 });
+    scroller.scrollTop = 300;
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu").style.top).toBe("332px"); // 300 + 28 + 4
+
+    // A session enters Live above the visible area. The rail's content grows by
+    // the 40px the row takes, and the browser moves the offset by the same 40
+    // to keep the pinned section where the reader is looking: 340 of a new
+    // 360. Inside the range, with no clamp and no resize anywhere.
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 560 });
+    scroller.scrollTop = 340;
+    fireEvent.scroll(scroller);
+    flush();
+
+    // The trigger never left the reader's screen, so the menu is still theirs -
+    // still open, and still sitting on the trigger.
+    expect(screen.getByRole("menu")).toBeTruthy();
+    expect(screen.getByRole("menu").style.top).toBe("332px");
+  } finally {
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// The other side of that reading, and the one that keeps this a fix rather than
+// a suppression: a scroll that really does slide the trigger out from under the
+// popup still closes the menu. Here the rail's content is untouched and the
+// reader scrolled 40px down it, so the trigger ends 40px HIGHER on screen while
+// the offset gains exactly those 40 - its place in the content is unmoved, and
+// that is what makes the offset change the reader's.
+test("a scroll that moves the trigger out from under the popup still closes the menu", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  let triggerTop = 300;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  const { flush } = captureFrames();
+  try {
+    render(
+      <div data-testid="owning-scroller" style={{ overflowY: "auto" }}>
+        <Menu trigger="Actions" items={items()} />
+      </div>,
+    );
+    const scroller = screen.getByTestId("owning-scroller");
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 560 });
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 200 });
+    scroller.scrollTop = 300;
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu")).toBeTruthy();
+
+    // The reader drags the rail down 40px. Nothing above the trigger changed,
+    // so the trigger slides up the screen by those 40.
+    scroller.scrollTop = 340;
+    triggerTop = 260;
+    fireEvent.scroll(scroller);
+    flush();
+
+    expect(screen.queryByRole("menu")).toBeNull();
+  } finally {
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
 // A row that was fully hidden stays fully hidden however it grows. The reader
 // focused Overview, then scrolled down to the lower actions with focus still on
 // it: all 44px of Overview are above a scrollport starting at 100. A live
@@ -1947,9 +2047,18 @@ test("a row inserted below the focused row leaves the reader's scroll where they
     return Array.prototype.indexOf.call(this.parentElement.children, this) * 44;
   });
   const { flush } = captureFrames();
+  // Five 44px rows in a 120px scrollport give 100px of scroll range, so the
+  // 40px offset below is one a browser can actually reach. Three rows would
+  // allow only 12px and the test would assert a position its own fixture
+  // forbids.
+  const five: MenuItem[] = [
+    ...items(),
+    { id: "archive", label: "Archive", onSelect: vi.fn() },
+    { id: "pin", label: "Pin", onSelect: vi.fn() },
+  ];
   function GrowingBelow({ trailing }: { trailing: boolean }) {
     const extra: MenuItem[] = trailing ? [{ id: "turn-stop", label: "Stop", onSelect: vi.fn() }] : [];
-    return <Menu trigger="Actions" items={[...items(), ...extra]} />;
+    return <Menu trigger="Actions" items={[...five, ...extra]} />;
   }
   try {
     const view = render(<GrowingBelow trailing={false} />);
@@ -1989,8 +2098,15 @@ test("a position-only placement leaves the reader's scroll where they put it", a
   stubPopupLayoutBox(window, 160, 120);
   const reveal = vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(() => {});
   const { flush } = captureFrames();
+  // Five 44px rows in a 120px scrollport, so the 40px offset the reader takes
+  // below is inside the 100px the fixture actually allows.
+  const rows: MenuItem[] = [
+    ...items(),
+    { id: "archive", label: "Archive", onSelect: vi.fn() },
+    { id: "pin", label: "Pin", onSelect: vi.fn() },
+  ];
   try {
-    render(<Menu trigger="Actions" items={items()} />);
+    render(<Menu trigger="Actions" items={rows} />);
     await user.click(screen.getByRole("button", { name: "Actions" }));
     // Focus stays on the first row; the reader scrolls down to the last one.
     expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Rename" }));
@@ -2042,8 +2158,16 @@ test("a width-only change leaves the reader's scroll where they put it", async (
     return Array.prototype.indexOf.call(this.parentElement.children, this) * 44;
   });
   const { flush } = captureFrames();
+  // Five 44px rows in a 120px scrollport give 100px of scroll range, so the
+  // reader's 40px offset below is one the fixture can actually hold. Three
+  // rows would allow only 12px, a position a browser would clamp away.
+  const rows: MenuItem[] = [
+    ...items(),
+    { id: "archive", label: "Archive", onSelect: vi.fn() },
+    { id: "pin", label: "Pin", onSelect: vi.fn() },
+  ];
   try {
-    render(<Menu trigger="Actions" items={items()} />);
+    render(<Menu trigger="Actions" items={rows} />);
     await user.click(screen.getByRole("button", { name: "Actions" }));
     // Focus stays on the first row, and the reader scrolls down to the last.
     const first = screen.getByRole("menuitem", { name: "Rename" });
@@ -2124,6 +2248,7 @@ const TRANSCRIPT_TOKENS = ["token 0", "token 1", "token 2"];
 function ComposerBesideTranscript({ tokens }: { tokens: string[] }) {
   return (
     <div>
+      <h2 data-testid="heading">Pinned sessions</h2>
       <div data-testid="transcript" style={{ overflowY: "auto", height: 400 }}>
         {tokens.map((token) => (
           <p key={token}>{token}</p>
@@ -2189,12 +2314,20 @@ test("a transcript streaming beside the composer does not re-place the open menu
     const callback = captured.byTarget.get(layoutContext);
     if (callback === undefined)
       throw new Error("the menu registered no mutation observer for the trigger's layout context");
-    const record = (target: Element) => {
+    const record = (target: Node) => {
       const next = { addedNodes: [], removedNodes: [] } as unknown as MutationRecord;
       Object.defineProperty(next, "target", { value: target });
       return next;
     };
-    scheduled.length = 0;
+    // The widget coalesces placement into one frame, so a request made while
+    // one is already pending never reaches requestAnimationFrame. Running the
+    // pending frame is what makes the NEXT case's count mean anything.
+    const drain = () => {
+      act(() => {
+        for (const callback of scheduled.splice(0)) callback(0);
+      });
+    };
+    drain();
 
     // A token arrives inside the transcript's own scroller, beside the
     // composer. Nothing outside that scroller is laid out by it, so no frame.
@@ -2204,6 +2337,32 @@ test("a transcript streaming beside the composer does not re-place the open menu
       callback([record(transcript)], {} as MutationObserver);
     });
     expect(scheduled.length).toBe(0);
+
+    // A token streamed INTO the transcript is the same shape as the heading
+    // below - a text node changing in place - and still must not re-measure,
+    // because its scroller is somebody else's. The filter's answer does not
+    // depend on the node type, only on where the node sits.
+    const token = transcript.firstElementChild?.firstChild ?? null;
+    if (token === null) throw new Error("the transcript has no text node");
+    act(() => {
+      callback([record(token)], {} as MutationObserver);
+    });
+    expect(scheduled.length).toBe(0);
+    drain();
+
+    // A HEADING above the trigger can be renamed in place: another tab's
+    // session gets a longer title, the heading wraps, and the trigger moves
+    // down with no node inserted, removed or resized anywhere. The record's
+    // target is the text node itself, which is why the filter starts its walk
+    // at that node's parent - a Text node has no parentElement of its own.
+    const heading = screen.getByTestId("heading");
+    const text = heading.firstChild;
+    if (text === null) throw new Error("the heading has no text node");
+    act(() => {
+      callback([record(text)], {} as MutationObserver);
+    });
+    expect(scheduled.length).toBe(1);
+    drain();
 
     // The same callback DOES schedule from a record that could move the
     // trigger: the composer's own wrapper is not inside any other scroller.
@@ -2219,6 +2378,75 @@ test("a transcript streaming beside the composer does not re-place the open menu
   } finally {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
+  }
+});
+
+// The record above is handed to the widget's own callback, which proves what
+// the FILTER does with a text-node record but not that the observer ever emits
+// one. A child-list-only registration emits nothing for a text node whose value
+// changes in place, so the heading has to be renamed on a REAL observer and the
+// popup has to follow. That is the whole case: a session title elsewhere gets
+// longer, the pinned heading above this trigger wraps, and the trigger moves
+// down while every observed box keeps its size.
+test("a heading renamed in place above the trigger moves the open popup with it", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  let pinnedTop = 300;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON" && this.textContent === "Pinned actions") return box(100, pinnedTop, 40, 28);
+    if (this.tagName === "BUTTON") return box(0, 0, 80, 24);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 100, 40);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  // Every box observer stays silent: the heading's box does not change either,
+  // because its wrapper keeps the height the wrapped text needs.
+  class SilentResizeObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  vi.stubGlobal("ResizeObserver", SilentResizeObserver);
+  const { flush } = captureFrames();
+  function RenamedAbove({ title }: { title: string }) {
+    return (
+      <div>
+        <h2 data-testid="heading">{title}</h2>
+        <Menu trigger="Pinned actions" items={items()} />
+      </div>
+    );
+  }
+  try {
+    const { rerender } = render(<RenamedAbove title="Pinned" />);
+    // Open and place FIRST, so the popup's position cannot come from measuring
+    // a trigger that had already moved.
+    await user.click(screen.getByRole("button", { name: "Pinned actions" }));
+    expect(screen.getByRole("menu").style.top).toBe("332px"); // 300 + 28 + 4
+
+    // The heading is renamed to a longer title and wraps, pushing the trigger
+    // down. The text node's value changes in place - no node is added, removed
+    // or resized - and the trigger keeps its own 40x28 box.
+    const heading = screen.getByTestId("heading");
+    const text = heading.firstChild;
+    if (text === null) throw new Error("the heading has no text node");
+    pinnedTop = 380;
+    act(() => {
+      text.nodeValue = "Pinned sessions, all of them";
+    });
+    rerender(<RenamedAbove title="Pinned sessions, all of them" />);
+    // A real observer delivers its records as a microtask after the mutation,
+    // and the widget answers them by scheduling a frame. Both steps have to
+    // run: the first is what a child-list-only registration never produces.
+    await act(async () => {});
+    flush();
+
+    expect(screen.getByRole("menu")).toBeTruthy();
+    expect(screen.getByRole("menu").style.top).toBe("412px"); // 380 + 28 + 4
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
   }
 });
 
