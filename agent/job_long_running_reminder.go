@@ -106,6 +106,10 @@ func longRunningJobsNotification(jobs []*jobstore.JobRecord, now time.Time) jobN
 	// #2340).
 	occurrence := sha256.Sum256([]byte(b.String()))
 	n.Occurrence = "reminder:" + hex.EncodeToString(occurrence[:16])
+	// The instant this listing describes. Identity alone cannot order two
+	// snapshots: a retried older one arrives after the newer one that replaced
+	// it, and the fold must not read arrival order as freshness.
+	n.SnapshotAt = now
 	return n
 }
 

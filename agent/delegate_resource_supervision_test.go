@@ -655,6 +655,48 @@ func TestDelegateResourceSupervision_FoldLeavesAPresentedTickAlone(t *testing.T)
 	}
 }
 
+// TestDelegateResourceSupervision_ARetriedOlderSnapshotKeepsTheNewerListing pins
+// that a snapshot's age decides the fold, not its arrival (#2340 review).
+//
+// A long-running-jobs listing that failed to append is retried, and by then a
+// newer listing may already have landed. The retry arrives LAST while describing
+// an OLDER world, so treating every different pending snapshot as superseded
+// made it discard the newer listing and present jobs that had already finished.
+func TestDelegateResourceSupervision_ARetriedOlderSnapshotKeepsTheNewerListing(t *testing.T) {
+	t.Parallel()
+	sess, _ := newCompactableSession(t)
+	base := time.Unix(1_700_000_000, 0).UTC()
+	makeSnapshot := func(minutes int, text string) jobNotification {
+		n := watchNotification("", longRunningJobsReason)
+		n.Note = text
+		n.Occurrence = "reminder:" + text
+		n.SnapshotAt = base.Add(time.Duration(minutes) * time.Minute)
+		return n
+	}
+	newer := makeSnapshot(10, "newer-listing")
+	older := makeSnapshot(5, "older-listing")
+
+	// The newer listing landed first and is what this receiver holds.
+	if _, err := sess.appendDelegateNotificationDurably(stableWatchDiagnosticAttentionID(newer), newer.Note); err != nil {
+		t.Fatalf("persist the newer listing: %v", err)
+	}
+	sess.notePendingStableWatchNotice(newer, stableWatchDiagnosticAttentionID(newer))
+
+	// The retried OLDER listing must not supersede it.
+	_, superseded := sess.foldPendingStableWatchNotice(older)
+	if slices.Contains(superseded, stableWatchDiagnosticAttentionID(newer)) {
+		t.Fatal("a retried older snapshot superseded the newer listing: the model would be shown jobs that already finished while the ones still running are hidden")
+	}
+
+	// Non-vacuity: a GENUINELY newer listing still replaces the older one, or
+	// this fixture would pass with the snapshot fold disabled entirely.
+	newest := makeSnapshot(15, "newest-listing")
+	_, superseded = sess.foldPendingStableWatchNotice(newest)
+	if !slices.Contains(superseded, stableWatchDiagnosticAttentionID(newer)) {
+		t.Fatal("a newer snapshot failed to supersede an older pending one: the snapshot fold stopped folding, so the arm above no longer distinguishes age from arrival")
+	}
+}
+
 // TestDelegateResourceSupervision_ForwardedGroupArmsUnderItsHold pins that a
 // durable arm inside the router's group hold defers its wake (#2340 review).
 //

@@ -639,6 +639,14 @@ type jobNotification struct {
 	// resolved attention identity (which would produce no wake), while replaying
 	// one tick must not append a duplicate.
 	Occurrence string
+	// SnapshotAt is the instant a SNAPSHOT notice describes the world at, for a
+	// family whose members replace one another rather than accumulate. A
+	// snapshot that failed to persist is retried, and by then a newer one may
+	// already have landed: arrival order cannot say which of the two is newer,
+	// because the retry arrives LAST while describing the OLDER world. The fold
+	// compares this instead, so a retried older listing cannot discard the newer
+	// one that replaced it (#2340 review). Zero for every other notice.
+	SnapshotAt time.Time
 	// backstopFires, when set, is how many times the originating watch has
 	// delivered within watchBackstopWindow; the rendered notification then
 	// carries the hourly backstop notice (watchBackstopNotice).

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -650,6 +651,10 @@ type stableWatchPendingNotice struct {
 	// recheck must skip these rows or it discards the firing it was written to
 	// protect (#2340 review).
 	terminal bool
+	// snapshotAt is the instant a SNAPSHOT row describes the world at. Arrival
+	// order cannot order snapshots: a retried older listing arrives after the
+	// newer one that replaced it, so the fold compares this instead.
+	snapshotAt time.Time
 	// order is arrival sequence: a newer snapshot replaces an older one, and a
 	// moved record can be told from a still-current one.
 	order uint64
@@ -723,6 +728,15 @@ func (s *Session) foldPendingStableWatchNotice(n jobNotification) (jobNotificati
 			if s.attentionIDCoveredLocked(held.attentionID) {
 				continue
 			}
+			// A retried snapshot describes an OLDER world than a newer one that
+			// already landed. Arrival order says the retry is newest; the
+			// snapshot instant says otherwise, and only the instant is
+			// trustworthy: retiring the newer listing would present jobs that
+			// have already finished and hide the ones still running
+			// (#2340 review).
+			if !held.snapshotAt.IsZero() && !n.SnapshotAt.IsZero() && n.SnapshotAt.Before(held.snapshotAt) {
+				continue
+			}
 			// A tick of one watch folds its count into the survivor; every other
 			// family member is simply replaced, because the survivor's content is
 			// a newer statement of the same fact.
@@ -762,6 +776,7 @@ func (s *Session) notePendingStableWatchNotice(n jobNotification, attentionID st
 		provenance:  n.Provenance,
 		watchID:     n.WatchID,
 		terminal:    n.Terminal,
+		snapshotAt:  n.SnapshotAt,
 		order:       0,
 	}
 	s.attentionMu.Lock()
