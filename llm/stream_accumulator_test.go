@@ -75,6 +75,7 @@ func TestStreamAccumulator_FinishWithMetadataOnlyResponse_PreservesAccumulatedCo
 		Model:    "gpt-5.4",
 		Raw:      map[string]any{"id": "resp_1"},
 	}
+	StampEndpointURL(&final, "https://serving.invalid/fixture-31", NewAPILogCredentialMaterial(nil, nil, "fixture-31"))
 	acc.Process(StreamEvent{Type: StreamEventFinish, Response: &final})
 
 	got := acc.Response()
@@ -92,6 +93,9 @@ func TestStreamAccumulator_FinishWithMetadataOnlyResponse_PreservesAccumulatedCo
 	}
 	if got.Raw["id"] != "resp_1" {
 		t.Fatalf("raw = %#v", got.Raw)
+	}
+	if got.ReasoningEndpoint() == "" || got.ReasoningEndpoint() != final.ReasoningEndpoint() {
+		t.Fatal("metadata-only terminal lost the streamed call's serving origin")
 	}
 	if calls := got.ToolCalls(); len(calls) != 1 || calls[0].ID != "call_streamed" {
 		t.Fatalf("metadata-only terminal lost the streamed call: %+v", calls)
