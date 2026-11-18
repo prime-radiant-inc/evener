@@ -339,17 +339,20 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     const availableWidth = visible.width - 2 * EDGE_MARGIN;
     const maxInlineSize = `${Math.max(0, availableWidth)}px`;
     if (popupEl.style.maxInlineSize !== maxInlineSize) popupEl.style.maxInlineSize = maxInlineSize;
-    // A popup that fits keeps the stylesheet's floor and its single-line rows.
-    // As soon as the visible width caps it, BOTH give: the floor yields so the
-    // cap can apply, and the labels may wrap. Wrapping is keyed on the cap
-    // having applied rather than on the cap being smaller than the floor,
-    // because a cap of 180 or more still narrows the popup - a long label (the
-    // session activity count at the largest text setting is one) overflows
-    // even then, and an overflowing label needs a horizontal scroll to read.
-    // A label that fits on one line is unaffected by the rule.
-    const capped = availableWidth < ownerWindow.innerWidth;
     const minInlineSize = availableWidth < NARROW_POPUP_WIDTH ? "0" : "";
     if (popupEl.style.minWidth !== minInlineSize) popupEl.style.minWidth = minInlineSize;
+    // The stylesheet sizes the popup to `max-content`, so the width measured
+    // here is the popup's own request capped by the visible width: below the
+    // cap it is what the labels want, at the cap it is as much as the reader
+    // can see. Only that second case wraps - the cap is then what forced the
+    // break, and without the break a long label (the session activity count at
+    // the largest text setting is one) runs past the scrollport and reading it
+    // needs a horizontal scroll. Wrapping is keyed on the measurement rather
+    // than on the cap being smaller than the stylesheet's floor: a cap at or
+    // above 180 still narrows the popup. Comparing the cap against the layout
+    // viewport instead would wrap every menu, since the cap always reserves
+    // both edge margins.
+    const capped = popupEl.offsetWidth >= availableWidth;
     popupEl.classList.toggle(CLASS.popupNarrow, capped);
     const placed = computeMenuPosition(
       localTriggerRect,
@@ -360,16 +363,25 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // would then activate a row whose label and focus ring are out of sight.
     // Only a shrink can do that, and only a shrink is answered: revealing on
     // every pass would undo the reader's own scroll to the lower actions the
-    // moment any placement runs (a pan, a row appearing above). `nearest` is
-    // the browser's minimal scroll: it does nothing when the row is already
-    // visible, scrolls the popup rather than the document, and only a row that
-    // already holds focus ever moves.
+    // moment any placement runs (a pan, a row appearing above).
+    //
+    // The reveal moves the POPUP's own scrollTop and nothing else.
+    // scrollIntoView would answer the same question through geometry, but on a
+    // pinch-zoomed page the row's position is measured against the VISUAL
+    // viewport, so it can pan the page itself - before this pass has written
+    // the popup's new coordinates, it pans toward where the popup used to be.
+    // Arithmetic in the popup's own scroll space has no such reach.
     const scrollportHeight = popupEl.offsetHeight;
     const shrunk = lastScrollportHeightRef.current !== null && scrollportHeight < lastScrollportHeightRef.current;
     lastScrollportHeightRef.current = scrollportHeight;
     if (shrunk) {
       const focusedRow = itemRefs.current.find((node) => node !== null && node === ownerDocument.activeElement);
-      focusedRow?.scrollIntoView({ block: "nearest" });
+      if (focusedRow) {
+        const rowTop = focusedRow.offsetTop;
+        const rowBottom = rowTop + focusedRow.offsetHeight;
+        if (rowTop < popupEl.scrollTop) popupEl.scrollTop = rowTop;
+        else if (rowBottom > popupEl.scrollTop + scrollportHeight) popupEl.scrollTop = rowBottom - scrollportHeight;
+      }
     }
     // Only write when it actually moved: the observers below can report a
     // mutation that changes nothing about placement (a text node elsewhere in

@@ -6,10 +6,20 @@ import { makeTranscriptDisplayConfig } from "@evener/appwire-client";
 import { keyID } from "@evener/appwire-client/state/navigation";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { activityChangedNotification } from "@evener/appwire-client/testing/notifications";
-import { act, cleanup, renderHook, render as renderUI, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  renderHook,
+  render as renderUI,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps, ReactElement } from "react";
 import { lazy } from "react";
+import { createPortal } from "react-dom";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../../motion";
 import { ActivitySidebar } from "../../../shell/activitybar/ActivitySidebar";
@@ -30,6 +40,7 @@ import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../../stores/transcriptDisplay";
 import { escapeRegExp } from "../../../styles/cssBlock";
 import { ALL_CAPABILITIES as CAPABILITIES } from "../../../threadTestUtils";
+import { appendPopout } from "../../../widgets/internal/popoutTestUtils";
 import { resetFindRequestsForTests, useFindRequest } from "../find/findRequest";
 import { settleActivityDiscovery } from "../testing/activityDiscovery";
 import { installMobileViewport } from "../testing/mobileViewport";
@@ -921,6 +932,47 @@ test("desktop Overview toggles closed only when the sidebar is scoped to this se
     expect(activitySidebarStore.getState().open).toBe(false);
   } finally {
     restoreSession();
+  }
+});
+
+// The Find decision is measured against the window the chrome is RENDERED IN.
+// A Dockview popout is its own Window: shortening it leaves the opener's
+// innerHeight untouched, so a list built once from a global measurement keeps
+// offering a row the popout has no room to show.
+test("shortening a popout drops Find and leaves the open menu on a surviving row", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_popout"));
+  fake.on("evener/jobs/list", () => ({ data: emptyActivityTree() }));
+  await threadsStore.getState().ensureThread("ref_popout");
+  const { frame, doc, win } = appendPopout();
+  Object.defineProperty(win, "innerHeight", { configurable: true, value: 520 });
+  const view = renderUI(createPortal(<SessionChrome ref="ref_popout" />, doc.body));
+  try {
+    const trigger = within(doc.body).getByRole("button", { name: "Session actions" });
+    fireEvent.click(trigger);
+    // 520px is tall enough for the menu to carry Find.
+    const find = within(doc.body).getByRole("menuitem", { name: /^Find in session/ });
+    // Focus Find itself, so the removal has to move focus rather than quietly
+    // drop a row nobody was on.
+    fireEvent.keyDown(doc.activeElement ?? trigger, { key: "ArrowDown" });
+    expect(doc.activeElement).toBe(find);
+
+    // The pane shortens to 390px. Only the popout's own window reports it.
+    Object.defineProperty(win, "innerHeight", { configurable: true, value: 390 });
+    act(() => {
+      win.dispatchEvent(new Event("resize"));
+    });
+
+    const menu = within(doc.body).getByRole("menu");
+    expect(within(menu).queryByRole("menuitem", { name: /^Find in session/ })).toBeNull();
+    // Still open, and focus sits on a row that is still there.
+    const focused = doc.activeElement;
+    expect(focused).not.toBeNull();
+    expect(menu.contains(focused)).toBe(true);
+    expect(focused?.getAttribute("role")).toBe("menuitem");
+  } finally {
+    view.unmount();
+    frame.remove();
   }
 });
 

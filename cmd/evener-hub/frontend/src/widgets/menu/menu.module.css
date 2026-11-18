@@ -85,6 +85,13 @@
   position: fixed;
   z-index: var(--z-menu);
   min-width: 180px;
+  /* An out-of-flow box with `width: auto` shrink-to-fits into whatever space
+   * its own offsets leave in the viewport, so the box measured at placement
+   * depends on the position placement is deciding. `max-content` asks for the
+   * label's own single-line width instead, which makes the measured width mean
+   * "capped or not" - the widget wraps labels when the cap is what decided the
+   * width, and must not wrap them when the popup's own content did. */
+  width: max-content;
   max-block-size: calc(100dvh - (2 * var(--space-2)));
   overflow-y: auto;
   margin: 0;
@@ -108,7 +115,7 @@
   transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
-/* A label wraps only when the popup has been narrowed to the visible viewport,
+/* A label wraps only when the popup was capped to the visible viewport,
  * the one case where keeping it on one line would push it out of the scrollport
  * instead of shortening the popup. The widget writes that class itself, so
  * every other menu keeps the single-line rows that make a menu scannable. A

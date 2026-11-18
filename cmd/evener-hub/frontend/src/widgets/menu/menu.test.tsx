@@ -976,6 +976,46 @@ test("a placement frame queued by a resize cannot re-place the popup during its 
   }
 });
 
+// The other direction, and the one a cap-vs-viewport comparison gets wrong: a
+// popup with room does NOT wrap. The cap always reserves both edge margins, so
+// `visible.width - 2 * EDGE_MARGIN` is below the viewport width on every
+// screen; keying the class on that comparison wrapped every menu on the hub and
+// let a long label break in a popup that had space for it. The class turns on
+// when the cap decided the popup's width, which the measured width reports.
+test("a menu with room for its label keeps the rows on one line", async () => {
+  const user = userEvent.setup();
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(20, 300, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 220, 120);
+    return box(0, 0, 0, 0);
+  });
+  // 220px of natural width against a viewport far wider than the cap.
+  stubPopupLayoutBox(window, 220, 120);
+  try {
+    render(
+      <Menu
+        trigger="Actions"
+        items={[{ id: "archive", label: "Archive all ten sessions in this workspace", onSelect: vi.fn() }]}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+
+    const popup = screen.getByRole("menu");
+    expect(popup.style.maxInlineSize).toBe(`${window.innerWidth - 16}px`);
+    expect(popup.className).not.toContain("popupNarrow");
+    // That predicate reads a measured width, and an out-of-flow box with
+    // `width: auto` shrink-to-fits into whatever its offsets leave - so with
+    // `auto` the measurement would always report the cap and every menu would
+    // wrap. jsdom resolves no CSS-module rules, so the stylesheet states the
+    // requirement the predicate rests on.
+    const here = dirname(fileURLToPath(import.meta.url));
+    const css = readFileSync(join(here, "menu.module.css"), "utf8");
+    expect(css).toMatch(/\.popup \{[^}]*width: max-content/);
+  } finally {
+    vi.restoreAllMocks();
+  }
+});
+
 // A cap does not have to be narrow to matter. At a 196px visible width the
 // popup is capped at 180 - its stylesheet floor exactly - and a long label (the
 // session activity count at the largest text setting) is wider than that padded
@@ -1130,8 +1170,9 @@ test("a popup wider than the visible viewport is capped to it so its labels wrap
 // Shrinking the window shrinks the popup's scrollport. If the reader is on a
 // lower row, that row can end up below the scrollport while still holding
 // focus - Enter activates a row whose label and focus ring are out of sight.
-// The placement pass reveals the focused row with the browser's own
-// minimal-scroll primitive, which moves the POPUP and only when it has to.
+// The reveal moves the POPUP's own scroll so the focused row is visible again.
+// Rows are 44px tall at 0/44/88; a 60px scrollport showing from 0 ends at 60,
+// and Delete's bottom is 132, so the minimal reveal lands at 132 - 60.
 test("a shrink that shortens the popup scrolls its focused row back into view", async () => {
   const user = userEvent.setup();
   const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
@@ -1143,10 +1184,15 @@ test("a shrink that shortens the popup scrolls its focused row back into view", 
     return box(0, 0, 0, 0);
   });
   vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
-    return this.tagName === "UL" ? popupHeight : 0;
+    if (this.tagName === "UL") return popupHeight;
+    return this.tagName === "LI" ? 44 : 0;
   });
   vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
     return this.tagName === "UL" ? 160 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName !== "LI" || !this.parentElement) return 0;
+    return Array.prototype.indexOf.call(this.parentElement.children, this) * 44;
   });
   const reveal = vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(() => {});
   const { flush } = captureFrames();
@@ -1157,6 +1203,8 @@ test("a shrink that shortens the popup scrolls its focused row back into view", 
     const last = screen.getByRole("menuitem", { name: "Delete" });
     last.focus();
     expect(document.activeElement).toBe(last);
+    const popup = screen.getByRole("menu");
+    expect(popup.scrollTop).toBe(0);
     reveal.mockClear();
 
     // The window shrinks and the popup's scrollport with it. The popup is now
@@ -1166,11 +1214,10 @@ test("a shrink that shortens the popup scrolls its focused row back into view", 
     fireEvent(window, new Event("resize"));
     flush();
 
-    // `nearest` is the primitive that scrolls only as far as needed, and never
-    // the document: the row that holds focus is the one brought back.
-    expect(reveal).toHaveBeenCalled();
-    expect(reveal.mock.contexts.at(-1)).toBe(last);
-    expect(reveal.mock.calls.at(-1)?.[0]).toEqual({ block: "nearest" });
+    expect(popup.scrollTop).toBe(72);
+    // Not scrollIntoView: on a zoomed page it answers the same question in the
+    // VISUAL viewport and can pan the page toward where the popup used to be.
+    expect(reveal).not.toHaveBeenCalled();
     expect(document.activeElement).toBe(last);
   } finally {
     vi.restoreAllMocks();
@@ -1201,6 +1248,8 @@ test("a position-only placement leaves the reader's scroll where they put it", a
     await user.click(screen.getByRole("button", { name: "Actions" }));
     // Focus stays on the first row; the reader scrolls down to the last one.
     expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Rename" }));
+    const popup = screen.getByRole("menu");
+    popup.scrollTop = 40;
     reveal.mockClear();
 
     // The trigger moves and the popup follows - the popup's own height does
@@ -1210,6 +1259,7 @@ test("a position-only placement leaves the reader's scroll where they put it", a
     flush();
 
     expect(screen.getByRole("menu").style.top).toBe("232px"); // followed
+    expect(popup.scrollTop).toBe(40); // still where the reader put it
     expect(reveal).not.toHaveBeenCalled();
   } finally {
     vi.restoreAllMocks();
