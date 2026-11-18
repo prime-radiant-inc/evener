@@ -132,6 +132,7 @@ function read(
     activeTurnId?: string;
     quotaWaitResumesAt?: number;
     quotaWaitStartedAt?: number;
+    asOf?: string;
   } = {},
 ): ThreadReadResponse {
   return {
@@ -144,6 +145,7 @@ function read(
     ...(options.authoritative === undefined ? {} : { authoritative: options.authoritative }),
     ...(options.changes ? { changes: options.changes } : {}),
     ...(options.olderCursor ? { olderCursor: options.olderCursor } : {}),
+    ...(options.asOf ? { servedFrom: "live", asOf: options.asOf } : {}),
   };
 }
 
@@ -356,6 +358,64 @@ test("a read from a source that cannot report the wait keeps a known live wait",
   const next = applyReadModel(model, fresh);
   expect(next.quotaResumesAt).toBe(resumesAt);
   expect(next.modelRetry?.errorClass).toBe("quota_exceeded");
+});
+
+// A read whose serving cut predates the wait cannot speak against it, even
+// from a source whose snapshot would otherwise be authoritative: an already
+// subscribed remote pane received the wait's live announcement, and the read
+// that was in flight before the announcement landed returns its pre-wait cut
+// - same running turn, no failure summary. The announcement is the newer
+// fact; the merge must keep the deadline and the retry the announcement
+// recorded, or the pane reports a stall for a wait the daemon scheduled.
+// A FRESH authoritative read (a cut after the wake ended the wait) still
+// clears the ended wait - the pane that missed the wake recovers on the next
+// reconnect.
+test("a read cut before the wait keeps the live-recorded wait; a fresh authoritative read still clears an ended one", () => {
+  const resumesAt = 4_102_400_000;
+  const waitStartedAt = 4_000_000_000;
+  // The pane hydrated, then the wait's live announcement landed.
+  let model = hydrateThread(read([turn("turn_1", 1)], { activeTurnId: "turn_1" }), REF, NOW);
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: THREAD_ID,
+        ref: REF,
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: resumesAt - NOW,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 1,
+        waitStartedAt,
+      },
+    } as AnyNotification,
+    NOW,
+  );
+  expect(model.quotaResumesAt).toBeDefined();
+  // The in-flight read lands: its serving cut names an instant BEFORE the
+  // wait began, its thread carries no failure summary, and it names the same
+  // running turn - a stale cut racing the live announcement.
+  const staleCut = hydrateThread(
+    read([turn("turn_1", 1)], { activeTurnId: "turn_1", asOf: new Date(waitStartedAt - 1).toISOString() }),
+    REF,
+    NOW + 1,
+  );
+  const kept = applyReadModel(model, staleCut);
+  expect(kept.quotaResumesAt).toBe(model.quotaResumesAt);
+  expect(kept.modelRetry?.errorClass).toBe("quota_exceeded");
+  // The fresh read after the wake: its cut postdates the wait, its snapshot
+  // carries no summary, and the ended wait clears.
+  const fresh = hydrateThread(
+    read([turn("turn_1", 1)], { activeTurnId: "turn_1", asOf: new Date(resumesAt + 1).toISOString() }),
+    REF,
+    NOW + 2,
+  );
+  const cleared = applyReadModel(kept, fresh);
+  expect(cleared.quotaResumesAt).toBeUndefined();
+  expect(cleared.modelRetry).toBeUndefined();
 });
 
 // A legacy ROOT daemon predates the capability bit but its reads always

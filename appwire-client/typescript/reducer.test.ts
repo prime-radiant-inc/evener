@@ -3391,6 +3391,24 @@ test("a turn boundary retires a turn whose quota announcement has not arrived ye
   expect(woken.quotaResumesAt).toBeUndefined();
   expect(woken.modelRetry?.errorClass).toBe("quota_exceeded");
   expect(woken.lastFrameAt).toBe(1_300_000);
+
+  // The active frame can arrive before any read is accepted, and the first
+  // one finds the model with no running turn (the boundary removed it), so
+  // the boundary rule above reads it as a turn change - but the frame names
+  // the RETIRED turn, which is the turn itself running again: the relay's
+  // idle was the relay's, not the daemon's. The retirement clears on that
+  // first frame (or the turn's wake is rejected next), and the frame is not
+  // a turn end - the turn it names is the one that runs.
+  const activeFrame = (turnId: string) =>
+    ({
+      method: "thread/status/changed",
+      params: { threadId: "thr_t", ref: "ref_t", status: { type: "active" }, activeTurnId: turnId },
+    }) as AnyNotification;
+  const revivedBeforeRead = applyNotification(ended, activeFrame("turn_1"), 1_260_000);
+  expect(revivedBeforeRead.retiredQuotaTurn).toBeUndefined();
+  const wokenEarly = applyNotification(revivedBeforeRead, wake("turn_1"), 1_270_000);
+  expect(wokenEarly.quotaResumesAt).toBeUndefined();
+  expect(wokenEarly.modelRetry?.errorClass).toBe("quota_exceeded");
 });
 
 // A read can beat the bridge: the pane hydrates after a stopped wait's turn

@@ -390,20 +390,22 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
       const retiredQuotaTurn = turnEnded ? model.runningTurnId : undefined;
       // The retirement ends when the turn runs again: a relay that exhausts
       // its redials reports a synthetic idle and the daemon keeps running
-      // the turn, so a later active frame naming the retired turn proves the
-      // pane's end report was the relay's, not the daemon's - the marker
-      // must not outlive the turn it judged, or the turn's own zero-delay
-      // wake is rejected next.
-      const retiredQuotaTurnRevived =
-        !turnEnded && n.params.activeTurnId !== undefined && n.params.activeTurnId === model.retiredQuotaTurn
-          ? { retiredQuotaTurn: undefined }
-          : {};
+      // the turn, so an active frame naming the retired turn proves the
+      // pane's end report was the relay's, not the daemon's. The FIRST such
+      // frame finds the model with no running turn (the boundary removed
+      // it), so the boundary rule above reads the frame as a turn change -
+      // the revive must not depend on that verdict, and the frame names the
+      // turn that runs, so it must not clear the wait as a turn end would.
+      const retiredTurnRevived =
+        status.type === "active" &&
+        n.params.activeTurnId !== undefined &&
+        n.params.activeTurnId === model.retiredQuotaTurn;
       return {
         ...(rest as M),
-        ...(turnEnded ? { quotaResumesAt: undefined } : {}),
-        ...(quotaRetryEnded ? { modelRetry: undefined } : {}),
+        ...(turnEnded && !retiredTurnRevived ? { quotaResumesAt: undefined } : {}),
+        ...(quotaRetryEnded && !retiredTurnRevived ? { modelRetry: undefined } : {}),
         ...(retiredQuotaTurn !== undefined ? { retiredQuotaTurn } : {}),
-        ...retiredQuotaTurnRevived,
+        ...(retiredTurnRevived ? { retiredQuotaTurn: undefined } : {}),
         ...(n.params.activeTurnId ? { runningTurnId: n.params.activeTurnId } : {}),
         status,
         // The work-clock anchor (activeTurnStartedAt) has no live push to

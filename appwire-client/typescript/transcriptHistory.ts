@@ -963,6 +963,25 @@ function quotaWaitStampsCorrelate(
   return model.modelRetry?.waitStartedAt !== undefined && read.quotaWaitStartedAt !== undefined;
 }
 
+// quotaReadPredatesWait reports whether the read's serving cut names an
+// instant before the wait the model holds began: the read was in flight
+// before the live announcement landed (the same running turn, no failure
+// summary), so its absent field is a stale cut's silence, not a statement
+// the wait ended. The cut instant (servingFacts.asOf) is compared against
+// the wait's daemon-issued start stamp; a read without a cut instant, or a
+// wait without a stamp, keeps the existing rules - the stamp postdates the
+// base revision, so a pre-stamp source never reaches here with one anyway.
+function quotaReadPredatesWait(
+  read: Pick<ThreadModel, "servingFacts">,
+  model: Pick<ThreadModel, "quotaWaitStartedAt" | "modelRetry">,
+): boolean {
+  const asOf = read.servingFacts?.asOf;
+  const waitStartedAt = model.quotaWaitStartedAt ?? model.modelRetry?.waitStartedAt;
+  if (asOf === undefined || waitStartedAt === undefined) return false;
+  const cutMs = Date.parse(asOf);
+  return Number.isFinite(cutMs) && cutMs < waitStartedAt;
+}
+
 // quotaWaitWakeRecorded reports whether the model carries the zero-delay
 // wake of the wait the read names by stamp: the pane saw the wait end (a
 // steer woke the call ahead of its scheduled reset) and a read whose
@@ -1105,10 +1124,14 @@ export function applyReadResponse<M extends ThreadModel>(
     readRunningTurnId !== base.modelRetry.turnId;
   // A recorded wake suppresses the deadline a pre-wake snapshot carries for
   // the same stamped wait: the read's summary is a stale cut, the wake the
-  // newer fact.
+  // newer fact. A read whose serving cut predates the wait is the same race
+  // from the other side: its absent field is a stale cut's silence, not a
+  // statement the wait ended, so it clears neither the deadline nor the
+  // retry the live announcement recorded.
+  const readPredatesWait = quotaReadPredatesWait(fields, model);
   const wakeSuppressesDeadline = quotaWaitWakeRecorded(fields, model);
   const clearedQuotaWait =
-    (fields.quotaResumesAt === undefined && (quotaSnapshotAuthoritative || waitTurnReplaced)) ||
+    (fields.quotaResumesAt === undefined && (quotaSnapshotAuthoritative || waitTurnReplaced) && !readPredatesWait) ||
     (fields.quotaResumesAt !== undefined && wakeSuppressesDeadline)
       ? { quotaResumesAt: undefined }
       : {};
@@ -1148,6 +1171,7 @@ export function applyReadResponse<M extends ThreadModel>(
         quotaSnapshotAuthoritative &&
         fields.quotaResumesAt !== model.quotaResumesAt));
   const clearedQuotaRetry =
+    !readPredatesWait &&
     (quotaSnapshotAuthoritative || waitTurnReplaced) &&
     (fields.quotaResumesAt === undefined || quotaRetryFromAnotherCall) &&
     base.modelRetry?.errorClass === "quota_exceeded"
@@ -1358,12 +1382,17 @@ export function applyReadModel<M extends ThreadModel>(
   // pre-wake snapshot carries for the same stamped wait. The suppression
   // must fire even though the wake already cleared the model's own deadline:
   // the read's fields spread reinstalls the stale cut's, and only this
-  // override drops it again.
+  // override drops it again. And a read whose serving cut predates the wait
+  // is the same race from the other side: its absent field is a stale
+  // cut's silence, so it clears neither the deadline nor the retry the
+  // live announcement recorded.
+  const readPredatesWait = quotaReadPredatesWait(fresh, model);
   const wakeSuppressesDeadline = quotaWaitWakeRecorded(fresh, model);
   const clearedQuotaWait =
     (fresh.quotaResumesAt === undefined &&
       (quotaSnapshotAuthoritative || waitTurnReplaced) &&
-      model.quotaResumesAt !== undefined) ||
+      model.quotaResumesAt !== undefined &&
+      !readPredatesWait) ||
     (fresh.quotaResumesAt !== undefined && wakeSuppressesDeadline)
       ? { quotaResumesAt: undefined }
       : {};
@@ -1380,6 +1409,7 @@ export function applyReadModel<M extends ThreadModel>(
         quotaSnapshotAuthoritative &&
         fresh.quotaResumesAt !== model.quotaResumesAt));
   const clearedQuotaRetry =
+    !readPredatesWait &&
     (quotaSnapshotAuthoritative || waitTurnReplaced) &&
     (fresh.quotaResumesAt === undefined || quotaRetryFromAnotherCall) &&
     model.modelRetry?.errorClass === "quota_exceeded"
