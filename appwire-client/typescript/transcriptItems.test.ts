@@ -8,7 +8,9 @@ import {
   itemTextPresence,
   markItemIdentityOnly,
   markItemTextOmitted,
+  wireItemToModel,
 } from "./transcriptItems";
+import type { ThreadItem } from "./types.gen";
 
 test("entry item codec preserves omitted text, identity-only markers, and rich recorded fields", () => {
   const omitted = markItemTextOmitted({ id: "item-1", turnId: "turn-1", type: "assistant", text: "" });
@@ -74,6 +76,72 @@ test("the entry item codec round-trips the answer link", () => {
   expect(decoded?.answerToTurnIds).toEqual(["turn-question"]);
   expect(
     decodeTranscriptItem({ ...encodeTranscriptItem(answered), answerToTurnIds: ["ok", 7] as unknown as string[] }),
+  ).toBeUndefined();
+});
+
+// Admission's per-call resolution evidence (#6323) has the same cache hazard
+// as the link above - the encoder spreads every key, so an unlisted one
+// rejects the whole write batch and strands cached history for every session
+// with a recorded answer. This starts from a WIRE item and folds through
+// wireItemToModel, because that carry is the load-bearing half: a test that
+// sets the field on an ItemModel directly would still pass if the projection
+// dropped it and live clients went back to guessing by header.
+test("the wire item's resolved ask calls survive projection and cache decoding", () => {
+  const wire: ThreadItem = {
+    id: "item-1",
+    turnId: "turn-1",
+    type: "userMessage",
+    text: "sure, go with Yes",
+    observation: {
+      ref: "",
+      causalKnown: false,
+      answerToTurnIds: ["turn-question"],
+      resolvedAskCalls: [
+        { turnId: "turn-question", callId: "call-1" },
+        { turnId: "turn-question", callId: "call-2" },
+      ],
+      resolvedAskLegacyCount: 1,
+    },
+  };
+  const projected = wireItemToModel(wire);
+  expect(projected.answerToTurnIds).toEqual(["turn-question"]);
+  expect(projected.resolvedAskCalls).toEqual([
+    { turnId: "turn-question", callId: "call-1" },
+    { turnId: "turn-question", callId: "call-2" },
+  ]);
+  expect(projected.resolvedAskLegacyCount).toBe(1);
+  // And the cache keeps them: the decoder is what a live client reads back.
+  const decoded = decodeTranscriptItem(encodeTranscriptItem(projected));
+  expect(decoded?.resolvedAskCalls).toEqual([
+    { turnId: "turn-question", callId: "call-1" },
+    { turnId: "turn-question", callId: "call-2" },
+  ]);
+  expect(decoded?.resolvedAskLegacyCount).toBe(1);
+  expect(
+    decodeTranscriptItem({
+      ...encodeTranscriptItem(projected),
+      resolvedAskCalls: [{ turnId: "turn-question" }] as unknown as ItemModel["resolvedAskCalls"],
+    }),
+  ).toBeUndefined();
+  expect(
+    decodeTranscriptItem({
+      ...encodeTranscriptItem(projected),
+      resolvedAskLegacyCount: "many" as unknown as number,
+    }),
+  ).toBeUndefined();
+  // A count is a non-negative integer. The decoder used to accept any number,
+  // so a corrupt cache could carry -1 or a fraction into the recap comparison.
+  expect(
+    decodeTranscriptItem({
+      ...encodeTranscriptItem(projected),
+      resolvedAskLegacyCount: -1,
+    }),
+  ).toBeUndefined();
+  expect(
+    decodeTranscriptItem({
+      ...encodeTranscriptItem(projected),
+      resolvedAskLegacyCount: 1.5,
+    }),
   ).toBeUndefined();
 });
 

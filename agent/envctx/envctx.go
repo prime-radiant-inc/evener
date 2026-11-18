@@ -244,7 +244,14 @@ func (t *Tracker) RenderDiff(cur Snapshot) string {
 		cur.GitBranch = ""
 		cur.gitBranchUnknown = false
 	}
-	reportBranch := cur.recordGitBranch || moved || cur.GitBranch != prev.GitBranch || unknown != t.st.GitBranchUnknown || (first && unknown && t.st.ReportUnconfirmedLaunchBranch)
+	reportStatus := t.st.GitBranchUnknown
+	if unknown {
+		// A prompt can name its checkout's branch even when the tracker holds
+		// no branch of its own. A measured inconclusive launch needs one
+		// explicit report. A move or a changed branch is handled below.
+		reportStatus = (first && t.st.ReportUnconfirmedLaunchBranch) || (prev.Cwd == "" && !t.st.GitBranchUnknown)
+	}
+	reportBranch := cur.recordGitBranch || moved || cur.GitBranch != prev.GitBranch || reportStatus
 	cur.recordGitBranch = false
 	if !first && cur == prev && !reportBranch && !t.st.ScratchDirUnknown && !t.st.WritableRootsUnknown {
 		return ""

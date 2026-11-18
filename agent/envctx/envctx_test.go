@@ -86,6 +86,67 @@ func TestRenderDiffGitBranchGoneRendersPlaceholder(t *testing.T) {
 	}
 }
 
+// TestRenderDiffInconclusiveProbeKeepsTheSavedBranchForTheSameCheckout pins the
+// three answers a Git probe can give about a checkout, because treating two of
+// them alike is what loses the model's last known branch:
+//
+//   - inconclusive for the checkout the saved prompt named: keep that branch,
+//     say nothing about it, and leave the next observation owed;
+//   - inconclusive for a checkout that moved: report uncertainty, because the
+//     saved branch describes somewhere the session is no longer standing;
+//   - confirmed outside a worktree: clear it, because the probe answered.
+func TestRenderDiffInconclusiveProbeKeepsTheSavedBranchForTheSameCheckout(t *testing.T) {
+	saved := fullSnap()
+	unconfirmed := func(s Snapshot) Snapshot {
+		s.gitBranchUnknown = true
+		return s
+	}
+
+	t.Run("inconclusive for the same checkout keeps the saved branch", func(t *testing.T) {
+		// A legacy transcript names the branch in its header but recorded no
+		// launch fact, so the tracker starts owing an observation of that same
+		// directory and holds no branch of its own to compare against.
+		tr := NewTracker(State{Last: Snapshot{Cwd: saved.Cwd}})
+		got := tr.RenderDiff(unconfirmed(saved))
+		// What the model ends up believing is the thing that matters: it read
+		// the saved prompt, and any block this session emits is applied on top.
+		model := NewTracker(State{Last: saved})
+		model.ReplayBlock(got)
+		if strings.Contains(got, "git branch:") {
+			t.Errorf("an inconclusive probe for the saved checkout must not supersede its branch, got %q", got)
+		}
+		if branch := model.State().Last.GitBranch; branch != saved.GitBranch {
+			t.Errorf("the model's branch became %q after an inconclusive probe, want the saved %q", branch, saved.GitBranch)
+		}
+	})
+
+	t.Run("inconclusive for a different checkout reports uncertainty", func(t *testing.T) {
+		tr := NewTracker(State{Last: saved})
+		next := saved
+		next.Cwd = "/Users/jesse/work/.worktrees/lane"
+		var delta Tracker
+		if !delta.ReplayBlock(tr.RenderDiff(unconfirmed(next))) {
+			t.Fatal("a moved checkout with no confirmed branch must still report")
+		}
+		if branch := delta.State().Last.GitBranch; branch != "" || !delta.State().GitBranchUnknown {
+			t.Errorf("moved-and-inconclusive reported branch %q unknown %v, want unknown", branch, delta.State().GitBranchUnknown)
+		}
+	})
+
+	t.Run("confirmed outside clears the saved branch", func(t *testing.T) {
+		tr := NewTracker(State{Last: saved})
+		outside := saved
+		outside.GitBranch = ""
+		got := tr.RenderDiff(outside)
+		if !strings.Contains(got, "git branch: (not in a git repository)") {
+			t.Fatalf("a confirmed absence must clear the saved branch explicitly, got %q", got)
+		}
+		if branch := tr.State().Last.GitBranch; branch != "" {
+			t.Errorf("tracker kept branch %q after a confirmed absence, want cleared", branch)
+		}
+	})
+}
+
 func TestRenderDiffPressureAppearAndClear(t *testing.T) {
 	tr := NewTracker(State{Last: fullSnap(), HasSent: true})
 

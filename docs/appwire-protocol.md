@@ -4090,6 +4090,8 @@ Underlying Go kind: `string` (no struct fields).
 | `generationId` | string | yes |  |
 | `turnId` | string | yes |  |
 | `answerToTurnIds` | []string | yes |  |
+| `resolvedAskCalls` | [][appwire.PendingAskCall](#pendingaskcall) | yes |  |
+| `resolvedAskLegacyCount` | int | yes |  |
 | `entryId` | string | yes |  |
 | `endTurn` | bool | yes |  |
 | `endReason` | string | yes |  |

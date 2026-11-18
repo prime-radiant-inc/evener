@@ -16,7 +16,6 @@ import (
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/apptranscript"
-	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/llm"
 )
 
@@ -159,13 +158,11 @@ func TestTranscriptAuthorshipNestedParent(t *testing.T) {
 		t.Fatal(middleResult.Err)
 	}
 	<-middleRun.entered
-	// Await the namer's own entry rather than arming a helper goroutine on it: a
-	// helper that timed out here would leave its goroutine blocked on this
-	// channel for the rest of the process, and the failure would come from the
-	// helper instead of from the condition.
-	testwait.Until(t, "the middle child's prompt namer reaching its provider call", func() bool {
-		return channelClosed(namerEntered)
-	})
+	// The namer closes namerEntered when it reaches its provider call, so the
+	// receive is the completion this test waits for: it holds a blocking select
+	// rather than a loop that samples a state the close already reports. The
+	// helper's ceiling only fires on a genuine hang.
+	waitForTestSignal(t, namerEntered, "the middle child's prompt namer reaching its provider call")
 	middleSub := root.getSub(middleResult.ChildSessionID)
 	middle := middleSub.sess
 	human := schema.NewTurn(schema.TurnUserInput, llm.User("nested-original-human"))
