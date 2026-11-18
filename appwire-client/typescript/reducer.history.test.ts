@@ -429,17 +429,16 @@ test("a read cut before the wait keeps the live-recorded wait; a fresh authorita
   expect(cleared.quotaResumesAt).toBeUndefined();
   expect(cleared.modelRetry).toBeUndefined();
 
-  // The envelope-lag window: the session stamps the wait, the announcement's
-  // event is still in flight to the projection, and the read's cut falls in
-  // that gap - after the wait began, before the projection refreshed the
-  // envelope - so the snapshot carries no summary while the cut clears the
-  // daemon-stamp comparison. The read response arrives after the
-  // announcement reached the pane (the pane was already subscribed), and
-  // the projection always precedes the announcement's transit, so the
-  // announcement's pane receipt postdates the cut: comparing the cut
-  // against the receipt - not the stamp alone - is what keeps the
-  // countdown. The projection's own ordering evidence is the receipt the
-  // pane stamped when the announcement landed.
+  // A second wait of the same turn, announced live, and a read that was cut
+  // BEFORE that wait began: the read is a snapshot of a state the pane has
+  // already left, so its absent summary is that cut's silence and the
+  // announcement's countdown stands. The bound is the wait's START, which is
+  // the instant the daemon publishes the summary at (the bridge refreshes
+  // the envelope before it publishes the wait's event), so a cut before it
+  // is the only cut that can carry no summary while the wait stands. A cut
+  // after it carries the summary whenever the wait still holds, and its
+  // silence is the wait having ended - a steer or a model switch resumed
+  // the call on another client while this pane missed the wake.
   const reannounced = applyNotification(
     cleared,
     {
@@ -457,19 +456,32 @@ test("a read cut before the wait keeps the live-recorded wait; a fresh authorita
         waitStartedAt: waitStartedAt + 30_000,
       },
     } as AnyNotification,
-    // Epoch-scale receipt, the shape a real pane stamps: the announcement
-    // reached the pane after the lagging read's cut sampled the envelope.
+    // Epoch-scale receipt, the shape a real pane stamps.
     waitStartedAt + 50_000,
   );
   expect(reannounced.quotaResumesAt).toBe(isoInstant(waitStartedAt + 30_000 + 60 * 60_000));
-  const stillLagging = hydrateThread(
-    read([turn("turn_1", 1)], { activeTurnId: "turn_1", asOf: new Date(waitStartedAt + 40_000).toISOString() }),
+  const cutBeforeWait = hydrateThread(
+    read([turn("turn_1", 1)], { activeTurnId: "turn_1", asOf: new Date(waitStartedAt + 29_000).toISOString() }),
     REF,
     NOW + 5,
   );
-  const preserved = applyReadModel(reannounced, stillLagging);
+  const preserved = applyReadModel(reannounced, cutBeforeWait);
   expect(preserved.quotaResumesAt).toBe(isoInstant(waitStartedAt + 30_000 + 60 * 60_000));
   expect(preserved.modelRetry?.errorClass).toBe("quota_exceeded");
+
+  // The other side of the same bound, which is finding M1: a cut AFTER the
+  // wait began and before its scheduled reset. The daemon had published the
+  // summary by then, so its absence means the wait ended - another client
+  // steered or switched models and this pane missed the wake - and both the
+  // countdown and the retry go.
+  const cutAfterWaitBegan = hydrateThread(
+    read([turn("turn_1", 1)], { activeTurnId: "turn_1", asOf: new Date(waitStartedAt + 40_000).toISOString() }),
+    REF,
+    NOW + 6,
+  );
+  const ended = applyReadModel(preserved, cutAfterWaitBegan);
+  expect(ended.quotaResumesAt).toBeUndefined();
+  expect(ended.modelRetry).toBeUndefined();
 });
 
 // A legacy ROOT daemon predates the capability bit but its reads always
@@ -2511,6 +2523,48 @@ test("a read cut before the wait began keeps it however far the browser clock ru
   const kept = applyReadModel(announced, staleCut);
   expect(kept.quotaResumesAt).toBe(isoInstant(DAEMON_RESET));
   expect(kept.modelRetry?.errorClass).toBe("quota_exceeded");
+});
+
+// An announcement from a daemon too old to issue a wait stamp carries no
+// instant the daemon named. The reducer must not stand in for it with this
+// pane's receipt time: the read merge orders its serving cut against the
+// wait's start, so a receipt written by a fast browser clock would make an
+// authoritative read cut after the reset look older than the wait and keep
+// the ended countdown. The relative display does not need the stamp - it
+// counts from the retry's own receipt on this client's single clock.
+test("an unstamped announcement records no wait stamp, so a post-reset read still clears it", () => {
+  const waitStartedAt = DAEMON_WAIT_STARTED_AT;
+  const announced = applyNotification(
+    hydrateThread(read([turn("turn_1", 1)], { activeTurnId: "turn_1" }), REF, NOW),
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: THREAD_ID,
+        ref: REF,
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: DAEMON_RESET - waitStartedAt,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 1,
+      },
+    } as AnyNotification,
+    // This pane's clock runs a day fast, so its receipt is far ahead of any
+    // daemon instant the read names.
+    waitStartedAt + DAY_MS,
+  );
+  expect(announced.quotaWaitStartedAt).toBeUndefined();
+  expect(announced.modelRetry?.waitStartedAt).toBeUndefined();
+  // The read is cut after the scheduled reset on the daemon's own clock.
+  const fresh = hydrateThread(
+    read([turn("turn_1", 1)], { activeTurnId: "turn_1", asOf: new Date(DAEMON_RESET + 1_000).toISOString() }),
+    REF,
+    DAEMON_RESET + DAY_MS,
+  );
+  const cleared = applyReadModel(announced, fresh);
+  expect(cleared.quotaResumesAt).toBeUndefined();
+  expect(cleared.modelRetry).toBeUndefined();
 });
 
 // A wait's deadline, its stamp and its retry metadata are one fact, so a

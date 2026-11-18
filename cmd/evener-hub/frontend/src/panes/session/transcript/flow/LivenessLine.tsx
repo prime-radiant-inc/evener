@@ -127,10 +127,22 @@ export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId, ret
   // guard against showing a dead turn's wait is the retry's own turn identity
   // rather than any frame clock: only a retry naming THIS pane's running turn
   // speaks for it.
+  //
+  // One time basis per wait, never two. A STAMPED wait has a daemon-issued
+  // start, so its instant is the daemon's arithmetic and `fromRead` above is
+  // the whole countdown; this receipt-based arm is not a fallback for it. The
+  // two bases disagree by the reader's clock skew, so mixing them made a wait
+  // expire early on a fast clock and then jump back to the receipt-based
+  // remainder - a countdown reaching zero and then leaping to an hour. Only a
+  // wait with no usable absolute deadline (an older daemon that issued no
+  // stamp, so nothing can put an instant in the model) counts from receipt,
+  // where both `now` and `receivedAt` are this client's clock and the
+  // difference carries no skew.
   const liveRemaining =
     retry !== undefined &&
     retry.errorClass === "quota_exceeded" &&
     retry.delayMs > 0 &&
+    retry.waitStartedAt === undefined &&
     retry.turnId !== undefined &&
     retry.turnId === turnId &&
     now - retry.receivedAt < retry.delayMs

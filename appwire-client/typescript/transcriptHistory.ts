@@ -1023,36 +1023,37 @@ function quotaReadNamesOlderWait(
 }
 
 // quotaReadPredatesWait reports whether the read's serving cut cannot speak
-// against the wait the pane holds: either it was cut before the wait existed,
-// or it was cut before the wait's own reset instant. In both cases its absent
-// failure summary is that cut's silence rather than a statement the wait
-// ended.
+// against the wait the pane holds: it was cut before the wait existed, so its
+// absent failure summary is that cut's silence rather than a statement the
+// wait ended.
 //
-// Every instant compared here is the DAEMON's: the cut is the source's own
-// read-cut stamp (server/appwire_read_handlers.go writes it from time.Now),
-// the wait's start is the daemon-issued WaitStartedAt, and the reset is that
-// stamp plus the daemon's delay. The pane's receipt time is deliberately NOT
-// part of the comparison. It is the browser's clock, and nothing in this
-// client may assume it agrees with the daemon's: a reader whose clock runs an
-// hour fast would make every fresh cut look older than the wait, keep a
-// countdown the read had already ended, and leave "Waiting for quota" on a
-// turn that resumed - the failure this comparison exists to prevent,
+// Both instants are the DAEMON's: the cut is the source's own read-cut stamp
+// (server/appwire_read_handlers.go writes it from time.Now), and the wait's
+// start is the daemon-issued WaitStartedAt. The pane's receipt time is
+// deliberately NOT part of the comparison. It is the browser's clock, and
+// nothing in this client may assume it agrees with the daemon's: a reader
+// whose clock runs fast would make every fresh cut look older than the wait,
+// keep a countdown the read had already ended, and leave "Waiting for quota"
+// on a turn that resumed - the failure this comparison exists to prevent,
 // inverted.
 //
-// The reset arm is bounded to a read that names the turn the retained retry
-// names: the envelope refreshes after the wait's event is recorded, so a cut
-// inside that gap carries no summary while the daemon still projects the wait
-// running to its reset, and the countdown must survive it. A read naming a
-// DIFFERENT running turn is the newer fact about the wait - the turn was
-// replaced while the pane held it - so it never takes this arm, and the
-// existing rules retire the wait.
+// The bound is the wait's START, not its reset, and that is what the
+// daemon's own publication order buys. The bridge refreshes the thread
+// envelope with the wait before it publishes the wait's event
+// (server/bridge.go), so the summary is in every read cut at or after the
+// instant the wait began. A read cut after that instant therefore carries
+// the summary whenever the wait still stands; its silence means the wait
+// ended - a steer or a model switch resumed the call on another client while
+// this pane missed the wake. Treating the whole span up to the scheduled
+// reset as "too early to tell" is what kept such an ended countdown on
+// screen, and what kept a second wait's retry metadata alive under a fresh
+// read's deadline.
 //
 // A read with no cut instant, or a model holding no wait stamp, keeps the
 // existing rules.
 function quotaReadPredatesWait(
   read: Pick<ThreadModel, "servingFacts">,
-  model: Pick<ThreadModel, "quotaResumesAt" | "quotaWaitStartedAt" | "modelRetry">,
-  sameWaitingTurn: boolean,
+  model: Pick<ThreadModel, "quotaWaitStartedAt" | "modelRetry">,
 ): boolean {
   const asOf = read.servingFacts?.asOf;
   if (asOf === undefined) return false;
@@ -1060,10 +1061,7 @@ function quotaReadPredatesWait(
   if (!Number.isFinite(cutMs)) return false;
   const waitStartedAt = model.quotaWaitStartedAt ?? model.modelRetry?.waitStartedAt;
   if (waitStartedAt === undefined) return false;
-  if (cutMs < waitStartedAt) return true;
-  if (!sameWaitingTurn || model.quotaResumesAt === undefined) return false;
-  const resetMs = Date.parse(model.quotaResumesAt);
-  return Number.isFinite(resetMs) && cutMs < resetMs;
+  return cutMs < waitStartedAt;
 }
 
 // quotaWaitEndedOnModel reports whether the wait the read names by stamp is
@@ -1223,14 +1221,13 @@ export function applyReadResponse<M extends ThreadModel>(
     base.modelRetry.turnId !== undefined &&
     readRunningTurnId !== undefined &&
     readRunningTurnId !== base.modelRetry.turnId;
-  const sameWaitingTurn = base.modelRetry?.turnId !== undefined && readRunningTurnId === base.modelRetry.turnId;
   // A recorded wake suppresses the deadline a pre-wake snapshot carries for
   // the same stamped wait: the read's summary is a stale cut, the wake the
   // newer fact. A read whose serving cut predates the wait is the same race
   // from the other side: its absent field is a stale cut's silence, not a
   // statement the wait ended, so it clears neither the deadline nor the
   // retry the live announcement recorded.
-  const readPredatesWait = quotaReadPredatesWait(fields, model, sameWaitingTurn);
+  const readPredatesWait = quotaReadPredatesWait(fields, model);
   const wakeSuppressesDeadline = quotaWaitWakeRecorded(fields, model);
   const readNamesEndedWait = quotaWaitEndedOnModel(fields, model);
   const clearedQuotaWait =
@@ -1492,7 +1489,6 @@ export function applyReadModel<M extends ThreadModel>(
     base.modelRetry.turnId !== undefined &&
     freshRunningTurnId !== undefined &&
     freshRunningTurnId !== base.modelRetry.turnId;
-  const sameWaitingTurn = base.modelRetry?.turnId !== undefined && freshRunningTurnId === base.modelRetry.turnId;
   // Same rule as applyReadResponse: a recorded wake suppresses the deadline a
   // pre-wake snapshot carries for the same stamped wait. The suppression
   // must fire even though the wake already cleared the model's own deadline:
@@ -1501,7 +1497,7 @@ export function applyReadModel<M extends ThreadModel>(
   // is the same race from the other side: its absent field is a stale
   // cut's silence, so it clears neither the deadline nor the retry the
   // live announcement recorded.
-  const readPredatesWait = quotaReadPredatesWait(fresh, model, sameWaitingTurn);
+  const readPredatesWait = quotaReadPredatesWait(fresh, model);
   const wakeSuppressesDeadline = quotaWaitWakeRecorded(fresh, model);
   const readNamesEndedWait = quotaWaitEndedOnModel(fresh, model);
   const clearedQuotaWait =

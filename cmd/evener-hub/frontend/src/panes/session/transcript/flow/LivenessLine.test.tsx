@@ -1,3 +1,4 @@
+import type { AnyNotification } from "@evener/appwire-client";
 import { applyNotification, applyReadResponse, hydrateThread, STUCK_AFTER_MS } from "@evener/appwire-client";
 import { waitingForQuotaText } from "@evener/appwire-client/state/navigation";
 import { testThread } from "@evener/appwire-client/testing/reducerTestKit";
@@ -394,6 +395,65 @@ test("a usage-limit retry with no read at all still says when the wait resumes",
   const el = screen.getByTestId("liveness-line");
   expect(el.getAttribute("data-level")).toBe("quota");
   expect(el.textContent).toBe(waitingForQuotaText(sixHours - 5_000));
+});
+
+// A stamped wait has one time basis: the daemon's. Its instant is the start
+// the daemon issued plus the delay, and the receipt-based arm must not stand
+// behind it - the two differ by this reader's clock skew. This pane's clock
+// runs an hour fast, so the receipt says the two-hour wait began only an hour
+// ago while the daemon's instant has already passed. Mixing the bases made
+// the countdown reach zero and then leap back to the receipt's hour.
+test("a stamped usage-limit wait past its daemon deadline does not fall back to the receipt countdown", () => {
+  const waitStartedAt = 1_000_000;
+  const twoHours = 2 * 60 * 60_000;
+  const skew = 60 * 60_000;
+  // The daemon's instant passed by `skew`, and this pane received the
+  // announcement an hour ago on its own fast clock.
+  const now = waitStartedAt + twoHours + skew;
+  const model = hydrateThread(
+    {
+      thread: testThread({
+        status: { type: "active" },
+        evener: { failure: { title: "Usage limit reached", resumesAt: waitStartedAt + twoHours, waitStartedAt } },
+      }),
+    },
+    "s1",
+    waitStartedAt,
+  );
+  threadsStore.setState({ threads: new Map([["s1", model]]) });
+  const announced = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_1",
+        ref: "s1",
+        turnId: "turn_0",
+        attempt: 1,
+        maxAttempts: 0,
+        delayMs: twoHours,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 0,
+        waitStartedAt,
+      },
+    } as AnyNotification,
+    now - skew,
+  );
+
+  render(
+    <LivenessLine
+      lastFrameAt={now - skew}
+      now={now}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      retry={announced.modelRetry}
+    />,
+  );
+
+  const el = screen.queryByTestId("liveness-line");
+  expect(el?.getAttribute("data-level") ?? "none").not.toBe("quota");
 });
 
 // The regression this guards: over a six-hour wait plenty of frames land that

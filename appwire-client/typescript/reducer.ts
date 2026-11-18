@@ -244,7 +244,17 @@ export function applyNotification<M extends ThreadModel>(
     n.method === "history/updated" &&
     next.history?.turns !== model.history?.turns &&
     (n.params.items ?? []).some((item) => MODEL_OUTPUT_ITEM_TYPES.has(item.type));
-  const quotaWaitPending = next.quotaResumesAt !== undefined;
+  // The pending test cannot be the stored deadline alone. An older daemon
+  // (or a legacy delegate route) announces a multi-hour quota wait with no
+  // snapshot instant, and the announcement itself is then the pane's only
+  // evidence of the wait: requiring quotaResumesAt would delete the retry on
+  // an earlier round's late output and drop the countdown while the call
+  // still waits. A positive-delay quota retry is pending on its own facts.
+  // The wake (delay 0) and every ordinary retry stay clearable by output,
+  // which is what retires a resumed call's chip.
+  const quotaWaitPending =
+    next.quotaResumesAt !== undefined ||
+    (next.modelRetry?.errorClass === "quota_exceeded" && next.modelRetry.delayMs > 0);
   if (!modelOutputCompleted || quotaWaitPending) return publicModel<M>(next);
   const cleared = { ...next };
   delete cleared.modelRetry;
@@ -682,8 +692,16 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
         // rule against a stamp some earlier wait's snapshot left behind
         // (a pane can live through two waits of one turn), and the wake
         // clears the pair together so no ended wait keeps a live stamp.
+        //
+        // Only the DAEMON's stamp is stored. An unstamped announcement from
+        // an older daemon leaves this unset rather than recording this
+        // pane's receipt instant: the read merge orders its serving cut
+        // against this field, and a browser clock running fast would then
+        // read an authoritative post-reset read as older than the wait and
+        // keep the ended countdown. The relative display does not need it -
+        // LivenessLine counts from the retry's own receipt stamp.
         quotaWaitStartedAt:
-          params.errorClass === "quota_exceeded" && params.delayMs > 0 ? (params.waitStartedAt ?? now) : undefined,
+          params.errorClass === "quota_exceeded" && params.delayMs > 0 ? params.waitStartedAt : undefined,
         // The wake records the ended wait's stamp independently of the chip:
         // the resumed request's first ordinary retry replaces the chip, and
         // this is the evidence that survives to refuse a read that captured

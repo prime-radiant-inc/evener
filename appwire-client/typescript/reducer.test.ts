@@ -3565,6 +3565,87 @@ test("a history update completing any output item keeps the quota wait", () => {
   expect(model.modelRetry?.errorClass).toBe("quota_exceeded");
 });
 
+// A legacy delegate route announces its wait with no snapshot instant, so the
+// announcement is the pane's ONLY evidence that the call waits: nothing can
+// put a deadline in the model. An earlier round's output reaches the history
+// worker after that announcement all the same. Keying "pending" on the stored
+// deadline alone deleted the retry on that output and dropped the countdown
+// while the delegate was still waiting. The retry's own positive delay is
+// what holds it; the wake and ordinary retries still clear on output.
+test("a quota retry with no stored deadline survives an earlier round's late output", () => {
+  let model = testHydrateV6({ turns: [{ id: "turn_1", status: "inProgress", itemsView: "", items: [] }] });
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: 2 * 60 * 60_000,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 500,
+        attemptCap: 1,
+      },
+    },
+    1_000_000,
+  );
+  // No daemon stamp and no read instant: the announcement stands alone.
+  expect(model.quotaResumesAt).toBeUndefined();
+  expect(model.modelRetry?.errorClass).toBe("quota_exceeded");
+
+  model = applyHistory(
+    model,
+    {
+      items: [
+        {
+          ...{ type: "agentMessage", id: "item_prev_round", turnId: "turn_1", status: "completed", text: "back" },
+          turnId: "turn_1",
+        },
+      ],
+    },
+    1_050_000,
+  );
+  expect(model.modelRetry?.errorClass).toBe("quota_exceeded");
+  expect(model.modelRetry?.delayMs).toBe(2 * 60 * 60_000);
+
+  // The wake still retires it: the resumed request's own output clears the
+  // chip, which is the rule that must not be weakened by the above.
+  const woken = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: 0,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 500,
+        attemptCap: 1,
+      },
+    },
+    1_100_000,
+  );
+  const afterWake = applyHistory(
+    woken,
+    {
+      items: [
+        {
+          ...{ type: "agentMessage", id: "item_resumed", turnId: "turn_1", status: "completed", text: "out" },
+          turnId: "turn_1",
+        },
+      ],
+    },
+    1_150_000,
+  );
+  expect(afterWake.modelRetry).toBeUndefined();
+});
+
 // The wake's progress state is the resumed request itself: once that request
 // completes real output, the state retires exactly as an ordinary retry's
 // does. Without this, a resumed request that opens a quiet foreground tool
