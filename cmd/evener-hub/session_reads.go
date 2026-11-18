@@ -122,7 +122,12 @@ func (o *sessionOperations) turns(ctx context.Context, p appwire.ThreadTurnsList
 		o.retainCanonicalWindowOptions(options)
 	})
 	if pastErr != nil {
-		return appwire.ThreadTurnsListResponse{}, pastErr
+		// A failed saved continuation inherits this read's own evidence about
+		// ownership, exactly as the plain listing above does. Without the stamp
+		// it carries the typed diagnostic and no boot generation at all, so a
+		// caller cannot tell established absence from unknown ownership — and a
+		// window-bearing cursor request is the one form that lands here.
+		return appwire.ThreadTurnsListResponse{}, savedHistoryStampFor(ctx, o.cfg, appwire.ThreadReadParams{Ref: p.Ref, ThreadID: p.ThreadID}, err)(pastErr)
 	}
 	if ok {
 		if liveAttempted && page.ServingFacts != nil {
