@@ -179,6 +179,48 @@ func TestSharedEnvDelegateMetaRecordsTheScratchOwner(t *testing.T) {
 	if got := sess.Meta().ScratchDirSessionID; got != parent {
 		t.Errorf("shared-env delegate meta records scratch dir session %q, want the environment owner %q", got, parent)
 	}
+	// The in-process path hands the child the parent's own environment, so the
+	// restore must leave that environment's identity exactly as the parent named
+	// it: adopting the recorded owner is the standalone path's job, not this one's.
+	if root, owner := env.ScratchIdentity(); root != rootID || owner != parent {
+		t.Errorf("in-process delegate restore named the handed environment %s/%s, want the parent's own %s/%s", root, owner, rootID, parent)
+	}
+}
+
+// TestStandaloneResumeReopensTheRecordedScratchOwner: `serve --resume
+// <delegate>` restores with an empty spawn carrier, so the delegate's meta is the
+// only record of a scratch it shared with its parent. The resume must name the
+// environment after the RECORDED owner — the session whose directory in the tree
+// the scratch occupies — and not after the delegate: naming it after the delegate
+// mints a second, empty directory beside the one its transcript names, and the
+// first autosave rewrites the recorded owner as unowned.
+func TestStandaloneResumeReopensTheRecordedScratchOwner(t *testing.T) {
+	rootID := artifactRestoreMeta(t).ID
+	ownerID := artifactRestoreMeta(t).ID
+	delegate := artifactRestoreMeta(t)
+	delegate.IsSubagent = true
+	delegate.ScratchTreeRootID = rootID
+	delegate.ScratchDirSessionID = ownerID
+	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
+	sess, err := RestoreSessionFromMetaWithConfig(newArtifactTestClient(), NewOpenAIProfile("gpt-5.2"), env, delegate, artifactRestoreConfig(t, t.TempDir()))
+	if err != nil {
+		t.Fatalf("standalone resume: %v", err)
+	}
+	t.Cleanup(sess.Close)
+	if root, owner := env.ScratchIdentity(); root != rootID || owner != ownerID {
+		t.Fatalf("standalone resume named its scratch %s/%s, want the recorded %s/%s", root, owner, rootID, ownerID)
+	}
+	scratch := mintRootScratch(t, sess)
+	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(scratch)) })
+	if got := sandbox.SessionScratchOwnerOf(scratch); got != ownerID {
+		t.Errorf("resumed delegate mints the directory of %q, want the recorded owner %q", got, ownerID)
+	}
+	if got := sandbox.SessionScratchTreeRootOf(scratch); got != rootID {
+		t.Errorf("resumed delegate mints in tree %q, want the recorded tree %q", got, rootID)
+	}
+	if got := sess.Meta().ScratchDirSessionID; got != ownerID {
+		t.Errorf("meta after the standalone resume records scratch dir session %q, want the recorded owner %q", got, ownerID)
+	}
 }
 
 // TestSelfOwnedScratchMetaRecordsNoScratchOwner: a delegate resumed as the root

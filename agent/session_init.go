@@ -925,8 +925,17 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	// A delegate's own environment was named when it was prepared, and a shared
 	// delegate is handed its parent's, so only a root restore names env.
+	//
+	// Scratch ownership is durable: it is recorded from the environment when the
+	// scratch is created (SessionMeta.ScratchDirSessionID) and every resume reads
+	// it from that same record. A delegate that shared its parent's environment is
+	// resumed on its own with nothing but its meta in hand, so naming it after
+	// itself here would mint a second, empty directory beside the one its
+	// transcript names and rewrite the recorded owner as unowned. Both identity
+	// halves come from the record: the tree the scratch lives in, and the session
+	// whose directory in that tree it occupies.
 	if restoreCfg.spawn.parentSessionID == "" {
-		nameRootScratch(env, meta.RestoredScratchTreeRoot(), meta.ID)
+		nameRootScratch(env, meta.RestoredScratchTreeRoot(), meta.RestoredScratchDirSession())
 	}
 
 	restoreComplete := false
@@ -2790,7 +2799,10 @@ func firstConnectRecoveryWarning(name string) events.WarningData {
 // on resume, and removed when the hub archives or deletes the session. A
 // scratch the environment already minted is unaffected. rootID is the tree the
 // scratch lives in: the session's own ID, except for a delegate resumed as a
-// top-level session (SessionMeta.RestoredScratchTreeRoot).
+// top-level session (SessionMeta.RestoredScratchTreeRoot). sessionID is the
+// session whose directory in that tree the scratch occupies: the session itself,
+// except for a delegate resumed on its own, which reads the owner its meta
+// recorded beside the tree root (SessionMeta.RestoredScratchDirSession).
 func nameRootScratch(env execenv.ExecutionEnvironment, rootID, sessionID string) {
 	local, ok := env.(*execenv.LocalExecutionEnvironment)
 	if !ok {
