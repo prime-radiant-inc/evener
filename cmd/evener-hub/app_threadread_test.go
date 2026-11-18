@@ -2280,15 +2280,13 @@ func TestHubRPCInitialWindowListServesSavedSessions(t *testing.T) {
 // TestPastEntryTurns_KeepsRecordedRoundOnSettledCall pins the round on a
 // settled command row of the hub's full saved-transcript read.
 //
-// computePastEntryTurns is that read: it projects each entry through
-// appItemsFromReplayTurn, which supplies apptranscript.ProjectTurn. That
-// projector does not apply the identity read model, so its assistant tool row
-// carries no RoundID, while the transcript records a round on the announcing
-// entry. A standalone steering delivery landing between the call and its result
-// makes executionItems settle the result into the announced row, so the row's
-// round is whatever the merge left there. An empty round names no round to a
-// client reconciling by round id, which is what the index already refuses to do
-// (window.go pins the opener's).
+// It calls computePastEntryTurns itself because that is the read clients get:
+// appItemsFromReplayTurn supplies apptranscript.ProjectTurn, which does not
+// apply the identity read model, so the assistant tool row carries no RoundID
+// while the transcript records one on the announcing entry. A standalone
+// delivery between the call and its result makes executionItems settle the
+// result into the announced row, and an empty round names no round to a client
+// reconciling by round id.
 //
 // The fixture writes a real transcript through the real writer, so the round,
 // turn and entry ordinals below are what the producer recorded.
@@ -2405,8 +2403,8 @@ func TestPastEntryTurns_KeepsRecordedRoundOnSettledCall(t *testing.T) {
 	if deliveryAt < 0 {
 		t.Fatalf("no steering row for the fixture's delivery")
 	}
-	if shellAt > deliveryAt {
-		t.Fatalf("settled row at item %d sits after the delivery at item %d, want the announcing entry's position", shellAt, deliveryAt)
+	if shellAt >= deliveryAt {
+		t.Errorf("settled row at item %d is not before the delivery at item %d, want the announcing entry's position", shellAt, deliveryAt)
 	}
 	if shell.ID != wantID {
 		t.Errorf("settled row id = %q, want %q, the id the announcing entry mints", shell.ID, wantID)
@@ -2414,11 +2412,8 @@ func TestPastEntryTurns_KeepsRecordedRoundOnSettledCall(t *testing.T) {
 	if shell.TurnID != turnID {
 		t.Errorf("settled row turn = %q, want %q", shell.TurnID, turnID)
 	}
-	if shell.RoundID == "" {
-		t.Fatalf("settled row round is empty and the announcing entry recorded %q: the hub's full saved read dropped the round", roundID)
-	}
 	if shell.RoundID != roundID {
-		t.Errorf("settled row round = %q, want the announcing entry's %q", shell.RoundID, roundID)
+		t.Errorf("settled row round = %q, want the announcing entry's %q: the hub's full saved read dropped the round", shell.RoundID, roundID)
 	}
 	if shell.Status != appwire.TurnStatusCompleted {
 		t.Errorf("settled row status = %q, want completed", shell.Status)
