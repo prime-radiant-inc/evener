@@ -46,7 +46,6 @@ import {
   collectAuthoritativeMutationIds,
   compareBootGeneration,
   confirmedBootReplacement,
-  DAEMONLESS_BOOT_GENERATION,
   errorText,
   frontierFromCursor,
   handOffReplacedSource,
@@ -4477,17 +4476,16 @@ async function readThreadHydration(
       const handedBase = failureOwner
         ? (handOffReplacedSource(failedBase, failureOwner, "authoritative") ?? failedBase)
         : failedBase;
-      // The hand-off above decides the BASE model. The buffer is the other half:
-      // a hold buffered just before its daemon exited is still in it, and folding
-      // it back would restore a wait whose owner the failure just confirmed gone.
-      // Durable fields still fold in, which is the state a durable-first merge
-      // would leave. A failure that names a LIVE replacement is not absence, so
-      // its buffered hold folds in normally and the wait survives.
-      const replayUpdates =
-        failureOwner === DAEMONLESS_BOOT_GENERATION
-          ? withoutDepartedHolds(pending.notifications)
-          : pending.notifications;
-      const published = replayHydrationNotifications(handedBase, replayUpdates).model;
+      // The buffer is NOT filtered by the failure's own token. A buffered
+      // delegate frame carries no source identity (EvenerDelegateParams is ref,
+      // threadId and delegate), so the client cannot tell which source published
+      // a sample - and the token itself is not trustworthy evidence: the hub
+      // stamps `daemonless` on a failed saved-history fallback even while a
+      // daemon runs (#6815). Filtering on it would strip the only copy of a LIVE
+      // hold, and an unchanged hold emits no update of its own to restore it, so
+      // the buffer folds in whole and the retired source's samples are cleared
+      // by the hand-off above instead.
+      const published = replayHydrationNotifications(handedBase, pending.notifications).model;
       const entry = tracked ? existingEntryRoute(ref) : undefined;
       if (!tracked) {
         putWatchedThreadModel(ref, published);
@@ -4514,7 +4512,7 @@ async function readThreadHydration(
               entry.repository,
               entry.lifetime,
               repositoryModel,
-              replayUpdates,
+              pending.notifications,
               false,
               failureOwner,
             );
@@ -4523,7 +4521,7 @@ async function readThreadHydration(
             // hand-off cleared the hold facet, so the replacement's own sample
             // must fold back or the wait it published disappears. Only the
             // hold-bearing method is re-offered, and only after the retire.
-            for (const update of replayUpdates) {
+            for (const update of pending.notifications) {
               if (update.notification.method !== "evener/delegate/updated") continue;
               entry.repository.accept(update.notification, { lifetime: entry.lifetime });
             }
@@ -6166,31 +6164,6 @@ function bufferPendingNotification(
   }
   currentAppliedSequences.set(ref, sequence);
   pending.notifications.push(update);
-}
-
-// A buffered frame outlives its source. When a failure CONFIRMS that no daemon
-// serves the ref any more, the buffer's delegate frames still describe rows that
-// existed, so their durable fields must fold in - but re-folding their hold
-// fields would reinstate a wait whose owner has exited, and an unchanged hold
-// emits no update of its own to release it. The durable-first shape is exactly
-// what retireStableDelegateHolds leaves behind for a model.
-function withoutDepartedHolds(
-  updates: PendingThreadHydration["notifications"],
-): PendingThreadHydration["notifications"] {
-  return updates.map((update) => {
-    if (update.notification.method !== "evener/delegate/updated") return update;
-    const {
-      drainHeldByJobs: _held,
-      runningJobCount: _count,
-      oldestRunningJobStartedAt: _oldest,
-      holdSequence: _sequence,
-      ...durable
-    } = update.notification.params.delegate;
-    return {
-      ...update,
-      notification: { ...update.notification, params: { ...update.notification.params, delegate: durable } },
-    };
-  });
 }
 
 function replayHydrationNotifications(
