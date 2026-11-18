@@ -611,7 +611,22 @@ func (c *delegateTreeController) acknowledgeRetryableStopDeliveriesLocked(stop *
 				// Permanent store failures join errDelegateNotControllable:
 				// production never swaps c.store, so the retry would poll
 				// forever.
-				return delegateMutationPlans{}, buildWakes(), fmt.Errorf("acknowledge stopped delegate delivery %s: %w", token.deliveryID, err)
+				//
+				// The lost-result warnings already accumulated above still ride
+				// this result. They are NOT delivery replay plans -- the pass is
+				// abandoning this receipt's acknowledgment, not replaying any --
+				// but they are news about receipts that are already gone from the
+				// store, so no later pass can rediscover them. Throwing them away
+				// here would discard a finding this same pass had proved.
+				//
+				// The lost-result warnings already accumulated above still ride
+				// this result. They are NOT delivery replay plans -- the pass is
+				// abandoning this receipt's acknowledgment, not replaying any --
+				// but they are news about receipts that are already gone from the
+				// store, so no later pass can rediscover them. Throwing them away
+				// here would discard a finding this same pass had proved.
+				plans := delegateMutationPlans{warnings: append([]events.WarningData(nil), lost...)}
+				return plans, buildWakes(), fmt.Errorf("acknowledge stopped delegate delivery %s: %w", token.deliveryID, err)
 			}
 			// A transient append failure keeps the receipt tracked. Re-arm the
 			// stop's progress so the parked drain retries after the store

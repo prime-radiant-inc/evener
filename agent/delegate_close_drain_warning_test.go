@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/execsupport/shellquote"
 )
 
 // closeDrainCascadeBudget is the close-cascade budget these tests mint with
@@ -99,7 +100,7 @@ func TestOrdinaryStopDrainDispatchesTheLostResultHookOnce(t *testing.T) {
 	runner.Add(plugin.HookNotification, plugin.RegisteredHook{
 		Matcher: "*",
 		Type:    "command",
-		Command: `printf 'hit\n' >> ` + hookDispatchLog,
+		Command: `printf 'hit\n' >> ` + shellquote.Literal(hookDispatchLog),
 		Timeout: 30,
 	})
 	f.root.hookRunner = runner

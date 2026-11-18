@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/execsupport/shellquote"
 )
 
 // The incomplete-close warning must still dispatch its configured Notification
@@ -38,7 +39,7 @@ func TestIncompleteCloseWarningDispatchesItsHookDespiteAFullBuffer(t *testing.T)
 	runner.Add(plugin.HookNotification, plugin.RegisteredHook{
 		Matcher: "*",
 		Type:    "command",
-		Command: `printf 'hit\n' >> ` + dispatchLog,
+		Command: `printf 'hit\n' >> ` + shellquote.Literal(dispatchLog),
 		Timeout: 30,
 	})
 	s.hookRunner = runner

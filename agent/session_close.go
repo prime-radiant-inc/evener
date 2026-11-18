@@ -594,7 +594,12 @@ func (s *Session) warnIncompleteCloseBeforeDisposal(ctx context.Context, what st
 	warning := events.WarningData{Message: fmt.Sprintf("%s close incomplete: %v", what, err)}
 	publishCtx, cancelPublish := closeCascadePublicationContext(ctx)
 	defer cancelPublish()
-	s.emitCloseDrainWarnings(publishCtx, []events.WarningData{warning}, hookOnAttempt)
+	// The send is capped at the cascade's publication cutoff, but the HOOK runs
+	// on the live cascade: the failure this warning reports can happen because
+	// that cutoff expired, and dispatching on it would skip the notification for
+	// exactly the case it exists for. One dispatch, on the cascade that is still
+	// live.
+	s.emitCloseDrainWarnings(publishCtx, ctx, []events.WarningData{warning}, hookOnAttempt)
 }
 
 // closeOwnedArtifactStore closes the root-owned artifact store after

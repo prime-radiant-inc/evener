@@ -818,16 +818,6 @@ func (c *delegateTreeController) drainStopForClose(ctx context.Context, stop *de
 	return c.drainStopAbandonable(ctx, stop, root, nil, true)
 }
 
-// drainStop is the ordinary stop drain: the same reconciliation as the close
-// drain, executing every plan the pass settled, with no abandon signal and no
-// warnings-only mode. It is main's seam, and it stays even though the close
-// drain now reaches drainStopAbandonable directly to express warningsOnly:
-// eight callers across four files drive the ordinary drain through it, and the
-// close drain cannot use it because it needs a mode this signature cannot name.
-func (c *delegateTreeController) drainStop(ctx context.Context, stop *delegateStopState, root *Session) error {
-	return c.drainStopAbandonable(ctx, stop, root, nil, false)
-}
-
 // publishDrainWarnings publishes the warnings a stop pass settled, on the path
 // that caller owns.
 //
@@ -850,7 +840,7 @@ func (s *Session) publishDrainWarnings(ctx context.Context, warningsOnly bool, w
 		return
 	}
 	if warningsOnly {
-		s.emitCloseDrainWarnings(ctx, warnings, hookOnPublication)
+		s.emitCloseDrainWarnings(ctx, ctx, warnings, hookOnPublication)
 		return
 	}
 	for _, warning := range warnings {
@@ -897,22 +887,19 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 		}
 	}()
 	// ONE publication decision for both callers, and one budget for the close
-	// side. Mediums 2 and 3 of review 53025's successor are the same mistake at
-	// two points of this entry, so they are answered here rather than at each
-	// publish site.
+	// side, so neither question is answered twice at two publish sites.
 	//
-	// M2 -- the ordinary stop driver must keep the guarantee the ordinary path
-	// had. Routing its warnings through emitCloseDrainWarnings made the hook a
+	// The ordinary stop driver keeps the guarantee the ordinary path had.
+	// Routing its warnings through emitCloseDrainWarnings makes the hook a
 	// CONSEQUENCE of channel delivery: that helper retains an undelivered
-	// warning and publishes the hook only when the send lands, so a full
-	// best-effort buffer converted a notification that used to arrive into one
-	// that silently did not. publishDrainWarnings keeps the ordinary path on
-	// emit, which dispatches the hook independently of delivery and retains
-	// nothing -- so the close-time retry can never deliver it twice.
+	// warning, so a full best-effort buffer would convert a notification that
+	// must arrive into one that silently did not. publishDrainWarnings keeps the
+	// ordinary path on emit, which dispatches the hook independently of delivery
+	// and retains nothing -- so the close-time retry can never deliver it twice.
 	//
-	// M3 -- a close-driven drain must not reserve a fresh slice per subtree.
-	// Each top-level subtree gets its own stop context, and passing that to the
-	// warning sends let every otherwise-complete stop spend another slice of the
+	// A close-driven drain must not reserve a fresh slice per subtree. Each
+	// top-level subtree gets its own stop context, and passing that to the
+	// warning sends lets every otherwise-complete stop spend another slice of the
 	// cascade against a full stream. The publications are capped at the
 	// cascade's SHARED absolute cutoff instead; the stop context still governs
 	// reconciliation, which is a join, not a publication.

@@ -410,12 +410,34 @@ func (s *Session) emitHookCompleted(data events.HookEndData) {
 // teardown budget open.
 func (s *Session) emitHookCompletedBounded(bound context.Context, data events.HookEndData) {
 	s.emitContext(bound, data)
-	s.recordHookCompletion(data)
+	s.recordHookCompletionOn(bound, data)
 }
 
 // recordHookCompletion writes the completion turn shared by both publication
 // paths above.
 func (s *Session) recordHookCompletion(data events.HookEndData) {
+	s.recordHookCompletionTurn(func(w events.WarningData) { s.emit(w) }, data)
+}
+
+// recordHookCompletionOn writes the completion turn, reporting a recording
+// failure on bound through the DIAGNOSTIC path.
+//
+// The completion is being recorded on a close publication bound because a
+// Notification hook is waiting on it. A write failure is an EventWarning, and
+// the ordinary warning path would fire that same Notification hook again -- on
+// the very send that is failing, for as long as the writer refuses, spending the
+// close budget one dispatch at a time. emitDiagnosticWarningContext publishes
+// the failure without dispatching a hook, so the failure still reaches every
+// reader and cannot re-enter the dispatcher that caused it.
+func (s *Session) recordHookCompletionOn(bound context.Context, data events.HookEndData) {
+	s.recordHookCompletionTurn(func(w events.WarningData) {
+		s.emitDiagnosticWarningContext(bound, w)
+	}, data)
+}
+
+// recordHookCompletionTurn builds the completion turn and records it, reporting
+// a write failure through warn. Both publication paths differ only in that sink.
+func (s *Session) recordHookCompletionTurn(warn func(events.WarningData), data events.HookEndData) {
 	info := schema.HookInfo{
 		Event:      data.Event,
 		HookType:   data.HookType,
@@ -432,7 +454,7 @@ func (s *Session) recordHookCompletion(data events.HookEndData) {
 	// SessionStart hooks run inside initSessionState, before the transcript
 	// writer exists (kata d4es). recordTurn holds the turn until it does; no
 	// buffering is needed here.
-	s.recordTurn(turn, turn)
+	s.recordTurnOn(warn, turn, turn)
 }
 
 // emitDiagnosticWarning emits a hook-configuration/matcher diagnostic so the
@@ -649,16 +671,29 @@ func (s *Session) sendEventContext(ctx context.Context, data events.EventData, p
 		// before it reaches the call that would publish either -- so without
 		// this arm the wait and the publisher wait on each other.
 		//
-		// A budget published BEFORE this send arrives supersedes the lifetime
-		// outright, and a nil channel never fires. A budget published while the
-		// send is already parked is handled on the arm itself: close publishes
-		// and then cancels the session context a few statements later, so an
-		// already-parked send sees the lifetime end with a fresh budget in hand
-		// and must come back to that budget rather than drop an event it still
-		// has its whole window to deliver.
-		var lifetimeDone <-chan struct{}
+		// A published budget SUPERSEDES the lifetime as the wait's own ceiling,
+		// but it never replaces the CALLER's cancellation: a caller that supplied
+		// a bound -- the close drain, a hook's lifecycle send, a watch
+		// invalidation -- must be able to release its own send, or a stalled
+		// consumer holds a caller whose budget already expired. Replacing the
+		// caller's context with the close budget is what let a bounded
+		// publication spend the whole cascade. So the caller's Done stays armed
+		// on every wait below, and the budget only takes over the LIFETIME's
+		// seat.
+		//
+		// A budget published while the send is already parked is handled on the
+		// arm itself: close publishes and then cancels the session context a few
+		// statements later, so an already-parked send sees the lifetime end with
+		// a fresh budget in hand and must come back to that budget rather than
+		// drop an event it still has its whole window to deliver.
+		// callerDone is armed on EVERY wait below. budgetDone is the published
+		// close budget, nil when none is published; lifetimeDone is the session's
+		// own lifetime, which stands in for a budget until one is published. Both
+		// are nil channels when not in force, and a nil channel never fires.
+		callerDone := ctx.Done()
+		var budgetDone, lifetimeDone <-chan struct{}
 		if closeCtx != nil {
-			ctx = closeCtx
+			budgetDone = closeCtx.Done()
 		} else {
 			lifetimeDone = s.sessionContext().Done()
 		}
@@ -697,9 +732,10 @@ func (s *Session) sendEventContext(ctx context.Context, data events.EventData, p
 				select {
 				case s.events <- ev:
 					delivered = true
-				case <-ctx.Done():
-				case <-closeSignal:
+				case <-callerDone:
+				case <-budgetDone:
 				case <-lifetimeDone:
+				case <-closeSignal:
 					// The lifetime ended under this send. If a close published
 					// its budget in the meantime, that budget owns the event
 					// exactly as it would for a send that arrived after the
@@ -717,6 +753,7 @@ func (s *Session) sendEventContext(ctx context.Context, data events.EventData, p
 						select {
 						case s.events <- ev:
 							delivered = true
+						case <-callerDone:
 						case <-published.Done():
 						case <-closeSignal:
 						}
@@ -782,9 +819,15 @@ var ObserveCloseDrainPublication func(bound context.Context)
 // failure the session always reported, and the path it used before this
 // publisher dispatched its hook independently of channel delivery, so that
 // notification must not become a consequence of a free slot (hookOnAttempt).
-// Either way the hook runs at most once: the post-removal retry publishes the
-// channel event only.
-func (s *Session) emitCloseDrainWarnings(ctx context.Context, warnings []events.WarningData, hook closeWarningHook) {
+//
+// On the hookOnAttempt path the hook runs on hookCtx, NOT on ctx: the warning's
+// send is capped at the cascade's publication cutoff, and once that has expired
+// the send cannot land -- but the cascade itself is still live, and the previous
+// close path dispatched this notification there. Running the hook on the expired
+// publication cutoff would skip it for exactly the failure it reports. It still
+// runs at most once: the post-removal retry publishes the channel event only,
+// and nothing redispatches the hook.
+func (s *Session) emitCloseDrainWarnings(ctx context.Context, hookCtx context.Context, warnings []events.WarningData, hook closeWarningHook) {
 	if s == nil || s.events == nil {
 		return
 	}
@@ -828,14 +871,15 @@ func (s *Session) emitCloseDrainWarnings(ctx context.Context, warnings []events.
 			s.jobManager.onSessionEventContext(ctx, ev)
 		}
 		message, title := warningHookMessage(data), warningHookTitle(data)
-		if !s.fireNotificationHookBounded(ctx, message, title) {
-			// The warning reached the stream, so it is delivered and must not be
-			// retained -- but its configured hook never STARTED, because the
-			// cutoff had expired by the time the dispatch was reached. The
-			// warning itself is what this drain exists to publish; a hook the
-			// cutoff declined is a known and stated limit of this change, not a
-			// second drop of the warning.
+		dispatchCtx := ctx
+		if hook == hookOnAttempt {
+			dispatchCtx = hookCtx
 		}
+		// A declined dispatch on the hookOnPublication path is the accepted limit
+		// stated above. On the hookOnAttempt path the caller has already given the
+		// hook the live cascade, so a decline there means the cascade itself is
+		// over -- there is no budget left to run anything on.
+		s.fireNotificationHookBounded(dispatchCtx, message, title)
 	}
 }
 

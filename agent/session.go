@@ -3005,6 +3005,16 @@ func (s *Session) appendPairedTurnVia(kind schema.TurnKind, live, persisted llm.
 // only when a tool exposes explicitly private evidence; every other caller
 // passes the same turn twice. It reports the entry's record.
 func (s *Session) recordTurn(live, persisted schema.Turn) transcript.Record {
+	return s.recordTurnOn(func(w events.WarningData) { s.emit(w) }, live, persisted)
+}
+
+// recordTurnOn is recordTurn with the sink a recording failure is reported on.
+// A hook completion recorded on a close publication bound passes a sink that
+// publishes on that bound AND cannot redispatch the hook: the failure is an
+// EventWarning, and the ordinary warning path fires the Notification hook, so a
+// writer that keeps refusing would dispatch that hook again on every completion
+// it could not record. Diagnosis, not a fresh dispatch.
+func (s *Session) recordTurnOn(warn func(events.WarningData), live, persisted schema.Turn) transcript.Record {
 	live.SkillState = live.SkillState.Clone()
 	persisted.SkillState = persisted.SkillState.Clone()
 	s.attentionMu.Lock()
@@ -3031,9 +3041,9 @@ func (s *Session) recordTurn(live, persisted schema.Turn) transcript.Record {
 	}
 	s.attentionMu.Unlock()
 	if err != nil {
-		s.emit(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		warn(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
-	s.surfaceTranscriptWarnings()
+	s.surfaceTranscriptWarningsOn(warn)
 	return rec
 }
 
@@ -3207,6 +3217,19 @@ func (s *Session) drainTranscriptWarnings(sink func(events.WarningData)) {
 // callers have already released the transcript locks.
 func (s *Session) surfaceTranscriptWarnings() {
 	s.drainTranscriptWarnings(func(w events.WarningData) { s.emit(w) })
+	s.announceFailClosed()
+}
+
+// surfaceTranscriptWarningsOn is surfaceTranscriptWarnings for a caller that owns
+// the sink its diagnostics must reach.
+//
+// A poisoned transcript retains a diagnostic for every append it refused, so a
+// hook completion recorded on a close publication bound would publish a burst of
+// warnings -- and the ordinary warning path fires the Notification hook for each
+// of them, re-entering the dispatcher whose own write just failed. The sink the
+// caller supplied is the diagnostic path, which cannot do that.
+func (s *Session) surfaceTranscriptWarningsOn(warn func(events.WarningData)) {
+	s.drainTranscriptWarnings(warn)
 	s.announceFailClosed()
 }
 
