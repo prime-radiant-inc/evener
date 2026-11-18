@@ -215,15 +215,36 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 		prelude = p
 		entryOrdinal = 1
 	}
-	// visibleRuns are, per stamped turn id, the groups that still emit items.
-	// A stamped turn the file records in more than one run must say so: each
-	// run is a FRAGMENT of one turn, not a whole turn of its own, or a client
-	// keyed by turn id holds two complete turns the index reports as one
-	// (#1166).
-	visibleRuns := map[string][]int{}
+	// runsByTurn are, per stamped turn id, the groups the file recorded under
+	// it, in file order. A RUN is a window onto the turn, not a turn: a
+	// standalone delivery can land between two runs of one execution, and both
+	// the call-id merge and the turn's metadata belong to the turn, not to the
+	// window (#1166 review).
+	runsByTurn := map[string][]int{}
 	for i := range acc.turns {
-		if group := &acc.turns[i]; group.stamped && len(group.items) > 0 {
-			visibleRuns[group.turnID] = append(visibleRuns[group.turnID], i)
+		if group := &acc.turns[i]; group.stamped {
+			runsByTurn[group.turnID] = append(runsByTurn[group.turnID], i)
+		}
+	}
+	runItems := make(map[string]map[int][]appwire.ThreadItem, len(runsByTurn))
+	runStamps := make(map[string]executionStamp, len(runsByTurn))
+	for turnID, runs := range runsByTurn {
+		runItems[turnID] = executionItems(runs, acc.turns)
+		runStamps[turnID] = stampOfRuns(runs, acc.turns)
+	}
+	// visibleRuns are, per stamped turn id, the runs that still emit items
+	// AFTER the turn-wide merge: a run whose items all settled into an earlier
+	// one is not a fragment, so its neighbour must not claim a continuation it
+	// does not have. A stamped turn the file records in more than one visible
+	// run must say so — each is a FRAGMENT of one turn, not a whole turn of its
+	// own, or a client keyed by turn id holds two complete turns the index
+	// reports as one (#1166).
+	visibleRuns := map[string][]int{}
+	for turnID, runs := range runsByTurn {
+		for _, run := range runs {
+			if len(runItems[turnID][run]) > 0 {
+				visibleRuns[turnID] = append(visibleRuns[turnID], run)
+			}
 		}
 	}
 	emittedAny := false
@@ -236,7 +257,14 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 		group := &acc.turns[i]
 		groupOrdinal := entryOrdinal
 		entryOrdinal++
-		items := mergeGroupedItems(group.items)
+		// A stamped run's items are the turn's, already merged across every run
+		// of it; a legacy group's are its own.
+		var items []appwire.ThreadItem
+		if group.stamped {
+			items = runItems[group.turnID][i]
+		} else {
+			items = mergeGroupedItems(group.items)
+		}
 		if len(items) == 0 {
 			continue
 		}
@@ -252,6 +280,14 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 		}
 		turn := appwire.Turn{ID: group.turnID, Items: positioned, ItemsView: appwire.TurnItemsViewFull, Status: appwire.TurnStatusCompleted}
 		StampGroupedTurn(&turn, group.entries)
+		if group.stamped {
+			// The turn's start and usage are the EXECUTION's, so every fragment
+			// reports the same whole-turn figures. A fragment that reported only
+			// its own run left a client reconciling turn metadata by id with the
+			// later fragment's partial total, and the saved turn underreported
+			// tokens and cost against the index (#1166 review).
+			runStamps[group.turnID].apply(&turn)
+		}
 		if prelude != nil && !preludeEmitted {
 			// The header's items and a LEADING prelude run are ONE turn: the
 			// writer stamps a fresh transcript's pre-execution entries with
@@ -315,6 +351,77 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 		turns = append([]appwire.Turn{*prelude}, turns...)
 	}
 	return ItemTurnProjection{Turns: turns, NextEntry: entryOrdinal}, nil
+}
+
+// executionStamp is one stamped turn's whole-turn metadata: the earliest
+// recorded start and the usage summed across every run of it.
+type executionStamp struct {
+	startedAt *int64
+	usage     llm.Usage
+}
+
+// apply writes the turn's whole-turn metadata onto one of its fragments.
+func (s executionStamp) apply(turn *appwire.Turn) {
+	turn.StartedAt = s.startedAt
+	if u := appwire.EvenerUsageFromLLM(s.usage); u != nil {
+		turn.Usage = u
+	}
+}
+
+// stampOfRuns folds the whole-turn metadata of one stamped turn from every run
+// of it, in file order.
+func stampOfRuns(runs []int, groups []groupedTurn) executionStamp {
+	var stamp executionStamp
+	for _, run := range runs {
+		for _, entry := range groups[run].entries {
+			if stamp.startedAt == nil && !entry.Timestamp.IsZero() {
+				ms := entry.Timestamp.UnixMilli()
+				stamp.startedAt = &ms
+			}
+			stamp.usage = stamp.usage.Add(entry.Usage)
+		}
+	}
+	return stamp
+}
+
+// executionItems merges one stamped turn's items ACROSS its runs and returns,
+// per run, the items that run emits: a later item of a call id already
+// introduced anywhere in the turn settles into the earlier item, which keeps
+// its own position and its run.
+//
+// The unit is the turn, not the run. A standalone delivery landing between a
+// call and its result splits the turn into two runs, and merging each run on
+// its own emitted the call in progress in the first and a second row for its
+// result in the second — two rows for one call id where the index keeps one
+// settled row (#1166 review).
+func executionItems(runs []int, groups []groupedTurn) map[int][]appwire.ThreadItem {
+	out := make(map[int][]appwire.ThreadItem, len(runs))
+	// callAt is, per call id, the run holding the item it settled into, so the
+	// settled item stays in the fragment the call was announced in.
+	callAt := map[string]int{}
+	at := map[int]map[string]int{}
+	for _, run := range runs {
+		out[run] = make([]appwire.ThreadItem, 0, len(groups[run].items))
+		at[run] = make(map[string]int, len(groups[run].items))
+	}
+	for _, run := range runs {
+		for _, item := range groups[run].items {
+			if !MergesByCallID(item) {
+				out[run] = append(out[run], item)
+				continue
+			}
+			earlier, ok := callAt[item.CallID]
+			if !ok {
+				callAt[item.CallID] = run
+				at[run][item.CallID] = len(out[run])
+				out[run] = append(out[run], item)
+				continue
+			}
+			index := at[earlier][item.CallID]
+			out[earlier][index] = MergeThreadItems(out[earlier][index], item)
+		}
+	}
+	return out
 }
 
 // StampGroupedTurn applies a group's terminal stamps: failure
