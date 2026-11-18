@@ -67,6 +67,10 @@ tool result or user turn must preserve the entire previously sent history
 prefix, including after a cold resume. Changing a single byte can invalidate
 the provider's prompt cache from that point forward.
 
+Keep each turn's native reasoning with the origin that actually served it.
+A gateway redirect or a model fallback must preserve the original eligible
+bytes when the conversation returns to that issuer.
+
 Carry the original bytes of every field the protocol replays through stream
 decoding, transcript storage and request construction. Preserve whitespace,
 JSON spelling inside tool arguments, opaque continuations, and the order,

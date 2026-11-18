@@ -146,6 +146,10 @@ func TestSessionContinuationTokenBudgetPreClientCarriesAdmittedShadow(t *testing
 	defer sess.Close()
 	sess.cfg.testOnly.responsesContinuationShadowEstimateFunc = func(llm.Request) (int, bool) { return 400_000, true }
 	req := llm.Request{Provider: profile.ID(), Model: profile.Model(), Messages: []llm.Message{llm.User("tiny delta")}, MaxTokens: new(131_072), HistoryMode: llm.HistoryModeResponsesDelta, PreviousResponseID: "resp-anchor"}
+	req.Continuation = &llm.ContinuationMetadata{
+		AnchorEndpoint: "https://issuer.example.invalid/v1/responses",
+		FullHistory:    []llm.Message{llm.User("prior question"), llm.Assistant("answer"), req.Messages[0]},
+	}
 	req = sess.applyResponsesContinuationShadowEstimate(profile, req)
 	if _, _, _, _, err := sess.callModelWithFallback(context.Background(), profile, req, nil, "", 0); err != nil {
 		t.Fatalf("callModelWithFallback: %v", err)
@@ -161,6 +165,14 @@ func TestSessionContinuationTokenBudgetPreClientCarriesAdmittedShadow(t *testing
 	}
 	if got.MaxTokens == nil || *got.MaxTokens <= 0 || *got.MaxTokens >= 131_072 {
 		t.Fatalf("continuation admitted MaxTokens = %v, want positive reduction below primary cap", got.MaxTokens)
+	}
+	full, changed := got.ForReasoningEndpoint("https://other.example.invalid/v1/responses", profile.Resolved())
+	if !changed || full.HistoryMode != llm.HistoryModeFullHistoryFallback || !requestCarriesText(full, "prior question") || full.InputTokensEstimate != got.FullHistoryInputTokensEstimate {
+		t.Fatal("the other serving origin needs the retained conversation and its full input estimate")
+	}
+	_, allocation, err := budgetModelDispatchRequestWithBudget(profile, full)
+	if err != nil || allocation.AdmittedOutput != *got.MaxTokens {
+		t.Fatalf("full-history output allowance = %d, error %v; admitted delta carries %d", allocation.AdmittedOutput, err, *got.MaxTokens)
 	}
 }
 

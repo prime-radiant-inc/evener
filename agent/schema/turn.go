@@ -570,40 +570,30 @@ func (t *Turn) ProjectReasoningText(res *registry.Resolved, route string, allowN
 		return msg
 	}
 	dropNative := !allowNative || t.DropsReasoningForTarget(res, route)
-	if !dropNative && (!res.ReplaysRawReasoning() || t.MatchesReasoningTextTarget(res, route)) {
+	if dropNative {
+		return msg.WithoutNativeReasoning(t.ReplaysChatDisplayText(res))
+	}
+	if !res.ReplaysRawReasoning() || t.MatchesReasoningTextTarget(res, route) {
 		return msg
 	}
-	if res.Protocol == registry.ProtocolOpenAIChat && !dropNative {
+	if res.Protocol == registry.ProtocolOpenAIChat {
 		return llm.TrimThinkingForReplayMessage(msg, true)
 	}
 	// Within one Responses deployment, a different model can receive opaque
 	// items even when the issuing model's plain reasoning is omitted.
-	removeNative := func(p llm.ContentPart) bool {
-		if p.Kind == llm.ContentRedThinking {
-			return dropNative
-		}
-		return p.Kind == llm.ContentThinking && p.Thinking != nil && (dropNative || p.Thinking.EncryptedContent == "")
+	plain := func(p llm.ContentPart) bool {
+		return p.Kind == llm.ContentThinking && p.Thinking != nil && p.Thinking.EncryptedContent == ""
 	}
-	first := slices.IndexFunc(msg.Content, removeNative)
+	first := slices.IndexFunc(msg.Content, plain)
 	if first < 0 {
 		return msg
 	}
-	keepDisplay := dropNative && t.ReplaysChatDisplayText(res)
 	out := make([]llm.ContentPart, first, len(msg.Content))
 	copy(out, msg.Content[:first])
 	for _, p := range msg.Content[first:] {
-		if removeNative(p) {
-			if !keepDisplay {
-				continue
-			}
-			text := p.UnsignedChatDisplayText()
-			if text == "" {
-				continue
-			}
-			// The Chat adapter joins display parts and the visible answer.
-			p.Thinking = &llm.ThinkingData{Text: text}
+		if !plain(p) {
+			out = append(out, p)
 		}
-		out = append(out, p)
 	}
 	msg.Content = out
 	return msg
@@ -646,6 +636,8 @@ func (t *Turn) HasRecordedEndpoint() bool {
 
 func (t *Turn) matchesReasoningRoute(res *registry.Resolved, route string) bool {
 	if t.ResponseReasoningRoute != "" {
+		// The configured route selects candidate history. Each HTTP request
+		// then projects it for the origin that will actually receive the body.
 		return t.ResponseReasoningRoute == route
 	}
 	if t.ResponseEndpoint == "" {

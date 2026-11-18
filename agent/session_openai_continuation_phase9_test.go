@@ -92,14 +92,32 @@ func TestSession_OpenAIResponsesContinuationPhase9RetryThroughRealAnchorSelectio
 			t.Fatal("full history lost the previous endpoint's conversation")
 		}
 	})
+	t.Run("configured route retains full history for its serving origins", func(t *testing.T) {
+		anchor := phase9MatchingAnchor("resp_serving_origin")
+		anchor.ResponseReasoningRoute = sess.currentProfile().ReasoningReplayRoute()
+		anchor.ResponseEndpoint = "https://serving.example.invalid/v1/responses"
+		req := runPhase9GateSession(t, []schema.Turn{
+			schema.NewTurn(schema.TurnUserInput, llm.User("question-31")),
+			anchor,
+		})
+		target := sess.currentProfile().Resolved()
+		same, changed := req.ForReasoningEndpoint(anchor.ResponseEndpoint, target)
+		if changed || same.PreviousResponseID != anchor.ResponseID || requestMessagesContainText(same.Messages, "question-31") {
+			t.Fatal("issuing origin lost its delta")
+		}
+		full, changed := req.ForReasoningEndpoint(target.Transport.BaseURL, target)
+		if !changed || full.PreviousResponseID != "" || !requestMessagesContainText(full.Messages, "question-31") ||
+			!requestMessagesContainText(full.Messages, anchor.Message.Text()) {
+			t.Fatal("other serving origin lost the conversation represented by the anchor")
+		}
+	})
 }
 
 // TestSession_OpenAIResponsesContinuationPhase9FallbackReplaySanitizesMalformedToolCall
 // is the anchor-rejection pin on a real dispatch: the session plans a delta
 // against a registry client, the endpoint answers previous_response_not_found,
-// and the session retries exactly once with the full history it kept in the
-// call frame — no sidecar on the request — sanitizing the malformed tool call
-// it replays.
+// and the session retries exactly once with its retained full history,
+// sanitizing the malformed tool call it replays.
 func TestSession_OpenAIResponsesContinuationPhase9FallbackReplaySanitizesMalformedToolCall(t *testing.T) {
 	dir := t.TempDir()
 	const malformedArgs = `{"value": broken`

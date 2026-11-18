@@ -530,4 +530,38 @@ func TestExpandHistory_StoredTranscriptUntouched(t *testing.T) {
 	if !hasContentKind(back, llm.ContentThinking) {
 		t.Fatal("switching back to the producing model must restore thinking replay")
 	}
+	t.Run("each turn keeps its serving origin through storage", func(t *testing.T) {
+		row := registry.Resolved{Instance: "anthropic", ModelID: "claude-opus-4-6", Protocol: registry.ProtocolAnthropic}
+		row.Transport.BaseURL = "https://configured.example.invalid"
+		scope := replayScope{Instance: row.Instance, Model: row.ModelID, Protocol: row.Protocol, destination: &row, reasoningRoute: row.ReasoningReplayRoute()}
+		history := []schema.Turn{turns[0], turns[0]}
+		for i, endpoint := range []string{"https://first.example.invalid", "https://second.example.invalid"} {
+			history[i].ResponseProtocol = row.Protocol
+			history[i].ResponseReasoningRoute = scope.reasoningRoute
+			history[i].ResponseEndpoint = endpoint
+		}
+		encoded, err := json.Marshal(history)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var restored []schema.Turn
+		if err := json.Unmarshal(encoded, &restored); err != nil {
+			t.Fatal(err)
+		}
+		for _, input := range [][]schema.Turn{history, restored} {
+			req := llm.Request{Messages: expandHistory(input, scope)}
+			for i, turn := range history {
+				got, changed := req.ForReasoningEndpoint(turn.ResponseEndpoint, row)
+				if !changed || len(got.Messages) != len(input) {
+					t.Fatal("serving-origin projection lost its conversation")
+				}
+				for j, m := range got.Messages {
+					hasThinking := hasContentKind([]llm.Message{m}, llm.ContentThinking)
+					if hasThinking != (i == j) || m.Text() != history[j].Message.Text() {
+						t.Fatalf("origin %d received the wrong content for turn %d", i, j)
+					}
+				}
+			}
+		}
+	})
 }

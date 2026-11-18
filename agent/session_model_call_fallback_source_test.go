@@ -185,12 +185,20 @@ func TestFallbackKeepsOpaqueAndWebSearchScopeAcrossProtocols(t *testing.T) {
 				if strings.Contains(wire, "ws-a08") || strings.Contains(wire, "q-c13") {
 					t.Errorf("Chat request %d carried a native search or its query", i)
 				}
-				if i == len(requests)-1 {
-					for _, message := range body["messages"].([]map[string]any) {
-						if text, ok := message["reasoning"].(string); ok {
-							scalars = append(scalars, text)
+				var legacySignature bool
+				for _, message := range body["messages"].([]map[string]any) {
+					details, _ := message["reasoning_details"].([]map[string]any)
+					for _, d := range details {
+						if d["signature"] == "sig-c13" && d["text"] == "c13" {
+							legacySignature = true
 						}
 					}
+					if text, ok := message["reasoning"].(string); ok && i == len(requests)-1 {
+						scalars = append(scalars, text)
+					}
+				}
+				if legacySignature != (i == 0) {
+					t.Errorf("fallback request %d replayed the endpoint-free tool round's signature: %t", i, legacySignature)
 				}
 			}
 			followup := requests[1]
@@ -202,6 +210,12 @@ func TestFallbackKeepsOpaqueAndWebSearchScopeAcrossProtocols(t *testing.T) {
 			}
 			t.Run("own tool continuation", func(t *testing.T) { testChatToolContinuation(t, chatContinuationCase{raw: tc.raw, viaFallback: true}) })
 			t.Run("direct Chat tool continuation", func(t *testing.T) { testChatToolContinuation(t, chatContinuationCase{raw: tc.raw}) })
+			t.Run("second Chat model takes the tool continuation", func(t *testing.T) {
+				testChatToolContinuation(t, chatContinuationCase{raw: tc.raw, viaFallback: true, switchModel: true})
+				t.Run("separate scalar as assistant text", func(t *testing.T) {
+					testChatToolContinuation(t, chatContinuationCase{raw: tc.raw, viaFallback: true, switchModel: true, asText: true})
+				})
+			})
 			t.Run("Chat display behind a Responses primary", func(t *testing.T) {
 				testChatToolContinuation(t, chatContinuationCase{raw: tc.raw, asText: true, viaFallback: true})
 			})
@@ -336,7 +350,7 @@ func testResponsesFallbackWebSearch(t *testing.T) {
 }
 
 type chatContinuationCase struct {
-	raw, viaFallback, asText, mirrorSigned bool
+	raw, viaFallback, asText, mirrorSigned, switchModel bool
 }
 
 func testChatToolContinuation(t *testing.T, tc chatContinuationCase) {
@@ -351,8 +365,14 @@ func testChatToolContinuation(t *testing.T, tc chatContinuationCase) {
 		map[string]any{"type": "reasoning.encrypted", "id": "r-23", "data": "cipher-29"},
 	}
 	const unsigned = "unsigned-detail-41"
+	const nextScalar = "scalar-52"
+	nextDetails := []any{map[string]any{"type": "reasoning.text", "text": "signed-52", "signature": "sig-52"}}
 	call := map[string]any{"id": "call-9", "type": "function", "function": map[string]any{"name": "missing_tool", "arguments": " { } "}}
-	history := make(chan []json.RawMessage, 10)
+	type chatRequest struct {
+		Model    string
+		Messages []json.RawMessage
+	}
+	history := make(chan chatRequest, 10)
 	var calls atomic.Int32
 	var rejectIssuer atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -360,10 +380,7 @@ func testChatToolContinuation(t *testing.T, tc chatContinuationCase) {
 			http.NotFound(w, r)
 			return
 		}
-		var req struct {
-			Model    string
-			Messages []json.RawMessage
-		}
+		var req chatRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Error(err)
 			w.WriteHeader(http.StatusBadRequest)
@@ -374,13 +391,16 @@ func testChatToolContinuation(t *testing.T, tc chatContinuationCase) {
 			return
 		}
 		select {
-		case history <- req.Messages:
+		case history <- req:
 		case <-r.Context().Done():
 			return
 		}
 		delta := map[string]any{}
 		n := int(calls.Add(1))
 		if n == 1 {
+			if tc.switchModel {
+				rejectIssuer.Store(true)
+			}
 			delta["content"] = answer
 			delta["tool_calls"] = []any{call}
 			delta["reasoning"] = scalar
@@ -390,6 +410,10 @@ func testChatToolContinuation(t *testing.T, tc chatContinuationCase) {
 			}
 		} else {
 			done := agenttest.CommunicateCall("done", "recovered")
+			if tc.switchModel && n == 2 {
+				done.ID = "other-done-52"
+				delta["reasoning"], delta["reasoning_details"] = nextScalar, nextDetails
+			}
 			delta["tool_calls"] = []any{map[string]any{"id": done.ID, "type": "function", "function": map[string]any{"name": done.Name, "arguments": string(done.Arguments)}}}
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -423,6 +447,9 @@ func testChatToolContinuation(t *testing.T, tc chatContinuationCase) {
 	target := func(model string) (*provider.Profile, []string) {
 		if tc.viaFallback {
 			fallbacks := []string{"gw/" + model}
+			if tc.switchModel && model == "reasoner" {
+				fallbacks = append(fallbacks, "gw/other")
+			}
 			if tc.asText && model == "reasoner" {
 				fallbacks = append(fallbacks, "gw/redirected")
 			}
@@ -441,6 +468,7 @@ func testChatToolContinuation(t *testing.T, tc chatContinuationCase) {
 	for _, input := range []string{"begin", "another turn"} {
 		sendOneUserInput(t, s, input)
 	}
+	rejectIssuer.Store(false)
 	for _, dest := range []struct{ base, model string }{{srv.URL, "reasoner"}, {srv.URL, "other"}, {srv.URL + "/other", "reasoner"}, {srv.URL + "/other", "other"}, {srv.URL, "reasoner"}} {
 		s.Close()
 		client = clientAt(dest.base)
@@ -459,11 +487,14 @@ func testChatToolContinuation(t *testing.T, tc chatContinuationCase) {
 	// Tool continuation, next turn, cold resume, another model, redirected
 	// endpoint, and a return to the original endpoint.
 	targets := []destination{{true, true}, {true, true}, {true, true}, {true, false}, {false, true}, {false, false}, {true, true}}
-	if tc.asText && tc.viaFallback {
+	if tc.switchModel {
+		targets[0].sameModel, targets[1].sameModel = false, false
+	}
+	if tc.asText && tc.viaFallback && !tc.switchModel {
 		rejectIssuer.Store(true)
 		sendOneUserInput(t, s, "continue on the other endpoint")
 		targets = append(targets, destination{false, false})
-	} else if tc.asText {
+	} else if tc.asText && !tc.viaFallback {
 		if err := s.SetModel("gw/redirected"); err != nil {
 			t.Fatal(err)
 		}
@@ -485,17 +516,27 @@ func testChatToolContinuation(t *testing.T, tc chatContinuationCase) {
 	var warm, toolResult json.RawMessage
 	for i, dest := range targets {
 		n := i + 1
-		var got, result json.RawMessage
-		for _, item := range <-history {
+		var got, result, ownDetails json.RawMessage
+		var ownScalar string
+		req := <-history
+		if dest.sameModel != (req.Model == "reasoner") {
+			t.Fatalf("Chat request %d reached model %q, expecting original model %t", n+1, req.Model, dest.sameModel)
+		}
+		for _, item := range req.Messages {
 			var msg struct {
 				ToolCallID string                `json:"tool_call_id"`
 				ToolCalls  []struct{ ID string } `json:"tool_calls"`
+				Details    json.RawMessage       `json:"reasoning_details"`
+				Scalar     string                `json:"reasoning"`
 			}
 			if err := json.Unmarshal(item, &msg); err != nil {
 				t.Fatal(err)
 			}
 			if len(msg.ToolCalls) > 0 && msg.ToolCalls[0].ID == "call-9" {
 				got = item
+			}
+			if len(msg.ToolCalls) > 0 && msg.ToolCalls[0].ID == "other-done-52" {
+				ownDetails, ownScalar = msg.Details, msg.Scalar
 			}
 			if msg.ToolCallID == "call-9" {
 				result = item
@@ -518,9 +559,18 @@ func testChatToolContinuation(t *testing.T, tc chatContinuationCase) {
 		if string(got) != mustJSON(t, want) {
 			t.Errorf("Chat request %d replayed %s, want %s", n+1, got, mustJSON(t, want))
 		}
+		if tc.switchModel && n > 1 && req.Model == "other" && dest.sameRoute {
+			var wantScalar string
+			if tc.raw && !tc.asText {
+				wantScalar = nextScalar
+			}
+			if string(ownDetails) != mustJSON(t, nextDetails) || ownScalar != wantScalar {
+				t.Errorf("Chat request %d lost the second model's own reasoning: details %s, scalar %q", n+1, ownDetails, ownScalar)
+			}
+		}
 		if n == 1 {
 			warm, toolResult = got, result
-		} else if dest.sameRoute && dest.sameModel && !bytes.Equal(got, warm) {
+		} else if dest == targets[0] && !bytes.Equal(got, warm) {
 			t.Errorf("Chat request %d rewrote the assistant message sent with its tool result", n+1)
 		}
 		if len(result) == 0 || !bytes.Equal(result, toolResult) {

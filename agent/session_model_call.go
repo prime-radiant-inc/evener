@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -108,8 +109,8 @@ func effectiveReasoningEffort(cfg, override string, escalated bool) string {
 // SystemPrompt, ContextMgmt, and HistoryExpand phase timings into t.
 //
 // It also returns the full-history message list a planned continuation delta was
-// cut from. That list is the round's, not the request's: the retry after a
-// rejected anchor rebuilds from it, and nothing on the wire ever carries it.
+// cut from. The round shares this snapshot with the transport so either a
+// rejected anchor or a different serving origin can send the full conversation.
 func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t *events.RoundTimings) (profile *provider.Profile, sys string, history []llm.Message, req llm.Request, fullHistory []llm.Message, reasoningEffort string, err error) {
 	if err := s.flushPendingDelegateDeliveries(); err != nil {
 		return nil, "", nil, llm.Request{}, nil, "", err
@@ -699,6 +700,8 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 			return !llm.RowSeesToolResultMedia(profile.Resolved(), mediaType)
 		})
 		req.Continuation = &llm.ContinuationMetadata{
+			AnchorEndpoint:          candidate.Turn.ResponseEndpoint,
+			FullHistory:             fullHistory,
 			PreviousResponseIDHash:  candidate.Turn.ResponseIDHash,
 			AnchorTurnIndex:         candidate.TurnIndex,
 			DeltaTurnCount:          len(candidate.Delta),
@@ -1322,10 +1325,14 @@ func (s *Session) recordResponseUsage(modelResp sessionModelResponse, req llm.Re
 		responseHasServerWebSearch(resp.Message.Content),
 	)
 	if record {
+		projectionChanged := false
+		if endpoint, _ := resp.Raw["endpoint_url"].(string); endpoint != "" && req.HasReasoningEndpoints() {
+			_, projectionChanged = req.ForReasoningEndpoint(endpoint, resolvedTargetOf(answeringProfile))
+		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		measured := modelResp.history
-		if !measured.matchesPrefix(s.history, s.historyRevision) {
+		if projectionChanged || !measured.matchesPrefix(s.history, s.historyRevision) {
 			// A count for a different projection cannot price resident history.
 			s.contextMgr.RecordInputTokensFor(answeringProfile, 0, 0)
 			return
@@ -1861,6 +1868,10 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		return withPreviews(modelResp), req, attempt, usedProfile, err
 	}
 	attempt = completeAttemptMetadata(attempt, modelResp.Response)
+	if attempt.EndpointURL != "" && req.HistoryModeForEndpoint(attempt.EndpointURL) != req.HistoryMode {
+		attempt.HistoryMode = llm.HistoryModeFullHistoryFallback
+		attempt.PreviousResponseIDHash, attempt.ConversationIDHash = "", ""
+	}
 	modelResp.history = fallbackSource.modelHistorySnapshot
 	if documents := fallbackSource.scope.rejectedDocuments; documents != nil && documents.omitted {
 		// Restore sends the original result. Only the live session can use
@@ -2236,8 +2247,13 @@ func (rs replayScope) thinkingReplayEligible(t schema.Turn, inFlight bool) bool 
 	if strings.TrimSpace(t.ResponseProvider) == "" {
 		return true
 	}
+	target := rs.destination
+	// A Chat fallback behind another protocol accepts signed details from its
+	// own recorded model and route, including while the tool call is in flight.
+	if target != nil && target.Protocol == registry.ProtocolOpenAIChat && rs.Protocol != target.Protocol && t.HasRecordedEndpoint() {
+		return t.MatchesReasoningTextTarget(target, rs.reasoningRoute)
+	}
 	if inFlight {
-		target := rs.destination
 		if target == nil || target.Protocol != registry.ProtocolAnthropic {
 			return true
 		}
@@ -2247,7 +2263,7 @@ func (rs replayScope) thinkingReplayEligible(t schema.Turn, inFlight bool) bool 
 			return true
 		}
 	}
-	if target := rs.destination; target != nil {
+	if target != nil {
 		switch target.Protocol {
 		case registry.ProtocolAnthropic:
 			if rs.Protocol != target.Protocol || rs.Instance != target.Instance || rs.Model != target.ModelID {
@@ -2259,12 +2275,6 @@ func (rs replayScope) thinkingReplayEligible(t schema.Turn, inFlight bool) bool 
 			}
 		case registry.ProtocolOpenAIResponses:
 			return !t.DropsReasoningForTarget(target, rs.reasoningRoute)
-		case registry.ProtocolOpenAIChat:
-			// The issuing Chat fallback received these details with its
-			// tool result. Finishing the turn cannot change that message.
-			if rs.Protocol != target.Protocol && t.HasRecordedEndpoint() && t.MatchesReasoningTextTarget(target, rs.reasoningRoute) {
-				return true
-			}
 		}
 	}
 	producer := rs.producerProtocol(t)
@@ -2486,6 +2496,11 @@ func (d *rejectedDocumentProjection) omit(tr *llm.ToolResultData) bool {
 // outgoing request while staying untouched in the stored transcript.
 func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message {
 	history := make([]llm.Message, 0, len(historyTurns))
+	// A transcript without serving provenance can replay to its configured origin.
+	var configuredEndpoint string
+	if scope.destination != nil {
+		configuredEndpoint = llm.SanitizeEndpointURL(scope.destination.Transport.BaseURL)
+	}
 	pendingToolCalls := map[string]struct{}{}
 	var deferredSteering []llm.Message
 
@@ -2559,6 +2574,7 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 		case schema.TurnAssistant:
 			endToolRound()
 			message := scope.projectTurnMessage(t, inFlight)
+			message = message.BindReasoningEndpoint(cmp.Or(t.ResponseEndpoint, configuredEndpoint))
 			history = append(history, message)
 			startToolRound(message)
 		case schema.TurnCheckpoint, schema.TurnSummary:

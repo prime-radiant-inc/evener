@@ -515,6 +515,10 @@ For older turns Evener uses the issuer information available in the
 transcript. A saved endpoint still identifies the serving host and path
 even when the turn predates route digests. Moving that route keeps its
 reasoning at the original endpoint. The visible conversation carries over.
+When a gateway redirects a request, each serving origin receives the native
+reasoning it issued. Returning to the same origin preserves those bytes
+through a cold resume. A Responses continuation handle also belongs to its
+issuing origin. Another origin receives the full visible conversation.
 An Anthropic fallback keeps its own signed thinking through tool calls and
 cold resumes. If a tool continuation moves to a different instance, model,
 or endpoint, the visible answer, tool call, and result follow it. The
@@ -578,9 +582,12 @@ call keeps its literal path and file contents, including XML.
   order, preserving its original array position. A signed detail on its own
   supplies only that detail. An encrypted detail keeps its own display text.
   When a provider omits the scalar, an unsigned text detail can supply it.
-  A Chat fallback receives its own signed and
-  encrypted details on subsequent turns and cold resumes when the recorded
-  model and serving route still match. Moving a Chat row to a new endpoint
+  A Chat fallback behind another protocol receives its own signed and
+  encrypted details during tool calls, on later turns and after cold resume
+  when the recorded model and serving route match. A second model on that
+  endpoint receives the visible answer, tool call and result. Its
+  `thinking_as_text` setting can also expose a separately supplied scalar.
+  Moving a Chat row to a new endpoint
   keeps signed and encrypted details at the original endpoint, including on
   rows that replay only opaque reasoning. When a Chat reply contains reasoning and no
   visible answer or tool call, Evener retries within its empty-answer limit.
@@ -615,10 +622,12 @@ call keeps its literal path and file contents, including XML.
   item can inherit its announced ID. Repeated completions update only the
   reasoning fields they supply. A replacement content or summary array
   selects its own parts and can inherit omitted text at a matching type and
-  index. If the replacement contains only display parts, the transcript keeps
-  those parts and the next request omits the withdrawn reasoning. When an
-  item omits its content, a native part announcement and the finalized text establish its
-  type, index and exact bytes. A single `reasoning_text` placeholder with
+  index. In a multipart selection, an explicit empty string clears the text
+  at that slot and preserves its position. If the replacement contains only
+  display parts, the transcript keeps those parts and the next request omits
+  the withdrawn reasoning. When an item omits its content, a native part
+  announcement and the finalized text establish its type, index and exact
+  bytes. A single `reasoning_text` placeholder with
   `text` set to `""` can recover all finalized native slots of that item in
   index order. An empty terminal output keeps these parts at the item's
   stream position. An explicit empty `content` array clears the item's
@@ -642,8 +651,9 @@ call keeps its literal path and file contents, including XML.
   Evener keeps the first confirmed item ID. An event naming an issued call
   delivers its arguments to that call even if its item ID or output index
   points to another tool. The `id` on an argument event can identify an
-  issued call by its call ID or item ID. If it names two different issued calls,
-  both keep their own arguments. Explicit terminal arguments take
+  issued call or a provisional item. When it names two different records,
+  Evener applies the arguments only if the output index identifies exactly
+  one of them. Explicit terminal arguments take
   precedence, and a terminal that omits them inherits the call's exact streamed
   arguments. Reasoning shown only as deltas remains
   visible in the transcript, including when the response ends with an
