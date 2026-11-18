@@ -560,12 +560,51 @@ func validateDiscardUnlessResolvedShape(disposition delegateAttentionResolution,
 	return nil
 }
 
-// publishDelegateAttentionReport puts a report a delivery recorded before its
-// acknowledgment into resident history. The acknowledgment has already raised
-// the floor, so this report and the release it frees are published together:
-// every request that can carry this row can also present the row it released.
-func (s *Session) publishDelegateAttentionReport(turn schema.Turn) error {
-	if turn.AttentionID == "" {
+// delegateAttentionTurnIdentity names one history turn for the purpose of
+// asking whether a request already projects it. Position cannot answer that
+// question: a release moves a held report to the tail, so every index after it
+// shifts while the set of turns a request carries is unchanged. A stable turn ID
+// is the turn's own identity and survives that move; a turn without one carries
+// no attention identity to compare and is not something this comparison can
+// claim either way, so the caller treats it as not-yet-presented.
+func delegateAttentionTurnIdentity(turn schema.Turn) string {
+	if turn.StableTurnID != "" {
+		return turn.StableTurnID
+	}
+	return turn.AttentionID
+}
+
+// publishAcknowledgedDelegateAttentionReport puts a delivery's report into
+// resident history once its acknowledgment has committed. The report was
+// recorded before that acknowledgment and deliberately withheld from history,
+// because the acknowledgment is what raises the release floor the report is
+// presented against: publishing earlier lets a request carry the new report
+// while withholding the earlier report the same acknowledgment released.
+//
+// The turn is read from the transcript rather than carried from the deposit, so
+// every acknowledgment path publishes the same row the same way — including a
+// stop that retries an acknowledgment whose first attempt failed, which holds
+// only the report ID. Restoration is ID-keyed, so a retry after a partial
+// success replaces the turn in place instead of duplicating it. A row the fold
+// does not hold is not an error: the deposit may not have landed at all, and the
+// caller's next attempt records it.
+func (s *Session) publishAcknowledgedDelegateAttentionReport(attentionID string, turn schema.Turn) error {
+	if s == nil || attentionID == "" {
+		return nil
+	}
+	if turn.AttentionID != "" {
+		// The caller already folded this row: publishing reuses that read so a
+		// commit path costs no second transcript fold.
+		return s.retainDelegateAttentionTurn(turn)
+	}
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	fold, err := s.delegateAttentionFoldLocked()
+	if err != nil {
+		return err
+	}
+	turn, ok := fold.turns[attentionID]
+	if !ok {
 		return nil
 	}
 	return s.retainDelegateAttentionTurn(turn)

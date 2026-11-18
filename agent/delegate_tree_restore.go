@@ -400,7 +400,9 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 		wakeAfterUnlock = func() error {
 			var wakeErrs []error
 			for _, wake := range deliveryWakes {
-				wakeErrs = append(wakeErrs, c.wakeDeliveryReceiver(wake.receiver, wake.attentionIDs, wake.wakeGeneration))
+				// The stop retry holds only the report IDs: the publish reads
+				// each one's turn back from the fold.
+				wakeErrs = append(wakeErrs, c.wakeDeliveryReceiver(wake.receiver, wake.attentionIDs, wake.wakeGeneration, nil))
 			}
 			return errors.Join(wakeErrs...)
 		}
@@ -777,9 +779,43 @@ func (c *delegateTreeController) reportDelegateWakeError(err error) {
 	}
 }
 
-// wakeDeliveryReceiver reproduces deliverDelegatePacket's post-commit wake for
-// an acknowledgment the stop retried itself. It runs outside c.mu.
-func (c *delegateTreeController) wakeDeliveryReceiver(receiver delegateDeliveryReceiver, attentionIDs []string, wakeGeneration uint64) error {
+// wakeDeliveryReceiver is the one place an acknowledged delivery's report is
+// published and its wake armed. deliverDelegatePacket calls it after committing
+// the acknowledgment, and so does a stop that retries that acknowledgment
+// itself; both reach the same work here.
+//
+// The report is published from the transcript before anything is armed. A
+// delivery's report is recorded before its acknowledgment but deliberately kept
+// out of resident history until that acknowledgment commits, because the
+// acknowledgment is what raises the release floor the report is presented
+// against. Every acknowledgment path must therefore publish it, and an arming
+// that skipped this step would arm an ID no request can carry: the root's
+// notification turn would select that ID, mark it consumed, and the model would
+// never see the report. Publishing is ID-keyed and idempotent, so a retry after
+// a partial success publishes nothing twice.
+//
+// It runs outside c.mu.
+func (c *delegateTreeController) wakeDeliveryReceiver(receiver delegateDeliveryReceiver, attentionIDs []string, wakeGeneration uint64, foldedTurns map[string]schema.Turn) error {
+	var publishErr error
+	if publisher, ok := receiver.(delegateAttentionReportPublisher); ok {
+		var publishErrs []error
+		for _, attentionID := range attentionIDs {
+			if err := publisher.publishAcknowledgedDelegateAttentionReport(attentionID, foldedTurns[attentionID]); err != nil {
+				publishErrs = append(publishErrs, err)
+			}
+		}
+		publishErr = errors.Join(publishErrs...)
+	}
+	if publishErr != nil {
+		// The report is durable and the acknowledgment committed, so the row is
+		// owed a presentation; a failed publish leaves it out of history and an
+		// arm now would consume it unseen. The arming is skipped, but the paced
+		// retry is still armed: it is what publishes on the next attempt, so a
+		// transient fold failure retries instead of stranding the row in a
+		// transcript nothing reads again.
+		c.retryDelegateAttentionLater()
+		return publishErr
+	}
 	switch receiver := receiver.(type) {
 	case *Session:
 		if receiver == nil {

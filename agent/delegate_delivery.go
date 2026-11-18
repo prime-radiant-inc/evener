@@ -131,17 +131,21 @@ type delegateDeliveryReceiver interface {
 
 // delegateAttentionReportPublisher is the receiver half of a delivery that
 // publishes its report only after its own acknowledgment lands. A receiver that
-// implements it records the row without publishing it and republishes the
-// returned turn once the acknowledgment has raised the release floor.
+// implements it records the row without publishing it and publishes it once the
+// acknowledgment has raised the release floor.
 type delegateAttentionReportPublisher interface {
 	appendDelegateAttentionMessageDurablyDeferred(attentionID string, message llm.Message) (schema.Turn, bool, error)
-	publishDelegateAttentionReport(turn schema.Turn) error
+	// publishAcknowledgedDelegateAttentionReport publishes one acknowledged
+	// report. A turn the caller already folded from the transcript is
+	// published as-is; a zero turn is read back from the fold, which is what
+	// the stop retry needs — it holds the report's ID and nothing else.
+	publishAcknowledgedDelegateAttentionReport(attentionID string, turn schema.Turn) error
 }
 
 // depositDelegateAttentionReport records a delivery's report without publishing
-// it into resident history, and reports the turn the caller must publish once
-// the acknowledgment has committed. A receiver that cannot split the two records
-// and publishes in one step, so it returns no turn and nothing left to publish.
+// it into resident history, and reports the turn the caller publishes once the
+// acknowledgment has committed. A receiver that cannot split the two records
+// publishes in one step, so it returns no turn and nothing left to publish.
 func depositDelegateAttentionReport(receiver delegateDeliveryReceiver, attentionID, content string) (schema.Turn, bool, error) {
 	if publisher, ok := receiver.(delegateAttentionReportPublisher); ok {
 		turn, _, err := publisher.appendDelegateAttentionMessageDurablyDeferred(attentionID, llm.User(content))
@@ -789,16 +793,15 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 		return plans, err
 	}
 	// The acknowledgment is committed: the floor it rose is what the request
-	// this report is owed to reads. A cold receiver has no resident history to
-	// order, so its deposit already did everything and published no turn.
+	// this report is owed to reads. The deposit already folded the report's
+	// turn, so the wake publishes that turn instead of reading the transcript
+	// again. A cold receiver has no resident history to order, so its deposit
+	// already did everything and published no turn.
+	var depositedTurns map[string]schema.Turn
 	if depositedRow {
-		if publisher, ok := receiver.(delegateAttentionReportPublisher); ok {
-			if err := publisher.publishDelegateAttentionReport(deposited); err != nil {
-				return plans, err
-			}
-		}
+		depositedTurns = map[string]schema.Turn{attentionID: deposited}
 	}
-	return plans, plan.controller.wakeDeliveryReceiver(receiver, []string{attentionID}, plans.wakeGeneration)
+	return plans, plan.controller.wakeDeliveryReceiver(receiver, []string{attentionID}, plans.wakeGeneration, depositedTurns)
 }
 
 // replanStaleDelivery re-plans a delivery whose claim is gone but whose durable

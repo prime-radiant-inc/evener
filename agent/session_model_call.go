@@ -385,41 +385,47 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// final-dispatch delivery reload path and the compacted-skill reload path.
 	// It reports whether any turn had actually been appended.
 	rebuildForAppendedSkillTurns := func() (bool, error) {
-		s.mu.Lock()
 		var appended []schema.Turn
-		// Measure against the snapshot this request projected (presentedTurns),
-		// not the round snapshot (historyTurns): a leased delegate round
-		// projects the controller's later snapshot, which can already hold the
-		// turns that landed in between and would otherwise be appended again.
-		if len(s.history) > presentedBoundary {
-			appended = append(appended, s.history[presentedBoundary:]...)
-			presentedBoundary = len(s.history)
-		}
-		historyTurns = append([]schema.Turn{}, s.history...)
-		s.mu.Unlock()
-		if len(appended) == 0 {
-			return false, nil
-		}
-		// A skill reload re-snapshots resident history, and a stable watch frame
-		// is durable there before any arm of its own runs. Appending that slice
-		// as-is would be a second entry into this request that skips the gate the
-		// projection above applies: the frame would reach the model, the run would
-		// resolve it, and its delayed arm would find the row resolved and skip the
-		// release it owed an earlier stopped report. The reload therefore filters
-		// what it appends by the same two questions the projection asks — a stop's
-		// hold, and whether an original frame's wake has been admitted — taken
-		// together with the turns under one attentionMu hold, so a release either
-		// lands before this capture and is in both, or waits and is in neither.
-		// Only an attention run filters: a send presents a held report by design,
-		// and its own request is not an automatic drive.
 		if attentionRun {
+			// The rebuild takes its own coherent capture: reconcile, the holds the
+			// projection filters by, the pending set admission is asked about, and
+			// the turns, all under one attentionMu hold. Slicing at a length taken
+			// before that hold reads a different moment than the filter that keeps
+			// rows out of it — a release landing in between moves a report to the
+			// tail and can shift or replace the suffix, so a positional slice
+			// appends a row whose gate has not run while dropping the very
+			// notification that made the reload fire.
 			s.attentionMu.Lock()
 			s.reconcileAutomaticDriveHoldsLocked()
 			heldIDs := maps.Clone(s.attentionAutomaticDriveHolds)
 			pendingIDs := delegateAttentionPendingSet(s.delegateAttentionPendingIDsLocked())
+			s.mu.Lock()
+			captured := append([]schema.Turn(nil), s.history...)
+			s.mu.Unlock()
 			s.attentionMu.Unlock()
-			kept := make([]schema.Turn, 0, len(appended))
-			for _, turn := range appended {
+			// What this request already projects is subtracted by identity, not by
+			// position: a release can reorder history between the projection and
+			// this rebuild, so a turn's index says nothing about whether the
+			// request already carries it.
+			//
+			// A turn with no attention identity is matched by count instead. The
+			// only writer that reorders this history between the two captures is
+			// the release's tail move, and it moves steering rows that always
+			// carry an attention identity; identity-less turns therefore keep
+			// their relative order and shift only as a block. Dropping them (or
+			// matching them by index) would lose the reload's own notification —
+			// the turn this rebuild exists to append.
+			presented := make(map[string]struct{}, len(presentedTurns))
+			alreadyPresented := 0
+			for _, turn := range presentedTurns {
+				if identity := delegateAttentionTurnIdentity(turn); identity != "" {
+					presented[identity] = struct{}{}
+				} else {
+					alreadyPresented++
+				}
+			}
+			kept := make([]schema.Turn, 0, len(captured))
+			for _, turn := range captured {
 				if turn.AttentionID != "" {
 					if _, held := heldIDs[turn.AttentionID]; held {
 						continue
@@ -428,12 +434,37 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 						continue
 					}
 				}
+				if identity := delegateAttentionTurnIdentity(turn); identity != "" {
+					if _, already := presented[identity]; already {
+						continue
+					}
+				} else if alreadyPresented > 0 {
+					alreadyPresented--
+					continue
+				}
 				kept = append(kept, turn)
 			}
 			appended = kept
+			historyTurns = append([]schema.Turn{}, captured...)
 			if len(appended) == 0 {
 				// Nothing the reload added may be presented: the request keeps what
 				// it already carried rather than rebuilding around an empty append.
+				return false, nil
+			}
+		} else {
+			s.mu.Lock()
+			// Measure against the snapshot this request projected
+			// (presentedTurns), not the round snapshot (historyTurns): a leased
+			// delegate round projects the controller's later snapshot, which can
+			// already hold the turns that landed in between and would otherwise be
+			// appended again.
+			if len(s.history) > presentedBoundary {
+				appended = append(appended, s.history[presentedBoundary:]...)
+				presentedBoundary = len(s.history)
+			}
+			historyTurns = append([]schema.Turn{}, s.history...)
+			s.mu.Unlock()
+			if len(appended) == 0 {
 				return false, nil
 			}
 		}
