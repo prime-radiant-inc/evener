@@ -63,8 +63,8 @@ func settingsHubOverview(cfg hubcore.WebConfig) *appwire.SettingsHubOverview {
 		PastIndex:      pastIndex,
 		// The quarantine signal is the same one startup logs: a completed
 		// custody-first quarantine leaves it on the store for as long as the
-		// custody file keeps the names it closed closed. A hub with no store
-		// configured, or a store with no custody file, reports none.
+		// custody file exists beside the store. A hub with no store configured,
+		// or a store with no custody file, reports none.
 		OperationStoreQuarantine: operationStoreQuarantine(cfg.RemoteHostOpsStore),
 		// Milliseconds, zero included: "disabled" and "not yet reported" must
 		// never decode as the same value.
@@ -81,6 +81,7 @@ func operationStoreQuarantine(store *hostops.Store) *appwire.SettingsOperationSt
 	}
 	return &appwire.SettingsOperationStoreQuarantine{
 		QuarantinedFile: signal.QuarantinedFile,
+		AsideFile:       signal.AsideFile,
 		CustodyFile:     signal.CustodyFile,
 		QuarantineEpoch: signal.QuarantineEpoch,
 	}

@@ -157,6 +157,7 @@ it("reports the operation store's quarantine signal when the hub carries one", a
 			...overview.hub,
 			operationStoreQuarantine: {
 				quarantinedFile: "/fixture/state/hub-ops.json",
+				asideFile: "/fixture/state/hub-ops.json.quarantined-20260101T000000.000000000Z",
 				custodyFile: "/fixture/state/hub-ops.json.custody-20260101T000000.000000000Z.json",
 				quarantineEpoch: 3,
 			},
@@ -168,6 +169,14 @@ it("reports the operation store's quarantine signal when the hub carries one", a
 
 	// The oracle is the notice's presence, by its testID, not its wording.
 	expect(testIDSuffixes(tree, "operation-store-quarantine")).toEqual([""]);
+	// The notice must name the file that holds the quarantined bytes. Its store
+	// path is where the healthy replacement now lives, so naming that would send
+	// an operator to the wrong file.
+	const notice = tree.root.findAll(
+		(node) => typeof node.props.testID === "string" && node.props.testID.endsWith("operation-store-quarantine"),
+	);
+	const shown = notice.map(textOf).join("\n");
+	expect(shown).toContain("/fixture/state/hub-ops.json.quarantined-20260101T000000.000000000Z");
 	act(() => tree.unmount());
 });
 

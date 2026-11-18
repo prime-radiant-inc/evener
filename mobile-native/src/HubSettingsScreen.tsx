@@ -305,13 +305,15 @@ function HubSettings({
  * signal: a corrupt store file was moved aside under a custody file and the hub
  * serves a replacement. The hub already recovered, so this is a standing fact
  * rather than a failure, and it is never shown for a hub that reports none (an
- * older hub sends no field at all). The paths are the ones to go look at. */
+ * older hub sends no field at all). The set-aside line names the aside file —
+ * the one holding the quarantined bytes — never the store path the replacement
+ * now occupies. */
 function OperationStoreQuarantineNotice({ quarantine }: { quarantine: SettingsOperationStoreQuarantine | undefined }) {
 	if (!quarantine) return null;
 	const lines = [
 		"The hub's operation store was quarantined: a corrupt store file was moved aside and the hub is serving a replacement.",
-		quarantine.quarantinedFile ? `Set aside: ${quarantine.quarantinedFile}` : null,
-		quarantine.custodyFile ? `Custody: ${quarantine.custodyFile}` : null,
+		quarantine.asideFile ? `Set aside: ${quarantine.asideFile}` : null,
+		quarantine.custodyFile ? `Custody file: ${quarantine.custodyFile}` : null,
 		quarantine.quarantineEpoch === undefined ? null : `Quarantine epoch: ${quarantine.quarantineEpoch}`,
 	].filter((line): line is string => line !== null);
 	return (

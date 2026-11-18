@@ -4424,10 +4424,16 @@ export interface SettingsMCPServerEntry {
 
 export interface SettingsOperationStoreQuarantine {
   /**
-   * QuarantinedFile is the path of the corrupt store file, renamed aside and
-   * never deleted.
+   * QuarantinedFile is the store path the quarantine replaced: the corrupt
+   * file lived there, was renamed aside, and the replacement now occupies it.
    */
   quarantinedFile?: string;
+  /**
+   * AsideFile is where the corrupt bytes were renamed to beside the store, so
+   * it is the file that holds what was quarantined. Empty when the aside file
+   * is gone while its custody file remains.
+   */
+  asideFile?: string;
   /**
    * CustodyFile is the path of the custody file the quarantine wrote beside
    * the store.

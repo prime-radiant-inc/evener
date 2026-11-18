@@ -1063,9 +1063,13 @@ type SettingsHubOverview struct {
 // names them, and they describe a completed quarantine — never a pending or
 // refused one, which leaves no signal.
 type SettingsOperationStoreQuarantine struct {
-	// QuarantinedFile is the path of the corrupt store file, renamed aside and
-	// never deleted.
+	// QuarantinedFile is the store path the quarantine replaced: the corrupt
+	// file lived there, was renamed aside, and the replacement now occupies it.
 	QuarantinedFile string `json:"quarantinedFile,omitempty"`
+	// AsideFile is where the corrupt bytes were renamed to beside the store, so
+	// it is the file that holds what was quarantined. Empty when the aside file
+	// is gone while its custody file remains.
+	AsideFile string `json:"asideFile,omitempty"`
 	// CustodyFile is the path of the custody file the quarantine wrote beside
 	// the store.
 	CustodyFile string `json:"custodyFile,omitempty"`

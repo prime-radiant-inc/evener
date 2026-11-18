@@ -1,5 +1,5 @@
 import { friendlyErrorMessage, type SettingsOverviewResponse, WireError } from "@evener/appwire-client";
-import { render, screen, waitFor, within } from "@testing-library/react";
+import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, test } from "vitest";
 import { resetConnectionStoreForTests } from "../../../stores/connection";
@@ -162,6 +162,7 @@ test("reports the operation store's quarantine signal when the hub carries one",
       daemonIdleTimeoutMillis: 3600000,
       operationStoreQuarantine: {
         quarantinedFile: "/fixture/state/hub-ops.json",
+        asideFile: "/fixture/state/hub-ops.json.quarantined-20260101T000000.000000000Z",
         custodyFile: "/fixture/state/hub-ops.json.custody-20260101T000000.000000000Z.json",
         quarantineEpoch: 3,
       },
@@ -175,6 +176,44 @@ test("reports the operation store's quarantine signal when the hub carries one",
   // The oracle is the notice's presence and its reason, not its wording: a
   // person opening Settings -> Hub must be able to see that the store was
   // quarantined. Copy changes must not fail this.
+  await waitFor(() => expect(statusReasons()).toContain("operation-store-quarantined"));
+});
+
+test("reveals a quarantine the hub performed while this tab was away, without a reload", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("evener/settings/overview", () => SAMPLE_RESPONSE);
+  fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
+
+  render(<HubSection />);
+  await waitFor(() => expect(fake.calls.length).toBeGreaterThan(0));
+  expect(statusReasons()).not.toContain("operation-store-quarantined");
+
+  // The hub restarted and quarantined the store while this tab held the healthy
+  // overview. fetch() is fetch-once, so only the recovery refresh can show it.
+  // Typed, not spread through a partial: SettingsHubOverview's
+  // daemonIdleTimeoutMillis is required, and a spread through the sample's
+  // optional type would drop it.
+  const quarantined: SettingsOverviewResponse = {
+    hub: {
+      ...SAMPLE_RESPONSE.hub,
+      daemonIdleTimeoutMillis: 3600000,
+      operationStoreQuarantine: {
+        quarantinedFile: "/fixture/state/hub-ops.json",
+        asideFile: "/fixture/state/hub-ops.json.quarantined-20260101T000000.000000000Z",
+        custodyFile: "/fixture/state/hub-ops.json.custody-20260101T000000.000000000Z.json",
+        quarantineEpoch: 3,
+      },
+    },
+  };
+  // A client replacement is the reconnect the recovery hook watches for; no
+  // remount and no poll.
+  await act(async () => {
+    connectReadyFakeClient((fake2) => {
+      fake2.on("evener/settings/overview", () => quarantined);
+      fake2.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
+    });
+  });
+
   await waitFor(() => expect(statusReasons()).toContain("operation-store-quarantined"));
 });
 

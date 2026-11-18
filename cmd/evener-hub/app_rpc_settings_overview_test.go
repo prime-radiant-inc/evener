@@ -873,8 +873,31 @@ func TestHubRPCSettingsOverviewReportsOperationStoreQuarantine(t *testing.T) {
 	if got == nil {
 		t.Fatal("Hub.OperationStoreQuarantine = nil, want the store's quarantine signal")
 	}
+	// The reported paths must identify the right files, not merely be non-empty:
+	// a notice that names the live replacement as the corrupt file sends an
+	// operator to a healthy store and reads as "nothing was set aside".
 	if got.QuarantinedFile != storePath {
-		t.Errorf("QuarantinedFile = %q, want %q", got.QuarantinedFile, storePath)
+		t.Errorf("QuarantinedFile = %q, want the store path %q", got.QuarantinedFile, storePath)
+	}
+	if got.AsideFile == "" {
+		t.Fatal("AsideFile is empty, want the file the corrupt bytes were renamed to")
+	}
+	if got.AsideFile == got.QuarantinedFile {
+		t.Errorf("AsideFile = QuarantinedFile = %q, want the aside path, not the store path", got.AsideFile)
+	}
+	asideBytes, err := os.ReadFile(got.AsideFile)
+	if err != nil {
+		t.Fatalf("read AsideFile %s: %v", got.AsideFile, err)
+	}
+	if string(asideBytes) != quarantineFixtureJSON {
+		t.Errorf("AsideFile %s holds %d bytes that are not the corrupt fixture; the notice names a file that does not hold the quarantined bytes",
+			got.AsideFile, len(asideBytes))
+	}
+	// And the store path now holds the replacement, not the corrupt bytes.
+	if storeBytes, err := os.ReadFile(storePath); err != nil {
+		t.Fatalf("read store path %s: %v", storePath, err)
+	} else if string(storeBytes) == quarantineFixtureJSON {
+		t.Errorf("store path %s still holds the corrupt fixture, so the quarantine did not replace it", storePath)
 	}
 	if got.CustodyFile == "" {
 		t.Error("CustodyFile is empty, want the custody file the quarantine wrote")

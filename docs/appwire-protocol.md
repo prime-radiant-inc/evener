@@ -4476,6 +4476,7 @@ Underlying Go kind: `string` (no struct fields).
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `quarantinedFile` | string | yes |  |
+| `asideFile` | string | yes |  |
 | `custodyFile` | string | yes |  |
 | `quarantineEpoch` | uint64 | yes |  |
 
