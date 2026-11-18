@@ -86,6 +86,7 @@ func (s *Session) setEnvironmentIdentity(snap *envctx.Snapshot, last envctx.Snap
 	changedModel := s.promptModel != "" && (s.profile.ID() != s.promptProvider || s.profile.Model() != s.promptModel)
 	if fork {
 		snap.SessionID = s.id
+		snap.ParentSessionID = s.fork.parentID
 		snap.OrdinarySession = !s.cfg.Manager
 	}
 	// Native forks inherit the parent's scratch instructions. A context-fork

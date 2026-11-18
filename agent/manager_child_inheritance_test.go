@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"slices"
 	"testing"
@@ -62,20 +63,50 @@ func TestManagerForkAsideDoNotInheritRole(t *testing.T) {
 		t.Fatal("parent request did not advertise the Manager control tool")
 	}
 	userTurn := 1 + slices.IndexFunc(entries, func(entry transcript.Entry) bool { return entry.Turn.Kind == schema.TurnUserInput })
-	for _, aside := range []bool{false, true} {
-		t.Run(map[bool]string{false: "fork", true: "aside"}[aside], func(t *testing.T) {
+	savedDir := t.TempDir()
+	savedHeader := header
+	savedPrompt, err := os.ReadFile("testdata/manager-launch-rules.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	savedHeader.SystemPrompt = string(savedPrompt)
+	writer, err := transcript.NewWriter(schema.SessionTranscriptPath(savedDir, parentID), savedHeader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, entry := range entries {
+		if err := writer.Append(entry.Turn); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.SaveSessionMeta(savedDir, parent.Meta()); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, dir, prompt string
+		aside             bool
+	}{
+		{"fork", stateDir, header.SystemPrompt, false},
+		{"aside", stateDir, header.SystemPrompt, true},
+		{"fork with saved launch rules", savedDir, savedHeader.SystemPrompt, false},
+		{"aside with saved launch rules", savedDir, savedHeader.SystemPrompt, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			var childID string
 			var err error
-			if aside {
-				childID, err = AsideSession(stateDir, parentID)
+			if tc.aside {
+				childID, err = AsideSession(tc.dir, parentID)
 			} else {
-				childID, err = ForkSession(stateDir, parentID, userTurn, "fork-input", "")
+				childID, err = ForkSession(tc.dir, parentID, userTurn, "fork-input", "")
 			}
 			if err != nil {
 				t.Fatal(err)
 			}
 			for cycle := range 2 {
-				childMeta, err := schema.LoadSessionMeta(stateDir, childID)
+				childMeta, err := schema.LoadSessionMeta(tc.dir, childID)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -85,7 +116,7 @@ func TestManagerForkAsideDoNotInheritRole(t *testing.T) {
 				client := llm.NewClient()
 				adapter := newFakeAdapter("openai", finish)
 				client.Register(adapter)
-				child, err := RestoreSessionFromMeta(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(workspace), childMeta, stateDir)
+				child, err := RestoreSessionFromMeta(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(workspace), childMeta, tc.dir)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -102,21 +133,25 @@ func TestManagerForkAsideDoNotInheritRole(t *testing.T) {
 				if !slices.ContainsFunc(req.Tools, func(tool llm.ToolDefinition) bool { return tool.Name == "job_list" }) {
 					t.Errorf("cycle %d lost the ordinary job_list tool", cycle)
 				}
-				if len(req.Messages) == 0 || req.Messages[0].Role != llm.RoleSystem || req.Messages[0].Text() != header.SystemPrompt {
+				instructions, history := responsesInstructionsAndHistory(responsesPromptBody(t, req, child.profile.Resolved()))
+				if instructions != tc.prompt {
 					t.Errorf("cycle %d changed the Manager's saved startup instructions", cycle)
 				}
 				var roleUpdates int
-				for _, msg := range req.Messages {
+				for _, text := range history {
 					var block envctx.Tracker
-					if msg.Role == llm.RoleUser && block.ReplayBlock(msg.Text()) && block.State().Last.OrdinarySession {
+					if block.ReplayBlock(text) && block.State().Last.OrdinarySession {
 						roleUpdates++
+						if last := block.State().Last; last.SessionID != childID || last.ParentSessionID != parentID {
+							t.Errorf("cycle %d ordinary-role update does not identify both the parent and the launched child", cycle)
+						}
 					}
 				}
 				if roleUpdates != 1 {
 					t.Errorf("cycle %d received %d ordinary role updates, want one", cycle, roleUpdates)
 				}
 			}
-			unchanged, err := schema.LoadSessionMeta(stateDir, parentID)
+			unchanged, err := schema.LoadSessionMeta(tc.dir, parentID)
 			if err != nil {
 				t.Fatal(err)
 			}

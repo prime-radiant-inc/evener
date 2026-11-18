@@ -117,8 +117,10 @@ explicit `manager: true` start. A missing bit means false, so existing sessions
 remain ordinary without migration.
 
 A fork or aside keeps its parent’s startup prompt. Its first model request
-includes its ordinary role in environment context. That role and the child’s
-current tool schemas take precedence over inherited Manager instructions.
+identifies the parent and child sessions and records that the child was
+created in ordinary mode. The Manager startup instructions assign ordinary
+mode to a newly created session unless its human launch selects Manager.
+The child receives the ordinary tool schemas and permissions.
 
 The daemon reports `thread.evener.manager`, and the hub reads that projection
 rather than storing a separate preference. Web **Session Details** and native

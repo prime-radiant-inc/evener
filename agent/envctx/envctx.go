@@ -31,6 +31,7 @@ type Snapshot struct {
 	GitBranch         string   `json:"git_branch,omitempty"` // "" outside a git repo
 	Pressure          Pressure `json:"pressure,omitzero"`
 	SessionID         string   `json:"session_id,omitempty"`
+	ParentSessionID   string   `json:"parent_session_id,omitempty"`
 	OrdinarySession   bool     `json:"ordinary_session,omitempty"`
 	Model             string   `json:"model,omitempty"`
 	KnowledgeCutoff   string   `json:"knowledge_cutoff,omitempty"`
@@ -51,6 +52,7 @@ type Tracker struct {
 }
 
 const ordinaryRole = "session role: ordinary"
+const parentSessionPrefix = "parent session id: "
 const scratchDirPrefix = "writable scratch directory: "
 const commitTrailerPrefix = "For new commits in this session, use this trailer: "
 const omitCommitTrailer = "Omit the Co-authored-by trailer on new commits in this session."
@@ -103,6 +105,8 @@ func (t *Tracker) ReplayBlock(block string) bool {
 			t.st.Last.GitBranch = value
 		case strings.HasPrefix(line, "session id: "):
 			t.st.Last.SessionID = strings.TrimPrefix(line, "session id: ")
+		case strings.HasPrefix(line, parentSessionPrefix):
+			t.st.Last.ParentSessionID = strings.TrimPrefix(line, parentSessionPrefix)
 		case line == ordinaryRole:
 			t.st.Last.OrdinarySession = true
 		case strings.HasPrefix(line, "model: "):
@@ -176,8 +180,9 @@ func (t *Tracker) RenderDiff(cur Snapshot) string {
 	if cur.SessionID != "" && cur.SessionID != prev.SessionID {
 		lines = append(lines, "session id: "+cur.SessionID)
 	}
-	if cur.OrdinarySession && (!prev.OrdinarySession || cur.SessionID != prev.SessionID) {
-		lines = append(lines, ordinaryRole, "This ordinary role supersedes any inherited Manager instructions. Use the tools and arguments offered in this request.")
+	if cur.OrdinarySession && (!prev.OrdinarySession || cur.SessionID != prev.SessionID || cur.ParentSessionID != prev.ParentSessionID) {
+		lines = append(lines, ordinaryRole, parentSessionPrefix+cur.ParentSessionID,
+			"This child was created without a Manager launch. Apply the startup rule for a newly created session and use the tools and arguments offered in this request.")
 	}
 	if cur.Model != "" {
 		if cur.Model != prev.Model {

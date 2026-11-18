@@ -16,7 +16,36 @@ import (
 	"primeradiant.com/evener/internal/commitprovenance"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/responses"
+	"primeradiant.com/evener/llm/registry"
 )
+
+func responsesPromptBody(t *testing.T, req llm.Request, row registry.Resolved) map[string]any {
+	t.Helper()
+	body, err := (&responses.Protocol{}).BuildBody(llm.ShapeRequest(req, row), row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return body
+}
+
+func responsesInstructionsAndHistory(body map[string]any) (string, []string) {
+	instructions, _ := body["instructions"].(string)
+	var history []string
+	for _, item := range body["input"].([]any) {
+		msg := item.(map[string]any)
+		parts, _ := msg["content"].([]any)
+		for _, part := range parts {
+			text, _ := part.(map[string]any)["text"].(string)
+			switch msg["role"] {
+			case "developer":
+				instructions = text
+			case "user":
+				history = append(history, text)
+			}
+		}
+	}
+	return instructions, history
+}
 
 func TestSystemPromptCarriesCommitTrailer(t *testing.T) {
 	host, err := os.Hostname()
@@ -57,32 +86,10 @@ func TestSystemPromptCarriesCommitTrailer(t *testing.T) {
 			t.Fatal(err)
 		}
 		wireBody := func(req llm.Request) map[string]any {
-			t.Helper()
-			row := parent.profile.Resolved()
-			body, err := (&responses.Protocol{}).BuildBody(llm.ShapeRequest(req, row), row)
-			if err != nil {
-				t.Fatal(err)
-			}
-			return body
+			return responsesPromptBody(t, req, parent.profile.Resolved())
 		}
 		wirePrompt := func(req llm.Request) (string, []string) {
-			body := wireBody(req)
-			instructions, _ := body["instructions"].(string)
-			var history []string
-			for _, item := range body["input"].([]any) {
-				msg := item.(map[string]any)
-				parts, _ := msg["content"].([]any)
-				for _, part := range parts {
-					text, _ := part.(map[string]any)["text"].(string)
-					switch msg["role"] {
-					case "developer":
-						instructions = text
-					case "user":
-						history = append(history, text)
-					}
-				}
-			}
-			return instructions, history
+			return responsesInstructionsAndHistory(wireBody(req))
 		}
 		parentRequests := adapter.Requests()
 		base, parentHistory := wirePrompt(parentRequests[0])
