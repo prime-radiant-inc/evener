@@ -65,7 +65,7 @@ describe("one step of a restart", () => {
 			() => true,
 		);
 		let settled = "open:closed";
-		const hook = renderHook(() => useSessionRestart(made, settled));
+		const hook = renderHook(() => useSessionRestart("hub-a", "ref-a", made, settled));
 		await act(async () => {
 			await hook.result.current.restart();
 		});
@@ -155,7 +155,7 @@ describe("one step of a restart", () => {
 			() => null,
 			() => true,
 		);
-		const hook = renderHook(() => useSessionRestart(made, "open"));
+		const hook = renderHook(() => useSessionRestart("hub-a", "ref-a", made, "open"));
 		await act(async () => {
 			const restarting = hook.result.current.restart();
 			await settle();
@@ -191,7 +191,7 @@ describe("one step of a restart", () => {
 			() => null,
 			() => true,
 		);
-		const hook = renderHook(() => useSessionRestart(made, "open"));
+		const hook = renderHook(() => useSessionRestart("hub-a", "ref-a", made, "open"));
 		await act(async () => {
 			await hook.result.current.restart();
 		});
@@ -255,7 +255,7 @@ describe("one step of a restart", () => {
 			() => null,
 			() => true,
 		);
-		const hook = renderHook(() => useSessionRestart(made, settled));
+		const hook = renderHook(() => useSessionRestart("hub-a", "ref-a", made, settled));
 		await act(async () => {
 			await hook.result.current.restart();
 		});
@@ -301,7 +301,7 @@ describe("one step of a restart", () => {
 		// Another conversation opens over the pane: the screen drops the controls
 		// it had, which is what a covering route does.
 		let live: SessionControls | null = made;
-		const hook = renderHook(() => useSessionRestart(live, "open"));
+		const hook = renderHook(() => useSessionRestart("hub-a", "ref-a", live, "open"));
 		let restarting!: Promise<void>;
 		act(() => {
 			restarting = hook.result.current.restart();
@@ -327,6 +327,52 @@ describe("one step of a restart", () => {
 		// daemon is stopped until it goes.
 		live = made;
 		hook.rerender();
+		await settle();
+		expect(sent).toBe(1);
+	});
+
+	// The stop is the hub's, and it can be acknowledged after the screen that
+	// asked for it is gone: closing a conversation does not cancel a stop the
+	// hub is already taking. The owed resume lived in the unmounted hook's own
+	// state, so that acknowledgement had nowhere to land - reopening the session
+	// mounted a fresh hook in "idle" and the daemon stayed stopped with the
+	// restart unfinished. The obligation belongs to the session, so a hook
+	// mounting for a session that still owes a resume starts by sending it.
+	it("sends a resume its stop owed after the screen closed", async () => {
+		let sent = 0;
+		let acknowledge = () => {};
+		const stopping = new Promise<void>((resolve) => {
+			acknowledge = resolve;
+		});
+		const made = new SessionControls(
+			{
+				forceStop: async () => {
+					await stopping;
+				},
+				resume: async () => {
+					sent += 1;
+				},
+			} as unknown as ConstructorParameters<typeof SessionControls>[0],
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		const first = renderHook(() => useSessionRestart("hub-b", "ref-b", made, "open"));
+		await act(async () => {
+			void first.result.current.restart();
+			await settle();
+		});
+		// The reader closes the conversation while the stop is still out.
+		first.unmount();
+		act(() => acknowledge());
+		await settle();
+		expect(sent).toBe(0);
+
+		// Reopening the session mounts a fresh hook with no memory of the stop.
+		// The resume is still owed, and the daemon is stopped until it goes.
+		renderHook(() => useSessionRestart("hub-b", "ref-b", made, "open"));
 		await settle();
 		expect(sent).toBe(1);
 	});

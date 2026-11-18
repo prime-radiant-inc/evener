@@ -2589,3 +2589,26 @@ test("reconciles the captured read when the message is withdrawn after the slot 
 	expect(reconcile).toHaveBeenCalled();
 	await runtime.stop();
 });
+
+// The rows are stored under the composite hub-and-ref key, so the resume
+// decision has to be asked in that same pair. Asking by the bare ref matches no
+// row at all: every lookup answers "nothing waiting", and a foreground Send
+// into a fenced session then declines the very resume its own parked message
+// needs - the message stays queued until something else moves the session.
+test("the resume decision finds the row its own target parked", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase(), {
+		createMutationId: () => "mutation-1",
+	});
+	const client = new FakeClient("ready");
+	await registerAndStart(runtime, client);
+
+	// A never-attempted row, which is the only certain evidence of a message
+	// still owed.
+	await runtime.submit(request("send"));
+	expect(await runtime.messageWaiting("hub-1", "ref-1")).toBe(true);
+	// Another session on the same hub, and the same ref on another hub, are
+	// different targets: neither may answer for this one.
+	expect(await runtime.messageWaiting("hub-1", "ref-2")).toBe(false);
+	expect(await runtime.messageWaiting("hub-2", "ref-1")).toBe(false);
+	await runtime.stop();
+});

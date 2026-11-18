@@ -1064,8 +1064,12 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 	 * and the daemon may already hold that message, so resuming to deliver it
 	 * again could duplicate it.
 	 */
-	async messageWaiting(targetRef: string): Promise<boolean> {
-		const records = await this.storage.listOutbox(targetRef);
+	async messageWaiting(hubId: string, targetRef: string): Promise<boolean> {
+		// The rows are stored under the composite key (nativeMutationTargetKey),
+		// so the lookup has to belong to the same authority that wrote them:
+		// asking by the bare ref matches no row and silently answers "nothing
+		// waiting", which declines every resume the callers meant to make.
+		const records = await this.storage.listOutbox(nativeMutationTargetKey(hubId, targetRef));
 		return records.some(
 			(record) => record.state === "submitting" && record.method !== "turn/interrupt" && record.attempted === false,
 		);

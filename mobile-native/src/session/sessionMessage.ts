@@ -217,7 +217,7 @@ export async function submitSessionMessage(
 		// session for work the reader discarded in the meantime.
 		await runtime
 			.settleTarget(target.hubId, target.ref, client, {
-				mayResumeFenced: () => runtime.messageWaiting(target.ref),
+				mayResumeFenced: () => runtime.messageWaiting(target.hubId, target.ref),
 			})
 			.catch(() => undefined);
 		return;

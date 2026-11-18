@@ -533,6 +533,33 @@ describe("ConversationStore", () => {
 
 	// --- I1: Error ownership — revision equality ONLY --------------------------------
 
+	// The read that follows a resumed send resolves the session's service when it
+	// runs, not the one the send pressed through: the resume recycles the socket,
+	// and the registry installs the replacement while the acknowledgement is
+	// still out. A read through the retired service binds it, and the store then
+	// serves nothing for the live one - the harm is that the live service's own
+	// paging and mutations come back ignored.
+	describe("a read through a retired service strands the live one", () => {
+		it("serves the live service after it is bound and refuses the retired one", async () => {
+			const retired = new FakeConversationService();
+			const store = createConversationStore();
+			await store.getState().openProjected(retired, "ref-1");
+			const live = new FakeConversationService();
+			live.openConv = store.getState().conversation ?? makeConversation({ status: { type: "idle" } });
+			live.olderItems = { items: [] };
+
+			// What the fixed read does: bind the service the entry holds now.
+			await store.getState().rehydrate(live);
+			store.setState({ olderCursor: "cursor-1" });
+
+			// The live service's own paging is served; the retired one's is not.
+			await store.getState().loadOlder(live);
+			expect(live.olderRequests).toHaveLength(1);
+			await store.getState().loadOlder(retired);
+			expect(retired.olderRequests).toHaveLength(0);
+		});
+	});
+
 	describe("newer clear-to-null and ABA-null own error", () => {
 		it("page failure after newer clear-to-null: page settles loading, preserves null (no write)", async () => {
 			const service = new FakeConversationService();

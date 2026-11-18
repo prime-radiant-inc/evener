@@ -2526,6 +2526,8 @@ function ConversationScreenView({
 	// is honest even if a render arrives for another reason, so both are in the
 	// key. Asking the store's status alone would leave the restart owed forever.
 	const restart = useSessionRestart(
+		route.params.hubId,
+		route.params.ref,
 		controls,
 		`${snapshot.status}:${snapshot.latestReadState}:${service?.openThread() ?? "none"}`,
 	);
@@ -2758,7 +2760,7 @@ function ConversationScreenView({
 					// "true", keeps the phone from restarting a session for work the
 					// reader discarded in the meantime - and still resumes when
 					// another never-attempted message needs the session.
-					mayResumeFenced: () => runtime.messageWaiting(ref),
+					mayResumeFenced: () => runtime.messageWaiting(hubId, ref),
 				})
 				.catch(() => undefined);
 			if (answered === "reconciled" || answered === "open") {
@@ -2767,15 +2769,25 @@ function ConversationScreenView({
 				// acknowledgement, and status notifications never clear that field.
 				// A stale fence would send every later message down this path
 				// instead of queueing behind the turn this one starts.
+				//
+				// The read resolves the entry's service at this moment, not the one
+				// this send pressed through: the resume recycled the socket, and the
+				// entry installs its replacement while the acknowledgement is still
+				// out. Rehydrating through the captured service would install the
+				// retired one as the store's binding, and the screen's replacement
+				// service would then find its own sends and older-page requests
+				// ignored.
+				const live = entry.service;
+				if (live === null) return false;
 				await store
 					.getState()
-					.rehydrate(through)
+					.rehydrate(live)
 					.catch(() => undefined);
 				return true;
 			}
 			return false;
 		},
-		[store, client, navigation, route.params],
+		[store, client, navigation, route.params, entry],
 	);
 	const deliver = useCallback(
 		async (
