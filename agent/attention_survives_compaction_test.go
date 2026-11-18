@@ -899,6 +899,114 @@ func TestDeriveHeldDelegateAttentionFromOutcome(t *testing.T) {
 			t.Fatalf("the drive-side read offered a row a newer stop still quiets: %v", ids)
 		}
 	})
+
+	// Window 1: the release runs before the settle tail installs its hold. A
+	// fresh watch arm journals the release once the stop has settled, and the
+	// settle tail reaches the setter afterwards. An install that ignores what
+	// the journal already records quiets the reopened row again, and the drive
+	// then presents the fresh row without it.
+	t.Run("an install after a newer release does not re-impose the quiet", func(t *testing.T) {
+		t.Parallel()
+		sess, reopenedID, _ := deriveHeldFixtureWithJournal(t, delegatestore.OutcomeCancelled, "cancelled")
+		stoppedGeneration := settledGeneration(t, sess)
+		// The newer event's wake was admitted for the generation the stop
+		// settled, and its release is journaled before the tail runs.
+		journalDeriveHeldRelease(t, sess, stoppedGeneration)
+		sess.releaseAutomaticDriveHolds(delegateHoldReleaseArm, stoppedGeneration)
+		// The settle tail's own install, arriving after both.
+		sess.holdDelegateAttentionFromAutomaticDriveAt(reopenedID, stoppedGeneration)
+		sess.attentionMu.Lock()
+		held := sess.delegateAttentionHeldFromAutomaticDriveLocked(reopenedID)
+		sess.attentionMu.Unlock()
+		if held {
+			t.Fatal("a hold installed after the wake released its generation quieted the row again")
+		}
+		ids, err := sess.automaticDelegateAttentionIDs()
+		if err != nil {
+			t.Fatalf("read the drive-side rows: %v", err)
+		}
+		if !slices.Contains(ids, reopenedID) {
+			t.Fatalf("the drive-side read withheld the row a newer wake released: %v", ids)
+		}
+	})
+
+	// Window 2: the same order across an idle reclaim. The derivation
+	// snapshots the outcome, then a wake journals the release, then the
+	// candidate attaches. The derivation's install must not outrun the release
+	// it can already see.
+	t.Run("a derived install after a newer release does not re-impose the quiet", func(t *testing.T) {
+		t.Parallel()
+		sess, reopenedID, journalPath := deriveHeldFixtureWithJournal(t, delegatestore.OutcomeCancelled, "cancelled")
+		stoppedGeneration := settledGeneration(t, sess)
+		restored := coldRestoredDeriveSession(t, sess, journalPath)
+		// The cold arm's release lands after the derivation has snapshotted the
+		// outcome and before it installs, which is the window the idle restore
+		// opens: the snapshot sees no release, so only the install can order
+		// the two.
+		updateSessionTestConfig(restored, func(cfg *testConfig) {
+			cfg.delegateAttentionBeforeDerivedHoldInstall = func() {
+				journalDeriveHeldRelease(t, restored, stoppedGeneration)
+			}
+		})
+		restored.deriveHeldDelegateAttentionFromOutcome()
+		restored.attentionMu.Lock()
+		held := restored.delegateAttentionHeldFromAutomaticDriveLocked(reopenedID)
+		restored.attentionMu.Unlock()
+		if held {
+			t.Fatal("the derivation reinstated a quiet a cold wake already released")
+		}
+		ids, err := restored.automaticDelegateAttentionIDs()
+		if err != nil {
+			t.Fatalf("read the drive-side rows: %v", err)
+		}
+		if !slices.Contains(ids, reopenedID) {
+			t.Fatalf("the drive-side read withheld the row a cold wake released: %v", ids)
+		}
+	})
+
+	// A hold from a stop that settles AFTER the admitted wake still stands: its
+	// generation outranks the release on record, so the install is newer
+	// evidence than the wake and the row stays quiet.
+	t.Run("a stop settling after the admitted wake keeps its quiet", func(t *testing.T) {
+		t.Parallel()
+		sess, reopenedID, _ := deriveHeldFixtureWithJournal(t, delegatestore.OutcomeCancelled, "cancelled")
+		stoppedGeneration := settledGeneration(t, sess)
+		// The admitted wake released the stopped generation; the next stop
+		// settles a later one, and that stop's quiet is newer evidence.
+		journalDeriveHeldRelease(t, sess, stoppedGeneration)
+		sess.holdDelegateAttentionFromAutomaticDriveAt(reopenedID, stoppedGeneration+1)
+		sess.attentionMu.Lock()
+		held := sess.delegateAttentionHeldFromAutomaticDriveLocked(reopenedID)
+		sess.attentionMu.Unlock()
+		if !held {
+			t.Fatal("a release older than the stop cleared the quiet that stop installed")
+		}
+	})
+}
+
+// journalDeriveHeldRelease journals the release an admitted wake records for
+// generation: the durable floor a hold's install is ordered against. It writes
+// the event the controller's own funnel writes, through the same locked append.
+func journalDeriveHeldRelease(t *testing.T, sess *Session, generation uint64) {
+	t.Helper()
+	sess.mu.Lock()
+	controller := sess.delegateController
+	owningDelegateID := sess.owningDelegateID
+	sess.mu.Unlock()
+	if controller == nil {
+		t.Fatal("the fixture session has no controller to journal through")
+	}
+	controller.mu.Lock()
+	defer controller.mu.Unlock()
+	if _, err := controller.appendLocked(delegatestore.Event{
+		Kind:       delegatestore.EventDelegateAttentionHoldReleased,
+		DelegateID: owningDelegateID,
+		AttentionHoldReleased: &delegatestore.AttentionHoldReleased{
+			Generation: generation,
+		},
+	}); err != nil {
+		t.Fatalf("journal the hold release at generation %d: %v", generation, err)
+	}
 }
 
 // coldRestoredDeriveSession rebuilds the durable side of a session the idle

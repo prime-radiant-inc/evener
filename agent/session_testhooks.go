@@ -213,6 +213,12 @@ type testConfig struct {
 	// release dropped. A release that dropped nothing observes nothing.
 	// Nil in production.
 	delegateAttentionHoldReleased func(site delegateHoldReleaseSite, released []string)
+	// delegateAttentionBeforeDerivedHoldInstall observes the instant the
+	// derivation is about to install the holds it derived, after its durable
+	// snapshot and before any install. Tests land an admitted wake's release
+	// there, which is the window an idle restore opens between the snapshot
+	// and the install. Nil in production.
+	delegateAttentionBeforeDerivedHoldInstall func()
 	// delegateAttentionBeforeReopenAppend observes the instant a reopen's
 	// durable append is about to land, after every teardown guard has run.
 	// Tests pause it there so a stop admitted into the guard-to-append window

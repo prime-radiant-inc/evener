@@ -1096,6 +1096,14 @@ func (s *Session) delegateAttentionHeldFromAutomaticDriveLocked(attentionID stri
 	return held
 }
 
+// delegateAttentionHoldStands reports whether a hold stamped with held still
+// outranks the newest wake admitted at admitted. A hold stands exactly while
+// it is strictly newer than every admitted wake: at equal generations the wake
+// supersedes the quiet the hold carries.
+func delegateAttentionHoldStands(held, admitted uint64) bool {
+	return held > admitted
+}
+
 // holdDelegateAttentionFromAutomaticDriveAt quiets a reopened row a user's
 // stop owns: the stopped generation's commit replaced the controller's wake
 // with the pending rows it excluded, so the stale armed wake still drives
@@ -1104,16 +1112,34 @@ func (s *Session) delegateAttentionHeldFromAutomaticDriveLocked(attentionID stri
 // generation that wake starts, the immediate restart the stop exists to
 // prevent. The hold carries the settled generation whose quiet it stands for,
 // because that stamp is what decides whether a later wake supersedes it.
+//
+// The install consults the delegate journal's release floor, so a hold can
+// never appear after a wake that already superseded its generation: the
+// release is recorded before any runtime clears holds for it, and this read
+// and the clear both happen under attentionMu, so the two orders cannot
+// interleave. A hold refused here is one whose quiet an admitted wake already
+// ended, and the row it would have held is presentable to that wake.
 func (s *Session) holdDelegateAttentionFromAutomaticDriveAt(attentionID string, generation uint64) {
 	if s == nil || attentionID == "" {
 		return
 	}
 	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	if controller := s.delegateController; controller != nil && s.owningDelegateID != "" {
+		controller.mu.Lock()
+		released := uint64(0)
+		if aggregate := controller.durable[s.owningDelegateID]; aggregate != nil {
+			released = aggregate.AttentionHoldReleasedGeneration
+		}
+		controller.mu.Unlock()
+		if !delegateAttentionHoldStands(generation, released) {
+			return
+		}
+	}
 	if s.attentionAutomaticDriveHolds == nil {
 		s.attentionAutomaticDriveHolds = make(map[string]uint64)
 	}
 	s.attentionAutomaticDriveHolds[attentionID] = generation
-	s.attentionMu.Unlock()
 }
 
 // delegateHoldReleaseSite names the wake a hold release serves.
@@ -1159,7 +1185,7 @@ func (s *Session) releaseAutomaticDriveHolds(site delegateHoldReleaseSite, admit
 	var released []string
 	s.attentionMu.Lock()
 	for id, held := range s.attentionAutomaticDriveHolds {
-		if held > admittedGeneration {
+		if delegateAttentionHoldStands(held, admittedGeneration) {
 			continue
 		}
 		released = append(released, id)
@@ -1307,6 +1333,14 @@ func (s *Session) deriveHeldDelegateAttentionFromOutcome() {
 	// The stamp is the generation the quiet comes from — the one the stop
 	// settled and the fold's reopens claim — so a wake admitted at a later
 	// generation ends this hold and one admitted before it never does.
+	if len(held) != 0 {
+		s.mu.Lock()
+		beforeInstall := s.cfg.testOnly.delegateAttentionBeforeDerivedHoldInstall
+		s.mu.Unlock()
+		if beforeInstall != nil {
+			beforeInstall()
+		}
+	}
 	for _, id := range held {
 		s.holdDelegateAttentionFromAutomaticDriveAt(id, generation)
 	}
