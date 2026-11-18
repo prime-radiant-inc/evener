@@ -335,6 +335,53 @@ test("a taller viewport that clamps an ancestor's scroll leaves the menu open an
   }
 });
 
+// A clamp does not need the WINDOW to grow. The rail's list gets taller when
+// its Needs You chip disappears, and `innerHeight` never changes - so a
+// dismissal keyed on window growth cannot see it. What can see it is the
+// scroller's own numbers: its offset was past the end, and the end moved up
+// under it, leaving the offset exactly at the new maximum. That is the browser
+// correcting an invalid position, not the reader leaving.
+test("a scroller that grows with the window unchanged clamps without closing the menu", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, 400, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  const { flush } = captureFrames();
+  try {
+    render(
+      <div data-testid="owning-scroller" style={{ overflowY: "auto" }}>
+        <Menu trigger="Actions" items={items()} />
+      </div>,
+    );
+    const scroller = screen.getByTestId("owning-scroller");
+    // The rail at its end: 300 of scroll in a 200px box, so the offset is
+    // 300 and that is where the reader left it.
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 500 });
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 200 });
+    scroller.scrollTop = 300;
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu")).toBeTruthy();
+
+    // The chip above the list disappears and the list grows: 400 of content in
+    // the same box, so 300 is past the end and the browser pulls it back to the
+    // new maximum of 200. No window resize anywhere.
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 400 });
+    scroller.scrollTop = 200;
+    fireEvent.scroll(scroller);
+    flush();
+
+    expect(screen.getByRole("menu")).toBeTruthy();
+  } finally {
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
 // The other half, and the one that keeps the dismissal: a scroll of the
 // trigger's own container that really does move the trigger still closes the
 // menu. Without this, "stop closing on scroll" would pass the test above and be
@@ -1337,9 +1384,13 @@ test("a zoom that narrows the popup wraps labels and keeps the focused row in vi
   fakeViewport.offsetTop = 0;
   vi.stubGlobal("visualViewport", fakeViewport);
   // A popup with room for its label, then the same popup under a cap that
-  // forces the break. Rows are 44px tall and the popup stays 120px tall in
-  // both cases, so only the cap distinguishes them.
+  // forces the break. The popup stays 120px tall in both cases, so only the cap
+  // distinguishes them - and the break is modelled where it really happens, in
+  // the ROWS: a label wrapped onto a second line makes a row taller, which is
+  // the movement that matters. A fixture that kept every row at 44px would
+  // pin nothing but the class name.
   let popupWidth = 220;
+  let rowHeight = 44;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     if (this.tagName === "BUTTON") return box(20, 100, 40, 28);
     if (this.tagName === "UL") return box(0, 0, popupWidth, 120);
@@ -1350,11 +1401,11 @@ test("a zoom that narrows the popup wraps labels and keeps the focused row in vi
   });
   vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
     if (this.tagName === "UL") return 120;
-    return this.tagName === "LI" ? 44 : 0;
+    return this.tagName === "LI" ? rowHeight : 0;
   });
   vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
     if (this.tagName !== "LI" || !this.parentElement) return 0;
-    return Array.prototype.indexOf.call(this.parentElement.children, this) * 44;
+    return Array.prototype.indexOf.call(this.parentElement.children, this) * rowHeight;
   });
   const { flush } = captureFrames();
   try {
@@ -1370,20 +1421,89 @@ test("a zoom that narrows the popup wraps labels and keeps the focused row in vi
     expect(popup.scrollTop).toBe(0);
 
     // Pinch zoom: the visible width no longer fits the popup, so the cap now
-    // decides its width and the labels wrap. Its box height does NOT change.
+    // decides its width and the labels wrap: each row takes a second line, so
+    // Delete moves from 88..132 to 120..180. The popup's own box height does
+    // NOT change.
     fakeViewport.width = 200;
     popupWidth = 184;
+    rowHeight = 60;
     fakeViewport.dispatchEvent(new Event("resize"));
     flush();
 
     expect(popup.className).toContain("popupNarrow");
-    // Delete's bottom is 132; a 120px scrollport from 0 ends at 120.
-    expect(popup.scrollTop).toBe(12);
+    // Delete now spans 120..180; a 120px scrollport from 0 ends at 120.
+    expect(popup.scrollTop).toBe(60);
     expect(document.activeElement).toBe(last);
   } finally {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     if (originalInnerWidth) Object.defineProperty(window, "innerWidth", originalInnerWidth);
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// The row held focus, the reader scrolled AWAY from it, and then the viewport
+// grew. The row is still below the scrollport - the taller scrollport did not
+// reach it - so a reveal keyed on "is it clipped" pulls the reader back down to
+// a row they had deliberately left. It is the same question the reveal exists
+// to ask, answered the other way: layout hid nothing, the reader moved, and
+// only the scrollport changed size.
+test("a focused row the reader scrolled away from is not pulled back by a taller viewport", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  // Four 44px rows in a 120px scrollport: End focuses the fourth (132..176),
+  // which is below the scrollport by 56px.
+  let popupHeight = 120;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, 300, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, popupHeight);
+    return box(0, 0, 0, 0);
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "UL") return popupHeight;
+    return this.tagName === "LI" ? 44 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "UL" ? 160 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName !== "LI" || !this.parentElement) return 0;
+    return Array.prototype.indexOf.call(this.parentElement.children, this) * 44;
+  });
+  const { flush } = captureFrames();
+  const four: MenuItem[] = [
+    { id: "rename", label: "Rename", onSelect: vi.fn() },
+    { id: "duplicate", label: "Duplicate", onSelect: vi.fn() },
+    { id: "archive", label: "Archive", onSelect: vi.fn() },
+    { id: "delete", label: "Delete", onSelect: vi.fn() },
+  ];
+  try {
+    render(<Menu trigger="Actions" items={four} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    const last = screen.getByRole("menuitem", { name: "Delete" });
+    const popup = screen.getByRole("menu");
+    // The reader is on the last row, out of sight below the scrollport: 176 is
+    // its bottom and a 120px scrollport from 0 ends at 120.
+    last.focus();
+    expect(document.activeElement).toBe(last);
+    // They scroll back up by hand, to the top of the list. Focus stays on
+    // Delete, out of sight below, because that is where they left it.
+    popup.scrollTop = 0;
+    expect(popup.scrollTop).toBe(0);
+
+    // The window is a little taller, and the popup's scrollport with it - still
+    // not enough to reach Delete at 132..176.
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 880 });
+    popupHeight = 140;
+    fireEvent(window, new Event("resize"));
+    flush();
+
+    // The reader is not yanked back down: nothing above them moved.
+    expect(popup.scrollTop).toBe(0);
+    expect(document.activeElement).toBe(last);
+  } finally {
+    vi.restoreAllMocks();
     if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
   }
 });

@@ -201,12 +201,25 @@ const observeRow = (popup: HTMLElement, row: HTMLElement): RowObservation => ({
   portWidth: popup.offsetWidth,
 });
 
-const movedSince = (now: RowObservation, before: RowObservation): boolean =>
-  now.top !== before.top ||
-  now.height !== before.height ||
-  now.width !== before.width ||
-  now.portHeight !== before.portHeight ||
-  now.portWidth !== before.portWidth;
+/** Did `scroller` just get CLAMPED? A clamp is visible in one scroller's own
+ * numbers: the offset this listener last saw for it was larger than the maximum
+ * it now allows - it pointed past the end - and the offset it reports now is
+ * exactly that new maximum, which is where a browser puts a scroll position it
+ * had to pull back. Nothing about the window or the trigger is needed, which is
+ * what makes this catch a container that grew while `innerHeight` stayed put.
+ *
+ * Records the offset as it goes, so each call compares against the previous
+ * one. A reader scrolling up normally lands anywhere below the maximum, and one
+ * scrolling to the end lands ON the maximum with a previous offset that was
+ * already legal - not a clamp, so `previous > maximum` is what separates them. */
+function wasClampedBy(scroller: Element, offsets: WeakMap<Element, number>): boolean {
+  const now = scroller.scrollTop;
+  const previous = offsets.get(scroller);
+  offsets.set(scroller, now);
+  if (previous === undefined) return false;
+  const maximum = scroller.scrollHeight - scroller.clientHeight;
+  return previous > maximum && now === maximum;
+}
 
 function itemAt(items: MenuEntry[], i: number): MenuEntry {
   const item = items[i];
@@ -357,6 +370,12 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   const anchoredTriggerRef = useRef<{ left: number; top: number } | null>(null);
   const grewBeforeScrollRef = useRef(false);
   const lastViewportHeightRef = useRef(0);
+  // The scroll offset last seen for each scroller that holds the trigger. A
+  // clamp can be read from the scroller alone: its offset was beyond a maximum
+  // that then SHRANK under it, and what is left is exactly that new maximum.
+  // That is the case a window height cannot see at all - the rail's list grows
+  // when its Needs You chip disappears, with `innerHeight` untouched.
+  const scrollerOffsetsRef = useRef(new WeakMap<Element, number>());
 
   /** Reveal the focused row if it is outside the popup's visible area, and do
    * nothing in every other case.
@@ -389,17 +408,29 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
       if (reason === "layout") {
         // `before === null` is the first look: the row was just focused and the
         // popup was placed around it, so layout has not moved it out of view.
-        if (before === null || !movedSince(now, before)) return;
-        // Clipping has a SIDE, and only one side is layout's to fix. A row
-        // hanging BELOW the scrollport is one content above it pushed out from
-        // under the reader. A row clipped ABOVE is a row the reader scrolled
-        // past - unless layout moved its top UP, which puts the clip back on
-        // layout. Anything else here is the reader's own place in the list, and
-        // a pass that ran for some other reason (a popup that changed width, a
-        // trigger that moved) must not take it away from them.
-        const clippedBelow = now.top + now.height > popup.scrollTop + now.portHeight;
-        const clippedAbove = now.top < popup.scrollTop;
-        if (!clippedBelow && !(clippedAbove && now.top < before.top)) return;
+        if (before === null) return;
+        // Did layout make the clip worse? Both observations are measured at the
+        // reader's CURRENT scroll, so the comparison holds the reader still and
+        // asks only what layout did to the row. That is what separates the two
+        // directions:
+        //
+        // - a row pushed below the scrollport, a row inserted above it, a label
+        //   above it wrapping taller, or a scrollport that SHORTENED under it
+        //   all add hidden pixels, so the row is revealed;
+        // - a scrollport that GREW while still short of the row, or a reader who
+        //   scrolled away from a row that is clipped anyway, add none - the clip
+        //   is the same or smaller than it was, and nothing is revealed.
+        //
+        // "The row is clipped" alone is not the question; a reader who moved the
+        // scroll is entitled to what the new clip shows them, and pulling them
+        // back is the bug this asks about. A row that was never visible and
+        // stayed exactly as hidden as it was is not a row layout hid, either.
+        const scrollTop = popup.scrollTop;
+        const hiddenBelow = (obs: RowObservation) => obs.top + obs.height - (scrollTop + obs.portHeight);
+        const hiddenAbove = (obs: RowObservation) => scrollTop - obs.top;
+        const worseBelow = hiddenBelow(now) > Math.max(0, hiddenBelow(before));
+        const worseAbove = hiddenAbove(now) > Math.max(0, hiddenAbove(before));
+        if (!worseBelow && !worseAbove) return;
       }
       // A row inserted BELOW the focused one moves nothing above it, and the
       // reader's own scroll to the lower actions must survive that: the guards
@@ -849,6 +880,14 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // the one measured.
     lastViewportHeightRef.current = ownerWindow.innerHeight;
     grewBeforeScrollRef.current = false;
+    // The offset each scroller held when this menu opened. Without this, the
+    // first scroll of the trigger's own container could only be judged by the
+    // rect, and a clamp that arrives as the very first event would be read as
+    // the reader leaving.
+    const seeded = scrollerOffsetsRef.current;
+    for (let node: HTMLElement | null = triggerRef.current; node !== null; node = node.parentElement) {
+      if (isScrollContainer(node, ownerWindow)) seeded.set(node, node.scrollTop);
+    }
     function onScrollCapture(event: Event) {
       const target = event.target;
       if (target === null) return;
@@ -864,19 +903,27 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         target === ownerWindow ||
         (nodeType === 1 && rootRef.current !== null && (target as Element).contains(rootRef.current))
       ) {
-        // A clamp has two facts, and it takes both of them: the window GREW
-        // since the previous scroll, and the trigger is still exactly where the
-        // last pass anchored it. Either one alone is not a clamp - a scroll with
-        // no growth behind it is the reader, however the rect happens to read,
-        // and growth on its own moves nothing. The flag is spent here, so one
-        // resize can excuse at most one corrected offset.
+        // A clamp is the browser correcting an offset that a bigger scrollport
+        // made invalid, and it is read from the scroller's own geometry: the
+        // offset this listener last saw was beyond a maximum that then shrank,
+        // and the offset left now IS that new maximum. That covers a window
+        // that grew AND a container that grew with the window untouched - the
+        // rail's list getting taller when its Needs You chip goes away. The
+        // trigger must also still be where the last pass anchored it, because a
+        // scroll that moved the trigger is the reader leaving whatever the
+        // arithmetic says. Growth alone is not enough either: a scroll with no
+        // clamp behind it belongs to the reader.
         const anchored = anchoredTriggerRef.current;
         const rect = triggerRef.current?.getBoundingClientRect();
         const grew = grewBeforeScrollRef.current;
         grewBeforeScrollRef.current = false;
-        const clamped =
-          grew && anchored !== null && rect !== undefined && rect.left === anchored.left && rect.top === anchored.top;
-        if (clamped) placeNowAndAfterLayout();
+        const stayed =
+          anchored !== null && rect !== undefined && rect.left === anchored.left && rect.top === anchored.top;
+        const clampedHere =
+          nodeType === 1 && target !== ownerWindow
+            ? wasClampedBy(target as Element, scrollerOffsetsRef.current)
+            : false;
+        if (stayed && (grew || clampedHere)) placeNowAndAfterLayout();
         else closeMenu();
       }
     }
