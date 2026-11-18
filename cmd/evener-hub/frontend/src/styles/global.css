@@ -68,6 +68,15 @@ body {
    * user-agent default. */
   caret-color: var(--accent);
   accent-color: var(--accent);
+  /* Text autosizing off: iOS Safari grows text it judges too narrow for its
+   * block, and it exempts text inside a form control, so the rail's caption
+   * line in a plain <span> rendered ~16.8px against a 13px title in a
+   * <button> (the iPhone Duo's cover display). The type ramp already owns
+   * every size the app renders, including the reader's own scale, so the
+   * engine's guess only ever departs from it. The unprefixed form is the
+   * spec name; the build has no autoprefixer, hence both. */
+  -webkit-text-size-adjust: 100%;
+  text-size-adjust: 100%;
 }
 
 ::selection {

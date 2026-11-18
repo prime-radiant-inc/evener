@@ -1342,7 +1342,15 @@ the coarse query says a touch screen exists, and desktop zoom keeps every
 path. The enlargement paths that remain on touch screens are the in-app
 font-size preference (S/M/L/XL) and the OS Magnifier; a reader who arrives
 already zoomed keeps that zoom and recovers through Safari's Page Zoom
-setting, since the veto removes the pinch way back. The viewport meta
+setting, since the veto removes the pinch way back. Safari's text autosizing
+is off for the same reason: `global.css`'s `body` rule pins
+`text-size-adjust: 100%`, because the engine's heuristic grows text it judges
+too narrow for its block and exempts text inside a form control, so a row's
+caption line in a plain `<span>` grew to ~16.8px while the session title in
+its `<button>` stayed at 13px on the iPhone Duo's cover display (Jesse
+2026-11-18). The type ramp owns every rendered size, so the engine's guess
+only ever departs from it. `src/styles/text-autosize.test.ts` fails if the pin
+goes away. The viewport meta
 itself still never locks zoom: modern iOS ignores `maximum-scale` for
 pinch anyway, so a meta lock would add nothing the veto and the coarse
 query do not already own, and `src/styles/viewport-pin.test.ts` fails if
