@@ -512,6 +512,13 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 					if err := renameStoreAside(fs, path, intent.AsideFile, faults); err != nil {
 						return snapshot{}, 0, nil, err
 					}
+					// The rename just put the corrupt bytes at the intent's aside
+					// path, so the signal this boot returns must name it: it was
+					// built while that file did not exist, and leaving it empty
+					// would omit the path for the rest of this boot.
+					if signal != nil && signal.CustodyFile == intent.CustodyFile {
+						signal.AsideFile = intent.AsideFile
+					}
 					return replacementFromCustody(fs, path, intent.CustodyFile, custody, artifacts.allocatorFloor, epoch, signal, faults)
 				}
 				// The intent's own rename already landed and a different

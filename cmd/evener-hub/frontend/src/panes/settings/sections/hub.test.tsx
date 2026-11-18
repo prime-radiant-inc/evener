@@ -177,19 +177,28 @@ test("reports the operation store's quarantine signal when the hub carries one",
   // person opening Settings -> Hub must be able to see that the store was
   // quarantined. Copy changes must not fail this.
   await waitFor(() => expect(statusReasons()).toContain("operation-store-quarantined"));
+  // And the path it shows must be the one holding the quarantined bytes. A row
+  // that exists but points at the replacement passes any presence-only check.
+  expect(settingsFieldValue("aside-file").textContent).toBe(
+    "/fixture/state/hub-ops.json.quarantined-20260101T000000.000000000Z",
+  );
+  expect(settingsFieldValue("quarantined-file").textContent).toBe("/fixture/state/hub-ops.json");
 });
 
-test("reveals a quarantine the hub performed while this tab was away, without a reload", async () => {
+test("reveals a quarantine the hub performed while this tab was on another section", async () => {
   const fake = connectReadyFakeClient();
   fake.on("evener/settings/overview", () => SAMPLE_RESPONSE);
   fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
 
-  render(<HubSection />);
+  const first = render(<HubSection />);
   await waitFor(() => expect(fake.calls.length).toBeGreaterThan(0));
   expect(statusReasons()).not.toContain("operation-store-quarantined");
+  // The reader moves to another Settings section, so HubSection unmounts.
+  first.unmount();
 
-  // The hub restarted and quarantined the store while this tab held the healthy
-  // overview. fetch() is fetch-once, so only the recovery refresh can show it.
+  // The hub restarted and quarantined the store while HubSection was gone.
+  // fetch() is fetch-once, so a subscription in the section would miss this
+  // reconnect entirely and reopening would reuse the healthy cache.
   // Typed, not spread through a partial: SettingsHubOverview's
   // daemonIdleTimeoutMillis is required, and a spread through the sample's
   // optional type would drop it.
@@ -206,7 +215,7 @@ test("reveals a quarantine the hub performed while this tab was away, without a 
     },
   };
   // A client replacement is the reconnect the recovery hook watches for; no
-  // remount and no poll.
+  // poll.
   await act(async () => {
     connectReadyFakeClient((fake2) => {
       fake2.on("evener/settings/overview", () => quarantined);
@@ -214,6 +223,7 @@ test("reveals a quarantine the hub performed while this tab was away, without a 
     });
   });
 
+  render(<HubSection />);
   await waitFor(() => expect(statusReasons()).toContain("operation-store-quarantined"));
 });
 

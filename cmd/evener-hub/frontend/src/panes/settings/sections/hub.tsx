@@ -1,7 +1,11 @@
 import type { SettingsOperationStoreQuarantine } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
 import { onConnectionReplacedOrRecovered } from "../../../stores/connection";
-import { settingsOverviewStore, useSettingsOverviewStore } from "../../../stores/settingsOverview";
+import {
+  loadSettingsOverview,
+  settingsOverviewStore,
+  useSettingsOverviewStore,
+} from "../../../stores/settingsOverview";
 import { Button, Disclosure, InlineNotice, PropertyList, Skeleton } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./hub.module.css";
@@ -24,13 +28,12 @@ export function HubSection() {
   const error = useSettingsOverviewStore((s) => s.error);
 
   useEffect(() => {
-    void settingsOverviewStore.getState().fetch();
-    // fetch() is fetch-once: a populated cache means a tab that was open across
-    // the hub's restart never reads again, so a quarantine the restart performed
-    // stays invisible — including after leaving and reopening this section. A
-    // replaced or recovered connection is exactly a read this tab missed, so
-    // refresh then. A failed refresh keeps the last successful overview.
-    return onConnectionReplacedOrRecovered(() => void settingsOverviewStore.getState().refresh());
+    // Reads once, and re-reads if a reconnect was missed while this section was
+    // unmounted, so a quarantine the hub performed in that window still shows.
+    loadSettingsOverview();
+    // While mounted, spend the reconnect immediately instead of waiting for the
+    // next open; the flag also covers the window this section was away.
+    return onConnectionReplacedOrRecovered(loadSettingsOverview);
   }, []);
 
   if (loading && !data) return <Skeleton lines={3} />;
@@ -125,6 +128,10 @@ function OperationStoreQuarantineNotice({ quarantine }: { quarantine: SettingsOp
       <PropertyList
         layout="stacked"
         rows={[
+          {
+            label: "Set aside",
+            value: <FieldValue field="aside-file">{quarantine.asideFile ?? ""}</FieldValue>,
+          },
           {
             label: "Store path",
             value: <FieldValue field="quarantined-file">{quarantine.quarantinedFile ?? ""}</FieldValue>,
