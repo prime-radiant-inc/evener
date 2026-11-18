@@ -474,7 +474,7 @@ func TestCompactionResetsEnvironmentContextTracker(t *testing.T) {
 // helper of its own: attentionMu then mu around resetEnvContextTrackerLocked,
 // then the autosave outside both, which is exactly what handleCompactionTurn's
 // CHECKPOINT/SUMMARY branch (session_namer.go) and publishFoldTransaction's
-// foldCommit.resetEnvContextTrackerLocked do. Calling those two callers
+// tracker restoration do. Calling those two callers
 // outright would drag in a transcript write, the compaction-turn effects and
 // the async namer — unbounded work this race test has no use for.
 //
@@ -791,6 +791,53 @@ func TestEnvironmentContextPreservedRecentTailStaysSilentAfterCompact(t *testing
 
 func TestEnvironmentContextRemovedFullBlockResetsAgainstRetainedChangedBlock(t *testing.T) {
 	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		back bool
+	}{{"stay on selected model", false}, {"return to launch model", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestSessionForEnvctx(t)
+			launch := s.profile.Model()
+			if err := s.maybeAppendEnvironmentContext(); err != nil {
+				t.Fatal(err)
+			}
+			seedNumberedSessionHistory(t, s, 8)
+			if err := s.SetModel("gpt-5.4"); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.maybeAppendEnvironmentContext(); err != nil {
+				t.Fatal(err)
+			}
+			selectedTrailer := s.commitTrailerPrompt()
+			if tc.back {
+				if err := s.SetModel(launch); err != nil {
+					t.Fatal(err)
+				}
+			}
+			s.contextMgr.PreserveRecentTurns = 2
+			if err := s.Compact(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if got := countEnvironmentTurns(s); got != 1 {
+				t.Fatalf("fold retained %d environment turns, want the model update alone", got)
+			}
+			_, _, _, req, _, _, err := s.prepareModelRequestWithError(t.Context(), 1, &events.RoundTimings{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			tracker := envctx.NewTracker(envctx.State{})
+			selected := 0
+			for _, msg := range req.Messages {
+				if msg.Role == llm.RoleUser && tracker.ReplayBlock(msg.Text()) {
+					selected += strings.Count(msg.Text(), selectedTrailer)
+				}
+			}
+			current := tracker.State().Last
+			if current.Model != s.profile.ID()+"/"+s.profile.Model() || current.CommitTrailer != s.commitTrailerPrompt() || selected != 1 {
+				t.Errorf("selected trailer appears %d times, current model %s and trailer %q, want %s and %q", selected, current.Model, current.CommitTrailer, s.profile.Model(), s.commitTrailerPrompt())
+			}
+		})
+	}
 	now := envctxFixedTime
 	s := newTestSessionForEnvctx(t, withConfig(SessionConfig{testOnly: testConfig{envProbes: &envctx.Probes{Now: func() time.Time { return now }}}}))
 	if err := s.maybeAppendEnvironmentContext(); err != nil {

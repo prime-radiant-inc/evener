@@ -363,7 +363,7 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	if onPublishLocked != nil {
 		onPublishLocked(published, restoredAt)
 	}
-	commit.resetEnvContextTrackerLocked(environmentTurnsRemoved(previousEnvironmentIDs, published))
+	commit.restoreEnvContextTrackerLocked(environmentTurnsRemoved(previousEnvironmentIDs, published))
 	commit.claimNoteLocked()
 	commit.publishedRevision = s.historyRevision
 	// The compaction-operation claim runs in the same s.mu critical section
@@ -817,7 +817,7 @@ type foldCommit struct {
 	commitTranscriptsLocked        func() bool
 	replayRetainedLocked           func()
 	flush                          func()
-	resetEnvContextTrackerLocked   func(bool)
+	restoreEnvContextTrackerLocked func(bool)
 	publishedRevision              int
 	actualCompaction               bool
 	captured                       *schema.SkillCompactionOperation
@@ -1137,9 +1137,9 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 		}
 		return markerLanded
 	}
-	commit.resetEnvContextTrackerLocked = func(removed bool) {
-		if removed && len(pendingCompactionTurns) > 0 {
-			s.resetEnvContextTrackerLocked()
+	commit.restoreEnvContextTrackerLocked = func(removed bool) {
+		if removed && len(pendingCompactionTurns) > 0 && s.envTracker != nil {
+			s.rehydrateEnvironmentContext(s.history)
 		}
 	}
 	flush := func() {

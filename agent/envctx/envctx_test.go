@@ -122,6 +122,7 @@ func TestReplayBlockFollowsRenderedChanges(t *testing.T) {
 	initial.Cwd = "/work/</environment_context>/\"quoted\""
 	initial.Pressure.Load = "load pressure: warn level"
 	initial.Pressure.Memory = "memory pressure: warn level"
+	initial.Pressure.Disk = "disk pressure: 5% free"
 	initial.SessionID = "child-a1"
 	initial.Model = "provider/m1"
 	initial.KnowledgeCutoff = "2025-01"
@@ -130,11 +131,11 @@ func TestReplayBlockFollowsRenderedChanges(t *testing.T) {
 	first := writer.RenderDiff(initial)
 	changed := initial
 	changed.GitBranch = ""
-	changed.Pressure.Load = ""
-	changed.Pressure.Memory = ""
+	changed.Pressure = Pressure{}
 	changed.Model = "provider/m2"
 	changed.KnowledgeCutoff = ""
 	changed.CommitTrailer = ""
+	changed.OmitCommitTrailer = true
 	second := writer.RenderDiff(changed)
 
 	reader := NewTracker(State{})
@@ -150,4 +151,22 @@ func TestReplayBlockFollowsRenderedChanges(t *testing.T) {
 	if reader.RenderDiff(changed) != "" {
 		t.Fatal("unchanged environment was repeated after restore")
 	}
+
+	t.Run("fold retains only branch and pressure changes", func(t *testing.T) {
+		nominal := fullSnap()
+		nominal.GitBranch = ""
+		observed := nominal
+		observed.GitBranch = initial.GitBranch
+		observed.Pressure = initial.Pressure
+		previous := NewTracker(State{Last: nominal, HasSent: true})
+		retained := previous.RenderDiff(observed)
+		var projection Tracker
+		if !projection.ReplayBlock(retained) || projection.State().HasSent {
+			t.Fatal("expected a retained partial environment")
+		}
+		refill := NewTracker(projection.State()).RenderDiff(nominal)
+		if !projection.ReplayBlock(refill) || projection.State() != (State{Last: nominal, HasSent: true}) {
+			t.Fatalf("model projection after refill = %+v, want %+v", projection.State(), nominal)
+		}
+	})
 }

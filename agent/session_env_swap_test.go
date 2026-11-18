@@ -12,9 +12,12 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/envctx"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/gittest"
+	"primeradiant.com/evener/llm"
 )
 
 func TestSwapEnvAndRefresh_AppendsCurrentEnvironmentToStartupPromptHistory(t *testing.T) {
@@ -71,6 +74,54 @@ func TestSwapEnvAndRefresh_AppendsCurrentEnvironmentToStartupPromptHistory(t *te
 	}
 	if got := sess.envTracker.State().Last; got.Cwd != repoDir || got.GitBranch != "feature-branch" {
 		t.Errorf("projected environment = %q, %q", got.Cwd, got.GitBranch)
+	}
+}
+
+func TestWorktreeToolReportsWorkspaceOnNextModelRequest(t *testing.T) {
+	t.Parallel()
+	const branch = "autonomous-work"
+	var requests []llm.Request
+	record := func(response llm.Response) func(llm.Request) llm.Response {
+		return func(req llm.Request) llm.Response {
+			requests = append(requests, req)
+			return response
+		}
+	}
+	cfg := worktreeTestSessionConfig()
+	cfg.testOnly.envProbes = &envctx.Probes{
+		Now:       func() time.Time { return envctxFixedTime },
+		GitBranch: func(cwd string) string { return strings.TrimSpace(wtGit(t, cwd, "symbolic-ref", "--short", "HEAD")) },
+	}
+	r := newWorktreeRepoWithConfig(t, cfg, withSteps(
+		record(agenttest.ToolCallResponse(llm.ToolCallData{ID: "create", Name: "manage_worktree", Arguments: []byte(`{"operation":"create","name":"autonomous-work"}`)})),
+		record(agenttest.FinalResponse("created")),
+		record(agenttest.FinalResponse("still here")),
+	))
+	sendOneUserInput(t, r.s, "create a worktree")
+	sendOneUserInput(t, r.s, "continue")
+	cwd := r.s.currentEnv().WorkingDirectory()
+	if len(requests) != 3 || cwd == r.mainRoot {
+		t.Fatalf("worktree creation produced %d requests and cwd %q", len(requests), cwd)
+	}
+	for i, req := range requests {
+		var tracker envctx.Tracker
+		blocks := 0
+		for _, msg := range req.Messages {
+			if msg.Role == llm.RoleUser && tracker.ReplayBlock(msg.Text()) {
+				blocks++
+			}
+		}
+		last := tracker.State().Last
+		if len(req.Messages) == 0 || req.Messages[0].Text() != r.s.cachedSystemPrompt {
+			t.Errorf("request %d lost its startup prompt", i)
+		}
+		if i == 0 {
+			if blocks != 1 || last.Cwd != r.mainRoot || last.GitBranch == branch {
+				t.Errorf("first request has %d blocks and workspace %q on %q", blocks, last.Cwd, last.GitBranch)
+			}
+		} else if blocks != 2 || last.Cwd != cwd || last.GitBranch != branch {
+			t.Errorf("request %d has %d blocks and workspace %q on %q, want %q on %q", i, blocks, last.Cwd, last.GitBranch, cwd, branch)
+		}
 	}
 }
 

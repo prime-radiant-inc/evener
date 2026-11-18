@@ -53,5 +53,23 @@ func Trailer(version, model, host, session string) (string, error) {
 	if !appwire.ValidRefPart(session) {
 		return "", fmt.Errorf("commit provenance: session %q is not usable in an address", session)
 	}
-	return fmt.Sprintf("Co-authored-by: Evener %s (%s) <%s@%s>", version, model, session, host), nil
+	return trailerPrefix(version, model, session) + host + ">", nil
+}
+
+// PromptHasTrailer reports whether the saved instructions contain this session's
+// commit trailer, including when the session started on a different host.
+func PromptHasTrailer(prompt, version, model, session string) bool {
+	prefix := trailerPrefix(version, model, session)
+	for line := range strings.SplitSeq(prompt, "\n") {
+		if address, ok := strings.CutPrefix(line, prefix); ok {
+			if host, ok := strings.CutSuffix(address, ">"); ok && appwire.ValidRefPart(host) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func trailerPrefix(version, model, session string) string {
+	return fmt.Sprintf("Co-authored-by: Evener %s (%s) <%s@", version, model, session)
 }

@@ -246,9 +246,8 @@ type Session struct {
 	// reassigned) and only ever read from the turn-processing goroutine, so it
 	// needs no lock. envTracker is NOT single-goroutine-owned: Session.Compact
 	// can run on a caller's own goroutine with no idle gate, and
-	// resetEnvContextTrackerLocked reassigns the pointer (and implicitly races
-	// the turn goroutine's maybeAppendEnvironmentContext, which mutates the
-	// pointed-to Tracker's internal state via RenderDiff).
+	// publishing a fold rebuilds the tracker from its retained history while
+	// maybeAppendEnvironmentContext can advance it on the turn goroutine.
 	//
 	// Both sides take attentionMu THEN mu, in that order. mu alone is not
 	// enough: the tracker advance and the transcript entry it describes are one
@@ -256,20 +255,22 @@ type Session struct {
 	// between an append's RenderDiff and the entry that carries its block, and
 	// the next turn would diff against a baseline no transcript records. See
 	// appendEnvironmentContext (which holds the pair across the whole append)
-	// and resetEnvContextTrackerLocked's two callers: publishFoldTransaction
-	// via foldCommit.resetEnvContextTrackerLocked, and handleCompactionTurn.
+	// and the compaction paths in publishFoldTransaction and handleCompactionTurn.
 	envCollector *envctx.Collector
 	envTracker   *envctx.Tracker
+	// A worktree tool can install an environment between model requests.
+	// The next request must observe it even if no user input intervenes.
+	worktreeContextPending bool
 	// The frozen prompt describes the provider, model and build at launch. A
 	// changed value belongs in the next environment context.
 	promptProvider, promptModel, promptBuild string
+	promptProvenanceOverridden               bool
 	inheritedEnvironmentIdentity             bool
 	// envContextState mirrors envTracker.State() for Meta()/SessionMeta.EnvContext:
 	// nil until the first ENVIRONMENT turn is emitted (or restored from a prior
 	// session), so a session that has said nothing about its environment yet
 	// persists nothing. Guarded by mu; appendEnvironmentContext advances it with
-	// the entry it commits and resetEnvContextTrackerLocked clears it with the
-	// tracker.
+	// the entry it commits and compaction updates it with the tracker.
 	envContextState *envctx.State
 
 	// notesLastProjected is the last shared-notes block
@@ -2718,9 +2719,7 @@ func (s *Session) appendTurn(kind schema.TurnKind, m llm.Message) {
 // bypasses NewSession/RestoreSessionFromMetaWithConfig).
 //
 // envTracker is read and mutated (RenderDiff) under attentionMu and mu because
-// Session.Compact can run resetEnvContextTrackerLocked on a caller's own
-// goroutine concurrently with this method running on the turn-processing
-// goroutine — see the field's doc comment.
+// Session.Compact can rebuild the tracker on a caller's own goroutine.
 func (s *Session) maybeAppendEnvironmentContext() error {
 	return s.appendEnvironmentContext(true)
 }
@@ -2731,8 +2730,9 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	if s.envCollector == nil {
 		return nil
 	}
+	env := s.currentEnv()
 	snap := s.envCollector.Collect(envctx.Inputs{
-		Cwd:     s.currentEnv().WorkingDirectory(),
+		Cwd:     env.WorkingDirectory(),
 		Sandbox: s.cfg.Sandbox,
 	})
 
@@ -2746,12 +2746,14 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	// like the two early returns beside this one: the caller is a turn the
 	// close is already ending, and failing it would only make a dying turn
 	// unwind state the close is about to discard.
-	if tracker == nil || s.closingOrClosedLocked() {
+	if tracker == nil || s.closingOrClosedLocked() || (s.worktreeContextPending && !sameEnvironment(env, s.env)) {
 		s.mu.Unlock()
 		s.attentionMu.Unlock()
 		return nil
 	}
 	before := tracker.State()
+	pendingWorkspace := s.worktreeContextPending
+	s.worktreeContextPending = false
 	s.setEnvironmentIdentity(&snap, before.Last)
 	block := tracker.RenderDiff(snap)
 	var st envctx.State
@@ -2795,6 +2797,7 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	if !committed {
 		s.mu.Lock()
 		s.envTracker = envctx.NewTracker(before)
+		s.worktreeContextPending = s.worktreeContextPending || pendingWorkspace
 		s.mu.Unlock()
 	}
 	if committed {
@@ -2837,14 +2840,8 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	return err
 }
 
-// resetEnvContextTrackerLocked clears the environment-context tracker when a
-// CHECKPOINT/SUMMARY turn replaces history: compaction drops any previously
-// appended ENVIRONMENT turns from the model-visible history (they are
-// model-bound content folded away like any other turn), so the model loses
-// whatever drift was last reported. Rebuilding the tracker at its zero state
-// (HasSent=false) makes the next maybeAppendEnvironmentContext call re-emit a
-// full block rather than staying silent on an environment the model can no
-// longer see anything about.
+// resetEnvContextTrackerLocked clears observations when a compaction marker
+// arrives without a retained history to replay. The next turn emits a full block.
 //
 // Requires attentionMu and mu, in that order, so a fold and an environment
 // append cannot publish different tracker generations together. It reports

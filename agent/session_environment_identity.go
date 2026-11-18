@@ -4,6 +4,7 @@ import (
 	"primeradiant.com/evener/agent/envctx"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/internal/commitprovenance"
 )
 
 func (s *Session) setPromptEnvironmentOrigin(header transcript.Header) {
@@ -13,6 +14,12 @@ func (s *Session) setPromptEnvironmentOrigin(header transcript.Header) {
 	}
 	if s.promptBuild == "" {
 		s.promptBuild = BuildVersion
+	}
+	if s.cfg.CommitProvenance != "" && header.SessionID != "" {
+		// Resume may override the saved setting. The original prompt survives
+		// subsequent config checkpoints and identifies the directive it contains.
+		hadTrailer := commitprovenance.PromptHasTrailer(header.SystemPrompt, s.promptBuild, s.promptProvider+"/"+s.promptModel, header.SessionID)
+		s.promptProvenanceOverridden = hadTrailer != (s.commitTrailerPrompt() != "")
 	}
 	if s.fork.parentID == "" || s.fork.divergence == 0 {
 		return
@@ -27,11 +34,28 @@ func (s *Session) setPromptEnvironmentOrigin(header transcript.Header) {
 	for _, turn := range s.history {
 		if turn.Kind == schema.TurnEnvironment && turn.Authorship != nil && turn.Authorship.Inherited && tracker.ReplayBlock(turn.Message.Text()) {
 			last := tracker.State().Last
-			if last.SessionID != "" || last.Model != "" || last.CommitTrailer != "" {
+			if last.SessionID != "" || last.Model != "" || last.CommitTrailer != "" || last.OmitCommitTrailer {
 				s.inheritedEnvironmentIdentity = true
 				return
 			}
 		}
+	}
+}
+
+// rehydrateEnvironmentContext reconstructs only the observations visible to
+// the next request. Both restore and a winning fold supply their retained history.
+func (s *Session) rehydrateEnvironmentContext(history []schema.Turn) {
+	s.envTracker = envctx.NewTracker(envctx.State{})
+	s.envContextState = nil
+	var retained bool
+	for _, turn := range history {
+		if turn.Kind == schema.TurnEnvironment && s.envTracker.ReplayBlock(turn.Message.Text()) {
+			retained = true
+		}
+	}
+	if retained {
+		state := s.envTracker.State()
+		s.envContextState = &state
 	}
 }
 
@@ -50,8 +74,10 @@ func (s *Session) setEnvironmentIdentity(snap *envctx.Snapshot, last envctx.Snap
 		snap.Model = s.profile.ID() + "/" + s.profile.Model()
 		snap.KnowledgeCutoff = s.profile.KnowledgeCutoff()
 	}
-	if fork || changedModel || last.CommitTrailer != "" || (s.promptBuild != "" && s.promptBuild != BuildVersion) {
+	overrideTrailer := fork || s.promptProvenanceOverridden || last.CommitTrailer != "" || last.OmitCommitTrailer
+	if overrideTrailer || changedModel || (s.promptBuild != "" && s.promptBuild != BuildVersion) {
 		snap.CommitTrailer = s.commitTrailerPrompt()
+		snap.OmitCommitTrailer = overrideTrailer && snap.CommitTrailer == ""
 	}
 }
 
@@ -61,6 +87,9 @@ func (s *Session) setEnvironmentIdentity(snap *envctx.Snapshot, last envctx.Snap
 func (s *Session) needsEnvironmentIdentityLocked() bool {
 	if s.envTracker == nil || s.envCollector == nil || s.closingOrClosedLocked() {
 		return false
+	}
+	if s.worktreeContextPending {
+		return true
 	}
 	last := s.envTracker.State().Last
 	next := last

@@ -21,19 +21,19 @@ type Pressure struct {
 	Disk   string `json:"disk,omitempty"`
 }
 
-// Snapshot is one observation of the session environment. All fields are
-// strings so Snapshot is comparable with == (the nothing-changed fast path)
-// and marshals directly into session meta.
+// Snapshot is one observation of the session environment. Its fields are
+// comparable for the nothing-changed fast path and marshal into session meta.
 type Snapshot struct {
-	Cwd             string   `json:"cwd,omitempty"`             // absolute working directory
-	LocalDateHour   string   `json:"local_date_hour,omitempty"` // "2026-08-06 14:00 PDT"
-	Sandbox         string   `json:"sandbox,omitempty"`         // always populated; "off" included
-	GitBranch       string   `json:"git_branch,omitempty"`      // "" outside a git repo
-	Pressure        Pressure `json:"pressure,omitzero"`
-	SessionID       string   `json:"session_id,omitempty"`
-	Model           string   `json:"model,omitempty"`
-	KnowledgeCutoff string   `json:"knowledge_cutoff,omitempty"`
-	CommitTrailer   string   `json:"commit_trailer,omitempty"`
+	Cwd               string   `json:"cwd,omitempty"`             // absolute working directory
+	LocalDateHour     string   `json:"local_date_hour,omitempty"` // "2026-08-06 14:00 PDT"
+	Sandbox           string   `json:"sandbox,omitempty"`         // always populated; "off" included
+	GitBranch         string   `json:"git_branch,omitempty"`      // "" outside a git repo
+	Pressure          Pressure `json:"pressure,omitzero"`
+	SessionID         string   `json:"session_id,omitempty"`
+	Model             string   `json:"model,omitempty"`
+	KnowledgeCutoff   string   `json:"knowledge_cutoff,omitempty"`
+	CommitTrailer     string   `json:"commit_trailer,omitempty"`
+	OmitCommitTrailer bool     `json:"omit_commit_trailer,omitempty"` // explicit cancellation of a prior directive
 }
 
 // State is the Tracker's persistable form, stored in session meta so resume
@@ -105,8 +105,10 @@ func (t *Tracker) ReplayBlock(block string) bool {
 			}
 		case strings.HasPrefix(line, commitTrailerPrefix):
 			t.st.Last.CommitTrailer = strings.TrimPrefix(line, commitTrailerPrefix)
+			t.st.Last.OmitCommitTrailer = false
 		case line == omitCommitTrailer:
 			t.st.Last.CommitTrailer = ""
+			t.st.Last.OmitCommitTrailer = true
 		case strings.HasPrefix(line, "load pressure: "):
 			t.st.Last.Pressure.Load = pressureValue(line, "load")
 		case strings.HasPrefix(line, "memory pressure: "):
@@ -153,20 +155,29 @@ func (t *Tracker) RenderDiff(cur Snapshot) string {
 	switch {
 	case cur.GitBranch != "":
 		add(cur.GitBranch != prev.GitBranch, "git branch: "+cur.GitBranch)
-	case !first && prev.GitBranch != "":
+	case prev.GitBranch != "":
 		lines = append(lines, "git branch: (not in a git repository)")
 	}
-	if cur.SessionID != "" {
-		add(cur.SessionID != prev.SessionID, "session id: "+cur.SessionID)
+	// A fold can retain an identity update while dropping the first environment
+	// block. Refill the missing environment without repeating retained identity.
+	if cur.SessionID != "" && cur.SessionID != prev.SessionID {
+		lines = append(lines, "session id: "+cur.SessionID)
 	}
 	if cur.Model != "" {
-		add(cur.Model != prev.Model, "model: "+strconv.Quote(cur.Model))
-		add(cur.Model != prev.Model || cur.KnowledgeCutoff != prev.KnowledgeCutoff, "knowledge cutoff: "+strconv.Quote(cur.KnowledgeCutoff))
+		if cur.Model != prev.Model {
+			lines = append(lines, "model: "+strconv.Quote(cur.Model))
+		}
+		if cur.Model != prev.Model || cur.KnowledgeCutoff != prev.KnowledgeCutoff {
+			lines = append(lines, "knowledge cutoff: "+strconv.Quote(cur.KnowledgeCutoff))
+		}
 	}
 	if cur.CommitTrailer != "" {
-		add(cur.CommitTrailer != prev.CommitTrailer, commitTrailerPrefix+cur.CommitTrailer)
-	} else if prev.CommitTrailer != "" || cur.SessionID != prev.SessionID {
+		if cur.CommitTrailer != prev.CommitTrailer {
+			lines = append(lines, commitTrailerPrefix+cur.CommitTrailer)
+		}
+	} else if prev.CommitTrailer != "" || cur.SessionID != prev.SessionID || (cur.OmitCommitTrailer && !prev.OmitCommitTrailer) {
 		lines = append(lines, omitCommitTrailer)
+		cur.OmitCommitTrailer = true
 	}
 	for _, p := range []struct{ label, cur, prev string }{
 		{"load", cur.Pressure.Load, prev.Pressure.Load},
@@ -176,7 +187,7 @@ func (t *Tracker) RenderDiff(cur Snapshot) string {
 		switch {
 		case p.cur != "":
 			add(p.cur != p.prev, p.cur)
-		case !first && p.prev != "":
+		case p.prev != "":
 			lines = append(lines, p.label+" pressure: back to normal")
 		}
 	}

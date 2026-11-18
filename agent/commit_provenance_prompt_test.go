@@ -83,6 +83,73 @@ func TestSystemPromptCarriesCommitTrailer(t *testing.T) {
 		if parentTrailer == "" || !strings.Contains(base, parentTrailer) || strings.Contains(strings.Join(parentHistory, "\n"), parentTrailer) {
 			t.Fatal("ordinary first request did not keep its attribution in its startup prompt")
 		}
+		for _, initial := range []string{commitprovenance.ModeCoauthor, commitprovenance.ModeOff} {
+			t.Run("restore overrides "+initial, func(t *testing.T) {
+				dir := t.TempDir()
+				original := newSession(t, withStateDir(dir), withAdapter(adapter), withConfig(SessionConfig{CommitProvenance: initial}))
+				sendOneUserInput(t, original, "before-override")
+				initialRequests := adapter.Requests()
+				startup, _ := wirePrompt(initialRequests[len(initialRequests)-1])
+				launchTrailer := original.commitTrailerPrompt()
+				original.Close()
+				opposite := commitprovenance.ModeOff
+				if initial == opposite {
+					opposite = commitprovenance.ModeCoauthor
+				}
+				checkAttribution := func(req llm.Request, want string, wantUpdates int) {
+					t.Helper()
+					instructions, history := wirePrompt(req)
+					tracker := envctx.NewTracker(envctx.State{Last: envctx.Snapshot{CommitTrailer: launchTrailer}})
+					updates := 0
+					for _, message := range history {
+						if tracker.ReplayBlock(message) {
+							var block envctx.Tracker
+							block.ReplayBlock(message)
+							if last := block.State().Last; last.CommitTrailer != "" || last.OmitCommitTrailer {
+								updates++
+							}
+						}
+					}
+					if got := tracker.State().Last.CommitTrailer; instructions != startup || got != want || updates != wantUpdates {
+						t.Errorf("frozen instructions = %t, trailer = %q, updates = %d; want %q and %d", instructions == startup, got, updates, want, wantUpdates)
+					}
+				}
+				for i, override := range []string{opposite, "", initial} {
+					meta, err := schema.LoadSessionMeta(dir, original.ID())
+					if err != nil {
+						t.Fatal(err)
+					}
+					restored, err := RestoreSessionFromMetaWithConfig(original.client, original.profile, execenv.NewLocalExecutionEnvironment(original.currentEnv().WorkingDirectory()), meta, RestoreSessionConfig{StateDir: dir, CommitProvenance: override, testOnly: testConfig{skipGitSnapshot: true}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					want := restored.commitTrailerPrompt()
+					sendOneUserInput(t, restored, "after-override")
+					requests := adapter.Requests()
+					wantUpdates := 1
+					if i == 2 {
+						wantUpdates++
+					}
+					checkAttribution(requests[len(requests)-1], want, wantUpdates)
+					if i == 1 {
+						seedNumberedSessionHistory(t, restored, 8)
+						restored.contextMgr.PreserveRecentTurns = 1
+						if err := restored.Compact(t.Context()); err != nil {
+							t.Fatal(err)
+						}
+						if n := countEnvironmentTurns(restored); n != 0 {
+							t.Fatalf("fold retained %d environment turns", n)
+						}
+						_, _, _, req, _, _, err := restored.prepareModelRequestWithError(t.Context(), 1, &events.RoundTimings{})
+						if err != nil {
+							t.Fatal(err)
+						}
+						checkAttribution(req, want, 1)
+					}
+					restored.Close()
+				}
+			})
+		}
 		off := parent.Meta().Config
 		off.CommitProvenance = commitprovenance.ModeOff
 		asideID, err := AsideSessionWithConfig(stateDir, parent.ID(), off)

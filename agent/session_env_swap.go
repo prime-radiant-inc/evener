@@ -169,6 +169,7 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	prior, _ := s.env.(*execenv.LocalExecutionEnvironment)
 	s.env = next
 	s.envInfo = ei
+	s.worktreeContextPending = true
 	if record != nil {
 		record()
 	}

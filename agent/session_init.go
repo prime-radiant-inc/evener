@@ -222,14 +222,9 @@ func escapeInheritedHistory(inherited []transcript.Entry) []schema.Turn {
 	return escapeNotesHistoryTurns(ResumeHistory(inherited), nil)
 }
 
-// initEnvContext constructs the session's environment-context collector and
-// tracker (agent/envctx), seeding the tracker from persisted (nil on
-// a fresh session; meta.EnvContext on resume, itself possibly nil for a
-// session that predates this feature or never emitted a block). Requires s.cfg
-// and s.env to already be set. Called once, before any turn is processed:
-// NewSession right after its struct literal, RestoreSessionFromMetaWithConfig
-// the same.
-func (s *Session) initEnvContext(persisted *envctx.State) {
+// initEnvContext installs the collector and restores the tracker from the
+// environment turns the model will see. A new session starts with no observations.
+func (s *Session) initEnvContext(history []schema.Turn) {
 	probes := envctx.DefaultProbes()
 	if s.cfg.testOnly.envProbes != nil {
 		probes = *s.cfg.testOnly.envProbes
@@ -247,13 +242,7 @@ func (s *Session) initEnvContext(persisted *envctx.State) {
 		}
 	}
 	s.envCollector = envctx.NewCollector(probes)
-	st := envctx.State{}
-	if persisted != nil {
-		st = *persisted
-		seeded := st
-		s.envContextState = &seeded
-	}
-	s.envTracker = envctx.NewTracker(st)
+	s.rehydrateEnvironmentContext(history)
 }
 
 // selectStrategy creates the appropriate contextmgr.Strategy from config.
@@ -1257,20 +1246,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	s.restoreConversation(transcriptEntries)
 	s.bufferArtifactStoreWarning(artifactStoreErr)
 	s.retirementController.Store(cfg.spawn.retirementController)
-	s.initEnvContext(meta.EnvContext)
 	// The environment turn is durable before meta.EnvContext is checkpointed.
-	// Replay only the effective resumed history, not folded transcript prefix
-	// entries. Starting from zero also honors a compaction boundary: a retained
-	// post-compaction environment block is a full snapshot, while an absent one
-	// means the next turn must emit a fresh full block even if meta is stale.
-	s.envTracker = envctx.NewTracker(envctx.State{})
-	s.envContextState = nil
-	for _, turn := range resumeHistory {
-		if turn.Kind == schema.TurnEnvironment && s.envTracker.ReplayBlock(turn.Message.Text()) {
-			state := s.envTracker.State()
-			s.envContextState = &state
-		}
-	}
+	s.initEnvContext(resumeHistory)
 	if err := s.bootstrapDelegateResources(); err != nil {
 		return nil, err
 	}
