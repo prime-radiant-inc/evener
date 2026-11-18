@@ -36,6 +36,82 @@ func requiredNames(t *testing.T, schema map[string]any) []string {
 	return out
 }
 
+// Two shapes the rewrite cannot reach escaped the gate: a nullable object
+// spelled as a type list, and an object behind a $ref into local $defs. Both
+// would have been sent strict with their optional property still optional,
+// which OpenAI answers by rejecting the whole request ("Invalid schema for
+// function ...: 'required' ... Missing 'limit'") rather than just the tool.
+// The projection must send both non-strict with the advertised required sets
+// intact (#6200).
+func TestStrictToolProjectionRejectsShapesTheRewriteCannotReach(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		params map[string]any
+		want   []string
+	}{
+		{
+			name: "nullable object type list",
+			params: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"event_filter": map[string]any{
+						"type":                 []string{"object", "null"},
+						"additionalProperties": false,
+						"properties": map[string]any{
+							"tool_name": map[string]any{"type": "string"},
+							"status":    map[string]any{"type": "string"},
+						},
+						"required": []string{"tool_name"},
+					},
+				},
+				"required": []string{"event_filter"},
+			},
+			want: []string{"event_filter"},
+		},
+		{
+			name: "object behind a ref into local defs",
+			params: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"$defs": map[string]any{
+					"target": map[string]any{
+						"type":                 "object",
+						"additionalProperties": false,
+						"properties": map[string]any{
+							"job":   map[string]any{"type": "string"},
+							"limit": map[string]any{"type": "integer"},
+						},
+						"required": []string{"job"},
+					},
+				},
+				"properties": map[string]any{
+					"target": map[string]any{"$ref": "#/$defs/target"},
+				},
+				"required": []string{"target"},
+			},
+			want: []string{"target"},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			req := userReq("hi")
+			req.Tools = []llm.ToolDefinition{{Name: "job_watch", Parameters: tc.params}}
+			body := build(t, req, resolved(strictCaps))
+			tool := body["tools"].([]map[string]any)[0]
+			if tool["strict"] != false {
+				t.Fatalf("strict = %#v, want false: the rewrite cannot reach this shape, so certifying it would make OpenAI reject the whole request", tool["strict"])
+			}
+			if got := requiredNames(t, tool["parameters"].(map[string]any)); !slices.Equal(got, tc.want) {
+				t.Fatalf("projected required = %v, want exactly %v (optional arguments stay omittable)", got, tc.want)
+			}
+		})
+	}
+}
+
 // A tool whose documented arguments include an optional one has no legal
 // OpenAI strict projection: strict mode requires every property to be present
 // and listed in required, so projecting it would force every call to invent a

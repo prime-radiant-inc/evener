@@ -65,22 +65,46 @@ func TestChatStrictToolsKeepOptionalArgumentsOmittable(t *testing.T) {
 // A tool that opts out with Strict=&false stays non-strict on the chat path
 // too, so the definition-level opt-outs the codebase already relies on are not
 // silently re-enabled by this adapter.
+//
+// The schema here is fully required on purpose. A schema with an optional
+// argument is already refused by the expressibility gate, so it would pass
+// even if the adapter ignored the definition's opt-out. Only a schema that is
+// strict-expressible isolates the opt-out: without it the adapter would set
+// strict on this tool.
 func TestChatStrictToolsHonorPerToolOptOut(t *testing.T) {
 	t.Parallel()
 	strictFalse := false
 	req := userReq("hi")
 	req.Tools = []llm.ToolDefinition{{
-		Name:       "job_list",
-		Strict:     &strictFalse,
-		Parameters: map[string]any{"type": "object", "properties": map[string]any{"offset": map[string]any{"type": "integer"}}},
+		Name:   "job_status",
+		Strict: &strictFalse,
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"target": map[string]any{"type": "string"},
+			},
+			"required": []string{"target"},
+		},
 	}}
 
-	body := build(t, req, resolved(func(c *registry.Caps) { c.StrictTools = new(true) }))
+	caps := func(c *registry.Caps) { c.StrictTools = new(true) }
+
+	// The control: the same schema without the opt-out is strictified, which
+	// is what makes the assertion below about the opt-out rather than the gate.
+	control := userReq("hi")
+	control.Tools = []llm.ToolDefinition{{Name: "job_status", Parameters: req.Tools[0].Parameters}}
+	controlFn := build(t, control, resolved(caps))["tools"].([]map[string]any)[0]["function"].(map[string]any)
+	if controlFn["strict"] != true {
+		t.Fatalf("control strict = %#v, want true: a fully-required schema must be strictified", controlFn["strict"])
+	}
+
+	body := build(t, req, resolved(caps))
 	fn := body["tools"].([]map[string]any)[0]["function"].(map[string]any)
 	if _, has := fn["strict"]; has {
 		t.Fatalf("strict = %#v, want no strict key for an opted-out tool", fn["strict"])
 	}
-	if params := fn["parameters"].(map[string]any); params["additionalProperties"] != nil {
+	if params := fn["parameters"].(map[string]any); params["additionalProperties"] != false || params["required"] == nil {
 		t.Fatalf("an opted-out tool must keep its advertised schema: %#v", params)
 	}
 }

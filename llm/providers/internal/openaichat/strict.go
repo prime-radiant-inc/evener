@@ -13,6 +13,10 @@ import "sort"
 // StrictExpressible: a schema that leaves a declared property optional
 // cannot be projected into strict mode without making that argument
 // mandatory (#6200).
+//
+// It matches a literal "object"/"array" string type only, and it resolves no
+// $ref and does not descend into $defs or definitions. A node in one of those
+// shapes keeps whatever it advertises, which StrictExpressible accounts for.
 func StrictifyJSONSchema(in map[string]any) map[string]any {
 	// Best-effort deep copy + strictification for OpenAI tool schemas.
 	// This intentionally handles only the constructs we emit (object/array) and is safe to
@@ -32,8 +36,29 @@ func StrictifyJSONSchema(in map[string]any) map[string]any {
 // projection makes a documented-optional argument mandatory, so a caller
 // must send the tool non-strict instead (#6200).
 //
-// The walk mirrors StrictifyJSONSchema's reach exactly: object properties,
-// array items, and anyOf/oneOf/allOf subschemas.
+// The walk accepts only what the rewrite provably projects or what is already
+// strict-valid, and answers inexpressible for everything it cannot verify. A
+// false "inexpressible" costs strict mode on that one tool; a false
+// "expressible" sends a strict tool whose optional argument is still optional,
+// which OpenAI rejects for the whole request (#6200).
+//
+// Two shapes need care, because StrictifyJSONSchema does not touch them:
+//
+//   - A type list such as ["object", "null"] — JSON Schema's way of spelling a
+//     nullable object, and OpenAI's documented way of spelling an optional
+//     field under strict mode. The rewrite matches only a literal "object"
+//     string type, so such a node keeps its own required list and its own
+//     additionalProperties. It is certifiable only when it is strict-valid
+//     already: every property required and additionalProperties false.
+//   - $ref, and the $defs/definitions table it points into. The rewrite never
+//     resolves a reference and never descends into the definitions, so a
+//     schema using either cannot be certified: certifying the referenced
+//     target would certify a projection the rewrite does not perform, and the
+//     referenced object would reach OpenAI with its optional property intact.
+//     Such a schema is refused rather than resolved.
+//
+// Likewise a node that declares properties or items under a type the rewrite
+// does not recognise keeps its advertised optionality, so it is refused.
 func StrictExpressible(schema map[string]any) bool {
 	return strictlyExpressibleNode(schema)
 }
@@ -42,11 +67,25 @@ func strictlyExpressibleNode(m map[string]any) bool {
 	if m == nil {
 		return true
 	}
-	typ, _ := m["type"].(string)
-	switch typ {
-	case "object":
+	if _, ok := m["$ref"]; ok {
+		return false
+	}
+	for _, defsKey := range []string{"$defs", "definitions"} {
+		if defs, ok := m[defsKey].(map[string]any); ok && len(defs) > 0 {
+			return false
+		}
+	}
+	isObject, isArray, listed := schemaTypeFlags(m["type"])
+	switch {
+	case isObject:
 		props, _ := m["properties"].(map[string]any)
 		if len(props) > 0 && !allPropertiesRequired(props, m["required"]) {
+			return false
+		}
+		// A type list is not rewritten, so the node must already be
+		// strict-valid: strict mode requires additionalProperties: false on
+		// every object, and an absent key is not the same as false.
+		if listed && m["additionalProperties"] != false {
 			return false
 		}
 		for _, child := range props {
@@ -54,8 +93,18 @@ func strictlyExpressibleNode(m map[string]any) bool {
 				return false
 			}
 		}
-	case "array":
+	case isArray:
 		if items, ok := m["items"].(map[string]any); ok && !strictlyExpressibleNode(items) {
+			return false
+		}
+	default:
+		// An object- or array-shaped node the rewrite does not recognise: it
+		// keeps whatever it advertises, so an optional property behind it stays
+		// optional under strict mode.
+		if _, has := m["properties"]; has {
+			return false
+		}
+		if _, has := m["items"]; has {
 			return false
 		}
 	}
@@ -76,6 +125,42 @@ func strictlyExpressibleNode(m map[string]any) bool {
 		}
 	}
 	return true
+}
+
+// schemaTypeFlags reads a schema's type as either a string or a list of
+// strings, which are the two shapes the builders and decoded provider schemas
+// emit. listed reports that a list was given, which is how the caller tells a
+// node the rewrite cannot match (it tests only a literal "object" string) from
+// one it can.
+func schemaTypeFlags(raw any) (isObject, isArray, listed bool) {
+	switch t := raw.(type) {
+	case string:
+		return t == "object", t == "array", false
+	case []string:
+		for _, name := range t {
+			switch name {
+			case "object":
+				isObject = true
+			case "array":
+				isArray = true
+			}
+		}
+		return isObject, isArray, true
+	case []any:
+		for _, v := range t {
+			if name, ok := v.(string); ok {
+				switch name {
+				case "object":
+					isObject = true
+				case "array":
+					isArray = true
+				}
+			}
+		}
+		return isObject, isArray, true
+	default:
+		return false, false, false
+	}
 }
 
 // allPropertiesRequired reports whether required names every property. The

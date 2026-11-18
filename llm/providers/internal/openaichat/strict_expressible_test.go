@@ -104,6 +104,116 @@ func TestStrictExpressible(t *testing.T) {
 			in:   nil,
 			want: true,
 		},
+		// A nullable object spelled as a type list is the shape the
+		// rewrite cannot match, so an optional property behind it would
+		// reach OpenAI intact while the tool was certified strict (#6200).
+		{
+			name: "nullable object type list leaves a property optional",
+			in: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"filter": map[string]any{
+						"type":                 []string{"object", "null"},
+						"additionalProperties": false,
+						"properties": map[string]any{
+							"tool_name": map[string]any{"type": "string"},
+							"status":    map[string]any{"type": "string"},
+						},
+						"required": []string{"tool_name"},
+					},
+				},
+				"required": []string{"filter"},
+			},
+			want: false,
+		},
+		{
+			name: "nullable object type list that is already strict-valid",
+			in: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"filter": map[string]any{
+						"type":                 []any{"object", "null"},
+						"additionalProperties": false,
+						"properties": map[string]any{
+							"tool_name": map[string]any{"type": "string"},
+						},
+						"required": []string{"tool_name"},
+					},
+				},
+				"required": []string{"filter"},
+			},
+			want: true,
+		},
+		{
+			name: "nullable object type list without additionalProperties false",
+			in: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"filter": map[string]any{
+						"type":       []string{"object", "null"},
+						"properties": map[string]any{"a": map[string]any{"type": "string"}},
+						"required":   []string{"a"},
+					},
+				},
+				"required": []string{"filter"},
+			},
+			want: false,
+		},
+		{
+			name: "nullable array type list leaves items optional",
+			in: map[string]any{
+				"type":  []string{"array", "null"},
+				"items": map[string]any{"type": "object", "properties": map[string]any{"a": map[string]any{"type": "string"}}},
+			},
+			want: false,
+		},
+		// A $ref into local $defs is never resolved by the rewrite, so the
+		// referenced object's optional property survives certification.
+		{
+			name: "ref into local defs leaves a property optional",
+			in: map[string]any{
+				"type": "object",
+				"$defs": map[string]any{
+					"target": map[string]any{
+						"type":                 "object",
+						"additionalProperties": false,
+						"properties": map[string]any{
+							"job":   map[string]any{"type": "string"},
+							"limit": map[string]any{"type": "integer"},
+						},
+						"required": []string{"job"},
+					},
+				},
+				"properties": map[string]any{
+					"target": map[string]any{"$ref": "#/$defs/target"},
+				},
+				"required": []string{"target"},
+			},
+			want: false,
+		},
+		{
+			name: "a bare ref is not certified",
+			in:   map[string]any{"$ref": "#/$defs/row"},
+			want: false,
+		},
+		// An object-shaped node without an object type keeps its own
+		// required list, so it is refused rather than assumed.
+		{
+			name: "properties without an object type",
+			in: map[string]any{
+				"properties": map[string]any{"a": map[string]any{"type": "string"}, "b": map[string]any{"type": "string"}},
+				"required":   []string{"a"},
+			},
+			want: false,
+		},
+		{
+			name: "fully required node without an object type",
+			in: map[string]any{
+				"properties": map[string]any{"a": map[string]any{"type": "string"}},
+				"required":   []string{"a"},
+			},
+			want: false,
+		},
 	}
 
 	for _, tc := range cases {
