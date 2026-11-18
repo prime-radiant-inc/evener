@@ -2822,11 +2822,13 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 		// it against the authoritative consumer while it holds eventsMu for
 		// read; shutdown's close budget releases it, but a consumer that only
 		// stops draining parks it there. It also runs the job-watch fan-out
-		// synchronously, walking the registered watches under jm.mu (skipping
-		// any whose receiver is this session). No watch can match this kind —
-		// the allowlist (watch_types.go's modelEventKinds) admits assistant.tool,
-		// communicate and job.notification — so the walk queues no send and no
-		// notification. All of it runs under attentionMu, so a stalled consumer
+		// synchronously, walking the registered watches under jm.mu and
+		// skipping the emitting session's own receivers. This kind can never
+		// trigger a send or a notification from that walk: watch_types.go's
+		// modelEventKinds admits only assistant.tool, communicate and
+		// job.notification, resolveEventKinds drops any name it does not map,
+		// and isSupportedWatchEventKind gates a wildcard watch on the same
+		// map. All of it runs under attentionMu, so a stalled consumer
 		// stalls this session's transcript writes and fold publication rather
 		// than only the emitter. Accepted because a parked consumer already
 		// stalls the emitting turn and the door already spans an fsync; see
