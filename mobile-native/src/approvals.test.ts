@@ -525,6 +525,51 @@ it("keeps resolutions delivered between the initial snapshot and its response", 
 	await open;
 	expect(store.getState().conversation?.pendingEscalations).toEqual([]);
 });
+// The receipt that settles a decision is the record that the hub took it, and
+// a read already out when that receipt arrives was cut before the decision
+// reached the hub. Publishing that read as-is puts the card back in front of
+// the next queued approval, where nothing will clear it - the read meant to
+// confirm the removal is a different one, and a disposed controller may never
+// issue it. Two mounted views sharing a session produce this with no unusual
+// timing: one closes, the other keeps the store alive, and a refresh it had
+// already asked for settles after the receipt.
+it("keeps an acknowledged decision settled when a read issued before it publishes", async () => {
+	const base = boundary();
+	let reads = 0;
+	let release!: () => void;
+	let started!: () => void;
+	const began = new Promise<void>((resolve) => {
+		started = resolve;
+	});
+	const client = Object.assign(new FakeClient("ready"), {
+		request: async () => {
+			const response = await base.client.request("thread/read", {
+				ref: "local:s",
+				includeTurns: true,
+			});
+			if (++reads !== 2) return response;
+			started();
+			await new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			// This snapshot was cut before the decision reached the hub, so it
+			// still carries the card.
+			return response;
+		},
+	});
+	const service = createConversationService(client),
+		store = createConversationStore();
+	await store.getState().openProjected(service, "local:s");
+	const generation = store.getState().conversationGeneration;
+	const refresh = store.getState().rehydrate(service);
+	await began;
+	// The receipt lands while that read is still out.
+	store.getState().applyEscalationDecision({ ref: "local:s", generation }, "approval");
+	expect(store.getState().conversation?.pendingEscalations).toEqual([]);
+	release();
+	await refresh;
+	expect(store.getState().conversation?.pendingEscalations).toEqual([]);
+});
 it("unsubscribes a failed initial read", async () => {
 	let unsubscribed = 0;
 	const client = Object.assign(new FakeClient("ready"), {

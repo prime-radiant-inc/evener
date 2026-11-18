@@ -667,6 +667,18 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 	}
 
 	let conversationGen = 0;
+	// Approvals this client's own resolve was acknowledged for, in the order
+	// they were decided, keyed to the conversation generation they were decided
+	// in. A read already in flight when the receipt arrived carries the snapshot
+	// the hub took BEFORE that decision, so publishing it restores the card the
+	// receipt just removed — and the read that was meant to confirm the removal
+	// is a different one. The record is what a publication consults: a read that
+	// started before the decision was acknowledged must not present that card as
+	// still pending. It is retired once a read that started after the decision
+	// publishes, because that read's own snapshot is the authoritative word on
+	// whether the card is gone.
+	const acknowledgedDecisions = new Map<string, { seq: number; generation: number }>();
+	let decisionSeq = 0;
 	// The store's mutation ownership token: bumped at every mutation press and
 	// at every lifecycle retirement of an attempt, so an attempt is current
 	// exactly while nothing newer has happened to the binding. Each action
@@ -1801,6 +1813,10 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				const entryLoadOlderToken = loadOlderToken;
 				const entryMutationRev = mutationOwnerRev;
 				const entryErrorRev = errorOwnerRev;
+				// Which decisions were already acknowledged when this read started.
+				// One acknowledged after this point is newer than the snapshot, so
+				// its card must not be presented as still pending.
+				const entryDecisionSeq = decisionSeq;
 				// D18 B3 round 8: the store's own paging cursor at entry. A racing
 				// loadOlder that succeeds with no retained rows still advances this
 				// value; a failed one moves it not at all — the difference the
@@ -1967,7 +1983,25 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					if (mergesHeldHistory && currentConvForMerge !== null && !replaceHeldHistory && !fallback) {
 						mergedTurns = stripFieldsOmittedByRead(mergedTurns, conversation.turns);
 					}
-					const merged = withSyncedHistoryTurns({ ...appliedModel, turns: mergedTurns }, mergedTurns);
+					let merged = withSyncedHistoryTurns({ ...appliedModel, turns: mergedTurns }, mergedTurns);
+					// A decision this client's own resolve was acknowledged for
+					// settles on the receipt, and the receipt can arrive while a read
+					// is already out. That read's snapshot was cut before the hub
+					// took the decision, so publishing it as-is puts the card the
+					// receipt just removed back in front of the next queued approval,
+					// where nothing will clear it. The acknowledgement therefore
+					// travels with any publication of a read that started before it.
+					// A read that started after the decision is the authoritative
+					// word instead: its snapshot has seen the decision, so whatever
+					// it says about that card stands, and the record retires.
+					for (const [escalationId, decided] of acknowledgedDecisions) {
+						if (decided.generation !== gen) continue;
+						if (decided.seq > entryDecisionSeq) {
+							merged = resolvePendingEscalation(merged, escalationId) as typeof merged;
+							continue;
+						}
+						acknowledgedDecisions.delete(escalationId);
+					}
 					// The wire-truth cursor is applyReadModel's own: it already keeps
 					// the held older cursor when the retained history overlaps this
 					// read's window, and takes the fresh read's own cursor otherwise
@@ -2889,6 +2923,8 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// Invalidate the current conversation generation so late frames are
 				// rejected, then return to idle.
 				++conversationGen;
+				// The record is about decisions on the conversation being left.
+				acknowledgedDecisions.clear();
 				// I1: increment the binding epoch and clear bindings so queued
 				// requests from the prior conversation are suppressed.
 				bindingEpoch += 1;
@@ -2961,6 +2997,12 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				if (conversation === null) return;
 				const settled = resolvePendingEscalation(conversation, escalationId);
 				if (settled === conversation) return;
+				// A read already in flight was cut before this decision reached the
+				// hub, so its snapshot still carries the card. Publishing it would
+				// put the card back in front of the next queued approval, so the
+				// acknowledgement has to travel with the publication, not only with
+				// this set.
+				acknowledgedDecisions.set(escalationId, { seq: ++decisionSeq, generation: state.conversationGeneration });
 				set({ conversation: settled as typeof conversation });
 			},
 		};
