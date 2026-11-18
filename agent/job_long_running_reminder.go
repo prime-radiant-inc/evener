@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sort"
 	"strings"
@@ -98,6 +100,12 @@ func longRunningJobsNotification(jobs []*jobstore.JobRecord, now time.Time) jobN
 	}
 	n := watchNotification("", longRunningJobsReason)
 	n.Note = b.String()
+	// The reminder's snapshot changes while its reason does not, so its identity
+	// is the snapshot: a later reminder with different contents is a new
+	// occurrence rather than a conflicting replay of the earlier one (LIFE-01,
+	// #2340).
+	occurrence := sha256.Sum256([]byte(b.String()))
+	n.Occurrence = "reminder:" + hex.EncodeToString(occurrence[:16])
 	return n
 }
 

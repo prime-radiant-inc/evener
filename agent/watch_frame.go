@@ -326,6 +326,18 @@ func (jm *jobManager) enqueueWatchNotifications(notifications []jobNotification)
 	_ = jm.enqueueNotifications(jm.routeWatchNotifications(notifications))
 }
 
+// stableWatchOwner snapshots the stable delegate owner and its controller under
+// jm.mu. Every reader of stableOwner must take this snapshot: a new generation
+// rewrites the field in bindDelegateParent under the same mutex, and a timer or
+// shell callback enqueues concurrently with exactly that rewrite. The caller
+// holds no lock afterwards, so transcript I/O and wake callbacks below run
+// outside jm.mu.
+func (jm *jobManager) stableWatchOwner() (*Session, *delegateTreeController) {
+	jm.mu.Lock()
+	defer jm.mu.Unlock()
+	return jm.stableOwner, jm.delegateController
+}
+
 // persistStableWatchAttention turns a watch notice bound for a stable delegate
 // child into durable stable attention (LIFE-01, #2340).
 //
@@ -349,30 +361,41 @@ func (jm *jobManager) enqueueWatchNotifications(notifications []jobNotification)
 // attention run delivers it; on failure the error is returned so the caller can
 // surface it as an operator diagnostic rather than silently starting an
 // unleased turn.
-func (jm *jobManager) persistStableWatchAttention(n jobNotification) (string, *Session, error) {
-	jm.mu.Lock()
-	owner := jm.stableOwner
-	jm.mu.Unlock()
-	if owner == nil || owner.owningDelegateID == "" {
-		return "", nil, nil
-	}
+func persistStableWatchAttention(owner *Session, controller *delegateTreeController, n jobNotification) (string, error) {
 	attentionID := stableWatchDiagnosticAttentionID(n)
+	// Register the notice's own cause BEFORE the item can be presented: a
+	// runaway-watch diagnostic carries the chain the breaker stopped, and the
+	// response event must descend from it or the breaker reads that response as
+	// a fresh trigger and fires again. This is the same registration the stable
+	// watch-send frame makes (watch_send_rail.go), so the lineage survives the
+	// hop identically.
+	if controller != nil {
+		controller.attentionCauses.remember(attentionID, n.Provenance)
+	}
 	content := owner.formatJobNotificationReminder([]deliverableJobNotification{{notification: n}})
 	if _, err := owner.appendDelegateNotificationDurably(attentionID, content); err != nil {
-		return "", owner, err
+		if controller != nil {
+			controller.attentionCauses.forget(attentionID)
+		}
+		return "", err
 	}
 	if err := owner.armDelegateAttention(attentionID); err != nil {
-		return "", owner, err
+		return "", err
 	}
-	return attentionID, owner, nil
+	return attentionID, nil
 }
 
 // stableWatchDiagnosticAttentionID derives a replay-stable identity for a watch
-// notice from the facts that make it one notice. The reason is hashed because
-// it is bounded free text rendered by the rail; the id only has to be equal
-// exactly when the notice is.
+// notice from the facts that make it ONE notice.
+//
+// The producer's Occurrence is authoritative when it supplies one: a repeating
+// timer fires many ticks with the same watch id, empty job id and reason, and a
+// long-running reminder's snapshot changes while its reason does not — both must
+// yield a distinct id per fire and the same id on a replay of that fire. Without
+// an occurrence, the notice's own facts identify it, and the reason is hashed
+// because it is bounded free text; the id only has to be equal exactly when the
+// notice is.
 func stableWatchDiagnosticAttentionID(n jobNotification) string {
-	sum := sha256.Sum256([]byte(n.Reason))
 	scope := n.WatchID
 	if scope == "" {
 		scope = n.OriginWatchID
@@ -380,6 +403,11 @@ func stableWatchDiagnosticAttentionID(n jobNotification) string {
 	if scope == "" {
 		scope = n.JobID
 	}
+	if n.Occurrence != "" {
+		occurrence := sha256.Sum256([]byte(n.Occurrence))
+		return "watchdiag:" + scope + ":" + n.JobID + ":" + hex.EncodeToString(occurrence[:8])
+	}
+	sum := sha256.Sum256([]byte(n.Reason))
 	return "watchdiag:" + scope + ":" + n.JobID + ":" + hex.EncodeToString(sum[:8])
 }
 

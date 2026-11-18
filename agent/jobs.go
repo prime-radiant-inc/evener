@@ -588,6 +588,14 @@ type jobNotification struct {
 	// orphaned tick once its watch detaches. Job-targeted fires, teardown
 	// notices, and send-rail diagnostics stamp this; timer fires keep WatchID.
 	OriginWatchID string
+	// Occurrence identifies WHICH firing or snapshot this notice is, for a
+	// producer whose notices would otherwise be indistinguishable. It must be
+	// stable across a replay of the same notice and different for every new
+	// firing: durable attention keys off it, so a repeating timer's second tick
+	// with the same watch id, job id and reason must not reuse the first tick's
+	// resolved attention identity (which would produce no wake), while replaying
+	// one tick must not append a duplicate.
+	Occurrence string
 	// backstopFires, when set, is how many times the originating watch has
 	// delivered within watchBackstopWindow; the rendered notification then
 	// carries the hourly backstop notice (watchBackstopNotice).
@@ -1933,8 +1941,15 @@ func (jm *jobManager) enqueueNotifications(notifs []jobNotification) bool {
 // A failure to persist is surfaced as an operator diagnostic and the notice is
 // dropped rather than demoted to the queue: the queue is the unleased path this
 // branch exists to close, and a duplicate notice is not worth reopening it.
+//
+// The owner and controller are snapshotted once, under jm.mu, and that snapshot
+// serves routing, persistence and warning emission alike: a new generation
+// rewrites both fields under the same mutex, so re-reading them here would race
+// a concurrent timer or shell callback. The mutex is released before the
+// transcript I/O and wake callbacks below.
 func (jm *jobManager) persistStableWatchPendings(notifs []jobNotification) bool {
-	if jm.stableOwner == nil {
+	owner, controller := jm.stableWatchOwner()
+	if owner == nil || owner.owningDelegateID == "" {
 		return false
 	}
 	for _, n := range notifs {
@@ -1944,17 +1959,12 @@ func (jm *jobManager) persistStableWatchPendings(notifs []jobNotification) bool 
 	}
 	var failures error
 	for _, n := range notifs {
-		_, owner, err := jm.persistStableWatchAttention(n)
-		if owner == nil {
-			return false
-		}
-		if err != nil {
+		if _, err := persistStableWatchAttention(owner, controller, n); err != nil {
 			failures = errors.Join(failures, err)
-			continue
 		}
 	}
 	if failures != nil {
-		jm.stableOwner.emit(warningDataFromError("persist stable watch attention", failures))
+		owner.emit(warningDataFromError("persist stable watch attention", failures))
 	}
 	return true
 }

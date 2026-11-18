@@ -49,11 +49,35 @@ func TestRepeatTimer_FiresEveryIntervalWithNote(t *testing.T) {
 		t.Fatal(err)
 	}
 	clk.BlockUntil(1)
+	// Every tick shares a watch id, an empty job id and the "repeat" reason, so
+	// nothing in those facts tells two ticks apart (#2340 review). The producer
+	// must stamp an occurrence that is DISTINCT per fire -- otherwise the second
+	// tick refolds into the first one's already-consumed attention item and never
+	// wakes -- and STABLE for the same fire, so a replay appends no duplicate.
+	occurrences := make(map[string]bool, 3)
+	attentionIDs := make(map[string]bool, 3)
 	for i := 1; i <= 3; i++ {
 		clk.Advance(60 * time.Second)
 		n := recvNotification(t, got)
 		if !n.isWatch() || n.Reason != "repeat" || n.WatchID != res.WatchID || n.Note != "check the deploy" || n.IntervalSeconds != 60 || n.Fires != 1 || n.Terminal {
 			t.Fatalf("tick %d = %+v", i, n)
+		}
+		if n.Occurrence == "" {
+			t.Fatalf("tick %d carries no occurrence, so a second tick cannot be told from the first: %+v", i, n)
+		}
+		if occurrences[n.Occurrence] {
+			t.Fatalf("tick %d reused occurrence %q: the next tick would refold into the consumed item and never wake", i, n.Occurrence)
+		}
+		occurrences[n.Occurrence] = true
+		attentionID := stableWatchDiagnosticAttentionID(n)
+		if attentionIDs[attentionID] {
+			t.Fatalf("tick %d resolved attention id %q, already used by an earlier tick", i, attentionID)
+		}
+		attentionIDs[attentionID] = true
+		// A replay of THIS fire is the same notice: the same occurrence resolves the
+		// same attention item, so re-delivering it appends no duplicate.
+		if replay := stableWatchDiagnosticAttentionID(n); replay != attentionID {
+			t.Fatalf("tick %d replayed to attention id %q, want the same %q", i, replay, attentionID)
 		}
 	}
 	jm.mu.Lock()

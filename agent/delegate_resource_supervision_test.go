@@ -28,6 +28,8 @@ import (
 	toolpkg "primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/internal/worktree"
 	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/internal/testwait"
@@ -458,6 +460,23 @@ func TestDelegateResourceSupervision_StableChildWatchDiagnosticRunsLeased(t *tes
 		watchSendDiagnosticNotification("watch:life-01", "job:finished", "watch send failed: delivery_id=life-01"),
 	})
 
+	// The conversion to durable attention must NOT drop the notice's causal
+	// provenance (#2340 review). A runaway-watch diagnostic carries the chain the
+	// breaker stopped, and an event the child emits in response has to descend
+	// from it: without that lineage the breaker reads the response as a fresh
+	// trigger and fires again, which is the loop this whole ingress closes. So the
+	// cause registered for the item is the notice's own, before presentation.
+	diagNotification := watchSendDiagnosticNotification("watch:life-01", "job:finished", "watch send failed: delivery_id=life-01")
+	diagNotification.Provenance = provenance.WithWatch(nil, "watch:life-01", "gen:life-01", "delivery:life-01", sub.sess.id, "job:finished")
+	diagAttentionID := stableWatchDiagnosticAttentionID(diagNotification)
+	if _, err := persistStableWatchAttention(sub.sess, root.delegateController, diagNotification); err != nil {
+		t.Fatalf("persist a provenance-bearing watch notice: %v", err)
+	}
+	registered := root.delegateController.attentionCauses.union([]string{diagAttentionID})
+	if !provenance.ContainsWatch(registered, "watch:life-01", "gen:life-01") {
+		t.Fatalf("attention %q carries cause %+v, want the notice's own watch lineage", diagAttentionID, registered)
+	}
+
 	// First: the diagnostic reaches the provider at all. This is the turn the
 	// audit says runs unleased, so its arrival is the premise, not the finding.
 	testwait.Until(t, "the watch diagnostic reached the provider", func() bool {
@@ -502,10 +521,55 @@ func TestDelegateResourceSupervision_StableChildMustHaveALeaseForModelTurns(t *t
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
 
+	// The refusal must come BEFORE request preparation, not after it. Preparation
+	// is not a pure builder: its context-management phase elicits a compaction
+	// note and summarizes history, and both are provider calls. So the child is
+	// put under enough history pressure to make that phase call the model if it
+	// runs at all, and the assertion is the PROVIDER CALL COUNT -- a refusal that
+	// arrives after a spent request still left an unleased provider call, which is
+	// the whole finding.
+	seedSessionHistory(t, sub.sess, 10)
+	forcePressureAbove(t, sub.sess, sub.sess.contextMgr.CheckpointThreshold)
+	warmRequests := supervisionRequestCount(fixture.adapter)
+	elicited := 0
+	sub.sess.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) {
+		elicited++
+		// Make the real provider call the production elicitor would make, so the
+		// adapter's request count is evidence rather than a proxy.
+		resp, err := sub.sess.client.Complete(context.Background(), llm.Request{
+			Model:    sub.sess.profile.Model(),
+			Messages: []llm.Message{llm.User("elicit a note")},
+		})
+		if err != nil {
+			return "", err
+		}
+		return resp.Text(), nil
+	}
+
 	// Model admission: the stable child refuses an unleased request build.
+	// The case is the issue's own: a watch notice sitting on the child's
+	// ordinary queue. Production ingress turns a stable child's watch notice
+	// into durable attention, so a queued one is the legacy rail this gate
+	// defends against -- a future path that demotes a notice back to the queue
+	// must fail loudly here rather than run a turn the controller never leased.
+	sub.sess.enqueueJobNotification(jobNotification{
+		Kind:   jobNotificationKindWatch,
+		JobID:  "job:unleased-admission",
+		Status: jobNotificationEventWatch,
+		Reason: "watch send failed",
+	})
+	if !sub.sess.hasPendingWatchNotification() {
+		t.Fatal("the queued watch notice is not visible to admission")
+	}
 	_, _, _, _, _, _, err := sub.sess.prepareModelRequestWithError(context.Background(), 0, new(events.RoundTimings))
 	if !errors.Is(err, errDelegateStableModelTurnUnleased) {
 		t.Fatalf("unleased model request on the stable child = %v, want the unleased-turn refusal", err)
+	}
+	if got := supervisionRequestCount(fixture.adapter); got != warmRequests {
+		t.Fatalf("provider requests after an unleased round = %d, want %d: the refusal came after a provider call", got, warmRequests)
+	}
+	if elicited != 0 {
+		t.Fatalf("note elicitation ran %d time(s) for an unleased round, want 0: the refusal came after request preparation", elicited)
 	}
 	// Tool admission: same rule. A refused tool is reported as a skipped, errored
 	// result with no execution, so the assertion is on that behavior rather than on
@@ -536,6 +600,14 @@ func TestDelegateResourceSupervision_StableChildMustHaveALeaseForModelTurns(t *t
 // is handed over, and unless the non-handoff rollback re-drives the child's
 // undelivered attention the queued notification sits undriven forever.
 //
+// The notice is injected through the PRODUCTION watch ingress, not straight into
+// a queue (#2340 review): a watch notice bound for a stable child now becomes
+// durable attention, so a test that pushed one onto the ordinary queue would be
+// exercising a rail production no longer uses. The assertions therefore split
+// the premise in two: the ingress must leave NOTHING queued and the item durably
+// pending while the claim is held, and the rollback's re-drive must then settle
+// exactly one committed generation for it.
+//
 // This test is load-bearing for that fix: with the rollback's re-drive removed,
 // the notification enqueued while the claim was held is never drained and the
 // child never runs a second turn.
@@ -549,6 +621,8 @@ func TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesDroppedWa
 	sub := warmStableSupervisionDelegate(t, root, fixture)
 	waitForStableSupervisionRun(t, root, fixture.childID)
 
+	warmFinished := latestDelegateControllerRunFinished(t, root.delegateController, fixture.delegateID)
+
 	var mu sync.Mutex
 	var claimSeen, wakeDropped bool
 	updateSessionTestConfig(root, func(cfg *testConfig) {
@@ -557,19 +631,27 @@ func TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesDroppedWa
 			if candidate == nil || candidate.sess == nil {
 				return
 			}
-			// A child notification arrives with the claim held: enqueue it and
-			// fire the child's notify exactly as a real arrival would. The wake
-			// edge reads the claim and refuses, leaving the queue undelivered.
-			candidate.sess.enqueueJobNotification(jobNotification{
-				Kind:   jobNotificationKindWatch,
-				JobID:  "redrive-dropped-wake",
-				Status: jobNotificationEventWatch,
+			// A real watch notice arrives with the claim held, through the same
+			// ingress every watch notice travels. For a stable child it becomes
+			// durable attention rather than a queued notification, and its wake
+			// reads the claim and refuses, leaving the item armed and undriven.
+			jm := candidate.sess.jobManager
+			if jm == nil {
+				t.Errorf("the stable child has no job manager to deliver the watch notice")
+				return
+			}
+			jm.enqueueWatchNotifications([]jobNotification{
+				watchSendDiagnosticNotification("watch:redrive-dropped-wake", "job:redrive-dropped-wake", "watch send failed: delivery_id=redrive-dropped-wake"),
 			})
-			candidate.sess.notify()
+			pending, err := candidate.sess.pendingDelegateAttentionIDs()
+			if err != nil {
+				t.Errorf("inspect armed watch attention: %v", err)
+			}
 			mu.Lock()
 			claimSeen = true
 			wakeDropped = root.childCommittedSendStart(childSessionID) &&
-				root.subagents.get(childSessionID).sess.peekNotifications() > 0
+				len(pending) > 0 &&
+				candidate.sess.peekNotifications() == 0
 			mu.Unlock()
 			// Fail the send after the claim: abort the in-flight reservation so
 			// the commit below cannot hand a run over.
@@ -590,19 +672,35 @@ func TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesDroppedWa
 		t.Fatal("the committed send start claim was never observed")
 	}
 	if !dropped {
-		t.Fatal("the claim did not leave the child's queued notification undelivered")
+		t.Fatal("the claim did not leave the child's watch attention durably pending and off the ordinary queue")
 	}
 
-	// The rollback's re-drive is now the only thing that can drain the queue.
-	testwait.Until(t, "dropped notification redriven after the rollback", func() bool {
+	// The rollback's re-drive is now the only thing that can present the item.
+	testwait.Until(t, "dropped watch attention redriven after the rollback", func() bool {
 		return supervisionRequestCount(fixture.adapter) > warmRequests
 	})
 	waitForStableSupervisionRun(t, root, fixture.childID)
 	if pending := sub.sess.peekNotifications(); pending != 0 {
 		t.Fatalf("child notifications pending after rollback re-drive = %d, want 0", pending)
 	}
+	pending, err := sub.sess.pendingDelegateAttentionIDs()
+	if err != nil {
+		t.Fatalf("inspect pending attention after rollback re-drive: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("child attention pending after rollback re-drive = %v, want none", pending)
+	}
 	if got := supervisionRequestCount(fixture.adapter); got != warmRequests+1 {
 		t.Fatalf("provider requests = %d, want warm plus one notification-drive turn", got)
+	}
+	// Exactly one LEASED generation: the single provider call above must have
+	// settled a committed generation newer than the warm send's. On the unleased
+	// fallback the call happens while the settled generation stays at the warm
+	// one, because nothing ever committed a generation to cover it.
+	finished := latestDelegateControllerRunFinished(t, root.delegateController, fixture.delegateID)
+	if finished.Generation <= warmFinished.Generation {
+		t.Fatalf("provider requests rose to %d but the settled generation stayed at %d (warm %d): the redriven notice ran an unleased turn",
+			supervisionRequestCount(fixture.adapter), finished.Generation, warmFinished.Generation)
 	}
 }
 

@@ -1569,6 +1569,34 @@ func (s *Session) drainJobNotifications() []jobNotification {
 	return drained
 }
 
+// hasPendingWatchNotification reports whether the model notifications this
+// session still owes include a watch notice. It is the narrow predicate model
+// and tool admission use to find the one payload that must never reach a model
+// through an unleased turn (LIFE-01, #2340): a watch notice's ingress turns it
+// into durable attention precisely so a governed generation presents it, and a
+// turn that finds one queued instead is the legacy path this issue closes.
+//
+// The kind is the whole test. Nothing here reads reason or body text, so a
+// caller cannot be refused for what a notice says -- only for what it is.
+func (s *Session) hasPendingWatchNotification() bool {
+	if s == nil {
+		return false
+	}
+	s.pendingJobNotifsMu.Lock()
+	defer s.pendingJobNotifsMu.Unlock()
+	for _, n := range s.pendingJobNotifs {
+		if n.isWatch() {
+			return true
+		}
+	}
+	for _, a := range s.jobNotifsAwaitingRequest {
+		if a.deliverable.notification.isWatch() {
+			return true
+		}
+	}
+	return false
+}
+
 // peekNotifications reports how many notifications are still owed to the model
 // WITHOUT draining them: those queued, and those whose reminder no dispatched
 // request has carried yet. The drain-loop tail uses it to decide whether to run

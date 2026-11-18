@@ -107,6 +107,42 @@ func effectiveReasoningEffort(cfg, override string, escalated bool) string {
 // cut from. That list is the round's, not the request's: the retry after a
 // rejected anchor rebuilds from it, and nothing on the wire ever carries it.
 func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t *events.RoundTimings) (profile *provider.Profile, sys string, history []llm.Message, req llm.Request, fullHistory []llm.Message, reasoningEffort string, err error) {
+	// Admission comes FIRST, before any phase that can reach a provider
+	// (LIFE-01, #2340). This function is not only a request builder: the
+	// context-management phase below elicits a compaction note
+	// (maybeElicitNoteBeforeCompaction) and summarizes history inside
+	// ManageContext, both of which are provider calls. A check placed after
+	// those phases would refuse the round only after the unleased turn had
+	// already spent one, which is the very thing it exists to prevent.
+	//
+	// A root session is not a delegate and has no generation to hold, so it
+	// keeps the ordinary path: the refusal applies only to a stable delegate
+	// child, and zero-model maintenance drains never reach here at all.
+	if s.owningDelegateID != "" && s.delegateController != nil {
+		lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
+		if !ok {
+			// An unleased turn is only THIS issue's defect when it is carrying a
+			// watch notice. Several legitimate paths run a stable child's turn with
+			// no lease in context -- a restored delegate's first task, a
+			// notification drive waiting out quota, an unserved session's framed
+			// entry -- and refusing those would break work the product permits. The
+			// watch notice is the one payload that must never arrive this way,
+			// because its ingress made it durable attention whose whole point is a
+			// governed generation (LIFE-01, #2340).
+			if s.hasPendingWatchNotification() {
+				return nil, "", nil, llm.Request{}, nil, "", errDelegateStableModelTurnUnleased
+			}
+		} else {
+			// A lease in context is not enough: it must still be the child's live
+			// generation, and no stop may be pending. The fold's provider calls are
+			// cancelled by the round's context, but a stop recorded between that
+			// cancellation check and compaction's own start would otherwise let a
+			// fenced turn spend a summarizer request.
+			if err := s.delegateController.admitModelRequestLease(lease); err != nil {
+				return nil, "", nil, llm.Request{}, nil, "", err
+			}
+		}
+	}
 	if err := s.flushPendingDelegateDeliveries(); err != nil {
 		return nil, "", nil, llm.Request{}, nil, "", err
 	}
@@ -309,19 +345,10 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			return nil, "", nil, llm.Request{}, nil, "", claimErr
 		}
 	} else {
-		// A stable delegate child is a session that may only reach its provider
-		// inside an exact generation under a lease (LIFE-01, #2340): the
-		// controller accounts for the turn, admits a stop, and settles the
-		// canonical result through that lease. Without one the turn would run
-		// unaccounted, with the controller reporting the child idle, so refuse it
-		// here rather than present it as an ordinary model call.
-		//
-		// A root session (owningDelegateID == "") keeps the ordinary path: it is
-		// not a delegate and has no generation to hold. Zero-model maintenance
-		// drains never reach this function, so they keep running unleased.
-		if s.owningDelegateID != "" && s.delegateController != nil {
-			return nil, "", nil, llm.Request{}, nil, "", errDelegateStableModelTurnUnleased
-		}
+		// Unreachable for a stable delegate child: the admission check at the top
+		// of this function refuses a missing or stale lease before any phase runs,
+		// so only a root session (or a session with no controller) reaches the
+		// ordinary expansion.
 		history = expandHistory(historyTurns, scope)
 	}
 
@@ -468,6 +495,23 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	return profile, sys, history, req, fullHistory, reasoningEffort, nil
 }
 
+// admitCompactionLease reports whether this round may spend provider calls on
+// automatic compaction. A root session has no lease and always may; a stable
+// delegate child may only while its lease is still the live generation and no
+// stop is pending. The check is deliberately re-run inside the fold rather than
+// hoisted with the request's own admission, because a stop can be recorded
+// between the two (LIFE-01, #2340).
+func (s *Session) admitCompactionLease(ctx context.Context) bool {
+	if s.owningDelegateID == "" || s.delegateController == nil {
+		return true
+	}
+	lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
+	if !ok {
+		return false
+	}
+	return s.delegateController.admitModelRequestLease(lease) == nil
+}
+
 // foldHistoryBeforeRequest applies context management ahead of a model request
 // and reports whether a winning fold already initialized the N4 in-flight-turn
 // boundary atomically with its publication. sysLen is the system prompt length
@@ -513,11 +557,20 @@ func (s *Session) foldHistoryBeforeRequest(ctx context.Context, round, sysLen in
 			snapAppends := s.persistedAppendLogBase + len(s.persistedAppendLog)
 			s.mu.Unlock()
 
+			// Automatic compaction reaches a provider: the note elicitor below
+			// and ManageContext's summarizer. On a fenced generation those calls
+			// must not start, so re-admit the lease here, after the round began
+			// and before either phase. A root session has no lease and skips
+			// this; the fold itself is unchanged for it.
+			compactionAdmitted := s.admitCompactionLease(ctx)
+
 			// Variant B (forced note): if a compaction is imminent, elicit +
 			// pin a must-keep note from the model BEFORE the fold, so
 			// erosion-prone facts are re-stamped verbatim rather than
 			// decaying through successive summaries.
-			s.maybeElicitNoteBeforeCompaction(ctx, historyTurns, sysLen)
+			if compactionAdmitted {
+				s.maybeElicitNoteBeforeCompaction(ctx, historyTurns, sysLen)
+			}
 
 			// This per-request fold is the REQUESTING caller of the pending
 			// AUTOMATIC operation (the one this round's elicitation just
@@ -527,8 +580,11 @@ func (s *Session) foldHistoryBeforeRequest(ctx context.Context, round, sysLen in
 			// captured here; only its round-tail dispatch claims it.
 			compactionCtx, emitFn, commit, foldInjectedCount := s.stageCompactionEffects(ctx, &historyTurns, triggerAuto, "")
 			commit.captured = s.capturableAutomaticCompaction()
-			if err := s.strategy.ManageContext(compactionCtx, &historyTurns, sysLen, emitFn); err != nil {
-				s.emit(bareWarningDataFromError("context strategy error", err))
+			if compactionAdmitted {
+				err := s.strategy.ManageContext(compactionCtx, &historyTurns, sysLen, emitFn)
+				if err != nil {
+					s.emit(bareWarningDataFromError("context strategy error", err))
+				}
 			}
 			managedLen := len(historyTurns)
 			injectedTurns := foldInjectedCount()
