@@ -427,14 +427,19 @@ test("a label that wraps above a fully hidden focused row does not pull the read
     return top;
   });
   const { flush } = captureFrames();
-  const four: MenuItem[] = [
+  // Five 44px rows in a 120px scrollport give 100px of scroll range, so the
+  // offset below is one a browser can actually reach. Four would have allowed
+  // only 56px, and the test would have exercised a position the fixture's own
+  // geometry forbids.
+  const five: MenuItem[] = [
     { id: "overview", label: "Overview", onSelect: vi.fn() },
     { id: "archive", label: "Archive", onSelect: vi.fn() },
     { id: "rename", label: "Rename", onSelect: vi.fn() },
     { id: "delete", label: "Delete", onSelect: vi.fn() },
+    { id: "pin", label: "Pin", onSelect: vi.fn() },
   ];
   try {
-    render(<Menu trigger="Actions" items={four} />);
+    render(<Menu trigger="Actions" items={five} />);
     await user.click(screen.getByRole("button", { name: "Actions" }));
     // Focus stays on Overview, at 0..44. The reader scrolls down to 100, which
     // puts all of Overview above the scrollport.
