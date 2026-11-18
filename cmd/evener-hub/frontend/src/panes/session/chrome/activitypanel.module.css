@@ -110,18 +110,36 @@
    * affordance a column of whitespace away from the name it opens. The meta
    * segments own the right edge via their own margin-left:auto. */
   flex: 0 1 auto;
-  /* An independent minimum visible-name budget. Shrinking distributes the
-   * deficit by content width, so a 200-character intent (a ~1200px flex base)
-   * kept ~97% of the row and left the name a sliver narrower than its own
-   * ellipsis. The floor is the name's claim on the row: the meta yields first,
-   * and only a row with less than this much left after its fixed chrome can
-   * push the name below it. Two `ch` is the width of a glyph and the ellipsis
-   * that follows it - the smallest prefix that still reads as a name - and it
-   * grows with --font-scale, so a larger text preference earns a wider
-   * prefix. It sits just under 16px at the default 13px UI size, so every row
-   * the intent already left a readable name on keeps its exact current
-   * geometry. */
-  min-width: 2ch;
+  /* An independent minimum visible-name budget: one glyph plus the ellipsis
+   * after it, the smallest prefix that still identifies a row. Shrinking
+   * distributes the deficit by content width, so a 200-character intent
+   * (a ~1200px flex base) kept ~97% of the row and left the name a sliver
+   * narrower than that prefix. The floor is the name's claim on the row: the
+   * meta yields first, down to its own min-width: 0.
+   *
+   * 1.8em, not a `ch` multiple. `ch` is the advance of "0", so a ch floor
+   * measures digits: at the default 13px UI size 2ch was 16.03px, while in the
+   * same font one glyph plus the ellipsis runs 0.97em for "inspect"'s first
+   * letter but 1.75em for a full-width ideograph and 1.78em for an emoji. A
+   * CJK-named row therefore still showed a bare ellipsis with no identifying
+   * glyph behind it. 1.8em clears the widest grapheme measured in the shipped
+   * font. It is in `em`, not px, so it tracks --font-scale: a larger text
+   * preference earns a wider prefix.
+   *
+   * The min() is the yield, and it keeps the claim honest where the row
+   * physically cannot honor it. The row spends four 8px gaps, a 12px
+   * disclosure toggle, a 14px kind glyph and the Open control - --tap-min,
+   * 44px on a phone and 28px on a fine pointer - before the name gets
+   * anything. Once a row's content box is down to that spend, the name is the
+   * only child left that can give, and demanding the floor anyway pushed Open
+   * past the pane's clipping edge (320px at nine nested groups, where the
+   * shrinkable name still fit it). A clipped target is a smaller target, so
+   * the floor stops at what the row has left: the name takes everything the
+   * row can spare and no more. Where the cap bites, the name still claims
+   * more than it did without the floor, because the meta has already yielded
+   * to zero - only a row too narrow to fit its own controls falls back
+   * further, and there it returns the space to Open. */
+  min-width: min(1.8em, max(0px, calc(100% - 4 * var(--space-2) - 12px - 14px - var(--tap-min, 28px))));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;

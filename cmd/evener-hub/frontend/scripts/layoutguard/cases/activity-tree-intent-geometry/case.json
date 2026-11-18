@@ -1,6 +1,6 @@
 {
   "name": "activity-tree-intent-geometry",
-  "description": "A 200-character intent cannot starve a short delegate name or hide its own Open control. Real phone Sheet insets at the issue's 320/360/390/430px viewports through eight nested groups, plus a wide 900px row whose full name and 60% meta cap must be untouched by the name floor.",
+  "description": "A 200-character intent cannot starve a short delegate name or hide its own Open control. Real phone Sheet insets at the issue's 320/360/390/430px viewports through nine nested groups, a wide 900px row whose full name and 60% meta cap must be untouched, and Latin, full-width CJK and emoji labels plus an `xl` font-scale row, because the name floor is a text-relative budget rather than a digit measurement. Every row is measured twice in the same run, with the floor on and off, so the rows the floor did not rescue are proved unmoved.",
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
@@ -14,7 +14,7 @@
   ],
   "viewport": {
     "width": 1200,
-    "height": 4400,
+    "height": 12000,
     "deviceScaleFactor": 1,
     "mobile": false
   },
@@ -22,64 +22,118 @@
     {
       "id": "320-0",
       "width": 320,
-      "depth": 0
+      "depth": 0,
+      "label": "inspect"
     },
     {
       "id": "320-1",
       "width": 320,
-      "depth": 1
+      "depth": 1,
+      "label": "inspect"
+    },
+    {
+      "id": "320-8-cjk",
+      "width": 320,
+      "depth": 8,
+      "label": "\u8abf\u67fb"
+    },
+    {
+      "id": "320-9",
+      "width": 320,
+      "depth": 9,
+      "label": "inspect"
     },
     {
       "id": "360-0",
       "width": 360,
-      "depth": 0
+      "depth": 0,
+      "label": "inspect"
     },
     {
       "id": "360-3",
       "width": 360,
-      "depth": 3
+      "depth": 3,
+      "label": "inspect"
     },
     {
       "id": "390-2",
       "width": 390,
-      "depth": 2
+      "depth": 2,
+      "label": "inspect"
     },
     {
       "id": "390-8",
       "width": 390,
-      "depth": 8
+      "depth": 8,
+      "label": "inspect"
+    },
+    {
+      "id": "390-8-cjk",
+      "width": 390,
+      "depth": 8,
+      "label": "\u8abf\u67fb"
+    },
+    {
+      "id": "390-8-emoji",
+      "width": 390,
+      "depth": 8,
+      "label": "\ud83d\ude00\ud83d\ude80"
     },
     {
       "id": "430-0",
       "width": 430,
-      "depth": 0
+      "depth": 0,
+      "label": "inspect"
     },
     {
       "id": "430-4",
       "width": 430,
-      "depth": 4
+      "depth": 4,
+      "label": "inspect"
     },
     {
       "id": "430-8",
       "width": 430,
-      "depth": 8
+      "depth": 8,
+      "label": "inspect"
     },
     {
       "id": "900-0",
       "width": 900,
-      "depth": 0
+      "depth": 0,
+      "label": "inspect"
+    },
+    {
+      "id": "390-8-cjk-xl",
+      "width": 390,
+      "depth": 8,
+      "label": "\u8abf\u67fb",
+      "fontScale": "xl"
+    },
+    {
+      "id": "430-4-xl",
+      "width": 430,
+      "depth": 4,
+      "label": "inspect",
+      "fontScale": "xl"
     }
   ],
   "mutation": {
-    "declaration": "activitypanel.module.css: remove only .denseName's min-width: 2ch",
+    "declaration": "activitypanel.module.css: replace .denseName's min() floor with min-width: 0",
     "verified": "2026-11-18",
     "expect": "fail",
-    "note": "Chrome exited 1 on the restored pre-floor baseline of this same case: 320px/depth 1 dropped the name to 5.03px, 320px/depth 0 to 5.70px, 360px/depth 3 to 5.11px, 390px/depth 8 to 2.81px and 430px/depth 8 to 4.23px - all under the guard's 16px readable floor. The 430px root and the 900px row kept their full names (45.23px) in both runs, which is the comfortable-width half of the contract. Stylesheet restored byte-for-byte before the passing run.",
+    "note": "Chrome exited 1 on the restored pre-floor baseline of this same case: at 320px/depth 0 the name dropped to 5.70px against its own 12.56px glyph-plus-ellipsis prefix with 162px free, and the CJK rows fell to 3.61px against a 22.79px prefix. The same run also covers the two unit choices the review separated: `min-width: 2ch` exits 1 (16.03px where the font-derived floor is 23.40px) and `min-width: 3ch` exits 1 (24.05px), because `ch` measures the digit 0. Stylesheet restored byte-for-byte before the passing run.",
     "previous": {
-      "declaration": "activitypanel.module.css: remove only .denseMeta's max-width: 60%",
-      "verified": "2026-10-23",
+      "declaration": "activitypanel.module.css: remove only .denseName's min-width: 2ch",
+      "verified": "2026-11-18",
       "expect": "fail",
-      "note": "Chrome exited 1: all nine names fell below 16px (6.84-9.61px) and every meta exceeded 60% of row content width. The 430px root also lost its full name. Stylesheet restored byte-for-byte before the passing runs."
+      "note": "Chrome exited 1 on the restored pre-floor baseline of this same case: 320px/depth 1 dropped the name to 5.03px, 320px/depth 0 to 5.70px, 360px/depth 3 to 5.11px, 390px/depth 8 to 2.81px and 430px/depth 8 to 4.23px - all under the guard's 16px readable floor. The 430px root and the 900px row kept their full names (45.23px) in both runs, which is the comfortable-width half of the contract. Stylesheet restored byte-for-byte before the passing run.",
+      "previous": {
+        "declaration": "activitypanel.module.css: remove only .denseMeta's max-width: 60%",
+        "verified": "2026-10-23",
+        "expect": "fail",
+        "note": "Chrome exited 1: all nine names fell below 16px (6.84-9.61px) and every meta exceeded 60% of row content width. The 430px root also lost its full name. Stylesheet restored byte-for-byte before the passing runs."
+      }
     }
   }
 }
