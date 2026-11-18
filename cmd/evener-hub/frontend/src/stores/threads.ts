@@ -1533,11 +1533,38 @@ let lastClearInvocationId = 0;
 // way replaces it. Clearing it on any successful read was too eager - a
 // pre-Clear read can succeed after Clear's replacement already recorded the
 // verdict, and erasing it there left the waiting resend with no answer.
+//
+// Keyed by the tracked-hydration ATTEMPT, not by ref: an attempt identity is a
+// promise that the answer belongs to that attempt, and a per-ref slot broke the
+// promise in both directions - a Clear replacement could read an older read's
+// diagnostic, and a watched read could populate the map a tracked handoff then
+// consulted. A caller that has no attempt (a replacement retired before it ran)
+// asks with `undefined` and gets no verdict, which is the truth about it.
+// The key carries the ref as well as the attempt: attempt ids are per-ref
+// counters (trackedHydrationAttempts), so the number alone names an attempt on
+// every ref at once.
 const terminalHydrationErrors = new Map<string, unknown>();
-function takeTerminalHydrationError(ref: string): unknown {
-  const error = terminalHydrationErrors.get(ref);
-  terminalHydrationErrors.delete(ref);
+function terminalVerdictKey(ref: string, attempt: number): string {
+  return `${ref}\u0000${attempt}`;
+}
+function takeTerminalHydrationError(ref: string, attempt: number | undefined): unknown {
+  if (attempt === undefined) return undefined;
+  const key = terminalVerdictKey(ref, attempt);
+  const error = terminalHydrationErrors.get(key);
+  terminalHydrationErrors.delete(key);
   return error;
+}
+// A published read answers the ref, so every verdict from an attempt at or
+// before it is spent. A LATER attempt's verdict is not touched: it describes a
+// read that started after this answer and has its own outcome coming.
+function retireTerminalHydrationErrorsThrough(ref: string, attempt: number | undefined): void {
+  if (attempt === undefined) return;
+  const prefix = `${ref}\u0000`;
+  for (const key of [...terminalHydrationErrors.keys()]) {
+    if (!key.startsWith(prefix)) continue;
+    const keyed = Number(key.slice(prefix.length));
+    if (Number.isFinite(keyed) && keyed <= attempt) terminalHydrationErrors.delete(key);
+  }
 }
 
 /** Waits out a Clear replacement and hands back its model. A replacement that
@@ -4809,11 +4836,18 @@ async function readThreadHydration(
       // diagnostic, so without this the handoff reads its null as a miss and
       // reads the ref again for a history the hub has already refused.
       //
-      // The verdict is recorded per ref because the handoff asks it by ref, and
-      // it is retired at the publish point rather than here - see
-      // publishAndReconcileThreadHydration for why a successful read cannot
-      // retire it on its own.
-      terminalHydrationErrors.set(ref, err);
+      // The verdict travels with the ATTEMPT that produced it, because an
+      // attempt identity is a promise that the answer belongs to that attempt:
+      // a Clear replacement stamped with its own identity that then read a
+      // per-ref slot could pick up an older read's history diagnostic and fail
+      // a press for a destination the hub has since answered. An attempt that
+      // retired before it ran has no verdict at all - that is a third state,
+      // not a fallback to the last one. Retired at the publish point rather
+      // than here; see publishAndReconcileThreadHydration for why a successful
+      // read cannot retire it on its own.
+      if (tracked && pending.attempt !== undefined) {
+        terminalHydrationErrors.set(terminalVerdictKey(ref, pending.attempt), err);
+      }
       // The pane-facing flag belongs to a pane-owned read. A watched read
       // carries its diagnostic on the watched model it publishes to
       // (applyHistoryReadFailure above), and that model has its own reader: a
@@ -6645,7 +6679,7 @@ async function publishAndReconcileThreadHydration(
   // HERE, not on the read's own success, because a response the fence above
   // discarded says nothing about the ref - and clearing on it left the waiting
   // claim with no verdict to read.
-  terminalHydrationErrors.delete(ref);
+  retireTerminalHydrationErrorsThrough(ref, pending.attempt);
   setThreadHistoryFailed(ref, false);
   // The retained replacement outcome describes the attempt whose read this one
   // superseded, so the same rule retires it: it must not outlive the answer the
@@ -7975,12 +8009,20 @@ function scheduleOwnedHydrationRetry(kind: HydrationOwnerKind, ref: string, pend
 // The retry action for a real pane or a pinned outbox ref: one targeted
 // authoritative refresh, then the same replay gate a resync opens — mutation
 // replay stays closed until an authoritative read actually succeeds.
-async function retryTrackedHydration(client: AppwireClientLike, epoch: number, ref: string): Promise<void> {
+async function retryTrackedHydration(
+  client: AppwireClientLike,
+  epoch: number,
+  ref: string,
+): Promise<number | undefined> {
   dispatchableMutationRefs.delete(ref);
-  await refreshTrackedThread(client, epoch, ref, true, { intent: hydrationIntentFor(ref) });
+  // The attempt this refresh began travels back to the caller: the Clear
+  // replacement records its verdict under that identity, so the answer it
+  // reads is the one its own read produced.
+  const attempt = await refreshTrackedThread(client, epoch, ref, true, { intent: hydrationIntentFor(ref) });
   const runtime = getMutationRuntime();
-  if (!runtime || getWiredClient() !== client || getReadyEpoch() !== epoch || client.state !== "ready") return;
+  if (!runtime || getWiredClient() !== client || getReadyEpoch() !== epoch || client.state !== "ready") return attempt;
   if (dispatchableMutationRefs.has(ref)) scheduleMutationDispatch(runtime, [ref]);
+  return attempt;
 }
 
 async function retryWatchedHydration(client: AppwireClientLike, epoch: number, ref: string): Promise<void> {
@@ -9537,11 +9579,15 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         loop.catch(() => undefined);
         const ended = await Promise.race([loop, budgetExpired]);
         if (ended === "expired") {
-          // The press is over, so the verification it abandoned must end with
-          // it. Retiring through the same decision point every other end uses
-          // stops the loop from re-arming a demand nobody waits on, which is
-          // how a spent press left work running behind it.
-          settleHydrationReadEnd("thread", ref, { kind: "claimBudgetExpired" });
+          // Only THIS acquisition is over. The wait is ref-wide: retiring it
+          // here settled every other waiter - a second resend sharing the retry
+          // failed before its own budget, and a mounted pane was handed a
+          // readiness timeout while its client was ready. One waiter's deadline
+          // may not spend another's demand, so the acquisition leaves and the
+          // lifecycle stays up for whoever is still waiting. When the last
+          // waiter leaves, its own release retires the lifecycle through
+          // retireCanonicalThreadIfUnowned - the same place every final release
+          // already does.
           throw new Error("The destination could not be verified inside the claim's budget");
         }
       } else {
@@ -10810,6 +10856,18 @@ function reconcileClearInput(): void {
         // resolved, and it must receive the same verdict rather than starting a
         // fresh read. A later attempt for the ref replaces the whole record, so
         // a stale verdict cannot outlive the answer that superseded it.
+        // The attempt this refresh began, captured before the outcome promise
+        // reads it: the verdict it is owed belongs to THAT attempt, and an
+        // attempt that retired before it ran leaves this undefined - in which
+        // case the replacement has no verdict at all rather than inheriting an
+        // older read's diagnostic.
+        // `issued` carries the union of both retry shapes because the two kinds
+        // share one selection; this branch is the tracked retry, whose promise
+        // resolves with the attempt it began.
+        const begunAttempt = issued.then(
+          (begun) => (typeof begun === "number" ? begun : undefined),
+          () => undefined,
+        );
         const attempt: ClearReplacementAttempt = {
           // The Clear that recorded this demand. Stamped here so the record
           // answers for that Clear and no other: a later Clear replaces the
@@ -10817,10 +10875,10 @@ function reconcileClearInput(): void {
           // of handing its verdict to the newer Clear's claimant.
           clearId: clearDemandOwners.get(ref) ?? 0,
           read: issued.then(
-            () => {
+            async () => {
               const outcome: ClearReplacementOutcome = {
                 model: null,
-                terminalError: takeTerminalHydrationError(ref),
+                terminalError: takeTerminalHydrationError(ref, await begunAttempt),
               };
               if (clearReplacementAttempts.get(ref) === attempt) attempt.settled = outcome;
               return outcome;
@@ -11067,6 +11125,20 @@ export function recordClearDemandForTests(ref: string, clearId: number): void {
 /** @internal The Clear identity the last invocation took. */
 export function lastClearInvocationForTests(): number {
   return lastClearInvocationId;
+}
+
+/** @internal Records a terminal history verdict against the attempt that
+ * produced it, as the hydration catch does. */
+export function recordTerminalVerdictForTests(ref: string, attempt: number, error: unknown): void {
+  terminalHydrationErrors.set(terminalVerdictKey(ref, attempt), error);
+}
+
+/** @internal The verdict a read under `attempt` is owed. The Clear replacement
+ * asks exactly this question, so a test can ask it too: an attempt that retired
+ * before it ran asks with `undefined` and must get no verdict, and an attempt
+ * must never receive another attempt's diagnostic. */
+export function takeTerminalVerdictForTests(ref: string, attempt: number | undefined): unknown {
+  return takeTerminalHydrationError(ref, attempt);
 }
 
 /** @internal Registers a replacement attempt the way a Clear's own issue step

@@ -70,6 +70,7 @@ import {
   markCacheSessionsDeleted,
   pendingThreadHydrationUpdatesForTests,
   recordClearDemandForTests,
+  recordTerminalVerdictForTests,
   registerClearReplacementForTests,
   resendRecoveryMutation,
   resetThreadsStoreForTests,
@@ -78,6 +79,7 @@ import {
   settleBackgroundTranscriptsForTests,
   settleEntryTranscriptForTests,
   subscribeCacheWrites,
+  takeTerminalVerdictForTests,
   threadsStore,
 } from "./threads";
 import { TranscriptRepository } from "./transcriptRepository";
@@ -10885,6 +10887,122 @@ it("a routing claim against an offline host spends its own budget while the clie
   }
 }, 20_000);
 
+// Finding 1 (review 53700): the wait a verification retry serves is REF-WIDE, so
+// one waiter's deadline may only end that waiter. Two presses share a retry;
+// the first one's budget expiring used to retire the lifecycle under both of
+// them and hand each a readiness timeout, failing the second press before its
+// own deadline and - worse - while the destination was about to recover.
+//
+// Decision point: which waiter the timeout is delivered to. Both presses are
+// distinguishable at the moment the first one expires: A's outcome settles,
+// B's does NOT, because B's budget has not run out and its retry is still
+// live. A fixture that cannot tell them apart passes with the bug present.
+it("one press's deadline does not spend another press sharing its retry", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const outboxStorage = new MutationOutboxIndexedDB({ indexedDB: factory });
+  setMutationStorageForTests(outboxStorage);
+  const client = connect();
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  await settleEntryTranscriptForTests("local:a");
+  const route = entryTranscriptRoute("local:a");
+  if (!route) throw new Error("expected an entry route");
+  route.cachedUnverified = true;
+  const makeRow = async (text: string) => {
+    const outbox = await outboxStorage.enqueueIntent({
+      targetRef: "local:a",
+      threadId: "thread-a",
+      method: "turn/start",
+      payload: { ref: "local:a", input: [{ type: "text", text }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/start", input: [{ type: "text", text }] },
+    });
+    const row = await outboxStorage.transferToRecovery(outbox.clientMutationId, "rejected");
+    if (!row) throw new Error("expected the recovery row to be durable");
+    return row;
+  };
+  const rowA = await makeRow("first press");
+  const rowB = await makeRow("second press");
+  client.on("thread/read", () => {
+    throw new Error("host offline");
+  });
+  let fireRetry: (() => void) | undefined;
+  const restoreScheduler = installHydrationRetrySchedulerForTests((_attempt, retry) => {
+    fireRetry = retry;
+    return () => undefined;
+  });
+  const restoreBound = setReadinessBoundForTests(150);
+  try {
+    // A starts first, so the retry both presses wait on is the one A's read
+    // armed. B joins it afterwards - the shared-retry case.
+    const resentA = withRecoveryDestinationClaim("local:a", () =>
+      resendRecoveryMutation(rowA.clientMutationId, "local:a", "send", "first press", []),
+    );
+    resentA.catch(() => undefined);
+    await vi.waitFor(() => expect(fireRetry, "A's failed read must schedule the shared retry").toBeDefined());
+    // A's budget timer is already armed from the short bound above; B takes a
+    // much longer one, so the ONLY deadline that can end B's press during this
+    // window is A's. Without that gap both would expire on their own timers and
+    // the test would pass whether or not one press's deadline can spend
+    // another's.
+    setReadinessBoundForTests(5_000);
+    const resentB = withRecoveryDestinationClaim("local:a", () =>
+      resendRecoveryMutation(rowB.clientMutationId, "local:a", "send", "second press", []),
+    );
+    resentB.catch(() => undefined);
+
+    let settledA: "ok" | "rejected" | "pending" = "pending";
+    let settledB: "ok" | "rejected" | "pending" = "pending";
+    void resentA.then(
+      () => {
+        settledA = "ok";
+      },
+      () => {
+        settledA = "rejected";
+      },
+    );
+    void resentB.then(
+      () => {
+        settledB = "ok";
+      },
+      () => {
+        settledB = "rejected";
+      },
+    );
+
+    // A's budget expires. B's has not: B awaits the same lifecycle, and the
+    // only correct answer is that A leaves while B keeps waiting.
+    await vi.waitFor(() => expect(settledA, "the expired press must end").toBe("rejected"), { timeout: 2_000 });
+    expect(settledB, "one press's deadline must not fail another press that is still inside its own budget").toBe(
+      "pending",
+    );
+
+    // The destination recovers while B still waits: the shared retry runs and
+    // verifies it, and B's press proceeds on its own budget.
+    client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+    client.emitStateChange("ready");
+    client.emitReady();
+    fireRetry?.();
+    await vi.waitFor(() =>
+      expect(settledB, "the surviving press must complete once the destination verifies").toBe("ok"),
+    );
+    expect(await outboxStorage.listOutbox("local:a"), "the surviving press must write its row").toHaveLength(1);
+    expect(
+      await outboxStorage.getRecovery(rowB.clientMutationId),
+      "the surviving press's draft is spent by its successful send",
+    ).toBeUndefined();
+    expect(
+      await outboxStorage.getRecovery(rowA.clientMutationId),
+      "the expired press must keep its draft",
+    ).toBeDefined();
+  } finally {
+    restoreBound();
+    restoreScheduler();
+    background.release();
+  }
+}, 25_000);
+
 // Finding 5 (review 52989): the post-await fence asked the REF's foreground
 // count, and a routing lease keeps that count positive after the pane that took
 // it has left. A pane that closes inside its own local restore then passes the
@@ -11039,6 +11157,56 @@ it("an aborted Clear's identity is not reused by the next Clear", async () => {
     second,
     "a later Clear invocation must take its own identity, even though the epoch never moved",
   ).toBeGreaterThan(first);
+}, 20_000);
+
+// Finding 2 (review 53700): a Clear replacement is stamped with its own
+// invocation identity, and an identity is a promise that the VERDICT belongs to
+// that invocation. The verdict used to be read from a per-ref slot, so a read
+// that recorded a history diagnostic earlier left it there, and a replacement
+// that retired before it ran resolved carrying an older read's error - failing
+// a press for a destination the hub could still answer.
+//
+// Decision point: the verdict a read under a given attempt is owed. Three
+// states, and the third is the one the old shape had no representation for:
+// this attempt's own verdict, another attempt's verdict (never delivered), and
+// no attempt at all (no verdict, not a fallback).
+it("a terminal verdict belongs to the attempt that produced it, and a retired attempt has none", async () => {
+  const verdict = new Error("thread history failed at entry 4");
+  // Attempt 7 recorded a diagnostic for this ref.
+  recordTerminalVerdictForTests("local:a", 7, verdict);
+
+  // A LATER attempt asks for its own verdict and must not receive 7's.
+  expect(
+    takeTerminalVerdictForTests("local:a", 8),
+    "an attempt must not inherit another attempt's terminal verdict",
+  ).toBeUndefined();
+  // A replacement that retired before it ran has no attempt at all, and that is
+  // a third state rather than a reason to fall back to the last verdict.
+  expect(
+    takeTerminalVerdictForTests("local:a", undefined),
+    "an attempt that never ran has no verdict to inherit",
+  ).toBeUndefined();
+  // The attempt that actually produced it is still owed its own answer, and
+  // taking it is what retires it.
+  expect(takeTerminalVerdictForTests("local:a", 7), "the producing attempt is owed its own verdict").toBe(verdict);
+  expect(
+    takeTerminalVerdictForTests("local:a", 7),
+    "a verdict is delivered once, so a second ask gets nothing",
+  ).toBeUndefined();
+}, 20_000);
+
+// Attempt ids are per-REF counters, so a bare number names an attempt on every
+// ref at once. The key carries the ref for exactly that reason, and this is the
+// assertion that pins it: the same attempt number on a different ref is a
+// different read with its own verdict.
+it("the same attempt number on another ref is a different attempt", async () => {
+  const verdict = new Error("thread history failed at entry 4");
+  recordTerminalVerdictForTests("local:a", 3, verdict);
+  expect(
+    takeTerminalVerdictForTests("local:b", 3),
+    "an attempt on another ref must not read this ref's verdict",
+  ).toBeUndefined();
+  expect(takeTerminalVerdictForTests("local:a", 3), "the producing ref's attempt still has its verdict").toBe(verdict);
 }, 20_000);
 
 // The certification open belongs to the pane that requested it. A routing lease

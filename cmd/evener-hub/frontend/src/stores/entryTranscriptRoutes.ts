@@ -23,7 +23,6 @@ import {
   backgroundHolds,
   canonicalThreadOwnerActive,
   clearFinalReleaseOwner,
-  heldCountsAtStore,
   isFinalReleaseOwner,
   nextBackgroundLeaseSequence,
   setFinalReleaseOwner,
@@ -286,8 +285,17 @@ export function entryTranscriptRoutes(): EntryTranscriptRoute[] {
   return [...productionEntryRoutes.values()];
 }
 
+/** Whether the ref has no BODY owner, so its completed transcript bodies are not
+ * displayed by anyone and must not be retained.
+ *
+ * Body ownership, not the keep-alive count: a routing lease keeps the model and
+ * subscription for dispatch and never reads the bodies, so counting it as a
+ * reason to retain them meant a resync during a resend could put a finished
+ * transcript back in the store after the last pane had released its reader. The
+ * question this answers is who displays the bodies, and the routing lease is
+ * not an answer to it. */
 export function isEntryTranscriptBackgroundOnly(ref: string): boolean {
-  return backgroundHolds(ref) > 0 && !heldCountsAtStore(ref);
+  return backgroundHolds(ref) > 0 && !threadBodyOwned(ref);
 }
 
 // Opening tokens, monotonic across the tab. The pane paints the
