@@ -914,11 +914,24 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 				return repoBasename(origin), true
 			}
 			if restore := strings.TrimSpace(meta.WorktreeRestoreRoot); restore != "" {
-				p := filepath.Base(restore)
-				if root := r.resolveMainRoot(restore); root != "" {
-					p = filepath.Base(root)
+				// The owner's restore path is read through the same lane boundary
+				// as everything else. When the state home sits inside a checkout,
+				// an unbounded walk from a deleted restore lane finds that
+				// checkout's .git and names the transcript after the repository
+				// that happens to enclose the state dir — before the parent
+				// lookup above can recover the project the lane belonged to.
+				// Bounded, a lane that no longer resolves names nothing, and the
+				// parent is what still answers. An ordinary restore directory is
+				// its own answer: it is where the session ran.
+				root, _, ok := r.projectAt(restore, bound)
+				if root != "" {
+					return filepath.Base(root), true
 				}
-				return p, true
+				if !ok {
+					if _, _, _, _, isLane := r.stateWorktreeOwner(filepath.Clean(restore), bound); !isLane {
+						return filepath.Base(restore), true
+					}
+				}
 			}
 			if home := strings.TrimSpace(meta.HomeDir()); home != "" && !strings.Contains(home, "worktrees") {
 				if root := r.resolveMainRoot(home); root != "" {
@@ -946,13 +959,14 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 		tiedToLane := stateDir == bound || managedProjectID != "" || parentSessionID == ownerSessionID
 		if tiedToLane {
 			if parent, ok := r.loadOwnedSessionMeta(bound, parentSessionID); ok {
-				if checkout, ok := r.siblingCheckout(parent, bound); ok &&
-					(managedProjectID == "" ||
-						identifier.ProjectFromCanonicalPath(identifier.ResolveClean(checkout)).ID == managedProjectID) {
+				checkout, recorded, ok := r.recordedProject(parent, bound)
+				if ok && (managedProjectID == "" || recorded == managedProjectID) {
 					if origin := strings.TrimSpace(parent.EnvInfo.GitOriginURL); origin != "" {
 						return repoBasename(origin), true
 					}
-					return filepath.Base(checkout), true
+					if checkout != "" {
+						return filepath.Base(checkout), true
+					}
 				}
 			}
 		}
@@ -993,32 +1007,34 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 	// A managed lane whose project segment IS its bucket's ID matches by name, so
 	// the bucket-basename comparison alone cannot tell a lane of this repository
 	// from a lane of another one that was pointed at this bucket with --state-dir.
-	// The evidence that settles it is the sibling's own recorded checkout: one
-	// that resolves to a different project is about another repository, and it
-	// must be neither selected nor cached. A sibling that records only an origin,
-	// or whose checkout no longer resolves, carries no project evidence either
-	// way and still answers.
+	// The evidence that settles it is the sibling's own recorded path: one that
+	// resolves to, or records, a different project is about another repository,
+	// and it must be neither selected nor cached. A sibling that records only an
+	// origin carries no project evidence either way and still answers.
 	excludeConflicting := managedProjectID != "" && !foreignProject
-	// A sibling's own checkout is read through the same lane boundary the row
-	// itself is, because a sibling's recorded path can be a state lane whose
-	// checkout has been deleted. An unbounded walk from it climbs to whichever
-	// repository encloses the state home and calls that the sibling's project,
-	// which would reject the one surviving record — its saved origin — as
-	// conflicting evidence. Confining the walk to the lane root leaves the
-	// project unproven there, so the origin answers.
+	// A sibling's own path is read through the same lane boundary the row itself
+	// is, because a sibling's recorded path can be a state lane whose checkout has
+	// been deleted. An unbounded walk from it climbs to whichever repository
+	// encloses the state home and calls that the sibling's project, which would
+	// both reject the surviving record — its saved origin — as conflicting
+	// evidence and invent an affiliation the lane never had.
 	//
-	// A sibling that identifies a different project is about another repository.
-	// An ordinary non-Git directory identifies one too: it is its own project, so
-	// its basename must not stand in as a label for a lane from somewhere else.
+	// A deleted lane still says which project it served: the ID is in its path.
+	// Dropping that ID because the checkout is gone is what let a lane from
+	// repository B answer for repository A's worktree, since its saved origin was
+	// then the only evidence left and nothing contradicted it.
+	//
+	// An ordinary non-Git directory identifies its own project too, so its
+	// basename must not stand in as a label for a lane from somewhere else.
 	conflictsWithLane := func(sm schema.SessionMeta) bool {
 		if managedProjectID == "" {
 			return false
 		}
-		checkout, ok := r.siblingCheckout(sm, bound)
+		_, recorded, ok := r.recordedProject(sm, bound)
 		if !ok {
 			return false
 		}
-		return identifier.ProjectFromCanonicalPath(identifier.ResolveClean(checkout)).ID != managedProjectID
+		return recorded != managedProjectID
 	}
 	// admissible reports whether a sibling may answer for this row. A foreign
 	// project needs positive evidence naming it; a bucket-matching managed lane
@@ -1076,19 +1092,19 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 				return p, true
 			}
 			if restore := strings.TrimSpace(sm.WorktreeRestoreRoot); restore != "" {
-				checkpoint, ok := r.siblingCheckout(sm, bound)
-				if !ok {
-					// A state lane whose checkout is gone names no project. Its
-					// recorded path ends in a lane name, which is not a project
-					// label, so keep looking rather than emit it.
+				checkpoint, _, _ := r.recordedProject(sm, bound)
+				if checkpoint == "" {
+					// A state lane whose checkout is gone names no directory to read
+					// a label from: its recorded path ends in the lane, which is not
+					// a project label. It may still have recorded an origin, and that
+					// answered above. Keep looking rather than emit the lane name.
 					if _, _, _, _, isLane := r.stateWorktreeOwner(filepath.Clean(restore), bound); isLane {
 						continue
 					}
+					cache(filepath.Base(restore))
+					return filepath.Base(restore), true
 				}
-				p := filepath.Base(restore)
-				if ok {
-					p = filepath.Base(checkpoint)
-				}
+				p := filepath.Base(checkpoint)
 				cache(p)
 				return p, true
 			}
@@ -1103,7 +1119,7 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 				home = strings.TrimSpace(sm.EnvInfo.WorkingDir)
 			}
 			if home != "" && !strings.Contains(home, "worktrees") {
-				if checkpoint, ok := r.siblingCheckout(sm, bound); ok {
+				if checkpoint, _, _ := r.recordedProject(sm, bound); checkpoint != "" {
 					p := filepath.Base(checkpoint)
 					cache(p)
 					return p, true
@@ -1127,53 +1143,64 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 // sibling's metadata was read from, so a recorded lane is resolved against the
 // same boundary as any other row in that bucket.
 func (r *projectNameResolver) matchesProjectID(m schema.SessionMeta, projectID, bucketDir string) bool {
-	checkout, ok := r.siblingCheckout(m, bucketDir)
-	if !ok {
-		return false
-	}
-	return identifier.ProjectFromCanonicalPath(identifier.ResolveClean(checkout)).ID == projectID
+	_, recorded, ok := r.recordedProject(m, bucketDir)
+	return ok && recorded == projectID
 }
 
-// siblingCheckout resolves a session's own recorded checkout the way the row
-// being labelled is resolved: through the lane boundary when the recorded path
-// is a state-managed lane. A lane whose checkout is gone must not be walked
-// past, because the walk would answer with whichever repository encloses the
-// state directory — and that answer would then stand as evidence about the
-// sibling's project. With the walk confined, a deleted lane has no project
-// evidence rather than false evidence, so its saved origin stays authoritative.
+// recordedProject answers what project a session's own recorded path names. It
+// is the one predicate for "evidence is the path, not the checkout", because a
+// recognized managed path is evidence even when what it points at is gone. Both
+// the row's own bounds and a sibling's are decided by it, so the two can never
+// disagree about what a recorded path proves.
 //
-// ok distinguishes "this checkout identifies a project" from "it identifies
-// none". An ordinary directory identifies its own project even without a .git:
-// it is where the session ran, so its canonical path is the project. A state
-// lane identifies none once its checkout is gone, which is exactly the case
-// where no evidence exists either way.
-//
-// The recorded restore root wins over the home directory, matching
-// canonicalProjectPath.
-func (r *projectNameResolver) siblingCheckout(m schema.SessionMeta, bucketDir string) (string, bool) {
+// A lane whose checkout is gone must not be walked past: the walk answers with
+// whichever repository encloses the state directory, which would both invent an
+// affiliation the lane never had and reject its surviving record — the saved
+// origin — as conflicting. Confined to the lane root, a deleted lane still
+// names the project its path records.
+func (r *projectNameResolver) recordedProject(m schema.SessionMeta, bucketDir string) (checkout, projectID string, ok bool) {
 	recorded := strings.TrimSpace(m.WorktreeRestoreRoot)
 	if recorded == "" {
 		recorded = strings.TrimSpace(m.HomeDir())
 	}
+	return r.projectAt(recorded, bucketDir)
+}
+
+// projectAt is recordedProject's rule, applied to a path. checkout is the
+// project's root, empty when the path names no directory that still exists.
+// projectID is the project the recording itself declares, and is never empty
+// when ok is true: a managed lane keeps <stateDir>/worktrees/<projectID>/<lane>
+// after its checkout is deleted, so the ID a lane belonged to survives the
+// deletion even though nothing is left on disk to resolve. ok distinguishes
+// "this path identifies a project" from "it identifies none". An ordinary
+// directory identifies its own project; a state lane whose checkout is gone
+// identifies the project its path records, which is why deleting a worktree does
+// not erase which one it served.
+func (r *projectNameResolver) projectAt(recorded, bucketDir string) (checkout, projectID string, ok bool) {
+	recorded = strings.TrimSpace(recorded)
 	if recorded == "" {
-		return "", false
+		return "", "", false
 	}
 	clean := filepath.Clean(recorded)
-	if _, laneRoot, _, _, isLane := r.stateWorktreeOwner(clean, bucketDir); isLane {
+	if _, laneRoot, _, managedProjectID, isLane := r.stateWorktreeOwner(clean, bucketDir); isLane {
 		if root := resolveMainRootWithin(clean, laneRoot); root != "" {
-			return root, true
+			return root, identifier.ProjectFromCanonicalPath(identifier.ResolveClean(root)).ID, true
 		}
-		return "", false
+		if managedProjectID != "" {
+			return "", managedProjectID, true
+		}
+		return "", "", false
 	}
 	if root := r.resolveMainRoot(clean); root != "" {
-		return root, true
+		return root, identifier.ProjectFromCanonicalPath(identifier.ResolveClean(root)).ID, true
 	}
 	if exists, err := os.Stat(clean); err == nil && exists.IsDir() {
 		// No .git anywhere above it, but the directory is really there: it is its
 		// own project, and that project is what its canonical path names.
-		return identifier.ResolveClean(clean), true
+		canonical := identifier.ResolveClean(clean)
+		return canonical, identifier.ProjectFromCanonicalPath(canonical).ID, true
 	}
-	return "", false
+	return "", "", false
 }
 
 // stateWorktreeOwner classifies wd against the layouts an Evener state dir

@@ -1322,6 +1322,44 @@ func TestFind_ProjectName_OrdinaryDirectoryIsItsOwnProject(t *testing.T) {
 	if got := projectName(lane, bucket); got != "" {
 		t.Fatalf("projectName(managed lane whose only sibling is an unrelated plain directory) = %q, want empty (that directory is its own project)", got)
 	}
+
+	// Two ordinary directories that share a basename are still two projects: a
+	// project ID names the whole canonical path, not its last segment. Pin that,
+	// because the exclusion above rests on it. A lane whose own project segment
+	// is one of these directories must not exclude the other, even though both
+	// are "notes".
+	one := filepath.Join(t.TempDir(), "notes")
+	two := filepath.Join(t.TempDir(), "notes")
+	for _, dir := range []string{one, two} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	oneProject := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(one))
+	twoProject := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(two))
+	if oneProject.ID == twoProject.ID {
+		t.Fatalf("two directories named %q share project ID %q, so a basename could stand in for a path", filepath.Base(one), oneProject.ID)
+	}
+	oneBucket, err := RuntimeDirForProjectWithStateHome(oneProject, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(oneBucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+	sameNameSibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	sameNameSibling.EnvInfo.WorkingDir = two
+	if err := schema.SaveSessionMeta(oneBucket, sameNameSibling); err != nil {
+		t.Fatal(err)
+	}
+	sameNameLane := schema.SessionMeta{}
+	sameNameLane.EnvInfo.WorkingDir = filepath.Join(oneBucket, "worktrees", oneProject.ID, "dlg_same_basename")
+	// The sibling is a different project despite the shared basename, so it may
+	// not name this lane: empty. A comparison on basenames would call them equal
+	// and answer "notes" from a directory the lane does not belong to.
+	if got := projectName(sameNameLane, oneBucket); got != "" {
+		t.Fatalf("projectName(lane for %s with a sibling directory %s) = %q, want empty (same basename, different project)", one, two, got)
+	}
 }
 
 // TestFind_ProjectName_SiblingOriginSurvivesDeletedLaneInsideCheckout covers the
@@ -1360,6 +1398,112 @@ func TestFind_ProjectName_SiblingOriginSurvivesDeletedLaneInsideCheckout(t *test
 	row.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", projectB.ID, "dlg_own")
 	if got, want := projectName(row, bucket), "repo-b"; got != want {
 		t.Fatalf("projectName(managed lane with a deleted-lane sibling inside checkout A) = %q, want the sibling's saved origin %q", got, want)
+	}
+}
+
+// TestFind_ProjectName_DeletedLaneRecordsItsProject covers a sibling whose
+// managed lane has been deleted. Deleting a worktree deletes the checkout, not
+// the project the lane belonged to: <stateDir>/worktrees/<projectID>/<lane>
+// still records it. A check that reads only the surviving checkout drops that
+// record, so a lane from repository B, sitting in repository A's bucket through
+// --state-dir, lends B's saved origin to an A worktree that has no usable
+// parent — and the bucket cache carries it to the rows that follow.
+func TestFind_ProjectName_DeletedLaneRecordsItsProject(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	repoA := newNamedCheckout(t, "repo-a")
+	projectA := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repoA))
+	bucket, err := RuntimeDirForProjectWithStateHome(projectA, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	// A sibling of repository B whose lane has been deleted: only its metadata,
+	// the lane path it recorded, and its saved origin remain.
+	repoB := newNamedCheckout(t, "repo-b")
+	projectB := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repoB))
+	sibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	sibling.EnvInfo.GitOriginURL = "git@github.com:owner/repo-b.git"
+	sibling.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", projectB.ID, "dlg_gone")
+	if err := schema.SaveSessionMeta(bucket, sibling); err != nil {
+		t.Fatal(err)
+	}
+
+	// An originless worktree of repository A with no parent. The only thing in
+	// this bucket that could answer is B's recorded lane, and B is not A.
+	rowA := schema.SessionMeta{}
+	rowA.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", projectA.ID, "dlg_a")
+	if got := projectName(rowA, bucket); got != "" {
+		t.Fatalf("projectName(worktree for repo A, with a sibling whose deleted lane records repo B) = %q, want empty", got)
+	}
+
+	// B's own worktree in the same bucket still reads B's origin: the deleted
+	// lane's recorded project is evidence for B, and the empty answer above is
+	// not cached over it.
+	rowB := schema.SessionMeta{}
+	rowB.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", projectB.ID, "dlg_b")
+	if got, want := projectName(rowB, bucket), "repo-b"; got != want {
+		t.Fatalf("projectName(worktree for repo B, same bucket) = %q, want the sibling's saved origin %q", got, want)
+	}
+
+	// The same two rows through one shared resolver, in the order that leaked:
+	// the conflicting sibling must be neither selected nor cached.
+	r := newProjectNameResolver()
+	if got := r.projectName(rowA, bucket); got != "" {
+		t.Fatalf("projectName(worktree for repo A first) = %q, want empty", got)
+	}
+	if got, want := r.projectName(rowB, bucket), "repo-b"; got != want {
+		t.Fatalf("projectName(worktree for repo B after repo A) = %q, want %q", got, want)
+	}
+}
+
+// TestFind_ProjectName_OwnerRestoreLaneDoesNotInheritEnclosingRepo covers the
+// owner fallback when the state directory sits inside checkout A. A deleted
+// session-owned lane's originless owner records a restore root that is itself a
+// deleted lane of repository B. An unbounded walk from that restore path finds
+// A's .git and labels the transcript as A, returning before the parent lookup
+// can recover B. The lane root must bound the owner's restore path too, and a
+// lane that no longer resolves must leave the parent's evidence to answer.
+func TestFind_ProjectName_OwnerRestoreLaneDoesNotInheritEnclosingRepo(t *testing.T) {
+	checkoutA := newNamedCheckout(t, "checkout-a")
+	stateHome := filepath.Join(checkoutA, "nested-state")
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	repoB := newNamedCheckout(t, "repo-b")
+	projectB := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repoB))
+	bucket := filepath.Join(stateHome, "evener", "projects", projectB.ID)
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	// The row is a session-owned lane that has been deleted. Its owner's metadata
+	// survived, carries no origin, and records a restore root that is a deleted
+	// lane of repository B.
+	ownerID := identifier.MustNewSessionID()
+	restoreLane := filepath.Join(bucket, "worktrees", projectB.ID, "dlg_restore")
+	owner := schema.SessionMeta{ID: ownerID}
+	owner.WorktreePath = restoreLane
+	owner.WorktreeRestoreRoot = restoreLane
+	if err := schema.SaveSessionMeta(bucket, owner); err != nil {
+		t.Fatal(err)
+	}
+
+	// The row's parent is repository B's own checkout, so its metadata names the
+	// project those deleted lanes belonged to.
+	parent := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	parent.EnvInfo.WorkingDir = repoB
+	if err := schema.SaveSessionMeta(bucket, parent); err != nil {
+		t.Fatal(err)
+	}
+
+	row := schema.SessionMeta{ParentSessionID: parent.ID}
+	row.EnvInfo.WorkingDir = filepath.Join(bucket, "sessions", ownerID, "worktrees", "dlg_row")
+	if got, want := projectName(row, bucket), "repo-b"; got != want {
+		t.Fatalf("projectName(deleted session lane whose owner recorded a deleted restore lane inside checkout A) = %q, want the parent's %q", got, want)
 	}
 }
 
