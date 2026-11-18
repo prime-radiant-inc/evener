@@ -1,6 +1,7 @@
 package sysmsg
 
 import (
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/mdfence"
@@ -175,12 +176,7 @@ func escapeFrameOpener(content string) (string, bool) {
 // isModelAuthoredMarkerLine reports whether line, trimmed, is exactly one of
 // modelAuthoredMarkerLines.
 func isModelAuthoredMarkerLine(line string) bool {
-	for _, marker := range modelAuthoredMarkerLines {
-		if line == marker {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(modelAuthoredMarkerLines, line)
 }
 
 // hasTagBoundary reports whether rest, the text after a matched tag prefix, is

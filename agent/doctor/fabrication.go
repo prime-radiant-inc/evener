@@ -4,6 +4,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/mdfence"
+	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/llm"
 )
 
@@ -25,19 +26,23 @@ type lineSpan struct {
 	prose  bool
 }
 
-var harnessTagPrefixes = []struct {
-	prefix        string
-	caseFoldASCII bool
-}{
-	{prefix: "<delegate-notification"},
-	{prefix: "<job-notification"},
-	{prefix: "<delegate-user-note"},
-	{prefix: "<system-notification"},
-	{prefix: "<system-reminder", caseFoldASCII: true},
-	{prefix: "<environment_context"},
-	{prefix: "<environment-context"},
-	{prefix: "<shared-notes"},
-	{prefix: "<skill-context"},
+// harnessTagPrefixes are the line-start tags this detector reports. The set is
+// narrower than sysmsg's modelAuthoredTagOpeners on purpose: a detector that
+// guessed would produce false positives, so [answers] is handled separately
+// below (it needs a numbered answer line) and there are no bracket markers
+// here. What the two lists share is how a tag NAME compares, through
+// sysmsg.HarnessTagMatches, so a case-folding rule cannot differ between what
+// is flagged and what is escaped (#6493).
+var harnessTagPrefixes = []sysmsg.HarnessTagPrefix{
+	{Prefix: "<delegate-notification"},
+	{Prefix: "<job-notification"},
+	{Prefix: "<delegate-user-note"},
+	{Prefix: "<system-notification"},
+	{Prefix: "<system-reminder", CaseFoldASCII: true},
+	{Prefix: "<environment_context"},
+	{Prefix: "<environment-context"},
+	{Prefix: "<shared-notes"},
+	{Prefix: "<skill-context"},
 }
 
 var lineStartToolPrefixes = []struct {
@@ -113,7 +118,7 @@ func inspectAssistantText(text string) (kind string, ok bool) {
 		case '<':
 			// 1. Line-start harness/user input envelopes.
 			for _, h := range harnessTagPrefixes {
-				if after, ok := cutPrefixMode(rest, h.prefix, h.caseFoldASCII); ok && hasTagBoundary(after, false) {
+				if after, ok := sysmsg.HarnessTagMatches(rest, h); ok && hasTagBoundary(after, false) {
 					return fabricationKindHarnessEnvelope, true
 				}
 			}
@@ -329,16 +334,6 @@ func hasFollowingNumberedAnswerLine(text string, lines []lineSpan, fromLine int)
 		return strings.HasPrefix(raw[rawIndent:], "1. ")
 	}
 	return false
-}
-
-func cutPrefixMode(s, prefix string, caseFoldASCII bool) (string, bool) {
-	if !caseFoldASCII {
-		return strings.CutPrefix(s, prefix)
-	}
-	if len(s) < len(prefix) || !strings.EqualFold(s[:len(prefix)], prefix) {
-		return "", false
-	}
-	return s[len(prefix):], true
 }
 
 func hasTagBoundary(rest string, allowEquals bool) bool {

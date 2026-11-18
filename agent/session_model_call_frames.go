@@ -2,6 +2,7 @@ package agent
 
 import (
 	"slices"
+	"strings"
 
 	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/llm"
@@ -32,19 +33,54 @@ func escapeModelAuthoredTurnFrames(msg llm.Message) llm.Message {
 	if msg.Role != llm.RoleAssistant {
 		return msg
 	}
-	var parts []llm.ContentPart
+	var indexes []int
+	var texts []string
 	for i, p := range msg.Content {
 		if p.Kind != llm.ContentText || p.Machinery || p.Text == "" {
 			continue
 		}
-		escaped := sysmsg.EscapeModelAuthoredFrames(p.Text)
-		if escaped == p.Text {
+		indexes = append(indexes, i)
+		texts = append(texts, p.Text)
+	}
+	if len(indexes) == 0 {
+		return msg
+	}
+
+	// Scan the text as the adapter will assemble it, not part by part. The
+	// Chat Completions adapter joins an assistant's text parts with a newline
+	// before the model reads them, so a fence one part opens and the next
+	// closes is a single fenced block on the wire. Escaping each part on its
+	// own would read the closing fence as a fresh opener and then treat the
+	// frame after it as fenced, leaving it unescaped in the text the model
+	// receives (#6493 review).
+	joined := strings.Join(texts, "\n")
+	escaped := sysmsg.EscapeModelAuthoredFrames(joined)
+	if escaped == joined {
+		return msg
+	}
+
+	// Escaping rewrites a frame's opening character and never adds or removes
+	// a line break, so the escaped text splits back into the same per-part
+	// line counts it was joined from.
+	lines := strings.Split(escaped, "\n")
+	var parts []llm.ContentPart
+	at := 0
+	for k, text := range texts {
+		n := strings.Count(text, "\n") + 1
+		if at+n > len(lines) {
+			// The escape changed the line structure; leave the turn as stored
+			// rather than hand back text split somewhere it was not.
+			return msg
+		}
+		segment := strings.Join(lines[at:at+n], "\n")
+		at += n
+		if segment == text {
 			continue
 		}
 		if parts == nil {
 			parts = slices.Clone(msg.Content)
 		}
-		parts[i].Text = escaped
+		parts[indexes[k]].Text = segment
 	}
 	if parts == nil {
 		return msg

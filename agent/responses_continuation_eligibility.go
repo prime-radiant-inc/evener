@@ -67,6 +67,18 @@ func selectResponsesContinuationAnchorCandidate(cfg SessionConfig, history []sch
 			Reason:      reason,
 		}
 	}
+	if responsesContinuationAnchorCarriesEscapableText(history, activeStart, anchorIndex) {
+		// The provider retains the anchor's own bytes and replays them from
+		// previous_response_id; only the delta is sent. A frame the projection
+		// would escape in the local copy therefore reaches the model in the
+		// provider's spelling, which is the defect this escape exists to stop
+		// (#6493 review). The retained prefix cannot be rewritten, so the
+		// request carries the escaped full history instead.
+		return responsesContinuationAnchorCandidate{}, llm.ResponsesContinuationDecision{
+			HistoryMode: llm.HistoryModeFullHistory,
+			Reason:      "continuation_prefix_model_authored_frame",
+		}
+	}
 
 	return responsesContinuationAnchorCandidate{
 		TurnIndex: anchorIndex,
@@ -97,6 +109,23 @@ func responsesContinuationDeltaTurns(history []schema.Turn, start int) []schema.
 		}
 	}
 	return attentionTransparentTurns(tail)
+}
+
+// responsesContinuationAnchorCarriesEscapableText reports whether the
+// projection would rewrite any assistant text the provider retains up to and
+// including the anchor. It asks the escape itself rather than pattern-matching
+// a frame, so a rule change in the escape cannot leave this check behind.
+func responsesContinuationAnchorCarriesEscapableText(history []schema.Turn, from, anchorIndex int) bool {
+	for i := from; i <= anchorIndex && i < len(history); i++ {
+		if history[i].Kind != schema.TurnAssistant {
+			continue
+		}
+		before := history[i].Message.Text()
+		if escapeModelAuthoredTurnFrames(history[i].Message).Text() != before {
+			return true
+		}
+	}
+	return false
 }
 
 func responsesContinuationDeltaIneligibleReason(anchor schema.Turn, delta []schema.Turn) string {
