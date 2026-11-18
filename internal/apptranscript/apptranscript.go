@@ -720,6 +720,12 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 		// rendered once, not twice. Reload must collapse the echo the same way
 		// the live projector does.
 		var lastAssistantText string
+		// A stamped entry applies the same first-part rule its reservation does
+		// (ReservedCalls): one entry reusing a provider id must not let the
+		// later part name the call it reserved. A legacy entry keeps its
+		// last-name-wins behaviour, which older lookups depend on.
+		stamped := turn.Format == schema.TurnFormatIdentity
+		reg.knownThisEntry = nil
 		for i, part := range turn.Message.Content {
 			switch part.Kind {
 			case llm.ContentText:
@@ -764,7 +770,15 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 				if part.ToolCall == nil {
 					continue
 				}
-				reg.Names[part.ToolCall.ID] = part.ToolCall.Name
+				if !stamped {
+					reg.Names[part.ToolCall.ID] = part.ToolCall.Name
+				} else if _, known := reg.knownThisEntry[part.ToolCall.ID]; !known {
+					if reg.knownThisEntry == nil {
+						reg.knownThisEntry = map[string]struct{}{}
+					}
+					reg.knownThisEntry[part.ToolCall.ID] = struct{}{}
+					reg.Names[part.ToolCall.ID] = part.ToolCall.Name
+				}
 				if part.ToolCall.Name == "communicate" {
 					// Defer ALL communicate messages to the paired tool result.
 					// The assistant turn alone cannot disambiguate: a valid-JSON
@@ -929,6 +943,14 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 			}
 			items = append(items, item)
 			recordPart(parts, i)
+			// A result for a call id also settles any pending communicate that
+			// entry deferred under the same id. Without this the id stays in
+			// CommRawArgs and FlushUnpairedCommunicates renders it a second
+			// time as an unpaired message, while the index — which consumes
+			// the pending state when the result arrives — shows only the
+			// settled command. One result, one item, in both readers.
+			delete(reg.CommRawArgs, part.ToolResult.ToolCallID)
+			delete(reg.CommAuthorship, part.ToolResult.ToolCallID)
 		}
 		return items
 	default:

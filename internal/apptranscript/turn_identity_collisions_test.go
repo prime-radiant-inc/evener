@@ -1818,7 +1818,38 @@ func TestRetryReportsItsOwnDiagnostic(t *testing.T) {
 // part rename the call and the result took the communicate branch, which
 // renders an agentMessage instead of settling the command (#1166 review).
 func TestUnnamedResultResolvesTheReservedCall(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	t.Run("entry parts", func(t *testing.T) {
+		unnamedResultSettlesTheReservedCall(t, "session.transcript.jsonl", projectWithEntryParts)
+	})
+	// ProjectTurn is the plain projector the hub's whole-file fallback calls.
+	// A rule proven only on ProjectEntryParts is proven on one of two entry
+	// points, which is the vacuous-test shape: both paths must apply the same
+	// first-part rule (#1166 review).
+	t.Run("plain projection", func(t *testing.T) {
+		unnamedResultSettlesTheReservedCall(t, "plain.transcript.jsonl", projectWithTurn)
+	})
+}
+
+// projectWithEntryParts projects through the transcript read model's entry
+// rules, the path the index and the item reader use.
+func projectWithEntryParts(turn schema.Turn, turnID string, entryIndex int, reg *apptranscript.ToolCallRegistry) []appwire.ThreadItem {
+	items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+	return items
+}
+
+// projectWithTurn projects through the plain projector the hub's whole-file
+// fallback calls.
+func projectWithTurn(turn schema.Turn, turnID string, entryIndex int, reg *apptranscript.ToolCallRegistry) []appwire.ThreadItem {
+	return apptranscript.ProjectTurn(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+}
+
+// unnamedResultSettlesTheReservedCall drives the same transcript through one
+// projector. A stamped entry that records a visible tool and a communicate
+// under one provider id reserves the FIRST part, so an unnamed result must
+// settle the visible tool and must not be reclassified as a delivered message.
+func unnamedResultSettlesTheReservedCall(t *testing.T, name string, project func(schema.Turn, string, int, *apptranscript.ToolCallRegistry) []appwire.ThreadItem) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), name)
 	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "unnamed_result"})
 	if err != nil {
 		t.Fatal(err)
@@ -1853,8 +1884,7 @@ func TestUnnamedResultResolvesTheReservedCall(t *testing.T) {
 
 	reg := apptranscript.NewToolCallRegistry()
 	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
-		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
-		return items
+		return project(turn, turnID, entryIndex, reg)
 	})
 	if err != nil {
 		t.Fatalf("ItemTurnsFromFile: %v", err)
