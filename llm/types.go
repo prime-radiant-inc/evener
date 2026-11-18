@@ -324,25 +324,41 @@ func IsOpenAICompatReasoningField(sig string) bool {
 // this to skip replaying a foreign provider's value on a cross-provider
 // transcript.
 func IsOpenAICompatEncryptedReasoning(s string) bool {
+	return OpenAICompatReasoningDetails(s) != nil
+}
+
+// OpenAICompatReasoningDetails returns the original Chat continuation items
+// with their provider-specific fields intact.
+func OpenAICompatReasoningDetails(s string) []map[string]any {
 	if len(s) == 0 || s[0] != '[' {
-		return false
+		return nil
 	}
-	var items []struct {
-		Type string `json:"type"`
-	}
+	var items []map[string]any
 	if err := json.Unmarshal([]byte(s), &items); err != nil || len(items) == 0 {
-		return false
+		return nil
 	}
 	for _, it := range items {
 		// The array carries every continuation-bearing detail item —
 		// encrypted blocks and signature-bearing reasoning.text — so any
 		// "reasoning."-typed item marks the value as ours. An OpenAI
 		// Responses opaque blob is not a JSON array of typed items at all.
-		if !strings.HasPrefix(it.Type, "reasoning.") {
-			return false
+		kind, _ := it["type"].(string)
+		if !strings.HasPrefix(kind, "reasoning.") {
+			return nil
 		}
 	}
-	return true
+	return items
+}
+
+// OpenAICompatSignedReasoningItem finds the detail that owns a thinking
+// part's text. Chat stores each signed block with its continuation metadata.
+func OpenAICompatSignedReasoningItem(details []map[string]any) map[string]any {
+	for _, item := range details {
+		if item["type"] == "reasoning.text" {
+			return item
+		}
+	}
+	return nil
 }
 
 // OpenAICompatSignatureReasoningNeedsText reports whether the opaque
@@ -352,22 +368,9 @@ func IsOpenAICompatEncryptedReasoning(s string) bool {
 // reasoning, and must survive a replay trim. A part whose array has no such
 // item carries display text only.
 func OpenAICompatSignatureReasoningNeedsText(s string) bool {
-	if !IsOpenAICompatEncryptedReasoning(s) {
-		return false
-	}
-	var items []struct {
-		Type string `json:"type"`
-		Text string `json:"text"`
-	}
-	if json.Unmarshal([]byte(s), &items) != nil {
-		return false
-	}
-	for _, it := range items {
-		if it.Type == "reasoning.text" && it.Text == "" {
-			return true
-		}
-	}
-	return false
+	signed := OpenAICompatSignedReasoningItem(OpenAICompatReasoningDetails(s))
+	text, _ := signed["text"].(string)
+	return signed != nil && text == ""
 }
 
 // TrimThinkingForReplay applies a target's thinking-replay policy to one

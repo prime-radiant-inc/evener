@@ -1016,6 +1016,7 @@ func TestEstimateMessagesInputTokensForResolved_BillsThinkingShapesByAdapter(t *
 	id := strings.Repeat("i", idChars)
 	summary := strings.Repeat("m", summaryChars)
 	compat := `[{"type":"reasoning.text","text":"","signature":"` + strings.Repeat("g", textChars) + `"}]`
+	signed := `[{"type":"reasoning.text","text":"` + text + `","signature":"sig"}]`
 
 	part := func(kind ContentKind, thinking *ThinkingData) []Message {
 		return []Message{{Role: RoleAssistant, Content: []ContentPart{{Kind: kind, Thinking: thinking}}}}
@@ -1031,6 +1032,10 @@ func TestEstimateMessagesInputTokensForResolved_BillsThinkingShapesByAdapter(t *
 	anthropic, responses := registry.ProtocolAnthropic, registry.ProtocolOpenAIResponses
 	chat, google := registry.ProtocolOpenAIChat, registry.ProtocolGoogle
 	replay := registry.Caps{ReplayReasoningText: new(true)}
+	signedAndScalar := thinking(&ThinkingData{Text: text, EncryptedContent: signed})
+	signedAndScalar[0].Content = append(signedAndScalar[0].Content, ContentPart{
+		Kind: ContentThinking, Thinking: &ThinkingData{Text: summary, Signature: "reasoning"},
+	})
 	userThinking := thinking(&ThinkingData{ID: id, Text: text})
 	userThinking[0].Role = RoleUser
 	mixed := thinking(&ThinkingData{Text: text + summary, ResponsesTextParts: []ResponsesTextPart{
@@ -1066,6 +1071,10 @@ func TestEstimateMessagesInputTokensForResolved_BillsThinkingShapesByAdapter(t *
 		{"google drops an opaque blob", row(google, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob, Text: text}), 0},
 
 		{"chat bills the compat array and its text", row(chat, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: compat, Text: text}), (len(compat) + textChars) / 4},
+		{"chat bills text already in its signed detail once", row(chat, replay), thinking(&ThinkingData{EncryptedContent: signed, Text: text}), len(signed) / 4},
+		{"chat bills independent scalar text beside its signed detail", row(chat, replay), signedAndScalar, (len(signed) + summaryChars) / 4},
+		{"chat bills text inserted in a signature-only detail", row(chat, replay), thinking(&ThinkingData{EncryptedContent: compat, Text: text}), (len(compat) + textChars) / 4},
+		{"chat bills signed text sent again as assistant content", row(chat, declare(true, true)), thinking(&ThinkingData{EncryptedContent: signed, Text: text}), (len(signed) + textChars) / 4},
 		{"anthropic drops the compat array and replays the text", row(anthropic, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: compat, Text: text}), textChars / 4},
 		{"responses drops the compat array", row(responses, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: compat, Text: text}), 0},
 		{"google drops the compat array", row(google, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: compat}), 0},

@@ -463,23 +463,25 @@ func responsesReasoningChars(t *ThinkingData, replayText bool) int {
 	return chars
 }
 
-// chatReasoningChars is what chatcompletions/messages.go emits: the compat
-// reasoning_details array (kept off the wire by a declared non-reasoning row),
-// the part's text (kept off the wire by a declared non-reasoning row that does
-// not replay thinking as text, which is what the target's unsignedThinking
-// records for a chat row), and the text a signature-bearing reasoning item
-// needs merged into it even when the target would otherwise drop the text.
-// A redacted part is never read.
+// chatReasoningChars counts the detail payload plus any text the Chat adapter
+// sends outside that payload or inserts into a signature-only detail.
 func chatReasoningChars(target targetInfo, p ContentPart) int {
 	if p.Kind != ContentThinking {
 		return 0
 	}
 	t := p.Thinking
 	chars := 0
-	if !target.reasoningOff && IsOpenAICompatEncryptedReasoning(t.EncryptedContent) {
-		chars += len(t.EncryptedContent)
+	sendText := target.unsignedThinking
+	if !target.reasoningOff {
+		if details := OpenAICompatReasoningDetails(t.EncryptedContent); len(details) > 0 {
+			chars = len(t.EncryptedContent)
+			if signed := OpenAICompatSignedReasoningItem(details); signed != nil && !target.thinkingAsText {
+				text, _ := signed["text"].(string)
+				sendText = text == ""
+			}
+		}
 	}
-	if target.unsignedThinking || (!target.reasoningOff && OpenAICompatSignatureReasoningNeedsText(t.EncryptedContent)) {
+	if sendText {
 		chars += len(t.Text)
 	}
 	return chars
@@ -508,6 +510,8 @@ type targetInfo struct {
 	// keeps the reasoning fields and the reasoning_details array off the wire
 	// (chatcompletions/messages.go).
 	reasoningOff bool
+	// thinkingAsText emits the display text again in ordinary assistant content.
+	thinkingAsText bool
 	// dropsToolResultImages marks a resolved row whose adapter leaves a
 	// tool-result image off the wire entirely (dropsToolResultImages).
 	dropsToolResultImages bool
@@ -650,6 +654,7 @@ func targetFromResolved(res registry.Resolved, provider, model string) targetInf
 		resolved: true, providerFromCaller: providerFromCaller,
 		imageDetail:           registry.StringValue(res.Caps.ImageDetail),
 		reasoningOff:          res.Caps.ReasoningDisabled(),
+		thinkingAsText:        registry.BoolValue(res.Caps.ThinkingAsText),
 		dropsToolResultImages: dropsToolResultImages(res),
 		seenToolResultDocuments: !res.Synthesized && res.Caps.AcceptsModality("pdf") &&
 			deliversToolResultDocuments(res.Protocol),
