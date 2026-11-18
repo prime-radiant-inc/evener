@@ -184,6 +184,29 @@ function frameOwesReread(n: AnyNotification): boolean {
 	return n.method === "evener/jobs/treeUpdated";
 }
 
+// Whether a model-control frame buffered during a read still owes the store an
+// authoritative answer once that read has published `published`.
+//
+// The shared reducer ignores a snapshot input while the held state is not
+// `ready`, so a frame that lands while the store holds `recovering` leaves no
+// trace on the held model — and a read's own publication takes the READ's
+// model-control fields. Every buffered frame is therefore classified against
+// the state the read just established, exactly as the live path would classify
+// it: a newer revision, an equal-revision conflict or a foreign authority asks
+// for an authoritative answer, and a frame the read already satisfies asks for
+// nothing.
+function modelControlFrameNeedsRead(frames: readonly AnyNotification[], published: ThreadModel): boolean {
+	return frames.some((frame) => {
+		if (frame.method !== "thread/model/controlChanged") return false;
+		const probe = reduceModelControl(published, {
+			kind: "snapshot",
+			source: "notification",
+			snapshot: frame.params.modelControl,
+		});
+		return probe.decision !== "ignored" && probe.decision !== "duplicate";
+	});
+}
+
 // I1: Binding snapshot captured at request time. Every request through the
 // drain scheduler captures the current bindingEpoch + ref + generation +
 // service object identity and projected flag. The effect verifies ALL fields are still
@@ -2071,7 +2094,20 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 							: { model: currentConvForMerge, replacementReadRequired: false };
 						if (readControl.model !== currentConvForMerge) {
 							set({ conversation: { ...readControl.model, items: currentConvForMerge.items } });
-							if (readControl.replacementReadRequired) requestRehydrate(ref);
+							// A frame that landed during this read is newer than the answer
+							// that just established authority, and the shared reducer ignored
+							// it while the store held `recovering` — so it leaves no trace on
+							// what was published. Probe every held frame against that state,
+							// exactly as the published path does, and ask for the authoritative
+							// answer the frame names. The discarded window is the only thing
+							// this branch drops: the transcript, paging cursor and mutation
+							// state stay as they were.
+							if (
+								readControl.replacementReadRequired ||
+								modelControlFrameNeedsRead(framesDuringRead, readControl.model)
+							) {
+								requestRehydrate(ref);
+							}
 						}
 						markLatest("unknown");
 						return;
@@ -2221,27 +2257,13 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						// null — preserve it (do not spuriously increment errorOwnerRev).
 						set(commitBase);
 					}
-					// A model-control frame that landed during this read while the store
-					// held `recovering` was folded by the shared reducer, which ignores a
-					// snapshot input off `ready` — it left no trace on the held model —
-					// and the publication above takes the READ's own model-control
-					// fields. Probe each held frame against the state this read just
-					// established, classified exactly as the live path would classify
-					// it: a newer revision, an equal-revision conflict or a foreign
-					// authority still asks for an authoritative answer, so carry that
-					// one recovery read out of publication here — independently of
-					// transcript replacement. A frame this read already satisfies
-					// asks for nothing.
-					const modelControlFramePending = framesDuringRead.some((frame) => {
-						if (frame.method !== "thread/model/controlChanged") return false;
-						const probe = reduceModelControl(committedConversation, {
-							kind: "snapshot",
-							source: "notification",
-							snapshot: frame.params.modelControl,
-						});
-						return probe.decision !== "ignored" && probe.decision !== "duplicate";
-					});
-					if (modelControlRecoveryRequired || modelControlFramePending) requestRehydrate(ref);
+					// The publication above takes the READ's own model-control fields, so
+					// a frame that landed while the store held `recovering` was ignored
+					// by the shared reducer and needs one authoritative answer here —
+					// independently of transcript replacement.
+					if (modelControlRecoveryRequired || modelControlFrameNeedsRead(framesDuringRead, committedConversation)) {
+						requestRehydrate(ref);
+					}
 				} catch (err) {
 					// R1: failure may set error only if error/page/mutation owners all
 					// remain unchanged. Check binding epoch, generation, token, page

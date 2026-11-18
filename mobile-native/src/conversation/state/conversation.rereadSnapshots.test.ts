@@ -239,6 +239,91 @@ describe("ConversationStore", () => {
 			expect(conversation.turns).toEqual(heldTurns);
 		});
 
+		// A recovery read that loses the transcript race still answers about model
+		// control, and that answer can itself be older than a same-boot switch
+		// another client made while the read was in flight. The frame arrives while
+		// the store holds `recovering`, so the shared reducer ignores it and the
+		// discarded-window branch used to return before probing it — publishing the
+		// read's older model as final, with no replacement read scheduled, so the
+		// composer showed the wrong selection until another update or read.
+		it("reconciles a model-control frame buffered during a discarded recovery read", async () => {
+			const service = new FakeConversationService();
+			const store = createConversationStore();
+			const initial = modelControl(1, MODEL_AUTHORITY_A, "claude-sonnet-5");
+			service.readProjectionResult = {
+				conversation: makeConversation(modelConversation(initial), true),
+				olderCursor: null,
+			};
+			await store.getState().openProjected(service, "ref-1");
+			// The pane waits for an authoritative answer, holding a longer window
+			// than the recovery read will carry, plus a paging cursor the discarded
+			// branch must leave alone.
+			const held = store.getState().conversation;
+			if (held === null) throw new Error("expected an opened conversation");
+			store.setState({
+				olderCursor: "cursor-held",
+				conversation: {
+					...held,
+					history: held.history && { ...held.history, length: 40 },
+					modelControlState: {
+						kind: "recovering",
+						lastSafeDisplay: { modelProvider: "anthropic", model: "claude-sonnet-5" },
+					},
+				},
+			});
+			const heldTurns = store.getState().conversation?.turns;
+			// The recovery read answers with a same-boot envelope one revision
+			// behind the switch that is about to land, and a window shorter than the
+			// held one, so its transcript is discarded.
+			const readSnapshot = modelControl(3, MODEL_AUTHORITY_A, "claude-opus-4-6");
+			const switched = modelControl(4, MODEL_AUTHORITY_A, "claude-haiku-4-5");
+			service.readProjectionResult = {
+				conversation: {
+					...makeConversation(modelConversation(readSnapshot), true),
+					history: { ...makeConversation(modelConversation(readSnapshot), true).history!, length: 1 },
+				},
+				olderCursor: null,
+			};
+			const ctrl = makeControlledRead(service);
+			const reading = store.getState().rehydrate(service);
+			await ctrl.started(1);
+			await ctrl.ready(1);
+
+			// Another client's switch lands while the store still holds
+			// `recovering`: the shared reducer ignores it, leaving no trace.
+			store.getState().applyNotification({
+				method: "thread/model/controlChanged",
+				params: { ref: "ref-1", threadId: "thread-1", modelControl: switched },
+			});
+			expect(store.getState().conversation?.modelControlState.kind).toBe("recovering");
+			// The daemon the switch committed on answers the replacement read the
+			// discarded branch must request.
+			service.readProjectionResult = {
+				conversation: makeConversation(modelConversation(switched), true),
+				olderCursor: null,
+			};
+			expect(ctrl.release()).toBe(true);
+			await reading;
+			await ctrl.completed(1);
+			await yieldMicrotask();
+			// The buffered frame is newer than the answer that just established
+			// authority, so the store owes one authoritative read. Without it the
+			// composer settles on the read's older choice.
+			expect(ctrl.getStartedCount(), "no replacement read was requested for the newer buffered frame").toBe(2);
+			await ctrl.ready(2);
+			expect(ctrl.release()).toBe(true);
+			await ctrl.completed(2);
+			await yieldMicrotask();
+
+			const conversation = store.getState().conversation;
+			if (conversation === null) throw new Error("expected a conversation");
+			expect(conversation.modelControlState).toEqual({ kind: "ready", snapshot: switched });
+			expect(modelControlDisplay(conversation).model).toBe("claude-haiku-4-5");
+			// Nothing else moved: the held transcript and the paging cursor stay.
+			expect(conversation.turns).toEqual(heldTurns);
+			expect(store.getState().olderCursor).toBe("cursor-held");
+		});
+
 		it("adopts a live whole-snapshot update through the shared notification reducer", async () => {
 			const service = new FakeConversationService();
 			const store = createConversationStore();
