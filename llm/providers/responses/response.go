@@ -119,38 +119,30 @@ func responsesThinking(item map[string]any) *llm.ThinkingData {
 	encrypted, _ := item["encrypted_content"].(string)
 	parts, _ := item["content"].([]any)
 	var display strings.Builder
-	ranges := make([][2]int, 0)
-	havePart := false
+	var textParts []llm.ResponsesTextPart
 	for _, part := range parts {
 		p, _ := part.(map[string]any)
 		text, ok := p["text"].(string)
-		raw := p["type"] == "reasoning_text"
-		if !ok || (!raw && strings.TrimSpace(text) == "") {
+		kind, _ := p["type"].(string)
+		if !ok || (kind == "" && strings.TrimSpace(text) == "") {
 			continue
 		}
-		if havePart {
+		if len(textParts) != 0 {
 			display.WriteString(reasoningPartSeparator)
 		}
-		havePart = true
 		start := display.Len()
 		display.WriteString(text)
-		if raw {
-			ranges = append(ranges, [2]int{start, display.Len()})
-		}
+		textParts = append(textParts, llm.ResponsesTextPart{Type: kind, Start: start, End: display.Len()})
 	}
-	if !havePart && encrypted == "" {
+	if len(textParts) == 0 && encrypted == "" {
 		return nil
 	}
-	wholeText := len(ranges) == 1 && ranges[0] == [2]int{0, display.Len()} && display.Len() > 0
-	if encrypted != "" || (wholeText && strings.TrimSpace(id) != "") {
-		ranges = nil
-	}
 	return &llm.ThinkingData{
-		ID:                  id,
-		Text:                display.String(),
-		EncryptedContent:    encrypted,
-		Summary:             parseReasoningSummary(item["summary"]),
-		ResponsesTextRanges: ranges,
+		ID:                 id,
+		Text:               display.String(),
+		EncryptedContent:   encrypted,
+		Summary:            parseReasoningSummary(item["summary"]),
+		ResponsesTextParts: textParts,
 	}
 }
 

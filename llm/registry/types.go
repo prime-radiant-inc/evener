@@ -301,6 +301,13 @@ func (c Caps) ReplaysReasoningText() bool {
 	return BoolValue(c.ReplayReasoningText) && !c.ReasoningDisabled()
 }
 
+// ReplaysRawReasoning reports whether the row sends plaintext reasoning as
+// native history. Chat's explicit thinking_as_text mode uses assistant text.
+func (r Resolved) ReplaysRawReasoning() bool {
+	return r.Caps.ReplaysReasoningText() && (r.Protocol == ProtocolOpenAIResponses ||
+		(r.Protocol == ProtocolOpenAIChat && !BoolValue(r.Caps.ThinkingAsText)))
+}
+
 // InputCeiling returns the smaller positive input token limit from
 // MaxInputTokens and ContextWindow, or 0 when neither is positive.
 func (c Caps) InputCeiling() int {

@@ -515,12 +515,17 @@ of what the target accepts.
   field. Without a declared field, the adapter uses the recognized incoming
   field or defaults to `reasoning_content`. An ordinary chat session omits
   plain reasoning until its row opts in. The existing `thinking_as_text`
-  setting merges reasoning into assistant-visible text, and opaque
-  `reasoning_details` retain their separate continuation behavior.
+  setting takes precedence and merges reasoning into assistant-visible text
+  across model switches. Opaque `reasoning_details` retain their separate
+  continuation behavior.
 - On `openai-responses`, an encrypted reasoning item takes precedence. When
   the row opts in and an item has raw `content`, Evener returns its
-  `reasoning_text` parts in order with the item's ID when supplied. A
-  display summary alone supplies no raw text. Neither
+  `reasoning_text` parts in order with the item's ID when supplied. Evener
+  saves the type and boundaries of each text part, including display-only
+  parts. Older transcripts can contain an item ID and joined text without
+  part types. On an opted-in route, Evener sends that text as one reasoning
+  part for the issuing model. Any display text already joined into that old
+  item travels with it. A summary alone supplies no raw text. Neither
   `fields.include` nor server-side continuation is needed for this path.
 
 The bundled Chat Completions providers `deepseek`, `zai`, `zai-coding-plan`,

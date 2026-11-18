@@ -256,36 +256,40 @@ type ThinkingData struct {
 	// cryptographic thinking signature; OpenAI-compatible providers store the
 	// wire field the reasoning arrived on (see OpenAICompatReasoningFields).
 	// Providers must guard against replaying a foreign provider's value.
-	Signature        string   `json:"signature,omitempty"`
-	Redacted         bool     `json:"redacted,omitempty"`
-	EncryptedContent string   `json:"encrypted_content,omitempty"`
-	Summary          []string `json:"summary,omitempty"`
-	// ResponsesTextRanges are the half-open byte ranges of reasoning_text
-	// parts within Text. An empty array marks display-only content. An absent
-	// array leaves the Responses item ID as the sole evidence of its origin.
-	ResponsesTextRanges [][2]int `json:"responses_text_ranges,omitzero"`
+	Signature          string              `json:"signature,omitempty"`
+	Redacted           bool                `json:"redacted,omitempty"`
+	EncryptedContent   string              `json:"encrypted_content,omitempty"`
+	Summary            []string            `json:"summary,omitempty"`
+	ResponsesTextParts []ResponsesTextPart `json:"responses_text_parts,omitempty"`
+}
+
+// ResponsesTextPart preserves a reasoning content part's wire type and
+// half-open byte range in ThinkingData.Text without storing its text twice.
+type ResponsesTextPart struct {
+	Type  string `json:"type"`
+	Start int    `json:"start"`
+	End   int    `json:"end"`
 }
 
 // ResponsesReasoningTextParts yields the original raw Responses content that
-// can be replayed. Only the Responses decoder assigns thinking item IDs, so a
-// saved item with an ID but no boundaries can supply one unsplit text part.
+// can be replayed. A named item without part metadata can only supply its
+// saved display text as one undivided part.
 func (t *ThinkingData) ResponsesReasoningTextParts() iter.Seq[string] {
 	return func(yield func(string) bool) {
 		if t == nil || t.Redacted || t.Signature != "" || t.EncryptedContent != "" {
 			return
 		}
-		if t.ResponsesTextRanges == nil {
+		if len(t.ResponsesTextParts) == 0 {
 			if strings.TrimSpace(t.ID) != "" && t.Text != "" {
 				yield(t.Text)
 			}
 			return
 		}
-		for _, span := range t.ResponsesTextRanges {
-			start, end := span[0], span[1]
-			if start < 0 || start > end || end > len(t.Text) {
+		for _, p := range t.ResponsesTextParts {
+			if p.Type != "reasoning_text" || p.Start < 0 || p.Start > p.End || p.End > len(t.Text) {
 				continue
 			}
-			if !yield(t.Text[start:end]) {
+			if !yield(t.Text[p.Start:p.End]) {
 				return
 			}
 		}

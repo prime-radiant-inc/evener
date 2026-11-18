@@ -546,9 +546,7 @@ type Turn struct {
 // A request projection never edits the stored message.
 func (t *Turn) ProjectReasoningText(res *registry.Resolved) llm.Message {
 	msg := t.Message
-	if res == nil || msg.Role != llm.RoleAssistant || !res.Caps.ReplaysReasoningText() ||
-		(res.Protocol != registry.ProtocolOpenAIChat && res.Protocol != registry.ProtocolOpenAIResponses) ||
-		t.MatchesReasoningTextTarget(res) {
+	if res == nil || msg.Role != llm.RoleAssistant || !res.ReplaysRawReasoning() || t.MatchesReasoningTextTarget(res) {
 		return msg
 	}
 	if res.Protocol == registry.ProtocolOpenAIChat {
@@ -571,6 +569,28 @@ func (t *Turn) MatchesReasoningTextTarget(res *registry.Resolved) bool {
 	if res.Instance == "" || t.ResponseProvider != res.Instance ||
 		(t.ResponseProtocol != "" && t.ResponseProtocol != res.Protocol) {
 		return false
+	}
+	if t.ResponseProtocol == "" {
+		// An unstamped turn can still identify its protocol through the
+		// reasoning item's wire fields, including after a route change.
+		for _, part := range t.Message.Content {
+			d := part.Thinking
+			if d == nil {
+				continue
+			}
+			switch {
+			case llm.IsOpenAICompatReasoningField(d.Signature), llm.IsOpenAICompatEncryptedReasoning(d.EncryptedContent):
+				if res.Protocol != registry.ProtocolOpenAIChat {
+					return false
+				}
+			case d.Signature != "":
+				return false
+			case d.ID != "" || len(d.ResponsesTextParts) != 0 || d.EncryptedContent != "":
+				if res.Protocol != registry.ProtocolOpenAIResponses {
+					return false
+				}
+			}
+		}
 	}
 	if requested := strings.TrimSpace(t.ResponseRequestModel); requested != "" {
 		return requested == res.ModelID

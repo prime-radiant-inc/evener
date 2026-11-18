@@ -102,7 +102,7 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 				want = append([]replayItem{item}, want...)
 			}
 			if got := replayInput(t, acc.Response().Message, true); !reflect.DeepEqual(got, want) {
-				t.Fatalf("next input = %+v, want %+v", got, want)
+				t.Fatalf("next input = %#v, want %#v", got, want)
 			}
 		})
 	}
@@ -145,6 +145,19 @@ func TestResponseContentFromOutputItems_KeepsReasoningTextContent(t *testing.T) 
 	if th.Thinking.EncryptedContent != "" {
 		t.Fatalf("encrypted content = %q, want empty", th.Thinking.EncryptedContent)
 	}
+	var record struct {
+		Parts []replayText `json:"responses_text_parts"`
+	}
+	if err := json.Unmarshal([]byte(jsonOf(t, th.Thinking)), &record); err != nil {
+		t.Fatal(err)
+	}
+	var kinds []string
+	for _, p := range record.Parts {
+		kinds = append(kinds, p.Type)
+	}
+	if want := []string{"reasoning_text", "summary_text", "reasoning_text", "reasoning_text"}; !reflect.DeepEqual(kinds, want) {
+		t.Fatalf("saved content types = %q, want %q", kinds, want)
+	}
 	msg := llm.Message{Role: llm.RoleAssistant, Content: content}
 	items := replayInput(t, msg, true)
 	want := []replayItem{
@@ -155,7 +168,7 @@ func TestResponseContentFromOutputItems_KeepsReasoningTextContent(t *testing.T) 
 		{Type: "message", Phase: "final_answer", Content: []replayText{{"output_text", "m2"}}},
 	}
 	if !reflect.DeepEqual(items, want) {
-		t.Fatalf("replayed items = %+v, want %+v", items, want)
+		t.Fatalf("replayed items = %#v, want %#v", items, want)
 	}
 	for _, it := range replayInput(t, msg, false) {
 		if it.Type == "reasoning" {
@@ -186,7 +199,7 @@ func TestBuildBody_ReasoningReplaySources(t *testing.T) {
 			want = append([]replayItem{{Type: "reasoning", ID: "rs_old", Content: []replayText{{"reasoning_text", " r1\n\nr2 "}}, Summary: []replayText{}}}, want...)
 		}
 		if got := replayInput(t, msg, replay); !reflect.DeepEqual(got, want) {
-			t.Errorf("replay %v: got %+v, want %+v", replay, got, want)
+			t.Errorf("replay %v: got %#v, want %#v", replay, got, want)
 		}
 	}
 }

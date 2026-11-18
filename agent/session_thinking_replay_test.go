@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/chatcompletions"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -149,18 +150,12 @@ func TestSessionReplaysReasoningAcrossToolRoundsAndTurns(t *testing.T) {
 		t.Run(profile.Protocol(), func(t *testing.T) {
 			t.Parallel()
 			adapter := &fakeAdapter{name: profile.ID(), steps: []func(llm.Request) llm.Response{
-				func(llm.Request) llm.Response {
-					return withReasoningMarker(agenttest.ToolCallResponse(
-						llm.ToolCallData{ID: "tool-a", Name: "missing_a", Arguments: []byte(`{}`)}), profile.Protocol(), "r17a")
-				},
-				func(llm.Request) llm.Response {
-					return withReasoningMarker(agenttest.ToolCallResponse(
-						llm.ToolCallData{ID: "tool-b", Name: "missing_b", Arguments: []byte(`{}`)}), profile.Protocol(), "r28b")
-				},
-				func(llm.Request) llm.Response {
-					return withReasoningMarker(agenttest.FinalResponse("done"), profile.Protocol(), "r39c")
-				},
-				func(llm.Request) llm.Response { return agenttest.FinalResponse("done") },
+				fixedStep(withReasoningMarker(agenttest.ToolCallResponse(
+					llm.ToolCallData{ID: "tool-a", Name: "missing_a", Arguments: []byte(`{}`)}), profile.Protocol(), "r17a")),
+				fixedStep(withReasoningMarker(agenttest.ToolCallResponse(
+					llm.ToolCallData{ID: "tool-b", Name: "missing_b", Arguments: []byte(`{}`)}), profile.Protocol(), "r28b")),
+				fixedStep(withReasoningMarker(agenttest.FinalResponse("done"), profile.Protocol(), "r39c")),
+				fixedStep(agenttest.FinalResponse("done")),
 			}}
 			s := newSession(t, withProfile(profile), withAdapter(adapter))
 			ctx := tripwireCtx(t)
@@ -200,14 +195,10 @@ func TestFallbackReplaysOnlyItsIssuersReasoning(t *testing.T) {
 		},
 	}
 	fallbackAdapter := &fakeAdapter{name: fallback.ID(), steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response {
-			return withReasoningMarker(agenttest.ToolCallResponse(
-				llm.ToolCallData{ID: "tool-b", Name: "missing_b", Arguments: []byte(`{}`)}), fallback.Protocol(), "fallback-73")
-		},
-		func(llm.Request) llm.Response {
-			return withReasoningMarker(agenttest.FinalResponse("done"), fallback.Protocol(), "fallback-81")
-		},
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("done") },
+		fixedStep(withReasoningMarker(agenttest.ToolCallResponse(
+			llm.ToolCallData{ID: "tool-b", Name: "missing_b", Arguments: []byte(`{}`)}), fallback.Protocol(), "fallback-73")),
+		fixedStep(withReasoningMarker(agenttest.FinalResponse("done"), fallback.Protocol(), "fallback-81")),
+		fixedStep(agenttest.FinalResponse("done")),
 	}}
 	s := newSession(t, withProfile(primary), withAdapter(primaryAdapter), withAdapter(fallbackAdapter),
 		withConfig(SessionConfig{
@@ -276,6 +267,14 @@ func TestSessionScopesReasoningTextToTheIssuingModel(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
+			otherProtocol := registry.ProtocolOpenAIChat
+			if profile.Protocol() == registry.ProtocolOpenAIChat {
+				otherProtocol = registry.ProtocolOpenAIResponses
+			}
+			foreign := withReasoningMarker(llm.Response{Provider: profile.ID(), Model: "served-reasoner", Message: llm.Assistant("answer")}, otherProtocol, "old-route-19")
+			if err := s.appendAssistantTurn(foreign, ModelAttemptMetadata{RequestModel: "reasoner"}); err != nil {
+				t.Fatal(err)
+			}
 			if _, err := s.ProcessInput(tripwireCtx(t), "continue", nil); err != nil {
 				t.Fatal(err)
 			}
@@ -297,6 +296,37 @@ func TestSessionScopesReasoningTextToTheIssuingModel(t *testing.T) {
 			assertReasoningMarkers(t, requests[1], "model-6d")
 		})
 	}
+}
+
+func TestChatThinkingAsTextAcrossModels(t *testing.T) {
+	t.Parallel()
+	row := replayGateway("gw", registry.ProtocolOpenAIChat).Resolved()
+	row.Caps.ThinkingAsText = new(true)
+	profile := provider.FromResolved(row, nil)
+	adapter := &fakeAdapter{name: profile.ID(), steps: []func(llm.Request) llm.Response{fixedStep(agenttest.FinalResponse("done"))}}
+	s := newSession(t, withProfile(profile), withAdapter(adapter))
+	prior := withReasoningMarker(llm.Response{Provider: row.Instance, Model: "other", Message: llm.Assistant("answer-4e")}, row.Protocol, "trace-7b")
+	if err := s.appendAssistantTurn(prior, ModelAttemptMetadata{Protocol: row.Protocol, RequestModel: "other"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ProcessInput(tripwireCtx(t), "continue", nil); err != nil {
+		t.Fatal(err)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 1 {
+		t.Fatalf("got %d requests, want one", len(requests))
+	}
+	body, err := chatcompletions.DefaultProtocol.BuildBody(requests[0], row)
+	if err != nil {
+		t.Fatal(err)
+	}
+	messages := body["messages"].([]map[string]any)
+	for _, m := range messages {
+		if m["role"] == "assistant" && m["content"] == "trace-7b\n\nanswer-4e" && m["reasoning_content"] == nil {
+			return
+		}
+	}
+	t.Error("prior model's thinking and answer did not travel together as ordinary assistant text")
 }
 
 // TestExpandHistory_OpenAIChat_DropThinkingKeepsEncryptedDetails pins the

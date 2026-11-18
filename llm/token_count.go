@@ -842,7 +842,7 @@ func unsignedThinkingReplayed(res registry.Resolved, provider, model string) boo
 	case registry.ProtocolAnthropic:
 		return true
 	case registry.ProtocolOpenAIResponses:
-		return res.Caps.ReplaysReasoningText()
+		return res.ReplaysRawReasoning()
 	case registry.ProtocolOpenAIChat:
 		// The adapter replays the text for a reasoning-enabled row, and merges
 		// it into assistant content for a thinking_as_text row. A request-level
@@ -865,7 +865,7 @@ func ReplaysAssistantThinking(res registry.Resolved) bool {
 	if res.Protocol != registry.ProtocolOpenAIChat {
 		return true
 	}
-	return res.Caps.ReplaysReasoningText() || registry.BoolValue(res.Caps.ThinkingAsText)
+	return res.ReplaysRawReasoning() || registry.BoolValue(res.Caps.ThinkingAsText)
 }
 
 // unsignedThinkingReplayedByName is the fallback for callers with no resolved
@@ -1010,12 +1010,10 @@ func EstimatorTargetsEquivalent(a, b registry.Resolved) bool {
 	if registry.BoolValue(a.Caps.ThinkingAsText) != registry.BoolValue(b.Caps.ThinkingAsText) {
 		return false
 	}
-	if a.Protocol == registry.ProtocolOpenAIChat || a.Protocol == registry.ProtocolOpenAIResponses {
-		// A turn can identify its issuer by the reported wire model.
-		replay := a.Caps.ReplaysReasoningText()
-		if replay != b.Caps.ReplaysReasoningText() || (replay && a.WireID != b.WireID) {
-			return false
-		}
+	// A turn can identify its issuer by the reported wire model.
+	replay := a.ReplaysRawReasoning()
+	if replay != b.ReplaysRawReasoning() || (replay && a.WireID != b.WireID) {
+		return false
 	}
 	if registry.StringValue(a.Caps.ImageDetail) != registry.StringValue(b.Caps.ImageDetail) {
 		return false
