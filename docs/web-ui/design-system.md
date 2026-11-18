@@ -1342,15 +1342,7 @@ the coarse query says a touch screen exists, and desktop zoom keeps every
 path. The enlargement paths that remain on touch screens are the in-app
 font-size preference (S/M/L/XL) and the OS Magnifier; a reader who arrives
 already zoomed keeps that zoom and recovers through Safari's Page Zoom
-setting, since the veto removes the pinch way back. Safari's text autosizing
-is off for the same reason: `global.css`'s `body` rule pins
-`text-size-adjust: 100%`, because the engine's heuristic grows text it judges
-too narrow for its block and exempts text inside a form control, so a row's
-caption line in a plain `<span>` grew to ~16.8px while the session title in
-its `<button>` stayed at 13px on the iPhone Duo's cover display (Jesse
-2026-11-18). The type ramp owns every rendered size, so the engine's guess
-only ever departs from it. `src/styles/text-autosize.test.ts` fails if the pin
-goes away. The viewport meta
+setting, since the veto removes the pinch way back. The viewport meta
 itself still never locks zoom: modern iOS ignores `maximum-scale` for
 pinch anyway, so a meta lock would add nothing the veto and the coarse
 query do not already own, and `src/styles/viewport-pin.test.ts` fails if
@@ -1359,6 +1351,16 @@ minimum and maximum, keeps the resize behavior accessible, and reserves space
 for any pinned actions below it. The field remains the same semantic textarea
 and preserves keyboard submission, attachment, paste, and screen-reader
 behavior across breakpoints.
+
+Safari's text autosizing is also off: `global.css`'s `body` rule pins
+`text-size-adjust: 100%`. The engine grows text in a block whose measured
+width it judges too narrow, so a rail row's truncated caption grew to ~16.8px
+on the iPhone Duo's cover display while its 13px title and its 12px timestamp
+from the same token stayed put (Jesse 2026-11-18). The type ramp owns every
+rendered size, the reader's own scale included, so the engine's guess only ever
+departs from it — and since the engine decides per block at layout time, the
+pin is document-wide rather than gated on the coarse query like the touch
+rules. `src/styles/text-autosize.test.ts` fails if it goes away.
 
 The touch floor query is `@media (max-width: 899px), (any-pointer: coarse)`.
 `--tap-min`, 44px (decision 4 of 2026-07-30-mobile-session-layout-design.md),
