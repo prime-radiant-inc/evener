@@ -159,7 +159,13 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 	t.Parallel()
 	decode := func(t *testing.T, body, sse string) (map[string]*llm.Response, string) {
 		t.Helper()
-		responses := map[string]*llm.Response{}
+		srv, _ := server(t, 200, body)
+		protocol := Protocol{Client: srv.Client()}
+		complete, err := protocol.Complete(t.Context(), userReq("sum"), liveRes(srv, nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		responses := map[string]*llm.Response{"complete": &complete}
 		for mode, recording := range map[string]string{"json": body, "recorded SSE": sse} {
 			resp, err := ExtractRecordedResponse([]byte(recording), "m")
 			if err != nil {
@@ -187,7 +193,7 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 		t.Helper()
 		for _, key := range llm.OpenAICompatReasoningFields() {
 			got, ok := msg[key]
-			if key == field && value != "" {
+			if key == field {
 				if got != value {
 					t.Errorf("%s = %#v, want %q", key, got, value)
 				}
@@ -221,6 +227,10 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 			name:        "mirrored unsigned text",
 			scalarField: "reasoning_text", scalar: "mirror-29", display: "mirror-29",
 			details: []any{map[string]any{"type": "reasoning.text", "text": "mirror-29"}},
+		},
+		{
+			name: "explicit empty scalar alongside an unsigned detail", scalarField: "reasoning", display: "two plus two",
+			details: []any{map[string]any{"type": "reasoning.text", "text": "two plus two"}},
 		},
 		{
 			name: "explicit index overlaps a sibling's array position", scalarField: "reasoning", scalar: "scalar", display: "left\nright",
@@ -266,6 +276,10 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 						res := resolved(nil)
 						res.Caps = route.caps
 						messages := build(t, req, res)["messages"].([]map[string]any)
+						warm := build(t, llm.Request{Model: "m", Messages: []llm.Message{resp.Message}}, res)
+						if jsonOf(t, messages) != jsonOf(t, warm["messages"]) {
+							t.Fatalf("persisted request differs on %q", route.field)
+						}
 						if len(messages) != 1 || messages[0]["role"] != "assistant" {
 							t.Fatalf("%s replay = %v, want one assistant message", route.field, messages)
 						}
@@ -284,6 +298,24 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 			}
 		})
 	}
+	t.Run("populated scalar after a blank alias", func(t *testing.T) {
+		fields := map[string]any{"reasoning_content": "", "reasoning": "four"}
+		sse := `data: {"choices":[{"delta":{"reasoning_content":""}}]}
+
+data: {"choices":[{"delta":{"reasoning":"four"},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+`
+		responses, _ := decode(t, jsonOf(t, chatResponseRaw(fields, "stop")), sse)
+		for _, resp := range responses {
+			out, err := toChatMessages([]llm.Message{resp.Message}, registry.Caps{ReplayReasoningText: new(true)}, false)
+			if err != nil || len(out) != 1 {
+				t.Fatalf("scalar replay = %v, error %v", out, err)
+			}
+			checkScalar(t, out[0], "reasoning", "four")
+		}
+	})
 	t.Run("encrypted detail display and scalar provenance", func(t *testing.T) {
 		const extension, unsignedText = " extension-21\t", " unsigned-51 "
 		opaque := map[string]any{"type": "reasoning.encrypted", "id": "e-42", "data": "cipher-39", "text": extension}
@@ -294,6 +326,7 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 		}{
 			{name: "encrypted detail alone"},
 			{name: "unsigned detail fallback", unsigned: true, wantField: "reasoning_content", wantScalar: unsignedText},
+			{name: "explicit empty scalar", unsigned: true, wantField: "reasoning_text"},
 			{name: "independent scalar", unsigned: true, scalar: " scalar-17\n", wantField: "reasoning_text", wantScalar: " scalar-17\n"},
 			{name: "independent scalar mirrors the extension", scalar: extension, wantField: "reasoning_text", wantScalar: extension},
 		} {
@@ -305,7 +338,7 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 					display += "\n" + unsignedText
 				}
 				fields := map[string]any{"reasoning_details": details}
-				if tc.scalar != "" {
+				if tc.wantField == "reasoning_text" {
 					fields["reasoning_text"] = tc.scalar
 				}
 				sse := `data: {"choices":[{"delta":` + jsonOf(t, fields) + `,"finish_reason":"stop"}]}` + "\n\ndata: [DONE]\n\n"
@@ -462,7 +495,7 @@ data: [DONE]
 		}
 	})
 	t.Run("unsigned and signed details alongside a scalar", func(t *testing.T) {
-		for _, scalar := range []string{"scalar-31", "unsigned-54", "signed-68"} {
+		for _, scalar := range []string{"", "scalar-31", "unsigned-54", "signed-68"} {
 			resp, err := fromChatCompletionResponse(chatResponseRaw(map[string]any{
 				"reasoning": scalar,
 				"reasoning_details": []any{
@@ -481,7 +514,7 @@ data: [DONE]
 			if len(details) != 1 || details[0]["text"] != "signed-68" || details[0]["signature"] != "sig-68" {
 				t.Fatalf("continuation = %#v", details)
 			}
-			if got, _ := out[0]["reasoning"].(string); got != scalar || out[0]["reasoning_content"] != nil {
+			if got, ok := out[0]["reasoning"].(string); !ok || got != scalar || out[0]["reasoning_content"] != nil {
 				t.Errorf("scalar %q replays as %#v", scalar, out[0])
 			}
 		}
@@ -566,7 +599,11 @@ data: [DONE]
 							t.Fatalf("persisted request differs on scalar field %q", route.scalarField)
 						}
 						msg := out["messages"].([]map[string]any)[0]
-						checkScalar(t, msg, route.scalarField, tc.scalar)
+						field := route.scalarField
+						if tc.scalar == "" {
+							field = ""
+						}
+						checkScalar(t, msg, field, tc.scalar)
 						details, _ := msg["reasoning_details"].([]map[string]any)
 						if jsonOf(t, details) != wantSigned {
 							t.Fatalf("signed detail = %s, want %s", jsonOf(t, details), wantSigned)

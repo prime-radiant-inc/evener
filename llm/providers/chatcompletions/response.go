@@ -36,9 +36,9 @@ type chatMessage struct {
 }
 
 type chatReasoningFields struct {
-	ReasoningContent string                `json:"reasoning_content,omitempty"`
-	Reasoning        string                `json:"reasoning,omitempty"`
-	ReasoningText    string                `json:"reasoning_text,omitempty"`
+	ReasoningContent *string               `json:"reasoning_content,omitempty"`
+	Reasoning        *string               `json:"reasoning,omitempty"`
+	ReasoningText    *string               `json:"reasoning_text,omitempty"`
 	ReasoningDetails []reasoningDetailItem `json:"reasoning_details,omitempty"`
 }
 
@@ -252,12 +252,19 @@ func thoughtSignatureFromExtraContent(extra *chatExtraContent) string {
 }
 
 func (f chatReasoningFields) scalar() (string, string) {
-	for i, v := range [...]string{f.ReasoningContent, f.Reasoning, f.ReasoningText} {
-		if v != "" {
-			return v, reasoningFieldNames[i]
+	var blankField string
+	for i, v := range [...]*string{f.ReasoningContent, f.Reasoning, f.ReasoningText} {
+		if v == nil {
+			continue
+		}
+		if *v != "" {
+			return *v, reasoningFieldNames[i]
+		}
+		if blankField == "" {
+			blankField = reasoningFieldNames[i]
 		}
 	}
-	return "", ""
+	return "", blankField
 }
 
 type reasoningDetailBlock struct {
@@ -335,17 +342,21 @@ func (r *chatReasoning) add(f chatReasoningFields, settled bool) string {
 		if r.display == nil {
 			r.display = &strings.Builder{}
 			r.display.WriteString(r.scalar.String())
-			r.displayField = r.scalarField
+			if r.scalar.Len() > 0 {
+				r.displayField = r.scalarField
+			}
 		}
 	}
 	if r.display != nil {
 		r.display.WriteString(delta)
 	}
 	if scalar != "" {
-		r.scalar.WriteString(scalar)
-		if r.scalarField == "" {
+		if r.scalar.Len() == 0 {
 			r.scalarField = field
 		}
+		r.scalar.WriteString(scalar)
+	} else if r.scalarField == "" {
+		r.scalarField = field
 	}
 	return delta
 }
@@ -519,13 +530,16 @@ func captureChatDetails(t *llm.ThinkingData, blocks []*reasoningDetailBlock) {
 func (r *chatReasoning) parts() []llm.ContentPart {
 	parts := []llm.ContentPart{}
 	appendPart := func(thinking llm.ThinkingData) {
-		if thinking.Text != "" || thinking.EncryptedContent != "" || len(thinking.ChatDetails) != 0 {
+		if thinking.Text != "" || thinking.EncryptedContent != "" || len(thinking.ChatDetails) != 0 || (thinking.ChatScalar != nil && thinking.ChatScalar.Empty) {
 			parts = append(parts, llm.ContentPart{Kind: llm.ContentThinking, Thinking: &thinking})
 		}
 	}
 	scalar := r.scalar.String()
+	thinking := llm.ThinkingData{Text: scalar, Signature: r.scalarField}
+	if scalar == "" && r.scalarField != "" {
+		thinking = llm.ThinkingData{ChatScalar: &llm.ChatReasoningScalar{Field: r.scalarField, Empty: true}}
+	}
 	if !r.hasSignature {
-		thinking := llm.ThinkingData{Text: scalar, Signature: r.scalarField}
 		if r.display != nil {
 			thinking.Text, thinking.Signature = r.display.String(), r.displayField
 			if scalar != "" {
@@ -537,15 +551,15 @@ func (r *chatReasoning) parts() []llm.ContentPart {
 		return parts
 	}
 	mirror := r.scalarMirror(scalar)
-	if scalar != "" && mirror == nil {
-		appendPart(llm.ThinkingData{Text: scalar, Signature: r.scalarField})
+	if r.scalarField != "" && mirror == nil {
+		appendPart(thinking)
 	}
 	for i, block := range r.blocks {
 		thinking := llm.ThinkingData{Text: block.text.String()}
 		captureChatDetails(&thinking, r.blocks[i:i+1])
 		if block == mirror {
 			setChatReplayScalar(&thinking, r.scalarField, scalar)
-		} else if !block.continuation && scalar != "" {
+		} else if !block.continuation && r.scalarField != "" {
 			thinking.ChatScalar = &llm.ChatReasoningScalar{}
 		}
 		appendPart(thinking)

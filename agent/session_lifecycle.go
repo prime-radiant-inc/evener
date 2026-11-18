@@ -306,8 +306,9 @@ func replayableEmptyChatPart(p llm.ContentPart, caps registry.Caps) bool {
 		for range llm.ChatNativeReasoningDetails([]llm.ContentPart{p}) {
 			return true
 		}
+		return scalar != ""
 	}
-	return scalar != ""
+	return scalar != "" || llm.IsOpenAICompatReasoningField(field)
 }
 
 // The Responses input encoder always accepts native messages and ciphertext.

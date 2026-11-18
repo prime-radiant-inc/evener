@@ -225,6 +225,9 @@ func testChatEmptyAnswerReplay(t *testing.T, mode string) {
 		map[string]any{"type": "reasoning.text", "index": 4, "signature": "signed-43"},
 	}
 	outputs := []map[string]any{raw, {"reasoning_details": sealed}, {}, raw}
+	if mode == "scalar" {
+		outputs[2] = map[string]any{"reasoning": "", "reasoning_details": []any{map[string]any{"type": "reasoning.text", "text": "two plus two"}}}
+	}
 	history := make(chan json.RawMessage, 8)
 	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -324,6 +327,8 @@ func testChatEmptyAnswerReplay(t *testing.T, mode string) {
 		switch {
 		case n == 1 && mode != "disabled":
 			msg["reasoning_details"] = sealed
+		case n == 2 && mode == "scalar":
+			msg["reasoning"] = ""
 		case (n == 0 || n == 3) && enrolled:
 			msg[field] = value
 		case (n == 0 || n == 3) && mode == "assistant text":
@@ -333,7 +338,7 @@ func testChatEmptyAnswerReplay(t *testing.T, mode string) {
 		}
 		want = append(want, mustJSON(t, msg))
 	}
-	if mode == "array" {
+	if enrolled {
 		for i, model := range []string{"other", "elsewhere"} {
 			if err := cold.SetModel("gw/" + model); err != nil {
 				t.Fatal(err)

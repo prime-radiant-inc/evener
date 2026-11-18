@@ -335,20 +335,25 @@ func chatContinuationSlot(item json.RawMessage) bool {
 }
 
 // ChatReasoningScalar records the scalar source when Chat's preferred display
-// came from reasoning_details. An empty Text reuses the identical display
-// bytes. An empty Field marks a detail displayed separately from the scalar.
+// came from reasoning_details. Empty records an observed zero-length scalar.
+// Otherwise an omitted Text reuses the display bytes. An empty Field marks
+// a detail displayed separately from the scalar.
 type ChatReasoningScalar struct {
 	Field string `json:"field,omitempty"`
 	Text  string `json:"text,omitempty"`
+	Empty bool   `json:"empty,omitempty"`
 }
 
 // ChatReplayScalar returns the observed scalar and its wire spelling, or the
 // eligible unsigned detail text when the provider supplied no scalar.
 func (t *ThinkingData) ChatReplayScalar() (text, field string) {
 	if t.ChatScalar == nil {
+		if t.Text == "" {
+			return "", ""
+		}
 		// An observed scalar either named its field or has a ChatScalar. An
 		// opaque detail may carry display text alongside the unsigned items.
-		if t.Text != "" && t.Signature == "" && slices.ContainsFunc(t.ChatDetails, chatContinuationSlot) {
+		if t.Signature == "" && slices.ContainsFunc(t.ChatDetails, chatContinuationSlot) {
 			details := OpenAICompatReasoningDetails(t.EncryptedContent)
 			if len(details) == 0 || slices.ContainsFunc(details, chatDetailHasDisplay) {
 				return t.unsignedChatDetailsText(), ""
@@ -358,6 +363,9 @@ func (t *ThinkingData) ChatReplayScalar() (text, field string) {
 	}
 	if t.ChatScalar.Field == "" {
 		return "", ""
+	}
+	if t.ChatScalar.Empty {
+		return "", t.ChatScalar.Field
 	}
 	if t.ChatScalar.Text != "" {
 		return t.ChatScalar.Text, t.ChatScalar.Field

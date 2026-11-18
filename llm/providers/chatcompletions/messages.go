@@ -137,7 +137,7 @@ func toChatMessages(messages []llm.Message, caps registry.Caps, useReasoningDeta
 			if len(details) != 0 {
 				msg["reasoning_details"] = details
 			}
-			if reasoning != "" {
+			if reasoning != "" || (scalarReplay && sourceField != "") {
 				msg[reasoningReplayField(sourceField, caps)] = reasoning
 			} else if len(details) == 0 && registry.BoolValue(caps.EmptyReasoningContent) && !useReasoningDetails && !reasoningOff {
 				msg["reasoning_content"] = ""
@@ -262,10 +262,10 @@ func reasoningFromParts(parts []llm.ContentPart, keepDetails, asText, scalarRepl
 		if scalarReplay {
 			piece, field = p.Thinking.ChatReplayScalar()
 		}
+		if sourceField == "" && (piece != "" || scalarReplay) && llm.IsOpenAICompatReasoningField(field) {
+			sourceField = field
+		}
 		if piece != "" {
-			if sourceField == "" && llm.IsOpenAICompatReasoningField(field) {
-				sourceField = field
-			}
 			if text.Len() != 0 {
 				text.WriteString("\n")
 			}
