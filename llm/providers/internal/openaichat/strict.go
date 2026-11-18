@@ -497,12 +497,20 @@ func strictifyJSONSchemaInPlace(m map[string]any) {
 func deepCopyAny(v any) any {
 	switch x := v.(type) {
 	case map[string]any:
+		// A typed nil map marshals as JSON null. Rebuilding it as an empty map
+		// would emit {} and change what the schema accepts.
+		if x == nil {
+			return x
+		}
 		out := make(map[string]any, len(x))
 		for k, vv := range x {
 			out[k] = deepCopyAny(vv)
 		}
 		return out
 	case []any:
+		if x == nil {
+			return x
+		}
 		out := make([]any, len(x))
 		for i := range x {
 			out[i] = deepCopyAny(x[i])

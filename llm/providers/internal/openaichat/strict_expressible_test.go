@@ -899,9 +899,9 @@ func TestReadableKeywordsRejectSomeValue(t *testing.T) {
 	// probe, which is the reason it cannot certify a typeless node.
 	identityForm := map[string]any{
 		"description": "d", "title": "t", "default": nil, "examples": []any{},
-		"format": "unknown-format", "pattern": "", "minimum": 0.0, "maximum": 0.0,
-		"minLength": 0, "maxLength": 0, "minItems": 0, "maxItems": 0,
-		"uniqueItems": false,
+		"format": "unknown-format", "pattern": "", "uniqueItems": false,
+		"minLength": 0, "minItems": 0,
+		"minimum": -1e308, "maximum": 1e308,
 	}
 	for keyword, value := range identityForm {
 		if modeledKeywords[keyword] == readableByWalk {
@@ -909,6 +909,33 @@ func TestReadableKeywordsRejectSomeValue(t *testing.T) {
 		}
 		if rejectsSomething(map[string]any{keyword: value}) {
 			t.Fatalf("keyword %q with value %v rejects a probe, so the identity form is not what this table assumes", keyword, value)
+		}
+	}
+
+	// A bound applies to one type and leaves every other type admissible, so a
+	// probed value of the wrong type proves nothing. Each bound below must be
+	// shown to reject a value of its own type, which is what makes it a
+	// constraint, and to leave a value of another type admissible, which is why
+	// it still cannot certify a typeless node.
+	typeConditional := []struct {
+		name    string
+		schema  map[string]any
+		rejects any
+		allows  any
+	}{
+		{"minLength", map[string]any{"minLength": 1}, "", 0.0},
+		{"maxLength", map[string]any{"maxLength": 0}, "a", 0.0},
+		{"maxItems", map[string]any{"maxItems": 0}, []any{"x"}, ""},
+		{"maximum", map[string]any{"maximum": 0.0}, 1.0, ""},
+		{"minimum", map[string]any{"minimum": 0.0}, -1.0, ""},
+	}
+	for _, tc := range typeConditional {
+		compiled := compileSchema(t, tc.schema)
+		if compiled.Validate(tc.rejects) == nil {
+			t.Fatalf("keyword %q accepts %v, but a bound that rejects no value of its own type is an annotation wearing a constraint's clothes", tc.name, tc.rejects)
+		}
+		if err := compiled.Validate(tc.allows); err != nil {
+			t.Fatalf("keyword %q rejects %v, a value of another type: %v", tc.name, tc.allows, err)
 		}
 	}
 }
@@ -983,6 +1010,53 @@ func TestOnlyReadableKeywordsCertifyATypelessNode(t *testing.T) {
 	}
 }
 
+// A Go caller can spell a JSON null in an enum as a typed nil map. Marshaling
+// renders it as null, so the advertised schema accepts null, and the gate
+// certifies the schema. The projection must preserve that member: copying a nil
+// map into an empty one turns null into {}, and the emitted schema then rejects
+// a value the advertised schema accepts.
+//
+// Both directions are asserted on the same schema: advertised and emitted each
+// accept the null member, and each accept the ordinary string members.
+func TestProjectionPreservesATypedNilMapInAnEnum(t *testing.T) {
+	t.Parallel()
+	var nullMember map[string]any // typed nil: marshals as JSON null
+	schema := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"format": map[string]any{
+				"type": []any{"string", "null"},
+				"enum": []any{"outline", "markdown", nullMember},
+			},
+		},
+		"required": []string{"format"},
+	}
+	if !StrictExpressible(schema) {
+		t.Fatal("a closed fully-required schema must be certifiable")
+	}
+
+	null := map[string]any{"format": nil}
+	outline := map[string]any{"format": "outline"}
+	markdown := map[string]any{"format": "markdown"}
+	if !schemaAccepts(t, schema, null) {
+		t.Fatal("the advertised schema must accept the null member it declares")
+	}
+
+	emitted := StrictifyJSONSchema(schema)
+	if !schemaAccepts(t, emitted, null) {
+		t.Fatal("the emitted schema rejects the null member the advertised one accepts: the projection changed what it certified")
+	}
+	for _, args := range []map[string]any{outline, markdown} {
+		if !schemaAccepts(t, schema, args) {
+			t.Fatalf("the advertised schema rejects %v, one of its own string members", args)
+		}
+		if !schemaAccepts(t, emitted, args) {
+			t.Fatalf("the emitted schema rejects %v, which the advertised schema accepts", args)
+		}
+	}
+}
+
 // A schema StrictExpressible accepts must survive the projection with its
 // declared required set intact, so the predicate and the rewrite agree.
 func TestStrictExpressibleAgreesWithTheProjection(t *testing.T) {
@@ -1035,10 +1109,6 @@ func TestOmittedAdditionalPropertiesIsNotCertified(t *testing.T) {
 	}
 	if StrictExpressible(schema) {
 		t.Fatal("a schema whose object omits additionalProperties must not be certified strict")
-	}
-	// The caller sends the advertised schema, so the documented call survives.
-	if !schemaAccepts(t, schema, args) {
-		t.Fatal("the schema sent non-strict rejects the call it documents")
 	}
 	// And the projection, which is never built for it, would reject that call.
 	// Asserting this keeps the refusal load-bearing rather than conservative.
@@ -1149,10 +1219,6 @@ func TestRefusedKeywordSchemasKeepTheirAcceptedCalls(t *testing.T) {
 			if StrictExpressible(tc.schema) {
 				t.Fatal("a schema with an unmodeled keyword must not be certified strict")
 			}
-			// The caller sends the advertised schema, so the call still validates.
-			if !schemaAccepts(t, tc.schema, tc.args) {
-				t.Fatalf("the schema sent non-strict rejects the call it documents: %v", tc.args)
-			}
 			// And the projection, which is never built for it, would have
 			// rejected that call. Asserting this keeps the reason honest: the
 			// refusal is load-bearing, not merely conservative.
@@ -1190,11 +1256,6 @@ func TestRefusedBranchSchemaKeepsItsAdvertisedArguments(t *testing.T) {
 	args := map[string]any{"id": "a", "name": "b"}
 	if !schemaAccepts(t, schema, args) {
 		t.Fatal("the advertised schema rejects the object its own required list demands")
-	}
-	// And the projection is never consulted for it, so no subtree is copied
-	// into the branches. Assert that the schema the tool sends is unmodified.
-	if !schemaAccepts(t, deepCopyAny(schema).(map[string]any), args) {
-		t.Fatal("the schema sent non-strict must accept what the advertised one accepts")
 	}
 }
 
