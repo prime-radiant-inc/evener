@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -265,6 +266,7 @@ func TestCoreCompleteWithoutAPIAttemptPreservesRedirectClientBehavior(t *testing
 }
 
 func TestCoreCompleteWireCaptureUsesActualBodyReadAfterBodyPreservingRedirect(t *testing.T) {
+	t.Run("issuer-bound history", testRedirectedReasoningHistory)
 	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	for _, provider := range wireProviders() {
 		for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
@@ -337,6 +339,130 @@ func TestCoreCompleteWireCaptureUsesActualBodyReadAfterBodyPreservingRedirect(t 
 				}
 			})
 		}
+	}
+}
+
+func testRedirectedReasoningHistory(t *testing.T) {
+	const front, first, second = "front.invalid", "first.invalid", "second.invalid"
+	provider := wireProviders()[0]
+	for _, tc := range []struct {
+		name   string
+		hosts  []string
+		status int
+		bound  bool
+	}{
+		{"one issuer", []string{front, first, front, first}, http.StatusTemporaryRedirect, true},
+		{"mixed issuers", []string{first, second, front, first}, http.StatusPermanentRedirect, true},
+		{"anchored history", []string{front, first, second, first}, http.StatusTemporaryRedirect, true},
+		{"ordinary history", []string{front, second}, http.StatusTemporaryRedirect, false},
+		{"bodyless redirect", []string{first, second}, http.StatusSeeOther, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := providerRequest(provider.name, "test-model")
+			req.Messages = []llm.Message{llm.User("user-03")}
+			for i, host := range []string{first, second} {
+				m := llm.Assistant(fmt.Sprintf("answer-%d", i))
+				if tc.bound && (i == 0 || tc.name == "mixed issuers") {
+					m.ReasoningEndpoint = "https://" + host + "/responses"
+					m.Content = append(m.Content, llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{EncryptedContent: fmt.Sprintf("fixture-%d", i)}})
+				}
+				req.Messages = append(req.Messages, m)
+			}
+			if tc.name == "anchored history" {
+				req.HistoryMode = llm.HistoryModeResponsesDelta
+				req.PreviousResponseID = "fixture-response"
+				delta := llm.User("delta-17")
+				req.Continuation = &llm.ContinuationMetadata{AnchorEndpoint: "https://" + first + "/responses", FullHistory: append(req.Messages, delta)}
+				req.Messages = []llm.Message{delta}
+			}
+			var hops [][]byte
+			client := &http.Client{Transport: transporttest.RoundTripFunc(func(r *http.Request) (*http.Response, error) {
+				i := len(hops)
+				if i >= len(tc.hosts) || r.URL.Host != tc.hosts[i] {
+					t.Fatalf("unexpected mocked destination at hop %d", i)
+				}
+				var body []byte
+				if r.Body != nil {
+					var err error
+					body, err = io.ReadAll(r.Body)
+					if err != nil {
+						t.Fatal(err)
+					}
+					_ = r.Body.Close()
+					if r.GetBody == nil {
+						t.Fatal("missing replayable request body")
+					}
+					copyBody, err := r.GetBody()
+					if err != nil {
+						t.Fatal(err)
+					}
+					replay, err := io.ReadAll(copyBody)
+					_ = copyBody.Close()
+					if err != nil || !bytes.Equal(replay, body) || r.ContentLength != int64(len(body)) {
+						t.Errorf("hop %d body replay or length mismatch", i)
+					}
+				}
+				hops = append(hops, body)
+				if tc.status == http.StatusSeeOther && i > 0 {
+					if r.Method != http.MethodGet || len(body) != 0 || r.GetBody != nil {
+						t.Error("bodyless redirect restored a request body")
+					}
+				} else {
+					if req.Continuation != nil && (bytes.Contains(body, []byte(req.PreviousResponseID)) != (r.URL.Host == first) ||
+						bytes.Contains(body, []byte("answer-0")) != (r.URL.Host != first)) {
+						t.Errorf("hop %d selected the wrong conversation history", i)
+					}
+					for index, message := range req.Messages[1:] {
+						if !bytes.Contains(body, []byte(message.Text())) {
+							t.Errorf("hop %d omitted ordinary assistant message %d", i, index)
+						}
+						want := message.ReasoningEndpoint == "https://"+r.URL.Host+"/responses"
+						if bytes.Contains(body, []byte(fmt.Sprintf("fixture-%d", index))) != want {
+							t.Errorf("hop %d selected the wrong native history for message %d", i, index)
+						}
+					}
+					for prior := range i {
+						if tc.hosts[prior] == r.URL.Host && !bytes.Equal(hops[prior], body) {
+							t.Errorf("returning to hop %d changed its request bytes", prior)
+						}
+					}
+				}
+				resp := &http.Response{StatusCode: http.StatusOK, Header: make(http.Header), Request: r, Body: io.NopCloser(strings.NewReader(provider.completeBody))}
+				if i+1 < len(tc.hosts) {
+					resp.StatusCode = tc.status
+					resp.Header.Set("Location", "/route")
+					resp.Body = http.NoBody
+				}
+				return resp, nil
+			}), CheckRedirect: func(candidate *http.Request, via []*http.Request) error {
+				candidate.URL.Host = tc.hosts[len(via)]
+				return nil
+			}}
+			sink := &outcomeSink{}
+			ctx := llm.WithAPIAttemptSink(llm.WithAPIAttemptGroup(t.Context(), llm.NewAPIAttemptGroup("ag_history")), sink)
+			resp, err := provider.wireClient(t, "https://"+tc.hosts[0], client, nil).Complete(ctx, req)
+			if err != nil || len(hops) != len(tc.hosts) || len(sink.attempts) != len(hops) {
+				t.Fatalf("completion error %v, hops %d, records %d", err, len(hops), len(sink.attempts))
+			}
+			if endpoint := resp.Raw["endpoint_url"]; endpoint != "https://"+tc.hosts[len(tc.hosts)-1]+"/route" {
+				t.Errorf("response endpoint = %v, want the final mocked recipient", endpoint)
+			}
+			for i, record := range sink.attempts {
+				if req.Continuation != nil {
+					want := llm.HistoryModeFullHistoryFallback
+					if tc.hosts[i] == first {
+						want = llm.HistoryModeResponsesDelta
+					}
+					if record.Request.HistoryMode != string(want) {
+						t.Errorf("hop %d recorded history mode %s, want %s", i, record.Request.HistoryMode, want)
+					}
+				}
+				recorded, err := apilog.DecodeBody(record.Request.Body)
+				if err != nil || !bytes.Equal(hops[i], recorded) {
+					t.Errorf("attempt %d recorded different body bytes", i)
+				}
+			}
+		})
 	}
 }
 

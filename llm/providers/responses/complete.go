@@ -10,14 +10,15 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
-func (p *Protocol) call(operation, method, url string, body map[string]any, req llm.Request, res registry.Resolved) *protocolhttp.Call {
-	return &protocolhttp.Call{Operation: operation, EndpointFamily: string(llm.ResponsesEndpointFamilyFor(res)), Method: method, URL: url, Body: body, Req: req, Res: res, Client: p.Client}
+func (p *Protocol) call(operation, url string, req llm.Request, res registry.Resolved) *protocolhttp.Call {
+	return &protocolhttp.Call{Operation: operation, EndpointFamily: string(llm.ResponsesEndpointFamilyFor(res)), Method: http.MethodPost, URL: url, Req: req, Res: res, Client: p.Client}
 }
 
-func (p *Protocol) completionCall(operation, method, url string, body map[string]any, req llm.Request, res registry.Resolved) *protocolhttp.Call {
-	call := p.call(operation, method, url, body, req, res)
-	call.FinalizeBody = func(_ context.Context, finalBody map[string]any) error {
-		reconcilePreparedOutput(finalBody, req, res)
+func (p *Protocol) completionCall(operation, url string, req llm.Request, res registry.Resolved, stream bool) *protocolhttp.Call {
+	call := p.call(operation, url, req, res)
+	call.BuildBody = func(view llm.Request) (map[string]any, error) { return buildBody(view, res, stream) }
+	call.FinalizeBody = func(_ context.Context, finalBody map[string]any, view llm.Request) error {
+		reconcilePreparedOutput(finalBody, view, res)
 		return nil
 	}
 	return call
@@ -29,11 +30,7 @@ func (p *Protocol) Complete(ctx context.Context, req llm.Request, res registry.R
 	if protocolhttp.RequiresStreamingComplete(res) {
 		return protocolhttp.CompleteViaStream(ctx, res.Instance, func(ctx context.Context) (llm.Stream, error) { return p.Stream(ctx, req, res) })
 	}
-	body, err := buildBody(req, res, false)
-	if err != nil {
-		return llm.Response{}, err
-	}
-	call := p.completionCall("responses.create", http.MethodPost, protocolhttp.URL(res, res.Transport.Endpoint), body, req, res)
+	call := p.completionCall("responses.create", protocolhttp.URL(res, res.Transport.Endpoint), req, res, false)
 	return protocolhttp.Complete(ctx, call, func(r *protocolhttp.Result) (llm.Response, error) {
 		resp := fromResponses(r.Raw, req.Model, r.Body)
 		p.stampResponseIDHash(ctx, &resp)
@@ -43,11 +40,7 @@ func (p *Protocol) Complete(ctx context.Context, req llm.Request, res registry.R
 
 // Stream implements llm.Protocol.
 func (p *Protocol) Stream(ctx context.Context, req llm.Request, res registry.Resolved) (llm.Stream, error) {
-	body, err := buildBody(req, res, true)
-	if err != nil {
-		return nil, err
-	}
-	call := p.completionCall("responses.create(stream)", http.MethodPost, protocolhttp.URL(res, res.Transport.StreamEndpoint), body, req, res)
+	call := p.completionCall("responses.create(stream)", protocolhttp.URL(res, res.Transport.StreamEndpoint), req, res, true)
 	return protocolhttp.Stream(ctx, call, func(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, r *protocolhttp.Result, attempt *transport.APIAttemptCapture) {
 		p.decodeStream(sctx, cancel, resp, s, req, res, r, attempt)
 	})

@@ -123,7 +123,7 @@ func TestPrepareReturnsFinalizeBodyError(t *testing.T) {
 		URL:    "https://example.test",
 		Body:   map[string]any{},
 		Res:    registry.Resolved{Transport: registry.Transport{Auth: registry.AuthNone}},
-		FinalizeBody: func(context.Context, map[string]any) error {
+		FinalizeBody: func(context.Context, map[string]any, llm.Request) error {
 			return want
 		},
 	})

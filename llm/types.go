@@ -62,6 +62,9 @@ type Message struct {
 	Content    []ContentPart `json:"content"`
 	Name       string        `json:"name,omitempty"`
 	ToolCallID string        `json:"tool_call_id,omitempty"`
+	// ReasoningEndpoint is the serving URL recorded for this assistant turn.
+	// The transcript owns its provenance. It is never a provider message field.
+	ReasoningEndpoint string `json:"-"`
 }
 
 // Text returns the concatenation of all text content parts in the message.

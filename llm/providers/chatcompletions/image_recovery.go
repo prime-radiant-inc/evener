@@ -23,13 +23,14 @@ const unmanagedImageCaveat = "This image was recovered without its color profile
 var errImageRepairUnchanged = errors.New("image repair produced no distinct usable request")
 
 type imageRecovery struct {
-	stage          int
-	originalSize   int
-	lastSize       int
-	requireSmaller bool
-	managed        bool
-	warnings       []llm.Warning
-	sent           map[[sha256.Size]byte]bool
+	stage        int
+	originalSize int
+	lastSize     int
+	smallerThan  int
+	managed      bool
+	warnings     []llm.Warning
+	sent         map[[sha256.Size]byte]bool
+	lastDigest   [sha256.Size]byte
 }
 
 // runImageRecovery owns only definite HTTP rejections. Once Stream returns a
@@ -44,18 +45,14 @@ func runImageRecovery[T any](ctx context.Context, p *Protocol, req llm.Request, 
 		if err := ctx.Err(); recovery.stage > 0 && err != nil {
 			return zero, err
 		}
-		body, err := buildBody(req, res, stream)
-		if err != nil {
-			return zero, err
-		}
 		operation, endpoint := "chat.completions", res.Transport.Endpoint
 		if stream {
 			operation, endpoint = "chat.completions(stream)", res.Transport.StreamEndpoint
 		}
-		call := p.completionCall(operation, http.MethodPost, protocolhttp.URL(res, endpoint), body, req, res)
+		call := p.completionCall(operation, protocolhttp.URL(res, endpoint), req, res, stream)
 		finalize := call.FinalizeBody
-		call.FinalizeBody = func(attemptCtx context.Context, body map[string]any) error {
-			if err := finalize(attemptCtx, body); err != nil {
+		call.FinalizeBody = func(attemptCtx context.Context, body map[string]any, view llm.Request) error {
+			if err := finalize(attemptCtx, body, view); err != nil {
 				return err
 			}
 			return llm.WrapContextError(res.Instance, recovery.prepare(attemptCtx, body))
@@ -68,7 +65,7 @@ func runImageRecovery[T any](ctx context.Context, p *Protocol, req llm.Request, 
 			return zero, ctx.Err()
 		}
 		if errors.Is(err, errImageRepairUnchanged) {
-			if recovery.requireSmaller {
+			if recovery.smallerThan > 0 {
 				return zero, originalErr
 			}
 			return zero, lastErr
@@ -81,7 +78,12 @@ func runImageRecovery[T any](ctx context.Context, p *Protocol, req llm.Request, 
 			originalErr = err
 		}
 		lastErr = err
-		recovery.requireSmaller = expanded
+		// Redirects can prepare the same image for several recipients. Only
+		// the body the provider actually rejected rules out a later retry.
+		recovery.sent[recovery.lastDigest] = true
+		if expanded {
+			recovery.smallerThan = recovery.lastSize
+		}
 		recovery.stage++
 	}
 }
@@ -113,7 +115,7 @@ func (r *imageRecovery) prepare(ctx context.Context, body map[string]any) error 
 			r.warnings = []llm.Warning{{Code: llm.WarningCodeImageColorUnmanaged, Message: unmanagedImageCaveat}}
 		}
 	}
-	// Stage 0 only seeds the digest and original size so a later repair stage
+	// Stage 0 measures the digest and original size so a later repair stage
 	// can tell whether it produced a distinct, smaller body. repairMessages
 	// touches only image_url parts, so a final wire body with none can never
 	// advance a repair stage; skip the serialization (#5489). The final body,
@@ -129,10 +131,10 @@ func (r *imageRecovery) prepare(ctx context.Context, body map[string]any) error 
 	digest := sha256.Sum256(encoded)
 	if r.stage == 0 {
 		r.originalSize = len(encoded)
-	} else if r.sent[digest] || (r.requireSmaller && len(encoded) >= r.lastSize) {
+	} else if r.sent[digest] || (r.smallerThan > 0 && len(encoded) >= r.smallerThan) {
 		return errImageRepairUnchanged
 	}
-	r.sent[digest] = true
+	r.lastDigest = digest
 	r.lastSize = len(encoded)
 	if r.stage > 0 {
 		return ctx.Err()

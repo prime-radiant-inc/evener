@@ -77,6 +77,9 @@ type ResponsesContinuationDecision struct {
 // counts, endpoint, fingerprints, and storage-policy labels recorded for a
 // continuation request.
 type ContinuationMetadata struct {
+	// The issuing origin accepts the anchor. Other origins need the full conversation.
+	AnchorEndpoint          string    `json:"-"`
+	FullHistory             []Message `json:"-"`
 	PreviousResponseIDHash  string
 	ConversationIDHash      string
 	AnchorTurnIndex         int

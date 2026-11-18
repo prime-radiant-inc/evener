@@ -36,6 +36,9 @@ type Call struct {
 	// drop keys — so callers must not reuse a Body across calls or read it
 	// back expecting the shape their builder produced.
 	Body map[string]any
+	// BuildBody encodes a history-bearing operation for the request selected
+	// for an HTTP recipient. Static operations may supply Body directly.
+	BuildBody func(llm.Request) (map[string]any, error)
 	// Headers are the protocol's fixed headers (anthropic-version, session
 	// affinity); they are set after res.Headers so the protocol wins.
 	Headers map[string]string
@@ -50,7 +53,7 @@ type Call struct {
 	// FinalizeBody, when set, runs after transport constants and the request
 	// preparer, immediately before the final body is marshaled. Its context
 	// carries the active attempt's deadline and cancellation.
-	FinalizeBody func(ctx context.Context, body map[string]any) error
+	FinalizeBody func(ctx context.Context, body map[string]any, view llm.Request) error
 }
 
 // Prepared is a Call after prune → constants → auth → prepare.
@@ -59,6 +62,7 @@ type Prepared struct {
 	Body         []byte
 	PrunedFields []string
 	material     llm.APILogCredentialMaterial
+	redirectBody func(*http.Request) error
 }
 
 // Prepare assembles the wire request without sending it (spec §8.2 steps
@@ -67,10 +71,14 @@ type Prepared struct {
 // the final body. Steps 2–4 all edit c.Body in place, so c.Body is the
 // wire body afterwards, not the body the protocol built.
 func Prepare(ctx context.Context, c *Call) (*Prepared, error) {
-	var pruned []string
-	if c.Body != nil {
-		pruned = registry.Prune(c.Body, c.Res.Caps, c.Res.Protocol)
-		registry.ApplyBodyConstants(c.Body, c.Res.Transport.Body)
+	view := c.Req
+	bound := c.BuildBody != nil && view.HasReasoningEndpoints()
+	if bound {
+		view, _ = view.ForReasoningEndpoint(c.URL, c.Res)
+	}
+	body, pruned, err := c.bodyFor(view)
+	if err != nil {
+		return nil, err
 	}
 	httpReq, err := http.NewRequestWithContext(ctx, c.Method, c.URL, nil)
 	if err != nil {
@@ -85,7 +93,7 @@ func Prepare(ctx context.Context, c *Call) (*Prepared, error) {
 	for k, v := range c.Headers {
 		httpReq.Header.Set(k, v)
 	}
-	if c.Body != nil {
+	if body != nil {
 		httpReq.Header.Set("Content-Type", "application/json")
 	}
 	auth := llm.AuthenticatorForContext(ctx, c.Res.Transport.Auth)
@@ -95,29 +103,107 @@ func Prepare(ctx context.Context, c *Call) (*Prepared, error) {
 	if err := auth.Apply(ctx, httpReq, c.Res); err != nil {
 		return nil, err
 	}
-	if preparer, ok := auth.(llm.RequestPreparer); ok && c.Body != nil {
-		if err := preparer.PrepareRequest(ctx, httpReq, c.Body, c.Req, c.Res); err != nil {
-			return nil, err
-		}
-	}
-	if c.FinalizeBody != nil && c.Body != nil {
-		if err := c.FinalizeBody(ctx, c.Body); err != nil {
-			return nil, err
-		}
-	}
 	p := &Prepared{Request: httpReq, PrunedFields: pruned}
-	if c.Body != nil {
-		b, err := MarshalBody(c.Body)
+	if body != nil {
+		// A redirected body's preparer sees the original authenticated
+		// headers on a private copy. The redirect policy owns the headers
+		// actually forwarded by net/http.
+		var beforePreparer *http.Request
+		if bound {
+			beforePreparer = httpReq.Clone(ctx)
+		}
+		p.Body, err = c.marshalBody(ctx, httpReq, auth, view, body)
 		if err != nil {
 			return nil, err
 		}
-		p.Body = b
-		httpReq.Body = io.NopCloser(bytes.NewReader(b))
-		httpReq.ContentLength = int64(len(b))
-		httpReq.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(b)), nil }
+		if bound {
+			if err := p.bindReasoningEndpoints(c, beforePreparer, auth); err != nil {
+				return nil, err
+			}
+		}
+		setRequestBody(httpReq, p.Body)
 	}
 	p.material = credentialMaterial(c.Res, httpReq)
 	return p, nil
+}
+
+func (p *Prepared) bindReasoningEndpoints(c *Call, authenticated *http.Request, auth llm.Authenticator) error {
+	bodyAt := func(candidate *http.Request) ([]byte, error) {
+		view, _ := c.Req.ForReasoningEndpoint(candidate.URL.String(), c.Res)
+		body, _, err := c.bodyFor(view)
+		if err != nil {
+			return nil, err
+		}
+		ctx := candidate.Context()
+		return c.marshalBody(ctx, authenticated.Clone(ctx), auth, view, body)
+	}
+	initial := *p.Request.URL
+	if initial.String() != c.URL {
+		// A preparer or authenticator can change the constructed URL.
+		b, err := bodyAt(p.Request)
+		if err != nil {
+			return err
+		}
+		p.Body = b
+	}
+	atInitial := true
+	p.redirectBody = func(candidate *http.Request) error {
+		// net/http obtains every retained redirect body from the first
+		// request's GetBody. It already has the first origin's bytes.
+		sameOrigin := candidate.URL.Scheme == initial.Scheme && candidate.URL.Host == initial.Host
+		if sameOrigin && atInitial {
+			return nil
+		}
+		atInitial = sameOrigin
+		b, err := bodyAt(candidate)
+		if err != nil {
+			return err
+		}
+		if sameOrigin {
+			// The finalizers now describe this hop again. Keep the first
+			// request's exact bytes and any caller body policy.
+			return nil
+		}
+		_ = candidate.Body.Close()
+		setRequestBody(candidate, b)
+		return nil
+	}
+	return nil
+}
+
+func (c *Call) bodyFor(view llm.Request) (body map[string]any, pruned []string, err error) {
+	body = c.Body
+	if c.BuildBody != nil {
+		body, err = c.BuildBody(view)
+		if err != nil {
+			return nil, nil, err
+		}
+	}
+	if body != nil {
+		pruned = registry.Prune(body, c.Res.Caps, c.Res.Protocol)
+		registry.ApplyBodyConstants(body, c.Res.Transport.Body)
+	}
+	return body, pruned, nil
+}
+
+func (c *Call) marshalBody(ctx context.Context, httpReq *http.Request, auth llm.Authenticator, view llm.Request, body map[string]any) ([]byte, error) {
+	if preparer, ok := auth.(llm.RequestPreparer); ok {
+		if err := preparer.PrepareRequest(ctx, httpReq, body, view, c.Res); err != nil {
+			return nil, err
+		}
+	}
+	if c.FinalizeBody != nil {
+		if err := c.FinalizeBody(ctx, body, view); err != nil {
+			return nil, err
+		}
+	}
+	return MarshalBody(body)
+}
+
+func setRequestBody(req *http.Request, b []byte) {
+	req.Body = io.NopCloser(bytes.NewReader(b))
+	req.ContentLength = int64(len(b))
+	req.GetBody = func() (io.ReadCloser, error) { return io.NopCloser(bytes.NewReader(b)), nil }
 }
 
 // URL joins the resolved base URL with an endpoint template, substituting
@@ -168,7 +254,7 @@ func credentialMaterial(res registry.Resolved, httpReq *http.Request) llm.APILog
 	return llm.NewAPILogCredentialMaterial(names, nil, values...)
 }
 
-func (c *Call) httpClient() *http.Client {
+func (c *Call) httpClient(p *Prepared) *http.Client {
 	var client *http.Client
 	if c.Client != nil {
 		client = c.Client
@@ -185,6 +271,7 @@ func (c *Call) httpClient() *http.Client {
 		credentialHeaders = append(credentialHeaders, name)
 	}
 	clientCopy.CheckRedirect = func(req *http.Request, via []*http.Request) error {
+		retainedBody := req.Body != nil && req.Body != http.NoBody
 		if checkRedirect != nil {
 			if err := checkRedirect(req, via); err != nil {
 				return err
@@ -197,6 +284,9 @@ func (c *Call) httpClient() *http.Client {
 				req.Header.Del(name)
 			}
 		}
+		if p.redirectBody != nil && retainedBody && req.Body != nil && req.Body != http.NoBody && req.URL != nil {
+			return p.redirectBody(req)
+		}
 		return nil
 	}
 	return &clientCopy
@@ -204,10 +294,14 @@ func (c *Call) httpClient() *http.Client {
 
 func (c *Call) metaBuilder(p *Prepared) transport.APIAttemptMetaBuilder {
 	return func(wireRequest *http.Request, requestBody []byte) llm.APIAttemptMeta {
+		mode := c.Req.HistoryMode
+		if c.Req.Continuation != nil {
+			mode = c.Req.HistoryModeForEndpoint(wireRequest.URL.String())
+		}
 		return llm.APIAttemptMeta{
 			ProviderInstance:   c.Res.Instance,
 			RequestModel:       c.Req.Model,
-			HistoryMode:        c.Req.HistoryMode,
+			HistoryMode:        mode,
 			EndpointFamily:     c.EndpointFamily,
 			Protocol:           c.Res.Protocol,
 			RequestBody:        requestBody,

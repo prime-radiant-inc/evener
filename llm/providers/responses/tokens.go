@@ -3,7 +3,6 @@ package responses
 import (
 	"context"
 	"fmt"
-	"net/http"
 
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/internal/protocolhttp"
@@ -23,17 +22,17 @@ func (p *Protocol) CountTokens(ctx context.Context, req llm.Request, res registr
 	if res.Transport.CountTokensEndpoint == registry.EndpointUnsupported {
 		return 0, llm.ErrInputTokenCountUnsupported
 	}
-	body, err := buildBody(req, res, false)
-	if err != nil {
-		return 0, err
+	call := p.call("responses.input_tokens", protocolhttp.URL(res, res.Transport.CountTokensEndpoint), req, res)
+	call.BuildBody = func(view llm.Request) (map[string]any, error) {
+		body, err := buildBody(view, res, false)
+		for _, f := range inputTokenCountOutputFields {
+			delete(body, f)
+		}
+		return body, err
 	}
-	for _, f := range inputTokenCountOutputFields {
-		delete(body, f)
-	}
-	call := p.call("responses.input_tokens", http.MethodPost, protocolhttp.URL(res, res.Transport.CountTokensEndpoint), body, req, res)
 	call.EndpointFamily = "openai_input_tokens"
 	var count int
-	err = protocolhttp.Do(ctx, call, func(r *protocolhttp.Result) (*llm.Response, error) {
+	err := protocolhttp.Do(ctx, call, func(r *protocolhttp.Result) (*llm.Response, error) {
 		n, ok := r.Raw["input_tokens"].(float64)
 		if !ok {
 			return nil, fmt.Errorf("responses.input_tokens: missing input_tokens in %q", r.Body)

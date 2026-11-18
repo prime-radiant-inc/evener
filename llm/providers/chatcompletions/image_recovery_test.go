@@ -22,6 +22,7 @@ import (
 
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/apilog"
+	"primeradiant.com/evener/llm/internal/transporttest"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -58,8 +59,8 @@ func TestImageRecoveryStageZeroSerializesWithImagePart(t *testing.T) {
 	if err := r.prepare(context.Background(), body); err != nil {
 		t.Fatalf("prepare: %v", err)
 	}
-	if r.originalSize == 0 || len(r.sent) != 1 {
-		t.Fatalf("originalSize=%d sent=%d, want the stage-0 digest seeded", r.originalSize, len(r.sent))
+	if r.originalSize == 0 || r.lastDigest == ([32]byte{}) {
+		t.Fatalf("originalSize=%d digest=%x, want the stage-0 image measured", r.originalSize, r.lastDigest)
 	}
 }
 
@@ -208,6 +209,44 @@ func recoveryImages(t *testing.T, body map[string]any) []string {
 
 func TestImageRecoveryManaged(t *testing.T) {
 	t.Parallel()
+	t.Run("redirected request", func(t *testing.T) {
+		const front = "https://front.invalid"
+		req := recoveryRequest(recoveryJPEG(t, nil))
+		prior := llm.Assistant("answer")
+		prior.ReasoningEndpoint = "https://issuer.invalid"
+		prior.Content = append(prior.Content, llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "fixture"}})
+		req.Messages = append(req.Messages, prior)
+		var images []string
+		p := &Protocol{Client: &http.Client{Transport: transporttest.RoundTripFunc(func(r *http.Request) (*http.Response, error) {
+			var body map[string]any
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			_ = r.Body.Close()
+			urls := recoveryImages(t, body)
+			if len(urls) != 1 {
+				t.Fatalf("request has %d images", len(urls))
+			}
+			images = append(images, urls[0])
+			resp := &http.Response{Request: r, Header: make(http.Header), StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(chatJSON))}
+			if r.URL.Host == "front.invalid" {
+				resp.StatusCode = http.StatusTemporaryRedirect
+				resp.Header.Set("Location", "https://model.invalid/chat")
+				resp.Body = http.NoBody
+			} else if len(images) == 2 {
+				resp.StatusCode = http.StatusBadRequest
+				resp.Body = io.NopCloser(strings.NewReader(imageRejection))
+			}
+			return resp, nil
+		})}}
+		resp, err := p.Complete(t.Context(), req, liveRes(&httptest.Server{URL: front}, nil))
+		if err != nil || len(resp.ToolCalls()) != 1 || len(images) != 4 {
+			t.Fatalf("completion error %v, tool calls %d, request hops %d", err, len(resp.ToolCalls()), len(images))
+		}
+		if images[0] != images[1] || images[2] != images[3] || images[0] == images[2] {
+			t.Fatal("image recovery did not deliver one distinct repaired image across both hops")
+		}
+	})
 	for _, stream := range []bool{false, true} {
 		t.Run(map[bool]string{false: "complete", true: "stream"}[stream], func(t *testing.T) {
 			data := recoveryJPEG(t, nil)

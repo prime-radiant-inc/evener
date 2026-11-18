@@ -15,14 +15,15 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
-func (p *Protocol) call(operation, family, method, u string, body map[string]any, req llm.Request, res registry.Resolved) *protocolhttp.Call {
-	return &protocolhttp.Call{Operation: operation, EndpointFamily: family, Method: method, URL: u, Body: body, Req: req, Res: res, Client: p.Client, Reclassify: reclassifyGemini(res)}
+func (p *Protocol) call(operation, family, method, u string, req llm.Request, res registry.Resolved) *protocolhttp.Call {
+	return &protocolhttp.Call{Operation: operation, EndpointFamily: family, Method: method, URL: u, Req: req, Res: res, Client: p.Client, Reclassify: reclassifyGemini(res)}
 }
 
-func (p *Protocol) completionCall(operation, family, method, u string, body map[string]any, req llm.Request, res registry.Resolved) *protocolhttp.Call {
-	call := p.call(operation, family, method, u, body, req, res)
-	call.FinalizeBody = func(_ context.Context, finalBody map[string]any) error {
-		return reconcileOutputField(finalBody, req.MaxTokens, res.Caps.MaxOutputTokens)
+func (p *Protocol) completionCall(operation, family, u string, req llm.Request, res registry.Resolved) *protocolhttp.Call {
+	call := p.call(operation, family, http.MethodPost, u, req, res)
+	call.BuildBody = func(view llm.Request) (map[string]any, error) { return p.BuildBody(view, res) }
+	call.FinalizeBody = func(_ context.Context, finalBody map[string]any, view llm.Request) error {
+		return reconcileOutputField(finalBody, view.MaxTokens, res.Caps.MaxOutputTokens)
 	}
 	return call
 }
@@ -87,11 +88,7 @@ func (p *Protocol) Complete(ctx context.Context, req llm.Request, res registry.R
 	if protocolhttp.RequiresStreamingComplete(res) {
 		return protocolhttp.CompleteViaStream(ctx, res.Instance, func(ctx context.Context) (llm.Stream, error) { return p.Stream(ctx, req, res) })
 	}
-	body, err := p.BuildBody(req, res)
-	if err != nil {
-		return llm.Response{}, err
-	}
-	call := p.completionCall("generateContent", "google_generate_content", http.MethodPost, protocolhttp.URL(res, res.Transport.Endpoint), body, req, res)
+	call := p.completionCall("generateContent", "google_generate_content", protocolhttp.URL(res, res.Transport.Endpoint), req, res)
 	return protocolhttp.Complete(ctx, call, func(r *protocolhttp.Result) (llm.Response, error) {
 		return fromGeminiResponse(r.Raw, req.Model, r.Body), nil
 	})
@@ -99,11 +96,7 @@ func (p *Protocol) Complete(ctx context.Context, req llm.Request, res registry.R
 
 // Stream implements llm.Protocol.
 func (p *Protocol) Stream(ctx context.Context, req llm.Request, res registry.Resolved) (llm.Stream, error) {
-	body, err := p.BuildBody(req, res)
-	if err != nil {
-		return nil, err
-	}
-	call := p.completionCall("streamGenerateContent", "google_stream_generate_content", http.MethodPost, protocolhttp.URL(res, res.Transport.StreamEndpoint), body, req, res)
+	call := p.completionCall("streamGenerateContent", "google_stream_generate_content", protocolhttp.URL(res, res.Transport.StreamEndpoint), req, res)
 	return protocolhttp.Stream(ctx, call, func(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, r *protocolhttp.Result, attempt *transport.APIAttemptCapture) {
 		decodeGenerateContentStream(sctx, cancel, resp, s, req, res.Instance, r.EndpointURL, r.Material, attempt)
 	})
@@ -126,7 +119,7 @@ func (p *Protocol) ListModels(ctx context.Context, res registry.Resolved) ([]reg
 		u += "?pageSize=1000"
 	}
 	var rows []registry.Model
-	err := protocolhttp.Do(ctx, p.call("models.list", "google_models", http.MethodGet, u, nil, llm.Request{Model: "*", AdapterTimeout: llm.ModelListingTimeout(ctx)}, res), func(r *protocolhttp.Result) (*llm.Response, error) {
+	err := protocolhttp.Do(ctx, p.call("models.list", "google_models", http.MethodGet, u, llm.Request{Model: "*", AdapterTimeout: llm.ModelListingTimeout(ctx)}, res), func(r *protocolhttp.Result) (*llm.Response, error) {
 		var payload struct {
 			Models []struct {
 				Name                       string   `json:"name"`
@@ -164,15 +157,18 @@ func (p *Protocol) CountTokens(ctx context.Context, req llm.Request, res registr
 	if res.Transport.CountTokensEndpoint == registry.EndpointUnsupported {
 		return 0, llm.ErrInputTokenCountUnsupported
 	}
-	inner, err := p.BuildBody(req, res)
-	if err != nil {
-		return 0, err
+	call := p.call("countTokens", "google_count_tokens", http.MethodPost, protocolhttp.URL(res, res.Transport.CountTokensEndpoint), req, res)
+	call.BuildBody = func(view llm.Request) (map[string]any, error) {
+		inner, err := p.BuildBody(view, res)
+		if err != nil {
+			return nil, err
+		}
+		registry.Prune(inner, res.Caps, res.Protocol)
+		inner["model"] = "models/" + res.WireID
+		return map[string]any{"generateContentRequest": inner}, nil
 	}
-	registry.Prune(inner, res.Caps, res.Protocol)
-	inner["model"] = "models/" + res.WireID
-	body := map[string]any{"generateContentRequest": inner}
 	var count int
-	err = protocolhttp.Do(ctx, p.call("countTokens", "google_count_tokens", http.MethodPost, protocolhttp.URL(res, res.Transport.CountTokensEndpoint), body, req, res), func(r *protocolhttp.Result) (*llm.Response, error) {
+	err := protocolhttp.Do(ctx, call, func(r *protocolhttp.Result) (*llm.Response, error) {
 		count = tokenCountInt(r.Raw["totalTokens"])
 		if count <= 0 && r.Raw["totalTokens"] == nil {
 			return nil, fmt.Errorf("countTokens: missing totalTokens in %q", r.Body)

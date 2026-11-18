@@ -64,7 +64,7 @@ func Do(parentCtx context.Context, c *Call, finish func(r *Result) (*llm.Respons
 			Err:          attemptErr,
 		}, timeoutSource, decodeErr, transportErr)
 	}()
-	client := llm.ClientWithAdapterTimeout(c.httpClient(), c.Req.AdapterTimeout)
+	client := llm.ClientWithAdapterTimeout(c.httpClient(p), c.Req.AdapterTimeout)
 	resp, att, doErr := transport.DoWithAPIAttempts(parentCtx, client, p.Request, c.metaBuilder(p))
 	attempt = att
 	if doErr != nil {

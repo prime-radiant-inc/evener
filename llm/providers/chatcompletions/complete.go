@@ -14,9 +14,8 @@ import (
 
 const endpointFamily = "openai_chat_completions"
 
-// call assembles the protocolhttp call: the session-affinity headers are
-// the only protocol-fixed headers this protocol adds.
-func (p *Protocol) call(operation, method, url string, body map[string]any, req llm.Request, res registry.Resolved) *protocolhttp.Call {
+// completionCall adds Chat's session-affinity headers to the shared HTTP call.
+func (p *Protocol) completionCall(operation, url string, req llm.Request, res registry.Resolved, stream bool) *protocolhttp.Call {
 	headers := map[string]string{}
 	if registry.BoolValue(res.Caps.SessionAffinityHeaders) {
 		if sid := strings.TrimSpace(req.SessionID); sid != "" {
@@ -25,13 +24,10 @@ func (p *Protocol) call(operation, method, url string, body map[string]any, req 
 			}
 		}
 	}
-	return &protocolhttp.Call{Operation: operation, EndpointFamily: endpointFamily, Method: method, URL: url, Body: body, Headers: headers, Req: req, Res: res, Client: p.Client}
-}
-
-func (p *Protocol) completionCall(operation, method, url string, body map[string]any, req llm.Request, res registry.Resolved) *protocolhttp.Call {
-	call := p.call(operation, method, url, body, req, res)
-	call.FinalizeBody = func(_ context.Context, finalBody map[string]any) error {
-		reconcilePreparedOutput(finalBody, req, res)
+	call := &protocolhttp.Call{Operation: operation, EndpointFamily: endpointFamily, Method: http.MethodPost, URL: url, Headers: headers, Req: req, Res: res, Client: p.Client}
+	call.BuildBody = func(view llm.Request) (map[string]any, error) { return buildBody(view, res, stream) }
+	call.FinalizeBody = func(_ context.Context, finalBody map[string]any, view llm.Request) error {
+		reconcilePreparedOutput(finalBody, view, res)
 		return nil
 	}
 	return call

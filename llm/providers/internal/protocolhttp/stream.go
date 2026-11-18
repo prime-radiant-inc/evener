@@ -31,7 +31,7 @@ func Stream(parentCtx context.Context, c *Call, decode StreamDecoder) (llm.Strea
 		cancelAll()
 		return nil, err
 	}
-	client := llm.ClientWithAdapterTimeout(c.httpClient(), c.Req.AdapterTimeout)
+	client := llm.ClientWithAdapterTimeout(c.httpClient(p), c.Req.AdapterTimeout)
 	resp, attempt, err := transport.DoWithAPIAttempts(parentCtx, client, p.Request, c.metaBuilder(p))
 	if err != nil {
 		returned := llm.WrapContextError(c.Res.Instance, err)
