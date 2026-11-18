@@ -1129,6 +1129,32 @@ func writeDelegateAttentionTranscript(t *testing.T, path, sessionID, attentionID
 	}
 }
 
+// appendDelegateAttentionTurnText appends a durable steering turn carrying text,
+// with attentionID set when it names a row. A test that needs a later exchange
+// in the transcript uses it with an empty attention identity.
+func appendDelegateAttentionTurnText(t *testing.T, path, sessionID, attentionID, text string) {
+	t.Helper()
+	writer, _, err := transcript.OpenWriterForSession(path, sessionID)
+	if err != nil {
+		t.Fatalf("OpenWriterForSession: %v", err)
+	}
+	kind := schema.TurnAssistant
+	message := llm.Assistant(text)
+	if attentionID != "" {
+		kind = schema.TurnSteering
+		message = llm.User(text)
+	}
+	turn := schema.NewTurn(kind, message)
+	turn.AttentionID = attentionID
+	if err := writer.AppendDurable(turn); err != nil {
+		_ = writer.Close()
+		t.Fatalf("AppendDurable turn: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Close writer: %v", err)
+	}
+}
+
 func appendDelegateAttentionTurn(t *testing.T, path, sessionID, attentionID string) {
 	t.Helper()
 	writer, _, err := transcript.OpenWriterForSession(path, sessionID)

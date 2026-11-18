@@ -168,6 +168,30 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		child.discardRestoredCandidate()
 		return nil, false, errors.New("restored delegate did not inherit the exact controller binding")
 	}
+	// The resumed history anchors on the last compaction marker, so a pending
+	// attention row recorded before that marker has no turn in it. Restoring
+	// them here is what makes the first request after an idle reclaim carry its
+	// reports: every path that attaches a restored runtime — an automatic arm, a
+	// commitment's cold delivery, an explicit send — reaches this restore, and a
+	// path that attached first would present the row without its turn, spending
+	// the generation on a request the model cannot answer. The restore is
+	// ID-keyed and idempotent, and resolved rows are never pending, so nothing
+	// resurrects.
+	//
+	// Best-effort: a transcript read that fails here leaves the rows pending
+	// with their turns unrestored, which the drive's own restore retries. It
+	// does not fail the restore, because a restore that cannot read attention
+	// state is still a usable runtime and the alternative is refusing to revive
+	// a delegate over a read the next generation would repeat.
+	child.attentionMu.Lock()
+	restoreFold, restoreFoldErr := child.delegateAttentionFoldLocked()
+	if restoreFoldErr == nil {
+		restoreFoldErr = child.retainPendingDelegateAttentionTurnsLocked(restoreFold)
+	}
+	child.attentionMu.Unlock()
+	if restoreFoldErr != nil {
+		child.emit(warningDataFromError("restore a pending delegate attention turn", restoreFoldErr))
+	}
 	for name := range child.reg.RegisteredNames() {
 		if !hasString(descriptor.ToolNameCeiling, name) {
 			child.discardRestoredCandidate()

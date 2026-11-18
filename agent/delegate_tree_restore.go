@@ -214,6 +214,23 @@ func delegateRunStartIndex(events []delegatestore.Event) map[delegateLease]deleg
 	return index
 }
 
+// delegateRunOutcomeIndex is each generation's own settled outcome, folded from
+// the same journal the aggregate comes from. The aggregate keeps only the
+// newest, and a cold restore that asked it which rows a stop quieted would apply
+// one generation's answer to every row: after two successive stops it would
+// rebuild the later quiet and present the earlier report on a stale wake that
+// never released it. Every row's own generation is the thing consulted, so this
+// index answers per row.
+func delegateRunOutcomeIndex(events []delegatestore.Event) map[delegateLease]delegatestore.Outcome {
+	index := make(map[delegateLease]delegatestore.Outcome)
+	for _, event := range events {
+		if event.RunFinished != nil {
+			index[delegateLease{delegateID: event.DelegateID, generation: event.RunFinished.Generation}] = event.RunFinished.Outcome
+		}
+	}
+	return index
+}
+
 func (c *delegateTreeController) ReconcileRequirements() delegateReconcileRequirements {
 	c.mu.Lock()
 	defer c.mu.Unlock()

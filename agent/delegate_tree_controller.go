@@ -120,8 +120,15 @@ type delegateTreeController struct {
 	closing         bool
 	reconcileOrder  []delegateLease
 	runStarts       map[delegateLease]delegatestore.RunTrigger
-	owedAdmission   bool
-	emitUpdate      func(delegateUpdatePlan)
+	// runOutcomes is each generation's own settled outcome, indexed beside
+	// runStarts. The delegate aggregate keeps only the newest, which is not
+	// enough to answer whether an individual reopened row was quieted by its own
+	// stop: several rows can be unreleased at once after successive stops, and a
+	// later generation's outcome says nothing about an earlier row. A restore
+	// therefore asks this index the row's own generation.
+	runOutcomes   map[delegateLease]delegatestore.Outcome
+	owedAdmission bool
+	emitUpdate    func(delegateUpdatePlan)
 	// appendFault, when set, fails appendLocked's durable append before it
 	// reaches the store. Tests inject a chosen append error; nil in
 	// production.
@@ -497,6 +504,7 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		releasing:           make(map[string]*Session),
 		reconcileOrder:      delegateOpenRunOrder(events, durable),
 		runStarts:           delegateRunStartIndex(events),
+		runOutcomes:         delegateRunOutcomeIndex(events),
 		owedAdmission:       true,
 	}
 	for _, event := range events {
@@ -533,6 +541,9 @@ func (c *delegateTreeController) appendLocked(events ...delegatestore.Event) ([]
 	for _, event := range appended {
 		if event.RunStarted != nil {
 			c.runStarts[delegateLease{delegateID: event.DelegateID, generation: event.RunStarted.Generation}] = event.RunStarted.Trigger
+		}
+		if event.RunFinished != nil {
+			c.runOutcomes[delegateLease{delegateID: event.DelegateID, generation: event.RunFinished.Generation}] = event.RunFinished.Outcome
 		}
 		if event.Created != nil {
 			c.noteActivityAdmissionLocked(event)

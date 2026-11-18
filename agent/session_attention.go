@@ -813,6 +813,21 @@ func (s *Session) armDelegateAttentionInController(attentionID string) (armed bo
 			s.attentionMu.Unlock()
 			return false, nil
 		}
+		// The handoff arms this frame by ID alone, and the frame can have landed
+		// after the attach folded the pending set: the restore that loaded the
+		// other rows' turns ran before it. Retaining the turn here, under the
+		// same hold that reads the pending set, is what keeps the wake from
+		// publishing a row no request can carry. It is ID-keyed, so a turn the
+		// attach already restored keeps its position.
+		if fold, err := s.delegateAttentionFoldLocked(); err != nil {
+			s.attentionMu.Unlock()
+			return false, err
+		} else if turn, ok := fold.turns[attentionID]; ok {
+			if err := s.retainDelegateAttentionTurn(turn); err != nil {
+				s.attentionMu.Unlock()
+				return false, err
+			}
+		}
 		_, blocker, plan, emit, wakeGeneration, err := s.delegateController.tryOpenDelegateAttention(s.owningDelegateID, attentionID)
 		s.attentionMu.Unlock()
 		if err != nil {
@@ -1297,26 +1312,64 @@ func (s *Session) moveHeldDelegateAttentionTurnsToTail(released []string) {
 	}
 }
 
-// stopQuietedDelegateAttentionRowsLocked lists the pending rows generation's
-// attention stop owns: a well-formed reopen of that generation's source whose
-// immediate source resumes at that generation, and whose wake the controller
-// does not already note — a noted wake is a new event's arm, which presents the
-// row exactly as it would have presented it against the resident hold. The
+// retainPendingDelegateAttentionTurnsLocked restores every still-pending row's
+// durable turn into the history. The point of the restore is that a row's turn
+// and its pending status come from one fold: a request that presents a row must
+// carry its turn, and a row whose turn predates the resumed history's last
+// compaction marker would otherwise be pending with nothing to present.
+// Restoration is ID-keyed and idempotent, so a turn the resumed history already
+// holds is replaced in place rather than duplicated. Every restore path calls
+// this before it attaches the runtime: an explicit send or an automatic arm
+// that attached first would build its request from a history that never got
+// them, and the rows would wait for a generation that may never come. The
 // caller holds attentionMu.
-func (s *Session) stopQuietedDelegateAttentionRowsLocked(fold delegateAttentionFold, noted map[string]struct{}, generation uint64) []string {
-	var rows []string
+func (s *Session) retainPendingDelegateAttentionTurnsLocked(fold delegateAttentionFold) error {
+	pendingTurns := fold.pendingTurns("")
+	for i, durable := range pendingTurns {
+		if err := s.retainDelegateAttentionTurn(durable, pendingTurns[i+1:]...); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// delegateQuietedRow is a pending reopened report together with the generation
+// whose stop quieted it. A row carries its own generation: several rows can be
+// unreleased at once, after successive stops, and the generation a later stop
+// settled says nothing about an earlier row's quiet.
+type delegateQuietedRow struct {
+	attentionID string
+	generation  uint64
+}
+
+// stopQuietedDelegateAttentionRowsLocked lists the pending rows a user stop
+// quieted, each with its own generation. The stop that owns a reopened row is
+// the generation its immediate source resumes at, and that generation must be
+// one whose own run was attention-triggered and settled cancelled: the same
+// evidence the resident quiet was built from, asked of the row rather than of
+// the delegate's newest generation. Which of them a restore rebuilds a hold for
+// is a separate question, answered per row against the release floor and the
+// noted wake set. The caller holds attentionMu and passes the run index read
+// under the controller lock with the aggregate.
+func (s *Session) stopQuietedDelegateAttentionRowsLocked(fold delegateAttentionFold, generation uint64, runStarts map[delegateLease]delegatestore.RunTrigger, runOutcomes map[delegateLease]delegatestore.Outcome, delegateID string) []delegateQuietedRow {
+	var rows []delegateQuietedRow
 	for _, id := range fold.pendingIDs() {
 		source, _, ok := cutDelegateAttentionReopenSegment(id)
 		if !ok {
 			continue
 		}
-		if fold.resumeGenerations[source] != generation {
+		claimed := fold.resumeGenerations[source]
+		if claimed == 0 || claimed > generation {
 			continue
 		}
-		if _, wakeNoted := noted[id]; wakeNoted {
+		lease := delegateLease{delegateID: delegateID, generation: claimed}
+		if runStarts[lease] != delegatestore.TriggerAttention {
 			continue
 		}
-		rows = append(rows, id)
+		if outcome, settled := runOutcomes[lease]; !settled || outcome.Status != delegatestore.OutcomeCancelled {
+			continue
+		}
+		rows = append(rows, delegateQuietedRow{attentionID: id, generation: claimed})
 	}
 	return rows
 }
@@ -1365,11 +1418,16 @@ func (s *Session) deriveHeldDelegateAttentionFromOutcome() {
 	if aggregate := controller.durable[s.owningDelegateID]; aggregate != nil {
 		generation = aggregate.Generation
 		released = aggregate.AttentionHoldReleasedGeneration
-		stopped = !aggregate.CurrentRunOpen &&
-			aggregate.Trigger == delegatestore.TriggerAttention &&
-			aggregate.LatestOutcome != nil &&
-			aggregate.LatestOutcome.Status == delegatestore.OutcomeCancelled
+		// The delegate is worth rebuilding a quiet for when any of its
+		// generations settled as an attention stop, not only the newest: an
+		// earlier stop's row can still be unreleased under a later generation
+		// that ran for another row.
+		stopped = !aggregate.CurrentRunOpen
 	}
+	// Each row's own generation decides its quiet, so the evidence is read per
+	// generation here, in the same locked snapshot as the aggregate.
+	runStarts := maps.Clone(controller.runStarts)
+	runOutcomes := maps.Clone(controller.runOutcomes)
 	var noted map[string]struct{}
 	if state := controller.attention[s.owningDelegateID]; state != nil {
 		noted = maps.Clone(state.wakeIDs)
@@ -1389,11 +1447,8 @@ func (s *Session) deriveHeldDelegateAttentionFromOutcome() {
 		s.attentionMu.Unlock()
 		return
 	}
-	pendingTurns := fold.pendingTurns("")
-	for i, durable := range pendingTurns {
-		if err := s.retainDelegateAttentionTurn(durable, pendingTurns[i+1:]...); err != nil {
-			s.emit(warningDataFromError("restore a pending delegate attention turn", err))
-		}
+	if err := s.retainPendingDelegateAttentionTurnsLocked(fold); err != nil {
+		s.emit(warningDataFromError("restore a pending delegate attention turn", err))
 	}
 	// Only a stop's own rows are in question here. Every other restored session
 	// presents its pending rows exactly as the resident one would, and has no
@@ -1402,30 +1457,37 @@ func (s *Session) deriveHeldDelegateAttentionFromOutcome() {
 		s.attentionMu.Unlock()
 		return
 	}
-	quieted := s.stopQuietedDelegateAttentionRowsLocked(fold, noted, generation)
-	// A release at or past the resting generation is newer evidence than the
-	// stop that generation settled: the quiet it ended must not come back. The
-	// rows that stop had quieted are the very rows that release freed, so they
-	// are the ones this restore must present — and presenting them means ending
-	// the request on them, which is what the release path's tail move exists
-	// for. Without it the restored report sits under the exchanges of the
-	// generation the quiet stood through, and the request that consumes it ends
-	// on a later assistant message. The resident release performs the same move
-	// against its in-memory hold, and the reclaim that emptied that map is what
-	// leaves this read to do it instead.
-	if released >= generation {
-		if len(quieted) != 0 {
-			s.moveHeldDelegateAttentionTurnsToTail(quieted)
+	quieted := s.stopQuietedDelegateAttentionRowsLocked(fold, generation, runStarts, runOutcomes, s.owningDelegateID)
+	// Each row's own generation decides its quiet, because several rows can be
+	// unreleased at once after successive stops and one generation's answer is
+	// not another's. A release at or past the row's generation is newer evidence
+	// than the stop that quieted it, so that quiet must not come back: the row
+	// presents, and presenting it means ending the request on it, which is what
+	// the release path's tail move exists for. A row whose generation the floor
+	// has not reached keeps its quiet. A wake the controller already notes is a
+	// new event's arm that presents the row on its own, so it needs no hold —
+	// but that question is asked only of rows whose quiet still stands, never of
+	// rows a release freed, because a restart leaves both the freed report and
+	// the fresh frame noted and the report still has to move.
+	var releasedRows, heldRows []string
+	for _, row := range quieted {
+		if delegateAttentionHoldStands(row.generation, released) {
+			if _, wakeNoted := noted[row.attentionID]; wakeNoted {
+				continue
+			}
+			heldRows = append(heldRows, row.attentionID)
+			continue
 		}
-		s.attentionMu.Unlock()
-		return
+		releasedRows = append(releasedRows, row.attentionID)
 	}
-	held := quieted
+	if len(releasedRows) != 0 {
+		s.moveHeldDelegateAttentionTurnsToTail(releasedRows)
+	}
 	s.attentionMu.Unlock()
-	// The stamp is the generation the quiet comes from — the one the stop
-	// settled and the fold's reopens claim — so a wake admitted at a later
-	// generation ends this hold and one admitted before it never does.
-	if len(held) != 0 {
+	// The stamp is each row's own generation — the one its stop settled and its
+	// reopen claims — so a wake admitted at a later generation ends that hold and
+	// one admitted before it never does.
+	if len(heldRows) != 0 {
 		s.mu.Lock()
 		beforeInstall := s.cfg.testOnly.delegateAttentionBeforeDerivedHoldInstall
 		s.mu.Unlock()
@@ -1433,8 +1495,11 @@ func (s *Session) deriveHeldDelegateAttentionFromOutcome() {
 			beforeInstall()
 		}
 	}
-	for _, id := range held {
-		s.holdDelegateAttentionFromAutomaticDriveAt(id, generation)
+	for _, row := range quieted {
+		if !slices.Contains(heldRows, row.attentionID) {
+			continue
+		}
+		s.holdDelegateAttentionFromAutomaticDriveAt(row.attentionID, row.generation)
 	}
 }
 
