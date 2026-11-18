@@ -343,6 +343,125 @@ test("a corrected scroll whose trigger the rail has clipped dismisses the menu",
   }
 });
 
+// Inside the LAYOUT window is not inside what a zoomed reader is looking at. A
+// pinch zoom leaves the visible region a fraction of the layout viewport, and a
+// scroll the browser makes to hold its own anchor never promises to keep the
+// trigger inside it: a live row arrives above the trigger, the browser gives
+// back the offset that holds the row it anchored, and the trigger ends up below
+// everything the reader can see while the layout viewport still contains it. A
+// popup that stayed open there would hold keyboard focus on rows off the screen.
+test("a corrected scroll whose trigger left the visual viewport dismisses the menu", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 1200 });
+  const fakeViewport = new EventTarget() as EventTarget & {
+    width: number;
+    height: number;
+    offsetLeft: number;
+    offsetTop: number;
+  };
+  // A zoomed page: 1200 of layout viewport, 400 of it visible.
+  fakeViewport.width = 800;
+  fakeViewport.height = 400;
+  fakeViewport.offsetLeft = 0;
+  fakeViewport.offsetTop = 0;
+  vi.stubGlobal("visualViewport", fakeViewport);
+  let triggerTop = 300;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.getAttribute("data-testid") === "rail-port") return box(0, 0, 300, 800);
+    if (this.getAttribute("data-testid") === "rail-row") return box(0, 120, 300, 40);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  const { flush } = captureFrames();
+  try {
+    render(
+      <div data-testid="rail-port" style={{ overflowY: "auto" }}>
+        <div data-testid="rail-row">Steady live session</div>
+        <Menu trigger="Actions" items={items()} />
+      </div>,
+    );
+    const scroller = screen.getByTestId("rail-port");
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 1200 });
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 800 });
+    scroller.scrollTop = 200;
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu")).toBeTruthy();
+    // A row arrives above the trigger, pushing it 200 further down the content,
+    // and the browser gives back 24 of offset to hold the row it anchored - the
+    // steady one, whose place in the content grew by exactly that much. The
+    // correction is the browser's, and it leaves the trigger 500 down a page
+    // whose visible region ends at 400.
+    scroller.scrollTop = 224;
+    triggerTop = 500;
+    fireEvent.scroll(scroller);
+    flush();
+    expect(screen.queryByRole("menu")).toBeNull();
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// The same correction with the trigger still inside the visible region. This is
+// the direction that stops the answer becoming "any correction dismisses": a
+// menu that closed on every browser adjustment would vanish on exactly the live
+// updates the correction exists to survive.
+test("a corrected scroll whose trigger is still inside the visual viewport re-anchors", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 1200 });
+  const fakeViewport = new EventTarget() as EventTarget & {
+    width: number;
+    height: number;
+    offsetLeft: number;
+    offsetTop: number;
+  };
+  fakeViewport.width = 800;
+  fakeViewport.height = 400;
+  fakeViewport.offsetLeft = 0;
+  fakeViewport.offsetTop = 0;
+  vi.stubGlobal("visualViewport", fakeViewport);
+  let triggerTop = 100;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.getAttribute("data-testid") === "rail-port") return box(0, 0, 300, 800);
+    if (this.getAttribute("data-testid") === "rail-row") return box(0, 20, 300, 40);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  const { flush } = captureFrames();
+  try {
+    render(
+      <div data-testid="rail-port" style={{ overflowY: "auto" }}>
+        <div data-testid="rail-row">Steady live session</div>
+        <Menu trigger="Actions" items={items()} />
+      </div>,
+    );
+    const scroller = screen.getByTestId("rail-port");
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 1200 });
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 800 });
+    scroller.scrollTop = 200;
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu").style.top).toBe("132px"); // 100 + 28 + 4
+    // The same anchoring adjustment, with the trigger still 140 down the 400 the
+    // reader can see: the popup follows it rather than closing.
+    scroller.scrollTop = 224;
+    triggerTop = 140;
+    fireEvent.scroll(scroller);
+    flush();
+    expect(screen.getByRole("menu").style.top).toBe("172px"); // 140 + 28 + 4
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
 test("a taller viewport that clamps an ancestor's scroll leaves the menu open and re-anchored", async () => {
   const user = userEvent.setup();
   const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
@@ -4754,6 +4873,84 @@ test("a placement pass after the reader's drag does not pull them back", async (
     });
     flush();
     expect(screen.getByRole("menu").scrollLeft).toBe(60);
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// A classic vertical scrollbar is part of the popup's OUTER width and none of
+// its client width. Recording the outer one makes a popup whose content runs
+// between the two report its overflow as smaller than it is: a reader who
+// dragged past the start of an overflowing label is then judged to still have
+// that start on screen, and the next position-only pass - a visual-viewport pan
+// leaves the geometry alone - scrolls them back to it. The width the reveal
+// reads is the one the reader can see, which is the client width.
+test("a scrollbar's width does not make a reader's drag look like a reveal", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  // 96 of content in a 60-wide popup of which 36 is client width: 24 of that
+  // outer width is the scrollbar. The focused row starts at 70, so at the
+  // reader's offset of 20 the start is out of view at 36 of visible width and
+  // only looks present at 60.
+  const SCROLLBAR_WIDTH = 24;
+  const POPUP_OUTER_WIDTH = 60;
+  const PORT_WIDTH = POPUP_OUTER_WIDTH - SCROLLBAR_WIDTH;
+  const ROW_START = 70;
+  const fakeViewport = new EventTarget() as EventTarget & {
+    width: number;
+    height: number;
+    offsetLeft: number;
+    offsetTop: number;
+  };
+  fakeViewport.width = 400;
+  fakeViewport.height = 800;
+  fakeViewport.offsetLeft = 0;
+  fakeViewport.offsetTop = 0;
+  vi.stubGlobal("visualViewport", fakeViewport);
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, 300, 30, 28);
+    if (this.tagName === "UL") return box(0, 300, PORT_WIDTH, 120);
+    return box(0, 0, 0, 0);
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "UL") return 120;
+    return this.tagName === "LI" ? 44 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "UL") return POPUP_OUTER_WIDTH;
+    return this.tagName === "LI" ? ROW_START : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetLeft", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "LI" ? ROW_START : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "scrollWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "UL" ? 96 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "UL" ? PORT_WIDTH : 0;
+  });
+  const { flush } = captureFrames();
+  try {
+    render(<Menu trigger="Actions" items={items()} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    const popup = screen.getByRole("menu");
+    // The reader drags sideways past the start of the label and the browser
+    // reports it. Nothing about the geometry changed - they moved the view.
+    popup.scrollLeft = 20;
+    fireEvent.scroll(popup);
+    expect(popup.scrollLeft).toBe(20);
+    // The visual viewport pans, so the popup is placed again with its own
+    // geometry untouched. The start was already out of the reader's view when
+    // this pass began, so the reveal is not this pass's to make.
+    fakeViewport.offsetTop = 40;
+    act(() => {
+      fakeViewport.dispatchEvent(new Event("scroll"));
+    });
+    flush();
+    expect(screen.getByRole("menu").scrollLeft).toBe(20);
   } finally {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();

@@ -131,7 +131,7 @@ function scrollContainerOf(element: HTMLElement, ownerWindow: Window): HTMLEleme
 }
 
 /** Whether `element` is inside the part of the page a reader can actually see:
- * the window, and the visible scrollport of every scroll container above it
+ * the VIEWPORT, and the visible scrollport of every scroll container above it
  * that clips it.
  *
  * The window alone answers a different question. A rail scrolled so that the
@@ -139,14 +139,21 @@ function scrollContainerOf(element: HTMLElement, ownerWindow: Window): HTMLEleme
  * window - the rail's header covers it - so a menu that trusts the window
  * bounds follows a trigger no reader can see, with keyboard focus still in it.
  * The clipped case and the pan case need the same answer, and this is the
- * narrower one. */
+ * narrower one.
+ *
+ * The viewport is the VISUAL one where there is one, because that is the region
+ * placement answers to: a pinch-zoomed or keyboard-shrunk page can leave the
+ * trigger inside the layout viewport and outside the part the reader is looking
+ * at, and a menu that stayed open there is attached to nothing. The two agree
+ * when no visual viewport exists. */
 function triggerVisibleOnScreen(element: HTMLElement, ownerWindow: Window): boolean {
   const rect = element.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) return false;
-  let left = 0;
-  let top = 0;
-  let right = ownerWindow.innerWidth;
-  let bottom = ownerWindow.innerHeight;
+  const viewport = ownerWindow.visualViewport;
+  let left = viewport ? viewport.offsetLeft : 0;
+  let top = viewport ? viewport.offsetTop : 0;
+  let right = viewport ? viewport.offsetLeft + viewport.width : ownerWindow.innerWidth;
+  let bottom = viewport ? viewport.offsetTop + viewport.height : ownerWindow.innerHeight;
   for (let node: HTMLElement | null = element.parentElement; node !== null; node = node.parentElement) {
     if (!isScrollContainer(node, ownerWindow)) continue;
     const port = node.getBoundingClientRect();
@@ -301,7 +308,12 @@ const observeRow = (popup: HTMLElement, row: HTMLElement): RowObservation => ({
   // the offset box and not to the port, and counting it lets a row's last few
   // pixels pass as visible.
   portHeight: popup.clientHeight || popup.offsetHeight,
-  portWidth: popup.offsetWidth,
+  // The width the reveal reads. A classic vertical scrollbar is part of the
+  // OUTER width and none of the client width, so recording the outer one makes
+  // a popup whose content runs between the two report no horizontal overflow at
+  // all: a reader who dragged past the start is then judged to have their start
+  // on screen, and the next position-only pass pulls them back.
+  portWidth: popup.clientWidth || popup.offsetWidth,
   scrolledTo: popup.scrollTop,
   scrolledAlong: popup.scrollLeft,
 });
