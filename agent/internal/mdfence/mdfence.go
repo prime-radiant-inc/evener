@@ -99,6 +99,18 @@ func leavesItem(line string, container int) bool {
 	return container > 0 && strings.TrimSpace(line) != "" && LeadingColumns(line) < container
 }
 
+// LeavesItem reports whether line leaves the list item the tracker is inside,
+// and so ends any block that item holds.
+//
+// It is StepInBlockIn's own item-exit test, exported for a caller that must
+// classify the same line and cannot wait for the step to be taken: the line
+// that ends a block belongs to the enclosing item, so a caller deciding
+// whether that line is indented code has to resolve its list scope before it
+// steps, not go on using the empty scope an open block imposes (#6493 review).
+func (t *Tracker) LeavesItem(line string) bool {
+	return leavesItem(line, t.container)
+}
+
 // Step advances over line and reports whether it opened or closed a block.
 func (t *Tracker) Step(line string) bool {
 	// A line that leaves the item ends any fence the item holds: it is read on

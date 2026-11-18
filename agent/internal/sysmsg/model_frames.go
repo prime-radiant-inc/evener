@@ -303,12 +303,16 @@ func EscapeModelAuthoredFrames(text string) string {
 		// a fence the item holds is read as a document-level block that outlives
 		// it (#6493 review).
 		//
-		// It is read only outside a block: a fence's own content may look like a
-		// list, and what it holds is quoted text, not structure. "Outside" is
-		// decided before the line, so the line that opens a fence still gets the
-		// item's scope.
+		// A block's own content may look like a list, and what it holds is quoted
+		// text, not structure, so the list is not stepped while one is open. The
+		// exception is the line that ENDS the block: it belongs to the enclosing
+		// item, so its scope is resolved here and the fence is told so below.
+		// Without that, an unclosed nested fence dedenting onto the parent's
+		// four-column prose would hand this line scope zero, the prose would read
+		// as page-indented code, and a model-authored frame in it would survive
+		// in both replay and checkpoint capture (#6493 review).
 		container := 0
-		if !fence.Inside() {
+		if !fence.Inside() || fence.LeavesItem(content) {
 			container = lists.step(content)
 		}
 		inBlock := fence.StepInBlockIn(content, container)

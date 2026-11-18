@@ -2,6 +2,36 @@ package mdfence
 
 import "testing"
 
+// TestLeavesItem pins the item-exit rule callers share. It is exported because
+// the escape has to resolve a line's list scope before it steps the tracker: the
+// line that ends a block belongs to the enclosing item, and only this check can
+// say so while the block is still open.
+func TestLeavesItem(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name      string
+		container int
+		line      string
+		want      bool
+	}{
+		{"outside any item nothing leaves", 0, "    [answers]", false},
+		{"dedent below the item leaves it", 6, "    [answers]", true},
+		{"line at the item's content stays", 4, "    [answers]", false},
+		{"line past the item's content stays", 4, "      quoted", false},
+		{"blank line stays in the item", 4, "", false},
+		{"whitespace-only line stays in the item", 4, "   ", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tracker := Tracker{container: tc.container}
+			if got := tracker.LeavesItem(tc.line); got != tc.want {
+				t.Fatalf("LeavesItem(container=%d, %q) = %v, want %v", tc.container, tc.line, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestStepInBlockInOpensInTheItemScope covers the scope a fence opened on a
 // list item's continuation line belongs to.
 //
