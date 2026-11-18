@@ -8,7 +8,9 @@ import {
   itemTextPresence,
   markItemIdentityOnly,
   markItemTextOmitted,
+  wireItemToModel,
 } from "./transcriptItems";
+import type { ThreadItem } from "./types.gen";
 
 test("entry item codec preserves omitted text, identity-only markers, and rich recorded fields", () => {
   const omitted = markItemTextOmitted({ id: "item-1", turnId: "turn-1", type: "assistant", text: "" });
@@ -74,6 +76,56 @@ test("the entry item codec round-trips the answer link", () => {
   expect(decoded?.answerToTurnIds).toEqual(["turn-question"]);
   expect(
     decodeTranscriptItem({ ...encodeTranscriptItem(answered), answerToTurnIds: ["ok", 7] as unknown as string[] }),
+  ).toBeUndefined();
+});
+
+// Admission's per-call resolution evidence is the load-bearing half of #6323:
+// the reply's observation names the exact (turnId, callId) pairs it answered,
+// and only the stamp can separate same-header siblings. It has to survive BOTH
+// hops a live transcript takes - wireItemToModel and the cache codec - or a
+// reload hands the client a reply it can only guess a header for. Starting
+// from the wire item is the point: a test that seeds the ItemModel directly
+// would still pass with wireItemToModel dropping the field.
+test("a wire answer carrying per-call resolution keeps its pairs through the model and the cache", () => {
+  const wire: ThreadItem = {
+    id: "item_user_2",
+    type: "userMessage",
+    turnId: "turn_2",
+    text: '[answers]\n1. [Deploy?] → "Yes"',
+    status: "completed",
+    observation: {
+      ref: "",
+      turnId: "turn_2",
+      answerToTurnIds: ["turn_1"],
+      resolvedAskCalls: [
+        { turnId: "turn_1", callId: "call_1" },
+        { turnId: "turn_1", callId: "call_2" },
+      ],
+      resolvedAskLegacyCount: 1,
+      causalKnown: false,
+    },
+  };
+  const model = wireItemToModel(wire);
+  expect(model.answerToTurnIds).toEqual(["turn_1"]);
+  expect(model.resolvedAskCalls).toEqual([
+    { turnId: "turn_1", callId: "call_1" },
+    { turnId: "turn_1", callId: "call_2" },
+  ]);
+  expect(model.resolvedAskLegacyCount).toBe(1);
+
+  const decoded = decodeTranscriptItem(encodeTranscriptItem(model));
+  expect(decoded?.resolvedAskCalls).toEqual([
+    { turnId: "turn_1", callId: "call_1" },
+    { turnId: "turn_1", callId: "call_2" },
+  ]);
+  expect(decoded?.resolvedAskLegacyCount).toBe(1);
+  // The cache decoder rejects the whole row when a pair is malformed, since a
+  // half-read stamp would attribute by call id alone.
+  expect(
+    decodeTranscriptItem({
+      ...encodeTranscriptItem(model),
+      resolvedAskCalls: [{ turnId: "turn_1" }] as unknown as { turnId: string; callId: string }[],
+    }),
   ).toBeUndefined();
 });
 

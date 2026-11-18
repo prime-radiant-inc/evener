@@ -669,3 +669,95 @@ test("a free-prose recap carries only the reply's first line, with an ellipsis f
     " — answered: Option B — but see my notes below: …",
   );
 });
+
+// Admission's per-call evidence (observation.resolvedAskCalls) names the exact
+// ask_user calls an answer consumed, so a reply beside same-header siblings is
+// attributed by (turnId, callId) instead of by guessed header (#6323).
+test("a call-stamped composed answer naming ONE of two same-header calls recaps only it", () => {
+  // Two calls ask the same header, which the header heuristic must refuse for
+  // both (one line cannot say which it answered). Admission's stamp says this
+  // reply answered the first, and the second call's recorded questions agree
+  // with its arguments, so neither source disagrees about what was asked.
+  const first = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_1",
+    callId: "call_1",
+    toolName: "ask_user",
+    status: "completed",
+  });
+  const second = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_2",
+    callId: "call_2",
+    toolName: "ask_user",
+    status: "completed",
+  });
+  const reply = userMessage({
+    text: '[answers]\n1. [Deploy?] → "Yes"',
+    turnId: "turn_2",
+    answerToTurnIds: ["turn_1"],
+    resolvedAskCalls: [{ turnId: "turn_1", callId: "call_1" }],
+  });
+  const model = turnsModel([first, second], [reply]);
+  expect(answeredAskUserReply(model, first)).toBe(reply);
+  expect(answeredAskUserSuffix(model, second)).toBeUndefined();
+  expect(answeredAskUserReply(model, second)).toBeUndefined();
+});
+
+test("a stamp whose recorded question disagrees with the arguments is not consumed", () => {
+  // Two same-header siblings, so ONLY the stamp could attribute the reply to
+  // the first. But a pre-tool hook rewrote the first call's question to
+  // "Run tests?" while the row still displays "Deploy?", and the answer line
+  // names "Deploy?". Consuming the stamp would recap the first call - beneath
+  // a question it does not answer. The narrow rule declines, so the
+  // pre-existing heuristic decides, and it refuses a shared header: neither
+  // call recaps, and both raw rows stay.
+  const deployQuestion = {
+    header: "Deploy?",
+    question: "Should I deploy this to production now?",
+    options: [
+      { label: "Yes", detail: "Ship it" },
+      { label: "No", detail: "Wait" },
+    ],
+  };
+  const first = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_1",
+    callId: "call_1",
+    toolName: "ask_user",
+    status: "completed",
+    raw: {
+      version: 1,
+      questions: [
+        {
+          header: "Run tests?",
+          question: "Run the test suite first?",
+          options: [
+            { label: "Yes", detail: "ok" },
+            { label: "No", detail: "ok" },
+          ],
+        },
+      ],
+    },
+  });
+  const second = item({
+    argumentsJSON: askUserArgs([deployQuestion]),
+    turnId: "turn_1",
+    id: "ask_2",
+    callId: "call_2",
+    toolName: "ask_user",
+    status: "completed",
+  });
+  const reply = userMessage({
+    text: '[answers]\n1. [Deploy?] → "Yes"',
+    turnId: "turn_2",
+    answerToTurnIds: ["turn_1"],
+    resolvedAskCalls: [{ turnId: "turn_1", callId: "call_1" }],
+  });
+  const model = turnsModel([first, second], [reply]);
+  expect(answeredAskUserSuffix(model, first)).toBeUndefined();
+  expect(answeredAskUserReply(model, first)).toBeUndefined();
+});

@@ -13,6 +13,7 @@ import type {
   EvenerUsage,
   GoalState,
   OverlayItem,
+  PendingAskCall,
   PendingMutation,
   QueueState,
   SandboxEscalationRequested,
@@ -79,6 +80,21 @@ export interface ItemModel {
   // consumer must fall back to the composed "[answers]" text shape there.
   // Names the QUESTION's turn, not the reply's own turn.
   answerToTurnIds?: string[];
+  // Wire ThreadItem.observation.resolvedAskCalls: admission's per-call
+  // evidence behind answerToTurnIds — the exact ask_user calls (execution
+  // turn AND call id) this accepted input consumed (issue #6323). The link
+  // above collapses a whole execution to one turn, so several calls in one
+  // execution share it; this list says WHICH of them the reply answered.
+  // Undefined for ordinary messages, for unfenced whole-set answers (which
+  // record no call list), and for any answer from a daemon that predates the
+  // field.
+  resolvedAskCalls?: PendingAskCall[];
+  // Wire ThreadItem.observation.resolvedAskLegacyCount: how many questions
+  // admission also consumed WITHOUT being able to name them, restored from
+  // records that predate call ids (issue #6323). Their headers never reach the
+  // wire, so a composed answer line cannot be attributed to a named call while
+  // this is nonzero. Undefined when every consumed question is named.
+  resolvedAskLegacyCount?: number;
   actor?: import("./types.gen").SessionActor;
   type: string; // wire ThreadItem.type verbatim
   text: string; // settled text

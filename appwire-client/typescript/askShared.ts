@@ -373,6 +373,107 @@ function isAnswerCarrier(item: ItemModel): boolean {
 // lose this round's answer to an unrelated later link. With no link
 // anywhere (an older daemon, or a reply the observation never reached) the
 // shape is the only evidence, exactly as before the link existed.
+// resolvesThisCallExactly answers whether admission's per-call stamp can be
+// used for this call WITHOUT risk of pairing an answer with a question the
+// row does not show (#6323). Three conditions, all required:
+//
+//   - the stamp names this row's own (turnId, callId). A row with no call id
+//     is never named: admission only names calls it can identify.
+//   - admission left no question unnamed (resolvedAskLegacyCount). Those
+//     questions' headers never reach the wire, so one of them may be the
+//     header an answer line names and no named call can account for it.
+//   - the questions the call RECORDED, when the page loaded them, are the
+//     same ones its arguments carry. The transcript rows draw their question
+//     from the arguments, so where the two disagree a recap would print an
+//     answer beneath a question it does not answer - the disagreement's
+//     resolution is a product decision, deliberately not made here.
+//
+// False means "use the behavior this client had before the field existed",
+// which is the heuristic in findAnswerReply and its shape fallback. That is
+// why an unloaded recorded state is not a refusal: nothing can disagree yet,
+// and the heuristic's own header comparison still stands in the way of a
+// wrong pairing.
+function resolvesThisCallExactly(items: readonly ItemModel[], item: ItemModel, reply: ItemModel): boolean {
+  const calls = reply.resolvedAskCalls;
+  if (calls === undefined || item.callId === undefined) return false;
+  if (reply.resolvedAskLegacyCount !== undefined && reply.resolvedAskLegacyCount > 0) return false;
+  if (!calls.some((call) => call.turnId === item.turnId && call.callId === item.callId)) return false;
+  const recorded = recordedAskQuestions(items, item);
+  if (recorded === undefined) return true;
+  const sent = parseAskUserQuestions(item);
+  if (sent === undefined) return true;
+  return sameAskQuestions(recorded, sent);
+}
+
+// recordedAskQuestions reads the questions a call ACTUALLY asked, from the
+// successful result's recorded state (schema.AskUserState, which the wire
+// carries on the result item's raw). Undefined when the page holds no such
+// state for this call - an older daemon, or a result row it did not load.
+function recordedAskQuestions(items: readonly ItemModel[], call: ItemModel): AskUserQuestion[] | undefined {
+  const own = askQuestionsFromRecord(call);
+  if (own !== undefined) return own;
+  if (call.callId === undefined) return undefined;
+  // A live item may arrive as two rows, so look for the recorded state on the
+  // pair - a call id alone repeats across executions.
+  for (const candidate of items) {
+    if (candidate === call) continue;
+    if (candidate.turnId !== call.turnId || candidate.callId !== call.callId) continue;
+    const recorded = askQuestionsFromRecord(candidate);
+    if (recorded !== undefined) return recorded;
+  }
+  return undefined;
+}
+
+function askQuestionsFromRecord(item: Pick<ItemModel, "raw">): AskUserQuestion[] | undefined {
+  const raw = item.raw;
+  if (typeof raw !== "object" || raw === null) return undefined;
+  const questions = (raw as { questions?: unknown }).questions;
+  if (!Array.isArray(questions) || questions.length === 0) return undefined;
+  // schema.AskUserQuestion's own omitempty rules, not the arguments shape's.
+  const parsed: AskUserQuestion[] = [];
+  for (const [index, question] of questions.entries()) {
+    if (typeof question !== "object" || question === null) return undefined;
+    const obj = question as Record<string, unknown>;
+    const header = typeof obj.header === "string" && obj.header !== "" ? obj.header : `Question ${index + 1}`;
+    if (typeof obj.question !== "string" || !Array.isArray(obj.options) || obj.options.length === 0) return undefined;
+    const options: AskUserOption[] = [];
+    for (const option of obj.options) {
+      if (typeof option !== "object" || option === null) return undefined;
+      const fields = option as Record<string, unknown>;
+      if (typeof fields.label !== "string") return undefined;
+      options.push({
+        label: fields.label,
+        detail: typeof fields.detail === "string" ? fields.detail : "",
+        recommended: fields.recommended === true,
+      });
+    }
+    parsed.push({
+      header,
+      question: obj.question,
+      options,
+      multiSelect: obj.multi_select === true,
+      why: typeof obj.why === "string" ? obj.why : undefined,
+      ifUnanswered: typeof obj.if_unanswered === "string" ? obj.if_unanswered : undefined,
+    });
+  }
+  return parsed;
+}
+
+// sameAskQuestions compares the two question sets a recap must reconcile: the
+// header each answer is keyed by AND the text the row displays. A hook may
+// keep the header and rewrite the question, so headers alone cannot stand for
+// "the row shows what the reply answers".
+function sameAskQuestions(recorded: readonly AskUserQuestion[], sent: readonly AskUserQuestion[]): boolean {
+  if (recorded.length !== sent.length) return false;
+  for (let index = 0; index < recorded.length; index += 1) {
+    const a = recorded[index];
+    const b = sent[index];
+    if (a === undefined || b === undefined) return false;
+    if (a.header !== b.header || a.question !== b.question) return false;
+  }
+  return true;
+}
+
 function findAnswerReply(
   items: readonly ItemModel[],
   later: readonly ItemModel[],
@@ -383,6 +484,14 @@ function findAnswerReply(
     if (candidate.answerToTurnIds !== undefined) {
       if (!isAnswerCarrier(candidate)) continue;
       if (!candidate.answerToTurnIds.includes(item.turnId)) return shapeMatch;
+      // Admission's per-call evidence, consumed ONLY where using it cannot be
+      // wrong (#6323): the stamp names this call, it left no question
+      // unnamed, and the questions the call recorded are the ones its
+      // arguments carry - so there is exactly one question set in play and
+      // the match below cannot pair a line with a question the row does not
+      // show. Every other case falls through to the heuristic above, which is
+      // this client's behavior before the field existed.
+      if (resolvesThisCallExactly(items, item, candidate)) return candidate;
       if (linkedReplyAnswersThisCall(items, item, candidate)) return candidate;
       continue;
     }
