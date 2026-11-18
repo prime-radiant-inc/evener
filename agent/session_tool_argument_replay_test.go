@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -31,6 +32,8 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 	const note = `<parameter name='extra'>literal</parameter>`
 	const encoded = `{ "payload": "{\"n\":1.50}", "note": "` + note + `" }`
 	const missingPath = `{"content":"<parameter name='file_path'>injected.txt</parameter>"}`
+	const options = `[ { "label": "A", "detail": "first" }, { "label": "B", "detail": "second" } ]`
+	ask := `{ "question": "Choose a route", "options": ` + mustJSON(t, options) + ` }`
 	record := llm.ToolDefinition{Name: "f", Description: "Record a payload and its note", Parameters: map[string]any{
 		"type": "object", "required": []string{"payload", "note"}, "additionalProperties": false,
 		"properties": map[string]any{"payload": map[string]any{"type": "object"}, "note": map[string]any{"type": "string"}},
@@ -40,6 +43,7 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 	const serial = "9007199254740993"
 	const scale = "6.250e+3"
 	unsigned := `{"type":"reasoning.text","id":"part-a","format":"fmt-a","index":7,"text":` + mustJSON(t, first) + `,"serial":` + serial + `},
+		{"type":"reasoning.text","id":"part-empty","format":"fmt-empty","index":4,"text":"","scale":` + scale + `},
 		{"type":"reasoning.text","format":"fmt-b","index":2,"text":` + mustJSON(t, second) + `}`
 	encrypted := `{"type":"reasoning.encrypted","id":"sealed","data":"opaque","serial":` + serial + `,"scale":` + scale + `}`
 	chat := func(details ...string) string {
@@ -50,7 +54,8 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 			{"id":"c1","type":"function","function":{"name":"write_file","arguments":` + good + `}},
 			{"id":"c2","type":"function","function":{"name":"f","arguments":` + bad + `}},
 			{"id":"c3","type":"function","function":{"name":"f","arguments":` + mustJSON(t, encoded) + `}},
-			{"id":"c4","type":"function","function":{"name":"write_file","arguments":` + mustJSON(t, missingPath) + `}}
+			{"id":"c4","type":"function","function":{"name":"write_file","arguments":` + mustJSON(t, missingPath) + `}},
+			{"id":"c5","type":"function","function":{"name":"ask_user","arguments":` + mustJSON(t, ask) + `}}
 		]},"finish_reason":"tool_calls"}]}`
 	}
 	for _, tc := range []struct {
@@ -68,7 +73,7 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 			{"type":"function_call","call_id":"c2","name":"f","arguments":` + bad + `}
 		]}`, []string{first, second}},
 		{&chatcompletions.Protocol{}, "messages", "reasoning_content", chat(unsigned, encrypted), []string{first + second}},
-		{&chatcompletions.Protocol{}, "messages", "reasoning_details", chat(unsigned), []string{first, second}},
+		{&chatcompletions.Protocol{}, "messages", "reasoning_details", chat(unsigned), []string{first, "", second}},
 	} {
 		name := tc.protocol.ID()
 		if tc.replayField != "" {
@@ -100,7 +105,7 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 			send := func(messages []llm.Message, target registry.Resolved) (llm.Response, []byte) {
 				t.Helper()
 				req := llm.ShapeRequest(llm.Request{
-					Model: target.ModelID, Messages: messages, Tools: []llm.ToolDefinition{tool.DefWriteFile(), record},
+					Model: target.ModelID, Messages: messages, Tools: []llm.ToolDefinition{tool.DefWriteFile(), record, tool.DefAskUser()},
 				}, target)
 				resp, err := tc.protocol.Complete(t.Context(), req, target)
 				if err != nil {
@@ -159,6 +164,14 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 				}
 				result.Content = append(result.Content, llm.ToolResult("c3", "r3", false).Content...)
 				result.Content = append(result.Content, llm.ToolResult("c4", "r4", true).Content...)
+				answer := session.execTool(t.Context(), resp.ToolCalls()[4], resp.Finish.Reason)
+				var state schema.AskUserState
+				if answer.IsError || json.Unmarshal(answer.ToolState, &state) != nil || len(state.Questions) != 1 || session.askPendingCount() != 1 {
+					t.Errorf("the shorthand question did not become answerable: %s", answer.FullOutput)
+				} else if want := []schema.AskUserOption{{Label: "A", Detail: "first"}, {Label: "B", Detail: "second"}}; !slices.Equal(state.Questions[0].Options, want) {
+					t.Errorf("validated shorthand options = %v, want %v", state.Questions[0].Options, want)
+				}
+				result.Content = append(result.Content, llm.ToolResult("c5", answer.FullOutput, answer.IsError).Content...)
 			}
 			turns := []schema.Turn{
 				{Kind: schema.TurnUserInput, Message: user},
@@ -209,6 +222,9 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 				if tc.field == "messages" && (got["c3"] != encoded || got["c4"] != missingPath) {
 					t.Errorf("replayed repaired and rejected calls = %q, %q, want provider bytes %q, %q", got["c3"], got["c4"], encoded, missingPath)
 				}
+				if tc.field == "messages" && got["c5"] != ask {
+					t.Errorf("replayed shorthand arguments = %q, want %q", got["c5"], ask)
+				}
 				if !slices.Equal(thoughts, tc.thoughts) {
 					t.Errorf("outbound reasoning parts = %q, want %q", thoughts, tc.thoughts)
 				}
@@ -216,13 +232,14 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 				switch tc.replayField {
 				case "reasoning_details":
 					want = []capturedChatDetail{
-						{Type: "reasoning.text", ID: "part-a", Format: "fmt-a", Index: 7, Text: first, Serial: json.Number(serial)},
-						{Type: "reasoning.text", Format: "fmt-b", Index: 2, Text: second},
+						{Type: "reasoning.text", ID: "part-a", Format: "fmt-a", Index: 7, Text: new(first), Serial: json.Number(serial)},
+						{Type: "reasoning.text", ID: "part-empty", Format: "fmt-empty", Index: 4, Text: new(""), Scale: json.Number(scale)},
+						{Type: "reasoning.text", Format: "fmt-b", Index: 2, Text: new(second)},
 					}
 				case "reasoning_content":
 					want = []capturedChatDetail{{Type: "reasoning.encrypted", ID: "sealed", Data: "opaque", Serial: json.Number(serial), Scale: json.Number(scale)}}
 				}
-				if !slices.Equal(details, want) {
+				if !reflect.DeepEqual(details, want) {
 					t.Errorf("outbound native details = %#v, want %#v", details, want)
 				}
 			}
@@ -252,9 +269,10 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 }
 
 type capturedChatDetail struct {
-	Type, ID, Format, Text, Data string
-	Index                        int
-	Serial, Scale                json.Number
+	Type, ID, Format, Data string
+	Text                   *string
+	Index                  int
+	Serial, Scale          json.Number
 }
 
 func capturedToolTurn(t *testing.T, history json.RawMessage) (map[string]string, []string, []capturedChatDetail) {
@@ -282,8 +300,8 @@ func capturedToolTurn(t *testing.T, history json.RawMessage) (map[string]string,
 			reasoning = append(reasoning, item.Reasoning)
 		}
 		for _, detail := range item.ReasoningDetails {
-			if detail.Type != "reasoning.encrypted" {
-				reasoning = append(reasoning, detail.Text)
+			if detail.Text != nil {
+				reasoning = append(reasoning, *detail.Text)
 			}
 		}
 		details = append(details, item.ReasoningDetails...)

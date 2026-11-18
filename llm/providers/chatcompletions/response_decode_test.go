@@ -298,6 +298,7 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 	})
 	t.Run("interleaved unsigned and opaque details", func(t *testing.T) {
 		for _, signed := range []bool{false, true} {
+			blank := map[string]any{"type": "reasoning.text", "id": "blank", "format": "fmt-empty", "index": 4, "text": "", "metadata": json.Number("9007199254740993")}
 			middle := map[string]any{"type": "reasoning.encrypted", "id": "opaque", "data": "sealed"}
 			tail := map[string]any{"type": "reasoning.text", "index": 3, "text": "tail", "format": "fmt-end"}
 			if signed {
@@ -305,11 +306,15 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 			}
 			want := []map[string]any{
 				{"type": "reasoning.text", "id": "a", "format": "fmt-a", "index": 9, "text": "a-complete"},
-				middle, tail,
+				blank, middle, tail, {"type": "reasoning.text", "format": "unindexed", "text": ""},
 			}
-			body := chatResponseRaw(map[string]any{"reasoning": "independent", "reasoning_details": want}, "stop")
+			complete := append(slices.Clone(want), map[string]any{"type": "reasoning.text", "index": 6, "text": nil})
+			body := chatResponseRaw(map[string]any{"reasoning": "independent", "reasoning_details": complete}, "stop")
 			chunks := []map[string]any{
-				{"reasoning": "independent", "reasoning_details": []any{map[string]any{"type": "reasoning.text", "id": "a", "format": "fmt-a", "index": 9, "text": "a-"}}},
+				{"reasoning": "independent", "reasoning_details": []any{
+					map[string]any{"type": "reasoning.text", "id": "a", "format": "fmt-a", "index": 9, "text": "a-"},
+					blank, map[string]any{"type": "reasoning.text", "id": "unfinished", "index": 8, "text": ""},
+				}},
 				{"reasoning_details": []any{middle, tail}},
 				{"reasoning_details": []any{map[string]any{"index": 9, "text": "complete"}}},
 			}
@@ -317,6 +322,7 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 			for _, chunk := range chunks {
 				stream.WriteString("data: " + jsonOf(t, map[string]any{"choices": []any{map[string]any{"delta": chunk}}}) + "\n\n")
 			}
+			stream.WriteString(`data: {"choices":[{"delta":{"reasoning_details":[{"index":4,"text":""},{"type":"reasoning.text","format":"unindexed","text":""}]},"finish_reason":"stop"}]}` + "\n\n")
 			stream.WriteString("data: [DONE]\n\n")
 			responses, _ := decode(t, jsonOf(t, body), stream.String())
 			for source, resp := range responses {

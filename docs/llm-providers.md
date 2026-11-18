@@ -542,7 +542,9 @@ recover an encoded object, array or XML parameter. A string field such as
   identical bytes in a scalar and a signed detail, a scalar route replays
   both fields. On an enrolled `reasoning_details` route, a captured native
   array supplies the replay items in their original order, with their own
-  field names, indexes, formats, and provider metadata. An independently
+  field names, indexes, formats, and provider metadata. An explicit empty
+  text detail in a complete message or final stream delta keeps its slot.
+  A stream opening needs later text or a signature to settle it. An independently
   returned scalar stays on scalar routes. If the response supplied only a
   scalar or an older transcript saved only display text, an array route
   constructs a text item from the available reasoning. A trailing
@@ -565,18 +567,21 @@ recover an encoded object, array or XML parameter. A string field such as
   parts. It preserves whitespace in raw parts, item IDs and summaries, and
   keeps separate assistant messages and their `output_text` and `refusal`
   parts in order. A final response that selects only a refusal or a provider-run
-  file search withdraws earlier streamed tool calls. A message reference can
-  inherit a refusal finalized at its content index, even when the stream omits
-  the completed message. An empty final output can recover an issued call.
+  file search withdraws earlier streamed tool calls. A message reference with
+  omitted or null `content` inherits a refusal finalized at its content index,
+  even when the stream omits the completed message. An empty final output can
+  recover an issued call.
   When the final response repeats only part of a streamed item, Evener keeps
   the matching call's argument bytes, completed message phase, indexed
   answer and reasoning text, and ciphertext from the stream. A reasoning
   item can inherit its announced ID. When it omits its content, a native
   part announcement and the finalized text for that part establish its
-  type, index and exact bytes. An empty terminal output keeps these finalized
-  parts at the item's stream position. An explicit empty `content` array
-  clears the item's earlier plaintext. A matching encrypted item still
-  carries its ciphertext and selected summary.
+  type, index and exact bytes. A single `reasoning_text` placeholder with
+  `text` set to `""` can recover all finalized native slots of that item in
+  index order. An empty terminal output keeps these parts at the item's
+  stream position. An explicit empty `content` array clears the item's
+  earlier plaintext. A matching encrypted item still carries its ciphertext
+  and selected summary.
   If a reply contains no visible answer or tool call, Evener still retries
   within its empty-answer limit. It saves eligible reasoning and native
   assistant message parts for the next attempt and a cold resume.

@@ -198,7 +198,7 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 				finishReason = choice.FinishReason
 			}
 
-			if delta := reasoning.add(choice.Delta.chatReasoningFields); delta != "" {
+			if delta := reasoning.add(choice.Delta.chatReasoningFields, choice.FinishReason != ""); delta != "" {
 				if !reasoningStarted {
 					s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningStart})
 					reasoningStarted = true

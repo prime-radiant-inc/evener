@@ -285,7 +285,7 @@ type chatReasoning struct {
 	batch        int
 }
 
-func (r *chatReasoning) add(f chatReasoningFields) string {
+func (r *chatReasoning) add(f chatReasoningFields, settled bool) string {
 	scalar, field := f.scalar()
 	var detailDelta strings.Builder
 	r.batch++
@@ -300,7 +300,7 @@ func (r *chatReasoning) add(f chatReasoningFields) string {
 			}
 			detailDelta.WriteString(piece)
 		}
-		r.addDetail(pos, item, piece, len(f.ReasoningDetails) == 1)
+		r.addDetail(pos, item, piece, len(f.ReasoningDetails) == 1, settled)
 	}
 	delta := scalar
 	if detailDelta.Len() != 0 {
@@ -377,7 +377,7 @@ func (r *chatReasoning) openDetail(pos int, item reasoningDetailItem, single boo
 	return match, r.open[match]
 }
 
-func (r *chatReasoning) addDetail(pos int, item reasoningDetailItem, piece string, single bool) {
+func (r *chatReasoning) addDetail(pos int, item reasoningDetailItem, piece string, single, settled bool) {
 	if item.isEncrypted() {
 		r.blocks = append(r.blocks, &reasoningDetailBlock{wire: item.wireItem(), continuation: true})
 		return
@@ -387,20 +387,24 @@ func (r *chatReasoning) addDetail(pos int, item reasoningDetailItem, piece strin
 		item.Type, _ = block.wire["type"].(string)
 	}
 	signed := item.Type == "reasoning.text" && item.Signature != ""
+	wire := item.wireItem()
+	// An explicit empty string in a complete message or final delta is a
+	// native slot. The same string on an unfinished opening carries no text.
+	settledEmpty := settled && piece == "" && item.Type == "reasoning.text" && wire["text"] == ""
 	// An identified opening can carry the only ID or format for its later text
-	// and signature. An opening that never receives either emits no part.
+	// or signature.
 	opening := (item.Index != nil || item.ID != "") && (item.Type == "" || item.Type == "reasoning.text")
-	if piece == "" && !signed && !opening {
+	if piece == "" && !signed && !opening && !settledEmpty {
 		return
 	}
 	if block == nil {
-		block = &reasoningDetailBlock{wire: item.wireItem(), position: pos}
+		block = &reasoningDetailBlock{wire: wire, position: pos}
 		r.blocks = append(r.blocks, block)
 		if !signed {
 			r.open = append(r.open, block)
 		}
 	} else {
-		for key, value := range item.wireItem() {
+		for key, value := range wire {
 			switch key {
 			case "type", "id", "index", "format":
 				// openDetail matched these fields. A fragment can fill a
@@ -416,9 +420,11 @@ func (r *chatReasoning) addDetail(pos int, item reasoningDetailItem, piece strin
 		block.index = item.Index
 	}
 	block.batch = r.batch
-	if block.textField == "" && piece != "" {
-		block.textField = "text"
-		if item.Text == "" {
+	if block.textField == "" {
+		switch {
+		case item.Text != "" || settledEmpty:
+			block.textField = "text"
+		case item.Thinking != "":
 			block.textField = "thinking"
 		}
 	}
@@ -458,7 +464,7 @@ func captureChatDetails(t *llm.ThinkingData, blocks []*reasoningDetailBlock) {
 func (r *chatReasoning) parts() []llm.ContentPart {
 	parts := []llm.ContentPart{}
 	appendPart := func(thinking llm.ThinkingData) {
-		if thinking.Text != "" || thinking.EncryptedContent != "" {
+		if thinking.Text != "" || thinking.EncryptedContent != "" || len(thinking.ChatDetails) != 0 {
 			parts = append(parts, llm.ContentPart{Kind: llm.ContentThinking, Thinking: &thinking})
 		}
 	}
@@ -565,7 +571,7 @@ func fromChatCompletionResponse(raw map[string]any, finishMap map[string]string,
 
 	// Build message.
 	var reasoning chatReasoning
-	reasoning.add(choice.Message.chatReasoningFields)
+	reasoning.add(choice.Message.chatReasoningFields, true)
 	parts := reasoning.parts()
 	if choice.Message.Content != "" {
 		parts = append(parts, llm.ContentPart{Kind: llm.ContentText, Text: choice.Message.Content})

@@ -102,11 +102,18 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 		res.Err = err
 		return res
 	}
+	argumentSchema := t.Schema
 	if t.Definition.Name == "ask_user" {
 		normalized, err := tool.NormalizeAskUserArgs(args)
 		if err != nil {
 			res.PrevalErr = err.Error()
 			return res
+		}
+		// In the single-question form the provider sent the fields of one
+		// question. Its item schema owns their types before wrapping.
+		questions := t.Schema.Properties["questions"]
+		if _, single := args["question"]; single && questions != nil {
+			argumentSchema = questions.Items2020
 		}
 		args = normalized
 	}
@@ -163,7 +170,7 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 	if err := t.Schema.Validate(args); err != nil {
 		// A provider can encode individual arguments using another syntax.
 		// Give its proposal the same tool-specific checks as the original.
-		if candidate := call.RepairedArguments(t.Schema); candidate != nil {
+		if candidate := call.RepairedArguments(argumentSchema); candidate != nil {
 			retry := res.Call
 			retry.Arguments = candidate
 			retry.ArgumentRepair = nil
