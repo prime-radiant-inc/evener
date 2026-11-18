@@ -790,6 +790,81 @@ test("a call-stamped composed answer to two same-header calls recaps neither", (
   expect(answeredAskUserReply(model, second)).toBeUndefined();
 });
 
+test("a refused stamp does not hand the calls to a later unlinked answer", () => {
+  // The stamped reply above is ambiguous, and looking FURTHER for another
+  // candidate would find this unlinked [answers] message: it names the shared
+  // header, so both calls would recap it and clients would hide its row from
+  // where the human wrote it. A stamp settles which reply answered the call,
+  // so refusing that reply's recap ends the search - the unlinked message
+  // answers no loaded call and keeps its own position.
+  const first = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_1",
+    callId: "call_1",
+    toolName: "ask_user",
+    status: "completed",
+  });
+  const second = item({
+    argumentsJSON: askUserArgs([{ ...ONE_QUESTION[0], question: "Should I deploy the docs too?" }]),
+    turnId: "turn_1",
+    id: "ask_2",
+    callId: "call_2",
+    toolName: "ask_user",
+    status: "completed",
+  });
+  const stamped = userMessage({
+    id: "reply_stamped",
+    text: '[answers]\n1. [Deploy?] → "Yes"',
+    turnId: "turn_2",
+    answerToTurnIds: ["turn_1"],
+    resolvedAskCalls: [
+      { turnId: "turn_1", callId: "call_1" },
+      { turnId: "turn_1", callId: "call_2" },
+    ],
+  });
+  const unlinked = userMessage({
+    id: "reply_unlinked",
+    text: '[answers]\n1. [Deploy?] → "Not sure yet"',
+    turnId: "turn_3",
+  });
+  const model = turnsModel([first, second], [stamped], [unlinked]);
+  expect(answeredAskUserSuffix(model, first)).toBeUndefined();
+  expect(answeredAskUserSuffix(model, second)).toBeUndefined();
+  // Neither call names the unlinked message as recapped, so nothing hides it.
+  expect(answeredAskUserReply(model, first)).toBeUndefined();
+  expect(answeredAskUserReply(model, second)).toBeUndefined();
+});
+
+test("a stamp naming a call the page did not load recaps nothing", () => {
+  // Transcript pages can split one turn's ask rows, so the second call is not
+  // loaded here. Counting headers over what IS loaded would see one question
+  // and attribute the line to the wrong ask; the count is only evidence when
+  // every call the stamp names is present, so the raw reply row stays visible
+  // and no recap is emitted.
+  const loaded = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_1",
+    callId: "call_1",
+    toolName: "ask_user",
+    status: "completed",
+  });
+  const reply = userMessage({
+    text: '[answers]\n1. [Deploy?] → "Yes"',
+    turnId: "turn_2",
+    answerToTurnIds: ["turn_1"],
+    resolvedAskCalls: [
+      { turnId: "turn_1", callId: "call_1" },
+      { turnId: "turn_1", callId: "call_2" },
+    ],
+  });
+  const model = turnsModel([loaded], [reply]);
+  expect(answeredAskUserSuffix(model, loaded)).toBeUndefined();
+  // The raw row is what the reader sees instead.
+  expect(answeredAskUserReply(model, loaded)).toBeUndefined();
+});
+
 test("a call-stamped composed answer naming ONE of two same-header calls still recaps it", () => {
   // The mirror of the case above: the same two same-header sibling calls, but
   // the stamp names only the first. Nothing is shared AMONG THE CALLS THE REPLY

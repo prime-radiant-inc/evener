@@ -182,31 +182,39 @@ function composedReplyRepeatsAHeader(text: string): boolean {
 // stampedComposedRecapIsAttributable answers the stamp's other, separate
 // question: given that admission named this reply for a call, can the recap
 // be shown for that call at all? The stamp proves which calls the reply
-// ANSWERS; it never proves the recap restates each answer faithfully. Two
-// composed shapes break that, and both keep the raw row instead:
+// ANSWERS; it never proves the recap restates each answer faithfully, and it
+// says nothing about what this CLIENT has loaded. Three composed shapes break
+// the recap, and each keeps the raw row instead:
 //
 //   - a header repeats among the answer lines, so the header-keyed parse keeps
 //     only the last line (composedReplyRepeatsAHeader);
 //   - a header identifies more than one QUESTION across the calls the reply
-//     claims. One line cannot say which of them it answered, so recapping it
+//     names. One line cannot say which of them it answered, so recapping it
 //     would show the same value on both and one call would be answered
 //     nothing. Counting questions, not calls, also covers one call that asks
-//     the same header twice (legal: two questions may share a header).
+//     the same header twice (legal: two questions may share a header);
+//   - a call the stamp names is not in the loaded items. A transcript page may
+//     split one turn's ask rows, so a partial view undercounts headers and
+//     would attribute a line to the wrong ask. The count is evidence only when
+//     every named call is present with parseable questions.
 //
-// Where no header is shared this way every claimed call's answers are its
-// own, and the recap is taken as before - including a reply stamped for only
-// one of two same-header siblings. Free prose names no header, so it is never
-// refused here.
+// Where no header is shared this way every named call's answers are its own,
+// and the recap is taken as before - including a reply stamped for only one of
+// two same-header siblings. Free prose names no header, so it is never refused
+// here.
 function stampedComposedRecapIsAttributable(items: readonly ItemModel[], reply: ItemModel): boolean {
   if (!reply.text.startsWith("[answers]")) return true;
   if (composedReplyRepeatsAHeader(reply.text)) return false;
   const questionsPerHeader = new Map<string, number>();
-  for (const call of items) {
-    if (!isAckedAskCall(call)) continue;
-    // Only calls this reply claims: a same-header sibling the reply did not
-    // answer says nothing about which of its own answers a line is.
-    if (resolvesThisCall(call, reply) !== true) continue;
-    for (const question of parseAskUserQuestions(call) ?? []) {
+  for (const named of reply.resolvedAskCalls ?? []) {
+    const call = items.find(
+      (candidate) =>
+        isAckedAskCall(candidate) && candidate.turnId === named.turnId && candidate.callId === named.callId,
+    );
+    if (call === undefined) return false;
+    const questions = parseAskUserQuestions(call);
+    if (questions === undefined) return false;
+    for (const question of questions) {
       questionsPerHeader.set(question.header, (questionsPerHeader.get(question.header) ?? 0) + 1);
     }
   }
@@ -458,10 +466,12 @@ function findAnswerReply(
       if (resolved === true) {
         // The stamp proves the reply answers THIS call. It does not prove the
         // recap restates that answer faithfully, so the composed form must
-        // also be attributable to a single question per header; when it is
-        // not, keep the raw row, exactly as composedReplyCoversCall does for
-        // the unstamped path.
-        if (!stampedComposedRecapIsAttributable(items, candidate)) continue;
+        // also be attributable to exactly one question per header, over a view
+        // that holds every call the stamp names. When it is not, this call has
+        // no recap at all: the stamp settles WHICH reply answered it, so
+        // refusing that reply's recap must end the search rather than hand the
+        // call to a later, unrelated message and hide that message's own row.
+        if (!stampedComposedRecapIsAttributable(items, candidate)) return undefined;
         return candidate;
       }
       if (resolved === false) continue;
