@@ -484,20 +484,27 @@ type SessionObservationMetadata struct {
 	AnswerToTurnIDs []string `json:"answerToTurnIds,omitempty"`
 	// ResolvedAskCalls carries admission's own per-call resolution evidence:
 	// the exact ask_user calls (execution turn AND call id) this accepted
-	// input consumed, from schema.Turn.AskResolution. AnswerToTurnIDs is the
-	// turn-granular collapse of the same evidence, so several calls in one
-	// execution share one link; a client that must say WHICH call a reply
-	// answered matches these calls instead of guessing. Absent on turns
-	// admitted before the evidence existed and on unfenced whole-set
-	// answers, which carry no call list at all.
+	// input's admission CAPTURED, from schema.Turn.AskResolution. It is the
+	// captured set, not a record of which calls this reply cleared: two fenced
+	// replies admitted against the same pending revision can carry the same
+	// capture, and the first to settle is the one that clears those calls.
+	// AnswerToTurnIDs is the turn-granular collapse of the same evidence, so
+	// several calls in one execution share one link; a client that must say
+	// WHICH call a reply answered matches these calls instead of guessing.
+	// Absent on turns admitted before the evidence existed and on unfenced
+	// whole-set answers, which carry no call list at all. A BOUNDED read may
+	// omit this list as a unit while keeping AnswerToTurnIDs and
+	// ResolvedAskLegacyCount, so a large capture cannot displace the reply.
 	ResolvedAskCalls []PendingAskCall `json:"resolvedAskCalls,omitempty"`
-	// ResolvedAskLegacyCount says admission ALSO consumed this many questions
-	// it could not name - the call-less population restored from records that
-	// predate call ids (schema.AskResolution.LegacyCount). ResolvedAskCalls
-	// cannot see them, so a client pairing a composed answer line to a named
-	// call by header must treat a nonzero count as unattributable: those
-	// questions' headers never reach the wire, and one of them may share the
-	// header the line names. Absent when every consumed question is named.
+	// ResolvedAskLegacyCount says admission's capture ALSO held this many
+	// questions it could not name - the call-less population restored from
+	// records that predate call ids (schema.AskResolution.LegacyCount).
+	// ResolvedAskCalls cannot see them, so a client pairing a composed answer
+	// line to a named call by header must treat a nonzero count as
+	// unattributable: those questions' headers never reach the wire, and one of
+	// them may share the header the line names. Absent when every captured
+	// question is named. A bounded read KEEPS this count even when it omits
+	// ResolvedAskCalls, because it is what makes the omission safe to see.
 	ResolvedAskLegacyCount int                `json:"resolvedAskLegacyCount,omitempty"`
 	EntryID                string             `json:"entryId,omitempty"`
 	EndTurn                bool               `json:"endTurn,omitempty"`

@@ -105,14 +105,21 @@ interrupt and session close also retain their explicit whole-set clear behavior.
 An answer's observation carries that capture to clients as two fields:
 `resolvedAskCalls:[{turnId,callId}]` and `resolvedAskLegacyCount`. The turn
 link alone cannot say which of several calls in one execution a reply answered,
-so `resolvedAskCalls` names them exactly, and a client matches a settled ask by
-the ask row's own `(turnId, callId)`. `resolvedAskLegacyCount` names the
-consumed questions admission could not attribute to a call at all: they are
+so `resolvedAskCalls` names the calls admission captured, and a client matches a
+settled ask by the ask row's own `(turnId, callId)`. It is the captured set,
+not a record of what this reply cleared: two fenced replies admitted against the
+same pending revision can carry the same capture, and the first to settle clears
+those calls. `resolvedAskLegacyCount` names the captured questions admission
+could not attribute to a call at all: they are
 restored from records that predate call ids, so their headers never reach the
 wire and no client can tell whether one of them shares a header an answer line
 names. `answerToTurnIds` and the composed `[answers]` text shape remain the
 turn-granular fallback for unfenced whole-set answers and for records stamped
 before the call list existed.
+
+A bounded read may omit `resolvedAskCalls` as a unit while keeping
+`answerToTurnIds` and `resolvedAskLegacyCount`, so a large capture cannot
+displace the reply it belongs to. That is the only field a read drops.
 
 The projection emits both fields only when the answer has a recorded turn link.
 An inline steer answering only its own still-running execution and a fenced

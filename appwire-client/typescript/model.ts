@@ -82,22 +82,28 @@ export interface ItemModel {
   answerToTurnIds?: string[];
   // Wire ThreadItem.observation.resolvedAskCalls: admission's per-call
   // evidence behind answerToTurnIds — the exact ask_user calls (execution
-  // turn AND call id) this accepted input consumed (issue #6323). The link
-  // above collapses a whole execution to one turn, so several calls in one
-  // execution share it; this list says WHICH of them the reply answered, and
-  // a consumer matches an ask row's own (turnId, callId) against it instead
-  // of guessing by header. Undefined for ordinary messages, for unfenced
-  // whole-set answers (which record no call list), and for any answer from a
-  // daemon that predates the field — a consumer must fall back to the link
-  // and then to the composed "[answers]" text shape there.
+  // turn AND call id) this input's admission CAPTURED (issue #6323). It is
+  // the captured set, not a record of which calls this reply cleared: two
+  // fenced replies admitted against the same pending revision can carry the
+  // same capture, and the first to settle clears those calls. The link above
+  // collapses a whole execution to one turn, so several calls in one
+  // execution share it; this list names WHICH calls were captured, and a
+  // consumer matches an ask row's own (turnId, callId) against it instead of
+  // guessing by header. Undefined for ordinary messages, for unfenced
+  // whole-set answers (which record no call list), for any answer from a
+  // daemon that predates the field, and on a BOUNDED read that omitted the
+  // list to fit its page — a consumer must fall back to the link and then to
+  // the composed "[answers]" text shape in every one of those cases.
   resolvedAskCalls?: PendingAskCall[];
   // Wire ThreadItem.observation.resolvedAskLegacyCount: how many questions
-  // admission also consumed WITHOUT being able to name them, restored from
-  // records that predate call ids (issue #6323). Their headers never reach the
-  // wire, so a composed answer line cannot be attributed to a named call while
-  // this is nonzero - one of these may share the header the line names. A
-  // consumer must then keep the raw reply and show no attributed recap.
-  // Undefined when every consumed question is named.
+  // admission's capture ALSO held WITHOUT being able to name them, restored
+  // from records that predate call ids (issue #6323). Their headers never reach
+  // the wire, so a composed answer line cannot be attributed to a named call
+  // while this is nonzero - one of these may share the header the line names.
+  // A consumer must then keep the raw reply and show no attributed recap. A
+  // bounded read KEEPS this count even when it omits the call list, because the
+  // count is what makes the omission safe to read. Undefined when every
+  // captured question is named.
   resolvedAskLegacyCount?: number;
   actor?: import("./types.gen").SessionActor;
   type: string; // wire ThreadItem.type verbatim
