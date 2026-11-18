@@ -160,8 +160,8 @@ func TestGHDrainWithoutAReplyIsNotSuccess(t *testing.T) {
 	if err == nil {
 		t.Fatalf("a wrapper that exited before answering was read as a successful call (out %q): an enqueue would be reported as landed on a reply nobody received", string(out))
 	}
-	if !errors.Is(err, errIncompleteReply) {
-		t.Fatalf("error = %v, want errIncompleteReply", err)
+	if !errors.Is(err, ErrIncompleteReply) {
+		t.Fatalf("error = %v, want ErrIncompleteReply", err)
 	}
 
 	// And the case the drain bound exists for still succeeds: a complete reply,
@@ -391,6 +391,44 @@ func TestParseDropEventReadsTheQueuesOwnReason(t *testing.T) {
 // TestParseDropEventReadsAnEmptyTimelineAsNone pins the no-event answer: nil,
 // not an error and not an empty event with a zero timestamp that the staleness
 // check would treat as ancient.
+// TestEnqueueIncompleteReplyIsReconciled pins the other half of the drain rule.
+// Refusing outright when the reply is lost reports an enqueue that may already
+// have landed, so the run reads the state back and lets it decide. Both
+// directions matter: a reply lost after the mutation landed must report the
+// queue position, and one lost before it landed must still be a refusal.
+func TestEnqueueIncompleteReplyIsReconciled(t *testing.T) {
+	t.Parallel()
+	// The reply is lost, but the PR is in the queue when the run looks again.
+	landed := &fakeClient{
+		enqueueErr: ErrIncompleteReply,
+		statuses: []Status{
+			{ID: "PR_6499", State: "OPEN"},
+			{ID: "PR_6499", State: "OPEN", Entry: queueEntry(2)},
+		},
+	}
+	out, exitErr := Execute(context.Background(), opts(0), landed, SystemClock)
+	if exitErr != nil {
+		t.Fatalf("Execute: %v, want the queue to report where the PR landed", exitErr)
+	}
+	if out.Kind != Queued || out.Position != 2 {
+		t.Fatalf("outcome = %+v, want Queued at position 2", out)
+	}
+
+	// The reply is lost and the PR is still absent, so the mutation did not land.
+	absent := &fakeClient{
+		enqueueErr: ErrIncompleteReply,
+		statuses: []Status{
+			{ID: "PR_6499", State: "OPEN"},
+			{ID: "PR_6499", State: "OPEN"},
+		},
+	}
+	if _, exitErr := Execute(context.Background(), opts(0), absent, SystemClock); exitErr == nil {
+		t.Fatal("an enqueue that could not be confirmed was reported as success")
+	} else if exitErr.Kind != EnqueueFailed {
+		t.Fatalf("kind = %v, want EnqueueFailed", exitErr.Kind)
+	}
+}
+
 func TestParseDropEventReadsAnEmptyTimelineAsNone(t *testing.T) {
 	t.Parallel()
 	event, err := parseDropEvent([]byte(`{"data":{"repository":{"pullRequest":{"timelineItems":{"nodes":[]}}}}}`))
@@ -399,6 +437,23 @@ func TestParseDropEventReadsAnEmptyTimelineAsNone(t *testing.T) {
 	}
 	if event != nil {
 		t.Fatalf("event = %+v, want nil for an empty timeline", event)
+	}
+}
+
+// TestParseDropEventReadsANullNodeAsNone pins the literal null the API sends
+// when the selected timeline item is not a removal event. Decoded into a struct
+// rather than a pointer it arrives as a zero value, and the empty timestamp then
+// reads as a malformed removal event -- an absent event reported as an
+// unreadable one, which is the difference between "nothing to explain" and "the
+// reason could not be read".
+func TestParseDropEventReadsANullNodeAsNone(t *testing.T) {
+	t.Parallel()
+	event, err := parseDropEvent([]byte(`{"data":{"repository":{"pullRequest":{"timelineItems":{"nodes":[null]}}}}}`))
+	if err != nil {
+		t.Fatalf("parseDropEvent: %v", err)
+	}
+	if event != nil {
+		t.Fatalf("event = %+v, want nil for a null node", event)
 	}
 }
 

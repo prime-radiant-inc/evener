@@ -134,7 +134,7 @@ func clearGHGroup(path string) {
 // wrapper dies, so the helper would report 130 while the CLI was still
 // submitting the enqueue. The group kill is what makes "the wait stopped" mean
 // the request stopped, not just that this process stopped waiting for it.
-// errIncompleteReply is a call whose captured output was cut off by the drain
+// ErrIncompleteReply is a call whose captured output was cut off by the drain
 // bound before the reply arrived.
 //
 // It exists because the drain bound cannot tell the two cases apart on its own.
@@ -145,7 +145,11 @@ func clearGHGroup(path string) {
 // that backgrounds the real CLI and returns. There is then no answer at all,
 // and reporting success would tell the caller an enqueue mutation landed on a
 // reply nobody received.
-var errIncompleteReply = errors.New("gh exited before its reply arrived, and a descendant it left behind kept the pipe open past the drain bound")
+// ErrIncompleteReply reports a call whose reply was cut off by the drain bound
+// before it arrived. It is exported because the caller has to do something
+// different with it: GitHub may have accepted the mutation before the reply was
+// lost, so a run must read the state back before calling the call a failure.
+var ErrIncompleteReply = errors.New("gh exited before its reply arrived, and a descendant it left behind kept the pipe open past the drain bound")
 
 // completeReply reports whether out is a whole JSON document.
 //
@@ -199,7 +203,7 @@ func (c GHClient) run(ctx context.Context, args ...string) ([]byte, error) {
 	// reclassified: a non-zero exit keeps its own error, and so does a call that
 	// answered in full with a descendant merely holding the pipe.
 	if errors.Is(rawErr, exec.ErrWaitDelay) && !completeReply(stdout.Bytes()) {
-		return nil, errIncompleteReply
+		return nil, ErrIncompleteReply
 	}
 	if err != nil {
 		if detail := strings.TrimSpace(stderr.String()); detail != "" {
@@ -357,7 +361,12 @@ func parseDropEvent(out []byte) (*DropEvent, error) {
 			Repository struct {
 				PullRequest *struct {
 					TimelineItems struct {
-						Nodes []struct {
+						// Pointers, so a null node stays distinguishable from a
+						// node with empty fields. A null entry is what GraphQL
+						// sends when the selected item is not of the requested
+						// type, and the honest reading of that is "no removal
+						// event", not "an event whose timestamp will not parse".
+						Nodes []*struct {
 							CreatedAt string
 							Reason    *string
 						}
@@ -370,7 +379,7 @@ func parseDropEvent(out []byte) (*DropEvent, error) {
 		return nil, fmt.Errorf("decode queue drop: %w", err)
 	}
 	pr := body.Data.Repository.PullRequest
-	if pr == nil || len(pr.TimelineItems.Nodes) == 0 {
+	if pr == nil || len(pr.TimelineItems.Nodes) == 0 || pr.TimelineItems.Nodes[0] == nil {
 		return nil, nil
 	}
 	node := pr.TimelineItems.Nodes[0]

@@ -23,6 +23,7 @@ package mergeq
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -286,9 +287,26 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 	}
 	if st.Entry == nil {
 		if err := c.Enqueue(ctx, opts.Repo, st.ID, opts.Jump); err != nil {
-			return Outcome{}, refusalFor(ctx, EnqueueFailed, err)
-		}
-		if st, exitErr = readStatus(ctx, opts, c); exitErr != nil {
+			// A reply lost to the drain bound is not a refusal: GitHub may have
+			// accepted the mutation before the answer was cut off, so calling it
+			// a failure would report an enqueue that already landed. Read the
+			// state once and let it decide. An explicit refusal, and a
+			// cancellation, keep their own paths below and above.
+			if !errors.Is(err, ErrIncompleteReply) {
+				return Outcome{}, refusalFor(ctx, EnqueueFailed, err)
+			}
+			if st, exitErr = readStatus(ctx, opts, c); exitErr != nil {
+				return Outcome{}, exitErr
+			}
+			if st.State == mergedState {
+				return Outcome{Kind: Merged, SHA: st.MergeSHA()}, nil
+			}
+			if st.Entry == nil {
+				// Still absent after a fresh read: the mutation did not land, and
+				// the honest report is that the enqueue could not be confirmed.
+				return Outcome{}, refusalFor(ctx, EnqueueFailed, err)
+			}
+		} else if st, exitErr = readStatus(ctx, opts, c); exitErr != nil {
 			return Outcome{}, exitErr
 		}
 		if st.State == mergedState {

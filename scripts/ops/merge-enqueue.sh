@@ -219,12 +219,24 @@ dir_is_owned_by_trusted() {
 # the mode bits already describe, and `other::` likewise. The mask is included
 # because it bounds every named entry, so a mask carrying write means a named
 # entry may carry it too even when that entry is printed as `#effective:r--`.
+#
+# The effective permission is the named entry's bits AND the mask, not the named
+# entry's bits alone. A named user granted `rwx` under a `r-x` mask can read and
+# search the directory and cannot write to it, so it cannot replace entries --
+# and reading the raw bits instead would refuse a directory nobody can tamper
+# with, which is a launcher that will not merge on a host with an ordinary
+# backup tool's ACLs. Both halves are required, so a mask that carries write
+# while no named entry does is also correctly not a grant.
+#
+# A named write with no mask line at all is a grant: the mask is what limits it,
+# and without one the permission cannot be shown to be limited. That keeps the
+# "answer unsafe when it cannot answer" convention.
 acl_getfacl_grants_foreign_write() {
   awk -F: '
-    $1 == "user"  && $2 != "" && index($3, "w") { found = 1 }
-    $1 == "group" && $2 != "" && index($3, "w") { found = 1 }
-    $1 == "mask"              && index($2, "w") { found = 1 }
-    END { exit found ? 0 : 1 }
+    $1 == "user"  && $2 != "" && index($3, "w") { named = 1 }
+    $1 == "group" && $2 != "" && index($3, "w") { named = 1 }
+    $1 == "mask"              { seenmask = 1; if (index($3, "w")) maskw = 1 }
+    END { exit (named && (!seenmask || maskw)) ? 0 : 1 }
   '
 }
 
@@ -876,7 +888,7 @@ start_helper() {
 # the one that runs the build, so the group holds the build's whole tree and one
 # TERM reaches all of it. `wait` then reaps the tracked child.
 build_helper() {
-  local out="$1" goenv
+  local out="$1"
   # `GOFLAGS=` in the environment does not win against a saved GOFLAGS. The go
   # command skips an empty value and falls back to the file, so a developer with
   # `go env -w GOFLAGS=-modfile=...` saved for another checkout would have that
@@ -896,38 +908,44 @@ build_helper() {
   # and `off` when the caller asked for no file at all. It mirrors
   # scripts/lib/private-go-home.sh and agent/sandbox/env_floor.go rather than
   # inventing a third answer.
-  goenv=${GOENV:-}
-  if [ -z "$goenv" ]; then
-    case "$(uname -s)" in
-      Darwin)
-        [ -z "${HOME:-}" ] || goenv="$HOME/Library/Application Support/go/env"
-        ;;
-      *)
-        if [ -n "${XDG_CONFIG_HOME:-}" ]; then
-          goenv="$XDG_CONFIG_HOME/go/env"
-        elif [ -n "${HOME:-}" ]; then
-          goenv="$HOME/.config/go/env"
-        fi
-        ;;
-    esac
-  fi
-  case "$goenv" in
-    '' | off)
-      goenv=off
-      ;;
-    *)
-      if [ -r "$goenv" ]; then
-        grep -v '^GOFLAGS=' "$goenv" > "$work/go-env" 2>/dev/null || true
-      else
-        : > "$work/go-env"
-      fi
-      goenv="$work/go-env"
-      ;;
-  esac
+  #
+  # Reading that file and writing the filtered copy happen inside the tracked
+  # subshell below, not here. A saved go env on a stalled network home does not
+  # return from the read, and a foreground read here would be un interruptible
+  # by the launcher's own TERM trap -- bash defers a trap until the foreground
+  # command returns, which is the same deferral the GOENV lookup used to cause.
   launching=true
   set -m
   (
     cd "$root" || exit 1
+    goenv=${GOENV:-}
+    if [ -z "$goenv" ]; then
+      case "$(uname -s)" in
+        Darwin)
+          [ -z "${HOME:-}" ] || goenv="$HOME/Library/Application Support/go/env"
+          ;;
+        *)
+          if [ -n "${XDG_CONFIG_HOME:-}" ]; then
+            goenv="$XDG_CONFIG_HOME/go/env"
+          elif [ -n "${HOME:-}" ]; then
+            goenv="$HOME/.config/go/env"
+          fi
+          ;;
+      esac
+    fi
+    case "$goenv" in
+      '' | off)
+        goenv=off
+        ;;
+      *)
+        if [ -r "$goenv" ]; then
+          grep -v '^GOFLAGS=' "$goenv" > "$work/go-env" 2>/dev/null || true
+        else
+          : > "$work/go-env"
+        fi
+        goenv="$work/go-env"
+        ;;
+    esac
     # GOTMPDIR is set to the scratch directory, because an inherited one is
     # not covered by anything above: GOTMPDIR overrides TMPDIR for the go
     # command's own work directory, so a value pointing at a shared non-sticky

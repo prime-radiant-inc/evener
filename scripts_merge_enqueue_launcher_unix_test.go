@@ -394,6 +394,18 @@ func launcherTrustsPath(t *testing.T, path string) bool {
 	return err == nil
 }
 
+// launcherCanExecuteIn asks the repository's own probe whether a script written
+// to path will run. It is the same function the launcher uses to pass over a
+// noexec root, so the fixture cannot disagree with the launcher about what
+// "executable" means.
+func launcherCanExecuteIn(t *testing.T, path string) bool {
+	t.Helper()
+	err := exec.Command("bash", "-c",
+		`eval "$(sed -n '/^gate_scratch_root_executes()/,/^}/p' "$1")"; gate_scratch_root_executes "$2"`,
+		"bash", filepath.Join("scripts", "lib", "gate-scratch-root.sh"), path).Run()
+	return err == nil
+}
+
 // fixtureScratchBase returns a directory whose full ancestry the launcher
 // accepts, and fails the case by name when the machine has none.
 //
@@ -432,6 +444,23 @@ func fixtureScratchBase(t *testing.T) string {
 // the fixture cannot drift from the rule it is trying to satisfy. A candidate
 // that is rejected is named in the failure: "no base this machine offers" and
 // "the base was fine but something else broke" must not look alike.
+//
+// A usable base is established on RESOLVED paths and holds all three of the
+// launcher's requirements at once, which is why there is one predicate rather
+// than one check per property:
+//
+//   - resolved: a symlinked candidate is judged by where it lands, because that
+//     is the path the launcher canonicalizes and then uses. Checking the
+//     spelling instead rejects a trusted destination (macOS's /var ->
+//     /private/var) and accepts a symlink whose target nobody validated.
+//   - trusted: no ancestor and no ACL lets another user replace entries.
+//   - executable: the launcher builds a helper here and runs it, so a noexec
+//     mount is writable, trusted and useless. Selecting one moves the failure to
+//     the fixture helper's start, far from the cause.
+//
+// Splitting these across call sites is what let the earlier version check trust
+// without executability and check the unresolved spelling; the same three hold
+// for every fixture that launches a program.
 func firstTrustedScratchBase(t *testing.T, candidates []string) string {
 	t.Helper()
 	var rejected []string
@@ -439,7 +468,15 @@ func firstTrustedScratchBase(t *testing.T, candidates []string) string {
 		if candidate == "" || !filepath.IsAbs(candidate) {
 			continue
 		}
-		dir, err := os.MkdirTemp(candidate, "merge-enqueue-fixture.")
+		// Resolved before the temporary is made: mkdtemp on a symlinked candidate
+		// creates it under the destination anyway, and resolving first means every
+		// later check names the directory the launcher will name.
+		base, err := filepath.EvalSymlinks(candidate)
+		if err != nil {
+			rejected = append(rejected, candidate+" (cannot resolve)")
+			continue
+		}
+		dir, err := os.MkdirTemp(base, "merge-enqueue-fixture.")
 		if err != nil {
 			rejected = append(rejected, candidate+" (cannot create)")
 			continue
@@ -447,15 +484,33 @@ func firstTrustedScratchBase(t *testing.T, candidates []string) string {
 		if err := os.Chmod(dir, 0o700); err != nil {
 			t.Fatalf("make %s private: %v", dir, err)
 		}
-		if launcherTrustsPath(t, dir) {
+		// No second resolution: `dir` descends from the resolved base, which has
+		// no symlinked component left by construction. A second EvalSymlinks here
+		// would be dead code, and dead code that looks load-bearing is how the
+		// resolve below went untested the first time.
+		if reason := unusableScratchBase(t, dir); reason == "" {
 			t.Cleanup(func() { _ = os.RemoveAll(dir) })
 			return dir
 		}
-		rejected = append(rejected, candidate+" (an ancestor is replaceable by another user)")
+		rejected = append(rejected, candidate+" ("+unusableScratchBase(t, dir)+")")
 		_ = os.RemoveAll(dir)
 	}
-	t.Fatalf("no scratch base this machine offers has a chain the launcher accepts: %s; point TMPDIR at a directory whose whole ancestry only you (or root) can write, and rerun",
+	t.Fatalf("no scratch base this machine offers is usable: %s; point TMPDIR at an exec-capable directory whose whole ancestry only you (or root) can write, and rerun",
 		strings.Join(rejected, ", "))
+	return ""
+}
+
+// unusableScratchBase reports why the launcher would refuse to build under path,
+// or "" when it would accept it. The three requirements are one answer because a
+// caller that reads them separately ends up checking two of them.
+func unusableScratchBase(t *testing.T, path string) string {
+	t.Helper()
+	if !launcherTrustsPath(t, path) {
+		return "an ancestor is replaceable by another user"
+	}
+	if !launcherCanExecuteIn(t, path) {
+		return "the filesystem cannot execute a program"
+	}
 	return ""
 }
 
@@ -1621,6 +1676,10 @@ func TestMergeEnqueueLauncherDoesNotBuildUnderAReplaceableRoot(t *testing.T) {
 		if err != nil {
 			t.Skip("setfacl is not installed: this machine cannot grant an ACL, so the grant half is untested here")
 		}
+		getfacl, err := exec.LookPath("getfacl")
+		if err != nil {
+			t.Skip("getfacl is not installed: this machine cannot read an ACL back")
+		}
 		user := "nobody"
 		if err := exec.Command(setfacl, "-m", "u:"+user+":rwx", probe).Run(); err != nil {
 			t.Skipf("could not grant an ACL to %s (%v): this machine cannot manufacture the condition", user, err)
@@ -1660,6 +1719,35 @@ func TestMergeEnqueueLauncherDoesNotBuildUnderAReplaceableRoot(t *testing.T) {
 			`eval "$(sed -n '/^acl_getfacl_grants_foreign_write()/,/^}/p;/^acl_ls_e_grants_foreign_write()/,/^}/p;/^dir_acl_grants_foreign_write()/,/^}/p' "$1")"; dir_acl_grants_foreign_write "$2"`,
 			"bash", mergeEnqueueLauncher, probe).Run(); err == nil {
 			t.Fatalf("%s carries no extended ACL; the reader reported a foreign write", probe)
+		}
+		// The permission that matters is the named entry's bits AND the mask. A
+		// named user granted rwx under an r-x mask can read and search and cannot
+		// write, so it cannot replace entries. Reading the raw bits would refuse
+		// this directory, and a launcher that refuses a usable root is the failure
+		// mode the whole chain check exists to avoid.
+		if err := exec.Command(setfacl, "-b", probe).Run(); err != nil {
+			t.Fatalf("reset the ACL: %v", err)
+		}
+		if err := exec.Command(setfacl, "-m", "u:"+user+":rwx", "-m", "m::r-x", probe).Run(); err != nil {
+			t.Fatalf("grant rwx under a read-only mask: %v", err)
+		}
+		// Confirmed against the tool itself, so this case cannot pass because the
+		// ACL was never set the way it claims.
+		listing, err := exec.Command(getfacl, "-p", "-c", probe).Output()
+		if err != nil {
+			t.Fatalf("read back the ACL: %v", err)
+		}
+		if !strings.Contains(string(listing), "mask::r-x") {
+			t.Fatalf("the mask was not narrowed (%q): this case needs rwx under an r-x mask", string(listing))
+		}
+		// Asked of the reader with the ACL this host just produced: the mask caps
+		// the named entry, so the answer is "no foreign write".
+		cmd := exec.Command("bash", "-c",
+			`eval "$(sed -n '/^acl_getfacl_grants_foreign_write()/,/^}/p' "$1")"; acl_getfacl_grants_foreign_write`,
+			"bash", mergeEnqueueLauncher)
+		cmd.Stdin = bytes.NewReader(listing)
+		if err := cmd.Run(); err == nil {
+			t.Fatalf("%s grants %s rwx under the r-x mask in %q, which cannot replace entries; the reader reported a foreign write", probe, user, string(listing))
 		}
 	})
 
@@ -1916,6 +2004,51 @@ func TestMergeEnqueueLauncherFixtureSkipsAnUntrustedScratchBase(t *testing.T) {
 	if !launcherTrustsPath(t, got) {
 		t.Fatalf("%s was chosen but the launcher does not trust it", got)
 	}
+
+	// A symlinked candidate is judged by where it lands. The launcher
+	// canonicalizes TMPDIR with `pwd -P` before checking it, so checking the
+	// spelling instead rejects a trusted destination -- macOS's /var ->
+	// /private/var is the case that matters -- and accepts a link whose target
+	// nobody validated. Both the choice and the reason are asserted.
+	t.Run("a symlink is judged by its destination", func(t *testing.T) {
+		target := filepath.Join(trusted, "symlink-target")
+		if err := os.MkdirAll(target, 0o700); err != nil {
+			t.Fatalf("create %s: %v", target, err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(target) })
+		link := filepath.Join(trusted, "symlink-candidate")
+		if err := os.Symlink(target, link); err != nil {
+			t.Skipf("cannot create a symlink here (%v): this machine cannot manufacture the case", err)
+		}
+		t.Cleanup(func() { _ = os.Remove(link) })
+		chosen := firstTrustedScratchBase(t, []string{link})
+		// The chosen directory must live under the resolved target, not under the
+		// link's own spelling.
+		resolvedChosen := resolvePath(t, chosen)
+		resolvedTarget := resolvePath(t, target)
+		if filepath.Dir(resolvedChosen) != resolvedTarget {
+			t.Fatalf("the fixture chose %s, want a directory directly under %s: a symlinked candidate was not resolved to its destination", resolvedChosen, resolvedTarget)
+		}
+	})
+
+	// A trusted but noexec base must be passed over. Selecting it moves the
+	// failure to the fixture helper's start, far from the cause.
+	t.Run("a trusted base that cannot execute is passed over", func(t *testing.T) {
+		noexec := filepath.Join(trusted, "noexec-candidate")
+		if err := os.MkdirAll(noexec, 0o700); err != nil {
+			t.Fatalf("create %s: %v", noexec, err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(noexec) })
+		if launcherCanExecuteIn(t, noexec) {
+			t.Skipf("%s can execute a program, so this machine cannot manufacture the condition", noexec)
+		}
+		if !launcherTrustsPath(t, noexec) {
+			t.Fatalf("%s is not trusted, so this case cannot show that executability alone rejects it", noexec)
+		}
+		if reason := unusableScratchBase(t, noexec); reason == "" {
+			t.Fatalf("%s cannot execute a program but the fixture predicate called it usable", noexec)
+		}
+	})
 }
 
 // TestMergeEnqueueLauncherDoesNotTouchACallerOwnedGroupFile pins the medium: an
@@ -2432,6 +2565,62 @@ while :; do sleep 0.05; done
 // file exits before it reads the package, so no process appears and this case
 // fails on readiness; a build given its own environment blocks there and the
 // case cancels it like the cold-build one.
+// TestMergeEnqueueLauncherCancelsAStalledGoEnvRead pins the placement of the
+// saved-goenv read. Reading it is a file read on a path the caller chose, and on
+// a stalled network home directory that read does not return. Run in the
+// foreground it would be a command before the build is a tracked child, and bash
+// defers a trap until a foreground command returns -- so SIGTERM at the
+// launcher's PID would do nothing until the read finished.
+//
+// The stall is a FIFO: opening it for reading blocks until a writer appears, and
+// no writer ever does. That is the same shape as a hung NFS read, it needs no
+// mount privileges, and unlike a sleep it cannot pass by finishing.
+func TestMergeEnqueueLauncherCancelsAStalledGoEnvRead(t *testing.T) {
+	t.Parallel()
+	c := newFixtureCheckout(t, fixtureTmpDir(t, "tmp"))
+	c.requireIsolated(t)
+	f := newLauncherFixture(t, "#!/usr/bin/env bash\nexit 0\n")
+	stalled := filepath.Join(f.dir, "stalled-go-env")
+	if err := syscall.Mkfifo(stalled, 0o600); err != nil {
+		t.Skipf("cannot create a FIFO here (%v): this machine cannot manufacture a stalled read", err)
+	}
+	for _, m := range []string{c.root, c.tmp} {
+		t.Cleanup(func() { assertNoSurvivors(t, m) })
+	}
+	cmd := f.launcherCmdAt(t, c.script, "--pr", "6499", "--repo", "example.invalid/none")
+	cmd.Env = envOverride(cmd.Env,
+		"TMPDIR="+c.tmp,
+		"GOWORK=off",
+		"GOENV="+stalled,
+	)
+	cmd.Env = slices.DeleteFunc(cmd.Env, func(kv string) bool {
+		return strings.HasPrefix(kv, "EVENER_DEV_BIN=")
+	})
+	runLauncher(t, cmd, f)
+	// The read is reached before the compiler starts, and the FIFO blocks it
+	// there, so the build never appears -- a build is what a working relocation
+	// would produce and this fixture exists to show the opposite. Wait for the
+	// blocked read instead: a process naming the FIFO that is still alive.
+	var readerPID int
+	testwait.UntilSeen(t, "the saved-goenv read to block on the fifo", func() (bool, string) {
+		for _, proc := range processesNaming(t, stalled) {
+			if proc.pid != cmd.Process.Pid {
+				readerPID = proc.pid
+				return true, ""
+			}
+		}
+		return false, "no process is reading the fifo yet"
+	})
+	signalLauncher(t, cmd, syscall.SIGTERM)
+	// The whole point: the launcher exits on its own signal rather than waiting
+	// for the read to return. With the read in the foreground this never
+	// happens, because bash defers the trap until it returns.
+	mustExit(t, cmd, f, 130)
+	testwait.Until(t, fmt.Sprintf("the blocked reader pid %d to be stopped", readerPID), func() bool {
+		return pidGone(readerPID)
+	})
+}
+
 func TestMergeEnqueueLauncherBuildsDespiteASavedModfile(t *testing.T) {
 	t.Parallel()
 	c := newFixtureCheckout(t, fixtureTmpDir(t, "tmp"))
