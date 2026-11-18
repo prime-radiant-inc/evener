@@ -271,6 +271,22 @@ describe("liveBandNodes", () => {
     const nodes = liveBandNodes(railLiveBands([], [busy]), sources, open, { remaining: 3, offset: 1, limit: 50 });
     expect(bandsOf(nodes).map((node) => node.band)).toEqual(["working"]);
     expect(nodes.map((node) => node.kind)).toEqual(["band", "overflow"]);
+    // This row renders with no band above it and can end up beside Live's own
+    // page row: it names the tier it pages. The copy inside a band does not -
+    // the band's fold already says which rows it speaks for.
+    expect(nodes.at(-1)).toMatchObject({ scope: "needsYou" });
+  });
+
+  test("the needs-you row inside its band stays unlabeled: the fold supplies that context", () => {
+    const nodes = liveBandNodes(
+      railLiveBands([], [row("local:ask", { state: "awaiting", ask_pending: true })]),
+      sources,
+      open,
+      { remaining: 12, offset: 1, limit: 50 },
+    );
+    const [needsYou] = bandsOf(nodes);
+    expect(needsYou?.children.at(-1)).toMatchObject({ kind: "overflow", count: 12 });
+    expect(needsYou?.children.at(-1)).not.toHaveProperty("scope");
   });
 });
 
