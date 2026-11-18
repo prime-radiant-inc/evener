@@ -415,12 +415,6 @@ func minimalExampleQuestionsArray() string {
 	return tool.MinimalExampleQuestionsArray()
 }
 
-// normalizeAskArgs delegates to tool.NormalizeAskUserArgs, the single canonical
-// normalizer for ask_user shorthand arguments.
-func normalizeAskArgs(args map[string]any) (map[string]any, error) {
-	return tool.NormalizeAskUserArgs(args)
-}
-
 // parseAskQuestions extracts the askQuestions from an ask_user call's parsed
 // arguments. Schema-level shape (question/option counts, required fields) is
 // already enforced by the registry's JSON-Schema
@@ -476,7 +470,7 @@ func parseAskQuestions(args map[string]any) ([]askQuestion, error) {
 // session records them for PendingAskArguments (already normalized; parsing
 // them again is a no-op), into its full questions, including each
 // option's detail text. It accepts both the batch ("questions") and
-// shorthand ("question"+"options") forms via normalizeAskArgs, the same
+// shorthand ("question"+"options") forms via tool.NormalizeAskUserArgs, the same
 // normalization the live tool call goes through, and applies
 // parseAskQuestions' same semantic checks (unique labels, at most one
 // recommended option). It exists for an external ask-responder: neither

@@ -13,7 +13,7 @@ import (
 
 // TestParseAskUserCallArgumentsBatchForm checks that a batch-form ask_user
 // call's raw arguments (as events.ToolCallStartData.ArgumentsJSON captures
-// them, before normalizeAskArgs runs) parse into full questions, including
+// them, before tool.NormalizeAskUserArgs runs) parse into full questions, including
 // each option's detail text — the piece askQuestion and PendingQuestion
 // deliberately omit, per session_tools_ask.go's own doc comments.
 func TestParseAskUserCallArgumentsBatchForm(t *testing.T) {
@@ -93,7 +93,7 @@ func TestParseAskUserCallArgumentsInvalidJSON(t *testing.T) {
 }
 
 // TestParseAskUserCallArgumentsSemanticViolation propagates
-// normalizeAskArgs/parseAskQuestions-style semantic errors (duplicate
+// tool.NormalizeAskUserArgs/parseAskQuestions-style semantic errors (duplicate
 // labels), the same rule the live Exec enforces.
 func TestParseAskUserCallArgumentsSemanticViolation(t *testing.T) {
 	raw := `{"questions":[{"question":"Which?","options":[{"label":"A","detail":"x"},{"label":"A","detail":"y"}]}]}`
