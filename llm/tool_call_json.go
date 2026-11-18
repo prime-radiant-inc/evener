@@ -141,7 +141,8 @@ func (tc *ToolCallData) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 	if record.ArgumentSpelling != nil {
 		original = record.ArgumentSpelling.restore(stored)
 	} else if err := json.Unmarshal(record.ArgumentBytes, &original); err != nil {
-		return nil
+		// A damaged optional spelling leaves the structured arguments usable.
+		original = nil
 	}
 	if len(original) != 0 {
 		encoded, err := json.Marshal(json.RawMessage(original))
