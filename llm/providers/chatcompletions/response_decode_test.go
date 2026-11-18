@@ -2,6 +2,7 @@ package chatcompletions
 
 import (
 	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 
@@ -497,6 +498,42 @@ data: [DONE]
 			}
 			if got := jsonOf(t, out[0]["reasoning_details"]); got != jsonOf(t, want) {
 				t.Errorf("%s signed details = %s, want %s", source, got, jsonOf(t, want))
+			}
+		}
+	})
+	t.Run("empty indexed openings retain signed detail metadata", func(t *testing.T) {
+		const sse = `data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","id":"a","index":7,"format":"fmt-a"},{"type":"reasoning.text","id":"b","index":2},{"type":"reasoning.text","id":"unused","index":9}]}}]}
+
+data: {"choices":[{"delta":{"reasoning_details":[{"index":2,"format":"fmt-b"}]}}]}
+
+data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","index":2,"text":"beta"},{"type":"reasoning.text","index":7,"text":"alpha"}]}}]}
+
+data: {"choices":[{"delta":{"reasoning_details":[{"type":null,"id":null,"format":"","index":2,"signature":"sig-b"},{"type":"reasoning.text","index":7,"signature":"sig-a"}]}}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+`
+		want := []map[string]any{
+			{"type": "reasoning.text", "id": "a", "index": 7, "format": "fmt-a", "text": "alpha", "signature": "sig-a"},
+			{"type": "reasoning.text", "id": "b", "index": 2, "format": "fmt-b", "text": "beta", "signature": "sig-b"},
+		}
+		complete := append(slices.Clone(want), map[string]any{"type": "reasoning.text", "id": "unused", "index": 9})
+		responses, _ := decode(t, jsonOf(t, chatResponseRaw(map[string]any{"reasoning_details": complete}, "stop")), sse)
+		res := resolved(nil)
+		res.Caps.ReplayReasoningText = new(true)
+		for source, resp := range responses {
+			if len(resp.Message.Content) != len(want) {
+				t.Errorf("%s settled %d parts, want only %d signed details", source, len(resp.Message.Content), len(want))
+			}
+			var saved llm.Message
+			if err := json.Unmarshal([]byte(jsonOf(t, resp.Message)), &saved); err != nil {
+				t.Fatal(err)
+			}
+			msg := build(t, llm.Request{Model: "m", Messages: []llm.Message{saved}}, res)["messages"].([]map[string]any)[0]
+			if got := jsonOf(t, msg["reasoning_details"]); got != jsonOf(t, want) {
+				t.Errorf("%s native reasoning details = %s, want %s", source, got, jsonOf(t, want))
 			}
 		}
 	})

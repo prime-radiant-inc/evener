@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"slices"
 	"strings"
 
@@ -96,13 +95,6 @@ func (d *reasoningDetailItem) UnmarshalJSON(b []byte) error {
 // that must be replayed verbatim to preserve the reasoning chain.
 func (d reasoningDetailItem) isEncrypted() bool {
 	return d.Type == "reasoning.encrypted" && d.ID != "" && d.Data != ""
-}
-
-// carriesContinuation reports whether the item holds provider continuation
-// material that must survive replay: encrypted blocks, or reasoning.text
-// items bearing a signature.
-func (d reasoningDetailItem) carriesContinuation() bool {
-	return d.isEncrypted() || (d.Type == "reasoning.text" && d.Signature != "")
 }
 
 func encodeEncryptedDetails(items []map[string]any) string {
@@ -374,24 +366,41 @@ func (r *chatReasoning) addDetail(pos int, item reasoningDetailItem, piece strin
 		r.blocks = append(r.blocks, &reasoningDetailBlock{wire: item.wireItem(), continuation: true})
 		return
 	}
-	if piece == "" && !item.carriesContinuation() {
+	index, block := r.openDetail(pos, item, single)
+	if block != nil && item.Type == "" {
+		item.Type, _ = block.wire["type"].(string)
+	}
+	signed := item.Type == "reasoning.text" && item.Signature != ""
+	// An identified opening can carry the only ID or format for its later text
+	// and signature. An opening that never receives either emits no part.
+	opening := (item.Index != nil || item.ID != "") && (item.Type == "" || item.Type == "reasoning.text")
+	if piece == "" && !signed && !opening {
 		return
 	}
-	index, block := r.openDetail(pos, item, single)
 	if block == nil {
 		block = &reasoningDetailBlock{wire: item.wireItem(), position: pos}
 		r.blocks = append(r.blocks, block)
-		if !item.carriesContinuation() {
+		if !signed {
 			r.open = append(r.open, block)
 		}
 	} else {
-		maps.Copy(block.wire, item.wireItem())
+		for key, value := range item.wireItem() {
+			switch key {
+			case "type", "id", "index", "format":
+				// openDetail matched these fields. A fragment can fill a
+				// missing identity, but its nulls cannot erase a known one.
+				if known := block.wire[key]; known != nil && known != "" {
+					continue
+				}
+			}
+			block.wire[key] = value
+		}
 	}
 	if item.Index != nil {
 		block.position, block.indexed = *item.Index, true
 	}
 	block.text.WriteString(piece)
-	if item.carriesContinuation() {
+	if signed {
 		block.continuation = true
 		if block.text.Len() > 0 {
 			block.wire["text"] = block.text.String()
