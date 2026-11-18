@@ -167,7 +167,8 @@ func (s *sseLineScanner) line() ([]byte, bool) {
 	// Two vectorized searches rather than one two-character scan: lines are the
 	// hot path, and each IndexByte runs at memchr speed.
 	cr, lf := s.find(&s.crFrom, '\r'), s.find(&s.lfFrom, '\n')
-	end, term := -1, 0
+	// Both surviving cases assign end before it is read, so it carries no seed.
+	var end, term int
 	switch {
 	case cr >= 0 && (lf < 0 || cr < lf):
 		end, term = cr, 1
