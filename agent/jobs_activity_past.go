@@ -175,26 +175,53 @@ func zeroOffsetJobFoldReordered(path string, next historicalJobFold) (restarted 
 // belongs earlier in a full fold, so that delta refolds the journal from
 // byte zero instead.
 func extendHistoricalJobFold(ctx context.Context, path string, fromOffset int64, prior historicalJobFold) (historicalJobFold, int64, bool, error) {
-	delta, toOffset, err := scanJobJournal(ctx, path, fromOffset, jobstore.ScanLimits{})
+	return extendHistoricalJobFoldAt(ctx, path, fromOffset, prior, jobstore.ScanLimits{})
+}
+
+// extendHistoricalJobFoldAt is extendHistoricalJobFold for a caller that knows
+// the last byte it may fold. limits.EndOffset is a committed boundary — see
+// jobstore.Store.CommittedJournal — and limits.Bounded makes an empty committed
+// prefix EOF rather than an unbounded read. A journal being appended to is
+// folded through that boundary so an append still in flight, and one whose
+// fsync then rolls it back, cannot enter the fold or move a position a page
+// counted.
+func extendHistoricalJobFoldAt(ctx context.Context, path string, fromOffset int64, prior historicalJobFold, limits jobstore.ScanLimits) (historicalJobFold, int64, bool, error) {
+	delta, toOffset, err := scanJobJournal(ctx, path, fromOffset, limits)
 	if err != nil {
 		return historicalJobFold{}, 0, false, err
 	}
-	sortJobEventsBySeq(delta)
+	// The scan checks ctx between records, so reaching here with a cancellation
+	// already observed means the decode finished just as the request was
+	// abandoned: stop before ordering or folding a delta nobody will read.
+	if err := ctx.Err(); err != nil {
+		return historicalJobFold{}, 0, false, err
+	}
+	if err := sortJobEventsBySeq(ctx, delta); err != nil {
+		return historicalJobFold{}, 0, false, err
+	}
 	if len(delta) > 0 && delta[0].Seq < prior.lastSeq {
-		all, toOffset, err := scanJobJournal(ctx, path, 0, jobstore.ScanLimits{})
+		all, toOffset, err := scanJobJournal(ctx, path, 0, limits)
 		if err != nil {
 			return historicalJobFold{}, 0, false, err
 		}
-		sortJobEventsBySeq(all)
+		if err := sortJobEventsBySeq(ctx, all); err != nil {
+			return historicalJobFold{}, 0, false, err
+		}
 		// The older event belongs ahead of records already folded, so the
 		// rebuilt list reorders what an earlier page rendered. Report the
 		// restart so foldcache advances the generation and refuses a
 		// continuation whose ResumeIndex was counted over the old order.
-		next := historicalJobFold{}.extend(all)
+		next, err := historicalJobFold{}.extend(ctx, all)
+		if err != nil {
+			return historicalJobFold{}, 0, false, err
+		}
 		storeJobFoldOrder(path, next)
 		return next, toOffset, true, nil
 	}
-	next := prior.extend(delta)
+	next, err := prior.extend(ctx, delta)
+	if err != nil {
+		return historicalJobFold{}, 0, false, err
+	}
 	if fromOffset == 0 {
 		// foldcache rebuilt this path from zero (first touch, eviction, or an
 		// mtime-unresolvable growth). Compare the rebuilt order with the last
@@ -206,8 +233,30 @@ func extendHistoricalJobFold(ctx context.Context, path string, fromOffset int64,
 	return next, toOffset, false, nil
 }
 
-func sortJobEventsBySeq(events []jobstore.Event) {
+// jobEventsOrdered reports whether events are already in ascending seq order,
+// which is the order every journal scan produces.
+func jobEventsOrdered(events []jobstore.Event) bool {
+	for i := 1; i < len(events); i++ {
+		if events[i].Seq < events[i-1].Seq {
+			return false
+		}
+	}
+	return true
+}
+
+// sortJobEventsBySeq orders events by seq, checking ctx before and after the
+// ordering so an abandoned request does not pay for a sort it will discard. A
+// delta already in seq order — what a journal scan produces — is left alone
+// rather than permuted and reallocated for nothing.
+func sortJobEventsBySeq(ctx context.Context, events []jobstore.Event) error {
+	if jobEventsOrdered(events) {
+		return nil
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	sort.SliceStable(events, func(i, j int) bool { return events[i].Seq < events[j].Seq })
+	return ctx.Err()
 }
 
 // extend folds events, in seq order and none older than f.lastSeq, into a
@@ -215,7 +264,16 @@ func sortJobEventsBySeq(events []jobstore.Event) {
 // record already in f.jobs is cloned before its first change, since f may
 // still be serving it. The list matches jobstore.FoldOrdered over the whole
 // history, less records without a job ID, which no page shows.
-func (f historicalJobFold) extend(events []jobstore.Event) historicalJobFold {
+//
+// A canceled ctx stops the fold between chunks of events and reports it. f
+// itself stays published and unchanged, but its position index does not: the
+// pushes below write into that shared map in place, so an abandoned fold leaves
+// entries naming positions in a list nobody will publish. The index is
+// therefore detached from the list it claims to describe before the error
+// returns, and the next extension rebuilds it from the fold it actually has.
+// Leaving it attached is the durable damage — a later extension trusts it and
+// replaces a slot that does not exist in the published list.
+func (f historicalJobFold) extend(ctx context.Context, events []jobstore.Event) (historicalJobFold, error) {
 	positions := f.positions
 	orderCount, orderHash := f.orderCount, f.orderHash
 	if positions == nil || positions.list != f.jobs {
@@ -230,7 +288,15 @@ func (f historicalJobFold) extend(events []jobstore.Event) historicalJobFold {
 	b := newActivityJobListBuilder(f.jobs, positions.of)
 	created := make(map[string]bool)
 	lastSeq := f.lastSeq
-	for _, event := range events {
+	for i, event := range events {
+		// Between chunks, so an abandoned fold gives up within one chunk of
+		// work instead of reducing a whole journal first.
+		if i > 0 && i%activityJobChunkRecords == 0 {
+			if err := ctx.Err(); err != nil {
+				positions.list = nil
+				return historicalJobFold{}, err
+			}
+		}
 		lastSeq = max(lastSeq, event.Seq)
 		if event.JobID == "" || !jobstore.IsJobRecordEvent(event.Kind) {
 			continue
@@ -251,8 +317,12 @@ func (f historicalJobFold) extend(events []jobstore.Event) historicalJobFold {
 			return jobstore.ApplyJob(rec, event)
 		})
 	}
+	if err := ctx.Err(); err != nil {
+		positions.list = nil
+		return historicalJobFold{}, err
+	}
 	positions.list = b.list()
-	return historicalJobFold{jobs: positions.list, positions: positions, lastSeq: lastSeq, orderCount: orderCount, orderHash: orderHash}
+	return historicalJobFold{jobs: positions.list, positions: positions, lastSeq: lastSeq, orderCount: orderCount, orderHash: orderHash}, nil
 }
 
 // loadCachedJobRecords returns jobsPath's complete, folded history via

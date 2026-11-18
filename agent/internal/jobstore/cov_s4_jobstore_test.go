@@ -47,9 +47,6 @@ func TestClosedStoreLoadOperationsReturnErrStoreClosed(t *testing.T) {
 	if err := s.AppendBatch([]Event{{Kind: EventJobStarted, JobID: "job_B"}}); !errors.Is(err, ErrStoreClosed) {
 		t.Errorf("AppendBatch after close = %v, want ErrStoreClosed", err)
 	}
-	if _, err := s.LoadOrdered(); !errors.Is(err, ErrStoreClosed) {
-		t.Errorf("LoadOrdered after close = %v, want ErrStoreClosed", err)
-	}
 	if _, err := s.LoadWatches(); !errors.Is(err, ErrStoreClosed) {
 		t.Errorf("LoadWatches after close = %v, want ErrStoreClosed", err)
 	}
@@ -285,8 +282,14 @@ func planFaultAt(idx ...int) *fault.Schedule {
 
 // faultStore opens a Store on a fresh MemMapFs wrapped in the given fault
 // schedule. A fresh (nonexistent) log consumes scheduled fs op 0 during open
-// (OpenFile; Stat is not scheduled), so faults scheduled at op index >= 1 land
-// on the first append instead of the open.
+// (OpenFile), so faults scheduled at op index >= 1 land on the first append
+// instead of the open.
+//
+// The append path's own scheduled ops start at index 1 with the single pre-write
+// stat that cursor validation, content tracking and the journal-name identity
+// check share. The indices below are exact on purpose: a second stat added to
+// that path would shift every one of them, which is the point — the append path
+// is allowed exactly one.
 func faultStore(t *testing.T, s *fault.Schedule) *Store {
 	t.Helper()
 	fs := fault.FS(afero.NewMemMapFs(), s)
@@ -306,9 +309,9 @@ func TestStoreAppendSurfacesFilesystemFaults(t *testing.T) {
 		op   int
 		want string
 	}{
-		{name: "seek", op: 1, want: "seek append start"},
-		{name: "write", op: 2, want: "write event"},
-		{name: "sync", op: 3, want: "sync event"},
+		{name: "seek", op: 2, want: "seek append start"},
+		{name: "write", op: 3, want: "write event"},
+		{name: "sync", op: 4, want: "sync event"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := faultStore(t, planFaultAt(tc.op))
@@ -332,13 +335,13 @@ func TestStoreAppendRollbackFailure(t *testing.T) {
 		rollbackOp int
 		want       string
 	}{
-		{name: "truncate", rollbackOp: 3, want: "rollback failed: truncate to 0"},
-		{name: "seek", rollbackOp: 4, want: "rollback failed: seek eof"},
-		{name: "sync", rollbackOp: 5, want: "rollback failed: sync rollback truncate"},
+		{name: "truncate", rollbackOp: 4, want: "rollback failed: truncate to 0"},
+		{name: "seek", rollbackOp: 5, want: "rollback failed: seek eof"},
+		{name: "sync", rollbackOp: 6, want: "rollback failed: sync rollback truncate"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			// op 2 is the append write (fails), the rollback op then also faults.
-			s := faultStore(t, planFaultAt(2, tc.rollbackOp))
+			// op 3 is the append write (fails), the rollback op then also faults.
+			s := faultStore(t, planFaultAt(3, tc.rollbackOp))
 			err := s.Append(Event{Kind: EventJobStarted, JobID: "job_A"})
 			if err == nil || !strings.Contains(err.Error(), "write event") || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("rollback-failure error = %v, want write event + %q", err, tc.want)
@@ -379,7 +382,7 @@ func TestStoreAppendRollbackFailure(t *testing.T) {
 			} else {
 				originalErr = fault.ErrInjected
 				var err error
-				s, err = openFs(fault.FS(base, planFaultAt(3, 4)), "/jobs.jsonl")
+				s, err = openFs(fault.FS(base, planFaultAt(4, 5)), "/jobs.jsonl")
 				if err != nil {
 					t.Fatalf("open fault store: %v", err)
 				}
@@ -527,9 +530,9 @@ func TestStoreAppendBatchSurfacesFilesystemFaults(t *testing.T) {
 		op   int
 		want string
 	}{
-		{name: "seek", op: 1, want: "seek append start"},
-		{name: "write", op: 2, want: "write event"},
-		{name: "sync", op: 4, want: "sync event"},
+		{name: "seek", op: 2, want: "seek append start"},
+		{name: "write", op: 3, want: "write event"},
+		{name: "sync", op: 5, want: "sync event"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := faultStore(t, planFaultAt(tc.op))
@@ -622,7 +625,6 @@ func TestStoreLoadReadFaultsPropagate(t *testing.T) {
 		read func(*Store) error
 	}{
 		{name: "Load", read: func(s *Store) error { _, err := s.Load(); return err }},
-		{name: "LoadOrdered", read: func(s *Store) error { _, err := s.LoadOrdered(); return err }},
 		{name: "LoadWatches", read: func(s *Store) error { _, err := s.LoadWatches(); return err }},
 		{name: "LoadWatchSends", read: func(s *Store) error { _, err := s.LoadWatchSends(); return err }},
 		{name: "LoadEvents", read: func(s *Store) error { _, err := s.LoadEvents(); return err }},

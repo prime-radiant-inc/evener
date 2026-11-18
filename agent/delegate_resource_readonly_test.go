@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -401,6 +402,12 @@ func seedStableReadonlyTornJournal(t *testing.T, stateDir, sessionID string) str
 
 // A cancelled evener/jobs/list request stops the live session's tree build
 // before it opens the next exited descendant's job journal.
+//
+// The cancellation lands on the FIRST exited descendant's journal, not on the
+// live root's: cancelling during the root's own scan proves only that the root
+// read stops, and would leave a build that kept walking descendants after that
+// unobserved. Cancelling here also proves the fixture reaches the descendants at
+// all, since the assertion below cannot pass unless the second one was skipped.
 func TestJobActivityTree_CancelReachesDescendantScans(t *testing.T) {
 	stateDir := t.TempDir()
 	s := newSession(t,
@@ -425,11 +432,15 @@ func TestJobActivityTree_CancelReachesDescendantScans(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(t.Context())
-	var scanned int
+	var scanned []string
 	original := scanJobJournal
 	scanJobJournal = func(ctx context.Context, path string, fromOffset int64, limits jobstore.ScanLimits) ([]jobstore.Event, int64, error) {
-		scanned++
-		cancel()
+		scanned = append(scanned, path)
+		// The live root's own journal folds first and must complete; only an
+		// exited descendant's journal cancels the request.
+		if filepath.Base(filepath.Dir(path)) != s.ID() {
+			cancel()
+		}
 		return original(ctx, path, fromOffset, limits)
 	}
 	t.Cleanup(func() { scanJobJournal = original })
@@ -437,7 +448,12 @@ func TestJobActivityTree_CancelReachesDescendantScans(t *testing.T) {
 	if _, err := s.JobActivityTree(ctx, appwire.JobsListParams{}); !errors.Is(err, context.Canceled) {
 		t.Fatalf("JobActivityTree error = %v, want context.Canceled", err)
 	}
-	if scanned != 1 {
-		t.Fatalf("scanned %d job journals after the request was cancelled, want 1", scanned)
+	if len(scanned) != 2 {
+		t.Fatalf("scanned %v, want the live root's journal then exactly one exited descendant", scanned)
+	}
+	for _, path := range scanned {
+		if strings.Contains(filepath.Base(filepath.Dir(path)), "dlg_b") {
+			t.Fatalf("scanned %v: the second descendant's journal was opened after cancellation", scanned)
+		}
 	}
 }

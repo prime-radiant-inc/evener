@@ -43,6 +43,59 @@ type Store struct {
 	foldGen uint64
 	folds   foldCache
 
+	// journalSize and journalMod are the file this store last accounted for, and
+	// journalGen counts the times that content was replaced by bytes the store
+	// did not write. The baseline is sampled at Open, so even the first boundary
+	// read can tell a journal that was cut in place from one this store grew.
+	//
+	// The rules, all guarded by mu:
+	//   - an append moves the end forward from the length this store left, which
+	//     is growth: same generation;
+	//   - a stat shorter than journalSize is a truncation: new generation;
+	//   - a stat of the same length with a different modification time is an
+	//     in-place rewrite: new generation;
+	//   - any of those checks that runs before an append or a rollback folds the
+	//     answer in BEFORE the store moves the file itself, because afterwards the
+	//     moved size and time are the store's own and cannot be told from a
+	//     foreign writer's.
+	//
+	// The advance is permanent: the generation is a property of the journal's
+	// content, not a one-shot flag a reader consumes. A fold built for the old
+	// bytes stays invalid until it is rebuilt against the new ones, even if every
+	// reader that noticed the change went away before publishing.
+	journalSize int64
+	journalMod  time.Time
+	journalGen  uint64
+	sampled     bool
+	// laggingAppendEnd, when non-zero, is the end of an append this store made
+	// durable that the filesystem's own metadata still under-reports. The
+	// committed boundary reports it instead of the stale size, so a job that
+	// just committed is not omitted from live activity until the attributes
+	// catch up. It is cleared as soon as a stat agrees with what was written, and
+	// never applied to a replacement: that is a different file, and this number
+	// describes this one.
+	laggingAppendEnd int64
+	// named is the file the journal's NAME reached when the store last
+	// accounted for it. It is compared with the next stat of the name, so a
+	// replacement is one change rather than a change on every read: the new
+	// file's own identity is stable, and it is the transition that moves the
+	// content generation. Sampled at Open and after every write and repair.
+	named os.FileInfo
+	// contentTracked arms the pre-write content check.
+	//
+	// It is armed by Open, not by the first CommittedJournal call, and the
+	// difference is a data-loss bug: a torn tail left by an out-of-band write
+	// AFTER the store opened would otherwise meet an append that still thought
+	// this journal was untouched. That append joins its event to the fragment
+	// and fsyncs one malformed line, which every later read and every reopen
+	// then fails on. Opening samples a baseline already, so the check costs one
+	// comparison against a stat the append path takes anyway — and an unchanged
+	// journal still takes the stat-only path.
+	//
+	// It is cleared only for a store that was never given a position to start
+	// from, which is the fault-injection shape a handful of tests construct.
+	contentTracked bool
+
 	// disableSync, when set, skips the per-append fsync. Production opens via
 	// Open, which leaves this false, so the durable write path is unchanged. The
 	// on-disk bytes are identical either way.
@@ -138,11 +191,9 @@ type fileCursor struct {
 type foldCache struct {
 	gen       uint64
 	jobs      map[string]*JobRecord
-	ordered   []*JobRecord
 	watches   map[string]*WatchRecord
 	sends     WatchSendRecord
 	jobsOK    bool
-	orderedOK bool
 	watchesOK bool
 	sendsOK   bool
 }
@@ -181,6 +232,18 @@ func openFs(fs afero.Fs, path string) (*Store, error) {
 		_ = f.Close()
 		return nil, fmt.Errorf("jobstore: stat %s: %w", path, err)
 	}
+	// Establish the content baseline before anything reads it. Opening repairs a
+	// torn tail itself (readAllLocked below), so a journal that was cut
+	// mid-record while no store was open must not look untouched to the first
+	// boundary read after this one: without a baseline sampled here, that read
+	// would have no earlier length to compare against, skip the repair, and let
+	// the next append write onto the fragment.
+	s.journalSize, s.journalMod, s.sampled = info.Size(), info.ModTime(), true
+	s.named = info
+	// This store now holds a position in a file it did not create on this call,
+	// so an unexpected change to it is its business from the very next write.
+	// See contentTracked.
+	s.contentTracked = true
 	if info.Size() == 0 {
 		return s, nil
 	}
@@ -188,6 +251,11 @@ func openFs(fs afero.Fs, path string) (*Store, error) {
 	if err != nil {
 		_ = f.Close()
 		return nil, err
+	}
+	// readAllLocked repaired the tail if it needed repairing, so re-sample the
+	// file the store will actually append to.
+	if repaired, err := f.Stat(); err == nil {
+		s.journalSize, s.journalMod = repaired.Size(), repaired.ModTime()
 	}
 	for _, e := range existing {
 		if e.Seq > s.seq {
@@ -204,9 +272,37 @@ func (s *Store) Append(e Event) error {
 	if err := s.ensureOpenLocked(); err != nil {
 		return err
 	}
-	s.verifyCursorBeforeAppendLocked()
+	named, namedErr := s.fs.Stat(s.path)
+	s.verifyCursorBeforeAppendLocked(named, namedErr)
+	adopted, err := s.followNamedJournalLocked(named, namedErr)
+	if err != nil {
+		return err
+	}
+	if !adopted {
+		// The name still reaches the file this store holds, so a change it did
+		// not write is this store's to repair before appending onto it.
+		// Adoption re-samples its own baseline against the file it just read.
+		if err := s.noteContentBeforeStoreWriteLocked(named, namedErr); err != nil {
+			return err
+		}
+	}
 	nextSeq := s.seq + 1
 	e.Seq = nextSeq
+	// The identity of the journal this append will actually write to, sampled
+	// before it writes a byte so the post-sync check can tell whether the name
+	// moved while the bytes were in flight. Sampling it afterwards cannot answer
+	// that: by then the name reaches whatever replaced the journal.
+	//
+	// It must be sampled AFTER adoption, not before it. Adoption can install a
+	// second replacement — the name moved again while the first candidate was
+	// being examined — and a sample taken before it describes the file that was
+	// moved aside. Verifying against that sample reports "the journal was
+	// replaced" for an append that landed in exactly the file the name reaches,
+	// leaves s.seq unadvanced, and lets the next append reuse its sequence.
+	appendedName := named
+	if adopted {
+		appendedName = s.named
+	}
 	b, err := json.Marshal(e)
 	if err != nil {
 		return fmt.Errorf("jobstore: marshal event: %w", err)
@@ -222,9 +318,103 @@ func (s *Store) Append(e Event) error {
 	if err := s.syncLocked(); err != nil {
 		return s.appendFailureLocked("sync event", err, startOffset)
 	}
+	verified, err := s.verifyAppendReachedTheNameLocked(appendedName)
+	if err != nil {
+		return err
+	}
 	s.seq = nextSeq
-	s.noteAppendedLocked(startOffset, startOffset+int64(len(b)))
+	s.noteAppendedLocked(startOffset, startOffset+int64(len(b)), verified)
 	return nil
+}
+
+// verifyAppendReachedTheNameLocked checks, after the bytes are durable, that the
+// journal's NAME still reaches the file they were written to.
+//
+// An append is only worth its success report if a reader of the name can see the
+// record. A journal renamed aside and replaced while this append was syncing
+// leaves the event in the moved file: readers follow the name to the replacement
+// and never find it, and the store's own post-write stat would adopt the
+// replacement as its baseline without noticing the jump. Reporting success there
+// loses the event silently.
+//
+// So the name is re-resolved against the handle that was synced. A replacement,
+// or a name that has gone, is a retryable failure: the bytes this append wrote
+// describe content the name no longer reaches, so the event is reported as failed
+// and the caller retries against whatever the name now holds. The generation
+// advances here as well, because any fold built on the old file is now serving
+// bytes a reader will never see.
+//
+// A name that cannot be examined at all is NOT treated as a replacement: there is
+// no evidence the bytes went somewhere unread, and failing an append whose record
+// is durable would be the worse error.
+//
+// The sample it verified is returned, and it is the one the caller books the
+// append against. Re-statting after this returns asks the same question again a
+// moment later, and the answer is allowed to have changed: a replacement landing
+// in that gap would be installed as the append's own baseline without advancing
+// the generation, and the next activity read would extend a fold built on the
+// old bytes from an offset into the new file. A nil return means the name could
+// not be examined, and the caller books no new baseline.
+func (s *Store) verifyAppendReachedTheNameLocked(opened os.FileInfo) (os.FileInfo, error) {
+	named, err := s.fs.Stat(s.path)
+	if err != nil {
+		// The name cannot be examined AFTER the bytes are durable.
+		//
+		// This is not the pre-write question. By the time this runs,
+		// followNamedJournalLocked has established that the name reaches the
+		// journal this store holds, so a stat that fails now is evidence about
+		// the filesystem's responsiveness rather than about the journal's
+		// identity: no observation has placed the bytes anywhere a reader will
+		// not look.
+		//
+		// Reporting a retryable failure here is the worse error, and it is worse
+		// in a way that loses data. A caller that retries re-derives the
+		// terminal generation of the event it is writing, so the durable fold
+		// keeps the FIRST terminal record and ignores the retry that carries the
+		// second: the job is committed, the append was told it failed, and the
+		// completion notification is dropped. A store that holes a journal for
+		// one flaky stat trades a lost notification for a risk no evidence
+		// supports.
+		//
+		// So the outcome is reconciled rather than assumed: one delayed re-stat
+		// still catches a replacement that is merely slow to appear under the
+		// name, and anything left is acknowledged. A store with no sample at all
+		// — a fault-injection fixture, or one constructed around a handle it was
+		// given — has never followed a name and has nothing to reconcile.
+		if retried, retryErr := s.fs.Stat(s.path); retryErr == nil {
+			if !sameJournalFile(opened, retried) {
+				s.journalGen++
+				s.sampled = false
+				s.laggingAppendEnd = 0
+				return nil, fmt.Errorf("%w: %s: the journal was replaced while the event was being written", ErrJournalReplaced, s.path)
+			}
+			return retried, nil
+		}
+		// The delayed re-stat failed too. Nothing observed the name reaching
+		// another file, so the append is acknowledged with no new baseline: the
+		// next boundary read samples for itself rather than trusting a
+		// comparison this call could not make. A store that has never followed a
+		// name lands here too, and for the same reason — there is nothing to
+		// compare the bytes against.
+		return nil, nil
+	}
+	// The name is compared with ITSELF, sampled before the write under the same
+	// lock that serialized it. That is the only comparison that answers this
+	// question without inventing one: a handle's metadata read next to the
+	// name's disagrees on an ordinary append wherever the filesystem reports the
+	// two through different paths (attributes that lag the data, timestamps too
+	// coarse to move), and the answer this needs is "did the name move", not
+	// "do two reporters agree".
+	if opened == nil || sameJournalFile(opened, named) {
+		return named, nil
+	}
+	// The name reaches a different file than the one this append synced to. The
+	// bytes are durable in the old file — that is why this is retryable rather
+	// than a rollback — but no reader of the name will find them.
+	s.journalGen++
+	s.sampled = false
+	s.laggingAppendEnd = 0
+	return nil, fmt.Errorf("%w: %s: the journal was replaced while the event was being written", ErrJournalReplaced, s.path)
 }
 
 // AppendBatch assigns contiguous Seq values to events, writes them as one
@@ -259,10 +449,25 @@ func (s *Store) AppendBatch(events []Event) error {
 	if err := s.ensureOpenLocked(); err != nil {
 		return err
 	}
-	s.verifyCursorBeforeAppendLocked()
+	named, namedErr := s.fs.Stat(s.path)
+	s.verifyCursorBeforeAppendLocked(named, namedErr)
+	adopted, err := s.followNamedJournalLocked(named, namedErr)
+	if err != nil {
+		return err
+	}
+	if !adopted {
+		if err := s.noteContentBeforeStoreWriteLocked(named, namedErr); err != nil {
+			return err
+		}
+	}
 	startOffset, err := s.f.Seek(0, io.SeekEnd)
 	if err != nil {
 		return fmt.Errorf("jobstore: seek append start: %w", err)
+	}
+	// The name's identity before this batch writes a byte; see Append.
+	appendedName := named
+	if adopted {
+		appendedName = s.named
 	}
 	nextSeq := s.seq
 	written := int64(0)
@@ -282,8 +487,12 @@ func (s *Store) AppendBatch(events []Event) error {
 	if err := s.syncLocked(); err != nil {
 		return s.appendFailureLocked("sync event", err, startOffset)
 	}
+	verified, err := s.verifyAppendReachedTheNameLocked(appendedName)
+	if err != nil {
+		return err
+	}
 	s.seq = nextSeq
-	s.noteAppendedLocked(startOffset, startOffset+written)
+	s.noteAppendedLocked(startOffset, startOffset+written, verified)
 	return nil
 }
 
@@ -309,27 +518,219 @@ func (s *Store) Load() (map[string]*JobRecord, error) {
 	return s.noteFoldedJobsLocked(Fold(events)), nil
 }
 
-// LoadOrdered reads every event and folds them to the current records, returning
-// them in durable APPEND ORDER — sorted by the seq of each job's FIRST event.
-// Append order is the total order the append-only log defines; callers that must
-// resolve "the latest record" (the one appended last) read it here rather than
-// from a wall-clock field, which can skew across restore.
-func (s *Store) LoadOrdered() ([]*JobRecord, error) {
+// CommittedJournalState is one snapshot of a store's committed journal.
+type CommittedJournalState struct {
+	// Path is the journal the store appends to.
+	Path string
+	// Size is the byte length of its committed prefix.
+	Size int64
+	// Generation identifies the journal CONTENT this snapshot describes. It
+	// advances whenever the file stops being the one the store's own appends
+	// produced — a truncation, or a same-length in-place rewrite — and never on
+	// an ordinary append, so two snapshots of a growing journal share a
+	// generation and a fold may be extended from one to the other.
+	//
+	// It is the cache key, not a flag. A reader that samples a new generation
+	// and then dies before rebuilding has still made every later reader
+	// compare against the new value, so the stale fold can never be served
+	// again. A one-shot "this shrank" boolean cannot say that: the first
+	// reader consumes it, and its canceled rebuild leaves the old fold
+	// looking current to everyone who comes after.
+	Generation uint64
+	// MetadataResolvesWrites reports whether this store's own appends can be
+	// told apart from someone else's write by length and modification time.
+	//
+	// It is false once the store has observed its own append change the file's
+	// length while the filesystem reported the same modification time twice:
+	// timestamps there cannot resolve a write, which is exactly what makes an
+	// incremental reader unsafe. The store answers its own question by
+	// re-reading (see fileCursor.disabled); a reader outside the store has no
+	// cursor to disable, and its cache compares a size and a generation. On such
+	// a filesystem neither moves for a same-length rewrite that lands in the
+	// same timestamp tick, so a reader holding that flag must not reuse a cached
+	// prefix — it has to refold.
+	MetadataResolvesWrites bool
+}
+
+// CommittedJournal returns this store's journal path and the byte length of its
+// committed prefix, or the same closed/unusable error every other operation
+// reports.
+//
+// The length is the file's end as this store left it: Append and AppendBatch
+// hold the store lock across their write, their fsync and any rollback
+// truncation, so no append is ever observable at a length between the one this
+// call returns and the one a later call returns. A reader that scans the file
+// itself, rather than through the store, must fold no further than this offset:
+// bytes past it belong to an append that has not committed, and one whose fsync
+// then fails is truncated away without the store ever having acknowledged it.
+// Folding through the boundary is what keeps a stale record from a failed
+// append out of a page and out of the continuation that page minted.
+//
+// It reads nothing, so a caller that reads this journal repeatedly folds it
+// incrementally instead of paying a clone and fold of the whole history per
+// call — with one exception on the truncation path, described below.
+//
+// A truncation is repaired before it is reported. Something that cut this file
+// in place can leave a torn trailing record: the bytes are there, the scanner
+// omits the incomplete line, and the next Append would append onto its tail and
+// fsync one malformed line where two records should be. So when the stat below
+// shows the file is no longer the one this store left, the store runs its
+// locked tail recovery — the same repair every full load performs — and reports
+// the repaired length. The repair is confined to that path: a journal that is
+// merely longer than the last sample is an ordinary append, and taking the fast
+// path there is the whole reason this call reads nothing.
+func (s *Store) CommittedJournal() (CommittedJournalState, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.ensureOpenLocked(); err != nil {
-		return nil, err
+		return CommittedJournalState{}, err
 	}
-	if folded, ok, err := s.foldOrderedHitLocked(); err != nil {
-		return nil, err
-	} else if ok {
-		return folded, nil
-	}
-	events, err := s.readAllLocked()
+	// The NAMED journal, not the open handle. The handle describes the file the
+	// store opened, which is not the file this path names once the path was
+	// removed or atomically replaced: a reader scanning the path would then be
+	// bounded by the old file's length, and a warm fold would keep serving rows
+	// the path no longer has. A stat of the name answers for what a scan of the
+	// name will read.
+	info, err := s.fs.Stat(s.path)
 	if err != nil {
-		return nil, err
+		// The journal is gone from the name. Report it as an empty prefix for
+		// the new generation rather than failing the read: the activity page
+		// still has the session's live rows, and refusing the whole load for a
+		// journal that is legitimately absent (a session that never wrote one,
+		// or one being replaced) would hide them.
+		if os.IsNotExist(err) {
+			if s.sampled {
+				s.journalGen++
+			}
+			s.sampled = false
+			return CommittedJournalState{Path: s.path, Size: 0, Generation: s.journalGen, MetadataResolvesWrites: !s.cursor.disabled}, nil
+		}
+		return CommittedJournalState{}, fmt.Errorf("jobstore: stat %s: %w", s.path, err)
 	}
-	return s.noteFoldedOrderedLocked(FoldOrdered(events)), nil
+
+	// Repairing is only this store's business while the name still reaches the
+	// file it holds: recovery truncates through the handle, so on a replacement
+	// it would cut the journal that was moved aside and leave the replacement
+	// torn. Identity decides that before anything else.
+	handle, handleErr := s.f.Stat()
+	sameFile := handleErr == nil && sameJournalFile(handle, info)
+
+	size, mod := info.Size(), info.ModTime()
+	// Reconcile the reported length with what this store already made durable
+	// BEFORE asking whether the content changed.
+	//
+	// An append records its own end, and a filesystem whose attributes lag
+	// reports less than that for as long as the lag lasts. Comparing the raw
+	// report against the recorded end therefore looks like a change on every
+	// read of the same bytes — and treating that as a new generation invalidates
+	// the fold each time, so a live session rebuilds its whole history on every
+	// poll until the metadata catches up. The order is what fixes it: settle the
+	// lag first, then compare. A sample that is merely behind the append is the
+	// same content, and repeated lagging samples are the same content as each
+	// other.
+	//
+	// The confirmation is the file's own length, the same arbiter the tail of
+	// this function uses: metadata trailing the data and a real truncation both
+	// report a smaller number, and only the file can say which one happened.
+	lagging := false
+	if s.laggingAppendEnd > size {
+		onDisk, haveLength := s.journalRealSizeLocked()
+		if haveLength && onDisk >= s.laggingAppendEnd {
+			size, lagging = s.laggingAppendEnd, true
+		} else {
+			s.laggingAppendEnd = 0
+		}
+	}
+	// One question decides both the generation and the repair: are these the
+	// bytes this store last accounted for? Identity answers for the file, the
+	// recorded length and time for its content. Anything else — a replacement,
+	// a foreign append, a truncation, a rewrite — is content the store did not
+	// write, and neither an incremental fold nor the cursor may extend across
+	// it.
+	//
+	// The name's identity is compared with the file it reached LAST time, not
+	// with the store's handle. A journal renamed aside and re-created under this
+	// name is a different file, and the store's handle still describes the one
+	// it opened; but comparing against the handle would call every later read of
+	// that same replacement a new change and rebuild the fold on every poll. It
+	// is the transition from one file to another that moves the generation.
+	renamed := s.named == nil || !sameJournalFile(s.named, info)
+	unexpected := renamed || !s.sampled || size != s.journalSize || !mod.Equal(s.journalMod)
+	if renamed {
+		// Whatever an earlier append said about its own end describes the bytes
+		// that append wrote. A replacement is a different file, so that
+		// statement is about content the name no longer reaches and must not
+		// raise this boundary.
+		s.laggingAppendEnd = 0
+		lagging = false
+	}
+	if unexpected {
+		// The generation moves for every unexplained change, whether the file
+		// grew, shrank or stayed the same length. Growth is the case worth
+		// naming: a rewrite that REPLACED the prefix and left the file longer
+		// than the last recorded length looks like an append by length alone,
+		// and resuming an incremental fold at the old offset would keep the rows
+		// the rewrite removed and decode the rest from the middle of a record.
+		// The cursor answers the same question the same way: anything short of
+		// "same length, same modification time" is reread from zero.
+		s.journalGen++
+	}
+	if sameFile && unexpected {
+		// The name still reaches this store's file, so its bytes are this
+		// store's to repair. A foreign writer can leave a partial record at the
+		// end, and a partial record is poisonous here: the scanner withholds the
+		// line it cannot decode, and the next Append joins a new event onto the
+		// fragment and fsyncs one malformed line that every later read then
+		// fails on. Repair the tail before reporting a length, the way a full
+		// load always has.
+		//
+		// This runs on the unexpected-change path only. A live session's own
+		// appends are recorded by noteAppendedLocked, so the stat above matches
+		// what the store wrote and this branch is not taken: the incremental
+		// read stays a stat.
+		if err := s.recoverTrailingPartialLineLocked(); err != nil {
+			return CommittedJournalState{}, err
+		}
+		if repaired, statErr := s.fs.Stat(s.path); statErr == nil {
+			info = repaired
+			size, mod = repaired.Size(), repaired.ModTime()
+		}
+	}
+	s.journalSize, s.journalMod, s.sampled = size, mod, true
+	s.named = info
+	s.contentTracked = true
+	// The append's recorded end stays authoritative while the path still reports
+	// less than it. Once the path catches up it is no longer the better
+	// evidence, and keeping it would let a later, genuine truncation be reported
+	// at the old length — so it is dropped, and the comparison above falls back
+	// to the path's own numbers.
+	//
+	// A lagging sample that the FILE contradicts was already cleared above,
+	// before the generation was decided: the bytes are gone, and the generation
+	// moved for it there.
+	if !lagging {
+		s.laggingAppendEnd = 0
+	}
+	return CommittedJournalState{Path: s.path, Size: size, Generation: s.journalGen, MetadataResolvesWrites: !s.cursor.disabled}, nil
+}
+
+// journalRealSizeLocked reports the journal's actual length, asking the file
+// rather than the path's attributes. It is how a boundary resolves the one
+// question a stat cannot: whether a length shorter than a confirmed append
+// means the attributes have not caught up or the file was cut. ok is false when
+// the file cannot be opened, in which case the caller has no evidence and must
+// not invent a length.
+func (s *Store) journalRealSizeLocked() (int64, bool) {
+	f, err := s.fs.Open(s.path)
+	if err != nil {
+		return 0, false
+	}
+	defer func() { _ = f.Close() }()
+	onDisk, err := f.Seek(0, io.SeekEnd)
+	if err != nil {
+		return 0, false
+	}
+	return onDisk, true
 }
 
 // LoadWatches reads every event and folds durable watch registry state.
@@ -546,6 +947,30 @@ func (s *Store) cursorTrustedLocked(info os.FileInfo) bool {
 		info.Size() == s.cursor.size && info.ModTime().Equal(s.cursor.mod)
 }
 
+// sameJournalFile reports whether named is the file handle refers to.
+//
+// It is the one question a boundary read has to answer before it repairs or
+// reports anything: the store's handle describes the file it opened, and a
+// journal that was renamed aside and re-created under the same path is two
+// different files — one the store can still write, one every reader will read.
+// Repairing through the handle in that case truncates the journal that was
+// moved aside and leaves the replacement torn, so the identity comes first.
+//
+// Where the filesystem exposes a file identity (an OS-backed one does) this is
+// that identity. Where it does not — afero's in-memory filesystems carry no
+// Sys — it falls back to the length and modification time the cursor already
+// relies on, and inherits the same documented residual: a replacement that
+// reproduces both is indistinguishable from no change at all.
+func sameJournalFile(handle, named os.FileInfo) bool {
+	if handle == nil || named == nil {
+		return false
+	}
+	if handle.Sys() != nil && named.Sys() != nil {
+		return os.SameFile(handle, named)
+	}
+	return handle.Size() == named.Size() && handle.ModTime().Equal(named.ModTime())
+}
+
 func (s *Store) resetCursorLocked() {
 	disabled := s.cursor.disabled
 	s.cursor = fileCursor{disabled: disabled}
@@ -569,17 +994,85 @@ func (s *Store) invalidateCursorLocked() {
 	s.folds = foldCache{gen: s.foldGen}
 }
 
+// noteContentBeforeStoreWriteLocked advances the content generation when the
+// file the store is about to write to is not the one it last accounted for.
+//
+// It runs before Append, AppendBatch and rollbackAppendLocked, for one reason:
+// after any of them the file's size and modification time are the store's own,
+// and a foreign rewrite that happened since the last boundary read becomes
+// indistinguishable from the store's own change. A rewrite followed by an
+// append before the next activity read is the concrete case — the fold would
+// resume at its old offset over replaced content, keeping a job that was
+// rewritten away and missing the one that replaced it.
+//
+// A failure to stat is not reported: the append below reports its own error, and
+// an unreadable file simply cannot be shown to be unchanged, so the generation
+// moves.
+//
+// A file this store did not write may end in a partial record. Appending at EOF
+// would join the new event onto that fragment and fsync one malformed line,
+// reporting success for an event no reader can decode and a record the file
+// cannot recover. So a detected change is repaired the way a load repairs it,
+// before the write and before the new baseline is recorded: the baseline may
+// only describe bytes the store has accounted for, and a torn tail it has not
+// yet cut is not one of them.
+//
+// Ordinary appends take the fast path: the store's own write is recorded by
+// noteAppendedLocked, so the stat here matches what it wrote, `changed` is
+// false, and no repair is attempted.
+func (s *Store) noteContentBeforeStoreWriteLocked(info os.FileInfo, err error) error {
+	if !s.contentTracked {
+		return nil
+	}
+	if err != nil {
+		if s.sampled {
+			s.journalGen++
+		}
+		s.sampled = false
+		return nil
+	}
+	size, mod := info.Size(), info.ModTime()
+	changed := !s.sampled || size != s.journalSize || !mod.Equal(s.journalMod)
+	if changed {
+		// The file moved since the store last accounted for it. Anything that is
+		// not this store's own append is a replacement of its content. The
+		// pre-append check ran before this write, so a rewrite that happened
+		// between them is the one case this cannot catch — and it cannot happen
+		// under the store lock that serializes every writer this store knows
+		// about.
+		s.journalGen++
+		// Repair before writing, and leave the baseline unrecorded if the repair
+		// fails: a caller that retries must see the change again rather than a
+		// baseline that claims bytes the store never verified.
+		if err := s.recoverTrailingPartialLineLocked(); err != nil {
+			s.sampled = false
+			return err
+		}
+		if repaired, statErr := s.fs.Stat(s.path); statErr == nil {
+			size, mod = repaired.Size(), repaired.ModTime()
+			s.named = repaired
+		} else {
+			s.sampled = false
+			return nil
+		}
+	}
+	// The store's own write is about to move the file; the append path records
+	// where it ends once that is known.
+	s.journalSize, s.journalMod = size, mod
+	s.sampled = true
+	return nil
+}
+
 // verifyCursorBeforeAppendLocked drops the cursor unless the file is still the
 // one it was built from. It runs BEFORE the store appends, because an append
 // moves the file's identity forward: without this check a foreign rewrite that
 // happened since the last load would be laundered into the cursor's own history
 // and the stale prefix trusted forever. Agent tests rewrite a delegate's log in
 // place and then append to it, so this is a live path, not a hypothetical.
-func (s *Store) verifyCursorBeforeAppendLocked() {
+func (s *Store) verifyCursorBeforeAppendLocked(info os.FileInfo, err error) {
 	if !s.cursor.valid {
 		return
 	}
-	info, err := s.fs.Stat(s.path)
 	if err != nil || !s.cursorTrustedLocked(info) {
 		s.cursor.valid = false
 		// The bytes the cached folds describe may not be the file's bytes
@@ -598,13 +1091,47 @@ func (s *Store) verifyCursorBeforeAppendLocked() {
 // filesystem. Bookkeeping failures leave the cursor invalid and are NOT reported
 // as append failures: the bytes are already durable, and a dropped cursor costs
 // a reread, never a wrong answer.
-func (s *Store) noteAppendedLocked(startOffset, endOffset int64) {
-	// Every append changes the durable bytes, so the generation moves on all
-	// paths below — including the early returns that drop the cursor. A fold
+//
+// verified is the sample the post-sync check resolved and vouched for, and it is
+// the only one this may install as the append's baseline. Statting the path here
+// would ask the same question a moment later, and a replacement arriving in
+// between would be recorded as the append's own end: the generation would not
+// move, so the next activity read would extend a fold built on the old bytes from
+// an offset into the new file, and pages would blend two files. A nil sample
+// means nothing was verified, so no baseline is recorded and the next read
+// re-samples for itself.
+func (s *Store) noteAppendedLocked(startOffset, endOffset int64, verified os.FileInfo) {
+	// Every append changes the durable bytes, so the fold generation moves on
+	// all paths below — including the early returns that drop the cursor. A fold
 	// cached before this append must never be served after it, whether or not
-	// the cursor survived.
+	// the cursor survived. The CONTENT generation is different: this write is
+	// the store's own growth of a file it already accounted for, so a fold built
+	// on the previous length stays valid and is extended, not rebuilt.
 	s.foldGen++
 	s.folds = foldCache{gen: s.foldGen}
+	if verified != nil {
+		s.journalSize, s.journalMod, s.sampled = verified.Size(), verified.ModTime(), true
+		s.named = verified
+		// The append computed endOffset from the bytes it wrote; the stat above
+		// asked a filesystem whose attributes may lag its data. Those two are
+		// not equally good evidence about THIS write: the path says "as of some
+		// moment that may predate my sync", the append says "exactly here". When
+		// the path reports less than the store just made durable, the boundary
+		// must report the append's end, or the record that just committed is
+		// omitted until the metadata catches up.
+		s.laggingAppendEnd = 0
+		if verified.Size() < endOffset {
+			s.journalSize = endOffset
+			s.laggingAppendEnd = endOffset
+		}
+	} else {
+		// Nothing was verified after the bytes were made durable under the
+		// handle. That is not this append's failure — the bytes are on disk — but
+		// it does mean the next boundary read has nothing to compare against, so
+		// it must not pretend the file is unchanged.
+		s.sampled = false
+		s.laggingAppendEnd = endOffset
+	}
 	if !s.cursor.valid {
 		return
 	}
@@ -731,15 +1258,20 @@ func (s *Store) recoverTrailingPartialLineLocked() (err error) {
 	if info.Size() == 0 {
 		return nil
 	}
-	f, err := s.fs.Open(s.path)
-	if err != nil {
-		return fmt.Errorf("jobstore: inspect %s: %w", s.path, err)
-	}
-	defer func() {
-		if closeErr := f.Close(); err == nil && closeErr != nil {
-			err = fmt.Errorf("jobstore: close %s: %w", s.path, closeErr)
-		}
-	}()
+	// Both halves of a repair are performed on the handle the store appends
+	// through, never on the path.
+	//
+	// Reading the path for evidence and then truncating the handle is how a
+	// second replacement gets its bytes used to justify a cut performed on the
+	// first one. A replacement holding a single torn record supplies offset
+	// zero, and offset zero erases every committed record from the journal that
+	// was moved aside — a journal that had made all of it durable.
+	//
+	// So the evidence and the repair are the same file by construction, and the
+	// name is rechecked before the cut: bytes repaired in a file the name no
+	// longer reaches are bytes no reader will ever see, and the replacement
+	// needs examining on its own terms instead.
+	f := s.f
 	if _, err := f.Seek(-1, io.SeekEnd); err != nil {
 		return fmt.Errorf("jobstore: inspect trailing byte: %w", err)
 	}
@@ -747,12 +1279,35 @@ func (s *Store) recoverTrailingPartialLineLocked() (err error) {
 	if _, err := io.ReadFull(f, last); err != nil {
 		return fmt.Errorf("jobstore: read trailing byte: %w", err)
 	}
+	// The read left the handle off its end; every exit from here restores it,
+	// because Append seeks to the end before writing and a half-positioned
+	// handle is the kind of state a later writer trusts.
+	defer func() {
+		if _, seekErr := s.f.Seek(0, io.SeekEnd); seekErr != nil && err == nil {
+			err = fmt.Errorf("jobstore: seek after trailing recovery: %w", seekErr)
+		}
+	}()
 	if last[0] == '\n' {
 		return nil
 	}
-	raw, err := afero.ReadFile(s.fs, s.path)
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return fmt.Errorf("jobstore: inspect %s: %w", s.path, err)
+	}
+	raw, err := io.ReadAll(f)
 	if err != nil {
 		return fmt.Errorf("jobstore: read %s: %w", s.path, err)
+	}
+	// The whole tail is now in memory, and the cut below is about to happen.
+	// Confirm the name still reaches this handle: if it does not, this repair
+	// belongs to a file nobody reads, and the replacement is someone else's to
+	// examine.
+	named, statErr := s.fs.Stat(s.path)
+	if statErr != nil {
+		return nil
+	}
+	handle, handleErr := f.Stat()
+	if handleErr != nil || !sameJournalFile(handle, named) {
+		return nil
 	}
 	cut := bytes.LastIndexByte(raw, '\n')
 	if cut < 0 {
@@ -838,6 +1393,266 @@ func (s *Store) ensureOpenLocked() error {
 	return nil
 }
 
+// ErrJournalReplaced is returned by Append and AppendBatch when the journal's
+// name reaches a file that is not a usable journal, so writing would either
+// land in a file nobody reads or corrupt the one that was put there.
+//
+// It is the backstop on the adoption path, not the common case: a replacement
+// that is a well-formed journal is adopted and the append proceeds, because
+// following the name the store was opened with is the whole guarantee. A
+// replacement that cannot be decoded is not adoptable — appending to it would
+// write after a record no reader can parse — and the store will not silently
+// keep writing to the file it holds instead, because that write is invisible to
+// every reader of the name.
+var ErrJournalReplaced = errors.New("jobstore: journal name refers to a different file that is not a readable journal")
+
+// ErrJournalNameUnavailable is returned by Append and AppendBatch when the
+// journal's path does not currently name a reachable file, so the append has
+// nowhere to land that any reader would find.
+//
+// It is retryable and the event is not consumed: rename-and-replace is not
+// atomic, and a writer that looks in the gap between the rename and the
+// creation of the replacement sees no name at all. Failing here is the only
+// answer that preserves the guarantee this store makes — that a successful
+// append is readable from the journal's name. Succeeding on the handle the
+// store still holds would report a job completion that never reached the file
+// activity and reopen read, which is a lost record, not a delayed one.
+var ErrJournalNameUnavailable = errors.New("jobstore: journal name is not reachable")
+
+// followNamedJournalLocked makes the store write to the file its journal name
+// reaches, adopting a replacement that arrived while the store was open.
+//
+// A journal renamed aside and re-created under its path is two files: the store
+// can still write the one it opened, and every reader reads the other. Writing
+// to the held file would append where no reader looks — every later event lost
+// from activity and from every load — and the store's tail recovery would
+// truncate the copy that was moved aside. So the name wins.
+//
+// The name must exist for the append to proceed at all. A rename-and-replace
+// leaves a window where the name reaches nothing; an append that took the
+// handle in that window would report success for an event the name never holds.
+// That window is retryable, and saying so is what makes waiting it out safe.
+//
+// Reassigning the handle is not a new hazard: every read and write of s.f
+// happens under s.mu, this call included, so an append can never be seeking a
+// handle that is being swapped. Nothing outside this file holds s.f.
+//
+// The caller passes the stat it already took for the pre-append checks, so
+// following the name costs the append path no extra filesystem call. A store
+// whose name still reaches the file it holds does no further work here.
+//
+// It reports whether it adopted a replacement, because adoption re-samples the
+// content baseline itself and the caller must not then apply a comparison made
+// against the file that is no longer named.
+func (s *Store) followNamedJournalLocked(named os.FileInfo, err error) (bool, error) {
+	if err != nil {
+		// The name reaches nothing, or cannot be examined. Either way there is no
+		// known file for this event to land in that a reader would see, so the
+		// append must not proceed on the held handle.
+		//
+		// This is never first use: opening a store creates the name, so a name
+		// that has stopped answering was removed or made unreadable after this
+		// store opened. The event is preserved by failing — the caller retries
+		// once the path is back — because the alternative is reporting success
+		// for a record no reader of the named journal will ever see.
+		return false, fmt.Errorf("%w: %s: %w", ErrJournalNameUnavailable, s.path, err)
+	}
+	if s.journalNameIsHeldLocked(named) {
+		return false, nil
+	}
+	// A rename-and-replace is not atomic, and a second one can land while this
+	// adoption is being prepared. Each attempt is reconciled against the name
+	// before anything is installed, so a candidate that stopped being the named
+	// file is dropped rather than appended through; the retry then follows
+	// whatever the name reaches now.
+	const adoptionAttempts = 3
+	for range adoptionAttempts {
+		// The name's identity at the moment this candidate was resolved, so the
+		// check after repair can tell whether the name moved while the candidate
+		// was being examined.
+		opened, openedErr := s.fs.Stat(s.path)
+		if openedErr != nil {
+			return false, fmt.Errorf("%w: %s: %w", ErrJournalNameUnavailable, s.path, openedErr)
+		}
+		f, err := s.fs.OpenFile(s.path, os.O_RDWR|os.O_APPEND, 0o644)
+		if err != nil {
+			return false, fmt.Errorf("%w: open %s: %w", ErrJournalReplaced, s.path, err)
+		}
+		// Validation and repair both run on this handle, never through the path.
+		// Reading the path for evidence and then repairing through the handle is
+		// how a second replacement gets its bytes used to decide a truncation
+		// performed on the first one — a journal that committed every byte of it
+		// loses content it had already made durable.
+		events, err := inspectAdoptableJournal(f, s.disableSync)
+		if err != nil {
+			_ = f.Close()
+			return false, fmt.Errorf("%w: %s: %w", ErrJournalReplaced, s.path, err)
+		}
+		// Repair has already written through this handle, so the name must still
+		// identify it before the store appends through it: bytes repaired in a
+		// file the name no longer reaches are bytes no reader will ever see.
+		named, statErr := s.fs.Stat(s.path)
+		if statErr != nil {
+			_ = f.Close()
+			return false, fmt.Errorf("%w: %s: %w", ErrJournalNameUnavailable, s.path, statErr)
+		}
+		// The name is compared with itself, not with the handle. The question is
+		// whether the name still reaches the file it reached when this candidate
+		// was opened, and a filesystem without file identity can only answer it
+		// by way of the metadata it reported then. Comparing the name's metadata
+		// against the handle's would instead ask whether two reporting paths
+		// agree, which they do not on a store whose attributes lag or whose
+		// timestamps are coarse.
+		if !sameJournalFile(named, opened) {
+			_ = f.Close()
+			continue
+		}
+		old := s.f
+		s.f = f
+		s.seq = 0
+		for _, e := range events {
+			if e.Seq > s.seq {
+				s.seq = e.Seq
+			}
+		}
+		// Everything cached describes the file that is no longer named. Reset
+		// the cursor, move both generations, and let the live folds refold from
+		// zero rather than resume at an offset into different bytes.
+		s.resetCursorLocked()
+		s.foldGen++
+		s.folds = foldCache{gen: s.foldGen}
+		s.journalGen++
+		// The stat is taken after the repair above, so it describes the bytes
+		// this store is about to append after rather than the torn tail.
+		s.journalSize, s.journalMod, s.sampled = named.Size(), named.ModTime(), true
+		s.named = named
+		if err := old.Close(); err != nil {
+			return true, fmt.Errorf("jobstore: close replaced %s: %w", s.path, err)
+		}
+		return true, nil
+	}
+	return false, fmt.Errorf("%w: %s: the name kept reaching a new file while it was being adopted", ErrJournalReplaced, s.path)
+}
+
+// journalNameIsHeldLocked reports whether the journal name still reaches the
+// file the store holds.
+//
+// The handle's own identity answers this wherever the filesystem exposes one.
+// An in-memory filesystem exposes none, so there the name is compared against
+// the store's own last sample of that name — the same comparison a boundary read
+// uses to decide the journal was replaced. Both questions have to be asked in
+// the filesystem's own terms: comparing a handle's metadata against a name's
+// metadata from two different reporting paths invents a difference that is not
+// a replacement, and acting on it re-opens the path and swaps the handle this
+// store appends through on every write.
+//
+// A store with no sample at all — one constructed directly rather than opened,
+// which is what a fault-injection fixture does — has nothing to compare the
+// name with except the handle it holds. Asking the handle is the honest answer
+// there: it is the only evidence of which file this store is following, and it
+// keeps the append on the handle the caller handed over instead of silently
+// replacing it with a fresh open.
+func (s *Store) journalNameIsHeldLocked(named os.FileInfo) bool {
+	handle, err := s.f.Stat()
+	if err != nil {
+		return true
+	}
+	if handle.Sys() != nil && named.Sys() != nil {
+		return os.SameFile(handle, named)
+	}
+	if s.named != nil {
+		return sameJournalFile(s.named, named)
+	}
+	return sameJournalFile(handle, named)
+}
+
+// inspectAdoptableJournal validates the open candidate f and repairs the one
+// thing a journal may legitimately need repaired, reading and writing that same
+// handle throughout. It returns every durable event f holds.
+//
+// The rule is about which bytes are evidence. Every newline-TERMINATED record is
+// content the journal claims to have committed, so a record that does not decode
+// condemns the file: it is not a journal, and adopting it would append after a
+// line no reader can parse. The unterminated LAST line is a write that was cut
+// off — terminated when it is a complete record, cut back to the last committed
+// newline when it is a fragment of one.
+//
+// The order matters because repair mutates. Every committed record is decoded
+// before a byte is written, so refusing an unreadable replacement never rewrites
+// the file it refused. And the handle, not the path, is what both steps see: a
+// replacement installed while this candidate was being examined would otherwise
+// supply the evidence for a truncation performed through this handle, and the
+// journal that was moved aside would lose content it had committed.
+func inspectAdoptableJournal(f afero.File, disableSync bool) ([]Event, error) {
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("seek %s: %w", f.Name(), err)
+	}
+	sc := bufio.NewScanner(f)
+	sc.Split(scanLinesKeepingTerminator)
+	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	var (
+		events []Event
+		// committed is the offset just past the last newline, which is both the
+		// end of the last trusted record and where a fragment gets cut back to.
+		committed int64
+		terminate bool
+		truncate  int64 = -1
+		lineNo    int
+	)
+	for sc.Scan() {
+		raw := sc.Bytes()
+		lineNo++
+		line := trimLineTerminator(raw)
+		terminated := len(raw) > 0 && raw[len(raw)-1] == '\n'
+		if len(line) == 0 {
+			if terminated {
+				committed += int64(len(raw))
+			}
+			continue
+		}
+		var e Event
+		err := json.Unmarshal(line, &e)
+		switch {
+		case err == nil && terminated:
+			events = append(events, e)
+			committed += int64(len(raw))
+		case err == nil:
+			// The record reached the file but its terminator did not. Adding the
+			// newline is what commits it, exactly as tail recovery does.
+			events = append(events, e)
+			terminate = true
+		case !terminated && isIncompleteTrailingJSON(line, err):
+			truncate = committed
+		default:
+			return nil, fmt.Errorf("parse event line %d: %w", lineNo, err)
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return nil, fmt.Errorf("read %s: %w", f.Name(), err)
+	}
+	if truncate >= 0 {
+		if err := f.Truncate(truncate); err != nil {
+			return nil, fmt.Errorf("truncate trailing partial line: %w", err)
+		}
+	}
+	if _, err := f.Seek(0, io.SeekEnd); err != nil {
+		return nil, fmt.Errorf("seek end %s: %w", f.Name(), err)
+	}
+	if truncate >= 0 || terminate {
+		if terminate {
+			if _, err := f.Write([]byte{'\n'}); err != nil {
+				return nil, fmt.Errorf("terminate trailing event: %w", err)
+			}
+		}
+		if !disableSync {
+			if err := f.Sync(); err != nil {
+				return nil, fmt.Errorf("sync trailing recovery: %w", err)
+			}
+		}
+	}
+	return events, nil
+}
+
 // syncLocked fsyncs the underlying file, unless the store was opened with sync
 // disabled (the fuzz-only fast path). Production stores always sync.
 func (s *Store) syncLocked() error {
@@ -873,11 +1688,38 @@ func (s *Store) rollbackAppendLocked(startOffset int64) error {
 	// The file's length and modification time both moved in ways the cursor did
 	// not record; the next load re-reads from byte zero.
 	s.invalidateCursorLocked()
+	// invalidateCursorLocked moves the FOLD generation, which is right: a load
+	// cached past a rollback must re-read. The CONTENT generation is a different
+	// question, and the answer is that a rollback replaces nothing: it restores
+	// the committed prefix the reader was already shown at startOffset. So the
+	// baseline goes back to the pre-append length rather than forward, and no
+	// reader sees a new generation, a rebuilt fold, or a refused continuation
+	// for rows that never moved. The modification time is re-sampled after the
+	// truncation below, because the rollback itself moves it.
+	s.journalSize = startOffset
 	truncateErr := s.f.Truncate(startOffset)
 	_, seekErr := s.f.Seek(0, io.SeekEnd)
 	syncErr := error(nil)
 	if truncateErr == nil && seekErr == nil {
 		syncErr = s.syncLocked()
+	}
+	if info, err := s.fs.Stat(s.path); err == nil {
+		// The rollback truncated THIS store's handle. Recording the path's
+		// numbers as the restored baseline is only honest while the path still
+		// reaches that handle: a journal replaced during the rollback is a
+		// different file, and adopting its length and time leaves a baseline
+		// that describes content no reader will see — with the generation
+		// unmoved, so a fold built on the old bytes stays citable.
+		if handle, handleErr := s.f.Stat(); handleErr == nil && sameJournalFile(handle, info) {
+			s.journalSize, s.journalMod, s.sampled = info.Size(), info.ModTime(), true
+			s.named = info
+		} else {
+			s.sampled = false
+			s.named = nil
+		}
+	} else {
+		s.sampled = false
+		s.named = nil
 	}
 	if truncateErr != nil && seekErr != nil {
 		return fmt.Errorf("truncate to %d: %w; seek eof: %w", startOffset, truncateErr, seekErr)
@@ -956,17 +1798,6 @@ func (s *Store) foldJobsHitLocked() (map[string]*JobRecord, bool, error) {
 	return cloneFoldJobs(s.folds.jobs), true, nil
 }
 
-func (s *Store) foldOrderedHitLocked() ([]*JobRecord, bool, error) {
-	if !s.folds.orderedOK || s.folds.gen != s.foldGen {
-		return nil, false, nil
-	}
-	ok, err := s.foldCurrentLocked()
-	if err != nil || !ok {
-		return nil, false, err
-	}
-	return cloneFoldOrdered(s.folds.ordered), true, nil
-}
-
 func (s *Store) foldWatchesHitLocked() (map[string]*WatchRecord, bool, error) {
 	if !s.folds.watchesOK || s.folds.gen != s.foldGen {
 		return nil, false, nil
@@ -1001,13 +1832,6 @@ func (s *Store) noteFoldedJobsLocked(folded map[string]*JobRecord) map[string]*J
 	return cloneFoldJobs(folded)
 }
 
-func (s *Store) noteFoldedOrderedLocked(folded []*JobRecord) []*JobRecord {
-	s.folds.gen = s.foldGen
-	s.folds.ordered = cloneFoldOrdered(folded)
-	s.folds.orderedOK = true
-	return cloneFoldOrdered(folded)
-}
-
 func (s *Store) noteFoldedWatchesLocked(folded map[string]*WatchRecord) map[string]*WatchRecord {
 	s.folds.gen = s.foldGen
 	s.folds.watches = cloneFoldWatches(folded)
@@ -1035,17 +1859,6 @@ func cloneFoldJobs(in map[string]*JobRecord) map[string]*JobRecord {
 	out := make(map[string]*JobRecord, len(in))
 	for k, r := range in {
 		out[k] = r.Clone()
-	}
-	return out
-}
-
-func cloneFoldOrdered(in []*JobRecord) []*JobRecord {
-	if in == nil {
-		return nil
-	}
-	out := make([]*JobRecord, len(in))
-	for i, r := range in {
-		out[i] = r.Clone()
 	}
 	return out
 }

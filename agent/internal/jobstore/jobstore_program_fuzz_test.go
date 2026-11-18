@@ -149,9 +149,12 @@ func jcpStoreLifecycle(t *testing.T, root string, r *jcpReader) {
 		t.Fatalf("Status.IsTerminal contract regressed")
 	}
 
-	ordered, err := s.LoadOrdered()
-	if err != nil || len(ordered) != 1 || ordered[0].JobID != started.JobID {
-		t.Fatalf("LoadOrdered = %#v, %v", ordered, err)
+	reloaded, err := s.LoadEvents()
+	if err != nil {
+		t.Fatalf("LoadEvents: %v", err)
+	}
+	if ordered := FoldOrdered(reloaded); len(ordered) != 1 || ordered[0].JobID != started.JobID {
+		t.Fatalf("FoldOrdered(LoadEvents()) = %#v", ordered)
 	}
 	watches, err := s.LoadWatches()
 	if err != nil || watches["watch-primary"] == nil || watches["watch-primary"].Active {
@@ -185,7 +188,6 @@ func jcpStoreLifecycle(t *testing.T, root string, r *jcpReader) {
 		func() error { return s.Append(Event{}) },
 		func() error { return s.AppendBatch([]Event{{}}) },
 		func() error { _, err := s.Load(); return err },
-		func() error { _, err := s.LoadOrdered(); return err },
 		func() error { _, err := s.LoadWatches(); return err },
 		func() error { _, err := s.LoadWatchSends(); return err },
 		func() error { _, err := s.LoadEvents(); return err },
@@ -859,7 +861,6 @@ func jcpStoreErrorPaths(t *testing.T, root string, r *jcpReader) {
 		call  func(*Store) error
 	}{
 		{"Load", func(s *Store) error { _, err := s.Load(); return err }},
-		{"LoadOrdered", func(s *Store) error { _, err := s.LoadOrdered(); return err }},
 		{"LoadWatches", func(s *Store) error { _, err := s.LoadWatches(); return err }},
 		{"LoadWatchSends", func(s *Store) error { _, err := s.LoadWatchSends(); return err }},
 		{"readAll", func(s *Store) error { _, err := s.readAll(); return err }},

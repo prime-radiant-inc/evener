@@ -1017,34 +1017,42 @@ func TestProjectActivityJob_DescriptionFallback(t *testing.T) {
 	}
 }
 
-func TestMergeActivityRecords_NilAndEmpty(t *testing.T) {
+func TestActivityJobListLiveOverlayNilAndEmpty(t *testing.T) {
 	t.Parallel()
-	// Nil durable + nil live = empty.
-	got := mergeActivityRecords(nil, nil)
-	if len(got) != 0 {
-		t.Fatalf("got %d, want 0", len(got))
+	// Nil durable + nil live = still nil.
+	var durable *activityJobList
+	if got := durable.withLive(nil); got != nil {
+		t.Fatalf("nil list = %+v, want nil", got)
 	}
-	// Records with empty JobID are skipped.
-	durable := []*jobstore.JobRecord{{JobID: "", Status: jobstore.StatusRunning}}
-	live := map[string]*jobstore.JobRecord{"": {JobID: ""}}
-	got = mergeActivityRecords(durable, live)
-	if len(got) != 0 {
-		t.Fatalf("got %d, want 0 (empty IDs skipped)", len(got))
+	// A live record keyed by an empty job ID matches no durable row, and the
+	// durable list keeps its own record regardless.
+	base := newActivityJobList([]*jobstore.JobRecord{{JobID: "", Status: jobstore.StatusRunning}})
+	got := base.withLive(map[string]*jobstore.JobRecord{"": {JobID: ""}})
+	if ids := activityRecordIDs(slices.Collect(got.all())); !reflect.DeepEqual(ids, []string{""}) {
+		t.Fatalf("ids = %v, want the one durable row", ids)
 	}
 }
 
-func TestMergeActivityRecords_LiveOnlyInsertion(t *testing.T) {
+// TestActivityJobListLiveOverlayKeepsDurableRows pins that a live record with
+// no durable counterpart adds no row: the entry is not in the journal yet, so
+// no page may render it, and the folded order is the only order pages see.
+func TestActivityJobListLiveOverlayKeepsDurableRows(t *testing.T) {
 	t.Parallel()
-	durable := []*jobstore.JobRecord{
+	durable := newActivityJobList([]*jobstore.JobRecord{
 		{JobID: "job_a", Status: jobstore.StatusCompleted, StartedAt: time.Unix(2, 0)},
-	}
+	})
 	live := map[string]*jobstore.JobRecord{
 		"job_b": {JobID: "job_b", Status: jobstore.StatusRunning, StartedAt: time.Unix(1, 0)},
 		"job_c": {JobID: "job_c", Status: jobstore.StatusRunning, StartedAt: time.Unix(3, 0)},
 	}
-	got := mergeActivityRecords(durable, live)
-	if ids := activityRecordIDs(got); !reflect.DeepEqual(ids, []string{"job_b", "job_a", "job_c"}) {
-		t.Fatalf("ids = %v, want [job_b job_a job_c]", ids)
+	got := durable.withLive(live)
+	if ids := activityRecordIDs(slices.Collect(got.all())); !reflect.DeepEqual(ids, []string{"job_a"}) {
+		t.Fatalf("ids = %v, want [job_a]", ids)
+	}
+	// The overlay adds no row, so it moves no count either: the list still
+	// reports exactly the one durable record's class.
+	if counts := got.counts(""); counts.shell+counts.unsupported != 1 {
+		t.Fatalf("counted %d records, want the durable 1 (%+v)", counts.shell+counts.unsupported, counts)
 	}
 }
 

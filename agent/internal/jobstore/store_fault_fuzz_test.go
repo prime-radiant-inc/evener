@@ -16,7 +16,7 @@ import (
 //  1. no injected I/O error makes the store panic; and
 //  2. transient faults leave the log RECOVERABLE — after the program, reopening
 //     the persisted bytes on the same, now fault-free, filesystem must
-//     LoadOrdered cleanly. A failed append that left the tail torn beyond the
+//     Load cleanly. A failed append that left the tail torn beyond the
 //     store's own trailing-line recovery, or a rollback that corrupted state,
 //     would trip this.
 //
@@ -87,8 +87,8 @@ func FuzzStoreFaultTolerance(f *testing.F) {
 			t.Fatalf("log unrecoverable after transient faults: reopen: %v", err)
 		}
 		defer clean.Close() //nolint:errcheck
-		if _, err := clean.LoadOrdered(); err != nil {
-			t.Fatalf("log unrecoverable after transient faults: LoadOrdered: %v", err)
+		if _, err := clean.Load(); err != nil {
+			t.Fatalf("log unrecoverable after transient faults: Load: %v", err)
 		}
 	})
 }
