@@ -292,7 +292,47 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 		// No group claimed the prelude id: the header items are the turn.
 		turns = append([]appwire.Turn{*prelude}, turns...)
 	}
+	markSplitTurnRuns(turns)
 	return ItemTurnProjection{Turns: turns, NextEntry: entryOrdinal}, nil
+}
+
+// markSplitTurnRuns flags the runs of a turn whose items another turn
+// separates. An older file can hold one stamped id on two spans with a
+// delivery between them (a prelude write, the delivery, another prelude
+// write); the writer no longer produces that shape — a delivery ends the
+// prelude's span — but a file already on disk keeps it, and no reader can
+// join the spans: their items would sit at positions on both sides of the
+// delivery's, so a joined turn would emit decreasing positions, which item
+// paging rejects.
+//
+// The bounded index serves such a turn as fragments and says where each one
+// stops: its candidate's HasEarlierItems/HasLaterItems follow the item's
+// ordinal within the whole turn (transcriptindex window.go). This read
+// reports the same boundaries, so a client that receives both — live item
+// pages and a cold whole-turn read — is told the same thing about a turn
+// that continues past another one. Without the flags the two runs share an id
+// and nothing marks them as halves of one turn.
+func markSplitTurnRuns(turns []appwire.Turn) {
+	seen := make(map[string]int, len(turns))
+	for i := range turns {
+		seen[turns[i].ID]++
+	}
+	first := make(map[string]int, len(seen))
+	last := make(map[string]int, len(seen))
+	for i := range turns {
+		if _, ok := first[turns[i].ID]; !ok {
+			first[turns[i].ID] = i
+		}
+		last[turns[i].ID] = i
+	}
+	for i := range turns {
+		id := turns[i].ID
+		if seen[id] < 2 || len(turns[i].Items) == 0 {
+			continue
+		}
+		turns[i].HasEarlierItems = i > first[id]
+		turns[i].HasLaterItems = i < last[id]
+	}
 }
 
 // StampGroupedTurn applies a group's terminal stamps: failure
@@ -335,24 +375,32 @@ func MergesByCallID(item appwire.ThreadItem) bool {
 // upsert). Ordinals are assigned AFTER merging, across the whole logical
 // turn; items that do not merge keep arrival order.
 //
-// stamped scopes the merge to a call that is still awaiting its result, which
-// is how the bounded index settles an identity turn's calls: its per-entry
-// loop records the item a call opened and the entry that settled it, so a
-// provider reusing one call id in a later round opens a SECOND call, with its
-// own arguments and result (#1166 review). Without that scope the second
-// round's announcement merges into the settled first item and its arguments
+// stamped scopes the merge to the call one announcement opened, which is how
+// the bounded index settles an identity turn's calls: a call opens the item
+// its announcing assistant entry projected, and a result attaches to THAT
+// entry, so a provider reusing one call id in a later round opens a SECOND
+// call, with its own arguments and result (#1166 review). Without that scope
+// the second round's announcement merges into the first item and its arguments
 // overwrite the first round's, losing that call as a distinct record.
 //
+// A second ANNOUNCEMENT is therefore never a merge: it is a second call, even
+// when the first never got its result (a failed result write leaves the call
+// in-progress and its id free to be reused). A result still joins the
+// announcement it settles, and settles it.
+//
 // A legacy group keeps the merge it always had: it folds every later item of
-// a call id, because the legacy reader has no settlement record to consult.
+// a call id, because the legacy reader has no announcement to consult.
 func mergeGroupedItems(items []appwire.ThreadItem, stamped bool) []appwire.ThreadItem {
 	merged := make([]appwire.ThreadItem, 0, len(items))
 	callIndex := map[string]int{}
 	for _, item := range items {
 		if MergesByCallID(item) {
-			if at, ok := callIndex[item.CallID]; ok {
+			// An announcement opens a call; a result settles one. Only a
+			// legacy group may fold an announcement into an announcement.
+			announcement := item.Status == appwire.TurnStatusInProgress
+			if at, ok := callIndex[item.CallID]; ok && (!stamped || !announcement) {
 				merged[at] = MergeThreadItems(merged[at], item)
-				if stamped && item.Status != appwire.TurnStatusInProgress {
+				if stamped {
 					// The result settled the call, so a later item of this id
 					// announces a new one.
 					delete(callIndex, item.CallID)
@@ -361,7 +409,7 @@ func mergeGroupedItems(items []appwire.ThreadItem, stamped bool) []appwire.Threa
 			}
 			// A stray result whose announcement lies outside this group opens
 			// its own record too, so nothing is dropped.
-			if !stamped || item.Status == appwire.TurnStatusInProgress {
+			if !stamped || announcement {
 				callIndex[item.CallID] = len(merged)
 			}
 		}
