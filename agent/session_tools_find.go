@@ -894,7 +894,13 @@ const (
 // scan needs every row in a bucket, and passing it in keeps the search from
 // decoding the same bucket once per labelled row.
 func newProjectNameResolver(bucketMetas ...map[string][]schema.SessionMeta) *projectNameResolver {
-	r := &projectNameResolver{}
+	// The sibling-evidence map is allocated HERE, with the resolver, rather than
+	// lazily on the success path. It has two write sites — the symlink refusal and
+	// the completed scan — and a lazy allocation before only one of them left the
+	// other writing to a nil map, which panics rather than merely mislabelling.
+	// Allocating once at construction removes the ordering dependency instead of
+	// adding a second early return that a later edit can miss.
+	r := &projectNameResolver{siblingEvidence: make(map[string][]projectEvidence)}
 	if len(bucketMetas) > 0 {
 		r.bucketMetas = bucketMetas[0]
 	}
@@ -919,11 +925,20 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 	// repository encloses the state dir — a guess about a lane whose identity the
 	// state directory recorded. The walk is therefore confined to the lane root,
 	// where a live lane's own pointer still resolves.
-	if _, laneRoot, _, _, isLane := r.stateWorktreeOwner(wd, bucketDir); isLane {
-		if root := resolveMainRootWithin(wd, laneRoot); root != "" {
+	//
+	// The alias is resolved BEFORE that decision, because it is what chooses the
+	// boundary. A recorded working directory can be a symlink to a lane whose own
+	// directory survives; classified by the alias, the path is not a lane at all,
+	// so the walk would be unbounded, would climb out of the lane, and would name
+	// the repository enclosing the state directory before the verified parent was
+	// consulted. The same resolved form is what the bounded walk and the metadata
+	// fallback below both see.
+	lanePath := identifier.ResolveClean(wd)
+	if _, laneRoot, _, _, isLane := r.stateWorktreeOwner(lanePath, bucketDir); isLane {
+		if root := resolveMainRootWithin(lanePath, laneRoot); root != "" {
 			return filepath.Base(root)
 		}
-		name, _ := r.worktreePathFallback(wd, bucketDir, m.ParentSessionID)
+		name, _ := r.worktreePathFallback(lanePath, bucketDir, m.ParentSessionID)
 		return name
 	}
 
@@ -1358,9 +1373,6 @@ func (r *projectNameResolver) siblingEvidenceFor(bucketDir string) []projectEvid
 		}
 	}
 	if snapshot {
-		if r.siblingEvidence == nil {
-			r.siblingEvidence = make(map[string][]projectEvidence)
-		}
 		r.siblingEvidence[bucketDir] = evidence
 	}
 	return evidence
@@ -1416,6 +1428,19 @@ func (r *projectNameResolver) projectAt(recorded, bucketDir string) (checkout, p
 		}
 		return "", "", false
 	}
+	// Outside a recognized state lane, a Git ancestor only describes this path if
+	// the path is still there. A recorded checkout that has since been removed
+	// leaves nothing behind, and the walk then finds whichever repository happens
+	// to enclose the empty space — an affiliation the deleted directory never had.
+	// Absence of a path proves nothing about its project, so it is no evidence:
+	// not a root, and not a conflict that would veto a sibling's saved origin.
+	//
+	// A lane keeps its recorded project ID across deletion and is handled above,
+	// which is why this check is confined to the ordinary-directory branch.
+	exists, statErr := os.Stat(clean)
+	if statErr != nil || !exists.IsDir() {
+		return "", "", false
+	}
 	root, refused := resolveMainRootOutcome(clean)
 	if root != "" {
 		return root, identifier.ProjectFromCanonicalPath(identifier.ResolveClean(root)).ID, true
@@ -1430,13 +1455,11 @@ func (r *projectNameResolver) projectAt(recorded, bucketDir string) (checkout, p
 		// nothing either way, and the origin stays eligible.
 		return "", "", false
 	}
-	if exists, err := os.Stat(clean); err == nil && exists.IsDir() {
-		// No .git anywhere above it, but the directory is really there: it is its
-		// own project, and that project is what its canonical path names.
-		canonical := identifier.ResolveClean(clean)
-		return canonical, identifier.ProjectFromCanonicalPath(canonical).ID, true
-	}
-	return "", "", false
+	// No .git anywhere above it, but the directory is really there — the stat above
+	// established that: it is its own project, and that project is what its
+	// canonical path names.
+	canonical := identifier.ResolveClean(clean)
+	return canonical, identifier.ProjectFromCanonicalPath(canonical).ID, true
 }
 
 // resolveMainRootOutcome is the one main-root lookup. Every caller goes through
@@ -1639,8 +1662,12 @@ func (r *projectNameResolver) resolveMainRoot(dir string) string {
 // A live lane still resolves, because its own .git pointer names the main
 // checkout and that pointer is read here.
 func resolveMainRootWithin(dir, root string) string {
-	clean := filepath.Clean(dir)
-	root = filepath.Clean(root)
+	// Resolved here as well as at the callers, because a boundary computed from an
+	// unresolved path describes the link rather than the lane: the walk would
+	// compare an alias against a lane root it does not lexically contain, climb
+	// past the boundary, and leave the lane's identity to whatever encloses it.
+	clean := identifier.ResolveClean(dir)
+	root = identifier.ResolveClean(root)
 	for {
 		if resolved, found := mainRootAt(clean); found {
 			return resolved

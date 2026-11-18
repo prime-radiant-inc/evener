@@ -3086,3 +3086,193 @@ func TestFind_ProjectName_SiblingScanSkippedWhenRowEvidenceWins(t *testing.T) {
 		t.Fatalf("lane with no row-specific evidence did not build the bucket's sibling evidence: the scan was suppressed for a row that needed it")
 	}
 }
+
+// TestFind_ProjectName_SymlinkedSessionsDoesNotPanicOnFirstSiblingLookup drives
+// the interleaving the review named: candidate discovery sees a real sessions/
+// directory, the directory is replaced with a symlink, and the first sibling
+// lookup then rejects it. The rejection must skip sibling inference, not write
+// through an unallocated map — a guard that panics is worse than the layout it
+// guards.
+//
+// The map is populated at construction precisely so this ordering cannot matter,
+// so the test asserts both halves: the lookup returns no evidence and does not
+// panic, and a bucket that was never refused still gets its evidence.
+func TestFind_ProjectName_SymlinkedSessionsDoesNotPanicOnFirstSiblingLookup(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	repo := newNamedCheckout(t, "replaced-sessions-repo")
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repo))
+	bucket, err := RuntimeDirForProjectWithStateHome(project, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	sessionsDir := filepath.Join(bucket, "sessions")
+	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	sibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	sibling.EnvInfo.GitOriginURL = "git@github.com:owner/replaced-sessions-repo.git"
+	if err := schema.SaveSessionMeta(bucket, sibling); err != nil {
+		t.Fatal(err)
+	}
+
+	// Discovery's snapshot is taken while sessions/ is a real directory. This is
+	// the snapshot a search would hold when the directory is swapped underneath it.
+	metas, err := schema.ListSessionMetas(bucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Swap the real directory for a symlink pointing at another directory that
+	// does hold metadata, which is the layout the guard exists to reject.
+	elsewhere := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(elsewhere, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir elsewhere: %v", err)
+	}
+	if err := os.RemoveAll(sessionsDir); err != nil {
+		t.Fatalf("remove sessions: %v", err)
+	}
+	if err := os.Symlink(filepath.Join(elsewhere, "sessions"), sessionsDir); err != nil {
+		t.Fatalf("symlink sessions: %v", err)
+	}
+
+	resolver := newProjectNameResolver(map[string][]schema.SessionMeta{bucket: metas})
+	// A lane with no row-specific evidence reaches the sibling lookup, which is
+	// the first thing to notice the swap. It must return empty, not panic.
+	lane := schema.SessionMeta{}
+	lane.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", project.ID, "dlg_swapped")
+	if got := resolver.projectName(lane, bucket); got != "" {
+		t.Fatalf("projectName(lane whose bucket sessions/ became a symlink) = %q, want empty (inference skipped, not served from the linked directory)", got)
+	}
+
+	// The refusal is memoized per bucket and must not leak to a healthy bucket.
+	healthyRepo := newNamedCheckout(t, "healthy-repo")
+	healthyProject := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(healthyRepo))
+	healthy, err := RuntimeDirForProjectWithStateHome(healthyProject, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if healthy == bucket {
+		t.Fatalf("fixture buckets collided at %q", bucket)
+	}
+	if err := os.MkdirAll(filepath.Join(healthy, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir healthy sessions: %v", err)
+	}
+	healthySibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	healthySibling.EnvInfo.GitOriginURL = "git@github.com:owner/healthy-repo.git"
+	if err := schema.SaveSessionMeta(healthy, healthySibling); err != nil {
+		t.Fatal(err)
+	}
+	healthyLane := schema.SessionMeta{}
+	healthyLane.EnvInfo.WorkingDir = filepath.Join(healthy, "worktrees", healthyProject.ID, "dlg_healthy")
+	if got, want := resolver.projectName(healthyLane, healthy), "healthy-repo"; got != want {
+		t.Fatalf("projectName(lane in an untouched bucket after another bucket was refused) = %q, want %q", got, want)
+	}
+}
+
+// TestFind_ProjectName_SymlinkedLaneKeepsItsBoundedWalk covers a recorded
+// working directory that is a symlink to a state lane whose own directory
+// survives but whose .git entry is gone. The lane check is what chooses the walk
+// boundary, so classifying the alias rather than what it points to means the path
+// is not seen as a lane at all: the walk is unbounded, climbs out of the lane,
+// and names the repository enclosing the state directory before the verified
+// parent is consulted.
+//
+// The state directory lives inside another checkout's .worktrees precisely so the
+// unbounded walk has a wrong answer available; with the walk correctly bounded
+// the parent's project is what answers.
+func TestFind_ProjectName_SymlinkedLaneKeepsItsBoundedWalk(t *testing.T) {
+	checkoutA := newNamedCheckout(t, "repo-a")
+	stateHome := filepath.Join(checkoutA, ".worktrees", "state")
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	repoB := newNamedCheckout(t, "repo-b")
+	projectB := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repoB))
+	bucket := filepath.Join(stateHome, "evener", "projects", projectB.ID)
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	// The parent names project B, so it is the evidence that must answer.
+	parent := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	parent.EnvInfo.GitOriginURL = "git@github.com:owner/repo-b.git"
+	parent.EnvInfo.WorkingDir = repoB
+	if err := schema.SaveSessionMeta(bucket, parent); err != nil {
+		t.Fatal(err)
+	}
+
+	// The lane's own directory survives, with no .git entry, so its own pointer
+	// cannot resolve it. The row records the lane through a symlink.
+	laneDir := filepath.Join(bucket, "worktrees", projectB.ID, "dlg_symlinked")
+	if err := os.MkdirAll(laneDir, 0o755); err != nil {
+		t.Fatalf("mkdir lane: %v", err)
+	}
+	aliasParent := t.TempDir()
+	alias := filepath.Join(aliasParent, "lane-alias")
+	if err := os.Symlink(laneDir, alias); err != nil {
+		t.Fatalf("symlink lane alias: %v", err)
+	}
+
+	row := schema.SessionMeta{ParentSessionID: parent.ID}
+	row.EnvInfo.WorkingDir = alias
+	if got, want := projectName(row, bucket), "repo-b"; got != want {
+		t.Fatalf("projectName(row recording a symlink to a deleted-checkout lane) = %q, want its parent's %q (not the repository enclosing the state dir)", got, want)
+	}
+}
+
+// TestFind_ProjectName_MissingSiblingCheckoutProvesNothing covers a sibling whose
+// checkout was nested inside a different repository and has since been removed.
+// Walking from the missing path finds the enclosing repository's .git, so the
+// deleted directory inherits an identity it never had — and a deleted managed lane
+// then rejects that sibling's saved origin as conflicting evidence, losing the
+// only label it had.
+//
+// Absence of a path proves nothing about its project. The saved origin must stay
+// eligible, and the project ID recorded in the lane's own path must not be
+// weakened.
+func TestFind_ProjectName_MissingSiblingCheckoutProvesNothing(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	// The enclosing repository, whose .git is what an unbounded walk from the
+	// missing path would find.
+	enclosing := newNamedCheckout(t, "enclosing-repo")
+
+	// The lane's repository, and a bucket for it.
+	laneRepo := newNamedCheckout(t, "lane-repo")
+	laneProject := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(laneRepo))
+	bucket, err := RuntimeDirForProjectWithStateHome(laneProject, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	// The sibling's checkout lived inside the enclosing repository and is now
+	// gone. Its saved origin is the only surviving record of the lane's project.
+	goneCheckout := filepath.Join(enclosing, "vendor", "lane-repo-copy")
+	sibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	sibling.EnvInfo.GitOriginURL = "git@github.com:owner/lane-repo.git"
+	sibling.EnvInfo.WorkingDir = goneCheckout
+	if err := schema.SaveSessionMeta(bucket, sibling); err != nil {
+		t.Fatal(err)
+	}
+
+	// The row is a deleted managed lane for the lane's project, with no owner and
+	// no parent, so the sibling's saved origin is the only thing that can name it.
+	lane := schema.SessionMeta{}
+	lane.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", laneProject.ID, "dlg_missing_sibling")
+	if got, want := projectName(lane, bucket), "lane-repo"; got != want {
+		t.Fatalf("projectName(lane whose only sibling's checkout was removed from inside another repo) = %q, want the sibling's saved origin %q", got, want)
+	}
+
+	// The project ID recorded in a DELETED managed lane is still its own answer,
+	// which is the property the existence check must not touch.
+	deletedLane := schema.SessionMeta{}
+	deletedLane.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", laneProject.ID, "dlg_records_its_project")
+	if got, want := projectName(deletedLane, bucket), "lane-repo"; got != want {
+		t.Fatalf("projectName(deleted managed lane recording its project) = %q, want %q", got, want)
+	}
+}
