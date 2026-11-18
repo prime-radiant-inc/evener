@@ -432,7 +432,16 @@ func (c *delegateTreeController) completeDeliveryAckLocked(token delegateDeliver
 			DeliveryID: token.deliveryID,
 		},
 	})
-	if _, err := c.appendLocked(events...); err != nil {
+	// The wake this acknowledgment publishes is newer evidence than a settled
+	// user-stop quiet, and the shared funnel journals that release in the same
+	// batch. Only a receipt that notes a wake releases one, so the release is
+	// gated on the same condition the note below is. A cold receiver takes this
+	// same path, so no delivery branch can publish a wake that omits it.
+	wakeOwner := ""
+	if !receipt.inline {
+		wakeOwner = receipt.ownerID
+	}
+	if err := c.appendAttentionWakeLocked(wakeOwner, events...); err != nil {
 		receipt.retryable = true
 		c.evidenceVersion++
 		// A stop drain parked on this admission must wake to retry the

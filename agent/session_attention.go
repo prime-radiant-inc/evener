@@ -1144,11 +1144,6 @@ func (s *Session) releaseAutomaticDriveHolds(site delegateHoldReleaseSite) {
 	s.mu.Lock()
 	hook := s.cfg.testOnly.delegateAttentionHoldReleased
 	s.mu.Unlock()
-	// The record lands before the holds end, and it does not depend on reading
-	// them: a quiet standing on a row some earlier pass already resolved has
-	// nothing to enumerate, and an event arriving after the stop supersedes it
-	// just the same.
-	s.recordAttentionHoldRelease()
 	var released []string
 	s.attentionMu.Lock()
 	if len(s.attentionAutomaticDriveHolds) != 0 {
@@ -1163,44 +1158,6 @@ func (s *Session) releaseAutomaticDriveHolds(site delegateHoldReleaseSite) {
 	if hook != nil && released != nil {
 		sort.Strings(released)
 		hook(site, released)
-	}
-}
-
-// recordAttentionHoldRelease journals that an event newer than the generation
-// this session's delegate rests at superseded its user-stop quiet. Only a
-// delegate resting cancelled by an attention stop can owe that quiet, and only
-// the first release at a generation records it, so a fleet's ordinary arms and
-// deliveries append nothing. It is best-effort like the release's other
-// durable bookkeeping: a runtime with no controller or no owning delegate has
-// no quiet a restore could rebuild, and a journal that refuses the record only
-// restores the pre-record behaviour.
-func (s *Session) recordAttentionHoldRelease() {
-	if s == nil || s.delegateController == nil || s.owningDelegateID == "" {
-		return
-	}
-	controller := s.delegateController
-	// The generation is read and the record appended under one controller hold,
-	// so the record names exactly the generation the aggregate rests at when
-	// the release is written.
-	controller.mu.Lock()
-	aggregate := controller.durable[s.owningDelegateID]
-	if aggregate == nil || aggregate.CurrentRunOpen || aggregate.Generation == 0 ||
-		aggregate.Trigger != delegatestore.TriggerAttention ||
-		aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeCancelled ||
-		aggregate.AttentionHoldReleasedGeneration >= aggregate.Generation {
-		controller.mu.Unlock()
-		return
-	}
-	_, err := controller.appendLocked(delegatestore.Event{
-		Kind:       delegatestore.EventDelegateAttentionHoldReleased,
-		DelegateID: s.owningDelegateID,
-		AttentionHoldReleased: &delegatestore.AttentionHoldReleased{
-			Generation: aggregate.Generation,
-		},
-	})
-	controller.mu.Unlock()
-	if err != nil {
-		s.emit(warningDataFromError("record delegate attention hold release", err))
 	}
 }
 

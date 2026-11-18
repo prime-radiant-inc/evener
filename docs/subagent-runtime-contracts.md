@@ -39,6 +39,21 @@ reservation and generation across a failed delegate-journal commit; retry does
 not create a second marker or generation. Parents continue to drive the child's
 attention, and fresh owner work remains admissible after the attention settles.
 
+A user's stop quiets a delegate's pending attention rows: they stay in the
+transcript but no automatic drive presents them, which is what keeps a stopped
+report from restarting the work the stop ended. The quiet is runtime state and
+does not survive an idle reclaim, so the delegate journal owns its ordering
+(`delegatestore.Aggregate.AttentionHoldReleasedGeneration`, written by
+`delegate_attention_hold_released`). An admitted wake — a successful arm, or a
+committed child delivery, resident or cold — is newer evidence than a settled
+stop, and journals the generation it supersedes in the same batch that
+publishes the wake (`delegateTreeController.appendAttentionWakeLocked`). A
+reopened row therefore stays quiet only while no release at or past its
+generation is journaled: the release makes it eligible again after an idle
+reclaim, and a stop that settles after a wake settles a later generation, whose
+quiet stands. The field is monotonic, so a replayed release cannot lower the
+floor and revive a quiet a newer release already ended.
+
 ## Delegate report preservation
 
 A successfully reported generation's terminal packet `message` is the accepted

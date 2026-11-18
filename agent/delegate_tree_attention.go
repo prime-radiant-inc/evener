@@ -302,10 +302,12 @@ func (c *delegateTreeController) tryOpenDelegateAttention(delegateID, attentionI
 	if err != nil {
 		return false, nil, delegateUpdatePlan{}, false, err
 	}
+	var openEvents []delegatestore.Event
 	if openEvent != nil {
-		if _, err := c.appendLocked(*openEvent); err != nil {
-			return false, nil, delegateUpdatePlan{}, false, err
-		}
+		openEvents = append(openEvents, *openEvent)
+	}
+	if err := c.appendAttentionWakeLocked(delegateID, openEvents...); err != nil {
+		return false, nil, delegateUpdatePlan{}, false, err
 	}
 	added := c.noteDelegateAttentionLocked(delegateID, attentionID)
 	var plan delegateUpdatePlan
@@ -460,6 +462,59 @@ func (c *delegateTreeController) noteDelegateAttentionLocked(delegateID, attenti
 	// another round of attempts.
 	c.resetDelegateAttentionAttemptsLocked(delegateID)
 	return true
+}
+
+// appendAttentionWakeLocked journals the events that publish delegateID's new
+// wake, together with the release that orders that wake against a settled
+// user-stop quiet.
+//
+// This is the one place a wake is published to the journal: the resident arm
+// (tryOpenDelegateAttention) and the committed delivery (completeDeliveryAck)
+// both reach it, so a cold arm or a stop's delivery retry inherits the release
+// instead of being a path that can omit it. The release rides the wake's own
+// batch, so an append that fails refuses the wake with it: a rejected arm can
+// never release a quiet it did not supersede.
+func (c *delegateTreeController) appendAttentionWakeLocked(delegateID string, events ...delegatestore.Event) error {
+	if release, owed := c.attentionHoldReleaseEventLocked(delegateID); owed {
+		events = append(events, release)
+	}
+	if len(events) == 0 {
+		return nil
+	}
+	_, err := c.appendLocked(events...)
+	return err
+}
+
+// attentionHoldReleaseEventLocked is the release owed when a wake is admitted
+// for delegateID. A wake is newer evidence than the quiet a settled user-stop
+// generation left, so that generation's quiet must not be rebuilt by a cold
+// restore. The generation is the one the aggregate rests at as the wake is
+// admitted, never one sampled later: a stop that settles after the wake settles
+// a later generation, and its quiet must stand.
+//
+// Only a delegate resting cancelled by an attention stop owes a release, and
+// only the first wake at a generation records one, so a fleet's ordinary arms
+// and deliveries append nothing. A wake admitted during an open run is not
+// newer than that run's own settle, so it records nothing either.
+func (c *delegateTreeController) attentionHoldReleaseEventLocked(delegateID string) (delegatestore.Event, bool) {
+	// A controller with no journal has no cold restore to order for.
+	if c.store == nil || delegateID == "" {
+		return delegatestore.Event{}, false
+	}
+	aggregate := c.durable[delegateID]
+	if aggregate == nil || aggregate.CurrentRunOpen || aggregate.Generation == 0 ||
+		aggregate.Trigger != delegatestore.TriggerAttention ||
+		aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeCancelled ||
+		aggregate.AttentionHoldReleasedGeneration >= aggregate.Generation {
+		return delegatestore.Event{}, false
+	}
+	return delegatestore.Event{
+		Kind:       delegatestore.EventDelegateAttentionHoldReleased,
+		DelegateID: delegateID,
+		AttentionHoldReleased: &delegatestore.AttentionHoldReleased{
+			Generation: aggregate.Generation,
+		},
+	}, true
 }
 
 func (c *delegateTreeController) forgetDelegateAttentionLocked(delegateID, attentionID string) {

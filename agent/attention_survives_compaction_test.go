@@ -598,6 +598,28 @@ func deriveHeldFixtureWithJournal(t *testing.T, outcome delegatestore.OutcomeSta
 	// derivation reads. The finish's terminal delivery is acknowledged in the
 	// same journal so no teardown waits on a delivery nothing will present.
 	journalDeriveHeldStop(t, controller, outcome, reason)
+	// The journaled finish settles the run, and production releases its start
+	// record on the same path. Releasing it here keeps the fixture equal to a
+	// settled generation: an accepted record left in the map is a run the
+	// controller still treats as starting, and any later attention open would
+	// wait on a done channel nothing will ever close.
+	controller.mu.Lock()
+	var settling []*delegateStartRecord
+	for _, record := range controller.reservations {
+		if record != nil && record.delegateID == "dlg_hold" && record.trigger == delegatestore.TriggerAttention {
+			settling = append(settling, record)
+		}
+	}
+	var settles []context.CancelFunc
+	for _, record := range settling {
+		settles = append(settles, controller.releaseReservationLocked(record))
+	}
+	controller.mu.Unlock()
+	for _, settle := range settles {
+		if settle != nil {
+			settle()
+		}
+	}
 	reopenedID := delegateAttentionReopenID(sourceID, 1)
 	if _, err := sess.appendDelegateNotificationDurably(reopenedID, acceptedTriggerText); err != nil {
 		t.Fatalf("append the reopened row: %v", err)
@@ -774,9 +796,19 @@ func TestDeriveHeldDelegateAttentionFromOutcome(t *testing.T) {
 		// The stop's own quiet, written through the production setter the settle
 		// tail writes with.
 		sess.holdDelegateAttentionFromAutomaticDrive(reopenedID)
-		// The newer event's release, through the production path the arm and the
-		// committed delivery both call: the arm that presents a fresh row ends
-		// the hold before its wake.
+		// The newer event: a fresh row is appended and admitted to the
+		// controller. openDelegateAttention is the primitive the resident arm and
+		// the cold drive both reach, and it journals the release for the
+		// generation the wake supersedes in the same batch that publishes the
+		// wake. Driving it here rather than through the Session's arm keeps the
+		// fixture off a real turn while still exercising the production path.
+		const freshID = "delegate:dlg_worker/delivery/2"
+		if _, err := sess.appendDelegateNotificationDurably(freshID, acceptedTriggerText); err != nil {
+			t.Fatalf("append the fresh row: %v", err)
+		}
+		if _, err := sess.delegateController.openDelegateAttention("dlg_hold", freshID); err != nil {
+			t.Fatalf("admit the fresh wake: %v", err)
+		}
 		sess.releaseAutomaticDriveHolds(delegateHoldReleaseArm)
 		sess.attentionMu.Lock()
 		heldBefore := sess.delegateAttentionHeldFromAutomaticDriveLocked(reopenedID)
@@ -849,6 +881,21 @@ func coldRestoredDeriveSession(t *testing.T, released *Session, journalPath stri
 	}
 	t.Cleanup(func() { _ = store.Close() })
 	restored := newSession(t, withDir(stateDir), withConfig(SessionConfig{StateDir: stateDir}))
+	// newSession opened a journal for the identity it minted, and this fixture
+	// reads the released session's journal instead. Close that one now and
+	// detach its ownership: leaving the field to be overwritten would strand an
+	// open store no cleanup owns, and a leaked store is a fixture defect of the
+	// same kind as a test that cannot fail.
+	restored.mu.Lock()
+	openedController := restored.delegateController
+	restored.delegateController = nil
+	restored.ownsDelegateController = false
+	restored.mu.Unlock()
+	if openedController != nil && openedController.store != nil {
+		if err := openedController.store.Close(); err != nil {
+			t.Fatalf("close the fixture's unused journal: %v", err)
+		}
+	}
 	// The released session wrote its transcript under its own session id; the
 	// restored one reads that file rather than creating an empty transcript of
 	// its own, so the fold sees the rows the stop left.
