@@ -318,19 +318,19 @@ interface WitnessPosition {
   top: number;
 }
 
-function recordFor(
-  triggerEl: HTMLElement,
-  scroller: Element,
-  ownerWindow: Window,
-  previous?: ScrollerRecord,
-): ScrollerRecord {
-  // A witness must be the SAME element in both looks or its two positions
-  // cannot be compared at all. Reusing the previous set while those nodes are
-  // still in the scroller is both cheaper and the only way the difference means
-  // anything; a fresh set is taken only when none of the old ones survives.
-  const kept = (previous?.witnesses ?? []).filter((w) => w.node.isConnected && scroller.contains(w.node));
-  const witnessNodes = kept.length > 0 ? kept.map((w) => w.node) : witnessesIn(scroller, triggerEl, ownerWindow);
-  const witnesses: WitnessPosition[] = witnessNodes.map((node) => ({
+function recordFor(triggerEl: HTMLElement, scroller: Element, ownerWindow: Window): ScrollerRecord {
+  // The set is taken fresh on EVERY look, including the rows that have just
+  // become visible. A set of survivors only goes stale in a way that defeats
+  // its purpose: a live list replaces rows as fast as it reorders them, so
+  // after a few updates every recorded element can be one the browser no
+  // longer looks at, and the row it IS holding has never been in the set at
+  // all. The next adjustment then has no element that moved with it, and the
+  // menu closes on an update nobody caused.
+  //
+  // Comparing two looks is still safe, because the positions compared are the
+  // ones the EARLIER record captured: an element is only used when it was
+  // recorded then and is still connected now.
+  const witnesses: WitnessPosition[] = witnessesIn(scroller, triggerEl, ownerWindow).map((node) => ({
     node,
     top: contentTopOf(node as HTMLElement, scroller),
   }));
@@ -365,7 +365,7 @@ function refreshScrollerBaselines(
     if (!isScrollContainer(node, ownerWindow)) continue;
     const recorded = records.get(node);
     if (recorded !== undefined && recorded.scrollTop !== node.scrollTop) continue;
-    records.set(node, recordFor(triggerEl, node, ownerWindow, recorded));
+    records.set(node, recordFor(triggerEl, node, ownerWindow));
   }
 }
 
@@ -402,7 +402,7 @@ function classifyScrollerScroll(
   const now = scroller.scrollTop;
   const previous = records.get(scroller);
   const contentTop = contentTopOf(triggerEl, scroller);
-  records.set(scroller, recordFor(triggerEl, scroller, scroller.ownerDocument.defaultView ?? window, previous));
+  records.set(scroller, recordFor(triggerEl, scroller, scroller.ownerDocument.defaultView ?? window));
   if (previous === undefined) return "scrolled";
   const maximum = scroller.scrollHeight - scroller.clientHeight;
   // The browser may land a correction a fraction short of the endpoint the
@@ -674,7 +674,16 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         // position recorded here is theirs. Reading that offset as layout
         // clipping is what jumps them back to the top of the list. When nothing
         // else about the row changed there is nothing to compare at all.
-        if (now.scrolledTo !== before.scrolledTo && now.top === before.top) return;
+        //
+        // Nothing else means the row's own box and the scrollport too. A label
+        // that wraps holds the row's TOP still - the offset moved under it and
+        // the row grew downward - and returning here on the top alone would
+        // both skip the reveal and save the clipped geometry as the baseline,
+        // so the next pass would have no earlier unclipped frame left to notice
+        // it against.
+        const rowUnchanged =
+          now.top === before.top && now.height === before.height && now.portHeight === before.portHeight;
+        if (now.scrolledTo !== before.scrolledTo && rowUnchanged) return;
         // The offset moved AND the row moved in the content by a DIFFERENT
         // amount, so the two did not travel together: part of the picture is
         // the reader's own scroll, undelivered when the swipe and the update

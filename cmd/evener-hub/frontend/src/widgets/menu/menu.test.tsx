@@ -699,6 +699,112 @@ test("a live row changing bands leaves the menu open on its trigger", async () =
   }
 });
 
+// A rail does not stand still: rows arrive and leave on every update, so the
+// row the browser anchored on a moment ago is often gone by the next one. A
+// witness set carried over from the survivors is, after a few updates, a set of
+// rows the browser no longer looks at - and the row it is holding now has never
+// been recorded, because a set built only from what survived never adds
+// anything. The correction then has no element that moved with it, and the menu
+// closes on an update nobody caused.
+//
+// The surviving row is what makes this discriminating: with nothing left, a
+// fresh set is taken anyway and the defect hides. Here the band's second row
+// stays, so a survivor-only set stays non-empty - and stale.
+test("a live update that replaces the anchored row still leaves the menu open", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  let triggerTop = 300;
+  // The row the browser holds still sits at 120 on screen. It is replaced by a
+  // DIFFERENT element after the first update, so only a set retaken then can
+  // name it. The row below survives both updates but CANNOT stand in for it:
+  // a second session arrives between the two, so the survivor slides DOWN the
+  // screen while the offset comes down - its place in the content moved the
+  // opposite way from the offset, which is what tells the classifier it is not
+  // the row being held.
+  const anchorTop = 120;
+  let survivorTop = 160;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.getAttribute("data-testid") === "anchor-row") return box(100, anchorTop, 200, 40);
+    if (this.getAttribute("data-testid") === "survivor-row") return box(100, survivorTop, 200, 40);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  class FiringResizeObserver {
+    static callback: ResizeObserverCallback | null = null;
+    constructor(callback: ResizeObserverCallback) {
+      FiringResizeObserver.callback = callback;
+    }
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  vi.stubGlobal("ResizeObserver", FiringResizeObserver);
+  const { flush } = captureFrames();
+  function Rail({ anchorLabel }: { anchorLabel: string }) {
+    return (
+      <div data-testid="owning-scroller" style={{ overflowY: "auto" }}>
+        <div data-testid="live-band">
+          {/* keyed by the label so a new session is a DIFFERENT element: React
+              would otherwise reuse the node and only change its text, which is
+              not the replacement this fixture is about. */}
+          <div data-testid="anchor-row" key={anchorLabel}>
+            {anchorLabel}
+          </div>
+          <div data-testid="survivor-row">Steady live session</div>
+        </div>
+        <Menu trigger="Actions" items={items()} />
+      </div>
+    );
+  }
+  try {
+    const view = render(<Rail anchorLabel="First live session" />);
+    const scroller = screen.getByTestId("owning-scroller");
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 600 });
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 200 });
+    scroller.scrollTop = 340;
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu")).toBeTruthy();
+
+    // First update: the row the browser was holding ends and a DIFFERENT row
+    // arrives in the same slot. Nothing changes height, so nothing scrolls and
+    // the trigger does not move. The pane reports the reflow, and the placement
+    // pass is where a settled baseline is recorded - the pass that has to take
+    // a fresh set, because the row now in that slot has never been in one.
+    view.rerender(<Rail anchorLabel="Second live session" />);
+    act(() => {
+      FiringResizeObserver.callback?.([], {} as ResizeObserver);
+    });
+    flush();
+    expect(screen.getByRole("menu")).toBeTruthy();
+
+    // Second update: a session changes bands across the row the browser is
+    // holding NOW - the replacement - and corrects the offset by 24 to hold it
+    // still. The trigger's place in the content does not change, and the
+    // surviving row does not move either, so the replacement is the only
+    // element that explains those 24. A set carried over from the survivors
+    // reads this as a reader's scroll and closes the menu.
+    scroller.scrollTop = 316;
+    triggerTop = 324;
+    // The browser holds the anchor exactly where it is on screen (120), which
+    // is its content position moving by the 24 the offset gave back. A session
+    // arriving between the two rows pushes the survivor DOWN to 200, so its
+    // content position rises by 16 while the offset falls by 24.
+    survivorTop = 200;
+    fireEvent.scroll(scroller);
+    flush();
+
+    expect(screen.getByRole("menu")).toBeTruthy();
+    expect(screen.getByRole("menu").style.top).toBe("356px"); // 324 + 28 + TRIGGER_GAP
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
 // The mirror of the reading above, and the reason it cannot be one-directional:
 // a rail loses rows as well as gaining them. A session ends, its Live row goes
 // above the visible area, and the browser lowers the offset by the height that
@@ -2938,6 +3044,79 @@ test("a focused row taller than the scrollport keeps its start in view", async (
 // takes their own scroll back out of the comparison, which is what keeps the
 // reveal answering "did LAYOUT hide this row" rather than "is this row on
 // screen".
+// The reader's swipe and a reflow can land in the same undelivered window, and
+// the two leave different traces. A swipe moves the offset; a reflow moves the
+// row's BOX. A guard that asks only "did the top move" returns whenever the two
+// coincide - and, worse, saves that frame as the baseline, so no later pass has
+// an intact frame to compare against and the row stays clipped while Enter
+// still invokes it.
+test("a scrollport that shrinks while the reader swipes is still judged", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 400 });
+  // The popup's own height: a capped SessionMenu whose cap tightens as the
+  // keyboard inset grows. Its rows are untouched.
+  let portHeight = 200;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, 100, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName !== "LI" || !this.parentElement) return 0;
+    return Array.prototype.indexOf.call(this.parentElement.children, this) * 44;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "UL") return portHeight;
+    return this.tagName === "LI" ? 44 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "UL" ? 160 : 0;
+  });
+  const { flush } = captureFrames();
+  const five: MenuItem[] = [
+    { id: "overview", label: "Overview", onSelect: vi.fn() },
+    { id: "archive", label: "Archive", onSelect: vi.fn() },
+    { id: "rename", label: "Rename", onSelect: vi.fn() },
+    { id: "delete", label: "Delete", onSelect: vi.fn() },
+    { id: "pin", label: "Pin", onSelect: vi.fn() },
+  ];
+  try {
+    render(<Menu trigger="Actions" items={five} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    const overview = screen.getByRole("menuitem", { name: "Overview" });
+    overview.focus();
+    const popup = screen.getByRole("menu");
+    expect(document.activeElement).toBe(overview);
+
+    // Overview spans 0..44 of the content and the popup shows 200 of it, so all
+    // 44 pixels of the row are on screen at offset 0.
+    expect(popup.scrollTop).toBe(0);
+    // In one undelivered frame the reader swipes 5px down AND the cap tightens
+    // from 200 to 30. The row's top is exactly where it was - content position
+    // 0, the reader's swipe moved the offset under it - so a guard that watches
+    // only the top treats this as a purely reader's scroll. Judged at the
+    // reader's own new offset it is not: the row ends at 44 and the scrollport
+    // now stops at 35, so 9px of the label - the bottom of the action Enter
+    // invokes - went out of sight when the cap tightened.
+    popup.scrollTop = 5;
+    portHeight = 30;
+    flush();
+    fireEvent(window, new Event("resize"));
+    flush();
+
+    // Revealed to the row's own top, because 44px of row cannot fit in a 30px
+    // scrollport and the beginning is what the reader reads first. A guard that
+    // returned on the unchanged top also saved this clipped frame as the
+    // baseline, so no later pass could have recovered it.
+    expect(popup.scrollTop).toBe(0);
+    expect(document.activeElement).toBe(overview);
+  } finally {
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
 test("a swipe the popup has not reported yet is not undone by rows arriving above", async () => {
   const user = userEvent.setup();
   const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
