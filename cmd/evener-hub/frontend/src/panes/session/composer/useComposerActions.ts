@@ -289,7 +289,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     // A restored image's exclusion facts are read from the same durable record
     // and the same revision its bytes came from - so both arrive in one call
     // below, and the decoder never consults a different row for them.
-    const restore = (excluded: readonly RecoveredExcludedImage[], persistedRevision: string | undefined) => {
+    const restore = (excluded: readonly RecoveredExcludedImage[]) => {
       const recovered = recoveryComposerDraft(chosen, excluded);
       const visible = materializeSelectionReferences({ ...recovered, skillNames: restoredSkillNames(recovered) });
       Object.assign(recovered, visible);
@@ -308,16 +308,30 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
       // which of those still carry bytes. Skipping it is what let a row's image
       // be dropped from the request that consumed the row.
       source.adoptRecoveredImageFacts(recovered, chosen.clientMutationId);
-      // Only the snapshot this restore incorporated. The persisted draft is
-      // SHARED: another pane on the same session can save a new draft while
-      // this one awaits a Blob, and clearing unconditionally erased that
-      // pane's saved text. This pane's own edit revision cannot see a peer's
-      // write, so the shared draft's revision is the only witness to it, and
-      // it is captured before the read for exactly that reason.
-      if (persistedRevision !== undefined) clearPersistedDraftIfRevisionMatches(ref, persistedRevision);
+      // A SAVED REVISION MAY BE CLEARED ONLY WHEN THE RECOVERY ROW PROVES IT
+      // INCORPORATED THAT EXACT REVISION.
+      //
+      // The persisted draft is SHARED. Another pane on the same session can save
+      // a new one after this composer mounts - and the revision captured before
+      // the Blob read is not evidence that this restore incorporated it: a
+      // peer's save that landed BEFORE the capture leaves that value unchanged
+      // through the whole read, so clearing on it erased text this restore never
+      // took in and nothing recorded that it existed. This pane's own edit
+      // counter cannot see a peer's write either.
+      //
+      // The row is the only witness to what it contains: `localDraftRevisionId`
+      // is the revision its transaction folded in. So the clear is gated on the
+      // row and the shared draft naming the SAME revision - which is the
+      // definition of "this restore incorporated it" - and a row that
+      // incorporated no draft clears nothing. Automatic restoration therefore
+      // leaves a peer's snapshot alone by construction, not by timing.
+      const incorporated = chosen.localDraftRevisionId;
+      if (incorporated !== undefined && readComposerDraftRevisionId(ref) === incorporated) {
+        clearPersistedDraftIfRevisionMatches(ref, incorporated);
+      }
     };
     if ((excludedRefs.get(chosen.clientMutationId)?.length ?? 0) === 0) {
-      restore([], undefined);
+      restore([]);
       return;
     }
     let cancelled = false;
@@ -350,7 +364,10 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
         readComposerDraftRevisionId(ref) !== persistedBeforeRead
       )
         return;
-      restore(excluded, persistedBeforeRead);
+      // `persistedBeforeRead` is NOT handed to the restore: it decides whether
+      // restoring now would overwrite work, not what the row contains. The clear
+      // reads the row's own incorporated revision instead.
+      restore(excluded);
     })();
     return () => {
       cancelled = true;

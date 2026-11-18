@@ -940,7 +940,20 @@ test.each(["success", "failure"] as const)(
       // than literal; every other field stays exact.
       expect(settled[0]?.id).toEqual(expect.any(String));
       expect(settled.map(({ id: _id, ...item }) => item)).toEqual([
-        { marker: 1, name: "source.png", mediaType: "image/png", pending: false, data: "AQID", width: 8, height: 4 },
+        // `insertedAt` is where the tile's own reference was spliced in - here
+        // offset 9, the end of "original ". It is asserted rather than ignored
+        // because it is the fact that binds these bytes to `[image 1]`; a tile
+        // that lost it would fall back to guessing from the text.
+        {
+          marker: 1,
+          name: "source.png",
+          mediaType: "image/png",
+          pending: false,
+          data: "AQID",
+          width: 8,
+          height: 4,
+          insertedAt: 9,
+        },
       ]);
       expect(readComposerDraft("root")).toEqual({ text: "original [image 1]", skillNames: [] });
       expect(getToasts()).toEqual([]);
@@ -2290,6 +2303,193 @@ test("a staged reference is recorded at its own spelling, not the first one", ()
   }
 });
 
+// Medium (sourceState.ts:532-550). The tile's own spelling was inferred as the
+// LAST `[image N]` no other anchor accounted for. That is right only while
+// nothing is typed after the reference: type a literal `[image 1]` AFTER it and
+// the last unaccounted spelling is the PROSE, so the persisted draft named the
+// words as the image's anchor. A reload then tied the warning to the prose, and
+// deleting the genuine reference left Send blocked over text that never had
+// bytes.
+//
+// The splice is the only moment the tile and its reference are one fact, so it
+// is recorded there and carried; the reader must not re-derive it.
+test("a literal typed after a staged reference does not become its anchor", () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  try {
+    const source = createTestComposerSource("root");
+    try {
+      // The splice: the tile's reference begins where the person's cursor was.
+      const tile = {
+        id: "staged",
+        marker: 1,
+        name: "staged.png",
+        mediaType: "image/png",
+        data: "AQID",
+        pending: false,
+        insertedAt: 0,
+      };
+      source.attachments.setState({ items: [tile] });
+      source.editor.write("[image 1]", 9);
+
+      // ...and then they type the same spelling AFTER it, as words.
+      const text = "[image 1] literal [image 1]";
+      // The editor reports where it typed, which is what the composer gets
+      // from SkillEditor: the insertion begins just past the reference.
+      source.editText(text, { from: "[image 1]".length, to: "[image 1]".length });
+      const literalAt = text.lastIndexOf("[image 1]");
+      expect(literalAt).toBeGreaterThan(0);
+
+      source.persistDraft(text);
+
+      // ONE anchor, and it is the reference the bytes back - not the prose, and
+      // not the prose in addition.
+      expect(readComposerDraftImageAnchors("root")).toEqual([{ marker: 1, offset: 0 }]);
+    } finally {
+      source.dispose();
+    }
+  } finally {
+    storage.close();
+  }
+});
+
+// Medium (SkillEditor.tsx:50-66). A drag is ONE transaction with a delete and
+// an insert, and the reported range folds both steps into their bounding span.
+// Dragging prose from before a reference to after it therefore reported a span
+// covering the reference, which neither step touched - so the warning retired
+// and the reference went out as literal text.
+//
+// The steps are what actually happened, so the reader maps each anchor through
+// them. This drives the reported shape directly: `[image 1]` sits at offset 0
+// and survives untouched while text before it is deleted and re-inserted after
+// it.
+test("a drag around a reference does not retire its warning", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  try {
+    const rowText = "prose [image 1] tail";
+    const row = await storage.enqueueIntent({
+      targetRef: "root",
+      threadId: "thread-a",
+      method: "turn/queue",
+      payload: { ref: "root", input: [{ type: "text", text: rowText }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: rowText }] },
+    });
+    await storage.transferToRecovery(row.clientMutationId, "editing");
+    const recovery = await storage.getRecovery(row.clientMutationId);
+    if (!recovery) throw new Error("missing recovery fixture");
+    // The row's own record: its text spells a reference it has no bytes for.
+    writeCompositionImageRecord(row.clientMutationId, {
+      anchors: [{ marker: 1, offset: rowText.indexOf("[image 1]") }],
+      tiles: [],
+      revision: (recovery as { compositionRevision?: number }).compositionRevision ?? 0,
+    });
+
+    const source = createTestComposerSource("root");
+    try {
+      await source.activateRecovery(recovery);
+      const before = source.getSnapshot().text;
+      expect(before).toContain("[image 1]");
+      expect(source.getSnapshot().unbackedImageMarkers).toEqual([1]);
+
+      // The drag: delete the leading prose "prose " (0-6) and re-insert it
+      // just past the reference. One transaction, two steps, and the reference
+      // lies between them - touched by neither.
+      const referenceAt = before.indexOf("[image 1]");
+      expect(referenceAt).toBe(6);
+      const referenceEnd = referenceAt + "[image 1]".length;
+      const after = `${before.slice(6, referenceEnd)}prose ${before.slice(referenceEnd)}`;
+      // The hull of both steps, which is what the editor used to report alone.
+      source.editText(after, {
+        from: 0,
+        to: referenceEnd,
+        spans: [
+          // Each span is in the coordinates of the document ITS step applied
+          // to, so the insertion's offset is measured after the deletion.
+          { from: 0, to: 6, delta: -6 },
+          { from: "[image 1]".length, to: "[image 1]".length, delta: 6 },
+        ],
+      });
+
+      // The reference moved with the text and still has no bytes: the warning
+      // has to survive, or Send ships it as prose.
+      expect(source.getSnapshot().unbackedImageMarkers).toEqual([1]);
+    } finally {
+      source.dispose();
+    }
+  } finally {
+    storage.close();
+  }
+});
+
+// Medium (sourceState.ts:2481-2484). The merge's durable write is awaited, and
+// the anchors it installs into the live editor were resolved BEFORE that await.
+// Text typed during the write - a caption before the reference - moves those
+// offsets and `latest.text` is re-merged to include it, so installing the
+// pre-write offsets tests each anchor against text it is no longer in. A
+// reference that merely slid is then dropped, and the next Send carries it as
+// prose.
+test("a caption typed while the merge is in flight does not lose the reference's warning", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  try {
+    const localText = "mine [image 1] gone";
+    writeComposerDraft("root", { text: localText, skillNames: [] }, [
+      { marker: 1, offset: localText.indexOf("[image 1]") },
+    ]);
+    const rowText = "peer text with no references";
+    const row = await storage.enqueueIntent({
+      targetRef: "root",
+      threadId: "thread-a",
+      method: "turn/queue",
+      payload: { ref: "root", input: [{ type: "text", text: rowText }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: rowText }] },
+    });
+    await storage.transferToRecovery(row.clientMutationId, "editing");
+    const recovery = await storage.getRecovery(row.clientMutationId);
+    if (!recovery) throw new Error("missing recovery fixture");
+
+    // Hold the durable write open so the test can type inside it.
+    const original = storage.updateRecoveryInput.bind(storage);
+    let reached: () => void = () => undefined;
+    const writeStarted = new Promise<void>((resolve) => {
+      reached = resolve;
+    });
+    let release: () => void = () => undefined;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    storage.updateRecoveryInput = (async (...args: Parameters<typeof original>) => {
+      reached();
+      await released;
+      return original(...args);
+    }) as typeof storage.updateRecoveryInput;
+
+    const source = createTestComposerSource("root");
+    try {
+      expect(source.getSnapshot().unbackedImageMarkers).toEqual([1]);
+      const activation = source.activateRecovery(recovery);
+      await writeStarted;
+      // The person types a caption BEFORE the reference while the row's write
+      // is still committing.
+      source.editText(`caption ${source.getSnapshot().text}`);
+      release();
+      await activation.catch(() => false);
+
+      expect(source.getSnapshot().text).toContain("caption");
+      // The reference moved, so its warning had to move with it. Losing it here
+      // means the next Send ships `[image 1]` as literal text with no image.
+      expect(source.getSnapshot().unbackedImageMarkers).toEqual([1]);
+    } finally {
+      source.dispose();
+    }
+  } finally {
+    storage.close();
+  }
+});
+
 // Medium (sourceState.ts:1374-1389). When a local draft and an incoming row
 // each contain a genuine missing `[image 1]`, the incoming occurrence claimed
 // the NUMBER and the local side - a real reference, at a different spelling -
@@ -2331,6 +2531,67 @@ test("a merge keeps both sides' missing references when both spell the same mark
       expect(source.getSnapshot().text).toContain(rowText);
       // TWO references, two spellings. One warning for one number is the
       // defect: the local missing reference would ship as literal prose.
+      const durable = (await storage.getRecovery(incoming.clientMutationId)) as
+        | { anchors?: { marker: number; offset?: number }[] }
+        | undefined;
+      expect(durable?.anchors).toHaveLength(2);
+    } finally {
+      source.dispose();
+    }
+  } finally {
+    storage.close();
+  }
+});
+
+// Medium (sourceState.ts:1540-1548). Two texts that both BEGIN with the same
+// marker put both anchors at offset 0 IN THEIR OWN TEXT. Deduplicating before
+// placing the texts therefore compared two different rulers and treated the
+// pair as one reference: the local warning was dropped, and deleting the
+// incoming reference enabled a Send whose local missing reference was still in
+// the text.
+//
+// The offset is the whole test: at the head of each text, "same marker, same
+// offset" is true of two references that are nowhere near each other in the
+// merged draft.
+test("a merge keeps both sides' missing references when both begin at offset zero", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  try {
+    const rowText = "[image 1] incoming missing";
+    const incoming = await storage.enqueueIntent({
+      targetRef: "root",
+      threadId: "thread-a",
+      method: "turn/queue",
+      payload: { ref: "root", input: [{ type: "text", text: rowText }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: rowText }] },
+    });
+    await storage.transferToRecovery(incoming.clientMutationId, "editing");
+    const incomingRow = await storage.getRecovery(incoming.clientMutationId);
+    if (!incomingRow) throw new Error("missing incoming fixture");
+    expect(rowText.indexOf("[image 1]")).toBe(0);
+    writeCompositionImageRecord(incoming.clientMutationId, {
+      anchors: [{ marker: 1, offset: 0 }],
+      tiles: [],
+    });
+    // This pane's own missing reference is ALSO at offset 0, in ITS text.
+    const localText = "[image 1] local missing";
+    writeComposerDraft("root", { text: localText, skillNames: [] }, [{ marker: 1, offset: 0 }]);
+
+    const source = createTestComposerSource("root");
+    try {
+      expect(source.getSnapshot().unbackedImageMarkers).toEqual([1]);
+      await source.activateRecovery(incomingRow).catch(() => false);
+      const merged = source.getSnapshot().text;
+      expect(merged).toContain(localText);
+      expect(merged).toContain(rowText);
+      // Both references survive in the EDITOR, at the positions the merged text
+      // actually puts them. One warning for two references is the defect.
+      expect(source.getSnapshot().unbackedImageMarkers).toEqual([1]);
+      // Deleting the incoming reference leaves the local one refusing a Send.
+      source.updateText(localText);
+      expect(source.getSnapshot().unbackedImageMarkers).toEqual([1]);
+      // ...and the durable row states both, in the merged text's coordinates.
       const durable = (await storage.getRecovery(incoming.clientMutationId)) as
         | { anchors?: { marker: number; offset?: number }[] }
         | undefined;
@@ -2448,4 +2709,98 @@ test("a stale save with different image bytes gets its own row", async () => {
     );
   expect(payloadBytes(peerRow as (typeof rows)[number])).toEqual(["S0VQVA=="]);
   expect(payloadBytes(forked)).toEqual(["T1RIRVI="]);
+});
+
+// Medium (sourceState.ts:746-754). A peer replaces a missing reference with the
+// SAME literal text, so the composed text and the attachments are identical and
+// only the anchors tell the two compositions apart. IndexedDB commits the empty
+// anchor list first; the side record is still describing the reference the peer
+// removed. A stale pane then reads that record by id, sees its own warning in
+// it, and calls the peer's row proof that its composition was already saved -
+// so the row reopens without the warning the pane is looking at.
+//
+// The row is the only witness to what it contains, so the comparison must read
+// the anchors the transaction committed WITH that text.
+test("a stale save compares the row's committed anchors, not a stale side record", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const peer = new MutationOutboxIndexedDB();
+  try {
+    // The composition both panes hold: one real reference, no tile.
+    const text = "[image 1] repaired as prose";
+    const original = await storage.enqueueIntent({
+      targetRef: "root",
+      threadId: "thread-a",
+      method: "turn/queue",
+      payload: { ref: "root", input: [{ type: "text", text }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text }] },
+    });
+    await storage.transferToRecovery(original.clientMutationId, "editing");
+    const recovery = await storage.getRecovery(original.clientMutationId);
+    if (!recovery) throw new Error("missing recovery fixture");
+
+    const startedAt = (recovery as { compositionRevision?: number }).compositionRevision ?? 0;
+    // THIS pane opens the row first, while the reference is still missing, so
+    // the warning is part of the composition it is holding.
+    writeCompositionImageRecord(original.clientMutationId, {
+      anchors: [{ marker: 1, offset: 0 }],
+      tiles: [],
+      revision: startedAt,
+    });
+    const source = createTestComposerSource("root");
+    try {
+      await source.activateRecovery(recovery);
+      expect(source.getSnapshot().unbackedImageMarkers).toEqual([1]);
+      // Activation advances the revision itself, so the peer's write is gated
+      // on the CURRENT one - a stale expectation would be refused as a
+      // concurrent edit and the test would measure that instead.
+      const current = (await peer.getRecovery(original.clientMutationId)) as
+        | { compositionRevision?: number }
+        | undefined;
+      const currentRevision = current?.compositionRevision ?? 0;
+
+      // The PEER then repairs that reference - replacing it with the same
+      // literal text - so the row commits an EMPTY anchor list: "this text
+      // references no missing image". Text and attachments are unchanged, which
+      // is why only the anchor list distinguishes the two compositions.
+      const advanced = await peer.updateRecoveryInput(
+        original.clientMutationId,
+        [{ type: "text", text }],
+        [],
+        text,
+        undefined,
+        undefined,
+        undefined,
+        currentRevision,
+        undefined,
+        undefined,
+        undefined,
+        [],
+      );
+      if (!advanced) throw new Error("peer could not advance the row");
+      // ...and the side record has NOT caught up: it still describes the
+      // reference the peer removed. Unstamped, so a reader that consults it
+      // trusts it - which is exactly the reading that loses this pane's warning.
+      writeCompositionImageRecord(original.clientMutationId, {
+        anchors: [{ marker: 1, offset: 0 }],
+        tiles: [],
+      });
+
+      // This pane saves the composition it is holding. Its lease is stale, so
+      // the save preserves rather than writing in place.
+      await source.queueRecoveryPersistence(original.clientMutationId, text, [], []);
+      await source.flushRecoveryWrites();
+      const rows = await storage.listRecovery("root");
+      // TWO compositions: one pane's text carries a missing reference, the
+      // row's does not. Reusing the row would discard this pane's warning, and
+      // the reopen would show prose that no longer refuses a Send.
+      expect(rows).toHaveLength(2);
+    } finally {
+      source.dispose();
+    }
+  } finally {
+    peer.close();
+    storage.close();
+  }
 });

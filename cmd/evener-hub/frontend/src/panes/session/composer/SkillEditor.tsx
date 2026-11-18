@@ -17,6 +17,7 @@ import {
   serializeSkillDocument,
   skillSchema,
   type TextChangeRange,
+  type TextChangeSpan,
   textOffsetToDocumentPosition,
 } from "./skillDocument";
 import styles from "./skilleditor.module.css";
@@ -63,7 +64,29 @@ function changedRange(before: ProseMirrorNode, transaction: Transaction): TextCh
   // the source fall back to "the earliest splice that explains the strings",
   // so pasting `[image 1]` immediately after a missing `[image 1]` moved the
   // warning onto the pasted copy instead of leaving it on the reference.
-  return { from: documentPositionToTextOffset(before, from), to: documentPositionToTextOffset(before, to) };
+  //
+  // THE STEPS TRAVEL TOO. The bound above is a HULL: a drag that deletes at
+  // one offset and inserts at another produces a span covering everything
+  // between them, including text neither step touched. A reader given only the
+  // hull retires an anchor sitting inside it whose own characters never moved,
+  // so a missing-image warning disappeared because the person dragged some
+  // prose past the reference. Reporting the steps lets the reader map each
+  // offset through the edits that actually happened to it.
+  const spans: TextChangeSpan[] = [];
+  transaction.steps.forEach((step) => {
+    step.getMap().forEach((oldStart, oldEnd, newStart, newEnd) => {
+      spans.push({
+        from: documentPositionToTextOffset(before, oldStart),
+        to: documentPositionToTextOffset(before, oldEnd),
+        delta: newEnd - newStart - (oldEnd - oldStart),
+      });
+    });
+  });
+  return {
+    from: documentPositionToTextOffset(before, from),
+    to: documentPositionToTextOffset(before, to),
+    ...(spans.length > 1 ? { spans } : {}),
+  };
 }
 
 export interface SkillEditorProps {

@@ -34,6 +34,21 @@ export interface PendingAttachment {
   height?: number;
   data?: string; // base64; undefined while pending === true
   pending: boolean;
+  /** Where this tile's own `[image N]` reference began in the text at the
+   * instant it was spliced in.
+   *
+   * Which spelling of a marker backs THIS image is knowable only here: the
+   * insertion point is the one moment the tile and its reference are the same
+   * fact. A reader that instead guesses later - "the last `[image N]` nothing
+   * else accounts for" - names a literal the person typed after the reference
+   * as soon as there is one, and the persisted draft then says the tile's bytes
+   * back that prose. Deleting the real reference left a Send refused over words
+   * that never had an image.
+   *
+   * An offset is a position in the text as it stood then; the composer's
+   * reconciliation moves it through every later edit. A tile adopted from
+   * storage has none, and falls back to the old reading. */
+  insertedAt?: number;
 }
 
 // Markers identify text references and may change when recovery merges around
@@ -271,10 +286,21 @@ export function createAttachmentOperations(
         selection: { start, end },
       } = editor.read();
       const newItems: PendingAttachment[] = accepted.map(({ file, marker, token }) => {
+        // The reference occupies `start` before the splice, so that is where
+        // this tile's own spelling begins - recorded on the tile because this
+        // is the only code that knows it.
+        const insertedAt = start;
         const edit = insertMarker(text, start, end, markerText(marker));
         text = edit.value;
         start = end = edit.cursor;
-        const item = { id: createSecureUUID(), marker, name: file.name, mediaType: "image/png", pending: true };
+        const item = {
+          id: createSecureUUID(),
+          marker,
+          name: file.name,
+          mediaType: "image/png",
+          pending: true,
+          insertedAt,
+        };
         operationTokens.set(item, token);
         return item;
       });

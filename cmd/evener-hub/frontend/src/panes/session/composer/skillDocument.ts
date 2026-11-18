@@ -224,4 +224,25 @@ export interface TextChangeRange {
   from: number;
   /** Offset in the PREVIOUS text where it ended. */
   to: number;
+  /** The transaction's own steps, one span each, in the order they applied.
+   *
+   * `from`/`to` above fold every step into ONE bounding span, which is exact
+   * for the single-step edits typing and deletion produce and WRONG for a
+   * compound one: dragging prose from before a reference to after it deletes
+   * at one offset and inserts at another, and the bound between them covers
+   * text neither step touched. A reader that trusts it retires an anchor whose
+   * characters are still there.
+   *
+   * Each span here is in the coordinates of the document THAT step applied to,
+   * with `delta` the length it changed by, so a caller can map offsets through
+   * the steps one at a time instead of through their hull.
+   */
+  spans?: readonly TextChangeSpan[];
+}
+
+/** One step's effect, in the coordinates of the text it applied to. */
+export interface TextChangeSpan {
+  from: number;
+  to: number;
+  delta: number;
 }

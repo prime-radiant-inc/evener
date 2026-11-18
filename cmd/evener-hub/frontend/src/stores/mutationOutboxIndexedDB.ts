@@ -132,7 +132,7 @@ function sameRecoveryComposition(
   composerText: string,
   composerMentions: readonly ComposerMention[] | undefined,
   attachments: readonly MutationAttachment[],
-  imageFacts: (clientMutationId: string) => string,
+  imageFacts: (record: MutationRecoveryRecord) => string,
   ownImageFacts: string,
 ): boolean {
   return (
@@ -145,7 +145,7 @@ function sameRecoveryComposition(
     // composition, and are deliberately excluded.
     JSON.stringify(record.attachments.map(({ marker, name, mediaType }) => ({ marker, name, mediaType }))) ===
       JSON.stringify(attachments.map(({ marker, name, mediaType }) => ({ marker, name, mediaType }))) &&
-    imageFacts(record.clientMutationId) === ownImageFacts
+    imageFacts(record) === ownImageFacts
   );
 }
 
@@ -2066,7 +2066,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
     // the meaning of a `[image N]` does not: one pane deletes a missing
     // reference and types the same spelling as prose, the other retains it as an
     // anchor. Reusing the row then restores a warning this composition repaired.
-    imageFacts?: (clientMutationId: string) => string,
+    imageFacts?: (record: MutationRecoveryRecord) => string,
     ownImageFacts?: string,
     // The missing-image anchors this composition's text carries, committed with
     // it. A preserved row states its own composition like any other: without

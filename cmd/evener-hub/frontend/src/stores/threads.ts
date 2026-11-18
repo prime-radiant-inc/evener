@@ -4088,7 +4088,7 @@ export async function preserveRecoveryMutation(
   localDraftRevisionId?: string,
   // The preserved composition's own image facts, so the store reuses a row only
   // when that row already says the same thing about its images.
-  imageFacts?: (clientMutationId: string) => string,
+  imageFacts?: (record: MutationRecoveryRecord) => string,
   ownImageFacts?: string,
   // The composition this row owns, when `attachments` is only its sendable
   // subset. Two lists, because "what ships" and "what the person can still see"

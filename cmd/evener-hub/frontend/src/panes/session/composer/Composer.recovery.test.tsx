@@ -41,7 +41,7 @@ import {
   submitButton,
   textarea,
 } from "./composerTestUtils";
-import { readDraft, writeComposerDraft } from "./draft";
+import { readComposerDraftRevisionId, readDraft, writeComposerDraft } from "./draft";
 import { refreshPendingTurnsProjection, resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 import { flushPendingTurnsProjectionForTests } from "./queue/testing/flushPendingTurnsProjection";
 import { resetQuoteInsertStoreForTests } from "./quoteInsert";
@@ -591,6 +591,80 @@ test("the mount helper returns only after the mount's projection refresh has set
   await mountComposer("ref_a", { status: { type: "idle" } });
 
   expect(textarea().textContent).toBe("slow to arrive");
+});
+
+// A SAVED REVISION MAY BE CLEARED ONLY WHEN THE RECOVERY ROW PROVES IT
+// INCORPORATED THAT EXACT REVISION.
+//
+// The persisted draft is shared by every pane on the ref. Simplest way to see
+// the difference between "the row took this text in" and "somebody saved it":
+// a row whose payload excluded a tile it still owns forces the asynchronous
+// Blob read, so the restore is a multi-step operation over a shared store, and
+// a peer's save landing inside that window is ordinary production traffic.
+//
+// jsdom's IndexedDB round-trip returns the stored Blob as a plain object, so
+// the read below would die in the fixture rather than reach the code. This
+// subclass hands back a real Blob, which is what a browser's own store does.
+class BlobRehydratingStorage extends MutationOutboxIndexedDB {
+  override async listRecovery(targetRef?: string): ReturnType<MutationOutboxIndexedDB["listRecovery"]> {
+    const rows = await super.listRecovery(targetRef);
+    return rows.map((row) => ({
+      ...row,
+      attachments: row.attachments.map((attachment) => ({
+        ...attachment,
+        blob: new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" }),
+      })),
+    }));
+  }
+}
+
+test("automatic restoration leaves a peer's saved draft untouched", async () => {
+  const storage = new BlobRehydratingStorage();
+  setMutationStorageForTests(storage);
+  // The row owns an image its own request left out, so restoring it has to read
+  // that image's bytes from the durable record. That await is the window.
+  const outbox = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thread_a",
+    method: "turn/start",
+    payload: { ref: "ref_a", input: [{ type: "text", text: "bounced prose" }] },
+    attachments: [
+      {
+        presentationId: "presentation-1",
+        marker: 1,
+        name: "kept.png",
+        mediaType: "image/png",
+        blob: new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" }),
+      },
+    ],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "bounced prose" }] },
+    composerText: "bounced prose [image 1]",
+  });
+  const recovered = await storage.transferToRecovery(outbox.clientMutationId, "rejected");
+  if (!recovered) throw new Error("failed to seed excluded-image recovery");
+  await stampRecoveryOwner(storage, recovered);
+
+  // Mount without settling the projection: the composer is empty and its
+  // recovery projection has not loaded yet.
+  const source = createTestComposerSource("ref_a");
+  await mountComposerWithHandle("ref_a", { status: { type: "idle" } }, { holdMountProjection: true, source });
+  expect(textarea().textContent).toBe("");
+
+  // ANOTHER PANE SAVES. This happens before the restore has read anything, so
+  // the revision captured for its Blob read is THIS one - the peer's - and a
+  // guard that asks only "did the revision change during the read" answers no.
+  writeComposerDraft("ref_a", { text: "peer's saved work", skillNames: [] });
+  const peerRevision = readComposerDraftRevisionId("ref_a");
+  if (peerRevision === undefined) throw new Error("missing peer draft revision");
+
+  await flushPendingTurnsProjectionForTests();
+
+  // The restore DID run - that is what makes this a test of the clear and not
+  // of the gate - and the row never incorporated the peer's text, so the peer's
+  // saved draft must be exactly as it was.
+  await waitFor(() => expect(source.getSnapshot().activeRecoveryId).toBe(recovered.clientMutationId));
+  expect(readDraft("ref_a")).toBe("peer's saved work");
+  expect(readComposerDraftRevisionId("ref_a")).toBe(peerRevision);
 });
 
 test("mount restore only adopts rows this pane's seat owns", async () => {

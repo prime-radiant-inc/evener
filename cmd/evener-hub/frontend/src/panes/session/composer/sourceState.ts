@@ -386,6 +386,35 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     // rather than re-reading spellings afterwards is what keeps two identical
     // `[image 1]` occurrences distinct: only the one the person removed goes.
     reconcileAdoptedAnchors(textRef.current, text, changed);
+    // The staged tiles' own references move by the same rule, and only while
+    // their spelling survives where the splice put it. A reference the edit
+    // destroyed is forgotten rather than relocated: an offset that no longer
+    // spells its marker is not evidence about where this tile's bytes used to
+    // be, and guessing "some other spelling" is the defect this record exists
+    // to remove.
+    //
+    // MOVED FIRST, THEN SEEDED. A tile inserted by this very write already
+    // carries its reference in the NEW text's coordinates, so it is recorded
+    // after the mapping rather than through it - otherwise the same delta
+    // would be applied to an offset that already includes it.
+    if (stagedReferences.size > 0 && text !== textRef.current) {
+      for (const [id, reference] of stagedReferences) {
+        const [moved] = mapAnchorsThroughEdit([reference], textRef.current, text, changed);
+        if (moved === undefined) stagedReferences.delete(id);
+        else stagedReferences.set(id, moved);
+      }
+    }
+    // A tile's `insertedAt` is where its own spelling began at the splice, and
+    // the splice is the write this call is handling. Recording it here is what
+    // makes "which `[image N]` do these bytes back" a fact about the tile
+    // instead of a guess about the text.
+    const liveTileIds = new Set(operations.items.map((item) => item.id));
+    for (const id of stagedReferences.keys()) if (!liveTileIds.has(id)) stagedReferences.delete(id);
+    for (const item of operations.items) {
+      if (stagedReferences.has(item.id)) continue;
+      if (item.insertedAt === undefined) continue;
+      stagedReferences.set(item.id, { marker: item.marker, offset: item.insertedAt });
+    }
     textRef.current = text;
     state.setState({ text });
     refreshUnbackedImageMarkers();
@@ -467,10 +496,11 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   // the text still spells it.
   function recordedMarkerAnchors(text: string): CompositionImageAnchor[] {
     const snapshot = state.getState();
-    const staged = sendableAttachments(operations.items, text, {
+    const stagedTiles = sendableAttachments(operations.items, text, {
       foreign: snapshot.foreignImageIds,
       restored: snapshot.restoredImageIds,
-    }).map((item) => item.marker);
+    });
+    const staged = stagedTiles.map((item) => item.marker);
     // The live anchors, filtered against the text they now describe. These are
     // OCCURRENCES: an anchor survives while its own spelling is still there, and
     // reducing them to numbers here is what let a newly staged image save with
@@ -542,12 +572,22 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     // so staging image 1 and then typing a literal `[image 1]` BEFORE the
     // inserted reference saved only the number, and a reload attached the
     // warning to the prose. Deleting that prose then enabled Send while the real
-    // reference was still in the text. Staging splices its reference at the
-    // cursor, so the tile's own spelling is the one no other anchor accounts
-    // for - and where several remain unaccounted, the LAST, because staging
-    // appends after the text that was already there.
+    // reference was still in the text.
     //
-    // An older record has no offset and keeps the first-spelling reading; that
+    // WHICH spelling is the tile's own is recorded at the splice that inserted
+    // it (`stagedReferences`), not inferred here. Inferring it - "the last
+    // spelling no other anchor accounts for" - is right only while nothing is
+    // typed after the reference. Type a literal `[image N]` after it and the
+    // last unaccounted spelling is the PROSE, so the record named prose as the
+    // image's anchor: a reload then tied the warning to the words, and deleting
+    // the reference left Send blocked on text that never had bytes.
+    //
+    // A tile whose splice this source never saw (it was staged before this
+    // source existed, or re-hydrated from storage) keeps the old reading: the
+    // last spelling still unaccounted for. That is a guess, and it is the best
+    // available one for a tile nobody observed being inserted.
+    //
+    // An older RECORD has no offset and keeps the first-spelling reading; that
     // is `resolveAnchors`' existing fallback, unchanged.
     // Occurrences this revision already accounts for, before inheritance is
     // considered. `live` first, because reconciliation is the authority on
@@ -555,8 +595,14 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     const claimedOccurrences = new Set<number>(
       liveAnchors.filter((anchor) => anchor.offset !== undefined).map((anchor) => anchor.offset as number),
     );
-    const stagedAnchors: CompositionImageAnchor[] = staged.map((marker) => {
-      const candidates = markerOccurrences(text).filter(
+    const occurrences = markerOccurrences(text);
+    const stagedAnchors: CompositionImageAnchor[] = stagedTiles.map(({ id, marker }) => {
+      const observed = stagedReferences.get(id);
+      if (observed !== undefined && observed.marker === marker) {
+        claimedOccurrences.add(observed.offset);
+        return { marker, offset: observed.offset };
+      }
+      const candidates = occurrences.filter(
         (occurrence) => occurrence.marker === marker && !claimedOccurrences.has(occurrence.offset),
       );
       const own = candidates.at(-1);
@@ -743,15 +789,49 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   // Anchors are compared by marker alone for the same reason: an offset is a
   // position in one composition's text, and the two panes' texts are the same
   // text here, so the offsets agree whenever the markers do.
-  function storedImageFacts(clientMutationId: string): string {
-    const record = readCompositionImageRecord(clientMutationId);
-    if (record === undefined) return "none";
-    // ONE comparator with the live side. An offset is a position in one
-    // composition's text, and the two panes being compared hold the SAME text -
-    // so equal markers with unequal occurrences means one of them lost a
-    // reference, which is a different composition however identical the numbers
-    // look.
-    return imageFactsOf(record.anchors, record.tiles);
+  // WHICH COPY IS AUTHORITATIVE: the candidate ROW, not a side record by id.
+  //
+  // Text and bytes are committed to IndexedDB and these facts to localStorage,
+  // so the two can disagree. Reading the side record here asks "what did the
+  // last write to localStorage say about this row id?" - and after a peer
+  // replaces a missing reference with identical literal text, the row commits an
+  // EMPTY anchor list while the side record still describes the reference it
+  // removed. A stale pane then reads its OWN warning out of that record, calls
+  // the peer's row proof that its composition was saved, and reuses it: the row
+  // reopens without the warning the pane is looking at.
+  //
+  // The row is the only witness to what it contains. `imageFacts` is handed the
+  // record being considered, so this reads the anchors and eligibility the
+  // transaction committed WITH that text. The side record is used only for the
+  // fields a row cannot state, and only when it names that revision - the same
+  // derivation rule `compositionAnchorsForRecord` applies, so there is one
+  // answer to "which record describes this composition" rather than two.
+  function storedImageFacts(record: MutationRecoveryRecord): string {
+    // `anchors` is an optional field the writers add; the portable record type
+    // does not declare it, so it is read the same way `recoveryDraft.ts` reads
+    // it rather than by widening another lane's interface.
+    const declared = record as { anchors?: CompositionImageAnchor[] };
+    const committed = Array.isArray(declared.anchors) ? declared.anchors : undefined;
+    const side = readCompositionImageRecord(record.clientMutationId);
+    // THE ANCHORS ARE THE ROW'S, THE TILES ARE THE SIDE RECORD'S, and the split
+    // is not arbitrary.
+    //
+    // An anchor list is committed WITH the text it describes (the writers pass
+    // it in the same transaction), so the row is the authority on which
+    // references its text carries. The side record is keyed by row id alone and
+    // survives a repair: a peer can commit an EMPTY anchor list - "this text
+    // references no missing image" - and leave the old side record still naming
+    // the reference it removed. Reading that record's anchors made a stale pane
+    // treat the peer's row as proof its own composition was saved, so the row
+    // reopened holding a warning the committed text no longer had.
+    //
+    // Per-tile eligibility has no row field to read: the row states which
+    // attachments it owns, not which are sendable, and a released tile's bytes
+    // are in `attachments` beside a sendable one's. The side record is the only
+    // place that fact is written, so it stays the source for tiles - with the
+    // digest that separates two images staged under one marker.
+    const anchors = committed ?? side?.anchors ?? compositionAnchorsForRecord(declared, record.clientMutationId) ?? [];
+    return imageFactsOf(anchors, side?.tiles ?? []);
   }
 
   /** A cheap, stable fingerprint of an attachment's base64 bytes.
@@ -954,6 +1034,23 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   // literal spelling beside it stays prose.
   let adoptedAnchors: { marker: number; offset: number }[] = [];
 
+  /** Each staged tile's OWN reference, by tile id.
+   *
+   * Which spelling of `[image N]` a tile's bytes back is a fact about the tile,
+   * and the splice that inserted that spelling is the only moment it is
+   * knowable. Deriving it later - "the last spelling nothing else accounts
+   * for" - is wrong the moment the person types the same literal AFTER the
+   * reference: the last unaccounted spelling is then the prose, so the record
+   * named the prose as the image's anchor and a reload tied the warning to the
+   * words rather than to the reference. Deleting the reference left Send
+   * blocked on text that was only prose.
+   *
+   * Recorded at insertion and moved by the same splice arithmetic the adopted
+   * anchors use, because an offset is a position in THIS text and every later
+   * edit before it shifts it.
+   */
+  const stagedReferences = new Map<string, { marker: number; offset: number }>();
+
   /** Occurrences this composer RETIRED, as `marker:offset` (or `marker:` bare).
    *
    * A stored draft record is copied forward so an anchor adopted before this
@@ -1029,6 +1126,23 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     return adoptedAnchors.map(({ marker, offset }) => ({ marker, offset }));
   }
 
+  /** This pane's own live anchors, dropped unless their spelling is still in
+   * `text`.
+   *
+   * `text` is a PARAMETER, not `textRef`, because the caller installing these
+   * anchors may be installing them into text that landed while a durable write
+   * was in flight: `latest.text`, not the snapshot the write was built from. A
+   * caption typed before a reference during that window shifts its offset, so
+   * testing the reference against the stale snapshot drops the anchor, and the
+   * text that keeps the caption then has no anchor for the reference beside it.
+   */
+  function localAnchorsIn(text: string): CompositionImageAnchor[] {
+    return liveAdoptedOccurrences().filter(
+      (anchor) =>
+        anchor.offset !== undefined && spellingSurvives({ marker: anchor.marker, offset: anchor.offset }, text),
+    );
+  }
+
   /** True while `anchor`'s offset still spells its own marker in `text`. */
   function spellingSurvives(anchor: { marker: number; offset: number }, text: string): boolean {
     const spelling = markerText(anchor.marker);
@@ -1101,7 +1215,53 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     }
   }
 
-  function reconcileAdoptedAnchorsInner(before: string, after: string, changed?: TextChangeRange): void {
+  /** Move anchors through one edit.
+   *
+   * ONE rule for every offset in this source: an anchor is a position in the
+   * text being edited, and an edit either leaves it where it is, shifts it by
+   * the delta, or destroys the spelling it named. A staged tile's own reference
+   * is such a position too - it is recorded at the splice and must follow the
+   * same arithmetic - so this is a pure function rather than a mutation of
+   * `adoptedAnchors`, and both callers get identical handling by construction.
+   */
+  function mapThroughSpan(
+    anchors: readonly { marker: number; offset: number }[],
+    span: { from: number; to: number; delta: number },
+  ): { marker: number; offset: number }[] {
+    return anchors.flatMap((anchor) => {
+      const length = markerText(anchor.marker).length;
+      // Entirely before the step: the step's own coordinates did not reach it.
+      if (anchor.offset + length <= span.from) return [anchor];
+      // Entirely after it: it slides by the length the step changed.
+      if (anchor.offset >= span.to) return [{ marker: anchor.marker, offset: anchor.offset + span.delta }];
+      // It OVERLAPS what this step replaced, so its own characters are gone.
+      return [];
+    });
+  }
+
+  function mapAnchorsThroughEdit(
+    anchors: readonly { marker: number; offset: number }[],
+    before: string,
+    after: string,
+    changed?: TextChangeRange,
+  ): { marker: number; offset: number }[] {
+    if (before === after || anchors.length === 0) return [...anchors];
+    // A COMPOUND EDIT IS MAPPED STEP BY STEP, not through its hull.
+    //
+    // `from`/`to` bound every step the transaction applied, and a drag that
+    // deletes at one offset and inserts at another puts untouched text between
+    // them inside that bound. Trusting the hull retires an anchor whose own
+    // characters are still exactly where they were - so dragging prose past a
+    // missing reference cleared its warning, and the reference then shipped as
+    // literal text. Each step's own span says what that step did; an anchor
+    // the step did not touch is carried through it unchanged.
+    if (changed?.spans !== undefined && changed.spans.length > 1) {
+      let moved = anchors.map(({ marker, offset }) => ({ marker, offset }));
+      for (const span of changed.spans) {
+        moved = mapThroughSpan(moved, span);
+      }
+      return moved.filter((anchor) => spellingSurvives(anchor, after));
+    }
     // When the editor reports what it replaced, the range settles the one
     // question two strings cannot: WHICH of two identical spellings went.
     // `[image 1][image 1]` with the second one a reference, edited to
@@ -1120,7 +1280,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
       // always does.
       const delta = after.length - before.length;
       const at = changed.from;
-      adoptedAnchors = adoptedAnchors.flatMap((anchor) => {
+      return anchors.flatMap((anchor) => {
         const length = markerText(anchor.marker).length;
         if (anchor.offset >= at) {
           const shifted = { ...anchor, offset: anchor.offset + delta };
@@ -1128,10 +1288,9 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
         }
         return anchor.offset + length <= at ? [anchor] : [];
       });
-      return;
     }
     if (changed !== undefined && changed.to > changed.from) {
-      adoptedAnchors = adoptedAnchors.flatMap((anchor) => {
+      return anchors.flatMap((anchor) => {
         const length = markerText(anchor.marker).length;
         const anchorEnd = anchor.offset + length;
         // An occurrence the change does not touch survives untouched.
@@ -1144,7 +1303,6 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
         // what keeps a pure insertion beside an anchor from retiring it.
         return [];
       });
-      return;
     }
     const delta = after.length - before.length;
     if (delta > 0) {
@@ -1157,26 +1315,24 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
         // rather than carried. Keeping it was the defect: the obsolete tag
         // survived invisibly and came back as a blocked Send the moment the
         // person typed the literal `[image 1]` somewhere else.
-        adoptedAnchors = adoptedAnchors.flatMap((anchor) => {
+        return anchors.flatMap((anchor) => {
           if (anchor.offset >= at) {
             const shifted = { ...anchor, offset: anchor.offset + delta };
             return spellingSurvives(shifted, after) ? [shifted] : [];
           }
           return anchor.offset + markerText(anchor.marker).length <= at ? [anchor] : [];
         });
-        return;
       }
     } else if (delta < 0) {
       const at = insertionPoint(after, before, -delta);
       if (at !== undefined) {
         const removedThrough = at - delta;
-        adoptedAnchors = adoptedAnchors.flatMap((anchor) => {
+        return anchors.flatMap((anchor) => {
           const length = markerText(anchor.marker).length;
           if (anchor.offset + length <= at) return [anchor];
           if (anchor.offset >= removedThrough) return [{ ...anchor, offset: anchor.offset + delta }];
           return [];
         });
-        return;
       }
     }
     let prefix = 0;
@@ -1189,12 +1345,16 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     )
       suffix += 1;
     const oldEnd = before.length - suffix;
-    adoptedAnchors = adoptedAnchors.flatMap((anchor) => {
+    return anchors.flatMap((anchor) => {
       const length = markerText(anchor.marker).length;
       if (anchor.offset + length <= prefix) return [anchor];
       if (anchor.offset >= oldEnd) return [{ ...anchor, offset: anchor.offset + delta }];
       return [];
     });
+  }
+
+  function reconcileAdoptedAnchorsInner(before: string, after: string, changed?: TextChangeRange): void {
+    adoptedAnchors = mapAnchorsThroughEdit(adoptedAnchors, before, after, changed);
   }
 
   /** Resolve stored anchors to the occurrences they name in `text`.
@@ -1277,6 +1437,37 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
       const sameMarkerTarget = target.filter((occurrence) => occurrence.marker === anchor.marker);
       const hit = sameMarkerTarget[sameMarkerTarget.length - fromEnd];
       return hit === undefined ? [] : [{ marker: hit.marker, offset: hit.offset }];
+    });
+  }
+
+  /** The merged composition's anchors: both sides in ONE coordinate system.
+   *
+   * The row's anchors are positions in the row's text; the live ones are
+   * positions in this pane's text, which is the merged text's PREFIX. Comparing
+   * them before translation is a comparison of two different rulers, and it is
+   * exactly how a genuine local missing reference was dropped: both sides began
+   * with `[image 1]`, both offsets were 0, the row's entry claimed the key, and
+   * the local warning vanished - so deleting the incoming reference enabled a
+   * Send whose local reference was still in the text.
+   *
+   * Translate first, then deduplicate. One spelling reached by two routes is one
+   * reference; two spellings of one number are two references and both stay.
+   * Both readers - the live editor and the durable row - take their set from
+   * here, so they cannot disagree about which spelling a warning belongs to.
+   */
+  function anchorsIntoOneComposition(
+    rowAnchors: readonly CompositionImageAnchor[],
+    localAnchors: readonly CompositionImageAnchor[],
+    recoveredText: string,
+    mergedText: string,
+  ): CompositionImageAnchor[] {
+    const merged = [...anchorsIntoMergedText(rowAnchors, recoveredText, mergedText), ...localAnchors];
+    const seen = new Set<string>();
+    return merged.filter((anchor) => {
+      const key = anchorKey(anchor);
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
     });
   }
 
@@ -1537,16 +1728,22 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     // one list made the translation drop the local anchor - offset 5 of this
     // pane's text is not offset 5 of the row's - so a merge that should have
     // carried two references committed one and shipped the other as prose.
-    const localAnchors = liveAdoptedOccurrences().filter(
-      (anchor) =>
-        // The NUMBER is not the test: two different spellings of one number are
-        // two references, and suppressing the local one by number is how its
-        // warning was lost.
-        !takenOccurrences.has(anchorKey(anchor)) &&
-        !resolvedAnchors.some((kept) => anchorKey(kept) === anchorKey(anchor)) &&
-        anchor.offset !== undefined &&
-        spellingSurvives({ marker: anchor.marker, offset: anchor.offset }, textRef.current),
-    );
+    // NOT deduplicated here, and that is the point.
+    //
+    // The sets above are keyed in the ROW's coordinates. A local anchor lives in
+    // THIS composer's text, which is the merged text's PREFIX - so the same key
+    // means a different place. When both sides began with a missing `[image 1]`,
+    // both offsets were 0 and the row's entry claimed the local one outright:
+    // the merge dropped the local warning, and deleting the incoming reference
+    // then enabled a Send whose local missing reference was still in the text.
+    // "Same marker at the same offset" only answers "same reference" once both
+    // offsets are positions in the SAME text.
+    //
+    // The caller that translates the row's anchors into the merged text is the
+    // one that knows the final offsets, so it deduplicates the union there, by
+    // resulting occurrence. Each side is still filtered against the text it was
+    // resolved in, which is what keeps a dead spelling out.
+    const localAnchors = localAnchorsIn(textRef.current);
     // Bytes the row restored that its own text does not name stay sendable:
     // the row carried them, and a resend consumes the row.
     //
@@ -2229,14 +2426,16 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
           const adoptedInRowText = recoveredImageFacts(recovered, record.clientMutationId, ownerId);
           const adopted = {
             ...adoptedInRowText,
-            anchors: [
-              // The incoming row's anchors, translated out of ITS text...
-              ...anchorsIntoMergedText(adoptedInRowText.anchors, recovered.text, merged.text),
-              // ...and this pane's own live tags, which are already in the
-              // merged prefix and must NOT be translated - their offsets name
-              // spellings the translation would look for in the wrong text.
-              ...adoptedInRowText.localAnchors,
-            ],
+            // The incoming row's anchors translated out of ITS text, and this
+            // pane's own live tags - already in the merged prefix, never
+            // translated - unioned and deduplicated in the ONE coordinate
+            // system they now share.
+            anchors: anchorsIntoOneComposition(
+              adoptedInRowText.anchors,
+              adoptedInRowText.localAnchors,
+              recovered.text,
+              merged.text,
+            ),
           };
           // TWO LISTS, because they answer two questions.
           //
@@ -2478,10 +2677,44 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
           // never the number's first spelling.
           // Same split here: the row's anchors are translated, the live ones are
           // already in this text's coordinates.
-          adoptUnbackedImageMarkers([
-            ...anchorsIntoMergedText(adoptedInRowText.anchors, recovered.text, latest.text),
-            ...adoptedInRowText.localAnchors,
-          ]);
+          // Same one set, translated into the text the install actually lands
+          // in. `latest` may have re-merged against typing that arrived during
+          // the write, so the coordinates are its, not `merged`'s.
+          // THE LIVE HALF IS MOVED, NOT CARRIED. `adoptedInRowText` resolved
+          // this pane's own anchors against the text that existed BEFORE the
+          // durable write, and its offsets are positions in `merged.text`.
+          // Text typed during the write - a caption before a reference, say -
+          // shifts them, and `latest` is the text that will be saved. Installing
+          // the pre-write offsets tests each live anchor against text it is no
+          // longer in, so an anchor that merely slid is dropped: the caption
+          // survives in `latest.text` while the reference beside it loses its
+          // warning, and the next Send carries it as prose.
+          //
+          // It cannot be re-derived from `adoptedAnchors` here either: the
+          // `updateText(latest.text)` above is the MERGE's own write, and its
+          // reconciliation treats the appended row as an edit to this pane's
+          // anchors. The pre-write list is the only surviving statement of what
+          // this pane held, so it is mapped forward by the same arithmetic
+          // every other offset uses.
+          //
+          // The row's half cannot be re-derived at all: its offsets are
+          // positions in the row's own text, which is why it is translated from
+          // `recovered.text`. The two halves stay separate for exactly this
+          // reason.
+          adoptUnbackedImageMarkers(
+            anchorsIntoOneComposition(
+              adoptedInRowText.anchors,
+              mapAnchorsThroughEdit(
+                adoptedInRowText.localAnchors.filter(
+                  (anchor): anchor is { marker: number; offset: number } => anchor.offset !== undefined,
+                ),
+                merged.text,
+                latest.text,
+              ),
+              recovered.text,
+              latest.text,
+            ),
+          );
           state.setState({ restoredImageIds: adopted.restored, foreignImageIds: adopted.foreign });
           // The record was written once, by the transaction above, from exactly
           // the text and tiles that transaction committed (`merged.text`,
