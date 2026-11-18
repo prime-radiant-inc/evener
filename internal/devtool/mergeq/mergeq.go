@@ -167,7 +167,16 @@ type Client interface {
 	// so this, not the snapshot, decides whether a wait is over.
 	MergedCommit(ctx context.Context, repo, pr string) (sha string, merged bool, err error)
 	// Enqueue adds the pull request to its base branch's merge queue.
-	Enqueue(ctx context.Context, repo, prID string, jump bool) error
+	//
+	// The entry GitHub put the pull request in is returned when the reply names
+	// one, and nil when it does not. It is an observation the run cannot get any
+	// other way: the confirmation read may find the entry already gone, because a
+	// concurrent push rebuilt the merge group between the mutation and the read,
+	// and without this the run reports "no queue entry after enqueueing" for an
+	// enqueue GitHub itself confirmed performing. With it, a gone entry is what it
+	// is -- a drop the queue decided -- and is reported with its diagnostics
+	// rather than as a failed mutation.
+	Enqueue(ctx context.Context, repo, prID string, jump bool) (*QueueEntry, error)
 	// QueueDrop reads the latest queue removal event, or nil when the
 	// timeline holds none.
 	QueueDrop(ctx context.Context, repo, pr string) (*DropEvent, error)
@@ -307,7 +316,7 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 	// verdict: the run never learned anything. That is the lookup failure exit 2
 	// is for, and the operator's signal stays the interrupt it was.
 	startCtx, stopStart := context.WithTimeout(ctx, startupAllowance)
-	st, exitErr := readStatus(startCtx, opts, c)
+	st, exitErr := readStatus(startCtx, ctx, opts, c)
 	if exitErr == nil && st.State != mergedState {
 		var out Outcome
 		var merged bool
@@ -350,7 +359,11 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 		// everything else here: a mutation that eats the whole --wait leaves the
 		// confirmation with nothing, which it reports rather than spends twice.
 		enqueueCtx, stopEnqueue := context.WithTimeout(ctx, remainingAllowance(opts, clock, deadline))
-		enqueueErr := c.Enqueue(enqueueCtx, opts.Repo, st.ID, opts.Jump)
+		// The entry GitHub put the PR in, when the mutation's own reply named one.
+		// It is the only record of the enqueue if a concurrent push rebuilds the
+		// merge group before the confirmation runs, and the confirmation then finds
+		// no entry without the mutation having failed.
+		enqueueEntry, enqueueErr := c.Enqueue(enqueueCtx, opts.Repo, st.ID, opts.Jump)
 		// The ending is read BEFORE the cancel below, because cancelling sets the
 		// context's error to Canceled whatever it was: asked afterwards, every
 		// failure looked like an expired allowance. That is not a cosmetic
@@ -393,9 +406,15 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 				return Outcome{Kind: Merged, SHA: st.MergeSHA()}, nil
 			}
 			if st.Entry == nil {
-				// Still absent after a fresh read: the mutation did not land, and
-				// the honest report is that the enqueue could not be confirmed.
-				return Outcome{}, refusalFor(ctx, EnqueueFailed, enqueueErr)
+				if enqueueEntry == nil {
+					// No entry then and none now: the mutation did not land, and the
+					// honest report is that the enqueue could not be confirmed.
+					return Outcome{}, refusalFor(ctx, EnqueueFailed, enqueueErr)
+				}
+				// The mutation's reply named an entry and the read finds none, so the
+				// queue took the entry and removed it: that is a drop, not a failed
+				// mutation, and the drop diagnostics are what the operator needs.
+				return dropOutcome(ctx, opts, st, c, clock.Now)
 			}
 		} else {
 			var confirmed bool
@@ -408,7 +427,12 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 			return Outcome{Kind: Merged, SHA: st.MergeSHA()}, nil
 		}
 		if st.Entry == nil {
-			return Outcome{}, &ExitError{Kind: EnqueueLeftNoEntry, PRState: st.State}
+			if enqueueEntry == nil {
+				return Outcome{}, &ExitError{Kind: EnqueueLeftNoEntry, PRState: st.State}
+			}
+			// The enqueue landed and the entry is gone before this run could read it:
+			// a drop, with the diagnostics the queue's own reason supplies.
+			return dropOutcome(ctx, opts, st, c, clock.Now)
 		}
 	} else if opts.Jump {
 		// The jump rides on the enqueue call, which a queued PR does not get.
@@ -696,7 +720,7 @@ func observe(ctx context.Context, opts Options, c Client, budget time.Duration) 
 	defer stop()
 	out, merged, exitErr = mergedOutcome(readCtx, opts, c)
 	if exitErr == nil && !merged {
-		st, exitErr = readStatus(readCtx, opts, c)
+		st, exitErr = readStatus(readCtx, ctx, opts, c)
 	}
 	if err := ctx.Err(); err != nil {
 		return Outcome{}, false, Status{}, &ExitError{Kind: Interrupted, Detail: err.Error()}, false
@@ -713,14 +737,25 @@ func observe(ctx context.Context, opts Options, c Client, budget time.Duration) 
 // readStatus reads the status, turning a failed read into the run-ending
 // refusal the script reported.
 //
-// The context is asked after the read and before the status is interpreted, on
-// the success path as well as the failure one. gh writes its reply, exits, and
-// leaves a descendant holding the output pipe open until the drain bound, so a
-// cancelled read still returns a complete, valid answer -- and printing
-// "MERGEQ queued position=1" for a wait the operator stopped tells them the run
-// reached its own conclusion. The status is thrown away with the context.
-func readStatus(ctx context.Context, opts Options, c Client) (Status, *ExitError) {
-	st, err := c.Status(ctx, opts.Repo, opts.PR)
+// The INVOCATION context is asked after the read and before the status is
+// interpreted, on the success path as well as the failure one. gh writes its
+// reply, exits, and leaves a descendant holding the output pipe open until the
+// drain bound, so a cancelled read still returns a complete, valid answer -- and
+// printing "MERGEQ queued position=1" for a wait the operator stopped tells them
+// the run reached its own conclusion. The status is thrown away with that
+// context.
+//
+// What is NOT thrown away is an answer that arrived while only this READ's own
+// allowance expired. The allowance bounds how long the run waits for a read; it
+// does not unread a reply that arrived before it ran out. Discarding one there
+// cost the run the only observation it had: a complete confirmation showing the
+// PR queued, with a descendant holding the pipe past the allowance and the
+// operator still waiting, was turned into Interrupted and reported as a lookup
+// failure. The two contexts are separate arguments for exactly that reason --
+// `readCtx` bounds the wait, `ctx` is the invocation, and only the invocation
+// says the operator stopped something.
+func readStatus(readCtx, ctx context.Context, opts Options, c Client) (Status, *ExitError) {
+	st, err := c.Status(readCtx, opts.Repo, opts.PR)
 	if err != nil {
 		return Status{}, refusalFor(ctx, LookupFailed, err)
 	}
@@ -762,7 +797,7 @@ func readStatus(ctx context.Context, opts Options, c Client) (Status, *ExitError
 func confirmEnqueue(ctx context.Context, opts Options, c Client, clock Clock, deadline time.Time, post *postDeadline) (Status, bool, *ExitError) {
 	readCtx, stop := context.WithTimeout(ctx, post.budget(clock, deadline, opts.Wait))
 	defer stop()
-	st, exitErr := readStatus(readCtx, opts, c)
+	st, exitErr := readStatus(readCtx, ctx, opts, c)
 	if exitErr != nil && exitErr.Kind == Interrupted && ctx.Err() == nil {
 		// refusalFor answered the budget, not the operator: the run's own context
 		// is still live, so what ended this read is the allowance.

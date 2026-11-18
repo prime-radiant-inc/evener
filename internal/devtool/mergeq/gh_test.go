@@ -128,6 +128,17 @@ func fixtureBaseCandidates() []string {
 //     mode's group position is the only place the mask is visible.
 //   - Anything that cannot be read is untrusted. "The check failed" and "the
 //     answer is no" are different facts and only one is safe to act on.
+//   - Every component is inspected with Lstat, never Stat. The walk runs over
+//     the path EvalSymlinks already resolved, so a component that is a symlink
+//     now is one that appeared AFTER that resolution: another user replaced it
+//     in the window between the resolve and this check. Following it would
+//     inspect the owner and mode of the target -- which can be this user's own
+//     private directory -- while the path still holds an entry that user can
+//     swap again, and the fixture would then write and execute scripts through
+//     it. A component that resolves to a symlink is refused for that reason and
+//     not because symlinks are unwanted in general: macOS's /var ->
+//     /private/var is resolved away before this walk, which is why EvalSymlinks
+//     happens first and only the resolved path is checked.
 func fixtureChainTrusted(t *testing.T, path string) (reason string) {
 	t.Helper()
 	if !filepath.IsAbs(path) {
@@ -145,9 +156,17 @@ func fixtureChainTrusted(t *testing.T, path string) (reason string) {
 // local user, or "" when it cannot.
 func fixtureComponentReplaceable(t *testing.T, component string) string {
 	t.Helper()
-	info, err := os.Stat(component)
+	// Lstat, not Stat: this walks a path EvalSymlinks already resolved, so a
+	// symlink here is a component that changed after that resolution. Stat would
+	// follow it and describe the target -- a directory this user owns at 0700,
+	// say -- while the name along the way is still one another user can retarget.
+	info, err := os.Lstat(component)
 	if err != nil {
 		return fmt.Sprintf("cannot inspect %s (%v)", component, err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		target, _ := os.Readlink(component)
+		return fmt.Sprintf("%s is a symlink to %q, which appeared after the path was resolved, so the entry another user can retarget is what the fixture would write through rather than the directory it points at", component, target)
 	}
 	if !info.IsDir() {
 		return component + " is not a directory"
@@ -700,6 +719,70 @@ func TestGHDrainWithoutAReplyIsNotSuccess(t *testing.T) {
 	}
 }
 
+// TestGraphqlRefusalWantsRejectionEvidenceNotAMessage pins what makes a reply a
+// definitive refusal.
+//
+// A refusal is GitHub saying no to the REQUEST, and it says that in the entry's
+// own shape: a `type` (UNPROCESSABLE, FORBIDDEN, NOT_FOUND) and no `path`.
+//
+// What is not a refusal is a field-resolution error -- an entry carrying a
+// `path`, which means GitHub executed the mutation and then failed while
+// building the reply. The write may already have landed, so classifying that as
+// the answer skips the read that would find the PR queued and reports an enqueue
+// GitHub performed as failed. Nor is an entry with no `type` and no `path`: it
+// is an execution failure that says nothing structured about the request.
+//
+// Before this rule any nonempty message was the answer, so both of those were
+// read as refusals.
+func TestGraphqlRefusalWantsRejectionEvidenceNotAMessage(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		body      string
+		want      bool
+		rationale string
+	}{
+		{
+			name: "a request-level rejection is a refusal",
+			body: `{"data":{"enqueuePullRequest":null},"errors":[{"type":"UNPROCESSABLE","message":"protected branch"}]}`,
+			want: true,
+		},
+		{
+			name: "another request-level type is a refusal too",
+			body: `{"data":{"enqueuePullRequest":null},"errors":[{"type":"FORBIDDEN","message":"not authorized to jump the queue"}]}`,
+			want: true,
+		},
+		{
+			name: "a field-resolution error is not",
+			body: `{"data":{"enqueuePullRequest":{"mergeQueueEntry":{"position":3}}},"errors":[{"type":"INTERNAL","path":["enqueuePullRequest"],"message":"something went wrong"}]}`,
+			want: false,
+		},
+		{
+			name: "an untyped execution failure is not",
+			body: `{"data":{"enqueuePullRequest":{"mergeQueueEntry":{"position":3}}},"errors":[{"message":"internal error"}]}`,
+			want: false,
+		},
+		{
+			name: "a whole body with no errors is not",
+			body: `{"data":{"enqueuePullRequest":{"mergeQueueEntry":{"position":3}}}}`,
+			want: false,
+		},
+		{
+			name: "an empty errors array is not",
+			body: `{"data":{"enqueuePullRequest":null},"errors":[]}`,
+			want: false,
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			msg, got := graphqlRefusal([]byte(tc.body))
+			if got != tc.want {
+				t.Fatalf("graphqlRefusal(%s) = %q, %v, want a refusal of %v: reading this the other way either skips the read-back for a write that may have landed or spends one on a request GitHub declined", tc.body, msg, got, tc.want)
+			}
+		})
+	}
+}
+
 // TestGHGatewayBodyIsNotAnAnswerToTheMutation pins that a whole JSON body on a
 // non-zero exit is not, by itself, GitHub's answer.
 //
@@ -722,16 +805,21 @@ func TestGHDrainWithoutAReplyIsNotSuccess(t *testing.T) {
 func TestGHGatewayBodyIsNotAnAnswerToTheMutation(t *testing.T) {
 	t.Parallel()
 	dir := fixtureExecDir(t)
+	// A token this test chose, so the detail check below pins that gh's stderr
+	// survives the classification rather than that production wording does. The
+	// literal cannot appear in production copy, which keeps it outside the
+	// error-text rule's subject entirely.
+	const detail = "fixture-gateway-detail-8c41"
 	// One gh, three different calls: the two status reads around the mutation
 	// answer properly, and the enqueue answers with a gateway body and exits 1.
 	// The reply is chosen by the arguments, which is what makes the mutation the
 	// call that fails.
 	gh := filepath.Join(dir, "gh")
-	writeExecutable(t, gh, `#!/usr/bin/env bash
+	writeExecutable(t, gh, fmt.Sprintf(`#!/usr/bin/env bash
 for arg in "$@"; do
 	if [[ "$arg" == query=*enqueuePullRequest* ]]; then
-		printf '%s' '{"message":"Server Error","status":"502"}'
-		printf 'gh: Server Error\n' >&2
+		printf '%%s' '{"message":"%[1]s","status":"502"}'
+		printf 'gh: %[1]s\n' >&2
 		exit 1
 	fi
 done
@@ -739,27 +827,30 @@ reads=$(dirname "$0")/status-reads
 count=$(cat "$reads" 2>/dev/null | wc -l)
 printf 'x\n' >>"$reads"
 if [ "$count" -eq 0 ]; then
-	printf '%s' '{"data":{"repository":{"pullRequest":{"id":"PR_6499","state":"OPEN","baseRefName":"main","mergeQueueEntry":null}}}}'
+	printf '%%s' '{"data":{"repository":{"pullRequest":{"id":"PR_6499","state":"OPEN","baseRefName":"main","mergeQueueEntry":null}}}}'
 else
-	printf '%s' '{"data":{"repository":{"pullRequest":{"id":"PR_6499","state":"OPEN","baseRefName":"main","mergeQueueEntry":{"position":3,"state":"QUEUED"}}}}}'
+	printf '%%s' '{"data":{"repository":{"pullRequest":{"id":"PR_6499","state":"OPEN","baseRefName":"main","mergeQueueEntry":{"position":3,"state":"QUEUED"}}}}}'
 fi
-`)
+`, detail))
 	c := GHClient{GH: gh, GroupFile: filepath.Join(dir, "group")}
 
 	// The client's own classification, before the run acts on it.
-	enqueueErr := c.Enqueue(context.Background(), "prime-radiant-inc/evener", "PR_6499", false)
+	_, enqueueErr := c.Enqueue(context.Background(), "prime-radiant-inc/evener", "PR_6499", false)
 	if enqueueErr == nil {
 		t.Fatal("an enqueue that exited 1 was reported as success")
 	}
-	var refusal *RefusalError
-	if errors.As(enqueueErr, &refusal) {
+	if _, isRefusal := errors.AsType[*RefusalError](enqueueErr); isRefusal {
 		t.Fatalf("error = %v, reported as a refusal: a gateway's 502 body is not GitHub declining the mutation", enqueueErr)
 	}
 	if !errors.Is(enqueueErr, ErrOutcomeUnknown) {
 		t.Fatalf("error = %v, want ErrOutcomeUnknown: a whole JSON body that names no error is no answer at all, and calling it a failure is what reported an accepted enqueue as refused", enqueueErr)
 	}
-	if !strings.Contains(enqueueErr.Error(), "Server Error") {
-		t.Fatalf("error = %v, want the gateway's own diagnostic carried: the operator needs to read what answered", enqueueErr)
+	// The diagnostic is carried through, checked against an opaque token this
+	// test chose rather than against production copy: what is being pinned is
+	// that the reader is handed whatever gh said, not that any particular
+	// wording survived.
+	if !strings.Contains(enqueueErr.Error(), detail) {
+		t.Fatalf("error = %v, want the detail this fixture emitted (%s) carried: the operator needs to read what answered, and dropping it leaves a 502 with no account of itself", enqueueErr, detail)
 	}
 
 	// And the run reconciles it rather than reporting a refusal. --wait 0 keeps
@@ -1338,6 +1429,56 @@ func TestMergEQFixtureBaseIsTrustedAndExecutable(t *testing.T) {
 		}
 		if reason := replaceableAncestor(t, dir); reason == "" {
 			t.Fatalf("%s is world-writable with no sticky bit, and the fixture rule accepted it because the ACL's group question came back clean: another user can replace entries in it", dir)
+		}
+	})
+	t.Run("a component that changed to a symlink is refused", func(t *testing.T) {
+		t.Parallel()
+		// The race the check is for, in miniature. The fixture resolves its base
+		// with EvalSymlinks and then walks the components. A component under a
+		// sticky directory belonging to another user can be renamed away and
+		// replaced with a symlink in that window: the walk would then describe the
+		// TARGET (this user's own 0700 directory, say) while the name along the
+		// path is one that user can retarget again at will.
+		//
+		// Stat follows the link and reports the target, so it accepts the swap. The
+		// step that changes and then the check that reads it are separated here by
+		// construction rather than by timing: the link is planted before the walk
+		// runs, which is exactly the state the race produces.
+		base := fixtureExecDir(t)
+		real := filepath.Join(base, "resolved-target")
+		if err := os.Mkdir(real, 0o700); err != nil {
+			t.Fatalf("make the trusted target: %v", err)
+		}
+		// The parent the fixture walks through: this user owns it, so the only
+		// reason to refuse is the link below.
+		parent := filepath.Join(base, "swapped-parent")
+		if err := os.Mkdir(parent, 0o700); err != nil {
+			t.Fatalf("make the walked parent: %v", err)
+		}
+		link := filepath.Join(parent, "component")
+		if err := os.Symlink(real, link); err != nil {
+			t.Fatalf("plant the swapped component: %v", err)
+		}
+		// The premise: Stat, and therefore the pre-fix check, sees the target and
+		// would have called this component a trusted 0700 directory.
+		if info, err := os.Stat(link); err != nil {
+			t.Fatalf("stat the link: %v", err)
+		} else if !info.IsDir() || info.Mode().Perm() != 0o700 {
+			t.Fatalf("the target reads as %v, so this case does not isolate the symlink: the whole point is that following the link looks safe", info.Mode())
+		}
+		if reason := replaceableAncestor(t, link); reason == "" {
+			t.Fatalf("%s is a symlink that appeared after the path was resolved, and the fixture rule accepted it by following it to a private 0700 directory: another user can retarget that name between the resolve and the check, so the fixture would write and execute scripts through a path they control", link)
+		}
+		// And the same path with the link replaced by the real directory is
+		// accepted, so the rule refuses the symlink rather than the location.
+		if err := os.Remove(link); err != nil {
+			t.Fatalf("remove the link: %v", err)
+		}
+		if err := os.Mkdir(link, 0o700); err != nil {
+			t.Fatalf("make the component a real directory: %v", err)
+		}
+		if reason := replaceableAncestor(t, link); reason != "" {
+			t.Fatalf("a real 0700 directory under a trusted parent was refused (%s): the rule must refuse the swap, not the path", reason)
 		}
 	})
 	t.Run("an exec-capable base is accepted", func(t *testing.T) {

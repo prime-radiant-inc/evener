@@ -228,22 +228,50 @@ func completeReply(out []byte) bool {
 // costs one status read and finds the truth. So the test is the errors array, and
 // anything else -- including a body with data and no errors, which the caller's
 // parser rejects on its own terms -- stays unknown.
+//
+// An errors array is not by itself a refusal either, which is why the entries
+// are read for their shape and not only their message. GitHub answers a rejected
+// mutation at the REQUEST level: the entry carries its own `type` (UNPROCESSABLE,
+// FORBIDDEN, NOT_FOUND) and no `path`, because nothing was executed to reject.
+// An entry with a `path` is a FIELD-RESOLUTION error: GitHub ran the mutation and
+// then failed while building the reply, which is precisely the case where the
+// write may already have landed. An entry with neither a type nor a path is an
+// execution failure with no structured evidence about the request at all. Both
+// of those are unknown, and unknown is read back; only the first is an answer.
+//
+// The previous rule took any nonempty message as the answer, so a payload that
+// failed to resolve AFTER the enqueue took effect was reported as a refusal and
+// the read that would have found the PR queued was skipped.
 func graphqlRefusal(out []byte) (string, bool) {
 	if !completeReply(out) {
 		return "", false
 	}
 	var body struct {
 		Errors []struct {
+			// Type is GitHub's own classification of a request-level rejection.
+			Type    string
 			Message string
+			// Path names the response field an execution error happened in. Its
+			// presence is what distinguishes "we failed to build the reply" from
+			// "we declined the request".
+			Path []json.RawMessage
 		}
 	}
 	if err := json.Unmarshal(out, &body); err != nil {
 		return "", false
 	}
 	for _, e := range body.Errors {
-		if msg := strings.TrimSpace(e.Message); msg != "" {
-			return msg, true
+		msg := strings.TrimSpace(e.Message)
+		if msg == "" {
+			continue
 		}
+		if len(e.Path) > 0 {
+			continue
+		}
+		if strings.TrimSpace(e.Type) == "" {
+			continue
+		}
+		return msg, true
 	}
 	return "", false
 }
@@ -466,12 +494,57 @@ func parseMergedCommit(out []byte) (string, bool, error) {
 }
 
 // Enqueue implements Client.
-func (c GHClient) Enqueue(ctx context.Context, repo, prID string, jump bool) error {
-	_, err := c.run(ctx, "api", "graphql",
+func (c GHClient) Enqueue(ctx context.Context, repo, prID string, jump bool) (*QueueEntry, error) {
+	out, err := c.run(ctx, "api", "graphql",
 		"-f", "query="+enqueueMutation,
 		"-f", "id="+prID,
 		"-F", "jump="+boolString(jump))
-	return err
+	if err != nil {
+		return nil, err
+	}
+	return parseEnqueuedEntry(out), nil
+}
+
+// parseEnqueuedEntry reads the queue entry the mutation's reply names, and nil
+// when it names none.
+//
+// The mutation asks for `enqueuePullRequest{mergeQueueEntry{position}}`, so a
+// reply that performed the write carries the position GitHub put the pull
+// request in. That is the one fact the confirmation read cannot recover if the
+// entry is gone by the time it runs, so it is decoded here and handed to the
+// caller rather than discarded.
+//
+// A reply this function cannot decode is not an error: the mutation returned no
+// error, so the write is performed, and the confirmation read is what decides
+// where it landed. Losing the entry then costs the drop diagnostics, which is
+// the same position a reply that named no entry leaves the run in.
+//
+// The struct only accepts a QUEUED entry with a position for the same reason the
+// status parser does: `mergeQueueEntry` is null in a reply where GitHub accepted
+// the mutation but the pull request is not in the queue, and a zero position is
+// not what that means.
+func parseEnqueuedEntry(out []byte) *QueueEntry {
+	var body struct {
+		Data struct {
+			EnqueuePullRequest *struct {
+				MergeQueueEntry *struct {
+					Position int64
+					State    string
+				}
+			}
+		}
+	}
+	if err := json.Unmarshal(out, &body); err != nil {
+		return nil
+	}
+	entry := body.Data.EnqueuePullRequest
+	if entry == nil || entry.MergeQueueEntry == nil || entry.MergeQueueEntry.Position <= 0 {
+		return nil
+	}
+	return &QueueEntry{
+		Position: entry.MergeQueueEntry.Position,
+		State:    entry.MergeQueueEntry.State,
+	}
 }
 
 // boolString renders a flag the way gh's typed -F wants it.

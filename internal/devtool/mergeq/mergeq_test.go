@@ -44,7 +44,10 @@ type fakeClient struct {
 	// enqueueErr makes the enqueue call fail. enqueued records the pulls it
 	// was asked to enqueue, in order.
 	enqueueErr error
-	enqueued   []enqueuedPull
+	// enqueueEntry is the queue entry the enqueue reply names, which is nil when
+	// the reply names none.
+	enqueueEntry *QueueEntry
+	enqueued     []enqueuedPull
 	// drop/ dropErr answer the removal-event read; drop nil means none.
 	drop    *DropEvent
 	dropErr error
@@ -86,12 +89,12 @@ func (f *fakeClient) MergedCommit(context.Context, string, string) (string, bool
 	return f.mergedSHA, f.merged, nil
 }
 
-func (f *fakeClient) Enqueue(_ context.Context, _ string, prID string, jump bool) error {
+func (f *fakeClient) Enqueue(_ context.Context, _ string, prID string, jump bool) (*QueueEntry, error) {
 	if f.enqueueErr != nil {
-		return f.enqueueErr
+		return nil, f.enqueueErr
 	}
 	f.enqueued = append(f.enqueued, enqueuedPull{prID: prID, jump: jump})
-	return nil
+	return f.enqueueEntry, nil
 }
 
 func (f *fakeClient) QueueDrop(context.Context, string, string) (*DropEvent, error) {
@@ -149,7 +152,9 @@ func (c *cancellingClient) MergedCommit(context.Context, string, string) (string
 	return "", false, nil
 }
 
-func (c *cancellingClient) Enqueue(context.Context, string, string, bool) error { return nil }
+func (c *cancellingClient) Enqueue(context.Context, string, string, bool) (*QueueEntry, error) {
+	return nil, nil
+}
 
 func (c *cancellingClient) QueueDrop(context.Context, string, string) (*DropEvent, error) {
 	return nil, nil
@@ -715,10 +720,10 @@ type expiringEnqueueClient struct {
 	now *time.Time
 }
 
-func (c *expiringEnqueueClient) Enqueue(ctx context.Context, _, _ string, _ bool) error {
+func (c *expiringEnqueueClient) Enqueue(ctx context.Context, _, _ string, _ bool) (*QueueEntry, error) {
 	<-ctx.Done()
 	*c.now = c.now.Add(time.Hour)
-	return ctx.Err()
+	return nil, ctx.Err()
 }
 
 // TestWaitingRunReportsTheQueuedPositionFirst pins the progress line a waiting
@@ -905,6 +910,107 @@ func TestWaitBudgetBoundsTheReadsItMakes(t *testing.T) {
 // as this invocation's success. That is the exact misreport the discriminated
 // error types exist to prevent, so matching through wrapping is load-bearing and
 // is pinned here rather than left to the errors.AsType rewrite's reputation.
+// TestReadStatusKeepsAnAnswerItsOwnAllowanceOutlived pins the distinction
+// readStatus has to make, at the place it makes it.
+//
+// The read context bounds how long the run waits. The invocation context says
+// whether the operator stopped it. They expire for different reasons and only
+// one of them makes the answer untrue, so the function takes both.
+//
+// A completed reply can arrive and then have a descendant hold the output pipe
+// until the read's own allowance runs out, so `Status` returns a decodable
+// status AND an expired read context together. Asking the read context makes
+// that Interrupted: the run denies an answer it received and reports a lookup
+// failure for a PR it was just told was queued, with nobody having cancelled
+// anything. Asking the invocation context keeps the answer, which is what the
+// allowance was always meant to bound.
+//
+// Tested here rather than through Execute because the window is the read
+// context's own expiry and a fake clock cannot expire a real context: the two
+// are separate machinery, and a case built on the clock would assert the fake's
+// arithmetic rather than this branch.
+// TestAConfirmedEnqueueThatIsGoneIsADropNotAFailure pins what the mutation's own
+// reply is worth.
+//
+// The enqueue mutation asks for the new queue entry, so a reply that performed
+// the write carries the position GitHub put the PR in. That reply used to be
+// discarded, and the only record left was the confirmation read. A concurrent
+// push can rebuild the merge group between the mutation and that read, which
+// removes the entry: the read then finds none, and the run reported
+// "no queue entry after enqueueing" -- exit 2, an enqueue failure -- for a
+// mutation GitHub itself had confirmed. The drop's own reason was never read,
+// so the operator also lost the diagnostics that say why.
+//
+// With the entry kept, a confirmation that finds it gone is what it is: the
+// queue took the entry and removed it. That is a drop, reported with its reason.
+func TestAConfirmedEnqueueThatIsGoneIsADropNotAFailure(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	// The mutation's reply named position 2. The confirmation reads after it find
+	// the PR open with no entry, which is the push-rebuild case.
+	c := &fakeClient{
+		enqueueEntry: queueEntry(2),
+		statuses: []Status{
+			{ID: "PR_6499", State: "OPEN", Base: "main"},
+			{ID: "PR_6499", State: "OPEN", Base: "main"},
+		},
+		drop: &DropEvent{CreatedAt: now.Add(-time.Minute), Reason: "failed_checks"},
+	}
+	out, exitErr := Execute(context.Background(), opts(0), c, (&fakeClock{now: now}).clock())
+	if exitErr != nil {
+		t.Fatalf("Execute: %v, want the drop reported: the mutation's reply named the entry GitHub put the PR in, so a read that finds it gone is the queue having removed it, not a failed enqueue", exitErr)
+	}
+	if out.Kind != Dropped {
+		t.Fatalf("outcome = %+v, want Dropped", out)
+	}
+	if out.DropClass != DropChecksFailed {
+		t.Fatalf("DropClass = %v, want %v: the queue's own removal reason was available and explains the drop", out.DropClass, DropChecksFailed)
+	}
+
+	// The other direction, so this is not a licence to call any absence a drop: a
+	// reply that named no entry and a read that finds none is still an enqueue
+	// failure.
+	silent := &fakeClient{
+		statuses: []Status{
+			{ID: "PR_6499", State: "OPEN", Base: "main"},
+			{ID: "PR_6499", State: "OPEN", Base: "main"},
+		},
+	}
+	if _, exitErr := Execute(context.Background(), opts(0), silent, (&fakeClock{now: now}).clock()); exitErr == nil {
+		t.Fatal("an enqueue that was never confirmed and left no entry was reported as success")
+	} else if exitErr.Kind != EnqueueLeftNoEntry {
+		t.Fatalf("kind = %v, want EnqueueLeftNoEntry: no reply named an entry and no read found one, so nothing established the enqueue", exitErr.Kind)
+	}
+}
+
+func TestReadStatusKeepsAnAnswerItsOwnAllowanceOutlived(t *testing.T) {
+	t.Parallel()
+	// The read's allowance is already spent when the call returns: expired before
+	// the read starts, which is the state an overrun leaves behind.
+	spent, stopSpent := context.WithTimeout(context.Background(), -time.Second)
+	defer stopSpent()
+	c := &fakeClient{statuses: []Status{{ID: "PR_6499", State: "OPEN", Entry: queueEntry(6)}}}
+
+	// The invocation is live, so the answer stands.
+	st, exitErr := readStatus(spent, context.Background(), opts(0), c)
+	if exitErr != nil {
+		t.Fatalf("readStatus: %v, want the decoded status: the read's own allowance expired, the reply arrived before it did, and nobody stopped the invocation", exitErr)
+	}
+	if st.Entry == nil || st.Entry.Position != 6 {
+		t.Fatalf("status = %+v, want position 6 from the reply the read returned", st)
+	}
+
+	// The invocation is stopped, so the answer does not stand. This is the
+	// direction that keeps the fix from becoming a licence to ignore a signal.
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, exitErr := readStatus(context.Background(), ctx, opts(0), c); exitErr == nil {
+		t.Fatal("a cancelled invocation reported the decoded status as its outcome")
+	} else if exitErr.Kind != Interrupted {
+		t.Fatalf("kind = %v, want Interrupted: the operator stopped the invocation, and a stop outranks a reply that arrived behind it", exitErr.Kind)
+	}
+}
+
 func TestAWrappedRefusalIsStillAnAnswer(t *testing.T) {
 	t.Parallel()
 	refusal := &RefusalError{Detail: "the pull request is already in the merge queue, so --jump was refused"}
@@ -980,7 +1086,7 @@ func (c *refusingEnqueueClient) Status(ctx context.Context, repo, pr string) (St
 	return c.fakeClient.Status(ctx, repo, pr)
 }
 
-func (c *refusingEnqueueClient) Enqueue(ctx context.Context, _, _ string, _ bool) error {
+func (c *refusingEnqueueClient) Enqueue(ctx context.Context, _, _ string, _ bool) (*QueueEntry, error) {
 	// The call waits out its allowance and THEN reports the refusal, which is the
 	// reviewer's interleaving: gh answered no just before the deadline and the
 	// drain crossed it, so the context is expired while the answer is definite.
@@ -988,7 +1094,7 @@ func (c *refusingEnqueueClient) Enqueue(ctx context.Context, _, _ string, _ bool
 	// a reconciliation read to spend -- if the run wrongly reconciles.
 	*c.now = c.now.Add(c.spend - time.Millisecond)
 	<-ctx.Done()
-	return &RefusalError{Detail: "the pull request is already in the merge queue, so --jump was refused"}
+	return nil, &RefusalError{Detail: "the pull request is already in the merge queue, so --jump was refused"}
 }
 
 // TestAStalledStartingLookupIsBounded pins that the first reads are bounded too.
@@ -1107,9 +1213,9 @@ type spendingEnqueueClient struct {
 	spend time.Duration
 }
 
-func (c *spendingEnqueueClient) Enqueue(context.Context, string, string, bool) error {
+func (c *spendingEnqueueClient) Enqueue(context.Context, string, string, bool) (*QueueEntry, error) {
 	*c.now = c.now.Add(c.spend)
-	return nil
+	return nil, nil
 }
 
 // TestAConfirmationThatStartsBeforeTheDeadlineStillGetsTheAllowance pins the
@@ -1165,10 +1271,10 @@ type confirmationBudgetClient struct {
 	confirmationReads  int
 }
 
-func (c *confirmationBudgetClient) Enqueue(context.Context, string, string, bool) error {
+func (c *confirmationBudgetClient) Enqueue(context.Context, string, string, bool) (*QueueEntry, error) {
 	*c.now = c.now.Add(c.spend)
 	c.enqueueCalled = true
-	return nil
+	return nil, nil
 }
 
 func (c *confirmationBudgetClient) Status(ctx context.Context, repo, pr string) (Status, error) {
@@ -1235,10 +1341,10 @@ type spentAllowanceClient struct {
 	enqueueCalled bool
 }
 
-func (c *spentAllowanceClient) Enqueue(context.Context, string, string, bool) error {
+func (c *spentAllowanceClient) Enqueue(context.Context, string, string, bool) (*QueueEntry, error) {
 	*c.now = c.now.Add(2 * finalObservationAllowance)
 	c.enqueueCalled = true
-	return fmt.Errorf("gh: %w", ErrIncompleteReply)
+	return nil, fmt.Errorf("gh: %w", ErrIncompleteReply)
 }
 
 func (c *spentAllowanceClient) Status(ctx context.Context, repo, pr string) (Status, error) {
@@ -1491,9 +1597,9 @@ type slowConfirmationClient struct {
 	enqueueCalled bool
 }
 
-func (c *slowConfirmationClient) Enqueue(context.Context, string, string, bool) error {
+func (c *slowConfirmationClient) Enqueue(context.Context, string, string, bool) (*QueueEntry, error) {
 	c.enqueueCalled = true
-	return nil
+	return nil, nil
 }
 
 func (c *slowConfirmationClient) Status(ctx context.Context, repo, pr string) (Status, error) {
@@ -1523,10 +1629,10 @@ type stallAfterConfirmationClient struct {
 	confirmed bool
 }
 
-func (c *stallAfterConfirmationClient) Enqueue(context.Context, string, string, bool) error {
+func (c *stallAfterConfirmationClient) Enqueue(context.Context, string, string, bool) (*QueueEntry, error) {
 	*c.now = c.now.Add(c.spend)
 	c.enqueueCalled = true
-	return nil
+	return nil, nil
 }
 
 func (c *stallAfterConfirmationClient) Status(ctx context.Context, repo, pr string) (Status, error) {
@@ -1738,9 +1844,9 @@ func (c *confirmationRecordingClient) MergedCommit(context.Context, string, stri
 	return "", false, nil
 }
 
-func (c *confirmationRecordingClient) Enqueue(context.Context, string, string, bool) error {
+func (c *confirmationRecordingClient) Enqueue(context.Context, string, string, bool) (*QueueEntry, error) {
 	c.enqueueCalled = true
-	return nil
+	return nil, nil
 }
 
 func (c *confirmationRecordingClient) QueueDrop(context.Context, string, string) (*DropEvent, error) {
@@ -1820,7 +1926,9 @@ func (c *deadlineRecordingClient) MergedCommit(ctx context.Context, _, _ string)
 	return "", false, nil
 }
 
-func (c *deadlineRecordingClient) Enqueue(context.Context, string, string, bool) error { return nil }
+func (c *deadlineRecordingClient) Enqueue(context.Context, string, string, bool) (*QueueEntry, error) {
+	return nil, nil
+}
 
 func (c *deadlineRecordingClient) QueueDrop(context.Context, string, string) (*DropEvent, error) {
 	return nil, nil
@@ -1927,7 +2035,9 @@ func (c *lateReplyClient) MergedCommit(context.Context, string, string) (string,
 	return "", false, nil
 }
 
-func (c *lateReplyClient) Enqueue(context.Context, string, string, bool) error { return nil }
+func (c *lateReplyClient) Enqueue(context.Context, string, string, bool) (*QueueEntry, error) {
+	return nil, nil
+}
 
 func (c *lateReplyClient) QueueDrop(context.Context, string, string) (*DropEvent, error) {
 	return nil, nil
