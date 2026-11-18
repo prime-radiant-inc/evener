@@ -264,6 +264,14 @@ type ThinkingData struct {
 	ScalarReasoningText  string `json:"scalar_reasoning_text,omitempty"`
 }
 
+// ChatReplayText selects the text for the Chat Completions replay shape.
+func (t *ThinkingData) ChatReplayText(scalar bool) string {
+	if scalar && t.ScalarReasoningText != "" && IsOpenAICompatReasoningField(t.ScalarReasoningField) {
+		return t.ScalarReasoningText
+	}
+	return t.Text
+}
+
 // openAICompatReasoningFields is the canonical ordered list of wire fields
 // OpenAI-compatible providers use for assistant reasoning. Order matters:
 // parsers take the first non-empty variant per chunk.

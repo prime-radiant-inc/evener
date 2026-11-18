@@ -340,9 +340,14 @@ func fromChatCompletionResponse(raw map[string]any, finishMap map[string]string,
 	reasoning, field := extractReasoning(choice.Message)
 	encrypted := encodeEncryptedDetails(choice.Message.ReasoningDetails)
 	if reasoning != "" || encrypted != "" {
+		thinking := &llm.ThinkingData{Text: reasoning, Signature: field, EncryptedContent: encrypted}
+		if field == "" {
+			m := choice.Message
+			thinking.ScalarReasoningText, thinking.ScalarReasoningField = extractScalarReasoning(m.ReasoningContent, m.Reasoning, m.ReasoningText)
+		}
 		parts = append(parts, llm.ContentPart{
 			Kind:     llm.ContentThinking,
-			Thinking: &llm.ThinkingData{Text: reasoning, Signature: field, EncryptedContent: encrypted},
+			Thinking: thinking,
 		})
 	}
 	if choice.Message.Content != "" {

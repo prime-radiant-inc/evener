@@ -39,10 +39,9 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 	var textBuf strings.Builder
 	var reasoningStarted bool
 	var reasoningBuf strings.Builder
-	var scalarField string
-	var hasDetailText bool
-	// Scalar-only streams already have their replay bytes in reasoningBuf.
-	var scalarBuf strings.Builder
+	// reasoningField remembers which wire field the first reasoning delta
+	// arrived on so replay can route thinking back to the same field.
+	var reasoningField string
 	// encryptedDetails accumulates opaque reasoning.encrypted items (OpenRouter
 	// Gemini/o-series) in arrival order; they ride the thinking part's
 	// EncryptedContent so the reasoning chain survives replay.
@@ -116,13 +115,7 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 				// Build final response.
 				msg := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{}}
 				if reasoningBuf.Len() > 0 || len(encryptedDetails) > 0 {
-					td := &llm.ThinkingData{Text: reasoningBuf.String()}
-					if hasDetailText {
-						td.ScalarReasoningField = scalarField
-						td.ScalarReasoningText = scalarBuf.String()
-					} else {
-						td.Signature = scalarField
-					}
+					td := &llm.ThinkingData{Text: reasoningBuf.String(), Signature: reasoningField}
 					if len(encryptedDetails) > 0 {
 						if b, err := json.Marshal(encryptedDetails); err == nil {
 							td.EncryptedContent = string(b)
@@ -237,27 +230,14 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 			// so reasoningFromDelta skips them).
 			encryptedDetails = append(encryptedDetails, collectEncryptedDetails(choice.Delta.ReasoningDetails)...)
 
-			// Structured text keeps display precedence. Scalar replay keeps
-			// its own deltas and the first scalar field from the stream.
+			// Reasoning delta — providers vary the field name; take the first
+			// non-empty variant per chunk (duplicated identical fields must
+			// not double the text) and remember the field for replay.
 			if delta, field := reasoningFromDelta(choice.Delta); delta != "" {
-				scalar := delta
-				if field == "" {
-					if !hasDetailText {
-						scalarBuf.WriteString(reasoningBuf.String())
-						hasDetailText = true
-					}
-					d := choice.Delta
-					scalar, field = extractScalarReasoning(d.ReasoningContent, d.Reasoning, d.ReasoningText)
-				}
-				if scalarField == "" {
-					scalarField = field
-				}
-				if hasDetailText {
-					scalarBuf.WriteString(scalar)
-				}
 				if !reasoningStarted {
 					s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningStart})
 					reasoningStarted = true
+					reasoningField = field
 				}
 				reasoningBuf.WriteString(delta)
 				s.Send(llm.StreamEvent{

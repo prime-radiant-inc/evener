@@ -241,7 +241,7 @@ func reasoningReplayField(parts []llm.ContentPart, caps registry.Caps) string {
 	}
 	for _, p := range parts {
 		if p.Kind == llm.ContentThinking && p.Thinking != nil {
-			if hasScalarReasoning(p.Thinking) {
+			if p.Thinking.ScalarReasoningText != "" && llm.IsOpenAICompatReasoningField(p.Thinking.ScalarReasoningField) {
 				return p.Thinking.ScalarReasoningField
 			}
 			if p.Thinking.Text == "" {
@@ -276,27 +276,18 @@ func encryptedDetailsFromParts(parts []llm.ContentPart) []map[string]any {
 	return out
 }
 
-func hasScalarReasoning(thinking *llm.ThinkingData) bool {
-	return thinking.ScalarReasoningText != "" && llm.IsOpenAICompatReasoningField(thinking.ScalarReasoningField)
-}
-
 func thinkingFromParts(parts []llm.ContentPart, scalarReplay bool) string {
 	var b strings.Builder
 	for _, p := range parts {
 		if p.Kind != llm.ContentThinking || p.Thinking == nil {
 			continue
 		}
-		text := p.Thinking.Text
-		if scalarReplay && hasScalarReasoning(p.Thinking) {
-			text = p.Thinking.ScalarReasoningText
+		if text := p.Thinking.ChatReplayText(scalarReplay); text != "" {
+			if b.Len() > 0 {
+				b.WriteString("\n")
+			}
+			b.WriteString(text)
 		}
-		if text == "" {
-			continue
-		}
-		if b.Len() > 0 {
-			b.WriteString("\n")
-		}
-		b.WriteString(text)
 	}
 	return b.String()
 }

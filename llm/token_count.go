@@ -8,6 +8,7 @@ import (
 	"image"
 	"math"
 	"os"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/llm/registry"
@@ -78,6 +79,10 @@ func EstimateInputTokensForResolved(res registry.Resolved, req Request) InputTok
 }
 
 func estimateInputTokens(t targetInfo, req Request) InputTokenCount {
+	options, _ := req.ProviderOptions[registry.ProtocolOpenAIChat].(map[string]any)
+	if _, ok := options["reasoning"]; ok && !t.reasoningOff {
+		t.chatUsesDisplay = true
+	}
 	tokens := estimateMessagesInputTokens(t, req.Messages)
 	if len(req.Tools) > 0 {
 		toolBytes := req.ToolsJSONBytes
@@ -272,6 +277,11 @@ func estimateMessagesInputTokens(t targetInfo, messages []Message) int {
 }
 
 func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
+	if t.protocol == registry.ProtocolOpenAIChat && !t.chatUsesDisplay && !t.reasoningOff {
+		t.chatUsesDisplay = slices.ContainsFunc(m.Content, func(p ContentPart) bool {
+			return p.Kind == ContentThinking && p.Thinking != nil && IsOpenAICompatEncryptedReasoning(p.Thinking.EncryptedContent)
+		})
+	}
 	chars := len(m.Name) + len(m.ToolCallID)
 	tokens := 0
 	for _, p := range m.Content {
@@ -463,7 +473,7 @@ func chatReasoningChars(target targetInfo, p ContentPart) int {
 		chars += len(t.EncryptedContent)
 	}
 	if target.unsignedThinking || (!target.reasoningOff && OpenAICompatSignatureReasoningNeedsText(t.EncryptedContent)) {
-		chars += len(t.Text)
+		chars += len(t.ChatReplayText(!target.chatUsesDisplay))
 	}
 	return chars
 }
@@ -491,6 +501,8 @@ type targetInfo struct {
 	// keeps the reasoning fields and the reasoning_details array off the wire
 	// (chatcompletions/messages.go).
 	reasoningOff bool
+	// Chat uses display text when reasoning rides a details array or ordinary content.
+	chatUsesDisplay bool
 	// dropsToolResultImages marks a resolved row whose adapter leaves a
 	// tool-result image off the wire entirely (dropsToolResultImages).
 	dropsToolResultImages bool
@@ -633,6 +645,7 @@ func targetFromResolved(res registry.Resolved, provider, model string) targetInf
 		resolved: true, providerFromCaller: providerFromCaller,
 		imageDetail:           registry.StringValue(res.Caps.ImageDetail),
 		reasoningOff:          res.Caps.ReasoningDisabled(),
+		chatUsesDisplay:       registry.StringValue(res.Caps.ReasoningField) == "reasoning_details" || registry.BoolValue(res.Caps.ThinkingAsText),
 		dropsToolResultImages: dropsToolResultImages(res),
 		seenToolResultDocuments: !res.Synthesized && res.Caps.AcceptsModality("pdf") &&
 			deliversToolResultDocuments(res.Protocol),
