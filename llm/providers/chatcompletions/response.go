@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/llm"
@@ -260,9 +261,11 @@ func (f chatReasoningFields) scalar() (string, string) {
 }
 
 type reasoningDetailBlock struct {
-	text   strings.Builder
-	wire   map[string]any
-	signed bool
+	text     strings.Builder
+	wire     map[string]any
+	signed   bool
+	position int
+	indexed  bool
 }
 
 // chatReasoning assembles one completion. A trailing signature authenticates
@@ -275,7 +278,7 @@ type chatReasoning struct {
 	// Until the first text-bearing detail, that display is exactly the scalar.
 	display      *strings.Builder
 	displayField string
-	open         map[int]*reasoningDetailBlock
+	open         []*reasoningDetailBlock
 	blocks       []*reasoningDetailBlock
 	continuation []*reasoningDetailBlock
 	hasSignature bool
@@ -322,15 +325,12 @@ func (r *chatReasoning) add(f chatReasoningFields) string {
 // singleton fragment can omit its index while finishing an earlier block.
 // Only a unique compatible block can supply the text a signature authenticates.
 func (r *chatReasoning) openDetail(pos int, item reasoningDetailItem, single bool) (int, *reasoningDetailBlock) {
-	if item.Index != nil {
-		return *item.Index, r.open[*item.Index]
-	}
-	if !single {
-		return pos, r.open[pos]
-	}
-	matchedIndex := pos
-	var match *reasoningDetailBlock
-	ambiguous := false
+	const (
+		byPosition = iota + 1
+		byID
+		byIndex
+	)
+	match, best := -1, 0
 	for i, block := range r.open {
 		id, _ := block.wire["id"].(string)
 		if id != "" && item.ID != "" && id != item.ID {
@@ -342,18 +342,32 @@ func (r *chatReasoning) openDetail(pos int, item reasoningDetailItem, single boo
 		if kind, _ := block.wire["type"].(string); kind != "" && item.Type != "" && kind != item.Type {
 			continue
 		}
-		if id != "" && id == item.ID {
-			return i, block
+		rank := byPosition
+		switch {
+		case item.Index != nil && block.indexed:
+			if *item.Index != block.position {
+				continue
+			}
+			rank = byIndex
+		case id != "" && id == item.ID:
+			rank = byID
+		case item.Index != nil:
+			if *item.Index != block.position {
+				continue
+			}
+		case !single && pos != block.position:
+			continue
 		}
-		if match != nil {
-			ambiguous = true
+		if rank > best {
+			match, best = i, rank
+		} else if rank == best {
+			match = -1
 		}
-		matchedIndex, match = i, block
 	}
-	if ambiguous {
-		return pos, nil
+	if match < 0 {
+		return -1, nil
 	}
-	return matchedIndex, match
+	return match, r.open[match]
 }
 
 func (r *chatReasoning) addDetail(pos int, item reasoningDetailItem, piece string, single bool) {
@@ -366,24 +380,16 @@ func (r *chatReasoning) addDetail(pos int, item reasoningDetailItem, piece strin
 	}
 	index, block := r.openDetail(pos, item, single)
 	if block == nil {
-		block = &reasoningDetailBlock{wire: item.wireItem()}
+		block = &reasoningDetailBlock{wire: item.wireItem(), position: pos}
 		r.blocks = append(r.blocks, block)
 		if !item.carriesContinuation() {
-			if r.open == nil {
-				r.open = make(map[int]*reasoningDetailBlock)
-			}
-			// An unindexed fragment can start a different native ID while
-			// its array position is already owned by another open block.
-			if r.open[index] != nil {
-				index = -1
-				for r.open[index] != nil {
-					index--
-				}
-			}
-			r.open[index] = block
+			r.open = append(r.open, block)
 		}
 	} else {
 		maps.Copy(block.wire, item.wireItem())
+	}
+	if item.Index != nil {
+		block.position, block.indexed = *item.Index, true
 	}
 	block.text.WriteString(piece)
 	if item.carriesContinuation() {
@@ -393,8 +399,8 @@ func (r *chatReasoning) addDetail(pos int, item reasoningDetailItem, piece strin
 		}
 		r.continuation = append(r.continuation, block)
 		r.hasSignature = true
-		if r.open[index] == block {
-			delete(r.open, index)
+		if index >= 0 {
+			r.open = slices.Delete(r.open, index, index+1)
 		}
 	}
 }

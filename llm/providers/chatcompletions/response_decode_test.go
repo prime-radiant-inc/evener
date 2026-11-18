@@ -474,6 +474,32 @@ data: [DONE]
 			}
 		}
 	})
+	t.Run("native index arrives after detail ID", func(t *testing.T) {
+		const sse = `data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","id":"a","text":"alpha "},{"type":"reasoning.text","id":"b","text":"beta "}]}}]}
+
+data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","id":"b","index":0,"text":"two "},{"type":"reasoning.text","id":"a","index":7,"text":"one "}]}}]}
+
+data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","index":7,"signature":"sig-a"},{"type":"reasoning.text","index":0,"signature":"sig-b"}]}}]}
+
+data: [DONE]
+
+`
+		want := []map[string]any{
+			{"type": "reasoning.text", "id": "a", "index": 7, "text": "alpha one ", "signature": "sig-a"},
+			{"type": "reasoning.text", "id": "b", "index": 0, "text": "beta two ", "signature": "sig-b"},
+		}
+		complete := map[string]any{"reasoning_details": want}
+		responses, _ := decode(t, jsonOf(t, chatResponseRaw(complete, "stop")), sse)
+		for source, resp := range responses {
+			out, err := toChatMessages([]llm.Message{resp.Message}, registry.Caps{}, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := jsonOf(t, out[0]["reasoning_details"]); got != jsonOf(t, want) {
+				t.Errorf("%s signed details = %s, want %s", source, got, jsonOf(t, want))
+			}
+		}
+	})
 }
 
 // TestFromChatCompletionResponse_ShapeFailures pins the decode's own error
