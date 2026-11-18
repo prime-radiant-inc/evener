@@ -921,6 +921,12 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 // answer, one admitted before the evidence existed, or a steer answering its
 // own active execution) keeps none, and the client's composed-reply shape
 // fallback covers it as before.
+//
+// ResolvedAskLegacyCount is the population ResolvedAskCalls cannot express:
+// admission also consumed this many questions it could not name, restored from
+// records that predate call ids. Their headers never reach the wire, so a
+// client attributing a composed answer line by header must treat a nonzero
+// count as unattributable (#6323).
 func answerObservation(turnID string, turn schema.Turn) *appwire.SessionObservationMetadata {
 	if len(turn.AnswerToTurnIDs) == 0 {
 		return nil
@@ -931,6 +937,7 @@ func answerObservation(turnID string, turn schema.Turn) *appwire.SessionObservat
 	}
 	if turn.AskResolution != nil {
 		observation.ResolvedAskCalls = append([]appwire.PendingAskCall(nil), turn.AskResolution.Calls...)
+		observation.ResolvedAskLegacyCount = turn.AskResolution.LegacyCount
 	}
 	return observation
 }

@@ -420,6 +420,11 @@ export function wireItemToModel(item: ThreadItem, imageSessionRoute?: string): I
   if (item.observation?.resolvedAskCalls?.length) {
     model.resolvedAskCalls = item.observation.resolvedAskCalls.map((call) => ({ ...call }));
   }
+  // The same observation also says how many resolved questions admission could
+  // NOT name; a nonzero count makes every composed answer line unattributable.
+  if (item.observation?.resolvedAskLegacyCount !== undefined) {
+    model.resolvedAskLegacyCount = item.observation.resolvedAskLegacyCount;
+  }
   if (item.actor) model.actor = item.actor;
   // Versioned-history fields, set only when the wire carried them (a v6 read,
   // history/updated, or an overlay item), so pre-v6 items keep their shape.

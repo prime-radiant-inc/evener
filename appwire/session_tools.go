@@ -490,13 +490,21 @@ type SessionObservationMetadata struct {
 	// answered matches these calls instead of guessing. Absent on turns
 	// admitted before the evidence existed and on unfenced whole-set
 	// answers, which carry no call list at all.
-	ResolvedAskCalls []PendingAskCall   `json:"resolvedAskCalls,omitempty"`
-	EntryID          string             `json:"entryId,omitempty"`
-	EndTurn          bool               `json:"endTurn,omitempty"`
-	EndReason        string             `json:"endReason,omitempty"`
-	TerminalAccepted *bool              `json:"terminalAccepted,omitempty"`
-	CausalKnown      bool               `json:"causalKnown"`
-	Causal           *provenance.Causal `json:"causal,omitempty"`
+	ResolvedAskCalls []PendingAskCall `json:"resolvedAskCalls,omitempty"`
+	// ResolvedAskLegacyCount says admission ALSO consumed this many questions
+	// it could not name - the call-less population restored from records that
+	// predate call ids (schema.AskResolution.LegacyCount). ResolvedAskCalls
+	// cannot see them, so a client pairing a composed answer line to a named
+	// call by header must treat a nonzero count as unattributable: those
+	// questions' headers never reach the wire, and one of them may share the
+	// header the line names. Absent when every consumed question is named.
+	ResolvedAskLegacyCount int                `json:"resolvedAskLegacyCount,omitempty"`
+	EntryID                string             `json:"entryId,omitempty"`
+	EndTurn                bool               `json:"endTurn,omitempty"`
+	EndReason              string             `json:"endReason,omitempty"`
+	TerminalAccepted       *bool              `json:"terminalAccepted,omitempty"`
+	CausalKnown            bool               `json:"causalKnown"`
+	Causal                 *provenance.Causal `json:"causal,omitempty"`
 }
 
 type SessionWatchUpdate struct {

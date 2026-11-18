@@ -746,8 +746,11 @@ test("two call-stamped answers each recap the call they name, in call order", ()
     resolvedAskCalls: [{ turnId: "turn_1", callId: "call_beta" }],
   });
   const model = turnsModel([alpha, beta], [alphaReply], [betaReply]);
-  expect(answeredAskUserSuffix(model, alpha)).toBe(" — answered: yes, ship it");
-  expect(answeredAskUserSuffix(model, beta)).toBe(" — answered: Postgres please");
+  // Assert WHICH reply each call selects, not the rendered phrase.
+  expect(answeredAskUserReply(model, alpha)).toBe(alphaReply);
+  expect(answeredAskUserReply(model, beta)).toBe(betaReply);
+  expect(answeredAskUserSuffix(model, alpha)).toContain(alphaReply.text);
+  expect(answeredAskUserSuffix(model, beta)).toContain(betaReply.text);
 });
 
 test("a call-stamped composed answer to two same-header calls recaps neither", () => {
@@ -863,6 +866,57 @@ test("a stamp naming a call the page did not load recaps nothing", () => {
   expect(answeredAskUserSuffix(model, loaded)).toBeUndefined();
   // The raw row is what the reader sees instead.
   expect(answeredAskUserReply(model, loaded)).toBeUndefined();
+});
+
+test("a stamp that also consumed an unnamed legacy ask recaps nothing", () => {
+  // A fenced reply can consume a NAMED ask and a restored LEGACY ask at once.
+  // The legacy question predates call ids, so the wire names only the first
+  // and reports the rest as a count (resolvedAskLegacyCount). The legacy
+  // question's header never reaches the wire and may be this same "Deploy?",
+  // so the single answer line may belong to it: displaying "Yes" under the
+  // named call would pair an answer with a question it may not answer. The
+  // raw reply stays visible and neither question recaps.
+  const named = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_1",
+    callId: "call_1",
+    toolName: "ask_user",
+    status: "completed",
+  });
+  const reply = userMessage({
+    text: '[answers]\n1. [Deploy?] → "Yes"',
+    turnId: "turn_2",
+    answerToTurnIds: ["turn_1"],
+    resolvedAskCalls: [{ turnId: "turn_1", callId: "call_1" }],
+    resolvedAskLegacyCount: 1,
+  });
+  const model = turnsModel([named], [reply]);
+  expect(answeredAskUserSuffix(model, named)).toBeUndefined();
+  expect(answeredAskUserReply(model, named)).toBeUndefined();
+});
+
+test("a named call that fully accounts for the answer still recaps", () => {
+  // The mirror: with no unnamed population, the same reply is attributable to
+  // the one named call and recaps as before. The legacy count must gate the
+  // recap only when it is actually nonzero.
+  const named = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_1",
+    callId: "call_1",
+    toolName: "ask_user",
+    status: "completed",
+  });
+  const reply = userMessage({
+    text: '[answers]\n1. [Deploy?] → "Yes"',
+    turnId: "turn_2",
+    answerToTurnIds: ["turn_1"],
+    resolvedAskCalls: [{ turnId: "turn_1", callId: "call_1" }],
+    resolvedAskLegacyCount: 0,
+  });
+  const model = turnsModel([named], [reply]);
+  expect(answeredAskUserReply(model, named)).toBe(reply);
 });
 
 test("a call-stamped composed answer naming ONE of two same-header calls still recaps it", () => {

@@ -196,7 +196,12 @@ function composedReplyRepeatsAHeader(text: string): boolean {
 //   - a call the stamp names is not in the loaded items. A transcript page may
 //     split one turn's ask rows, so a partial view undercounts headers and
 //     would attribute a line to the wrong ask. The count is evidence only when
-//     every named call is present with parseable questions.
+//     every named call is present with parseable questions;
+//   - admission also consumed questions it could NOT name
+//     (resolvedAskLegacyCount). Those are restored from records that predate
+//     call ids, their headers never reach the wire, and one of them may share
+//     the header an answer line names - so the named calls cannot account for
+//     the line on their own.
 //
 // Where no header is shared this way every named call's answers are its own,
 // and the recap is taken as before - including a reply stamped for only one of
@@ -205,6 +210,10 @@ function composedReplyRepeatsAHeader(text: string): boolean {
 function stampedComposedRecapIsAttributable(items: readonly ItemModel[], reply: ItemModel): boolean {
   if (!reply.text.startsWith("[answers]")) return true;
   if (composedReplyRepeatsAHeader(reply.text)) return false;
+  // A named call fully accounts for the line only when nothing else was
+  // consumed: an unnamed question carrying the same header would be displayed
+  // under the named ask, which may not be the one the human answered.
+  if (reply.resolvedAskLegacyCount !== undefined && reply.resolvedAskLegacyCount > 0) return false;
   const questionsPerHeader = new Map<string, number>();
   for (const named of reply.resolvedAskCalls ?? []) {
     const call = items.find(

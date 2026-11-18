@@ -72,9 +72,12 @@ func TestAskResolutionProjectsCallLevelEvidence(t *testing.T) {
 		t.Fatalf("resolvedAskCalls = %+v, want the admitted calls in order %+v", got, pair.Calls)
 	}
 
-	// The wire's call ids are the ids the ask rows themselves project, so a
-	// client can match a reply to the call it answered.
-	projectedAskCalls := map[string]bool{}
+	// The wire's (turn, call) pairs are the pairs the ask rows themselves
+	// project, so a client can match a reply to the call it answered. Both
+	// clients match on the PAIR, so a call id alone is not enough: a row
+	// projected under a different turn than the stamp would still satisfy a
+	// call-id-only check and break every consumer.
+	projectedAskCalls := map[appwire.PendingAskCall]bool{}
 	for _, entry := range answerLinkRecords(t, s) {
 		if entry.Kind != schema.TurnAssistant {
 			continue
@@ -82,13 +85,13 @@ func TestAskResolutionProjectsCallLevelEvidence(t *testing.T) {
 		askItems, _ := apptranscript.ProjectEntryParts(entry.TurnID, 0, entry, nil, nil, nil)
 		for _, item := range askItems {
 			if item.ToolName == "ask_user" {
-				projectedAskCalls[item.CallID] = true
+				projectedAskCalls[appwire.PendingAskCall{TurnID: item.TurnID, CallID: item.CallID}] = true
 			}
 		}
 	}
 	for _, call := range got {
-		if !projectedAskCalls[call.CallID] {
-			t.Fatalf("resolved call %q matches no projected ask row (rows=%v)", call.CallID, projectedAskCalls)
+		if !projectedAskCalls[call] {
+			t.Fatalf("resolved call %+v matches no projected ask row (rows=%v)", call, projectedAskCalls)
 		}
 	}
 }

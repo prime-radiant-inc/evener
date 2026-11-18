@@ -100,6 +100,7 @@ test("the wire item's resolved ask calls survive projection and cache decoding",
         { turnId: "turn-question", callId: "call-1" },
         { turnId: "turn-question", callId: "call-2" },
       ],
+      resolvedAskLegacyCount: 1,
     },
   };
   const projected = wireItemToModel(wire);
@@ -108,16 +109,24 @@ test("the wire item's resolved ask calls survive projection and cache decoding",
     { turnId: "turn-question", callId: "call-1" },
     { turnId: "turn-question", callId: "call-2" },
   ]);
+  expect(projected.resolvedAskLegacyCount).toBe(1);
   // And the cache keeps them: the decoder is what a live client reads back.
   const decoded = decodeTranscriptItem(encodeTranscriptItem(projected));
   expect(decoded?.resolvedAskCalls).toEqual([
     { turnId: "turn-question", callId: "call-1" },
     { turnId: "turn-question", callId: "call-2" },
   ]);
+  expect(decoded?.resolvedAskLegacyCount).toBe(1);
   expect(
     decodeTranscriptItem({
       ...encodeTranscriptItem(projected),
       resolvedAskCalls: [{ turnId: "turn-question" }] as unknown as ItemModel["resolvedAskCalls"],
+    }),
+  ).toBeUndefined();
+  expect(
+    decodeTranscriptItem({
+      ...encodeTranscriptItem(projected),
+      resolvedAskLegacyCount: "many" as unknown as number,
     }),
   ).toBeUndefined();
 });

@@ -91,6 +91,14 @@ export interface ItemModel {
   // daemon that predates the field — a consumer must fall back to the link
   // and then to the composed "[answers]" text shape there.
   resolvedAskCalls?: PendingAskCall[];
+  // Wire ThreadItem.observation.resolvedAskLegacyCount: how many questions
+  // admission also consumed WITHOUT being able to name them, restored from
+  // records that predate call ids (issue #6323). Their headers never reach the
+  // wire, so a composed answer line cannot be attributed to a named call while
+  // this is nonzero - one of these may share the header the line names. A
+  // consumer must then keep the raw reply and show no attributed recap.
+  // Undefined when every consumed question is named.
+  resolvedAskLegacyCount?: number;
   actor?: import("./types.gen").SessionActor;
   type: string; // wire ThreadItem.type verbatim
   text: string; // settled text

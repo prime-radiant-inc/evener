@@ -135,6 +135,7 @@ const ITEM_MODEL_KEYS = new Set([
   "conversationInputIds",
   "answerToTurnIds",
   "resolvedAskCalls",
+  "resolvedAskLegacyCount",
   "actor",
   "type",
   "text",
@@ -226,6 +227,7 @@ export function validItem(value: unknown): value is CachedSessionItem {
       ))
   )
     return false;
+  if (value.resolvedAskLegacyCount !== undefined && typeof value.resolvedAskLegacyCount !== "number") return false;
   if (value.prevalOnly !== undefined && typeof value.prevalOnly !== "boolean") return false;
   if (
     value.warning !== undefined &&
