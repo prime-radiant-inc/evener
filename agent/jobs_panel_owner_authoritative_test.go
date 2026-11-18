@@ -906,6 +906,103 @@ func TestLoadSessionJobOutputPageRoutesByValidatedOwner(t *testing.T) {
 	}
 }
 
+// TestLoadSessionJobGetKeepsForwardedTerminalOverDamagedLegacyOwner is the
+// round-5 medium-1 regression, the legacy half of the damaged-prefix rule. The
+// job has a bare-UUID ID and its row claims an owner; that journal corroborates
+// with a valid start followed by durable corruption. Corroboration proves the
+// journal owns the job, not that the job finished — so an observed finish in the
+// scoped copy must not be replaced by a running row from a prefix that cannot
+// reach it.
+func TestLoadSessionJobGetKeepsForwardedTerminalOverDamagedLegacyOwner(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := "job_legacy_d4d5e6f7"
+	started := time.Date(2026, 11, 18, 23, 30, 0, 0, time.UTC)
+	ended := started.Add(3 * time.Minute)
+	exit := 4
+
+	// The hinted owner corroborates, but its journal then stops at corruption.
+	writeJobJournalLines(t, jobsDir(stateDir, ownerSession),
+		`{"kind":"job_started","seq":1,"ts":"`+started.Format(time.RFC3339)+
+			`","job_id":"`+jobID+`","type":"shell","status":"running","owner_session_id":"`+ownerSession+
+			`","visible_to_session_id":"`+ownerSession+`","started_at":"`+started.Format(time.RFC3339)+`"}`+"\n",
+		"{this is not json}\n",
+	)
+
+	// The scoped copy holds the complete observed lifecycle.
+	rootStore := openJobJournal(t, jobsDir(stateDir, rootSession))
+	appendJobEvent(t, rootStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: rootSession,
+		StartedAt: &started,
+	})
+	appendJobEvent(t, rootStore, jobstore.Event{
+		Kind: jobstore.EventJobFinished, TS: ended, JobID: jobID,
+		Status: jobstore.StatusCommandExitedNonzero, Reason: "exit_nonzero", ExitCode: &exit,
+		EndedAt: &ended, TerminalGen: "gen_forwarded",
+	})
+	closeJobJournal(t, rootStore)
+
+	job, found, err := LoadSessionJobGet(stateDir, rootSession, jobID, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the observed finish")
+	}
+	if job.Status != string(jobstore.StatusCommandExitedNonzero) {
+		t.Fatalf("status = %q, want %q: a corroborated owner whose prefix stops at corruption cannot overrule an observed finish",
+			job.Status, jobstore.StatusCommandExitedNonzero)
+	}
+	if job.ExitCode == nil || *job.ExitCode != exit {
+		t.Fatalf("exitCode = %v, want %d from the observed finish", job.ExitCode, exit)
+	}
+}
+
+// TestLoadSessionJobOutputPageRoutesLegacyBySupplyingJournal is the round-5
+// medium-2 regression. A legacy row whose owner claim the hinted journal could
+// NOT corroborate is served from the scoped journal, so its default log lives
+// beside that journal. Routing the output by the rejected claim looked in a
+// directory that never held this job's log.
+func TestLoadSessionJobOutputPageRoutesLegacyBySupplyingJournal(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	scopedSession := identifier.MustNewSessionID()
+	uncorroboratedSession := identifier.MustNewSessionID()
+	jobID := "job_legacy_a9b8c7d6"
+	started := time.Date(2026, 11, 18, 23, 45, 0, 0, time.UTC)
+
+	// The scoped journal holds the row, with a claim naming a session that has no
+	// journal at all — so the claim cannot stand.
+	writeJobJournalLines(t, jobsDir(stateDir, scopedSession),
+		`{"kind":"job_started","seq":1,"ts":"`+started.Format(time.RFC3339)+
+			`","job_id":"`+jobID+`","type":"shell","status":"running","owner_session_id":"`+uncorroboratedSession+
+			`","visible_to_session_id":"`+scopedSession+`","started_at":"`+started.Format(time.RFC3339)+`"}`+"\n",
+	)
+
+	logPath := filepath.Join(jobsDir(stateDir, scopedSession), "jobs", jobID+".log")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(logPath, []byte("scoped log"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	page, found, err := LoadSessionJobOutputPage(stateDir, scopedSession, jobID, nil, 64, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobOutputPage: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the log beside the journal that supplied the record")
+	}
+	if page.Data != "scoped log" {
+		t.Fatalf("data = %q, want %q: an uncorroborated claim must not choose the log directory",
+			page.Data, "scoped log")
+	}
+}
+
 // openJobJournal opens a session's jobs.jsonl for a fixture, creating the
 // directory the store lives in.
 func openJobJournal(t *testing.T, dir string) *jobstore.Store {

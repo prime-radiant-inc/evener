@@ -761,10 +761,25 @@ func TestHubJobsGetFencesDurablyDeletedOwner(t *testing.T) {
 	_, err = hubJobsGet(context.Background(), cfg, newExitedLocalRegistry(), appwire.JobsGetParams{
 		Ref: localAppRef(rootSession), JobID: jobID,
 	})
-	wire := requireWireError(t, err, appwire.CodeInvalidParams)
-	if want := "job not found: " + jobID; wire.Message != want {
-		t.Fatalf("err message = %q, want %q: the descendant is durably deleted, so its job is not servable through the ancestor",
-			wire.Message, want)
+	// The structured code is the assertion; the wording of the message is not
+	// this test's to pin.
+	_ = requireWireError(t, err, appwire.CodeInvalidParams)
+
+	// Abandoning the deletion drops the fence, and the same scoped request must
+	// serve the owner's completed job again — a fence that never clears would
+	// turn an intact session into a permanent deletion.
+	if abortErr := store.Abandon("project-jobs-0000000000", 1); abortErr != nil {
+		t.Fatalf("Abandon: %v", abortErr)
+	}
+	resp, err := hubJobsGet(context.Background(), cfg, newExitedLocalRegistry(), appwire.JobsGetParams{
+		Ref: localAppRef(rootSession), JobID: jobID,
+	})
+	if err != nil {
+		t.Fatalf("hubJobsGet after Abandon: %v", err)
+	}
+	if resp.Data.Status != string(appwire.JobStatusCompleted) {
+		t.Fatalf("status after Abandon = %q, want %q: dropping the fence must let reads resume",
+			resp.Data.Status, appwire.JobStatusCompleted)
 	}
 }
 

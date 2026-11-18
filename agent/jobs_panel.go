@@ -300,16 +300,35 @@ func loadSessionJobRecord(stateDir, sessionID, jobID string, fence OwnerDeletion
 		}
 		corroborated, hintErr := readSessionJobJournal(stateDir, hint, jobID)
 		if hintErr != nil || !corroborated.found {
-			// The hint did not hold up. It is not an encoded owner, so it cannot
-			// outrank the scoped copy: that copy stands, flagged as a fallback.
+			// The hinted journal could not corroborate — it was absent, unreadable,
+			// or held no record of this job. That is a fact about the HINT, not a
+			// failure of this read: the caller asked about the scoped session, whose
+			// record is intact, so the scoped copy stands. The hint's damage is not
+			// discarded — it rides the diagnostic, including durable corruption that
+			// made its journal unreadable — and a claim nothing corroborated is not
+			// an owner, so the scoped copy keeps fallback status rather than
+			// pretending to be the owner's.
+			if hintErr != nil {
+				local.diagnostics.ScanIncomplete = true
+			}
 			local.diagnostics.OwnerUnavailable = true
 			local.diagnostics.ForwardedFallback = true
 			return local, nil
 		}
-		corroborated.diagnostics.mergeIntegrity(local.diagnostics)
-		corroborated.diagnostics.ForwardedFallback = false
-		corroborated.diagnostics.OwnerUnavailable = false
-		return corroborated, nil
+		// A corroborated legacy owner goes through the SAME precedence the encoded
+		// branch applies — no second authority test. Corroboration makes the hinted
+		// journal the owner, but ownership is not evidence of settled state: its
+		// prefix may have stopped at durable corruption short of the finish the
+		// scoped copy observed. stateEstablished is what still separates them.
+		if retainedJobReadOutranks(false, local, true, corroborated) {
+			corroborated.diagnostics.mergeIntegrity(local.diagnostics)
+			corroborated.diagnostics.ForwardedFallback = false
+			corroborated.diagnostics.OwnerUnavailable = false
+			return corroborated, nil
+		}
+		local.diagnostics.mergeIntegrity(corroborated.diagnostics)
+		local.diagnostics.ForwardedFallback = true
+		return local, nil
 	}
 	if owner == sessionID {
 		// An ID naming this session is already the authoritative branch.
@@ -327,9 +346,11 @@ func loadSessionJobRecord(stateDir, sessionID, jobID string, fence OwnerDeletion
 	owned, ownerErr := readSessionJobJournal(stateDir, owner, jobID)
 	if ownerErr == nil && owned.found {
 		// Both journals hold a record: apply the one precedence rule.
-		if retainedJobReadOutranks(jobID, local, owned) {
+		existingIsOwner := retainedJobAuthority(jobID, local.sourceSessionID, local.record)
+		incomingIsOwner := retainedJobAuthority(jobID, owned.sourceSessionID, owned.record)
+		if retainedJobReadOutranks(existingIsOwner, local, incomingIsOwner, owned) {
 			owned.diagnostics.mergeIntegrity(local.diagnostics)
-			owned.diagnostics.ForwardedFallback = !retainedJobAuthority(jobID, owned.sourceSessionID, owned.record)
+			owned.diagnostics.ForwardedFallback = !incomingIsOwner
 			owned.diagnostics.OwnerUnavailable = false
 			return owned, nil
 		}
@@ -337,7 +358,7 @@ func loadSessionJobRecord(stateDir, sessionID, jobID string, fence OwnerDeletion
 		// best evidence available, so it keeps any integrity signal the owner
 		// branch carried rather than losing the damage report with the race.
 		local.diagnostics.mergeIntegrity(owned.diagnostics)
-		if !retainedJobAuthority(jobID, local.sourceSessionID, local.record) {
+		if !existingIsOwner {
 			local.diagnostics.ForwardedFallback = true
 		}
 		return local, nil
@@ -354,11 +375,12 @@ func loadSessionJobRecord(stateDir, sessionID, jobID string, fence OwnerDeletion
 
 // retainedJobReadOutranks reports whether the incoming read replaces the
 // existing one for the same job. It is the ONE decision both branches of
-// loadSessionJobRecord consult, and it composes two rules in a fixed order:
+// loadSessionJobRecord consult — the encoded-owner branch and the legacy
+// corroborated-hint branch — and it composes two rules in a fixed order:
 //
 //  1. Authority (keepIncomingDescendantRow, the live recursive path's own rule
-//     in jobs_nested.go): the record from the encoded owner's journal wins, and
-//     between two records of equal authority the one already held is kept.
+//     in jobs_nested.go): the record from the owner's journal wins, and between
+//     two records of equal authority the one already held is kept.
 //  2. Evidence: a record that cannot state the job's state never displaces one
 //     that can. The owner's journal is the authority on what the job IS, but a
 //     scan that stopped at durable corruption hands back a prefix, and a prefix
@@ -366,13 +388,17 @@ func loadSessionJobRecord(stateDir, sessionID, jobID string, fence OwnerDeletion
 //     finish may be the very line that failed to decode. The competing forwarded
 //     copy's terminal observation is then the only settled answer there is.
 //
+// The two AUTHORITY inputs come from the caller because the identifier is not
+// always there to consult: an encoded owner is proved by retainedJobAuthority,
+// and a legacy job ID with no owner in it is proved by corroborating the row's
+// own claim against that journal. What those facts MEAN once established — and
+// how they rank against evidence — is this function, stated once.
+//
 // Rule 2 gates rule 1's winner rather than competing with it: it can only stop
 // an incoming record from DISPLACING a settled one. It never promotes a
 // forwarded copy over an owner record that establishes state — an owner terminal
 // row always wins — and it never demotes a record on authority grounds.
-func retainedJobReadOutranks(jobID string, existing, incoming sessionJobRecordRead) bool {
-	existingIsOwner := retainedJobAuthority(jobID, existing.sourceSessionID, existing.record)
-	incomingIsOwner := retainedJobAuthority(jobID, incoming.sourceSessionID, incoming.record)
+func retainedJobReadOutranks(existingIsOwner bool, existing sessionJobRecordRead, incomingIsOwner bool, incoming sessionJobRecordRead) bool {
 	if !keepIncomingDescendantRow(existing.found, existingIsOwner, incomingIsOwner) {
 		// Authority keeps what is already held; nothing displaces it.
 		return false
@@ -468,17 +494,15 @@ func readSessionJobJournal(stateDir, sessionID, jobID string) (sessionJobRecordR
 // the job, and the validated identifier is what says which one that is.
 //
 // For a job ID encoding no owner (a legacy bare UUID) there is no identifier to
-// rank against, so the record's own claim is the only pointer there is, and it
-// is used only when the journal that supplied the record corroborates it: a
-// corroborated read has already resolved sourceSessionID to that journal. A
-// record with neither falls back to the journal that supplied it, which is where
-// its bytes were read from.
+// rank against, so the journal that SUPPLIED the selected record is the answer:
+// that is where the log was written, and the resolution already corroborated any
+// claim before it could speak for that journal. The claim itself is never the
+// routing input — an uncorroborated one named a session whose directory was
+// never involved, and routing there hid a readable log sitting beside the scoped
+// journal.
 func routingJobSession(jobID string, read sessionJobRecordRead) string {
 	if owner := encodedJobOwner(jobID); owner != "" {
 		return owner
-	}
-	if read.record != nil && read.record.OwnerSessionID != "" {
-		return read.record.OwnerSessionID
 	}
 	return read.sourceSessionID
 }

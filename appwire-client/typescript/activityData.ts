@@ -97,6 +97,10 @@ export interface ActivityJob {
   lastOutputAt?: string;
   exitCode?: number;
   outputBytes: number;
+  // What a retained read could not establish about the history behind this
+  // row. Only retained rows carry it. A non-terminal row with a diagnostic is
+  // not confirmed running, so a client must not poll it as if it were live.
+  diagnostics?: string[];
 }
 
 export interface ActivityShellEntry {
@@ -424,6 +428,8 @@ export function parseActivityJob(raw: unknown): ActivityJob | null {
   const endedAt = readOptionalString(raw, "endedAt");
   const lastOutputAt = readOptionalString(raw, "lastOutputAt");
   const exitCode = raw.exitCode;
+  const diagnostics = parseStringArray(raw.diagnostics);
+  if (diagnostics === null) return null;
   if (typeof raw.outcome !== "undefined" && typeof raw.outcome !== "string") return null;
   if (typeof raw.transcriptRef !== "undefined" && typeof raw.transcriptRef !== "string") return null;
   if (typeof raw.parentDelegateId !== "undefined" && typeof raw.parentDelegateId !== "string") return null;
@@ -442,6 +448,11 @@ export function parseActivityJob(raw: unknown): ActivityJob | null {
   if (endedAt) job.endedAt = endedAt;
   if (lastOutputAt) job.lastOutputAt = lastOutputAt;
   if (typeof exitCode === "number") job.exitCode = exitCode;
+  // A retained row's diagnostics name what the read could not establish about
+  // the history behind it. Dropping them here made a stale forwarded running row
+  // indistinguishable from a live one once it reached the browser, which then
+  // polled a job that had already finished.
+  if (diagnostics) job.diagnostics = diagnostics;
   return job;
 }
 
