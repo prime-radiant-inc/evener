@@ -489,6 +489,78 @@ test("a visual-viewport resize re-anchors the menu to the trigger it moved", asy
   }
 });
 
+// The visual viewport can also SCROLL without resizing: iOS moves it under a
+// fixed layout as the keyboard's inset settles, which translates the trigger
+// relative to the popup and fires no `resize`. The order matters - the frame
+// drains before the footer moves, so only a `scroll` listener placed after
+// that can bring the popup back to the trigger.
+test("a visual-viewport scroll with no resize re-anchors the menu", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  const fakeViewport = new EventTarget() as EventTarget & { height: number; offsetTop: number };
+  fakeViewport.height = 400;
+  fakeViewport.offsetTop = 0;
+  vi.stubGlobal("visualViewport", fakeViewport);
+  const { flush } = captureFrames();
+  let triggerTop = 300;
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 400 });
+  const box = (left: number, top: number, width: number, height: number) =>
+    ({
+      left,
+      top,
+      right: left + width,
+      bottom: top + height,
+      width,
+      height,
+      x: left,
+      y: top,
+      toJSON: () => ({}),
+    }) as DOMRect;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  // No ResizeObserver: this case must work through the visual viewport alone.
+  class SilentResizeObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  vi.stubGlobal("ResizeObserver", SilentResizeObserver);
+  try {
+    render(<Menu trigger="Actions" items={items()} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu").style.top).toBe("176px"); // flipped above
+
+    // The frame the listener scheduled drains FIRST, with the footer still
+    // where it was: it measures the old position and that is all it can know.
+    fakeViewport.dispatchEvent(new Event("scroll"));
+    flush();
+    expect(screen.getByRole("menu").style.top).toBe("176px"); // unchanged
+
+    // Only now does the inset land and the footer slide down - after the
+    // frame, with no resize and no window scroll to announce it.
+    triggerTop = 500;
+    fakeViewport.offsetTop = 100;
+
+    // A second scroll notification is what the settled viewport reports.
+    fakeViewport.dispatchEvent(new Event("scroll"));
+    flush();
+
+    expect(screen.getByRole("menu")).toBeTruthy();
+    // The layout viewport stayed short (this is a scroll, not a resize), so
+    // the trigger at 500 no longer fits below it and the popup flips above:
+    // 500 - 4 - 120 = 376. The point is that it moved off 176 at all.
+    expect(screen.getByRole("menu").style.top).toBe("376px");
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
 // --- the trigger moves after the resize event ------------------------------
 // Dockview lays out from an observed box, a frame after the window's own
 // resize. Measuring in the resize handler therefore reads the trigger's OLD
@@ -594,13 +666,22 @@ test("a trigger that only moves, with its box unchanged, is still followed after
     return box(0, 0, 0, 0);
   });
   stubPopupLayoutBox(window, 160, 120);
-  // An observer that never fires: this is the pure-translation case.
-  class SilentResizeObserver {
-    observe() {}
-    unobserve() {}
-    disconnect() {}
+  // Records what gets observed, so the test can fire only what a pane reflow
+  // would fire: a notification about an ANCESTOR of the trigger. Firing the
+  // trigger's own callback would not prove the pure-translation case, because
+  // a real browser never sends that notification for a fixed-size element.
+  const observed = new Map<Element, () => void>();
+  class RecordingResizeObserver {
+    constructor(private readonly callback: () => void) {}
+    observe(target: Element): void {
+      observed.set(target, this.callback);
+    }
+    unobserve(target: Element): void {
+      observed.delete(target);
+    }
+    disconnect(): void {}
   }
-  vi.stubGlobal("ResizeObserver", SilentResizeObserver);
+  vi.stubGlobal("ResizeObserver", RecordingResizeObserver);
   const { flush } = captureFrames();
   try {
     render(<Menu trigger="Actions" items={items()} />);
@@ -614,10 +695,29 @@ test("a trigger that only moves, with its box unchanged, is still followed after
     fireEvent(window, new Event("resize"));
     expect(screen.getByRole("menu").style.top).toBe("332px"); // measured the old rect
 
-    // Dockview finishes its layout. The footer moves, its SIZE does not, and
-    // no further window event fires - so the silent observer reports nothing
-    // and only the frame the resize handler scheduled can see this.
+    // The frame the resize scheduled runs FIRST, still before the pane has
+    // reflowed - Dockview's layout frame was queued from its own observer and
+    // can land after this one. Measuring here must not be the last word.
+    flush();
+    expect(screen.getByRole("menu").style.top).toBe("332px"); // still the old rect
+
+    // The trigger itself must be observed, and so must the boxes around it -
+    // the pane is what changes size when the footer only translates.
+    const observedTags = [...observed.keys()].map((element) => element.tagName);
+    expect(observedTags).toContain("BUTTON");
+    expect(observedTags).toContain("DIV");
+
+    // Dockview finishes its layout: the footer moves, its SIZE does not, and
+    // no window event fires. Nothing about the trigger changed, so only the
+    // pane box around it can report this.
     triggerTop = 500;
+    const paneCallbacks = [...observed]
+      .filter(([element]) => element.tagName !== "BUTTON" && element.tagName !== "UL")
+      .map(([, callback]) => callback);
+    expect(paneCallbacks.length).toBeGreaterThan(0);
+    act(() => {
+      for (const callback of paneCallbacks) callback();
+    });
     flush();
 
     expect(screen.getByRole("menu")).toBeTruthy();
@@ -828,6 +928,32 @@ test("a row disabled in place cannot retarget Enter at the first enabled row", a
   await user.keyboard("{Enter}");
   // A disabled row activates nothing: it must not fall through to "Rename".
   expect(screen.getByRole("menu")).toBeTruthy();
+});
+
+// A disabled row that keeps focus is focused but not TABBABLE, so FocusScope's
+// trap - which wraps at the ends of the tabbable list - does not recognize it
+// as an edge. Tab then continued from it in DOM order and, when the single tab
+// stop sat earlier in the list, left the open menu: Escape from the new target
+// no longer reached the popup. Tab from such a row has to land on a menu item.
+test("Tab from a row disabled in place stays inside the open menu", async () => {
+  const user = userEvent.setup();
+  render(<DisablingMenu />);
+  await user.click(screen.getByRole("button", { name: "Actions" }));
+  await user.keyboard("{ArrowDown}");
+  const focusedRow = screen.getByRole("menuitem", { name: "Duplicate" });
+  expect(document.activeElement).toBe(focusedRow);
+
+  fireEvent(window, new Event("resize"));
+  expect(document.activeElement).toBe(focusedRow); // still the disabled row
+
+  await user.keyboard("{Tab}");
+
+  // Focus is on a menu item, so the trap still contains it and Escape still
+  // closes the menu rather than being lost to whatever was outside.
+  const menu = screen.getByRole("menu");
+  expect(menu.contains(document.activeElement)).toBe(true);
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("menu")).toBeNull();
 });
 
 test("Tab is trapped within the open menu", async () => {

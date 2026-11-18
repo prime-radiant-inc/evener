@@ -65,14 +65,21 @@ export interface PopoverProps {
  * outside click or Escape closes it - as with Menu. Built on FocusScope with
  * trap so Tab/Shift+Tab cycle within the panel while open, also as with Menu.
  *
- * Its own dismissal rules, which Menu does not share, because Popover never
- * repositions after opening: ANY scroll (capture-phase, so a scrollable
- * ancestor's own scroll counts too) closes it, and so does a viewport resize.
- * Menu instead closes only on a scroll that can actually move its trigger,
- * and re-anchors rather than closing when the viewport resizes - opening Menu
- * can itself dismiss the software keyboard, and that resize is not the reader
- * dismissing anything. A caller that needs a panel to survive those
- * passes `closeOnScroll={false}`. See "Menu" in the widget reference.
+ * Its own dismissal rules, which Menu does not share: ANY scroll
+ * (capture-phase, so a scrollable ancestor's own scroll counts too) closes it,
+ * and so does a viewport resize. Menu instead closes only on a scroll that can
+ * actually move its trigger, and re-anchors rather than closing when the
+ * viewport resizes - opening Menu can itself dismiss the software keyboard,
+ * and that resize is not the reader dismissing anything. A caller that needs a
+ * panel to survive those passes `closeOnScroll={false}`. See "Menu" in the
+ * widget reference.
+ *
+ * It does re-place itself after opening, in one case: when the PANEL's own box
+ * changes, an observed resize re-runs the placement, so asynchronously-arriving
+ * content (the model picker's catalog) cannot leave a grown panel hanging off
+ * the viewport edge. That is a panel-content change, not a scroll or a
+ * viewport change, and it is why the dismissal rules above do not say "never
+ * repositions".
  */
 export function Popover({
   open,

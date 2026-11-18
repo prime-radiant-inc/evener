@@ -267,14 +267,16 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     setOrigin(transformOriginFor(triggerRect, placed));
   }, [ownerDocument]);
 
-  // Re-measure ONCE on the next frame, never synchronously. A resize event is
-  // not the moment the trigger has finished moving: Dockview defers its own
-  // layout to a frame too, and its rAF was queued by the same event dispatch
-  // before this one, so measuring here reads the layout Dockview has already
-  // settled rather than the one the resize caught mid-flight. Coalesced
-  // through one pending frame, so a burst of
-  // notifications - a resize, a visual-viewport change and an observation
-  // together - re-measures once.
+  // Re-measure ONCE on the next frame. A resize event is not the moment the
+  // trigger has finished moving: the docked pane reflows after it, and the
+  // footer can be somewhere else by the next frame with no further event to
+  // say so. The next frame is the widget's own "after layout" point - a
+  // getBoundingClientRect there forces the settled layout rather than reading
+  // the rect the resize happened to catch - and it is the point a widget can
+  // reach: none of them knows Dockview, so none subscribes to its layout
+  // event. Coalesced through one pending frame, so a burst of notifications -
+  // a resize, a visual-viewport change and an observation together -
+  // re-measures once.
   const frameRef = useRef<number | null>(null);
   const placeAfterLayout = useCallback(() => {
     if (frameRef.current !== null) return;
@@ -452,6 +454,19 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         event.stopPropagation();
         closeMenu();
         break;
+      case "Tab":
+        // Tab is FocusScope's job while focus sits on a menu item, and its
+        // trap wraps at the ends of the tabbable list. A row disabled in place
+        // is focused but NOT tabbable, so it is not one of those ends: the
+        // browser would continue from it in DOM order and, when the single
+        // tab stop sits before it, walk straight out of the open menu. Route
+        // Tab from such a row to the item the roving id resolves to - which
+        // keeps the trap intact - and leave Enter/Space on it doing nothing.
+        if (focused !== -1 && !isActionable(itemAt(items, focused))) {
+          event.preventDefault();
+          focusIndex(indexOfActive());
+        }
+        break;
       default:
         break;
     }
@@ -545,7 +560,21 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     if (!isOpen) return;
     const ownerWindow = ownerDocument.defaultView ?? window;
     const visualViewport = ownerWindow.visualViewport;
+    // `resize` covers the viewport changing size; `scroll` covers it moving
+    // without changing size. On iOS the visual viewport scrolls under a
+    // fixed-position layout when the keyboard's inset settles, and that moves
+    // the trigger relative to the popup with no `resize` and no window scroll
+    // at all - so the layout moves and nothing else says so. Both route
+    // through the same scheduler, which coalesces them into one frame.
+    //
+    // Neither is a dismissal: a visual-viewport scroll is the layout moving
+    // under the popup, not the reader scrolling away from it. The dismissal
+    // paths stay where they are - a document scroll or a scroll of the
+    // trigger's own container still closes the menu (onScrollCapture below).
+    // A visual viewport's own events never reach that window capture
+    // listener, so the two cannot fight.
     visualViewport?.addEventListener("resize", placeAfterLayout);
+    visualViewport?.addEventListener("scroll", placeAfterLayout);
     const Observer = ownerWindow.ResizeObserver;
     const observer = typeof Observer === "undefined" ? null : new Observer(placeAfterLayout);
     // The trigger's box covers a trigger that resized; the POPUP's box covers
@@ -553,17 +582,31 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // without touching the trigger at all - adding "Find in session..." to an
     // upward-opening popup would otherwise keep its old top and overlap the
     // trigger. Popover observes its own panel for the same reason. A pure
-    // translation of a fixed-size trigger fires neither, which is why the
-    // resize path also measures on the frame after layout instead of trusting
-    // an event to say the trigger has finished moving.
+    // translation of a fixed-size trigger fires NEITHER of those, and the
+    // resize frame alone can run before the pane reflows - which is why the
+    // trigger's ancestors, whose boxes the pane's reflow does change, are
+    // observed as well.
     const triggerEl = triggerRef.current;
     const popupEl = popupRef.current;
     if (observer !== null) {
       if (triggerEl !== null) observer.observe(triggerEl);
       if (popupEl !== null) observer.observe(popupEl);
+      // The trigger's own box is constant in the case that matters most: the
+      // docked pane reflows and translates the footer, and the composer's
+      // fixed-size button moves without resizing. What does change size is
+      // the pane around it, so every ancestor up to the body is observed too.
+      // That is what makes this the pane's own layout notification without
+      // the widget knowing Dockview exists - the walk is short (a handful of
+      // wrappers), and redundant notifications coalesce into one frame.
+      let ancestor = triggerEl?.parentElement ?? null;
+      while (ancestor !== null && ancestor !== ownerDocument.body) {
+        observer.observe(ancestor);
+        ancestor = ancestor.parentElement;
+      }
     }
     return () => {
       visualViewport?.removeEventListener("resize", placeAfterLayout);
+      visualViewport?.removeEventListener("scroll", placeAfterLayout);
       observer?.disconnect();
     };
   }, [isOpen, ownerDocument, placeAfterLayout]);
