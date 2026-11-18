@@ -297,6 +297,10 @@ func extractReasoningFields(reasoningContent, reasoning, reasoningText string, d
 	if b.Len() > 0 {
 		return b.String(), ""
 	}
+	return extractScalarReasoning(reasoningContent, reasoning, reasoningText)
+}
+
+func extractScalarReasoning(reasoningContent, reasoning, reasoningText string) (text, field string) {
 	for i, v := range [...]string{reasoningContent, reasoning, reasoningText} {
 		if v != "" {
 			return v, reasoningFieldNames[i]

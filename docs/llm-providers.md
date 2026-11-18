@@ -524,8 +524,10 @@ on — `reasoning_content`, `reasoning`, or `reasoning_text` as a plain string
 field, or `reasoning_details` as OpenRouter's array form. The value comes from
 models.dev's `interleaved.field` when the catalog states one, else the field
 the text actually arrived on, else `reasoning_content`.
-If a stream combines scalar deltas with display text from `reasoning_details`,
-the assembled reasoning keeps its full display text and has no scalar source field.
+Mixed Chat streams keep their assembled display text and store scalar deltas
+and their first wire field separately. Scalar replay uses those deltas, honoring
+the catalog field override. Array, encrypted and thinking-as-text replay use
+the assembled text under their existing rules.
 
 What changed structurally: `thinking_format` is now a `Caps` field set in
 `providers.toml`/the curated overlay (a provider- or model-level TOML key),

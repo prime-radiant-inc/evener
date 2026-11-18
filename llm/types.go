@@ -259,6 +259,9 @@ type ThinkingData struct {
 	Redacted         bool     `json:"redacted,omitempty"`
 	EncryptedContent string   `json:"encrypted_content,omitempty"`
 	Summary          []string `json:"summary,omitempty"`
+	// Chat Completions scalar replay when Text includes structured reasoning.
+	ScalarReasoningField string `json:"scalar_reasoning_field,omitempty"`
+	ScalarReasoningText  string `json:"scalar_reasoning_text,omitempty"`
 }
 
 // openAICompatReasoningFields is the canonical ordered list of wire fields
