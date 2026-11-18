@@ -334,6 +334,13 @@ func TestRunListFailureFallsBackToThePrefix(t *testing.T) {
 	if out.Run.Prefix != prefix {
 		t.Fatalf("drop prefix = %q, want %q", out.Run.Prefix, prefix)
 	}
+	// The operator-facing reason must carry the prefix too, or the advice sends
+	// them looking for a run it does not name. Asserted against Reason, the
+	// renderer's own input, rather than through outcomeLine: the sentence's
+	// wording is not the contract, the fact that the prefix reaches it is.
+	if !strings.Contains(out.Reason, prefix) {
+		t.Fatalf("drop reason = %q, want it to carry the queue branch prefix %q", out.Reason, prefix)
+	}
 }
 
 // TestEmptyRunListFallsBackToThePrefix pins the same fallback for the other
@@ -368,6 +375,9 @@ func TestEmptyRunListFallsBackToThePrefix(t *testing.T) {
 	}
 	if out.Run.Prefix != prefix {
 		t.Fatalf("drop prefix = %q, want %q", out.Run.Prefix, prefix)
+	}
+	if !strings.Contains(out.Reason, prefix) {
+		t.Fatalf("drop reason = %q, want it to carry the queue branch prefix %q", out.Reason, prefix)
 	}
 }
 

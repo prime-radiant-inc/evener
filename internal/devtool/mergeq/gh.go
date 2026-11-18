@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/execsupport/orphanpipe"
+	"primeradiant.com/evener/execsupport/procgroup"
 )
 
 // GHClient answers the queue's questions with the GitHub CLI: one `gh api
@@ -34,26 +35,49 @@ func (c GHClient) ghName() string {
 
 // ghDrainGrace bounds how long a gh that has exited successfully may keep the
 // caller waiting for its captured pipes. A `gh` that is a wrapper script
-// starting the real CLI without `exec` hands the pipe to that CLI, and killing
-// the wrapper on cancellation does not kill it: without this bound, cmd.Run
-// waits for the descendant and a cancelled wait reports its 130 minutes late.
-// It is short on purpose: the answer is already in the buffer by the time the
-// child exits, so the grace only covers a descendant that lingers after
-// writing. One second stays well under the helper's measured 0.7s interrupt
-// path even with process creation on a loaded runner.
+// starting the real CLI without `exec` hands the pipe to that CLI, so without
+// this bound cmd.Run waits for the descendant and a cancelled wait reports its
+// 130 minutes late. It is short on purpose: the answer is already in the buffer
+// by the time the child exits, so the grace only covers a descendant that
+// lingers after writing. One second stays well under the helper's measured 0.7s
+// interrupt path even with process creation on a loaded runner.
 const ghDrainGrace = time.Second
 
 // run executes gh and returns its stdout. The error carries gh's own stderr
 // when it wrote one, because that text is what the operator needs to read;
 // the caller adds the context that says which call failed.
+//
+// gh runs in a process group of its own, and a cancelled context kills that
+// whole group. Closing the captured pipes is not enough on its own: a `gh` that
+// is a wrapper starting the real CLI without `exec` keeps running after the
+// wrapper dies, so the helper would report 130 while the CLI was still
+// submitting the enqueue. The group kill is what makes "the wait stopped" mean
+// the request stopped, not just that this process stopped waiting for it.
 func (c GHClient) run(ctx context.Context, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, c.ghName(), args...)
+	cmd.SysProcAttr = procgroup.SysProcAttr()
+	// Kill, not Terminate: this is a cancellation, and the same choice the
+	// config value evaluator makes for the same reason. A wrapper's CLI that
+	// ignores TERM would otherwise cost the whole drain grace before dying,
+	// and a cancelled wait has nothing left to negotiate.
+	cmd.Cancel = func() error {
+		if cmd.Process != nil {
+			procgroup.Kill(cmd.Process.Pid)
+		}
+		return nil
+	}
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	cmd.WaitDelay = ghDrainGrace
-	// ChildErr keeps a gh that answered and exited 0 a success even when only
-	// the drain timed out, and leaves a gh the context killed an error.
-	if err := orphanpipe.ChildErr(cmd, cmd.Run()); err != nil {
+	err := orphanpipe.ChildErr(cmd, cmd.Run())
+	// The group dies with the call whether or not the context fired: on a clean
+	// exit nobody ran Cancel, and a wrapper's CLI would otherwise survive it.
+	// After the reap the pid names no process this call owns, and the group
+	// still holds whatever the call left in it.
+	if cmd.Process != nil {
+		procgroup.KillGroupAfterReap(cmd.Process.Pid)
+	}
+	if err != nil {
 		if detail := strings.TrimSpace(stderr.String()); detail != "" {
 			return nil, errors.New(detail)
 		}

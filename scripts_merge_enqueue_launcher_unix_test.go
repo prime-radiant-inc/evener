@@ -19,6 +19,29 @@ import (
 	"primeradiant.com/evener/internal/testwait"
 )
 
+// resolvePath returns path with every symlink and relative component resolved.
+//
+// The launcher's scratch library canonicalizes TMPDIR with `cd ... && pwd -P`
+// (scripts/lib/scratch-lib.sh), because on macOS $TMPDIR lives behind the
+// /var -> /private/var symlink. A case that matched processes by the raw TMPDIR
+// would search for a path the launcher never uses: the build's argv carries the
+// canonical one, so detection would never fire and cleanup would sweep the wrong
+// string, leaving a FIFO-blocked build in its own process group. Both sides go
+// through this function instead, so the comparison is path identity, not string
+// identity.
+func resolvePath(t *testing.T, path string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatalf("resolve %s: %v", path, err)
+	}
+	absolute, err := filepath.Abs(resolved)
+	if err != nil {
+		t.Fatalf("absolutize %s: %v", resolved, err)
+	}
+	return absolute
+}
+
 // mergeEnqueueLauncher is the script under test. These cases drive it as an
 // operator does -- a real process, a real signal at its PID or at its process
 // group, its real exit status -- because the defects they pin are about process
@@ -57,10 +80,10 @@ const mergeEnqueueLauncher = "scripts/ops/merge-enqueue.sh"
 //     pass with the real one.
 //   - cleanup leaves nothing behind, checked by scanning for the case's own
 //     marker after the group kills rather than by observing that the direct
-//     child exited. A `kill` of the direct child is what left the review's
-//     orphans alive: the helper runs in a group of its own, so
-//     `cmd.Process.Kill()` cannot reach it. The fixture's grandchild stands in
-//     for that shape -- it ignores TERM, so only a group signal stops it.
+//     child exited. A kill of the direct child cannot reach a helper that leads
+//     a group of its own, so a test tearing down that way leaks the tree. The
+//     fixture's grandchild stands in for exactly that shape: it ignores TERM,
+//     so only a group signal stops it.
 func TestMergeEnqueueLauncherLeavesNothingRunningAfterCancellation(t *testing.T) {
 	t.Parallel()
 	f := newLauncherFixture(t, `#!/usr/bin/env bash
@@ -76,12 +99,10 @@ while :; do sleep 0.05; done
 	// the fixture's PID alone, which is exactly the shape that outlived the
 	// review's tests.
 	grandchild := filepath.Join(f.dir, "grandchild.sh")
-	if err := os.WriteFile(grandchild, []byte(`#!/usr/bin/env bash
+	writeTestFile(t, grandchild, []byte(`#!/usr/bin/env bash
 trap '' TERM
 while :; do sleep 0.05; done
-`), 0o755); err != nil {
-		t.Fatalf("write fixture grandchild: %v", err)
-	}
+`), 0o755)
 	var helperPID int
 	var grandchildPID int
 	cmd := f.launcherCmd(t, "--pr", "6499", "--wait", "570", "--repo", "example.invalid/none")
@@ -180,9 +201,7 @@ func newFixtureCheckout(t *testing.T, tmp string) fixtureCheckout {
 		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 			t.Fatalf("mkdir for %s: %v", path, err)
 		}
-		if err := os.WriteFile(path, body, 0o755); err != nil {
-			t.Fatalf("write %s: %v", path, err)
-		}
+		writeTestFile(t, path, body, 0o755)
 	}
 	if err := os.MkdirAll(filepath.Join(root, "cmd", "evener-dev", "bin"), 0o755); err != nil {
 		t.Fatalf("mkdir fixture package: %v", err)
@@ -205,6 +224,17 @@ func newFixtureCheckout(t *testing.T, tmp string) fixtureCheckout {
 	if err := os.MkdirAll(tmp, 0o755); err != nil {
 		t.Fatalf("mkdir fixture TMPDIR: %v", err)
 	}
+	// Both paths are resolved once, after they exist, and every later comparison
+	// uses the resolved form. The launcher canonicalizes TMPDIR itself with
+	// `pwd -P` (scripts/lib/scratch-lib.sh, written for macOS's
+	// /var -> /private/var), so the build's argv carries the canonical path. A
+	// case comparing the raw one would wait for a path the launcher never uses,
+	// then sweep the same unmatched string in cleanup -- which is how a
+	// FIFO-blocked build could survive in its own process group.
+	c.root = resolvePath(t, root)
+	c.script = filepath.Join(c.root, "scripts", "ops", "merge-enqueue.sh")
+	c.sentinel = filepath.Join(c.root, "helper-ran")
+	c.tmp = resolvePath(t, tmp)
 	return c
 }
 
@@ -263,7 +293,9 @@ type launcherFixture struct {
 // file its handlers append to, and the files its output goes to.
 func newLauncherFixture(t *testing.T, script string) launcherFixture {
 	t.Helper()
-	dir := t.TempDir()
+	// Resolved, because the launcher canonicalizes the TMPDIR it is handed and
+	// the sweep matches against the path the launcher actually used.
+	dir := resolvePath(t, t.TempDir())
 	f := launcherFixture{
 		dir:    dir,
 		path:   filepath.Join(dir, "evener-dev"),
@@ -271,9 +303,7 @@ func newLauncherFixture(t *testing.T, script string) launcherFixture {
 		stdout: filepath.Join(dir, "stdout"),
 		stderr: filepath.Join(dir, "stderr"),
 	}
-	if err := os.WriteFile(f.path, []byte(script), 0o755); err != nil {
-		t.Fatalf("write fixture helper: %v", err)
-	}
+	writeTestFile(t, f.path, []byte(script), 0o755)
 	return f
 }
 
@@ -354,12 +384,10 @@ func killGroups(pids ...int) {
 // KILLs the launcher's process group, every fixture pid named so far, and every
 // process still naming the fixture directory.
 //
-// That last sweep is what the review's reproduction showed was missing: three
-// real helpers from this suite were found orphaned to PID 1 for over an hour,
-// each holding a --wait 570 budget the tests believed bounded them. A pid list
-// only covers the processes a case managed to learn before its assertion failed;
-// a helper that published nothing, or one the launcher started into a group of
-// its own, was outside every list. The fixture directory is unique per case and
+// The sweep covers what a pid list cannot: a pid list only holds the processes a
+// case managed to learn before its assertion failed, so a helper that published
+// nothing, or one the launcher started into a group of its own, is outside every
+// list. A tree left that way outlives its test and runs unattended. The fixture directory is unique per case and
 // appears in the argv of every process a case starts (the fixture helper by
 // path, a build or a real helper by the scratch path under it), so it is the one
 // handle that does not depend on the case getting that far.
@@ -652,29 +680,29 @@ func logPIDAndGroup(t *testing.T, f launcherFixture, prefix string) (pid, group 
 	return pid, group
 }
 
-// TestMergeEnqueueLauncherInterruptsAColdBuildInItsOwnGroup covers two findings
-// from the review at 092f60f468.
+// TestMergeEnqueueLauncherInterruptsAColdBuildInItsOwnGroup pins the launcher's
+// cold-build properties. Three invariants hold here, and the case is written so
+// it cannot pass without them:
 //
-// The build property is the medium from the review at 4adeb894e2: the launcher
-// tracked the background subshell while `setsid` ran *inside* it, so `$!` named
-// a wrapper whose group did not hold the build, and a compiler forked after
-// stop_command's PID snapshot was reparented when `go build` exited. The fix
-// runs the build under bash job control, so the tracked child leads the group
-// that holds the build's whole tree, and one signal reaches all of it.
+//   - The tracked child leads the process group that holds the build's tree, so
+//     one signal reaches the build and every compiler it forks, including one
+//     forked after stop_command's PID snapshot. The build runs under bash job
+//     control for this (scripts/lib/gate-bounded.sh's run_bounded is the same
+//     pattern); a background subshell whose child leads a group of its own would
+//     make `$!` name a wrapper, and a compiler reparented when `go build` exits
+//     would keep the caller's pipes open past the launcher's 130.
+//     positively by the fixture's own scratch path in its argv rather than as
+//     "the launcher's first child", which is a probe binary during scratch
+//     preflight.
+//   - No process here can reach a merge-queue helper. The script runs from a
+//     fixture checkout whose only buildable package writes a sentinel and exits,
+//     and requireIsolated fails the case if the script under test is not that
+//     copy. A test that reached the real helper could put a real pull request in
+//     the real merge queue from a `go test` run.
 //
-// The reachability property is the review's next medium: this case used to run
-// the *real* launcher from this checkout with no EVENER_DEV_BIN, so it built the
-// real helper and -- with an authenticated `gh` on PATH -- the helper could query
-// prime-radiant-inc/evener and enqueue PR 6499 from a test run. It did run: the
-// review's reproduction found the real `evener-dev dev merge-enqueue --pr 6499
-// --wait 570` orphaned to PID 1 for over an hour, each with a fixture `gh.sh`.
-//
-// So the case runs the script under test from a *fixture checkout*: the script
-// and the libraries it sources are copies, and the only package
-// ./cmd/evener-dev/bin can build is the fixture's own module. No real helper
-// exists here to start, whatever completes the build. The build is held open by
-// a FIFO source file instead of a cold cache, so "the build is running" is a
-// fact the case can wait for rather than a race it hopes to win.
+// The build is held open by a FIFO source file rather than a cold cache: a cold
+// build is a race against the host, and this case has to observe the build
+// before signalling it.
 func TestMergeEnqueueLauncherInterruptsAColdBuildInItsOwnGroup(t *testing.T) {
 	t.Parallel()
 	c := newFixtureCheckout(t, filepath.Join(t.TempDir(), "tmp"))
@@ -725,9 +753,9 @@ func TestMergeEnqueueLauncherInterruptsAColdBuildInItsOwnGroup(t *testing.T) {
 		return pidGone(buildPID)
 	})
 	// The stub never ran: the build was cancelled, so there was nothing to
-	// start. This is the sentinel the review's reproduction needed -- proof the
-	// helper the launcher would have run is the fixture's own, and that no
-	// merge-queue helper exists in this checkout to run at all.
+	// start. The sentinel is what distinguishes "the fixture's helper was
+	// cancelled" from "something else ran", and no merge-queue helper exists in
+	// this checkout to run at all.
 	if _, err := os.Stat(c.sentinel); err == nil {
 		t.Fatalf("the fixture helper ran: the build finished after all, so this case did not exercise cancellation")
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -735,12 +763,12 @@ func TestMergeEnqueueLauncherInterruptsAColdBuildInItsOwnGroup(t *testing.T) {
 	}
 }
 
-// TestMergeEnqueueLauncherForwardsSigtermToAPrebuiltHelper is the medium from
-// the review at a20021a01b: with EVENER_DEV_BIN set, the launcher started and
-// waited for the helper before installing its traps, so a SIGTERM at the
-// launcher PID killed it with the shell's default action (143) and left the
-// helper polling until the wait expired, holding the caller's output open for
-// the rest of the wait.
+// TestMergeEnqueueLauncherForwardsSigtermToAPrebuiltHelper pins that the
+// prebuilt path is interruptible: the traps are installed before either launch
+// path, so a SIGTERM at the launcher's PID stops the helper and exits 130. A
+// handler installed after the helper starts leaves the default action, which
+// kills the launcher with 143 while the helper polls until the wait expires,
+// holding the caller's output open for the rest of it.
 //
 // The fixture publishes its pid only after its TERM handler is installed, so a
 // correct launcher cannot be failed by signalling a fixture that is still
@@ -769,12 +797,12 @@ while :; do sleep 0.05; done
 	})
 }
 
-// TestMergeEnqueueLauncherRunsTheHelperInItsOwnProcessGroup is the third medium
-// from the review at 4adeb894e2: the launcher, the helper and the helper's `gh`
-// shared one process group, so Ctrl-C's SIGINT reached `gh` before the helper's
-// own handler cancelled the context. The helper then read the interrupted call
-// as an ordinary GitHub failure and printed a drop verdict with re-enqueue
-// advice for a wait the operator cancelled.
+// TestMergeEnqueueLauncherRunsTheHelperInItsOwnProcessGroup pins that the helper
+// leads a group of its own. Sharing the launcher's group would let a terminal
+// Ctrl-C reach the helper's `gh` before the helper's own handler cancelled the
+// context, and the helper would then read the interrupted call as an ordinary
+// GitHub failure and print a drop verdict with re-enqueue advice for a wait the
+// operator cancelled.
 //
 // The assertion is the process-group structure, not a log line, because a log
 // line cannot honestly observe this. A bash fixture forked with `&` from a
@@ -791,13 +819,11 @@ while :; do sleep 0.05; done
 func TestMergeEnqueueLauncherRunsTheHelperInItsOwnProcessGroup(t *testing.T) {
 	t.Parallel()
 	gh := filepath.Join(t.TempDir(), "gh.sh")
-	if err := os.WriteFile(gh, []byte(`#!/usr/bin/env bash
+	writeTestFile(t, gh, []byte(`#!/usr/bin/env bash
 trap 'printf "gh-termed\n" >> "$EVENER_FIXTURE_LOG"; exit 0' TERM
 printf 'gh-pid=%s;pgid=%s\n' "$$" "$(ps -o pgid= -p "$$" | tr -d ' ')" >> "$EVENER_FIXTURE_LOG"
 while :; do sleep 0.05; done
-`), 0o755); err != nil {
-		t.Fatalf("write fixture gh: %v", err)
-	}
+`), 0o755)
 	f := newLauncherFixture(t, `#!/usr/bin/env bash
 set -uo pipefail
 trap 'printf "helper-interrupted\n" >> "$EVENER_FIXTURE_LOG"; kill -TERM "$gh" 2>/dev/null; exit 130' INT TERM
@@ -832,9 +858,9 @@ while :; do sleep 0.05; done
 	})
 }
 
-// TestMergeEnqueueLauncherResolvesItsRootUnderCDPATH is the low from the review
-// at a20021a01b: `cd` prints the directory it moved to when a CDPATH entry
-// matches, so the root captured two lines. Everything that path is used for then
+// TestMergeEnqueueLauncherResolvesItsRootUnderCDPATH pins that the root resolves
+// to one path: `cd` prints the directory it moved to when a CDPATH entry
+// matches, so the root would otherwise capture two lines. Everything that path is used for then
 // failed -- the scratch library would not load from a path with a newline in it,
 // and `cd "$root"` before the helper fails.
 //
