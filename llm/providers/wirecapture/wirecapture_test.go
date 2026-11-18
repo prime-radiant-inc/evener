@@ -157,6 +157,41 @@ func text(s string) []llm.ContentPart { return []llm.ContentPart{{Kind: llm.Cont
 
 var weatherTool = llm.ToolDefinition{Name: "weather", Description: "Current weather", Parameters: map[string]any{"type": "object", "properties": map[string]any{"city": map[string]any{"type": "string"}}}}
 
+// strictWeatherTool is the same tool with its single argument declared
+// required, for rows whose provider sets strict_tools.
+//
+// A schema that leaves an argument optional is not certified: the projection
+// force-requires every property, so certifying one would make a documented-
+// optional argument mandatory, and that is the defect this branch exists to
+// fix. Such a tool is sent unchanged with strict false (see
+// openai-gpt-5-5-optional-argument), which is a different wire schema from
+// this one and is recorded separately rather than by reusing a strict row.
+var strictWeatherTool = llm.ToolDefinition{Name: "weather", Description: "Current weather", Parameters: map[string]any{
+	"type":                 "object",
+	"additionalProperties": false,
+	"properties":           map[string]any{"city": map[string]any{"type": "string"}},
+	"required":             []string{"city"},
+}}
+
+// strictToolsRequest is toolsRequest for a row that turns strict mode on.
+func strictToolsRequest(effort string) llm.Request {
+	req := toolsRequest(effort)
+	req.Tools = []llm.ToolDefinition{strictWeatherTool}
+	return req
+}
+
+// optionalToolsRequest is toolsRequest with the same tool leaving its argument
+// optional, which is what a strict-capable row must still record: the gate
+// refuses to certify it, so it reaches the wire unchanged with strict false.
+// Without a row asserting that, the suite would prove only that an
+// already-fully-required schema survives projection, which is the one shape
+// this branch's refusal never has to handle.
+func optionalToolsRequest(effort string) llm.Request {
+	req := toolsRequest(effort)
+	req.Tools = []llm.ToolDefinition{weatherTool}
+	return req
+}
+
 // toolsRequest is the common fixture: a system prompt, one user turn, one
 // tool with forced tool choice, the session identifiers the Codex headers
 // and the affinity headers read, and a prompt cache key plus 24h retention
@@ -217,12 +252,13 @@ var cases = []wireCase{
 	{"anthropic-opus-4-6-no-effort", "anthropic/claude-opus-4-6", false, toolsRequest("")},
 	{"anthropic-opus-4-7-display", "anthropic/claude-opus-4-7", false, toolsRequest("high")},
 	{"anthropic-opus-4-5-hybrid", "anthropic/claude-opus-4-5", false, toolsRequest("high")},
-	{"openai-gpt-5-5", "openai/gpt-5.5", false, toolsRequest("high")},
-	{"openai-codex-gpt-5-6-lite-stream", "openai-codex/gpt-5.6", true, toolsRequest("")},
+	{"openai-gpt-5-5", "openai/gpt-5.5", false, strictToolsRequest("high")},
+	{"openai-gpt-5-5-optional-argument", "openai/gpt-5.5", false, optionalToolsRequest("high")},
+	{"openai-codex-gpt-5-6-lite-stream", "openai-codex/gpt-5.6", true, strictToolsRequest("")},
 	{"groq-chat-stream", "groq/openai/gpt-oss-120b", true, toolsRequest("high")},
 	{"groq-responses", "groq-responses/openai/gpt-oss-120b", false, toolsRequest("high")},
 	{"openrouter-opus-5-signed-tool-turn", "openrouter/anthropic/claude-opus-5", false, signedToolTurn()},
-	{"work-glm-zai-stream", "work/glm-5.2-nvfp4", true, toolsRequest("high")},
+	{"work-glm-zai-stream", "work/glm-5.2-nvfp4", true, strictToolsRequest("high")},
 	{"azure-gpt55-prod", "azure/gpt55-prod", false, toolsRequest("high")},
 	{"azure-claude-prod", "azure/claude-prod", false, toolsRequest("high")},
 	{"bedrock-sonnet-5-stream", "bedrock/anthropic.claude-sonnet-5", true, webSearchRequest()},

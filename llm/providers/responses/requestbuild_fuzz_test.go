@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/internal/openaichat"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -269,6 +270,12 @@ func FuzzResponsesBuildBody(f *testing.F) {
 	// include list under both the drop and the pass-through rows.
 	f.Add("m", "s", "u", []byte(`{}`), []byte(`{}`), byte(0), byte(144), byte(0))
 	f.Add("json", "s", "u", []byte(`{}`), []byte(`{}`), byte(25), byte(0), byte(0))
+	// A nil tool schema is a tool that declares no arguments. The builder
+	// supplies its own closed empty object, so with the per-tool override
+	// asking for strict mode the tool goes out strict. The oracle must not
+	// substitute an open schema for nil and expect non-strict: nil means "no
+	// declared arguments", which is not the same thing as an open object.
+	f.Add("m", "s", "u", []byte(`{}`), []byte(`null`), byte(131), byte(2), byte(0))
 	f.Add("JSON", "s", "u", []byte(`{}`), []byte(`{}`), byte(25), byte(0), byte(0))
 	f.Add("json_schema", "s", "u", []byte(`{}`), []byte(`{"type":"object"}`), byte(25), byte(8), byte(0))
 	f.Add("m", "s", "u", []byte(`{}`), []byte(`{"type":"object","properties":{"x":{"type":"string"}}}`), byte(131), byte(3), byte(0))
@@ -401,19 +408,36 @@ func FuzzResponsesBuildBody(f *testing.F) {
 			} else {
 				toolRows, _ = body["tools"].([]map[string]any)
 			}
-			if len(toolRows) == 0 || toolRows[0]["strict"] != (sel&1 == 1) {
-				t.Fatalf("tools[0].strict = %#v, want the per-tool override %v", toolRows, sel&1 == 1)
-			}
-			if sel&1 == 1 {
-				var schema map[string]any
-				_ = json.Unmarshal(toolParams, &schema)
-				if schema == nil {
-					schema = map[string]any{"type": "object"}
+			var schema map[string]any
+			_ = json.Unmarshal(toolParams, &schema)
+			// A nil schema is not an open schema: it is a tool that declares no
+			// arguments at all. The builder supplies the closed empty object for
+			// it and certifies it strict, so the expectation for nil has to be
+			// stated on its own rather than by substituting a schema here.
+			override := sel&1 == 1
+			if schema == nil {
+				if len(toolRows) == 0 || toolRows[0]["strict"] != override {
+					t.Fatalf("a parameterless tool must follow the per-tool override: tools[0] = %#v, want strict %v", toolRows, override)
 				}
-				if typ, _ := schema["type"].(string); typ == "object" {
-					params, _ := toolRows[0]["parameters"].(map[string]any)
-					if params == nil || params["additionalProperties"] != false {
-						t.Fatalf("a strict tool must carry the strictified schema: %#v", toolRows[0]["parameters"])
+				params, _ := toolRows[0]["parameters"].(map[string]any)
+				if override && (params == nil || params["additionalProperties"] != false) {
+					t.Fatalf("a strict parameterless tool must carry the closed empty object: %#v", toolRows[0]["parameters"])
+				}
+			} else {
+				// Strict mode force-requires every property, so the per-tool
+				// override can only be honored for a schema that already requires
+				// them all. A schema with an optional property is projected
+				// non-strict instead of made mandatory.
+				wantStrict := override && openaichat.StrictExpressible(schema)
+				if len(toolRows) == 0 || toolRows[0]["strict"] != wantStrict {
+					t.Fatalf("tools[0].strict = %#v, want %v (override %v, expressible %v)", toolRows, wantStrict, override, openaichat.StrictExpressible(schema))
+				}
+				if wantStrict {
+					if typ, _ := schema["type"].(string); typ == "object" {
+						params, _ := toolRows[0]["parameters"].(map[string]any)
+						if params == nil || params["additionalProperties"] != false {
+							t.Fatalf("a strict tool must carry the strictified schema: %#v", toolRows[0]["parameters"])
+						}
 					}
 				}
 			}

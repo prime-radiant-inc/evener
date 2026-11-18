@@ -33,13 +33,70 @@ func toResponsesResponseFormat(rf llm.ResponseFormat, structured bool) any {
 	}
 }
 
+// toolSchema is the schema one tool is sent with, and whether that tool rides
+// the request under strict enforcement. The rules are stated below in the order
+// the builder applies them.
+func toolSchema(t llm.ToolDefinition, strict bool) (params map[string]any, toolStrict bool) {
+	toolStrict = strict
+	if toolStrict && t.Strict != nil {
+		toolStrict = *t.Strict
+	}
+	params = t.Parameters
+	if params == nil {
+		// A tool that declares no parameters takes the empty object. On the
+		// strict path the root has to be explicitly closed, because strict
+		// mode accepts that and only that: an open root is not certifiable,
+		// and sending it non-strict would accept any keys the tool rejects.
+		// With strict mode off the advertised shape is unchanged.
+		params = map[string]any{"type": "object", "properties": map[string]any{}}
+		if toolStrict {
+			params["additionalProperties"] = false
+		}
+	}
+	if toolStrict {
+		// OpenAI strict mode requires a fully-specified JSON Schema:
+		// - object schemas must set additionalProperties=false
+		// - required must include every key in properties (even for "optional" fields)
+		// See API validation errors like:
+		// "Invalid schema for function 'read_file': ... 'required' ... Missing 'limit'."
+		//
+		// That force-requiring is lossless only when the schema already
+		// requires every property. A tool with a documented-optional argument
+		// has no legal strict form: projecting it would make that argument
+		// mandatory on every call. Such a tool keeps its advertised schema and
+		// is sent non-strict.
+		if !openaichat.StrictExpressible(params) {
+			toolStrict = false
+		}
+	}
+	if toolStrict {
+		// StrictifyJSONSchema states the derived type itself at the end of its
+		// walk, so the strict and refused paths agree on the emitted schema
+		// without a second pass here.
+		return openaichat.StrictifyJSONSchema(params), true
+	}
+	// A refused tool keeps the schema it advertised, because the projection
+	// would change which arguments it accepts. The provider still requires an
+	// explicit type on every node, so a closed value set that implies one gets
+	// it stated here: the accepted values are identical either way, and an
+	// argument declared {"const": "fixed"} would otherwise be rejected along
+	// with the whole request. This runs on the non-strict path too because the
+	// requirement is the schema dialect's, not strict mode's — additional_tools
+	// on this route carries strict:false and is still rejected for a typeless
+	// node.
+	return openaichat.SupplyDerivedTypes(params), false
+}
+
 func toResponsesTools(tools []llm.ToolDefinition, strict bool) []map[string]any {
 	out := make([]map[string]any, 0, len(tools))
 	for _, t := range tools {
-		params := t.Parameters
-		if params == nil {
-			params = map[string]any{"type": "object", "properties": map[string]any{}}
-		}
+		// The per-tool opt-out is read before the fallback is synthesized: a
+		// tool that opts out is advertised with the open empty object, which is
+		// what every non-strict route already sends and what the local
+		// validator allows. Only a tool that will actually be sent in strict
+		// mode gets the closed empty object, because strict mode accepts that
+		// and only that.
+		params, toolStrict := toolSchema(t, strict)
 		entry := map[string]any{
 			"type":        "function",
 			"name":        t.Name,
@@ -47,19 +104,6 @@ func toResponsesTools(tools []llm.ToolDefinition, strict bool) []map[string]any 
 			"parameters":  params,
 		}
 		if strict {
-			toolStrict := true
-			if t.Strict != nil {
-				toolStrict = *t.Strict
-			}
-			if toolStrict {
-				// OpenAI strict mode requires a fully-specified JSON Schema:
-				// - object schemas must set additionalProperties=false
-				// - required must include every key in properties (even for "optional" fields)
-				// See API validation errors like:
-				// "Invalid schema for function 'read_file': ... 'required' ... Missing 'limit'."
-				params = openaichat.StrictifyJSONSchema(params)
-				entry["parameters"] = params
-			}
 			entry["strict"] = toolStrict
 		}
 		out = append(out, entry)

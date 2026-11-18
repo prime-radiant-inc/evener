@@ -398,3 +398,34 @@ func TestExecuteToolCalls_UnknownToolDefaultsNonReadOnly(t *testing.T) {
 		}
 	})
 }
+
+// A tool that declares no parameters must stay distinguishable from one that
+// advertises the open empty object, because the Responses adapter emits a
+// different schema for each: a closed empty object it can certify strict, and
+// the open object it must send non-strict. Preparation is where that
+// distinction is lost if it fills the nil in, so it must validate the default
+// without writing it back.
+func TestPrepareToolsPreservesTheNoArgumentDefinition(t *testing.T) {
+	t.Parallel()
+	idx, defs, err := prepareTools([]Tool{
+		{Definition: ToolDefinition{Name: "no_args"}},
+		{Definition: ToolDefinition{Name: "open_args", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}}},
+	})
+	if err != nil {
+		t.Fatalf("prepareTools: %v", err)
+	}
+	if len(defs) != 2 {
+		t.Fatalf("got %d definitions, want 2", len(defs))
+	}
+	if defs[0].Parameters != nil {
+		t.Fatalf("a tool that declared no parameters came out with %#v: the adapter can no longer tell it apart from an explicitly open schema", defs[0].Parameters)
+	}
+	if defs[1].Parameters == nil {
+		t.Fatal("an explicitly supplied schema must be preserved as given")
+	}
+	// The compiled validator still accepts an empty argument object for the
+	// no-argument tool, so preserving nil must not cost argument checking.
+	if _, ok := idx["no_args"]; !ok {
+		t.Fatal("the no-argument tool must still be callable")
+	}
+}

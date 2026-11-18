@@ -251,7 +251,10 @@ func prepareGeneration(opts GenerateOptions) (*generationState, error) {
 
 // request builds the model request for one step from opts and the conversation so far.
 func (gs *generationState) request(opts GenerateOptions, history []Message) Request {
-	return Request{
+	// preparedTools marks this request as one preparation built: Tools came from
+	// prepareTools, so the adapters find the nil a parameterless definition
+	// keeps, and can tell that apart from a direct call's nil.
+	return MarkPreparedTools(Request{
 		Model:                opts.Model,
 		Provider:             opts.Provider,
 		Messages:             append([]Message{}, history...),
@@ -282,7 +285,7 @@ func (gs *generationState) request(opts GenerateOptions, history []Message) Requ
 		ProviderOptions:      opts.ProviderOptions,
 		WebSearch:            opts.WebSearch,
 		AdapterTimeout:       opts.AdapterTimeout,
-	}
+	})
 }
 
 // endsToolLoop reports whether a step's response is the last one: it carries no
@@ -392,6 +395,11 @@ func prepareTools(tools []Tool) (map[string]Tool, []ToolDefinition, error) {
 		if err := ValidateToolName(name); err != nil {
 			return nil, nil, err
 		}
+		// A definition that declares no parameters keeps its nil: the adapters
+		// distinguish "this tool takes no arguments" from "this tool advertises
+		// the open empty object", and only the first is strict-expressible.
+		// Validate and compile against the default without writing it back.
+		declared := t.Definition.Parameters
 		if t.Definition.Parameters == nil {
 			t.Definition.Parameters = defaultToolParameters()
 		}
@@ -402,6 +410,7 @@ func prepareTools(tools []Tool) (map[string]Tool, []ToolDefinition, error) {
 		if err != nil {
 			return nil, nil, err
 		}
+		t.Definition.Parameters = declared
 		t.schema = s
 		idx[name] = t
 		defs = append(defs, t.Definition)
