@@ -38,14 +38,7 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 	var textStarted bool
 	var textBuf strings.Builder
 	var reasoningStarted bool
-	var reasoningBuf strings.Builder
-	// reasoningField remembers which wire field the first reasoning delta
-	// arrived on so replay can route thinking back to the same field.
-	var reasoningField string
-	// encryptedDetails accumulates opaque reasoning.encrypted items (OpenRouter
-	// Gemini/o-series) in arrival order; they ride the thinking part's
-	// EncryptedContent so the reasoning chain survives replay.
-	var encryptedDetails []map[string]any
+	var reasoning chatReasoning
 	var responseID string
 	var model string
 	var finishReason string
@@ -113,19 +106,7 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 				}
 
 				// Build final response.
-				msg := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{}}
-				if reasoningBuf.Len() > 0 || len(encryptedDetails) > 0 {
-					td := &llm.ThinkingData{Text: reasoningBuf.String(), Signature: reasoningField}
-					if len(encryptedDetails) > 0 {
-						if b, err := json.Marshal(encryptedDetails); err == nil {
-							td.EncryptedContent = string(b)
-						}
-					}
-					msg.Content = append(msg.Content, llm.ContentPart{
-						Kind:     llm.ContentThinking,
-						Thinking: td,
-					})
-				}
+				msg := llm.Message{Role: llm.RoleAssistant, Content: reasoning.parts()}
 				if textBuf.Len() > 0 {
 					msg.Content = append(msg.Content, llm.ContentPart{Kind: llm.ContentText, Text: textBuf.String()})
 				}
@@ -157,12 +138,7 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 				if usage != nil {
 					finalResp.Usage = *usage
 				}
-				if finalResp.Usage.ReasoningTokens == nil && finalResp.Usage.ReasoningTokensEstimated == nil {
-					if est := estimateThinkingFromBuf(reasoningBuf.Len()); est > 0 {
-						e := est
-						finalResp.Usage.ReasoningTokensEstimated = &e
-					}
-				}
+				estimateReasoningUsage(finalResp)
 				llm.StampEndpointURL(finalResp, r.EndpointURL, r.Material)
 				// The provider may keep the body open after [DONE]; Finish stops
 				// the parser before its next read.
@@ -226,20 +202,11 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 				finishReason = choice.FinishReason
 			}
 
-			// Accumulate opaque encrypted reasoning items (they carry no text,
-			// so reasoningFromDelta skips them).
-			encryptedDetails = append(encryptedDetails, collectEncryptedDetails(choice.Delta.ReasoningDetails)...)
-
-			// Reasoning delta — providers vary the field name; take the first
-			// non-empty variant per chunk (duplicated identical fields must
-			// not double the text) and remember the field for replay.
-			if delta, field := reasoningFromDelta(choice.Delta); delta != "" {
+			if delta := reasoning.add(choice.Delta.chatReasoningFields); delta != "" {
 				if !reasoningStarted {
 					s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningStart})
 					reasoningStarted = true
-					reasoningField = field
 				}
-				reasoningBuf.WriteString(delta)
 				s.Send(llm.StreamEvent{
 					Type:           llm.StreamEventReasoningDelta,
 					ReasoningDelta: delta,

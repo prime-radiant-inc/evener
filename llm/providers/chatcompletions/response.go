@@ -26,13 +26,17 @@ type chatChoice struct {
 }
 
 type chatMessage struct {
-	Role             string                `json:"role"`
-	Content          string                `json:"content"`
+	chatReasoningFields
+	Role      string         `json:"role"`
+	Content   string         `json:"content"`
+	ToolCalls []chatToolCall `json:"tool_calls,omitempty"`
+}
+
+type chatReasoningFields struct {
 	ReasoningContent string                `json:"reasoning_content,omitempty"`
 	Reasoning        string                `json:"reasoning,omitempty"`
 	ReasoningText    string                `json:"reasoning_text,omitempty"`
 	ReasoningDetails []reasoningDetailItem `json:"reasoning_details,omitempty"`
-	ToolCalls        []chatToolCall        `json:"tool_calls,omitempty"`
 }
 
 // chatExtraContent carries provider-specific continuation metadata that rides
@@ -55,7 +59,7 @@ type reasoningDetailItem struct {
 	Type   string `json:"type"`
 	Text   string `json:"text,omitempty"`
 	Format string `json:"format,omitempty"`
-	Index  int    `json:"index,omitempty"`
+	Index  *int   `json:"index,omitempty"`
 	// Signature carries the provider's continuation signature on
 	// reasoning.text items (OpenRouter's Anthropic route: streamed as a
 	// trailing text-less item, non-stream merged with the text). It must
@@ -99,38 +103,24 @@ func (d reasoningDetailItem) carriesContinuation() bool {
 	return d.isEncrypted() || (d.Type == "reasoning.text" && d.Signature != "")
 }
 
-// encodeEncryptedDetails serializes the encrypted items of a reasoning_details
-// array into the JSON string carried on ThinkingData.EncryptedContent, in
-// arrival order. Returns "" when there are none.
-func encodeEncryptedDetails(items []reasoningDetailItem) string {
-	enc := collectEncryptedDetails(items)
-	if len(enc) == 0 {
+func encodeEncryptedDetails(items []map[string]any) string {
+	if len(items) == 0 {
 		return ""
 	}
-	b, _ := json.Marshal(enc)
+	b, _ := json.Marshal(items)
 	return string(b)
 }
 
-// collectEncryptedDetails returns the continuation-bearing items (encrypted
-// blocks and signature-carrying reasoning.text) as wire maps, preserving
-// order AND every field the provider sent (decoded from the item's verbatim
-// Raw JSON — replay must be lossless or continuation can break). Used both to
-// build EncryptedContent and to accumulate streamed items.
-func collectEncryptedDetails(items []reasoningDetailItem) []map[string]any {
-	var enc []map[string]any
-	for _, d := range items {
-		if !d.carriesContinuation() {
-			continue
-		}
-		var verbatim map[string]any
-		if len(d.Raw) > 0 && json.Unmarshal(d.Raw, &verbatim) == nil {
-			enc = append(enc, verbatim)
-			continue
-		}
-		// Raw missing (item built programmatically): fall back to known fields.
-		enc = append(enc, map[string]any{"type": d.Type, "id": d.ID, "data": d.Data})
+// wireItem preserves provider-specific continuation metadata, including
+// fields not represented by reasoningDetailItem.
+func (d reasoningDetailItem) wireItem() map[string]any {
+	var wire map[string]any
+	if len(d.Raw) > 0 && json.Unmarshal(d.Raw, &wire) == nil {
+		return wire
 	}
-	return enc
+	b, _ := json.Marshal(d)
+	_ = json.Unmarshal(b, &wire)
+	return wire
 }
 
 type chatToolCall struct {
@@ -184,13 +174,10 @@ type chatChunkChoice struct {
 }
 
 type chatDelta struct {
-	Role             string                `json:"role"`
-	Content          string                `json:"content"`
-	ReasoningContent string                `json:"reasoning_content,omitempty"`
-	Reasoning        string                `json:"reasoning,omitempty"`
-	ReasoningText    string                `json:"reasoning_text,omitempty"`
-	ReasoningDetails []reasoningDetailItem `json:"reasoning_details,omitempty"`
-	ToolCalls        []chatChunkToolCall   `json:"tool_calls,omitempty"`
+	chatReasoningFields
+	Role      string              `json:"role"`
+	Content   string              `json:"content"`
+	ToolCalls []chatChunkToolCall `json:"tool_calls,omitempty"`
 }
 
 // reasoningFieldNames are the wire fields OpenAI-compatible providers use for
@@ -199,13 +186,6 @@ type chatDelta struct {
 // reasoning_text); chutes.ai duplicates identical content across two, so
 // exactly one is read per chunk.
 var reasoningFieldNames = llm.OpenAICompatReasoningFields()
-
-// reasoningFromDelta returns the chunk's reasoning text and the field it
-// arrived on. Both response paths use the same precedence and detail joining
-// so a provider payload decodes identically in stream and non-stream mode.
-func reasoningFromDelta(d chatDelta) (text, field string) {
-	return extractReasoningFields(d.ReasoningContent, d.Reasoning, d.ReasoningText, d.ReasoningDetails)
-}
 
 type chatChunkToolCall struct {
 	Index        int               `json:"index"`
@@ -269,40 +249,152 @@ func thoughtSignatureFromExtraContent(extra *chatExtraContent) string {
 	return strings.TrimSpace(extra.Google.ThoughtSignature)
 }
 
-// extractReasoning returns the reasoning text from a chat message and the wire
-// field it arrived on, using the same extraction as the stream decoder.
-func extractReasoning(msg chatMessage) (text, field string) {
-	return extractReasoningFields(msg.ReasoningContent, msg.Reasoning, msg.ReasoningText, msg.ReasoningDetails)
-}
-
-// extractReasoningFields prefers reasoning_details when it contains text,
-// joining pieces with newlines. Its empty field preserves the special replay
-// contract for reasoning_details; scalar fields retain the canonical registry
-// index mapping.
-func extractReasoningFields(reasoningContent, reasoning, reasoningText string, details []reasoningDetailItem) (text, field string) {
-	var b strings.Builder
-	for _, item := range details {
-		piece := item.Text
-		if piece == "" {
-			piece = item.Thinking
-		}
-		if piece == "" {
-			continue
-		}
-		if b.Len() > 0 {
-			b.WriteString("\n")
-		}
-		b.WriteString(piece)
-	}
-	if b.Len() > 0 {
-		return b.String(), ""
-	}
-	for i, v := range [...]string{reasoningContent, reasoning, reasoningText} {
+func (f chatReasoningFields) scalar() (string, string) {
+	for i, v := range [...]string{f.ReasoningContent, f.Reasoning, f.ReasoningText} {
 		if v != "" {
 			return v, reasoningFieldNames[i]
 		}
 	}
 	return "", ""
+}
+
+type reasoningDetailBlock struct {
+	text strings.Builder
+	wire map[string]any
+}
+
+// chatReasoning assembles one completion. A trailing signature authenticates
+// detail text from its own index. A scalar is an independent source unless it
+// mirrors the text on the details.
+type chatReasoning struct {
+	scalar      strings.Builder
+	scalarField string
+	// Unsigned details take precedence over a scalar in the same chunk.
+	// Until the first text-bearing detail, that display is exactly the scalar.
+	display      *strings.Builder
+	displayField string
+	open         map[int]*reasoningDetailBlock
+	blocks       []*reasoningDetailBlock
+	continuation []*reasoningDetailBlock
+	hasSignature bool
+}
+
+func (r *chatReasoning) add(f chatReasoningFields) string {
+	scalar, field := f.scalar()
+	var detailDelta strings.Builder
+	for pos, item := range f.ReasoningDetails {
+		piece := item.Text
+		if piece == "" {
+			piece = item.Thinking
+		}
+		if piece != "" {
+			if detailDelta.Len() != 0 {
+				detailDelta.WriteByte('\n')
+			}
+			detailDelta.WriteString(piece)
+		}
+		r.addDetail(pos, item, piece)
+	}
+	delta := scalar
+	if detailDelta.Len() != 0 {
+		delta = detailDelta.String()
+		if r.display == nil {
+			r.display = &strings.Builder{}
+			r.display.WriteString(r.scalar.String())
+			r.displayField = r.scalarField
+		}
+	}
+	if r.display != nil {
+		r.display.WriteString(delta)
+	}
+	if scalar != "" {
+		r.scalar.WriteString(scalar)
+		if r.scalarField == "" {
+			r.scalarField = field
+		}
+	}
+	return delta
+}
+
+func (r *chatReasoning) addDetail(index int, item reasoningDetailItem, piece string) {
+	if item.isEncrypted() {
+		r.continuation = append(r.continuation, &reasoningDetailBlock{wire: item.wireItem()})
+		return
+	}
+	if piece == "" && !item.carriesContinuation() {
+		return
+	}
+	if item.Index != nil {
+		index = *item.Index
+	}
+	block := r.open[index]
+	if block == nil {
+		block = &reasoningDetailBlock{}
+		if r.open == nil {
+			r.open = make(map[int]*reasoningDetailBlock)
+		}
+		r.open[index] = block
+		r.blocks = append(r.blocks, block)
+	}
+	block.text.WriteString(piece)
+	if item.carriesContinuation() {
+		block.wire = item.wireItem()
+		if block.text.Len() > 0 {
+			block.wire["text"] = block.text.String()
+		}
+		r.continuation = append(r.continuation, block)
+		r.hasSignature = true
+		delete(r.open, index)
+	}
+}
+
+func (r *chatReasoning) parts() []llm.ContentPart {
+	parts := []llm.ContentPart{}
+	appendPart := func(text, field, encrypted string) {
+		if text != "" || encrypted != "" {
+			parts = append(parts, llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{
+				Text: text, Signature: field, EncryptedContent: encrypted,
+			}})
+		}
+	}
+	scalar := r.scalar.String()
+	if !r.hasSignature {
+		field := r.scalarField
+		if r.display != nil {
+			scalar, field = r.display.String(), r.displayField
+		}
+		var opaque []map[string]any
+		for _, block := range r.continuation {
+			opaque = append(opaque, block.wire)
+		}
+		appendPart(scalar, field, encodeEncryptedDetails(opaque))
+		return parts
+	}
+	if scalar != "" && !r.mirrorsDetails(scalar) {
+		appendPart(scalar, r.scalarField, "")
+	}
+	for _, block := range r.blocks {
+		if block.wire == nil {
+			appendPart(block.text.String(), "", "")
+		}
+	}
+	for _, block := range r.continuation {
+		appendPart(block.text.String(), "", encodeEncryptedDetails([]map[string]any{block.wire}))
+	}
+	return parts
+}
+
+func (r *chatReasoning) mirrorsDetails(scalar string) bool {
+	var pieces []string
+	for _, block := range r.blocks {
+		if text := block.text.String(); text != "" {
+			if text == scalar {
+				return true
+			}
+			pieces = append(pieces, text)
+		}
+	}
+	return scalar == strings.Join(pieces, "\n") || scalar == strings.Join(pieces, "")
 }
 
 // fromChatCompletionResponse decodes a non-streaming Chat Completions
@@ -332,15 +424,9 @@ func fromChatCompletionResponse(raw map[string]any, finishMap map[string]string,
 	choice := parsed.Choices[0]
 
 	// Build message.
-	parts := []llm.ContentPart{}
-	reasoning, field := extractReasoning(choice.Message)
-	encrypted := encodeEncryptedDetails(choice.Message.ReasoningDetails)
-	if reasoning != "" || encrypted != "" {
-		parts = append(parts, llm.ContentPart{
-			Kind:     llm.ContentThinking,
-			Thinking: &llm.ThinkingData{Text: reasoning, Signature: field, EncryptedContent: encrypted},
-		})
-	}
+	var reasoning chatReasoning
+	reasoning.add(choice.Message.chatReasoningFields)
+	parts := reasoning.parts()
 	if choice.Message.Content != "" {
 		parts = append(parts, llm.ContentPart{Kind: llm.ContentText, Text: choice.Message.Content})
 	}
@@ -405,31 +491,27 @@ func fromChatCompletionResponse(raw map[string]any, finishMap map[string]string,
 		resp.Usage = openaichat.ParseChatUsage(choice.Usage)
 	}
 
-	if resp.Usage.ReasoningTokens == nil && resp.Usage.ReasoningTokensEstimated == nil {
-		chars := 0
-		for _, p := range parts {
-			if p.Kind == llm.ContentThinking && p.Thinking != nil {
-				chars += len(p.Thinking.Text)
-			}
-		}
-		if est := estimateThinkingFromBuf(chars); est > 0 {
-			e := est
-			resp.Usage.ReasoningTokensEstimated = &e
-		}
-	}
+	estimateReasoningUsage(&resp)
 
 	return resp, nil
 }
 
-// estimateThinkingFromBuf returns a char/4 rough estimate from a
-// thinking-content character count. Used only for the Usage metadata
-// field ReasoningTokensEstimated — never for billing.
-func estimateThinkingFromBuf(chars int) int {
-	if chars == 0 {
-		return 0
+// estimateReasoningUsage fills the display estimate from the settled blocks
+// when the provider omits reasoning usage.
+func estimateReasoningUsage(resp *llm.Response) {
+	if resp.Usage.ReasoningTokens != nil || resp.Usage.ReasoningTokensEstimated != nil {
+		return
 	}
-	est := max(chars/4, 1)
-	return est
+	chars := 0
+	for _, p := range resp.Message.Content {
+		if p.Kind == llm.ContentThinking && p.Thinking != nil {
+			chars += len(p.Thinking.Text)
+		}
+	}
+	if chars > 0 {
+		est := max(chars/4, 1)
+		resp.Usage.ReasoningTokensEstimated = &est
+	}
 }
 
 // rawArgsBodyDecode is the focused raw-args body decode. Tests replace it to

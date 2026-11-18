@@ -2,6 +2,7 @@ package chatcompletions
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/llm"
@@ -107,23 +108,18 @@ func TestFromChatCompletionResponse_ToolCallThoughtSignature(t *testing.T) {
 	}
 }
 
-// TestCollectEncryptedDetailsProgrammaticFallback pins the fallback for an
+// TestReasoningDetailItemProgrammaticFallback pins the fallback for an
 // item built without its verbatim raw JSON: the known fields still round-trip.
-func TestCollectEncryptedDetailsProgrammaticFallback(t *testing.T) {
+func TestReasoningDetailItemProgrammaticFallback(t *testing.T) {
 	t.Parallel()
-	enc := collectEncryptedDetails([]reasoningDetailItem{
-		{Type: "reasoning.encrypted", ID: "i1", Data: "d1"},
-	})
-	if len(enc) != 1 {
-		t.Fatalf("collected = %+v, want the one continuation-bearing item", enc)
-	}
-	if enc[0]["type"] != "reasoning.encrypted" || enc[0]["id"] != "i1" || enc[0]["data"] != "d1" {
-		t.Fatalf("fallback item = %v, want the known fields", enc[0])
+	item := reasoningDetailItem{Type: "reasoning.encrypted", ID: "i1", Data: "d1"}.wireItem()
+	if item["type"] != "reasoning.encrypted" || item["id"] != "i1" || item["data"] != "d1" {
+		t.Fatalf("fallback item = %v, want the known fields", item)
 	}
 }
 
-// TestFromChatCompletionResponse_ThinkingItemsJoin pins extractReasoning's
-// detail-item walk: legacy {type:"thinking", thinking:"..."} items contribute
+// TestFromChatCompletionResponse_ThinkingItemsJoin pins the detail-item
+// walk: legacy {type:"thinking", thinking:"..."} items contribute
 // their text, joined with a newline when there are several, and report no
 // replay field.
 func TestFromChatCompletionResponse_ThinkingItemsJoin(t *testing.T) {
@@ -221,6 +217,121 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 			}
 		})
 	}
+	for _, tc := range []struct {
+		name, scalar, detail, wantScalar string
+		streamPrefix                     int
+	}{
+		{"independent signed text", "scalar-12", "signed-37", "scalar-12", 0},
+		{"signature without detail text", "scalar-12", "", "scalar-12", 0},
+		{"trailing detail signature", "scalar-12", "signed-37", "scalar-12", len("signed-37")},
+		{"signature with final text fragment", "scalar-12", "signed-37", "scalar-12", len("signed-")},
+		{"mirrored signed text", "signed-37", "signed-37", "", 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			signed := map[string]any{"type": "reasoning.text", "signature": "sig-37", "format": "wire-1", "index": 0}
+			if tc.detail != "" {
+				signed["text"] = tc.detail
+			}
+			fields := map[string]any{"reasoning": tc.scalar, "reasoning_text": tc.scalar, "reasoning_details": []any{signed}}
+			body, err := json.Marshal(chatResponseRaw(fields, "stop"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			chunks := []map[string]any{{"reasoning": tc.scalar, "reasoning_text": tc.scalar}}
+			if tc.streamPrefix != 0 {
+				chunks = append(chunks, map[string]any{"reasoning_details": []any{map[string]any{"type": "reasoning.text", "text": tc.detail[:tc.streamPrefix], "index": 0}}})
+				signed["text"] = tc.detail[tc.streamPrefix:]
+			}
+			chunks = append(chunks, map[string]any{"reasoning_details": []any{signed}})
+			var sse strings.Builder
+			for _, chunk := range chunks {
+				data, err := json.Marshal(map[string]any{"choices": []any{map[string]any{"delta": chunk}}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				sse.WriteString("data: " + string(data) + "\n\n")
+			}
+			sse.WriteString("data: [DONE]\n\n")
+			for mode, recorded := range map[string][]byte{"json": body, "stream": []byte(sse.String())} {
+				t.Run(mode, func(t *testing.T) {
+					resp, err := ExtractRecordedResponse(recorded, "m")
+					if err != nil {
+						t.Fatal(err)
+					}
+					if got, want := resp.ReasoningText(), strings.Trim(tc.wantScalar+"\n\n"+tc.detail, "\n"); got != want {
+						t.Errorf("settled reasoning = %q, want %q", got, want)
+					}
+					if tc.wantScalar != "" {
+						var source string
+						for _, part := range resp.Message.Content {
+							if part.Thinking != nil && part.Thinking.Text == tc.wantScalar && part.Thinking.EncryptedContent == "" {
+								source = part.Thinking.Signature
+							}
+						}
+						if source != "reasoning" {
+							t.Errorf("independent scalar source = %q", source)
+						}
+					}
+					for _, field := range []string{"reasoning_text", "reasoning_details"} {
+						caps := registry.Caps{ReplayReasoningText: new(true), ReasoningField: &field}
+						out, err := toChatMessages([]llm.Message{resp.Message}, caps, field == "reasoning_details")
+						if err != nil {
+							t.Fatal(err)
+						}
+						msg := out[0]
+						details, _ := msg["reasoning_details"].([]map[string]any)
+						if field == "reasoning_details" && tc.wantScalar != "" {
+							if len(details) != 2 || details[0]["text"] != tc.wantScalar || details[0]["signature"] != nil {
+								t.Errorf("unified independent text = %#v", msg)
+								continue
+							}
+							echo, err := fromChatCompletionResponse(chatResponseRaw(msg, "stop"), nil, nil)
+							if err != nil {
+								t.Fatal(err)
+							}
+							if got, n := echo.ReasoningText(), len(echo.Message.Content); got != resp.ReasoningText() || n != len(resp.Message.Content) {
+								t.Errorf("unified details decode to %q in %d parts, want %q in %d", got, n, resp.ReasoningText(), len(resp.Message.Content))
+							}
+							details = details[1:]
+						} else if got, _ := msg["reasoning_text"].(string); got != tc.wantScalar {
+							t.Errorf("scalar = %q, want %q", got, tc.wantScalar)
+						}
+						if len(details) != 1 || details[0]["signature"] != "sig-37" || details[0]["format"] != "wire-1" {
+							t.Fatalf("signed detail = %#v", details)
+						}
+						if got, _ := details[0]["text"].(string); got != tc.detail {
+							t.Errorf("%s signed text = %q, want %q", field, got, tc.detail)
+						}
+					}
+				})
+			}
+		})
+	}
+	t.Run("interleaved detail indexes", func(t *testing.T) {
+		sse := `data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","index":2,"text":"first-"},{"type":"reasoning.text","index":7,"text":"second-"}]}}]}
+
+data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.encrypted","id":"e3","data":"opaque-3"}]}}]}
+
+data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","index":7,"signature":"sig-7","text":"7","metadata":"meta-7"},{"type":"reasoning.text","index":2,"signature":"sig-2","text":"2"}]}}]}
+
+data: [DONE]
+
+`
+		resp, err := ExtractRecordedResponse([]byte(sse), "m")
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, err := toChatMessages([]llm.Message{resp.Message}, registry.Caps{ReplayReasoningText: new(true)}, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		details, _ := out[0]["reasoning_details"].([]map[string]any)
+		if len(details) != 3 || details[0]["data"] != "opaque-3" ||
+			details[1]["signature"] != "sig-7" || details[1]["text"] != "second-7" || details[1]["metadata"] != "meta-7" ||
+			details[2]["signature"] != "sig-2" || details[2]["text"] != "first-2" {
+			t.Fatalf("interleaved continuations = %#v", details)
+		}
+	})
 }
 
 // TestFromChatCompletionResponse_ShapeFailures pins the decode's own error

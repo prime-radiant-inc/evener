@@ -90,6 +90,12 @@ func TestToChatMessages_ReasoningReplay(t *testing.T) {
 	if out[0]["reasoning_content"] != "r2" || len(items) != 1 || items[0]["text"] != "thought" || items[0]["signature"] != "sig-1" {
 		t.Fatalf("separate scalar and signed reasoning = %#v", out[0])
 	}
+	observed := registry.Caps{ReplayReasoningText: new(true)}
+	mixed[0].Content[0], mixed[0].Content[1] = mixed[0].Content[1], mixed[0].Content[0]
+	out, _ = toChatMessages(mixed, observed, false)
+	if out[0]["reasoning"] != "r2" || out[0]["reasoning_content"] != nil {
+		t.Fatalf("scalar source following a signed detail = %#v", out[0])
+	}
 
 	asText := base
 	asText.ThinkingAsText = new(true)

@@ -90,7 +90,7 @@ func toChatMessages(messages []llm.Message, caps registry.Caps, useReasoningDeta
 			calls := toolCallsFromParts(content)
 			asText := registry.BoolValue(caps.ThinkingAsText)
 			scalarReplay := caps.ReplaysReasoningText() && !useReasoningDetails && !asText
-			reasoning, details := reasoningFromParts(content, !reasoningOff, scalarReplay)
+			reasoning, details := reasoningFromParts(content, !reasoningOff, asText)
 			if reasoningOff && !asText {
 				// A declared non-reasoning model accepts no reasoning fields —
 				// prior-turn thinking (a fallback or model switch can carry it)
@@ -109,14 +109,11 @@ func toChatMessages(messages []llm.Message, caps registry.Caps, useReasoningDeta
 				}
 				reasoning = ""
 			}
-			// A unified array puts reasoning text before the opaque items, or
-			// merges it into the signed item that carries it.
+			// The remaining plaintext has no signature of its own.
 			if reasoning != "" && (useReasoningDetails || (len(details) != 0 && !scalarReplay)) {
-				if !mergeSignedReasoningText(details, reasoning) {
-					details = append([]map[string]any{{
-						"type": "reasoning.text", "text": reasoning, "format": "unknown", "index": 0,
-					}}, details...)
-				}
+				details = append([]map[string]any{{
+					"type": "reasoning.text", "text": reasoning, "format": "unknown", "index": independentReasoningIndex(details),
+				}}, details...)
 				reasoning = ""
 			}
 			if len(details) != 0 {
@@ -215,15 +212,13 @@ func reasoningReplayField(parts []llm.ContentPart, caps registry.Caps) string {
 			if llm.IsOpenAICompatReasoningField(p.Thinking.Signature) {
 				return p.Thinking.Signature
 			}
-			break
 		}
 	}
 	return "reasoning_content"
 }
 
-// reasoningFromParts keeps each signed item's text with its own signature
-// when independent plaintext goes to a scalar field.
-func reasoningFromParts(parts []llm.ContentPart, keepDetails, scalarReplay bool) (string, []map[string]any) {
+// reasoningFromParts keeps each signed item's text with its own continuation.
+func reasoningFromParts(parts []llm.ContentPart, keepDetails, asText bool) (string, []map[string]any) {
 	var text strings.Builder
 	var details []map[string]any
 	for _, p := range parts {
@@ -231,13 +226,14 @@ func reasoningFromParts(parts []llm.ContentPart, keepDetails, scalarReplay bool)
 			continue
 		}
 		piece := p.Thinking.Text
-		if keepDetails && llm.IsOpenAICompatEncryptedReasoning(p.Thinking.EncryptedContent) {
-			var items []map[string]any
-			if err := json.Unmarshal([]byte(p.Thinking.EncryptedContent), &items); err == nil {
-				details = append(details, items...)
-				if scalarReplay && piece != "" && mergeSignedReasoningText(items, piece) {
-					continue
+		if keepDetails {
+			items := llm.OpenAICompatReasoningDetails(p.Thinking.EncryptedContent)
+			details = append(details, items...)
+			if signed := llm.OpenAICompatSignedReasoningItem(items); signed != nil && !asText {
+				if existing, _ := signed["text"].(string); existing == "" && piece != "" {
+					signed["text"] = piece
 				}
+				continue
 			}
 		}
 		if piece != "" {
@@ -250,16 +246,22 @@ func reasoningFromParts(parts []llm.ContentPart, keepDetails, scalarReplay bool)
 	return text.String(), details
 }
 
-func mergeSignedReasoningText(details []map[string]any, text string) bool {
-	for _, item := range details {
-		if item["type"] == "reasoning.text" {
-			if existing, _ := item["text"].(string); existing == "" {
-				item["text"] = text
-			}
-			return true
+// independentReasoningIndex keeps a synthetic text block from becoming part
+// of a signed block when the recipient assembles details by index.
+func independentReasoningIndex(details []map[string]any) int {
+	used := make(map[int]bool, len(details))
+	for pos, item := range details {
+		index := pos + 1 // The independent block precedes the provider items.
+		if wireIndex, ok := item["index"].(float64); ok {
+			index = int(wireIndex)
 		}
+		used[index] = true
 	}
-	return false
+	index := 0
+	for used[index] {
+		index++
+	}
+	return index
 }
 
 // hasImageOrDocumentContent reports whether the multimodal content form is
