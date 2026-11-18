@@ -866,79 +866,63 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir string) (string
 		return filepath.Base(repoDir), true
 	}
 
-	// (b) Evener state-dir worktrees. The state root lays a managed worktree out
-	// as <bucket>/worktrees/<lane>, .../projects/<bucket>/worktrees/<lane>, or
-	// .../sessions/<sid>/worktrees/<lane>. Requiring that shape — rather than any
-	// segment named "worktrees" — keeps an ordinary directory such as
-	// /tmp/worktrees/notes from being mistaken for a deleted state worktree.
-	parts := strings.Split(clean, sep)
-	isStateWorktree := bucketDir != "" &&
-		strings.HasPrefix(clean, filepath.Join(filepath.Clean(bucketDir), "worktrees")+sep)
-	for i := 0; i+2 < len(parts); i++ {
-		if (parts[i] == "projects" || parts[i] == "sessions") && parts[i+2] == "worktrees" {
-			isStateWorktree = true
-			break
-		}
-	}
+	// (b) Evener state-dir worktrees. The predicate is the layout itself, not a
+	// lookalike: a managed worktree is written at <stateDir>/worktrees/<lane> and
+	// a delegate's at <stateDir>/sessions/<sid>/worktrees/<lane>, where stateDir
+	// is this bucket or a recognized Evener project bucket.
+	stateDir, ownerSessionID, isStateWorktree := stateWorktreeOwner(clean, bucketDir)
 	if !isStateWorktree {
 		return "", false
 	}
-
 	if bucketDir == "" {
 		return "", true
 	}
-	if name, ok := r.bucketProjectCache[bucketDir]; ok {
-		return name, true
-	}
 
-	// Try loading sid's own SessionMeta if wd is .../sessions/<sid>/worktrees/...
-	for i, part := range parts {
-		if part == "sessions" && i+2 < len(parts) && parts[i+2] == "worktrees" {
-			sid := parts[i+1]
-			if meta, err := schema.LoadSessionMeta(bucketDir, sid); err == nil {
-				if origin := strings.TrimSpace(meta.EnvInfo.GitOriginURL); origin != "" {
-					p := repoBasename(origin)
-					r.bucketProjectCache[bucketDir] = p
-					return p, true
+	// Resolve the worktree's own owner first: its metadata names the project for
+	// this worktree specifically. The answer is deliberately not cached — one
+	// state dir holds worktrees from more than one repository, so caching an
+	// owner's project would mislabel the next worktree resolved through it.
+	if ownerSessionID != "" {
+		if meta, err := schema.LoadSessionMeta(stateDir, ownerSessionID); err == nil {
+			if origin := strings.TrimSpace(meta.EnvInfo.GitOriginURL); origin != "" {
+				return repoBasename(origin), true
+			}
+			if restore := strings.TrimSpace(meta.WorktreeRestoreRoot); restore != "" {
+				p := filepath.Base(restore)
+				if root := r.resolveMainRoot(restore); root != "" {
+					p = filepath.Base(root)
 				}
-				if restore := strings.TrimSpace(meta.WorktreeRestoreRoot); restore != "" {
-					p := filepath.Base(restore)
-					if root := r.resolveMainRoot(restore); root != "" {
-						p = filepath.Base(root)
-					}
-					r.bucketProjectCache[bucketDir] = p
-					return p, true
+				return p, true
+			}
+			if home := strings.TrimSpace(meta.HomeDir()); home != "" && !strings.Contains(home, "worktrees") {
+				if root := r.resolveMainRoot(home); root != "" {
+					return filepath.Base(root), true
 				}
-				if home := strings.TrimSpace(meta.HomeDir()); home != "" && !strings.Contains(home, "worktrees") {
-					if root := r.resolveMainRoot(home); root != "" {
-						p := filepath.Base(root)
-						r.bucketProjectCache[bucketDir] = p
-						return p, true
-					}
-					p := filepath.Base(home)
-					r.bucketProjectCache[bucketDir] = p
-					return p, true
-				}
+				return filepath.Base(home), true
 			}
 		}
 	}
 
-	// Scan bucket sessions in two passes:
-	// Pass 1: authoritative GitOriginURL or WorktreeRestoreRoot
-	// Only a validated project bucket holds one repository: with a flat
-	// --state-dir override, bucketDir is a shared state dir holding sessions from
-	// several repositories, so an originless delegate worktree must not borrow a
-	// sibling's project.
-	if identifier.ValidateProjectID(filepath.Base(bucketDir)) != nil {
-		r.bucketProjectCache[bucketDir] = ""
+	// Sibling inference answers only for a worktree with no owner metadata, and
+	// it is bucket-wide, so it is trustworthy only where the bucket holds one
+	// repository. stateHomeFor is that layout test: a flat --state-dir override
+	// has no state home and is skipped, whatever its basename looks like, while
+	// every recognized project bucket keeps the fallback.
+	if stateHomeFor(stateDir) == "" {
 		return "", true
 	}
-	metas, err := schema.ListSessionMetas(bucketDir)
+	if name, ok := r.bucketProjectCache[stateDir]; ok {
+		return name, true
+	}
+
+	// Scan bucket sessions in two passes:
+	// Pass 1: authoritative GitOriginURL or WorktreeRestoreRoot
+	metas, err := schema.ListSessionMetas(stateDir)
 	if err == nil {
 		for _, sm := range metas {
 			if origin := strings.TrimSpace(sm.EnvInfo.GitOriginURL); origin != "" {
 				p := repoBasename(origin)
-				r.bucketProjectCache[bucketDir] = p
+				r.bucketProjectCache[stateDir] = p
 				return p, true
 			}
 			if restore := strings.TrimSpace(sm.WorktreeRestoreRoot); restore != "" {
@@ -946,7 +930,7 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir string) (string
 				if root := r.resolveMainRoot(restore); root != "" {
 					p = filepath.Base(root)
 				}
-				r.bucketProjectCache[bucketDir] = p
+				r.bucketProjectCache[stateDir] = p
 				return p, true
 			}
 		}
@@ -959,18 +943,47 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir string) (string
 			if home != "" && !strings.Contains(home, "worktrees") {
 				if root := r.resolveMainRoot(home); root != "" {
 					p := filepath.Base(root)
-					r.bucketProjectCache[bucketDir] = p
+					r.bucketProjectCache[stateDir] = p
 					return p, true
 				}
 				p := filepath.Base(home)
-				r.bucketProjectCache[bucketDir] = p
+				r.bucketProjectCache[stateDir] = p
 				return p, true
 			}
 		}
 	}
 
-	r.bucketProjectCache[bucketDir] = ""
+	r.bucketProjectCache[stateDir] = ""
 	return "", true
+}
+
+// stateWorktreeOwner classifies wd against the layouts an Evener state dir
+// actually writes: <stateDir>/worktrees/<lane> for a managed worktree, and
+// <stateDir>/sessions/<sid>/worktrees/<lane> for a delegate's. It returns the
+// state dir wd sits in and, for a delegate worktree, the session whose metadata
+// names the project. ok is false for every other path — including an ordinary
+// directory that merely spells a "worktrees" segment.
+func stateWorktreeOwner(wd, bucketDir string) (stateDir, ownerSessionID string, ok bool) {
+	sep := string(filepath.Separator)
+	clean := filepath.Clean(wd)
+	parts := strings.Split(clean, sep)
+	cleanBucket := filepath.Clean(bucketDir)
+	for i := len(parts) - 1; i >= 1; i-- {
+		// A lane must follow the worktrees segment: <lane>-less is not a worktree.
+		if parts[i] != "worktrees" || i+1 >= len(parts) {
+			continue
+		}
+		stateParts, owner := parts[:i], ""
+		if i >= 2 && parts[i-2] == "sessions" {
+			stateParts, owner = parts[:i-2], parts[i-1]
+		}
+		candidate := strings.Join(stateParts, sep)
+		if candidate != cleanBucket && stateHomeFor(candidate) == "" {
+			continue
+		}
+		return candidate, owner, true
+	}
+	return "", "", false
 }
 
 func (r *projectNameResolver) resolveMainRoot(dir string) string {

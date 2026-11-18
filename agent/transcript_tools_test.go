@@ -593,7 +593,7 @@ func TestFind_ProjectName_FallbacksAndOrdinaryDirectories(t *testing.T) {
 		t.Fatal(err)
 	}
 	restoreWD := schema.SessionMeta{}
-	restoreWD.EnvInfo.WorkingDir = filepath.Join(t.TempDir(), "sessions", restoreSID, "worktrees", "dlg_restore_sub")
+	restoreWD.EnvInfo.WorkingDir = filepath.Join(restoreBucket, "sessions", restoreSID, "worktrees", "dlg_restore_sub")
 	if got, want := projectName(restoreWD, restoreBucket), filepath.Base(restoreMain); got != want {
 		t.Fatalf("projectName(delegate restore root in repo subdirectory) = %q, want repo root %q", got, want)
 	}
@@ -605,7 +605,9 @@ func TestFind_ProjectName_FallbacksAndOrdinaryDirectories(t *testing.T) {
 	if err := schema.SaveSessionMeta(restoreSiblingBucket, siblingRestore); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := projectName(restoreWD, restoreSiblingBucket), filepath.Base(restoreMain); got != want {
+	siblingWD := schema.SessionMeta{}
+	siblingWD.EnvInfo.WorkingDir = filepath.Join(restoreSiblingBucket, "sessions", identifier.MustNewSessionID(), "worktrees", "dlg_sibling_sub")
+	if got, want := projectName(siblingWD, restoreSiblingBucket), filepath.Base(restoreMain); got != want {
 		t.Fatalf("projectName(bucket-wide sibling restore root in repo subdirectory) = %q, want repo root %q", got, want)
 	}
 
@@ -633,6 +635,114 @@ func TestFind_ProjectName_FallbacksAndOrdinaryDirectories(t *testing.T) {
 	mFlatManaged.EnvInfo.WorkingDir = filepath.Join(flatDir, "worktrees", "a-project-0123456789", "dlg_lane")
 	if got := projectName(mFlatManaged, flatDir); got != "" {
 		t.Fatalf("projectName(flat state-dir managed worktree) = %q, want empty (not the lane leaf)", got)
+	}
+
+	// 12. The resolver is shared across result rows (find sorts newest first), so
+	// one worktree's answer must not stand in for another's. A newer deleted
+	// worktree with no recoverable project must not suppress the project of the
+	// older worktree whose own session metadata names one, and the older one's
+	// project must not be inherited by the next originless worktree.
+	sharedDir := filepath.Join(t.TempDir(), "shared-flat-dir")
+	if err := os.MkdirAll(sharedDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	r := newProjectNameResolver()
+	ownerSID, bareSID := identifier.MustNewSessionID(), identifier.MustNewSessionID()
+	otherBareSID := identifier.MustNewSessionID()
+	ownerMeta := schema.SessionMeta{ID: ownerSID}
+	ownerMeta.EnvInfo.GitOriginURL = "git@github.com:owner/owner-repo.git"
+	if err := schema.SaveSessionMeta(sharedDir, ownerMeta); err != nil {
+		t.Fatal(err)
+	}
+	sharedWD := func(sid, lane string) schema.SessionMeta {
+		m := schema.SessionMeta{}
+		m.EnvInfo.WorkingDir = filepath.Join(sharedDir, "sessions", sid, "worktrees", lane)
+		return m
+	}
+	if got := r.projectName(sharedWD(bareSID, "dlg_bare"), sharedDir); got != "" {
+		t.Fatalf("projectName(newer originless flat worktree) = %q, want empty", got)
+	}
+	if got := r.projectName(sharedWD(ownerSID, "dlg_owner"), sharedDir); got != "owner-repo" {
+		t.Fatalf("projectName(older flat worktree whose owner names a project) = %q, want %q after an originless worktree resolved", got, "owner-repo")
+	}
+	if got := r.projectName(sharedWD(otherBareSID, "dlg_other_bare"), sharedDir); got != "" {
+		t.Fatalf("projectName(originless flat worktree after an owner-resolved one) = %q, want empty (not the previous owner's project)", got)
+	}
+
+	// 12b. In a project bucket sibling inference does cache a name, so the same
+	// ordering rule must hold there: a worktree whose own owner names a project
+	// reports that project, never the cached sibling name.
+	orderBucket := newBucket(t)
+	orderSibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	orderSibling.EnvInfo.GitOriginURL = "git@github.com:owner/sibling-repo.git"
+	if err := schema.SaveSessionMeta(orderBucket, orderSibling); err != nil {
+		t.Fatal(err)
+	}
+	orderOwnerSID := identifier.MustNewSessionID()
+	orderOwner := schema.SessionMeta{ID: orderOwnerSID}
+	orderOwner.EnvInfo.GitOriginURL = "git@github.com:owner/its-own-repo.git"
+	if err := schema.SaveSessionMeta(orderBucket, orderOwner); err != nil {
+		t.Fatal(err)
+	}
+	orderWD := func(sid, lane string) schema.SessionMeta {
+		m := schema.SessionMeta{}
+		m.EnvInfo.WorkingDir = filepath.Join(orderBucket, "sessions", sid, "worktrees", lane)
+		return m
+	}
+	if got := r.projectName(orderWD(identifier.MustNewSessionID(), "dlg_no_meta"), orderBucket); got != "sibling-repo" {
+		t.Fatalf("projectName(worktree with no owner metadata) = %q, want bucket sibling %q", got, "sibling-repo")
+	}
+	if got := r.projectName(orderWD(orderOwnerSID, "dlg_its_own"), orderBucket); got != "its-own-repo" {
+		t.Fatalf("projectName(worktree whose owner names a project) = %q, want %q, not the cached sibling name", got, "its-own-repo")
+	}
+
+	// 13. A flat --state-dir whose basename passes identifier.ValidateProjectID
+	// (a ten-character numeric suffix) is still not a project bucket: it holds
+	// several repositories, so an originless worktree there must not inherit a
+	// sibling's project.
+	lookalikeDir := filepath.Join(t.TempDir(), "evener-cache-2026111800")
+	if err := identifier.ValidateProjectID(filepath.Base(lookalikeDir)); err != nil {
+		t.Fatalf("fixture basename %q must pass ValidateProjectID: %v", filepath.Base(lookalikeDir), err)
+	}
+	if err := os.MkdirAll(lookalikeDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	lookalikeSibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	lookalikeSibling.EnvInfo.GitOriginURL = "git@github.com:owner/unrelated-repo.git"
+	if err := schema.SaveSessionMeta(lookalikeDir, lookalikeSibling); err != nil {
+		t.Fatal(err)
+	}
+	mLookalike := schema.SessionMeta{}
+	mLookalike.EnvInfo.WorkingDir = filepath.Join(lookalikeDir, "sessions", identifier.MustNewSessionID(), "worktrees", "dlg_lookalike")
+	if got := projectName(mLookalike, lookalikeDir); got != "" {
+		t.Fatalf("projectName(originless worktree in lookalike flat state dir) = %q, want empty", got)
+	}
+
+	// 14. A recognized project bucket keeps the sibling fallback even when its
+	// name fails identifier.ValidateProjectID: transcript search still enumerates
+	// legacy-named buckets, so their sessions must still get a project label.
+	legacyDir := filepath.Join(newStateHome(t), "evener", "projects", "0123456789abcdef")
+	if err := identifier.ValidateProjectID(filepath.Base(legacyDir)); err == nil {
+		t.Fatalf("fixture bucket name %q must fail ValidateProjectID", filepath.Base(legacyDir))
+	}
+	legacySibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	legacySibling.EnvInfo.GitOriginURL = "git@github.com:owner/legacy-repo.git"
+	if err := schema.SaveSessionMeta(legacyDir, legacySibling); err != nil {
+		t.Fatal(err)
+	}
+	mLegacy := schema.SessionMeta{}
+	mLegacy.EnvInfo.WorkingDir = filepath.Join(legacyDir, "worktrees", "dlg_legacy")
+	if got := projectName(mLegacy, legacyDir); got != "legacy-repo" {
+		t.Fatalf("projectName(legacy-named project bucket worktree) = %q, want %q", got, "legacy-repo")
+	}
+
+	// 15. An ordinary non-Git directory that spells a state-shaped path must keep
+	// its own basename: the predicate anchors on a recognized state root, not on
+	// the segment names.
+	mProjectsDemo := schema.SessionMeta{}
+	mProjectsDemo.EnvInfo.WorkingDir = "/home/user/projects/demo/worktrees/notes"
+	if got := projectName(mProjectsDemo, newBucket(t)); got != "notes" {
+		t.Fatalf("projectName(/home/user/projects/demo/worktrees/notes) = %q, want %q", got, "notes")
 	}
 }
 
