@@ -2047,6 +2047,133 @@ func (c *lateReplyClient) MergeGroupRuns(context.Context, string) ([]GroupRun, e
 	return nil, nil
 }
 
+// TestAPollWhoseStatusQueryExhaustsItsBudgetStillGetsTheFinalObservation pins
+// the read site M1 is about: the status query inside a poll.
+//
+// The poll's own allowance bounds the status read, and a descendant holding the
+// output pipe can spend it after `gh pr view` has already answered that the PR is
+// not merged. The read then produces no status, and the run used to report that
+// as a lookup failure (exit 2) even though the invocation was live and the final
+// observation had an allowance of its own waiting. The merge that landed in that
+// window was never observed, and the caller was told nothing was decided.
+//
+// The poll keeps a sliver of the caller's wait, which is what makes the poll --
+// not the shared post-deadline allowance -- the budget that runs out. The status
+// read spends it, and the merge is visible to the observation that follows.
+func TestAPollWhoseStatusQueryExhaustsItsBudgetStillGetsTheFinalObservation(t *testing.T) {
+	t.Parallel()
+	sha := "abcdef0123456789abcdef0123456789abcdef01"
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	c := &pollBudgetClient{sha: sha, now: &now}
+	c.statuses = []Status{{ID: "PR_6499", State: "OPEN", Entry: queueEntry(3)}}
+	clock := Clock{
+		Now: func() time.Time { return now },
+		// The sleep leaves a millisecond of the caller's wait, so the poll reads
+		// on that instead of drawing the post-deadline allowance.
+		Sleep: func(_ context.Context, d time.Duration) bool { now = now.Add(d - time.Millisecond); return true },
+	}
+	out, exitErr := Execute(context.Background(), opts(400*time.Millisecond), c, clock)
+	if exitErr != nil {
+		t.Fatalf("Execute: %v, want the merge the final observation read: a poll that spent its own allowance on a live invocation is not the end of the run", exitErr)
+	}
+	if out.Kind != Merged || out.SHA != sha {
+		t.Fatalf("outcome = %+v, want Merged with sha %s: the final observation had its own allowance and read the merge", out, sha)
+	}
+}
+
+// pollBudgetClient spends the poll's own allowance inside the status query after
+// `gh pr view` has already answered, and reports the merge to the observation
+// that follows -- the shape of a read whose pipes were held past its budget.
+type pollBudgetClient struct {
+	fakeClient
+	now *time.Time
+	// waited says the wait has begun, so the read being seen is the poll rather
+	// than the starting lookup.
+	waited bool
+	// spent says the poll's status query has already exhausted its budget, which
+	// is what makes the merge visible to the next observation.
+	spent bool
+	sha   string
+}
+
+func (c *pollBudgetClient) Status(ctx context.Context, repo, pr string) (Status, error) {
+	if !c.waited || c.spent {
+		return c.fakeClient.Status(ctx, repo, pr)
+	}
+	// The allowance runs out under a live invocation: gh answered nothing before
+	// the descendant holding the pipe outlived the budget.
+	c.spent = true
+	*c.now = c.now.Add(time.Second)
+	<-ctx.Done()
+	return Status{}, ctx.Err()
+}
+
+func (c *pollBudgetClient) MergedCommit(context.Context, string, string) (string, bool, error) {
+	if !c.waited {
+		// The starting probe answers "not merged" before the wait begins.
+		c.waited = true
+		return "", false, nil
+	}
+	// The poll's own probe answers before its allowance is spent, so the status
+	// query is the read that runs out. Once it has, the merge is what the final
+	// observation sees.
+	return c.sha, c.spent, nil
+}
+
+// TestAMergeThatOutlivedItsReadAllowanceIsStillAMerge pins the other two read
+// sites M2 names, where a decoded MERGED result was discarded because the read's
+// own allowance had expired.
+//
+// Both are M1's rule with the answer PRESENT instead of absent: a usable answer
+// outranks an expired read allowance, and only an operator cancellation outranks
+// the answer.
+//
+//   - mergedOutcome checked the read context, so a complete MERGED reply whose
+//     pipe a descendant held past the poll's allowance was thrown away and the
+//     run went on to report a timeout it had already been told not to.
+//   - startupEnding turned a nil error into the lookup failure whenever the
+//     starting allowance had expired, which discarded an initial status that
+//     reported MERGED before Execute ever reached its merge check.
+//
+// The allowance is already spent when the call returns, which is the state an
+// overrun leaves behind. Asserting the deadline the read RECEIVES rather than
+// waiting one out is the same choice TestAStalledStartingLookupIsBounded makes:
+// waiting a real allowance would spend the suite's half-minute proving a timer
+// fires, and the finding is about which context decides.
+func TestAMergeThatOutlivedItsReadAllowanceIsStillAMerge(t *testing.T) {
+	t.Parallel()
+	const sha = "abcdef0123456789abcdef0123456789abcdef01"
+	c := &fakeClient{mergedSHA: sha, merged: true}
+	spent, stopSpent := context.WithTimeout(context.Background(), -time.Second)
+	defer stopSpent()
+
+	// The merge probe: the invocation is live, so the decoded merge stands.
+	out, merged, exitErr := mergedOutcome(spent, context.Background(), opts(0), c)
+	if exitErr != nil {
+		t.Fatalf("mergedOutcome: %v, want the decoded merge: the read's own allowance expired, the reply arrived before it did, and nobody stopped the invocation", exitErr)
+	}
+	if !merged || out.Kind != Merged || out.SHA != sha {
+		t.Fatalf("mergedOutcome = %+v merged=%v, want Merged with sha %s", out, merged, sha)
+	}
+
+	// The same probe with the invocation cancelled: the stop outranks the answer.
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, _, exitErr := mergedOutcome(spent, cancelled, opts(0), c); exitErr == nil || exitErr.Kind != Interrupted {
+		t.Fatalf("mergedOutcome under a cancelled invocation = %+v, want Interrupted: the operator's stop outranks the answer", exitErr)
+	}
+
+	// The starting status: a read that answered is not a lookup failure just
+	// because the starting allowance expired alongside it.
+	if exitErr := startupEnding(context.Background(), nil); exitErr != nil {
+		t.Fatalf("startupEnding = %+v, want no refusal: an answer outranks the expired starting allowance", exitErr)
+	}
+	// And an unanswered read is still the lookup failure, not a merge.
+	if exitErr := startupEnding(context.Background(), startupNotRead()); exitErr == nil || exitErr.Kind != LookupFailed {
+		t.Fatalf("startupEnding with no answer = %+v, want LookupFailed", exitErr)
+	}
+}
+
 // TestRunExitCodes pins the contract the launcher's callers depend on: 0 for
 // queued and merged, 1 for drop and timeout, 2 for every refusal.
 func TestRunExitCodes(t *testing.T) {

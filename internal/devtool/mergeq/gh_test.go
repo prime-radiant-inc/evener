@@ -1585,3 +1585,74 @@ func TestMergEQFixtureBaseIsTrustedAndExecutable(t *testing.T) {
 		}
 	})
 }
+
+// TestGHNonzeroExitKeepsTheEntryTheMutationReported pins M3: a reply that both
+// performed the mutation and reported an error is still the record of the write.
+//
+// GitHub answers this shape when it applies the mutation and then fails to
+// resolve a returned field: `{"data":{"enqueuePullRequest":{"mergeQueueEntry":
+// {"position":7}}},"errors":[{"message":"...","path":["enqueuePullRequest"]}]}`,
+// and gh prints it on stdout and exits non-zero. `run` used to discard stdout on
+// any non-zero exit, so Enqueue returned a nil entry and Execute had no evidence
+// the enqueue landed. If a concurrent push rebuilds the merge group before the
+// confirmation read, the read finds no entry and the run reports an enqueue
+// failure for a mutation GitHub confirmed -- and skips the drop diagnostics.
+//
+// Driven through Execute as well as the client, because the entry is only worth
+// preserving if the run uses it: the client keeps the entry through the failed
+// exit, and the run reports the drop instead of a failed enqueue.
+func TestGHNonzeroExitKeepsTheEntryTheMutationReported(t *testing.T) {
+	t.Parallel()
+	dir := fixtureExecDir(t)
+	gh := filepath.Join(dir, "gh")
+	// The mutation performs the write and reports a field-resolution error in the
+	// same reply, then exits non-zero. A field-resolution error carries a path and
+	// no type, so graphqlRefusal does not call it a refusal -- the outcome stays
+	// unknown and the entry is the data that resolves it.
+	writeExecutable(t, gh, `#!/usr/bin/env bash
+for arg in "$@"; do
+	if [[ "$arg" == query=*enqueuePullRequest* ]]; then
+		printf '%s' '{"data":{"enqueuePullRequest":{"mergeQueueEntry":{"position":7,"state":"QUEUED"}}},"errors":[{"message":"field resolution failed","path":["enqueuePullRequest"]}]}'
+		exit 1
+	fi
+done
+for arg in "$@"; do
+	if [[ "$arg" == "view" ]]; then
+		printf '%s' '{"state":"OPEN","mergeCommit":null}'
+		exit 0
+	fi
+done
+# The confirmation reads find the PR open with no entry: a concurrent push
+# rebuilt the merge group, which is exactly the case the saved entry is for.
+printf '%s' '{"data":{"repository":{"pullRequest":{"id":"PR_6499","state":"OPEN","baseRefName":"main","mergeQueueEntry":null}}}}'
+`)
+	c := GHClient{GH: gh, GroupFile: filepath.Join(dir, "group")}
+
+	// The client's own answer: the entry survives the nonzero exit.
+	entry, err := c.Enqueue(context.Background(), "prime-radiant-inc/evener", "PR_6499", false)
+	if err == nil {
+		t.Fatal("an enqueue that exited non-zero was reported as success")
+	}
+	if _, isRefusal := errors.AsType[*RefusalError](err); isRefusal {
+		t.Fatalf("error = %v, reported as a refusal: a field-resolution error says GitHub ran the mutation and failed to build the reply", err)
+	}
+	if !errors.Is(err, ErrOutcomeUnknown) {
+		t.Fatalf("error = %v, want ErrOutcomeUnknown: nothing in a field-resolution error establishes whether the write landed", err)
+	}
+	if entry == nil {
+		t.Fatal("the mutation's reply named a queue entry and it was discarded with the exit status")
+	}
+	if entry.Position != 7 || entry.State != "QUEUED" {
+		t.Fatalf("entry = %+v, want position 7 QUEUED: that is the record of where GitHub put the pull request", entry)
+	}
+
+	// And the run acts on it: the enqueue's outcome is unknown, the read finds the
+	// entry gone, and the reply is what makes that a drop rather than a failure.
+	out, exitErr := Execute(context.Background(), opts(0), c, SystemClock)
+	if exitErr != nil {
+		t.Fatalf("Execute: %v, want the drop reported: the mutation's reply named an entry, so a read that finds it gone is the queue having removed it", exitErr)
+	}
+	if out.Kind != Dropped {
+		t.Fatalf("outcome = %+v, want Dropped", out)
+	}
+}

@@ -320,18 +320,14 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 	if exitErr == nil && st.State != mergedState {
 		var out Outcome
 		var merged bool
-		out, merged, exitErr = mergedOutcome(startCtx, opts, c)
+		out, merged, exitErr = mergedOutcome(startCtx, ctx, opts, c)
 		if exitErr == nil && merged {
 			stopStart()
 			return out, nil
 		}
 	}
-	// The ending is read before the cancel for the same reason the enqueue's is:
-	// cancelling sets the context's error whatever it was, so a check that runs
-	// afterwards sees Canceled and calls an expired allowance a cancellation.
-	startExpired := errors.Is(startCtx.Err(), context.DeadlineExceeded)
 	stopStart()
-	if exitErr := startupEnding(ctx, startExpired, exitErr); exitErr != nil {
+	if exitErr := startupEnding(ctx, exitErr); exitErr != nil {
 		return Outcome{}, exitErr
 	}
 	if st.State == mergedState {
@@ -664,25 +660,29 @@ func lookupNotRead() *ExitError {
 // The two endings are the same context error to a reader that only asks whether
 // the context is done, and they are different codes: 130 says the operator
 // stopped it and 2 says nothing was decided. refusalFor already answers the
-// cancellation, so an Interrupted it reports is kept; an allowance that expired
-// under a live parent becomes the lookup failure, because the run reached no
-// queue answer and the caller has to know the difference between "I stopped
-// this" and "this could not be read".
-func startupEnding(ctx context.Context, startExpired bool, exitErr *ExitError) *ExitError {
+// cancellation, so the run's own context is asked first; an allowance that
+// expired under a live invocation becomes the lookup failure, because the run
+// reached no queue answer and the caller has to know the difference between "I
+// stopped this" and "this could not be read".
+//
+// The allowance is not asked about separately, and that is the fix: it used to
+// turn a nil error into the lookup failure whenever it had expired, which threw
+// away an answer that arrived just before it did. A nil error IS an answer -- a
+// decoded status, or a merge the probe read -- and a usable answer outranks an
+// expired allowance. Only an operator cancellation outranks the answer, and that
+// is the invocation check above.
+func startupEnding(ctx context.Context, exitErr *ExitError) *ExitError {
 	if ctx.Err() != nil {
 		return &ExitError{Kind: Interrupted, Detail: ctx.Err().Error()}
 	}
 	if exitErr == nil {
-		// A read that reported no failure on an expired allowance never answered:
-		// the context ended while it was running and it returned no error.
-		if startExpired {
-			return startupNotRead()
-		}
 		return nil
 	}
 	if exitErr.Kind != Interrupted {
 		return exitErr
 	}
+	// refusalFor answered the starting allowance, not the operator: the run's own
+	// context is live, so what ended this read was the allowance.
 	return startupNotRead()
 }
 
@@ -712,23 +712,39 @@ func startupNotRead() *ExitError {
 // from that reply tells the operator a wait they stopped ran to its own
 // conclusion. The read is allowed to finish; the answer to it is not used.
 //
-// expired reports that a read ended because its budget ran out rather than
-// because the operator cancelled. The two are different endings and the caller
-// is what knows which one this point in the wait can act on.
+// expired reports that a read ended because its budget ran out and produced
+// nothing usable, rather than because the operator cancelled. The two are
+// different endings and the caller is what knows which one this point in the
+// wait can act on: a spent poll budget is not the end of the run, because the
+// final observation has an allowance of its own.
+//
+// A usable answer outranks the spent allowance. The allowance bounds how long
+// the run waits for a read; it does not unread a reply that arrived before it
+// ran out. Only an operator cancellation outranks the answer, and that is asked
+// of the INVOCATION context above.
 func observe(ctx context.Context, opts Options, c Client, budget time.Duration) (out Outcome, merged bool, st Status, exitErr *ExitError, expired bool) {
 	readCtx, stop := context.WithTimeout(ctx, budget)
 	defer stop()
-	out, merged, exitErr = mergedOutcome(readCtx, opts, c)
+	out, merged, exitErr = mergedOutcome(readCtx, ctx, opts, c)
 	if exitErr == nil && !merged {
 		st, exitErr = readStatus(readCtx, ctx, opts, c)
 	}
 	if err := ctx.Err(); err != nil {
 		return Outcome{}, false, Status{}, &ExitError{Kind: Interrupted, Detail: err.Error()}, false
 	}
-	// refusalFor answered an interrupt from the read's context. With the run's
-	// own context still live, that context is this function's budget, so the
-	// ending is the budget's and not the operator's.
-	if exitErr != nil && exitErr.Kind == Interrupted {
+	if exitErr == nil {
+		return out, merged, st, nil, false
+	}
+	// The invocation is live, so nothing here is the operator's doing. What is
+	// left is the read's own allowance, and a read that exhausted it without
+	// producing an answer is a budget expiry: the run is not over, because the
+	// final observation draws on an allowance of its own. Reporting it as the
+	// run-ending lookup failure skipped that observation and exited 2 while the
+	// allowance was still there to spend.
+	//
+	// refusalFor already answered the invocation's cancellation above, so an
+	// Interrupted reaching this point is the budget's too.
+	if errors.Is(readCtx.Err(), context.DeadlineExceeded) || exitErr.Kind == Interrupted {
 		return Outcome{}, false, Status{}, nil, true
 	}
 	return out, merged, st, exitErr, false
@@ -940,26 +956,42 @@ func refusalFor(ctx context.Context, kind ErrorKind, err error) *ExitError {
 // mergedOutcome reports the merged outcome when the pull request's own state
 // says MERGED, and false when it does not (or cannot be read, which the queue
 // read that follows surfaces as a real failure).
-func mergedOutcome(ctx context.Context, opts Options, c Client) (Outcome, bool, *ExitError) {
-	sha, merged, err := c.MergedCommit(ctx, opts.Repo, opts.PR)
-	// Asked before the answer is used, for the reason readStatus gives: a
-	// cancelled read can still deliver the complete reply it received before the
-	// signal, and a merge reported from it ends a wait the operator stopped.
+//
+// Two contexts, for the reason readStatus gives. `readCtx` bounds how long the
+// run waits for the answer and `ctx` is the invocation, and only the invocation
+// says the operator stopped something. A MERGED reply that arrived while the
+// read's own allowance was expiring is an answer -- the entire point of the read
+// -- and discarding it here reported a timeout after the run had been told the
+// pull request merged. A reply that never arrived is still the read failing.
+func mergedOutcome(readCtx, ctx context.Context, opts Options, c Client) (Outcome, bool, *ExitError) {
+	sha, merged, err := c.MergedCommit(readCtx, opts.Repo, opts.PR)
+	// Asked before the answer is used: a cancelled read can still deliver the
+	// complete reply it received before the signal, and a merge reported from it
+	// ends a wait the operator stopped.
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return Outcome{}, false, &ExitError{Kind: Interrupted, Detail: ctxErr.Error()}
 	}
-	if err != nil || !merged {
+	if err == nil && merged {
+		// The answer wins, whether or not the allowance expired while the pipe
+		// drained. Only the invocation outranks it.
+		return Outcome{Kind: Merged, SHA: sha}, true, nil
+	}
+	if err != nil {
+		// A read that produced no answer and spent its allowance is the budget
+		// expiring, not a state the run learned: report it as the read's ending so
+		// the caller can spend the allowance it keeps for exactly this, rather than
+		// as a verdict about a pull request nobody read.
+		if errors.Is(readCtx.Err(), context.DeadlineExceeded) {
+			return Outcome{}, false, &ExitError{Kind: Interrupted, Detail: readCtx.Err().Error()}
+		}
 		// A cancelled probe must not fall through to a queue verdict: the run
 		// would report "queued position=N" (exit 0) for a PR whose state it
 		// never read.
-		if err != nil {
-			if exitErr := refusalFor(ctx, LookupFailed, err); exitErr.Kind == Interrupted {
-				return Outcome{}, false, exitErr
-			}
+		if exitErr := refusalFor(ctx, LookupFailed, err); exitErr.Kind == Interrupted {
+			return Outcome{}, false, exitErr
 		}
-		return Outcome{}, false, nil
 	}
-	return Outcome{Kind: Merged, SHA: sha}, true, nil
+	return Outcome{}, false, nil
 }
 
 // queuePrefix is the prefix every merge-group run's branch for this PR carries.

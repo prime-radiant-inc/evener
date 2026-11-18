@@ -39,12 +39,17 @@ func (s *stubQueue) MergedCommit(context.Context, string, string) (string, bool,
 	return "", false, nil
 }
 
-func (s *stubQueue) Enqueue(_ context.Context, _, prID string, _ bool) error {
+// Enqueue keeps the two things the subcommand's contract is pinned through --
+// which PR was asked for, and the error it was told to report -- and answers the
+// entry with nil. The entry is the mutation's own reply, which these tests do not
+// exercise: what they check is the exit code the command derives from the error,
+// and a nil entry is the reply that named none.
+func (s *stubQueue) Enqueue(_ context.Context, _, prID string, _ bool) (*mergeq.QueueEntry, error) {
 	if s.enqueueErr != nil {
-		return s.enqueueErr
+		return nil, s.enqueueErr
 	}
 	s.enqueued = append(s.enqueued, prID)
-	return nil
+	return nil, nil
 }
 
 func (s *stubQueue) QueueDrop(context.Context, string, string) (*mergeq.DropEvent, error) {

@@ -375,13 +375,21 @@ func (c GHClient) run(ctx context.Context, args ...string) ([]byte, error) {
 		// So the body's presence is not the test; the refusal is. Anything short
 		// of GitHub saying no leaves the outcome unknown, and unknown is read
 		// back.
+		//
+		// The bytes are returned WITH the error rather than dropped. A body that
+		// carries the mutation's own result is the one record of a write GitHub
+		// performed, and a caller that discards it because the exit status was
+		// non-zero loses the queue entry a concurrent push can remove before the
+		// read-back runs -- turning a confirmed enqueue into a reported failure.
+		// The callers that only read state ignore the bytes when err is non-nil,
+		// so handing them back cannot be mistaken for an answer by them.
 		if detail != "" {
 			// The diagnostic is still carried: it is what the operator needs
 			// when the read-back finds nothing. The error itself stays wrapped so
 			// errors.Is still sees the termination cause.
-			return nil, fmt.Errorf("%w: %w: %s", ErrOutcomeUnknown, err, detail)
+			return stdout.Bytes(), fmt.Errorf("%w: %w: %s", ErrOutcomeUnknown, err, detail)
 		}
-		return nil, fmt.Errorf("%w: %w", ErrOutcomeUnknown, err)
+		return stdout.Bytes(), fmt.Errorf("%w: %w", ErrOutcomeUnknown, err)
 	}
 	return stdout.Bytes(), nil
 }
@@ -494,15 +502,29 @@ func parseMergedCommit(out []byte) (string, bool, error) {
 }
 
 // Enqueue implements Client.
+//
+// The entry is decoded from whatever the reply carried, including a reply that
+// came back with a non-zero exit. That combination is not hypothetical: GitHub
+// can apply the mutation and then fail while resolving the response fields, and
+// `gh` prints both the data it received and the error, exiting non-zero. The
+// entry in that reply is the only record of where the PR landed, and a read-back
+// that finds it gone -- a concurrent push rebuilding the merge group -- otherwise
+// reports a failed enqueue for a mutation GitHub confirmed.
+//
+// The error is returned beside it, not swallowed: `run` has already classified a
+// definitive refusal as a RefusalError, and the caller still reconciles the
+// unknown endings with its bounded read. Returning the entry with the error only
+// means the reconciliation has the mutation's own evidence to fall back on.
 func (c GHClient) Enqueue(ctx context.Context, repo, prID string, jump bool) (*QueueEntry, error) {
 	out, err := c.run(ctx, "api", "graphql",
 		"-f", "query="+enqueueMutation,
 		"-f", "id="+prID,
 		"-F", "jump="+boolString(jump))
+	entry := parseEnqueuedEntry(out)
 	if err != nil {
-		return nil, err
+		return entry, err
 	}
-	return parseEnqueuedEntry(out), nil
+	return entry, nil
 }
 
 // parseEnqueuedEntry reads the queue entry the mutation's reply names, and nil
