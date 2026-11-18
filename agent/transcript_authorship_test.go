@@ -118,9 +118,10 @@ func TestTranscriptAuthorshipNestedParent(t *testing.T) {
 
 	// The middle child's prompt namer is parked inside its provider call for the
 	// length of this test, so the close below meets a namer that cannot finish.
-	// The namer's own wait group is the only thing that can prove it ended: the
-	// close joins sendersWG (which also counts delegate runs) and only within the
-	// close budget, which gives up on a straggler.
+	// The close cannot prove it ended: it joins sendersWG (which also counts
+	// delegate runs) and only within the close budget, which gives up on a
+	// straggler. The proof is a separate unbudgeted sendersWG wait once both
+	// delegate runs are settled, so the namer is the only emitter left.
 	namerGate := make(chan struct{})
 	releaseNamer := sync.OnceFunc(func() { close(namerGate) })
 	// Registered before the fixture's own Close: a failure anywhere below must
@@ -210,17 +211,26 @@ func TestTranscriptAuthorshipNestedParent(t *testing.T) {
 	// would still be running when the temporary directories are removed. This
 	// runs before the fixture's cleanups and releases the gates itself, so every
 	// exit path ends with both namers joined.
+	//
+	// The wait runs at most once. A join that times out fails the test from
+	// inside the tripwire, and the cleanup below would otherwise start a second
+	// full wait on the same undrained group: twice the teardown time, and a
+	// second waiter parked for the rest of the process, which is the very leak
+	// this test exists to catch.
+	var joinOnce sync.Once
 	joinNamers := func() {
-		// TRIPWIRE: a wait group cannot report a namer that exits without calling
-		// Done, and there is no channel to select on, so this ceiling is the only
-		// way a missing Done fails this test by name instead of stalling the shard
-		// until the binary's timeout with the fixture never cleaned up. With the
-		// gates released both namers answer from a scripted adapter with no real
-		// I/O, so this normally returns in well under a second; 30s only fires on
-		// a missing Done.
-		awaitWithin(t, 30*time.Second, "the middle and leaf children's namers to finish", func() {
-			joinRetirementTreeEmitters(middle)
-			joinRetirementTreeEmitters(leaf)
+		joinOnce.Do(func() {
+			// TRIPWIRE: a wait group cannot report a namer that exits without calling
+			// Done, and there is no channel to select on, so this ceiling is the only
+			// way a missing Done fails this test by name instead of stalling the shard
+			// until the binary's timeout with the fixture never cleaned up. With the
+			// gates released both namers answer from a scripted adapter with no real
+			// I/O, so this normally returns in well under a second; 30s only fires on
+			// a missing Done.
+			awaitWithin(t, 30*time.Second, "the middle and leaf children's namers to finish", func() {
+				joinRetirementTreeEmitters(middle)
+				joinRetirementTreeEmitters(leaf)
+			})
 		})
 	}
 	t.Cleanup(func() {
