@@ -747,6 +747,10 @@ type Response struct {
 	Raw       map[string]any `json:"raw,omitempty"`
 	Warnings  []Warning      `json:"warnings,omitempty"`
 	RateLimit *RateLimitInfo `json:"rate_limit,omitempty"`
+	// ContentAuthoritative tells a stream accumulator to use Message.Content
+	// even when empty. Set it when the terminal explicitly selects the output.
+	// A metadata-only terminal leaves it false so streamed deltas can supply content.
+	ContentAuthoritative bool `json:"-"`
 }
 
 // Text returns the concatenated text content of the response message.

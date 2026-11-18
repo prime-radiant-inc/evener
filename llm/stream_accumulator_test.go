@@ -65,6 +65,9 @@ func TestStreamAccumulator_FinishWithMetadataOnlyResponse_PreservesAccumulatedCo
 	acc.Process(StreamEvent{Type: StreamEventTextStart, TextID: "t1"})
 	acc.Process(StreamEvent{Type: StreamEventTextDelta, TextID: "t1", Delta: "Hello"})
 	acc.Process(StreamEvent{Type: StreamEventTextEnd, TextID: "t1"})
+	acc.Process(StreamEvent{Type: StreamEventToolCallEnd, ToolCall: &ToolCallData{
+		ID: "call_streamed", Name: "f", Arguments: json.RawMessage(`{}`),
+	}})
 
 	final := Response{
 		ID:       "resp_1",
@@ -89,6 +92,9 @@ func TestStreamAccumulator_FinishWithMetadataOnlyResponse_PreservesAccumulatedCo
 	}
 	if got.Raw["id"] != "resp_1" {
 		t.Fatalf("raw = %#v", got.Raw)
+	}
+	if calls := got.ToolCalls(); len(calls) != 1 || calls[0].ID != "call_streamed" {
+		t.Fatalf("metadata-only terminal lost the streamed call: %+v", calls)
 	}
 }
 

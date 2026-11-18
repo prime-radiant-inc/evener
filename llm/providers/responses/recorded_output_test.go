@@ -82,13 +82,16 @@ func TestExtractRecordedResponse_WebSearchCallItem(t *testing.T) {
 // failing the decode, while the well-formed entry survives.
 func TestExtractRecordedResponse_MalformedOutputEntries(t *testing.T) {
 	t.Parallel()
-	body := []byte(`{"id":"r","status":"completed","output":["bare",{"type":"message","content":["bare",{"type":"output_text","text":"ok"}]}]}`)
+	body := []byte(`{"id":"r","status":"completed","output":["bare",{"type":"function_call","id":"fc_only","name":"f","arguments":"{}"},{"type":"message","content":["bare",{"type":"output_text","text":"ok"}]}]}`)
 	resp, err := ExtractRecordedResponse(body, "m")
 	if err != nil {
 		t.Fatalf("ExtractRecordedResponse: %v", err)
 	}
 	if resp.Text() != "ok" {
 		t.Fatalf("Text() = %q, want the one decodable entry", resp.Text())
+	}
+	if calls := resp.ToolCalls(); len(calls) != 0 {
+		t.Errorf("function item without call_id produced dispatchable calls: %+v", calls)
 	}
 }
 

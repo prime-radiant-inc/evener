@@ -549,11 +549,13 @@ saved the original spelling can replay only the bytes still on disk.
   parts. It preserves whitespace in raw parts, item IDs and summaries, and
   keeps separate assistant messages and their `output_text` parts in order.
   When the final response repeats only part of a streamed item, Evener keeps
-  the matching call's argument bytes, indexed answer text, and ciphertext
-  from the stream. When later events link a stream index, item ID and tool
-  call ID, the pieces form one native item and a tool call executes once.
-  Reasoning shown only as deltas remains visible in the
-  transcript and carries no native continuation.
+  the matching call's argument bytes, completed message phase, indexed
+  answer and reasoning text, and ciphertext from the stream. Evener uses
+  the stream index and item ID to collect a function's arguments. The
+  provider must supply a `call_id` before Evener can dispatch the tool and
+  return its result under that ID. Reasoning shown only as deltas remains
+  visible in the transcript, including when the response ends with an
+  answer. Only native reasoning parts supply replay text.
   Older transcripts can contain an item ID and joined text without
   part types. On an opted-in route, Evener sends that text as one reasoning
   part for the issuing model. Any display text already joined into that old

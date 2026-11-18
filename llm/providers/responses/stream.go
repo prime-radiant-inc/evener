@@ -18,10 +18,9 @@ import (
 )
 
 type responsesToolState struct {
-	id, itemID, name   string
-	started, hasOutput bool
-	hasCallID          bool // The provider supplied call_id, even if it equals its item ID.
-	args               responsesOutputText
+	callID, itemID, name string // Only the provider's call_id can identify a dispatchable call.
+	started, hasOutput   bool
+	args                 responsesOutputText
 }
 
 type responsesOutputItem struct {
@@ -169,6 +168,20 @@ func (acc *responsesOutputAccumulator) reasoningDisplay(typ string, payload map[
 	return delta
 }
 
+// The completed text belongs to one native content slot. Until an item
+// declares that slot, this event cannot add an item to the replay.
+func (acc *responsesOutputAccumulator) handleReasoningTextDone(payload map[string]any) {
+	id, _ := payload["item_id"].(string)
+	index := responsesEventIndex(payload, "content_index")
+	text, ok := payload["text"].(string)
+	if !ok || index < 0 || (id == "" && responsesEventIndex(payload, "output_index") < 0) {
+		return
+	}
+	item := acc.outputItem(payload, "reasoning", id, nil, false)
+	acc.order++
+	item.textPart(index, false).settle(text, false, acc.order)
+}
+
 func newResponsesOutputAccumulator() *responsesOutputAccumulator {
 	return &responsesOutputAccumulator{
 		byCallID: map[string]*responsesOutputItem{},
@@ -213,12 +226,10 @@ func (acc *responsesOutputAccumulator) join(item, other *responsesOutputItem) *r
 		return item
 	}
 	if a, b := item.tool, other.tool; a != nil && b != nil {
-		if a.hasCallID && b.hasCallID && a.id != b.id {
+		if a.callID != "" && b.callID != "" && a.callID != b.callID {
 			return item
 		}
-		if !a.hasCallID && (b.hasCallID || a.id == "") {
-			a.id, a.hasCallID = b.id, b.hasCallID
-		}
+		a.callID = cmp.Or(a.callID, b.callID)
 		a.itemID = cmp.Or(a.itemID, b.itemID)
 		a.name = cmp.Or(a.name, b.name)
 		a.started = a.started || b.started
@@ -393,24 +404,38 @@ func (item *responsesOutputItem) settleMessage(message map[string]any, order int
 	}
 }
 
-// Both native IDs name the same call. A call known only by item ID can gain
-// its call ID and function name from a later event.
-func (acc *responsesOutputAccumulator) toolOutput(payload map[string]any, callID, itemID, name string, explicit bool) *responsesOutputItem {
-	if callID == "" && itemID == "" && responsesEventIndex(payload, "output_index") < 0 {
+// A provider can issue the same value as its item ID and call ID in separate events.
+func (acc *responsesOutputAccumulator) callItem(callID string) *responsesOutputItem {
+	if item := acc.byCallID[callID]; item != nil {
+		return item
+	}
+	if item := acc.byID[callID]; item != nil && item.tool != nil && item.tool.callID == "" {
+		return item
+	}
+	return nil
+}
+
+func (acc *responsesOutputAccumulator) toolOutput(payload map[string]any, callID, itemID, name, alias string) *responsesOutputItem {
+	if callID == "" && itemID == "" && alias == "" && responsesEventIndex(payload, "output_index") < 0 {
 		return nil
 	}
-	item := acc.outputItem(payload, "function_call", itemID, acc.byCallID[callID], true)
+	fallback := acc.callItem(callID)
+	if alias != "" {
+		fallback = cmp.Or(acc.byID[alias], acc.byCallID[alias])
+	}
+	item := acc.outputItem(payload, "function_call", itemID, fallback, true)
 	if item.tool == nil {
 		item.tool = new(responsesToolState)
 	}
 	st := item.tool
-	if callID != "" && (st.id == "" || explicit && !st.hasCallID) {
-		st.id, st.hasCallID = callID, explicit
-	}
+	st.callID = cmp.Or(st.callID, callID)
 	st.name = cmp.Or(st.name, name)
 	st.itemID = item.id
-	if st.id != "" {
-		acc.byCallID[st.id] = item
+	if st.callID != "" {
+		acc.byCallID[st.callID] = item
+	}
+	if alias != "" && item.id == "" && acc.byID[alias] == nil {
+		acc.byID[alias] = item // A later event can identify the bare ID as an item_id or call_id.
 	}
 	return item
 }
@@ -434,28 +459,18 @@ func (acc *responsesOutputAccumulator) HandleOutputItemAdded(payload, item map[s
 	}
 	callID, _ := item["call_id"].(string)
 	name, _ := item["name"].(string)
-	acc.toolOutput(payload, cmp.Or(callID, itemID), itemID, name, callID != "")
+	acc.toolOutput(payload, callID, itemID, name, "")
 }
 
 func (acc *responsesOutputAccumulator) argumentOutput(payload map[string]any) *responsesOutputItem {
 	callID, _ := payload["call_id"].(string)
 	itemID, _ := payload["item_id"].(string)
-	explicit := callID != ""
 	var alias string
 	if callID == "" && itemID == "" {
 		alias, _ = payload["id"].(string)
-		callID = alias
-		if known := acc.byID[alias]; known != nil && known.tool != nil && known.id == alias {
-			itemID, callID = known.id, known.tool.id
-		}
 	}
 	name, _ := payload["name"].(string)
-	output := acc.toolOutput(payload, cmp.Or(callID, itemID), itemID, name, explicit)
-	if alias != "" && output.id == "" && acc.byID[alias] == nil {
-		// A bare id can later be identified as either the item_id or call_id.
-		acc.byID[alias] = output
-	}
-	return output
+	return acc.toolOutput(payload, callID, itemID, name, alias)
 }
 
 // HandleFunctionCallArgumentsDelta merges one
@@ -464,8 +479,8 @@ func (acc *responsesOutputAccumulator) argumentOutput(payload map[string]any) *r
 // preserves bytes the decoded payload string coerced; capture or unescape
 // failure falls back to that string. The returned delta is the effective
 // fragment written to state, for byte-identical live emission. ok is false
-// when the event can't be mapped to a tool call at all -- the caller should
-// pass the raw payload through unmodified in that case.
+// until the provider identifies the call; its fragments remain available when
+// a later event supplies call_id.
 func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDelta(payload map[string]any, eventData []byte) (state *responsesToolState, delta string, ok bool) {
 	delta, _ = payload["delta"].(string)
 	if delta == "" {
@@ -493,7 +508,7 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDelta(payload 
 			acc.write(&st.args.deltas, delta)
 		}
 	}
-	return st, delta, st.id != ""
+	return st, delta, st.callID != ""
 }
 
 // HandleFunctionCallArgumentsDone applies a
@@ -501,8 +516,7 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDelta(payload 
 // bytes, overriding whatever deltas were accumulated so far, resolving
 // call_id via item_id when needed. eventData preserves bytes the decoded
 // payload string coerced; capture or unescape failure falls back to that
-// string. ok is false when the event carried no resolvable call_id -- the
-// caller should pass the raw payload through.
+// string. A known item can retain its arguments before the provider issues a call ID.
 func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDone(payload map[string]any, eventData []byte) (state *responsesToolState, ok bool) {
 	argsStr, _ := payload["arguments"].(string)
 	output := acc.argumentOutput(payload)
@@ -520,7 +534,7 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDone(payload m
 		acc.order++
 		st.args.settle(argsStr, false, acc.order)
 	}
-	return st, st.id != ""
+	return st, st.callID != "" || st.itemID != ""
 }
 
 // HandleOutputItemDone processes a response.output_item.done event's item,
@@ -531,11 +545,8 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDone(payload m
 // It returns the raw item (nil if the payload carried none -- e.g. the
 // event was malformed), and, only for a function_call item whose call_id
 // resolved, the tool state and its full arguments string with ok=true.
-// ok=false covers both "not a function_call" (the item is recorded) and
-// "function_call with no resolvable call_id" (the item is skipped).
-// Callers distinguish the two by
-// checking rawItem's own "type" field, matching the two different
-// live-stream fallbacks (best-effort end-of-text vs. raw passthrough).
+// Other item types and provisional calls remain in the accumulator. The
+// live reader uses rawItem's type for end-of-text or raw passthrough.
 func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]any, eventData []byte) (rawItem map[string]any, state *responsesToolState, argsStr string, ok bool) {
 	itemAny := payload["item"]
 	if itemAny == nil {
@@ -571,7 +582,7 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 			argsStr = string(content)
 		}
 	}
-	output := acc.toolOutput(payload, callID, itemID, name, callID != "")
+	output := acc.toolOutput(payload, callID, itemID, name, "")
 	if output == nil {
 		return item, nil, "", false
 	}
@@ -580,7 +591,7 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 	st.args.settle(argsStr, true, acc.order)
 	argsStr = st.args.value()
 	acc.completed++
-	return item, st, argsStr, st.id != ""
+	return item, st, argsStr, st.callID != ""
 }
 
 // responsesInbandError decodes a Responses-API failure event delivered on an
@@ -802,16 +813,17 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 			case "response.function_call_arguments.delta":
 				st, delta, ok := acc.HandleFunctionCallArgumentsDelta(payload, ev.Data)
 				if !ok {
-					// Can't map reliably; pass through.
+					// The frame carries content before a dispatchable call is known.
 					s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload, ContentBearing: true})
 					return nil
 				}
 				if !st.started {
 					st.started = true
-					tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Type: "function"}
+					tc := llm.ToolCallData{ID: st.callID, ItemID: st.itemID, Name: st.name, Type: "function"}
 					s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &tc})
+					delta = st.args.value() // Include fragments retained before the call ID arrived.
 				}
-				tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Arguments: []byte(delta), Type: "function"}
+				tc := llm.ToolCallData{ID: st.callID, ItemID: st.itemID, Name: st.name, Arguments: []byte(delta), Type: "function"}
 				s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallDelta, ToolCall: &tc})
 			case "response.function_call_arguments.done":
 				if _, ok := acc.HandleFunctionCallArgumentsDone(payload, ev.Data); !ok {
@@ -823,10 +835,10 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 				case ok:
 					if !st.started {
 						st.started = true
-						tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Type: "function"}
+						tc := llm.ToolCallData{ID: st.callID, ItemID: st.itemID, Name: st.name, Type: "function"}
 						s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &tc})
 					}
-					tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Arguments: json.RawMessage(argsStr), Type: "function"}
+					tc := llm.ToolCallData{ID: st.callID, ItemID: st.itemID, Name: st.name, Arguments: json.RawMessage(argsStr), Type: "function"}
 					s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallEnd, ToolCall: &tc})
 				case rawItem == nil:
 					// Best-effort: treat as end-of-text.
@@ -877,6 +889,9 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 					return &transport.FatalStreamError{Err: llm.RewriteErrorProvider(inband, res.Instance)}
 				}
 				s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
+			case "response.reasoning_text.done":
+				acc.handleReasoningTextDone(payload)
+				fallthrough
 			default:
 				// A failure frame can miss the switch above two ways: a gateway
 				// can wrap an upstream rejection as {"error": {...}} with no

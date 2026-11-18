@@ -2,6 +2,7 @@ package responses
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"strings"
@@ -73,6 +74,36 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 		t.Helper()
 		return jsonOf(t, build(t, llm.Request{Model: res.ModelID, Messages: []llm.Message{response.Message}}, res)["input"])
 	}
+	t.Run("completed message phase survives an omitted terminal field", func(t *testing.T) {
+		const commentary = `"phase":"commentary",`
+		const final = `"phase":"final_answer",`
+		message := func(phase, second string) string {
+			return `{"type":"message","id":"m",` + phase + `"content":[{"type":"output_text","text":"a"},{"type":"output_text","text":` + jsonOf(t, second) + `}]}`
+		}
+		const second = " β\t"
+		for _, tc := range []struct{ name, phase, second, want string }{
+			{"recover phase and missing part", "", "", commentary},
+			{"recover phase with repeated parts", "", second, commentary},
+			{"terminal phase wins", final, "", final},
+			{"explicitly cleared phase", `"phase":null,`, "", ""},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				want := nextInput(t, recorded(t, `{"output":[`+message(tc.want, second)+`]}`))
+				events := []string{
+					`{"type":"response.output_item.done","item":` + message(commentary, second) + `}`,
+					`{"type":"response.completed","response":{"output":[` + message(tc.phase, tc.second) + `]}}`,
+				}
+				_, live := responsesEvents(t, events...)
+				saved := recorded(t, "data: "+strings.Join(events, "\n\ndata: ")+"\n\n")
+				for _, result := range []llm.Response{*live, saved} {
+					if got := nextInput(t, result); got != want {
+						t.Errorf("stream input = %s, complete input = %s", got, want)
+					}
+				}
+			})
+		}
+	})
+
 	t.Run("independently repeated fields replay identical input", func(t *testing.T) {
 		fields := [4]string{"cipher", " λ\t", "\r\n<&>", " \t" + `{ "arg": 1.0 }` + "\n"}
 		terminal := func(f [4]string) string {
@@ -110,6 +141,16 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 	const placeholder = `{"type":"reasoning","id":"r","content":[{"type":"reasoning_text","text":""}]}`
 	const answerDelta = `{"type":"response.output_text.delta","item_id":"m","delta":" A "}`
 	const toolDone = `{"type":"response.output_item.done","output_index":1,"item":` + tool + `}`
+	reasoning := func(second *string, third string) string {
+		part := map[string]string{"type": "reasoning_text"}
+		if second != nil {
+			part["text"] = *second
+		}
+		return `{"type":"reasoning","id":"r","content":[{"type":"reasoning_text","text":"owned"},` + jsonOf(t, part) + `,{"type":"reasoning_text","text":` + jsonOf(t, third) + `},{"type":"reasoning_text","text":""}]}`
+	}
+	finalText := func(identity string, index int, text string) string {
+		return fmt.Sprintf(`{"type":"response.reasoning_text.done",%s,"content_index":%d,"text":%s}`, identity, index, jsonOf(t, text))
+	}
 	for _, tc := range []struct {
 		name     string
 		events   []string
@@ -121,6 +162,23 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 		{"native call claims its index after display", []string{`{"output_index":1,` + display + "}", toolDone, answerDelta}, "", answer + "," + tool},
 		{"sparse terminal answer after display", []string{"{" + display + "}", answerDelta, toolDone}, `{"type":"message","id":"m","content":[{"type":"output_text","text":""}]}`, answer + "," + tool},
 		{"terminal reasoning owns its native slot", []string{`{"item_id":"r","output_index":0,` + display + "}", answerDelta, toolDone}, placeholder, placeholder + "," + tool + "," + answer},
+		{"substantive terminal retains display", []string{"{" + display + "}", answerDelta, toolDone}, tool + "," + answer, tool + "," + answer},
+		{"finalized reasoning fills only its native part", []string{
+			"{" + display + "}",
+			finalText(`"item_id":"r"`, 2, "\r\n<&>"),
+			finalText(`"output_index":1`, 1, " λ\t"),
+			finalText(`"item_id":"r","output_index":1`, 0, "superseded"),
+			finalText(`"item_id":"other","output_index":0`, 3, "foreign"),
+			`{"type":"response.reasoning_text.delta","item_id":"r","content_index":3,"delta":"interim"}`,
+			`{"type":"response.reasoning_summary_text.done","item_id":"r","summary_index":3,"text":"summary"}`,
+		}, answer + "," + reasoning(nil, "") + "," + tool, answer + "," + reasoning(new(" λ\t"), "\r\n<&>") + "," + tool},
+		{"finalized part without a native item keeps answer and call positions", []string{
+			"{" + display + "}", finalText(`"item_id":"r","output_index":0`, 0, "unmatched"), answerDelta, toolDone,
+		}, "", answer + "," + tool},
+		{"completed item owns text before part fallback", []string{
+			"{" + display + "}", finalText(`"item_id":"r"`, 0, "earlier"), finalText(`"item_id":"r"`, 2, "\t"),
+			`{"type":"response.output_item.done","item":` + reasoning(nil, "") + `}`,
+		}, placeholder + "," + answer, reasoning(nil, "\t") + "," + answer},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			want := nextInput(t, recorded(t, `{"output":[`+tc.complete+`]}`))
@@ -131,14 +189,18 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 				if got := nextInput(t, result); got != want {
 					t.Errorf("input from stream = %s, complete response = %s", got, want)
 				}
-				var displays int
-				for _, part := range result.Message.Content {
-					if th := part.Thinking; th != nil && th.Text == " D " && th.ID == "" && len(th.ResponsesTextParts) == 0 {
-						displays++
+				var stored llm.Message
+				if err := json.Unmarshal([]byte(jsonOf(t, result.Message)), &stored); err != nil {
+					t.Fatal(err)
+				}
+				var displays []string
+				for _, part := range stored.Content {
+					if th := part.Thinking; th != nil && th.ID == "" && th.EncryptedContent == "" && len(th.ResponsesTextParts) == 0 {
+						displays = append(displays, th.Text)
 					}
 				}
-				if displays != 1 {
-					t.Errorf("settled display parts = %d, want 1", displays)
+				if !slices.Equal(displays, []string{" D "}) {
+					t.Errorf("saved display parts = %q, want the streamed part once", displays)
 				}
 			}
 		})

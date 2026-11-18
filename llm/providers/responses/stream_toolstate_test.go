@@ -170,6 +170,62 @@ func TestResponsesStreamToolStateMapping(t *testing.T) {
 		}
 	})
 
+	t.Run("named item needs a provider-issued call ID", func(t *testing.T) {
+		const added = `{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_p","name":"f"}}`
+		const delta = `{"type":"response.function_call_arguments.delta","item_id":"fc_p","delta":" \t{ \"k\": 1 }\n"}`
+		const itemDone = `{"type":"response.output_item.done","item":{"type":"function_call","id":"fc_p"}}`
+		const args = " \t{ \"k\": 1 }\n"
+		for _, tc := range []struct{ name, callID, confirmation, wantArgs string }{
+			{"unconfirmed", "", "", ""},
+			{"same ID confirmed", "fc_p", `{"type":"response.output_item.done","item":{"type":"function_call","call_id":"fc_p"}}`, args},
+			{"distinct ID confirmed", "call_1", `{"type":"response.output_item.done","item":{"type":"function_call","id":"fc_p","call_id":"call_1"}}`, args},
+			{"delta confirms retained bytes", "call_1", `{"type":"response.function_call_arguments.delta","item_id":"fc_p","call_id":"call_1","delta":" "}`, args + " "},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				frames := []string{added, delta, itemDone}
+				if tc.confirmation != "" {
+					frames = append(frames, tc.confirmation)
+				}
+				events, final := responsesEvents(t, append(frames, completed)...)
+				for _, event := range events {
+					if call := event.ToolCall; call != nil && (tc.callID == "" || call.ID != tc.callID || call.ItemID != "fc_p") {
+						t.Errorf("live %s: call ID %q, item ID %q, issued call ID %q", event.Type, call.ID, call.ItemID, tc.callID)
+					}
+					if event.Type == llm.StreamEventToolCallDelta && string(event.ToolCall.Arguments) != tc.wantArgs {
+						t.Errorf("first confirmed delta = %q, want %q", event.ToolCall.Arguments, tc.wantArgs)
+					}
+				}
+				calls := final.ToolCalls()
+				if tc.callID == "" {
+					if len(calls) != 0 || final.Finish.Reason != "stop" {
+						t.Errorf("unconfirmed item settled as %q with calls %+v", final.Finish.Reason, calls)
+					}
+				} else if len(calls) != 1 || calls[0].ID != tc.callID || calls[0].ItemID != "fc_p" || calls[0].Name != "f" || string(calls[0].Arguments) != tc.wantArgs {
+					t.Errorf("confirmed call %q lost its item or argument bytes: %+v", tc.callID, calls)
+				}
+			})
+		}
+	})
+
+	t.Run("terminal selects a different unconfirmed function", func(t *testing.T) {
+		frames := []string{
+			`{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_a","call_id":"call_a","name":"write_file"}}`,
+			`{"type":"response.function_call_arguments.delta","item_id":"fc_a","delta":"{}"}`,
+			`{"type":"response.completed","response":{"status":"completed","output":[{"type":"function_call","id":"fc_b","name":"write_file","arguments":"{}"}]}}`,
+		}
+		events, live := responsesEvents(t, frames...)
+		if toolEvent(t, events, llm.StreamEventToolCallStart).ID != "call_a" {
+			t.Fatal("stream did not announce the issued call")
+		}
+		recorded, err := ExtractRecordedResponse([]byte("data: "+strings.Join(frames, "\n\ndata: ")+"\n\n"), "m")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got, fromLog := live.ToolCalls(), recorded.ToolCalls(); len(got) != 0 || len(fromLog) != 0 {
+			t.Errorf("terminal selected fc_b without a call_id: live calls = %+v, recorded calls = %+v", got, fromLog)
+		}
+	})
+
 	t.Run("done function_call with an unknown id passes through raw", func(t *testing.T) {
 		events, _ := responsesEvents(t,
 			`{"type":"response.output_item.done","item":{"type":"function_call","id":"fc_unknown","name":"f"}}`,
