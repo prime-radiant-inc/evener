@@ -2620,4 +2620,90 @@ describe("useThreadsStore.ensureThread", () => {
 
     threadsStore.getState().releaseThread(ref);
   });
+
+  test("an older boot's failure does not strip the newer boot's buffered frame", async () => {
+    // RoboRev 53429 (Medium 3): the buffer entry's own identity decides its
+    // fate, not the failing read's. A watched read starts on boot 1 and buffers
+    // boot 2's history frame and then boot 2's delegate sample; the read then
+    // fails naming BOOT 1. Asking `confirmedBootReplacement(retiredBy, boot)`
+    // answers "does the buffered frame supersede the failure's boot" - true
+    // here - and blanked boot 2's identity, leaving boot 1's stale 900 in place
+    // to outrank boot 2's sample even though the buffer identified the new
+    // source. The comparison now runs the other way: only a frame whose own
+    // boot the failure actually replaced folds as bootless.
+    const fake = connectReadyFakeClient();
+    const ref = "local:watched";
+    const threadId = `thr_${ref}`;
+    const initial = versionedReadResponse(
+      ref,
+      {
+        status: { type: "active" },
+        evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+      },
+      0,
+    );
+    const refused: Array<(error: Error) => void> = [];
+    let readCount = 0;
+    fake.on("thread/read", (params) => {
+      readCount += 1;
+      if (readCount === 1) return echoRead({ ...initial, bootGeneration: "1" }, params.requestGeneration);
+      return new Promise<ThreadReadResponse>((_resolve, reject) => {
+        refused.push(reject);
+      });
+    });
+
+    await threadsStore.getState().watchThread(ref, { includeTurns: true });
+    fake.emitNotification({
+      method: "evener/delegate/updated",
+      params: { threadId, ref, delegate: heldDelegateRow() },
+    });
+    await flushUntil(() => threadsStore.getState().watchedThreads.get(ref)?.delegates?.[0]?.holdSequence === 900);
+
+    // Boot 1's own resync starts the read that will buffer boot 2's frames.
+    fake.emitNotification({
+      method: "evener/thread/resync",
+      params: { threadId, ref, bootGeneration: "1", epoch: 2 },
+    });
+    await flushUntil(() => refused.length === 1);
+
+    // Boot 2's history frame and its own delegate sample land in the buffer.
+    emitHistoryUpdatedFor(fake, ref, threadId, {
+      bootGeneration: "2",
+      epoch: 1,
+      snapshot: { incarnation: "inc-2", length: 1 },
+      turns: [],
+      items: [],
+    });
+    fake.emitNotification({
+      method: "evener/delegate/updated",
+      params: {
+        threadId,
+        ref,
+        delegate: { ...heldDelegateRow(), holdSequence: 1, projectionRevision: 4 },
+      },
+    });
+    await Promise.resolve();
+    // Non-vacuous: boot 1's 900 is still what the published model shows, so
+    // boot 2's sample exists only in the buffer.
+    expect(threadsStore.getState().watchedThreads.get(ref)?.delegates?.[0]?.holdSequence).toBe(900);
+
+    // The pending read fails naming BOOT 1 — the source boot 2 replaced.
+    refused[0]?.(
+      new WireError("thread history failed at entry 7", -32603, {
+        evenerErrorInfo: ErrorTranscriptHistoryFailed,
+        bootGeneration: "1",
+      }),
+    );
+    await flushUntil(() => threadsStore.getState().watchedThreads.get(ref)?.history?.failed !== undefined);
+    const published = threadsStore.getState().watchedThreads.get(ref);
+    // The buffered boot-2 sample is boot 1's replacement, not boot 1's
+    // property: it survives the replay...
+    expect(published?.delegates?.[0]?.holdSequence).toBe(1);
+    // ...and boot 2 is recorded as the owner the buffer's frame named.
+    expect(published?.history?.holdOwner).toBe("2");
+    // The diagnostic still publishes.
+    expect(published?.history?.failed).toBeDefined();
+
+    threadsStore.getState().releaseWatchedThread(ref);
+  });
 });

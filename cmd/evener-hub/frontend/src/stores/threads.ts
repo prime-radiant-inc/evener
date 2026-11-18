@@ -6257,10 +6257,24 @@ function bufferPendingNotification(
 // is still the newest recorded form of what it changed, so only its source
 // identity is dropped - it folds as a bootless frame, which invalidates
 // nothing and records nothing.
+//
+// WHICH direction that comparison runs is the whole question, and running it
+// the wrong way is what this used to do. The buffer entry's own identity
+// decides its fate; the failing read is only the base. A read that starts on
+// boot 1, buffers boot 2's history frame and then boot 2's delegate sample,
+// and finally receives boot 1's failure must NOT blank that frame: boot 2 is
+// NEWER than the failing read's boot, so the buffered frame is evidence of a
+// replacement the failure knows nothing about. Asking
+// `confirmedBootReplacement(retiredBy, boot)` answers "does the buffered frame
+// supersede the failure's boot" - true exactly in that case - and stripping
+// then LEFT boot 1's stale sample in place, free to outrank boot 2's while the
+// buffer itself identified the new source. Only a frame whose own boot is
+// what the failure replaced (an OLDER or equal source, from that source's own
+// mouth) folds as bootless.
 function withoutRetiredSourceToken(notification: AnyNotification, retiredBy: string): AnyNotification {
   if (notification.method !== "history/updated") return notification;
   const boot = notification.params.bootGeneration;
-  if (!boot || !confirmedBootReplacement(retiredBy, boot, "authoritative")) return notification;
+  if (!boot || !confirmedBootReplacement(boot, retiredBy, "authoritative")) return notification;
   return {
     ...notification,
     params: { ...notification.params, bootGeneration: "" },
