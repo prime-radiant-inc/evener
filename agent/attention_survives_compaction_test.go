@@ -760,6 +760,70 @@ func TestUnleasedStableChildKeepsAnUnresolvedWatchRowOutOfEveryBuilder(t *testin
 		}
 	})
 
+	// A tick persisted before its timer was CLEARED is retired at the request
+	// boundary, and the retirement has to run BEFORE the round snapshots
+	// history: retiring removes the row's resident turn, so a retirement placed
+	// after the snapshot leaves that turn in the slice this request projects
+	// and the unleased filter has no pending id left to match. The cleared tick
+	// then reaches the provider on exactly the unleased turn this issue is
+	// about (#2340 review).
+	t.Run("a cleared tick is retired before the snapshot, not after it", func(t *testing.T) {
+		t.Parallel()
+		sess := newContinuationSession(t)
+		const clearedWatchID = "watch:phase-cleared"
+		jm := sess.jobManager
+		if jm == nil {
+			t.Fatal("the fixture session has no job manager, so no timer can be cleared")
+		}
+		// This session IS the stable receiver here (owningDelegateID is set by
+		// the shared setup), so the ingress accepts its own watch notices.
+		jm.mu.Lock()
+		ownOwner := jm.stableOwner
+		ownController := jm.delegateController
+		jm.stableOwner = sess
+		jm.delegateController = sess.delegateController
+		t.Cleanup(func() {
+			jm.mu.Lock()
+			jm.stableOwner = ownOwner
+			jm.delegateController = ownController
+			jm.mu.Unlock()
+		})
+		jm.watches[watchKey{VisibleSessionID: jm.sessionID, Target: "self", Slot: clearedWatchID}] = &watchConfig{watchID: clearedWatchID, target: "self", timer: true}
+		jm.mu.Unlock()
+		tick := jobNotification{Kind: jobNotificationKindWatch, WatchID: clearedWatchID, Fires: 1, Reason: "repeat", Status: jobNotificationEventWatch, Occurrence: "tick:" + clearedWatchID + ":1"}
+		if !jm.persistStableWatchPendings([]jobNotification{tick}) {
+			t.Fatal("the production stable ingress declined the tick")
+		}
+		// The exact text the model would read, built by the same renderer the
+		// ingress used, so the assertion below is about THIS row and not a
+		// substring guess.
+		tickText := sess.formatJobNotificationReminder([]deliverableJobNotification{{notification: tick}})
+		if tickText == "" {
+			t.Fatal("setup: the tick rendered no text, so its presence in a request could not be detected")
+		}
+		if indexOfTurnText(currentHistory(t, sess), tickText) < 0 {
+			t.Fatalf("setup: the tick never reached the resident history, so the ordering under test cannot be observed")
+		}
+		// The clear lands after the row was already durable, which is the window
+		// the enqueue-time rule cannot cover.
+		jm.mu.Lock()
+		delete(jm.watches, watchKey{VisibleSessionID: jm.sessionID, Target: "self", Slot: clearedWatchID})
+		jm.mu.Unlock()
+		req, fallback := prepare(t, sess)
+		if requestMessagesContainText(req.Messages, tickText) {
+			t.Fatal("a cleared timer's tick reached the provider on an unleased turn: the request boundary retired it after the history snapshot, so its resident turn was already in the projected slice")
+		}
+		if requestMessagesContainText(fallback, tickText) {
+			t.Fatal("the fallback source carried a cleared timer's tick: a later provider in the chain would see it")
+		}
+		if pending, err := sess.pendingDelegateAttentionIDs(); err != nil || len(pending) != 0 {
+			t.Fatalf("the cleared tick is still pending after the request boundary (pending=%v, err=%v): retiring it is what makes it safe to project the history that no longer holds it", pending, err)
+		}
+		if !requestMessagesContainText(req.Messages, priorText) {
+			t.Fatal("the request lost its conversation history while dropping the cleared tick")
+		}
+	})
+
 	t.Run("ordinary continuation still plans a delta", func(t *testing.T) {
 		t.Parallel()
 		sess := newContinuationSession(t)
