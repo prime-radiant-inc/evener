@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/hooks"
@@ -395,6 +396,16 @@ func (s *Session) emitDiagnosticWarning(data events.WarningData) {
 	s.sendEvent(data, s.activeCausalProvenance())
 }
 
+// emitDiagnosticWarningContext is emitDiagnosticWarning on a caller's bound. A
+// nil bound is the session's ordinary publication path, unchanged: no caller
+// deadline, so the send observes whatever close budget is current when it sends.
+func (s *Session) emitDiagnosticWarningContext(ctx context.Context, data events.WarningData) {
+	if s == nil || s.events == nil {
+		return
+	}
+	s.sendEventOnContext(ctx, data, s.activeCausalProvenance())
+}
+
 // sendEvent enriches and delivers data on the event stream, stamping the given
 // causal provenance onto the envelope, and returns the enriched payload alongside
 // the delivered envelope. Summary failure metadata is also retained in the
@@ -407,6 +418,66 @@ func (s *Session) emitDiagnosticWarning(data events.WarningData) {
 func (s *Session) sendEvent(data events.EventData, p *provenance.Causal) (events.EventData, events.SessionEvent) {
 	data, ev, _ := s.sendEventContext(context.Background(), data, p)
 	return data, ev
+}
+
+// sendEventOnContext delivers on a caller's bound, which bounds the send in
+// addition to whatever close budget the session has published.
+func (s *Session) sendEventOnContext(ctx context.Context, data events.EventData, p *provenance.Causal) (events.EventData, events.SessionEvent) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	data, ev, _ := s.sendEventContext(ctx, data, p)
+	return data, ev
+}
+
+// noBound is the explicit "no caller supplied a stall budget" value for the
+// publication path. It is a real context rather than nil so a caller that has no
+// bound and a caller that forgot to pass one are distinguishable at the seam
+// that decides whether a send may be dropped.
+var noBound context.Context = unboundedContext{}
+
+type unboundedContext struct{}
+
+func (unboundedContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (unboundedContext) Done() <-chan struct{}       { return nil }
+func (unboundedContext) Err() error                  { return nil }
+func (unboundedContext) Value(key any) any           { return nil }
+
+// suppliedCallerBound reports whether bound is anything other than one of the
+// two encodings of "no bound": a nil context and noBound.
+func suppliedCallerBound(bound context.Context) bool {
+	return bound != nil && bound != noBound
+}
+
+// publicationBoundKey marks a hook dispatch whose lifecycle and output
+// publications are made on the bound carried in the context, rather than on the
+// session's own delivery path.
+//
+// It exists because the alternative -- applying every dispatch's context to
+// every hook event -- is the defect it replaces. A turn's cancellation is the
+// context an ordinary hook dispatch runs under, and an ordinary hook's
+// completion must reach the stream even when that turn is interrupted: the
+// completion is also recorded in the transcript, so dropping the live event
+// leaves a reloaded session showing a hook exit that live readers never saw.
+// The bound here is therefore supplied only by a caller that has one to impose
+// and knows what to do with the loss, which today is the delegate close drain.
+type publicationBoundKey struct{}
+
+// withPublicationBound marks ctx as a dispatch bound the publisher must honour.
+func withPublicationBound(ctx context.Context) context.Context {
+	return context.WithValue(ctx, publicationBoundKey{}, true)
+}
+
+// publicationBound reports the bound a lifecycle publication must use, and
+// whether the dispatcher supplied one at all.
+func publicationBound(ctx context.Context) (context.Context, bool) {
+	if !suppliedCallerBound(ctx) {
+		return nil, false
+	}
+	if bounded, _ := ctx.Value(publicationBoundKey{}).(bool); !bounded {
+		return nil, false
+	}
+	return ctx, true
 }
 
 // sendEventContext is the bounded variant used by shutdown's terminal
@@ -568,6 +639,150 @@ func (s *Session) SetDescendantEventFunc(f func(events.SessionEvent)) {
 	}
 }
 
+// ObserveCloseDrainPublication is the context-independent observation seam for a
+// bounded close publication: it sees the bound the send is made on, so a test can
+// assert WHICH deadline caps it instead of measuring how long the send took. Nil
+// in production, like ObserveCloseStopJoinBudget and for the same reason -- host
+// load can stretch any wall-clock ceiling, but the deadline a pass chose is exact.
+var ObserveCloseDrainPublication func(bound context.Context)
+
+// emitCloseDrainWarnings publishes the warnings a delegate close drain settled,
+// on the stop context that drain runs under. It is the closing session's whole
+// publication surface: a warning is news the owner would otherwise never see --
+// a delegate's result was lost -- and it costs one channel send. Nothing else
+// the drain settled is published here, because a closing session has no turn to
+// run a delivery in.
+//
+// The bound matters as much as the publication. When the root's authoritative
+// consumer is wedged, a send parks until something releases it; without this
+// context it would park until the close cascade's own deadline, spending the
+// half that teardown needs and leaving collectible isolation lanes on disk. The
+// stop bound releases the send early, dropping this one warning and leaving the
+// rest of the cascade intact.
+func (s *Session) emitCloseDrainWarnings(ctx context.Context, warnings []events.WarningData) {
+	if s == nil || s.events == nil {
+		return
+	}
+	// Recorded at the publication rather than at each caller: every bounded
+	// close publication ends up here, so this is the one place that can say
+	// which deadline actually capped the send.
+	if observe := ObserveCloseDrainPublication; observe != nil {
+		observe(ctx)
+	}
+	// The bound travels with the warning, not with the session. Every send this
+	// publication causes -- the warning itself, the Notification hook it fires,
+	// that hook's own lifecycle events and its output -- is made on the drain's
+	// context. Nothing else on the root is.
+	for _, warning := range warnings {
+		data, ev, delivered := s.sendEventContext(ctx, warning, s.activeCausalProvenance())
+		if !delivered && s.forwardsEventsToParent() {
+			// A resident delegate whose unread local channel is full still
+			// FORWARDS every event to its parent synchronously, and that parent is
+			// the authority this warning had to reach. Counting only the local
+			// channel send as delivery made this publisher treat a warning that
+			// already arrived as failed: it skipped the Notification hook and
+			// retained the warning, and the retry forwarded a SECOND copy to
+			// AppWire. A warning that reached the stream by either route is
+			// published, so the hook fires here and nothing is retained.
+			delivered = true
+		}
+		if !delivered {
+			// The bound expired before the warning reached the stream. The
+			// receipt that produced this warning is already abandoned and gone
+			// from the store, so no later reconciliation can settle it again:
+			// dropping it here is the loss this whole change exists to prevent.
+			// Retain it for one retry on the budget left after teardown.
+			s.retainUndeliveredCloseWarning(warning)
+			continue
+		}
+		if s.jobManager != nil {
+			// The bound, not the ordinary path: this flush runs on the drain's
+			// goroutine, synchronous with the warning that just filled the last
+			// slot, so on the ordinary path it would wait out the whole cascade.
+			s.jobManager.onSessionEventContext(ctx, ev)
+		}
+		message, title := warningHookMessage(data), warningHookTitle(data)
+		if !s.fireNotificationHookBounded(ctx, message, title) {
+			// The warning reached the stream, so it is delivered and must not be
+			// retained -- but its configured hook never STARTED, because the
+			// cutoff had expired by the time the dispatch was reached. The
+			// warning itself is what this drain exists to publish; a hook the
+			// cutoff declined is a known and stated limit of this change, not a
+			// second drop of the warning.
+		}
+	}
+}
+
+// forwardsEventsToParent reports whether this session forwards every event it
+// emits to its parent, which is how a resident delegate reaches the authoritative
+// stream when its own unread channel cannot take another event.
+//
+// The callback is read under the session mutex, the same way emitDelegateUpdate
+// reads it: installed at spawn, cleared at teardown. A close does not move it.
+func (s *Session) forwardsEventsToParent() bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	forward := s.descendantEvent
+	s.mu.Unlock()
+	return forward != nil
+}
+
+// retainUndeliveredCloseWarning holds a lost-result warning whose publication
+// expired, so retryCloseDrainWarnings can deliver it once on what the cascade
+// has left after the worktree removals have run.
+//
+// It is deliberately NOT a durable record. The warning names a receipt that is
+// already gone, so there is nothing to reconcile against later: the only chance
+// to report it is this close, and the only budget that can carry it is the
+// remainder the removals did not spend.
+func (s *Session) retainUndeliveredCloseWarning(warning events.WarningData) {
+	for {
+		current := s.closeDrainWarnings.Load()
+		next := append([]events.WarningData(nil), warning)
+		if current != nil {
+			next = append(append([]events.WarningData(nil), (*current)...), warning)
+		}
+		if s.closeDrainWarnings.CompareAndSwap(current, &next) {
+			return
+		}
+	}
+}
+
+// retryCloseDrainWarnings publishes the warnings whose first attempt expired, on
+// what is left of the close cascade. It runs after the worktree removals, because
+// the budget it spends must be budget the teardown no longer needs.
+//
+// The retry does NOT redispatch the Notification hook. A hook is a side effect a
+// user configured for the first publication, and running it again from the
+// close's tail would let a warning's own dispatch fail the shutdown it was
+// reported during.
+func (s *Session) retryCloseDrainWarnings(ctx context.Context) {
+	held := s.closeDrainWarnings.Swap(nil)
+	if held == nil || len(*held) == 0 {
+		return
+	}
+	for _, warning := range *held {
+		_, ev, delivered := s.sendEventContext(ctx, warning, s.activeCausalProvenance())
+		if !delivered && s.forwardsEventsToParent() {
+			// Same rule as the first attempt: the warning reached the parent's
+			// stream, so it is published and must not be dropped here.
+			delivered = true
+		}
+		if !delivered {
+			// Nothing is left to spend and no later pass can rebuild the receipt.
+			// This is the one case the close cannot report, and it is known and
+			// stated rather than silently assumed away: the cascade budget, not
+			// this warning, ran out.
+			continue
+		}
+		if s.jobManager != nil {
+			s.jobManager.onSessionEventContext(ctx, ev)
+		}
+	}
+}
+
 // fireNotificationHook runs the Notification hook for a genuine, model-facing
 // warning. It carries no re-entrancy guard, and deliberately so: a warning→hook→
 // warning recursion is structurally impossible because nothing inside a
@@ -600,6 +815,50 @@ func (s *Session) SetDescendantEventFunc(f func(events.SessionEvent)) {
 // exhausted deadline of either kind declines the hook rather than launching one
 // nothing is left to wait for.
 func (s *Session) fireNotificationHook(message, title string) {
+	ctx := s.notificationHookBaseContext()
+	if ctx.Err() != nil {
+		return
+	}
+	s.runNotificationHook(ctx, message, title)
+}
+
+// fireNotificationHookBounded is fireNotificationHook for a caller that carries
+// its own bound, which stays in force on top of the session's: the delegate
+// close drain publishes on the stop context, and a Notification hook launched
+// there must not outlive it. It reports whether the dispatch STARTED, so the
+// caller can hold the dispatch for the close-time retry when the cutoff had
+// already expired.
+func (s *Session) fireNotificationHookBounded(ctx context.Context, message, title string) bool {
+	base := s.notificationHookBaseContext()
+	if base.Err() != nil {
+		return false
+	}
+	if ctx == nil {
+		ctx = base
+	}
+	bounded, cancel := context.WithCancel(ctx)
+	defer cancel()
+	// The hook ends at whichever bound expires first: the caller's, the
+	// session's lifetime, or a published close budget.
+	stop := context.AfterFunc(base, cancel)
+	defer stop()
+	if bounded.Err() != nil {
+		return false
+	}
+	// Marked so the runner's lifecycle publisher, and the output publication
+	// inside runNotificationHook, honour this bound instead of the session's
+	// delivery path: the drain is waiting on this hook, so an unresponsive
+	// consumer must release it at the stop deadline. Unmarked dispatches -- every
+	// ordinary hook -- are unaffected.
+	s.runNotificationHook(withPublicationBound(bounded), message, title)
+	return true
+}
+
+// notificationHookBaseContext is the Notification hook's own bound: the
+// session's lifetime, superseded by a close budget once one is published. A
+// hook already running when shutdown starts is interrupted by the same
+// cancellation instead of holding the shutdown budget for its full timeout.
+func (s *Session) notificationHookBaseContext() context.Context {
 	ctx := s.sessionContext()
 	s.closeCtxMu.RLock()
 	closeCtx := s.closeCtx
@@ -607,10 +866,7 @@ func (s *Session) fireNotificationHook(message, title string) {
 	if closeCtx != nil {
 		ctx = closeCtx
 	}
-	if ctx.Err() != nil {
-		return
-	}
-	s.runNotificationHook(ctx, message, title)
+	return ctx
 }
 
 // warningData is the warning payload an event carries, and whether it carries
@@ -655,6 +911,24 @@ func (s *Session) runNotificationHook(ctx context.Context, message, title string
 	if s.hookRunner == nil {
 		return
 	}
+	// The hook's OUTPUT publication is scoped to a caller that supplied a bound.
+	// A bound is a publication deadline handed in by a caller that has a stall
+	// budget of its own -- the delegate close drain is the only one. Every other
+	// dispatcher passes a context that merely tracks the session, and reusing
+	// that one as the publication bound turned a canceled session context into a
+	// delivery deadline: an ordinary hook finishing as Close cancels the session
+	// dropped its user message off a full buffer at once, even though the
+	// consumer frees a slot inside the close window the event was entitled to.
+	//
+	// An unmarked dispatch therefore publishes on NIL, which sendEventContext
+	// reads as "the session's own publication path": no caller deadline, so each
+	// send observes whatever close budget is current AT THE MOMENT IT SENDS.
+	// One assignment, because publicationBound already answers both questions:
+	// it returns the bound when the dispatcher marked one, and nil -- the
+	// session's own publication path -- when none exists. The nil is load-bearing:
+	// an unmarked dispatch must not inherit a captured lifetime as its delivery
+	// deadline.
+	output, _ := publicationBound(ctx)
 	input := s.hookInput(plugin.HookNotification)
 	input.Message = message
 	input.Reason = message
@@ -663,11 +937,11 @@ func (s *Session) runNotificationHook(ctx context.Context, message, title string
 	result := s.hookRunner.RunNotification(s.apiLogContext(ctx), input)
 	for _, m := range result.ModelContext {
 		if err := s.deliverHookContext(m); err != nil {
-			s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("steering admission failed: %v", err)})
+			s.emitDiagnosticWarningContext(output, events.WarningData{Message: fmt.Sprintf("steering admission failed: %v", err)})
 		}
 	}
 	for _, m := range result.UserMessages {
-		s.deliverHookUserMessage(m)
+		s.deliverHookUserMessageContext(output, m)
 	}
 }
 

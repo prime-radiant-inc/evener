@@ -549,6 +549,13 @@ type Session struct {
 
 	reg *tool.Registry
 
+	// closeDrainWarnings holds the lost-result warnings a close drain settled
+	// whose bounded publication expired before they reached the stream
+	// (session_events.go). The receipts behind them are already abandoned, so
+	// these cannot be re-settled: the close gets one retry on the budget left
+	// after the worktree removals, and this is the only place they survive.
+	closeDrainWarnings atomic.Pointer[[]events.WarningData]
+
 	steeringQueue []steeringMessage
 	// steeringInFlight holds the client steers popSteeringHead has taken out of
 	// steeringQueue whose incorporation the store has not yet recorded

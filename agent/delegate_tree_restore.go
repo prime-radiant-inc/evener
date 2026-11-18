@@ -358,7 +358,14 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 		}
 	}
 	if deliveryErr != nil {
-		return delegateMutationPlans{}, deliveryErr
+		// The delivery acknowledgments failed, but the warnings this pass already
+		// settled are not part of that failure. Each one names a receipt that was
+		// abandoned during this pass and cannot be settled again, so returning
+		// empty plans here would erase the only record of a lost result. Hand the
+		// warnings back with the error: the drain publishes them before it
+		// returns, and every caller that would execute plans returns on the
+		// error instead.
+		return delegateMutationPlans{warnings: deliveryPlans.warnings}, deliveryErr
 	}
 	plans.updates = append(plans.updates, deliveryPlans.updates...)
 	plans.deliveries = append(plans.deliveries, deliveryPlans.deliveries...)
@@ -419,7 +426,17 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 			RequestSeq: stop.requestSeq,
 		},
 	}); err != nil {
-		return delegateMutationPlans{}, err
+		// The plans are returned WITH the error, not instead of it. A lost result
+		// is discovered by removing the receipt that can no longer be answered,
+		// so the warning that records it exists only in this pass: the receipt is
+		// gone from memory and no later pass can settle it again. Returning empty
+		// plans here would make the one fact worth reporting depend on a journal
+		// append that just failed.
+		//
+		// Callers that execute plans return on error and discard them, so nothing
+		// here is delivered twice; the close drain publishes the warnings before
+		// it returns this error.
+		return plans, err
 	}
 	close(stop.done)
 	c.stop = nil

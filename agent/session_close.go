@@ -258,14 +258,11 @@ func (s *Session) closeTerminal(ctx context.Context, options closeOptions) {
 	// delegate tree. Persist and join recursive stop before generic Session
 	// teardown can close a child out from under that durable operation. The
 	// store stays open until worktree disposal has recorded its evidence.
-	if err := s.closeOwnedDelegateRuntimeTree(budgetCtx); err != nil {
-		s.warnIncompleteClose("delegate tree", err)
+	if failed := s.closeDelegateRuntimeTree(budgetCtx); failed {
 		// A hopeless stop has already consumed its dedicated half of the
 		// cascade budget. Do not spend the remaining half joining the same
 		// wedged child again through its generic Session.Close path.
-		if errors.Is(err, context.DeadlineExceeded) {
-			cancelBudget()
-		}
+		cancelBudget()
 	}
 
 	// Reacquire the pair and drain the subagent map. Marking closing BEFORE
@@ -324,6 +321,12 @@ func (s *Session) closeTerminal(ctx context.Context, options closeOptions) {
 	// mark is a durable append); it closes below.
 	s.disposeLaneResidueAtClose(budgetCtx)
 	s.unlockOwnManagedWorktreeAtClose(budgetCtx)
+	// A lost-result warning whose bounded publication expired is retried here,
+	// on what is left of the cascade, now that the removals it was competing
+	// with have run. Its receipt is gone from the store, so this close is the
+	// last chance to report it and the budget it may spend is what the removals
+	// above did not need.
+	s.retryCloseDrainWarnings(budgetCtx)
 
 	if s.jobManager != nil {
 		jobManagerCloseErr = errors.Join(jobManagerCloseErr, s.jobManager.closeStoreOnly())
@@ -534,10 +537,64 @@ func (s *Session) joinInFlightDisposeAndEnvWork(budgetCtx context.Context) {
 }
 
 // warnIncompleteClose warns that a teardown step left something open.
+//
+// It publishes on emit, the ordinary path, which is right for every caller that
+// runs AFTER the worktree removals: by then the cascade's remaining budget has
+// no other claimant, and a send parked on a stalled consumer can spend what is
+// left without starving anything.
 func (s *Session) warnIncompleteClose(what string, err error) {
 	if err != nil {
 		s.emit(events.WarningData{Message: fmt.Sprintf("%s close incomplete: %v", what, err)})
 	}
+}
+
+// closeDelegateRuntimeTree stops and joins the root's delegate tree, and reports
+// whether the stop failed with a spent cascade budget.
+//
+// The warning for a plain failure is published HERE rather than at the caller so
+// the one place that decides how it is published is the one place that also knows
+// why: this runs BEFORE the worktree removals, and a warning published on the
+// ordinary path can park on the whole cascade behind a stalled authoritative
+// consumer -- leaving collectible lanes on disk because the stop's news took the
+// budget their removal needed. The failure is still reported, on the cascade's
+// publication cutoff, with an undelivered warning retained for the post-removal
+// retry. A caller that has no bound to give (a direct close helper in a test, an
+// ordinary teardown) still reaches warnIncompleteClose and keeps today's
+// behavior exactly.
+func (s *Session) closeDelegateRuntimeTree(ctx context.Context) bool {
+	err := s.closeOwnedDelegateRuntimeTree(ctx)
+	if err == nil {
+		return false
+	}
+	if suppliedCallerBound(ctx) {
+		s.warnIncompleteCloseBeforeDisposal(ctx, "delegate tree", err)
+	} else {
+		s.warnIncompleteClose("delegate tree", err)
+	}
+	return errors.Is(err, context.DeadlineExceeded)
+}
+
+// warnIncompleteCloseBeforeDisposal is warnIncompleteClose for a teardown step
+// that runs BEFORE the worktree removals, where a synchronous send on the full
+// cascade is a deadline the removals then do not have.
+//
+// The delegate-tree close is the one such caller, and the drain inside it may
+// have just taken the last slot in a full authoritative stream with a
+// lost-result warning. The failure that follows is news -- a close that could
+// not stop its tree -- but publishing it must not cost the budget that collects
+// the isolatable lanes. So the first attempt is bounded by the cascade's shared
+// publication cutoff, the same one every other close publication uses, and an
+// undelivered warning is retained for retryCloseDrainWarnings to deliver once on
+// what the removals did not need. A consumer that resumes inside the window
+// still receives it, which is the guarantee the warning exists for.
+func (s *Session) warnIncompleteCloseBeforeDisposal(ctx context.Context, what string, err error) {
+	if err == nil {
+		return
+	}
+	warning := events.WarningData{Message: fmt.Sprintf("%s close incomplete: %v", what, err)}
+	publishCtx, cancelPublish := closeCascadePublicationContext(ctx)
+	defer cancelPublish()
+	s.emitCloseDrainWarnings(publishCtx, []events.WarningData{warning})
 }
 
 // closeOwnedArtifactStore closes the root-owned artifact store after

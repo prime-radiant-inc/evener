@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 )
 
@@ -792,11 +793,69 @@ func (c *delegateTreeController) stopForResult(result delegateStopResult) *deleg
 }
 
 func (c *delegateTreeController) drainStopForClose(ctx context.Context, stop *delegateStopState) error {
-	return c.drainStop(ctx, stop, nil)
+	// The close drain runs the same reconciliation as the stop driver and
+	// publishes through the same root runtime, which outlives the drain, but it
+	// publishes WARNINGS AND NOTHING ELSE. A closing session still has a reader
+	// for a lost result -- the notice it most needs, since the result is gone and
+	// the session is about to stop being where its owner would look -- and no
+	// turn to deliver into. Two consequences the mode exists to pin:
+	//
+	//   - It never executes a delivery plan. Acknowledging one receipt here
+	//     replans every other pending delivery its owner holds; running that
+	//     replay against a session that refuses turns fails, and the failure
+	//     would end a close the journal was otherwise able to finish. Each
+	//     subtree's own reconciliation settles the receipts it tracks.
+	//   - It is bounded by ctx, the stop's own half of the cascade, including the
+	//     notification hook. Waiting out the whole cascade to tell a delegate
+	//     something spends the budget teardown needs and leaves collectible
+	//     worktrees on disk.
+	//
+	// Neither one lets another subsystem's failure become a failure to stop a
+	// subtree.
+	c.mu.Lock()
+	root := c.rootRuntime
+	c.mu.Unlock()
+	return c.drainStopAbandonable(ctx, stop, root, nil, true)
 }
 
+// drainStop is the ordinary stop drain: the same reconciliation as the close
+// drain, executing every plan the pass settled, with no abandon signal and no
+// warnings-only mode. It is main's seam, and it stays even though the close
+// drain now reaches drainStopAbandonable directly to express warningsOnly:
+// eight callers across four files drive the ordinary drain through it, and the
+// close drain cannot use it because it needs a mode this signature cannot name.
 func (c *delegateTreeController) drainStop(ctx context.Context, stop *delegateStopState, root *Session) error {
-	return c.drainStopAbandonable(ctx, stop, root, nil)
+	return c.drainStopAbandonable(ctx, stop, root, nil, false)
+}
+
+// publishDrainWarnings publishes the warnings a stop pass settled, on the path
+// that caller owns.
+//
+// The two callers have different obligations and must not share one publisher:
+//
+//   - The ordinary stop driver (warningsOnly false) publishes on emit, the
+//     session's ordinary path. That path fires the configured Notification hook
+//     independently of whether the channel accepted the event, which is the
+//     guarantee a full best-effort buffer must not remove.
+//   - The close drain (warningsOnly true) publishes on emitCloseDrainWarnings,
+//     which is bounded by the drain's stop context and retains an undelivered
+//     warning for one retry on what the cascade has left after the removals.
+//     That retry deliberately does NOT redispatch the hook.
+//
+// Neither path can run the hook twice: the ordinary path retains nothing, so
+// the close-time retry never sees it, and the close path's retry publishes only
+// the channel event.
+func (s *Session) publishDrainWarnings(ctx context.Context, warningsOnly bool, warnings []events.WarningData) {
+	if s == nil || len(warnings) == 0 {
+		return
+	}
+	if warningsOnly {
+		s.emitCloseDrainWarnings(ctx, warnings)
+		return
+	}
+	for _, warning := range warnings {
+		s.emit(warning)
+	}
 }
 
 // drainStopAbandonable is drainStop plus an optional abandon signal. The stop
@@ -806,10 +865,27 @@ func (c *delegateTreeController) drainStop(ctx context.Context, stop *delegateSt
 // keep reconciling even after their budget is cancelled, which the stop's final
 // reconciliation relies on, and only the wait at the loop's foot observes their
 // context.
-func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop *delegateStopState, root *Session, abandon <-chan struct{}) error {
+//
+// warningsOnly publishes the pass's warnings to root and withholds every other
+// plan it settled. The close drain sets it: a closing root can still record a
+// warning, but executing a delivery there would run a replay against a session
+// that is refusing turns, and an error from that replay would abort a close the
+// journal was otherwise able to complete.
+func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop *delegateStopState, root *Session, abandon <-chan struct{}, warningsOnly bool) error {
 	if stop == nil {
 		return nil
 	}
+	// Nothing this pass causes may reach the full close budget: the drain is on
+	// the close-join critical path, so a wake warning or a closure announcement
+	// parked on the session's own delivery path spends the budget reserved for
+	// leaving collectible worktrees on disk.
+	//
+	// The bound is PASSED to each Reconcile, not installed on the controller.
+	// The controller is shared with the live root, so a bound installed here
+	// applied to every delegate publication for as long as this drain ran: an
+	// unrelated sibling finishing in that window had its update and activity
+	// suppressed by this pass's deadline. A bound belongs to the pass that
+	// supplied it.
 	// Each Reconcile hands back a retirement-mutation lease, and the drain
 	// deliberately holds every one until it returns. Collect them and release
 	// all on return — LIFO, as the per-iteration defers did — rather than
@@ -820,6 +896,32 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 			retirementRelease()
 		}
 	}()
+	// ONE publication decision for both callers, and one budget for the close
+	// side. Mediums 2 and 3 of review 53025's successor are the same mistake at
+	// two points of this entry, so they are answered here rather than at each
+	// publish site.
+	//
+	// M2 -- the ordinary stop driver must keep the guarantee the ordinary path
+	// had. Routing its warnings through emitCloseDrainWarnings made the hook a
+	// CONSEQUENCE of channel delivery: that helper retains an undelivered
+	// warning and publishes the hook only when the send lands, so a full
+	// best-effort buffer converted a notification that used to arrive into one
+	// that silently did not. publishDrainWarnings keeps the ordinary path on
+	// emit, which dispatches the hook independently of delivery and retains
+	// nothing -- so the close-time retry can never deliver it twice.
+	//
+	// M3 -- a close-driven drain must not reserve a fresh slice per subtree.
+	// Each top-level subtree gets its own stop context, and passing that to the
+	// warning sends let every otherwise-complete stop spend another slice of the
+	// cascade against a full stream. The publications are capped at the
+	// cascade's SHARED absolute cutoff instead; the stop context still governs
+	// reconciliation, which is a join, not a publication.
+	pubCtx := ctx
+	if warningsOnly {
+		capped, cancelCapped := closeCascadePublicationContext(ctx)
+		defer cancelCapped()
+		pubCtx = capped
+	}
 	for {
 		select {
 		case <-stop.done:
@@ -853,8 +955,23 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 				}
 				continue
 			}
+			// A warning the pass settled is published even when the pass
+			// failed: the receipt that produced it is gone from the store,
+			// so no later pass can settle it again.
+			if root != nil {
+				root.publishDrainWarnings(pubCtx, warningsOnly, plans.warnings)
+			}
 			return err
 		}
+		// Publication comes before any plan runs. A warning this pass settled
+		// names a receipt that was abandoned during the pass and cannot be
+		// settled again, so a repair or cleanup that fails below must not carry
+		// it out of the drain unpublished. Publishing first also keeps the
+		// warning off the plan-execution path: it is news, not an effect.
+		if root != nil {
+			root.publishDrainWarnings(pubCtx, warningsOnly, plans.warnings)
+		}
+		plans.warnings = nil
 		for _, plan := range plans.shellRepairs {
 			if err := executeDelegateShellRepair(plan, c.now()); err != nil {
 				return err
@@ -868,7 +985,15 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 				return err
 			}
 		}
-		if root != nil {
+		if warningsOnly {
+			// The plans withheld here own delivery claims, and a claimed
+			// delivery is never re-planned. Give the claims back so each
+			// subtree's reconciliation, or a later store re-plan, can pick
+			// the deliveries up.
+			c.mu.Lock()
+			c.dropDeliveryPlanClaimsLocked(plans)
+			c.mu.Unlock()
+		} else if root != nil {
 			rootPlans := plans
 			rootPlans.attention = nil
 			if err := root.executeDelegateMutationPlans(rootPlans); err != nil {
@@ -890,7 +1015,7 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 }
 
 func (c *delegateTreeController) runStopReconcileDriver(stop *delegateStopState, driver *delegateStopDriver, root *Session) {
-	err := c.drainStopAbandonable(driver.ctx, stop, root, driver.ctx.Done())
+	err := c.drainStopAbandonable(driver.ctx, stop, root, driver.ctx.Done(), false)
 	c.mu.Lock()
 	driver.err = err
 	close(driver.done)
