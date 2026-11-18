@@ -683,20 +683,343 @@ func TestLegacyGroupSharingAStampedIDKeepsItsOwnItems(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ItemTurnsFromFile: %v", err)
 	}
-	var texts []string
+	// The defect this covers dropped the legacy group's item and emitted the
+	// stamped run twice. Both are structural facts, so the check is structure:
+	// the turns in order, and the item identity each source entry produced,
+	// counted rather than compared as prose. The userMessage items carry the
+	// two questions and the hook completion is the systemMessage between them.
+	var shapes []string
 	for _, turn := range turns {
+		shapes = append(shapes, turn.ID)
+	}
+	// The legacy group, the hook, and the stamped execution are three turns,
+	// and the legacy one comes first because the file puts it first.
+	if len(shapes) < 3 {
+		t.Fatalf("full read turn ids = %v, want the legacy group, the hook and the stamped execution", shapes)
+	}
+	var legacyUser, stampedUser, hooks int
+	for at, turn := range turns {
 		for _, item := range turn.Items {
-			if item.Text != "" {
-				texts = append(texts, item.Text)
+			switch item.Type {
+			case "userMessage":
+				// The legacy group is the turn that precedes the hook, so it is
+				// the first turn carrying a userMessage; the stamped execution
+				// is the later one.
+				if at == 0 {
+					legacyUser++
+				} else {
+					stampedUser++
+				}
+			case "systemMessage":
+				if item.EventKind == appwire.ThreadItemEventKindHookCompleted {
+					hooks++
+				}
 			}
 		}
 	}
-	// Every item the transcript holds appears exactly once: the legacy
-	// question, the hook between the groups, and the stamped question. The
-	// defect this covers dropped the legacy item and emitted the stamped one
-	// twice, so the count and the presence of the legacy text are the check.
-	want := []string{"legacy question", "hook ran", "stamped question"}
-	if !reflect.DeepEqual(texts, want) {
-		t.Errorf("full read item texts = %v, want %v: a legacy group is not a run of the stamped execution", texts, want)
+	// Each source entry's item appears exactly ONCE. The regression emitted the
+	// stamped question twice and dropped the legacy one, which this count sees
+	// without reading the text.
+	if legacyUser != 1 {
+		t.Errorf("legacy userMessage items = %d, want 1: the legacy group is not a run of the stamped execution", legacyUser)
+	}
+	if stampedUser != 1 {
+		t.Errorf("stamped userMessage items = %d, want 1: the stamped run is emitted once", stampedUser)
+	}
+	if hooks != 1 {
+		t.Errorf("hook completion items = %d, want 1", hooks)
+	}
+}
+
+// TestInterruptedCompletionInterruptsItsCall covers a crash that recovery
+// closed with an interrupted completion while a tool call was still awaiting a
+// result. The completion record projects no item, but it decides the state the
+// execution ended in: the turn is interrupted AND the unanswered call is
+// interrupted. Deriving status from the remaining entries instead reported the
+// turn completed while the call still read in progress, which is the pair a
+// client reads to decide whether to keep waiting (#1166 review).
+func TestInterruptedCompletionInterruptsItsCall(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "crash_recovered"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := func(turn schema.Turn, place transcript.Placement) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: place}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	tc := llm.ToolCallData{ID: "call_crashed", Name: "read_file", Arguments: json.RawMessage(`{"path":"a"}`)}
+	w.BeginExecution("t_crash", false)
+	record(schema.NewTurn(schema.TurnUserInput, llm.User("go")), transcript.PlaceSession)
+	record(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &tc}}}}, transcript.PlaceSession)
+	// The process died here: no result was ever recorded for call_crashed.
+	record(schema.Turn{Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnInterrupted}}, transcript.PlaceCompletion)
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	var turn *appwire.Turn
+	for i := range turns {
+		if turns[i].ID == "t_crash" {
+			turn = &turns[i]
+		}
+	}
+	if turn == nil {
+		t.Fatalf("full read turns = %+v, want the crashed execution", shapesFromTurns(turns))
+	}
+	if turn.Status != appwire.TurnStatusInterrupted {
+		t.Errorf("execution status = %q, want %q: the completion record says it was interrupted",
+			turn.Status, appwire.TurnStatusInterrupted)
+	}
+	var call *appwire.ThreadItem
+	for i := range turn.Items {
+		if turn.Items[i].CallID == "call_crashed" {
+			call = &turn.Items[i]
+		}
+	}
+	if call == nil {
+		t.Fatalf("execution items = %+v, want the unanswered call", turn.Items)
+	}
+	if call.Status != appwire.TurnStatusInterrupted {
+		t.Errorf("unanswered call status = %q, want %q: nothing else was coming for it",
+			call.Status, appwire.TurnStatusInterrupted)
+	}
+}
+
+// TestDeliveryBeforePreludeMarksTheHeaderAsAFragment covers an OLDER transcript
+// the current writer can no longer produce: a header prompt, a standalone
+// attention delivery, then the first entry stamped `turn_system`. The header
+// cannot merge into that later run without putting position 0 after the
+// delivery, so it is emitted first — but it is not a complete turn. Marked
+// full, it advertised a turn the index keeps open, and a client keyed by turn
+// id saw two `turn_system` turns where the index reports parts of one
+// (#1166 review).
+func TestDeliveryBeforePreludeMarksTheHeaderAsAFragment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "old_prelude", SystemPrompt: "header prompt"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := func(turn schema.Turn) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceVerbatim}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	stamp := func(turn schema.Turn, id string, span schema.TurnSpanKind) schema.Turn {
+		turn.Format = schema.TurnFormatIdentity
+		turn.TurnID = id
+		turn.TurnKind = span
+		return turn
+	}
+	record(stamp(schema.NewTurn(schema.TurnSteering, llm.User("attention")), "turn_delivery", schema.TurnSpanDelivery))
+	record(stamp(newHookTurn("SessionStart"), appwire.SystemPreludeTurnID, schema.TurnSpanPrelude))
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	var runs []appwire.Turn
+	for _, turn := range turns {
+		if turn.ID == appwire.SystemPreludeTurnID {
+			runs = append(runs, turn)
+		}
+	}
+	if len(runs) == 0 {
+		t.Fatalf("full read turns = %+v, want the header and the stamped prelude", shapesFromTurns(turns))
+	}
+	// The turn id must name ONE turn's fragments, not two complete turns: every
+	// run of the prelude is a fragment, the first says the turn goes on, and
+	// each later one says it started earlier.
+	for at, run := range runs {
+		if run.ItemsView != appwire.TurnItemsViewFragment {
+			t.Errorf("prelude run %d ItemsView = %q, want %q: one id must not name two complete turns",
+				at, run.ItemsView, appwire.TurnItemsViewFragment)
+		}
+		if at == 0 && !run.HasLaterItems {
+			t.Errorf("prelude run %d HasLaterItems = false, want true: the turn continues", at)
+		}
+		if at > 0 && !run.HasEarlierItems {
+			t.Errorf("prelude run %d HasEarlierItems = false, want true: the prompt came first", at)
+		}
+	}
+	// Chronology is what item paging validates: position 0 must be first.
+	if got := turns[0].ID; got != appwire.SystemPreludeTurnID {
+		// The delivery opens the file, and an itemless delivery projects no
+		// turn, so the first emitted turn is the header at position 0.
+		t.Errorf("first emitted turn = %q, want the header at position 0", got)
+	}
+	if err := appitempaging.ValidateCandidates(indexCandidates(t, path)); err != nil {
+		t.Errorf("bounded index candidates rejected: %v", err)
+	}
+}
+
+// TestAdjacentLegacyGroupDoesNotAbsorbAStampedExecution covers a legacy group
+// immediately followed by a stamped execution with the same id, with no hook
+// between them. Joining on the id alone appended the stamped entry to the
+// legacy group, whose `stamped` flag stayed false — so the execution fell back
+// to the legacy call-id merge and a reused call id collapsed two announcements
+// into one. The index gives the stamped opener its own summary (#1166 review).
+func TestAdjacentLegacyGroupDoesNotAbsorbAStampedExecution(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "adjacent_shapes"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := func(turn schema.Turn) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceVerbatim}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	stamp := func(turn schema.Turn, id string, span schema.TurnSpanKind) schema.Turn {
+		turn.Format = schema.TurnFormatIdentity
+		turn.TurnID = id
+		turn.TurnKind = span
+		return turn
+	}
+	// A legacy user turn, then the stamped execution reusing its id ADJACENTLY.
+	legacy := schema.NewTurn(schema.TurnUserInput, llm.User("legacy question"))
+	legacy.StableTurnID = "turn_shared"
+	record(legacy)
+	record(stamp(schema.NewTurn(schema.TurnUserInput, llm.User("stamped question")), "turn_shared", schema.TurnSpanExecution))
+	// Two rounds of the same execution reusing one call id, with a result for
+	// each. Only the stamped path keeps both announcements.
+	call := func(args string) schema.Turn {
+		tc := llm.ToolCallData{ID: "call_s", Name: "read_file", Arguments: json.RawMessage(args)}
+		return stamp(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &tc}}}}, "turn_shared", schema.TurnSpanExecution)
+	}
+	record(call(`{"round":1}`))
+	record(stamp(schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call_s", "read_file", "first-out", false)), "turn_shared", schema.TurnSpanExecution))
+	record(call(`{"round":2}`))
+	record(stamp(schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call_s", "read_file", "second-out", false)), "turn_shared", schema.TurnSpanExecution))
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// The index keeps both announcements: that is the reference.
+	wantRounds := []string{`{"round":1}`, `{"round":2}`}
+	var indexed []string
+	for _, candidate := range indexCandidates(t, path) {
+		if candidate.Item.CallID == "call_s" && candidate.Item.Type == "commandExecution" {
+			indexed = append(indexed, candidate.Item.ArgumentsJSON)
+		}
+	}
+	if !reflect.DeepEqual(indexed, wantRounds) {
+		t.Fatalf("index call arguments = %v, want %v", indexed, wantRounds)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	var full []string
+	for _, turn := range turns {
+		for _, item := range turn.Items {
+			if item.CallID == "call_s" && item.Type == "commandExecution" {
+				full = append(full, item.ArgumentsJSON)
+			}
+		}
+	}
+	// The stamped execution keeps BOTH announcements, as the index does. A
+	// legacy group that absorbed it would merge them by call id and lose one.
+	if !reflect.DeepEqual(full, wantRounds) {
+		t.Errorf("full read call arguments = %v, want %v: a stamped execution keeps its own settlement rules", full, wantRounds)
+	}
+	// And the legacy turn keeps its own item.
+	found := false
+	for _, turn := range turns {
+		if turn.ID != "turn_shared" {
+			continue
+		}
+		for _, item := range turn.Items {
+			if item.Type == "userMessage" && item.Text != "" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Errorf("full read turns = %+v, want the legacy group to keep its item", shapesFromTurns(turns))
+	}
+}
+
+// TestItemlessDeliveryDoesNotSplitTheVisibleTurn covers an execution split by an
+// entry that projects no item. Its displayed items are adjacent, so it is ONE
+// turn: emitting two fragments carried continuation flags that promised items
+// nothing delivered, and a paging client asked for a page that holds nothing but
+// the same turn again (#1166 review).
+func TestItemlessDeliveryDoesNotSplitTheVisibleTurn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "itemless_split"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := func(turn schema.Turn) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceVerbatim}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	stamp := func(turn schema.Turn, id string, span schema.TurnSpanKind) schema.Turn {
+		turn.Format = schema.TurnFormatIdentity
+		turn.TurnID = id
+		turn.TurnKind = span
+		return turn
+	}
+	record(stamp(schema.NewTurn(schema.TurnUserInput, llm.User("go")), "t_exec", schema.TurnSpanExecution))
+	record(stamp(schema.NewTurn(schema.TurnAttentionResolution, llm.System("resolved")), "turn_delivery", schema.TurnSpanDelivery))
+	record(stamp(schema.NewTurn(schema.TurnAssistant, llm.Assistant("done")), "t_exec", schema.TurnSpanExecution))
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	var runs []appwire.Turn
+	for _, turn := range turns {
+		if turn.ID == "t_exec" {
+			runs = append(runs, turn)
+		}
+	}
+	if len(runs) != 1 {
+		t.Fatalf("execution turns = %+v, want ONE turn: its visible items are adjacent", shapesFromTurns(turns))
+	}
+	// The joined turn is complete: nothing precedes or follows it.
+	if runs[0].ItemsView != appwire.TurnItemsViewFull {
+		t.Errorf("execution ItemsView = %q, want %q: the delivery projected no item", runs[0].ItemsView, appwire.TurnItemsViewFull)
+	}
+	if runs[0].HasEarlierItems || runs[0].HasLaterItems {
+		t.Errorf("execution continuation flags earlier=%v later=%v, want both false",
+			runs[0].HasEarlierItems, runs[0].HasLaterItems)
+	}
+	if len(runs[0].Items) != 2 {
+		t.Errorf("execution items = %d, want both of its visible items", len(runs[0].Items))
 	}
 }

@@ -1,6 +1,8 @@
 package apptranscript
 
 import (
+	"sort"
+
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -118,6 +120,13 @@ type TurnGrouper struct {
 	Open bool
 	// TurnID is the latest group's turn id.
 	TurnID string
+	// Stamped reports whether the latest group was opened by an
+	// identity-format entry. A stamped entry joins a group by its id, but ONLY
+	// a group that is itself stamped: the index gives an identity entry its own
+	// summary regardless of the legacy group before it (build.go's
+	// applyIdentity resets the grouper), so an id shared with a legacy group
+	// must not make the two one turn (#1166 review).
+	Stamped bool
 }
 
 // Place reports the turn the entry belongs to and whether it starts a new
@@ -139,23 +148,23 @@ func (g *TurnGrouper) Place(entry *schema.Turn, entryIndex int) (turnID string, 
 		// while the index kept it in the turn its stamp names, so the two
 		// readers disagreed about a turn boundary on the same transcript
 		// (#1166).
-		if g.TurnID == entry.TurnID {
+		if g.TurnID == entry.TurnID && g.Stamped {
 			g.Open = false
 			return g.TurnID, false
 		}
-		g.TurnID, g.Open = entry.TurnID, false
+		g.TurnID, g.Open, g.Stamped = entry.TurnID, false, true
 		return g.TurnID, true
 	}
 	kind, owner := entry.Kind, entry.OwningTurnID
 	switch {
 	case opensLogicalTurn(kind, entry.GoalContinuation != nil):
-		g.TurnID, g.Open = persistedTurnID(*entry, entryIndex), true
+		g.TurnID, g.Open, g.Stamped = persistedTurnID(*entry, entryIndex), true, false
 		return g.TurnID, true
 	case kind == schema.TurnSteering && owner != "":
 		if g.Open && g.TurnID == owner {
 			return g.TurnID, false
 		}
-		g.TurnID, g.Open = owner, true
+		g.TurnID, g.Open, g.Stamped = owner, true, false
 		return g.TurnID, true
 	case continuesLogicalTurn(kind) && g.Open:
 		return g.TurnID, false
@@ -163,7 +172,7 @@ func (g *TurnGrouper) Place(entry *schema.Turn, entryIndex int) (turnID string, 
 		// Standalone kind, or a continuation with no open group: its own
 		// group. A standalone closes it; a stray continuation stays open for
 		// later continuations.
-		g.TurnID, g.Open = persistedTurnID(*entry, entryIndex), continuesLogicalTurn(kind)
+		g.TurnID, g.Open, g.Stamped = persistedTurnID(*entry, entryIndex), continuesLogicalTurn(kind), false
 		return g.TurnID, true
 	}
 }
@@ -215,6 +224,14 @@ func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, t
 		// Written for the history projection phase 3 introduces. Today's
 		// projection passes over it: it joins no group, closes none, and
 		// projects nothing, though its line still takes an entry index.
+		//
+		// A stamped completion or reopen is the exception, and only for its
+		// STATUS: it opens no group and projects no item, but it decides
+		// whether the execution it ends reads completed, failed or
+		// interrupted. Discarding it here derived status from the remaining
+		// entries instead, so a crash recovered as interrupted read completed
+		// while its unanswered call read still in progress (#1166 review).
+		acc.recordControl(turn, entryIndex)
 		return
 	}
 	if turn.OriginalOrdinal != nil {
@@ -235,6 +252,23 @@ func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, t
 		items = project(turn, turnID, entryIndex)
 	}
 	acc.appendEntry(turn, entryIndex, items)
+}
+
+// recordControl buffers a stamped completion or reopen record against the turn
+// whose state it changes. Records are appended in file order and the fold
+// replays them in that order, so a reopen after a failure clears it and the
+// next completion decides the state the turn actually ended in.
+func (a *logicalTurnAccumulator) recordControl(turn schema.Turn, entryIndex int) {
+	if turn.Format != schema.TurnFormatIdentity || turn.TurnID == "" {
+		return
+	}
+	if turn.Kind != schema.TurnCompletion && turn.Kind != schema.TurnReopen {
+		return
+	}
+	if a.controls == nil {
+		a.controls = map[string][]indexedTurn{}
+	}
+	a.controls[turn.TurnID] = append(a.controls[turn.TurnID], indexedTurn{index: entryIndex, turn: turn})
 }
 
 // groupedAppTurnProjection flushes the accumulator into AppWire turns under
@@ -300,6 +334,7 @@ func (ex *turnExecution) settle() {
 	}
 	ex.settled = true
 	ex.merged, ex.mergedRun, ex.mergedGrp = mergeExecutionItems(ex.items, ex.itemEntries, ex.itemAnnounce, ex.runOfItem, ex.groupOfItem)
+	ex.interruptAwaitedCalls()
 	seen := make(map[int]bool, len(ex.runs))
 	for _, group := range ex.mergedGrp {
 		if seen[group] {
@@ -308,6 +343,49 @@ func (ex *turnExecution) settle() {
 		seen[group] = true
 		ex.visible = append(ex.visible, group)
 	}
+}
+
+// interruptAwaitedCalls marks a call interrupted when the execution completed
+// without a result for it. The index does exactly this
+// (builder.interruptAwaitedCalls, applied to the completion record at
+// window.go's item projection): a completion is the execution's statement that
+// nothing else is coming, so a call still awaiting a result did not finish.
+// Without it a crash whose recovery wrote an interrupted completion reported
+// the turn interrupted and the call still in progress, which is the one thing
+// a client reads to decide whether to wait (#1166 review).
+//
+// Only unanswered CALLS change: a call that already has a result keeps the
+// status its result gave it, because a completion never retracts a recorded
+// outcome.
+func (ex *turnExecution) interruptAwaitedCalls() {
+	if !ex.hasCompletionControl() {
+		return
+	}
+	for at := range ex.merged {
+		item := &ex.merged[at]
+		if !MergesByCallID(*item) || item.CallID == "" {
+			continue
+		}
+		if item.Status == "" || item.Status == appwire.TurnStatusInProgress {
+			item.Status = appwire.TurnStatusInterrupted
+		}
+	}
+}
+
+// hasCompletionControl reports whether a completion record closed this
+// execution. A reopen alone reopens it, so it must not interrupt the calls of
+// a turn that is running again.
+func (ex *turnExecution) hasCompletionControl() bool {
+	completed := false
+	for _, control := range ex.controls {
+		switch control.turn.Kind {
+		case schema.TurnCompletion:
+			completed = true
+		case schema.TurnReopen:
+			completed = false
+		}
+	}
+	return completed
 }
 
 // itemsOfGroup returns the execution's settled items that belong to one group.
@@ -410,9 +488,35 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 	// which item paging rejects (#1166 review).
 	preludeEmitted := false
 	emittedAny := false
-	emitPrelude := func() {
+	// headerStandalone is true once the header has been emitted WITHOUT merging
+	// into a leading prelude run. It is then its own visible fragment of the
+	// prelude turn, and the runs after it must count it as one.
+	headerStandalone := false
+	// preludeRunFollows reports whether a stamped run of the prelude turn still
+	// follows the header in file order. When one does, the header and that run
+	// are two fragments of ONE turn, and the header must say so: emitted as a
+	// complete turn it claimed the prelude ended, so a client keyed by turn id
+	// saw two "turn_system" turns where the index keeps one (#1166 review).
+	preludeRunFollows := func(from int) bool {
+		for i := from; i < len(acc.turns); i++ {
+			if acc.turns[i].turnID == appwire.SystemPreludeTurnID && acc.turns[i].stamped {
+				return true
+			}
+		}
+		return false
+	}
+	emitPrelude := func(from int) {
 		if prelude == nil || preludeEmitted {
 			return
+		}
+		// The header is the FIRST visible fragment of the prelude turn whenever
+		// stamped prelude items survive later in the file. Continuation flags
+		// are what the bounded reader sets for the same shape, so a client
+		// paging one run cannot mistake it for the whole turn.
+		if preludeRunFollows(from) {
+			prelude.ItemsView = appwire.TurnItemsViewFragment
+			prelude.HasLaterItems = true
+			prelude.HasEarlierItems = false
 		}
 		turns = append(turns, *prelude)
 		preludeEmitted = true
@@ -421,14 +525,21 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 		group := &acc.turns[i]
 		groupOrdinal := entryOrdinal
 		entryOrdinal++
-		items := mergeGroupedItems(group.items, group.itemEntries, group.itemAnnounce, false)
 		var ex *turnExecution
+		var items []appwire.ThreadItem
 		if candidate := execs[group.turnID]; candidate != nil {
 			// Membership decides the path, never an id match: a legacy group
 			// that happens to carry a stamped turn's id is not one of its runs.
 			if membership, ok := candidate.itemsOfGroup(i); ok {
 				ex, items = candidate, membership
 			}
+		}
+		if ex == nil {
+			// Only a legacy group takes the call-id-wide merge. A stamped run's
+			// items are already settled against the whole execution, so
+			// merging them here computed a result the execution's own fold had
+			// superseded (#1166 review).
+			items = mergeGroupedItems(group.items, group.itemEntries, group.itemAnnounce, false)
 		}
 		if len(items) == 0 {
 			continue
@@ -466,7 +577,8 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 				turn.Items = append(merged, turn.Items...)
 				preludeEmitted = true
 			} else {
-				emitPrelude()
+				emitPrelude(i)
+				headerStandalone = true
 			}
 		}
 		// Every visible run of a split stamped turn is a FRAGMENT, and the
@@ -474,8 +586,18 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 		// run settlement emptied is not a boundary, so its neighbour must not
 		// claim a continuation it does not have (#1166 review). An independent
 		// legacy group keeps "full".
+		//
+		// A header emitted on its own is one of those visible fragments: the
+		// prompt and the stamped prelude items are ONE turn, so a run that
+		// follows the header has an earlier fragment even when it is the only
+		// stamped run of its id. Counting raw runs alone made it read "full"
+		// while the index kept the turn open (#1166 review).
 		if ex != nil {
 			_, visible, earlier, later := ex.boundary(i)
+			if headerStandalone && group.turnID == appwire.SystemPreludeTurnID {
+				visible++
+				earlier = true
+			}
 			if visible > 1 {
 				turn.ItemsView = appwire.TurnItemsViewFragment
 				turn.HasEarlierItems = earlier
@@ -496,7 +618,53 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 		turns = append([]appwire.Turn{*prelude}, turns...)
 		preludeEmitted = true
 	}
+	turns = coalesceAdjacentRuns(turns)
 	return ItemTurnProjection{Turns: turns, NextEntry: entryOrdinal}, nil
+}
+
+// coalesceAdjacentRuns joins consecutive emitted turns of one execution when
+// no visible item from another turn stands between them. An itemless entry
+// splits an execution's runs without splitting what a reader sees, so two
+// fragments whose items are adjacent are one fragment: they carry continuation
+// flags that promise earlier or later items nothing delivered, and the index
+// reports the execution's items as one turn (#1166 review).
+//
+// A turn whose id differs, or another turn's item in between, keeps the runs
+// apart — only runs that are adjacent in the OUTPUT are joined.
+func coalesceAdjacentRuns(turns []appwire.Turn) []appwire.Turn {
+	out := make([]appwire.Turn, 0, len(turns))
+	for _, turn := range turns {
+		if n := len(out); n > 0 {
+			prev := &out[n-1]
+			// Two fragments of one stamped turn, adjacent in the output, are
+			// one fragment. A legacy turn is never joined: its runs are
+			// independent groups even when they share an id.
+			if prev.ID == turn.ID &&
+				prev.ItemsView == appwire.TurnItemsViewFragment &&
+				turn.ItemsView == appwire.TurnItemsViewFragment {
+				prev.Items = append(prev.Items, turn.Items...)
+				// The joined turn's earlier/later flags describe the execution's
+				// boundaries OUTSIDE the runs being joined, so the first run's
+				// earlier flag and the last run's later flag are the only ones
+				// that survive. The interior flags are what the join removes.
+				prev.HasLaterItems = turn.HasLaterItems
+				continue
+			}
+		}
+		out = append(out, turn)
+	}
+	// A joined turn that is now the execution's only fragment is COMPLETE: it
+	// has nothing earlier or later, so the flags it carried no longer describe
+	// it.
+	for at := range out {
+		if out[at].ItemsView != appwire.TurnItemsViewFragment {
+			continue
+		}
+		if !out[at].HasEarlierItems && !out[at].HasLaterItems {
+			out[at].ItemsView = appwire.TurnItemsViewFull
+		}
+	}
+	return out
 }
 
 // stampExecutionControls applies a stamped execution's completion and reopen
@@ -507,7 +675,15 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 // recovered from (#1166 review). The failure itself stays in the transcript as
 // history; only the turn's current state changes.
 func stampExecutionControls(turn *appwire.Turn, controls []indexedTurn) {
-	for _, control := range controls {
+	// File order is the fold's contract: a reopen clears the state an earlier
+	// completion set, and only the position says which came first. The records
+	// are buffered in scan order already, so the sort is a guarantee rather
+	// than a fix — but the ORDER is what makes the result correct, so it is
+	// stated here instead of assumed from the caller.
+	ordered := make([]indexedTurn, len(controls))
+	copy(ordered, controls)
+	sort.SliceStable(ordered, func(i, j int) bool { return ordered[i].index < ordered[j].index })
+	for _, control := range ordered {
 		switch control.turn.Kind {
 		case schema.TurnReopen:
 			turn.Status = appwire.TurnStatusInProgress
