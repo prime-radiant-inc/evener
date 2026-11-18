@@ -9,6 +9,7 @@ import {
   formatRetryWait,
   formatSubagentCount,
   QUIET_THRESHOLD_MS,
+  quotaWaitFrom,
   type RetryWait,
 } from "./liveness";
 
@@ -317,14 +318,28 @@ test("describeLiveness: a live quota wait keeps its elapsed time beside the inst
   expect(snapshot.text).not.toContain(formatExactGap(0));
 });
 
-// The quota-wait label belongs to a pending countdown only. Once the wait is
-// over (the zero-delay wake went out, or the announced delay elapsed), the
-// line describes the resumed request as motion; a cause that says "waiting"
-// over a running call mislabels it twice over - and the wake may have been a
-// steer or a model switch, so the copy claims no reason for the wait ending.
-test("formatRetryWait: an in-progress quota retry reads as motion, never as the wait label", () => {
-  const waiting = formatRetryWait(
-    retryWait({ attempt: 1, attemptCap: 1, delayMs: 60 * 60_000, errorClass: "quota_exceeded" }),
+// A quota wait renders one of three states, and they never read as one
+// another: the pending countdown while the reset is ahead, the overdue line
+// once the reset has passed with no wake yet (the daemon may queue the retry
+// behind other work), and the resumed request once the zero-delay wake went
+// out. The countdown and the elapsed time render as their computed values;
+// the three states are pinned by pairwise distinctness, not by wording the
+// testing guide forbids asserting (copy is not a test oracle).
+test("formatRetryWait: a quota wait's three states never read as one another", () => {
+  const delay = 2 * 60 * 60_000;
+  const waited = 60 * 60_000;
+  const pending = formatRetryWait(
+    retryWait({ attempt: 1, attemptCap: 1, delayMs: delay, errorClass: "quota_exceeded", groupElapsedMs: waited }),
+  );
+  const overdue = formatRetryWait(
+    retryWait({
+      attempt: 1,
+      attemptCap: 1,
+      delayMs: delay,
+      errorClass: "quota_exceeded",
+      groupElapsedMs: waited,
+      resetPassed: true,
+    }),
   );
   const running = formatRetryWait(
     retryWait({
@@ -332,38 +347,33 @@ test("formatRetryWait: an in-progress quota retry reads as motion, never as the 
       attemptCap: 1,
       delayMs: 0,
       errorClass: "quota_exceeded",
-      groupElapsedMs: 60 * 60_000,
+      groupElapsedMs: waited,
       inProgress: true,
     }),
   );
-  expect(running).not.toBe(waiting);
-  // The wait label is reserved for the pending countdown: the running line
-  // names neither the wait nor a countdown to a reset.
-  expect(running).not.toContain("waiting for quota");
-  expect(running).not.toContain("resumes in");
-  // The running line still says what is running and how long the call has
-  // run, the way every in-progress retry line does.
-  expect(running).toContain("in progress");
-  expect(running).toContain(formatExactGap(60 * 60_000));
+  // Three distinct states for three distinct facts.
+  expect(new Set([pending, overdue, running]).size).toBe(3);
+  // The pending state is the countdown: the computed wait, the computed
+  // elapsed time.
+  expect(pending).toContain(compactDuration(delay));
+  expect(pending).toContain(formatExactGap(waited));
+  // The overdue state stops the countdown: it renders the elapsed time but
+  // not the (already passed) wait, which the pending state alone renders.
+  expect(overdue).toContain(formatExactGap(waited));
+  expect(overdue).not.toContain(compactDuration(delay));
+  // The running state is motion: it renders the elapsed time and never the
+  // countdown.
+  expect(running).toContain(formatExactGap(waited));
+  expect(running).not.toContain(compactDuration(delay));
 });
 
-// The same rule for the other way a wait ends without a wake announcement:
-// the announced delay elapsing. The line must not count down a reset that
-// has already passed as if the call were still waiting for it.
-test("formatRetryWait: a quota retry whose announced delay elapsed reads as motion, not a stale countdown", () => {
-  const running = formatRetryWait(
-    retryWait({
-      attempt: 1,
-      attemptCap: 1,
-      delayMs: 60_000,
-      errorClass: "quota_exceeded",
-      groupElapsedMs: 61_000,
-      inProgress: true,
-    }),
-  );
-  expect(running).not.toContain("waiting for quota");
-  expect(running).not.toContain("resumes in");
-  expect(running).toContain("in progress");
+// The snapshot's instant alone (a reload) renders the pending countdown the
+// same way, never inventing an elapsed time it cannot know.
+test("formatRetryWait: the instant's snapshot form keeps the pending countdown", () => {
+  const resumesIn = 90 * 60_000;
+  const snapshot = formatRetryWait(quotaWaitFrom(resumesIn));
+  expect(snapshot).toContain(compactDuration(resumesIn));
+  expect(snapshot).toBe(formatRetryWait({ ...quotaWaitFrom(resumesIn), groupElapsedMs: 0 }));
 });
 
 test("describeLiveness: a retry is never stuck while a subagent runs", () => {

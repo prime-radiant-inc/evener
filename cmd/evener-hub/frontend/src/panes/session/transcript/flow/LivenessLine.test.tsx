@@ -1,4 +1,4 @@
-import { STUCK_AFTER_MS } from "@evener/appwire-client";
+import { compactDuration, STUCK_AFTER_MS } from "@evener/appwire-client";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { connectionStore, resetConnectionStoreForTests } from "../../../../stores/connection";
@@ -238,13 +238,12 @@ test("a live quota wait stays a wait when unrelated activity advances lastFrameA
   // Still the pending countdown, with the wait's own elapsed value (5m) plus
   // the 120s since the announcement landed.
   expect(el.textContent).toContain(formatExactGap(5 * 60_000 + 120_000));
-  expect(el.textContent).toContain("resumes in");
 });
 
 // The wake's zero-delay announcement is the request going out: the line
-// describes the resumed request as motion, and the quota-wait label stays
-// reserved for the pending countdown above.
-test("a zero-delay quota announcement (the wake) renders as in-progress motion, never as the wait", () => {
+// describes the resumed request as motion, distinct from the pending
+// countdown and carrying the computed elapsed time of the call.
+test("a zero-delay quota announcement (the wake) renders the resumed request as motion", () => {
   render(
     <LivenessLine
       lastFrameAt={0}
@@ -263,15 +262,16 @@ test("a zero-delay quota announcement (the wake) renders as in-progress motion, 
     />,
   );
   const el = screen.getByTestId("liveness-line");
-  expect(el.textContent).not.toContain("waiting for quota");
-  expect(el.textContent).toContain("in progress");
-  expect(el.textContent).not.toContain("resumes in");
+  // Motion, not a countdown: the wake carries no delay to count down.
+  expect(el.textContent).not.toContain(compactDuration(60 * 60_000));
+  expect(el.textContent).toContain(formatExactGap(60 * 60_000));
 });
 
-// The announced delay elapsing without a wake announcement is the other way
-// the wait ends: the line must not keep counting down a reset that has
-// already passed as if the call were still waiting for it.
-test("a live quota wait whose announced delay has elapsed renders as motion, not a stale countdown", () => {
+// The reset passing is not the request starting: the daemon may queue the
+// retry behind other work for minutes past the reset, so the expired
+// deadline reads as overdue - distinct from the countdown and from motion -
+// while the wake is still pending.
+test("a live quota wait whose reset has passed without a wake reads as overdue, not as motion", () => {
   render(
     <LivenessLine
       lastFrameAt={0}
@@ -290,10 +290,30 @@ test("a live quota wait whose announced delay has elapsed renders as motion, not
       quotaResumesAt={90 * 60_000}
     />,
   );
-  const el = screen.getByTestId("liveness-line");
-  expect(el.textContent).not.toContain("waiting for quota");
-  expect(el.textContent).toContain("in progress");
-  expect(el.textContent).not.toContain("resumes in");
+  const overdue = screen.getByTestId("liveness-line");
+  // The countdown has stopped: the passed reset renders nowhere, and the
+  // line stays distinct from the resumed-request line the wake renders.
+  expect(overdue.textContent).not.toContain(compactDuration(90 * 60_000));
+  expect(overdue.textContent).toContain(formatExactGap(5 * 60_000 + 90 * 60_000 + 30_000));
+  cleanup();
+  const wake = render(
+    <LivenessLine
+      lastFrameAt={0}
+      now={90 * 60_000 + 30_000}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      retry={rawRetry({
+        attempt: 1,
+        attemptCap: 1,
+        delayMs: 0,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5 * 60_000,
+        receivedAt: 90 * 60_000 + 30_000,
+      })}
+    />,
+  );
+  expect(wake.getByTestId("liveness-line").textContent).not.toBe(overdue.textContent);
 });
 
 test("renders the retry cause and wait instead of the quiet phrase", () => {

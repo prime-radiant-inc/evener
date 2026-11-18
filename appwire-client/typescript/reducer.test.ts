@@ -3344,12 +3344,15 @@ test("a turn boundary retires a turn whose quota announcement has not arrived ye
   expect(fresh.modelRetry?.errorClass).toBe("quota_exceeded");
 });
 
-// A history update that completes a TOOL result belongs to an earlier
-// request, not the waiting call: the wait's announcement arrives after the
-// request that carried it failed, and that earlier request's tool result can
-// land while the call waits. Clearing the wait on it would spend the rest of
-// a multi-hour pause showing a stall.
-test("a history update completing a tool result keeps the quota wait; the model's own output clears it", () => {
+// A history update that completes an output item can belong to an earlier
+// model round, not the waiting call: the history worker publishes
+// asynchronously, so the round before the quota failure can land its text
+// (or its tool result, which projects as a commandExecution - the same
+// type as the model's own tool call) after the quota announcement. No
+// history item proves the WAITING call has resumed, so the wait survives
+// every item completion and clears only on the wake, a turn boundary, or
+// an authoritative read.
+test("a history update completing any output item keeps the quota wait", () => {
   let model = testHydrateV6({ turns: [{ id: "turn_1", status: "inProgress", itemsView: "", items: [] }] });
   model = applyNotification(
     model,
@@ -3371,9 +3374,7 @@ test("a history update completing a tool result keeps the quota wait; the model'
   );
 
   // The tool call's result completes through the history worker while the
-  // next request waits for quota. On the wire a tool result projects as a
-  // commandExecution - the same type as the model's own tool call - so the
-  // output check cannot tell them apart and must not clear the wait.
+  // next request waits for quota.
   model = applyHistory(
     model,
     {
@@ -3396,6 +3397,7 @@ test("a history update completing a tool result keeps the quota wait; the model'
   expect(model.quotaResumesAt).toBeDefined();
   expect(model.modelRetry?.errorClass).toBe("quota_exceeded");
 
+  // The earlier round's own text lands after the announcement all the same.
   model = applyHistory(
     model,
     {
@@ -3408,8 +3410,8 @@ test("a history update completing a tool result keeps the quota wait; the model'
     },
     1_100_000,
   );
-  expect(model.quotaResumesAt).toBeUndefined();
-  expect(model.modelRetry).toBeUndefined();
+  expect(model.quotaResumesAt).toBeDefined();
+  expect(model.modelRetry?.errorClass).toBe("quota_exceeded");
 });
 
 // Component 1 (docs/superpowers/specs/2026-08-07-provider-failure-feedback-

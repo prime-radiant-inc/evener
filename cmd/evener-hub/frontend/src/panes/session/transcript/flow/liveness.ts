@@ -82,8 +82,23 @@ export interface RetryWait {
   model?: string;
   /** Elapsed wall-clock ms for the current retry group (one model call), not the whole turn. */
   groupElapsedMs: number;
-  /** Whether the wait is over: a frame has landed since this retry was reported, or its own delay has elapsed. */
+  /**
+   * Whether the wait is over. For an ordinary retry: a frame has landed
+   * since this retry was reported, or its own delay has elapsed. For a
+   * quota retry: the zero-delay wake announcement only - the request has
+   * gone out - never a frame landing or the deadline passing (see
+   * resetPassed for that case).
+   */
   inProgress: boolean;
+  /**
+   * A quota wait whose reset time has passed while the wake (the zero-delay
+   * retry announcement) has not come: the daemon may queue the retry behind
+   * other work for minutes past the reset. Derived by the caller (the only
+   * place with a clock); the countdown must stop at the deadline rather than
+   * count down a reset that already passed, and the line must not claim the
+   * request is in progress when it has not started.
+   */
+  resetPassed?: boolean;
 }
 
 /**
@@ -124,25 +139,29 @@ export function formatRetryWait(retry: RetryWait | QuotaWait): string {
   // same wall-clock phrasing every other surface gives it (the rail row and
   // the phone Board's compactDuration), with the call's elapsed time beside
   // it so the reader can tell a fresh wait from one hours in.
-  // A quota retry still waiting reads as the wait it is; once the request is
-  // out (the wake went out, or the announced delay elapsed) it reads as
-  // motion - never as a wait that has already ended.
+  // A quota retry is binary by its own announcement: still waiting reads as
+  // the wait (or, past its reset with no wake yet, as overdue - the daemon
+  // may queue the retry behind other work for minutes), and the zero-delay
+  // wake reads as motion. The clock never decides: a frame landing or the
+  // deadline passing is not the request starting.
   if (retry.errorClass === "quota_exceeded") {
-    if (!retry.inProgress) {
-      const wait = `resumes in ${compactDuration(retry.delayMs)}`;
-      // The snapshot's instant knows no elapsed time; inventing "0s on this
-      // call" would claim a fresh wait a reload cannot prove. Only a wait
-      // that actually reported one renders the elapsed suffix.
-      const elapsed = retry.groupElapsedMs > 0 ? ` — ${formatExactGap(retry.groupElapsedMs)} on this call` : "";
-      return `${formatRetryCause(retry.errorClass)} — ${wait}${elapsed}`;
+    // The snapshot's instant knows no elapsed time; inventing "0s on this
+    // call" would claim a fresh wait a reload cannot prove. Only a wait
+    // that actually reported one renders the elapsed suffix.
+    const elapsed = retry.groupElapsedMs > 0 ? ` — ${formatExactGap(retry.groupElapsedMs)} on this call` : "";
+    if (!retry.inProgress && retry.resetPassed) {
+      return `${formatRetryCause(retry.errorClass)} — reset passed, retry not started yet${elapsed}`;
     }
-    // The wait is over and the request is out (the zero-delay wake, or the
-    // announced delay elapsing): the line describes the resumed request as
-    // motion, and the wait label above stays reserved for the pending
-    // countdown - a cause that says "waiting" over a running call is the
-    // mislabel this branch exists to avoid. The wait may have ended for a
-    // reset, a steer or a model switch, so the copy claims none of them; the
-    // model tag still names a switch when the announcement carries one.
+    if (!retry.inProgress) {
+      return `${formatRetryCause(retry.errorClass)} — resumes in ${compactDuration(retry.delayMs)}${elapsed}`;
+    }
+    // The wait is over and the request is out (the zero-delay wake): the
+    // line describes the resumed request as motion, and the wait label
+    // above stays reserved for the pending countdown - a cause that says
+    // "waiting" over a running call is the mislabel this branch exists to
+    // avoid. The wait may have ended for a reset, a steer or a model
+    // switch, so the copy claims none of them; the model tag still names a
+    // switch when the announcement carries one.
     const modelTag = "model" in retry && retry.model ? ` (${retry.model})` : "";
     return `quota wait ended${modelTag} — in progress — ${formatExactGap(retry.groupElapsedMs)} on this call`;
   }
@@ -162,7 +181,7 @@ export function formatRetryWait(retry: RetryWait | QuotaWait): string {
 // branch of formatRetryWait reads: the instant alone carries no attempt count
 // (the wait announcement always reads attempt 1 and spends no budget) and no
 // call elapsed time, so neither is invented.
-export type QuotaWait = Pick<RetryWait, "errorClass" | "inProgress" | "delayMs" | "groupElapsedMs">;
+export type QuotaWait = Pick<RetryWait, "errorClass" | "inProgress" | "delayMs" | "groupElapsedMs" | "resetPassed">;
 
 export function quotaWaitFrom(resumesInMs: number): QuotaWait {
   return {
@@ -170,6 +189,7 @@ export function quotaWaitFrom(resumesInMs: number): QuotaWait {
     errorClass: "quota_exceeded",
     groupElapsedMs: 0,
     inProgress: false,
+    resetPassed: false,
   };
 }
 
