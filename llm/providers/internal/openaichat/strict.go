@@ -73,7 +73,7 @@ func StrictifyJSONSchema(in map[string]any) map[string]any {
 // one — dropping every advertised argument — and an unreadable combinator list
 // would keep its optional properties. Neither is certifiable.
 func StrictExpressible(schema map[string]any) bool {
-	return strictlyExpressibleNode(schema, true)
+	return strictlyExpressibleNode(schema, true, nil)
 }
 
 // strictlyExpressibleNode walks one node. visited reports whether
@@ -81,7 +81,11 @@ func StrictExpressible(schema map[string]any) bool {
 // property or items subschema is visited only when its parent is visited and
 // carries the literal object or array type the rewrite matches, and combinator
 // branches are visited whenever the node itself is.
-func strictlyExpressibleNode(m map[string]any, visited bool) bool {
+//
+// inherited carries the enclosing node's properties when this node is one of
+// its combinator branches, because the rewrite closes a branch that declares
+// no properties of its own against them.
+func strictlyExpressibleNode(m map[string]any, visited bool, inherited map[string]any) bool {
 	if m == nil {
 		return true
 	}
@@ -98,9 +102,15 @@ func strictlyExpressibleNode(m map[string]any, visited bool) bool {
 	// Only a visited node whose type is the literal string the rewrite matches
 	// is transformed. Everything else keeps what it advertises.
 	transformed := visited && (literal == "object" || literal == "array")
-	switch {
-	case isObject:
-		props, ok := inspectProperties(m)
+	// A type list may name both shapes at once, as in ["object", "array"].
+	// Both are then constraints on the same node, and the rewrite — which
+	// matches only a literal type string — transforms neither, so every one of
+	// them has to hold as advertised. Checking them in one switch would walk
+	// only the object side and leave the array side's items unverified.
+	var props map[string]any
+	if isObject {
+		var ok bool
+		props, ok = inspectProperties(m)
 		if !ok {
 			return false
 		}
@@ -118,6 +128,23 @@ func strictlyExpressibleNode(m map[string]any, visited bool) bool {
 		if transformed && !allKeysDeclared(m) {
 			return false
 		}
+		// The rewrite replaces required with exactly the declared property
+		// names, so a requirement on a key the node never declares would be
+		// dropped rather than projected.
+		//
+		// A transformed branch that declares no properties is closed against
+		// the enclosing node's, so those are the keys it may require.
+		declared := props
+		if transformed && len(props) == 0 {
+			declared = inherited
+		}
+		if transformed {
+			for name := range requiredNamesOf(m["required"]) {
+				if _, has := declared[name]; !has {
+					return false
+				}
+			}
+		}
 		for _, child := range props {
 			childMap, ok := child.(map[string]any)
 			if !ok {
@@ -125,21 +152,23 @@ func strictlyExpressibleNode(m map[string]any, visited bool) bool {
 				// never verified either.
 				return false
 			}
-			if !strictlyExpressibleNode(childMap, visited && literal == "object") {
+			if !strictlyExpressibleNode(childMap, visited && literal == "object", nil) {
 				return false
 			}
 		}
-	case isArray:
+	}
+	if isArray {
 		if raw, has := m["items"]; has && raw != nil {
 			items, ok := raw.(map[string]any)
 			if !ok {
 				return false
 			}
-			if !strictlyExpressibleNode(items, visited && literal == "array") {
+			if !strictlyExpressibleNode(items, visited && literal == "array", nil) {
 				return false
 			}
 		}
-	default:
+	}
+	if !isObject && !isArray {
 		// An object- or array-shaped node the rewrite does not recognise: it
 		// keeps whatever it advertises, so an optional property behind it stays
 		// optional under strict mode.
@@ -163,12 +192,42 @@ func strictlyExpressibleNode(m map[string]any, visited bool) bool {
 			// property inside would reach the provider unchanged.
 			return false
 		}
+		// A branch declaring no properties of its own is closed against this
+		// node's, so this node's are the ones it may require. oneOf branches
+		// are not closed against them, because all of them would then match the
+		// same objects.
+		var branchInherited map[string]any
+		if comb != "oneOf" {
+			branchInherited = props
+		}
 		for _, it := range arr {
 			child, ok := it.(map[string]any)
 			if !ok {
 				return false
 			}
-			if !strictlyExpressibleNode(child, visited) {
+			if !strictlyExpressibleNode(child, visited, branchInherited) {
+				return false
+			}
+			// Closing a branch sets additionalProperties: false against the
+			// branch's own properties. A branch that declares none would accept
+			// only {}, while this node requires every property it declares, so
+			// no branch could be satisfied. The rewrite instead gives such a
+			// branch this node's properties, which is lossless because this node
+			// already requires all of them.
+			//
+			// A branch that declares properties of its own is refused: closing
+			// it narrows it to those keys alone, while the enclosing object
+			// forbids exactly the ones it leaves out, so the two can agree only
+			// when the sets match — a shape no builder here emits, and not worth
+			// certifying blind.
+			branchProps, ok := inspectProperties(child)
+			if !ok || len(branchProps) > 0 {
+				return false
+			}
+			// anyOf and allOf tolerate the branch matching whenever this node
+			// does. oneOf does not: every such branch would match the same
+			// objects, so its exactly-one rule would reject them all.
+			if comb == "oneOf" {
 				return false
 			}
 		}
@@ -321,6 +380,14 @@ func requiredNamesOf(raw any) map[string]bool {
 }
 
 func strictifyJSONSchemaInPlace(m map[string]any) {
+	strictifyNode(m, nil)
+}
+
+// strictifyNode rewrites one node. enclosingProps carries the properties of the
+// nearest enclosing object that this node is a combinator branch of, so a
+// branch declaring none of its own can be closed against them instead of
+// against an empty map.
+func strictifyNode(m map[string]any, enclosingProps map[string]any) {
 	if m == nil {
 		return
 	}
@@ -331,6 +398,16 @@ func strictifyJSONSchemaInPlace(m map[string]any) {
 		m["additionalProperties"] = false
 
 		props, _ := m["properties"].(map[string]any)
+		if len(props) == 0 && len(enclosingProps) > 0 {
+			// A branch that declares no properties is closed against the
+			// enclosing object's, which the enclosing node already requires.
+			// Closing it against an empty map would leave it accepting only {}.
+			props = make(map[string]any, len(enclosingProps))
+			for k, v := range enclosingProps {
+				props[k] = deepCopyAny(v)
+			}
+			m["properties"] = props
+		}
 		if props == nil {
 			props = map[string]any{}
 			m["properties"] = props
@@ -346,12 +423,12 @@ func strictifyJSONSchemaInPlace(m map[string]any) {
 		// Recurse into property schemas.
 		for _, k := range keys {
 			if child, ok := props[k].(map[string]any); ok {
-				strictifyJSONSchemaInPlace(child)
+				strictifyNode(child, nil)
 			}
 		}
 	case "array":
 		if items, ok := m["items"].(map[string]any); ok {
-			strictifyJSONSchemaInPlace(items)
+			strictifyNode(items, nil)
 		}
 	}
 
@@ -365,9 +442,16 @@ func strictifyJSONSchemaInPlace(m map[string]any) {
 		if !ok {
 			continue
 		}
+		// A property-less branch inherits the enclosing object's properties.
+		// oneOf does not, because every such branch would then match the same
+		// objects and its exactly-one rule would reject them all.
+		var inherited map[string]any
+		if comb != "oneOf" {
+			inherited, _ = m["properties"].(map[string]any)
+		}
 		for _, it := range arr {
 			if child, ok := it.(map[string]any); ok {
-				strictifyJSONSchemaInPlace(child)
+				strictifyNode(child, inherited)
 			}
 		}
 	}

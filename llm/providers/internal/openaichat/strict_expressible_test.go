@@ -1,6 +1,12 @@
 package openaichat
 
-import "testing"
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+
+	"github.com/santhosh-tekuri/jsonschema/v5"
+)
 
 // StrictExpressible decides whether a schema may be projected into OpenAI
 // strict mode without making a documented-optional argument mandatory. Strict
@@ -403,6 +409,11 @@ func TestStrictExpressible(t *testing.T) {
 			},
 			want: false,
 		},
+		// The gate only certifies a parent that requires every property it
+		// declares, so a branch narrowing required to a subset of those names
+		// was already redundant. Closing the branch against the parent's
+		// properties keeps that so, where closing it against an empty map
+		// would have made it accept only {}.
 		{
 			name: "branch requires a key the parent declares",
 			in: map[string]any{
@@ -419,6 +430,81 @@ func TestStrictExpressible(t *testing.T) {
 				},
 			},
 			want: true,
+		},
+		// The rewrite gives such a branch the enclosing object's declared
+		// properties before closing it, so the branch still admits the object
+		// the enclosing node requires. A branch carrying its own properties
+		// would instead have those narrowed against the rest, so it is
+		// refused rather than certified.
+		{
+			name: "closed branch declares properties of its own",
+			in: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"id":   map[string]any{"type": "string"},
+					"name": map[string]any{"type": "string"},
+				},
+				"required": []string{"id", "name"},
+				"anyOf": []any{
+					map[string]any{
+						"type":       "object",
+						"properties": map[string]any{"id": map[string]any{"type": "string"}},
+						"required":   []string{"id"},
+					},
+				},
+			},
+			want: false,
+		},
+		// A type list naming both object and array has two shapes to satisfy,
+		// and the node is not transformed, so the array side is never
+		// rewritten either. An item object with an optional property still
+		// reaches the provider, which strict mode rejects.
+		{
+			name: "mixed object and array type list leaves an item property optional",
+			in: map[string]any{
+				"type":                 []string{"object", "array"},
+				"additionalProperties": false,
+				"properties":           map[string]any{"split": map[string]any{"type": "string"}},
+				"required":             []string{"split"},
+				"items": map[string]any{
+					"type": "object",
+					"properties": map[string]any{
+						"row":  map[string]any{"type": "string"},
+						"note": map[string]any{"type": "string"},
+					},
+					"required": []string{"row"},
+				},
+			},
+			want: false,
+		},
+		{
+			name: "mixed object and array type list whose item object is strict-valid",
+			in: map[string]any{
+				"type":                 []string{"object", "array"},
+				"additionalProperties": false,
+				"properties":           map[string]any{"split": map[string]any{"type": "string"}},
+				"required":             []string{"split"},
+				"items": map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties":           map[string]any{"row": map[string]any{"type": "string"}},
+					"required":             []string{"row"},
+				},
+			},
+			want: true,
+		},
+		// The rewrite replaces required with exactly the declared property
+		// names, so a requirement on a key the node never declares would be
+		// dropped rather than projected.
+		{
+			name: "required names a key the node never declares",
+			in: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"a": map[string]any{"type": "string"}},
+				"required":   []string{"a", "b"},
+			},
+			want: false,
 		},
 	}
 
@@ -449,4 +535,55 @@ func TestStrictExpressibleAgreesWithTheProjection(t *testing.T) {
 	if len(required) != 1 || required[0] != "a" {
 		t.Fatalf("projected required = %#v, want exactly the declared [a]", projected["required"])
 	}
+}
+
+// A schema StrictExpressible accepts must still accept the arguments its
+// original form accepted. Closing a combinator branch sets
+// additionalProperties: false against the branch's own properties, so a
+// branch that only requires keys accepts the empty object once closed and
+// then admits nothing the enclosing object requires.
+func TestStrictProjectionKeepsRequiredBranchesSatisfiable(t *testing.T) {
+	t.Parallel()
+	schema := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"id":   map[string]any{"type": "string"},
+			"name": map[string]any{"type": "string"},
+		},
+		"required": []string{"id", "name"},
+		"anyOf": []any{
+			map[string]any{"type": "object", "required": []string{"id"}},
+			map[string]any{"type": "object", "required": []string{"name"}},
+		},
+	}
+	args := map[string]any{"id": "a", "name": "b"}
+	if !schemaAccepts(t, schema, args) {
+		t.Fatal("the declared schema does not accept both required keys")
+	}
+	if !StrictExpressible(schema) {
+		t.Fatal("a schema whose branches only require declared keys must be expressible")
+	}
+	if !schemaAccepts(t, StrictifyJSONSchema(schema), args) {
+		t.Fatal("the projection rejects the object its own required list demands")
+	}
+}
+
+// schemaAccepts compiles schema with the validator the tool registry uses and
+// reports whether args satisfies it.
+func schemaAccepts(t *testing.T, schema map[string]any, args map[string]any) bool {
+	t.Helper()
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		t.Fatalf("marshal schema: %v", err)
+	}
+	compiler := jsonschema.NewCompiler()
+	if err := compiler.AddResource("mem://strict.json", strings.NewReader(string(raw))); err != nil {
+		t.Fatalf("add schema resource: %v", err)
+	}
+	compiled, err := compiler.Compile("mem://strict.json")
+	if err != nil {
+		t.Fatalf("compile schema %s: %v", raw, err)
+	}
+	return compiled.Validate(args) == nil
 }
