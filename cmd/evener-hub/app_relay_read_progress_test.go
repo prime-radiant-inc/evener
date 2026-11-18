@@ -500,15 +500,11 @@ func testHubRelayInterruptedRead(t *testing.T, disconnect bool) {
 	// before the interrupted read, so that subscription alone would carry root
 	// notes to the relay and out to any downstream connection: a follow-up read
 	// that returned the right ref without subscribing would still look fine.
-	// Move the relay-holding demand to the child ref and withdraw rootRef, then
-	// run the follow-up read on a fresh downstream client, so the only
-	// subscription that can deliver the notes below is the one that read
-	// establishes.
+	// Move the relay-holding demand to the child ref, then run the follow-up
+	// read on a fresh downstream client, so the only subscription that can
+	// deliver the notes below to that client is the one the read establishes.
 	if _, err := client.ThreadRead(f.ctx, appwire.ThreadReadParams{Ref: childRef, Subscribe: true}); err != nil {
 		t.Fatalf("hold the relay on %s: %v", childRef, err)
-	}
-	if _, err := client.ThreadUnsubscribe(f.ctx, appwire.ThreadUnsubscribeParams{Ref: rootRef}); err != nil {
-		t.Fatalf("withdraw the pre-interruption %s subscription: %v", rootRef, err)
 	}
 	after := f.open()
 	served, err := after.ThreadRead(f.ctx, appwire.ThreadReadParams{Ref: rootRef, Subscribe: true})
@@ -526,6 +522,18 @@ func testHubRelayInterruptedRead(t *testing.T, disconnect bool) {
 		got := nextRelayProgressNote(f.ctx, t, after)
 		if got.Ref != rootRef || got.ThreadID != rootID || got.HumanNote != want {
 			t.Fatalf("notification after interruption = %+v, want %s on %s", got, want, rootRef)
+		}
+	}
+	// Both subscribers are asserted, because a note delivered to the wrong one
+	// is invisible if you only read the right one. `client`'s pre-interruption
+	// rootRef subscription is still live, so a note leaked from the old epoch
+	// would already sit in its queue ahead of the two below: reading them in
+	// order on that connection is the ordered barrier, and a leak fails on the
+	// value it receives first rather than on a wait.
+	for _, want := range []string{"new-epoch-first", "new-epoch-second"} {
+		got := nextRelayProgressNote(f.ctx, t, client)
+		if got.Ref != rootRef || got.ThreadID != rootID || got.HumanNote != want {
+			t.Fatalf("original subscriber got %+v, want %s on %s: a note reached the wrong subscriber", got, want, rootRef)
 		}
 	}
 }

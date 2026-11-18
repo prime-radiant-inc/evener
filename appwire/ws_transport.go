@@ -23,13 +23,11 @@ var (
 // the caller's values and deadline and drops the caller's cancellation:
 // coder/websocket installs a context.AfterFunc on the write context that closes
 // the whole connection when it ends (conn.go's setupWriteTimeout), so honoring
-// one caller's cancellation there tears down a socket every caller on this
-// transport shares. The next frame then fails with "use of closed network
-// connection" — issue #6824, where a canceled relay read closed the hub's
-// daemon connection under the read that followed it. A deadline still applies,
-// so the server write timeout and any caller deadline keep bounding a wedged
-// peer, and a dropped peer still unblocks the write through the keepalive
-// closing the transport.
+// one caller's cancellation there would tear down a socket every caller on
+// this transport shares, and their next frames would fail on a connection
+// nobody closed. A deadline still applies, so the server write timeout and any
+// caller deadline keep bounding a wedged peer, and a dropped peer still
+// unblocks the write through the keepalive closing the transport.
 func frameWriteContext(ctx context.Context) (context.Context, context.CancelFunc) {
 	detached := context.WithoutCancel(ctx)
 	deadline, ok := ctx.Deadline()
