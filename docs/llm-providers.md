@@ -80,6 +80,18 @@ The registry supplies the instance, model facts, protocol, and surface. The prof
 `resp.Provider` and error labels are stamped back to the instance name
 centrally, in `llm.Client`, not by each protocol package.
 
+### Responses function-call identity
+
+The Responses adapter settles repeated records in the provider's final output
+with the same explicit `call_id` into one tool call at its first position.
+Later records can fill in an omitted item ID, tool name or arguments. The
+decoded call retains the first supplied argument bytes. Warm and cold replay
+follow the existing request and transcript encoding rules. Records with distinct
+or absent call IDs remain separate even when they share an item ID. When the
+final output is empty, recovery keeps streamed completions in order, including
+calls whose ID came from an item ID. Live decoding and API-log recomputation
+apply the same rule.
+
 ## Image recovery
 
 The [Chat Completions adapter](../llm/providers/chatcompletions/image_recovery.go)

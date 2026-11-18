@@ -66,6 +66,67 @@ func TestResponsesStreamToolStateMapping(t *testing.T) {
 	t.Parallel()
 	completed := `{"type":"response.completed","response":{"id":"resp_ts","status":"completed","output":[]}}`
 
+	type settledCall struct{ id, itemID, name, arguments string }
+	checkSettledCalls := func(t *testing.T, frames []string, want []settledCall) {
+		t.Helper()
+		_, live := responsesEvents(t, frames...)
+		recorded, err := ExtractRecordedResponse([]byte("data: "+strings.Join(frames, "\n\ndata: ")+"\n\n"), "gpt-5.5")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, response := range []struct {
+			source string
+			result *llm.Response
+		}{{"live", live}, {"recorded", &recorded}} {
+			calls := response.result.ToolCalls()
+			if len(calls) != len(want) {
+				t.Errorf("%s calls = %d, want %d", response.source, len(calls), len(want))
+				continue
+			}
+			for i, call := range calls {
+				got := settledCall{call.ID, call.ItemID, call.Name, string(call.Arguments)}
+				if got != want[i] {
+					t.Errorf("%s call[%d] = %+v, want %+v", response.source, i, got, want[i])
+				}
+			}
+		}
+	}
+
+	t.Run("repeated terminal call ID settles at its first position", func(t *testing.T) {
+		const terminal = `{"type":"response.completed","response":{"status":"completed","output":[
+			{"type":"function_call","id":"fc_first","call_id":"call_a"},
+			{"type":"function_call","id":"fc_first","name":"omitted","arguments":"{ \"n\": 1 }"},
+			{"type":"function_call","id":"fc_first","call_id":"call_b","name":"other","arguments":"{}"},
+			{"type":"function_call","id":"fc_first","call_id":"","name":"empty","arguments":"{ \"n\": 2 }"},
+			{"type":"function_call","call_id":"call_c","name":"with_arguments","arguments":"{ \"keep\" : 3 }"},
+			{"type":"function_call","id":"fc_repeat","call_id":"call_a","name":"chosen","arguments":"{ \"a\" : 1 }"},
+			{"type":"function_call","id":"fc_c","call_id":"call_c","arguments":"{ \"ignore\": 4 }"},
+			{"type":"function_call","id":"fc_later","call_id":"call_a","name":"ignored","arguments":"{}"}
+		]}}`
+		// An SSE data field is one line on the wire.
+		event := strings.ReplaceAll(terminal, "\n", "")
+		checkSettledCalls(t, []string{event}, []settledCall{
+			{"call_a", "fc_first", "chosen", `{ "a" : 1 }`},
+			{"", "fc_first", "omitted", `{ "n": 1 }`},
+			{"call_b", "fc_first", "other", "{}"},
+			{"", "fc_first", "empty", `{ "n": 2 }`},
+			{"call_c", "fc_c", "with_arguments", `{ "keep" : 3 }`},
+		})
+	})
+
+	t.Run("empty terminal keeps item-only completions with a synthesized call ID", func(t *testing.T) {
+		frames := []string{
+			`{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_a","name":"f"}}`,
+			`{"type":"response.output_item.done","item":{"type":"function_call","id":"fc_a","arguments":"{ \"a\": 1 }"}}`,
+			`{"type":"response.output_item.done","item":{"type":"function_call","id":"fc_a","arguments":"{ \"a\": 2 }"}}`,
+			completed,
+		}
+		checkSettledCalls(t, frames, []settledCall{
+			{"fc_a", "fc_a", "f", `{ "a": 1 }`},
+			{"fc_a", "fc_a", "f", `{ "a": 2 }`},
+		})
+	})
+
 	t.Run("delta keyed by a foreign call id falls back to item state", func(t *testing.T) {
 		events, final := responsesEvents(t,
 			`{"type":"response.output_item.added","item":{"type":"function_call","call_id":"call_a","id":"fc_a","name":"orig"}}`,
