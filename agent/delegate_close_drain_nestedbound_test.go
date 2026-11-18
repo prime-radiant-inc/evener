@@ -32,17 +32,18 @@ func TestNestedClosureAnnouncementUsesTheDrainBound(t *testing.T) {
 	root.authoritativeConsumer = true
 	t.Cleanup(func() { root.authoritativeConsumer = false })
 
-	// A bound the pass supplied, already spent.
+	// A bound the pass supplied, already spent. It travels on the plan, which is
+	// the point: a bound installed on the shared controller would also apply to
+	// an unrelated sibling that publishes during this pass.
 	bound, cancelBound := context.WithCancel(t.Context())
 	cancelBound()
-	restore := controller.setPublicationBound(bound)
-	t.Cleanup(restore)
 
 	var parked atomic.Bool
 	root.testOnlyBlockedSendEntered = func() { parked.Store(true) }
 	t.Cleanup(func() { root.testOnlyBlockedSendEntered = nil })
 
 	plan := controller.capturedPlanLocked(delegateID)
+	plan.bound = bound
 
 	done := make(chan struct{})
 	go func() {

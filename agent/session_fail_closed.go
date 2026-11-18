@@ -42,6 +42,13 @@ type failClosedState struct {
 	cause atomic.Pointer[error]
 	// announced is set once the diagnostic is emitted.
 	announced atomic.Bool
+	// pending holds the diagnostic a bounded publisher claimed but could not
+	// deliver, so the close can retry it once the teardown work that needed the
+	// budget is done. Claiming without delivering would let a send that expires
+	// on a full stream take the session's ONE fail-closed diagnostic and then
+	// drop it: a consumer that resumes before the cascade deadline would find
+	// the claim taken and nothing delivered.
+	pending atomic.Pointer[events.ErrorData]
 	// cancelExecution cancels the running execution's context; nil while none
 	// runs.
 	cancelExecution atomic.Pointer[context.CancelFunc]
@@ -233,7 +240,43 @@ func (s *Session) announceFailClosedOn(bound context.Context) {
 	// A close drain's terminal drain waits on this call, so an unresponsive
 	// consumer must release it at the drain's deadline rather than hold the
 	// teardown budget behind a session that has already failed closed.
-	s.sendEventOnContext(bound, data, s.activeCausalProvenance())
+	//
+	// The claim is CONFIRMED by the delivery, not taken by it. A send that
+	// expires on a full stream used to keep the claim and drop the diagnostic,
+	// so a consumer that resumed inside the cascade window found the one
+	// announcement already spent. When the send does not deliver, the claim is
+	// released and the diagnostic held as pending for retryCloseFailClosed
+	// below, which runs after the worktree cleanup that needed the budget.
+	if _, _, delivered := s.sendEventContext(bound, data, s.activeCausalProvenance()); delivered {
+		return
+	}
+	if s.failedClosed.announced.CompareAndSwap(true, false) {
+		held := data
+		if s.failedClosed.pending.CompareAndSwap(nil, &held) {
+			return
+		}
+		// Another retry already parked this diagnostic. Re-take the claim so the
+		// session still reports itself as announced to whoever arrives next.
+		s.failedClosed.announced.Store(true)
+	}
+}
+
+// retryCloseFailClosed publishes a fail-closed diagnostic a bounded send
+// claimed but could not deliver, using what is left of the close cascade after
+// the worktree cleanup has run. At-most-once is preserved by the announced
+// claim: this re-takes it before sending, so a concurrent ordinary announce
+// cannot publish a second copy, and a second retry finds nothing pending.
+func (s *Session) retryCloseFailClosed(ctx context.Context) {
+	held := s.failedClosed.pending.Swap(nil)
+	if held == nil {
+		return
+	}
+	if !s.failedClosed.announced.CompareAndSwap(false, true) {
+		// Someone else announced while this was parked. That announcement is
+		// the one the session gets; this copy is dropped rather than duplicated.
+		return
+	}
+	s.sendEventOnContext(ctx, *held, s.activeCausalProvenance())
 }
 
 // claimFailClosedDiagnostic reports the one announcement a failed-closed session

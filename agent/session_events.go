@@ -498,20 +498,7 @@ func (s *Session) emitHookCompleted(data events.HookEndData) {
 	s.recordHookCompletion(data, recordDiagnostics{warn: s.emitDiagnosticWarning})
 }
 
-// emitHookCompletedContext is emitHookCompleted on a caller's bound, so a hook a
-// close drain launched has its completion published on the drain's deadline
-// rather than the full close budget.
-func (s *Session) emitHookCompletedContext(ctx context.Context, data events.HookEndData) {
-	s.emitContext(ctx, data)
-	// The record's own diagnostics are published on the same bound, and as
-	// diagnostics: see recordHookCompletion.
-	s.recordHookCompletion(data, recordDiagnostics{
-		bound: ctx,
-		warn:  func(w events.WarningData) { s.emitDiagnosticWarningContext(ctx, w) },
-	})
-}
-
-// emitHookCompletedBounded is emitHookCompletedContext for a caller on the
+// emitHookCompletedBounded is emitHookCompleted for a caller on the
 // close-join critical path. It additionally bounds the ACQUISITION of the
 // transcript door: the drain waits for this callback, so a completion that
 // cannot take the door within the bound records nothing and announces the drop
@@ -692,9 +679,21 @@ func (s *Session) sendEventContext(ctx context.Context, data events.EventData, p
 		// already-parked send sees the lifetime end with a fresh budget in hand
 		// and must come back to that budget rather than drop an event it still
 		// has its whole window to deliver.
-		var lifetimeDone <-chan struct{}
+		// The caller's bound and the published close budget are INDEPENDENT
+		// exit conditions, not one context that wins over the other. Merging
+		// them by taking the earlier deadline silently discarded the caller's
+		// cancellation whenever that caller had no deadline of its own: a stop
+		// driver runs on a cancel-only context, so a send it made while a close
+		// budget was published waited out the whole cascade even after the
+		// driver was abandoned. Both arms are kept below, so whichever fires
+		// first releases the send.
+		//
+		// An ordinary emit passes context.Background(), which never fires and
+		// has no deadline, so the close arm is the only one that can release it
+		// — exactly the close window it had before.
+		var lifetimeDone, closeDone <-chan struct{}
 		if closeCtx != nil {
-			ctx = earlierDeadlineContext(ctx, closeCtx)
+			closeDone = closeCtx.Done()
 		} else {
 			lifetimeDone = s.sessionContext().Done()
 		}
@@ -745,6 +744,7 @@ func (s *Session) sendEventContext(ctx context.Context, data events.EventData, p
 				case s.events <- ev:
 					delivered = true
 				case <-ctx.Done():
+				case <-closeDone:
 				case <-closeSignal:
 				case <-lifetimeDone:
 					// The lifetime ended under this send. If a close published
@@ -764,6 +764,7 @@ func (s *Session) sendEventContext(ctx context.Context, data events.EventData, p
 						select {
 						case s.events <- ev:
 							delivered = true
+						case <-ctx.Done():
 						case <-published.Done():
 						case <-closeSignal:
 						}
@@ -787,24 +788,6 @@ func (s *Session) sendEventContext(ctx context.Context, data events.EventData, p
 		s.publishFrontierStartup(open && (delivered || forwarded))
 	}
 	return data, ev, open && delivered
-}
-
-// earlierDeadlineContext returns whichever of ctx and other expires first, so a
-// caller that brought its own bound keeps it: the close budget can shorten a
-// send's window, never lengthen one. A context with no deadline loses to one
-// with a deadline.
-func earlierDeadlineContext(ctx, other context.Context) context.Context {
-	if other == nil {
-		return ctx
-	}
-	otherDeadline, ok := other.Deadline()
-	if !ok {
-		return ctx
-	}
-	if deadline, ok := ctx.Deadline(); ok && deadline.Before(otherDeadline) {
-		return ctx
-	}
-	return other
 }
 
 // SetDescendantEventFunc installs the callback inherited by subsequently

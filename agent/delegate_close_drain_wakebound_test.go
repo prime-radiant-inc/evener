@@ -39,11 +39,11 @@ func TestDelegateWakeWarningUsesTheDrainBound(t *testing.T) {
 			t.Fatal("session has no delegate controller: this test needs one to publish through")
 		}
 
-		// A bound the drain supplied, already spent.
+		// A bound the drain supplied, already spent. It is passed to the wake
+		// rather than installed on the shared controller, so it cannot reach an
+		// unrelated delegate's publications.
 		bound, cancelBound := context.WithCancel(t.Context())
 		cancelBound()
-		restore := controller.setPublicationBound(bound)
-		t.Cleanup(restore)
 
 		var parked atomic.Bool
 		s.testOnlyBlockedSendEntered = func() { parked.Store(true) }
@@ -52,7 +52,7 @@ func TestDelegateWakeWarningUsesTheDrainBound(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			controller.reportDelegateWakeError(errTestWakeFailed)
+			controller.reportDelegateWakeError(bound, errTestWakeFailed)
 		}()
 
 		// It must return on the drain's bound rather than park on the stream.

@@ -4628,7 +4628,7 @@ func TestDelegateAttention_PrelaunchStopBatchesRetryAcknowledgments(t *testing.T
 	if len(wakes) != 1 {
 		t.Fatalf("wakes = %d, want one for the owner receiver", len(wakes))
 	}
-	if err := c.wakeDeliveryReceiver(wakes[0].receiver, wakes[0].attentionIDs); err != nil {
+	if err := c.wakeDeliveryReceiver(nil, wakes[0].receiver, wakes[0].attentionIDs); err != nil {
 		t.Fatalf("wake grouped receiver: %v", err)
 	}
 	if got := atomic.LoadInt32(f.notifies); got != 1 {
@@ -4663,7 +4663,7 @@ func TestDelegateAttention_PrelaunchStopBatchesRootWakeIDs(t *testing.T) {
 	if len(wakes[0].attentionIDs) != receipts {
 		t.Fatalf("root wake carries %d attention IDs, want %d", len(wakes[0].attentionIDs), receipts)
 	}
-	if err := c.wakeDeliveryReceiver(wakes[0].receiver, wakes[0].attentionIDs); err != nil {
+	if err := c.wakeDeliveryReceiver(nil, wakes[0].receiver, wakes[0].attentionIDs); err != nil {
 		t.Fatalf("root wake: %v", err)
 	}
 	if got := notifies.Load(); got != 1 {
@@ -5146,17 +5146,17 @@ func TestDelegateAttention_WakeDeliveryReceiverBranches(t *testing.T) {
 	c.mu.Lock()
 	c.rootRuntime = root
 	c.mu.Unlock()
-	if err := c.wakeDeliveryReceiver(root, []string{"delegate:missing"}); err != nil {
+	if err := c.wakeDeliveryReceiver(nil, root, []string{"delegate:missing"}); err != nil {
 		t.Fatalf("root receiver wake: %v", err)
 	}
-	if err := c.wakeDeliveryReceiver(coldDelegateDeliveryReceiver{}, []string{"delegate:missing"}); err != nil {
+	if err := c.wakeDeliveryReceiver(nil, coldDelegateDeliveryReceiver{}, []string{"delegate:missing"}); err != nil {
 		t.Fatalf("cold receiver wake: %v", err)
 	}
 	if got := notified.Load(); got != 1 {
 		t.Fatalf("root wake count = %d, want 1 from the cold receiver", got)
 	}
 	var typedNil *Session
-	if err := c.wakeDeliveryReceiver(typedNil, []string{"delegate:missing"}); err != nil {
+	if err := c.wakeDeliveryReceiver(nil, typedNil, []string{"delegate:missing"}); err != nil {
 		t.Fatalf("typed-nil root wake: %v", err)
 	}
 }
@@ -5167,7 +5167,7 @@ func TestDelegateAttention_ReportsDeliveryWakeErrors(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	root := &Session{id: c.rootSessionID, stateDir: c.stateDir, delegateController: c, events: make(chan events.SessionEvent, 1)}
 	c.rootRuntime = root
-	c.reportDelegateWakeError(errors.New("wake failed"))
+	c.reportDelegateWakeError(nil, errors.New("wake failed"))
 	event := <-root.events
 	warning, ok := event.Data.(events.WarningData)
 	if event.Kind != events.EventWarning || !ok || warning.Message == "" {

@@ -254,11 +254,28 @@ func (c *delegateTreeController) reconcileRequirementsLocked(stop *delegateStopS
 }
 
 func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (result delegateMutationPlans, resultErr error) {
+	return c.reconcileBounded(evidence, nil)
+}
+
+// reconcileBounded is Reconcile on the publication bound of the pass calling it,
+// for a caller on the close-join critical path. Every publication this reconcile
+// causes — the plan updates, the wake warning — is made on that bound, so a
+// deadline belongs to the pass that supplied it and an unrelated delegate's
+// publications are unaffected.
+//
+// A nil bound is the session's ordinary delivery path, which is what Reconcile
+// above is, and takes it exactly as before.
+func (c *delegateTreeController) reconcileBounded(evidence delegateReconcileEvidence, bound context.Context) (result delegateMutationPlans, resultErr error) {
 	release, err := c.beginRetirementMutation()
 	if err != nil {
 		return delegateMutationPlans{}, err
 	}
 	defer func() {
+		// Every plan this pass returns carries this pass's publication bound,
+		// on the error paths too: a repair error still hands back the warnings
+		// and updates it settled. Result is the named return, so this covers
+		// all of them at one place instead of at each return.
+		result = stampBound(result, bound)
 		if resultErr == nil && (len(result.updates) != 0 || len(result.deliveries) != 0 || len(result.attention) != 0 || len(result.shellRepairs) != 0 || result.attentionFinalization != nil) {
 			result.retirementRelease = release
 		} else {
@@ -278,7 +295,7 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 			// replayed deliveries and their claims, and the attention arm
 			// retries on its own.
 			if wakeErr := wakeAfterUnlock(); wakeErr != nil {
-				c.reportDelegateWakeError(wakeErr)
+				c.reportDelegateWakeError(bound, wakeErr)
 			}
 		}
 	}()
@@ -352,7 +369,7 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 		wakeAfterUnlock = func() error {
 			var wakeErrs []error
 			for _, wake := range deliveryWakes {
-				wakeErrs = append(wakeErrs, c.wakeDeliveryReceiver(wake.receiver, wake.attentionIDs))
+				wakeErrs = append(wakeErrs, c.wakeDeliveryReceiver(bound, wake.receiver, wake.attentionIDs))
 			}
 			return errors.Join(wakeErrs...)
 		}
@@ -731,7 +748,11 @@ func (c *delegateTreeController) dropDeliveryPlanClaimsLocked(plans delegateMuta
 
 // reportDelegateWakeError logs a best-effort delivery wake failure. The
 // attention arm retries on its own.
-func (c *delegateTreeController) reportDelegateWakeError(err error) {
+//
+// bound is the publication bound of the pass that observed the failure, or nil
+// on the session's ordinary path. It is passed in rather than read from shared
+// controller state: see delegateUpdatePlan.bound.
+func (c *delegateTreeController) reportDelegateWakeError(bound context.Context, err error) {
 	if c == nil || err == nil {
 		return
 	}
@@ -747,7 +768,7 @@ func (c *delegateTreeController) reportDelegateWakeError(err error) {
 		// reaches a consumer that can accept it and releases the drain on one that
 		// cannot.
 		data := warningDataFromError("delegate delivery wake failed", err)
-		if bound, ok := c.publicationBoundFor(); ok {
+		if bound != nil {
 			root.emitWithProvenanceContext(bound, data, root.activeCausalProvenance())
 			return
 		}
@@ -757,14 +778,16 @@ func (c *delegateTreeController) reportDelegateWakeError(err error) {
 
 // wakeDeliveryReceiver reproduces deliverDelegatePacket's post-commit wake for
 // an acknowledgment the stop retried itself. It runs outside c.mu.
-func (c *delegateTreeController) wakeDeliveryReceiver(receiver delegateDeliveryReceiver, attentionIDs []string) error {
+// bound is the publication bound of the pass that produced this wake, or nil on
+// the session's ordinary path; it reaches reportDelegateWakeError unchanged.
+func (c *delegateTreeController) wakeDeliveryReceiver(bound context.Context, receiver delegateDeliveryReceiver, attentionIDs []string) error {
 	switch receiver := receiver.(type) {
 	case *Session:
 		if receiver == nil {
 			return nil
 		}
 		if receiver.isRootDelegateAttentionReceiver() {
-			return receiver.armDelegateAttentions(attentionIDs)
+			return receiver.armDelegateAttentionsBounded(bound, attentionIDs)
 		}
 		// A committed delivery is a wake from a new event in its own
 		// right: the child's report may present a row a user's stop
@@ -786,8 +809,8 @@ func (c *delegateTreeController) wakeDeliveryReceiver(receiver delegateDeliveryR
 		// the receiver exactly once, as it did before the arm — the
 		// wake is the delivery's own, and the arm's paced retry owns
 		// only the re-arm.
-		if err := receiver.armDelegateAttentions(attentionIDs); err != nil {
-			c.reportDelegateWakeError(err)
+		if err := receiver.armDelegateAttentionsBounded(bound, attentionIDs); err != nil {
+			c.reportDelegateWakeError(bound, err)
 			receiver.notify()
 		}
 		// The lane's own wake cannot start its consumption generation —

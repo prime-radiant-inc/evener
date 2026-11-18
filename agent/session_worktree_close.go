@@ -110,11 +110,14 @@ func (s *Session) disposeDelegateLanesAtClose(ctx context.Context) {
 	// closeStopJoinContext reserves exactly that half and halves it again for a
 	// nested close, which is the same bound the stop join runs on -- one bound for
 	// both scopes, root pass and resident delegate's nested pass.
+	//
+	// The bound is applied to THESE plans, not installed on the controller: the
+	// controller is shared with the live root, so installing it suppressed an
+	// unrelated sibling's publications for as long as this pass ran.
 	publishCtx, cancelPublish := closeStopJoinContext(budgetCtx)
 	defer cancelPublish()
-	restoreBound := s.delegateController.setPublicationBound(publishCtx)
-	defer restoreBound()
 	for _, plan := range closureUpdates {
+		plan.bound = publishCtx
 		s.delegateController.emitDelegateUpdate(plan)
 	}
 	if len(kept) > 0 {

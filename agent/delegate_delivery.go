@@ -722,7 +722,8 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 	if err != nil {
 		return plans, err
 	}
-	return plans, plan.controller.wakeDeliveryReceiver(receiver, []string{attentionID})
+	// This is the session's ordinary delivery path, which supplies no bound.
+	return plans, plan.controller.wakeDeliveryReceiver(nil, receiver, []string{attentionID})
 }
 
 // replanStaleDelivery re-plans a delivery whose claim is gone but whose durable

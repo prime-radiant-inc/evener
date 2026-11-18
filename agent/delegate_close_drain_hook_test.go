@@ -48,8 +48,8 @@ func TestDelegateCloseDrainBoundsNotificationHookPublication(t *testing.T) {
 	// The lifecycle callback is what puts HookStart and HookEnd on the session's
 	// stream. Without it the runner dispatches and publishes nothing, so a test
 	// built on the bare runner would pass even if the drain never launched a
-	// hook at all. Wiring it through emitHookCompleted -- the production route --
-	// makes every one of those sends a real send under the drain's cap.
+	// hook at all. Wiring it through publishHookLifecycle -- the production route
+	// -- makes every one of those sends a real send under the drain's cap.
 	var lifecycleMu sync.Mutex
 	var lifecycle []events.EventKind
 	defer func() {
@@ -66,11 +66,10 @@ func TestDelegateCloseDrainBoundsNotificationHookPublication(t *testing.T) {
 		lifecycleMu.Lock()
 		lifecycle = append(lifecycle, kind)
 		lifecycleMu.Unlock()
-		if end, ok := data.(events.HookEndData); ok && kind == events.EventHookEnd {
-			root.emitHookCompletedContext(ctx, end)
-			return
-		}
-		root.emitContext(ctx, data)
+		// The production route, not a test-only variant: the drain marks the
+		// dispatch context with its bound and publishHookLifecycle decides from
+		// that mark whether a completed hook publishes and records on it.
+		root.publishHookLifecycle(ctx, kind, data)
 	})
 	root.hookRunner = runner
 

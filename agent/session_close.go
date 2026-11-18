@@ -324,6 +324,11 @@ func (s *Session) closeTerminal(ctx context.Context, options closeOptions) {
 	// mark is a durable append); it closes below.
 	s.disposeLaneResidueAtClose(budgetCtx)
 	s.unlockOwnManagedWorktreeAtClose(budgetCtx)
+	// A fail-closed diagnostic that a bounded send claimed but could not deliver
+	// is retried here, on what is left of the cascade, now that the removals it
+	// was competing with have run. The claim is re-taken inside the retry, so
+	// this can deliver at most the one diagnostic the session gets.
+	s.retryCloseFailClosed(budgetCtx)
 
 	if s.jobManager != nil {
 		jobManagerCloseErr = errors.Join(jobManagerCloseErr, s.jobManager.closeStoreOnly())

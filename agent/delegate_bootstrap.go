@@ -102,8 +102,16 @@ func (s *Session) emitDelegateUpdate(plan delegateUpdatePlan) {
 	// causes must not reach the session's full close budget, because that budget
 	// is what removes the remaining collectible lanes. A nested pass publishing
 	// the root's stream on the full budget could take the slots the root's own
-	// removals need. The bound travels with the pass.
-	bound, bounded := s.delegateController.publicationBoundFor()
+	// removals need.
+	//
+	// The bound travels ON THE PLAN, from the pass that produced it. It is
+	// deliberately not read from the controller: the controller is shared with
+	// the live root, so a bound installed there for one child's teardown
+	// suppressed an unrelated sibling's update and activity for the duration of
+	// that teardown. A plan produced outside a pass carries no bound and takes
+	// the session's ordinary delivery path, exactly as before.
+	bound := plan.bound
+	bounded := bound != nil
 	publish := func(target *Session, data events.DelegateUpdatedData, p *provenance.Causal) {
 		if bounded {
 			target.emitWithProvenanceContext(bound, data, p)

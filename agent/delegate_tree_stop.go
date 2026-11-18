@@ -841,10 +841,14 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 	// Nothing this pass causes may reach the full close budget: the drain is on
 	// the close-join critical path, so a wake warning or a closure announcement
 	// parked on the session's own delivery path spends the budget reserved for
-	// leaving collectible worktrees on disk. Install the pass bound for as long
-	// as this call runs; a publication from outside the pass is unaffected.
-	restoreBound := c.setPublicationBound(ctx)
-	defer restoreBound()
+	// leaving collectible worktrees on disk.
+	//
+	// The bound is PASSED to each Reconcile, not installed on the controller.
+	// The controller is shared with the live root, so a bound installed here
+	// applied to every delegate publication for as long as this drain ran: an
+	// unrelated sibling finishing in that window had its update and activity
+	// suppressed by this pass's deadline. A bound belongs to the pass that
+	// supplied it.
 	// Each Reconcile hands back a retirement-mutation lease, and the drain
 	// deliberately holds every one until it returns. Collect them and release
 	// all on return — LIFO, as the per-iteration defers did — rather than
@@ -877,7 +881,7 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 		if err != nil {
 			return err
 		}
-		plans, err := c.Reconcile(evidence)
+		plans, err := c.reconcileBounded(evidence, ctx)
 		if plans.retirementRelease != nil {
 			retirementReleases = append(retirementReleases, plans.retirementRelease)
 		}

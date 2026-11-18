@@ -680,6 +680,28 @@ func (s *Session) armDelegateAttention(attentionID string) error {
 // the batch; the stop's batched acknowledgment retry is the caller that has
 // several IDs.
 func (s *Session) armDelegateAttentions(attentionIDs []string) error {
+	return s.armDelegateAttentionsBounded(nil, attentionIDs)
+}
+
+// errDelegateAttentionArmSpent reports that a bounded arm could not take
+// attentionMu before its caller's bound expired, so nothing was armed.
+var errDelegateAttentionArmSpent = errors.New("delegate attention arm could not take the attention lock within the caller's bound")
+
+// armDelegateAttentionsBounded is armDelegateAttentions on a caller's bound, for
+// a wake the close drain drives: it ACQUIRES attentionMu under that bound
+// instead of waiting behind whatever holds it.
+//
+// A wake is news about an acknowledgment that already committed, and the
+// notification behind it was appended to the receiver's transcript durably
+// before this ran. So when the lock is not available in time nothing is lost
+// that a restart cannot recover: the arm is skipped, the durable row stands,
+// and the caller reports the skip. What must not happen is the close parking
+// here — an in-flight environment append holds attentionMu across its publish,
+// so an unbounded acquisition waits on the stream the close is competing with.
+//
+// A nil bound is the session's ordinary path and takes the lock outright,
+// exactly as before.
+func (s *Session) armDelegateAttentionsBounded(bound context.Context, attentionIDs []string) error {
 	if s == nil {
 		return errors.New("delegate attention wake identity is incomplete")
 	}
@@ -710,9 +732,14 @@ func (s *Session) armDelegateAttentions(attentionIDs []string) error {
 		err = armFault()
 	}
 	if err == nil {
-		err = s.armDelegateAttentionsOnce(ids)
+		err = s.armDelegateAttentionsOnceBounded(bound, ids)
 	}
-	s.attentionMu.Lock()
+	// The retention below is bookkeeping for a paced retry, not the wake itself:
+	// it is not worth waiting out the close for, and the durable row already
+	// stands. A spent bound skips it and reports the skip.
+	if !lockWithin(bound, &s.attentionMu) {
+		return errors.Join(err, errDelegateAttentionArmSpent)
+	}
 	if err != nil {
 		if s.delegateAttentionArmIDs == nil {
 			s.delegateAttentionArmIDs = make(map[string]struct{})
@@ -739,10 +766,16 @@ func (s *Session) armDelegateAttentions(attentionIDs []string) error {
 // receiver once for the whole batch — the same single wake a one-ID arm's
 // caller gets — instead of once per ID.
 func (s *Session) armDelegateAttentionsOnce(attentionIDs []string) error {
+	return s.armDelegateAttentionsOnceBounded(nil, attentionIDs)
+}
+
+// armDelegateAttentionsOnceBounded is armDelegateAttentionsOnce on a caller's
+// bound; see armDelegateAttentionsBounded for why the close bounds these.
+func (s *Session) armDelegateAttentionsOnceBounded(bound context.Context, attentionIDs []string) error {
 	if !s.isRootDelegateAttentionReceiver() {
 		armed := false
 		for _, attentionID := range attentionIDs {
-			idArmed, err := s.armDelegateAttentionInController(attentionID)
+			idArmed, err := s.armDelegateAttentionInControllerBounded(bound, attentionID)
 			if err != nil {
 				return err
 			}
@@ -758,7 +791,7 @@ func (s *Session) armDelegateAttentionsOnce(attentionIDs []string) error {
 		}
 		return nil
 	}
-	pending, err := s.pendingDelegateAttentionIDs()
+	pending, err := s.pendingDelegateAttentionIDsBounded(bound)
 	if err != nil {
 		return err
 	}
@@ -799,11 +832,20 @@ func (s *Session) armDelegateAttentionOnce(attentionID string) error {
 // reports whether attentionID was still pending, so the caller decides how the
 // wake fires — once for a batch, or the single-ID arm's own notify.
 func (s *Session) armDelegateAttentionInController(attentionID string) (armed bool, err error) {
+	return s.armDelegateAttentionInControllerBounded(nil, attentionID)
+}
+
+// armDelegateAttentionInControllerBounded is armDelegateAttentionInController on
+// a caller's bound; see armDelegateAttentionsBounded for why the close bounds
+// these.
+func (s *Session) armDelegateAttentionInControllerBounded(bound context.Context, attentionID string) (armed bool, err error) {
 	if s.delegateController == nil || s.owningDelegateID == "" {
 		return false, errors.New("delegate attention controller identity is incomplete")
 	}
 	for {
-		s.attentionMu.Lock()
+		if !lockWithin(bound, &s.attentionMu) {
+			return false, errDelegateAttentionArmSpent
+		}
 		ids, err := s.pendingDelegateAttentionIDsLocked()
 		if err != nil {
 			s.attentionMu.Unlock()
@@ -846,10 +888,18 @@ func (s *Session) hasPendingDelegateAttentionArmRetry() bool {
 }
 
 func (s *Session) pendingDelegateAttentionIDs() ([]string, error) {
+	return s.pendingDelegateAttentionIDsBounded(nil)
+}
+
+// pendingDelegateAttentionIDsBounded is pendingDelegateAttentionIDs on a
+// caller's bound; see armDelegateAttentionsBounded.
+func (s *Session) pendingDelegateAttentionIDsBounded(bound context.Context) ([]string, error) {
 	if s == nil {
 		return nil, nil
 	}
-	s.attentionMu.Lock()
+	if !lockWithin(bound, &s.attentionMu) {
+		return nil, errDelegateAttentionArmSpent
+	}
 	defer s.attentionMu.Unlock()
 	return s.pendingDelegateAttentionIDsLocked()
 }
