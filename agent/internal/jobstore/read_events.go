@@ -60,6 +60,27 @@ var ErrScanLimitExceeded = errors.New("jobstore: journal exceeds scan limit")
 // package themselves.
 var ErrLineTooLong = linecap.ErrTooLong
 
+// ReadDiagnostics reports what a job-journal read could not make whole. It is
+// deliberately the same shape as delegatestore.ReadDiagnostics: retained job
+// history and retained delegate history answer the same question — was the
+// history returned complete — so a consumer that already reports one store's
+// diagnostics reports the other's the same way.
+type ReadDiagnostics struct {
+	// TornTail is set when the scan stopped at an unterminated, syntactically
+	// incomplete final line: an in-flight append racing the read — or an
+	// append that will never finish. The events before it are returned
+	// normally; the torn line is not part of them.
+	TornTail bool
+	// Corrupt is set when the scan stopped at a line it could not decode: the
+	// journal itself is damaged, and the events before that line are a decoded
+	// prefix rather than the whole history. It is the diagnostic counterpart of
+	// the parse error, and it exists so a caller that reports integrity can say
+	// "this journal is damaged" without also saying it about a journal it could
+	// not open at all — an unreadable file is a fact about access, not about the
+	// bytes.
+	Corrupt bool
+}
+
 // ReadEvents reads and decodes every event from a jobs.jsonl file WITHOUT
 // opening a Store for append. It is the read-only forensic path: a caller that
 // only inspects settled state (evener-doctor) uses this instead of Open, which
@@ -82,6 +103,13 @@ func ReadEvents(path string) ([]Event, error) {
 func ScanEvents(ctx context.Context, path string, limits ScanLimits) ([]Event, error) {
 	events, _, err := ScanEventsFrom(ctx, path, 0, limits)
 	return events, err
+}
+
+// ScanEventsWithDiagnostics is ScanEvents starting at byte 0 that also returns
+// the read's diagnostics. See ScanEventsFromWithDiagnostics for the contract.
+func ScanEventsWithDiagnostics(ctx context.Context, path string, limits ScanLimits) ([]Event, ReadDiagnostics, error) {
+	events, _, diagnostics, err := ScanEventsFromWithDiagnostics(ctx, path, 0, limits)
+	return events, diagnostics, err
 }
 
 // ScanEventsFrom is ScanEvents' incremental counterpart: it seeks to
@@ -113,22 +141,58 @@ func ScanEvents(ctx context.Context, path string, limits ScanLimits) ([]Event, e
 // (a non-nil slice with a non-nil error, toOffset 0), so a caller that
 // specifically recognizes ErrScanLimitExceeded can degrade to a truncated-
 // but-honest partial result instead of discarding everything already read.
-// MaxLineBytes is different: exceeding it returns ErrLineTooLong with NO
-// partial result (nil events, toOffset 0) — a single line that long is
-// corruption serious enough that there is nothing safe to salvage from
-// this scan.
+//
+// A malformed JSON line returns its partial result the same way and for the
+// same reason: the events decoded BEFORE the bad line are still true statements
+// about this journal, so they are returned alongside the parse error, with
+// toOffset 0 because the scan did not reach a resumable record boundary. A
+// caller that recognizes neither sentinel and treats any non-nil error as a
+// failed read ignores the slice, which stays correct: the read did fail, and
+// reusing toOffset would resume inside the damaged line.
+//
+// Which errors carry a decoded prefix is a property of the ERROR, not of the
+// slice: match ErrScanLimitExceeded and ErrLineTooLong explicitly rather than
+// inferring the case from a non-empty result.
+//
+//   - ErrScanLimitExceeded: the prefix. The limit fired after those events.
+//   - a malformed-JSON error: the prefix. The scan stopped at one bad line.
+//   - ErrLineTooLong: NOTHING (nil events, toOffset 0). A single line that long
+//     is corruption serious enough that there is nothing safe to salvage.
+//   - every other failure — open, seek, a read error, a cancelled context, and
+//     the missing-file case that returns no error at all — also carries NO
+//     prefix, but for an unrelated reason: the scan never got far enough to
+//     decode one. An empty slice is therefore NOT evidence that the journal is
+//     oversized or corrupt; only matching ErrLineTooLong says that.
 func ScanEventsFrom(ctx context.Context, path string, fromOffset int64, limits ScanLimits) ([]Event, int64, error) {
+	events, offset, _, err := ScanEventsFromWithDiagnostics(ctx, path, fromOffset, limits)
+	return events, offset, err
+}
+
+// ScanEventsFromWithDiagnostics is ScanEventsFrom plus the scan's diagnostics:
+// whether it stopped at a torn trailing line instead of at a clean record
+// boundary, and whether it stopped at a line it could not decode. Those are
+// different outcomes with different consequences — a torn tail is an append that
+// has not finished, a corrupt line is permanent damage — so they are reported
+// separately rather than folded into one flag.
+//
+// A clean EOF, a limit, a cancellation, and every failure to REACH the file
+// (open, seek, a read error, the missing-file case) leave ReadDiagnostics at its
+// zero value — a limit is already reported by the error, and the file-level
+// failures establish nothing about the bytes, so reporting damage for them would
+// describe something no scan observed. A torn tail or Corrupt is reported in
+// addition to the events the scan did keep.
+func ScanEventsFromWithDiagnostics(ctx context.Context, path string, fromOffset int64, limits ScanLimits) ([]Event, int64, ReadDiagnostics, error) {
 	f, err := openScanEventsFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, 0, nil
+			return nil, 0, ReadDiagnostics{}, nil
 		}
-		return nil, 0, fmt.Errorf("jobstore: read %s: %w", path, err)
+		return nil, 0, ReadDiagnostics{}, fmt.Errorf("jobstore: read %s: %w", path, err)
 	}
 	defer func() { _ = f.Close() }()
 	if fromOffset > 0 {
 		if _, err := f.Seek(fromOffset, io.SeekStart); err != nil {
-			return nil, 0, fmt.Errorf("jobstore: seek %s: %w", path, err)
+			return nil, 0, ReadDiagnostics{}, fmt.Errorf("jobstore: seek %s: %w", path, err)
 		}
 	}
 
@@ -139,12 +203,13 @@ func ScanEventsFrom(ctx context.Context, path string, fromOffset int64, limits S
 	// 64 KiB matches the doctor's bounded readers.
 	reader := bufio.NewReaderSize(f, 64*1024)
 	events := make([]Event, 0)
+	var diagnostics ReadDiagnostics
 	totalBytes := fromOffset
 	offset := fromOffset
 	lineNum := 0
 	for {
 		if err := ctx.Err(); err != nil {
-			return nil, 0, err
+			return nil, 0, ReadDiagnostics{}, err
 		}
 		// Checked before reading the next line, not just before decoding
 		// it: a MaxEvents-only scan (MaxLineBytes left at its generous
@@ -157,16 +222,19 @@ func ScanEventsFrom(ctx context.Context, path string, fromOffset int64, limits S
 		// event this check already accounts for.
 		if limits.MaxEvents > 0 && len(events) >= limits.MaxEvents {
 			if err := ctx.Err(); err != nil {
-				return nil, 0, err
+				return nil, 0, ReadDiagnostics{}, err
 			}
-			return events, 0, fmt.Errorf("%w: %s exceeds %d events", ErrScanLimitExceeded, path, limits.MaxEvents)
+			return events, 0, ReadDiagnostics{}, fmt.Errorf("%w: %s exceeds %d events", ErrScanLimitExceeded, path, limits.MaxEvents)
 		}
 		line, terminated, consumed, readErr := linecap.ReadLine(ctx, reader, maxLineBytes)
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
 			if errors.Is(readErr, linecap.ErrTooLong) {
-				return nil, 0, fmt.Errorf("%w: %s line %d", ErrLineTooLong, path, lineNum+1)
+				// A single line this long is damage to the bytes, the same
+				// category as a line that will not decode — not a failure to
+				// reach the file.
+				return nil, 0, ReadDiagnostics{Corrupt: true}, fmt.Errorf("%w: %s line %d", ErrLineTooLong, path, lineNum+1)
 			}
-			return nil, 0, fmt.Errorf("jobstore: read %s: %w", path, readErr)
+			return nil, 0, ReadDiagnostics{}, fmt.Errorf("jobstore: read %s: %w", path, readErr)
 		}
 		if errors.Is(readErr, io.EOF) {
 			break // clean EOF, nothing left to process
@@ -182,13 +250,20 @@ func ScanEventsFrom(ctx context.Context, path string, fromOffset int64, limits S
 			// wins over a coincident limit, not just when the two are
 			// spaced further apart.
 			if err := ctx.Err(); err != nil {
-				return nil, 0, err
+				return nil, 0, ReadDiagnostics{}, err
 			}
-			return events, 0, fmt.Errorf("%w: %s exceeds %d raw bytes", ErrScanLimitExceeded, path, limits.MaxBytes)
+			return events, 0, ReadDiagnostics{}, fmt.Errorf("%w: %s exceeds %d raw bytes", ErrScanLimitExceeded, path, limits.MaxBytes)
 		}
 		if len(bytes.TrimSpace(line)) == 0 {
 			if !terminated {
-				break // trailing blank/whitespace-only unterminated tail
+				// A blank or whitespace-only tail is not a record that failed to
+				// finish: the writer starts every event with a JSON object, so
+				// these bytes cannot be the beginning of one. Treat it as a clean
+				// boundary, exactly as a terminated blank line is, because
+				// reporting it as torn would turn a readable journal into
+				// "unavailable" and mark an intact running row unconfirmed for a
+				// newline that has not landed yet.
+				break
 			}
 			offset += consumed
 			continue
@@ -199,9 +274,19 @@ func ScanEventsFrom(ctx context.Context, path string, fromOffset int64, limits S
 				// Tolerate only an unterminated, syntactically incomplete final
 				// line from an in-flight append. A newline-terminated or
 				// definitively malformed final record is durable corruption.
+				diagnostics.TornTail = true
 				break
 			}
-			return nil, 0, fmt.Errorf("jobstore: parse event line %d in %s: %w", lineNum, path, err)
+			// Durable corruption: the scan cannot get past this line, and it says
+			// so with an error. The records decoded BEFORE it are still true
+			// statements about the journal, so they are returned alongside that
+			// error exactly as a limit returns its partial result — a caller that
+			// must answer a question one of those records settles (does this
+			// journal hold a start for job X?) can use them, and a caller that
+			// treats any error as fatal ignores them as before. offset stays 0
+			// because the scan did NOT reach a resumable record boundary.
+			diagnostics.Corrupt = true
+			return events, 0, diagnostics, fmt.Errorf("jobstore: parse event line %d in %s: %w", lineNum, path, err)
 		}
 		// A successful decode makes this record complete and final
 		// regardless of whether its trailing newline has landed yet (see
@@ -216,5 +301,5 @@ func ScanEventsFrom(ctx context.Context, path string, fromOffset int64, limits S
 		events = append(events, e)
 		offset += consumed
 	}
-	return events, offset, nil
+	return events, offset, diagnostics, nil
 }
