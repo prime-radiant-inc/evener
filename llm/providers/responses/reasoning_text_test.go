@@ -510,6 +510,39 @@ func TestResponsesIssuedCallKeepsOneRecordAcrossItemIDs(t *testing.T) {
 	}
 }
 
+// The terminal direction of the same rule: a call finalizes its arguments in
+// the stream, then the terminal selects that call_id under a different item
+// ID and omits the arguments. The call ID identifies the record, so the
+// terminal still selects it and its streamed arguments survive.
+func TestResponsesTerminalSelectsCallUnderAnotherItemID(t *testing.T) {
+	t.Parallel()
+	frames := []string{
+		`{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"fc_one","call_id":"call_dup","name":"write_file"}}`,
+		`{"type":"response.function_call_arguments.done","output_index":0,"call_id":"call_dup","arguments":"{\"path\":\"x\"}"}`,
+	}
+	const selected = `[{"type":"function_call","id":"fc_two","call_id":"call_dup","name":"write_file","arguments":""}]`
+	all := append(slices.Clone(frames), `{"type":"response.completed","response":{"status":"completed","output":`+selected+`}}`)
+	for _, source := range []string{"live", "recorded"} {
+		var resp *llm.Response
+		if source == "live" {
+			_, resp = responsesEvents(t, all...)
+		} else {
+			recorded, err := ExtractRecordedResponse([]byte("data: "+strings.Join(all, "\n\ndata: ")+"\n\n"), "m")
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp = &recorded
+		}
+		calls := resp.ToolCalls()
+		if len(calls) != 1 {
+			t.Fatalf("%s dispatchable calls = %d, want the one issued call: %+v", source, len(calls), calls)
+		}
+		if calls[0].ID != "call_dup" || string(calls[0].Arguments) != `{"path":"x"}` {
+			t.Fatalf("%s dispatch = %q %q, want the streamed arguments the terminal omitted", source, calls[0].ID, string(calls[0].Arguments))
+		}
+	}
+}
+
 // A reasoning item that carries plain reasoning_text content (no
 // encrypted_content) must still land in the settled message as a thinking
 // part, or the transcript loses everything the model thought. Parts are

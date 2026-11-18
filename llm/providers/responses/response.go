@@ -117,7 +117,11 @@ func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawM
 				continue
 			}
 			call := &responsesTerminalCall{
-				ToolCallData:      llm.ToolCallData{ID: callID, ItemID: itemID, Name: name, Arguments: json.RawMessage(args), Type: "function"},
+				ID:                callID,
+				ItemID:            itemID,
+				Name:              name,
+				Arguments:         json.RawMessage(args),
+				Type:              "function",
 				terminalArguments: terminalArguments,
 			}
 			if calls == nil {
