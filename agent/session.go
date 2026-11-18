@@ -264,6 +264,7 @@ type Session struct {
 	// The frozen prompt describes the provider, model and build at launch. A
 	// changed value belongs in the next environment context.
 	promptProvider, promptModel, promptBuild string
+	promptKnowledgeCutoff                    *string
 	promptProvenanceOverridden               bool
 	inheritedEnvironmentIdentity             bool
 	// envContextState mirrors envTracker.State() for Meta()/SessionMeta.EnvContext:

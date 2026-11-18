@@ -23,6 +23,9 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/envctx"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
@@ -420,6 +423,45 @@ func TestSetModel_MarkerWarnsOnDroppedFallbacks(t *testing.T) {
 func TestSetModel_ProjectsKnowledgeCutoffAfterStartupPrompt(t *testing.T) {
 	t.Parallel()
 	launch := NewOpenAIProfile("gpt-5.4")
+	t.Run("catalog changes under the same model", func(t *testing.T) {
+		state, cwd := t.TempDir(), t.TempDir()
+		s := newSession(t, withProfile(launch), withStateDir(state), withDir(cwd))
+		if err := s.maybeAppendEnvironmentContext(); err != nil {
+			t.Fatal(err)
+		}
+		startup, id := s.cachedSystemPrompt, s.ID()
+		s.Close()
+		for _, cutoff := range []string{"2026-09", "", launch.KnowledgeCutoff()} {
+			meta, err := schema.LoadSessionMeta(state, id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			row := launch.Resolved()
+			row.Caps.KnowledgeCutoff = new(cutoff)
+			restored, err := RestoreSessionFromMetaWithConfig(s.client, launch.WithResolved(row), execenv.NewLocalExecutionEnvironment(cwd), meta, RestoreSessionConfig{StateDir: state})
+			if err != nil {
+				t.Fatal(err)
+			}
+			before := countEnvironmentTurns(restored)
+			for round := range 2 {
+				_, _, _, req, _, _, err := restored.prepareModelRequestWithError(t.Context(), round+1, &events.RoundTimings{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				var projected envctx.Tracker
+				for _, msg := range req.Messages {
+					if msg.Role == llm.RoleUser {
+						projected.ReplayBlock(msg.Text())
+					}
+				}
+				last := projected.State().Last
+				if req.Messages[0].Text() != startup || countEnvironmentTurns(restored) != before+1 || last.Model != launch.ID()+"/"+launch.Model() || last.KnowledgeCutoff != cutoff {
+					t.Errorf("post-restore request %d reports model %q cutoff %q, want %q under the saved prompt", round, last.Model, last.KnowledgeCutoff, cutoff)
+				}
+			}
+			restored.Close()
+		}
+	})
 	switched := newAnthropicProfile("claude-opus-4-6")
 	launchCutoff, switchedCutoff := launch.KnowledgeCutoff(), switched.KnowledgeCutoff()
 	if launchCutoff == "" || switchedCutoff == "" || launchCutoff == switchedCutoff {

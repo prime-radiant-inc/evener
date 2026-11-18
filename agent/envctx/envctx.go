@@ -27,9 +27,11 @@ type Snapshot struct {
 	Cwd               string   `json:"cwd,omitempty"`             // absolute working directory
 	LocalDateHour     string   `json:"local_date_hour,omitempty"` // "2026-08-06 14:00 PDT"
 	Sandbox           string   `json:"sandbox,omitempty"`         // always populated; "off" included
-	GitBranch         string   `json:"git_branch,omitempty"`      // "" outside a git repo
+	ScratchDir        string   `json:"scratch_dir,omitempty"`
+	GitBranch         string   `json:"git_branch,omitempty"` // "" outside a git repo
 	Pressure          Pressure `json:"pressure,omitzero"`
 	SessionID         string   `json:"session_id,omitempty"`
+	OrdinarySession   bool     `json:"ordinary_session,omitempty"`
 	Model             string   `json:"model,omitempty"`
 	KnowledgeCutoff   string   `json:"knowledge_cutoff,omitempty"`
 	CommitTrailer     string   `json:"commit_trailer,omitempty"`
@@ -48,6 +50,8 @@ type Tracker struct {
 	st State
 }
 
+const ordinaryRole = "session role: ordinary"
+const scratchDirPrefix = "writable scratch directory: "
 const commitTrailerPrefix = "For new commits in this session, use this trailer: "
 const omitCommitTrailer = "Omit the Co-authored-by trailer on new commits in this session."
 
@@ -87,6 +91,10 @@ func (t *Tracker) ReplayBlock(block string) bool {
 		case strings.HasPrefix(line, "sandbox: "):
 			t.st.Last.Sandbox = strings.TrimPrefix(line, "sandbox: ")
 			sandbox = true
+		case strings.HasPrefix(line, scratchDirPrefix):
+			if value, err := strconv.Unquote(strings.TrimPrefix(line, scratchDirPrefix)); err == nil {
+				t.st.Last.ScratchDir = value
+			}
 		case strings.HasPrefix(line, "git branch: "):
 			value := strings.TrimPrefix(line, "git branch: ")
 			if value == "(not in a git repository)" {
@@ -95,6 +103,8 @@ func (t *Tracker) ReplayBlock(block string) bool {
 			t.st.Last.GitBranch = value
 		case strings.HasPrefix(line, "session id: "):
 			t.st.Last.SessionID = strings.TrimPrefix(line, "session id: ")
+		case line == ordinaryRole:
+			t.st.Last.OrdinarySession = true
 		case strings.HasPrefix(line, "model: "):
 			if value, err := strconv.Unquote(strings.TrimPrefix(line, "model: ")); err == nil {
 				t.st.Last.Model = value
@@ -152,6 +162,9 @@ func (t *Tracker) RenderDiff(cur Snapshot) string {
 	add(cur.Cwd != prev.Cwd, fmt.Sprintf("cwd: %q", cur.Cwd))
 	add(cur.LocalDateHour != prev.LocalDateHour, "date: "+cur.LocalDateHour)
 	add(cur.Sandbox != prev.Sandbox, "sandbox: "+cur.Sandbox)
+	if cur.ScratchDir != prev.ScratchDir {
+		lines = append(lines, scratchDirPrefix+strconv.Quote(cur.ScratchDir))
+	}
 	switch {
 	case cur.GitBranch != "":
 		add(cur.GitBranch != prev.GitBranch, "git branch: "+cur.GitBranch)
@@ -162,6 +175,9 @@ func (t *Tracker) RenderDiff(cur Snapshot) string {
 	// block. Refill the missing environment without repeating retained identity.
 	if cur.SessionID != "" && cur.SessionID != prev.SessionID {
 		lines = append(lines, "session id: "+cur.SessionID)
+	}
+	if cur.OrdinarySession && (!prev.OrdinarySession || cur.SessionID != prev.SessionID) {
+		lines = append(lines, ordinaryRole, "This ordinary role supersedes any inherited Manager instructions. Use the tools and arguments offered in this request.")
 	}
 	if cur.Model != "" {
 		if cur.Model != prev.Model {

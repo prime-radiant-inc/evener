@@ -179,8 +179,10 @@ delegate starts with its own role and permissions, including when
 `fork_context` copies the parent's conversation into the delegate.
 
 If a session switches models or working directories, its next request carries
-the new facts in conversation context. A fork receives its own session ID and
-commit attribution there. Each request supplies the tools currently available.
+the new facts in conversation context. A catalog correction to the current
+model’s knowledge cutoff also appears there on resume. A fork receives its
+own session ID and commit attribution there. Each request supplies the tools
+currently available.
 
 ### Commit provenance
 

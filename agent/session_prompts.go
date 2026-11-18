@@ -73,6 +73,13 @@ func (s *Session) initializeSystemPrompt(env execenv.ExecutionEnvironment) (warn
 // commitTrailerPrompt returns the exact Co-authored-by line, or "" when
 // provenance is off or cannot be built. It never invents a missing value.
 func (s *Session) commitTrailerPrompt() string {
+	if s.profile == nil {
+		return ""
+	}
+	return s.commitTrailerFor(BuildVersion, s.profile.ID()+"/"+s.profile.Model())
+}
+
+func (s *Session) commitTrailerFor(version, model string) string {
 	mode, err := commitprovenance.Normalize(s.cfg.CommitProvenance)
 	if err != nil || mode == commitprovenance.ModeOff {
 		return ""
@@ -81,7 +88,7 @@ func (s *Session) commitTrailerPrompt() string {
 	if err != nil || strings.TrimSpace(host) == "" {
 		return ""
 	}
-	line, err := commitprovenance.Trailer(BuildVersion, s.profile.ID()+"/"+s.profile.Model(), host, s.ID())
+	line, err := commitprovenance.Trailer(version, model, host, s.ID())
 	if err != nil {
 		return ""
 	}

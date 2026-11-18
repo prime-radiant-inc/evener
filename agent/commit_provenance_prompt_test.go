@@ -204,16 +204,19 @@ func TestSystemPromptCarriesCommitTrailer(t *testing.T) {
 				t.Error("child's commit trailer did not appear exactly once in the wire history")
 			}
 		}
-		for _, tc := range []struct{ name, build, mode, want string }{
-			{"build upgrade", "fixture-earlier-build", "", parentTrailer},
-			{"disable trailer in saved prompt", BuildVersion, commitprovenance.ModeOff, ""},
+		for _, tc := range []struct{ name, build, host, retainedHost, mode, want string }{
+			{name: "build upgrade", build: "fixture-earlier-build", host: host, want: parentTrailer},
+			{name: "disable trailer in saved prompt", build: BuildVersion, host: host, mode: commitprovenance.ModeOff},
+			{name: "renamed launch host", build: BuildVersion, host: host + "-prior", want: parentTrailer},
+			{name: "renamed launch host with explicit coauthor", build: BuildVersion, host: host + "-prior", mode: commitprovenance.ModeCoauthor, want: parentTrailer},
+			{name: "renamed retained host", build: BuildVersion, host: host, retainedHost: host + "-prior", want: parentTrailer},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				oldState := t.TempDir()
 				meta := parent.Meta()
 				old := entries.Header
 				old.BuildVersion = tc.build
-				oldTrailer, err := commitprovenance.Trailer(old.BuildVersion, old.ProfileID+"/"+old.Model, host, old.SessionID)
+				oldTrailer, err := commitprovenance.Trailer(old.BuildVersion, old.ProfileID+"/"+old.Model, tc.host, old.SessionID)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -229,27 +232,46 @@ func TestSystemPromptCarriesCommitTrailer(t *testing.T) {
 						t.Fatal(err)
 					}
 				}
+				wantUpdates := 1
+				if tc.retainedHost != "" {
+					retained, err := commitprovenance.Trailer(old.BuildVersion, old.ProfileID+"/"+old.Model, tc.retainedHost, old.SessionID)
+					if err != nil {
+						t.Fatal(err)
+					}
+					block := envctx.NewTracker(envctx.State{HasSent: true}).RenderDiff(envctx.Snapshot{CommitTrailer: retained})
+					if err := writer.Append(schema.NewTurn(schema.TurnEnvironment, llm.User(block))); err != nil {
+						t.Fatal(err)
+					}
+					wantUpdates++
+				}
 				if err := writer.Close(); err != nil {
 					t.Fatal(err)
 				}
 				if err := schema.SaveSessionMeta(oldState, meta); err != nil {
 					t.Fatal(err)
 				}
-				restored, err := RestoreSessionFromMetaWithConfig(parent.client, parent.profile, execenv.NewLocalExecutionEnvironment(parent.currentEnv().WorkingDirectory()), meta, RestoreSessionConfig{StateDir: oldState, CommitProvenance: tc.mode, testOnly: testConfig{skipGitSnapshot: true}})
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer restored.Close()
-				sendOneUserInput(t, restored, "after-upgrade-e5")
-				reqs := adapter.Requests()
-				req := reqs[len(reqs)-1]
-				checkAttribution(t, req, old.SystemPrompt, oldTrailer, tc.want, 1)
 				previous := parentRequests[len(parentRequests)-1]
 				previous.Messages = slices.Clone(previous.Messages)
 				previous.Messages[0] = llm.System(old.SystemPrompt)
-				before, after := wireBody(previous)["input"].([]any), wireBody(req)["input"].([]any)
-				if len(after) < len(before) || !reflect.DeepEqual(after[:len(before)], before) {
-					t.Error("restore changed the previously dispatched input items")
+				for range 2 {
+					meta, err := schema.LoadSessionMeta(oldState, parent.ID())
+					if err != nil {
+						t.Fatal(err)
+					}
+					restored, err := RestoreSessionFromMetaWithConfig(parent.client, parent.profile, execenv.NewLocalExecutionEnvironment(parent.currentEnv().WorkingDirectory()), meta, RestoreSessionConfig{StateDir: oldState, CommitProvenance: tc.mode, testOnly: testConfig{skipGitSnapshot: true}})
+					if err != nil {
+						t.Fatal(err)
+					}
+					sendOneUserInput(t, restored, "after-upgrade-e5")
+					restored.Close()
+					reqs := adapter.Requests()
+					req := reqs[len(reqs)-1]
+					checkAttribution(t, req, old.SystemPrompt, oldTrailer, tc.want, wantUpdates)
+					before, after := wireBody(previous)["input"].([]any), wireBody(req)["input"].([]any)
+					if len(after) < len(before) || !reflect.DeepEqual(after[:len(before)], before) {
+						t.Error("restore changed the previously dispatched input items")
+					}
+					previous = req
 				}
 			})
 		}

@@ -328,7 +328,9 @@ subsystem. Anyone authorized to start a session may pass `manager: true` to
 `thread/start`. S08–S09 persist the bit in session metadata and preserve it
 through resume, process restart and Clear. Fresh roots and forks do not inherit
 it; a new Manager requires an explicit start parameter. A missing bit is false,
-with no migration of existing sessions.
+with no migration of existing sessions. Forks and asides retain the parent’s
+startup prompt and append their ordinary role to model-facing environment
+context. The child’s role and tool schemas govern inherited Manager guidance.
 
 The daemon owns `thread.evener.manager`; S06 reads it, and S02–S03 show a
 read-only indication. S05 authenticates the local daemon binding and identifies

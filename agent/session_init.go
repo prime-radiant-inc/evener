@@ -346,6 +346,7 @@ func (s *Session) transcriptHeader(createdAt time.Time) transcript.Header {
 		CreatedAt:        createdAt,
 		ProfileID:        s.profile.ID(),
 		Model:            s.profile.Model(),
+		KnowledgeCutoff:  new(s.profile.KnowledgeCutoff()),
 		WorkingDir:       s.envInfo.WorkingDir,
 		Depth:            s.cfg.spawn.depth,
 		BuildVersion:     BuildVersion,

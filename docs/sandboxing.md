@@ -169,6 +169,9 @@ and two probes (the exit status of `git config --list`, and which of `go`,
 sandbox-derived lines. It exists so a session reads its box instead of
 discovering it by failing at it.
 
+Sandboxed forks and asides keep the parent's startup prompt and report their own
+writable scratch directory in the environment context sent with the first child request.
+
 The same rule governs it: every line is read from the resolved policy, quoted
 from a ruling recorded here, or measured at session start — through the
 session's own execution environment, so what it measures is what a real command

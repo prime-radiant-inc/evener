@@ -9,9 +9,12 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/envctx"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -314,8 +317,8 @@ func TestSandboxPromptLine(t *testing.T) {
 // parent box" — this test instead exercises the real EnableSandbox path so a
 // Wrapper (and its real, on-disk scratch dir) exists.
 func TestSandboxPromptLineIncludesScratchDir(t *testing.T) {
-	t.Parallel()
 	root := t.TempDir()
+	t.Setenv("TMPDIR", t.TempDir())
 	host := sandbox.HostFacts{OS: "linux", Home: t.TempDir(), BwrapPath: "/usr/bin/bwrap", BwrapCapable: true, OverlaySupported: true}
 	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite}, host, root)
 	if err != nil {
@@ -323,6 +326,10 @@ func TestSandboxPromptLineIncludesScratchDir(t *testing.T) {
 	}
 	local := execenv.NewLocalExecutionEnvironment(root)
 	t.Cleanup(func() { local.Cleanup(); local.DisposeSandboxScratch() })
+	cfg := SessionConfig{Sandbox: sandbox.ModeWorkspaceWrite.String(), StateDir: t.TempDir()}
+	if err := PickFreshSessionID(local, &cfg); err != nil {
+		t.Fatal(err)
+	}
 	if err := local.EnableSandbox(&rp); err != nil {
 		t.Fatalf("EnableSandbox: %v", err)
 	}
@@ -337,6 +344,89 @@ func TestSandboxPromptLineIncludesScratchDir(t *testing.T) {
 	}
 	if !strings.Contains(got, scratch) {
 		t.Fatalf("sandbox prompt line must name the scratch directory so the model can find it: got %q, want it to contain %q", got, scratch)
+	}
+
+	adapter := &agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response { return agenttest.FinalResponse("done") }}
+	parent := newSession(t, withEnv(local), withConfig(cfg), withAdapter(adapter))
+	sendOneUserInput(t, parent, "parent input")
+	startup := adapter.Requests()[0].Messages[0].Text()
+	if !strings.Contains(startup, scratch) {
+		t.Fatal("parent request did not name its installed scratch directory in the startup prompt")
+	}
+	entries, err := readTranscriptFull(t.Context(), transcriptPath(cfg.StateDir, parent.ID()), cfg.StateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	position := slices.IndexFunc(entries.Entries, func(e transcript.Entry) bool { return e.Turn.Kind == schema.TurnUserInput }) + 1
+	for _, tc := range []struct {
+		name   string
+		create func(string, string) (string, error)
+	}{
+		{"fork", func(state, id string) (string, error) { return ForkSession(state, id, position, "edited input", "") }},
+		{"aside", AsideSession},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			id, err := tc.create(cfg.StateDir, parent.ID())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var initialScratch string
+			for round := range 2 {
+				meta, err := schema.LoadSessionMeta(cfg.StateDir, id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				env := execenv.NewLocalExecutionEnvironment(root)
+				child, err := RestoreSessionFromMetaWithConfig(parent.client, parent.profile, env, meta, RestoreSessionConfig{
+					StateDir: cfg.StateDir,
+					testOnly: testConfig{skipGitSnapshot: true, sandboxProber: sandbox.FakeProber{Facts: host}},
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(child.Close)
+				childScratch := env.SessionScratchDir()
+				if childScratch == "" || childScratch == scratch || (round > 0 && childScratch != initialScratch) {
+					t.Fatalf("installed scratch = %q, parent = %q, first child = %q", childScratch, scratch, initialScratch)
+				}
+				if round == 0 {
+					initialScratch = childScratch
+					write := func(dir string) toolExecResult {
+						return fileToolCall(t, child, "write_file", map[string]string{"file_path": filepath.Join(dir, "child-file"), "content": id})
+					}
+					if !write(scratch).isError {
+						t.Fatal("child file tool allowed a write to the parent's scratch")
+					}
+					if _, err := os.Stat(filepath.Join(scratch, "child-file")); !os.IsNotExist(err) {
+						t.Fatalf("denied write changed parent's scratch: %v", err)
+					}
+					if res := write(childScratch); res.isError {
+						t.Fatalf("write to child scratch: %s", res.output)
+					}
+					if data, err := os.ReadFile(filepath.Join(childScratch, "child-file")); err != nil || string(data) != id {
+						t.Fatalf("child scratch file = %q, err = %v", data, err)
+					}
+				}
+				sendOneUserInput(t, child, "child input")
+				requests := adapter.Requests()
+				messages := requests[len(requests)-1].Messages
+				if messages[0].Text() != startup {
+					t.Fatal("child request changed the inherited system prompt")
+				}
+				var observations int
+				for _, msg := range messages[1:] {
+					var tracker envctx.Tracker
+					if tracker.ReplayBlock(msg.Text()) && tracker.State().Last.ScratchDir == childScratch {
+						observations++
+					}
+				}
+				if observations != 1 {
+					t.Errorf("request %d contains %d environment updates with the child's writable scratch, want 1", round+1, observations)
+				}
+				child.Close()
+				env.Cleanup()
+			}
+		})
 	}
 }
 

@@ -2,13 +2,16 @@ package agent
 
 import (
 	"context"
+	"path/filepath"
+	"slices"
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/agent/internal/agenttest"
-
+	"primeradiant.com/evener/agent/envctx"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -38,22 +41,35 @@ func assertOrdinaryManagerRequest(t *testing.T, req llm.Request) {
 
 func TestManagerForkAsideDoNotInheritRole(t *testing.T) {
 	t.Parallel()
+	stateDir, workspace := t.TempDir(), t.TempDir()
+	finish := func(llm.Request) llm.Response { return agenttest.FinalResponse("result") }
+	adapter := newFakeAdapter("openai", finish)
+	parent := newSession(t, withDir(workspace), withStateDir(stateDir), withAdapter(adapter), withConfig(SessionConfig{
+		Manager: true, AgentsDocPath: filepath.Join(workspace, "personal.md"),
+	}))
+	sendOneUserInput(t, parent, "parent-input")
+	parentID := parent.ID()
+	parent.Close()
+	header, entries, _, err := readTranscript(t.Context(), schema.SessionTranscriptPath(stateDir, parentID), stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	parentReq := adapter.Requests()[0]
+	if header.SystemPrompt == "" || parentReq.Messages[0].Text() != header.SystemPrompt {
+		t.Fatal("parent request did not carry its saved startup instructions")
+	}
+	if !slices.ContainsFunc(parentReq.Tools, func(tool llm.ToolDefinition) bool { return tool.Name == "session_control" }) {
+		t.Fatal("parent request did not advertise the Manager control tool")
+	}
+	userTurn := 1 + slices.IndexFunc(entries, func(entry transcript.Entry) bool { return entry.Turn.Kind == schema.TurnUserInput })
 	for _, aside := range []bool{false, true} {
 		t.Run(map[bool]string{false: "fork", true: "aside"}[aside], func(t *testing.T) {
-			stateDir, parentID := buildParentSession(t)
-			meta, err := schema.LoadSessionMeta(stateDir, parentID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			meta.Manager, meta.Config.Manager = true, true
-			if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
-				t.Fatal(err)
-			}
 			var childID string
+			var err error
 			if aside {
 				childID, err = AsideSession(stateDir, parentID)
 			} else {
-				childID, err = ForkSession(stateDir, parentID, 3, "fork-input", "")
+				childID, err = ForkSession(stateDir, parentID, userTurn, "fork-input", "")
 			}
 			if err != nil {
 				t.Fatal(err)
@@ -67,20 +83,38 @@ func TestManagerForkAsideDoNotInheritRole(t *testing.T) {
 					t.Errorf("cycle %d persisted child inherited Manager", cycle)
 				}
 				client := llm.NewClient()
-				client.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
-					assertOrdinaryManagerRequest(t, req)
-					return agenttest.FinalResponse("child-result")
-				}))
-				child, err := RestoreSessionFromMeta(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), childMeta, stateDir)
+				adapter := newFakeAdapter("openai", finish)
+				client.Register(adapter)
+				child, err := RestoreSessionFromMeta(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(workspace), childMeta, stateDir)
 				if err != nil {
 					t.Fatal(err)
 				}
 				t.Cleanup(child.Close)
 				assertOrdinaryManagerChild(t, child)
-				if _, err := child.ProcessInput(t.Context(), "child-input", nil); err != nil {
-					t.Fatal(err)
-				}
+				sendOneUserInput(t, child, "child-input")
 				child.Close()
+				requests := adapter.Requests()
+				if len(requests) != 1 {
+					t.Fatalf("cycle %d sent %d requests, want one", cycle, len(requests))
+				}
+				req := requests[0]
+				assertOrdinaryManagerRequest(t, req)
+				if !slices.ContainsFunc(req.Tools, func(tool llm.ToolDefinition) bool { return tool.Name == "job_list" }) {
+					t.Errorf("cycle %d lost the ordinary job_list tool", cycle)
+				}
+				if len(req.Messages) == 0 || req.Messages[0].Role != llm.RoleSystem || req.Messages[0].Text() != header.SystemPrompt {
+					t.Errorf("cycle %d changed the Manager's saved startup instructions", cycle)
+				}
+				var roleUpdates int
+				for _, msg := range req.Messages {
+					var block envctx.Tracker
+					if msg.Role == llm.RoleUser && block.ReplayBlock(msg.Text()) && block.State().Last.OrdinarySession {
+						roleUpdates++
+					}
+				}
+				if roleUpdates != 1 {
+					t.Errorf("cycle %d received %d ordinary role updates, want one", cycle, roleUpdates)
+				}
 			}
 			unchanged, err := schema.LoadSessionMeta(stateDir, parentID)
 			if err != nil {

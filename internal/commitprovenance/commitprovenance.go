@@ -56,18 +56,18 @@ func Trailer(version, model, host, session string) (string, error) {
 	return trailerPrefix(version, model, session) + host + ">", nil
 }
 
-// PromptHasTrailer reports whether the saved instructions contain this session's
-// commit trailer, including when the session started on a different host.
-func PromptHasTrailer(prompt, version, model, session string) bool {
+// TrailerInPrompt returns the saved trailer for this session, including its
+// original hostname. A prompt without one returns an empty string.
+func TrailerInPrompt(prompt, version, model, session string) string {
 	prefix := trailerPrefix(version, model, session)
 	for line := range strings.SplitSeq(prompt, "\n") {
 		if address, ok := strings.CutPrefix(line, prefix); ok {
 			if host, ok := strings.CutSuffix(address, ">"); ok && appwire.ValidRefPart(host) {
-				return true
+				return line
 			}
 		}
 	}
-	return false
+	return ""
 }
 
 func trailerPrefix(version, model, session string) string {

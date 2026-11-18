@@ -2,6 +2,7 @@ package agent
 
 import (
 	"primeradiant.com/evener/agent/envctx"
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/internal/commitprovenance"
@@ -18,17 +19,24 @@ func (s *Session) setPromptEnvironmentOrigin(header transcript.Header) {
 		}
 	}
 	s.promptProvider, s.promptModel, s.promptBuild = header.ProfileID, header.Model, header.BuildVersion
+	s.promptKnowledgeCutoff = header.KnowledgeCutoff
+	if s.promptKnowledgeCutoff == nil && header.SystemPrompt == "" {
+		s.promptKnowledgeCutoff = new(s.profile.KnowledgeCutoff())
+	}
 	if s.promptProvider == "" || s.promptModel == "" {
 		s.promptProvider, s.promptModel = s.profile.ID(), s.profile.Model()
 	}
 	if s.promptBuild == "" {
 		s.promptBuild = BuildVersion
 	}
-	if s.cfg.CommitProvenance != "" && header.SessionID != "" {
-		// Resume may override the saved setting. The original prompt survives
-		// subsequent config checkpoints and identifies the directive it contains.
-		hadTrailer := commitprovenance.PromptHasTrailer(header.SystemPrompt, s.promptBuild, s.promptProvider+"/"+s.promptModel, header.SessionID)
-		s.promptProvenanceOverridden = hadTrailer != (s.commitTrailerPrompt() != "")
+	if header.SessionID != "" {
+		model := s.promptProvider + "/" + s.promptModel
+		saved := commitprovenance.TrailerInPrompt(header.SystemPrompt, s.promptBuild, model, header.SessionID)
+		if saved != "" || s.cfg.CommitProvenance != "" {
+			// Compare the hostname and mode at the same launch identity. A
+			// subsequent model switch can return to this model before dispatch.
+			s.promptProvenanceOverridden = saved != s.commitTrailerFor(s.promptBuild, model)
+		}
 	}
 	if s.fork.parentID == "" || s.fork.divergence == 0 {
 		return
@@ -78,10 +86,23 @@ func (s *Session) setEnvironmentIdentity(snap *envctx.Snapshot, last envctx.Snap
 	changedModel := s.promptModel != "" && (s.profile.ID() != s.promptProvider || s.profile.Model() != s.promptModel)
 	if fork {
 		snap.SessionID = s.id
+		snap.OrdinarySession = !s.cfg.Manager
 	}
-	if fork || changedModel || last.Model != "" {
+	// Native forks inherit the parent's scratch instructions. A context-fork
+	// delegate has its own prompt, but can inherit a later scratch update.
+	if fork && !s.isSubagentSession() || last.ScratchDir != "" {
+		snap.ScratchDir = ""
+		if local, ok := s.env.(*execenv.LocalExecutionEnvironment); ok {
+			snap.ScratchDir = local.SessionScratchDir()
+		}
+	}
+	cutoff := s.profile.KnowledgeCutoff()
+	// When a saved prompt has no recorded cutoff, publish the current catalog
+	// fact once. Retained model updates then own the cutoff across restores.
+	changedCutoff := s.promptModel != "" && (s.promptKnowledgeCutoff == nil || *s.promptKnowledgeCutoff != cutoff)
+	if fork || changedModel || changedCutoff || last.Model != "" {
 		snap.Model = s.profile.ID() + "/" + s.profile.Model()
-		snap.KnowledgeCutoff = s.profile.KnowledgeCutoff()
+		snap.KnowledgeCutoff = cutoff
 	}
 	overrideTrailer := fork || s.promptProvenanceOverridden || last.CommitTrailer != "" || last.OmitCommitTrailer
 	if overrideTrailer || changedModel || (s.promptBuild != "" && s.promptBuild != BuildVersion) {
