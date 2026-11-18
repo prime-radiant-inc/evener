@@ -3815,3 +3815,125 @@ test("coverage agrees with the merge about a versioned standalone result", () =>
     "coverage must agree the emitted row is older history the merge keeps",
   ).toBe(true);
 });
+
+// T-M4: the coverage walk called a versioned result superseded when the
+// surviving CALL under its id was unversioned, so it was still a fold
+// candidate. The result survives the fold — the fold refuses to absorb a
+// versioned row — but coverage reported retained history the merge keeps as
+// thrown away, and a retention consumer gating on that answer drops the row.
+test("coverage keeps a versioned result beside an unversioned call of the same id", () => {
+  const older: TurnModel[] = [
+    {
+      id: "turn_1",
+      status: "completed",
+      items: [
+        {
+          id: "item_tool_result_2_0",
+          turnId: "turn_1",
+          type: "commandExecution",
+          toolName: "read_file",
+          text: "",
+          callId: "call_shared",
+          output: "the read result",
+          status: "completed",
+          version: 7,
+        },
+      ],
+    },
+  ];
+  const newer: TurnModel[] = [
+    {
+      id: "turn_1",
+      status: "completed",
+      items: [
+        {
+          // Unversioned, so this call IS a fold candidate and it supplies every
+          // field the older result carries.
+          id: "item_tool_1_0",
+          turnId: "turn_1",
+          type: "commandExecution",
+          toolName: "read_file",
+          text: "",
+          callId: "call_shared",
+          output: "the read result",
+          status: "completed",
+          exitCode: 0,
+        },
+      ],
+    },
+  ];
+
+  const result = mergeTurnHistoryWithFolds(older, newer);
+  const emitted = result.turns.flatMap((turn) => turn.items).some((item) => item.id === "item_tool_result_2_0");
+  expect(emitted, "the merge returns the versioned standalone result").toBe(true);
+  expect(
+    result.olderItemAddsCoverage(older[0]!.items[0]!),
+    "coverage agrees the emitted row is older history the merge keeps",
+  ).toBe(true);
+});
+
+// T-M5: a group whose fragments differ only in version is not a no-op. The
+// merged turn carries the highest version, and reporting "the older side
+// contributed nothing" returned the fresh side unchanged, discarding it — the
+// next update then resolved a stale intermediate failure over the attempt that
+// answered.
+test("a higher merged version counts as a contribution", () => {
+  const older: TurnModel[] = [
+    {
+      id: "turn_v",
+      status: "inProgress",
+      version: 12,
+      items: [{ id: "item_v", turnId: "turn_v", type: "message", text: "same text" }],
+    },
+  ];
+  const newer: TurnModel[] = [
+    {
+      id: "turn_v",
+      status: "inProgress",
+      version: 10,
+      items: [{ id: "item_v", turnId: "turn_v", type: "message", text: "same text" }],
+    },
+  ];
+
+  const result = mergeTurnHistoryWithFolds(older, newer);
+  expect(
+    result.turns.map((turn) => turn.version),
+    "the higher version survives the no-op shortcut",
+  ).toEqual([12]);
+});
+
+// T-M6: merging a retained failed version with a higher-version reopen clears
+// the diagnostic and completion timing. Coverage credited those same discarded
+// fields through the rank and nullish chains, so it reported history the merge
+// throws away. Terminal-field coverage answers with the same version decision
+// the merge uses.
+test("coverage does not credit terminal fields the versioned merge cleared", () => {
+  const older: TurnModel[] = [
+    {
+      id: "turn_reopen",
+      status: "failed",
+      version: 9,
+      error: { message: "the first attempt failed" },
+      completedAt: "2026-01-01T00:00:05Z",
+      durationMs: 5000,
+      // The item survives in both fragments unchanged, so the ONLY thing that
+      // could claim coverage here is a terminal field — which is the finding.
+      items: [{ id: "item_shared", turnId: "turn_reopen", type: "message", text: "attempt" }],
+    },
+  ];
+  const newer: TurnModel[] = [
+    {
+      id: "turn_reopen",
+      status: "inProgress",
+      version: 10,
+      items: [{ id: "item_shared", turnId: "turn_reopen", type: "message", text: "attempt" }],
+    },
+  ];
+
+  const result = mergeTurnHistoryWithFolds(older, newer);
+  const merged = result.turns.find((turn) => turn.id === "turn_reopen");
+  expect(merged?.error, "the merge clears the replaced attempt's diagnostic").toBeUndefined();
+  expect(merged?.completedAt, "the merge clears the replaced attempt's completion timing").toBeUndefined();
+  expect(merged?.status, "the reopen owns the status").toBe("inProgress");
+  expect(result.olderCoverage, "coverage must not claim terminal fields the merge cleared").toBe(false);
+});

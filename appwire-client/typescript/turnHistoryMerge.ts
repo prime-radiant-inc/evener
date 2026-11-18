@@ -807,6 +807,62 @@ function highestVersion(left: number | undefined, right: number | undefined): nu
   return Math.max(left, right);
 }
 
+// authoritativeFragment answers WHICH of two fragments of one turn speaks for
+// it, and it is the only place that question is answered.
+//
+// A versioned turn answers for the whole turn at its version, so the highest
+// recorded version owns it. A side with no version loses to one that has one: a
+// placeholder carries no record to rank. Neither side versioned means nothing
+// here ranks them, and null is the caller's answer to keep the legacy
+// rank-and-fill rules.
+//
+// Three separate places used to decide this for themselves — the merge's
+// terminal fields (nullishTurnFields), the coverage walk's terminal fields
+// (olderTurnAddsCoverage), and the no-op shortcut's question of whether the
+// older side contributed anything (olderTurnContributes) — and they disagreed.
+// A merge that cleared a stale diagnostic by version while coverage credited
+// that same discarded field reported history the merge threw away; a no-op
+// shortcut that ignored the version returned the LOWER version and let an
+// intermediate stale failure overwrite the authoritative state on the next
+// update (#1166 review).
+function authoritativeFragment(older: TurnModel, newer: TurnModel): TurnModel | null {
+  if (older.version === undefined && newer.version === undefined) return null;
+  if (newer.version === undefined) return older;
+  if (older.version === undefined) return newer;
+  return older.version > newer.version ? older : newer;
+}
+
+// terminalFieldsSurviveMerge answers, for ONE older fragment of a versioned
+// turn group, whether the merge keeps its terminal state once every later
+// fragment has been folded over it — and which of its coverage fields survive
+// individually.
+//
+// It walks the same fragments in the same order the merge does, so a claim it
+// permits is a claim the merge honours. Null means no side carried a version
+// and the caller must fall back to the rank and nullish rules.
+function terminalFieldsSurviveMerge(
+  older: TurnModel,
+  laterTurns: readonly TurnModel[],
+): { status: boolean; terminal: Partial<Record<(typeof turnCoverageFields)[number], boolean>> } | null {
+  let merged = older;
+  let versioned = older.version !== undefined;
+  for (const later of laterTurns) {
+    const authoritative = authoritativeFragment(merged, later);
+    if (authoritative !== null) versioned = true;
+    merged = mergePageTurn(merged, later);
+  }
+  // Nothing in the chain carried a version: the rank and nullish rules own it.
+  if (!versioned) return null;
+  // The terminal state is one answer, from one fragment — so it survives for
+  // this fragment exactly when the fold's last word on it is this fragment's
+  // own, or the same value this fragment carried.
+  const terminal = {} as Partial<Record<(typeof turnCoverageFields)[number], boolean>>;
+  for (const field of turnCoverageFields) {
+    terminal[field] = merged[field] === older[field];
+  }
+  return { status: merged.status === older.status, terminal };
+}
+
 // The turn fields that merge with a nullish fallback: a side carrying no value
 // for one of them says nothing, and the other side's value stands.
 //
@@ -836,7 +892,8 @@ function nullishTurnFields(
   };
   // Neither side carries a version: nothing here ranks them by record, so the
   // legacy rank and fallback rules above stand.
-  if (newer.version === undefined && older.version === undefined) return fields;
+  const authoritative = authoritativeFragment(older, newer);
+  if (authoritative === null) return fields;
   // A versioned turn answers for its own terminal state — status, error and
   // completion timing together, INCLUDING by omission. They are one answer, not
   // three: the rank chain above exists for unversioned page fragments, whose
@@ -851,11 +908,6 @@ function nullishTurnFields(
   // reopened turn would otherwise be overwritten by a stale failed version 10
   // and would restore that attempt's diagnostic and timing. The highest recorded
   // version owns the terminal state; items still merge from both fragments.
-  // The fragment with the highest recorded version owns the terminal state. A
-  // side with no version at all loses to one that has it: a placeholder carries
-  // no record to rank.
-  const authoritative =
-    older.version !== undefined && (newer.version === undefined || older.version > newer.version) ? older : newer;
   const other = authoritative === newer ? older : newer;
   const { startedAt: _startedAt, completedAt: _completedAt, durationMs: _durationMs, ...rest } = fields;
   return {
@@ -1199,9 +1251,17 @@ function olderItemContributes(older: ItemModel, newer: ItemModel): boolean {
 // supersession asks exactly what the fold will do.
 function fullySupersededToolResult(older: ItemModel, view: ToolFoldView) {
   if (older.callId === undefined || !isToolResultId(older.id)) return false;
+  // A versioned row answers for itself at its version and is never absorbed by
+  // an unversioned call fragment. The fold already excludes versioned rows from
+  // its candidate sets (toolFoldView's rowIsLegacy gate), so asking only the
+  // view here made the two disagree: the result survived the fold but coverage
+  // called it superseded — a claim the merge did not honour. Both sides now ask
+  // the fold's own eligibility rule (#1166 review).
+  if (!rowIsLegacy(older)) return false;
   if (!view.callIds.has(older.callId)) return false;
   const fresh = view.fresh.get(older.callId);
   if (fresh === undefined) return false;
+  if ([...fresh.results, ...fresh.calls].every((item) => !rowIsLegacy(item))) return false;
   for (const field of toolResultFields) {
     const value = (older as unknown as Record<string, unknown>)[field];
     if (value === undefined) continue;
@@ -1411,14 +1471,26 @@ function olderTurnAddsCoverage(
   view: ToolFoldView,
   context?: ToolItemMergeContext,
 ): boolean {
+  // The versioned answer, when there is one, is the ONLY answer for the
+  // terminal fields: the merge either keeps this fragment's terminal state
+  // (every later fragment loses on version) or discards it (some later
+  // fragment outranks it), and the rank/nullish chains below describe the
+  // unversioned case. Asking them instead made coverage credit a stale
+  // failed attempt's diagnostic and completion timing that the merge had
+  // already cleared in favour of a higher-version reopen (#1166 review).
+  const versioned = terminalFieldsSurviveMerge(older, laterTurns);
   if (
     // The canonical-fields check stays ahead of the unmatched early return:
     // an unmatched turn carrying persisted fields still claims even when its
     // items cannot (naming-trap regression: a warning-only turn with usage).
-    turnCoverageFields.some(
-      (field) =>
-        !absentForCoverage(older[field], true) && matches.every((turn) => absentForCoverage(turn[field], true)),
-    )
+    turnCoverageFields.some((field) => {
+      if (absentForCoverage(older[field], true)) return false;
+      const survives =
+        versioned === null
+          ? matches.every((turn) => absentForCoverage(turn[field], true))
+          : versioned.terminal?.[field] === true;
+      return survives === true;
+    })
   ) {
     // The claimed turn fields ride the merged group turn, which the fold
     // drops once it has folded every item away unless it was already empty
@@ -1428,7 +1500,9 @@ function olderTurnAddsCoverage(
     // checking instead of returning.
     if (turnSurvivesFold(groupTurn, view)) return true;
   }
-  if (matches.length > 0 && statusOutlives(older.status, laterTurns)) {
+  const statusSurvives =
+    versioned === null ? matches.length > 0 && statusOutlives(older.status, laterTurns) : versioned.status === true;
+  if (statusSurvives) {
     // Turn status merges by rank (mergePageTurn) exactly as item status does:
     // a matched older turn's completed outlives fresh inProgress fragments and
     // the group turn keeps that persisted state. Unmatched retained turns
@@ -1478,6 +1552,13 @@ function foldTurnFragments(turns: TurnModel[], context?: ToolItemMergeContext): 
 }
 
 function olderTurnContributes(merged: TurnModel, fresh: TurnModel): boolean {
+  // The turn's version is part of what the merged turn carries. Leave it out
+  // and a group whose fragments differ only in version reads as a no-op: the
+  // shortcut returns the fresh side unchanged, the HIGHER merged version is
+  // discarded, and the next update resolves its terminal state against the
+  // lower one — an intermediate stale failure then overwrites the attempt that
+  // actually answered (#1166 review).
+  if (merged.version !== fresh.version) return true;
   for (const field of ["id", "status", ...turnCoverageFields] as const) {
     if (merged[field] !== fresh[field]) return true;
   }
