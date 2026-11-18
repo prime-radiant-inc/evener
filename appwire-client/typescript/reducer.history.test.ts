@@ -540,6 +540,83 @@ test("a read issued before the wait's announcement cannot clear the live countdo
   expect(cleared.modelRetry).toBeUndefined();
 });
 
+// M2: the receipt must belong to the wait being reconciled. A refresh issued
+// during wait A can take its snapshot after wait B begins but before B reaches
+// the daemon projection, and return after the pane receives B's announcement.
+// Its caller captured A's receipt. Letting that stand for B orders the read
+// against the wrong publication, so the snapshot's missing summary reads as
+// proof B ended and the live countdown and retry are cleared.
+test("a refresh that started during an earlier wait cannot use its own receipt to clear a newer live wait", () => {
+  const firstReset = 4_102_400_000;
+  const firstStart = 4_000_000_000;
+  const secondReset = 4_500_000_000;
+  const secondStart = 4_400_000_000;
+  // The receipt for A, which is what this refresh captured when it was issued.
+  const firstReceipt = 500_000;
+  // The receipt for B, the wait the pane holds now.
+  const secondReceipt = 900_000;
+  let model = hydrateThread(read([turn("turn_1", 1)], { activeTurnId: "turn_1" }), REF, NOW);
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: THREAD_ID,
+        ref: REF,
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: firstReset - firstStart,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 1,
+        waitStartedAt: firstStart,
+      },
+    } as AnyNotification,
+    firstReceipt,
+  );
+  // B supersedes A on the same turn.
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: THREAD_ID,
+        ref: REF,
+        turnId: "turn_1",
+        attempt: 2,
+        maxAttempts: 1,
+        delayMs: secondReset - secondStart,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 1,
+        waitStartedAt: secondStart,
+      },
+    } as AnyNotification,
+    secondReceipt,
+  );
+  expect(model.quotaWaitStartedAt).toBe(secondStart);
+  // The refresh's snapshot was taken after B began (so its cut is past B's
+  // start) but before B reached the projection, so it carries no summary.
+  const snapshotAfterBBegan = hydrateThread(
+    read([turn("turn_1", 1)], { activeTurnId: "turn_1", asOf: new Date(secondStart + 40_000).toISOString() }),
+    REF,
+    secondReceipt + 1,
+  );
+  // Its caller passes A's receipt, as a refresh issued during A would. A's
+  // receipt predates the second wait, so it must not order against B: the
+  // merge uses the model's own receipt for the wait it holds. The read was
+  // ISSUED during A, before this pane heard of B, and its cut landed after B
+  // began but before the bridge projected it.
+  const issuedDuringA = firstReceipt + 100_000;
+  const merged = applyReadModel(model, snapshotAfterBBegan, undefined, {
+    issuedAt: issuedDuringA,
+    announcedAt: firstReceipt,
+  });
+  expect(merged.quotaResumesAt).toBe(model.quotaResumesAt);
+  expect(merged.modelRetry?.waitStartedAt).toBe(secondStart);
+});
+
 // M2: a read captured while the turn was waiting can land AFTER the pane
 // received Stop. Stop produces no zero-delay wake, so the ended-wait check has
 // no stamp to reject it, and the read revives the retired turn merely by
@@ -597,12 +674,20 @@ test("a read captured before Stop cannot revive the retired turn, but a recovery
   const stale = applyReadModel(stopped, waitingSnapshot(stopAt + 1), undefined, { issuedAt: stopAt - 2_000 });
   expect(stale.quotaResumesAt).toBeUndefined();
   expect(stale.retiredQuotaTurn).toBe("turn_1");
+  // The stale snapshot also saw the turn running and the session working. The
+  // retirement protects the whole fact, not just the deadline: spreading the
+  // snapshot's status and running turn over the held idle model says the
+  // stopped session is working again, which is the state the Stop refutes.
+  expect(stale.status).toEqual(stopped.status);
+  expect(stale.runningTurnId).toBeUndefined();
   // The relay's recovery read, issued AFTER the synthetic idle, names the same
   // turn running and its wait live: the retirement was the relay's, and the
   // turn comes back with its countdown.
   const recovered = applyReadModel(stopped, waitingSnapshot(stopAt + 2), undefined, { issuedAt: stopAt + 2 });
   expect(recovered.retiredQuotaTurn).toBeUndefined();
   expect(recovered.quotaResumesAt).toBe(isoInstant(resumesAt));
+  // A genuinely running turn is still restored by the recovery read.
+  expect(recovered.runningTurnId).toBe("turn_1");
 });
 
 // M3: the pane reconnects after another client stopped a waiting turn and

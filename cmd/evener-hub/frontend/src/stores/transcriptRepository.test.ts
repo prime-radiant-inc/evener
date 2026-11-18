@@ -5323,3 +5323,41 @@ it("keeps the held body when a same-version merge supplies ask evidence", () => 
   expect(merged.text).toBe(durable.text);
   expect(merged.resolvedAskCalls).toEqual([{ turnId: "turn_1", callId: "call-6" }]);
 });
+
+// A quota wait's announcement can arrive while an initial read is in flight,
+// so the store buffers it for replay onto the adopted snapshot. The repository
+// receives that same buffered input, and it must fold the announcement too:
+// when the snapshot was taken before the wait reached the projection, neither
+// the snapshot's summary nor any other route establishes the countdown, and the
+// pane shows a working turn with no wait at all.
+it("folds a buffered quota announcement that predates the adopted snapshot", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  expect(owner.acceptRead(read("row-1"), { lifetime: 1, readId: "pre-cut", boundary: "pre-cut" })).toBe(true);
+  const waitStartedAt = 4_000_000_000;
+  const resumesAt = waitStartedAt + 7_200_000;
+  owner.acceptBeforeReadCut(
+    [
+      {
+        method: "evener/thread/modelRetry",
+        params: {
+          threadId,
+          ref,
+          turnId: "turn_1",
+          attempt: 1,
+          maxAttempts: 1,
+          delayMs: 7_200_000,
+          errorClass: "quota_exceeded",
+          groupElapsedMs: 5_000,
+          attemptCap: 1,
+          waitStartedAt,
+        },
+      } as AnyNotification,
+    ],
+    { lifetime: 1 },
+  );
+  const model = owner.getSnapshot();
+  expect(model?.quotaResumesAt).toBe(new Date(resumesAt).toISOString());
+  expect(model?.modelRetry?.errorClass).toBe("quota_exceeded");
+});

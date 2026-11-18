@@ -1150,7 +1150,14 @@ export class TranscriptRepository {
   acceptBeforeReadCut(notifications: readonly AnyNotification[], context: { lifetime: number }): void {
     const responseOverlayKeys = new Set(Object.keys(this.#model?.overlay ?? {}));
     for (const notification of notifications) {
-      if (notification.method === "history/updated") {
+      // A quota wait's announcement is the one frame whose loss erases a
+      // countdown outright: the wait has no other route into a model adopted
+      // from a snapshot taken before it, so a pane that buffered it while the
+      // read was in flight must still fold it here. The snapshot's own summary
+      // is not a substitute - that is exactly the projection the announcement
+      // outran - and the wait's wake is a zero-delay frame of the same method,
+      // so both ends of the transition travel this route.
+      if (notification.method === "history/updated" || notification.method === "evener/thread/modelRetry") {
         this.accept(notification, context);
       } else if (
         notification.method === "thread/queueChanged" &&

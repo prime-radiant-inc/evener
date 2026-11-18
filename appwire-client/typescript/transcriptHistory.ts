@@ -1115,10 +1115,21 @@ export interface QuotaReadEvidence {
 // asOf LATER than waitStartedAt and carries no summary, so the cut comparison
 // reads it as a wait that ended and erases a live countdown for the rest of the
 // wait.
+//
+// WHOSE receipt, though - that is the whole rule. The receipt must belong to
+// the wait being reconciled, and the model's own retry is the only thing that
+// names one. A read can be issued during wait A and return after the pane
+// received wait B's announcement; its caller captured A's receipt, and letting
+// that stand for B would order the read against the wrong publication and clear
+// a countdown B had only just started. So the model's receipt wins whenever the
+// model holds a quota retry - it carries B, the wait this merge is deciding.
+// Caller-supplied evidence is the fallback for the case the model holds NO
+// retry, which is the announcement withheld from the model during a pending
+// hydration: then there is no wait identity in the model to match, and the
+// caller's receipt is the only evidence the pane received the announcement.
 function quotaReadNewerThanWait(model: Pick<ThreadModel, "modelRetry">, evidence: QuotaReadEvidence): boolean {
-  const announcedAt =
-    evidence.announcedAt ??
-    (model.modelRetry?.errorClass === "quota_exceeded" ? model.modelRetry.receivedAt : undefined);
+  const heldRetry = model.modelRetry?.errorClass === "quota_exceeded" ? model.modelRetry : undefined;
+  const announcedAt = heldRetry?.receivedAt ?? evidence.announcedAt;
   if (announcedAt === undefined) return true;
   return evidence.issuedAt !== undefined && evidence.issuedAt >= announcedAt;
 }
@@ -1384,6 +1395,14 @@ export function applyReadResponse<M extends ThreadModel>(
   const heldRetiredWaitFields: Partial<ThreadModel> = retiredTurnStillEnded
     ? { quotaResumesAt: model.quotaResumesAt, quotaWaitStartedAt: model.quotaWaitStartedAt }
     : {};
+  // The retirement protects more than the quota pair. A snapshot captured
+  // before the Stop also carries the turn it saw running and the working status
+  // that went with it; spreading those over a held idle model puts a stopped
+  // session back to work, with no countdown and nothing saying the Stop took.
+  // Turn ownership, status and the quota pair are one fact here.
+  const heldRetiredTurnFields: Partial<ThreadModel> = retiredTurnStillEnded
+    ? { status: model.status, runningTurnId: model.runningTurnId }
+    : {};
   // A read that names a DIFFERENT running turn retires the old turn's retry
   // metadata even while the new turn waits its own wait: the snapshot's new
   // deadline is real, but the retained retry (its elapsed time, its model)
@@ -1441,6 +1460,7 @@ export function applyReadResponse<M extends ThreadModel>(
       ...keptQuotaReadReportsWaits,
       ...clearedRetiredQuotaTurn,
       ...runningTurn(resp.thread),
+      ...heldRetiredTurnFields,
       olderCursor,
       olderFrontier,
     },
@@ -1701,6 +1721,12 @@ export function applyReadModel<M extends ThreadModel>(
   const heldRetiredWaitFields: Partial<ThreadModel> = retiredTurnStillEnded
     ? { quotaResumesAt: model.quotaResumesAt, quotaWaitStartedAt: model.quotaWaitStartedAt }
     : {};
+  // Same rule as applyReadResponse: a pre-Stop snapshot's working status and
+  // running turn are as stale as its deadline, and spreading them revives a
+  // session the pane watched stop.
+  const heldRetiredTurnFields: Partial<ThreadModel> = retiredTurnStillEnded
+    ? { status: model.status, runningTurnId: model.runningTurnId }
+    : {};
   let next = withDisplay(
     {
       ...base,
@@ -1714,6 +1740,7 @@ export function applyReadModel<M extends ThreadModel>(
       ...keptQuotaReadReportsWaits,
       ...clearedRetiredQuotaTurn,
       ...(freshRunningTurnId ? { runningTurnId: freshRunningTurnId } : {}),
+      ...heldRetiredTurnFields,
       olderCursor,
       olderFrontier,
     },
