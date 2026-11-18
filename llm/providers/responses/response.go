@@ -232,6 +232,7 @@ func (acc *responsesOutputAccumulator) sparseContent(terminal []responsesTermina
 	for _, item := range terminal {
 		if item.observed != nil {
 			previous = item.observed
+			previous.displayOnly = false // The terminal supplies a native item at this position.
 			matched[previous] = item.parts
 		} else if previous != nil {
 			matched[previous] = append(matched[previous], item.parts...)
@@ -339,23 +340,33 @@ func (item *responsesOutputItem) appendMessage(content []llm.ContentPart, messag
 	return content, substantive
 }
 
-// Providers may omit an index on some or all items. Fill unclaimed positions
-// by first appearance without allocating a slice sized by a wire index.
+// Fill unclaimed native output positions by first appearance. Display-only
+// records keep their observed places in the transcript and own no native slots.
 func (acc *responsesOutputAccumulator) orderOutput() {
 	if len(acc.byIndex) == 0 {
 		return
 	}
 	var next int64
+	native := make([]*responsesOutputItem, 0, len(acc.output))
 	for _, item := range acc.output {
+		if item.displayOnly {
+			continue
+		}
+		native = append(native, item)
 		if item.index < 0 {
-			for acc.byIndex[next] != nil {
+			for acc.byIndex[next] != nil && !acc.byIndex[next].displayOnly {
 				next++
 			}
 			item.index = next
 			next++
 		}
 	}
-	slices.SortStableFunc(acc.output, func(a, b *responsesOutputItem) int { return cmp.Compare(a.index, b.index) })
+	slices.SortStableFunc(native, func(a, b *responsesOutputItem) int { return cmp.Compare(a.index, b.index) })
+	for i, item := range acc.output {
+		if !item.displayOnly {
+			acc.output[i], native = native[0], native[1:]
+		}
+	}
 }
 
 type reasoningContent uint8

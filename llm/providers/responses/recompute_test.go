@@ -58,6 +58,20 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 		t.Fatalf("ToolCalls() = %d, want 0: %+v", len(calls), calls)
 	}
 
+	res := resolved(openaiCaps)
+	res.Caps.ReplayReasoningText = new(true)
+	recorded := func(t *testing.T, body string) llm.Response {
+		t.Helper()
+		got, err := ExtractRecordedResponse([]byte(body), res.ModelID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return got
+	}
+	nextInput := func(t *testing.T, response llm.Response) string {
+		t.Helper()
+		return jsonOf(t, build(t, llm.Request{Model: res.ModelID, Messages: []llm.Message{response.Message}}, res)["input"])
+	}
 	t.Run("independently repeated fields replay identical input", func(t *testing.T) {
 		fields := [4]string{"cipher", " λ\t", "\r\n<&>", " \t" + `{ "arg": 1.0 }` + "\n"}
 		terminal := func(f [4]string) string {
@@ -72,17 +86,7 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 			`data: {"type":"response.output_text.delta","item_id":"msg","content_index":0,"delta":` + jsonOf(t, fields[1]) + `}`,
 			`data: {"type":"response.function_call_arguments.done","item_id":"fc","call_id":"call","arguments":` + jsonOf(t, fields[3]) + `}`,
 		}, "\n\n") + "\n\n"
-		res := resolved(openaiCaps)
-		res.Caps.ReplayReasoningText = new(true)
-		nextInput := func(t *testing.T, response string) string {
-			t.Helper()
-			got, err := ExtractRecordedResponse([]byte(response), res.ModelID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			return jsonOf(t, build(t, llm.Request{Model: res.ModelID, Messages: []llm.Message{got.Message}}, res)["input"])
-		}
-		want := nextInput(t, terminal(fields))
+		want := nextInput(t, recorded(t, terminal(fields)))
 		for omitted := range 1 << len(fields) {
 			t.Run(fmt.Sprintf("omitted_%04b", omitted), func(t *testing.T) {
 				repeated := fields
@@ -92,12 +96,52 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 					}
 				}
 				stream := events + `data: {"type":"response.completed","response":` + terminal(repeated) + "}\n\n"
-				if got := nextInput(t, stream); got != want {
+				if got := nextInput(t, recorded(t, stream)); got != want {
 					t.Errorf("input from stream = %s, complete response = %s", got, want)
 				}
 			})
 		}
 	})
+
+	const display = `"type":"response.reasoning_text.delta","delta":" D "`
+	const answer = `{"type":"message","id":"m","content":[{"type":"output_text","text":" A "}]}`
+	const tool = `{"type":"function_call","call_id":"c","name":"f","arguments":" { } "}`
+	const placeholder = `{"type":"reasoning","id":"r","content":[{"type":"reasoning_text","text":""}]}`
+	const answerDelta = `{"type":"response.output_text.delta","item_id":"m","delta":" A "}`
+	const toolDone = `{"type":"response.output_item.done","output_index":1,"item":` + tool + `}`
+	for _, tc := range []struct {
+		name     string
+		events   []string
+		terminal string
+		complete string
+	}{
+		{"anonymous display before unindexed answer", []string{"{" + display + "}", answerDelta, toolDone}, "", answer + "," + tool},
+		{"indexed display before unindexed answer", []string{`{"output_index":0,` + display + "}", answerDelta, toolDone}, "", answer + "," + tool},
+		{"native call claims its index after display", []string{`{"output_index":1,` + display + "}", toolDone, answerDelta}, "", answer + "," + tool},
+		{"sparse terminal answer after display", []string{"{" + display + "}", answerDelta, toolDone}, `{"type":"message","id":"m","content":[{"type":"output_text","text":""}]}`, answer + "," + tool},
+		{"terminal reasoning owns its native slot", []string{`{"item_id":"r","output_index":0,` + display + "}", answerDelta, toolDone}, placeholder, placeholder + "," + tool + "," + answer},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want := nextInput(t, recorded(t, `{"output":[`+tc.complete+`]}`))
+			events := append(tc.events, `{"type":"response.completed","response":{"output":[`+tc.terminal+`]}}`)
+			_, live := responsesEvents(t, events...)
+			saved := recorded(t, "data: "+strings.Join(events, "\n\ndata: ")+"\n\n")
+			for _, result := range []llm.Response{*live, saved} {
+				if got := nextInput(t, result); got != want {
+					t.Errorf("input from stream = %s, complete response = %s", got, want)
+				}
+				var displays int
+				for _, part := range result.Message.Content {
+					if th := part.Thinking; th != nil && th.Text == " D " && th.ID == "" && len(th.ResponsesTextParts) == 0 {
+						displays++
+					}
+				}
+				if displays != 1 {
+					t.Errorf("settled display parts = %d, want 1", displays)
+				}
+			}
+		})
+	}
 }
 
 func TestExtractRecordedResponse_ResponsesSSE_TerminalRawArguments(t *testing.T) {

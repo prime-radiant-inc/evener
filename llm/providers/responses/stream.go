@@ -300,9 +300,14 @@ func (acc *responsesOutputAccumulator) outputItem(payload map[string]any, kind, 
 		item.id = id
 		acc.byID[id] = item
 	}
-	if index >= 0 && (acc.byIndex[index] == nil || acc.byIndex[index] == item) && (item.index < 0 || item.index == index) {
-		item.index = index
-		acc.byIndex[index] = item
+	if index >= 0 && (item.index < 0 || item.index == index) {
+		if prior := acc.byIndex[index]; prior == nil || prior == item || (native && prior.displayOnly) {
+			if prior != nil && prior != item {
+				prior.index = -1 // A display delta cannot reserve a native output slot.
+			}
+			item.index = index
+			acc.byIndex[index] = item
+		}
 	}
 	if !native && id == "" && index < 0 {
 		acc.anonymousDisplay = item
