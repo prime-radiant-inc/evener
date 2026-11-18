@@ -40,6 +40,7 @@ import (
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/envvars/userdirs"
+	"primeradiant.com/evener/execsupport/fsatomic"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
@@ -383,12 +384,31 @@ func (s *Session) publishTranscript(meta schema.SessionMeta, hdr transcript.Head
 		var err error
 		writer, err = s.createTranscript(path, faultPoint, hdr)
 		return err
-	})
+	}, s.syncTranscriptPublication)
+	if errors.Is(err, fsatomic.ErrPublished) {
+		// The header and launch facts already belong to this writer.
+		// Retry the directory barrier without republishing the session.
+		if retryErr := s.syncTranscriptPublication(schema.SessionsDir(s.stateDir)); retryErr != nil {
+			err = errors.Join(err, fmt.Errorf("retry transcript directory sync: %w", retryErr))
+		}
+		s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{
+			Code:    "transcript_publication_sync",
+			Message: fmt.Sprintf("initial transcript directory sync failed: %v", err),
+		})
+		return writer, nil
+	}
 	if err != nil {
 		_ = writer.Close()
 		return nil, err
 	}
 	return writer, nil
+}
+
+func (s *Session) syncTranscriptPublication(dir string) error {
+	if fault := s.sessionInitFault("sync_transcript_publication"); fault != nil {
+		return fault
+	}
+	return fsatomic.SyncDir(dir)
 }
 
 // installContextStrategy selects the configured context strategy and registers

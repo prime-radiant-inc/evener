@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -23,6 +24,7 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/execsupport/fsatomic"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
@@ -1346,7 +1348,7 @@ func TestRestoreSessionFromMeta_NoTranscript_StartsClean(t *testing.T) {
 				return err
 			}
 			return io.ErrShortWrite
-		})
+		}, fsatomic.SyncDir)
 		if !errors.Is(err, io.ErrShortWrite) {
 			t.Fatalf("partial header write: %v", err)
 		}
@@ -1365,6 +1367,84 @@ func TestRestoreSessionFromMeta_NoTranscript_StartsClean(t *testing.T) {
 			t.Error("the retried request did not use its published prompt")
 		}
 	})
+	for _, tc := range []struct {
+		name  string
+		fresh bool
+	}{
+		{name: "fresh header directory sync", fresh: true},
+		{name: "replacement header directory sync"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := RestoreSessionConfig{StateDir: t.TempDir(), ForceRealIO: true, testOnly: testConfig{skipGitSnapshot: true, noSyncJobStore: true}}
+			if !tc.fresh {
+				if err := schema.SaveSessionMeta(cfg.StateDir, meta); err != nil {
+					t.Fatal(err)
+				}
+			}
+			path := schema.SessionTranscriptPath(cfg.StateDir, meta.ID)
+			var publishedHeader []byte
+			syncs := 0
+			cfg.testOnly.sessionInitFault = func(point string) error {
+				if point != "sync_transcript_publication" {
+					return nil
+				}
+				syncs++
+				var err error
+				publishedHeader, err = os.ReadFile(path)
+				if err != nil {
+					t.Fatalf("read published transcript at directory sync: %v", err)
+				}
+				if syncs == 1 {
+					return syscall.EIO
+				}
+				return nil
+			}
+			s, err := start(tc.fresh, cfg)
+			if err != nil {
+				t.Fatalf("start with published header: %v", err)
+			}
+			defer s.Close()
+			if syncs != 2 {
+				t.Errorf("startup made %d directory sync attempts, want 2", syncs)
+			}
+			served := serveFailClosedSession(s)
+			if _, err := s.ProcessInput(t.Context(), "continue after the sync failure", nil); err != nil {
+				t.Fatalf("served input after published header: %v", err)
+			}
+			if prompt, _ := lastRequest(t, s); prompt != s.transcript.Header().SystemPrompt {
+				t.Error("request did not use the published header's system prompt")
+			}
+			systemPrompt := s.transcript.Header().SystemPrompt
+			evs := served.settle(s)
+			if !slices.ContainsFunc(evs, func(ev events.SessionEvent) bool {
+				warning, ok := ev.Data.(events.WarningData)
+				return ok && ev.Kind == events.EventWarning && warning.Code == "transcript_publication_sync"
+			}) {
+				t.Error("the sync failure was not reported to the served event stream")
+			}
+			transcriptBytes, err := os.ReadFile(path)
+			if err != nil || !bytes.HasPrefix(transcriptBytes, publishedHeader) || len(transcriptBytes) == len(publishedHeader) {
+				t.Fatalf("served session did not append to the published header: %v", err)
+			}
+			current := loadMetaForTest(t, s)
+			if mode := current.PromptLaunch.TurnEndsProcess; mode == nil || *mode {
+				t.Errorf("published metadata did not retain the session's launch facts: %+v", current.PromptLaunch)
+			}
+			cfg.testOnly.sessionInitFault = nil
+			cfg.TurnEndsProcess = true
+			cold, err := restore(current, cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer cold.Close()
+			if _, err := cold.ProcessInput(t.Context(), "cold input", nil); err != nil {
+				t.Fatal(err)
+			}
+			if prompt, mode := lastRequest(t, cold); prompt != systemPrompt || mode != envctx.OneShotMode {
+				t.Error("cold request lost the published prompt or its updated job-lifetime guidance")
+			}
+		})
+	}
 	for _, failure := range []string{"metadata write", "header write"} {
 		t.Run("retry after "+failure, func(t *testing.T) {
 			cfg := RestoreSessionConfig{StateDir: t.TempDir(), ForceRealIO: true, testOnly: testConfig{skipGitSnapshot: true, noSyncJobStore: true}}

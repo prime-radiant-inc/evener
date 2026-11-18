@@ -580,7 +580,9 @@ func SaveSessionMetaWithFS(fs afero.Fs, dir string, meta SessionMeta) error {
 // PublishSessionTranscript reserves the final path for its first publisher.
 // When recovering a missing transcript or reusing an ID with metadata, the
 // new header becomes visible only after its matching launch facts are durable.
-func PublishSessionTranscript(fs afero.Fs, dir string, meta SessionMeta, recovering bool, writeHeader func(string) error) error {
+// A syncDir failure after rename wraps fsatomic.ErrPublished. The transcript
+// remains at the final path and the caller can retry the directory sync.
+func PublishSessionTranscript(fs afero.Fs, dir string, meta SessionMeta, recovering bool, writeHeader, syncDir func(string) error) error {
 	if fs == nil {
 		fs = sessionMetaFS
 	}
@@ -610,7 +612,10 @@ func PublishSessionTranscript(fs afero.Fs, dir string, meta SessionMeta, recover
 			if err := os.Rename(header, path); err != nil {
 				return err
 			}
-			return fsatomic.SyncDir(sessionsDir)
+			if err := syncDir(sessionsDir); err != nil {
+				return fmt.Errorf("%w: %w", fsatomic.ErrPublished, err)
+			}
+			return nil
 		}
 		if !recovering {
 			if _, err := lstatIfPossible(fs, SessionMetaPath(dir, meta.ID)); errors.Is(err, os.ErrNotExist) {
