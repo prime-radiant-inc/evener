@@ -3653,3 +3653,165 @@ test("prependOlderTurns keeps an unmatched item in the turn", () => {
   });
   expect(result.turns[1]).toBe(currentTurn);
 });
+
+// A page backfill hands the retained window to the merge SECOND
+// (mergeOlderItemPageWithFolds -> mergeTurnHistoryWithContext(olderTurns,
+// model.turns)), so argument order is not age order. A versioned turn must carry
+// its own terminal state from the fragment with the highest recorded version: the
+// page here holds version 12 of a turn that reopened, and the retained window
+// still holds the failed version 10 it replaced.
+test("an older-history page's higher-version turn owns the failure fields", () => {
+  const page: TurnModel[] = [
+    {
+      id: "turn_1",
+      status: "inProgress",
+      version: 12,
+      items: [{ id: "item_12", turnId: "turn_1", type: "agentMessage", text: "trying again", status: "inProgress" }],
+    },
+  ];
+  const retained: TurnModel[] = [
+    {
+      id: "turn_1",
+      status: "failed",
+      version: 10,
+      error: { message: "the first attempt's diagnostic", source: "provider" },
+      startedAt: "2026-01-01T00:00:00Z",
+      completedAt: "2026-01-01T00:00:05Z",
+      durationMs: 5000,
+      items: [{ id: "item_10", turnId: "turn_1", type: "agentMessage", text: "first attempt", status: "failed" }],
+    },
+  ];
+
+  // The retained window is passed second, exactly as the page merge does.
+  const result = mergeTurnHistoryWithFolds(page, retained);
+  const merged = result.turns.find((turn) => turn.id === "turn_1");
+  expect(merged?.status, "the highest recorded version owns the status: the attempt is running").toBe("inProgress");
+  expect(merged?.version, "the highest recorded version survives the merge").toBe(12);
+  expect(merged?.error, "the replaced attempt's diagnostic is not restored").toBeUndefined();
+  expect(merged?.completedAt, "the replaced attempt's completion timing is not restored").toBeUndefined();
+  expect(merged?.durationMs, "the replaced attempt's duration is not restored").toBeUndefined();
+  // Items from both fragments survive.
+  expect(merged?.items.map((item) => item.id).sort()).toEqual(["item_10", "item_12"]);
+});
+
+// One unversioned turn used to switch the whole merge back to the legacy call-id
+// fold (turnsAreVersioned). A compatibility page adds exactly that turn beside a
+// versioned announcement and the standalone result the index kept for a reused
+// call id, and the fold then dropped the result and copied its output onto the
+// unrelated announcement.
+test("a mixed merge keeps a versioned standalone result beside an unversioned turn", () => {
+  const older: TurnModel[] = [
+    {
+      id: "turn_1",
+      status: "completed",
+      version: 4,
+      items: [
+        {
+          id: "item_tool_result_1_0",
+          turnId: "turn_1",
+          type: "commandExecution",
+          toolName: "read_file",
+          text: "",
+          callId: "call_shared",
+          output: "the read result",
+          status: "completed",
+          version: 4,
+        },
+      ],
+    },
+    // The compatibility page's legacy turn. It MUST carry an item: the old gate
+    // skipped item-less turns as neutral, so an empty one would leave the set
+    // "versioned" and the fixture would pass without ever reaching the fold.
+    {
+      id: "turn_0",
+      status: "completed",
+      items: [{ id: "item_legacy_0", turnId: "turn_0", type: "message", text: "from an older build" }],
+    },
+  ];
+  const newer: TurnModel[] = [
+    {
+      id: "turn_1",
+      status: "completed",
+      version: 5,
+      items: [
+        {
+          id: "item_tool_1_0",
+          turnId: "turn_1",
+          type: "commandExecution",
+          toolName: "communicate",
+          text: "",
+          callId: "call_shared",
+          output: "the announcement's own result",
+          status: "completed",
+          version: 5,
+        },
+      ],
+    },
+  ];
+
+  const result = mergeTurnHistoryWithFolds(older, newer);
+  const items = result.turns.flatMap((turn) => turn.items);
+  const standalone = items.find((item) => item.id === "item_tool_result_1_0");
+  expect(standalone, "the versioned standalone result survives: it answers identity for itself").toBeDefined();
+  expect(standalone?.output, "the standalone result keeps its own output").toBe("the read result");
+  const announcement = items.find((item) => item.id === "item_tool_1_0");
+  expect(announcement?.output, "the unrelated announcement does not take the result's output").toBe(
+    "the announcement's own result",
+  );
+});
+
+// The coverage walk must use the same fold eligibility as the emitted merge, or
+// it reports a retained row as superseded that the merge actually returns.
+test("coverage agrees with the merge about a versioned standalone result", () => {
+  const older: TurnModel[] = [
+    {
+      id: "turn_1",
+      status: "completed",
+      version: 4,
+      items: [
+        {
+          id: "item_tool_result_1_0",
+          turnId: "turn_1",
+          type: "commandExecution",
+          toolName: "read_file",
+          text: "",
+          callId: "call_shared",
+          output: "the read result",
+          status: "completed",
+          version: 4,
+        },
+      ],
+    },
+  ];
+  const newer: TurnModel[] = [
+    {
+      id: "turn_1",
+      status: "completed",
+      version: 5,
+      items: [
+        {
+          id: "item_tool_1_0",
+          turnId: "turn_1",
+          type: "commandExecution",
+          toolName: "communicate",
+          text: "",
+          // The fresh announcement supplies every field the older result carries,
+          // which is what made the coverage walk call the result superseded.
+          callId: "call_shared",
+          output: "the read result",
+          status: "completed",
+          exitCode: 0,
+          version: 5,
+        },
+      ],
+    },
+  ];
+
+  const result = mergeTurnHistoryWithFolds(older, newer);
+  const emitted = result.turns.flatMap((turn) => turn.items).some((item) => item.id === "item_tool_result_1_0");
+  expect(emitted, "the merge returns the versioned standalone result").toBe(true);
+  expect(
+    result.olderItemAddsCoverage(older[0]!.items[0]!),
+    "coverage must agree the emitted row is older history the merge keeps",
+  ).toBe(true);
+});

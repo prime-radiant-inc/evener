@@ -243,6 +243,9 @@ function collectToolCandidates(
   for (const turn of normalizedTurns) {
     for (const item of turn.items) {
       if (!item.callId) continue;
+      // Same eligibility as the merge: a versioned row is not a fold source,
+      // whether it arrives directly or through a coalesced membership.
+      if (!rowIsLegacy(item)) continue;
       const provenance = context.provenance.get(item);
       const entry = candidates.get(item.callId) ?? { calls: [], results: [] };
       appendToolItemCandidates(provenance?.[source], entry, item.callId);
@@ -257,6 +260,8 @@ function collectDirectToolCandidates(turns: TurnModel[]): Map<string, ToolCandid
   for (const turn of turns) {
     for (const item of turn.items) {
       if (!item.callId) continue;
+      // Same eligibility as the merge: a versioned row is not a fold source.
+      if (!rowIsLegacy(item)) continue;
       const entry = candidates.get(item.callId) ?? { calls: [], results: [] };
       if (isToolResultId(item.id)) entry.results.push(item);
       else if (isToolCallId(item.id)) entry.calls.push(item);
@@ -286,7 +291,10 @@ function toolFoldView(turns: TurnModel[], context?: ToolItemMergeContext): ToolF
   const callIds = new Set<string>();
   for (const turn of turns) {
     for (const item of turn.items) {
-      if (item.callId && isToolCallId(item.id)) callIds.add(item.callId);
+      // Only a legacy row is a fold candidate. A versioned row answers identity
+      // for itself, and this is the same predicate the coverage walk reads, so
+      // a verdict about a versioned result cannot model a fold that never runs.
+      if (item.callId && isToolCallId(item.id) && rowIsLegacy(item)) callIds.add(item.callId);
     }
   }
   const fresh = context ? collectToolCandidates(turns, context, "fresh") : collectDirectToolCandidates(turns);
@@ -338,15 +346,6 @@ export function mergeToolCallsByCallId(
   context?: ToolItemMergeContext,
   view?: ToolFoldView,
 ): TurnModel[] {
-  // A versioned read answers identity per ROW: every recorded item carries its
-  // own version and position, so a result the index kept standalone (a
-  // different tool reusing a reserved call id) says so itself. Folding by call
-  // id alone overrides that answer — the fold pairs the rows by the one field
-  // they share and copies the standalone result's payload onto the unrelated
-  // call, losing the row. Call-id folding exists for a LEGACY read, whose
-  // unversioned rows have no other identity to go on, so it keeps running
-  // there and only there.
-  if (turnsAreVersioned(turns)) return turns;
   const fold = view ?? toolFoldView(turns, context);
   if (fold.noOp) return turns;
 
@@ -354,6 +353,13 @@ export function mergeToolCallsByCallId(
   for (const turn of turns) {
     const items: ItemModel[] = [];
     for (const item of turn.items) {
+      // A versioned row answers identity for itself: neither its result nor its
+      // call folds by call id. `view` already excluded such rows from the
+      // candidate sets, and this keeps the base row untouched as well.
+      if (!rowIsLegacy(item)) {
+        items.push(item);
+        continue;
+      }
       if (item.callId && isToolResultId(item.id) && fold.callIds.has(item.callId)) continue; // folded into its call
       if (item.callId && isToolCallId(item.id) && fold.resultCallIds.has(item.callId)) {
         const fresh = fold.fresh.get(item.callId) ?? { calls: [], results: [] };
@@ -430,21 +436,23 @@ export function mergeToolCallsByCallId(
   return merged;
 }
 
-// turnsAreVersioned reports whether a recorded turn set answers identity per
-// row rather than per call id.
+// rowIsLegacy reports whether one row's identity comes from the legacy call-id
+// fold rather than from its own recorded version.
 //
-// A turn with no items cannot contradict anything, so it is neutral; the set is
-// versioned only when EVERY turn carrying items has a recorded version. One
-// unversioned turn keeps the legacy rules for the whole set: a mixed set is a
-// pre-v6 model with placeholders, and the fold is what made those readable.
-function turnsAreVersioned(turns: readonly TurnModel[]): boolean {
-  let sawItems = false;
-  for (const turn of turns) {
-    if (turn.items.length === 0) continue;
-    if (turn.version === undefined) return false;
-    sawItems = true;
-  }
-  return sawItems;
+// This is the fold's eligibility rule and the ONLY one: the merge below and the
+// coverage walk both ask it, so the coverage verdict and the returned turns
+// cannot disagree about which rows the fold may touch. A row carrying a version
+// answers identity for itself — a standalone result the index kept for a reused
+// call id says so — and folding it by the one field it shares with an unrelated
+// call would copy that payload across and drop the row.
+//
+// The rule is per ROW, not per turn set. It used to be per set: one unversioned
+// turn anywhere switched every turn back to the legacy fold, so a compatibility
+// page adding one unversioned turn beside a versioned announcement and its
+// standalone result dropped the result and pasted its output onto the unrelated
+// announcement.
+function rowIsLegacy(item: ItemModel): boolean {
+  return item.version === undefined;
 }
 
 const statusRank: Record<string, number> = {
@@ -782,8 +790,21 @@ function mergePageTurn(older: TurnModel, newer: TurnModel, context?: ToolItemMer
     ...older,
     ...newer,
     ...nullishTurnFields(older, newer),
+    // The spread above takes `newer`'s version, and `newer` is whatever the
+    // caller passed second — not the newer record. The turn's own version is
+    // the highest one merged, so it comes from the same authoritative fragment
+    // that supplies the terminal state.
+    version: highestVersion(older.version, newer.version),
     items: mergePageItems(older.items, newer.items, context),
   };
+}
+
+// highestVersion returns the highest recorded version of two fragments, keeping
+// undefined only when neither fragment recorded one.
+function highestVersion(left: number | undefined, right: number | undefined): number | undefined {
+  if (left === undefined) return right;
+  if (right === undefined) return left;
+  return Math.max(left, right);
 }
 
 // The turn fields that merge with a nullish fallback: a side carrying no value
@@ -813,22 +834,37 @@ function nullishTurnFields(
         ? older.status
         : newer.status,
   };
-  if (newer.version === undefined) return fields;
-  // A versioned newer turn answers for its own terminal state — status, error
-  // and completion timing together, INCLUDING by omission. They are one answer,
-  // not three: the rank chain above exists for unversioned page fragments,
-  // whose status is the best evidence available, and applying it to a versioned
-  // turn strands a stale `failed` over a newer `inProgress` while clearing that
+  // Neither side carries a version: nothing here ranks them by record, so the
+  // legacy rank and fallback rules above stand.
+  if (newer.version === undefined && older.version === undefined) return fields;
+  // A versioned turn answers for its own terminal state — status, error and
+  // completion timing together, INCLUDING by omission. They are one answer, not
+  // three: the rank chain above exists for unversioned page fragments, whose
+  // status is the best evidence available, and applying it to a versioned turn
+  // strands a stale `failed` over a newer `inProgress` while clearing that
   // failure's error — the browser then paints a failure row and offers Retry
-  // for an attempt that is running (#1166 review).
+  // for an attempt that is running.
+  //
+  // WHICH fragment answers is a separate question from whether one does, and it
+  // is not "the second argument". mergeOlderItemPageWithFolds passes the
+  // retained window second, so an older-history page carrying version 12 of a
+  // reopened turn would otherwise be overwritten by a stale failed version 10
+  // and would restore that attempt's diagnostic and timing. The highest recorded
+  // version owns the terminal state; items still merge from both fragments.
+  // The fragment with the highest recorded version owns the terminal state. A
+  // side with no version at all loses to one that has it: a placeholder carries
+  // no record to rank.
+  const authoritative =
+    older.version !== undefined && (newer.version === undefined || older.version > newer.version) ? older : newer;
+  const other = authoritative === newer ? older : newer;
   const { startedAt: _startedAt, completedAt: _completedAt, durationMs: _durationMs, ...rest } = fields;
   return {
     ...rest,
-    startedAt: newer.startedAt ?? older.startedAt,
-    completedAt: newer.completedAt,
-    durationMs: newer.durationMs,
-    error: newer.error,
-    status: newer.status,
+    startedAt: authoritative.startedAt ?? other.startedAt,
+    completedAt: authoritative.completedAt,
+    durationMs: authoritative.durationMs,
+    error: authoritative.error,
+    status: authoritative.status,
   };
 }
 
