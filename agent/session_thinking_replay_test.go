@@ -1175,7 +1175,7 @@ func testAnthropicFallbackThinking(t *testing.T, protocol string, replay bool) {
 		if i == 1 || i == 3 {
 			wantSigned = 1
 		}
-		if signed != wantSigned || !requestCarriesText(req, "go") || (i > 0 && !(answer && call && result)) {
+		if signed != wantSigned || !requestCarriesText(req, "go") || (i > 0 && (!answer || !call || !result)) {
 			t.Errorf("Anthropic request %d (%s/%s) sent %d signed blocks, want %d, visible answer/call/result %t/%t/%t", i, req.Provider, req.Model, signed, wantSigned, answer, call, result)
 		}
 	}
