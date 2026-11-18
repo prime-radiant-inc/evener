@@ -513,9 +513,11 @@ select a different model from its `wire_id`. Changing the selected model
 or endpoint under the same name starts a separate reasoning history.
 For older turns Evener uses the issuer
 information available in the transcript. Replayed reasoning counts toward
-context pressure. On resume, a saved input-token measurement applies only to
-the target and replay rules that produced it. Otherwise Evener estimates the
-current history locally.
+context pressure. A saved input-token count covers the history actually sent
+to that target under its replay rules. Evener estimates later additions,
+including delegate reports received while the request was in flight. If that
+prefix changes during the call, or the saved count belongs to a different
+target on resume, Evener estimates the current history locally.
 
 On Chat and Responses, Evener preserves the original string of a valid
 function-call argument object, including its whitespace, key order and
@@ -540,6 +542,10 @@ saved the original spelling can replay only the bytes still on disk.
   saves the type and byte boundaries of each text part, including display-only
   parts. It preserves whitespace in raw parts, item IDs and summaries, and
   keeps separate assistant messages and their `output_text` parts in order.
+  When the final response repeats only part of a streamed item, Evener keeps
+  the matching call's argument bytes, indexed answer text, and ciphertext
+  from the stream. Reasoning shown only as deltas remains visible in the
+  transcript and carries no native continuation.
   Older transcripts can contain an item ID and joined text without
   part types. On an opted-in route, Evener sends that text as one reasoning
   part for the issuing model. Any display text already joined into that old
