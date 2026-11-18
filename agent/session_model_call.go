@@ -1338,6 +1338,9 @@ func (s *Session) recordResponseUsage(modelResp sessionModelResponse, req llm.Re
 		}
 		if s.contextMgr.RecordInputTokensFor(answeringProfile, tokens, len(measured.turns)) {
 			s.measuredTranscriptEntries = measured.transcriptEntries
+			if s.sawLiveOnlyToolResult && slices.ContainsFunc(measured.turns, func(t schema.Turn) bool { return t.LiveOnlyToolResult }) {
+				s.measuredTranscriptEntries = 0
+			}
 		}
 	}
 }

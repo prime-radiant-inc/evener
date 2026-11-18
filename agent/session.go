@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -515,6 +516,7 @@ type Session struct {
 	turnHistoryBaseline           int       // history index of the first turn belonging to the in-flight turn (captured at round 0, adjusted for mid-turn compaction). Turns at or after it are exempt from N4 replay-provenance filtering (fallback rounds keep today's replay semantics). Guarded by mu.
 	history                       []schema.Turn
 	measuredTranscriptEntries     uint64        // Recorded transcript prefix behind the context manager's last input measurement. Guarded by mu.
+	sawLiveOnlyToolResult         bool          // This process has received a tool result projected differently on disk. Guarded by mu.
 	unrecordedFold                bool          // The live fold differs from the on-disk history. Guarded by attentionMu.
 	historyRevision               int           // bumped by every publishFoldedHistory publish and every other non-append history mutation (orphaned-tool-result repair, attention-turn replace/remove — see bumpHistoryRevisionLocked), never by an ordinary append. Lets a fold snapshot detect whether a competing publish OR mutation already happened since it started, distinct from the ordinary concurrent appends publishFoldedHistory's merge-back already tolerates. Guarded by mu.
 	persistedAppendLog            []schema.Turn // persisted transcript forms of the append/write pairs since the last fold publication, in append order — the exact forms publishFoldTransaction re-appends after its markers. Pruned wholesale by each successful publication. Guarded by mu.
@@ -2929,6 +2931,17 @@ func (s *Session) appendTurnAfterTranscriptWriteLocked(persisted schema.Turn, wr
 // prunes the log at every successful publication.
 func (s *Session) logPairPersistedLocked(persisted schema.Turn) {
 	s.persistedAppendLog = append(s.persistedAppendLog, persisted)
+	if persisted.Kind == schema.TurnToolResults {
+		live := &s.history[len(s.history)-1]
+		// Ordinary parts share their result with the transcript. A private
+		// read substitutes a bounded handle only in the persisted pair.
+		if !slices.EqualFunc(live.Message.Content, persisted.Message.Content, func(a, b llm.ContentPart) bool {
+			return a.ToolResult == b.ToolResult || reflect.DeepEqual(a.ToolResult, b.ToolResult)
+		}) {
+			live.LiveOnlyToolResult = true
+			s.sawLiveOnlyToolResult = true
+		}
+	}
 }
 
 // markLastPairOrdinalLocked stamps the most recently logged pair with the

@@ -555,6 +555,9 @@ type Turn struct {
 	Usage                    llm.Usage                         `json:"usage"`
 	VoicePresentation        *appwire.VoicePresentationContext `json:"voice_presentation,omitempty"`
 	VoicePresentationInputID string                            `json:"voice_presentation_input_id,omitempty"`
+	// LiveOnlyToolResult marks a model-facing result whose transcript entry
+	// contains a bounded reread handle in place of the private output.
+	LiveOnlyToolResult bool `json:"-"`
 }
 
 // ProjectReasoningText keeps raw reasoning for the chat or Responses model

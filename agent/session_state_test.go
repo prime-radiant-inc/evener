@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"sync"
@@ -87,9 +88,86 @@ func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
 		t.Fatalf("Meta().CumulativeUsage = %+v, want %+v", got.CumulativeUsage, meta.CumulativeUsage)
 	}
 
+	t.Run("private API result is only measured live", func(t *testing.T) {
+		const private = "q81-private-body-36"
+		state := newBucket(t)
+		attempt := testAPIAttemptRecord("ag_private", 1, []byte(strings.Repeat(private, 300)), nil)
+		args, err := json.Marshal(map[string]string{"source": "api_log", "attempt_id": attempt.AttemptID, "body": "request"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		read := llm.ToolCallData{ID: "read-36", Name: "read_session_transcript", Arguments: args}
+		client := llm.NewClient()
+		client.Register(newFakeAdapter("openai", fixedStep(agenttest.ToolCallResponse(read)), func(req llm.Request) llm.Response {
+			if !messagesContainToolResultText(req.Messages, private) {
+				t.Error("live provider request lost the private API result")
+			}
+			answer := agenttest.FinalResponse("answer-42")
+			answer.Usage = llm.Usage{InputTokens: 90_000}
+			return answer
+		}, func(req llm.Request) llm.Response {
+			if messagesContainToolResultText(req.Messages, private) || !messagesContainToolResultText(req.Messages, attempt.AttemptID) {
+				t.Error("resumed provider request must carry only the reread handle for the private result")
+			}
+			answer := agenttest.FinalResponse("answer-67")
+			answer.Usage = llm.Usage{InputTokens: 1_200}
+			return answer
+		}))
+		s := newSession(t, withClient(client), withStateDir(state))
+		deps := &toolDeps{stateDir: state, sessionID: s.ID()}
+		s.registerTool(read.Name, "Read the fixture's API evidence", map[string]any{"type": "object"}, func(ctx context.Context, args any) (any, error) {
+			return execReadSessionTranscript(ctx, deps, args.(map[string]any))
+		})
+		writeTestAPILog(t, state, s.ID(), attempt)
+		resume := func(s *Session) *Session {
+			t.Helper()
+			s.Close()
+			meta, err := schema.LoadSessionMeta(state, s.ID())
+			if err != nil {
+				t.Fatal(err)
+			}
+			restored, err := RestoreSessionFromMetaWithConfig(client, s.Profile(), s.currentEnv(), meta,
+				RestoreSessionConfig{StateDir: state, testOnly: sharingHostProbe(testConfig{skipGitSnapshot: true})})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(restored.Close)
+			return restored
+		}
+		ctx := tripwireCtx(t)
+		if _, err := s.ProcessInput(ctx, "input-36", nil); err != nil {
+			t.Fatal(err)
+		}
+		if used := s.contextMgr.LastInputTokens(); used != 90_000 {
+			t.Fatalf("live measured input = %d, want 90000", used)
+		}
+		durable, ok := findToolResultInEntries(readPersistedTranscriptEntries(t, state, s.ID()), read.ID)
+		body, _ := durable.Content.(string)
+		var handle apiLogTranscriptPlaceholder
+		if !ok || strings.Contains(body, private) || json.Unmarshal([]byte(body), &handle) != nil || !handle.PrivateEvidenceOmitted || handle.ReRead.AttemptID != attempt.AttemptID {
+			t.Fatal("semantic transcript must persist only the matching API-log reread handle")
+		}
+		s = resume(s)
+		if used := s.contextMgr.LastInputTokens(); used != 0 {
+			t.Errorf("restored input measurement for the private result = %d, want a fresh estimate", used)
+		}
+		if _, err := s.ProcessInput(ctx, "input-97", nil); err != nil {
+			t.Fatal(err)
+		}
+		if used := resume(s).contextMgr.LastInputTokens(); used != 1_200 {
+			t.Fatalf("restored input measurement for the reread handle = %d, want 1200", used)
+		}
+	})
+
 	t.Run("input measurement follows the answering target", func(t *testing.T) {
 		const original = "https://measure-a.example.test/v1"
 		const replacement = "https://measure-b.example.test/v1"
+		const private = "private-38"
+		appendPrivate := func(s *Session) {
+			s.appendTurnWithTranscriptMessage(schema.TurnToolResults,
+				llm.ToolResultNamed("read-38", "read_session_transcript", private, false),
+				llm.ToolResultNamed("read-38", "read_session_transcript", "handle-38", false))
+		}
 		clientFor := func(wire, endpoint string, replay bool, steps ...func(llm.Request) llm.Response) *llm.Client {
 			inst := testRegistryInstances()["gw"]
 			inst.Transport.BaseURL = endpoint
@@ -105,6 +183,7 @@ func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
 			want                 int
 		}{
 			{"same", "wire-a", original, true, true, 90_000},
+			{"private result appended after dispatch", "wire-a", original, true, true, 90_000},
 			{"measured after committed fold", "wire-a", original, true, true, 90_000},
 			{"measured after repaired tool result", "wire-a", original, true, true, 90_000},
 			{"compacted during dispatch", "wire-a", original, true, true, 0},
@@ -123,6 +202,9 @@ func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
 					if !requestCarriesText(req, "measured-41") || requestCarriesText(req, report) {
 						t.Error("the measured request must contain the input that preceded the report")
 					}
+					if messagesContainToolResultText(req.Messages, private) {
+						t.Error("measured request contains a private result outside its expected prefix")
+					}
 					close(dispatched)
 					awaitSignal(t, release, "history change before the provider answer")
 					resp := agenttest.FinalResponse("answer-59")
@@ -132,6 +214,9 @@ func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
 				s := newSession(t, withClient(client), withStateDir(state), withProfile(resolveClientProfile(t, client, "gw/reasoner")))
 				ctx := tripwireCtx(t)
 				fold := tc.name == "compacted during dispatch"
+				if tc.name == "measured after committed fold" {
+					appendPrivate(s)
+				}
 				if fold || tc.name == "measured after committed fold" {
 					for range 12 {
 						s.appendTurn(schema.TurnUserInput, llm.User("old-15"))
@@ -157,6 +242,9 @@ func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
 				s.mu.RLock()
 				measured := len(s.history)
 				s.mu.RUnlock()
+				if tc.name == "private result appended after dispatch" {
+					appendPrivate(s)
+				}
 				if fold {
 					if err := s.Compact(ctx); err != nil {
 						t.Errorf("compact dispatched history: %v", err)
