@@ -510,6 +510,13 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   // about to leave. Only a row that was here and is now gone may move focus,
   // and that is the one thing that may move the popup's own scroll.
   const lastFocusedIdRef = useRef<string | null>(null);
+  // Where that row sat in the popup's scroll space when focus or the list last
+  // changed. A list update can leave the focused row exactly where it was and
+  // still re-run this effect (a row arriving BELOW it, which is the ordinary
+  // case for a turn starting under a menu the reader has scrolled down), and
+  // revealing then would undo their scroll for an update that moved nothing
+  // they can see. Only a row the update actually moved is revealed.
+  const lastFocusedTopRef = useRef<number | null>(null);
   // biome-ignore lint/correctness/useExhaustiveDependencies: itemIds is the deliberate trigger-only dep - the id signature, not the array's identity, is what says the caller's list changed, and callers rebuild that array every render; indexOfActive is called at effect time, so the closure that runs is the current one
   useLayoutEffect(() => {
     // `isOpen` false means the popup is leaving: FocusScope has already handed
@@ -528,7 +535,10 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // one thing a list change can do to a row whose identity survived. Enter
     // would then invoke an action the reader cannot see.
     if (popup !== null && focused !== null && popup.contains(focused)) {
-      revealRow(popup, focused as HTMLElement);
+      const row = focused as HTMLElement;
+      const moved = lastFocusedTopRef.current !== null && lastFocusedTopRef.current !== row.offsetTop;
+      lastFocusedTopRef.current = row.offsetTop;
+      if (moved) revealRow(popup, row);
       return;
     }
     // A row was focused and that row is still in the list: nothing was lost, so
@@ -560,6 +570,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     const index = itemRefs.current.findIndex((node) => node !== null && node === target);
     if (index === -1) return;
     lastFocusedIdRef.current = itemAt(items, index).id;
+    lastFocusedTopRef.current = (target as HTMLElement).offsetTop;
   }
 
   // `reveal` is for a replacement focused OUT of a keypress: a row the reader

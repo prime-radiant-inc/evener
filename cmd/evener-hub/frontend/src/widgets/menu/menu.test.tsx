@@ -1494,6 +1494,59 @@ test("a row inserted above the focused row leaves it in view", async () => {
 // moved away from the row that still holds focus, and every other placement
 // pass - a pan, a row inserted above, a trigger moving - must leave that scroll
 // alone, or the actions they just reached jump back out of reach.
+// The same rule holds for the list-change effect: a row arriving BELOW the
+// focused row moves nothing the reader can see, so it must not scroll the
+// popup back toward the row that still holds focus.
+test("a row inserted below the focused row leaves the reader's scroll where they put it", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 400 });
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, 100, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "UL") return 120;
+    return this.tagName === "LI" ? 44 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "UL" ? 160 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName !== "LI" || !this.parentElement) return 0;
+    return Array.prototype.indexOf.call(this.parentElement.children, this) * 44;
+  });
+  const { flush } = captureFrames();
+  function GrowingBelow({ trailing }: { trailing: boolean }) {
+    const extra: MenuItem[] = trailing ? [{ id: "turn-stop", label: "Stop", onSelect: vi.fn() }] : [];
+    return <Menu trigger="Actions" items={[...items(), ...extra]} />;
+  }
+  try {
+    const view = render(<GrowingBelow trailing={false} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    // Focus stays on the first row, and the reader scrolls down to the last.
+    const first = screen.getByRole("menuitem", { name: "Rename" });
+    expect(document.activeElement).toBe(first);
+    const popup = screen.getByRole("menu");
+    popup.scrollTop = 40;
+    expect(popup.scrollTop).toBe(40);
+
+    // A turn starts under the menu: Stop arrives BELOW Delete, so the row
+    // holding focus does not move at all.
+    view.rerender(<GrowingBelow trailing />);
+    flush();
+
+    expect(screen.getByRole("menuitem", { name: "Stop" })).toBeTruthy();
+    expect(document.activeElement).toBe(first);
+    // Still where the reader put it: nothing above their row moved.
+    expect(popup.scrollTop).toBe(40);
+  } finally {
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
 test("a position-only placement leaves the reader's scroll where they put it", async () => {
   const user = userEvent.setup();
   const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
