@@ -793,6 +793,70 @@ test("a call-stamped composed answer to two same-header calls recaps neither", (
   expect(answeredAskUserReply(model, second)).toBeUndefined();
 });
 
+test("a hook-rewritten header recaps under the question that ran, not the arguments", () => {
+  // Both calls SENT the same "Deploy?" question, so the arguments name one
+  // header twice and cannot say which call the deployment line answered. A
+  // pre-tool hook rewrote the FIRST call to "Run tests?", and the reply answers
+  // both with different values. Counting headers from the recorded state makes
+  // the two calls distinct, so each recap must pair the call's OWN answer: the
+  // first with the test answer, the second with the deployment one. Reading the
+  // arguments for the render instead would look up "Deploy?" on both calls and
+  // show the deployment answer twice, replacing the first call's answer.
+  const testAnswer = '"Yes"';
+  const deployAnswer = '"No"';
+  const first = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_1",
+    callId: "call_1",
+    toolName: "ask_user",
+    status: "completed",
+    raw: {
+      version: 1,
+      questions: [
+        {
+          header: "Run tests?",
+          question: "Run the test suite first?",
+          options: [{ label: "Yes" }, { label: "No" }],
+        },
+      ],
+    },
+  });
+  const second = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_2",
+    callId: "call_2",
+    toolName: "ask_user",
+    status: "completed",
+    raw: { version: 1, questions: [{ ...ONE_QUESTION[0] }] },
+  });
+  const reply = userMessage({
+    text: `[answers]\n1. [Run tests?] → ${testAnswer}\n2. [Deploy?] → ${deployAnswer}`,
+    turnId: "turn_2",
+    answerToTurnIds: ["turn_1"],
+    resolvedAskCalls: [
+      { turnId: "turn_1", callId: "call_1" },
+      { turnId: "turn_1", callId: "call_2" },
+    ],
+  });
+  const model = turnsModel([first, second], [reply]);
+
+  const firstSuffix = answeredAskUserSuffix(model, first);
+  const secondSuffix = answeredAskUserSuffix(model, second);
+  // Each call renders its own answer line, taken from the reply fixture.
+  expect(firstSuffix).toContain(testAnswer);
+  expect(firstSuffix).not.toContain(deployAnswer);
+  expect(secondSuffix).toContain(deployAnswer);
+  expect(secondSuffix).not.toContain(testAnswer);
+  // One reply answers both calls, so neither recap restates all of it: the raw
+  // reply row must stay visible rather than be dropped as a recap it does not
+  // carry (composedReplyCoversCall requires the reply to BE this call's answer
+  // set, and it carries the sibling's line too).
+  expect(answeredAskUserReply(model, first)).toBeUndefined();
+  expect(answeredAskUserReply(model, second)).toBeUndefined();
+});
+
 test("a refused stamp does not hand the calls to a later unlinked answer", () => {
   // The stamped reply above is ambiguous, and looking FURTHER for another
   // candidate would find this unlinked [answers] message: it names the shared

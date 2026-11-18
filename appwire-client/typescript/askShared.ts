@@ -296,18 +296,26 @@ function stampedComposedRecapIsAttributable(items: readonly ItemModel[], reply: 
   return true;
 }
 
-// questionsThisCallAsked is the header-count's only source, and it prefers the
-// record of what RAN: the successful result's canonical state. The original
-// arguments are the model's intent, and a pre-tool hook may have replaced the
-// questions after it was sent. Where no state exists at all (an older daemon, a
-// result the page did not load) the arguments stand in, but only when EVERY
-// question in them parses: one that does not could be the question a hook
-// replaced, so the header set is unprovable and the caller refuses the recap
-// rather than guessing (#6323).
+// questionsThisCallAsked is the one source for both halves of the composed
+// recap: the attribution check counts headers from it, and answerFor renders
+// the recap's lines from it (#6323). Two sources is how a reply passed the
+// check and then displayed an answer under a question it may not answer.
+//
+// It prefers the record of what RAN: the successful result's canonical state.
+// The original arguments are the model's intent, and a pre-tool hook may have
+// replaced the questions after it was sent. Where no state exists at all (an
+// older daemon, a result the page did not load) the arguments stand in, but
+// only when EVERY question in them parses: one that does not could be the
+// question a hook replaced, so the header set is unprovable and the caller
+// refuses the recap rather than guessing.
 function questionsThisCallAsked(items: readonly ItemModel[], call: ItemModel): AskUserQuestion[] | undefined {
   const canonical = canonicalAskUserQuestions(call);
   if (canonical === null) return undefined;
   if (canonical !== undefined) return canonical;
+  // A row with no call id cannot be matched to a recorded result, so its
+  // arguments are the only evidence it can offer - and the same rule applies
+  // to both callers, so neither can see a set the other does not.
+  if (call.callId === undefined) return everyAskQuestionFromArguments(call);
   // The fold that merges a result onto its call does not always run (a live
   // item may arrive as two rows), so look for the recorded state by call id
   // before concluding the page carries none.
@@ -387,14 +395,21 @@ function answerFor(
   item: ItemModel,
 ): { reply: ItemModel; suffix: string; carriesWholeReply: boolean } | undefined {
   if (item.error !== undefined) return undefined;
-  const questions = parseAskUserQuestions(item);
-  if (!questions) return undefined;
+  const argumentsQuestions = parseAskUserQuestions(item);
   const items = model.turns.flatMap((turn) => turn.items);
   const at = items.findIndex((i) => i.id === item.id);
   if (at === -1) return undefined;
   const reply = findAnswerReply(items, items.slice(at + 1), item);
   if (!reply) return undefined;
   if (reply.text.startsWith("[answers]")) {
+    // The same set the attribution check counted (#6323): the questions the
+    // call ACTUALLY asked. Reading the arguments here instead would pair an
+    // answer line with a header a pre-tool hook replaced, which is exactly the
+    // misattribution that check exists to refuse. When this returns
+    // undefined the check refuses the stamp too, so the two can never
+    // disagree - and an unstamped reply keeps its raw row rather than guess.
+    const questions = questionsThisCallAsked(items, item);
+    if (!questions) return undefined;
     // The composed form always resolves here, even when it parses to nothing
     // or nothing matches this call's headers (the user edited the draft,
     // spec §6.1): an attempted composed reply is not free prose to echo.
@@ -414,6 +429,7 @@ function answerFor(
       carriesWholeReply: composedReplyCoversCall(reply.text, questions, answers),
     };
   }
+  if (!argumentsQuestions) return undefined;
   // A linked reply whose text is not the composed form is the spec's other
   // reply form - free prose (§4.3: "either the numbered [answers] form ...
   // or free prose; treat either as the reply to everything you asked") -
