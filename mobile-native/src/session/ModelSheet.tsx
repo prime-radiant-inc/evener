@@ -85,11 +85,16 @@ function ModelSheetBody({
 	const modelBusy = busy || (!vision && !modelPickCanSend(session));
 	const levels = vision ? [] : sessionEffortLevels(session.reasoningEffortLevels, session.supportsReasoning);
 	const modelTarget = modelControlDisplay(session);
+	// Every model-control state carries a complete display target, and rows are
+	// keyed "provider/model": marking the provider alone during recovery leaves
+	// the last safe model unchecked while the composer still shows it. A saved
+	// session's legacy read holds the whole id in both fields, so joining those
+	// would repeat the id's own path segments (see sessionFacts' modelChipLabel).
 	const current = vision
 		? session.visionModel
-		: session.modelControlState.kind === "ready"
-			? `${modelTarget.modelProvider}/${modelTarget.model}`
-			: modelTarget.modelProvider;
+		: modelTarget.modelProvider === modelTarget.model
+			? modelTarget.model
+			: `${modelTarget.modelProvider}/${modelTarget.model}`;
 	const canChange = vision ? session.capabilities.changeVisionModel : session.capabilities.changeModel;
 	const error = state?.modelError ?? (state?.lastAction && MODEL_ACTIONS.has(state.lastAction) ? state.error : null);
 	const revealError = () => {

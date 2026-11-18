@@ -295,6 +295,42 @@ describe("choosing a model (spec 8.5)", () => {
 		expect(calls).toEqual([]);
 	});
 
+	it("checks the last safe model while model-control authority is recovering", () => {
+		// A recovery's last safe display names the provider AND the model a pick
+		// had reached. Rows are keyed by "provider/model", so checking only the
+		// provider loses the checkmark for the whole recovery even though the
+		// composer still shows the last safe model.
+		provide(
+			conversation({
+				modelControlState: {
+					kind: "recovering",
+					lastSafeDisplay: { modelProvider: "anthropic", model: "claude-haiku-5" },
+				},
+			}),
+		);
+		const tree = sheet();
+		expect(pressable(tree, "Claude Haiku 5")?.props.accessibilityState).toMatchObject({ selected: true });
+		expect(pressable(tree, "Claude Sonnet 5")?.props.accessibilityState).toMatchObject({ selected: false });
+	});
+
+	it("checks a saved record whose provider field holds the whole id", () => {
+		// A saved session's legacy read has no separate model id, so its display
+		// target carries the whole id in both fields. Joining those would repeat
+		// the id's own path segments and match no row.
+		provide(
+			conversation({
+				status: { type: "closed" },
+				modelControlState: {
+					kind: "unsupported",
+					canonicalDisplay: { modelProvider: "anthropic/claude-sonnet-5", model: "anthropic/claude-sonnet-5" },
+				},
+			}),
+		);
+		const tree = sheet();
+		expect(pressable(tree, "Claude Sonnet 5")?.props.accessibilityState).toMatchObject({ selected: true });
+		expect(pressable(tree, "Claude Haiku 5")?.props.accessibilityState).toMatchObject({ selected: false });
+	});
+
 	it("changes the model, closes, and the session says it applies from the next turn", async () => {
 		const { calls } = provide(conversation());
 		const tree = sheet();
