@@ -407,6 +407,22 @@ test("a legacy root read is authoritative for a live-announced wait; a legacy de
   const delegateNext = applyReadModel(delegate, delegateReconnect);
   expect(delegateNext.quotaResumesAt).toBe(resumesAt);
   expect(delegateNext.modelRetry?.errorClass).toBe("quota_exceeded");
+
+  // The fork route: a fork is a session served by its own daemon, whose
+  // legacy reads attached the wait summary exactly as a root's did (the
+  // session projection carries ResumesAt for any daemon-served session, not
+  // roots alone). The hub stamps kind "fork" and a parentRef on these reads,
+  // which is what must not exclude them: the reconnect clears the ended wait.
+  let fork = hydrateThread(read([turn("turn_1", 1)], { activeTurnId: "turn_1" }), REF, NOW);
+  fork.capabilities = { ...fork.capabilities, quotaWaitSnapshot: false };
+  fork = applyNotification(fork, liveAnnounced("turn_1"), NOW);
+  const forkReconnect = hydrateThread(read([turn("turn_1", 1)], { activeTurnId: "turn_1" }), REF, NOW + 1);
+  forkReconnect.capabilities = { ...forkReconnect.capabilities, quotaWaitSnapshot: false };
+  forkReconnect.kind = "fork";
+  forkReconnect.parentRef = "local:parent-session";
+  const forkNext = applyReadModel(fork, forkReconnect);
+  expect(forkNext.quotaResumesAt).toBeUndefined();
+  expect(forkNext.modelRetry).toBeUndefined();
 });
 
 // The hub stamps kind "session" on indexed roots (stampHubThreadKind's
@@ -442,6 +458,57 @@ test("a hub-enriched root read (kind session) is authoritative for a live-announ
   const next = applyReadModel(model, fresh);
   expect(next.quotaResumesAt).toBeUndefined();
   expect(next.modelRetry).toBeUndefined();
+});
+
+// The wire-path merge (applyReadResponse) enforces the same route rule as
+// the hydrated-model path: a fork read - kind "fork" with a parentRef, the
+// hub's shape for a session forked from another - comes from the fork's own
+// daemon-backed session read, which attaches the wait summary on any
+// revision, so its absent field clears the ended live-announced wait. The
+// same read naming a delegate (kind "subagent") stays non-authoritative.
+test("a wire-path fork read is authoritative for a live-announced wait; a wire-path delegate read is not", () => {
+  const resumesAt = 4_102_400_000;
+  const liveAnnounced = {
+    method: "evener/thread/modelRetry",
+    params: {
+      threadId: THREAD_ID,
+      ref: REF,
+      turnId: "turn_1",
+      attempt: 1,
+      maxAttempts: 1,
+      delayMs: resumesAt - NOW,
+      errorClass: "quota_exceeded",
+      groupElapsedMs: 5_000,
+      attemptCap: 1,
+    },
+  } as AnyNotification;
+  const forkRead = () => {
+    const response = read([turn("turn_1", 1)], { activeTurnId: "turn_1" });
+    response.thread.evener.capabilities = { ...response.thread.evener.capabilities!, quotaWaitSnapshot: false };
+    response.thread.evener.kind = "fork";
+    response.thread.evener.parentRef = "local:parent-session";
+    return response;
+  };
+  const delegateRead = () => {
+    const response = read([turn("turn_1", 1)], { activeTurnId: "turn_1" });
+    response.thread.evener.capabilities = { ...response.thread.evener.capabilities!, quotaWaitSnapshot: false };
+    response.thread.evener.kind = "subagent";
+    return response;
+  };
+
+  // The fork route: the reconnect clears the ended wait.
+  let fork = hydrateThread(forkRead(), REF, NOW);
+  fork = applyNotification(fork, liveAnnounced, NOW);
+  const forkNext = applyReadResponse(fork, forkRead(), NOW + 1);
+  expect(forkNext.quotaResumesAt).toBeUndefined();
+  expect(forkNext.modelRetry).toBeUndefined();
+
+  // The delegate route: the reconnect preserves the live-only wait.
+  let delegate = hydrateThread(delegateRead(), REF, NOW);
+  delegate = applyNotification(delegate, liveAnnounced, NOW);
+  const delegateNext = applyReadResponse(delegate, delegateRead(), NOW + 1);
+  expect(delegateNext.quotaResumesAt).toBe(resumesAt);
+  expect(delegateNext.modelRetry?.errorClass).toBe("quota_exceeded");
 });
 
 // An ordinary retry is ordered proof the model call runs again (its backoff

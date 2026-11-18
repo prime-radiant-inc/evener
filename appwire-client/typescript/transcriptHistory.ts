@@ -963,11 +963,14 @@ function quotaWaitStampsCorrelate(
   return model.modelRetry?.waitStartedAt !== undefined && read.quotaWaitStartedAt !== undefined;
 }
 
-// isRootThread names the read's route by the thread's own shape: a root's
-// kind is "session" (the hub stamps it on indexed roots) or unset, and no
-// parentRef. A delegate names itself with kind "subagent", a fork with a
-// parentRef.
-function isRootThread(thread: Pick<ThreadModel, "kind" | "parentRef">): boolean {
+// isDaemonSessionRead names the read's route by the thread's own shape. A
+// root's kind is "session" (the hub stamps it on indexed roots) or unset
+// with no parentRef; a fork names itself with kind "fork". Both are
+// sessions served by their own daemon, whose reads attached the wait
+// summary on every revision. A delegate names itself with kind "subagent" -
+// the in-process route, whose legacy reads predate the summary entirely.
+function isDaemonSessionRead(thread: Pick<ThreadModel, "kind" | "parentRef">): boolean {
+  if (thread.kind === "fork") return true;
   return thread.parentRef === undefined && (thread.kind === undefined || thread.kind === "session");
 }
 
@@ -1061,14 +1064,14 @@ export function applyReadResponse<M extends ThreadModel>(
   // their absent field speaks for the wait. A legacy DELEGATE's read is not -
   // the delegate route predates the summary entirely - which is what the
   // thread's own shape names: a root's kind is "session" (the hub stamps it
-  // on indexed roots) or unset, a delegate names itself with kind subagent
-  // and a fork with a parentRef.
+  // on indexed roots) or unset, a fork names itself with kind fork (its own
+  // daemon-served session, same summary rule), a delegate with kind subagent.
   const quotaSnapshotAuthoritative =
     fields.capabilities?.quotaWaitSnapshot === true ||
     base.quotaReadReportsWaits === true ||
     (base.modelRetry?.errorClass === "quota_exceeded" &&
       base.quotaReadReportsWaits === undefined &&
-      isRootThread(fields));
+      isDaemonSessionRead(fields));
   const readRunningTurnId = runningTurn(resp.thread).runningTurnId;
   // A read that shows no wait is authoritative that the wait ended: the chip
   // goes with the deadline, or the canceled turn's "waiting for quota" reads
@@ -1301,18 +1304,18 @@ export function applyReadModel<M extends ThreadModel>(
   // one the live announcements recorded - except by the capability, by the
   // model's own quotaReadReportsWaits (only a prior READ's failure summary
   // sets it, so its presence means this source's reads already reported a
-  // wait: a base-revision daemon predating the bit), by the root-thread
-  // evidence (a base-revision ROOT read attached the summary unconditionally;
-  // a delegate read names itself with kind or parentRef), or by turn
-  // ownership, the read's own fact: a read naming a DIFFERENT running turn
-  // than the wait's is proof the wait's turn ended on any source, and clears
-  // wait and chip together.
+  // wait: a base-revision daemon predating the bit), by the daemon-session
+  // evidence (a base-revision ROOT or FORK read attached the summary
+  // unconditionally; a delegate read names itself with kind subagent), or by
+  // turn ownership, the read's own fact: a read naming a DIFFERENT running
+  // turn than the wait's is proof the wait's turn ended on any source, and
+  // clears wait and chip together.
   const quotaSnapshotAuthoritative =
     fresh.capabilities?.quotaWaitSnapshot === true ||
     base.quotaReadReportsWaits === true ||
     (base.modelRetry?.errorClass === "quota_exceeded" &&
       base.quotaReadReportsWaits === undefined &&
-      isRootThread(fresh));
+      isDaemonSessionRead(fresh));
   const waitTurnReplaced =
     base.modelRetry?.errorClass === "quota_exceeded" &&
     base.modelRetry.turnId !== undefined &&

@@ -318,6 +318,28 @@ test("describeLiveness: a live quota wait keeps its elapsed time beside the inst
   expect(snapshot.text).not.toContain(formatExactGap(0));
 });
 
+// A stamped announcement can arrive late: the deadline the reducer computed
+// from the daemon-issued start instant has already passed when the
+// announcement lands, while the announcement's own delay is still counting
+// from its receipt. The known deadline wins - the pane reads the overdue
+// line with the announcement's elapsed time, never jumping back to the full
+// original delay a receipt-time clock would show.
+test("describeLiveness: a passed deadline reads as overdue even while a live quota wait's receipt-time clock still counts", () => {
+  const live = retryWait({
+    attempt: 1,
+    attemptCap: 1,
+    delayMs: 90 * 60_000,
+    errorClass: "quota_exceeded",
+    groupElapsedMs: 14 * 60_000,
+  });
+  const overdue = describeLiveness(2_000, true, 0, live, undefined, true);
+  expect(overdue.level).toBe("retrying");
+  // Overdue, not the receipt-time countdown: the full delay renders nowhere,
+  // and the announcement's elapsed time survives into the line.
+  expect(overdue.text).not.toContain(compactDuration(90 * 60_000));
+  expect(overdue.text).toContain(formatExactGap(14 * 60_000));
+});
+
 // A quota wait renders one of three states, and they never read as one
 // another: the pending countdown while the reset is ahead, the overdue line
 // once the reset has passed with no wake yet (the daemon may queue the retry

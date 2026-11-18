@@ -319,6 +319,39 @@ test("a live quota wait whose reset has passed without a wake reads as overdue, 
   expect(overdue.textContent).not.toContain(compactDuration(90 * 60_000));
   expect(overdue.textContent).toContain(formatExactGap(5 * 60_000 + 90 * 60_000 + 30_000));
   cleanup();
+
+  // The same passed deadline with the announcement arriving LATE: the daemon
+  // stamped the wait's start (waitStartedAt), so the deadline the reducer
+  // computed is already in the past when the announcement lands, but the
+  // announcement's own delay is still counting from its receipt. The known
+  // deadline wins: the pane reads the overdue line, never jumping back to
+  // the full original delay a receipt-time clock would show.
+  const late = render(
+    <LivenessLine
+      lastFrameAt={0}
+      now={90 * 60_000 + 30_000}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      retry={rawRetry({
+        attempt: 1,
+        attemptCap: 1,
+        delayMs: 90 * 60_000,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5 * 60_000,
+        receivedAt: 90 * 60_000 + 30_000,
+      })}
+      quotaResumesAt={90 * 60_000}
+    />,
+  );
+  const lateLine = late.getByTestId("liveness-line");
+  // The receipt-time countdown never renders (that would jump the pane back
+  // to the full original delay), and the announcement's own elapsed time
+  // (5m, it just landed) survives into the overdue line.
+  expect(lateLine.textContent).not.toContain(compactDuration(90 * 60_000));
+  expect(lateLine.textContent).toContain(formatExactGap(5 * 60_000));
+  cleanup();
+
   const wake = render(
     <LivenessLine
       lastFrameAt={0}

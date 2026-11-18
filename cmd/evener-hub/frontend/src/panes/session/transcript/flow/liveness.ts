@@ -250,8 +250,20 @@ export function describeLiveness(
   // wait: the daemon keeps the wait while the retry queues behind other
   // work. The overdue line never invents the elapsed time the snapshot
   // cannot know, and never reads as a stall for a wait the snapshot names.
-  if (quotaOverdueFromSnapshot && !liveQuotaWait) {
-    return { level: "retrying", text: formatRetryWait({ ...quotaWaitFrom(0), resetPassed: true }) };
+  // The deadline wins over a live announcement whose receipt-time clock
+  // still counts: a stamped announcement can land late (the deadline it
+  // names already passed at receipt), and rendering the announcement's
+  // delay would jump the pane back to the full original wait. The
+  // announcement's elapsed time survives. An in-progress retry outranks the
+  // deadline anyway - the wake's own announcement cleared the instant, so
+  // the two coexist only when a late read re-installed an ended wait's
+  // summary after the wake, and motion is the truth there.
+  if (quotaOverdueFromSnapshot && !retry?.inProgress) {
+    const elapsed = liveQuotaWait ? retry.groupElapsedMs : 0;
+    return {
+      level: "retrying",
+      text: formatRetryWait({ ...quotaWaitFrom(0), groupElapsedMs: elapsed, resetPassed: true }),
+    };
   }
   // A live quota retry and the instant its reducer stamped name the same
   // wait. The instant's remaining time is the honest countdown (measured
