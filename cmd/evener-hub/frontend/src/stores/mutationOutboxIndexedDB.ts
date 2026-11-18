@@ -101,12 +101,24 @@ function retainedDisplaySource(subject: MutationRecord): MutationRecord | undefi
 // A stale row that still holds exactly the composition a refused pane meant to
 // write already preserves it: duplicating it would give the same unsent work
 // two recovery owners.
+//
+// "The same composition" includes what the row says about its IMAGES, not only
+// its text and bytes. A composition's identity is its text, its attachments and
+// which references have no bytes behind them; two rows can agree on the first
+// two and disagree on the third. A stale pane that deletes a missing reference
+// and types the same spelling as prose produces identical text and identical
+// attachments while its tags differ - so reusing the peer's row would restore
+// the peer's warning and discard the person's repair. The record is compared
+// through `imageFacts`, which the caller supplies from the same durable record
+// its own text came from.
 function sameRecoveryComposition(
   record: MutationRecoveryRecord,
   input: readonly InputItem[],
   composerText: string,
   composerMentions: readonly ComposerMention[] | undefined,
   attachments: readonly MutationAttachment[],
+  imageFacts: (clientMutationId: string) => string,
+  ownImageFacts: string,
 ): boolean {
   return (
     record.composerText === composerText &&
@@ -117,7 +129,8 @@ function sameRecoveryComposition(
     // composition. Presentation IDs name a staging of those bytes, not the
     // composition, and are deliberately excluded.
     JSON.stringify(record.attachments.map(({ marker, name, mediaType }) => ({ marker, name, mediaType }))) ===
-      JSON.stringify(attachments.map(({ marker, name, mediaType }) => ({ marker, name, mediaType })))
+      JSON.stringify(attachments.map(({ marker, name, mediaType }) => ({ marker, name, mediaType }))) &&
+    imageFacts(record.clientMutationId) === ownImageFacts
   );
 }
 
@@ -2013,13 +2026,32 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
     composerMentions?: readonly ComposerMention[],
     compositionOwnerId?: string,
     localDraftRevisionId?: string,
+    // The image facts of the composition being preserved, compared against the
+    // row's own before that row is reused for it. Text and bytes can match while
+    // the meaning of a `[image N]` does not: one pane deletes a missing
+    // reference and types the same spelling as prose, the other retains it as an
+    // anchor. Reusing the row then restores a warning this composition repaired.
+    imageFacts?: (clientMutationId: string) => string,
+    ownImageFacts?: string,
   ): Promise<MutationRecoveryRecord | undefined> {
     return this.#write(ENQUEUE_STORES, "preserveRecoveryComposition", async (transaction) => {
       const recoveryStore = transaction.objectStore(RECOVERY_STORE);
       const stale = await requestResult<VersionedMutationRecoveryRecord | undefined>(
         recoveryStore.get(base.clientMutationId),
       );
-      if (stale && sameRecoveryComposition(stale, input, composerText, composerMentions, attachments)) return stale;
+      if (
+        stale &&
+        sameRecoveryComposition(
+          stale,
+          input,
+          composerText,
+          composerMentions,
+          attachments,
+          imageFacts ?? (() => "none"),
+          ownImageFacts ?? "none",
+        )
+      )
+        return stale;
       const intentSequence = await this.#allocateSequence(transaction, base.targetRef);
       const clientMutationId = this.#createMutationId();
       await this.#assertMutationIdAvailable(transaction, clientMutationId);

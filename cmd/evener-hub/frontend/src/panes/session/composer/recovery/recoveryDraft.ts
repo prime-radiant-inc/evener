@@ -2,6 +2,7 @@ import type { ComposerMention } from "@evener/appwire-client";
 import { mergeComposerCompositions, recoverMutationComposition } from "@evener/appwire-client";
 import type { MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import { createSecureUUID } from "../../../../stores/secureUUID";
+import { arrayBufferToBase64 } from "../attachments/encodePng";
 import type { PendingAttachment } from "../attachments/useAttachments";
 import { readCompositionImageRecord } from "../draft";
 import { parseSkillDocument, skillAtomMentions } from "../skillDocument";
@@ -66,11 +67,66 @@ export function recoveryImageReferencesUnavailable(draft: RecoveredComposerDraft
   return unavailableImageReferences.has(draft);
 }
 
+/** One image a row still OWNS whose reference its outgoing payload omitted.
+ *
+ * A recovery row carries two different things and they are not the same list:
+ * the request it would send (`payload.input`, the sendable selection) and the
+ * composition it owns (`attachments`, every tile it kept). When a person
+ * deletes a reference and leaves the tile staged, the tile is excluded from the
+ * request but still durable in `attachments`. Decoding from the payload alone
+ * therefore hides it, and the next save - built from what is on screen - drops
+ * its bytes for good.
+ *
+ * Supplied by the caller because reading a Blob is asynchronous and this
+ * decoder is not: the caller has already awaited storage, so it resolves these
+ * and hands them in. The facts travel with the bytes they describe.
+ */
+export interface RecoveredExcludedImage {
+  marker: number;
+  name?: string;
+  mediaType?: string;
+  data: string;
+}
+
+/** The attachments this row owns that its payload did not carry.
+ *
+ * Synchronous, so a caller can ask "is there anything to read?" without
+ * awaiting. Reading a Blob is what costs a turn of the event loop, and a row
+ * whose request carried everything it owns has nothing to read.
+ */
+export function excludedRecoveryAttachmentRefs(
+  record: MutationRecoveryRecord,
+): readonly MutationRecoveryRecord["attachments"][number][] {
+  const carried = new Set(recoverMutationComposition(record).attachments.map((item) => item.marker));
+  return record.attachments.filter((attachment) => !carried.has(attachment.marker));
+}
+
+/** The retained images this row owns that its payload did not carry.
+ *
+ * Reads the same durable record the decoder reads, at the same revision: the
+ * payload's own images are marked by marker, and every other attachment the row
+ * keeps is a tile its request deliberately excluded. Their bytes come from the
+ * row, never from the wire.
+ */
+export async function excludedRecoveryImages(record: MutationRecoveryRecord): Promise<RecoveredExcludedImage[]> {
+  return Promise.all(
+    excludedRecoveryAttachmentRefs(record).map(async (attachment) => ({
+      marker: attachment.marker,
+      ...(attachment.name ? { name: attachment.name } : {}),
+      mediaType: attachment.mediaType,
+      data: arrayBufferToBase64(await attachment.blob.arrayBuffer()),
+    })),
+  );
+}
+
 // The shared recovery owns portable record decoding: composer text and marker
 // metadata identify associations, while payload input owns image bytes. This
 // browser wrapper converts those images to settled PendingAttachment tiles and
 // keeps the browser's optional command-list shape.
-export function recoveryComposerDraft(record: MutationRecoveryRecord): RecoveredComposerDraft {
+export function recoveryComposerDraft(
+  record: MutationRecoveryRecord,
+  excluded: readonly RecoveredExcludedImage[] = [],
+): RecoveredComposerDraft {
   const recovered = recoverMutationComposition(record);
   // The record this row's composition was written with, read BEFORE the ids are
   // minted below so the facts can be attached to them as they are created.
@@ -96,10 +152,28 @@ export function recoveryComposerDraft(record: MutationRecoveryRecord): Recovered
     (storedRecord.revision === undefined || storedRecord.revision === (record.compositionRevision ?? 0));
   const storedTiles = storedRevisionMatches ? storedRecord.tiles : [];
   const withholdEligibility = storedRecord !== undefined && !storedRevisionMatches;
+  // A tile the row's own request left out is never sendable on restore,
+  // whichever record survived. Its reference is gone - that is why the request
+  // excluded it - so reading a record that calls it eligible would undo the
+  // person's deletion. This is a fact about the tile, taken from the row the
+  // bytes came from.
+  const excludedMarkers = new Set(excluded.map((image) => image.marker));
   const eligibilityById = new Map<string, boolean>();
   const draft: RecoveredComposerDraft = {
     text: recovered.text,
-    attachments: recovered.attachments.map((attachment) => {
+    attachments: [
+      ...recovered.attachments,
+      // The tiles this row kept and its request left out. They are part of the
+      // composition, so they come back with it - visible, holding their bytes,
+      // and NOT sendable: their reference is gone, which is why the request
+      // excluded them, and a reopen must not undo that decision.
+      ...excluded.map((image) => ({
+        marker: image.marker,
+        mediaType: image.mediaType ?? "image/png",
+        data: image.data,
+        name: image.name ?? "image",
+      })),
+    ].map((attachment) => {
       // A fresh tile in a fresh composer, so a fresh identity. The merge may
       // renumber the marker, and the restored-image exemption is recorded
       // against this id when the row is activated.
@@ -109,7 +183,12 @@ export function recoveryComposerDraft(record: MutationRecoveryRecord): Recovered
       // marker in one names the same image as that marker in the other. Once
       // this draft exists, only the id is consulted.
       const stored = storedTiles.find((tile) => tile.marker === attachment.marker);
-      if (stored) eligibilityById.set(id, stored.eligible);
+      // Withholding must be EXPLICIT: an absent fact is read by adoption as
+      // permission, which is the grant that let a deleted reference be sent
+      // again. So every reason to withhold writes `false` rather than omitting
+      // the entry.
+      if (excludedMarkers.has(attachment.marker)) eligibilityById.set(id, false);
+      else if (stored) eligibilityById.set(id, stored.eligible);
       else if (withholdEligibility) eligibilityById.set(id, false);
       return {
         ...attachment,

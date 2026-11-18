@@ -4,7 +4,13 @@ import { installLocalStorage, MemoryStorage } from "../../../../storageTestUtils
 import type { MutationAttachment, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import type { PendingAttachment } from "../attachments/useAttachments";
 import { readCompositionImageRecord, writeCompositionImageRecord } from "../draft";
-import { mergeRecoveryComposerDraft, recoveryComposerDraft, recoveryTileEligibility } from "./recoveryDraft";
+import {
+  excludedRecoveryAttachmentRefs,
+  excludedRecoveryImages,
+  mergeRecoveryComposerDraft,
+  recoveryComposerDraft,
+  recoveryTileEligibility,
+} from "./recoveryDraft";
 
 afterEach(() => {
   installLocalStorage(new MemoryStorage());
@@ -345,4 +351,55 @@ test("merging a command recovery retains the existing skill and shifts command o
     { kind: "skill", name: "same", offset: 0 },
     { kind: "command", name: "same", offset: 100 },
   ]);
+});
+
+// A recovery row owns TWO lists and they are not the same one: the request it
+// would send (`payload.input`) and the composition it keeps (`attachments`).
+// Deleting a reference while leaving the tile staged puts an image in the
+// second and not the first - correctly, because it is not sendable. Decoding
+// from the payload alone loses it, and the next save then writes over the only
+// durable copy of those bytes.
+test("a row's retained image survives decoding with its bytes and stays excluded", async () => {
+  installLocalStorage(new MemoryStorage());
+  const record = recoveryRecord(
+    [
+      { type: "text", text: "caption" },
+      { type: "image", mediaType: "image/png", data: "AQID", name: "sent.png" },
+    ],
+    {
+      composerText: "caption [image 1]",
+      // The row kept two images; its request carried only the first.
+      attachments: [durableAttachment(1, "sent.png"), durableAttachment(2, "kept.png")],
+    },
+  );
+
+  const draft = recoveryComposerDraft(record, await excludedRecoveryImages(record));
+
+  // The request's own image and the retained one, both with bytes on screen.
+  expect(draft.attachments.map((item) => item.name)).toEqual(["sent.png", "kept.png"]);
+  expect(draft.attachments[1]?.data).toBeDefined();
+  // ...and the tile whose reference the person deleted is NOT sendable.
+  expect([...recoveryTileEligibility(draft).values()]).toEqual([false]);
+});
+
+test("a row whose request carried everything it owns restores synchronously and eligible", () => {
+  installLocalStorage(new MemoryStorage());
+  const record = recoveryRecord(
+    [
+      { type: "text", text: "caption" },
+      { type: "image", mediaType: "image/png", data: "AQID", name: "sent.png" },
+    ],
+    {
+      composerText: "caption",
+      attachments: [durableAttachment(1, "sent.png")],
+    },
+  );
+
+  // Nothing for the caller to read: no async step, and no excluded tile.
+  expect(excludedRecoveryAttachmentRefs(record)).toEqual([]);
+  const draft = recoveryComposerDraft(record);
+  expect(draft.attachments.map((item) => item.name)).toEqual(["sent.png"]);
+  // No stored facts and nothing excluded: the restored image keeps the
+  // markerless-image exemption that lets a row resend bytes its prose lost.
+  expect([...recoveryTileEligibility(draft).values()]).toEqual([]);
 });

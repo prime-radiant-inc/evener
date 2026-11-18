@@ -4074,6 +4074,10 @@ export async function preserveRecoveryMutation(
   mentions?: readonly ComposerMention[],
   compositionOwnerId?: string,
   localDraftRevisionId?: string,
+  // The preserved composition's own image facts, so the store reuses a row only
+  // when that row already says the same thing about its images.
+  imageFacts?: (clientMutationId: string) => string,
+  ownImageFacts?: string,
 ): Promise<MutationRecoveryRecord | undefined> {
   const runtime = requireMutationRuntime();
   await runtime.start;
@@ -4085,6 +4089,8 @@ export async function preserveRecoveryMutation(
     mentions,
     compositionOwnerId,
     localDraftRevisionId,
+    imageFacts,
+    ownImageFacts,
   );
   if (!record) return undefined;
   notifyMutationPersistence([targetRef]);

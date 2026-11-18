@@ -496,6 +496,56 @@ test("reusing a peer's row does not overwrite its image facts with a stale pane'
   }
 });
 
+// A number is a label the text uses, not a durable key: the same `[image 1]`
+// can appear twice in one draft - one the anchor whose bytes are gone, one a
+// literal spelling that was always prose. Retiring the tag by "is this number
+// still spelled anywhere" answers yes on the strength of the OTHER occurrence,
+// so deleting the real reference leaves Send disabled forever.
+//
+// The anchor here is the SECOND `[image 1]`; deleting it must retire the tag
+// even though the first spelling is still in the text. The row's record can
+// only name a number, so it is read as the first occurrence it could have
+// meant - which is why this fixture makes the anchor its own text's first
+// occurrence and the PROSE the second: the recorded number then resolves to
+// the occurrence that is genuinely the anchor.
+test("deleting an anchor retires its tag even while the same spelling survives as prose", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const text = "anchor [image 1] here\n\nqueued [image 1] literal";
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    threadId: "thread-a",
+    method: "turn/start",
+    payload: { ref: "root", input: [{ type: "text", text }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const row = await storage.getRecovery(original.clientMutationId);
+  if (!row) throw new Error("missing recovery fixture");
+  // One reference with no bytes. The text spells the number twice, so a
+  // number-only rule cannot tell which occurrence this describes.
+  writeCompositionImageRecord(original.clientMutationId, { anchors: [1], tiles: [] });
+
+  const source = createTestComposerSource("root");
+  try {
+    // Adopting the row installs its anchors, which is the path a reopen takes.
+    const activated = await source.activateRecovery(row);
+    expect(activated).toBe(true);
+    expect(source.getSnapshot().unbackedImageMarkers).toEqual([1]);
+
+    // The person removes the ANCHOR - the first occurrence - and leaves the
+    // second spelling alone as prose.
+    source.updateText("anchor removed here\n\nqueued [image 1] literal");
+
+    // Send is restored: nothing in this text is an anchor any more.
+    expect(source.getSnapshot().unbackedImageMarkers).toEqual([]);
+  } finally {
+    source.dispose();
+    storage.close();
+  }
+});
+
 test("rebound composer adopts and consumes the exact persisted draft revision once", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
@@ -1155,6 +1205,72 @@ test("a released image's bytes survive into recovery without becoming sendable",
 // replaced them, so the fork walked away carrying its own text and the PEER's
 // answer to "which reference in this text had no bytes". A reopen then either
 // blocked prose the fork never tagged, or dropped a tag the fork did carry.
+// Two compositions can agree on their text and their tiles and still not be the
+// same composition: one says a `[image 1]` is an anchor with no bytes, the other
+// says the same spelling is prose. Reusing the row for the second restores the
+// warning the person already repaired, and the draft refuses a send it should
+// allow. The facts are part of the composition, so the reuse comparison asks
+// about them too.
+test("a preserved fork whose image facts differ gets its own row, not the peer's", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const text = "same [image 1]";
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    threadId: "thread-a",
+    method: "turn/queue",
+    payload: { ref: "root", input: [{ type: "text", text }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "editing");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  // The row as it stands: this spelling is an anchor with no bytes.
+  writeCompositionImageRecord(original.clientMutationId, { anchors: [1], tiles: [] });
+
+  const source = createTestComposerSource("root");
+  const peer = new MutationOutboxIndexedDB();
+  try {
+    await source.activateRecovery(recovery);
+    // The peer retires the tag: for it the spelling is ordinary prose. Text and
+    // tiles are unchanged, so only the facts move.
+    const activated = await peer.getRecovery(original.clientMutationId);
+    if (!activated) throw new Error("peer cannot see the row");
+    const advanced = await peer.updateRecoveryInput(
+      original.clientMutationId,
+      [{ type: "text", text }],
+      undefined,
+      text,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        [original.clientMutationId]:
+          (activated as MutationRecoveryRecord & { compositionRevision?: number }).compositionRevision ?? 0,
+      },
+    );
+    expect(advanced).toBeDefined();
+    writeCompositionImageRecord(original.clientMutationId, { anchors: [], tiles: [] });
+
+    // This pane still holds its own tag and now loses the lease.
+    await source.queueRecoveryPersistence(original.clientMutationId, text, [], []);
+    await source.flushRecoveryWrites();
+
+    const preserved = (await storage.listRecovery("root")).find(
+      (record) => record.clientMutationId !== original.clientMutationId,
+    );
+    if (!preserved) throw new Error("the stale composition was not preserved in its own row");
+    // The fork keeps the anchor it actually held, in a row of its own.
+    expect(readCompositionImageRecord(preserved.clientMutationId)?.anchors).toEqual([1]);
+  } finally {
+    source.dispose();
+    peer.close();
+    storage.close();
+  }
+});
+
 test("a stale editor's preserved fork keeps its own anchors, not the peer's", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);

@@ -22,7 +22,10 @@ import {
   useRecoveryEntries,
 } from "./queue/pendingTurnsStore";
 import {
+  excludedRecoveryAttachmentRefs,
+  excludedRecoveryImages,
   mergeRecoveryComposerDraft,
+  type RecoveredExcludedImage,
   recoveredCompositionIsEmpty,
   recoveryComposerDraft,
 } from "./recovery/recoveryDraft";
@@ -248,39 +251,72 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     // The entries arrive sorted ascending by intent sequence; a pane that
     // bounced more than one composition restores the NEWEST one - the user's
     // latest work - not the oldest.
+    const candidates = recoveryEntries.filter(
+      (entry) =>
+        entry.recoveryKind === "rejected" &&
+        entry.method !== "turn/interrupt" &&
+        !entry.preserveComposer &&
+        entry.compositionOwnerId === source.compositionOwnerId,
+    );
+    // The row's own kept images that its request left out, found WITHOUT reading
+    // bytes: a row whose payload carried everything it owns has nothing to read
+    // and must restore synchronously.
+    const excludedRefs = new Map(
+      candidates.map((entry) => [entry.clientMutationId, excludedRecoveryAttachmentRefs(entry)] as const),
+    );
     let record: (typeof recoveryEntries)[number] | undefined;
-    for (const entry of recoveryEntries) {
-      if (entry.recoveryKind !== "rejected") continue;
-      if (entry.method === "turn/interrupt" || entry.preserveComposer) continue;
-      if (entry.compositionOwnerId !== source.compositionOwnerId) continue;
+    for (const entry of candidates) {
       // An empty rejected drain is a notice, not a draft: activating it loads
       // an empty composer that the persistence effect immediately discards,
       // so the click only flashes recovery state. The pending stack already
       // shows the refusal and its reason (lifecycle ruling 2026-11-09, issue
-      // #1436).
-      if (recoveredCompositionIsEmpty(recoveryComposerDraft(entry))) continue;
+      // #1436). A row owning bytes its request excluded is never empty: the
+      // tile is work the person kept.
+      const empty =
+        recoveredCompositionIsEmpty(recoveryComposerDraft(entry)) &&
+        (excludedRefs.get(entry.clientMutationId)?.length ?? 0) === 0;
+      if (empty) continue;
       if (record === undefined || (entry.intentSequence ?? 0) > (record.intentSequence ?? 0)) record = entry;
     }
     if (!record) return;
-    const recovered = recoveryComposerDraft(record);
-    const visible = materializeSelectionReferences({ ...recovered, skillNames: restoredSkillNames(recovered) });
-    Object.assign(recovered, visible);
-    recoveryOwnsLocalDraftRef.current = false;
-    setActiveRecoveryId(record);
-    // Restoration replaces this mount's local owner without editing the
-    // shared recovery draft that an earlier mount may still be submitting.
-    draftEditRevisionRef.current += 1;
-    markRestore();
-    updateText(recovered.text);
-    updateSkillNames(restoredSkillNames(recovered));
-    updateSelectionMeta(recovered);
-    attachments.replaceWithSettled(recovered.attachments);
-    // This path restores a row without going through activateRecovery, so it
-    // must record the same image facts: which markers the row declared and
-    // which of those still carry bytes. Skipping it is what let a row's image
-    // be dropped from the request that consumed the row.
-    source.adoptRecoveredImageFacts(recovered, record.clientMutationId);
-    clearPersistedDraft(ref);
+    const chosen = record;
+    // A restored image's exclusion facts are read from the same durable record
+    // and the same revision its bytes came from - so both arrive in one call
+    // below, and the decoder never consults a different row for them.
+    const restore = (excluded: readonly RecoveredExcludedImage[]) => {
+      const recovered = recoveryComposerDraft(chosen, excluded);
+      const visible = materializeSelectionReferences({ ...recovered, skillNames: restoredSkillNames(recovered) });
+      Object.assign(recovered, visible);
+      recoveryOwnsLocalDraftRef.current = false;
+      setActiveRecoveryId(chosen);
+      // Restoration replaces this mount's local owner without editing the
+      // shared recovery draft that an earlier mount may still be submitting.
+      draftEditRevisionRef.current += 1;
+      markRestore();
+      updateText(recovered.text);
+      updateSkillNames(restoredSkillNames(recovered));
+      updateSelectionMeta(recovered);
+      attachments.replaceWithSettled(recovered.attachments);
+      // This path restores a row without going through activateRecovery, so it
+      // must record the same image facts: which markers the row declared and
+      // which of those still carry bytes. Skipping it is what let a row's image
+      // be dropped from the request that consumed the row.
+      source.adoptRecoveredImageFacts(recovered, chosen.clientMutationId);
+      clearPersistedDraft(ref);
+    };
+    if ((excludedRefs.get(chosen.clientMutationId)?.length ?? 0) === 0) {
+      restore([]);
+      return;
+    }
+    let cancelled = false;
+    void (async () => {
+      const excluded = await excludedRecoveryImages(chosen);
+      if (cancelled) return;
+      restore(excluded);
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [
     activeRecoveryId,
     attachments.replaceWithSettled,
@@ -480,6 +516,15 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     // composition does not own by id and records each tile's eligibility
     // separately.
     const ownedAttachments = attachments.toInputAttachments();
+    // The ownership-filtered markers the recovery handoff carries, captured in
+    // the press's own synchronous prefix for the same reason `ownedAttachments`
+    // is: a pane closed while the resend waits for its destination resets the
+    // attachment store, and reading it afterwards answers "this composition
+    // owned nothing". The resend then consumes the recovery row without keeping
+    // the tile the person left staged, and a refused delivery has no durable
+    // copy of those bytes to restore. Ownership at press time is the fact the
+    // transaction acts on.
+    const submittedOwnedMarkers = source.ownedAttachments().map((attachment) => attachment.marker);
     const submittedLease = recoveryOwnerLeaseRef.current;
     const submittedRecoveryId = submittedLease?.clientMutationId ?? null;
     let releaseRecoveryInFlight: (() => void) | null = null;
@@ -601,7 +646,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
                   // across a rebind bears a number the adopted draft uses for a
                   // different image, so handing its marker to storage would keep
                   // a tile this composition does not own.
-                  source.ownedAttachments().map((attachment) => attachment.marker),
+                  submittedOwnedMarkers,
                 );
                 if (outcome.status !== "sent") {
                   // A not-sent outcome answers the press as a refusal: the
@@ -616,7 +661,16 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
                 // row that replaced the consumed one, or a refusal of THIS
                 // delivery restores the images without knowing which of them
                 // were released or which references had no bytes.
-                moveCompositionImageRecord(submittedRecoveryId, outcome.record.clientMutationId);
+                //
+                // Restamped to the replacement's own revision. The facts are
+                // this composition's; the revision they describe is the one the
+                // row they now sit under counts - and a row a refused resend
+                // creates starts at zero, because the composer has not edited
+                // it yet. Carrying the consumed row's stamp forward would name
+                // a revision the replacement never had, and the reader would
+                // withhold every eligibility: the next Send then consumes the
+                // row while omitting an image it was allowed to resend.
+                moveCompositionImageRecord(submittedRecoveryId, outcome.record.clientMutationId, 0);
                 // The resend transaction consumed the recovery row, so a remount
                 // can no longer restore it. Keep the guard until here rather than
                 // until the network settles.

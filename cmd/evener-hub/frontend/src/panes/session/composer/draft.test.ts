@@ -7,12 +7,15 @@ import {
   clearPersistedDraftIfRevisionMatches,
   composerDraftStorageKey,
   draftStorageKey,
+  moveCompositionImageRecord,
   readComposerDraft,
   readComposerDraftImageMarkers,
   readComposerDraftRevisionId,
+  readCompositionImageRecord,
   readDraft,
   readDraftRevision,
   writeComposerDraft,
+  writeCompositionImageRecord,
   writeDraft,
 } from "./draft";
 import { parseSkillDocument, serializeSkillDocument } from "./skillDocument";
@@ -461,4 +464,24 @@ test("removing every reference records an empty provenance rather than dropping 
   expect(readComposerDraftImageMarkers(ref)).toEqual([1]);
   writeComposerDraft(ref, { text: "keep", skillNames: [] }, []);
   expect(readComposerDraftImageMarkers(ref)).toEqual([]);
+});
+
+// A replacement row starts its own revision count. A record moved onto it must
+// describe THAT row, or the reader sees a stamp from another composition's
+// history and withholds every eligibility - the next Send then consumes the row
+// while omitting an image it was allowed to resend.
+test("a moved image record describes the replacement row's revision, not the consumed one's", () => {
+  installLocalStorage(new MemoryStorage());
+  writeCompositionImageRecord("consumed", {
+    anchors: [],
+    tiles: [{ id: "tile-1", marker: 1, eligible: true, hasBytes: true }],
+    revision: 7,
+  });
+
+  moveCompositionImageRecord("consumed", "replacement", 0);
+
+  const moved = readCompositionImageRecord("replacement");
+  expect(moved?.revision).toBe(0);
+  // The COMPOSITION's facts travel intact; only the revision they describe moves.
+  expect(moved?.tiles).toEqual([{ id: "tile-1", marker: 1, eligible: true, hasBytes: true }]);
 });

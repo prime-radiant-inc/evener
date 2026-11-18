@@ -450,12 +450,25 @@ export function readCompositionImageRecord(clientMutationId: string): Compositio
  * the consumed id, the replacement row would restore the images with no idea
  * which of them were released or which references had no bytes behind them, and
  * the next Send would carry an image the person had deleted.
+ *
+ * The stamp must follow the ROW, not the key. `revision` counts a row's own
+ * composition revisions, and a replacement row starts at its own zero - so
+ * copying the consumed row's stamp forward describes a revision the row it now
+ * sits under has never had. The reader then treats the pair as disagreeing and
+ * withholds every eligibility, which turns a markerless image the row is
+ * allowed to resend into one the next Send omits while consuming the row that
+ * held its bytes. The facts are the same composition; the revision they
+ * describe is the replacement's.
  */
-export function moveCompositionImageRecord(fromClientMutationId: string, toClientMutationId: string): void {
+export function moveCompositionImageRecord(
+  fromClientMutationId: string,
+  toClientMutationId: string,
+  toCompositionRevision: number,
+): void {
   if (fromClientMutationId === toClientMutationId) return;
   const record = readCompositionImageRecord(fromClientMutationId);
   if (record === undefined) return;
-  writeCompositionImageRecord(toClientMutationId, record);
+  writeCompositionImageRecord(toClientMutationId, { ...record, revision: toCompositionRevision });
 }
 
 export function writeCompositionImageRecord(clientMutationId: string, record: CompositionImageRecord): void {
