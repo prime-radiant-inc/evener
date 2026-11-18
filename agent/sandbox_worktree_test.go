@@ -174,6 +174,7 @@ func TestEnterExitWorktreeReRootsAndRestores(t *testing.T) {
 		s.Close()
 		meta := loadMetaForTest(t, s)
 		meta.PromptLaunch.WritableRoots = nil
+		writeRawSessionMeta(t, schema.SessionMetaPath(s.stateDir, meta.ID), meta)
 		s = restore(t, s, meta)
 		requireShellModeEnum(t, s, "restored plain shell", "foreground", "background", "detached")
 		if d := fileToolCall(t, s, "shell", map[string]string{"command": "exec true", "mode": "detached"}); d.isError {

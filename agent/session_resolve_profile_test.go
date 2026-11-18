@@ -290,7 +290,6 @@ func TestRestoreSessionFromMetaWithConfig_InstallsResolveProfile(t *testing.T) {
 
 func TestRestoreSessionFromMetaWithConfig_LayersModelFallbacks(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
 
@@ -302,18 +301,31 @@ func TestRestoreSessionFromMetaWithConfig_LayersModelFallbacks(t *testing.T) {
 			ModelFallbacks: []string{"openai/persisted-fallback"},
 		}).toSnapshot(),
 	}
-	sess, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{
-		StateDir:       dir,
-		ModelFallbacks: []string{"openai/runtime-fallback"},
-	})
-	if err != nil {
-		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
-	}
-	defer sess.Close()
-
-	got := sess.Meta().Config.ModelFallbacks
-	if len(got) != 1 || got[0] != "openai/runtime-fallback" {
-		t.Fatalf("restored model fallbacks = %v, want [openai/runtime-fallback]", got)
+	for _, state := range []string{"missing transcript", "saved header with malformed sidecar"} {
+		t.Run(state, func(t *testing.T) {
+			dir := t.TempDir()
+			supplied := meta
+			if state == "saved header with malformed sidecar" {
+				writeFindTranscript(t, dir, meta.ID, meta.CreatedAt)
+				writeTestFile(t, schema.SessionMetaPath(dir, meta.ID), "{")
+				supplied.PromptLaunch.KnowledgeCutoff = new("external-cutoff-137")
+			}
+			sess, err := RestoreSessionFromMetaWithConfig(c, NewOpenAIProfile("gpt-5.4"), execenv.NewLocalExecutionEnvironment(dir), supplied, RestoreSessionConfig{
+				StateDir:       dir,
+				ModelFallbacks: []string{"openai/runtime-fallback"},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer sess.Close()
+			snapshot := sess.Meta()
+			if got := snapshot.Config.ModelFallbacks; len(got) != 1 || got[0] != "openai/runtime-fallback" {
+				t.Fatalf("restored model fallbacks = %v, want [openai/runtime-fallback]", got)
+			}
+			if want := supplied.PromptLaunch.KnowledgeCutoff; want != nil && (snapshot.PromptLaunch.KnowledgeCutoff == nil || *snapshot.PromptLaunch.KnowledgeCutoff != *want) {
+				t.Error("restore lost the externally supplied launch facts")
+			}
+		})
 	}
 }
 

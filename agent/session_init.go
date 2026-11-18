@@ -911,6 +911,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	if err := schema.ValidateSessionID(meta.ID); err != nil {
 		return nil, fmt.Errorf("invalid session id: %w", err)
 	}
+	metaFS := restoreCfg.testOnly.metaFS
+	if metaFS == nil {
+		metaFS = afero.NewOsFs()
+	}
 	restoreComplete := false
 	ownershipAcquired := false
 	if restoreCfg.AcquireSessionOwnership != nil {
@@ -921,13 +925,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 			ownershipAcquired = true
 		}
 		if restoreCfg.StateDir != "" {
-			var currentMeta schema.SessionMeta
-			var err error
-			if fs := restoreCfg.testOnly.metaFS; fs != nil {
-				currentMeta, err = schema.LoadSessionMetaWithFS(fs, restoreCfg.StateDir, meta.ID)
-			} else {
-				currentMeta, err = schema.LoadSessionMeta(restoreCfg.StateDir, meta.ID)
-			}
+			currentMeta, err := schema.LoadSessionMetaWithFS(metaFS, restoreCfg.StateDir, meta.ID)
 			if err != nil {
 				if ownershipAcquired {
 					_ = client.ReleaseSessionAPILog(meta.ID)
@@ -1076,6 +1074,14 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		}
 		if resumeTranscript != nil {
 			restoredTranscriptHeader = resumeTranscript.Header()
+			if restoreCfg.AcquireSessionOwnership == nil {
+				// A replacement header can postdate the caller's snapshot. Its
+				// published launch facts belong to those prompt bytes. An embedder
+				// with no readable sidecar can still supply its own snapshot.
+				if published, err := schema.LoadSessionMetaWithFS(metaFS, cfg.StateDir, meta.ID); err == nil {
+					meta.PromptLaunch = published.PromptLaunch
+				}
+			}
 		}
 		restoredTranscriptOpened = openErr == nil
 	}

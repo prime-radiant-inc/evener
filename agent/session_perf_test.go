@@ -984,6 +984,9 @@ func TestRestoreSession_FromMetaAndTranscript(t *testing.T) {
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
 		TurnCount: 2,
+		PromptLaunch: schema.PromptLaunchFacts{
+			TurnEndsProcess: new(true),
+		},
 	}
 
 	// Write a transcript file with history.
@@ -1017,6 +1020,9 @@ func TestRestoreSession_FromMetaAndTranscript(t *testing.T) {
 
 	if sess.ID() != meta.ID {
 		t.Fatalf("id: got %q want %q", sess.ID(), meta.ID)
+	}
+	if mode := sess.Meta().PromptLaunch.TurnEndsProcess; mode == nil || !*mode {
+		t.Error("restore with an external snapshot and no metadata file lost its supplied launch mode")
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
@@ -1131,6 +1137,10 @@ func TestRestoreSessionFromMeta_NoTranscript_StartsClean(t *testing.T) {
 			if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
 				t.Fatal(err)
 			}
+			beforeRecovery, err := schema.LoadSessionMeta(stateDir, meta.ID)
+			if err != nil {
+				t.Fatal(err)
+			}
 			cfg := RestoreSessionConfig{StateDir: stateDir, ForceRealIO: true, testOnly: testConfig{skipGitSnapshot: true, noSyncJobStore: true}}
 			contenderCfg := cfg
 			contenderCfg.TurnEndsProcess = true
@@ -1189,11 +1199,21 @@ func TestRestoreSessionFromMeta_NoTranscript_StartsClean(t *testing.T) {
 				t.Error("one-shot contender replaced the winning daemon's launch facts")
 			}
 			cfg.TurnEndsProcess = true
-			cold, err := restore(current, cfg)
+			// One caller loaded its snapshot before either recovery began.
+			supplied := current
+			if closeWinner {
+				supplied = beforeRecovery
+			}
+			supplied.PinnedNote = "caller-pinned-823"
+			cfg.CompactAtPercent = 63
+			cold, err := restore(supplied, cfg)
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer cold.Close()
+			if got := cold.Meta(); got.PinnedNote != supplied.PinnedNote || got.Config.CompactAtPercent != cfg.CompactAtPercent {
+				t.Error("restore replaced the caller's pinned work or runtime compaction setting")
+			}
 			if _, err := cold.ProcessInput(t.Context(), "cold input", nil); err != nil {
 				t.Fatal(err)
 			}
