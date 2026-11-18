@@ -27,7 +27,7 @@ import {
   mergeTranscriptTurnVersioned,
   olderFrontierOf,
 } from "./transcriptHistory";
-import { handOffReplacedSource, markItemTextOmitted } from "./transcriptItems";
+import { handOffReplacedSource, holdOwnerOf, markItemTextOmitted } from "./transcriptItems";
 import type {
   AnyNotification,
   EvenerDelegateInfo,
@@ -200,6 +200,82 @@ test("a disjoint fallback window keeps the held live continuation", () => {
   expect(next.olderCursor).toBe("before-5");
   expect(olderFrontierOf(next)).toBe("before-5");
 });
+
+// A read that names no source answers a question about history, not about who
+// owns the hold samples. The fixture is the one the finding describes: a resync
+// recorded boot 2 as the owner while history still named boot 1, and then a
+// saved-index fallback read - which names no boot at all - put history's
+// identity back on boot 1. Rebuilding history from the four identity fields
+// alone drops the record, so boot 2's own next resync compares against boot 1,
+// reads as a SECOND replacement, and clears the live hold boot 2 just
+// published. That hold emits no update of its own, so the wait is simply gone.
+//
+// Asserted at the harm, not at the field: the hold must still be there after
+// the owner's own resync. A field-only assertion would pass while the
+// comparison that actually erases the wait still used the wrong token.
+for (const viaApplyReadModel of [false, true] as const) {
+  test(`a read naming no source keeps the owner of a live hold (applyReadModel=${viaApplyReadModel})`, () => {
+    const base = hydrateThread(
+      {
+        thread: testThread(),
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 100 },
+      },
+      "ref_t",
+      1000,
+    );
+    // Boot 2 replaced boot 1 and owns the samples; history still names boot 1
+    // because no read has applied since. This is the record a resync made.
+    let model: ThreadModel = { ...base, history: base.history && { ...base.history, holdOwner: "2" } };
+
+    // A saved-index fallback: it names no source of its own, and it keeps the
+    // identity history already had - boot 1, the boot that was REPLACED. That
+    // is exactly what makes the dropped record harmful: the identity left
+    // behind is the retired boot's, so the live owner's next frame compares
+    // against its predecessor.
+    const fallback = {
+      ...historyRead(),
+      thread: testThread({ turns: [versionedFragmentTurn([1])] }),
+      bootGeneration: "1",
+      snapshot: { incarnation: "inc-1", length: 100 },
+      servedFrom: "saved-index",
+      fallbackReason: "live-read-failed",
+      asOf: "2026-11-08T00:00:00Z",
+    } as ThreadReadResponse;
+    model = viaApplyReadModel
+      ? applyReadModel(model, hydrateThread(fallback, "ref_t", 1001))
+      : applyReadResponse(model, fallback, 1002);
+    // Boot 2 publishes its live hold - after the read, because a read is the
+    // authority on which waits are still running and rebuilds the list.
+    model = applyNotification(
+      model,
+      {
+        method: "evener/delegate/updated",
+        params: { ref: "ref_t", delegate: heldDelegate(900, 3) },
+      } as AnyNotification,
+      2500,
+    );
+    expect(model.delegates?.[0]?.holdSequence).toBe(900);
+
+    // Boot 2's OWN next resync. It is not a replacement of itself, so the live
+    // hold must survive it. Without the retained owner this compares against
+    // boot 1, confirms a replacement, and the wait disappears.
+    model = applyNotification(
+      model,
+      {
+        method: "evener/thread/resync",
+        params: { threadId: base.threadId, ref: "ref_t", bootGeneration: "2", epoch: 2 },
+      } as AnyNotification,
+      3000,
+    );
+    // Asserted at the harm: the wait is still there. A field-only assertion
+    // would pass while the comparison that actually erases the wait read the
+    // wrong token, so it is checked after the frame that harms it.
+    expect(model.delegates?.[0]?.holdSequence).toBe(900);
+    expect(holdOwnerOf(model.history!)).toBe("2");
+  });
+}
 
 for (const facts of ["legacy", "unavailable"] as const) {
   for (const authoritative of [false, true]) {

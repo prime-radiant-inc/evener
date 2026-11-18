@@ -94,6 +94,46 @@ function retainedReadIdentity(identity: ReadIdentity | undefined, held: ReadIden
   };
 }
 
+// retainedHistoryIdentity is retainedReadIdentity plus the one field that is
+// not identity at all and must not be dropped with it: the recorded HOLD
+// OWNER.
+//
+// History validity and hold ownership are different questions, and a read that
+// names no source answers only the first. A saved-index fallback read names no
+// boot at all, and a read with no snapshot keeps held's identity exactly; in
+// both cases rebuilding the history from the four identity fields alone drops
+// `holdOwner`. The model then names history.bootGeneration again while the
+// daemon that actually owns the hold samples is a DIFFERENT, newer boot - and
+// that boot's own next resync compares against the stale one, reads as a second
+// replacement, and clears the live hold it just published. An unchanged hold
+// emits no update of its own to restore it.
+//
+// The owner changes only where the read's OWN token confirms it replaced the
+// recorded one (confirmedBootReplacement, the same single comparison every
+// other hand-off uses). `readBoot` is that token and nothing else: passing the
+// retained bootGeneration instead would let the identity this merge is
+// deliberately keeping decide an ownership question it just declined to
+// answer. A read that names no source, or names one that did not replace the
+// recorded owner, preserves the record - it cannot show that the owner
+// changed, and an owner dropped here is an ownership comparison lost on the
+// very next frame.
+//
+// Where it DOES confirm, the incoming boot is recorded explicitly rather than
+// left to `holdOwnerOf`'s fallback. An accepted replacement that leaves the
+// owner unrecorded is the M1 shape: the next frame from that same boot
+// compares against the boot it replaced and clears the hold it just published.
+function retainedHistoryIdentity(
+  identity: ReadIdentity | undefined,
+  held: HistoryState,
+  readBoot: string | undefined,
+): ReadIdentity & { holdOwner?: string } {
+  const retained = retainedReadIdentity(identity, held);
+  if (held.holdOwner === undefined) return retained;
+  if (readBoot !== undefined && confirmedBootReplacement(held.holdOwner, readBoot, "authoritative"))
+    return { ...retained, holdOwner: readBoot };
+  return { ...retained, holdOwner: held.holdOwner };
+}
+
 export function readIdentity(resp: {
   bootGeneration?: string;
   epoch?: number;
@@ -1069,7 +1109,10 @@ export function applyReadResponse<M extends ThreadModel>(
   }
   const generation = resp.requestGeneration ?? 0;
   const history: HistoryState = {
-    ...(historyFallback(resp) ? retainedReadIdentity(undefined, held) : readIdentity(resp)),
+    // A saved-index fallback names no source: it keeps held's identity AND
+    // held's recorded owner, and passes no read token, so nothing it carries
+    // can stand in as evidence of a replacement.
+    ...(historyFallback(resp) ? retainedHistoryIdentity(undefined, held, undefined) : readIdentity(resp)),
     appliedGeneration: generation,
     issuedGeneration: Math.max(held.issuedGeneration, generation),
     deferredPages: [],
@@ -1247,7 +1290,7 @@ export function applyReadModel<M extends ThreadModel>(
     // preserved. Only the four identity fields carry over — never
     // invalidatedAtGeneration/awaited/pendingIncarnation/failed, which this
     // merge (a non-discard disposition) already resolved.
-    ...retainedReadIdentity(identity, held),
+    ...retainedHistoryIdentity(identity, held, fallback ? undefined : freshHistory?.bootGeneration),
     appliedGeneration: held.appliedGeneration,
     issuedGeneration: held.issuedGeneration,
     deferredPages: [],

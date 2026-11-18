@@ -6042,7 +6042,18 @@ function beginWatchedHydration(
   // failure replay has nothing to publish. When the supersession IS a
   // confirmed replacement, the buffer belongs to the replaced source and goes
   // with it.
-  const carried = previousPending ? carriedHydrationUpdates(previousPending, resyncBootGeneration) : [];
+  //
+  // A buffer belongs to the CONNECTION that filled it. A replacement client or
+  // a new ready epoch means the frames in it were addressed to a hub session
+  // this read no longer answers to: its delegate samples name daemons that
+  // session was serving, and replaying them here would restore a retired
+  // hold after this read's own failure hand-off cleared it. Same connection
+  // is what makes a buffered sample still evidence; across connections it is
+  // only a stale copy.
+  const carried =
+    previousPending && previousPending.client === client && previousPending.epoch === epoch
+      ? carriedHydrationUpdates(previousPending, resyncBootGeneration)
+      : [];
   if (previousPending) retirePendingHydration(ref, previousPending, pendingWatchedHydrations);
   // Only a history-requesting read orders the repair-status sequence: a
   // lean watch the hub can answer without touching the transcript index
