@@ -5,6 +5,14 @@
 // This module never imports threads.ts.
 
 const foregroundCounts = new Map<string, number>();
+// The same holds split by what the acquisition took. The total answers "is this
+// ref kept alive"; it cannot answer "is the hold I am releasing the one I took".
+// A rollback undoing its own failed acquisition would otherwise spend whichever
+// hold is standing - and once a pane closes during its own read, the only hold
+// left can be a resend's routing lease, which that rollback then retires the
+// model out from under. A release drops a hold of its own kind, or nothing.
+const paneForegroundCounts = new Map<string, number>();
+const routingForegroundCounts = new Map<string, number>();
 // A foreground holder that also owns the live transcript bodies - a mounted
 // pane. Its own count, not foregroundCounts: a routing holder keeps the model
 // alive without becoming the reader a later pane finds and defers to, and
@@ -40,12 +48,18 @@ export function foregroundHolds(ref: string): number {
   return foregroundCounts.get(ref) ?? 0;
 }
 
-export function holdForeground(ref: string): void {
+export function holdForeground(ref: string, routing = false): void {
   hold(foregroundCounts, ref);
+  hold(routing ? routingForegroundCounts : paneForegroundCounts, ref);
 }
 
-/** Drops one foreground hold and returns how many remain. */
-export function releaseForeground(ref: string): number {
+/** Drops one foreground hold of this kind and returns how many remain. Nothing
+ * of this kind left means nothing of it to drop: the standing count is another
+ * lifecycle's, and spending it would retire a model out from under its holder. */
+export function releaseForeground(ref: string, routing = false): number {
+  const counts = routing ? routingForegroundCounts : paneForegroundCounts;
+  if ((counts.get(ref) ?? 0) <= 0) return foregroundHolds(ref);
+  release(counts, ref);
   return release(foregroundCounts, ref);
 }
 
@@ -171,6 +185,8 @@ export function nextBackgroundLeaseSequence(ref: string): number {
 
 export function resetThreadOwnersForTests(): void {
   foregroundCounts.clear();
+  paneForegroundCounts.clear();
+  routingForegroundCounts.clear();
   bodyOwnerCounts.clear();
   backgroundCounts.clear();
   historyHoldCounts.clear();

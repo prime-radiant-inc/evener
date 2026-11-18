@@ -7487,33 +7487,6 @@ function routingFulfilment(ref: string): RoutingFulfilment {
   return { kind: "unverified" };
 }
 
-// The decision a parked waiter makes when the lifecycle it waited on retired
-// instead of publishing: which read, if any, to adopt and continue on. Its
-// inputs are the whole state of that decision — the read this lifecycle
-// retired into, and whatever the in-flight registry happens to hold — and it
-// exists as a function so the rule is decidable on its own rather than only
-// through the interleaving that reaches it.
-//
-// The successor is the whole answer. The registry read is an input only so the
-// rule is stated against the presence question it must NOT answer: a cached
-// shell counts as published, so the registry can hold a read issued for a
-// different demand, and adopting that would spend work this ref never owed and
-// judge another demand's answer. No successor means no adoption — the caller
-// re-arms through its ordinary path instead.
-function ownHydrationRejoinTarget(input: {
-  successor: Promise<ThreadModel | null> | null;
-  registryRead: Promise<ThreadModel | null> | undefined;
-}): Promise<ThreadModel | null> | undefined {
-  return input.successor ?? undefined;
-}
-
-export function ownHydrationRejoinTargetForTests(input: {
-  successor: Promise<ThreadModel | null> | null;
-  registryRead: Promise<ThreadModel | null> | undefined;
-}): Promise<ThreadModel | null> | undefined {
-  return ownHydrationRejoinTarget(input);
-}
-
 // scheduleOwnedHydrationRetry is the self-heal itself: the attempt that just
 // failed in transport asks its owner generation to read again. At most one
 // retry is outstanding per lifecycle — concurrent owners share it — and only
@@ -8487,7 +8460,9 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       ensureCacheLease(ref);
     }
     const generation = ensureGenerations.get(ref) ?? 0;
-    holdForeground(ref);
+    // The kind this hold is taken as, so the rollback below releases this
+    // acquisition's count and never one belonging to another lifecycle.
+    holdForeground(ref, routingOnly);
     if (!routingOnly) holdBodyOwnership(ref);
     syncTranscriptResidencyOwners(ref);
     // Retention alone grants no write permission: only an explicit pane open
@@ -8513,7 +8488,16 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // status and capabilities from a model whose read has landed. A resident
     // verified model answers it here - no transcript open, and no post-Clear
     // reconciliation, both of which are the pane's work.
-    if (routingOnly && threadsStore.getState().threads.has(ref) && routingVerified()) return;
+    //
+    // A resident model is not enough on its own: it can be real and the
+    // destination can be gone. This is the same first question every other
+    // routing fulfilment asks, asked here because this is the earliest place a
+    // claim can be satisfied, and a shortcut that skips it fulfils a claim for
+    // a session the deletion fence will refuse to dispatch.
+    if (routingOnly && threadsStore.getState().threads.has(ref) && routingVerified()) {
+      if (threadsStore.getState().deletedRefs.has(ref)) return endDeletedDestination();
+      return;
+    }
     // Already hydrated: no re-read. The exception is a clear-suppressed ref
     // whose new explicit foreground lifetime owes an authoritative hydration
     // even while its stale display model is still resident.
@@ -8687,7 +8671,16 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           // must not end a press the replacement verified. This is checked
           // before every fence below, including the owner-generation fence:
           // the replacement's publication is the answer, whoever read it.
-          if (routingOnly && threadsStore.getState().threads.has(ref) && routingVerified()) return;
+          //
+          // It goes through the shared decision rather than returning on
+          // presence, because presence alone does not answer it: a verified
+          // model whose destination was deleted fulfils nothing, and swallowing
+          // that here would hand the caller a claim the fence will refuse.
+          if (routingOnly) {
+            const fulfilment = routingFulfilment(ref);
+            if (fulfilment.kind === "fulfilled") return;
+            if (fulfilment.kind === "deleted") return endDeletedDestination();
+          }
           const replacement = inflightHydrates.get(ref);
           const lifecycleActive = ensureGenerations.get(ref) === generation && foregroundHolds(ref) > 0;
           if (lifecycleActive && replacement && replacement !== inflight) {
@@ -8782,15 +8775,9 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           // is exactly the read that answers the demand this waiter gave up
           // on. Adopting any read in flight instead would spend work the ref
           // never owed and could judge a different demand's answer.
-          {
-            const replacement = ownHydrationRejoinTarget({
-              successor: retriedInto,
-              registryRead: inflightHydrates.get(ref),
-            });
-            if (replacement) {
-              inflight = replacement;
-              continue;
-            }
+          if (retriedInto) {
+            inflight = retriedInto;
+            continue;
           }
           // Fall through to the shared re-arm below: it returns when the claim
           // is gone or a model published, and otherwise rejoins the newest
@@ -8829,19 +8816,19 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         if (!inflight) inflight = startHydration(client, getReadyEpoch());
       }
     } catch (err) {
-      // This call's own claim (the increment above) never landed: undo it
-      // via the same releaseThread() a caller would otherwise use, so a
-      // caller that retries ensureThread() after a failure and then
-      // releases exactly once (the normal mount/retry/unmount lifecycle)
-      // doesn't strand a phantom refcount that keeps a never-hydrated ref
-      // "tracked" forever (scanned by handleNotification on every
-      // notification, with no pane left to ever release it). Reusing
-      // releaseThread() rather than hand-rolling the decrement also means
-      // its own <=0 guard already makes this safe if a concurrent
-      // releaseThread() consumed this exact claim first.
-      if (ensureGenerations.get(ref) === generation && foregroundHolds(ref) > 0) {
-        threadsStore.getState().releaseThread(ref, { routingOnly });
-      }
+      // This call's own hold never landed: undo it via the same releaseThread()
+      // a caller would otherwise use, so a caller that retries ensureThread()
+      // after a failure and then releases exactly once (the normal
+      // mount/retry/unmount lifecycle) doesn't strand a phantom refcount that
+      // keeps a never-hydrated ref "tracked" forever.
+      //
+      // It releases the kind this acquisition took, because the count standing
+      // here is not necessarily this call's: a pane that closed while the read
+      // was in flight already released, and what remains can be a resend's
+      // routing lease. Releasing against the total would spend that lease's hold
+      // and retire the model under the press, which is how a resend came to
+      // resolve with no verified routing state behind it.
+      if (ensureGenerations.get(ref) === generation) threadsStore.getState().releaseThread(ref, { routingOnly });
       throw err;
     }
   },
@@ -8852,14 +8839,22 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   },
 
   releaseThread(ref, opts) {
+    const routing = opts?.routingOnly === true;
+    // Whether this release owns a hold is releaseForeground's answer, not a
+    // second predicate asked here: the two would drift, and the answer has to
+    // be "a hold of this release's own kind", because the total count standing
+    // is not necessarily this release's. A pane that closed while its read was
+    // in flight has already released, and what remains can be a resend's
+    // routing lease; spending it retires the model under the press.
+    const before = foregroundHolds(ref);
+    releaseForeground(ref, routing);
     const count = foregroundHolds(ref);
-    if (count <= 0) return; // never tracked, or already released
+    if (count === before) return; // nothing of this kind to drop
     // One release drops exactly what its own acquisition took: a routing hold
     // never took the bodies, so it must not spend a pane's body count.
-    if (opts?.routingOnly !== true) releaseBodyOwnership(ref);
-    releaseForeground(ref);
+    if (!routing) releaseBodyOwnership(ref);
     syncTranscriptResidencyOwners(ref);
-    if (count > 1) {
+    if (count > 0) {
       // Another holder keeps the ref alive, so nothing below is this release's
       // to do — except the bodies. When this was the last body owner, the pane
       // that owned the display is gone even though a routing lease still holds
@@ -10039,6 +10034,23 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
     for (const [ref, pending] of [...pendingHydrations]) {
       demands.set(ref, hydrationOwnerGeneration(kind, ref));
       retirePendingHydration(ref, pending, pendingHydrations);
+    }
+    // A wait can also be parked without a read on the wire: a routing
+    // verification whose retry already fired and is queued behind other
+    // background hydrations has consumed its timer and left the pending map, so
+    // retiring pending reads leaves it with no replacement and its press parks
+    // on a composer that never becomes usable. Every parked lifecycle is a
+    // demand, whichever way it is waiting, so record it here and let the
+    // committed Clear re-issue the read through the same path as the rest.
+    for (const [ref, owned] of [...ownedHydrationsFor(kind)]) {
+      if (demands.has(ref)) continue;
+      // The Clear issues this lifecycle's replacement itself, whichever way it
+      // was waiting, so a retry it already armed must not fire as well: one
+      // demand, one replacement read. Cancelling here is safe for an aborted
+      // Clear too - the abort path re-issues from the same recorded demand.
+      owned.cancelRetry?.();
+      owned.cancelRetry = null;
+      demands.set(ref, hydrationOwnerGeneration(kind, ref));
     }
   }
   residencyIfCreated?.retireClaims();

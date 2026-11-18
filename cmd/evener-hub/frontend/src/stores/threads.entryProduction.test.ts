@@ -65,7 +65,6 @@ import {
   countCachedSessions,
   installHydrationRetrySchedulerForTests,
   markCacheSessionsDeleted,
-  ownHydrationRejoinTargetForTests,
   pendingThreadHydrationUpdatesForTests,
   resendRecoveryMutation,
   resetThreadsStoreForTests,
@@ -1998,32 +1997,6 @@ it("a resend's claim on an evicted background destination does not wait on the b
   lease.release();
   background.release();
 }, 20_000);
-
-// The state a parked hold has to decide in: its demand retired, a replacement
-// read in flight, and a cached shell that counts as published. Those three
-// facts are this decision's own inputs, so they are built directly rather than
-// through a client, a reconnect or an unmount - each of which is only a way
-// production arrives here. The rule under test is which read the hold adopts.
-it("a retired wait adopts only the read its own demand retired into", () => {
-  const successor = Promise.resolve(null);
-  const unrelated = Promise.resolve(null);
-  // The read this demand retired into is adopted, even though a cached
-  // publication means the registry question "is a read in flight" is the wrong
-  // one to ask.
-  expect(
-    ownHydrationRejoinTargetForTests({ successor, registryRead: unrelated }),
-    "the hold must adopt the read its own demand retired into",
-  ).toBe(successor);
-  // A read issued for another demand is not adopted: doing so would spend work
-  // this ref never owed and judge a different demand's answer. This is the
-  // negative a bare presence test cannot express.
-  expect(
-    ownHydrationRejoinTargetForTests({ successor: null, registryRead: unrelated }),
-    "an unrelated read in flight must not be adopted",
-  ).toBe(undefined);
-  // No read at all: nothing to adopt, and the caller re-arms its ordinary way.
-  expect(ownHydrationRejoinTargetForTests({ successor: null, registryRead: undefined })).toBe(undefined);
-});
 
 // A terminal history diagnostic is terminal on its own, and every read that
 // meets one must be answered the same way: one visible diagnostic and no
@@ -9980,3 +9953,137 @@ it("an aborted Clear resumes a parked background end read without an unhandled r
   await settleEntryTranscriptForTests(ref);
   await owner.release();
 });
+
+// The resident-model exit is the earliest place a routing claim can be
+// fulfilled, and it is still a fulfilment: a destination whose model this tab
+// already tracks is not routable when the deletion fence covers it. Answering
+// that exit on presence alone hands the callback a claim for a session that is
+// gone, and a retargeted Steer or Drain spends the recovery draft on it.
+it("a resident model does not fulfil the claim for a deleted destination", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const outboxStorage = new MutationOutboxIndexedDB({ indexedDB: factory });
+  setMutationStorageForTests(outboxStorage);
+  const client = connect();
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  await settleEntryTranscriptForTests("local:a");
+  const outbox = await outboxStorage.enqueueIntent({
+    targetRef: "local:a",
+    threadId: "thread-a",
+    method: "turn/start",
+    payload: { ref: "local:a", input: [{ type: "text", text: "retry me" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "retry me" }] },
+  });
+  const row = await outboxStorage.transferToRecovery(outbox.clientMutationId, "rejected");
+  if (!row) throw new Error("expected the recovery row to be durable");
+  // The model stays resident and its routing state stays verified; only the
+  // deletion fence changed. The shortcut is the exit this presses.
+  markCacheSessionsDeleted(["local:a"]);
+  try {
+    const resent = withRecoveryDestinationClaim("local:a", () =>
+      resendRecoveryMutation(row.clientMutationId, "local:a", "send", "retry me", []),
+    );
+    const outcome = await resent.then(
+      () => ({ ok: true as const }),
+      () => ({ ok: false as const }),
+    );
+    expect(outcome.ok, "a deleted destination must reject the routing claim").toBe(false);
+    expect(await outboxStorage.listOutbox("local:a"), "a deleted destination must leave the outbox empty").toHaveLength(
+      0,
+    );
+    expect(await outboxStorage.listRecovery("local:a"), "the recovery draft must survive the rejection").toHaveLength(
+      1,
+    );
+  } finally {
+    background.release();
+  }
+}, 20_000);
+
+// The rejection exit asks the same question as the success exit. A deletion can
+// land while the claim's read is in flight, and the model can become verified
+// before that read fails: returning on presence there reports a fulfilled claim
+// for a destination the fence refuses, and the callback enqueues a row it will
+// never dispatch.
+it("a claim whose read fails after a deletion rejects instead of returning", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const outboxStorage = new MutationOutboxIndexedDB({ indexedDB: factory });
+  setMutationStorageForTests(outboxStorage);
+  const client = connect();
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  await settleEntryTranscriptForTests("local:a");
+  const route = entryTranscriptRoute("local:a");
+  if (!route) throw new Error("expected an entry route");
+  // Unverified at acquisition, so the claim spends its own read.
+  route.cachedUnverified = true;
+  const outbox = await outboxStorage.enqueueIntent({
+    targetRef: "local:a",
+    threadId: "thread-a",
+    method: "turn/start",
+    payload: { ref: "local:a", input: [{ type: "text", text: "retry me" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "retry me" }] },
+  });
+  const row = await outboxStorage.transferToRecovery(outbox.clientMutationId, "rejected");
+  if (!row) throw new Error("expected the recovery row to be durable");
+  const claimRead = deferred<ThreadReadResponse>();
+  client.on("thread/read", () => claimRead.promise);
+  try {
+    const resent = withRecoveryDestinationClaim("local:a", () =>
+      resendRecoveryMutation(row.clientMutationId, "local:a", "send", "retry me", []),
+    );
+    await vi.waitFor(() => expect(claimRead, "the claim must spend its verification read").toBeDefined());
+    markCacheSessionsDeleted(["local:a"]);
+    // The model became verified before the claim finished: presence alone would
+    // read as fulfilment.
+    route.cachedUnverified = false;
+    claimRead.reject(new Error("transport died"));
+    const outcome = await resent.then(
+      () => ({ ok: true as const }),
+      () => ({ ok: false as const }),
+    );
+    expect(outcome.ok, "a deleted destination must reject the routing claim").toBe(false);
+    expect(await outboxStorage.listOutbox("local:a"), "a deleted destination must leave the outbox empty").toHaveLength(
+      0,
+    );
+    expect(await outboxStorage.listRecovery("local:a"), "the recovery draft must survive the rejection").toHaveLength(
+      1,
+    );
+  } finally {
+    background.release();
+  }
+}, 20_000);
+
+// A resend's routing lease and a pane's acquisition are two holds on one ref,
+// and each release must drop only its own. A pane that closed while its own read
+// was in flight has already released; when its failed acquisition rolls back a
+// second time the only count left is the lease's, and spending it retires the
+// model under the press - so the resend dispatches on nothing.
+it("a second rollback does not spend a routing lease's hold", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const client = connect();
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  const lease = await acquireUnreadThreadClaim("local:a");
+  // The pane's own acquisition released already, and its rollback runs again.
+  threadsStore.getState().releaseThread("local:a");
+  threadsStore.getState().releaseThread("local:a");
+  expect(foregroundHolds("local:a"), "the routing lease's hold must survive the pane's second rollback").toBe(1);
+  expect(threadsStore.getState().threads.has("local:a"), "the leased model must still stand").toBe(true);
+  // And the pane still retires: the last holder releasing removes the model.
+  lease.release();
+  expect(foregroundHolds("local:a")).toBe(0);
+  // The removal follows the entry route's retirement, so await it rather than
+  // reading the map before the last release has finished retiring.
+  await threadsStore.getState().releaseThreadAndWait("local:a");
+  expect(threadsStore.getState().threads.has("local:a"), "the model must retire once the last holder releases").toBe(
+    false,
+  );
+}, 20_000);
