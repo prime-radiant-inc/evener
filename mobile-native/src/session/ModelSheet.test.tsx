@@ -26,7 +26,14 @@ import { Sheet } from "../sheet/Sheet";
 import { sheetKey } from "../sheet/sheetHosts";
 import { type ModelHost, ModelSheet, modelHosts } from "./ModelSheet";
 
-const navigation = vi.hoisted(() => ({ goBack: vi.fn(), navigate: vi.fn(), dispatch: vi.fn() }));
+// The sheet's own route on top of the stack: a real native-stack navigator
+// reports this, and the sheet closes only while it still holds.
+const navigation = vi.hoisted(() => ({
+	goBack: vi.fn(),
+	navigate: vi.fn(),
+	dispatch: vi.fn(),
+	getState: () => ({ index: 0, routes: [{ key: "model-sheet", name: "ModelSheet" }] }),
+}));
 const viewport = vi.hoisted(() => ({ fontScale: 1, scrolls: [] as { y: number; animated: boolean }[] }));
 
 vi.mock("react-native", async () => {

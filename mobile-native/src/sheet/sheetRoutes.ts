@@ -79,3 +79,10 @@ export function inFront(state: StackState, key: string): boolean {
 	if (position === -1 || position > state.index) return false;
 	return state.routes.slice(position + 1, state.index + 1).every((route) => isSheetRoute(route.name));
 }
+
+/** Whether the route is the one a bare `goBack()` pops: the top of the stack.
+ * A sheet's answer can arrive after the reader has closed it, when the route
+ * that asked to dismiss is no longer there to dismiss. */
+export function onTop(state: StackState, key: string): boolean {
+	return state.routes[state.index]?.key === key;
+}

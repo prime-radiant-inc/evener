@@ -18,6 +18,7 @@ import { Segmented } from "../sheet/Grouped";
 import { Sheet } from "../sheet/Sheet";
 import { useSheet } from "../sheet/useSheet";
 import { sheetHosts, sheetKey, useSheetHost } from "../sheet/sheetHosts";
+import { onTop, type StackState } from "../sheet/sheetRoutes";
 import type { ToastMessage } from "../Toast";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { effortName } from "./sessionFacts";
@@ -37,14 +38,22 @@ export const modelHosts = sheetHosts<ModelHost>();
 // The actions whose errors this sheet shows; the Session sheet shows every other one.
 export const MODEL_ACTIONS = new Set(["changeModel", "setReasoningEffort", "setVisionModel"]);
 
-export function ModelSheet({ route }: NativeStackScreenProps<Routes, "ModelSheet">) {
+export function ModelSheet({ route, navigation }: NativeStackScreenProps<Routes, "ModelSheet">) {
 	const { hubId, ref, setting } = route.params;
 	const sheet = useSheet();
 	const host = useSheetHost(modelHosts, sheetKey(hubId, ref), sheet);
 	const [query, setQuery] = useState("");
 	if (!host) return null;
 	return (
-		<ModelSheetBody host={host} vision={setting === "vision"} query={query} setQuery={setQuery} finish={sheet.finish} />
+		<ModelSheetBody
+			host={host}
+			vision={setting === "vision"}
+			query={query}
+			setQuery={setQuery}
+			finish={sheet.finish}
+			routeKey={route.key}
+			stack={() => navigation.getState() as unknown as StackState}
+		/>
 	);
 }
 
@@ -54,12 +63,20 @@ function ModelSheetBody({
 	query,
 	setQuery,
 	finish,
+	routeKey,
+	stack,
 }: {
 	host: ModelHost;
 	vision: boolean;
 	query: string;
 	setQuery(query: string): void;
 	finish(): void;
+	/** This sheet's own route. A pick outlives the binding that sent it, so its
+	 * answer can arrive after the reader closed this sheet — and then the
+	 * conversation is what a bare `goBack()` would pop. */
+	routeKey: string;
+	/** The stack as it stands at the moment of a call. */
+	stack(): StackState;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -89,7 +106,10 @@ function ModelSheetBody({
 				revealError();
 				return;
 			}
-			finish();
+			// A pick that outlived this sheet still reports the change it made and
+			// takes the reader nowhere: only a sheet still on top has anything to
+			// close.
+			if (onTop(stack(), routeKey)) finish();
 			then?.();
 		});
 	const choose = (model: ModelDescriptor) => {

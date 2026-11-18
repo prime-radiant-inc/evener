@@ -2359,9 +2359,16 @@ it("confirms an acknowledged model pick when the phone goes inactive before its 
 	// same session stays in front with its picker open.
 	harness.connection = { ...screenConnection(null, "idle"), error: null, disconnect: () => {} };
 	act(() => tree.update(<SessionScreen route={route} navigation={navigation} />));
+	// The reader taps Done while the read is still out: the picker goes by its
+	// own route, and the conversation under it is now what a bare goBack would
+	// pop.
+	act(() => pressable(sheet, "Done")?.props.onPress());
+	expect(navigation.goBack).toHaveBeenCalledTimes(1);
 	held.resolve();
 	await settle();
-	expect(navigation.goBack).toHaveBeenCalled();
+	// The confirmation still comes, and it takes the conversation nowhere: the
+	// sheet that asked to close has already gone.
+	expect(navigation.goBack).toHaveBeenCalledTimes(1);
 	// The confirmation is the screen's own toast, shown as the sheet goes.
 	expect(tree.root.findAllByType(Toast)).toHaveLength(1);
 });
