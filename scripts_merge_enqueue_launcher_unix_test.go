@@ -2527,6 +2527,34 @@ scratch_path_is_trusted "$2"`
 				acl:  " 0: user:nobody inherited allow list,delete_child\n",
 				want: true,
 			},
+			{
+				// `chown` is the grant that makes every other answer here moot: a
+				// trustee that can change this directory's owner becomes its owner,
+				// and ownership is what the rest of the walk trusts. The mode and the
+				// current owner both read as safe, which is exactly the shape an
+				// attribute-only parser accepts.
+				name: "a chown grant is a replaceable directory",
+				acl:  " 0: user:nobody allow list,chown\n",
+				want: true,
+			},
+			{
+				// The inherited spelling, because the grant is the same one: Darwin
+				// only moves the action along by a field, and an inherited chown takes
+				// the other branch of the field assignment. A fix that covered only
+				// the explicit form would accept the ancestor that matters most -- the
+				// one whose grant was set on a parent and reaches this directory.
+				name: "an inherited chown grant is a replaceable directory",
+				acl:  " 0: group:writers inherited allow list,chown\n",
+				want: true,
+			},
+			{
+				// The other direction, so `chown` is not a substring accident: a
+				// permission that merely starts with the same letters is not a grant,
+				// and the whole-item match has to keep holding.
+				name: "a read-only grant is still accepted beside chown in the list",
+				acl:  " 0: user:nobody allow read,list,search\n",
+				want: false,
+			},
 		}
 		for _, c := range cases {
 			t.Run(c.name, func(t *testing.T) {
@@ -3798,6 +3826,33 @@ while :; do sleep 0.05; done
 	testwait.Until(t, fmt.Sprintf("the helper the wrapper left behind (pid %d) to be stopped before the launcher returns", innerPID), func() bool {
 		return pidGone(innerPID)
 	})
+}
+
+// TestMergeEnqueueLauncherReportsAHelperKilledBetweenPollsAsALauncherFailure
+// pins the exit code for a helper that dies without reaching a queue decision.
+//
+// The helper is killed by a signal with nothing published: it dies between
+// polls, so it leaves no GitHub call for the survivor census to find, and every
+// check in that census is silent because there is nothing to look at. `wait`
+// then returns the shell's own encoding of the death -- 137 here -- and passing
+// that through hands the caller a status the contract does not define for a run
+// that never asked the queue anything.
+//
+// The two codes it could be confused with are both wrong in the same way. 1
+// tells the operator the PR dropped, which invites them to repeat a command
+// whose first invocation may not have reached GitHub at all. 130 claims a
+// cancellation, and no signal was sent to this launcher. What happened is that
+// the launcher could not get an answer, which is 2.
+//
+// The kill is SIGKILL against the helper's own pid, so the status is certainly
+// a signal and not an exit code the fixture chose; the assertion would pass
+// trivially for a helper that exited 2 on its own.
+func TestMergeEnqueueLauncherReportsAHelperKilledBetweenPollsAsALauncherFailure(t *testing.T) {
+	t.Parallel()
+	f := newLauncherFixture(t, "#!/usr/bin/env bash\nkill -9 \"$$\"\n")
+	cmd := f.launcherCmd(t, "--pr", "6499", "--wait", "570", "--repo", "example.invalid/none")
+	runLauncher(t, cmd, f)
+	mustExit(t, cmd, f, 2)
 }
 
 // TestMergeEnqueueLauncherDoesNotReportSuccessForAWrapperThatLeftItsHelper pins

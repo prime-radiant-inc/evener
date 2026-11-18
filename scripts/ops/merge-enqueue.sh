@@ -319,6 +319,15 @@ acl_ls_e_grants_foreign_write() {
     # permission list are read from whichever fields they actually landed in, so
     # an inherited `read` stays accepted while an inherited `write` does not.
     #
+    # `chown` is a mutation permission in the same sense as `writesecurity`, and it
+    # is checked in both spellings because it is the same grant: a trustee that can
+    # chown this directory to itself becomes its owner, and ownership is what the
+    # rest of this walk trusts. It is granted on a directory whose mode and owner
+    # both read as trusted, which is exactly why the mode is not the whole story.
+    # Reading it as an attribute permission would accept a 0755 ancestor another
+    # local user can take ownership of, and the paths this launcher executes
+    # through are under that ancestor.
+    #
     # $2 requires a name after the colon, which excludes `user::` and `group::` --
     # the owner and owning group, whose bits the caller has already read from the
     # mode. Each permission is matched as a whole comma-separated item for the
@@ -328,7 +337,7 @@ acl_ls_e_grants_foreign_write() {
       action = ($3 == "inherited") ? $4 : $3
       perms  = ($3 == "inherited") ? $5 : $4
       if (action == "allow" &&
-          perms ~ /(^|,)(writesecurity|write|add_file|add_subdirectory|delete|delete_child|append)(,|$)/) { found = 1 }
+          perms ~ /(^|,)(chown|writesecurity|write|add_file|add_subdirectory|delete|delete_child|append)(,|$)/) { found = 1 }
     }
     END { exit found ? 0 : 1 }
   '
@@ -1173,10 +1182,23 @@ start_helper() {
   # 126 and 127 are the shell's "found but could not execute" and "not found".
   # A noexec mount produces the first after a successful build, and neither is
   # a decision the helper made: the helper's own codes are 0, 1, 2 and 130.
+  #
+  # Anything else outside that set is not a queue answer either. A helper killed
+  # by a signal with no published GitHub call left running -- the helper dies
+  # between polls, so the census above finds nothing and takes no action -- exits
+  # as 137 or 143, and passing that through hands the caller a status the
+  # contract does not define for a run that reached no queue decision. 1 would
+  # read as "your PR dropped", which is a queue answer this run never got, so it
+  # is the launcher-failure code: 2.
   case "$status" in
+    0|1|2|130) ;;
     126|127)
       helper_started=false
       echo "merge-enqueue: the helper could not be executed: $1" >&2
+      return 2
+      ;;
+    *)
+      echo "merge-enqueue: the helper exited $status without reaching a queue decision, so that status is not an outcome" >&2
       return 2
       ;;
   esac

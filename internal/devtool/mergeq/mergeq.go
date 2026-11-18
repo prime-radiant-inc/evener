@@ -300,7 +300,21 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 	} else if merged {
 		return out, nil
 	}
+	// The caller's limit for the whole invocation, established BEFORE the enqueue
+	// is confirmed. It used to be created after that confirmation returned, which
+	// is a limit that starts after the thing it limits: a stalled refresh made the
+	// wait wait, on top of a --wait that had already begun. Everything below --
+	// the confirmation reads and the wait itself -- spends what is left of this.
+	deadline := clock.Now().Add(opts.Wait)
 	if st.Entry == nil {
+		// A run that asked for no wait has no caller budget to lend the
+		// confirmation, so it gets the same allowance as the other reads that
+		// decide an outcome. Never the signal-only context: that carries no
+		// deadline at all, which is what let a stalled gh call hold the command.
+		confirmBudget := finalObservationAllowance
+		if opts.Wait > 0 {
+			confirmBudget = deadline.Sub(clock.Now())
+		}
 		if err := c.Enqueue(ctx, opts.Repo, st.ID, opts.Jump); err != nil {
 			// A reply lost to the drain bound is not a refusal: GitHub may have
 			// accepted the mutation before the answer was cut off, so calling it
@@ -310,7 +324,7 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 			if !errors.Is(err, ErrIncompleteReply) {
 				return Outcome{}, refusalFor(ctx, EnqueueFailed, err)
 			}
-			if st, exitErr = readStatus(ctx, opts, c); exitErr != nil {
+			if st, exitErr = confirmEnqueue(ctx, opts, c, confirmBudget); exitErr != nil {
 				return Outcome{}, exitErr
 			}
 			if st.State == mergedState {
@@ -321,7 +335,7 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 				// the honest report is that the enqueue could not be confirmed.
 				return Outcome{}, refusalFor(ctx, EnqueueFailed, err)
 			}
-		} else if st, exitErr = readStatus(ctx, opts, c); exitErr != nil {
+		} else if st, exitErr = confirmEnqueue(ctx, opts, c, confirmBudget); exitErr != nil {
 			return Outcome{}, exitErr
 		}
 		if st.State == mergedState {
@@ -344,7 +358,8 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 		opts.Progress(Outcome{Kind: Queued, Position: st.Entry.Position})
 	}
 
-	deadline := clock.Now().Add(opts.Wait)
+	// deadline was established before the enqueue, so the wait and the
+	// confirmation share one budget rather than each starting its own.
 	for {
 		if err := ctx.Err(); err != nil {
 			return Outcome{}, &ExitError{Kind: Interrupted, Detail: err.Error()}
@@ -477,6 +492,34 @@ func readStatus(ctx context.Context, opts Options, c Client) (Status, *ExitError
 		return Status{}, &ExitError{Kind: Interrupted, Detail: ctxErr.Error()}
 	}
 	return st, nil
+}
+
+// confirmEnqueue reads the status once after an enqueue, bounded by an
+// allowance of its own.
+//
+// The refresh that follows an enqueue is what decides whether the PR is queued,
+// so it is part of the answer and not a diagnostic. On the signal-only context
+// it had no limit: a stalled gh call there held the command for however long
+// GitHub took, past the --wait the caller asked for, and the enqueue that had
+// already landed was never reported. `--wait 0` is the sharpest case, because
+// there is no wait at all to end and nothing else to bound it.
+//
+// An allowance that expires is not a cancellation: the operator did not stop
+// anything, and exit 130 would say they had. The run does not know whether the
+// enqueue landed, which is a lookup failure -- exit 2 -- and says so.
+func confirmEnqueue(ctx context.Context, opts Options, c Client, budget time.Duration) (Status, *ExitError) {
+	readCtx, stop := context.WithTimeout(ctx, budget)
+	defer stop()
+	st, exitErr := readStatus(readCtx, opts, c)
+	if exitErr != nil && exitErr.Kind == Interrupted && ctx.Err() == nil {
+		// refusalFor answered the budget, not the operator: the run's own context
+		// is still live, so what ended this read is the allowance.
+		return Status{}, &ExitError{
+			Kind:   LookupFailed,
+			Detail: "the queue state after enqueueing did not complete within the wait's allowance, so whether the pull request is queued was not read",
+		}
+	}
+	return st, exitErr
 }
 
 // refusalFor turns a failed client call into the run-ending refusal.

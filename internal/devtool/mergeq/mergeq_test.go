@@ -3,6 +3,7 @@ package mergeq
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -799,6 +800,99 @@ func TestWaitBudgetBoundsTheReadsItMakes(t *testing.T) {
 	}
 }
 
+// TestThePostEnqueueConfirmationIsBounded pins that the read which decides
+// whether an enqueue landed carries a deadline.
+//
+// Both paths that refresh after the enqueue used the run's signal-only context,
+// which carries no deadline at all, and the wait's own deadline was created only
+// after that refresh returned. A `gh` call that stalls there therefore held the
+// command for as long as GitHub took, on top of a --wait that had already
+// started: the caller's limit bounded everything except the read that decided
+// whether their PR was in the queue. `--wait 0` is the sharpest shape, because
+// there is no wait at all and nothing else that could end the run.
+//
+// The assertion is on the deadline the read RECEIVES, not on a stall played out
+// against the clock: waiting for a real allowance to expire would spend the
+// suite's time proving that a timer fires.
+func TestThePostEnqueueConfirmationIsBounded(t *testing.T) {
+	t.Parallel()
+	for _, wait := range []time.Duration{0, 60 * time.Second} {
+		t.Run(fmt.Sprintf("wait=%s", wait), func(t *testing.T) {
+			t.Parallel()
+			c := &confirmationRecordingClient{statuses: []Status{
+				{ID: "PR_6499", State: "OPEN"},
+				{ID: "PR_6499", State: "OPEN", Entry: queueEntry(1)},
+			}}
+			now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+			clock := Clock{
+				Now: func() time.Time { return now },
+				// The sleep spends the budget, so a wait asked for one round of
+				// polling ends rather than spinning: this case is about the deadline
+				// the confirmation read carries, not about how long a wait runs.
+				Sleep: func(_ context.Context, d time.Duration) bool { now = now.Add(d); return true },
+			}
+			_, _ = Execute(context.Background(), opts(wait), c, clock)
+			if c.afterEnqueue == 0 {
+				t.Fatalf("no status read followed the enqueue, so this case did not reach the read it exists to bound (reads %d)", c.reads)
+			}
+			if !c.firstAfterEnqueueBounded {
+				t.Fatal("the status read that decides whether the enqueue landed was issued on a context carrying no deadline: a stalled gh call there holds the command past the limit the caller set, and the enqueue is never reported either way")
+			}
+		})
+	}
+}
+
+// confirmationRecordingClient answers a PR as unqueued, then queued, and records
+// whether the read AFTER the enqueue call carried a deadline.
+type confirmationRecordingClient struct {
+	statuses []Status
+	reads    int
+	// afterEnqueue counts the reads made once the enqueue call has run.
+	afterEnqueue int
+	// firstAfterEnqueueBounded says whether the FIRST read after the enqueue
+	// carried a deadline. Only that one is the confirmation. The wait's own polls
+	// also carry deadlines, so a client that recorded "any read after the
+	// enqueue" would answer yes from a poll and hide an unbounded confirmation --
+	// which is how this case passed against the mutant on its first run.
+	firstAfterEnqueueBounded bool
+	enqueueCalled            bool
+}
+
+func (c *confirmationRecordingClient) Status(ctx context.Context, _, _ string) (Status, error) {
+	c.reads++
+	if c.enqueueCalled {
+		c.afterEnqueue++
+		if c.afterEnqueue == 1 {
+			_, c.firstAfterEnqueueBounded = ctx.Deadline()
+		}
+	}
+	if len(c.statuses) == 0 {
+		return Status{}, errors.New("confirmationRecordingClient: no status supplied")
+	}
+	st := c.statuses[0]
+	if len(c.statuses) > 1 {
+		c.statuses = c.statuses[1:]
+	}
+	return st, nil
+}
+
+func (c *confirmationRecordingClient) MergedCommit(context.Context, string, string) (string, bool, error) {
+	return "", false, nil
+}
+
+func (c *confirmationRecordingClient) Enqueue(context.Context, string, string, bool) error {
+	c.enqueueCalled = true
+	return nil
+}
+
+func (c *confirmationRecordingClient) QueueDrop(context.Context, string, string) (*DropEvent, error) {
+	return nil, nil
+}
+
+func (c *confirmationRecordingClient) MergeGroupRuns(context.Context, string) ([]GroupRun, error) {
+	return nil, nil
+}
+
 // deadlineRecordingClient records the budget every read is given, and answers as
 // a PR that stays queued.
 type deadlineRecordingClient struct {
@@ -875,8 +969,8 @@ func TestACompleteReplyAfterTheSignalIsNotAQueueVerdict(t *testing.T) {
 	// the initial status read never enters the wait, and the case then passes
 	// without exercising the path it names -- which is what an earlier version of
 	// this test did.
-	if c.observedAt != finalObservation {
-		t.Fatalf("the cancelling read was %v, want the final observation: the case has to cancel on the read whose reply commits the run to a verdict, or it proves nothing about it", c.observedAt)
+	if c.observedAt == noLateRead {
+		t.Fatal("the run never made a read after the initial one, so no reply arrived late and the case proves nothing about the one it exists to reject")
 	}
 	// The wait reported where the PR entered the queue, which is not a terminal
 	// verdict: it is the progress line the script always printed.
@@ -884,25 +978,33 @@ func TestACompleteReplyAfterTheSignalIsNotAQueueVerdict(t *testing.T) {
 		t.Fatalf("the wait printed no queued progress line (stdout %q): the run did not reach the wait this case is about", stdout.String())
 	}
 	// And no terminal verdict: no MERGEQ line other than that progress line.
-	for _, line := range strings.Split(strings.TrimSpace(stdout.String()), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(stdout.String()), "\n") {
 		if strings.HasPrefix(line, "MERGEQ ") && line != "MERGEQ queued position=1" {
 			t.Fatalf("a cancelled wait printed the terminal verdict %q: the reply arrived after the operator cancelled, and reporting it says a wait they stopped reached its own conclusion", line)
 		}
 	}
 }
 
-// observing is the read a lateReplyClient cancelled on.
+// observing names the read a lateReplyClient cancelled on.
+//
+// There is one name and not one per read: the client cannot see where the run
+// is, so a fake that labelled a read "a poll" or "the final observation" would
+// be inventing the very distinction the case is meant to prove, and an assertion
+// on that label would only read its own bookkeeping back. What the client knows
+// is that the first read must answer normally -- it is what places the PR in the
+// queue -- and that a later read is the one whose reply the run must not use.
+// The zero value is "no later read happened", which is the shape a client that
+// cancelled on the first read leaves behind.
 type observing int
 
 const (
-	// initialRead is the status read before the wait, which places the PR in the
-	// queue.
-	initialRead observing = iota
-	// finalObservation is the read made after the wait's budget is spent, whose
-	// reply is what a run would report as the outcome.
-	finalObservation
-	// queueRead is a poll's status read inside the wait.
-	queueRead
+	// noLateRead is a client that never reached a read after the first: the
+	// vacuous shape this case exists to rule out.
+	noLateRead observing = iota
+	// lateRead is a read made after the one that placed the PR in the queue. The
+	// name says no more than the client can see: the run is waiting by then, and
+	// the reply this read delivers is the one the run must not report.
+	lateRead
 )
 
 // lateReplyClient answers the pre-wait reads normally, then delivers one
@@ -927,7 +1029,7 @@ func (c *lateReplyClient) Status(context.Context, string, string) (Status, error
 	// Every later status read is the poll's or the final observation's. The latter
 	// is the one that decides a timeout, so it is the one that cancels and then
 	// answers in full.
-	c.observedAt = finalObservation
+	c.observedAt = lateRead
 	c.cancel()
 	return Status{ID: "PR_6499", State: mergedState, MergeCommit: new(string)}, nil
 }
