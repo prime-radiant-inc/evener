@@ -52,16 +52,8 @@ func hasToolResultNamed(msgs []llm.Message, name string) bool {
 }
 
 func newResponsesAnchorTurn(suffix string, call llm.ToolCallData) schema.Turn {
-	turn := schema.NewTurn(schema.TurnAssistant, llm.Message{
-		Role:    llm.RoleAssistant,
-		Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
-	})
-	turn.ResponseID = "resp_anchor_" + suffix
-	turn.ResponseIDHash = "hash_anchor_" + suffix
-	turn.ResponseEndpoint = "responses"
-	turn.ResponseStorageScopeFingerprint = "scope_" + suffix
-	turn.ResponseRequestFingerprint = "req_fp_" + suffix
-	turn.ResponseContextMarker = responseContextMarkerV1
+	turn := responsesContinuationEligibleAssistantTurn("resp_anchor_" + suffix)
+	turn.Message.Content = []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}
 	return turn
 }
 
