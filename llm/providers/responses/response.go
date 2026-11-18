@@ -170,8 +170,8 @@ func (acc *responsesOutputAccumulator) terminalMessage(id string, index int, out
 
 // Only a completed reasoning item with the same native ID may supply
 // reasoning absent from the terminal.
-func (output *responsesOutputItem) settleReasoning(item map[string]any, terminal *llm.ThinkingData, terminalNative reasoningContent) *llm.ThinkingData {
-	prior, native := responsesThinking(output.done)
+func (item *responsesOutputItem) settleReasoning(terminalItem map[string]any, terminal *llm.ThinkingData, terminalNative reasoningContent) *llm.ThinkingData {
+	prior, native := responsesThinking(item.done)
 	if native == reasoningAbsent {
 		return terminal
 	}
@@ -180,7 +180,7 @@ func (output *responsesOutputItem) settleReasoning(item map[string]any, terminal
 	if prior.EncryptedContent == "" && (terminalNative == reasoningWhitespace || terminalNative == native) {
 		return terminal
 	}
-	if summary := parseReasoningSummary(item["summary"]); summary != nil {
+	if summary := parseReasoningSummary(terminalItem["summary"]); summary != nil {
 		prior.Summary = summary
 	}
 	return prior
