@@ -458,6 +458,88 @@ test("a live row arriving above the trigger anchors the scroll and leaves the me
   }
 });
 
+// The row and the offset are read at different precisions: `offsetTop` is an
+// integer, `scrollTop` is not. A browser's anchoring correction can be the
+// fractional half of that pair, and an exact comparison then reads 37 against
+// 36.5 as a swipe - judging the earlier look at an offset nobody chose and
+// reading a loss no layout produced. Two looks half a pixel apart show the same
+// part of the row, so the reader keeps their place.
+test("a fractional anchoring adjustment does not read as a swipe", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  const PORT = 120;
+  const ROW = 44;
+  // A 100px leading block above five 44px rows: 320 of content in a 120px
+  // scrollport, so the reader can reach 200.
+  let leading = 100;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, 300, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, PORT);
+    return box(0, 0, 0, 0);
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "UL") return PORT;
+    return this.tagName === "LI" ? ROW : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "UL" ? 160 : 0;
+  });
+  // offsetTop reports WHOLE pixels - that is the whole difficulty. The
+  // fractional leading block the browser actually laid out arrives here
+  // rounded, and it is the offset that carries the half.
+  vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName !== "LI" || !this.parentElement) return 0;
+    const index = Array.prototype.indexOf.call(this.parentElement.children, this);
+    return Math.round(leading + index * ROW);
+  });
+  const { flush } = captureFrames();
+  const five: MenuItem[] = [
+    { id: "rename", label: "Rename", onSelect: vi.fn() },
+    { id: "duplicate", label: "Duplicate", onSelect: vi.fn() },
+    { id: "archive", label: "Archive", onSelect: vi.fn() },
+    { id: "delete", label: "Delete", onSelect: vi.fn() },
+    { id: "pin", label: "Pin", onSelect: vi.fn() },
+  ];
+  try {
+    render(<Menu trigger="Actions" items={five} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    const focused = screen.getByRole("menuitem", { name: "Archive" });
+    const popup = screen.getByRole("menu");
+    Object.defineProperty(popup, "scrollHeight", { configurable: true, value: leading + 5 * ROW });
+    focused.focus();
+    expect(document.activeElement).toBe(focused);
+    // Archive spans 188..232. The reader is at 196, so the visible area runs
+    // 196..316 and the row's first 8px are above it - clipped, and left there
+    // deliberately.
+    popup.scrollTop = 196;
+    fireEvent.scroll(popup);
+    expect(popup.scrollTop).toBe(196);
+
+    // A live update inserts 36.5 above it. The browser gives back exactly that
+    // 36.5 of offset to hold the view, and `offsetTop` reports the row's own
+    // move as 36 - the nearest whole pixel - while the offset carries the .5.
+    // Half a pixel is the entire difference between the two looks, and the
+    // visible interval moves by that half: 8px clipped becomes 7.5px. Only a
+    // comparison that reads both at the same precision can see that as the same
+    // view; an exact one calls it a swipe, rebases the earlier look onto
+    // 159.5, finds the row fully visible there and 7.5px clipped now, and
+    // scrolls back to a row the reader had scrolled past.
+    leading = 63.5;
+    Object.defineProperty(popup, "scrollHeight", { configurable: true, value: leading + 5 * ROW });
+    popup.scrollTop = 159.5;
+    fireEvent.scroll(popup);
+    flush();
+
+    // The reader keeps the offset they chose, and focus stays on their row.
+    expect(popup.scrollTop).toBe(159.5);
+    expect(document.activeElement).toBe(focused);
+  } finally {
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
 // A clamp can move the row and the offset up by the same amount, and then the
 // same part of the row is on screen at both looks.
 //
@@ -1037,8 +1119,14 @@ test("a refresh that inserts on both sides of the anchor still leaves the menu o
   const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
   Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
   let triggerTop = 300;
+  // The row the browser holds: 120 on screen before the correction and 120
+  // after it, so its place in the content rises by exactly the 24 the offset
+  // gives back. That is the evidence the unequal trigger movement is paid for
+  // by something the browser held, rather than by the insertion alone.
+  const anchorTop = 120;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.getAttribute("data-testid") === "anchor-row") return box(100, anchorTop, 200, 40);
     if (this.tagName === "UL") return box(0, 0, 160, 120);
     return box(0, 0, 0, 0);
   });
@@ -1059,6 +1147,7 @@ test("a refresh that inserts on both sides of the anchor still leaves the menu o
   try {
     render(
       <div data-testid="owning-scroller" style={{ overflowY: "auto" }}>
+        <div data-testid="anchor-row">Pinned section</div>
         <Menu trigger="Actions" items={items()} />
       </div>,
     );
@@ -1101,6 +1190,67 @@ test("a refresh that inserts on both sides of the anchor still leaves the menu o
     // popup followed the 16 it moved beyond the offset step.
     expect(screen.getByRole("menu")).toBeTruthy();
     expect(screen.getByRole("menu").style.top).toBe("308px"); // 276 + 28 + TRIGGER_GAP
+  } finally {
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// An insertion of its own moves every row below it, so it can make the trigger's
+// content position grow by more than the offset in the same gesture a reader is
+// scrolling - and "grew by at least as much" accepted that as the browser
+// holding a row still. The row it actually held has not moved at all here, and
+// that is the difference: the correction is paid for by the held row, never by
+// the trigger alone. The menu is the reader's to close by scrolling, so this
+// one must close.
+test("a reader's scroll is not excused by a row arriving below the anchor", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  let triggerTop = 300;
+  // The row the browser was holding. A reader's drag slides it UP the screen and
+  // leaves its place in the content alone, which is the opposite of a
+  // correction: the browser holds a row still on screen while the content moves
+  // under it. This row reports nothing the reader did not do.
+  let anchorTop = 120;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.getAttribute("data-testid") === "anchor-row") return box(100, anchorTop, 200, 40);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  const { flush } = captureFrames();
+  try {
+    render(
+      <div data-testid="owning-scroller" style={{ overflowY: "auto" }}>
+        <div data-testid="anchor-row">Pinned section</div>
+        <Menu trigger="Actions" items={items()} />
+      </div>,
+    );
+    const scroller = screen.getByTestId("owning-scroller");
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 600 });
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 200 });
+    scroller.scrollTop = 300;
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu")).toBeTruthy();
+
+    // A 40px live row arrives BELOW the anchor and above the trigger, and the
+    // reader drags 12px down the rail in the same pass. The trigger's place in
+    // the content grows by the row's 40 - the drag adds nothing to a content
+    // position - while the offset grows by 12. "Grew by at least as much" is
+    // satisfied by exactly the 40 an insertion produces on its own, and 12 of
+    // reader is hidden inside it. The row that was held moved 0 in the content
+    // while sliding 12 up the screen, so nothing the browser held accounts for
+    // the offset, and the menu goes.
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 640 });
+    scroller.scrollTop = 312;
+    triggerTop = 328;
+    anchorTop = 108;
+    fireEvent.scroll(scroller);
+    flush();
+
+    expect(screen.queryByRole("menu")).toBeNull();
   } finally {
     vi.restoreAllMocks();
     if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
@@ -4236,6 +4386,67 @@ test("declares a :focus-visible rule in its CSS module, using only tokens", () =
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "menu.module.css"), "utf8");
   expect(css).toContain(":focus-visible");
+});
+
+// A zoomed-in viewport can cap the popup narrower than the space its own insets
+// take. At 52px of viewport the cap is 36, the popup's 4px inset and the row's
+// 12px leave 4px for a glyph - and a glyph does not wrap. The insets are the
+// widget's breathing room, so they yield first; only then does the popup take
+// the overflow onto its own horizontal scrollbar rather than painting the text
+// outside a box the vertical reveal can never reach.
+test("the popup and row insets yield when the visible width is narrower than them", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "menu.module.css"), "utf8");
+  const narrow = /\.popupNarrow\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(narrow).toMatch(/padding-inline:\s*0;/);
+  const narrowItem = /\.popupNarrow\s+\.item\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(narrowItem).toMatch(/padding-inline:\s*var\(--space-1\);/);
+  const popup = /\.popup\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(popup).toMatch(/overflow-x:\s*auto;/);
+});
+
+// The same rows, on the other axis. A label caught between a cap narrower than
+// itself and a glyph that cannot wrap runs past the popup's right edge, and the
+// vertical reveal leaves it there because the row is vertically whole. Moving
+// only the popup's own scroll - never scrollIntoView - is what keeps a
+// pinch-zoomed page where the reader put it.
+test("a row wider than the popup is brought into view by the popup's own horizontal scroll", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  const PORT_WIDTH = 36;
+  // The row sits inset 10px and is 40 wide: 6px of it live past the 36px popup,
+  // and its own start is 10px inside the popup's content.
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, 300, 40, 28);
+    if (this.tagName === "UL") return box(0, 300, PORT_WIDTH, 120);
+    return box(0, 0, 0, 0);
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "UL") return 120;
+    return this.tagName === "LI" ? 44 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "UL") return PORT_WIDTH;
+    return this.tagName === "LI" ? 40 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetLeft", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "LI" ? 10 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
+    return 0;
+  });
+  try {
+    render(<Menu trigger="Actions" items={items()} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    const popup = screen.getByRole("menu");
+    // Vertically whole, so only the horizontal branch can have moved it.
+    expect(popup.scrollTop).toBe(0);
+    expect(popup.scrollLeft).toBe(10);
+  } finally {
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
 });
 
 test("keeps the menu trigger and items at the narrow-viewport tap floor", () => {

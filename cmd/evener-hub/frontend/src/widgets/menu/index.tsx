@@ -154,6 +154,11 @@ const CAP_ROUNDING = 1;
 // `scrollHeight - clientHeight` describes and still be that correction. Layout
 // endpoints can be fractional while those two properties report integers.
 const CLAMP_ROUNDING = 1;
+// The same pixel, for the focused row's own metrics: `offsetTop` reports whole
+// pixels while `scrollTop` does not, so the browser's fractional anchoring
+// adjustment and the visible interval it leaves arrive a fraction apart. A
+// difference within this distance is the reading, not the view.
+const CLIP_ROUNDING = 1;
 
 function firstEnabledIndex(items: MenuEntry[]): number {
   return items.findIndex(isActionable);
@@ -180,6 +185,21 @@ function revealRow(popup: HTMLElement, row: HTMLElement): void {
     // them scroll the rest, which is the direction they would read it anyway.
     popup.scrollTop = row.offsetHeight > portHeight ? rowTop : rowBottom - portHeight;
   }
+  // The same question on the other axis. A zoomed-in viewport can cap the popup
+  // narrower than a glyph, so the row's own text runs past its right edge and
+  // the vertical scroll above cannot reach it. The popup's scroll space is the
+  // only thing moved, for the same reason it is on the vertical axis: this runs
+  // before placement writes the popup's new coordinates, and scrollIntoView
+  // would pan the page toward where it used to be.
+  const rowLeft = row.offsetLeft;
+  const rowRight = rowLeft + row.offsetWidth;
+  const portWidth = popup.offsetWidth;
+  // Start, not end, when the row is wider than the popup - the same choice the
+  // vertical branch makes, and for the same reason: the beginning of the
+  // action's label is what the reader is reading toward.
+  if (rowRight > popup.scrollLeft + portWidth) {
+    popup.scrollLeft = row.offsetWidth > portWidth ? rowLeft : rowRight - portWidth;
+  } else if (rowLeft < popup.scrollLeft) popup.scrollLeft = rowLeft;
 }
 
 /** What the reveal question is asked of: the row's place in the popup's scroll
@@ -442,12 +462,11 @@ function classifyScrollerScroll(
   const moved = now - previous.scrollTop;
   const contentMoved = contentTop - previous.contentTop;
   // The offset moved, in the same direction as the trigger's place in the
-  // content, by AT LEAST as much. That is the browser holding the anchor
-  // still: it moves the offset by whatever arrived above the anchor, and the
-  // trigger - which can sit below the anchor - moves by that plus whatever
-  // arrived between the two. One refresh can put rows on both sides of the
-  // anchor, so the offset is a lower bound and not the whole story: requiring
-  // the two numbers to be equal dismisses exactly that case.
+  // content, by exactly as much. Nothing but an insertion or removal above the
+  // trigger moves the two together like that: a reader's drag moves the offset
+  // and leaves the content alone, so `contentMoved` is zero. This one reading
+  // needs no other witness - the equality IS the statement that the content
+  // above the trigger changed by what the reader did not scroll.
   //
   // Both directions count, because a rail both gains and loses rows. A session
   // arriving above the anchor grows the offset; one LEAVING above it shrinks
@@ -455,12 +474,14 @@ function classifyScrollerScroll(
   // with it. The reader is sitting still in both, and in both the trigger is
   // where they left it.
   //
-  // A reader's own scroll never looks like this. Their drag moves the offset
-  // with the content untouched, so `contentMoved` is zero and nothing above
-  // them explains the movement.
-  if (moved !== 0 && Math.sign(contentMoved) === Math.sign(moved) && Math.abs(contentMoved) >= Math.abs(moved)) {
-    return "anchoring";
-  }
+  // UNEQUAL is not evidence on its own, and this is the trap: a row arriving
+  // BETWEEN the anchor and the trigger grows the trigger's content position by
+  // its height without asking the browser for any correction at all, so a
+  // reader who scrolled 12px in the same moment shows 12 of offset against 40
+  // of content movement - larger, same direction, and nothing to do with
+  // anchoring. The difference has to be paid for by the row the browser
+  // actually held, which is what the witness set below is for.
+  if (moved !== 0 && Math.abs(contentMoved - moved) <= CLAMP_ROUNDING) return "anchoring";
   // The trigger cannot always say so. A Live session moving from Idle to
   // Working crosses the row the browser anchored on: both bands stay populated,
   // the moved row keeps its height, and the trigger's own place in the content
@@ -475,7 +496,10 @@ function classifyScrollerScroll(
   // reader's view starts at, which can be a heading, a row of the band above,
   // or the first row that stayed put while a neighbour changed bands. Requiring
   // a particular one to be the anchor asks this widget to guess; one row moving
-  // by the offset is the statement that the browser held THAT row.
+  // by EXACTLY the offset is the statement that the browser held THAT row. At
+  // least as much is not the same statement: an insertion of its own moves a
+  // row below it by more than the offset, and accepting that would let any
+  // live update excuse any scroll the reader makes at the same moment.
   //
   // A witness the update removed has no position to report, and a detached
   // element's rect is zeros - which would read as a huge movement in whichever
@@ -483,13 +507,11 @@ function classifyScrollerScroll(
   for (const witness of previous.witnesses) {
     if (!witness.node.isConnected) continue;
     const witnessMoved = contentTopOf(witness.node as HTMLElement, scroller) - witness.top;
-    if (
-      witnessMoved !== 0 &&
-      Math.sign(witnessMoved) === Math.sign(moved) &&
-      Math.abs(witnessMoved) >= Math.abs(moved)
-    ) {
-      return "anchoring";
-    }
+    if (witnessMoved === 0) continue;
+    // Within a pixel, because a rect can be fractional while the offset the
+    // browser corrected is whole. Anything larger is a row that moved for its
+    // own reasons and says nothing about where the browser's view sits.
+    if (moved !== 0 && Math.abs(witnessMoved - moved) <= CLAMP_ROUNDING) return "anchoring";
   }
   return "scrolled";
 }
@@ -740,10 +762,16 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         // the visible area is.
         const maximum = popup.scrollHeight - now.portHeight;
         const clamped = before.scrolledTo > maximum && Math.abs(now.scrolledTo - maximum) <= CLAMP_ROUNDING;
+        // The row and the offset are read at DIFFERENT precisions: `offsetTop`
+        // is an integer, `scrollTop` is not. A browser's 36.5px anchoring
+        // adjustment therefore reports 37px of row movement against 36.5px of
+        // offset, and an exact comparison calls a correction the reader never
+        // made a swipe. One pixel is the whole of that gap, and it is the same
+        // pixel the clamp reading above already allows for the same reason.
+        const rowMoved = now.top - before.top;
+        const offsetMoved = now.scrolledTo - before.scrolledTo;
         const readerScrolled =
-          !clamped &&
-          now.scrolledTo !== before.scrolledTo &&
-          now.top - before.top !== now.scrolledTo - before.scrolledTo;
+          !clamped && now.scrolledTo !== before.scrolledTo && Math.abs(rowMoved - offsetMoved) > CLAMP_ROUNDING;
         const was = readerScrolled ? { ...before, scrolledTo: now.scrolledTo } : before;
         // Each look is judged at the offset it was TAKEN at. A clamp moves the
         // whole list under a viewport that did not move, so reading the earlier
@@ -763,8 +791,23 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         // is left in the numbers.
         const showStart = (obs: RowObservation) => Math.max(0, obs.scrolledTo - obs.top);
         const showEnd = (obs: RowObservation) => Math.min(obs.height, obs.scrolledTo + obs.portHeight - obs.top);
-        const fullyVisible = (obs: RowObservation) => showStart(obs) === 0 && showEnd(obs) === obs.height;
-        if (fullyVisible(now)) return;
+        // The intervals are compared at that same pixel. A sub-pixel difference
+        // between two looks is the rounding above, not a change in what the
+        // reader can see: treating half a pixel as lost visibility scrolls the
+        // popup for a correction that left the row exactly as it was.
+        const fullyVisible = (obs: RowObservation) =>
+          showStart(obs) <= CLIP_ROUNDING && showEnd(obs) >= obs.height - CLIP_ROUNDING;
+        if (fullyVisible(now)) {
+          // The popup can be capped narrower than a glyph - a zoomed-in
+          // viewport leaves a few pixels of text room however the insets
+          // yield - and the horizontal scroll is the only thing that can bring
+          // it back. This is the same question on the other axis: is the row
+          // inside the box the reader can see? It reads the row's own width
+          // against the popup's, so nothing here is measured in two coordinate
+          // systems.
+          if (now.width > now.portWidth) revealRow(popup, row);
+          return;
+        }
         // Three ways layout can take a row out of sight, and one for rows it
         // never showed:
         //
@@ -789,11 +832,11 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         //   ever on screen to lose.
         const becameClipped = fullyVisible(was);
         const wasOnScreen = showEnd(was) > showStart(was);
-        const lostItsStart = showStart(now) > showStart(was);
+        const lostItsStart = showStart(now) > showStart(was) + CLIP_ROUNDING;
         // What the reader could still read a moment ago that the row still
         // contains: the earlier interval, cut to the row's present height.
         const survivedEnd = Math.min(showEnd(was), now.height);
-        const lostItsEnd = showEnd(now) < survivedEnd;
+        const lostItsEnd = showEnd(now) < survivedEnd - CLIP_ROUNDING;
         if (!becameClipped && !(wasOnScreen && (lostItsStart || lostItsEnd))) return;
       }
       // A row inserted BELOW the focused one moves nothing above it, and the

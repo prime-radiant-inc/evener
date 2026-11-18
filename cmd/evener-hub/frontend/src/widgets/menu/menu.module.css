@@ -94,6 +94,11 @@
   width: max-content;
   max-block-size: calc(100dvh - (2 * var(--space-2)));
   overflow-y: auto;
+  /* A glyph wider than the popup's own cap - a zoomed-in viewport leaves a few
+   * pixels of text room even after the insets yield - cannot wrap, so the
+   * popup scrolls horizontally to it rather than painting it outside its box,
+   * where the vertical reveal cannot reach it. */
+  overflow-x: auto;
   margin: 0;
   /* Items sit inset from the popup's edge and round their own wash, so no
    * square hover corner meets the popup's rounded one. */
@@ -124,6 +129,16 @@
 .popupNarrow .item {
   white-space: normal;
   overflow-wrap: anywhere;
+  /* A zoomed-in viewport can leave a cap narrower than the two insets put
+   * together - 52px of viewport caps the popup at 36, and the popup's own 4px
+   * and the row's 12px leave 4px for a glyph. Wrapping cannot break a glyph, so
+   * the room has to come from the insets instead: they are the widget's own
+   * breathing room, not the reader's content. */
+  padding-inline: var(--space-1);
+}
+
+.popupNarrow {
+  padding-inline: 0;
 }
 
 .item:hover {
