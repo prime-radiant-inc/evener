@@ -219,7 +219,7 @@ func structuralWorktreeRoot(cwd string) (string, bool) {
 // An absence is known only for an accessible working directory whose .git
 // lookups all returned ErrNotExist. An unavailable directory leaves it unknown.
 func HasGitEntryAncestor(cwd string) (present, known bool) {
-	cwd = filepath.Clean(cwd)
+	cwd = identifier.ResolveClean(cwd)
 	dir := cwd
 	for {
 		_, err := os.Lstat(filepath.Join(dir, ".git"))

@@ -3,6 +3,7 @@ package schema
 import (
 	"cmp"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -777,9 +778,20 @@ func writeSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta, newPrompt
 			return fmt.Errorf("session meta revision overflow for %s", meta.ID)
 		}
 		meta.Revision = previous.Revision + 1
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return err
 	} else {
+		if !errors.Is(err, os.ErrNotExist) {
+			_, syntax := errors.AsType[*json.SyntaxError](err)
+			_, shape := errors.AsType[*json.UnmarshalTypeError](err)
+			if !newPrompt || !(syntax || shape) {
+				return err
+			}
+			// The caller supplied a usable snapshot for the missing transcript.
+			// Keep the unreadable sidecar alongside its replacement for diagnosis.
+			path := SessionMetaPath(dir, meta.ID)
+			if err := fs.Rename(path, path+".corrupt-"+rand.Text()); err != nil {
+				return err
+			}
+		}
 		meta.Revision = 1
 	}
 

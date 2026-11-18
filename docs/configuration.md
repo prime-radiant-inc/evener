@@ -190,7 +190,10 @@ A fork or aside copies those facts with the prompt.
 A delegate records its own launch facts. An empty value is distinct from a
 fact an older session never recorded. On restore or after compaction, retained
 environment updates in the conversation supersede the launch facts.
-When the transcript is missing, Evener renders a new prompt. The first
+When the transcript is missing, Evener renders a new prompt. A caller with
+a valid session snapshot can recover even if the saved metadata contains
+malformed JSON. Evener preserves those bytes beside the recovered metadata.
+The first
 restore to publish its header establishes the launch facts. A failed
 publication can be retried. Reopening that header uses its recorded launch
 facts even when an embedding application supplies an older session snapshot.

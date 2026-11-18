@@ -6,6 +6,8 @@ package agent
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -301,10 +303,13 @@ func TestRestoreSessionFromMetaWithConfig_LayersModelFallbacks(t *testing.T) {
 			ModelFallbacks: []string{"openai/persisted-fallback"},
 		}).toSnapshot(),
 	}
-	for _, state := range []string{"missing transcript", "saved header with malformed sidecar"} {
+	for _, state := range []string{"missing transcript", "missing transcript with malformed sidecar", "saved header with malformed sidecar"} {
 		t.Run(state, func(t *testing.T) {
 			dir := t.TempDir()
 			supplied := meta
+			if state == "missing transcript with malformed sidecar" {
+				writeTestFile(t, schema.SessionMetaPath(dir, meta.ID), "{")
+			}
 			if state == "saved header with malformed sidecar" {
 				writeFindTranscript(t, dir, meta.ID, meta.CreatedAt)
 				writeTestFile(t, schema.SessionMetaPath(dir, meta.ID), "{")
@@ -319,6 +324,16 @@ func TestRestoreSessionFromMetaWithConfig_LayersModelFallbacks(t *testing.T) {
 			}
 			defer sess.Close()
 			snapshot := sess.Meta()
+			if state == "missing transcript with malformed sidecar" {
+				files, err := filepath.Glob(schema.SessionMetaPath(dir, meta.ID) + ".corrupt-*")
+				if err != nil || len(files) != 1 {
+					t.Fatalf("preserved sidecars = %v, err = %v", files, err)
+				}
+				data, err := os.ReadFile(files[0])
+				if err != nil || string(data) != "{" {
+					t.Fatalf("preserved sidecar = %q, err = %v", data, err)
+				}
+			}
 			if got := snapshot.Config.ModelFallbacks; len(got) != 1 || got[0] != "openai/runtime-fallback" {
 				t.Fatalf("restored model fallbacks = %v, want [openai/runtime-fallback]", got)
 			}

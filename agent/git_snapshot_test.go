@@ -420,6 +420,17 @@ func TestSnapshotGitBranch_ReportsTheCheckedOutBranchAndNothingWithoutACommit(t 
 
 	mustExec(t, env, dir, "git config user.email test@test.com && git config user.name test")
 	mustExec(t, env, dir, "git checkout -b probe-branch && git commit --allow-empty -m initial")
+	nested := filepath.Join(dir, "nested")
+	if err := os.Mkdir(nested, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(nested, alias); err != nil {
+		t.Fatal(err)
+	}
+	if got, known := snapshotGitBranch(env, alias); !known || got != "probe-branch" {
+		t.Errorf("branch through a symlink to a nested directory = %q (known %t)", got, known)
+	}
 	if got, known := snapshotGitBranch(env, dir); !known || got != "probe-branch" {
 		t.Fatalf("branch = %q (known %t), want probe-branch", got, known)
 	}
