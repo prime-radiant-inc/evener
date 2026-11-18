@@ -2799,41 +2799,16 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	}
 	if committed && publishEvent {
 		// The entry and the event announcing it are one publication, and the
-		// transcript door is the statement that says so: the entry is in
-		// history before the event exists, so no reader can observe the event
-		// ahead of the transcript that explains it. Held across both steps, the
-		// door also keeps a fold from committing its markers between them.
-		//
-		// It keeps an in-flight send ahead of the terminal SESSION_END too:
-		// announceSessionEnd takes this same door, so a live reader cannot see
-		// the environment event behind the boundary that says the session is
-		// over.
+		// transcript door is the statement that says so: the entry is in history
+		// before the event exists, so no reader can observe the event ahead of
+		// the transcript that explains it, and the door keeps a fold from
+		// committing its markers between those two steps.
 		//
 		// The event is a trigger, not a snapshot: the bridge samples current
 		// context when it handles the event (server/thread_envelope.go's
 		// facetsByEvent), so the sample can reflect state a later publication
-		// moved. Nor does the door order this event against a fold's own
-		// events: a fold commits its markers under the door and flushes its
-		// buffered events only after releasing it (publishFoldTransaction), so
-		// a reader can observe a fold's events after a transcript entry that
-		// another publication wrote in the meantime.
-		//
-		// The trade is real: emit is not a bounded send. A full buffer blocks
-		// it against the authoritative consumer while it holds eventsMu for
-		// read; shutdown's close budget releases it, but a consumer that only
-		// stops draining parks it there. It also runs the job-watch fan-out
-		// synchronously, walking the registered watches under jm.mu and
-		// skipping the emitting session's own receivers. This kind can never
-		// trigger a send or a notification from that walk: watch_types.go's
-		// modelEventKinds admits only assistant.tool, communicate and
-		// job.notification, resolveEventKinds drops any name it does not map,
-		// and isSupportedWatchEventKind gates a wildcard watch on the same
-		// map. All of it runs under attentionMu, so a stalled consumer
-		// stalls this session's transcript writes and fold publication rather
-		// than only the emitter. Accepted because a parked consumer already
-		// stalls the emitting turn and the door already spans an fsync; see
-		// publishFoldTransaction, whose deferred flush must NOT follow this
-		// example.
+		// moved. Nor does the door order this event against a fold's own events,
+		// which flush only after it is released (publishFoldTransaction).
 		if hook := s.cfg.testOnly.beforeEnvironmentEventPublish; hook != nil {
 			hook()
 		}
