@@ -944,7 +944,12 @@ func jcpStoreErrorPaths(t *testing.T, root string, r *jcpReader) {
 		// seed would assert nothing about the failures it names. The handle is
 		// what has to be wrapped.
 		s := &Store{path: "/partial.jsonl", fs: base, f: operation.wrap(raw)}
-		jcpRequireError(t, operation.label, s.recoverTrailingPartialLineLocked())
+		// Recovery reports whether it ESTABLISHED the tail as well as its error,
+		// because a writer must distinguish "the tail is clean" from "the
+		// question could not be put to the file". A fault here is the error.
+		if _, err := s.recoverTrailingPartialLineLocked(); err == nil {
+			t.Fatalf("%s: recovery reported no error", operation.label)
+		}
 		_ = raw.Close()
 	}
 
