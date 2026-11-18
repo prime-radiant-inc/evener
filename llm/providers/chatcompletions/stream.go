@@ -39,8 +39,8 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 	var textBuf strings.Builder
 	var reasoningStarted bool
 	var reasoningBuf strings.Builder
-	// reasoningField remembers which wire field the first reasoning delta
-	// arrived on so replay can route thinking back to the same field.
+	// Keep the first scalar field only while all accumulated reasoning text
+	// comes from scalar fields. Structured display text has no scalar field.
 	var reasoningField string
 	// encryptedDetails accumulates opaque reasoning.encrypted items (OpenRouter
 	// Gemini/o-series) in arrival order; they ride the thinking part's
@@ -234,10 +234,12 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 			// non-empty variant per chunk (duplicated identical fields must
 			// not double the text) and remember the field for replay.
 			if delta, field := reasoningFromDelta(choice.Delta); delta != "" {
+				if reasoningBuf.Len() == 0 || field == "" {
+					reasoningField = field
+				}
 				if !reasoningStarted {
 					s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningStart})
 					reasoningStarted = true
-					reasoningField = field
 				}
 				reasoningBuf.WriteString(delta)
 				s.Send(llm.StreamEvent{

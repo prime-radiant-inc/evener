@@ -84,6 +84,35 @@ func TestStreamReasoningOnlyClosesAtDone(t *testing.T) {
 	}
 }
 
+func TestStreamReasoningFieldRequiresOnlyScalarDeltas(t *testing.T) {
+	t.Parallel()
+	const scalar = `data: {"choices":[{"delta":{"reasoning":"scalar"}}]}` + "\n\n"
+	const details = `data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","text":"detail"}]}}]}` + "\n\n"
+	for _, tc := range []struct {
+		name, body, text, field string
+	}{
+		{"scalar only", scalar + scalar, "scalarscalar", "reasoning"},
+		{"details only", details, "detail", ""},
+		{"details after scalar", scalar + details, "scalardetail", ""},
+		{"scalar after details", details + scalar, "detailscalar", ""},
+		{"scalar on both sides of details", scalar + details + scalar, "scalardetailscalar", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			resp, err := ExtractRecordedResponse([]byte(tc.body+"data: [DONE]\n\n"), "m")
+			if err != nil {
+				t.Fatal(err)
+			}
+			parts := resp.Message.Content
+			if len(parts) != 1 || parts[0].Kind != llm.ContentThinking || parts[0].Thinking == nil {
+				t.Fatalf("settled content = %+v, want one thinking part", parts)
+			}
+			if got := parts[0].Thinking; got.Text != tc.text || got.Signature != tc.field || got.EncryptedContent != "" {
+				t.Fatalf("settled thinking = %+v, want text %q and field %q without opaque details", got, tc.text, tc.field)
+			}
+		})
+	}
+}
+
 // TestStreamEncryptedDetailsRideThinkingPart pins the accumulation of opaque
 // encrypted reasoning items: they survive to the settled thinking part's
 // EncryptedContent, verbatim.
