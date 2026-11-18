@@ -1100,6 +1100,127 @@ func TestFind_ProjectName_StateLaneStopsGitWalkAtLaneRoot(t *testing.T) {
 	}
 }
 
+// TestFind_ProjectName_BucketMatchingLaneExcludesConflictingSibling covers a
+// lane whose project segment IS its bucket's ID, so it matches by name. That
+// match alone is not evidence of ownership: another repository's session can be
+// given this bucket with --state-dir. A sibling that positively resolves to a
+// different project is about another repository, so it must be neither selected
+// nor cached — caching is what would turn one wrong label into every later
+// row's label. A sibling with no project evidence still answers.
+func TestFind_ProjectName_BucketMatchingLaneExcludesConflictingSibling(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	checkout := newNamedCheckout(t, "owning-repo")
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(checkout))
+	bucket, err := RuntimeDirForProjectWithStateHome(project, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	// Another repository's live checkout, saved into this bucket as a newer
+	// session — what --state-dir aimed at the wrong bucket produces.
+	intruderRepo := newNamedCheckout(t, "intruder-repo")
+	intruder := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	intruder.EnvInfo.GitOriginURL = "git@github.com:other/intruder-repo.git"
+	intruder.EnvInfo.WorkingDir = intruderRepo
+	if err := schema.SaveSessionMeta(bucket, intruder); err != nil {
+		t.Fatal(err)
+	}
+
+	r := newProjectNameResolver()
+	lane := schema.SessionMeta{}
+	lane.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", project.ID, "dlg_bucket_matching")
+
+	// With the only sibling naming another project, the lane has no evidence for
+	// its own project and must not take the intruder's.
+	if got := r.projectName(lane, bucket); got != "" {
+		t.Fatalf("projectName(bucket-matching lane with only a conflicting sibling) = %q, want empty (the sibling names another project)", got)
+	}
+
+	// The refusal must not have been cached: a later row must still be able to
+	// take a genuine sibling's evidence, and this bucket now gains one. Its
+	// recorded checkout is the bucket's own repository, so its project evidence
+	// matches the lane's segment.
+	sibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	sibling.EnvInfo.GitOriginURL = "git@github.com:owner/owning-repo.git"
+	sibling.EnvInfo.WorkingDir = checkout
+	if err := schema.SaveSessionMeta(bucket, sibling); err != nil {
+		t.Fatal(err)
+	}
+	nextLane := schema.SessionMeta{}
+	nextLane.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", project.ID, "dlg_bucket_matching_next")
+	if got, want := r.projectName(nextLane, bucket), "owning-repo"; got != want {
+		t.Fatalf("projectName(next bucket-matching lane once a matching sibling exists) = %q, want %q (the empty answer must not have been cached)", got, want)
+	}
+}
+
+// TestFind_ProjectName_CrossBucketParentNeedsLaneEvidence covers a row in bucket
+// A recording a deleted session-owned lane in bucket B. A session-owned path
+// carries no managed project ID, so without evidence the parent lookup would
+// accept a parent in A — whose metadata describes A's repository — and return A
+// before the cross-bucket guard is reached. The parent must be tied to the lane
+// it names: same bucket, a matching managed project ID, or being that lane's own
+// recorded owner.
+func TestFind_ProjectName_CrossBucketParentNeedsLaneEvidence(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	bucketA := filepath.Join(stateHome, "evener", "projects", "repo-a-0123456789")
+	bucketB := filepath.Join(stateHome, "evener", "projects", "repo-b-0123456789")
+	for _, dir := range []string{bucketA, bucketB} {
+		if err := os.MkdirAll(filepath.Join(dir, "sessions"), 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+
+	// The parent lives in A and names A's repository. It is not the lane's owner:
+	// the lane's path encodes a different session as its owner.
+	parentID := identifier.MustNewSessionID()
+	parent := schema.SessionMeta{ID: parentID, WorktreeRestoreRoot: newNamedCheckout(t, "repo-a")}
+	parent.EnvInfo.GitOriginURL = "git@github.com:owner/repo-a.git"
+	if err := schema.SaveSessionMeta(bucketA, parent); err != nil {
+		t.Fatal(err)
+	}
+
+	ownerInB := identifier.MustNewSessionID()
+	row := schema.SessionMeta{ParentSessionID: parentID}
+	row.EnvInfo.WorkingDir = filepath.Join(bucketB, "sessions", ownerInB, "worktrees", "dlg_in_b")
+	if got := projectName(row, bucketA); got != "" {
+		t.Fatalf("projectName(row in A recording a deleted lane in B with a parent in A) = %q, want empty (that parent is not evidence about B's lane)", got)
+	}
+
+	// Same-bucket parent recovery is preserved: a parent in the row's own bucket
+	// does name the lane's project.
+	sameParentID := identifier.MustNewSessionID()
+	sameParent := schema.SessionMeta{ID: sameParentID, WorktreeRestoreRoot: newNamedCheckout(t, "repo-a")}
+	sameParent.EnvInfo.GitOriginURL = "git@github.com:owner/repo-a.git"
+	if err := schema.SaveSessionMeta(bucketA, sameParent); err != nil {
+		t.Fatal(err)
+	}
+	sameBucketRow := schema.SessionMeta{ParentSessionID: sameParentID}
+	sameBucketRow.EnvInfo.WorkingDir = filepath.Join(bucketA, "sessions", identifier.MustNewSessionID(), "worktrees", "dlg_in_a")
+	if got, want := projectName(sameBucketRow, bucketA), "repo-a"; got != want {
+		t.Fatalf("projectName(deleted lane in A with a parent in A) = %q, want %q", got, want)
+	}
+
+	// The lane's own recorded owner is evidence in any bucket: when the parent is
+	// exactly the session the lane's path names, it does describe this lane.
+	ownerParent := schema.SessionMeta{ID: ownerInB, WorktreeRestoreRoot: newNamedCheckout(t, "repo-b")}
+	ownerParent.EnvInfo.GitOriginURL = "git@github.com:owner/repo-b.git"
+	if err := schema.SaveSessionMeta(bucketA, ownerParent); err != nil {
+		t.Fatal(err)
+	}
+	ownerRow := schema.SessionMeta{ParentSessionID: ownerInB}
+	ownerRow.EnvInfo.WorkingDir = filepath.Join(bucketB, "sessions", ownerInB, "worktrees", "dlg_in_b_owned")
+	if got, want := projectName(ownerRow, bucketA), "repo-b"; got != want {
+		t.Fatalf("projectName(deleted lane whose recorded owner is its parent) = %q, want %q", got, want)
+	}
+}
+
 func TestFind_CatalogTrimmedAndOrdered(t *testing.T) {
 	t.Parallel()
 	dir := newBucket(t)

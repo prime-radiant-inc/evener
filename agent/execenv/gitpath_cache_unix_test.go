@@ -230,7 +230,10 @@ func TestResolveMainRepoRoot_RefusedPointerNeverExecutesGit(t *testing.T) {
 	workspace := t.TempDir()
 	canary := filepath.Join(workspace, "git-ran")
 	fakeGit := filepath.Join(workspace, "git")
-	script := "#!/bin/sh\n: > " + canary + "\nexit 1\n"
+	// The marker path is quoted: TMPDIR can contain a space, and an unquoted
+	// redirect fails under /bin/sh, which would leave the canary unwritten and
+	// the test passing without proving anything.
+	script := "#!/bin/sh\n: > " + ShellEscapeArgs(canary) + "\nexit 1\n"
 	if err := os.WriteFile(fakeGit, []byte(script), 0o755); err != nil {
 		t.Fatalf("write workspace git: %v", err)
 	}

@@ -922,19 +922,27 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 	// owner session, and a delegate's lane at
 	// <stateDir>/sessions/<sid>/worktrees/<lane> records one whose metadata can be
 	// gone with the lane. Both record their parent, and a lane is created as a
-	// worktree of its parent's repository, so the parent's own metadata names the
-	// project. A managed lane also records its project in its path, and then the
-	// parent must agree with that segment — otherwise the parent describes a
-	// different repository than the lane does.
+	// worktree of its parent's repository, so a parent in the same bucket as the
+	// lane names the project.
+	//
+	// A parent in a DIFFERENT bucket does not: its metadata describes this
+	// bucket's repository, and the lane it names belongs to another one. Evidence
+	// has to tie the parent to this lane, which only two things do — the parent is
+	// the lane's own recorded owner, or the lane's path records the project and
+	// the parent agrees with it. Without either, the label is omitted rather than
+	// taken from the bucket the row happened to be discovered in.
 	if parentSessionID != "" {
-		if parent, ok := r.loadOwnedSessionMeta(bound, parentSessionID); ok {
-			if canonical := r.canonicalProjectPath(parent); canonical != "" &&
-				(managedProjectID == "" ||
-					identifier.ProjectFromCanonicalPath(identifier.ResolveClean(canonical)).ID == managedProjectID) {
-				if origin := strings.TrimSpace(parent.EnvInfo.GitOriginURL); origin != "" {
-					return repoBasename(origin), true
+		tiedToLane := stateDir == bound || managedProjectID != "" || parentSessionID == ownerSessionID
+		if tiedToLane {
+			if parent, ok := r.loadOwnedSessionMeta(bound, parentSessionID); ok {
+				if canonical := r.canonicalProjectPath(parent); canonical != "" &&
+					(managedProjectID == "" ||
+						identifier.ProjectFromCanonicalPath(identifier.ResolveClean(canonical)).ID == managedProjectID) {
+					if origin := strings.TrimSpace(parent.EnvInfo.GitOriginURL); origin != "" {
+						return repoBasename(origin), true
+					}
+					return filepath.Base(canonical), true
 				}
-				return filepath.Base(canonical), true
 			}
 		}
 	}
@@ -971,6 +979,15 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 		bucketProjectID = ""
 	}
 	foreignProject := managedProjectID != "" && managedProjectID != bucketProjectID
+	// A managed lane whose project segment IS its bucket's ID matches by name, so
+	// the bucket-basename comparison alone cannot tell a lane of this repository
+	// from a lane of another one that was pointed at this bucket with --state-dir.
+	// The evidence that settles it is the sibling's own recorded checkout: one
+	// that resolves to a different project is about another repository, and it
+	// must be neither selected nor cached. A sibling that records only an origin,
+	// or whose checkout no longer resolves, carries no project evidence either
+	// way and still answers.
+	excludeConflicting := managedProjectID != "" && !foreignProject
 	// The cache is keyed by bucket and the bucket holds one repository, so it is
 	// only reusable for a project-agnostic answer. A foreign project's answer
 	// describes that project alone and must not stand for the next row.
@@ -986,8 +1003,30 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 	}
 
 	cache := func(name string) {
-		if !foreignProject {
-			r.bucketProjectCache[bound] = name
+		// An answer chosen for a foreign project describes that project alone, so
+		// it never stands for the bucket. An empty answer for a bucket-matching
+		// lane is also not cached: it was reached by excluding a conflicting
+		// sibling, and a later row may have a sibling that does match.
+		if foreignProject {
+			return
+		}
+		if name == "" && excludeConflicting {
+			return
+		}
+		r.bucketProjectCache[bound] = name
+	}
+	// admissible reports whether a sibling may answer for this row. A foreign
+	// project needs positive evidence naming it; a bucket-matching managed lane
+	// needs the absence of evidence naming a different project.
+	admissible := func(sm schema.SessionMeta) bool {
+		switch {
+		case foreignProject:
+			return r.matchesProjectID(sm, managedProjectID)
+		case excludeConflicting:
+			id := r.resolvedProjectID(sm)
+			return id == "" || id == managedProjectID
+		default:
+			return true
 		}
 	}
 
@@ -996,7 +1035,7 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 	metas, err := schema.ListSessionMetas(bound)
 	if err == nil {
 		for _, sm := range metas {
-			if foreignProject && !r.matchesProjectID(sm, managedProjectID) {
+			if !admissible(sm) {
 				continue
 			}
 			if origin := strings.TrimSpace(sm.EnvInfo.GitOriginURL); origin != "" {
@@ -1015,7 +1054,7 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 		}
 		// Pass 2: ordinary home directory, resolved via resolveMainRoot
 		for _, sm := range metas {
-			if foreignProject && !r.matchesProjectID(sm, managedProjectID) {
+			if !admissible(sm) {
 				continue
 			}
 			home := strings.TrimSpace(sm.HomeDir())
@@ -1050,6 +1089,35 @@ func (r *projectNameResolver) matchesProjectID(m schema.SessionMeta, projectID s
 		return false
 	}
 	return identifier.ProjectFromCanonicalPath(identifier.ResolveClean(canonical)).ID == projectID
+}
+
+// resolvedProjectID reports the project a sibling session's own recorded
+// checkout identifies, or "" when it identifies none — a session that records
+// only an origin, or whose checkout has since been deleted. It is the negative
+// half of matchesProjectID: the caller excludes a sibling that POSITIVELY names
+// a different project, and an empty answer (no evidence either way) stays
+// admissible.
+//
+// Only a checkout that resolves counts. A recorded path with nothing left at it
+// still hashes to some project ID, but that ID describes where the directory
+// used to be, not which repository the session belonged to: deriving evidence
+// from a path that no longer resolves is the same mistake as reading a label
+// from one.
+func (r *projectNameResolver) resolvedProjectID(m schema.SessionMeta) string {
+	if restore := strings.TrimSpace(m.WorktreeRestoreRoot); restore != "" {
+		if root := r.resolveMainRoot(restore); root != "" {
+			return identifier.ProjectFromCanonicalPath(identifier.ResolveClean(root)).ID
+		}
+		return ""
+	}
+	home := strings.TrimSpace(m.HomeDir())
+	if home == "" {
+		return ""
+	}
+	if root := r.resolveMainRoot(home); root != "" {
+		return identifier.ProjectFromCanonicalPath(identifier.ResolveClean(root)).ID
+	}
+	return ""
 }
 
 // stateWorktreeOwner classifies wd against the layouts an Evener state dir

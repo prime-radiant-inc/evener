@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"testing"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/gittest"
 	"primeradiant.com/evener/identifier"
@@ -110,7 +111,10 @@ func TestProjectName_LabelNeverExecutesGit(t *testing.T) {
 	canaryDir := t.TempDir()
 	canary := filepath.Join(canaryDir, "git-ran")
 	fakeGit := filepath.Join(canaryDir, "git")
-	script := "#!/bin/sh\n: > " + canary + "\nexit 1\n"
+	// The marker path is quoted: TMPDIR can contain a space, and an unquoted
+	// redirect fails under /bin/sh, which would leave the canary unwritten and
+	// the test passing without proving anything.
+	script := "#!/bin/sh\n: > " + execenv.ShellEscapeArgs(canary) + "\nexit 1\n"
 	if err := os.WriteFile(fakeGit, []byte(script), 0o755); err != nil {
 		t.Fatalf("write fake git: %v", err)
 	}
