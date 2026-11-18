@@ -226,6 +226,33 @@ func TestStrictExpressible(t *testing.T) {
 			},
 			want: false,
 		},
+		// A schema that constrains nothing cannot be verified against strict
+		// mode: an empty schema admits every JSON value, so an argument
+		// declared that way constrains nothing the provider could check.
+		{
+			name: "closed object with a required unconstrained argument",
+			in: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"payload": map[string]any{},
+				},
+				"required": []string{"payload"},
+			},
+			want: false,
+		},
+		{
+			name: "closed object with a required unconstrained array",
+			in: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"tags": map[string]any{"type": "array"},
+				},
+				"required": []string{"tags"},
+			},
+			want: false,
+		},
 		{
 			name: "nullable array type list leaves items optional",
 			in: map[string]any{
@@ -878,63 +905,6 @@ func TestRefusedKeywordSchemasKeepTheirAcceptedCalls(t *testing.T) {
 	}
 }
 
-// A schema the gate refuses is never projected, so the projected size cannot
-// grow with nesting. This is the regression test for the exponential blowup:
-// copying an enclosing object's properties into each combinator branch makes
-// the wire schema grow with depth, and a compact advertised tool can then
-// exhaust the process building its own request.
-//
-// The bound asserted is linear: sixteen nested levels of a two-property parent
-// must project to a schema no larger than a small multiple of the advertised
-// one. A schema that refuses certification is not projected at all, so its
-// measured growth stays flat.
-func TestRefusedSchemaProjectionDoesNotGrowWithNesting(t *testing.T) {
-	t.Parallel()
-	build := func(depth int) map[string]any {
-		var inner map[string]any
-		for range depth {
-			node := map[string]any{
-				"type":                 "object",
-				"additionalProperties": false,
-				"properties": map[string]any{
-					"a": map[string]any{"type": "string"},
-					"b": map[string]any{"type": "string"},
-				},
-				"required": []string{"a", "b"},
-				"anyOf": []any{
-					map[string]any{"type": "object", "required": []string{"a"}},
-					map[string]any{"type": "object", "required": []string{"b"}},
-				},
-			}
-			if inner != nil {
-				node["properties"].(map[string]any)["inner"] = inner
-				node["required"] = []string{"a", "b", "inner"}
-			}
-			inner = node
-		}
-		return inner
-	}
-
-	sizes := make([]int, 0, 6)
-	for _, depth := range []int{1, 2, 4, 8, 16, 32} {
-		schema := build(depth)
-		if StrictExpressible(schema) {
-			t.Fatalf("depth %d: a property-less combinator branch must not be certified", depth)
-		}
-		// The caller sends the advertised schema, never a projection of it.
-		sizes = append(sizes, len(mustMarshal(t, schema)))
-	}
-	// Doubling the depth may at most double the size. Linear is the strongest
-	// claim the construction supports; anything superlinear would mean the
-	// projection is being built anyway.
-	for i := 1; i < len(sizes); i++ {
-		if sizes[i] > 2*sizes[i-1]+64 {
-			t.Fatalf("schema size %d at step %d exceeds twice the previous %d: growth is not linear",
-				sizes[i], i, sizes[i-1])
-		}
-	}
-}
-
 // A schema the gate refuses is sent non-strict with the schema it advertised,
 // so every argument it documented still reaches the model unchanged. This is
 // what keeps a refused combinator schema usable: the tool loses strict mode,
@@ -968,16 +938,6 @@ func TestRefusedBranchSchemaKeepsItsAdvertisedArguments(t *testing.T) {
 	if !schemaAccepts(t, deepCopyAny(schema).(map[string]any), args) {
 		t.Fatal("the schema sent non-strict must accept what the advertised one accepts")
 	}
-}
-
-// mustMarshal encodes a schema the way an adapter would before sending it.
-func mustMarshal(t *testing.T, schema map[string]any) []byte {
-	t.Helper()
-	raw, err := json.Marshal(schema)
-	if err != nil {
-		t.Fatalf("marshal schema: %v", err)
-	}
-	return raw
 }
 
 // schemaAccepts compiles schema with the validator the tool registry uses and

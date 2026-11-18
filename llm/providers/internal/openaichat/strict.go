@@ -93,6 +93,15 @@ func strictlyExpressibleNode(m map[string]any, visited bool) bool {
 	if !keywordsModeled(m) {
 		return false
 	}
+	// A node that constrains nothing admits every JSON value. Strict mode
+	// cannot be established for it: the projection closes objects and rewrites
+	// arrays, but it cannot state a subset of "anything", so what the provider
+	// enforces is decided by the provider rather than by this walk. An empty
+	// schema, a missing type, an object with no properties, and an array with
+	// no items are all that shape.
+	if !constrainsSomething(m, isObject, isArray) {
+		return false
+	}
 	// A type list may name both shapes at once, as in ["object", "array"].
 	// Both are then constraints on the same node, and the rewrite — which
 	// matches only a literal type string — transforms neither, so every one of
@@ -250,6 +259,45 @@ func allPropertiesRequired(props map[string]any, required any) bool {
 		return false
 	}
 	return true
+}
+
+// constrainsSomething reports whether a node states any constraint at all. An
+// empty schema admits every JSON value, and so does an object that declares no
+// properties without closing itself, and an array that names no items. Strict
+// mode is a promise about the set of accepted values, and this walk can only
+// keep that promise for a node whose accepted set it can read.
+//
+// A closed object with no declared properties is not that shape: it admits
+// exactly the empty object, which is the one argument set a parameterless tool
+// takes. An array that names items is likewise constrained, whether or not the
+// walk transforms it.
+func constrainsSomething(m map[string]any, isObject, isArray bool) bool {
+	switch {
+	case isObject:
+		props, ok := inspectProperties(m)
+		if !ok {
+			return false
+		}
+		return len(props) > 0 || m["additionalProperties"] == false
+	case isArray:
+		raw, has := m["items"]
+		return has && raw != nil
+	default:
+		// Any other node must name a type or carry a value constraint: without
+		// one it is the empty schema, which admits every value.
+		if _, has := m["type"]; has {
+			return true
+		}
+		for kw := range modeledKeywords {
+			if kw == "type" {
+				continue
+			}
+			if _, has := m[kw]; has {
+				return true
+			}
+		}
+		return false
+	}
 }
 
 // requiredNamesDeclared reports whether every name in required is a declared

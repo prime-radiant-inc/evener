@@ -353,3 +353,46 @@ func TestStrictToolProjectionSendsMismatchedRequiredUnchanged(t *testing.T) {
 		t.Fatalf("the emitted schema must be the advertised one, with the stale required name intact\n got: %s\nwant: %s", got, want)
 	}
 }
+
+// A required argument declared with an empty schema admits every JSON value,
+// and an array declared without items admits every element. Neither can be
+// verified against strict mode, so a tool carrying one is sent non-strict with
+// its advertised schema rather than certified and sent to a provider that
+// enforces the strict subset.
+func TestStrictToolProjectionRefusesUnconstrainedArguments(t *testing.T) {
+	t.Parallel()
+	schemas := map[string]map[string]any{
+		"unconstrained argument": {
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"payload": map[string]any{},
+			},
+			"required": []string{"payload"},
+		},
+		"array without items": {
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"tags": map[string]any{"type": "array"},
+			},
+			"required": []string{"tags"},
+		},
+	}
+	for name, schema := range schemas {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			req := userReq("hi")
+			req.Tools = []llm.ToolDefinition{{Name: "job_status", Parameters: schema}}
+
+			body := build(t, req, resolved(strictCaps))
+			tool := body["tools"].([]map[string]any)[0]
+			if tool["strict"] != false {
+				t.Fatalf("strict = %#v, want false: this schema constrains too little to be verified", tool["strict"])
+			}
+			if got, want := jsonOf(t, tool["parameters"]), jsonOf(t, schema); got != want {
+				t.Fatalf("the emitted schema must be the advertised one\n got: %s\nwant: %s", got, want)
+			}
+		})
+	}
+}
