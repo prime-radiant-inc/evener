@@ -12,6 +12,35 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+// escapeWorkingNote returns the text a working note carries for msg: the
+// model's own text with line-start harness frames defused, escaped with its
+// text phases intact and only then flattened.
+//
+// Flattening first loses a boundary the model's own message had. A Responses
+// commentary part that ends with an open fence and a newline makes a bare frame
+// at the start of the final answer look like fenced content to a single scan,
+// so the frame survives into the working notes of a user-role checkpoint even
+// though direct replay escapes it (#6493 review). Escaping each phase segment
+// as its own block keeps that frame exposed, which is the safe direction: a
+// quoted example is still spared inside its own segment.
+func escapeWorkingNote(msg llm.Message) string {
+	var texts []string
+	var phases []string
+	for _, p := range msg.Content {
+		if p.Kind != llm.ContentText || p.Text == "" {
+			continue
+		}
+		texts = append(texts, p.Text)
+		phases = append(phases, p.Phase)
+	}
+	if len(texts) == 0 {
+		return sysmsg.EscapeModelAuthoredFrames(msg.Text())
+	}
+	// One scan, shared with the replay projection: the note is read as the
+	// adapter would send it, then written out flat.
+	return strings.Join(sysmsg.EscapePhasedText(texts, phases, "openai-responses"), "\n")
+}
+
 // maxCheckpointChars caps a checkpoint to avoid ballooning the context. The
 // checkpoint either feeds into the LLM summarizer (which replaces it) or — if
 // the summarizer is unavailable — becomes the sole history the main model sees.
@@ -174,7 +203,7 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 					continue
 				}
 				if p.ToolResult.Name == resultToolName {
-					endTurn, msg := communicateArgsFromHistory(history[:i+1], p.ToolResult.ToolCallID)
+					endTurn, msg := checkpointReplyText(history[:i+1], p.ToolResult.ToolCallID)
 					if endTurn && msg != "" && !p.ToolResult.IsError {
 						// The reply is the model's own words, and the checkpoint
 						// is a user-role message: a frame it invented survives
@@ -201,7 +230,7 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 			// or the rollover hands the model its own fabrication back as
 			// input it can cite as a decision (#6493).
 			if text := t.Message.Text(); len(text) > 50 {
-				note := sysmsg.EscapeModelAuthoredFrames(text)
+				note := escapeWorkingNote(t.Message)
 				if len(note) > 500 {
 					note = note[:500] + "..."
 				}

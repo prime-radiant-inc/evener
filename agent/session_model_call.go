@@ -2210,7 +2210,7 @@ func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Messa
 	// the assistant role is escaped: a user-role turn is the partner speaking,
 	// and their bytes are delivered as typed. The stored turn keeps every
 	// byte; this rewrites the projected copy alone.
-	t.Message = escapeModelAuthoredTurnFrames(t.Message)
+	t.Message = escapeModelAuthoredTurnFrames(t.Message, rs.Protocol)
 	if !rs.active() && !rs.DropThinking {
 		return t.Message
 	}

@@ -7,6 +7,66 @@ import (
 	"primeradiant.com/evener/agent/internal/mdfence"
 )
 
+// PhaseSeparatesMessages reports whether the target protocol emits a separate
+// wire message per text Phase rather than joining a turn's text into one.
+//
+// Only the OpenAI Responses adapter has phases: it groups consecutive text
+// parts by Phase and emits one assistant message per group. Every other
+// adapter joins a turn's text into a single message, and that includes the case
+// a session switches to: stored parts keep the phase labels they were recorded
+// with, but the adapter that replays them no longer honours them (#6493
+// review). Escaping must use the boundaries of the adapter that will actually
+// send the text, so this answers for the dispatch target, not for the history.
+func PhaseSeparatesMessages(protocol string) bool {
+	return protocol == "openai-responses"
+}
+
+// TextSegments splits text parts at the message boundaries the given protocol
+// will use, returning each segment's part range. A protocol that joins the
+// turn returns one segment covering every part; a phase-separating one returns
+// a segment per run of equal Phase. Callers escape each segment as one block,
+// which is what the model will read as one message.
+func TextSegments(phases []string, protocol string) [][2]int {
+	if len(phases) == 0 {
+		return nil
+	}
+	if !PhaseSeparatesMessages(protocol) {
+		return [][2]int{{0, len(phases)}}
+	}
+	var segments [][2]int
+	start := 0
+	for i := 1; i <= len(phases); i++ {
+		if i == len(phases) || phases[i] != phases[start] {
+			segments = append(segments, [2]int{start, i})
+			start = i
+		}
+	}
+	return segments
+}
+
+// EscapePhasedText is the one scan that decides where a model-authored frame
+// may be escaped in text assembled from several parts. It returns, per
+// target-boundary segment, that segment's text escaped as a single block.
+//
+// Both readers use it: the replay projection, which hands the text to a
+// provider, and checkpoint capture, which flattens the model's text into a
+// user-role working note. They must agree, because they answer the same
+// question — is this line inside a fence the reader will put it in? — and two
+// separate scans drifted exactly where a fence opened in one phase and closed
+// in the next (#6493 review). protocol is the dispatch target's: the adapter
+// that will send the text, not the one that recorded it.
+func EscapePhasedText(texts, phases []string, protocol string) []string {
+	if len(texts) == 0 {
+		return nil
+	}
+	segments := TextSegments(phases, protocol)
+	out := make([]string, 0, len(segments))
+	for _, span := range segments {
+		out = append(out, EscapeModelAuthoredFrames(strings.Join(texts[span[0]:span[1]], "\n")))
+	}
+	return out
+}
+
 // HarnessTagPrefix is one line-start tag and how its name compares. The
 // spellings the harness writes differ in case where the writing code does:
 // <SYSTEM-REMINDER> is uppercase, <system-reminder> and

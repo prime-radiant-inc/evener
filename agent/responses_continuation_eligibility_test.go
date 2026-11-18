@@ -19,12 +19,17 @@ import (
 func TestResponsesContinuationAnchorCandidateRejectsEscapableAnchorText(t *testing.T) {
 	t.Parallel()
 	build := func(anchorText string) []schema.Turn {
+		boundary := schema.NewTurn(schema.TurnCheckpoint, llm.User("[CONTEXT CHECKPOINT]"))
 		anchor := responsesContinuationEligibleAssistantTurn("resp_after")
 		anchor.Message = llm.Assistant(anchorText)
+		// The anchor was produced from the compacted history, so it postdates
+		// the fold. An anchor older than the boundary is the case the separate
+		// pre-boundary test covers.
+		anchor.Timestamp = boundary.Timestamp.Add(time.Minute)
 		return []schema.Turn{
 			schema.NewTurn(schema.TurnUserInput, llm.User("before")),
 			responsesContinuationEligibleAssistantTurn("resp_before"),
-			schema.NewTurn(schema.TurnCheckpoint, llm.User("[CONTEXT CHECKPOINT]")),
+			boundary,
 			schema.NewTurn(schema.TurnUserInput, llm.User("after")),
 			anchor,
 			schema.NewTurn(schema.TurnUserInput, llm.User("delta")),
@@ -41,6 +46,41 @@ func TestResponsesContinuationAnchorCandidateRejectsEscapableAnchorText(t *testi
 	if _, decision := selectResponsesContinuationAnchorCandidate(SessionConfig{}, forged); decision.HistoryMode != llm.HistoryModeFullHistory ||
 		decision.Reason != "continuation_prefix_model_authored_frame" {
 		t.Fatalf("an anchor carrying a frame was not refused: %+v", decision)
+	}
+}
+
+// TestResponsesContinuationAnchorCandidateRejectsPreBoundaryResponse pins the
+// resumed-session case (#6493 review). A checkpoint can fold a fabricated frame
+// away while a newer, locally clean assistant turn survives. That turn's stored
+// response was produced from history that still held the frame, so anchoring to
+// it brings the frame back through the provider's retained prefix. A response
+// produced from the compacted history still anchors.
+func TestResponsesContinuationAnchorCandidateRejectsPreBoundaryResponse(t *testing.T) {
+	t.Parallel()
+	fold := func(anchorStamp time.Time) []schema.Turn {
+		boundary := schema.NewTurn(schema.TurnCheckpoint, llm.User("[CONTEXT CHECKPOINT]"))
+		anchor := responsesContinuationEligibleAssistantTurn("resp_after")
+		anchor.Message = llm.Assistant("the work is done")
+		anchor.Timestamp = anchorStamp
+		return []schema.Turn{
+			schema.NewTurn(schema.TurnUserInput, llm.User("before")),
+			boundary,
+			schema.NewTurn(schema.TurnUserInput, llm.User("after")),
+			anchor,
+			schema.NewTurn(schema.TurnUserInput, llm.User("delta")),
+		}
+	}
+
+	before := time.Now().UTC().Add(-time.Hour)
+	if _, decision := selectResponsesContinuationAnchorCandidate(SessionConfig{}, fold(before)); decision.HistoryMode != llm.HistoryModeFullHistory ||
+		decision.Reason != "continuation_anchor_predates_boundary" {
+		t.Fatalf("an anchor produced before the fold was not refused: %+v", decision)
+	}
+
+	after := time.Now().UTC().Add(time.Hour)
+	if _, decision := selectResponsesContinuationAnchorCandidate(SessionConfig{}, fold(after)); decision.HistoryMode != llm.HistoryModeResponsesDelta ||
+		decision.Reason != "continuation_anchor_candidate" {
+		t.Fatalf("an anchor produced from the compacted history did not anchor: %+v", decision)
 	}
 }
 
@@ -94,12 +134,17 @@ func TestResponsesContinuationAnchorCandidateTreatsSummaryAsBoundary(t *testing.
 
 func TestResponsesContinuationAnchorCandidateSelectsLatestActiveAssistant(t *testing.T) {
 	t.Parallel()
+	boundary := schema.NewTurn(schema.TurnCheckpoint, llm.User("[CONTEXT CHECKPOINT]"))
+	anchorTurn := responsesContinuationEligibleAssistantTurn("resp_after")
+	// A response produced from the compacted history postdates the fold; one
+	// older than the boundary is the pre-boundary case, tested separately.
+	anchorTurn.Timestamp = boundary.Timestamp.Add(time.Minute)
 	history := []schema.Turn{
 		schema.NewTurn(schema.TurnUserInput, llm.User("before")),
 		responsesContinuationEligibleAssistantTurn("resp_before"),
-		schema.NewTurn(schema.TurnCheckpoint, llm.User("[CONTEXT CHECKPOINT]")),
+		boundary,
 		schema.NewTurn(schema.TurnUserInput, llm.User("after")),
-		responsesContinuationEligibleAssistantTurn("resp_after"),
+		anchorTurn,
 		schema.NewTurn(schema.TurnUserInput, llm.User("delta")),
 	}
 

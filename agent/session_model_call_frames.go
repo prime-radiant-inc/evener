@@ -29,7 +29,7 @@ import (
 //
 // The turn is never modified: the caller gets a message whose changed text
 // parts are copies, so the transcript keeps exactly what the model wrote.
-func escapeModelAuthoredTurnFrames(msg llm.Message) llm.Message {
+func escapeModelAuthoredTurnFrames(msg llm.Message, protocol string) llm.Message {
 	if msg.Role != llm.RoleAssistant {
 		return msg
 	}
@@ -60,20 +60,26 @@ func escapeModelAuthoredTurnFrames(msg llm.Message) llm.Message {
 		return msg
 	}
 
-	// Scan the text as the adapter will assemble it, not part by part. Both
-	// adapters group consecutive text parts by Phase and emit one message per
-	// group: Chat Completions joins a turn's parts into one message (its Phase
-	// is always empty, so the whole turn is one group), and Responses emits a
-	// separate assistant message per phase. A fence one part opens and the next
-	// closes is therefore one fenced block within a group, while the next
-	// phase starts a fresh message with fresh fence state. Scanning part by
-	// part would read the closing fence as a new opener and leave the frame
-	// after it unescaped, and scanning across a phase boundary would treat a
-	// new message's frame as still fenced (#6493 review).
+	// Scan the text as the target adapter will assemble it. The boundaries are
+	// the adapter's, not the history's: Responses emits one message per text
+	// phase, while every other protocol joins the turn's text into one message
+	// even when the stored parts still carry phase labels from a session that
+	// ran against Responses. Escaping against the wrong boundaries either reads
+	// a closing fence as a fresh opener or lets an example's delimiter close a
+	// fence the adapter does not put in the same message (#6493 review).
 	var parts []llm.ContentPart
-	for _, group := range phaseGroups(texts, msg.Content, indexes) {
-		joined := strings.Join(group.texts, "\n")
-		escaped := sysmsg.EscapeModelAuthoredFrames(joined)
+	phases := make([]string, len(texts))
+	for k := range texts {
+		phases[k] = msg.Content[indexes[k]].Phase
+	}
+	// The scan itself is shared with checkpoint capture, so the two readers
+	// cannot disagree about where a fence is (#6493 review).
+	segments := sysmsg.TextSegments(phases, protocol)
+	escapedSegments := sysmsg.EscapePhasedText(texts, phases, protocol)
+	for s, span := range segments {
+		segmentTexts := texts[span[0]:span[1]]
+		joined := strings.Join(segmentTexts, "\n")
+		escaped := escapedSegments[s]
 		if escaped == joined {
 			continue
 		}
@@ -82,22 +88,22 @@ func escapeModelAuthoredTurnFrames(msg llm.Message) llm.Message {
 		// per-part line counts it was joined from.
 		lines := strings.Split(escaped, "\n")
 		at := 0
-		for k, text := range group.texts {
+		for k, text := range segmentTexts {
 			n := strings.Count(text, "\n") + 1
 			if at+n > len(lines) {
 				// The escape changed the line structure; leave the turn as
 				// stored rather than hand back text split somewhere it was not.
 				return msg
 			}
-			segment := strings.Join(lines[at:at+n], "\n")
+			piece := strings.Join(lines[at:at+n], "\n")
 			at += n
-			if segment == text {
+			if piece == text {
 				continue
 			}
 			if parts == nil {
 				parts = slices.Clone(msg.Content)
 			}
-			parts[group.indexes[k]].Text = segment
+			parts[indexes[span[0]+k]].Text = piece
 		}
 	}
 	if parts == nil {
@@ -105,31 +111,4 @@ func escapeModelAuthoredTurnFrames(msg llm.Message) llm.Message {
 	}
 	msg.Content = parts
 	return msg
-}
-
-// textGroup is one wire message's worth of an assistant turn's text: the
-// consecutive parts an adapter emits together.
-type textGroup struct {
-	phase   string
-	indexes []int
-	texts   []string
-}
-
-// phaseGroups walks content in order and splits the selected text parts at
-// phase changes, which is where both adapters start a new wire message. A part
-// whose Phase differs from the previous one begins a new group; Phase is empty
-// throughout for a turn Chat Completions assembles, so the whole turn is one
-// group there.
-func phaseGroups(texts []string, content []llm.ContentPart, indexes []int) []textGroup {
-	groups := make([]textGroup, 0, 1)
-	for k, text := range texts {
-		phase := content[indexes[k]].Phase
-		if len(groups) == 0 || groups[len(groups)-1].phase != phase {
-			groups = append(groups, textGroup{phase: phase})
-		}
-		g := &groups[len(groups)-1]
-		g.indexes = append(g.indexes, indexes[k])
-		g.texts = append(g.texts, text)
-	}
-	return groups
 }

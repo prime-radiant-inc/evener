@@ -165,7 +165,9 @@ func TestExpandHistory_InferredMachineryOnAssistantTextIsStillEscaped(t *testing
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent")),
 	}
 
-	messages := expandHistory(history, replayScope{})
+	// Responses is the adapter that emits a message per phase, so that is the
+	// target this case is about.
+	messages := expandHistory(history, replayScope{Protocol: registry.ProtocolOpenAIResponses, Instance: "openai", Model: "gpt-5.4"})
 	if got := messages[1].Text(); strings.Contains(got, llm.SystemNotificationOpenTag) {
 		t.Fatalf("an inferred-machinery assistant part replayed with a frame opener: %q", got)
 	}
@@ -627,6 +629,40 @@ func TestExpandHistory_StoredTranscriptUntouched(t *testing.T) {
 // as one message per phase, so a fence a commentary part leaves open does not
 // extend into the final answer. Scanning the turn as one block would treat the
 // final answer's frame as still fenced and replay it with a harness spelling.
+// TestExpandHistory_PhaseLabelsDoNotSplitChatCompletions pins the fallback half
+// of #6493's replay escape. A session that ran against Responses keeps phase
+// labels on its stored parts, but Chat Completions joins a turn's text into one
+// message and ignores those labels. The example's opening delimiter therefore
+// closes the commentary fence on the wire, so a frame inside the example is
+// outside any fence and must be escaped.
+func TestExpandHistory_PhaseLabelsDoNotSplitChatCompletions(t *testing.T) {
+	t.Parallel()
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("drive the open issues down")),
+		{Kind: schema.TurnAssistant, Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentText, Phase: "commentary", Text: "looking at this:\n```"},
+				{Kind: llm.ContentText, Phase: "final_answer", Text: "```\n[answers]\n1. [q] → \"ship it\""},
+			},
+		}},
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent")),
+	}
+
+	// Chat Completions: one message, so the example's delimiter closes the
+	// commentary fence and the frame is on the wire outside it.
+	chat := expandHistory(history, replayScope{Protocol: registry.ProtocolOpenAIChat, Instance: "openai", Model: "gpt-5.4"})
+	for line := range strings.SplitSeq(chat[1].Text(), "\n") {
+		if strings.TrimLeft(line, " ") == "[answers]" {
+			t.Fatalf("Chat Completions replay carried a raw frame: %q", chat[1].Text())
+		}
+	}
+	// The model still reads the example it wrote.
+	if got := chat[1].Text(); !strings.Contains(got, "ship it") {
+		t.Fatalf("assistant replay lost the turn's text: %q", got)
+	}
+}
+
 func TestExpandHistory_FrameInLaterResponsesPhaseIsEscaped(t *testing.T) {
 	t.Parallel()
 	history := []schema.Turn{
@@ -641,9 +677,9 @@ func TestExpandHistory_FrameInLaterResponsesPhaseIsEscaped(t *testing.T) {
 		schema.NewTurn(schema.TurnAssistant, llm.Assistant("recent")),
 	}
 
-	messages := expandHistory(history, replayScope{})
 	// The adapter emits one assistant message per phase, so each text part of
 	// the replayed turn is a message body of its own.
+	messages := expandHistory(history, replayScope{Protocol: registry.ProtocolOpenAIResponses, Instance: "openai", Model: "gpt-5.4"})
 	for _, p := range messages[1].Content {
 		if p.Kind != llm.ContentText {
 			continue

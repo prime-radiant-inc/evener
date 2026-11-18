@@ -7,7 +7,32 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
+
+// anchorResponsePredatesBoundary reports whether the anchor's stored response
+// was produced before the turn that opens the active history.
+//
+// A checkpoint or summary turn stands for the history it folded away, and the
+// provider's retained response does not know about the fold: it still carries
+// the folded turns as they were when it was generated. Anchoring to it would
+// re-present text the fold removed — including a fabricated frame — even
+// though every turn now in scope is clean. The boundary turn is written at the
+// fold, so a response generated before that timestamp cannot have seen the
+// compacted history and is refused.
+func anchorResponsePredatesBoundary(history []schema.Turn, activeStart int, anchor schema.Turn) bool {
+	if activeStart <= 0 || activeStart > len(history) {
+		return false
+	}
+	boundary := history[activeStart-1]
+	if boundary.Kind != schema.TurnCheckpoint && boundary.Kind != schema.TurnSummary {
+		return false
+	}
+	if anchor.Timestamp.IsZero() || boundary.Timestamp.IsZero() {
+		return false
+	}
+	return anchor.Timestamp.Before(boundary.Timestamp)
+}
 
 const responseContextMarkerV1 = "cont-ctx-v1"
 
@@ -79,6 +104,18 @@ func selectResponsesContinuationAnchorCandidate(cfg SessionConfig, history []sch
 			Reason:      "continuation_prefix_model_authored_frame",
 		}
 	}
+	if anchorResponsePredatesBoundary(history, activeStart, anchor) {
+		// The stored response was produced from history that a checkpoint has
+		// since folded away. Its retained context still holds whatever that
+		// history said, including a frame the fold removed, so anchoring to it
+		// brings the frame back even though the local scan above finds nothing
+		// to escape (#6493 review). A response produced from the compacted
+		// history has no such prefix and anchors normally.
+		return responsesContinuationAnchorCandidate{}, llm.ResponsesContinuationDecision{
+			HistoryMode: llm.HistoryModeFullHistory,
+			Reason:      "continuation_anchor_predates_boundary",
+		}
+	}
 
 	return responsesContinuationAnchorCandidate{
 		TurnIndex: anchorIndex,
@@ -121,7 +158,9 @@ func responsesContinuationAnchorCarriesEscapableText(history []schema.Turn, from
 			continue
 		}
 		before := history[i].Message.Text()
-		if escapeModelAuthoredTurnFrames(history[i].Message).Text() != before {
+		// The anchor decision is only made for an OpenAI Responses request, so
+		// the escape is asked against that adapter's message boundaries.
+		if escapeModelAuthoredTurnFrames(history[i].Message, registry.ProtocolOpenAIResponses).Text() != before {
 			return true
 		}
 	}
