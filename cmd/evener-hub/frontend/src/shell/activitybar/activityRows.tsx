@@ -12,6 +12,7 @@ import {
   activityNodeID,
   DELEGATE_QUIET_AFTER_MS,
   delegateTiming,
+  delegateWaitText,
   delegateWorkText,
   isFailedDelegateOutcome,
   jobIsFailed,
@@ -115,11 +116,14 @@ export function AgentRow({ sub, onDrill, now }: { sub: SessionDelegate; onDrill?
   const successful = agentIsSuccessful(sub);
   const failed = sub.terminal ? isFailedDelegateOutcome(sub.outcome) : false;
   const status = agentStateText(sub);
+  // A row held open by the delegate's own running job says so instead of the
+  // bare running word, on the visible meta and in the accessible description.
+  const wait = delegateWaitText(sub);
   const name = sub.name?.trim() || sub.description || sub.task || sub.delegateId;
   return (
     <ListRow
       variant="plain"
-      aria-description={status}
+      aria-description={wait || status}
       leading={
         <span className={CLASS.rowGlyph}>
           <SubagentDot delegate={sub} now={dotNow} labeled />

@@ -733,6 +733,24 @@ export interface EvenerDelegateInfo {
   runEndedAt?: string;
   latestActivityAt?: string;
   /**
+   * DrainHeldByJobs says this delegate's finalization drain is holding its run
+   * open on the jobs counted below; RunningJobCount and
+   * OldestRunningJobStartedAt phrase that wait. The same facts SessionDelegate
+   * carries, so a pushed frame and a read row cannot disagree about why a
+   * delegate is still running. Absent without the hold.
+   */
+  drainHeldByJobs?: boolean;
+  runningJobCount?: number;
+  oldestRunningJobStartedAt?: string;
+  /**
+   * HoldSequence orders DrainHeldByJobs against every other sample of the same
+   * delegate's hold. The source bumps it under the controller lock when the
+   * sampled hold changes, so a consumer applies the highest sequence and
+   * rejects a sample a slower publisher delivered late. Absent when no sample
+   * ever differed.
+   */
+  holdSequence?: number;
+  /**
    * LatestIntent is the open generation's newest stated tool-call intent
    * ("Reading the board's row tests."), one line of at most MaxIntentRunes:
    * the row's display line, the same Excerpt-bounded value the read
@@ -3992,6 +4010,39 @@ export interface SessionDelegate {
    * frame agree for every row state. Absent from older daemons.
    */
   latestIntent?: string;
+  /**
+   * DrainHeldByJobs is the fact the row could not state before: this
+   * delegate's run is held open by its own finalization drain, waiting on
+   * the managed shell counted below. It is what a reader needs to tell a
+   * held delegate from one still working — a delegate mid-turn with the same
+   * background shell is NOT held. Only the live read produces it, and it is
+   * absent from a retained read or an older daemon, so a client never reads
+   * an omission as "known free".
+   */
+  drainHeldByJobs?: boolean;
+  /**
+   * RunningJobCount is how many managed shell jobs the delegate's own child
+   * session is running while that hold is set. Absent whenever the hold is,
+   * so it phrases the wait and never reports a count on its own.
+   */
+  runningJobCount?: number;
+  /**
+   * OldestRunningJobStartedAt is the RFC3339Nano start of the oldest of those
+   * jobs, so a row can say how long the wait has lasted. Empty whenever
+   * RunningJobCount is absent.
+   */
+  oldestRunningJobStartedAt?: string;
+  /**
+   * HoldSequence orders DrainHeldByJobs against the other samples of the same
+   * delegate's hold. The hold is a per-row fact whose samples can reach a
+   * client out of order — a publisher that sampled before another can send
+   * after it — and the projection revision cannot order them, because both
+   * edges of the hold arrive at the revision the row already carries. This
+   * counter is bumped at the source, under the controller lock, whenever the
+   * sampled hold changes, so a receiver applies the highest sequence it has
+   * seen and rejects a delayed sample. Absent when no sample ever differed.
+   */
+  holdSequence?: number;
   usage?: EvenerUsage;
   worktree?: JobActivityWorktree;
 }
@@ -6576,7 +6627,7 @@ export const WIRE_FIELD_KEYS = {
   OutputImage: ["source", "name", "mediaType", "size", "url", "sha", "path"],
   QueueState: ["depth", "revision", "preview", "ids", "clientMutationIds", "texts", "skillNames", "commandNames", "mentions", "imageCounts"],
   EvenerUsage: ["inputTokens", "outputTokens", "cacheReadTokens", "totalTokens"],
-  EvenerDelegateInfo: ["runGeneration", "delegateId", "ownerSessionId", "logicalOwnerSessionId", "rootSessionId", "childSessionId", "childRef", "transcriptRef", "parentDelegateId", "type", "lifecycle", "phase", "status", "outcome", "reason", "error", "terminal", "resumable", "needsAttention", "notResumableReason", "projectionRevision", "reportPreview", "reportPreviewTruncated", "task", "description", "agentType", "requestedModel", "resolvedProfileId", "resolvedModel", "model", "reasoningEffort", "originTurnId", "originToolCallId", "originItemId", "runStartedAt", "runEndedAt", "latestActivityAt", "latestIntent", "runningForMs", "quietForMs", "durationMs", "packetKind", "message", "structuredResult", "structuredResultValid", "structuredResultReason", "warnings", "diagnostics", "exhaustionBudget", "exhaustionLimit", "exhaustionResumable", "delegationAllowance", "parentWatchGranted", "usage", "worktree"],
+  EvenerDelegateInfo: ["runGeneration", "delegateId", "ownerSessionId", "logicalOwnerSessionId", "rootSessionId", "childSessionId", "childRef", "transcriptRef", "parentDelegateId", "type", "lifecycle", "phase", "status", "outcome", "reason", "error", "terminal", "resumable", "needsAttention", "notResumableReason", "projectionRevision", "reportPreview", "reportPreviewTruncated", "task", "description", "agentType", "requestedModel", "resolvedProfileId", "resolvedModel", "model", "reasoningEffort", "originTurnId", "originToolCallId", "originItemId", "runStartedAt", "runEndedAt", "latestActivityAt", "drainHeldByJobs", "runningJobCount", "oldestRunningJobStartedAt", "holdSequence", "latestIntent", "runningForMs", "quietForMs", "durationMs", "packetKind", "message", "structuredResult", "structuredResultValid", "structuredResultReason", "warnings", "diagnostics", "exhaustionBudget", "exhaustionLimit", "exhaustionResumable", "delegationAllowance", "parentWatchGranted", "usage", "worktree"],
   JobActivityWorktree: ["path", "branch", "headSha", "ahead", "dirty"],
   CommandDescriptor: ["name", "pluginName", "description", "argumentHint", "source"],
   EvenerSkillInfo: ["name", "description", "disableModelInvocation", "userInvocable", "available", "allowedTools"],

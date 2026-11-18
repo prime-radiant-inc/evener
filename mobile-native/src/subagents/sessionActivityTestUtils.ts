@@ -61,6 +61,13 @@ type UncopiedDelegateField = Exclude<
 	| "status"
 	| "terminal"
 	| "resumable"
+	// The drain hold is not a fact the retained activity tree carries: the hub
+	// joins it from the delegate's own session into the delegate read, so a
+	// fixture built from a tree has no hold to pass on and its rows carry none.
+	| "drainHeldByJobs"
+	| "holdSequence"
+	| "runningJobCount"
+	| "oldestRunningJobStartedAt"
 >;
 const everyDelegateFieldCarried: [UncopiedDelegateField] extends [never] ? true : UncopiedDelegateField = true;
 void everyDelegateFieldCarried;

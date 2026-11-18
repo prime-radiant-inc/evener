@@ -17,12 +17,37 @@ export function delegateStatedIntent(delegate: StableDelegateState & { latestInt
   return !delegate.terminal && delegate.latestIntent ? delegate.latestIntent : "";
 }
 
+/** A working row's live wait on its own running job, or "".
+ *
+ * The hold gates this, not the count. A delegate that starts a background
+ * shell and keeps working has one running job and is not waiting on it; only
+ * `drainHeldByJobs` says the finalization drain is holding the run open, which
+ * is the state whose intent and activity clock both stop moving. The count
+ * then only phrases the wait. A row carrying neither fact (a retained read, an
+ * older daemon) says nothing, which is not the same claim as "known idle". */
+export function delegateWaitText(
+  delegate: StableDelegateState & { drainHeldByJobs?: boolean; runningJobCount?: number },
+): string {
+  if (delegate.terminal || !delegate.drainHeldByJobs) return "";
+  const count = delegate.runningJobCount ?? 0;
+  if (count <= 0) return "";
+  return count === 1 ? "Waiting on 1 running job" : `Waiting on ${count} running jobs`;
+}
+
 // A working row's newest tool intent stands in for the status word; every
 // other row state keeps the word the surface passed in. Each client owns its
 // own status vocabulary, and this one helper owns the substitution rule, so
 // the surfaces cannot drift. The intent is display-only: the status still
 // drives sorting, aggregation, and accessibility.
-export function delegateWorkText(delegate: StableDelegateState & { latestIntent?: string }, status: string): string {
+export function delegateWorkText(
+  delegate: StableDelegateState & { latestIntent?: string; drainHeldByJobs?: boolean; runningJobCount?: number },
+  status: string,
+): string {
+  // The wait outranks both the intent and the status word, but only while the
+  // drain actually holds the run: a delegate still working keeps its intent
+  // and its status word even with a running job of its own.
+  const wait = delegateWaitText(delegate);
+  if (wait !== "") return wait;
   const intent = delegateStatedIntent(delegate);
   return intent !== "" ? intent : status;
 }
