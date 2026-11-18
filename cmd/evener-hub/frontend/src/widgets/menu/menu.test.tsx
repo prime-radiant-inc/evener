@@ -15,6 +15,11 @@ import { appendPopout } from "../internal/popoutTestUtils";
 import { Textarea } from "../textarea";
 import { Menu, type MenuItem } from "./index";
 
+// jsdom's DOMRect derives the edges from the box, so a scenario states only the
+// four numbers it actually cares about and the arithmetic lives in one place.
+const box = (left: number, top: number, width: number, height: number): DOMRect =>
+  new DOMRect(left, top, width, height);
+
 function items(overrides?: Partial<Record<string, Partial<MenuItem>>>): MenuItem[] {
   const base: MenuItem[] = [
     { id: "rename", label: "Rename", onSelect: vi.fn() },
@@ -292,18 +297,6 @@ test("a document scroll closes the menu", async () => {
 test("a viewport resize re-anchors the menu instead of closing it", async () => {
   const user = userEvent.setup();
   let triggerTop = 400;
-  const box = (left: number, top: number, width: number, height: number) =>
-    ({
-      left,
-      top,
-      right: left + width,
-      bottom: top + height,
-      width,
-      height,
-      x: left,
-      y: top,
-      toJSON: () => ({}),
-    }) as DOMRect;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
     if (this.tagName === "UL") return box(0, 0, 160, 120);
@@ -348,18 +341,6 @@ test("a keyboard-dismissal resize leaves the composer's menu open and re-anchore
   let triggerTop = 300;
   const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
   Object.defineProperty(window, "innerHeight", { configurable: true, value: 400 });
-  const box = (left: number, top: number, width: number, height: number) =>
-    ({
-      left,
-      top,
-      right: left + width,
-      bottom: top + height,
-      width,
-      height,
-      x: left,
-      y: top,
-      toJSON: () => ({}),
-    }) as DOMRect;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
     if (this.tagName === "UL") return box(0, 0, 160, 120);
@@ -466,18 +447,6 @@ test("a visual viewport smaller than the layout viewport is what the popup flips
   fakeViewport.offsetLeft = 0;
   fakeViewport.offsetTop = 0;
   vi.stubGlobal("visualViewport", fakeViewport);
-  const box = (left: number, top: number, width: number, height: number) =>
-    ({
-      left,
-      top,
-      right: left + width,
-      bottom: top + height,
-      width,
-      height,
-      x: left,
-      y: top,
-      toJSON: () => ({}),
-    }) as DOMRect;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     // The trigger ends at 328: below it a 120px popup would reach 452.
     if (this.tagName === "BUTTON") return box(100, 300, 40, 28);
@@ -519,18 +488,6 @@ test("a scrolled visual viewport places the popup in the reader's visible region
   fakeViewport.offsetLeft = 0;
   fakeViewport.offsetTop = 600;
   vi.stubGlobal("visualViewport", fakeViewport);
-  const box = (left: number, top: number, width: number, height: number) =>
-    ({
-      left,
-      top,
-      right: left + width,
-      bottom: top + height,
-      width,
-      height,
-      x: left,
-      y: top,
-      toJSON: () => ({}),
-    }) as DOMRect;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     // The trigger sits NEAR THE BOTTOM of the scrolled-in region (600..1000):
     // below it a 120px popup overflows the visible area, though it would fit
@@ -582,18 +539,6 @@ test("a visual-viewport resize re-anchors the menu to the trigger it moved", asy
   const { flush } = captureFrames();
   let triggerTop = 300;
   Object.defineProperty(window, "innerHeight", { configurable: true, value: 400 });
-  const box = (left: number, top: number, width: number, height: number) =>
-    ({
-      left,
-      top,
-      right: left + width,
-      bottom: top + height,
-      width,
-      height,
-      x: left,
-      y: top,
-      toJSON: () => ({}),
-    }) as DOMRect;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
     if (this.tagName === "UL") return box(0, 0, 160, 120);
@@ -644,18 +589,6 @@ test("a visual-viewport scroll with no resize re-anchors the menu", async () => 
   const { flush } = captureFrames();
   let triggerTop = 300;
   Object.defineProperty(window, "innerHeight", { configurable: true, value: 400 });
-  const box = (left: number, top: number, width: number, height: number) =>
-    ({
-      left,
-      top,
-      right: left + width,
-      bottom: top + height,
-      width,
-      height,
-      x: left,
-      y: top,
-      toJSON: () => ({}),
-    }) as DOMRect;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
     if (this.tagName === "UL") return box(0, 0, 160, 120);
@@ -713,18 +646,6 @@ test("a trigger the window shrinks past still gets a popup inside the visible re
   const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
   Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
   let triggerTop = 300;
-  const box = (left: number, top: number, width: number, height: number) =>
-    ({
-      left,
-      top,
-      right: left + width,
-      bottom: top + height,
-      width,
-      height,
-      x: left,
-      y: top,
-      toJSON: () => ({}),
-    }) as DOMRect;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
     if (this.tagName === "UL") return box(0, 0, 160, 120);
@@ -771,18 +692,6 @@ test("a desktop resize that lands before the layout settles still ends on the tr
   // below is read from the trigger's bottom, which moves with it.
   let triggerHeight = 28;
   Object.defineProperty(window, "innerHeight", { configurable: true, value: 400 });
-  const box = (left: number, top: number, width: number, height: number) =>
-    ({
-      left,
-      top,
-      right: left + width,
-      bottom: top + height,
-      width,
-      height,
-      x: left,
-      y: top,
-      toJSON: () => ({}),
-    }) as DOMRect;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     if (this.tagName === "BUTTON") return box(100, triggerTop, 40, triggerHeight);
     if (this.tagName === "UL") return box(0, 0, 160, 120);
@@ -860,18 +769,6 @@ test("a trigger that only moves, with its box unchanged, is still followed after
   const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
   let triggerTop = 300;
   Object.defineProperty(window, "innerHeight", { configurable: true, value: 400 });
-  const box = (left: number, top: number, width: number, height: number) =>
-    ({
-      left,
-      top,
-      right: left + width,
-      bottom: top + height,
-      width,
-      height,
-      x: left,
-      y: top,
-      toJSON: () => ({}),
-    }) as DOMRect;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     // Same 40x28 box at every position: nothing about its SIZE changes.
     if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
@@ -952,18 +849,6 @@ test("a change to the popup's own height re-anchors an upward-opening menu", asy
   const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
   Object.defineProperty(window, "innerHeight", { configurable: true, value: 400 });
   let popupHeight = 120;
-  const box = (left: number, top: number, width: number, height: number) =>
-    ({
-      left,
-      top,
-      right: left + width,
-      bottom: top + height,
-      width,
-      height,
-      x: left,
-      y: top,
-      toJSON: () => ({}),
-    }) as DOMRect;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     if (this.tagName === "BUTTON") return box(100, 300, 40, 28);
     if (this.tagName === "UL") return box(0, 0, 160, popupHeight);
@@ -1024,18 +909,6 @@ test("a placement frame queued by a resize cannot re-place the popup during its 
   const originalGetAnimations = Object.getOwnPropertyDescriptor(Element.prototype, "getAnimations");
   let triggerTop = 300;
   Object.defineProperty(window, "innerHeight", { configurable: true, value: 400 });
-  const box = (left: number, top: number, width: number, height: number) =>
-    ({
-      left,
-      top,
-      right: left + width,
-      bottom: top + height,
-      width,
-      height,
-      x: left,
-      y: top,
-      toJSON: () => ({}),
-    }) as DOMRect;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
     if (this.tagName === "UL") return box(0, 0, 160, 120);
@@ -1103,6 +976,53 @@ test("a placement frame queued by a resize cannot re-place the popup during its 
   }
 });
 
+// A cap does not have to be narrow to matter. At a 196px visible width the
+// popup is capped at 180 - its stylesheet floor exactly - and a long label (the
+// session activity count at the largest text setting) is wider than that padded
+// row, so it still runs off the scrollport. Wrapping has to follow the cap
+// having applied, not the cap being narrower than the floor.
+test("a width cap at or above the popup's floor still lets a long label wrap", async () => {
+  const user = userEvent.setup();
+  const originalInnerWidth = Object.getOwnPropertyDescriptor(window, "innerWidth");
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 800 });
+  const fakeViewport = new EventTarget() as EventTarget & {
+    width: number;
+    height: number;
+    offsetLeft: number;
+    offsetTop: number;
+  };
+  fakeViewport.width = 196;
+  fakeViewport.height = 800;
+  fakeViewport.offsetLeft = 0;
+  fakeViewport.offsetTop = 0;
+  vi.stubGlobal("visualViewport", fakeViewport);
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(20, 300, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 400, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 400, 120);
+  try {
+    render(
+      <Menu
+        trigger="Actions"
+        items={[{ id: "archive", label: "Archive all ten sessions in this workspace", onSelect: vi.fn() }]}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+
+    const popup = screen.getByRole("menu");
+    // 196 - 16 = 180: the cap equals the floor, so the floor does not yield -
+    // but the popup IS capped, and the row has to be able to wrap.
+    expect(popup.style.maxInlineSize).toBe("180px");
+    expect(popup.className).toContain("popupNarrow");
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerWidth) Object.defineProperty(window, "innerWidth", originalInnerWidth);
+  }
+});
+
 // A popup can be TALLER than the area the reader can see. Its stylesheet caps
 // it at 100dvh - two edge margins, which is the LAYOUT viewport: after a
 // trackpad pinch zoom the visible area can be half that, so the popup is placed
@@ -1126,18 +1046,6 @@ test("a popup taller than the visible viewport is capped to it so its last actio
   fakeViewport.offsetLeft = 0;
   fakeViewport.offsetTop = 0;
   vi.stubGlobal("visualViewport", fakeViewport);
-  const box = (left: number, top: number, width: number, height: number) =>
-    ({
-      left,
-      top,
-      right: left + width,
-      bottom: top + height,
-      width,
-      height,
-      x: left,
-      y: top,
-      toJSON: () => ({}),
-    }) as DOMRect;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     if (this.tagName === "BUTTON") return box(100, 100, 40, 28);
     if (this.tagName === "UL") return box(0, 0, 160, 400);
@@ -1187,18 +1095,6 @@ test("a popup wider than the visible viewport is capped to it so its labels wrap
   fakeViewport.offsetLeft = 0;
   fakeViewport.offsetTop = 0;
   vi.stubGlobal("visualViewport", fakeViewport);
-  const box = (left: number, top: number, width: number, height: number) =>
-    ({
-      left,
-      top,
-      right: left + width,
-      bottom: top + height,
-      width,
-      height,
-      x: left,
-      y: top,
-      toJSON: () => ({}),
-    }) as DOMRect;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     if (this.tagName === "BUTTON") return box(20, 300, 40, 28);
     if (this.tagName === "UL") return box(0, 0, 400, 120);
@@ -1241,18 +1137,6 @@ test("a shrink that shortens the popup scrolls its focused row back into view", 
   const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
   Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
   let popupHeight = 120;
-  const box = (left: number, top: number, width: number, height: number) =>
-    ({
-      left,
-      top,
-      right: left + width,
-      bottom: top + height,
-      width,
-      height,
-      x: left,
-      y: top,
-      toJSON: () => ({}),
-    }) as DOMRect;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     if (this.tagName === "BUTTON") return box(100, 300, 40, 28);
     if (this.tagName === "UL") return box(0, 0, 160, popupHeight);
@@ -1294,6 +1178,45 @@ test("a shrink that shortens the popup scrolls its focused row back into view", 
   }
 });
 
+// Revealing the focused row is only ever an answer to a scrollport that got
+// SHORTER. A reader who scrolls down to the lower actions has deliberately
+// moved away from the row that still holds focus, and every other placement
+// pass - a pan, a row inserted above, a trigger moving - must leave that scroll
+// alone, or the actions they just reached jump back out of reach.
+test("a position-only placement leaves the reader's scroll where they put it", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 400 });
+  let triggerTop = 300;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  const reveal = vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(() => {});
+  const { flush } = captureFrames();
+  try {
+    render(<Menu trigger="Actions" items={items()} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    // Focus stays on the first row; the reader scrolls down to the last one.
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Rename" }));
+    reveal.mockClear();
+
+    // The trigger moves and the popup follows - the popup's own height does
+    // not change, so nothing has been hidden.
+    triggerTop = 200;
+    fireEvent(window, new Event("resize"));
+    flush();
+
+    expect(screen.getByRole("menu").style.top).toBe("232px"); // followed
+    expect(reveal).not.toHaveBeenCalled();
+  } finally {
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
 // The popup grows out of the corner nearest its trigger, so the motion reads as
 // coming from the control that opened it. That corner is decided by comparing
 // the placed position with the trigger's rect - and with a panned visual
@@ -1316,18 +1239,6 @@ test("a panned visual viewport still grows the popup out of its trigger's edge",
   fakeViewport.offsetLeft = 0;
   fakeViewport.offsetTop = 60;
   vi.stubGlobal("visualViewport", fakeViewport);
-  const box = (left: number, top: number, width: number, height: number) =>
-    ({
-      left,
-      top,
-      right: left + width,
-      bottom: top + height,
-      width,
-      height,
-      x: left,
-      y: top,
-      toJSON: () => ({}),
-    }) as DOMRect;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     if (this.tagName === "BUTTON") return box(100, 300, 40, 28);
     if (this.tagName === "UL") return box(0, 0, 160, 120);
@@ -1375,18 +1286,6 @@ function ComposerBesideTranscript({ tokens }: { tokens: string[] }) {
 test("a transcript streaming beside the composer does not re-place the open menu", async () => {
   const user = userEvent.setup();
   const triggerTop = 300;
-  const box = (left: number, top: number, width: number, height: number) =>
-    ({
-      left,
-      top,
-      right: left + width,
-      bottom: top + height,
-      width,
-      height,
-      x: left,
-      y: top,
-      toJSON: () => ({}),
-    }) as DOMRect;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
     if (this.tagName === "UL") return box(0, 0, 160, 120);
@@ -1493,18 +1392,6 @@ test("a row inserted above the trigger moves the open popup with it", async () =
   // The pinned section's own top in the rail scroller; the trigger keeps a
   // fixed 28px height and a fixed 40px width wherever the section puts it.
   let pinnedTop = 300;
-  const box = (left: number, top: number, width: number, height: number) =>
-    ({
-      left,
-      top,
-      right: left + width,
-      bottom: top + height,
-      width,
-      height,
-      x: left,
-      y: top,
-      toJSON: () => ({}),
-    }) as DOMRect;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     if (this.tagName === "BUTTON" && this.textContent === "Pinned actions") return box(100, pinnedTop, 40, 28);
     if (this.tagName === "BUTTON") return box(0, 0, 80, 24);
@@ -2027,14 +1914,12 @@ test("places the popup from its untransformed layout box, not its mid-animation 
   const SETTLED_WIDTH = 200;
   const ANIMATING_WIDTH = 192; // scale(0.96)
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
-    const box = (left: number, width: number) =>
-      ({ left, right: left + width, top: 20, bottom: 40, width, height: 20 }) as DOMRect;
     // Its far edge exactly EDGE_MARGIN inside the viewport: close enough that
     // left-aligning the popup overflows, so the flip is still the answer, and
     // far enough that the right-aligned popup keeps its own margin.
-    if (this.tagName === "BUTTON") return box(window.innerWidth - 48, 40);
-    if (this.tagName === "UL") return box(0, ANIMATING_WIDTH);
-    return box(0, 0);
+    if (this.tagName === "BUTTON") return box(window.innerWidth - 48, 20, 40, 20);
+    if (this.tagName === "UL") return box(0, 20, ANIMATING_WIDTH, 20);
+    return box(0, 0, 0, 0);
   });
   stubPopupLayoutBox(window, SETTLED_WIDTH, 100);
   render(<Menu trigger="Actions" items={items()} />);
@@ -2052,22 +1937,10 @@ test("places a popout menu from the popout window's own viewport", () => {
   const { frame, doc, win } = appendPopout();
   Object.defineProperty(win, "innerWidth", { configurable: true, value: 600 });
   Object.defineProperty(win, "innerHeight", { configurable: true, value: 150 });
-  const rect = (left: number, top: number, width: number, height: number): DOMRect =>
-    ({
-      left,
-      top,
-      right: left + width,
-      bottom: top + height,
-      width,
-      height,
-      x: left,
-      y: top,
-      toJSON: () => ({}),
-    }) as DOMRect;
   vi.spyOn(win.HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
-    if (this.tagName === "BUTTON") return rect(450, 20, 140, 125);
-    if (this.tagName === "UL") return rect(0, 0, 200, 120);
-    return rect(0, 0, 0, 0);
+    if (this.tagName === "BUTTON") return box(450, 20, 140, 125);
+    if (this.tagName === "UL") return box(0, 0, 200, 120);
+    return box(0, 0, 0, 0);
   });
   stubPopupLayoutBox(win, 200, 120);
   const view = render(createPortal(<Menu trigger="Actions" items={items()} />, doc.body));

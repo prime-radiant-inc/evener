@@ -336,31 +336,41 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // min-width in CSS, so both are written.
     const maxBlockSize = `${Math.max(0, visible.height - 2 * EDGE_MARGIN)}px`;
     if (popupEl.style.maxBlockSize !== maxBlockSize) popupEl.style.maxBlockSize = maxBlockSize;
-    const maxInlineSize = `${Math.max(0, visible.width - 2 * EDGE_MARGIN)}px`;
+    const availableWidth = visible.width - 2 * EDGE_MARGIN;
+    const maxInlineSize = `${Math.max(0, availableWidth)}px`;
     if (popupEl.style.maxInlineSize !== maxInlineSize) popupEl.style.maxInlineSize = maxInlineSize;
-    // Only when the cap is what is narrowing it: a popup that fits keeps the
-    // stylesheet's floor untouched, and its labels stay on one line. A narrowed
-    // popup has to let them wrap, or each label runs past the scrollport and
-    // reading it needs a horizontal scroll - the one thing a menu cannot ask
-    // for.
-    const narrowed = visible.width - 2 * EDGE_MARGIN < NARROW_POPUP_WIDTH;
-    const minInlineSize = narrowed ? "0" : "";
+    // A popup that fits keeps the stylesheet's floor and its single-line rows.
+    // As soon as the visible width caps it, BOTH give: the floor yields so the
+    // cap can apply, and the labels may wrap. Wrapping is keyed on the cap
+    // having applied rather than on the cap being smaller than the floor,
+    // because a cap of 180 or more still narrows the popup - a long label (the
+    // session activity count at the largest text setting is one) overflows
+    // even then, and an overflowing label needs a horizontal scroll to read.
+    // A label that fits on one line is unaffected by the rule.
+    const capped = availableWidth < ownerWindow.innerWidth;
+    const minInlineSize = availableWidth < NARROW_POPUP_WIDTH ? "0" : "";
     if (popupEl.style.minWidth !== minInlineSize) popupEl.style.minWidth = minInlineSize;
-    popupEl.classList.toggle(CLASS.popupNarrow, narrowed);
+    popupEl.classList.toggle(CLASS.popupNarrow, capped);
     const placed = computeMenuPosition(
       localTriggerRect,
       { width: popupEl.offsetWidth, height: popupEl.offsetHeight },
       { width: visible.width, height: visible.height },
     );
-    // A shorter popup can leave the row the reader is on below its scrollport.
-    // Enter would still activate that row while its label and focus ring sat
-    // out of sight, which is the one arrangement a keyboard menu must never
-    // produce. `nearest` is the browser's own "just enough": it does nothing
-    // when the row is already visible, and it scrolls the popup - not the
-    // document - when it is not. Only a row that already holds focus moves, so
-    // this never takes focus from anything else.
-    const focusedRow = itemRefs.current.find((node) => node !== null && node === ownerDocument.activeElement);
-    focusedRow?.scrollIntoView({ block: "nearest" });
+    // A SHORTER scrollport can leave the row the reader is on below it - Enter
+    // would then activate a row whose label and focus ring are out of sight.
+    // Only a shrink can do that, and only a shrink is answered: revealing on
+    // every pass would undo the reader's own scroll to the lower actions the
+    // moment any placement runs (a pan, a row appearing above). `nearest` is
+    // the browser's minimal scroll: it does nothing when the row is already
+    // visible, scrolls the popup rather than the document, and only a row that
+    // already holds focus ever moves.
+    const scrollportHeight = popupEl.offsetHeight;
+    const shrunk = lastScrollportHeightRef.current !== null && scrollportHeight < lastScrollportHeightRef.current;
+    lastScrollportHeightRef.current = scrollportHeight;
+    if (shrunk) {
+      const focusedRow = itemRefs.current.find((node) => node !== null && node === ownerDocument.activeElement);
+      focusedRow?.scrollIntoView({ block: "nearest" });
+    }
     // Only write when it actually moved: the observers below can report a
     // mutation that changes nothing about placement (a text node elsewhere in
     // the same scroller), and a state write per notification would re-render
@@ -387,6 +397,9 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   // a resize, a visual-viewport change and an observation together -
   // re-measures once.
   const frameRef = useRef<number | null>(null);
+  // The popup's scrollport height at the last placement, so a pass can tell a
+  // shrink (which may have hidden the focused row) from an ordinary re-place.
+  const lastScrollportHeightRef = useRef<number | null>(null);
   const placeAfterLayout = useCallback(() => {
     if (frameRef.current !== null) return;
     const ownerWindow = ownerDocument.defaultView ?? window;
