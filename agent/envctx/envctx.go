@@ -21,16 +21,18 @@ type Pressure struct {
 	Disk   string `json:"disk,omitempty"`
 }
 
-// Snapshot is one observation of the session environment. All fields are
-// strings so Snapshot is comparable with == (the nothing-changed fast path)
-// and marshals directly into session meta.
+// Snapshot is one comparable observation of the session environment and
+// marshals directly into session meta.
 type Snapshot struct {
-	Cwd           string   `json:"cwd,omitempty"`             // absolute working directory
-	LocalDateHour string   `json:"local_date_hour,omitempty"` // "2026-08-06 14:00 PDT"
-	Sandbox       string   `json:"sandbox,omitempty"`         // always populated; "off" included
-	GitBranch     string   `json:"git_branch,omitempty"`      // "" outside a git repo
-	Pressure      Pressure `json:"pressure,omitzero"`
+	Cwd              string   `json:"cwd,omitempty"`             // absolute working directory
+	LocalDateHour    string   `json:"local_date_hour,omitempty"` // "2026-08-06 14:00 PDT"
+	Sandbox          string   `json:"sandbox,omitempty"`         // always populated; "off" included
+	GitBranch        string   `json:"git_branch,omitempty"`      // "" outside a git repo
+	GitBranchUnknown bool     `json:"git_branch_unknown,omitempty"`
+	Pressure         Pressure `json:"pressure,omitzero"`
 }
+
+const gitBranchUnconfirmed = "(unconfirmed in this directory)"
 
 // State is the Tracker's persistable form, stored in session meta so resume
 // stays silent when nothing changed across a restart.
@@ -82,7 +84,8 @@ func (t *Tracker) ReplayBlock(block string) bool {
 			sandbox = true
 		case strings.HasPrefix(line, "git branch: "):
 			value := strings.TrimPrefix(line, "git branch: ")
-			if value == "(not in a git repository)" {
+			t.st.Last.GitBranchUnknown = value == gitBranchUnconfirmed
+			if t.st.Last.GitBranchUnknown || value == "(not in a git repository)" {
 				value = ""
 			}
 			t.st.Last.GitBranch = value
@@ -115,10 +118,14 @@ func pressureValue(line, name string) string {
 // caller must deliver the rendered block to the model.
 func (t *Tracker) RenderDiff(cur Snapshot) string {
 	first := !t.st.HasSent
-	if !first && cur == t.st.Last {
+	prev := t.st.Last
+	if !first && cur.Cwd == prev.Cwd && cur.GitBranchUnknown && !prev.GitBranchUnknown {
+		cur.GitBranch = prev.GitBranch
+		cur.GitBranchUnknown = false
+	}
+	if !first && cur == prev {
 		return ""
 	}
-	prev := t.st.Last
 
 	var lines []string
 	add := func(changed bool, line string) {
@@ -130,9 +137,11 @@ func (t *Tracker) RenderDiff(cur Snapshot) string {
 	add(cur.LocalDateHour != prev.LocalDateHour, "date: "+cur.LocalDateHour)
 	add(cur.Sandbox != prev.Sandbox, "sandbox: "+cur.Sandbox)
 	switch {
+	case cur.GitBranchUnknown:
+		add(cur.Cwd != prev.Cwd || !prev.GitBranchUnknown, "git branch: "+gitBranchUnconfirmed)
 	case cur.GitBranch != "":
 		add(cur.GitBranch != prev.GitBranch, "git branch: "+cur.GitBranch)
-	case !first && prev.GitBranch != "":
+	case !first && (prev.GitBranch != "" || prev.GitBranchUnknown):
 		lines = append(lines, "git branch: (not in a git repository)")
 	}
 	for _, p := range []struct{ label, cur, prev string }{

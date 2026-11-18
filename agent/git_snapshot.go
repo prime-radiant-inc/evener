@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"errors"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -82,32 +81,38 @@ func gitOriginURL(ctx context.Context, env execenv.ExecutionEnvironment, cwd str
 // status/log/origin-url subprocess calls snapshotGit also runs. Used by the
 // envctx GitBranch probe (agent/session_init.go), which runs on every user
 // turn and needs just the branch name, not a full session-launch environment
-// snapshot.
-func snapshotGitBranch(env execenv.ExecutionEnvironment, cwd string) string {
+// snapshot. known distinguishes a confirmed absence from an incomplete probe.
+func snapshotGitBranch(env execenv.ExecutionEnvironment, cwd string) (branch string, known bool) {
 	if env == nil {
-		return ""
+		return "", false
 	}
 	cwd = strings.TrimSpace(cwd)
 	if cwd == "" {
 		cwd = env.WorkingDirectory()
 	}
-	if !hasGitMetadataAncestor(cwd) {
-		return ""
+	if present, known := hasGitMetadataAncestor(cwd); !present {
+		return "", known
 	}
-	run := func(cmd string) (execenv.ExecResult, error) {
+	run := func(args ...string) (execenv.ExecResult, error) {
 		ctx, cancel := context.WithTimeout(context.Background(), gitExecTimeout)
 		defer cancel()
-		return env.ExecCommand(ctx, cmd, gitExecTimeoutMS(), cwd, nil)
+		return execenv.RunGit(ctx, env, cwd, gitExecTimeoutMS(), args...)
 	}
-	inside, err := run("git rev-parse --is-inside-work-tree")
-	if err != nil || inside.ExitCode != 0 || strings.TrimSpace(inside.Stdout) != "true" {
-		return ""
+	inside, err := run("rev-parse", "--is-inside-work-tree")
+	if err != nil || inside.ExitCode != 0 || inside.StdoutTruncated {
+		return "", false
 	}
-	br, err := run("git rev-parse --abbrev-ref HEAD")
-	if err != nil || br.ExitCode != 0 {
-		return ""
+	switch strings.TrimSpace(inside.Stdout) {
+	case "false":
+		return "", true
+	case "true":
+		br, err := run("rev-parse", "--abbrev-ref", "HEAD")
+		if err == nil && br.ExitCode == 0 && !br.StdoutTruncated {
+			branch = strings.TrimSpace(br.Stdout)
+			return branch, branch != ""
+		}
 	}
-	return strings.TrimSpace(br.Stdout)
+	return "", false
 }
 
 // snapshotGit reads the launch/refresh git summary for cwd. ctx is the
@@ -129,8 +134,8 @@ func snapshotGit(ctx context.Context, env execenv.ExecutionEnvironment, cwd stri
 	if cwd == "" {
 		cwd = env.WorkingDirectory()
 	}
-	if !hasGitMetadataAncestor(cwd) {
-		return false, "", 0, 0, nil, false, false
+	if present, known := hasGitMetadataAncestor(cwd); !present {
+		return false, "", 0, 0, nil, false, !known
 	}
 
 	run := func(args ...string) (execenv.ExecResult, error) {
@@ -225,20 +230,10 @@ func gitExited(err error) bool {
 	return exitErr.ProcessState != nil && exitErr.Exited()
 }
 
-func hasGitMetadataAncestor(cwd string) bool {
-	dir := strings.TrimSpace(cwd)
-	if dir == "" || !filepath.IsAbs(dir) {
-		return true
+func hasGitMetadataAncestor(cwd string) (present, known bool) {
+	cwd = strings.TrimSpace(cwd)
+	if !filepath.IsAbs(cwd) {
+		return true, false // Leave working-directory resolution to the Git command.
 	}
-	dir = filepath.Clean(dir)
-	for {
-		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-			return true
-		}
-		parent := filepath.Dir(dir)
-		if parent == dir {
-			return false
-		}
-		dir = parent
-	}
+	return execenv.HasGitEntryAncestor(cwd)
 }

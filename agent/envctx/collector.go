@@ -17,10 +17,10 @@ type Inputs struct {
 // Probes are the Collector's injected observation functions. Pressure
 // probes return a self-labeled warning line (e.g. "memory pressure: warn
 // level") or "" when nominal; a nil probe always reads nominal. GitBranch
-// returns "" outside a git repo.
+// returns a name and whether the observation is definitive.
 type Probes struct {
 	Now       func() time.Time
-	GitBranch func(cwd string) string
+	GitBranch func(cwd string) (branch string, known bool)
 	Load      func() string
 	Memory    func() string
 	Disk      func(path string) string
@@ -68,8 +68,9 @@ func (c *Collector) Collect(in Inputs) Snapshot {
 		sandbox = "off"
 	}
 	var branch string
+	known := true
 	if c.p.GitBranch != nil {
-		branch = c.p.GitBranch(in.Cwd)
+		branch, known = c.p.GitBranch(in.Cwd)
 	}
 
 	// Guard the Disk probe: pass nil to refresh when c.p.Disk is nil
@@ -79,10 +80,11 @@ func (c *Collector) Collect(in Inputs) Snapshot {
 	}
 
 	return Snapshot{
-		Cwd:           in.Cwd,
-		LocalDateHour: now.Local().Format("2006-01-02 15:00 MST"),
-		Sandbox:       sandbox,
-		GitBranch:     branch,
+		Cwd:              in.Cwd,
+		LocalDateHour:    now.Local().Format("2006-01-02 15:00 MST"),
+		Sandbox:          sandbox,
+		GitBranch:        branch,
+		GitBranchUnknown: !known,
 		Pressure: Pressure{
 			Load:   c.refresh(&c.load, now, "", c.p.Load),
 			Memory: c.refresh(&c.mem, now, "", c.p.Memory),

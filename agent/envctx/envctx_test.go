@@ -87,6 +87,25 @@ func TestRenderDiffGitBranchGoneRendersPlaceholder(t *testing.T) {
 	if !strings.Contains(got, "git branch: (not in a git repository)") {
 		t.Fatalf("branch->empty must render placeholder, got %q", got)
 	}
+	t.Run("unconfirmed branch on another checkout", func(t *testing.T) {
+		before := State{Last: fullSnap(), HasSent: true}
+		tr, replayed := NewTracker(before), NewTracker(before)
+		cur := before.Last
+		cur.Cwd += "/another-checkout"
+		cur.GitBranch, cur.GitBranchUnknown = "", true
+		block := tr.RenderDiff(cur)
+		if block == "" || !replayed.ReplayBlock(block) || replayed.State().Last != cur {
+			t.Fatalf("replayed checkout = %+v, want unconfirmed branch in %+v", replayed.State().Last, cur)
+		}
+		if block := tr.RenderDiff(cur); block != "" {
+			t.Error("unchanged unconfirmed branch emitted another block")
+		}
+		cur.GitBranchUnknown = false
+		block = tr.RenderDiff(cur)
+		if block == "" || !replayed.ReplayBlock(block) || replayed.State().Last != cur {
+			t.Fatalf("replayed checkout = %+v, want confirmed absence in %+v", replayed.State().Last, cur)
+		}
+	})
 }
 
 func TestRenderDiffPressureAppearAndClear(t *testing.T) {

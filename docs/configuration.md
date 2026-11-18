@@ -113,6 +113,12 @@ provider journey, see [first-provider verification](getting-started.md#first-pro
 
 The launch resolver uses the selected working directory, not an upward search for `.evener/launch.toml`. Linked worktrees share canonical project identity for metadata, but their cwd-local launch files remain distinct. The old `<config-root>/projects/<id>/launch.toml` is a read-only fallback when `launch.local.toml` is absent; saving the project layer writes the new location.
 
+During a session, Git observations update the model's environment context. An
+inconclusive probe keeps the last confirmed branch for the current directory.
+After a move to an unconfirmed directory, the context records that uncertainty.
+Later observations update the branch or confirm that the directory is outside
+Git.
+
 Project MCP configuration instead lives at the Git root, even when you launch from a subdirectory. See [MCP configuration locations](mcp.md#configuration-locations-and-precedence).
 
 `EVENER_STATE_DIR` selects one invocation's project/session state directory. It does **not** move the whole state root or OAuth store. Provider and credential path overrides are documented in [Environment variables](environment-variables.md).

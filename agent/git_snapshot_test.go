@@ -381,21 +381,21 @@ func TestSnapshotGit_FreshRepoNoCommits(t *testing.T) {
 // TestSnapshotGitBranch_ReportsTheCheckedOutBranchAndNothingWithoutACommit
 // covers the per-turn branch probe: a repository with a commit reports its
 // checked-out branch, and one with no commit yet, whose HEAD names no
-// revision, reports no branch.
+// revision, leaves the branch unconfirmed.
 func TestSnapshotGitBranch_ReportsTheCheckedOutBranchAndNothingWithoutACommit(t *testing.T) {
 	dir := t.TempDir()
 	env := execenv.NewLocalExecutionEnvironment(dir)
 	defer env.Cleanup()
 
 	mustExec(t, env, dir, "git init")
-	if got := snapshotGitBranch(env, dir); got != "" {
-		t.Fatalf("branch before the first commit = %q, want none", got)
+	if got, known := snapshotGitBranch(env, dir); got != "" || known {
+		t.Fatalf("branch before the first commit = %q, known %t; want unconfirmed", got, known)
 	}
 
 	mustExec(t, env, dir, "git config user.email test@test.com && git config user.name test")
 	mustExec(t, env, dir, "git checkout -b probe-branch && git commit --allow-empty -m initial")
-	if got := snapshotGitBranch(env, dir); got != "probe-branch" {
-		t.Fatalf("branch = %q, want probe-branch", got)
+	if got, known := snapshotGitBranch(env, dir); got != "probe-branch" || !known {
+		t.Fatalf("branch = %q, known %t; want confirmed probe-branch", got, known)
 	}
 }
 

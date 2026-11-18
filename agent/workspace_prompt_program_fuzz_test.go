@@ -248,7 +248,11 @@ func wppGitSnapshot(t *testing.T, token string) {
 	if inRepo, _, _, _, _, _, _ := snapshotGit(context.Background(), noRepoEnv, noRepo); inRepo || len(noRepoEnv.calls) != 0 {
 		t.Fatalf("non-repo snapshot invoked scripted command: repo=%v calls=%#v", inRepo, noRepoEnv.calls)
 	}
-	if !hasGitMetadataAncestor("") || !hasGitMetadataAncestor("relative") || !hasGitMetadataAncestor(nested) || hasGitMetadataAncestor(noRepo) {
+	hasMetadata := func(cwd string) bool {
+		present, _ := hasGitMetadataAncestor(cwd)
+		return present
+	}
+	if !hasMetadata("") || !hasMetadata("relative") || !hasMetadata(nested) || hasMetadata(noRepo) {
 		t.Fatal("git metadata structural probe returned an inconsistent result")
 	}
 

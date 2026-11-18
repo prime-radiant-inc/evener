@@ -17,7 +17,7 @@ type fakeProbes struct {
 func (f *fakeProbes) probes() Probes {
 	return Probes{
 		Now:       func() time.Time { return f.now },
-		GitBranch: func(string) string { return f.branch },
+		GitBranch: func(string) (string, bool) { return f.branch, true },
 		Load:      func() string { f.loadCalls++; return f.load },
 		Memory:    func() string { f.memCalls++; return f.mem },
 		Disk:      func(string) string { f.diskCalls++; return f.disk },
@@ -79,7 +79,7 @@ func TestCollectCachedReadingServedBetweenProbes(t *testing.T) {
 }
 
 func TestCollectNilProbesReadNominal(t *testing.T) {
-	c := NewCollector(Probes{Now: time.Now, GitBranch: func(string) string { return "" }})
+	c := NewCollector(Probes{Now: time.Now, GitBranch: func(string) (string, bool) { return "", true }})
 	got := c.Collect(Inputs{Cwd: "/w"})
 	if got.Pressure != (Pressure{}) {
 		t.Fatalf("nil probes must read nominal: %+v", got.Pressure)
@@ -102,7 +102,7 @@ func TestCollectReProbesDiskOnWorkspaceChange(t *testing.T) {
 	var loadCalls, memCalls int
 	p := Probes{
 		Now:       func() time.Time { return now },
-		GitBranch: func(string) string { return "" },
+		GitBranch: func(string) (string, bool) { return "", true },
 		Load:      func() string { loadCalls++; return "load pressure: high" },
 		Memory:    func() string { memCalls++; return "memory pressure: warn level" },
 		Disk: func(path string) string {

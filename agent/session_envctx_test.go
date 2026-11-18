@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -409,6 +411,47 @@ func TestSecondUserTurnEmitsNoEnvironmentContextWhenUnchanged(t *testing.T) {
 	if count := countEnvironmentTurns(s); count != 1 {
 		t.Fatalf("unchanged environment must emit exactly once, got %d", count)
 	}
+	t.Run("temporary checkout loss", func(t *testing.T) {
+		root := t.TempDir()
+		checkout := filepath.Join(root, "checkout")
+		if err := os.Mkdir(checkout, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		env := execenv.NewLocalExecutionEnvironment(checkout)
+		runInfraGit(t, checkout, "init", "-b", "confirm-branch")
+		runInfraGit(t, checkout, "-c", "user.name=test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "initial")
+		probes := &envctx.Probes{
+			Now:       func() time.Time { return envctxFixedTime },
+			GitBranch: func(cwd string) (string, bool) { return snapshotGitBranch(env, cwd) },
+		}
+		s := newTestSessionForEnvctx(t, withEnv(env), withConfig(SessionConfig{
+			StateDir: filepath.Join(root, "state"),
+			testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true, envProbes: probes},
+		}))
+		check := func(wantBranch string, wantTurns int) {
+			t.Helper()
+			if err := s.maybeAppendEnvironmentContext(); err != nil {
+				t.Fatal(err)
+			}
+			if branch := s.envTracker.State().Last.GitBranch; branch != wantBranch || countEnvironmentTurns(s) != wantTurns {
+				t.Errorf("observed branch %q with %d environment turns, want %q with %d", branch, countEnvironmentTurns(s), wantBranch, wantTurns)
+			}
+		}
+		check("confirm-branch", 1)
+		retained := filepath.Join(root, "retained")
+		if err := os.Rename(checkout, retained); err != nil {
+			t.Fatal(err)
+		}
+		check("confirm-branch", 1)
+		if err := os.Rename(retained, checkout); err != nil {
+			t.Fatal(err)
+		}
+		check("confirm-branch", 1)
+		if err := os.Rename(filepath.Join(checkout, ".git"), filepath.Join(root, "metadata")); err != nil {
+			t.Fatal(err)
+		}
+		check("", 2)
+	})
 }
 
 func TestEnvContextStatePersistsToMeta(t *testing.T) {
