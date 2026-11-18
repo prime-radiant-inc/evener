@@ -125,6 +125,7 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	newWD := next.WorkingDirectory()
 	ei := s.snapshotEnvironmentInfo(next)
 	writableRoots := installedWritableRoots(next)
+	var observedBranch *string
 	if !s.cfg.testOnly.skipGitSnapshot {
 		inRepo, branch, mod, untracked, commits, statusKnown, probeFailed := snapshotGit(refreshCtx, next, newWD)
 		ei.GitSnapshotFailed = probeFailed
@@ -137,6 +138,7 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 			ei.GitRecentCommitTitles = commits
 			ei.GitOriginURL = gitOriginURL(refreshCtx, next, newWD)
 		}
+		observedBranch = observedGitBranch(ei)
 	}
 	// Step 2 — under s.mu: atomically install env+envInfo (so the two are
 	// never observed in a torn intermediate state) and rebuild the tool definitions.
@@ -170,6 +172,9 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	prior, _ := s.env.(*execenv.LocalExecutionEnvironment)
 	s.env = next
 	s.envInfo = ei
+	if observedBranch != nil {
+		s.envCollector.ObserveGitBranch(newWD, *observedBranch)
+	}
 	s.workspaceRevision++
 	s.workspaceWritableRoots = writableRoots
 	s.worktreeContextPending = true

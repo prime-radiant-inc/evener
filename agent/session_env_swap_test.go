@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -27,9 +28,8 @@ func TestSwapEnvAndRefresh_AppendsCurrentEnvironmentToStartupPromptHistory(t *te
 		launch, other := evalSyms(t, t.TempDir()), evalSyms(t, t.TempDir())
 		unborn, outside := evalSyms(t, t.TempDir()), evalSyms(t, t.TempDir())
 		copyWorktreeBaseRepo(t, launch)
-		copyWorktreeBaseRepo(t, other)
 		gittest.Run(t, launch, "checkout", "-b", "launch-branch")
-		gittest.Run(t, other, "checkout", "-b", "other-branch")
+		gittest.Run(t, launch, "worktree", "add", "-b", "other-branch", other)
 		gittest.Run(t, unborn, "init")
 		base := execenv.NewLocalExecutionEnvironment(launch)
 		var timeout bool
@@ -42,12 +42,9 @@ func TestSwapEnvAndRefresh_AppendsCurrentEnvironmentToStartupPromptHistory(t *te
 		adapter := &agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response { return agenttest.FinalResponse("ack") }}
 		cfg := SessionConfig{StateDir: t.TempDir(), testOnly: testConfig{envProbes: probes}}
 		s := newSession(t, withEnv(base), withEnvironmentSnapshot(), withConfig(cfg), withAdapter(adapter))
-		startup := s.cachedSystemPrompt
-		visit := func(cwd, wantBranch string, unknown bool) {
+		startup := s.transcript.Header().SystemPrompt
+		request := func(cwd, wantBranch string, unknown bool) {
 			t.Helper()
-			if err := s.swapEnvAndRefresh(base.WithWorkingDirectory(cwd), nil); err != nil {
-				t.Fatal(err)
-			}
 			round := len(adapter.Requests())
 			enqueueCompletedJobNotification(t, s, fmt.Sprintf("job_checkout_%d", round))
 			if _, err := s.ProcessInputKind(t.Context(), "", nil, EntryNotification); err != nil {
@@ -71,12 +68,43 @@ func TestSwapEnvAndRefresh_AppendsCurrentEnvironmentToStartupPromptHistory(t *te
 			}
 			t.Fatalf("no environment update on request %d", round)
 		}
-		// Switch away before the first input. Only the startup prompt has
-		// observed the launch branch.
-		visit(other, "other-branch", false)
+		visit := func(cwd, wantBranch string, unknown bool) {
+			t.Helper()
+			if err := s.swapEnvAndRefresh(base.WithWorkingDirectory(cwd), nil); err != nil {
+				t.Fatal(err)
+			}
+			request(cwd, wantBranch, unknown)
+		}
+		// Change the original checkout while the session occupies its linked worktree.
+		if err := s.enterWorktree(other, false); err != nil {
+			t.Fatal(err)
+		}
+		timeout = true
+		request(other, "other-branch", false)
+		gittest.Run(t, launch, "checkout", "-b", "return-branch")
+		if cwd, ok, err := s.exitWorktree(); err != nil || !ok || cwd != launch {
+			t.Fatalf("exit worktree returned %q, %t, %v", cwd, ok, err)
+		}
+		turns := countEnvironmentTurns(s)
+		failure := errors.New("transcript sync unavailable")
+		attachEnvironmentSyncFailure(t, s, failure, nil)
+		if _, _, _, _, _, _, err := s.prepareModelRequestWithError(t.Context(), 1, &events.RoundTimings{}); !errors.Is(err, failure) || countEnvironmentTurns(s) != turns {
+			t.Fatalf("failed workspace publication left %d turns, want %d, err %v", countEnvironmentTurns(s), turns, err)
+		}
+		request(launch, "return-branch", false)
+		// The checkout can also change after the swap and before the next request.
+		if err := s.swapEnvAndRefresh(base.WithWorkingDirectory(other), nil); err != nil {
+			t.Fatal(err)
+		}
+		gittest.Run(t, other, "checkout", "-b", "dispatch-branch")
+		timeout = false
+		request(other, "dispatch-branch", false)
 		visit(unborn, "", true)
 		visit(outside, "", false)
 		timeout = true
+		// Both the next installation and dispatch are now inconclusive for
+		// launch. A cold visit must use the branch the successful retry saved.
+		gittest.Run(t, launch, "checkout", "--orphan", "unborn-return")
 		for _, cold := range []bool{false, true} {
 			if cold {
 				seedNumberedSessionHistory(t, s, 8)
@@ -97,13 +125,13 @@ func TestSwapEnvAndRefresh_AppendsCurrentEnvironmentToStartupPromptHistory(t *te
 				t.Cleanup(resumed.Close)
 				s = resumed
 			}
-			visit(other, "other-branch", false)
-			visit(launch, "launch-branch", false)
+			visit(other, "dispatch-branch", false)
+			visit(launch, "return-branch", false)
 			visit(unborn, "", true)
 			visit(outside, "", false)
 		}
 		s = newSession(t, withEnv(base.WithWorkingDirectory(unborn)), withEnvironmentSnapshot(), withConfig(cfg), withAdapter(adapter))
-		startup = s.cachedSystemPrompt
+		startup = s.transcript.Header().SystemPrompt
 		visit(unborn, "", true)
 		if branch := loadMetaForTest(t, s).PromptLaunch.GitBranch; branch != nil {
 			t.Errorf("an unborn checkout persisted a confirmed launch branch %q", *branch)

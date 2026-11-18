@@ -203,7 +203,8 @@ name their working directory so a retained update still identifies its checkout
 after a fold.
 An unborn HEAD or a checkout Git refuses to inspect leaves the branch
 unconfirmed at launch. If a later probe fails, the request keeps the last
-confirmed branch for this checkout, including one observed during restore.
+confirmed branch for this checkout, including one observed during restore or
+when entering or leaving a worktree.
 A checkout with no confirmed observation reports its branch as unconfirmed.
 Evener recovers each checkout’s
 last observation from the launch facts and transcript, including a confirmed
