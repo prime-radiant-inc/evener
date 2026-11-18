@@ -68,10 +68,10 @@ func delegateContextEntries(parent []transcript.Entry) []transcript.Entry {
 	// file. A copy whose original was not inherited keeps no ordinal: it is the
 	// child's only record of that content, and the inherited prelude records it
 	// as conversation, so it renders once as any other inherited turn does.
-	for _, copy := range copied {
-		if original, ok := position[uint64(copy.original)]; ok {
+	for _, folded := range copied {
+		if original, ok := position[uint64(folded.original)]; ok {
 			ordinal := uint64(original)
-			out[copy.at].Turn.OriginalOrdinal = &ordinal
+			out[folded.at].Turn.OriginalOrdinal = &ordinal
 		}
 	}
 	return out

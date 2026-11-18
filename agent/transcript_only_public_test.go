@@ -209,7 +209,7 @@ func TestPublicTranscriptDecidesInclusionFromDecodedTurn(t *testing.T) {
 func assertPublicEmitted(t *testing.T, surface, content, marker string) {
 	t.Helper()
 	found := false
-	for _, line := range strings.Split(strings.TrimSuffix(content, "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSuffix(content, "\n"), "\n") {
 		if !strings.Contains(line, marker) {
 			continue
 		}
