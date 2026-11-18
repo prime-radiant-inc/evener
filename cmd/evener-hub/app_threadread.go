@@ -124,15 +124,22 @@ var afterSavedSubscriptionCapture func(appwire.ThreadReadParams)
 
 // unavailableThreadReadResponse prefers saved turns, but a confirmed incompatible
 // owner remains readable from roster metadata even before it has a past entry.
+// It establishes nothing about the serving daemon, so a failed saved read
+// underneath it stamps the owner as unknown.
 func unavailableThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {
-	return unavailableThreadReadResponseOwned(ctx, cfg, sources, params, nil)
+	return unavailableThreadReadResponseOwned(ctx, cfg, sources, params, unknownOwnerReadError, nil)
 }
 
+// unavailableThreadReadResponseOwned answers a read from the persisted
+// transcript. stampReadError decides what a failure under it may claim: the
+// caller passes daemonlessReadError only when it established that no daemon
+// serves the thread, and unknownOwnerReadError otherwise.
 func unavailableThreadReadResponseOwned(
 	ctx context.Context,
 	cfg hubcore.WebConfig,
 	sources *appsource.Registry,
 	params appwire.ThreadReadParams,
+	stampReadError func(error) error,
 	configureWindow func(*transcriptWindowPackOptions),
 ) (appwire.ThreadReadResponse, bool, error) {
 	if params.LiveOnly {
@@ -189,7 +196,7 @@ func unavailableThreadReadResponseOwned(
 	}
 	if hasPast {
 		response, ok, err := pastEntryItemReadResponseOwned(ctx, cfg, params, entry, configureWindow)
-		return response, ok, daemonlessReadError(err)
+		return response, ok, stampReadError(err)
 	}
 	if _, required, err := restartRequiredDaemon(ctx, cfg, params.Ref, params.ThreadID); err != nil || !required {
 		return appwire.ThreadReadResponse{}, false, err
@@ -216,14 +223,40 @@ func unavailableThreadReadResponseOwned(
 	return appwire.ThreadReadResponse{}, false, nil
 }
 
-// daemonlessReadError stamps a daemonless history read's error with the
-// generation and epoch it ran under, as a daemon stamps its own: the
-// daemonless token and epoch 0, with no snapshot.
+// daemonlessReadError stamps a failed saved-history read's error with the
+// daemonless generation and epoch 0, with no snapshot. Call it only where
+// absence is established: a failed read must never claim a daemon is gone,
+// because the only evidence it has is that it failed.
 func daemonlessReadError(err error) error {
+	return stampSavedHistoryReadError(err, appwire.DaemonlessBootGeneration)
+}
+
+// unknownOwnerReadError stamps a failed saved-history read's error with the
+// generation and epoch it ran under when the serving daemon was never
+// established: the fallback itself failed, and the live read that made the
+// fallback necessary said nothing about who owned the thread.
+func unknownOwnerReadError(err error) error {
+	return stampSavedHistoryReadError(err, appwire.UnknownOwnerBootGeneration)
+}
+
+func stampSavedHistoryReadError(err error, bootGeneration string) error {
 	if err == nil {
 		return nil
 	}
-	return appwire.WithHistoryReadIdentity(appserver.WireError(err), appwire.DaemonlessBootGeneration, 0)
+	return appwire.WithHistoryReadIdentity(appserver.WireError(err), bootGeneration, 0)
+}
+
+// savedHistoryStampFor picks the token for a saved read that answered another
+// read's failure. Only two answers establish absence: the daemon naming the
+// session dead, and the ref naming a source this hub does not serve, since a
+// daemon the hub cannot route to cannot be serving the thread. A relay outage,
+// a protocol refusal, or a deadline says the read failed, not that its owner is
+// gone, so those keep the owner unknown.
+func savedHistoryStampFor(readErr error) func(error) error {
+	if isDeadSessionError(readErr) || errors.Is(readErr, appsource.ErrSourceNotFound) {
+		return daemonlessReadError
+	}
+	return unknownOwnerReadError
 }
 
 func pastThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {

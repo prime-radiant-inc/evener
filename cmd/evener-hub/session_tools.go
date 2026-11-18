@@ -1200,7 +1200,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 		if isTargetDeletedError(err) || params.IsPendingAskPage() {
 			return appwire.ThreadReadResponse{}, err
 		}
-		resp, ok, pastErr := unavailableThreadReadResponseOwned(ctx, cfg, sources, params, func(options *transcriptWindowPackOptions) {
+		resp, ok, pastErr := unavailableThreadReadResponseOwned(ctx, cfg, sources, params, savedHistoryStampFor(err), func(options *transcriptWindowPackOptions) {
 			o.retainCanonicalWindowOptions(options)
 		})
 		if pastErr != nil {
@@ -1253,7 +1253,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 			if daemon, ok := source.(*appsource.LocalDaemonSource); ok {
 				_, admissionErr := daemon.ResolveSubscriptionAdmission(params)
 				if isDeadSessionError(admissionErr) {
-					saved, found, savedErr := unavailableThreadReadResponseOwned(ctx, cfg, sources, params, func(options *transcriptWindowPackOptions) {
+					saved, found, savedErr := unavailableThreadReadResponseOwned(ctx, cfg, sources, params, daemonlessReadError, func(options *transcriptWindowPackOptions) {
 						o.retainCanonicalWindowOptions(options)
 					})
 					if savedErr != nil {
@@ -1389,7 +1389,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 		// Keep the first attempt's saved-history eligibility if the
 		// discovered owner disappears before the retry lands.
 		if !recovered && allowPast {
-			saved, ok, pastErr := unavailableThreadReadResponseOwned(ctx, cfg, sources, params, func(options *transcriptWindowPackOptions) {
+			saved, ok, pastErr := unavailableThreadReadResponseOwned(ctx, cfg, sources, params, savedHistoryStampFor(err), func(options *transcriptWindowPackOptions) {
 				o.retainCanonicalWindowOptions(options)
 			})
 			if pastErr != nil {
@@ -1449,7 +1449,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 		})
 		if pastErr != nil {
 			read.finish(false)
-			return appwire.ThreadReadResponse{}, daemonlessReadError(pastErr)
+			return appwire.ThreadReadResponse{}, stampSavedHistoryReadError(pastErr, appwire.UnknownOwnerBootGeneration)
 		}
 		if ok {
 			pastPage = &past

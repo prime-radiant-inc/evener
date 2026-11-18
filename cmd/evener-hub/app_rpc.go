@@ -1465,7 +1465,18 @@ func registerThreadHandlers(
 		}
 		saved, ok, pastErr := pastThreadTurnsList(ctx, cfg, params)
 		if pastErr != nil {
-			return appwire.ThreadTurnsListResponse{}, daemonlessReadError(pastErr)
+			// The failed saved read inherits this read's own evidence: a ref no
+			// served source owns, or a live read that named the session dead,
+			// establishes absence. A bound source that failed some other way
+			// leaves the owner unknown.
+			stamp := unknownOwnerReadError
+			switch {
+			case srcErr != nil:
+				stamp = savedHistoryStampFor(srcErr)
+			case isDeadSessionError(liveErr):
+				stamp = daemonlessReadError
+			}
+			return appwire.ThreadTurnsListResponse{}, stamp(pastErr)
 		}
 		if ok {
 			if srcErr == nil && saved.ServingFacts != nil {

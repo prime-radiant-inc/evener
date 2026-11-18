@@ -6,8 +6,21 @@ import (
 )
 
 // DaemonlessBootGeneration is the boot generation the hub stamps on a read it
-// serves from the transcript with no daemon running for the session.
+// serves from the transcript with no daemon running for the session. It is a
+// positive claim of absence: the hub answered from the persisted transcript
+// because no daemon was there to answer. A read that failed without
+// establishing that absence carries UnknownOwnerBootGeneration instead.
 const DaemonlessBootGeneration = "daemonless"
+
+// UnknownOwnerBootGeneration is the boot generation the hub stamps on a failed
+// history read whose serving daemon it never established: the saved-history
+// fallback that answered the read failed, and the live read that made the
+// fallback necessary said nothing about who was serving the thread. It is not
+// a claim that no daemon runs — a failed read must never claim a daemon is
+// gone, because the only evidence it has is that it failed. It is no counter
+// either: CompareBootGeneration applies it to itself and replaces any other
+// token.
+const UnknownOwnerBootGeneration = "unknown-owner"
 
 // BootGeneration spells a daemon's boot counter as the wire carries it for
 // the daemon's root thread.
@@ -69,7 +82,8 @@ func CompareBootGeneration(held, incoming string) BootGenerationAction {
 }
 
 // parseBootGeneration reads a counter token: "<n>" (owner "") or
-// "<n>@<root>". daemonless and malformed tokens report false.
+// "<n>@<root>". DaemonlessBootGeneration, UnknownOwnerBootGeneration and
+// malformed tokens report false.
 func parseBootGeneration(token string) (counter uint64, owner string, ok bool) {
 	number, owner, qualified := strings.Cut(token, "@")
 	if qualified && owner == "" {

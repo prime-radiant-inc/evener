@@ -1,12 +1,17 @@
 package hub
 
 import (
+	"context"
 	"errors"
+	"os"
 	"testing"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/llm"
 )
 
 // TestBlockedUnknownMutationError covers the error construction function.
@@ -93,4 +98,90 @@ func TestAllowsPastFallbackAfterLiveReadFailureSubscribeNilSource(t *testing.T) 
 	if !got {
 		t.Fatal("subscribe with non-relay source should allow past fallback")
 	}
+}
+
+// requireSavedHistoryFailureStamp pins the identity and the typed diagnostic
+// of a saved-history read's failure. Both are machine values: the boot
+// generation a client compares, and the error info it acts on. No message copy
+// is read (Copy Is Not a Test Oracle).
+func requireSavedHistoryFailureStamp(t *testing.T, err error, wantGeneration string) {
+	t.Helper()
+	wire, ok := errors.AsType[appwire.WireError](err)
+	if !ok {
+		t.Fatalf("saved-history failure = %T %v, want a WireError", err, err)
+	}
+	data, ok := wire.Data.(appwire.HistoryReadErrorData)
+	if !ok {
+		t.Fatalf("saved-history failure data = %#v, want HistoryReadErrorData", wire.Data)
+	}
+	if data.BootGeneration != wantGeneration {
+		t.Fatalf("saved-history failure boot generation = %q, want %q", data.BootGeneration, wantGeneration)
+	}
+	if data.Epoch == nil || *data.Epoch != 0 {
+		t.Fatalf("saved-history failure epoch = %v, want 0", data.Epoch)
+	}
+	// The diagnostic survives the stamp: the failure still names what went
+	// wrong with the transcript, not merely who did not serve it.
+	if data.EvenerErrorInfo != appwire.ErrorTranscriptHistoryFailed {
+		t.Fatalf("saved-history failure info = %q, want %q", data.EvenerErrorInfo, appwire.ErrorTranscriptHistoryFailed)
+	}
+}
+
+// dispatchThreadReadOver dispatches one thread/read through the hub's real
+// router over the given sources.
+func dispatchThreadReadOver(t *testing.T, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadReadParams) error {
+	t.Helper()
+	server := newHubAppServer(cfg, sources)
+	_, err := server.Router().Dispatch(context.Background(), appwire.Request{
+		ID: appwire.NewIntID(1), Method: appwire.MethodThreadRead, Params: mustPagingJSON(t, params),
+	})
+	return err
+}
+
+// TestPastFallbackAfterLiveFailureStampsOwnerUnknown pins the read issue #6815
+// names. A browser refresh of a thread it already holds sends subscribe:false,
+// so the hub tries saved history after a live read fails even though the daemon
+// owning the thread may still be running. When that saved read fails too, the
+// failure must say its owner is unknown: the live read failed for a reason that
+// establishes nothing about who serves the thread.
+func TestPastFallbackAfterLiveFailureStampsOwnerUnknown(t *testing.T) {
+	cfg, entry, path := seedIndexedPastSession(t,
+		execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.User("question"))),
+	)
+	// The saved read fails on its own: the transcript cannot be decoded. That
+	// keeps the failure the stamp rides on, and the typed diagnostic with it.
+	if err := os.WriteFile(path, []byte(`{"kind":"header","format_version":1}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sources := appsource.NewRegistry()
+	// The ref's source is registered and bound to the thread, so a daemon may
+	// be serving it. Its read fails for a reason that names no absence.
+	sources.Add(&pastFallbackRelaySource{readErr: appwire.Unavailable("relay route publication failed")})
+
+	err := dispatchThreadReadOver(t, cfg, sources, appwire.ThreadReadParams{
+		Ref: "local:" + entry.Meta.ID, IncludeTurns: true, ItemLimit: 40, RequestGeneration: 1,
+	})
+	requireSavedHistoryFailureStamp(t, err, appwire.UnknownOwnerBootGeneration)
+}
+
+// TestPastFallbackWithoutServingSourceStampsDaemonless is the other direction,
+// over the same failing saved read: when the ref names a source this hub does
+// not serve, no daemon here can be serving the thread, so the failure keeps
+// claiming the real absence. Fixing the unknown-owner direction must not
+// weaken this one.
+func TestPastFallbackWithoutServingSourceStampsDaemonless(t *testing.T) {
+	cfg, entry, path := seedIndexedPastSession(t,
+		execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.User("question"))),
+	)
+	if err := os.WriteFile(path, []byte(`{"kind":"header","format_version":1}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// Nothing serves the ref. A hub with no local daemon is exactly this shape
+	// in production (newHubSourceRegistry registers no local source without a
+	// roster), and its saved reads already answer as daemonless when they
+	// succeed.
+	err := dispatchThreadReadOver(t, cfg, appsource.NewRegistry(), appwire.ThreadReadParams{
+		Ref: "local:" + entry.Meta.ID, IncludeTurns: true, ItemLimit: 40, RequestGeneration: 1,
+	})
+	requireSavedHistoryFailureStamp(t, err, appwire.DaemonlessBootGeneration)
 }
