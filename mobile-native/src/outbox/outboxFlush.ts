@@ -34,6 +34,10 @@ export interface FlushRuntime {
 	};
 	start(): Promise<void>;
 	targetClient(hubId: string, targetRef: string): AppwireClientLike | undefined;
+	/** Whether the target still holds a message worth resuming a session for.
+	 * The runtime's one implementation, so a screen and the flush cannot ask it
+	 * in different keys. */
+	messageWaiting(hubId: string, targetRef: string): Promise<boolean>;
 	/** True when the target's registration is held by a client that is gone. */
 	hasStaleRegistration?(hubId: string, targetRef: string): boolean;
 	registerTarget(hubId: string, targetRef: string, client: AppwireClientLike | null): () => void;
@@ -300,6 +304,17 @@ export class OutboxFlush {
 		timer.unref?.();
 	}
 
+	/** Looks again shortly for a target a screen just settled but could not
+	 * finish: storage answered "retry", or the settle was superseded by a newer
+	 * read. The screen holds its target, so the storage watcher deliberately
+	 * skips it, and nothing else would come back - the parked message would
+	 * wait for the reader's next send, their next visit, or a reconnect. The
+	 * next look re-asks the durable row, so a message withdrawn in the meantime
+	 * still declines. */
+	retryTargetAfterScreenSettle(): void {
+		this.retryTargetSoon();
+	}
+
 	/** A target the flush holds may be done; a record for one nobody holds is
 	 * work no screen will send. A claim whose settle is out only notes the
 	 * change: that settle's end decides. A target a session screen holds stays
@@ -383,10 +398,13 @@ export class OutboxFlush {
 	 * never-attempted row is the only certain evidence of a message still owed,
 	 * and so the only thing that authorizes a resume. */
 	private async messageWaiting(runtime: FlushRuntime, key: string): Promise<boolean> {
-		const records = await runtime.storage.listOutbox(key);
-		return records.some(
-			(record) => record.state === "submitting" && record.method !== "turn/interrupt" && record.attempted === false,
-		);
+		const target = parseTargetKey(key);
+		if (target === null) return false;
+		// Asked of the runtime, not answered here: the rows are stored under the
+		// composite key and the helper that reads them builds it from the hub and
+		// ref. A second copy of this question is how a caller ends up asking in a
+		// key the writer never used.
+		return runtime.messageWaiting(target.hubId, target.ref);
 	}
 
 	/** Lets go of this claim, and only this one: a late continuation of an

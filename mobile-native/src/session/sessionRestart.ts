@@ -14,17 +14,78 @@ function restartKey(hubId: string, ref: string): string {
 	return JSON.stringify([hubId, ref]);
 }
 
-/** Restarts whose stop the hub acknowledged and whose resume is still owed,
- * by target. The acknowledgement can arrive after the screen that asked for
- * the restart is gone - closing a conversation does not cancel a stop the hub
- * is already taking - so this outlives the hook that recorded it. Reopening
- * the session mounts a fresh hook, which finds the entry and sends the resume
- * on the first binding that can carry it. Presentation stays with the screen
- * that opened the restart: only whether the resume is still owed lives here.
+/** An owed resume for one session, and who currently holds it.
  *
- * A resume that went out and lost its answer is not owed: replaying it could
- * resume the session twice. Only a step that never reached the wire is. */
-const owedResumes = new Map<string, true>();
+ * `owed` means a stop the hub acknowledged is still waiting for its resume.
+ * `claimed` is the hook that is sending it right now: two hooks can be mounted
+ * for one session in a reopen race, and without the claim both would send and
+ * each would recycle the shared socket.
+ *
+ * The acknowledgement can arrive after the screen that asked for the restart
+ * is gone - closing a conversation does not cancel a stop the hub is already
+ * taking - so this outlives the hook that recorded it. It is also what a hook
+ * mounting mid-flight subscribes to: a reopen before the acknowledgement picks
+ * the obligation up when it lands, and a reopen during dispatch joins the
+ * attempt instead of starting a second one.
+ *
+ * A resume that went out and lost its answer is never owed again: replaying it
+ * could resume the session twice. Only a step that never reached the wire
+ * releases its claim for another try. */
+interface OwedResume {
+	owed: boolean;
+	claimed: symbol | null;
+}
+const owedResumes = new Map<string, OwedResume>();
+const owedListeners = new Set<() => void>();
+let owedRevision = 0;
+
+function recordFor(key: string): OwedResume | undefined {
+	return owedResumes.get(key);
+}
+
+/** Whether this session still has a resume waiting to be sent by anyone. */
+function isOwed(key: string | null): boolean {
+	return key !== null && recordFor(key)?.owed === true;
+}
+
+/** Records that this session's stop was acknowledged and its resume is owed. */
+function owe(key: string): void {
+	const existing = recordFor(key);
+	if (existing) existing.owed = true;
+	else owedResumes.set(key, { owed: true, claimed: null });
+	announceOwed();
+}
+
+/** Takes the owed resume for sending. One holder at a time: a second hook
+ * joining the same dispatch gets nothing and waits for the first's outcome. */
+function claim(key: string): symbol | null {
+	const record = recordFor(key);
+	if (!record?.owed || record.claimed !== null) return null;
+	const claimToken = Symbol(key);
+	record.claimed = claimToken;
+	return claimToken;
+}
+
+/** Gives the claim back with its outcome. `retry` leaves the resume owed for
+ * the next hook that can send; anything else settles the obligation. */
+function settle(key: string, claimToken: symbol, retry: boolean): void {
+	const record = recordFor(key);
+	if (!record || record.claimed !== claimToken) return;
+	record.claimed = null;
+	if (!retry) record.owed = false;
+	if (!record.owed && record.claimed === null) owedResumes.delete(key);
+	announceOwed();
+}
+
+function announceOwed(): void {
+	owedRevision += 1;
+	for (const listener of owedListeners) listener();
+}
+
+function subscribeOwed(listener: () => void): () => void {
+	owedListeners.add(listener);
+	return () => owedListeners.delete(listener);
+}
 
 /** How one step went: done, failed at the hub, or refused by the controls
  * before any request went out (another action pending, or the session not
@@ -71,10 +132,16 @@ export function useSessionRestart(
 	settled: unknown,
 ) {
 	const key = hubId === null || ref === null ? null : restartKey(hubId, ref);
-	// A fresh hook for a session that already owes a resume starts where the
-	// unmounted one left off, so reopening the conversation sends it rather
-	// than leaving a stopped daemon behind a restart nobody remembers.
-	const [phase, setPhase] = useState<Phase>(() => (key !== null && owedResumes.has(key) ? "resumeOwed" : "idle"));
+	// The record is subscribed, not sampled at mount: a hook that opens before
+	// the acknowledgement arrives must pick the obligation up when it lands,
+	// and one that opens during a dispatch must join that attempt rather than
+	// start a second resume on the same socket.
+	const [phase, setPhase] = useState<Phase>(() => (isOwed(key) ? "resumeOwed" : "idle"));
+	useEffect(() => {
+		const sync = () => setPhase((current) => (current === "idle" && isOwed(key) ? "resumeOwed" : current));
+		sync();
+		return subscribeOwed(sync);
+	}, [key]);
 	const [error, setError] = useState<string | null>(null);
 	const pending = useControlsState(controls)?.pending ?? null;
 	// What a refused resume was refused under, so it isn't retried until
@@ -90,7 +157,7 @@ export function useSessionRestart(
 			// Recorded before any effect can run and after unmount too: the
 			// acknowledgement is the hub's, and the resume it owes must not depend
 			// on this screen still being mounted to hear it.
-			if (key !== null) owedResumes.set(key, true);
+			if (key !== null) owe(key);
 			setPhase("resumeOwed");
 		} else {
 			setPhase("idle");
@@ -100,17 +167,32 @@ export function useSessionRestart(
 	useEffect(() => {
 		if (phase !== "resumeOwed" || !controls || pending !== null) return;
 		if (refused.current?.controls === controls && refused.current.settled === settled) return;
-		setPhase("resuming");
+		// The claim is what keeps a second mounted hook from sending the same
+		// resume; if another holds it, this one waits for that attempt's outcome.
+		if (key === null) {
+			setPhase("resuming");
+		} else {
+			const claimToken = claim(key);
+			if (claimToken === null) return;
+			setPhase("resuming");
+			void attemptControl(controls, "resume").then((outcome) => {
+				if (outcome === "refused") {
+					// Never sent: the step is still owed, for this hook or the next.
+					settle(key, claimToken, true);
+					refused.current = { controls, settled };
+					setPhase("resumeOwed");
+					return;
+				}
+				// Done, or the hub refused it: either way the step is settled and
+				// no binding is still owed a resume. A failed attempt went out, so
+				// it settles too - replaying it could resume the session twice.
+				settle(key, claimToken, false);
+				setPhase("idle");
+				if (outcome === "failed") setError(RESUME_FAILED);
+			});
+			return;
+		}
 		void attemptControl(controls, "resume").then((outcome) => {
-			if (outcome === "refused") {
-				refused.current = { controls, settled };
-				setPhase("resumeOwed");
-				return;
-			}
-			// Done, or the hub refused it: either way the step is settled and no
-			// binding is still owed a resume. Only a step that never left the
-			// phone stays owed.
-			if (key !== null) owedResumes.delete(key);
 			setPhase("idle");
 			if (outcome === "failed") setError(RESUME_FAILED);
 		});

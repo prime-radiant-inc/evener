@@ -181,6 +181,7 @@ import { useOlderHistory } from "./session/useOlderHistory";
 import { type FindState, newFind, matchLabel, matchPosition } from "./session/findInSession";
 import { currentLevel, displayForLevel, levelToast } from "./session/detailLevels";
 import { detailLevels } from "./session/nativeDetailLevels";
+import { outboxFlush } from "./outbox/nativeOutboxFlush";
 import { type OfflineTarget, offlineRequest } from "./outbox/offlineSend";
 import { composerPlaceholder, sendAction, sendLabel } from "./session/sendAction";
 import { NotesBar } from "./session/NotesBar";
@@ -2763,6 +2764,14 @@ function ConversationScreenView({
 					mayResumeFenced: () => runtime.messageWaiting(hubId, ref),
 				})
 				.catch(() => undefined);
+			// Two outcomes mean the settle could not finish, not that nothing is
+			// owed: storage answered "retry", or a newer read superseded this one.
+			// This screen holds the target, so the storage watcher leaves it to the
+			// screen and nothing else comes back for it - the parked message would
+			// wait for the reader's next send, their next visit, or a reconnect.
+			// The flush looks again shortly and re-asks the durable row, so a
+			// message withdrawn in the meantime still declines.
+			if (answered === "retry" || answered === "stale") outboxFlush.retryTargetAfterScreenSettle();
 			if (answered === "reconciled" || answered === "open") {
 				// The store's conversation can still read resumeRequired: a
 				// reconnect's hydration may have landed before the resume's

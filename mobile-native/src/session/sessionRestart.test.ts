@@ -376,4 +376,111 @@ describe("one step of a restart", () => {
 		await settle();
 		expect(sent).toBe(1);
 	});
+
+	// The stop is the hub's, and the reader can close and reopen the conversation
+	// around it. Both sides of that race are one question: who sends the resume.
+	// A reopen before the acknowledgement must pick the obligation up when it
+	// lands, and a reopen during dispatch must join that attempt rather than
+	// start a second resume on the same socket.
+	it("sends the resume a reopen is still waiting for when the stop is acknowledged", async () => {
+		let sent = 0;
+		let acknowledge = () => {};
+		const stopping = new Promise<void>((resolve) => {
+			acknowledge = resolve;
+		});
+		const made = new SessionControls(
+			{
+				forceStop: async () => {
+					await stopping;
+				},
+				resume: async () => {
+					sent += 1;
+				},
+			} as unknown as ConstructorParameters<typeof SessionControls>[0],
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		const first = renderHook(() => useSessionRestart("hub-c", "ref-c", made, "open"));
+		await act(async () => {
+			void first.result.current.restart();
+			await settle();
+		});
+		// The reader closes the conversation while the stop is still out, and
+		// reopens it before the hub answers.
+		first.unmount();
+		const reopened = renderHook(() => useSessionRestart("hub-c", "ref-c", made, "open"));
+		await settle();
+		expect(sent).toBe(0);
+
+		// The acknowledgement arrives at a session whose screen is already open
+		// again. It must be picked up there, not lost with the view that asked.
+		await act(async () => {
+			acknowledge();
+		});
+		await settle();
+		expect(sent).toBe(1);
+		reopened.unmount();
+	});
+
+	it("joins an owed resume already in flight instead of sending a second", async () => {
+		let sent = 0;
+		let answer!: () => void;
+		const answered = new Promise<void>((resolve) => {
+			answer = resolve;
+		});
+		const made = new SessionControls(
+			{
+				forceStop: async () => {},
+				resume: async () => {
+					sent += 1;
+					await answered;
+				},
+			} as unknown as ConstructorParameters<typeof SessionControls>[0],
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		const first = renderHook(() => useSessionRestart("hub-d", "ref-d", made, "open"));
+		await act(async () => {
+			void first.result.current.restart();
+		});
+		await settle();
+		// The resume is out and unanswered when the reader closes and reopens,
+		// and the controls that sent it stop reporting it pending on the way out.
+		// Nothing about the in-flight attempt itself changes.
+		expect(sent).toBe(1);
+		first.unmount();
+		// A reopen builds fresh controls for the same session, which can send.
+		// Only the claim that the in-flight attempt holds stands between them and
+		// a second resume on the same socket.
+		const replacement = new SessionControls(
+			{
+				forceStop: async () => {},
+				resume: async () => {
+					sent += 1;
+				},
+			} as unknown as ConstructorParameters<typeof SessionControls>[0],
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		const reopened = renderHook(() => useSessionRestart("hub-d", "ref-d", replacement, "open"));
+		await settle();
+		// The second hook joins the attempt rather than recycling the socket
+		// again for a resume that is already on its way.
+		expect(sent).toBe(1);
+		await act(async () => {
+			answer();
+		});
+		await settle();
+		expect(sent).toBe(1);
+		reopened.unmount();
+	});
 });

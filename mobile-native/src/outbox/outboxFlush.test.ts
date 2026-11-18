@@ -843,3 +843,61 @@ it("resumes a fenced session for a send that was never attempted", async () => {
 	flush.dispose();
 	await outbox.stop();
 });
+
+// A screen holds its session's target, so the storage watcher deliberately
+// leaves that target to the screen rather than settling it on every change.
+// That makes the screen the only one who can ask for another look - and its
+// settle can end without finishing: storage answers "retry" when it cannot
+// read, and "stale" when a newer read superseded this one. Treating either as
+// "nothing is owed" leaves the parked message waiting for the reader's next
+// send, their next visit, or a reconnect, on a connection that is healthy the
+// whole time. The screen hands the target back to this flush instead.
+it("looks again for a screen-held target whose settle could not read storage", async () => {
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	try {
+		const outbox = runtime();
+		const client = new FakeClient("ready");
+		// The session's own read says using it again requires a resume, which is
+		// what makes the resume decision get asked at all.
+		client.on("thread/read", () => fencedRead("ref-1"));
+		client.on("turn/start", applied);
+		const flush = new OutboxFlush(() => outbox);
+		// Registered by the screen before the message exists, so the bind-time
+		// look has nothing to send and cannot be what produces the resume this
+		// test is about.
+		const screen = outbox.registerTarget("hub-1", "ref-1", client);
+		flush.bind("hub-1", client);
+		await flush.flush();
+		expect(methods(client)).not.toContain("thread/resume");
+
+		await outbox.submit(message());
+		// The screen holds this target, so the storage watcher leaves it to the
+		// screen: only the settle below happens.
+		outbox.beginAuthoritativeRead("hub-1", "ref-1", client);
+		const answer = await outbox.settleTarget("hub-1", "ref-1", client, {
+			// Storage is refused for the resume decision while the connection is fine.
+			mayResumeFenced: async () => {
+				throw new Error("the database is busy");
+			},
+		});
+		expect(answer).toBe("retry");
+		expect(methods(client)).not.toContain("thread/resume");
+
+		// Nothing else looks: the screen holds the target, so the watcher skips
+		// it, and a message parked behind a transient read failure would wait for
+		// the reader's next send, their next visit, or a reconnect.
+		await vi.advanceTimersByTimeAsync(600);
+		expect(methods(client)).not.toContain("thread/resume");
+
+		// Handing the target back is what schedules the next look, and it re-asks
+		// the durable row rather than assuming the message is still there.
+		flush.retryTargetAfterScreenSettle();
+		await vi.advanceTimersByTimeAsync(600);
+		await vi.waitFor(() => expect(methods(client)).toContain("thread/resume"));
+		screen();
+		flush.dispose();
+		await outbox.stop();
+	} finally {
+		vi.useRealTimers();
+	}
+});
