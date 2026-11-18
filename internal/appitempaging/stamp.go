@@ -20,9 +20,14 @@ func OmitResolvedAskCalls(item appwire.ThreadItem, limit int) (appwire.ThreadIte
 	if observation == nil || len(observation.ResolvedAskCalls) == 0 {
 		return item, false
 	}
-	encoded, err := json.Marshal(observation.ResolvedAskCalls)
-	if err != nil || len(encoded) <= limit {
-		return item, false
+	// A zero limit means "omit it", which is what the recovery paths want: they
+	// run on a page that is already over budget, so measuring the list before
+	// discarding it would spend the encoding cost at the worst moment.
+	if limit > 0 {
+		encoded, err := json.Marshal(observation.ResolvedAskCalls)
+		if err != nil || len(encoded) <= limit {
+			return item, false
+		}
 	}
 	bounded := *observation
 	bounded.ResolvedAskCalls = nil

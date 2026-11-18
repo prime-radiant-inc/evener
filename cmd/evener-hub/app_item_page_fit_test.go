@@ -651,11 +651,14 @@ func TestFitManagerReadUnderCapDropsStampAtThePageCap(t *testing.T) {
 		},
 		Version: 1,
 	}
+	// A Manager transcript read arrives as Turns, not Read: Invoke rejects
+	// Read.IncludeTurns (appwire/session_tools.go), so a Read-shaped fixture
+	// would exercise a response the RPC cannot produce.
 	cursor := "next-page"
 	response := appwire.SessionOperationResponse{
-		Read: &appwire.ThreadHistoryReadResponse{
-			Thread:      appwire.Thread{ID: "thread", Turns: []appwire.Turn{{ID: answerTurn, Items: []appwire.ThreadItem{reply}}}},
-			OlderCursor: cursor,
+		Turns: &appwire.ThreadHistoryTurnsListResponse{
+			Data:       []appwire.Turn{{ID: answerTurn, Items: []appwire.ThreadItem{reply}}},
+			NextCursor: cursor,
 		},
 	}
 	before, err := json.Marshal(response)
@@ -679,13 +682,13 @@ func TestFitManagerReadUnderCapDropsStampAtThePageCap(t *testing.T) {
 	if err := managerReadWithinCap(fit); err != nil {
 		t.Fatalf("fitted response refused by the cap check: %v", err)
 	}
-	if fit.Read == nil {
-		t.Fatal("fallback dropped the read")
+	if fit.Turns == nil {
+		t.Fatal("fallback dropped the turns page")
 	}
-	if fit.Read.OlderCursor != cursor {
-		t.Fatalf("fallback dropped the paging cursor: %q", fit.Read.OlderCursor)
+	if fit.Turns.NextCursor != cursor {
+		t.Fatalf("fallback dropped the paging cursor: %q", fit.Turns.NextCursor)
 	}
-	items := flattenTestItems(fit.Read.Thread.Turns)
+	items := flattenTestItems(fit.Turns.Data)
 	if len(items) != 1 {
 		t.Fatalf("served item count = %d, want 1", len(items))
 	}
@@ -706,7 +709,7 @@ func TestFitManagerReadUnderCapDropsStampAtThePageCap(t *testing.T) {
 	}
 	// The input response keeps its full stamp: fitting a read must not rewrite
 	// the projection every other read serves.
-	if got := len(response.Read.Thread.Turns[0].Items[0].Observation.ResolvedAskCalls); got != len(calls) {
+	if got := len(response.Turns.Data[0].Items[0].Observation.ResolvedAskCalls); got != len(calls) {
 		t.Fatalf("input response stamp = %d calls, want %d", got, len(calls))
 	}
 }

@@ -614,11 +614,11 @@ func managerReadFitUnderCap(response appwire.SessionOperationResponse) (appwire.
 	// Mutate copies rather than rebuilding the structs field by field: a
 	// hand-copied envelope silently drops every field a later reader adds.
 	trimmed := response
-	if trimmed.Read != nil {
-		read := *trimmed.Read
-		read.Thread = stripResolvedAskCallsFromThread(read.Thread)
-		trimmed.Read = &read
-	}
+	// Only the turns route can carry transcript items on a Manager read:
+	// SessionOperationRequest.Validate refuses Read.IncludeTurns
+	// (appwire/session_tools.go), so a status read has no items to strip and a
+	// transcript read that fits the cap arrives as Turns. Stripping a Read
+	// would be trimming a shape Invoke cannot produce.
 	if trimmed.Turns != nil {
 		turns := *trimmed.Turns
 		turns.Data = stripResolvedAskCallsFromThread(appwire.Thread{Turns: turns.Data}).Turns
