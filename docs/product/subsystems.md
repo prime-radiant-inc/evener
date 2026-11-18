@@ -292,18 +292,27 @@ wait primitive. See [job control](../job-control.md).
 
 S12 owns the durable side of a user's stop on a delegate's pending report: the
 stop appends the report as a reopened row and quietens it, and the delegate
-journal records that quiet's generation. A row stays quiet across an idle
-reclaim until a settled wake journals a release at or past the generation its
-own stop settled — that newer event, not the generation the delegate happens to
-be on, is what makes it eligible again, and presentation is where the decision
-is taken because a wake journals its release before it publishes anything. A
-same-process idle reclaim is not a restart: the controller keeps its wake state
-and the in-memory release floor a wake admitted during an open run recorded, so
-a restored runtime's first presentation read can end a quiet with no durable
-release at all. A daemon restart is the deliberate exception: bootstrap puts
-every pending row into the wake set by ID, so a restart can make a row eligible
-with the release floor still at zero, while an idle reclaim rebuilds the quiet
-from the settled stop. See [the delegate runtime contract](
+journal records that quiet's generation. A quiet ends only when a newer event
+reaches at or past that generation, and the release floor carries which
+generation the newest reaching event had. The floor has two sources and they
+are one number: the delegate journal's durable release record, which is what a
+restart can read, and — while the controller process lives — the generation
+each admitted wake sampled at the moment it committed. The second exists
+because a wake admitted during an open run is refused a journal record: the
+journal will not name a generation that has not settled, so the controller
+keeps that sample in memory and raises the floor with it.
+
+Which source applies is decided by whether the controller survived, not by
+whether the row was reclaimed. A same-process idle reclaim keeps the
+controller, its wake state and that in-memory sample, so a restored runtime's
+first presentation read can end a quiet with no durable release at all. A
+daemon restart rebuilds the controller and loses the sample; bootstrap instead
+puts every pending row into the wake set by ID, which is what makes a row
+eligible after a restart with the journal's floor still at zero. Presentation
+is where the decision is taken in both cases, because a wake journals its
+release — where it can — before it publishes anything, so a release that
+matters has already landed by the time a row is selected or projected. See
+[the delegate runtime contract](
 ../subagent-runtime-contracts.md#read-a-delegate-result-correctly).
 
 S06 requires local `hub_state_root` storage with best-effort OS classification,

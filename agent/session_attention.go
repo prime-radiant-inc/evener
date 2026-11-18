@@ -1131,6 +1131,70 @@ func (s *Session) delegateAttentionHeldFromAutomaticDriveLocked(attentionID stri
 	return held
 }
 
+// delegateAttentionRowIsPresentableLocked answers the one question every
+// presentation path asks about a pending row: may a request carry it now?
+//
+// There are exactly two reasons a pending row is withheld, and they must not
+// be confused with each other:
+//
+//   - Nothing has admitted it yet. A stable watch frame is written to a cold
+//     receiver's transcript by the watch rail, which holds no controller, and
+//     a reopened row is minted by a stop; neither is an arm. A row of this
+//     kind presents when its own wake passes the gate — an admission notes it,
+//     or a release makes it eligible — and until then it must stay out of both
+//     selection and the request, because a generation that presented and
+//     consumed it would spend the row on a request that never showed it.
+//     own generation is not yet superseded by a release, so the quiet stands
+//     and the row waits for a newer event. That is the quiet #5713 protects.
+//
+// A row is presentable when neither applies: it is an accepted trigger, an
+// admitted wake or rider, a released row, or an ordinary pending row whose
+// identity no stop and no admission gate owns. Callers must hold attentionMu,
+// because the answer is made of this session's holds and the controller's
+// admission state, and a reader that took them separately would answer about a
+// moment the request is not showing.
+func (s *Session) delegateAttentionRowIsPresentableLocked(attentionID string) bool {
+	if attentionID == "" {
+		return true
+	}
+	if s.delegateAttentionHeldFromAutomaticDriveLocked(attentionID) {
+		return false
+	}
+	return !s.delegateAttentionAwaitingAdmissionLocked(attentionID)
+}
+
+// delegateAttentionAwaitingAdmissionLocked reports whether attentionID is an
+// original stable watch frame whose wake no admission has reached.
+//
+// The answer is derived from the controller's own admission state rather than
+// recorded on the row: the restore that finds the frame and the arm that admits
+// it both run against the controller, so a session-side note would be a second
+// source of truth that a restart, a reclaim, or an arm landing in between could
+// leave stale. A reopened row is not an original frame, so this never covers a
+// stop's own quiet — that is the hold's job. Callers must hold attentionMu.
+func (s *Session) delegateAttentionAwaitingAdmissionLocked(attentionID string) bool {
+	if !isOriginalStableWatchFrame(attentionID) {
+		return false
+	}
+	controller := s.delegateController
+	if controller == nil || s.owningDelegateID == "" {
+		return false
+	}
+	admitted := controller.admittedAttentionRows(s.owningDelegateID)
+	if _, known := admitted[attentionID]; known {
+		return false
+	}
+	return true
+}
+
+// delegateAttentionAwaitingAdmissionStamp is the value the projection's
+// withheld set carries for a row withheld because nothing has admitted it yet.
+// It is not a generation and is never compared as one: the set answers
+// membership only, and the projection's filter drops by presence. A stop's hold
+// carries its own settled generation instead, which the release path does
+// compare.
+const delegateAttentionAwaitingAdmissionStamp = ^uint64(0)
+
 // delegateAttentionHoldStands reports whether a hold stamped with held still
 // outranks the newest wake admitted at admitted. A hold stands exactly while
 // it is strictly newer than every admitted wake: at equal generations the wake
@@ -1237,6 +1301,26 @@ func (s *Session) retainAdmittedPendingTurnsLocked() {
 			_ = s.retainDelegateAttentionTurn(turn)
 		}
 	}
+}
+
+// clearDelegateAttentionHold ends a hold whose quiet the derivation's own
+// evidence says a newer event already superseded, performing the release path's
+// history-tail move first so the report is not left at the position the quiet
+// put it in. Ending a quiet is one event whichever path notices it, and the
+// move is what makes the next request end on the report rather than on a later
+// assistant turn. The row's own arm presents it from there.
+func (s *Session) clearDelegateAttentionHold(attentionID string) {
+	if s == nil || attentionID == "" {
+		return
+	}
+	s.attentionMu.Lock()
+	if _, held := s.attentionAutomaticDriveHolds[attentionID]; !held {
+		s.attentionMu.Unlock()
+		return
+	}
+	s.moveHeldDelegateAttentionTurnsToTail([]string{attentionID})
+	delete(s.attentionAutomaticDriveHolds, attentionID)
+	s.attentionMu.Unlock()
 }
 
 // holdDelegateAttentionFromAutomaticDriveAt quiets a reopened row a user's
@@ -1441,7 +1525,13 @@ func (s *Session) admitPendingWatchFramesLocked(fold delegateAttentionFold) ([]s
 	var deferred []string
 	var plans []delegateUpdatePlan
 	for _, attentionID := range fold.pendingIDs() {
-		if !isStableWatchAttentionID(attentionID) {
+		// Only an original frame is a row nothing has admitted yet. A reopen
+		// minted from a frame is a stop's own row: its eligibility is decided
+		// by its own generation against the release floor, never by admitting a
+		// wake for it. Treating a reopen as a fresh frame would journal a
+		// release for the very stop that reopened it, and the stopped work
+		// would restart with no new event.
+		if !isOriginalStableWatchFrame(attentionID) {
 			continue
 		}
 		if _, known := admitted[attentionID]; known {
@@ -1610,10 +1700,22 @@ func (s *Session) deriveHeldDelegateAttentionFromOutcome() {
 	// but that question is asked only of rows whose quiet still stands, never of
 	// rows a release freed, because a restart leaves both the freed report and
 	// the fresh frame noted and the report still has to move.
-	var releasedRows, heldRows []string
+	var releasedRows, heldRows, rearmedRows []string
 	for _, row := range quieted {
 		if delegateAttentionHoldStands(row.generation, released) {
 			if _, wakeNoted := noted[row.attentionID]; wakeNoted {
+				// A noted wake is a new event's arm, and that arm presents the
+				// row on its own — so this row needs no hold. A hold found here
+				// was installed by an earlier pass of this same derivation, made
+				// before the controller had noted the wake: a daemon restart
+				// rebuilds ancestors for an owed start and derives their quiet
+				// before bootstrap reconciles the transcript's wakes. The pass
+				// that can see the wake must therefore also undo that hold, or
+				// the ancestor keeps suppressing the very report the restart
+				// re-armed. The evidence is read here, not predicted, so an
+				// ordinary same-process reclaim — where the noted set is the
+				// live one — decides exactly as it did before.
+				rearmedRows = append(rearmedRows, row.attentionID)
 				continue
 			}
 			heldRows = append(heldRows, row.attentionID)
@@ -1630,6 +1732,9 @@ func (s *Session) deriveHeldDelegateAttentionFromOutcome() {
 	// hold is released, as the resident arm delivers its own.
 	for _, plan := range admissionPlans {
 		controller.emitDelegateUpdate(plan)
+	}
+	for _, attentionID := range rearmedRows {
+		s.clearDelegateAttentionHold(attentionID)
 	}
 	// The stamp is each row's own generation — the one its stop settled and its
 	// reopen claims — so a wake admitted at a later generation ends that hold and
@@ -1663,12 +1768,9 @@ func (s *Session) automaticDelegateAttentionIDs() ([]string, error) {
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
 	s.reconcileAutomaticDriveHoldsLocked()
-	if len(s.attentionAutomaticDriveHolds) == 0 {
-		return pending, nil
-	}
 	kept := make([]string, 0, len(pending))
 	for _, id := range pending {
-		if s.delegateAttentionHeldFromAutomaticDriveLocked(id) {
+		if !s.delegateAttentionRowIsPresentableLocked(id) {
 			continue
 		}
 		kept = append(kept, id)
@@ -1860,8 +1962,20 @@ func (s *Session) acceptDelegateAttention(reservation *delegateStartReservation)
 			captured = append(captured, pendingID)
 			continue
 		}
-		if _, generation, ok := cutDelegateAttentionReopenSegment(pendingID); ok && released >= generation {
-			captured = append(captured, pendingID)
+		// A reopen is eligible on its own evidence, and that evidence is not
+		// only the release floor. A row reopened by a failed start claims a
+		// generation that never began — no RunStarted was ever journaled for it
+		// — so no stop settled it and none quieted it. Waiting for a release
+		// that no event owes would drop the row from the successor's owed set,
+		// and the commit would then clear NeedsAttention and the wake set while
+		// the report is still pending, leaving it for unrelated work to wake.
+		// A row reopened by a stop's own settle does claim a generation that
+		// began, and that row still waits for the release that supersedes the
+		// stop: the same floor, asked of the same generation.
+		if _, generation, ok := cutDelegateAttentionReopenSegment(pendingID); ok {
+			if released >= generation || !s.delegateAttentionGenerationStartedLocked(reservation.delegateID, generation) {
+				captured = append(captured, pendingID)
+			}
 		}
 	}
 	if err := s.delegateController.prepareAttentionStart(reservation, s, captured); err != nil {
@@ -1876,6 +1990,29 @@ func (s *Session) acceptDelegateAttention(reservation *delegateStartReservation)
 		return err
 	}
 	return nil
+}
+
+// delegateAttentionGenerationStartedLocked reports whether the reservation's
+// delegate ever journaled a RunStarted for generation. A reopen whose claimed
+// generation never began was minted by a failed start, not by a stop's settle,
+// so nothing quieted it and no release is owed for it — its eligibility is its
+// own. A generation that did begin and was stopped is a different row, and that
+// one waits for a release.
+func (s *Session) delegateAttentionGenerationStartedLocked(delegateID string, generation uint64) bool {
+	if delegateID == "" {
+		return false
+	}
+	if generation == 0 {
+		return false
+	}
+	controller := s.delegateController
+	if controller == nil {
+		return false
+	}
+	controller.mu.Lock()
+	defer controller.mu.Unlock()
+	_, started := controller.runStarts[delegateLease{delegateID: delegateID, generation: generation}]
+	return started
 }
 
 // retainCapturedDelegateAttentionTurns puts every captured row's turn into the

@@ -531,11 +531,29 @@ func stableWatchAttentionID(state jobstore.WatchSendState) string {
 }
 
 // isStableWatchAttentionID reports whether attentionID names a stable watch
-// frame. Such a row is appended to a cold receiver's transcript by the watch
-// rail before its wake is admitted, so admission is what has to catch up with
-// it before the row can present.
+// frame, either an original or a row reopened from one.
 func isStableWatchAttentionID(attentionID string) bool {
 	return strings.HasPrefix(attentionID, stableWatchAttentionPrefix)
+}
+
+// isOriginalStableWatchFrame reports whether attentionID names a stable watch
+// frame the rail wrote, rather than a row a failed presentation reopened from
+// one.
+//
+// The two are different facts about the same prefix. An original frame is
+// written to a cold receiver's transcript by the watch rail, which holds no
+// controller, so it is durable before any arm of its own runs and its wake
+// must be admitted before the row presents. A reopen is minted by a stop or a
+// failed start and carries that event's own generation: its eligibility is
+// decided by the release floor against its generation, exactly like any other
+// reopened row, and it must never be admitted as a fresh frame. Admitting one
+// would journal a release for the very stop that reopened it.
+func isOriginalStableWatchFrame(attentionID string) bool {
+	if !isStableWatchAttentionID(attentionID) {
+		return false
+	}
+	_, _, reopened := cutDelegateAttentionReopenSegment(attentionID)
+	return !reopened
 }
 
 // renderWatchSendFrame is the frame text cfg's pending state delivers to a

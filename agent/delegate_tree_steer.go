@@ -487,6 +487,23 @@ func (s *Session) delegateAttentionModelProjection() (delegateModelProjection, m
 		inFlightFrom: s.turnHistoryBaseline,
 	}
 	s.mu.Unlock()
+	// A row withheld because nothing has admitted it is filtered here too, from
+	// the same predicate selection uses and against the same captured turns. A
+	// deferred frame the restore already loaded into history would otherwise
+	// ride this request while selection refused to claim it — the request would
+	// carry a frame whose wake never passed its gate, and the stopped report
+	// that gate releases would be missing from the same request.
+	for _, turn := range projection.turns {
+		if turn.AttentionID == "" {
+			continue
+		}
+		if _, held := holds[turn.AttentionID]; held {
+			continue
+		}
+		if s.delegateAttentionAwaitingAdmissionLocked(turn.AttentionID) {
+			holds[turn.AttentionID] = delegateAttentionAwaitingAdmissionStamp
+		}
+	}
 	return projection, holds
 }
 
