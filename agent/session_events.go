@@ -310,7 +310,7 @@ func (s *Session) emitWithProvenanceContext(ctx context.Context, data events.Eve
 		s.jobManager.onSessionEventContext(ctx, ev)
 	}
 	if events.KindOf(data) == events.EventWarning {
-		s.fireNotificationHookBounded(ctx, warningHookMessage(data), warningHookTitle(data))
+		s.fireNotificationHookBounded(ctx, ctx, warningHookMessage(data), warningHookTitle(data))
 	}
 }
 
@@ -416,7 +416,7 @@ func (s *Session) emitHookCompletedBounded(bound context.Context, data events.Ho
 // recordHookCompletion writes the completion turn shared by both publication
 // paths above.
 func (s *Session) recordHookCompletion(data events.HookEndData) {
-	s.recordHookCompletionTurn(func(w events.WarningData) { s.emit(w) }, data)
+	s.recordHookCompletionTurn(noBound, func(w events.WarningData) { s.emit(w) }, data)
 }
 
 // recordHookCompletionOn writes the completion turn, reporting a recording
@@ -430,14 +430,14 @@ func (s *Session) recordHookCompletion(data events.HookEndData) {
 // the failure without dispatching a hook, so the failure still reaches every
 // reader and cannot re-enter the dispatcher that caused it.
 func (s *Session) recordHookCompletionOn(bound context.Context, data events.HookEndData) {
-	s.recordHookCompletionTurn(func(w events.WarningData) {
+	s.recordHookCompletionTurn(bound, func(w events.WarningData) {
 		s.emitDiagnosticWarningContext(bound, w)
 	}, data)
 }
 
 // recordHookCompletionTurn builds the completion turn and records it, reporting
 // a write failure through warn. Both publication paths differ only in that sink.
-func (s *Session) recordHookCompletionTurn(warn func(events.WarningData), data events.HookEndData) {
+func (s *Session) recordHookCompletionTurn(bound context.Context, warn func(events.WarningData), data events.HookEndData) {
 	info := schema.HookInfo{
 		Event:      data.Event,
 		HookType:   data.HookType,
@@ -454,7 +454,7 @@ func (s *Session) recordHookCompletionTurn(warn func(events.WarningData), data e
 	// SessionStart hooks run inside initSessionState, before the transcript
 	// writer exists (kata d4es). recordTurn holds the turn until it does; no
 	// buffering is needed here.
-	s.recordTurnOn(warn, turn, turn)
+	s.recordTurnOn(bound, warn, turn, turn)
 }
 
 // emitDiagnosticWarning emits a hook-configuration/matcher diagnostic so the
@@ -538,21 +538,30 @@ func suppliedCallerBound(bound context.Context) bool {
 // and knows what to do with the loss, which today is the delegate close drain.
 type publicationBoundKey struct{}
 
-// withPublicationBound marks ctx as a dispatch bound the publisher must honour.
-func withPublicationBound(ctx context.Context) context.Context {
-	return context.WithValue(ctx, publicationBoundKey{}, true)
+// withPublicationBound marks ctx as a dispatch whose lifecycle and output
+// publications are made on publication. The two are the same context for an
+// ordinary bounded dispatch. They differ for a close-time hook that must still
+// RUN after its publication cutoff expired: the hook's command gets the live
+// cascade, so it is not declined over a deadline the failure it reports may
+// itself have caused, while the events it publishes -- HOOK_START, HOOK_END, its
+// output -- stay on the cutoff, so an unresponsive consumer releases them
+// without holding the close's remaining budget.
+func withPublicationBound(ctx, publication context.Context) context.Context {
+	return context.WithValue(ctx, publicationBoundKey{}, publication)
 }
 
 // publicationBound reports the bound a lifecycle publication must use, and
-// whether the dispatcher supplied one at all.
+// whether the dispatcher supplied one at all. A mark carrying no usable context
+// is "no bound", so an unmarked dispatch keeps the ordinary path.
 func publicationBound(ctx context.Context) (context.Context, bool) {
 	if !suppliedCallerBound(ctx) {
 		return nil, false
 	}
-	if bounded, _ := ctx.Value(publicationBoundKey{}).(bool); !bounded {
+	bound, _ := ctx.Value(publicationBoundKey{}).(context.Context)
+	if !suppliedCallerBound(bound) {
 		return nil, false
 	}
-	return ctx, true
+	return bound, true
 }
 
 // installRunnerEventCallback wires the runner's lifecycle events onto the
@@ -616,6 +625,13 @@ func (s *Session) publishHookLifecycle(ctx context.Context, kind events.EventKin
 // ObserveCloseDrainPublication and for the same reason -- the route chosen is
 // exact, while how long a send took is not.
 var ObserveCloseDrainPublicationRoute func(bounded bool)
+
+// ObserveCloseDrainRetryBudget is the context-independent observation seam for
+// the post-disposal warning retry: it reports whether the retry was handed a live
+// budget. Nil in production, like the observers above and for the same reason --
+// whether a send landed depends on the buffer, while the budget the retry received
+// is exact.
+var ObserveCloseDrainRetryBudget func(live bool)
 
 // sendEventContext is the bounded variant used by shutdown's terminal
 // boundary. An authoritative consumer normally provides backpressure so the
@@ -735,7 +751,6 @@ func (s *Session) sendEventContext(ctx context.Context, data events.EventData, p
 				case <-callerDone:
 				case <-budgetDone:
 				case <-lifetimeDone:
-				case <-closeSignal:
 					// The lifetime ended under this send. If a close published
 					// its budget in the meantime, that budget owns the event
 					// exactly as it would for a send that arrived after the
@@ -758,6 +773,7 @@ func (s *Session) sendEventContext(ctx context.Context, data events.EventData, p
 						case <-closeSignal:
 						}
 					}
+				case <-closeSignal:
 				}
 			}
 		}
@@ -879,7 +895,9 @@ func (s *Session) emitCloseDrainWarnings(ctx context.Context, hookCtx context.Co
 		// stated above. On the hookOnAttempt path the caller has already given the
 		// hook the live cascade, so a decline there means the cascade itself is
 		// over -- there is no budget left to run anything on.
-		s.fireNotificationHookBounded(dispatchCtx, message, title)
+		// The PUBLICATION is always ctx: the hook's lifecycle and output sends stay
+		// on the cascade's cutoff even when its command runs on the live cascade.
+		s.fireNotificationHookBounded(dispatchCtx, ctx, message, title)
 	}
 }
 
@@ -950,6 +968,13 @@ func (s *Session) retryCloseDrainWarnings(ctx context.Context) {
 	if held == nil || len(*held) == 0 {
 		return
 	}
+	// The budget the retry actually received, recorded at the entry rather than
+	// inferred from whether a warning landed: a send can succeed on a buffer with
+	// room no matter what context it was made on, so the context's own state is the
+	// only exact answer to whether the retry had budget to spend.
+	if observe := ObserveCloseDrainRetryBudget; observe != nil {
+		observe(ctx.Err() == nil)
+	}
 	for _, warning := range *held {
 		_, ev, delivered := s.sendEventContext(ctx, warning, s.activeCausalProvenance())
 		if !delivered && s.forwardsEventsToParent() {
@@ -1015,17 +1040,29 @@ func (s *Session) fireNotificationHook(message, title string) {
 // there must not outlive it. It reports whether the dispatch STARTED, so the
 // caller can hold the dispatch for the close-time retry when the cutoff had
 // already expired.
-func (s *Session) fireNotificationHookBounded(ctx context.Context, message, title string) bool {
+//
+// dispatch and publication are the same context for every caller but one. They
+// differ for the incomplete-close hook, which must still RUN when the
+// publication cutoff the failure may itself have caused has expired: its command
+// gets the live cascade, while the events it publishes -- its lifecycle and its
+// output -- stay on publication. Marking only the dispatch context would put
+// those sends on the cascade, and the runner publishes HOOK_START BEFORE it
+// invokes the command, so a stalled consumer would park the drain on the
+// cascade's whole remaining budget and leave collectible lanes on disk.
+func (s *Session) fireNotificationHookBounded(dispatch, publication context.Context, message, title string) bool {
 	base := s.notificationHookBaseContext()
 	if base.Err() != nil {
 		return false
 	}
-	if ctx == nil {
-		ctx = base
+	if dispatch == nil {
+		dispatch = base
 	}
-	bounded, cancel := context.WithCancel(ctx)
+	if publication == nil {
+		publication = dispatch
+	}
+	bounded, cancel := context.WithCancel(dispatch)
 	defer cancel()
-	// The hook ends at whichever bound expires first: the caller's, the
+	// The hook ends at whichever bound expires first: the dispatcher's, the
 	// session's lifetime, or a published close budget.
 	stop := context.AfterFunc(base, cancel)
 	defer stop()
@@ -1033,11 +1070,11 @@ func (s *Session) fireNotificationHookBounded(ctx context.Context, message, titl
 		return false
 	}
 	// Marked so the runner's lifecycle publisher, and the output publication
-	// inside runNotificationHook, honour this bound instead of the session's
+	// inside runNotificationHook, honour publication instead of the session's
 	// delivery path: the drain is waiting on this hook, so an unresponsive
-	// consumer must release it at the stop deadline. Unmarked dispatches -- every
-	// ordinary hook -- are unaffected.
-	s.runNotificationHook(withPublicationBound(bounded), message, title)
+	// consumer must release it at the cutoff rather than at the cascade's end.
+	// Unmarked dispatches -- every ordinary hook -- are unaffected.
+	s.runNotificationHook(withPublicationBound(bounded, publication), message, title)
 	return true
 }
 

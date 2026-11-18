@@ -32,7 +32,8 @@ func TestCloseDrainHookLifecycleTakesThePublicationBound(t *testing.T) {
 
 	// A marked dispatch is what fireNotificationHookBounded hands the runner, so
 	// this is the context a close-dispatched hook's HookStart actually runs under.
-	s.publishHookLifecycle(withPublicationBound(tripwireCtx(t)), events.EventHookStart,
+	dispatch := tripwireCtx(t)
+	s.publishHookLifecycle(withPublicationBound(dispatch, dispatch), events.EventHookStart,
 		events.HookStartData{Event: "Notification", HookType: "command", Matcher: "*"})
 
 	if len(routes) != 1 {

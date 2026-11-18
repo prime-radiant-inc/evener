@@ -49,7 +49,7 @@ func TestBoundedHookCompletionRecordingFailureDoesNotRedispatchTheHook(t *testin
 	fs.rollbackFailure = errors.New("injected transcript rollback failure")
 	fs.mu.Unlock()
 
-	s.emitHookCompletedBounded(withPublicationBound(t.Context()), events.HookEndData{
+	s.emitHookCompletedBounded(withPublicationBound(t.Context(), t.Context()), events.HookEndData{
 		Event: "Notification", HookType: "command", Matcher: "*", ExitCode: 0,
 	})
 

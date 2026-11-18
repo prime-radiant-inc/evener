@@ -258,11 +258,31 @@ func (s *Session) closeTerminal(ctx context.Context, options closeOptions) {
 	// delegate tree. Persist and join recursive stop before generic Session
 	// teardown can close a child out from under that durable operation. The
 	// store stays open until worktree disposal has recorded its evidence.
+	//
+	// joinCtx is the context the child joins below take; budgetCtx is what the
+	// disposal steps and the warning retry spend. They are the same context until a
+	// stop gives up, and separate from then on for the reason stated there.
+	joinCtx := budgetCtx
 	if failed := s.closeDelegateRuntimeTree(budgetCtx); failed {
-		// A hopeless stop has already consumed its dedicated half of the
-		// cascade budget. Do not spend the remaining half joining the same
-		// wedged child again through its generic Session.Close path.
-		cancelBudget()
+		// A hopeless stop has already consumed its dedicated half of the cascade
+		// budget, so do not spend the remaining half joining the same wedged child
+		// again through its generic Session.Close path.
+		//
+		// The JOINS are the only thing that skips. Canceling the cascade itself
+		// here also took the budget that worktree disposal and
+		// retryCloseDrainWarnings spend, and those are the two steps the remaining
+		// half of the cascade exists for: a retained lost-result or
+		// incomplete-close warning discovered before the stop was then discarded
+		// even though its receipt is already gone from the store, and otherwise
+		// collectible isolation lanes were left on disk. A wedged child is a reason
+		// to stop waiting on that child, never a reason to stop reporting.
+		//
+		// An already-cancelled context, not a cancel of the shared one: the joins
+		// below return immediately, and nothing this close still owes observes it.
+		skipCtx, cancelSkip := context.WithCancel(budgetCtx)
+		cancelSkip()
+		defer cancelSkip()
+		joinCtx = skipCtx
 	}
 
 	// Reacquire the pair and drain the subagent map. Marking closing BEFORE
@@ -303,7 +323,7 @@ func (s *Session) closeTerminal(ctx context.Context, options closeOptions) {
 	// cleanup of that env, so a child's teardown never runs it; what a child
 	// owns is its scratch, which its teardown ends.
 	for _, sub := range subs {
-		teardownChildSession(budgetCtx, sub.sess)
+		teardownChildSession(joinCtx, sub.sess)
 	}
 	s.warnIncompleteClose("artifact store", s.closeOwnedArtifactStore())
 	// Dispose the isolation delegate lanes this session created and unlock its
