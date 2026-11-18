@@ -680,6 +680,9 @@ type Session struct {
 	// transcriptCreateErr is why the session's transcript could not be
 	// created, nil when it was (or none was wanted). Set once at construction.
 	transcriptCreateErr error
+	// transcriptPublicationRetry paces the directory sync while accepted
+	// work waits for a published transcript. Guarded by mu.
+	transcriptPublicationRetry backoffTimer
 	// userInputEntry is the 1-based entry index of the latest USER_INPUT
 	// entry the session recorded, 0 before one is; guarded by mu.
 	userInputEntry int

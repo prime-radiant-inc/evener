@@ -1090,6 +1090,7 @@ func (s *Session) refuseTurnOnUnhealthyTranscript(ctx context.Context) error {
 	if refusal == nil {
 		return nil
 	}
+	s.retryTranscriptPublication(refusal)
 	s.announceFailClosed()
 	s.finishProcessingAtFailureBoundary(ctx)
 	s.endInputAtTurnFailure()

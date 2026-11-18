@@ -5,15 +5,115 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
 )
+
+func TestPendingDaemonWorkWaitsForTranscriptPublication(t *testing.T) {
+	t.Parallel()
+	for _, kind := range []string{"queued input", "notification only"} {
+		t.Run(kind, func(t *testing.T) {
+			const queuedText = "queued-during-directory-sync"
+			const jobID = "job_finishes_during_directory_sync"
+			adapter := newFakeAdapter("openai", repeatFinalResponse(1, "ok")...)
+			clk := agenttest.NewFakeClock()
+			cfg := minimalTestSessionConfig(t)
+			cfg.StateDir = t.TempDir()
+			cfg.ForceRealIO = true
+			var unavailable atomic.Bool
+			unavailable.Store(true)
+			var syncAttempts atomic.Int32
+			cfg.testOnly.sessionInitFault = func(point string) error {
+				if point == "sync_transcript_publication" {
+					syncAttempts.Add(1)
+					if unavailable.Load() {
+						return syscall.EIO
+					}
+				}
+				return nil
+			}
+			sess := newSession(t, withConfig(cfg), withClock(clk), withAdapter(adapter))
+			var wakes atomic.Int32
+			sess.SetNotifyFunc(func() { wakes.Add(1) })
+			sess.SetPendingUserInputWakeFunc(func() { wakes.Add(1) })
+			if kind == "queued input" {
+				queueOneMutation(t, sess, "publication-pending", queuedText)
+			} else {
+				enqueueCompletedJobNotification(t, sess, jobID)
+			}
+			before := sess.clientMutations.snapshot()
+			originalWakes := wakes.Load()
+			announced := false
+			// The daemon probes accepted work before waiting on its channel.
+			_, ran, err := sess.ProcessPendingUserInput(t.Context(), func(string) { announced = true })
+			if kind == "queued input" {
+				if ran || announced || !errors.Is(err, transcript.ErrPublicationUnsynced) {
+					t.Errorf("blocked queue probe = ran:%t announced:%t error:%v, want no claim", ran, announced, err)
+				}
+				after := sess.clientMutations.snapshot()
+				if after.QueueRevision != before.QueueRevision || after.AcceptedTurns != before.AcceptedTurns || after.ActiveTurnID != before.ActiveTurnID {
+					t.Errorf("blocked probe changed durable admission from (%d,%d,%q) to (%d,%d,%q)", before.QueueRevision, before.AcceptedTurns, before.ActiveTurnID, after.QueueRevision, after.AcceptedTurns, after.ActiveTurnID)
+				}
+			} else {
+				if ran || err != nil || announced {
+					t.Fatalf("notification-only probe unexpectedly found user input: %t %v", ran, err)
+				}
+				if _, err := sess.ProcessInputKind(t.Context(), "", nil, EntryNotification); !errors.Is(err, transcript.ErrPublicationUnsynced) {
+					t.Fatalf("blocked notification = %v, want publication failure", err)
+				}
+			}
+			if len(adapter.Requests()) != 0 || wakes.Load() != originalWakes {
+				t.Error("blocked work dispatched a request or posted an immediate wake")
+			}
+			attempts := syncAttempts.Load()
+			clk.Advance(jobNotificationRetryInitialDelay)
+			clk.Drain()
+			if syncAttempts.Load() != attempts+1 || wakes.Load() != originalWakes {
+				t.Error("the paced retry did not check the barrier once and keep the daemon asleep")
+			}
+			unavailable.Store(false)
+			clk.Advance(2 * jobNotificationRetryInitialDelay)
+			clk.Drain()
+			if wakes.Load() != originalWakes+1 {
+				t.Fatal("successful directory sync did not wake the held work once")
+			}
+			_, ran, err = sess.ProcessPendingUserInput(t.Context(), nil)
+			if kind == "queued input" && (!ran || err != nil) {
+				t.Fatalf("recovered queue probe = ran:%t error:%v", ran, err)
+			}
+			if kind == "notification only" {
+				if ran || err != nil {
+					t.Fatalf("recovered notification probe found user input: %t %v", ran, err)
+				}
+				if _, err := sess.ProcessInputKind(t.Context(), "", nil, EntryNotification); err != nil {
+					t.Fatalf("recovered notification: %v", err)
+				}
+			}
+			requests := adapter.Requests()
+			want := queuedText
+			if kind == "notification only" {
+				want = jobID
+			}
+			if len(requests) != 1 || !requestsContain(requests, want) || sess.queueDepth() != 0 || sess.peekNotifications() != 0 {
+				t.Fatalf("recovered work did not dispatch once and settle: requests=%d queue=%d notifications=%d", len(requests), sess.queueDepth(), sess.peekNotifications())
+			}
+			clk.Advance(jobNotificationRetryMaxDelay)
+			clk.Drain()
+			if wakes.Load() != originalWakes+1 {
+				t.Error("publication recovery left a retry wake behind")
+			}
+		})
+	}
+}
 
 // TestFinalizeInterruptHoldsNoSessionLock calls the interrupt finalizer directly
 // while Session.mu is held. It is a pure function of a store snapshot -- the

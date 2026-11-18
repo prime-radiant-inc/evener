@@ -71,8 +71,69 @@ func (s *Session) refuseBeforeClaimingOnUnhealthyTranscript() error {
 	if refusal == nil {
 		refusal = writer.EstablishPublication()
 	}
+	s.retryTranscriptPublication(refusal)
 	s.announceFailClosed()
 	return refusal
+}
+
+// retryTranscriptPublication checks the directory barrier on a paced timer.
+// Failed checks leave accepted work untouched. Once the barrier clears, the
+// daemon's notification wake re-probes durable input before draining notices.
+func (s *Session) retryTranscriptPublication(refusal error) {
+	if !errors.Is(refusal, transcript.ErrPublicationUnsynced) || !s.hasPublicationBlockedWork() {
+		return
+	}
+	s.mu.Lock()
+	if s.closingOrClosedLocked() || s.transcriptPublicationRetry.active {
+		s.mu.Unlock()
+		return
+	}
+	delay, generation := s.transcriptPublicationRetry.arm()
+	s.mu.Unlock()
+	s.sclock().AfterFunc(delay, func() {
+		s.mu.Lock()
+		if !s.transcriptPublicationRetry.fire(generation) || s.closingOrClosedLocked() {
+			s.mu.Unlock()
+			return
+		}
+		s.transcriptPublicationRetry.settle(true, delay, jobNotificationRetryMaxDelay)
+		s.mu.Unlock()
+		if !s.hasPublicationBlockedWork() {
+			return
+		}
+		release, err := s.beginJobNotifyCallback()
+		if err != nil {
+			s.retryTranscriptPublication(refusal)
+			return
+		}
+		defer release()
+		if err := s.refuseOnCurrentUnhealthyTranscript(); err != nil {
+			s.retryTranscriptPublication(err)
+			return
+		}
+		s.mu.Lock()
+		s.transcriptPublicationRetry.reset()
+		closing := s.closingOrClosedLocked()
+		notify := s.notifyFunc
+		s.mu.Unlock()
+		if closing {
+			return
+		}
+		if notify != nil {
+			notify()
+			return
+		}
+		if s.hasRunnableClientMutationStart() {
+			s.wakeClientMutationStart()
+		}
+		if s.hasPendingUserInputToRun() {
+			s.wakePendingUserInput()
+		}
+	})
+}
+
+func (s *Session) hasPublicationBlockedWork() bool {
+	return s.hasRunnableUserSteering() || s.sessionWorkPending()
 }
 
 // refuseOnUnhealthyTranscript is refuseBeforeClaimingOnUnhealthyTranscript for a

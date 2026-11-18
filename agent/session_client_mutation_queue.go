@@ -277,6 +277,13 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 	if err := s.ensureClientMutationStore(); err != nil {
 		return "", false, err
 	}
+	writer := s.attachedTranscript()
+	if s.refuseOnUnhealthyTranscript(writer) == nil {
+		if err := writer.EstablishPublication(); err != nil {
+			s.retryTranscriptPublication(err)
+			return "", false, err
+		}
+	}
 	// Each claim below decides the poisoned-transcript refusal on the same
 	// generation it claims on, so nothing here has to read a claimability
 	// snapshot the claim might then contradict. A wake that claims nothing --
