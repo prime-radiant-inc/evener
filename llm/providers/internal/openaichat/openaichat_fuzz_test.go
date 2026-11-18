@@ -22,6 +22,7 @@ func FuzzToolArgumentsString(f *testing.F) {
 		`["status"]`,
 		`{"status": in_progress"}`,
 		`  {"a":1}  `,
+		`{"n":1e400}`,
 		`123`,
 		`"a string"`,
 		`{}`,
@@ -42,7 +43,7 @@ func FuzzToolArgumentsString(f *testing.F) {
 		if got == "{}" {
 			return
 		}
-		var obj map[string]any
+		var obj map[string]json.RawMessage
 		if err := json.Unmarshal([]byte(got), &obj); err != nil {
 			t.Fatalf("ToolArgumentsString returned non-JSON %q for input %q: %v", got, raw, err)
 		}
