@@ -23,6 +23,10 @@ var (
 		// key falls back to the union, which would read Anthropic's own
 		// exec_command as shell.
 		registry.SurfaceAnthropic: {},
+		// Generic applies no aliases in dispatch either (surfaceConventions
+		// returns nil for it), so the same reasoning holds: listing it makes
+		// "renames nothing" a fact instead of an omission (#1166 review).
+		registry.SurfaceGeneric: {},
 	}
 )
 

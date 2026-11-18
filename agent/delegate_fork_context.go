@@ -38,13 +38,19 @@ func delegateContextEntries(parent []transcript.Entry) []transcript.Entry {
 		// parent's delivery receipts, client mutation IDs, usage, or server
 		// continuation handles. Those belong to its execution, not the child.
 		entry.Turn = schema.Turn{
-			Kind:                 t.Kind,
-			Authorship:           inheritedTranscriptAuthorship(t.Authorship),
-			Message:              t.Message,
-			Timestamp:            t.Timestamp,
-			SteeringSource:       t.SteeringSource,
-			SteeringKind:         t.SteeringKind,
-			ResponseProvider:     t.ResponseProvider,
+			Kind:             t.Kind,
+			Authorship:       inheritedTranscriptAuthorship(t.Authorship),
+			Message:          t.Message,
+			Timestamp:        t.Timestamp,
+			SteeringSource:   t.SteeringSource,
+			SteeringKind:     t.SteeringKind,
+			ResponseProvider: t.ResponseProvider,
+			// The surface the copied tool names were written in. Without it the
+			// child's prelude falls back to the union of every surface's
+			// aliases, and an Anthropic parent's separate shell and
+			// exec_command calls under one id merge in the child while the
+			// parent's own index keeps them apart (#1166 review).
+			ResponseSurface:      t.ResponseSurface,
 			ResponseModel:        t.ResponseModel,
 			ResponseRequestModel: t.ResponseRequestModel,
 			ResponseProtocol:     t.ResponseProtocol,

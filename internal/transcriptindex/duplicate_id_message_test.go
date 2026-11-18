@@ -1109,3 +1109,111 @@ func TestAnEmptyNamedReservationKeepsItsOwnOutput(t *testing.T) {
 			itemShapes(indexed))
 	}
 }
+
+// TestAGenericSurfaceRenamesNothing pins the generic surface's vocabulary on
+// the reader side.
+//
+// Dispatch applies no aliases on a generic surface, so a generic session's
+// configured exec_command tool is an ordinary tool, not the shell alias. When
+// a shell call and a configured exec_command share one call id in one batch,
+// reading the generic surface through the union of provider aliases makes them
+// one tool: exec_command's result settles the shell row and its own row
+// disappears. The surface that recorded the entry decides; only an entry with
+// no recorded surface may fall back to the union (#1166 review).
+func TestAGenericSurfaceRenamesNothing(t *testing.T) {
+	announce := inTurn("turn_gen", assistant(
+		call("call_gen", "shell", `{"cmd":"ls"}`),
+		call("call_gen", "exec_command", `{"message":"report"}`),
+	))
+	announce.ResponseSurface = "generic"
+	fx := fixture{
+		name:   "a generic surface renames nothing",
+		header: transcript.Header{SessionID: "generic_surface", CreatedAt: fixtureClock, ProfileID: "p", Model: "m"},
+		lines: []fixtureLine{
+			entryLine(opens("turn_gen", schema.TurnSpanExecution, user("go"))),
+			entryLine(announce),
+			// The configured tool's own result, under the reused id. On a
+			// generic surface this answers exec_command alone.
+			entryLine(inTurn("turn_gen", results(result("call_gen", "exec_command", "report sent")))),
+		},
+	}
+	path := writeFixture(t, fx)
+	indexed := turnItemsOf(t, allCandidates(t, openIndex(t, path, t.TempDir())), "turn_gen")
+
+	var shell, configured *appwire.ThreadItem
+	for i := range indexed {
+		if indexed[i].CallID != "call_gen" {
+			continue
+		}
+		switch indexed[i].ToolName {
+		case "shell":
+			shell = &indexed[i]
+		case "exec_command":
+			configured = &indexed[i]
+		}
+	}
+	if shell == nil {
+		t.Fatalf("the shell announcement is missing from %s", itemShapes(indexed))
+	}
+	if shell.Status == appwire.TurnStatusCompleted {
+		t.Errorf("index: the shell call reads completed from the configured tool's result: a generic surface renames nothing, so exec_command is not the shell alias (items %s)",
+			itemShapes(indexed))
+	}
+	if configured == nil {
+		t.Errorf("index: the configured exec_command result lost its own row: a generic surface renames nothing, so the result answers its own call (items %s)",
+			itemShapes(indexed))
+	}
+}
+
+// TestOneEntryWritesItsSeedOnce covers the sidecar cost of the seed.
+//
+// The seed is a per-ENTRY fact: the builder's resolution of the entry's unnamed
+// results. A result entry that keeps several standalone rows appended a full
+// copy of that list for each of them, so a batch resolving many names wrote
+// the same bytes once per row — for rows whose context-free reader never reads
+// them at all. One entry writes its seed once and its contextual rows share the
+// reference (#1166 review).
+func TestOneEntryWritesItsSeedOnce(t *testing.T) {
+	fx := fixture{
+		name:   "one entry writes its seed once",
+		header: transcript.Header{SessionID: "seed_once", CreatedAt: fixtureClock, ProfileID: "p", Model: "m"},
+		lines: []fixtureLine{
+			entryLine(opens("turn_seed", schema.TurnSpanExecution, user("go"))),
+			entryLine(inTurn("turn_seed", inheritedAuthorship(assistant(
+				call("call_seed", "communicate", `{"message":"first"}`),
+				call("call_seed2", "communicate", `{"message":"second"}`),
+			)))),
+			// One results entry holding two delivery results. Both name no tool,
+			// so the entry's seed resolves both to communicate, and both rows
+			// replay context — the shape that appended the seed twice.
+			entryLine(inTurn("turn_seed", results(
+				result("call_seed", "", "first"),
+				result("call_seed2", "", "second"),
+			))),
+		},
+	}
+	path := writeFixture(t, fx)
+	x := openIndex(t, path, t.TempDir())
+
+	seeds := map[strRef]int{}
+	for slot := uint64(0); slot < x.items.n; slot++ {
+		buf, err := x.items.read(slot, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		record := decodeItem(buf)
+		if record.Seed.Len == 0 {
+			continue
+		}
+		seeds[record.Seed]++
+	}
+	if len(seeds) != 1 {
+		t.Fatalf("distinct seed references across one entry's contextual rows = %d, want 1: the entry encodes its seed once and every row of that entry shares it",
+			len(seeds))
+	}
+	for _, count := range seeds {
+		if count != 2 {
+			t.Fatalf("rows sharing the entry's seed reference = %d, want 2: both contextual rows of the entry must carry it", count)
+		}
+	}
+}

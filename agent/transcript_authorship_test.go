@@ -462,3 +462,30 @@ func TestTranscriptAuthorshipQueuedExecution(t *testing.T) {
 		t.Fatal(seen)
 	}
 }
+
+// TestForkKeepsTheRecordedDispatchSurface covers the surface across a fork.
+//
+// A forked delegate inherits the parent's assistant entries, including their
+// recorded tool names. Those names are only readable in the vocabulary they were
+// written in, and the child's replay has no other source for it: without the
+// surface it falls back to the union of every surface's aliases, and an
+// Anthropic parent's separate shell and exec_command calls under one call id
+// merge in the child while the parent's own index keeps them apart
+// (#1166 review).
+func TestForkKeepsTheRecordedDispatchSurface(t *testing.T) {
+	t.Parallel()
+	parent := []transcript.Entry{{Turn: schema.Turn{
+		Kind:             schema.TurnAssistant,
+		Message:          llm.Assistant("answer"),
+		ResponseProvider: "anthropic",
+		ResponseSurface:  "anthropic",
+	}}}
+	copied := delegateContextEntries(parent)
+	if len(copied) != 1 {
+		t.Fatalf("copied = %d", len(copied))
+	}
+	if got := copied[0].Turn.ResponseSurface; got != "anthropic" {
+		t.Errorf("forked entry ResponseSurface = %q, want anthropic: the child reads the inherited names in the parent's vocabulary, not in every surface's",
+			got)
+	}
+}

@@ -155,6 +155,13 @@ type builder struct {
 	seedBuf     map[string]string
 	regNames    map[string]string
 	regCommArgs map[string]string
+	// seedEncodedEntry and seedEncodedRef memoize the encoded seed for the entry
+	// currently being applied: seedEncodedEntry is the entry version the ref
+	// belongs to (0: none yet), so a result entry whose batch resolves many
+	// names writes that list once for all of its contextual rows instead of
+	// once per row (#1166 review).
+	seedEncodedEntry uint64
+	seedEncodedRef   strRef
 	// itemBuf, turnBuf and updateBuf are the fixed-size encode scratch of the
 	// hot loop: the encode*Into functions fill them, and the table layer
 	// copies their bytes out synchronously, so reuse is safe.
@@ -757,42 +764,61 @@ func (b *builder) appendItems(slot uint64, entry *schema.Turn, c contributor, se
 	return nil
 }
 
+// encodeSeed writes one entry's name seed and returns its reference.
+//
+// Sort the IDs BEFORE writing their strings. Sorting on the strRef offsets
+// afterwards makes the encoded order follow map iteration, because the offsets
+// are assigned in that order — so two builds of one transcript from one binary
+// could write different sidecar bytes.
+func (b *builder) encodeSeed(seed map[string]string) (strRef, error) {
+	ids := make([]string, 0, len(seed))
+	for callID := range seed {
+		ids = append(ids, callID)
+	}
+	slices.Sort(ids)
+	list := make([]seedEntry, 0, len(seed))
+	for _, callID := range ids {
+		name := seed[callID]
+		callRef, err := b.x.strings.putString(callID)
+		if err != nil {
+			return strRef{}, err
+		}
+		nameRef, err := b.x.strings.putString(name)
+		if err != nil {
+			return strRef{}, err
+		}
+		list = append(list, seedEntry{Call: callRef, Name: nameRef})
+	}
+	return b.x.strings.put(encodeSeedEntries(list))
+}
+
 // appendItemWithContext appends the record of an item the entry c opens at
 // part. Only deferred communicate results need Context (communicateContext).
 func (b *builder) appendItemWithContext(item appwire.ThreadItem, part int, turnSlot uint64, c contributor, context strRef, seed map[string]string) (uint64, error) {
 	version := c.Ordinal + 1
 	record := itemRecord{Entry: version, Part: uint32(part), Turn: uint32(turnSlot), Version: version, Opener: c, ItemIndex: b.entryItemIndex, Context: context}
-	// Persist the builder's own resolution of this entry's unnamed results.
+	// Persist the builder's own resolution of this entry's unnamed results, and
+	// only on a row that replays context: that is the one read path that
+	// consults it (window.go's projectWithContext). A row projected from its own
+	// opener re-derives from a registry the builder filled the same way, so a
+	// copy there would be bytes nothing reads — once per row, for a whole seed.
 	// Read-back reprojects the entry and must reproduce this record rather than
 	// derive a new answer from a turn summary a later batch may have moved past
 	// the announcing entry (#1166 review).
-	if len(seed) > 0 {
-		// Sort the IDs BEFORE writing their strings. Sorting on the strRef
-		// offsets afterwards makes the encoded order follow map iteration,
-		// because the offsets are assigned in that order — so two builds of one
-		// transcript from one binary could write different sidecar bytes.
-		ids := make([]string, 0, len(seed))
-		for callID := range seed {
-			ids = append(ids, callID)
-		}
-		slices.Sort(ids)
-		list := make([]seedEntry, 0, len(seed))
-		for _, callID := range ids {
-			name := seed[callID]
-			callRef, err := b.x.strings.putString(callID)
+	if len(seed) > 0 && context.Len > 0 {
+		// One entry, one copy: a result entry that resolves a whole batch of
+		// names writes that list once and every contextual row of the same
+		// entry shares the reference. The seed is a per-entry fact, so the
+		// per-row copy multiplied sidecar bytes and writes by the number of
+		// standalone rows (#1166 review).
+		if b.seedEncodedEntry != version || b.seedEncodedRef.Len == 0 {
+			ref, err := b.encodeSeed(seed)
 			if err != nil {
 				return 0, err
 			}
-			nameRef, err := b.x.strings.putString(name)
-			if err != nil {
-				return 0, err
-			}
-			list = append(list, seedEntry{Call: callRef, Name: nameRef})
+			b.seedEncodedEntry, b.seedEncodedRef = version, ref
 		}
-		var err error
-		if record.Seed, err = b.x.strings.put(encodeSeedEntries(list)); err != nil {
-			return 0, err
-		}
+		record.Seed = b.seedEncodedRef
 	}
 	b.entryItemIndex++
 	if b.entryReplayOrdinal {

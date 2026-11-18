@@ -8,6 +8,7 @@ import {
   mergeTurnHistory,
   readWindowBounds,
   type ThreadModel,
+  type TurnModel,
   threadModelFromCache,
 } from "./index";
 
@@ -272,5 +273,113 @@ describe("mergeTailTurns", () => {
   it("returns the model unchanged for an empty tail", () => {
     const replaced = hydrateThread(readResponseFixture(), "local:thr_1", 7000);
     expect(mergeTailTurns(replaced, [])).toBe(replaced);
+  });
+});
+
+// A v6 window holding one announced call, plus the standalone result row the
+// index keeps when a DIFFERENT tool reuses the same call id. Both rows carry
+// their own positions, which is what a versioned read always gives them.
+function reusedCallWindowFixture(): Parameters<typeof hydrateThread>[0] {
+  const fixture = readResponseFixture("toolCall");
+  fixture.thread.turns = [
+    {
+      id: "turn_1",
+      status: "completed",
+      itemsView: "full",
+      version: 2,
+      items: [
+        {
+          id: "item_tool_1",
+          turnId: "turn_1",
+          type: "commandExecution",
+          toolName: "shell",
+          callId: "call_dup",
+          status: "inProgress",
+          argumentsJson: '{"cmd":"ls"}',
+          position: { entry: 1, item: 0, sub: 0 },
+        },
+        {
+          id: "item_tool_result_1",
+          turnId: "turn_1",
+          type: "commandExecution",
+          toolName: "exec_command",
+          callId: "call_dup",
+          status: "completed",
+          output: "report sent",
+          position: { entry: 2, item: 0, sub: 0 },
+        },
+      ],
+    },
+  ];
+  return fixture;
+}
+
+describe("mergeTailTurns on a versioned tail", () => {
+  it("keeps a standalone result row when a different tool reused the call id", () => {
+    // The replacement window holds the announcement alone; the tail the live
+    // fold had already seen carries the standalone result. The legacy call-id
+    // fold pairs them by call id alone, drops the standalone row, and copies
+    // its output onto the unrelated call — so the shell row would read
+    // "report sent" and exec_command's own row would vanish.
+    const replaced = hydrateThread(reusedCallWindowFixture(), "local:thr_1", 7000);
+    const tail: TurnModel[] = [
+      {
+        id: "turn_1",
+        status: "completed",
+        version: 3,
+        items: [
+          {
+            id: "item_tool_result_1",
+            turnId: "turn_1",
+            type: "commandExecution",
+            text: "",
+            toolName: "exec_command",
+            callId: "call_dup",
+            status: "completed",
+            output: "report sent",
+            position: { entry: 2, item: 0, sub: 0 },
+            version: 3,
+          },
+        ],
+      },
+    ];
+    const merged = mergeTailTurns(replaced, tail);
+    const rows = (merged.history?.turns ?? []).flatMap((turn) =>
+      turn.items.filter((item) => item.callId === "call_dup"),
+    );
+    const shell = rows.find((item) => item.toolName === "shell");
+    const standalone = rows.find((item) => item.toolName === "exec_command");
+    expect(shell?.output, "the unrelated call must not take the other tool's output").toBeUndefined();
+    expect(standalone?.output, "the standalone row keeps its own payload").toBe("report sent");
+  });
+});
+
+describe("mergeTailTurns failure provenance", () => {
+  it("does not fill a versioned turn's omitted error from the replaced window", () => {
+    // The replacement window holds the FIRST failed attempt, with its
+    // diagnostic. The tail is the same turn reopened and failed again without
+    // recording a diagnostic of its own — so the newer versioned turn's omitted
+    // error is the answer, and the recovered attempt's message is history.
+    // Filling it from the older window shows the person a diagnostic from an
+    // attempt that already happened and can offer reconnect-and-retry on it.
+    const window = readResponseFixture();
+    window.thread.turns = [
+      {
+        id: "turn_1",
+        status: "failed",
+        itemsView: "full",
+        version: 2,
+        error: { message: "the first attempt's diagnostic", source: "provider" } as never,
+        items: [],
+      },
+    ];
+    const replaced = hydrateThread(window, "local:thr_1", 7000);
+    const tail: TurnModel[] = [{ id: "turn_1", status: "failed", version: 5, items: [] }];
+
+    const merged = mergeTailTurns(replaced, tail);
+    const turn = (merged.history?.turns ?? []).find((candidate) => candidate.id === "turn_1");
+    expect(turn, "the turn must survive the merge").toBeDefined();
+    expect(turn?.error, "the current attempt recorded no diagnostic, so none may be borrowed").toBeUndefined();
+    expect(turn?.status, "the turn is still failed: the failure row and Retry remain owed").toBe("failed");
   });
 });

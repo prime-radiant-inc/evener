@@ -75,3 +75,26 @@ func TestSameAgreesWithTheDispatchTable(t *testing.T) {
 		t.Error("Same(\"\", tool) = true: an unnamed result has no tool identity to match")
 	}
 }
+
+// TestGenericSurfaceRenamesNothing pins the generic surface's vocabulary.
+//
+// Dispatch applies no aliases on a generic surface (surfaceConventions returns
+// nil for it), so exec_command there is an ordinary tool name, not shell. A
+// surface absent from the table falls back to the union of every surface's
+// renames, which makes the two names one tool and lets a generic session's
+// exec_command result settle a shell reservation (#1166 review).
+func TestGenericSurfaceRenamesNothing(t *testing.T) {
+	if got := CanonicalFor(registry.SurfaceGeneric, "exec_command"); got != "exec_command" {
+		t.Errorf("CanonicalFor(generic, exec_command) = %q, want exec_command: dispatch applies no aliases on a generic surface",
+			got)
+	}
+	if SameFor(registry.SurfaceGeneric, "shell", "exec_command") {
+		t.Error("SameFor(generic, shell, exec_command) = true: a generic surface renames nothing, so those are two tools")
+	}
+	// The union stays the answer for a transcript that records no surface: such
+	// a file has no vocabulary to scope to, and the alias case is still the
+	// everyday one.
+	if !SameFor("", "shell", "exec_command") {
+		t.Error("SameFor(\"\", shell, exec_command) = false: an unrecorded surface keeps the union, or every OpenAI alias call regresses")
+	}
+}

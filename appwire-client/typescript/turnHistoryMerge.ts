@@ -338,6 +338,15 @@ export function mergeToolCallsByCallId(
   context?: ToolItemMergeContext,
   view?: ToolFoldView,
 ): TurnModel[] {
+  // A versioned read answers identity per ROW: every recorded item carries its
+  // own version and position, so a result the index kept standalone (a
+  // different tool reusing a reserved call id) says so itself. Folding by call
+  // id alone overrides that answer — the fold pairs the rows by the one field
+  // they share and copies the standalone result's payload onto the unrelated
+  // call, losing the row. Call-id folding exists for a LEGACY read, whose
+  // unversioned rows have no other identity to go on, so it keeps running
+  // there and only there.
+  if (turnsAreVersioned(turns)) return turns;
   const fold = view ?? toolFoldView(turns, context);
   if (fold.noOp) return turns;
 
@@ -419,6 +428,23 @@ export function mergeToolCallsByCallId(
     }
   }
   return merged;
+}
+
+// turnsAreVersioned reports whether a recorded turn set answers identity per
+// row rather than per call id.
+//
+// A turn with no items cannot contradict anything, so it is neutral; the set is
+// versioned only when EVERY turn carrying items has a recorded version. One
+// unversioned turn keeps the legacy rules for the whole set: a mixed set is a
+// pre-v6 model with placeholders, and the fold is what made those readable.
+function turnsAreVersioned(turns: readonly TurnModel[]): boolean {
+  let sawItems = false;
+  for (const turn of turns) {
+    if (turn.items.length === 0) continue;
+    if (turn.version === undefined) return false;
+    sawItems = true;
+  }
+  return sawItems;
 }
 
 const statusRank: Record<string, number> = {
@@ -755,6 +781,27 @@ function mergePageTurn(older: TurnModel, newer: TurnModel, context?: ToolItemMer
   return {
     ...older,
     ...newer,
+    ...nullishTurnFields(older, newer),
+    items: mergePageItems(older.items, newer.items, context),
+  };
+}
+
+// The turn fields that merge with a nullish fallback: a side carrying no value
+// for one of them says nothing, and the other side's value stands.
+//
+// That rule is right for a page fragment, whose absence just means the page did
+// not carry the field. It is wrong for a VERSIONED turn, which answers for the
+// whole turn at a version: an attempt that recorded no diagnostic is a fact
+// about that attempt, not an omission. Filling it from the replaced window puts
+// a recovered attempt's diagnostic — and the Reconnect & retry control built on
+// it — under the current failure (#1166 review). The newer versioned turn is
+// authoritative for its own failure fields; the earlier diagnostic stays in the
+// transcript's own history, which is where it belongs.
+function nullishTurnFields(
+  older: TurnModel,
+  newer: TurnModel,
+): Pick<TurnModel, "startedAt" | "completedAt" | "durationMs" | "usage" | "cost" | "error" | "status"> {
+  const fields = {
     startedAt: newer.startedAt ?? older.startedAt,
     completedAt: newer.completedAt ?? older.completedAt,
     durationMs: newer.durationMs ?? older.durationMs,
@@ -765,8 +812,12 @@ function mergePageTurn(older: TurnModel, newer: TurnModel, context?: ToolItemMer
       newer.status === undefined || (statusRank[newer.status] ?? 0) < (statusRank[older.status ?? ""] ?? 0)
         ? older.status
         : newer.status,
-    items: mergePageItems(older.items, newer.items, context),
   };
+  if (newer.version === undefined) return fields;
+  // A versioned newer turn answers for every field it is authoritative for,
+  // INCLUDING by omission. status is never omitted on the wire, so it keeps the
+  // rank chain above; error can be.
+  return { ...fields, error: newer.error };
 }
 
 type TurnFragment = {
