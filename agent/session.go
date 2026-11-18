@@ -1384,14 +1384,20 @@ type Session struct {
 	// delegateAttentionWarnMu guards delegateAttentionWarned alone: per
 	// failing delegate-attention action and delegate, the error the session
 	// last warned about (see warnDelegateAttentionFailed).
-	delegateAttentionWarnMu   sync.Mutex
-	delegateAttentionWarned   map[delegateAttentionWarning]string
-	delegateAttentionArmIDs   map[string]struct{}
-	delegateAttentionArmRetry backoffTimer
-	stableAttentionRetry      backoffTimer
-	delegateDeliveryWake      bool
-	delegateDeliveryPumping   bool
-	delegateDeliveryRetry     backoffTimer
+	delegateAttentionWarnMu sync.Mutex
+	delegateAttentionWarned map[delegateAttentionWarning]string
+	delegateAttentionArmIDs map[string]struct{}
+	// delegateAttentionUnpublishedReports holds acknowledged delivery reports
+	// whose publication failed. The acknowledgment already removed the delivery
+	// from the durable replay set, so nothing revisits the row on its own: the
+	// arm retry publishes each one before it arms, and only a successful
+	// publication removes it.
+	delegateAttentionUnpublishedReports map[string]struct{}
+	delegateAttentionArmRetry           backoffTimer
+	stableAttentionRetry                backoffTimer
+	delegateDeliveryWake                bool
+	delegateDeliveryPumping             bool
+	delegateDeliveryRetry               backoffTimer
 	// transcriptReady records that attachTranscript has run, i.e. that the
 	// session has finished deciding whether it has a transcript at all. Until
 	// then a turn has nowhere to go and is held in pendingTranscriptTurns; a

@@ -809,10 +809,14 @@ func (c *delegateTreeController) wakeDeliveryReceiver(receiver delegateDeliveryR
 	if publishErr != nil {
 		// The report is durable and the acknowledgment committed, so the row is
 		// owed a presentation; a failed publish leaves it out of history and an
-		// arm now would consume it unseen. The arming is skipped, but the paced
-		// retry is still armed: it is what publishes on the next attempt, so a
-		// transient fold failure retries instead of stranding the row in a
-		// transcript nothing reads again.
+		// arm now would consume it unseen. The receiver keeps the IDs on its own
+		// retry surface, which publishes before it arms and so recovers on a
+		// later pass; a controller-level wake retry only scans delegate wake
+		// state and would never revisit a row whose acknowledgment already left
+		// the replay set.
+		for _, attentionID := range attentionIDs {
+			retainUnpublishedDelegateAttentionReport(receiver, attentionID)
+		}
 		c.retryDelegateAttentionLater()
 		return publishErr
 	}

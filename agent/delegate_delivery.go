@@ -140,6 +140,21 @@ type delegateAttentionReportPublisher interface {
 	// published as-is; a zero turn is read back from the fold, which is what
 	// the stop retry needs — it holds the report's ID and nothing else.
 	publishAcknowledgedDelegateAttentionReport(attentionID string, turn schema.Turn) error
+	// retainUnpublishedDelegateAttentionReport keeps one acknowledged report the
+	// receiver still owes a publication, so its own paced retry publishes and
+	// then arms it. Without this the ID is dropped when the publish fails and
+	// the report is stranded: its acknowledgment already left the durable
+	// replay set, so no later pass revisits it.
+	retainUnpublishedDelegateAttentionReport(attentionID string)
+}
+
+// retainUnpublishedDelegateAttentionReport hands one owed report to the
+// receiver's own retry surface. A receiver without one cannot be helped past a
+// failed publish and is left alone rather than reported as handled.
+func retainUnpublishedDelegateAttentionReport(receiver delegateDeliveryReceiver, attentionID string) {
+	if retainer, ok := receiver.(delegateAttentionReportPublisher); ok {
+		retainer.retainUnpublishedDelegateAttentionReport(attentionID)
+	}
 }
 
 // depositDelegateAttentionReport records a delivery's report without publishing

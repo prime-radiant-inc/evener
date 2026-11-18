@@ -863,6 +863,14 @@ func (s *Session) armDelegateAttentionsOnce(attentionIDs []string) error {
 }
 
 func (s *Session) armDelegateAttentionOnce(attentionID string) error {
+	// An acknowledged report this receiver still owes a publication is
+	// published first: its acknowledgment already left the durable replay set,
+	// so this arm is the last chance to put its turn in history before a
+	// notification turn selects it. A failed publication keeps it owed and
+	// fails this attempt, which leaves the ID on the retry surface below.
+	if err := s.publishRetainedDelegateAttentionReport(attentionID); err != nil {
+		return err
+	}
 	if s.isRootDelegateAttentionReceiver() {
 		return s.armDelegateAttentionsOnce([]string{attentionID})
 	}
@@ -1673,6 +1681,49 @@ func (s *Session) moveHeldDelegateAttentionTurnsToTail(released []string) {
 			s.emit(warningDataFromError("move held delegate attention turn to the history tail", err))
 		}
 	}
+}
+
+// retainUnpublishedDelegateAttentionReport records that this receiver still
+// owes one acknowledged report a publication, and schedules the paced retry
+// that will attempt it. The report's turn is not in history yet, so arming it
+// now would let a notification turn select an ID no request can carry.
+func (s *Session) retainUnpublishedDelegateAttentionReport(attentionID string) {
+	if s == nil || attentionID == "" {
+		return
+	}
+	s.attentionMu.Lock()
+	if s.delegateAttentionUnpublishedReports == nil {
+		s.delegateAttentionUnpublishedReports = make(map[string]struct{})
+	}
+	s.delegateAttentionUnpublishedReports[attentionID] = struct{}{}
+	if s.delegateAttentionArmIDs == nil {
+		s.delegateAttentionArmIDs = make(map[string]struct{})
+	}
+	s.delegateAttentionArmIDs[attentionID] = struct{}{}
+	s.scheduleDelegateAttentionArmRetryLocked()
+	s.attentionMu.Unlock()
+}
+
+// publishRetainedDelegateAttentionReport publishes one report this receiver
+// retained after a failed publication, and drops the obligation once the turn
+// is resident. A report the receiver does not owe publishes nothing.
+func (s *Session) publishRetainedDelegateAttentionReport(attentionID string) error {
+	if s == nil || attentionID == "" {
+		return nil
+	}
+	s.attentionMu.Lock()
+	_, owed := s.delegateAttentionUnpublishedReports[attentionID]
+	s.attentionMu.Unlock()
+	if !owed {
+		return nil
+	}
+	if err := s.publishAcknowledgedDelegateAttentionReport(attentionID, schema.Turn{}); err != nil {
+		return err
+	}
+	s.attentionMu.Lock()
+	delete(s.delegateAttentionUnpublishedReports, attentionID)
+	s.attentionMu.Unlock()
+	return nil
 }
 
 // retainPendingDelegateAttentionTurnsLocked restores every still-pending row's
