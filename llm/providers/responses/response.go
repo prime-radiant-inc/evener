@@ -12,17 +12,12 @@ import (
 
 // responseContentFromOutputItems converts a Responses API output-item array
 // into message content parts. It walks the same wire shape whether the items
-// come from a terminal response.completed payload's "output" field or from
-// decodeStream's accumulated response.output_item.done events, so both
-// callers share this one walk.
-func responseContentFromOutputItems(out []any, body []byte) []llm.ContentPart {
-	return responseContentFromOutputItemsRaw(out, body, nil)
-}
-
-func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.RawMessage) []llm.ContentPart {
+// come from a terminal response.completed payload or output_item.done events.
+func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawMessage, stream *responsesOutputAccumulator) []llm.ContentPart {
 	var rawBodyItems []json.RawMessage
 	var rawBodyCaptured bool
 	var content []llm.ContentPart
+	var recovered int
 	for itemIdx, itemAny := range out {
 		item, ok := itemAny.(map[string]any)
 		if !ok {
@@ -104,14 +99,96 @@ func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.R
 				},
 			})
 		case "reasoning":
-			if thinking := responsesThinking(item); thinking != nil {
+			thinking, filled := stream.settleReasoning(item)
+			if filled {
+				recovered++
+			}
+			if thinking != nil {
 				content = append(content, llm.ContentPart{Kind: llm.ContentThinking, Thinking: thinking})
 			}
 		default:
 			// ignore
 		}
 	}
+	if recovered > 0 && recovered == len(content) {
+		return stream.outputWithRecoveredReasoning(content)
+	}
 	return content
+}
+
+// settleReasoning reports whether a matching completed item supplied native
+// reasoning that the terminal omitted.
+func (acc *responsesOutputAccumulator) settleReasoning(item map[string]any) (*llm.ThinkingData, bool) {
+	terminal := responsesThinking(item)
+	id, _ := item["id"].(string)
+	if acc == nil || acc.reasoningByID[id] == nil || hasResponsesReasoning(terminal) {
+		return terminal, false
+	}
+	prior := responsesThinking(acc.reasoningByID[id])
+	if !hasResponsesReasoning(prior) {
+		return terminal, false
+	}
+	if summary := parseReasoningSummary(item["summary"]); len(summary) > 0 {
+		prior.Summary = summary
+	}
+	return prior, true
+}
+
+// A terminal made entirely of reasoning placeholders supplies their order
+// and summaries. The completed items place them among any settled siblings.
+func (acc *responsesOutputAccumulator) outputWithRecoveredReasoning(reasoning []llm.ContentPart) []llm.ContentPart {
+	ids := make(map[string]bool, len(reasoning))
+	for _, part := range reasoning {
+		ids[part.Thinking.ID] = true
+	}
+	var content []llm.ContentPart
+	for i, entry := range acc.output {
+		item, _ := entry.(map[string]any)
+		if item["type"] == "reasoning" {
+			if id, _ := item["id"].(string); ids[id] {
+				content = append(content, reasoning[0])
+				reasoning = reasoning[1:]
+				delete(ids, id)
+			}
+			continue
+		}
+		parts := responseContentFromOutputItems(acc.output[i:i+1], nil, acc.rawOutput[i:i+1], nil)
+		content = append(content, parts...)
+	}
+	return acc.withOutputDeltas(content)
+}
+
+// Completed items take precedence over deltas of the same answer or call.
+func (acc *responsesOutputAccumulator) withOutputDeltas(content []llm.ContentPart) []llm.ContentPart {
+	if len(content) == 0 {
+		return content
+	}
+	for _, delta := range acc.outputDeltas {
+		if delta.text != nil && delta.text.Len() != 0 {
+			content = append(content, llm.ContentPart{Kind: llm.ContentText, Text: delta.text.String()})
+		}
+		if st := delta.tool; st != nil && !st.done {
+			content = append(content, llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+				ID: st.id, ItemID: st.itemID, Name: st.name, Type: "function", Arguments: st.args.Bytes(),
+			}})
+		}
+	}
+	return content
+}
+
+func hasResponsesReasoning(t *llm.ThinkingData) bool {
+	if t == nil {
+		return false
+	}
+	if t.EncryptedContent != "" {
+		return true
+	}
+	for text := range t.ResponsesReasoningTextParts() {
+		if strings.TrimSpace(text) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func responsesThinking(item map[string]any) *llm.ThinkingData {
@@ -149,56 +226,40 @@ func responsesThinking(item map[string]any) *llm.ThinkingData {
 	}
 }
 
-// settleResponsesTerminalOutput decides the settled message content and
-// finish reason for a Responses-API terminal (response.completed) payload,
-// given the output items accumulated from the stream en route. When the
-// terminal payload's own "output" array is non-empty it is authoritative
-// (the provider's settled truth); when it's empty but the stream accumulated
-// real items, those are synthesized in its place (observed on affected
-// sessions: the terminal payload carries no output even though earlier
-// response.output_item.done events in the same stream carried real content).
-// Shared by the live streaming decoder (decodeStream) and offline
-// recomputation so both apply the identical terminal-wins rule.
-func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, accumulatedOutput []any, accumulatedRawOutput []json.RawMessage) {
-	terminalOutput, _ := rawResp["output"].([]any)
-	switch {
-	case len(terminalOutput) == 0 && len(accumulatedOutput) > 0:
-		// The terminal payload carries no output even though the stream's
-		// output_item.done events carried real content (observed on
-		// affected sessions). Synthesize the settled message from what the
-		// stream actually sent, reusing fromResponses' item-walk.
-		r.Message.Content = responseContentFromOutputItemsRaw(accumulatedOutput, nil, accumulatedRawOutput)
-		if status, _ := rawResp["status"].(string); status != "incomplete" {
-			if len(r.ToolCalls()) > 0 {
-				r.Finish = llm.FinishReason{Reason: "tool_calls"}
-			} else {
-				r.Finish = llm.FinishReason{Reason: "stop"}
-			}
-		}
-	case len(terminalOutput) > 0 && len(accumulatedOutput) > 0 && len(terminalOutput) != len(accumulatedOutput):
-		// Terminal output is authoritative when non-empty, but a count
-		// mismatch against what the stream accumulated is worth surfacing.
-		r.Warnings = append(r.Warnings, llm.Warning{
-			Code:    "responses_output_item_count_mismatch",
-			Message: fmt.Sprintf("terminal output items=%d differ from accumulated stream items=%d", len(terminalOutput), len(accumulatedOutput)),
-		})
-	}
-}
-
 // fromResponses maps a Responses API JSON object into an llm.Response.
-// Provider is left as "openai": the non-streaming caller (complete.go, via
-// protocolhttp.Do) stamps it to res.Instance after this returns, and the
-// streaming caller (stream.go's decodeStream) stamps it itself since it
-// calls this directly, outside Do.
-//
 // body is the raw response body bytes for byte-faithful argument capture;
 // nil falls back to the existing string-form path.
 func fromResponses(raw map[string]any, requestedModel string, body []byte) llm.Response {
+	out, _ := raw["output"].([]any)
+	return responseWithContent(raw, requestedModel, responseContentFromOutputItems(out, body, nil, nil))
+}
+
+// settleResponsesTerminalOutput uses the terminal's item order and content.
+// A matching completed reasoning item can fill in absent native content.
+// An empty output array uses the stream's completed items and pending output.
+func settleResponsesTerminalOutput(raw map[string]any, requestedModel string, body []byte, acc *responsesOutputAccumulator) llm.Response {
+	out, _ := raw["output"].([]any)
+	if len(out) == 0 {
+		content := responseContentFromOutputItems(acc.Output(), nil, acc.RawOutput(), nil)
+		return responseWithContent(raw, requestedModel, acc.withOutputDeltas(content))
+	}
+	r := responseWithContent(raw, requestedModel, responseContentFromOutputItems(out, body, nil, acc))
+	if n := len(acc.Output()); n > 0 && len(out) != n {
+		r.Warnings = append(r.Warnings, llm.Warning{
+			Code:    "responses_output_item_count_mismatch",
+			Message: fmt.Sprintf("terminal output items=%d differ from accumulated stream items=%d", len(out), n),
+		})
+	}
+	return r
+}
+
+func responseWithContent(raw map[string]any, requestedModel string, content []llm.ContentPart) llm.Response {
 	// Best-effort mapping. OpenAI Responses output is a list of typed items.
 	r := llm.Response{
 		Provider: "openai",
 		Model:    requestedModel,
 		Raw:      raw,
+		Message:  llm.Message{Role: llm.RoleAssistant, Content: content},
 	}
 	if id, _ := raw["id"].(string); id != "" {
 		r.ID = id
@@ -206,15 +267,6 @@ func fromResponses(raw map[string]any, requestedModel string, body []byte) llm.R
 	if m, _ := raw["model"].(string); m != "" {
 		r.Model = m
 	}
-
-	msg := llm.Message{Role: llm.RoleAssistant}
-
-	// Parse output items.
-	if out, ok := raw["output"].([]any); ok {
-		msg.Content = responseContentFromOutputItems(out, body)
-	}
-
-	r.Message = msg
 
 	// Check Responses API status/incomplete_details for finish reason.
 	status, _ := raw["status"].(string)

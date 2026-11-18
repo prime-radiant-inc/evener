@@ -78,11 +78,8 @@ func isChatCompletionsSSE(body []byte) bool {
 
 // extractResponsesFromSSE offline-replays a stored Responses-API SSE body to
 // recover the settled Response, driving the same responsesOutputAccumulator
-// decodeStream drives live (response.output_item.added/done and
-// response.function_call_arguments.delta/done events feed the identical
-// accumulation state machine) and the same terminal-settlement rule
-// (settleResponsesTerminalOutput) that decides whether the terminal payload
-// or the accumulated items are authoritative.
+// decodeStream drives live. Both readers use settleResponsesTerminalOutput
+// to recover missing content from the events the provider supplied.
 func extractResponsesFromSSE(body []byte, requestedModel string) (llm.Response, error) {
 	acc := newResponsesOutputAccumulator()
 	var (
@@ -107,6 +104,8 @@ func extractResponsesFromSSE(body []byte, requestedModel string) (llm.Response, 
 			if item, ok := payload["item"].(map[string]any); ok {
 				acc.HandleOutputItemAdded(item)
 			}
+		case "response.output_text.delta":
+			acc.handleOutputTextDelta(payload)
 		case "response.function_call_arguments.delta":
 			acc.HandleFunctionCallArgumentsDelta(payload, ev.Data)
 		case "response.function_call_arguments.done":
@@ -130,9 +129,7 @@ func extractResponsesFromSSE(body []byte, requestedModel string) (llm.Response, 
 		return llm.Response{}, errors.New("responses: recorded responses SSE body has no response.completed event")
 	}
 
-	r := fromResponses(terminal, requestedModel, terminalRaw)
-	settleResponsesTerminalOutput(&r, terminal, acc.Output(), acc.RawOutput())
-	return r, nil
+	return settleResponsesTerminalOutput(terminal, requestedModel, terminalRaw, acc), nil
 }
 
 // decodeJSONObject decodes a response body as a JSON object, keeping numbers
