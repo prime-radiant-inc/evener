@@ -256,11 +256,34 @@ type ThinkingData struct {
 	// cryptographic thinking signature; OpenAI-compatible providers store the
 	// wire field the reasoning arrived on (see OpenAICompatReasoningFields).
 	// Providers must guard against replaying a foreign provider's value.
-	Signature          string              `json:"signature,omitempty"`
-	Redacted           bool                `json:"redacted,omitempty"`
-	EncryptedContent   string              `json:"encrypted_content,omitempty"`
-	Summary            []string            `json:"summary,omitempty"`
-	ResponsesTextParts []ResponsesTextPart `json:"responses_text_parts,omitempty"`
+	Signature          string               `json:"signature,omitempty"`
+	Redacted           bool                 `json:"redacted,omitempty"`
+	EncryptedContent   string               `json:"encrypted_content,omitempty"`
+	Summary            []string             `json:"summary,omitempty"`
+	ResponsesTextParts []ResponsesTextPart  `json:"responses_text_parts,omitempty"`
+	ChatScalar         *ChatReasoningScalar `json:"chat_scalar,omitempty"`
+}
+
+// ChatReasoningScalar records the scalar source when Chat's preferred display
+// came from reasoning_details. An empty Text reuses the identical display
+// bytes. An empty Field marks a detail displayed separately from the scalar.
+type ChatReasoningScalar struct {
+	Field string `json:"field,omitempty"`
+	Text  string `json:"text,omitempty"`
+}
+
+// ChatReplayScalar returns the exact scalar and its original wire spelling.
+func (t *ThinkingData) ChatReplayScalar() (text, field string) {
+	if t.ChatScalar == nil {
+		return t.Text, t.Signature
+	}
+	if t.ChatScalar.Field == "" {
+		return "", ""
+	}
+	if t.ChatScalar.Text != "" {
+		return t.ChatScalar.Text, t.ChatScalar.Field
+	}
+	return t.Text, t.ChatScalar.Field
 }
 
 // ResponsesTextPart preserves a reasoning content part's wire type and
@@ -393,11 +416,15 @@ func TrimThinkingForReplay(p ContentPart, dropPlain bool) (trimmed ContentPart, 
 	if !IsOpenAICompatEncryptedReasoning(p.Thinking.EncryptedContent) {
 		return p, true
 	}
-	if p.Thinking.Text == "" || OpenAICompatSignatureReasoningNeedsText(p.Thinking.EncryptedContent) {
+	keepText := OpenAICompatSignatureReasoningNeedsText(p.Thinking.EncryptedContent)
+	if p.Thinking.ChatScalar == nil && (p.Thinking.Text == "" || keepText) {
 		return p, false
 	}
 	display := *p.Thinking
-	display.Text = ""
+	if !keepText {
+		display.Text = ""
+	}
+	display.ChatScalar = nil
 	p.Thinking = &display
 	return p, false
 }

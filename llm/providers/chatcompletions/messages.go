@@ -90,7 +90,7 @@ func toChatMessages(messages []llm.Message, caps registry.Caps, useReasoningDeta
 			calls := toolCallsFromParts(content)
 			asText := registry.BoolValue(caps.ThinkingAsText)
 			scalarReplay := caps.ReplaysReasoningText() && !useReasoningDetails && !asText
-			reasoning, details := reasoningFromParts(content, !reasoningOff, asText)
+			reasoning, sourceField, details := reasoningFromParts(content, !reasoningOff, asText, scalarReplay)
 			if reasoningOff && !asText {
 				// A declared non-reasoning model accepts no reasoning fields —
 				// prior-turn thinking (a fallback or model switch can carry it)
@@ -120,7 +120,7 @@ func toChatMessages(messages []llm.Message, caps registry.Caps, useReasoningDeta
 				msg["reasoning_details"] = details
 			}
 			if reasoning != "" {
-				msg[reasoningReplayField(content, caps)] = reasoning
+				msg[reasoningReplayField(sourceField, caps)] = reasoning
 			} else if len(details) == 0 && registry.BoolValue(caps.EmptyReasoningContent) && !useReasoningDetails && !reasoningOff {
 				msg["reasoning_content"] = ""
 			}
@@ -199,33 +199,29 @@ func textFromParts(parts []llm.ContentPart) string {
 // reasoningReplayField returns the wire field assistant thinking replays to:
 // caps.ReasoningField when the row names one (reasoning_details is excluded —
 // that shape is an array, assembled separately, not a scalar replay field);
-// else the field the thinking originally arrived on (recorded in the part's
-// Signature) when it names a known reasoning field; else reasoning_content.
-// Signatures that aren't field names (e.g. Anthropic crypto blobs riding a
-// cross-provider transcript) fall back to the default.
-func reasoningReplayField(parts []llm.ContentPart, caps registry.Caps) string {
+// else the recognized incoming scalar field, else reasoning_content.
+func reasoningReplayField(sourceField string, caps registry.Caps) string {
 	if f := registry.StringValue(caps.ReasoningField); f != "" && f != "reasoning_details" {
 		return f
 	}
-	for _, p := range parts {
-		if p.Kind == llm.ContentThinking && p.Thinking != nil && p.Thinking.Text != "" {
-			if llm.IsOpenAICompatReasoningField(p.Thinking.Signature) {
-				return p.Thinking.Signature
-			}
-		}
+	if sourceField != "" {
+		return sourceField
 	}
 	return "reasoning_content"
 }
 
-// reasoningFromParts keeps each signed item's text with its own continuation.
-func reasoningFromParts(parts []llm.ContentPart, keepDetails, asText bool) (string, []map[string]any) {
+// reasoningFromParts keeps signed text with its continuation. A scalar route
+// uses the received scalar and field even when the same message displayed
+// different, unsigned details.
+func reasoningFromParts(parts []llm.ContentPart, keepDetails, asText, scalarReplay bool) (string, string, []map[string]any) {
 	var text strings.Builder
+	var sourceField string
 	var details []map[string]any
 	for _, p := range parts {
 		if p.Kind != llm.ContentThinking || p.Thinking == nil {
 			continue
 		}
-		piece := p.Thinking.Text
+		piece, field := p.Thinking.Text, p.Thinking.Signature
 		if keepDetails {
 			items := llm.OpenAICompatReasoningDetails(p.Thinking.EncryptedContent)
 			details = append(details, items...)
@@ -236,14 +232,20 @@ func reasoningFromParts(parts []llm.ContentPart, keepDetails, asText bool) (stri
 				continue
 			}
 		}
+		if scalarReplay {
+			piece, field = p.Thinking.ChatReplayScalar()
+		}
 		if piece != "" {
+			if sourceField == "" && llm.IsOpenAICompatReasoningField(field) {
+				sourceField = field
+			}
 			if text.Len() != 0 {
 				text.WriteString("\n")
 			}
 			text.WriteString(piece)
 		}
 	}
-	return text.String(), details
+	return text.String(), sourceField, details
 }
 
 // independentReasoningIndex keeps a synthetic text block from becoming part

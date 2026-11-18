@@ -350,51 +350,91 @@ func (r *chatReasoning) addDetail(index int, item reasoningDetailItem, piece str
 
 func (r *chatReasoning) parts() []llm.ContentPart {
 	parts := []llm.ContentPart{}
-	appendPart := func(text, field, encrypted string) {
-		if text != "" || encrypted != "" {
-			parts = append(parts, llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{
-				Text: text, Signature: field, EncryptedContent: encrypted,
-			}})
+	appendPart := func(thinking llm.ThinkingData) {
+		if thinking.Text != "" || thinking.EncryptedContent != "" {
+			parts = append(parts, llm.ContentPart{Kind: llm.ContentThinking, Thinking: &thinking})
 		}
 	}
 	scalar := r.scalar.String()
 	if !r.hasSignature {
-		field := r.scalarField
+		thinking := llm.ThinkingData{Text: scalar, Signature: r.scalarField}
 		if r.display != nil {
-			scalar, field = r.display.String(), r.displayField
+			thinking.Text, thinking.Signature = r.display.String(), r.displayField
+			if scalar != "" {
+				setChatReplayScalar(&thinking, r.scalarField, scalar)
+			}
 		}
 		var opaque []map[string]any
 		for _, block := range r.continuation {
 			opaque = append(opaque, block.wire)
 		}
-		appendPart(scalar, field, encodeEncryptedDetails(opaque))
+		thinking.EncryptedContent = encodeEncryptedDetails(opaque)
+		appendPart(thinking)
 		return parts
 	}
-	if scalar != "" && !r.mirrorsDetails(scalar) {
-		appendPart(scalar, r.scalarField, "")
+	mirror := r.scalarMirror(scalar)
+	if scalar != "" && mirror == nil {
+		appendPart(llm.ThinkingData{Text: scalar, Signature: r.scalarField})
 	}
 	for _, block := range r.blocks {
 		if block.wire == nil {
-			appendPart(block.text.String(), "", "")
+			thinking := llm.ThinkingData{Text: block.text.String()}
+			if block == mirror {
+				setChatReplayScalar(&thinking, r.scalarField, scalar)
+			} else if scalar != "" {
+				thinking.ChatScalar = &llm.ChatReasoningScalar{}
+			}
+			appendPart(thinking)
 		}
 	}
 	for _, block := range r.continuation {
-		appendPart(block.text.String(), "", encodeEncryptedDetails([]map[string]any{block.wire}))
+		appendPart(llm.ThinkingData{Text: block.text.String(), EncryptedContent: encodeEncryptedDetails([]map[string]any{block.wire})})
 	}
 	return parts
 }
 
-func (r *chatReasoning) mirrorsDetails(scalar string) bool {
+func setChatReplayScalar(thinking *llm.ThinkingData, field, scalar string) {
+	if field == thinking.Signature && scalar == thinking.Text {
+		return
+	}
+	thinking.ChatScalar = &llm.ChatReasoningScalar{Field: field}
+	if scalar != thinking.Text {
+		thinking.ChatScalar.Text = scalar
+	}
+}
+
+// An exact signed mirror already carries the scalar on the wire. When several
+// detail texts together mirror it, one unsigned part carries the exact scalar
+// including any separators received from the provider.
+func (r *chatReasoning) scalarMirror(scalar string) *reasoningDetailBlock {
+	if scalar == "" {
+		return nil
+	}
+	var exact, aggregate *reasoningDetailBlock
 	var pieces []string
 	for _, block := range r.blocks {
-		if text := block.text.String(); text != "" {
-			if text == scalar {
-				return true
-			}
-			pieces = append(pieces, text)
+		text := block.text.String()
+		if text == "" {
+			continue
 		}
+		if text == scalar {
+			if block.wire != nil {
+				return block
+			}
+			exact = block
+		}
+		if aggregate == nil || (aggregate.wire != nil && block.wire == nil) {
+			aggregate = block
+		}
+		pieces = append(pieces, text)
 	}
-	return scalar == strings.Join(pieces, "\n") || scalar == strings.Join(pieces, "")
+	if exact != nil {
+		return exact
+	}
+	if scalar == strings.Join(pieces, "\n") || scalar == strings.Join(pieces, "") {
+		return aggregate
+	}
+	return nil
 }
 
 // fromChatCompletionResponse decodes a non-streaming Chat Completions

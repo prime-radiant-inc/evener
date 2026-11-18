@@ -152,43 +152,36 @@ func TestFromChatCompletionResponse_ThinkingItemsJoin(t *testing.T) {
 	}
 }
 
-// TestFromChatCompletionResponse_ReplayReasoningDetailsDelta compares both
-// decoders for reasoning_details payloads. Details retain their replay field
-// contract and join text pieces with newlines, even when scalar reasoning is
-// also present.
+// Detail text drives the display. A route that accepts a scalar receives its
+// original field and bytes in the next request, including after persistence.
 func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name   string
-		fields map[string]any
-		want   string
+		name, scalarField, scalar, display string
+		details                            []any
 	}{
 		{
-			name: "details win over scalar reasoning and join multiple pieces",
-			fields: map[string]any{
-				"reasoning_content": "scalar reasoning",
-				"reasoning_details": []any{
-					map[string]any{"type": "reasoning.text", "text": "step one"},
-					map[string]any{"type": "thinking", "thinking": "step two"},
-				},
+			name:        "details win over scalar reasoning and join multiple pieces",
+			scalarField: "reasoning", scalar: " scalar-17\n\t", display: "step one\nstep two",
+			details: []any{
+				map[string]any{"type": "reasoning.text", "text": "step one"},
+				map[string]any{"type": "thinking", "thinking": "step two"},
 			},
-			want: "step one\nstep two",
+		},
+		{
+			name:        "mirrored unsigned text",
+			scalarField: "reasoning_text", scalar: "mirror-29", display: "mirror-29",
+			details: []any{map[string]any{"type": "reasoning.text", "text": "mirror-29"}},
 		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			nonStream, err := fromChatCompletionResponse(chatResponseRaw(tt.fields, "stop"), nil, nil)
+			fields := map[string]any{tt.scalarField: tt.scalar, "reasoning_details": tt.details}
+			nonStream, err := fromChatCompletionResponse(chatResponseRaw(fields, "stop"), nil, nil)
 			if err != nil {
 				t.Fatal(err)
 			}
-			var nonStreamThinking *llm.ThinkingData
-			for _, p := range nonStream.Message.Content {
-				if p.Kind == llm.ContentThinking {
-					nonStreamThinking = p.Thinking
-				}
-			}
-
-			delta, err := json.Marshal(tt.fields)
+			delta, err := json.Marshal(fields)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -197,26 +190,94 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			var streamThinking *llm.ThinkingData
-			for _, p := range stream.Message.Content {
-				if p.Kind == llm.ContentThinking {
-					streamThinking = p.Thinking
-				}
+			events, err := chatStreamEvents(t, body, nil)
+			if err != nil {
+				t.Fatal(err)
 			}
-			if nonStreamThinking == nil || streamThinking == nil {
-				t.Fatalf("non-stream thinking = %+v, stream thinking = %+v", nonStreamThinking, streamThinking)
+			acc := llm.NewStreamAccumulator()
+			var liveDisplay strings.Builder
+			for _, ev := range events {
+				acc.Process(ev)
+				liveDisplay.WriteString(ev.ReasoningDelta)
 			}
-			if nonStreamThinking.Text != streamThinking.Text {
-				t.Errorf("decoder reasoning differs: non-stream %q, stream %q", nonStreamThinking.Text, streamThinking.Text)
+			if acc.Response() == nil || liveDisplay.String() != tt.display {
+				t.Fatalf("live reasoning = %q, settled = %t", liveDisplay.String(), acc.Response() != nil)
 			}
-			if nonStreamThinking.Text != tt.want {
-				t.Errorf("reasoning = %q, want %q", nonStreamThinking.Text, tt.want)
-			}
-			if nonStreamThinking.Signature != "" || streamThinking.Signature != "" {
-				t.Errorf("details replay signatures = %q and %q, want both empty", nonStreamThinking.Signature, streamThinking.Signature)
+			for name, resp := range map[string]*llm.Response{"json": &nonStream, "recorded SSE": &stream, "live SSE": acc.Response()} {
+				t.Run(name, func(t *testing.T) {
+					parts := resp.Message.Content
+					if len(parts) != 1 || parts[0].Kind != llm.ContentThinking || parts[0].Thinking == nil || parts[0].Thinking.Text != tt.display || parts[0].Thinking.Signature != "" {
+						t.Fatalf("settled detail display = %#v", parts)
+					}
+					var saved llm.Message
+					if err := json.Unmarshal([]byte(jsonOf(t, resp.Message)), &saved); err != nil {
+						t.Fatal(err)
+					}
+					if source := saved.Content[0].Thinking.ChatScalar; tt.scalar == tt.display && source != nil && source.Text != "" {
+						t.Fatal("persisted scalar duplicates its display text")
+					}
+					req := llm.Request{Model: "m", Messages: []llm.Message{saved}}
+					for _, route := range []struct {
+						caps        registry.Caps
+						field, want string
+					}{
+						{registry.Caps{ReplayReasoningText: new(true)}, tt.scalarField, tt.scalar},
+						{registry.Caps{ReplayReasoningText: new(true), ReasoningField: new("reasoning_content")}, "reasoning_content", tt.scalar},
+						{registry.Caps{ReplayReasoningText: new(true), ReasoningField: new("reasoning_details")}, "reasoning_details", tt.display},
+						{registry.Caps{}, "reasoning_content", tt.display},
+						{registry.Caps{Reasoning: new(false), ReplayReasoningText: new(true)}, "content", ""},
+						{registry.Caps{ReplayReasoningText: new(true), ThinkingAsText: new(true)}, "content", tt.display},
+					} {
+						res := resolved(nil)
+						res.Caps = route.caps
+						msg := build(t, req, res)["messages"].([]map[string]any)[0]
+						if route.field == "reasoning_details" {
+							details, _ := msg[route.field].([]map[string]any)
+							if len(details) != 1 || details[0]["text"] != route.want {
+								t.Errorf("unified replay = %#v", msg)
+							}
+						} else if msg[route.field] != route.want || msg["reasoning_details"] != nil {
+							t.Errorf("%s replay = %#v, want %q", route.field, msg, route.want)
+						}
+						for _, field := range llm.OpenAICompatReasoningFields() {
+							if field != route.field && msg[field] != nil {
+								t.Errorf("%s replay also includes %s", route.field, field)
+							}
+						}
+					}
+				})
 			}
 		})
 	}
+	t.Run("unsigned and signed details alongside a scalar", func(t *testing.T) {
+		for _, scalar := range []string{"scalar-31", "unsigned-54", "signed-68"} {
+			resp, err := fromChatCompletionResponse(chatResponseRaw(map[string]any{
+				"reasoning": scalar,
+				"reasoning_details": []any{
+					map[string]any{"type": "reasoning.text", "text": "unsigned-54", "index": 0},
+					map[string]any{"type": "reasoning.text", "text": "signed-68", "index": 1, "signature": "sig-68"},
+				},
+			}, "stop"), nil, nil)
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, err := toChatMessages([]llm.Message{resp.Message}, registry.Caps{ReplayReasoningText: new(true)}, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			details, _ := out[0]["reasoning_details"].([]map[string]any)
+			if len(details) != 1 || details[0]["text"] != "signed-68" || details[0]["signature"] != "sig-68" {
+				t.Fatalf("continuation = %#v", details)
+			}
+			want := scalar
+			if scalar == "signed-68" {
+				want = "" // The signed continuation already carries this scalar.
+			}
+			if got, _ := out[0]["reasoning"].(string); got != want || out[0]["reasoning_content"] != nil {
+				t.Errorf("scalar %q replays as %#v", scalar, out[0])
+			}
+		}
+	})
 	for _, tc := range []struct {
 		name, scalar, detail, wantScalar string
 		streamPrefix                     int
