@@ -328,6 +328,48 @@ describe("two resumes owed on one connection", () => {
 			client.close();
 		}
 	});
+
+	// Whether the hub was asked is a fact about one attempt's frame. A resume
+	// waiting for the slot has not written anything, so it must not answer with
+	// the record of the attempt that went before it: whichever ordering the two
+	// land in, only the attempt that wrote its own frame may be reported as
+	// possibly delivered, and only the one that did not may be sent again.
+	it("answers each attempt from its own frame, not the one ahead of it in the slot", async () => {
+		const { client, sockets } = await connectedFixture();
+		try {
+			// The attempt that holds the slot and loses its reply after the frame
+			// has gone out: it must be reported as delivered-but-unknown.
+			const sent = client.resumeThread("local:thread-1", {
+				beforeRequest: () => {
+					// The frame has not been written yet here; the close below lands
+					// after it, which is the uncertain case.
+				},
+			});
+			// Queued behind it: this one writes no frame of its own.
+			const refused = client.resumeThread("local:thread-1", {
+				beforeRequest: () => {
+					client.close();
+				},
+			});
+			const outcomes = await Promise.all(
+				[sent, refused].map((resume) =>
+					resume.then(
+						() => "sent" as const,
+						(cause: unknown) => cause,
+					),
+				),
+			);
+			// The second never reached the wire, so the step it stands for is still
+			// owed. Inheriting the first's mark would report it as though the hub
+			// had answered, and the restart would drop it with the daemon stopped.
+			expect(outcomes[1]).toBeInstanceOf(ResumeNotDispatched);
+			expect(sockets.flatMap((socket) => socket.methods).filter((method) => method === "thread/resume")).toHaveLength(
+				1,
+			);
+		} finally {
+			client.close();
+		}
+	});
 });
 
 // The resume recycles the socket and waits for a fresh handshake before it

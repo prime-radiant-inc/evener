@@ -767,6 +767,22 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 						}
 						if (!held) throw new ResumeAbandoned("blocked");
 					},
+					// The handshake between here and the frame is another window: the
+					// reader can discard the last waiting message while the resume's
+					// replacement socket is coming up, and restarting the session then
+					// would do it for a row that is gone. Only the message is asked
+					// again — the read lease is not, because the recycle on the way
+					// through has already cleared this registration's token, so asking
+					// it here would call every resume superseded.
+					beforeRequest: async () => {
+						let held: boolean;
+						try {
+							held = await stillWanted();
+						} catch {
+							throw new ResumeAbandoned("retry");
+						}
+						if (!held) throw new ResumeAbandoned("blocked");
+					},
 				})
 				.catch((cause: unknown) => {
 					if (cause instanceof ResumeAbandoned) return cause;

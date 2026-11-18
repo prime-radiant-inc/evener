@@ -284,10 +284,18 @@ function waitForReady(client: AppwireClient): Promise<void> {
 
 const DEFAULT_RESUME_WAIT_MS = 30_000;
 
+/** Which attempt's frame a socket write belongs to. The slot guarantees at most
+ * one attempt is sending, so the socket names the holder rather than the client
+ * guessing from call order: a resume that queues behind another must not inherit
+ * an answer owed to it. */
+interface ResumeFrames {
+	holding: { sent: boolean } | null;
+}
+
 /** Watches one socket for the resume frame. The client writes every request as
  * JSON with its method, so the frame is identified by that alone; a socket
  * that fails to send records nothing, which is the point. */
-function watchResumeFrames(socket: WebSocketLike, seen: { sent: boolean }): WebSocketLike {
+function watchResumeFrames(socket: WebSocketLike, frames: ResumeFrames): WebSocketLike {
 	return {
 		get onopen() {
 			return socket.onopen;
@@ -316,7 +324,7 @@ function watchResumeFrames(socket: WebSocketLike, seen: { sent: boolean }): WebS
 		send(data: string) {
 			// Recorded after the socket takes it: a send that throws left nothing.
 			socket.send(data);
-			if (data.includes('"method":"thread/resume"')) seen.sent = true;
+			if (frames.holding !== null && data.includes('"method":"thread/resume"')) frames.holding.sent = true;
 		},
 		close(code?: number) {
 			socket.close(code);
@@ -332,7 +340,7 @@ export function createHubClient(origin: string, token: string, socketFactory: Na
 	// still refuse without a byte leaving. Marking dispatch anywhere before the
 	// frame is what let a never-sent resume be reported as though the hub had
 	// answered it.
-	const resumeFrame = { sent: false };
+	const frames: ResumeFrames = { holding: null };
 	const client = new AppwireClient({
 		url: connectionTarget(origin),
 		clientInfo: { name: "evener-native", version: "0.3.0" },
@@ -341,22 +349,31 @@ export function createHubClient(origin: string, token: string, socketFactory: Na
 				socketFactory(url, {
 					headers: token ? { Authorization: `Bearer ${token}` } : {},
 				}),
-				resumeFrame,
+				frames,
 			),
 	});
 	const resumeThread = client.resumeThread.bind(client);
 	client.resumeThread = (ref: string, options?: Parameters<typeof resumeThread>[1]) => {
 		const admission = options as ResumeAdmission | undefined;
-		resumeFrame.sent = false;
+		// This attempt's own dispatch record. It is installed only once the slot
+		// is held, so a resume still queued behind another cannot see — or clear —
+		// the answer owed to the attempt that is actually on the wire.
+		const frame = { sent: false };
 		return admitResume(
 			client,
-			() =>
-				resumeThread(ref, {
-					...options,
-					beforeRequest: async () => {
-						await options?.beforeRequest?.();
-					},
-				}),
+			async () => {
+				frames.holding = frame;
+				try {
+					return await resumeThread(ref, {
+						...options,
+						beforeRequest: async () => {
+							await options?.beforeRequest?.();
+						},
+					});
+				} finally {
+					if (frames.holding === frame) frames.holding = null;
+				}
+			},
 			admission?.beforeRecycle,
 		).catch((cause: unknown) => {
 			// The caller decided the resume was not wanted: nothing was sent, and
@@ -367,7 +384,7 @@ export function createHubClient(origin: string, token: string, socketFactory: Na
 			if (cause instanceof WireError) throw cause;
 			// No resume frame left the socket, so there is nothing the hub could
 			// have taken: the step is still owed and may be sent again.
-			if (!resumeFrame.sent)
+			if (!frame.sent)
 				throw new ResumeNotDispatched(cause instanceof Error ? cause.message : "The connection did not come back");
 			// The frame went out. Whether the hub took it is unknowable here,
 			// so it is reported and never replayed.

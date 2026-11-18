@@ -121,6 +121,14 @@ function SessionInfoBody({
 	const navigation = useNavigation<NativeStackNavigationProp<Routes>>();
 	const state = useControlsState(host.controls);
 	const { session, ready } = host;
+	// What a rename or compaction that outlived its controls could not confirm.
+	// A reconnect replaces the controls while the request is out, and the answer
+	// lands on the retired set this sheet no longer renders from, so its error
+	// would never be read here: the reader comes back to an editable title or an
+	// enabled Compact with nothing saying the last attempt was unconfirmed. The
+	// failure is read off the set that sent it and kept here, the same way the
+	// Model sheet reports a pick made across a reconnect.
+	const [unconfirmed, setUnconfirmed] = useState<string | null>(null);
 	const capabilities = session.capabilities;
 	const sessionHost = host.host(hostIdOf(session.ref));
 	const where = whereFacts(session, () => sessionHost.label);
@@ -150,7 +158,12 @@ function SessionInfoBody({
 		// reader typed while waiting. Settling this request must not clear a
 		// draft it does not own: only the one it submitted goes.
 		const submitted = editing.text;
-		if ((await host.controls.rename(submitted)) === true) {
+		// The controls this request was sent on: once it answers, they may no
+		// longer be the ones this sheet renders from.
+		const sentWith = host.controls;
+		// A new attempt answers for itself, so the previous one stops showing.
+		setUnconfirmed(null);
+		if ((await sentWith.rename(submitted)) === true) {
 			setEditing((current) => (current !== null && current.text === submitted ? null : current));
 			// The hub took the name, so the editor clears whichever screen is in
 			// front. The toast is the reader's question, and this sheet being on
@@ -164,9 +177,18 @@ function SessionInfoBody({
 			// is looking at that sheet's rows instead.
 			if (screenInFront(navigation, routeKey) && onTop(navigation.getState(), routeKey))
 				toast.show({ kind: "rename:done", text: "Session renamed" });
+		} else {
+			// The hub did not confirm it. The report belongs to the set that asked,
+			// and the draft stays: the reader is still editing the name that was
+			// refused, so clearing it would throw away what they typed.
+			const failure = sentWith.getSnapshot().error;
+			if (failure) setUnconfirmed(failure);
 		}
 	};
 	const error = state?.error && !(state.lastAction && MODEL_ACTIONS.has(state.lastAction)) ? state.error : null;
+	// A carried failure is this sheet's own record of an attempt made from it,
+	// so it shows wherever the sheet still represents the same session.
+	const shown = unconfirmed ?? error;
 	return (
 		<GroupedPage>
 			<View style={{ paddingHorizontal: space.margin, paddingTop: 4, gap: 4 }}>
@@ -350,8 +372,21 @@ function SessionInfoBody({
 						label="Compact context"
 						tone="accent"
 						disabled={!ready}
-						onPress={() =>
+						onPress={() => {
+							// The set this request is sent on. A reconnect can replace it
+							// while the reply is out, and a refusal it recorded is then
+							// invisible here: the sheet reads the replacement's state.
+							const sentWith = host.controls;
+							setUnconfirmed(null);
 							void host.act("compact").then((message) => {
+								// A refusal is the sending set's error, not a toast: carry it
+								// here so the reader returning to this sheet learns that the
+								// last attempt could not be confirmed, rather than finding
+								// Compact offered again with no report.
+								if (!message) {
+									const failure = sentWith?.getSnapshot().error;
+									if (failure) setUnconfirmed(failure);
+								}
 								// The same rule as the rename: the action settles
 								// wherever it was asked from, and its toast belongs to
 								// whoever is still looking at this sheet, which an outer
@@ -360,8 +395,8 @@ function SessionInfoBody({
 								// leaving this stack.
 								if (message && screenInFront(navigation, routeKey) && onTop(navigation.getState(), routeKey))
 									toast.show(message);
-							})
-						}
+							});
+						}}
 					/>
 				) : null}
 				<Row label="Pin to category…" tone="accent" onPress={() => leaveFor("pin")} />
@@ -378,11 +413,11 @@ function SessionInfoBody({
 					<Row label="Delete" tone="danger" onPress={() => leaveFor("delete")} />
 				) : null}
 			</Group>
-			{error ? (
+			{shown ? (
 				// The shared GroupFooter is a plain Text; keep the alert so VoiceOver
 				// still announces a failed action.
 				<View accessible accessibilityRole="alert">
-					<GroupFooter tone="danger">{error}</GroupFooter>
+					<GroupFooter tone="danger">{shown}</GroupFooter>
 				</View>
 			) : null}
 		</GroupedPage>

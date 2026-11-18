@@ -693,6 +693,38 @@ describe("renaming", () => {
 		await act(async () => field.props.onSubmitEditing());
 		expect(markers(tree, "toast")).toEqual(["rename:done"]);
 	});
+
+	// A reconnect replaces the controls while the rename is out, and the hub's
+	// refusal lands on the retired set. This sheet renders the replacement's
+	// state, so without carrying the answer the reader comes back to an editable
+	// title with nothing saying the last attempt could not be confirmed, and a
+	// second tap looks like the first one never happened.
+	it("reports a rename the hub could not confirm after its controls were replaced", async () => {
+		const reply = Promise.withResolvers<boolean>();
+		const sentWith = fakeControls({ error: "rejection-sentinel" });
+		sentWith.rename.mockImplementation(() => reply.promise);
+		provide(conversation({ capabilities: { ...NONE, rename: true } }), {
+			controls: sentWith as unknown as SessionControls,
+		});
+		const tree = sheet();
+		press(tree, "Fix the settle race, rename");
+		const field = tree.root.find((node) => String(node.type) === "TextInput");
+		act(() => field.props.onChangeText("Settle race"));
+		act(() => void field.props.onSubmitEditing());
+		// The reconnect hands the sheet a fresh set while the refusal is still out.
+		act(() => {
+			provide(conversation({ capabilities: { ...NONE, rename: true } }), {
+				controls: fakeControls() as unknown as SessionControls,
+			});
+		});
+		act(() => reply.resolve(false));
+		await settle();
+		// The answer is the sending set's, and the sheet that is still attached to
+		// this session reports it.
+		expect(tree.root.findAll((node) => node.props.accessibilityRole === "alert")).toHaveLength(1);
+		// The draft stays: it is the name the reader asked for and the hub refused.
+		expect(tree.root.find((node) => String(node.type) === "TextInput").props.value).toBe("Settle race");
+	});
 });
 
 describe("the goal", () => {

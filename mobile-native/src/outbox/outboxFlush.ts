@@ -210,7 +210,7 @@ export class OutboxFlush {
 					// The screen is not reading here, and a resume writes nothing, so
 					// this path owns the follow-up for a settle that resumed but could
 					// not finish - the same reason the claim path does.
-					if (answer === "resumed") this.retryTargetSoon();
+					if (answer === "resumed" || answer === "stale") this.retryTargetSoon();
 					// A predicate that could not read storage: retry on the existing
 					// storage backoff, since the message behind it is still waiting.
 					else if (answer === "retry") {
@@ -253,7 +253,15 @@ export class OutboxFlush {
 			// resume recycled its transport) leaves the row parked with no storage
 			// write to wake this flush, so it owns the next look. A plain "blocked"
 			// is a fence or a failure and waits as it always did.
-			if (answer === "resumed") this.retryTargetSoon();
+			//
+			// A superseded read is the same shape: a newer read took the target
+			// while this settle waited for the connection's resume slot, so the
+			// attempt ended without sending and without a storage write. Both sides
+			// of that race leave the row parked, and whichever lost looks again
+			// rather than leaving the message queued on a working connection. The
+			// look is cheap when the newer read already settled the row: flush
+			// checks for a waiting message before it settles anything.
+			if (answer === "resumed" || answer === "stale") this.retryTargetSoon();
 			else if (answer === "retry") {
 				this.readFailures += 1;
 				this.retryLater(generation);

@@ -695,6 +695,50 @@ it("reads the hub and ref out of a composite target key", () => {
 	expect(parseTargetKey(JSON.stringify(["hub-1"]))).toBeNull();
 });
 
+// A settle can be superseded while it waits for the connection's one resume
+// slot: a newer read takes the target over and the queued attempt is answered
+// "stale" without a byte sent. Nothing was written to storage either, so no
+// change wakes this flush and the row would sit queued on a working connection
+// until an unrelated event looked again. The attempt that lost the race owns
+// the next look, exactly as one that resumed and could not finish does.
+it("looks again for a settle superseded while it waited for the resume slot", async () => {
+	vi.useFakeTimers();
+	try {
+		const outbox = runtime();
+		await outbox.submit(message());
+		const client = new FakeClient("ready");
+		let fenced = true;
+		client.on("thread/read", () => (fenced ? fencedRead("ref-1") : read("ref-1")));
+		client.on("thread/resume", () => {
+			fenced = false;
+			return read("ref-1");
+		});
+		client.on("turn/start", applied);
+		const settleTarget = outbox.settleTarget.bind(outbox);
+		let settles = 0;
+		vi.spyOn(outbox, "settleTarget").mockImplementation(async (...args) => {
+			settles += 1;
+			// The first attempt is the one another read superseded.
+			if (settles === 1) return "stale";
+			return settleTarget(...args);
+		});
+		const flush = new OutboxFlush(() => outbox);
+		flush.bind("hub-1", client);
+		await vi.advanceTimersByTimeAsync(0);
+		expect(settles).toBe(1);
+		// Nothing touched storage: the message is still waiting, and the only
+		// thing that will look again is the retry the stale answer schedules.
+		expect(methods(client)).not.toContain("turn/start");
+		await vi.advanceTimersByTimeAsync(500);
+		await vi.waitFor(() => expect(methods(client)).toContain("turn/start"));
+		expect(settles).toBeGreaterThan(1);
+		flush.dispose();
+		await outbox.stop();
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
 // An identity-changing resume registers the resolved identity for the
 // runtime's lifetime. The runtime outlives an ordinary connection replacement,
 // so that entry can be left holding a client nobody serves. A registration is

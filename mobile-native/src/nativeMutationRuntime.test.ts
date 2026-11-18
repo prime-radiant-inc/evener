@@ -790,6 +790,45 @@ test("drops an automatic resume whose message was withdrawn before it was sent",
 	await runtime.stop();
 });
 
+// The revalidation before the recycle is not the last chance to withdraw: the
+// resume then retires the socket and waits for a replacement handshake, and the
+// reader can discard the last waiting message inside that window. Sending after
+// it would restart the session for a row that is gone.
+test("drops an automatic resume whose message is withdrawn during the replacement handshake", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase(), { createMutationId: () => "mutation-1" });
+	const client = new FakeClient("ready");
+	client.on("thread/read", () => readResponse("ref-1", { resumeRequired: true }));
+	client.on("thread/resume", () => readResponse("ref-1", {}));
+	client.on("turn/start", appliedReceipt);
+	await registerAndStart(runtime, client);
+	await runtime.submit(request("send"));
+
+	// Standing in for the connection's ordering: one admission, then the
+	// withdrawal window the replacement handshake opens, then the frame. The
+	// first hook is unchanged by this test's subject; the second is the window.
+	const send = client.resumeThread.bind(client);
+	let waiting = true;
+	client.resumeThread = (async (
+		ref: string,
+		options?: { beforeRecycle?: () => void | Promise<void>; beforeRequest?: () => void | Promise<void> },
+	) => {
+		await options?.beforeRecycle?.();
+		// The handshake is out and the reader discards the message behind it.
+		waiting = false;
+		await options?.beforeRequest?.();
+		return send(ref, options);
+	}) as typeof client.resumeThread;
+
+	const answer = await runtime.settleTarget("hub-1", "ref-1", client, {
+		mayResumeFenced: async () => waiting,
+	});
+	// The withdrawal is not a hub refusal and not a failed read: the session has
+	// nothing to resume for, so the row rests parked.
+	expect(answer).toBe("blocked");
+	expect(client.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+	await runtime.stop();
+});
+
 // A resume can hand back a different identity. The parked row must move with
 // it, keeping its clientMutationId (the daemon's reconciliation key) and taking
 // the resumed instance fence, or it dispatches against an instance the daemon
