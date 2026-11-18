@@ -708,15 +708,23 @@ func (s *Session) removeChildUnreachableTools(names []string, isolationName stri
 // The answer can flip while the session runs, and it is recorded as it is
 // computed (noteExclusionDecision) so every cache built from it can tell that it
 // was built from an older answer.
+//
+// The RECORDED decision is the shared-workspace one. A worktree lane is a
+// per-spawn exception on top of it, not a different decision: recording the
+// exception in the shared version made one worktree spawn stamp the roster
+// caches as stale, and the next model request flipped the recorded answer back
+// to the shared one and rebuilt both caches although their shared-workspace
+// roster was unchanged. The exception therefore applies in the returned value
+// only, so a caller deriving a lane's ceiling gets it and the caches do not.
 func (s *Session) childExclusionDecision(isolationName string) (managerOnly, cliMCP map[string]bool, excludeCLIMCP bool) {
 	s.delegateExclusionsMu.RLock()
 	managerOnly = s.managerOnlyTools
 	cliMCP = s.cliMCPToolNames
 	fresh := s.cliMCPEvidenceFreshKnown && s.cliMCPEvidenceFresh
 	s.delegateExclusionsMu.RUnlock()
-	excludeCLIMCP = len(cliMCP) > 0 && isolationName != "worktree" && fresh
-	s.noteExclusionDecision(excludeCLIMCP)
-	return managerOnly, cliMCP, excludeCLIMCP
+	shared := len(cliMCP) > 0 && fresh
+	s.noteExclusionDecision(shared)
+	return managerOnly, cliMCP, shared && isolationName != "worktree"
 }
 
 // cliMCPClassificationEvidence is what the CLI-only MCP classification was

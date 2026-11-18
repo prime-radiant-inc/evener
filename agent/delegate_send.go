@@ -643,23 +643,22 @@ func (runtime delegateRuntime) stableSendFailureOutcomeAfterDispatch(ctx context
 
 func delegateFailedSendResult(started delegateStartCommit, plans delegateMutationPlans, cause error, nameMap ...map[string]string) sendMessageResult {
 	snapshot := latestDelegateMutationSnapshot(started.lease.delegateID, started.plan, plans)
-	if snapshot.id == "" {
-		// No snapshot row was selected for this delegate, so the ceiling the
-		// availability fallback would read is the zero snapshot's nil tool
-		// ceiling. Use the start commit's frozen ceiling instead: it is the
-		// descriptor this delegate was started with. A selected row still wins,
-		// and so does an observation, so an observed empty list remains an
-		// answer rather than a missing one.
-		snapshot.descriptor = started.descriptor
-	}
 	resumable := snapshot.resumable
 	// The SAME resolution job_status reads. A stop that wins after the runtime
 	// attached has a recorded observation for this generation, and building the
 	// receipt from the descriptor ceiling instead advertises a tool the status
-	// read correctly omits for it. delegateAvailability prefers a live runtime,
-	// then this generation's settled record, and falls back to the ceiling only
-	// for a delegate no generation of which was ever observed.
-	tools := delegateAvailability(snapshot, nameMap...)
+	// read correctly omits for it.
+	//
+	// An unobserved generation reports the ceiling this send started it with, not
+	// the selected row's descriptor: the row can be absent or carry no ceiling,
+	// and the start commit's descriptor is the one the child was started under.
+	tools, observed := delegateObservedTools(snapshot)
+	if !observed {
+		tools = append([]string(nil), started.descriptor.ToolNameCeiling...)
+	}
+	if len(nameMap) > 0 && nameMap[0] != nil {
+		tools = providerVisibleToolNames(tools, nameMap[0])
+	}
 	result := sendMessageResult{
 		Target:              started.lease.delegateID,
 		DelegateID:          started.lease.delegateID,

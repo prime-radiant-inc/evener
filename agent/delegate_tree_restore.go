@@ -491,6 +491,12 @@ func (c *delegateTreeController) reconcileRecoveryRequiredStopLocked() (delegate
 		plans, cancel, finishErr := c.executeFinishDecisionLocked(c.reduceStoppedGenerationFinishIntent(finishIntent{
 			lease: lease,
 			latch: finishLatchNone,
+			// The retry settles the generation the first append failed to settle,
+			// so it must record that generation's observation just as the first
+			// attempt did. boundRuntimeLocked samples the runtime BY GENERATION: a
+			// resident runtime from an earlier generation is not this one's, and
+			// nil then means no observation rather than an observed empty registry.
+			runtime: c.boundRuntimeLocked(live, lease.generation),
 		}))
 		if finishErr != nil {
 			return delegateMutationPlans{}, nil, fmt.Errorf("reconcile delegate %s recovery-required stop: %w", lease.delegateID, finishErr)

@@ -203,7 +203,7 @@ func discoverPluginMCPConfigs(pluginDir string, manifestMCPServers json.RawMessa
 	switch {
 	case err == nil:
 		layers = append(layers, fileConfigs)
-		fileEvidence = mcpconfig.LayerEvidence{Path: mcpPath, Digest: mcpconfig.ConfigDigest(fileBytes)}
+		fileEvidence = mcpconfig.LayerEvidence{Path: mcpPath, Digest: mcpconfig.ConfigDigest(fileBytes), Size: int64(len(fileBytes))}
 	case os.IsNotExist(err):
 		// Missing file is not an error.
 		fileEvidence = mcpconfig.LayerEvidence{Path: mcpPath}
@@ -319,6 +319,7 @@ func loadResolution(resolution manifestResolution) (Instance, error) {
 	lp.MCPEvidence = []mcpconfig.LayerEvidence{{
 		Path:   manifestPath,
 		Digest: mcpconfig.ConfigDigest(data),
+		Size:   int64(len(data)),
 	}}
 	lp.Skills = discoverPluginSkills(resolved, manifest.Name)
 
@@ -516,6 +517,7 @@ func LoadAllFailSoft(dirs []string) ([]Instance, []SkippedPlugin) {
 				Evidence: mcpconfig.LayerEvidence{
 					Path:           resolution.ManifestPath,
 					Digest:         resolution.ManifestDigest,
+					Size:           int64(len(resolution.ManifestBytes)),
 					ConfiguredPath: dir,
 					ResolvedDir:    resolution.ResolvedDir,
 				},

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -133,6 +134,31 @@ func TestDelegateResult(t *testing.T) {
 	result5 := startedDelegateResult(descriptor, "dlg_1", emptyCommitted, delegateMutationPlans{}, nil)
 	if result5.Status != jobstore.StatusRunning {
 		t.Errorf("status = %q, want running for empty snapshot", result5.Status)
+	}
+	// A generation that attached and then settled with its own observation
+	// reports what the child registered, not the descriptor ceiling. A stop that
+	// wins between attach and the initial input commit produces exactly this
+	// row, and reading the ceiling here made the receipt advertise tools that
+	// job_status omits for the same generation.
+	descriptorWithCeiling := descriptor
+	descriptorWithCeiling.ToolNameCeiling = []string{"shell", "grep", "read_file"}
+	observedCommitted := delegateUpdatePlan{rows: []delegateSnapshot{
+		{id: "dlg_1", lifecycle: delegateLifecycleIdle, generation: 1, observedTools: []string{"read_file"}},
+	}}
+	if got := startedDelegateResult(descriptorWithCeiling, "dlg_1", observedCommitted, delegateMutationPlans{}, nil).Tools; !slices.Equal(got, []string{"read_file"}) {
+		t.Errorf("tools = %v, want the generation's observed registration [read_file] rather than the frozen ceiling", got)
+	}
+	// An observed EMPTY registration is an answer, not a missing one, and must
+	// not be replaced by the ceiling either.
+	emptyObserved := delegateUpdatePlan{rows: []delegateSnapshot{
+		{id: "dlg_1", lifecycle: delegateLifecycleIdle, generation: 1, observedTools: []string{}},
+	}}
+	if got := startedDelegateResult(descriptorWithCeiling, "dlg_1", emptyObserved, delegateMutationPlans{}, nil).Tools; len(got) != 0 {
+		t.Errorf("tools = %v, want empty for a generation observed registering nothing", got)
+	}
+	// With no observation at all the ceiling is still the answer.
+	if got := startedDelegateResult(descriptorWithCeiling, "dlg_1", committed, delegateMutationPlans{}, nil).Tools; !slices.Equal(got, descriptorWithCeiling.ToolNameCeiling) {
+		t.Errorf("tools = %v, want the frozen ceiling %v for an unobserved generation", got, descriptorWithCeiling.ToolNameCeiling)
 	}
 }
 

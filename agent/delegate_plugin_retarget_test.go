@@ -309,10 +309,13 @@ func TestDuplicatePluginRetargetInvalidatesTheEvidence(t *testing.T) {
 	// namespace.
 	dupV1 := filepath.Join(root, "dup-v1")
 	writePlugin(dupV1, "team-plugin", `{"mcpServers":{"other":{"command":"/bin/other"}}}`)
-	// v2 keeps the duplicate's manifest name — a retargeted directory is still a
-	// duplicate — and declares the matching server.
+	// v2 carries a DIFFERENT manifest name and declares the matching server. The
+	// distinct name is the point: if v2 kept "team-plugin" it would still be
+	// skipped as a duplicate after the retarget, so a fresh child would load
+	// nothing from it and the test would never exercise the case it claims to —
+	// a child loading a server that only became reachable through the retarget.
 	dupV2 := filepath.Join(root, "dup-v2")
-	writePlugin(dupV2, "team-plugin", `{"mcpServers":{"other":{"command":"/bin/other"},"svc":{"command":"/bin/svc"}}}`)
+	writePlugin(dupV2, "team-plugin-v2", `{"mcpServers":{"other":{"command":"/bin/other"},"svc":{"command":"/bin/svc"}}}`)
 
 	skippedDir := filepath.Join(root, "skipped")
 	if err := os.Symlink(dupV1, skippedDir); err != nil {
@@ -355,5 +358,20 @@ func TestDuplicatePluginRetargetInvalidatesTheEvidence(t *testing.T) {
 	}
 	if got := ceilingOf(); !slices.Contains(got, cliTool) {
 		t.Errorf("the skipped directory now resolves to a plugin declaring a server matching %q, which a child loads; the winner is unchanged, so only the duplicate's own recorded resolution can notice: %v", cliTool, got)
+	}
+
+	// The claim above is that a CHILD loads this plugin. Prove it rather than
+	// asserting it: a fresh load over the same directories must select v2 and
+	// expose its server, which is what makes the exclusion wrong in the
+	// permissive direction had it been kept.
+	fresh := &Session{env: execenv.NewLocalExecutionEnvironment(root)}
+	fresh.setManagerOnlyTools(nil)
+	freshLoad := fresh.loadPluginsFailSoft([]string{winner, skippedDir})
+	var loadedNames []string
+	for _, instance := range freshLoad {
+		loadedNames = append(loadedNames, instance.Manifest.Name)
+	}
+	if !slices.Contains(loadedNames, "team-plugin-v2") {
+		t.Fatalf("a fresh child did not load the retargeted plugin, so this fixture does not exercise a newly reachable server: loaded %v", loadedNames)
 	}
 }

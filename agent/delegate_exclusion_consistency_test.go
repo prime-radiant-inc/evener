@@ -532,3 +532,50 @@ func TestConfigEditAloneInvalidatesTheCachedAnswer(t *testing.T) {
 		t.Errorf("the ceiling still excludes %q after the config edit: %v", cliTool, got)
 	}
 }
+
+// A worktree spawn is a per-lane exception, not a change to the session's
+// shared-workspace decision. Recording it in the shared version stamped both
+// roster caches stale, so the next model request flipped the recorded answer
+// back and rebuilt them although the shared-workspace roster was unchanged.
+func TestWorktreeSpawnDoesNotInvalidateTheSharedRosterCaches(t *testing.T) {
+	// Not parallel: hermeticInfraEnv calls t.Setenv.
+	hermeticInfraEnv(t)
+	root := realTempDirForTest(t)
+	// A real git root, because the project layer only resolves inside one: without
+	// it the evidence is never fresh and the exclusion never applies, which made
+	// this fixture pass while testing nothing.
+	runInfraGit(t, root, "init", "-q")
+	writeInfraFile(t, filepath.Join(root, ".evener", "mcp.json"), `{"mcpServers":{"svc":{"command":"/bin/a"}}}`, 0o644)
+	env := execenv.NewLocalExecutionEnvironment(root)
+
+	const cliTool = "svc__echo"
+	s := newSession(t, withEnv(env))
+	_, _, evidence, _, err := mcpconfig.DiscoverWithCLIOnlyAndEvidence(env, nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.setCLIMCPServers(map[string]bool{"svc": true}, nil, evidence)
+	s.setCLIMCPToolNames(map[string]bool{cliTool: true})
+
+	// Settle both caches on the shared-workspace answer.
+	for range 4 {
+		s.refreshCachesForExclusionChange()
+	}
+	settled := s.exclusionVersion()
+
+	// The lane's own ceiling keeps the CLI-only name: the startup snapshot
+	// describes the session's workspace, not the fresh lane's, so reachability
+	// there is unknown and unknown means the child gets to try. The exception is
+	// real, and only its bookkeeping changed.
+	if got := s.removeChildUnreachableTools([]string{cliTool, "read_file"}, "worktree"); !slices.Contains(got, cliTool) {
+		t.Fatalf("a fresh worktree lane dropped a CLI-only name whose reachability there is unknown: %v", got)
+	}
+	// The shared workspace still applies the exclusion.
+	if got := s.removeChildUnreachableTools([]string{cliTool, "read_file"}, ""); slices.Contains(got, cliTool) {
+		t.Fatalf("the shared workspace stopped applying the exclusion: %v", got)
+	}
+
+	if got := s.exclusionVersion(); got != settled {
+		t.Fatalf("deriving a worktree lane's ceiling moved the shared decision version from %d to %d, so the next request rebuilds both roster caches for an unchanged shared roster", settled, got)
+	}
+}

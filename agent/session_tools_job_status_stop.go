@@ -368,19 +368,38 @@ func projectDelegateStatus(now time.Time, snapshot delegateSnapshot, nameMap ...
 // An observed empty list is an answer ("it registered nothing") and is never
 // replaced by the ceiling.
 func delegateAvailability(snapshot delegateSnapshot, nameMap ...map[string]string) []string {
-	var tools []string
-	switch {
-	case snapshot.observedTools != nil:
-		tools = append([]string(nil), snapshot.observedTools...)
-	case snapshot.settledObservation != nil && snapshot.observedGeneration == snapshot.generation:
-		tools = append([]string(nil), snapshot.settledObservation...)
-	default:
+	tools, observed := delegateObservedTools(snapshot)
+	if !observed {
 		tools = append([]string(nil), snapshot.descriptor.ToolNameCeiling...)
 	}
 	if len(nameMap) > 0 && nameMap[0] != nil {
 		tools = providerVisibleToolNames(tools, nameMap[0])
 	}
 	return tools
+}
+
+// delegateObservedTools reports the registrations observed for the generation a
+// snapshot describes, and whether it carries one at all. The three cases are
+// distinct and every caller must keep them apart:
+//
+//   - observed, possibly EMPTY: the child registered these names. An empty list
+//     is an answer — the child registered nothing — and is never replaced by a
+//     ceiling.
+//   - not observed: no runtime reported for this generation. The caller supplies
+//     the ceiling it started the generation with.
+//
+// A live runtime is read at capture time and only while it is bound to this
+// generation; a settled record is this generation's only while the stamp says
+// so, because a cold restart commits the new generation before its runtime
+// attaches and the previous run's record still stands until then.
+func delegateObservedTools(snapshot delegateSnapshot) ([]string, bool) {
+	if snapshot.observedTools != nil {
+		return append([]string(nil), snapshot.observedTools...), true
+	}
+	if snapshot.settledObservation != nil && snapshot.observedGeneration == snapshot.generation {
+		return append([]string(nil), snapshot.settledObservation...), true
+	}
+	return nil, false
 }
 
 // projectDelegateStatusWithoutTools projects everything a status row reports

@@ -853,6 +853,16 @@ func startedDelegateResult(descriptor delegatestore.Descriptor, delegateID strin
 	if status == "" {
 		status = jobstore.StatusRunning
 	}
+	// The SAME rule job_status reads: a row that observed this generation
+	// reports what the child registered, and only an unobserved generation
+	// reports the frozen ceiling. A stop that wins between attach and the
+	// initial input commit settles this generation WITH its observation, so
+	// reading the descriptor ceiling here would advertise tools the status read
+	// correctly omits for the same generation.
+	tools, observed := delegateObservedTools(snapshot)
+	if !observed {
+		tools = append([]string(nil), descriptor.ToolNameCeiling...)
+	}
 	result := delegateResult{
 		DelegateID:          delegateID,
 		ChildSessionID:      descriptor.ChildSessionID,
@@ -860,7 +870,7 @@ func startedDelegateResult(descriptor delegatestore.Descriptor, delegateID strin
 		Status:              status,
 		Name:                descriptor.Name,
 		AgentType:           descriptor.AgentType,
-		Tools:               append([]string(nil), descriptor.ToolNameCeiling...),
+		Tools:               tools,
 		Resumable:           &resumable,
 		RunningInBackground: true,
 		TranscriptRef:       descriptor.TranscriptRef,

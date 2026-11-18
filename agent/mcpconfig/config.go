@@ -114,7 +114,7 @@ func loadLayerEvidence(path string, expand func(string) (string, error)) ([]Serv
 	if err != nil {
 		return nil, LayerEvidence{}, err
 	}
-	return configs, LayerEvidence{Path: path, Digest: ConfigDigest(data)}, nil
+	return configs, LayerEvidence{Path: path, Digest: ConfigDigest(data), Size: int64(len(data))}, nil
 }
 
 func loadFile(path string, expand func(string) (string, error)) ([]ServerConfig, error) {
@@ -483,6 +483,12 @@ func ProjectConfigPathFreshDefinitive(env execenv.ExecutionEnvironment) (string,
 type LayerEvidence struct {
 	Path   string
 	Digest string
+	// Size is the byte length of the file Digest fingerprints. It is recorded so
+	// a freshness check can refuse a file whose size already differs without
+	// reading a byte, and so a layer recorded ABSENT (empty Digest) can be
+	// checked by existence alone. Without it, every check had to read the whole
+	// file to discover that it had nothing to compare against.
+	Size int64
 	// ConfiguredPath is the path as it was CONFIGURED, before symlinks were
 	// resolved, and ResolvedDir is the directory it resolved to at load time.
 	// Both are recorded for layers whose contents are found by following a path
@@ -608,10 +614,12 @@ func (e ConfigEvidence) EvidenceCurrent(env execenv.ExecutionEnvironment) bool {
 // a match: the directory may be mid-upgrade, and a name must not be excluded on a
 // comparison that could not be made.
 //
-// The comparison is containment rather than equality, because Path is a FILE
-// inside the resolved directory. If the configured directory no longer resolves
-// to a directory that contains that file, the layer this evidence describes is
-// not the layer a child would read.
+// The comparison is exact equality with the directory recorded at load, not
+// containment. Containment answers the wrong question: a plugin symlink
+// retargeted from a version subdirectory to that subdirectory's PARENT still
+// contains every recorded file, so containment passes while the child reads the
+// parent's manifest and MCP config instead. Equality is the only form that
+// notices a move in either direction.
 func pluginConfiguredPathCurrent(plugin LayerEvidence) bool {
 	if plugin.ConfiguredPath == "" || plugin.ResolvedDir == "" {
 		return true
@@ -629,6 +637,20 @@ func pluginConfiguredPathCurrent(plugin LayerEvidence) bool {
 // layerEvidenceCurrent compares one layer's recorded evidence against what that
 // path says now. An empty recorded Path is a layer discovery never resolved, and
 // it stays current only while the workspace still resolves to none.
+//
+// The file's identity is settled by STAT before anything is read, because this
+// runs on every model round:
+//
+//   - Recorded absent (empty Digest): the layer is current only while the path
+//     still does not exist. A file that appeared there is a change, and it is
+//     answered by the stat that found it — reading it would allocate its whole
+//     contents on every request just to learn the recorded digest is empty.
+//   - Recorded present: a size that differs from the recorded one is already a
+//     change, so it answers without a read. Only a same-size file is read, where
+//     the digest comparison is the thing that can still tell them apart.
+//
+// A path that cannot be statted is UNKNOWN, not absent: the caller reads "not
+// current" as unknown reachability and leaves the names eligible.
 func layerEvidenceCurrent(recorded LayerEvidence, path string) bool {
 	if recorded.Path == "" {
 		return path == ""
@@ -636,12 +658,22 @@ func layerEvidenceCurrent(recorded LayerEvidence, path string) bool {
 	if path != recorded.Path {
 		return false
 	}
+	if recorded.Digest == "" {
+		_, err := os.Lstat(recorded.Path)
+		return errors.Is(err, os.ErrNotExist)
+	}
+	info, err := os.Lstat(recorded.Path)
+	if err != nil {
+		return false
+	}
+	if info.Mode().IsRegular() && info.Size() != recorded.Size {
+		return false
+	}
 	data, err := execenv.ReadFileCapped(recorded.Path)
 	if err != nil {
-		// Recorded as absent (empty digest) and still absent.
-		return errors.Is(err, os.ErrNotExist) && recorded.Digest == ""
+		return false
 	}
-	return recorded.Digest != "" && ConfigDigest(data) == recorded.Digest
+	return int64(len(data)) == recorded.Size && ConfigDigest(data) == recorded.Digest
 }
 
 // DiscoverWithCLIOnlyAndEvidence is Discover plus two things read in the same
