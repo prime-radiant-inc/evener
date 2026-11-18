@@ -963,6 +963,14 @@ function quotaWaitStampsCorrelate(
   return model.modelRetry?.waitStartedAt !== undefined && read.quotaWaitStartedAt !== undefined;
 }
 
+// isRootThread names the read's route by the thread's own shape: a root's
+// kind is "session" (the hub stamps it on indexed roots) or unset, and no
+// parentRef. A delegate names itself with kind "subagent", a fork with a
+// parentRef.
+function isRootThread(thread: Pick<ThreadModel, "kind" | "parentRef">): boolean {
+  return thread.parentRef === undefined && (thread.kind === undefined || thread.kind === "session");
+}
+
 export function applyReadResponse<M extends ThreadModel>(
   model: M,
   resp: ThreadReadResponse,
@@ -1052,15 +1060,15 @@ export function applyReadResponse<M extends ThreadModel>(
   // revision's root reads attached the failure summary unconditionally, so
   // their absent field speaks for the wait. A legacy DELEGATE's read is not -
   // the delegate route predates the summary entirely - which is what the
-  // thread's own kind names: a delegate read carries kind "subagent" or a
-  // parentRef, a root read carries neither.
+  // thread's own shape names: a root's kind is "session" (the hub stamps it
+  // on indexed roots) or unset, a delegate names itself with kind subagent
+  // and a fork with a parentRef.
   const quotaSnapshotAuthoritative =
     fields.capabilities?.quotaWaitSnapshot === true ||
     base.quotaReadReportsWaits === true ||
     (base.modelRetry?.errorClass === "quota_exceeded" &&
       base.quotaReadReportsWaits === undefined &&
-      fields.kind === undefined &&
-      fields.parentRef === undefined);
+      isRootThread(fields));
   const readRunningTurnId = runningTurn(resp.thread).runningTurnId;
   // A read that shows no wait is authoritative that the wait ended: the chip
   // goes with the deadline, or the canceled turn's "waiting for quota" reads
@@ -1304,8 +1312,7 @@ export function applyReadModel<M extends ThreadModel>(
     base.quotaReadReportsWaits === true ||
     (base.modelRetry?.errorClass === "quota_exceeded" &&
       base.quotaReadReportsWaits === undefined &&
-      fresh.kind === undefined &&
-      fresh.parentRef === undefined);
+      isRootThread(fresh));
   const waitTurnReplaced =
     base.modelRetry?.errorClass === "quota_exceeded" &&
     base.modelRetry.turnId !== undefined &&

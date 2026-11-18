@@ -642,13 +642,19 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
         // itself (a reload drops modelRetry, and the snapshot's failure
         // summary is what re-hydrates it). The zero-delay announcement is the
         // retry starting - the wait it announced is over, so it clears the
-        // instant; any other class leaves it as the model held it.
+        // instant. An ORDINARY retry proves the session is running a model
+        // call again (its backoff is a failure of a live call), which proves
+        // any held quota wait ended - including one a legacy delegate read
+        // could not clear - so the deadline retires rather than hiding the
+        // live retry behind a wait that ended.
+        // A stamped wait's deadline is its own arithmetic - the daemon-issued
+        // start instant plus its delay - so a delayed event does not shift
+        // the pane's reset past the daemon's; an unstamped announcement (an
+        // older daemon) keeps the receipt-time arithmetic.
         quotaResumesAt:
           params.errorClass === "quota_exceeded" && params.delayMs > 0
-            ? now + params.delayMs
-            : params.errorClass === "quota_exceeded"
-              ? undefined
-              : model.quotaResumesAt,
+            ? (params.waitStartedAt ?? now) + params.delayMs
+            : undefined,
         // A newly recorded wait owns the stale-event rule from here on; the
         // turn the last boundary retired no longer names one.
         retiredQuotaTurn:
