@@ -126,3 +126,37 @@ func summarizeRefused(ctx context.Context) bool {
 	refused, _ := ctx.Value(summarizeRefusalKey{}).(bool)
 	return refused
 }
+
+type summarizeAdmissionKey struct{}
+
+// WithSummarizeAdmission installs a live admission the summarization layer asks
+// AT ITS DISPATCH BOUNDARY, rather than a verdict decided when the context was
+// built. An up-front refusal answers a question about the moment it was asked,
+// and the layers above the summarizer (the deterministic checkpoint, the
+// PreCompact hook, the orientation refresh) run between that moment and the
+// request. Anything they durably record -- a subtree stop, most of all -- is
+// invisible to an up-front answer, so a stop recorded during checkpointing
+// would fence the next turn rather than the request already in flight
+// (LIFE-01, #2340 review M6).
+//
+// A nil admission permits the layer, matching WithSummarizeRefusal's default.
+func WithSummarizeAdmission(ctx context.Context, admit func() bool) context.Context {
+	if admit == nil {
+		return ctx
+	}
+	return context.WithValue(ctx, summarizeAdmissionKey{}, admit)
+}
+
+// summarizeAllowed reports whether the summarization layer may dispatch its
+// provider call now. Both dispatch sites ask this one question, so a caller
+// cannot refuse the layer in one place and have it run in another.
+func summarizeAllowed(ctx context.Context) bool {
+	if summarizeRefused(ctx) {
+		return false
+	}
+	admit, _ := ctx.Value(summarizeAdmissionKey{}).(func() bool)
+	if admit == nil {
+		return true
+	}
+	return admit()
+}

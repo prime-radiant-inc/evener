@@ -2024,16 +2024,29 @@ func persistStableWatchAttentionGroup(owner *Session, controller *delegateTreeCo
 	if owner == nil || len(notifs) == 0 {
 		return
 	}
+	// Append the WHOLE group before arming any of it. The child's wake is what
+	// starts its next generation, so an arm that lands while a later row in the
+	// same batch is still unwritten lets that request miss those notices and
+	// start a second generation for one batch (LIFE-01, #2340 review L2).
 	var failures error
 	var retry []jobNotification
+	persisted := make([]string, 0, len(notifs))
 	for _, n := range notifs {
-		if _, err := persistStableWatchAttention(owner, controller, n); err != nil {
+		attentionID, err := appendStableWatchAttention(owner, controller, n)
+		if err != nil {
 			failures = errors.Join(failures, err)
 			retry = append(retry, n)
+			continue
 		}
+		persisted = append(persisted, attentionID)
 	}
 	if failures != nil {
 		owner.emit(warningDataFromError("persist stable watch attention", failures))
+	}
+	// One wake for everything that is durable, after the last append. A failed
+	// row keeps its own retry chain, which arms it once its append lands.
+	if err := owner.armDelegateAttentions(persisted); err != nil {
+		owner.emit(warningDataFromError("arm stable watch attention", err))
 	}
 	if len(retry) > 0 {
 		owner.scheduleStableWatchAttentionRetry(retry)
@@ -2054,6 +2067,10 @@ func (s *Session) scheduleStableWatchAttentionRetry(notifs []jobNotification) {
 	if s == nil || len(notifs) == 0 {
 		return
 	}
+	// Record the obligation BEFORE the first timer is armed, so a runtime
+	// release that runs in between cannot observe "nothing owed" and tear the
+	// session down under a retry that has not been scheduled yet.
+	s.addPendingAttentionAppends(len(notifs))
 	var attempt func([]jobNotification, time.Duration)
 	attempt = func(pending []jobNotification, delay time.Duration) {
 		s.sclock().AfterFunc(delay, func() {
@@ -2068,10 +2085,15 @@ func (s *Session) scheduleStableWatchAttentionRetry(notifs []jobNotification) {
 			closed := s.closingOrClosedLocked()
 			s.mu.Unlock()
 			if closed {
+				// A closing session settles or discards its obligations, so this
+				// chain's claim retires here. The release this counter blocks is
+				// nonterminal only; a permanent end is handled by close.
+				s.releasePendingAttentionAppends(len(pending))
 				return
 			}
 			owner, controller := s.jobManager.stableWatchOwner()
 			if owner == nil || owner.owningDelegateID == "" {
+				s.releasePendingAttentionAppends(len(pending))
 				return
 			}
 			var failed []jobNotification
@@ -2080,6 +2102,9 @@ func (s *Session) scheduleStableWatchAttentionRetry(notifs []jobNotification) {
 					failed = append(failed, n)
 				}
 			}
+			// Everything that landed has discharged its obligation; only the
+			// ones still owed stay counted.
+			s.releasePendingAttentionAppends(len(pending) - len(failed))
 			if len(failed) == 0 {
 				return
 			}
@@ -2087,6 +2112,37 @@ func (s *Session) scheduleStableWatchAttentionRetry(notifs []jobNotification) {
 		})
 	}
 	attempt(notifs, jobNotificationRetryInitialDelay)
+}
+
+// addPendingAttentionAppends records notices whose durable append is owed.
+func (s *Session) addPendingAttentionAppends(n int) {
+	if s == nil || n <= 0 {
+		return
+	}
+	s.pendingJobNotifsMu.Lock()
+	s.pendingAttentionAppends += n
+	s.pendingJobNotifsMu.Unlock()
+}
+
+// releasePendingAttentionAppends discharges n of the owed appends.
+func (s *Session) releasePendingAttentionAppends(n int) {
+	if s == nil || n <= 0 {
+		return
+	}
+	s.pendingJobNotifsMu.Lock()
+	s.pendingAttentionAppends = max(0, s.pendingAttentionAppends-n)
+	s.pendingJobNotifsMu.Unlock()
+}
+
+// hasPendingAttentionAppend reports whether a watch notice is still owed a
+// durable attention append. See pendingAttentionAppends.
+func (s *Session) hasPendingAttentionAppend() bool {
+	if s == nil {
+		return false
+	}
+	s.pendingJobNotifsMu.Lock()
+	defer s.pendingJobNotifsMu.Unlock()
+	return s.pendingAttentionAppends > 0
 }
 
 func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) error {

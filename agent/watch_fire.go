@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
@@ -217,7 +218,12 @@ func (jm *jobManager) conditionFireNotificationLocked(cfg *watchConfig, jobID, r
 	}
 	if len(own) >= runawaySelfInfluenceDepth {
 		cfg.rememberStoppedRunawayChain(own)
+		// The stopped chain is the occurrence: each distinct runaway episode is its
+		// own diagnostic, and a replay of one fire reuses its episode's id.
 		diagnostic := watchSendDiagnosticNotification(cfg.watchID, jobID, "watch notification dropped: runaway")
+		if episode := strings.Join(own, ","); episode != "" {
+			diagnostic.Occurrence = "runaway:" + episode
+		}
 		diagnostic.Provenance = provenance.Clone(root)
 		return []jobNotification{diagnostic}, false
 	}

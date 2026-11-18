@@ -299,7 +299,16 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// heldDropped reports that this request's projection kept a held row out
 	// — a nonstandard view of the resident history that must not seed or
 	// continue from a stored anchor.
+	//
+	// watchDropped reports the same thing for the unleased stable-child
+	// projection, which keeps unresolved watch attention turns out. Both are
+	// "this request projects a nonstandard view", so both take the SAME
+	// bypass below rather than each growing its own: the projection omits
+	// turns the resident history keeps, so no stored exchange matches its
+	// prefix, and an anchor chosen from the unfiltered slice would rebuild a
+	// delta that carries the very row the projection dropped (#2340 review).
 	heldDropped := false
+	watchDropped := false
 	if lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); ok && s.delegateController != nil {
 		claim, claimErr := s.delegateController.BeginModelRequest(lease)
 		if claimErr != nil {
@@ -355,11 +364,24 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		// the drive guard, so the unleased request would hand it to the provider
 		// and the leased re-drive would present it again (#2340 review F3). Drop
 		// the unresolved watch turns from the projection and leave them pending.
-		projected := historyTurns
+		// The filter is ONE decision: the projected slice it returns is what
+		// this request expands AND what continuation planning sees, so a
+		// third builder added later inherits it by consuming the same slice.
+		//
+		// presentedBoundary deliberately does NOT move: it is the window the
+		// skill rebuild measures "turns appended since the snapshot" against,
+		// and shrinking it would make the dropped watch rows read as appended
+		// and put them straight back into the request.
 		if s.stableChildTurnNeedsLease(ctx) {
-			projected, _ = s.dropUnresolvedWatchAttentionTurns(projected)
+			filtered, droppedAt := s.dropUnresolvedWatchAttentionTurns(historyTurns)
+			watchDropped = len(droppedAt) > 0
+			historyTurns = filtered
+			// Continuation planning reads presentedTurns, not historyTurns, so
+			// the filtered slice must reach BOTH or the plan is made from the
+			// projection the request does not send (#2340 review).
+			presentedTurns = filtered
 		}
-		history = expandHistory(projected, scope)
+		history = expandHistory(historyTurns, scope)
 	}
 
 	t.HistoryExpand = time.Since(tPhaseStart)
@@ -394,7 +416,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// The turns the delta carries come back with it: staging must credit only
 	// the inline deliveries this call actually presents.
 	var deltaTurns []schema.Turn
-	req, fullHistory, deltaTurns = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, presentedTurns, true, heldDropped)
+	req, fullHistory, deltaTurns = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, presentedTurns, true, heldDropped || watchDropped)
 	if req, budget, err = budgetModelDispatchRequestWithBudget(profile, req); err != nil {
 		return profile, sys, history, req, fullHistory, reasoningEffort, err
 	}
@@ -426,6 +448,19 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		}
 		historyTurns = append([]schema.Turn{}, s.history...)
 		s.mu.Unlock()
+		// This rebuild is the second place turns join the request, and a watch
+		// row can land between the snapshot this request projects and this
+		// point. Apply the same projection decision to exactly the slice that
+		// joins here, so an unresolved watch row stays out of the rebuilt
+		// request and out of the fallback source it seeds (#2340 review). The
+		// row it drops is still pending, and the leased drive presents it.
+		if s.stableChildTurnNeedsLease(ctx) {
+			filtered, droppedAt := s.dropUnresolvedWatchAttentionTurns(appended)
+			if len(droppedAt) > 0 {
+				watchDropped = true
+				appended = filtered
+			}
+		}
 		if len(appended) == 0 {
 			return false, nil
 		}
@@ -449,7 +484,10 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			return true, budgetErr
 		}
 		req, budget = budgetedReq, budgeted
-		req, fullHistory, deltaTurns = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, historyTurns, true, heldDropped)
+		// Re-plan from the same filtered projection the first plan saw. The
+		// rebuild appends only turns that landed after the snapshot, so the
+		// watch rows this projection dropped are still absent here.
+		req, fullHistory, deltaTurns = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, historyTurns, true, heldDropped || watchDropped)
 		budgetedReq, budgeted, budgetErr = budgetModelDispatchRequestWithBudget(profile, req)
 		if budgetErr != nil {
 			return true, budgetErr
@@ -624,15 +662,20 @@ func (s *Session) foldHistoryBeforeRequest(ctx context.Context, round, sysLen in
 			// The strategy is INVOKED whenever this turn may manage context at
 			// all, so an allowed unleased turn keeps its zero-cost layers (the
 			// deterministic checkpoint, the session-log fold, OODA's orientation
-			// refresh). Only the layer that spends a provider call is refused, via
-			// the context flag, and the provider question is re-answered HERE
-			// rather than reusing the elicitor's answer: a stop recorded while the
-			// elicitor ran lands after that check and before this one.
+			// refresh). Only the layer that spends a provider call is refused, and
+			// that question is re-answered at the dispatch site rather than reused
+			// from any earlier check: a stop recorded while the elicitor or the
+			// zero-cost layers ran lands after those checks and before the request.
 			if s.admitCompactionInvocation(ctx) {
-				strategyCtx := compactionCtx
-				if !s.admitCompactionProviderCall(ctx) {
-					strategyCtx = contextmgr.WithSummarizeRefusal(compactionCtx)
-				}
+				// The summarizer is asked at its own dispatch boundary, after
+				// the zero-cost layers (deterministic checkpoint, session-log
+				// fold, PreCompact hook, orientation refresh) have run. Those
+				// layers can durably record a stop, so an answer taken HERE
+				// would be stale by the time the request starts: pass the
+				// question down and let each dispatch site ask it (#2340 M6).
+				strategyCtx := contextmgr.WithSummarizeAdmission(compactionCtx, func() bool {
+					return s.admitCompactionProviderCall(ctx)
+				})
 				err := s.strategy.ManageContext(strategyCtx, &historyTurns, sysLen, emitFn)
 				if err != nil {
 					s.emit(bareWarningDataFromError("context strategy error", err))

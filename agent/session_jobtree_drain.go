@@ -1313,9 +1313,23 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		// ids a settled request staged, and staging is gated by
 		// coversPresentedAttention, so a drain turn that merely opens
 		// EntryNotification neither presents nor retires the row.
+		// Pending WATCH attention is a turn owed HERE, under the run lease this
+		// drain already holds, when it is attention this drain can present and
+		// settle. The generation the drain is finalizing under IS the lease, so
+		// coversPresentedAttention is true and a settled request that presents
+		// the row retires it through the ordinary coverage path; a pass that
+		// cannot present it runs no turn and falls to the wait below rather than
+		// re-opening one (#2340 review M2).
+		//
+		// Without this term the row waits for a successor generation that cannot
+		// start until this one finalizes: a delegate whose only pending work is
+		// a watch notice about the shell it is waiting on could wait forever for
+		// the notice that was meant to tell it what to do about that shell.
+		watchAttentionOwed := s.drainCanPresentWatchAttention(ctx)
 		notificationTurnOwed := s.peekNotifications() > 0 ||
 			s.pendingRootDelegateAttention() ||
-			s.hasUndrivenDelegateUpdate(drivenUpdates)
+			s.hasUndrivenDelegateUpdate(drivenUpdates) ||
+			watchAttentionOwed
 		if s.hasPendingStableSteering() && !notificationTurnOwed {
 			return lastResult, nil
 		}
@@ -1328,7 +1342,17 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 			// queue holds only completions and frames armed during the drain;
 			// frames queued before the pre-drain final answer were cut at entry
 			// (discardTerminalWatchLeftovers).
-			res, err := process(ctx, "", nil, EntryNotification)
+			// A pass whose only reason to run is watch attention uses the
+			// attention entry: the leased run's request then projects the row,
+			// stages it at settle and the turn-end resolution retires it. The
+			// notification entry stands down when nothing else is queued
+			// (acceptNotificationInput's emptiness gate does not know about
+			// watch attention), so it would open a contentless turn and spin.
+			entry := EntryNotification
+			if watchAttentionOwed && s.peekNotifications() == 0 && !s.pendingRootDelegateAttention() && !s.hasUndrivenDelegateUpdate(drivenUpdates) {
+				entry = EntryDelegateAttention
+			}
+			res, err := process(ctx, "", nil, entry)
 			if err != nil {
 				return lastResult, err
 			}

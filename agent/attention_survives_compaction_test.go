@@ -6,6 +6,7 @@ import (
 	"os"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/schema"
@@ -496,6 +498,169 @@ func TestHeldAttentionProjectionSeedsNoContinuationAnchor(t *testing.T) {
 }
 
 const acceptedTriggerText = `<delegate-notification delegate_id="dlg_worker" kind="update">TRIGGER_ITEM</delegate-notification>`
+
+// A request has two builders, and an unleased stable-child turn must keep an
+// unresolved watch row out of BOTH. The first builder's projection filtered the
+// row, but the skill-delivery rebuild re-snapshots history and copies every turn
+// appended since the round's snapshot into the primary and the fallback source
+// without asking the same question — so a watch notice landing between the
+// snapshot and the rebuild reached the provider on an unleased turn, and the
+// leased drive then owed it again (#2340 review finding 1).
+//
+// The second arm is the guard against over-filtering: the filter must not cost
+// the ordinary continuation, or dropping a watch row would trade a leak for a
+// request that can no longer continue from its anchor.
+func TestUnleasedStableChildKeepsAnUnresolvedWatchRowOutOfEveryBuilder(t *testing.T) {
+	t.Parallel()
+	const (
+		priorText = "prior conversation marker"
+		watchText = "unresolved watch row marker"
+		envText   = "environment marker appended after the anchor"
+	)
+	newContinuationSession := func(t *testing.T) *Session {
+		t.Helper()
+		dir := t.TempDir()
+		adapter := &agenttest.FakeAdapter{
+			Provider: "openai",
+			PlanResponsesContinuationFunc: func(req llm.Request) (llm.ResponsesContinuationPlan, error) {
+				return phase4DIContinuationPlan(req), nil
+			},
+		}
+		client := llm.NewClient()
+		client.Register(adapter)
+		sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.4")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+			StateDir:                    dir,
+			OpenAIResponsesContinuation: "auto",
+			MaxSubagentDepth:            1,
+			testOnly: testConfig{
+				responsesContinuationSupportRegistry: map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{
+					llm.ResponsesEndpointFamilyOpenAIPublic: phase4DIEnabledSupport(),
+				},
+			},
+		})
+		if err != nil {
+			t.Fatalf("NewSession: %v", err)
+		}
+		t.Cleanup(sess.Close)
+		drainSessionEvents(sess)
+		// A stable delegate child with no lease in context: the turn the issue
+		// permits (a completion drive, a restored first task) and the one whose
+		// projection must keep unresolved watch rows out.
+		controller, _ := newDelegateControllerTestHarness(t, 1, 1)
+		sess.mu.Lock()
+		ownController := sess.delegateController
+		sess.delegateController = controller
+		sess.owningDelegateID = "dlg_target"
+		sess.mu.Unlock()
+		t.Cleanup(func() {
+			sess.mu.Lock()
+			sess.delegateController = ownController
+			sess.owningDelegateID = ""
+			sess.mu.Unlock()
+		})
+		anchor := responsesContinuationEligibleAssistantTurn("resp_watch_row_anchor")
+		anchor.ResponseIDHash = "cont-handle-v1:response_id:watch_row"
+		anchor.ResponseRequestFingerprint = "cont-req-v1:phase4d"
+		anchor.ResponseStorageScopeFingerprint = "cont-scope-v1:phase4d"
+		sess.mu.Lock()
+		sess.history = []schema.Turn{
+			schema.NewTurn(schema.TurnUserInput, llm.User(priorText)),
+			anchor,
+		}
+		sess.mu.Unlock()
+		return sess
+	}
+	// prepare builds the unleased stable-child request and returns the request
+	// plus the fallback source the next provider in the chain would receive.
+	prepare := func(t *testing.T, sess *Session) (llm.Request, []llm.Message) {
+		t.Helper()
+		var timings events.RoundTimings
+		// No delegate lease in context: this is the unleased stable-child turn.
+		_, _, _, req, fullHistory, _, err := sess.prepareModelRequestWithError(context.Background(), 1, &timings)
+		if err != nil {
+			t.Fatalf("prepare model request: %v", err)
+		}
+		return req, fullHistory
+	}
+	// armDeliveryRebuild gives the session one pending delivery obligation that
+	// cannot succeed, so prepareSkillDelivery appends a notification turn and the
+	// request rebuilds through rebuildForAppendedSkillTurns.
+	armDeliveryRebuild := func(t *testing.T, sess *Session) {
+		t.Helper()
+		sess.mu.Lock()
+		sess.skillLifecycle.Obligations = append(sess.skillLifecycle.Obligations, schema.SkillDeliveryObligation{
+			InvocationID: "inv-watch-row",
+			Route:        "model_tool",
+		})
+		sess.skillLifecycle.Revision++
+		sess.mu.Unlock()
+	}
+
+	t.Run("rebuild does not carry a watch row that landed after the snapshot", func(t *testing.T) {
+		t.Parallel()
+		sess := newContinuationSession(t)
+		const watchID = stableWatchAttentionIDPrefix + "watch:phase1:job:phase1"
+		armDeliveryRebuild(t, sess)
+		// The row lands exactly where the review names: after the round's history
+		// snapshot, before the rebuild re-snapshots.
+		var landOnce sync.Once
+		updateSessionTestConfig(sess, func(cfg *testConfig) {
+			cfg.afterModelHistorySnapshot = func() {
+				landOnce.Do(func() {
+					if _, err := sess.appendDelegateNotificationDurably(watchID, watchText); err != nil {
+						t.Errorf("persist watch attention: %v", err)
+					}
+				})
+			}
+		})
+		req, fallback := prepare(t, sess)
+		// Positive control: the row really is pending and really is in the
+		// resident history, so an empty request here means the filter worked and
+		// not that the fixture never created the row.
+		pending, err := sess.pendingDelegateAttentionIDs()
+		if err != nil {
+			t.Fatalf("read pending attention: %v", err)
+		}
+		if !slices.Contains(pending, watchID) {
+			t.Fatalf("setup: the watch row is not pending (pending=%v)", pending)
+		}
+		if indexOfTurnText(currentHistory(t, sess), watchText) < 0 {
+			t.Fatal("setup: the watch row never reached the resident history")
+		}
+		if requestMessagesContainText(req.Messages, watchText) {
+			t.Fatal("the rebuilt unleased request carried an unresolved watch row: the row must wait for the leased turn that presents it")
+		}
+		if requestMessagesContainText(fallback, watchText) {
+			t.Fatal("the fallback source carried an unresolved watch row: a later provider in the chain would see it")
+		}
+		// Dropping the row must not cost the conversation: the anchor's own
+		// history is still carried.
+		if !requestMessagesContainText(req.Messages, priorText) {
+			t.Fatal("the request lost its conversation history while dropping the watch row")
+		}
+	})
+
+	t.Run("ordinary continuation still plans a delta", func(t *testing.T) {
+		t.Parallel()
+		sess := newContinuationSession(t)
+		sess.mu.Lock()
+		sess.history = append(sess.history, schema.NewTurn(schema.TurnEnvironment, llm.User(envText)))
+		sess.mu.Unlock()
+		req, _ := prepare(t, sess)
+		if req.HistoryMode != llm.HistoryModeResponsesDelta {
+			t.Fatalf("HistoryMode = %q, want %q: with nothing pending the anchor must still be usable", req.HistoryMode, llm.HistoryModeResponsesDelta)
+		}
+		if req.PreviousResponseID == "" {
+			t.Fatal("PreviousResponseID is empty: the delta did not continue from the stored anchor")
+		}
+		if req.Continuation == nil || req.Continuation.DeltaTurnCount == 0 {
+			t.Fatalf("Continuation = %+v, want a non-empty delta: the anchor was selected but carried no turns", req.Continuation)
+		}
+		if !requestMessagesContainText(req.Messages, envText) {
+			t.Fatal("the planned delta did not carry the turn appended after the anchor")
+		}
+	})
+}
 
 // acceptedTriggerSession is a delegate runtime that has accepted an attention
 // generation whose trigger is old enough for a fold to summarize away, with a
@@ -1106,79 +1271,212 @@ func TestRootDelegateAttentionMidTurnFoldPreservesArrivalOrderAcrossAnchors(t *t
 	}
 }
 
-// TestStableChildCompactionStopsSpendingAfterAFencedStop pins the second half of
-// LIFE-01 (#2340): automatic compaction reaches a provider TWICE, once in the
-// note elicitor and again in the summarizer, so ONE admission result cannot
-// govern both. A stop recorded while the elicitor runs lands after the first
-// admission and before the summarizer's call, which is exactly the window a
-// shared result cannot see. The summarizer must not spend a request on a
-// generation the user has already stopped.
+// fencedCompactionRig builds a stable child whose automatic compaction reaches
+// both providers, with the counts on separate adapters so neither assertion can
+// pass by never calling the model at all.
 //
-// Both assertions are provider CALL COUNTS on two separate adapters, never
-// message text: the elicitor's request happens (so the test cannot pass by never
-// reaching the fold), and the summarizer's must not.
-func TestStableChildCompactionStopsSpendingAfterAFencedStop(t *testing.T) {
-	t.Parallel()
+// Pressure comes from a request-sized system prompt (sysPromptChars is a real
+// production input: the caller's own prompt length) rather than from a synthetic
+// token measurement, because the checkpoint clears the measurement before the
+// summarizer threshold is evaluated. That is exactly what made the earlier
+// fixture vacuous (review L1): zero summarizer calls passed there even with the
+// fence removed. Every test below therefore asserts BOTH directions on the same
+// fixture -- a control arm that must reach the summarizer and a fenced arm that
+// must not.
+const (
+	fencedCompactionWindow       = 60_000
+	fencedCompactionSysPrompt    = 240_000
+	fencedCompactionDelegateName = "dlg_compaction_target"
+)
+
+func fencedCompactionRig(t *testing.T) (*Session, *delegateTreeController, *atomic.Int32, *atomic.Int32) {
+	t.Helper()
 	var elicited, summarized atomic.Int32
 	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
-	seedDelegateControllerRunning(t, controller, "dlg_compaction_target", "")
+	seedDelegateControllerRunning(t, controller, fencedCompactionDelegateName, "")
 	main := newFakeAdapter("openai", func(llm.Request) llm.Response {
 		elicited.Add(1)
 		return agenttest.FinalResponse("a pinned note")
 	})
-	cheap := &agenttest.ScriptedAdapter{Provider: "compact-cheap", Responder: func(llm.Request) llm.Response {
-		summarized.Add(1)
+	// The cheap route also serves the session namer, which is not a
+	// summarizer. Count only requests carrying the summarizer's own instruction
+	// block, so a namer call cannot be mistaken for the request this test
+	// fences (or vice versa: a refused summarizer must not be masked by one).
+	cheap := &agenttest.ScriptedAdapter{Provider: "compact-cheap", Responder: func(req llm.Request) llm.Response {
+		if isSummarizerRequest(req) {
+			summarized.Add(1)
+		}
 		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
 	}}
 	client := llm.NewClient()
 	client.Register(main)
 	client.Register(cheap)
 	stateDir := t.TempDir()
-	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "compact-cheap/model")
+	// 60k keeps summarizerInputLimit above minSummarizingWindow: at 50k the
+	// summarize layer is unusable and the fenced arm's zero would mean nothing.
+	profile := withContextWindow(WithCheapModel(NewOpenAIProfile("gpt-5.2"), "compact-cheap/model"), fencedCompactionWindow)
 	sess := newSession(t, withClient(client), withProfile(profile), withDir(stateDir), withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}))
 	sess.delegateController = controller
-	sess.owningDelegateID = "dlg_compaction_target"
+	sess.owningDelegateID = fencedCompactionDelegateName
 	controller.mu.Lock()
-	controller.live["dlg_compaction_target"].binding.runtime = sess
+	controller.live[fencedCompactionDelegateName].binding.runtime = sess
 	controller.mu.Unlock()
-
 	seedNumberedSessionHistory(t, sess, 12)
-	forcePressureAbove(t, sess, sess.contextMgr.CheckpointThreshold)
-	// Record the stop BETWEEN the two provider admissions: after the elicitor
-	// asks the model, before the summarizer does. PendingStopSeq is the state
-	// admitLeaseLocked refuses on.
-	sess.elicitNoteFn = func(ctx context.Context, turns []schema.Turn) (string, error) {
-		resp, err := sess.client.Complete(ctx, llm.Request{
-			Model:    sess.profile.Model(),
-			Messages: []llm.Message{llm.User("elicit a note")},
-		})
-		controller.mu.Lock()
-		_, appendErr := controller.appendLocked(delegatestore.Event{
-			Kind:       delegatestore.EventDelegateSubtreeStopRequested,
-			DelegateID: "dlg_compaction_target",
-			TS:         time.Unix(20, 0).UTC(),
-			SubtreeStopRequested: &delegatestore.SubtreeStopRequested{
-				TargetDelegateID: "dlg_compaction_target",
-			},
-		})
-		controller.mu.Unlock()
-		if appendErr != nil {
-			t.Errorf("record the stop fence: %v", appendErr)
-			return "", appendErr
-		}
-		if err != nil {
-			return "", err
-		}
-		return resp.Text(), nil
-	}
+	return sess, controller, &elicited, &summarized
+}
 
-	lease := delegateLease{delegateID: "dlg_compaction_target", generation: 1}
-	ctx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease)
-	sess.foldHistoryBeforeRequest(ctx, 0, 0)
-	if got := elicited.Load(); got != 1 {
-		t.Fatalf("the elicitor made %d provider request(s), want exactly 1: without it the test cannot tell a refused summarizer from a fold that never reached it", got)
+// isSummarizerRequest reports whether req is the context manager's own summary
+// call, by the instruction block only the summarizer's prompt carries.
+func isSummarizerRequest(req llm.Request) bool {
+	for _, msg := range req.Messages {
+		if strings.Contains(msg.Text(), "CONTEXT CHECKPOINT COMPACTION") {
+			return true
+		}
 	}
-	if got := summarized.Load(); got != 0 {
-		t.Fatalf("the summarizer spent %d provider request(s) after the stop was recorded, want 0: one admission result was reused for two provider admissions", got)
+	return false
+}
+
+// fencedCompactionLeaseCtx is the run lease the child's own generation holds.
+func fencedCompactionLeaseCtx() context.Context {
+	return context.WithValue(context.Background(), delegateRunLeaseContextKey{},
+		delegateLease{delegateID: fencedCompactionDelegateName, generation: 1})
+}
+
+// TestStableChildCompactionStopsSpendingAfterAFencedStop pins the elicitation
+// half of LIFE-01 (#2340): automatic compaction reaches a provider TWICE, once
+// in the note elicitor and again in the summarizer. A stop recorded while the
+// elicitor runs lands after the elicitor's own admission and before the
+// summarizer's call. The summarizer must not spend a request on a generation the
+// user has already stopped.
+//
+// The control arm is what makes the fenced arm evidence (review L1).
+func TestStableChildCompactionStopsSpendingAfterAFencedStop(t *testing.T) {
+	t.Parallel()
+	for _, arm := range []struct {
+		name   string
+		fence  bool
+		wantSu bool
+	}{
+		{name: "control_no_stop", wantSu: true},
+		{name: "fenced_during_elicitation", fence: true},
+	} {
+		t.Run(arm.name, func(t *testing.T) {
+			t.Parallel()
+			sess, controller, elicited, summarized := fencedCompactionRig(t)
+			if arm.fence {
+				// Record the stop BETWEEN the two provider admissions: after the
+				// elicitor asks the model, before the summarizer does.
+				// PendingStopSeq is the state admitLeaseLocked refuses on.
+				sess.elicitNoteFn = func(ctx context.Context, turns []schema.Turn) (string, error) {
+					resp, err := sess.client.Complete(ctx, llm.Request{
+						Model:    sess.profile.Model(),
+						Messages: []llm.Message{llm.User("elicit a note")},
+					})
+					recordSubtreeStop(t, controller, fencedCompactionDelegateName)
+					if err != nil {
+						return "", err
+					}
+					return resp.Text(), nil
+				}
+			}
+			sess.foldHistoryBeforeRequest(fencedCompactionLeaseCtx(), 0, fencedCompactionSysPrompt)
+			if arm.fence && elicited.Load() != 1 {
+				t.Fatalf("the elicitor made %d provider request(s), want exactly 1: without it the test cannot tell a refused summarizer from a fold that never reached it", elicited.Load())
+			}
+			assertFencedCompactionArms(t, arm.wantSu, summarized.Load())
+		})
+	}
+}
+
+// checkpointStopStrategy interposes on ManageContext's emit stream so the test
+// records the subtree stop at the DETERMINISTIC CHECKPOINT's own emit -- after the
+// checkpoint layer folded, before the summarize layer is decided. That instant is
+// inside the window review M6 names: the summarizer's verdict was taken before
+// ManageContext ran, and a stop recorded here must still fence the request.
+// Everything else is the production strategy, unchanged.
+type checkpointStopStrategy struct {
+	contextmgr.Strategy
+	record func()
+}
+
+func (s *checkpointStopStrategy) ManageContext(ctx context.Context, history *[]schema.Turn, sysPromptChars int, emitFn func(events.EventKind, events.EventData)) error {
+	return s.Strategy.ManageContext(ctx, history, sysPromptChars, func(kind events.EventKind, data events.EventData) {
+		emitFn(kind, data)
+		if record := s.record; record != nil {
+			if ccd, ok := data.(events.ContextCompactionData); ok && ccd.Layer == "checkpoint" {
+				s.record = nil
+				record()
+			}
+		}
+	})
+}
+
+// TestStableChildCompactionFencesTheSummarizerAtItsDispatchBoundary is review
+// M6's window: the summarizer's lease verdict is taken BEFORE ManageContext runs
+// the deterministic checkpoint (and its PreCompact hook). A subtree stop recorded
+// during that work is not visible to a verdict taken earlier, so the summarize
+// layer would dispatch on a generation the user has already stopped.
+//
+// The stop is recorded DURING the checkpoint, not before it, and the control arm
+// proves the same fixture reaches the summarizer when no stop is recorded.
+func TestStableChildCompactionFencesTheSummarizerAtItsDispatchBoundary(t *testing.T) {
+	t.Parallel()
+	for _, arm := range []struct {
+		name   string
+		fence  bool
+		wantSu bool
+	}{
+		{name: "control_no_stop", wantSu: true},
+		{name: "fenced_during_checkpoint", fence: true},
+	} {
+		t.Run(arm.name, func(t *testing.T) {
+			t.Parallel()
+			sess, controller, elicited, summarized := fencedCompactionRig(t)
+			muteNoteElicitation(sess)
+			inner := sess.strategy
+			decorator := &checkpointStopStrategy{Strategy: inner}
+			if arm.fence {
+				decorator.record = func() { recordSubtreeStop(t, controller, fencedCompactionDelegateName) }
+			}
+			sess.strategy = decorator
+			sess.foldHistoryBeforeRequest(fencedCompactionLeaseCtx(), 0, fencedCompactionSysPrompt)
+			if arm.fence && elicited.Load() != 0 {
+				t.Fatalf("the elicitor made %d provider request(s), want 0: this arm is about the summarizer, not the elicitor", elicited.Load())
+			}
+			assertFencedCompactionArms(t, arm.wantSu, summarized.Load())
+		})
+	}
+}
+
+// assertFencedCompactionArms states the both-directions rule once: the control
+// arm must reach the summarize layer, and the fenced arm must not.
+func assertFencedCompactionArms(t *testing.T, wantSummarizer bool, summarized int32) {
+	t.Helper()
+	if wantSummarizer {
+		if summarized == 0 {
+			t.Fatal("the control arm made no summarizer request: the fixture never reached the summarize layer, so the fenced arm's zero would prove nothing about the fence")
+		}
+		return
+	}
+	if summarized != 0 {
+		t.Fatalf("the summarizer spent %d provider request(s) after the stop was recorded, want 0: the fence verdict was taken before ManageContext and never re-asked at the dispatch boundary", summarized)
+	}
+}
+
+// recordSubtreeStop durably records a subtree stop for id, the state
+// admitLeaseLocked refuses on.
+func recordSubtreeStop(t *testing.T, controller *delegateTreeController, id string) {
+	t.Helper()
+	controller.mu.Lock()
+	defer controller.mu.Unlock()
+	if _, err := controller.appendLocked(delegatestore.Event{
+		Kind:       delegatestore.EventDelegateSubtreeStopRequested,
+		DelegateID: id,
+		TS:         time.Unix(20, 0).UTC(),
+		SubtreeStopRequested: &delegatestore.SubtreeStopRequested{
+			TargetDelegateID: id,
+		},
+	}); err != nil {
+		t.Fatalf("record the stop fence: %v", err)
 	}
 }

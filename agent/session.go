@@ -1010,6 +1010,20 @@ type Session struct {
 	// carries them without writing their reminder again. Guarded by
 	// pendingJobNotifsMu.
 	jobNotifsAwaitingRequest []awaitedJobNotification
+	// pendingAttentionAppends counts watch notices whose durable attention
+	// append failed and whose paced retry has not landed yet.
+	//
+	// The retry lives in a clock closure, so nothing else on the session can
+	// see that a notice is still owed. A nonterminal idle-runtime release that
+	// runs before the retry tears the runtime down, and the notice then has
+	// neither an attention row nor an active timer left to recover it: the
+	// only firing of a one-shot is gone (#2340 review M5). Counting it here
+	// makes the obligation visible to idleReleasePregatesClear, so the release
+	// waits for the append instead of outrunning it.
+	//
+	// Guarded by pendingJobNotifsMu for the same reason the queue is: the
+	// retry closure runs on the clock's goroutine.
+	pendingAttentionAppends int
 	// jobNotifsDelivered counts the job notifications acceptNotificationInput
 	// has delivered to the model over the session's lifetime. The one-shot
 	// drain reads it across an undisposed-job announcement turn: growth means a
@@ -1460,6 +1474,28 @@ func (s *Session) enqueueJobNotification(n jobNotification) {
 	s.appendOrFoldJobNotificationLocked(n)
 }
 
+// forgetJobStatusPollForNotification marks n as news for the job_status repeat
+// guard: the next check on n's target must report current status rather than be
+// refused as a duplicate of one this notice superseded.
+//
+// It is ONE implementation with two callers -- the ordinary queue's fold above
+// and the durable stable-attention ingress -- because the rule is about the
+// notice, not about which route carries it. A durable route that skipped it
+// refused a stable delegate's first check after a timer as a duplicate of the
+// check it made before that timer existed (LIFE-01, #2340 review L3).
+func (s *Session) forgetJobStatusPollForNotification(n jobNotification) {
+	if s == nil {
+		return
+	}
+	if n.JobID == "" {
+		// A self timer is about no one job: the recheck it schedules is news
+		// for every running target.
+		s.jobStatusPolls.forgetAll()
+		return
+	}
+	s.jobStatusPolls.forget(n.JobID)
+}
+
 // appendOrFoldJobNotificationLocked appends n to the pending queue, or, for a
 // timer tick whose watch already has a pending non-terminal entry, adds its
 // fires to that entry instead. Non-timer notifications take the fast path.
@@ -1469,13 +1505,7 @@ func (s *Session) enqueueJobNotification(n jobNotification) {
 // The caller holds pendingJobNotifsMu; this must never take jm.mu, because
 // the established order is jm.mu then pendingJobNotifsMu.
 func (s *Session) appendOrFoldJobNotificationLocked(n jobNotification) {
-	if n.JobID == "" {
-		// A self timer is about no one job: the recheck it schedules is news
-		// for every running target.
-		s.jobStatusPolls.forgetAll()
-	} else {
-		s.jobStatusPolls.forget(n.JobID)
-	}
+	s.forgetJobStatusPollForNotification(n)
 	if n.WatchID != "" && !n.Terminal {
 		for i := range s.pendingJobNotifs {
 			p := &s.pendingJobNotifs[i]

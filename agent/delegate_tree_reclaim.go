@@ -1034,6 +1034,15 @@ func (s *Session) idleReleasePregatesClear() bool {
 	if s.peekNotifications() != 0 {
 		return false
 	}
+	// A watch notice whose durable attention append failed is still owed: its
+	// only firing lives in a retry closure, and it has no queue entry, no
+	// pending watch send and no timer to recover it. Releasing the runtime here
+	// would outrun the retry and lose the notice (#2340 review M5). The
+	// obligation is in memory, like everything else this precheck reads, so the
+	// release waits for the append instead of needing a durable record of it.
+	if s.hasPendingAttentionAppend() {
+		return false
+	}
 	if s.jobManager != nil && (s.jobManager.hasPendingWatchSends() || s.jobManager.hasRuntimeObligations()) {
 		return false
 	}

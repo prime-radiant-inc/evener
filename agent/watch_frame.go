@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/lineend"
 	"primeradiant.com/evener/agent/provenance"
 )
@@ -29,6 +30,25 @@ func watchNotification(jobID, reason string) jobNotification {
 func watchSendDiagnosticNotification(watchID, jobID, reason string) jobNotification {
 	n := watchNotification(jobID, reason)
 	n.OriginWatchID = watchID
+	return n
+}
+
+// watchSendDiagnosticForState is watchSendDiagnosticNotification for a site
+// that holds the failed send's own state, and it stamps the send's delivery id
+// as the notice's occurrence.
+//
+// Without that stamp two failures of the SAME watch and job whose rendered
+// reasons happen to match — "watch send pending state failed: <err>" is the
+// same sentence for two different deliveries when the store keeps returning the
+// same error — collapsed onto one attention identity. The second failure then
+// reused the first's resolved row: no new row, no wake, and a lost notice
+// (#2340 review). Replaying one delivery's diagnostic still yields its original
+// identity, because the delivery id is minted once per send.
+func watchSendDiagnosticForState(state jobstore.WatchSendState, reason string) jobNotification {
+	n := watchSendDiagnosticNotification(state.Key.WatchID, state.Key.ResolvedWatchedIdentity, reason)
+	if state.DeliveryID != "" {
+		n.Occurrence = "diagnostic:" + state.DeliveryID
+	}
 	return n
 }
 
@@ -407,6 +427,22 @@ func (s *Session) deliverableStableWatchAttention(notifs []jobNotification) []jo
 // surface it as an operator diagnostic rather than silently starting an
 // unleased turn.
 func persistStableWatchAttention(owner *Session, controller *delegateTreeController, n jobNotification) (string, error) {
+	attentionID, err := appendStableWatchAttention(owner, controller, n)
+	if err != nil {
+		return "", err
+	}
+	if err := owner.armDelegateAttention(attentionID); err != nil {
+		return "", err
+	}
+	return attentionID, nil
+}
+
+// appendStableWatchAttention writes the notice's durable attention row WITHOUT
+// arming it. Split from the arm so a GROUP can be made fully durable before the
+// first wake: a wake that lands while later rows in the same batch are still
+// unwritten lets the child's first request miss them and start a second
+// generation for one batch (LIFE-01, #2340 review L2).
+func appendStableWatchAttention(owner *Session, controller *delegateTreeController, n jobNotification) (string, error) {
 	attentionID := stableWatchDiagnosticAttentionID(n)
 	// Register the notice's own cause BEFORE the item can be presented: a
 	// runaway-watch diagnostic carries the chain the breaker stopped, and the
@@ -417,14 +453,14 @@ func persistStableWatchAttention(owner *Session, controller *delegateTreeControl
 	if controller != nil {
 		controller.attentionCauses.remember(attentionID, n.Provenance)
 	}
+	// An accepted notice is news for the job_status repeat guard, exactly as a
+	// queued one is: the same rule, the same helper (LIFE-01, #2340 review L3).
+	owner.forgetJobStatusPollForNotification(n)
 	content := owner.formatJobNotificationReminder([]deliverableJobNotification{{notification: n}})
 	if _, err := owner.appendDelegateNotificationDurably(attentionID, content); err != nil {
 		if controller != nil {
 			controller.attentionCauses.forget(attentionID)
 		}
-		return "", err
-	}
-	if err := owner.armDelegateAttention(attentionID); err != nil {
 		return "", err
 	}
 	return attentionID, nil
@@ -436,6 +472,37 @@ func persistStableWatchAttention(owner *Session, controller *delegateTreeControl
 // dropUnresolvedWatchAttentionTurns, which keeps an unresolved row's turn out
 // of an unleased projection (LIFE-01, #2340 review).
 const stableWatchAttentionIDPrefix = "watchdiag:"
+
+// stableWatchSendAttentionPrefix names the durable-attention rows the watch
+// SEND rail creates for a stable receiver (see stableWatchAttentionID in
+// watch_send_rail.go, which builds "watch:<deliveryID>:<seq>").
+//
+// The two families are separate: a diagnostic reports a send that FAILED, and a
+// send row carries a frame that is pending. A predicate that means "watch
+// attention, either family" must test both, or it silently misses half the
+// rows — the trap the drain's own predicate documents.
+const stableWatchSendAttentionPrefix = "watch:"
+
+// isStableWatchSendAttentionID reports whether attentionID belongs to the watch
+// send rail's family. The id is a display/identity string, so the marker is
+// checked structurally: the prefix and the two separators stableWatchAttentionID
+// always emits.
+func isStableWatchSendAttentionID(attentionID string) bool {
+	if !strings.HasPrefix(attentionID, stableWatchSendAttentionPrefix) || strings.HasPrefix(attentionID, stableWatchAttentionIDPrefix) {
+		return false
+	}
+	rest := strings.TrimPrefix(attentionID, stableWatchSendAttentionPrefix)
+	delivery, seq, found := strings.Cut(rest, ":")
+	return found && delivery != "" && seq != ""
+}
+
+// isStableWatchAttentionID reports whether attentionID names durable attention
+// created for a watch notice of either family: a send-rail frame or a send
+// diagnostic. Callers that mean "watch attention" use this rather than testing
+// one prefix, so a row can never be invisible to them (#2340 review M2 trap).
+func isStableWatchAttentionID(attentionID string) bool {
+	return strings.HasPrefix(attentionID, stableWatchAttentionIDPrefix) || isStableWatchSendAttentionID(attentionID)
+}
 
 // stableWatchDiagnosticAttentionID derives a replay-stable identity for a watch
 // notice from the facts that make it ONE notice.

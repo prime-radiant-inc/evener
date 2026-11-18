@@ -1,3 +1,5 @@
+
+
 package agent
 
 import (
@@ -267,5 +269,64 @@ func TestForegroundShellThatCompletesNeverArmsTheReminder(t *testing.T) {
 
 	if got := r.clock.PendingCallbacks(); got != before {
 		t.Fatalf("armed clock callbacks after a completed foreground shell = %d, want %d", got, before)
+	}
+}
+
+// A watch notice whose durable attention append failed is an obligation until
+// the retry lands.
+//
+// The retry lives in a clock closure, so a nonterminal idle-runtime release
+// that runs before it has nothing to observe: the notice has no queue entry, no
+// pending watch send and no timer. Releasing the runtime then loses the only
+// firing a one-shot will ever have, and the next runtime finds neither a timer
+// nor an attention row (#2340 review M5).
+//
+// The oracle is the release precheck itself, read while the obligation is owed
+// and again after the retry discharges it. That is the wait the finding is
+// about: the counter must hold the release BEFORE the append succeeds, not
+// merely take a value afterwards.
+func TestPendingAttentionAppendHoldsIdleRuntimeReleaseUntilItLands(t *testing.T) {
+	t.Parallel()
+	rig := newReminderRig(t)
+	sess := rig.sess
+
+	// Non-vacuity: with nothing owed the precheck is clear, so a false below is
+	// this obligation and not some other residue of the fixture.
+	if !sess.idleReleasePregatesClear() {
+		t.Fatal("setup: the precheck is not clear before anything is owed")
+	}
+	if sess.hasPendingAttentionAppend() {
+		t.Fatal("setup: an append is owed before the fixture owes one")
+	}
+
+	// One notice that cannot be persisted: detaching the transcript writer is
+	// the same refusal a failed attention append takes, without a fake writer.
+	sess.mu.Lock()
+	writer := sess.transcript
+	sess.transcript = nil
+	sess.mu.Unlock()
+	notif := watchSendDiagnosticNotification("watch:m5", "job:m5", "watch send failed: delivery_id=m5")
+	notif.Occurrence = "diagnostic:m5"
+	sess.scheduleStableWatchAttentionRetry([]jobNotification{notif})
+
+	// The obligation exists even though the append has not been retried.
+	if !sess.hasPendingAttentionAppend() {
+		t.Fatal("a failed attention append left no obligation: a runtime release could outrun the retry")
+	}
+	if sess.idleReleasePregatesClear() {
+		t.Fatal("the idle-runtime release precheck cleared while a notice was still owed its durable append")
+	}
+
+	// Restore the writer and let the retry land. The obligation discharges, and
+	// only then may a release proceed.
+	sess.mu.Lock()
+	sess.transcript = writer
+	sess.mu.Unlock()
+	rig.advance(jobNotificationRetryInitialDelay)
+	if sess.hasPendingAttentionAppend() {
+		t.Fatal("the retry landed the append but the obligation was never discharged: the release would wait forever")
+	}
+	if !sess.idleReleasePregatesClear() {
+		t.Fatal("the precheck still refuses after the owed append landed")
 	}
 }

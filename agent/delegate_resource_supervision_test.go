@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -449,32 +450,46 @@ func TestDelegateResourceSupervision_StableChildWatchDiagnosticRunsLeased(t *tes
 		t.Fatalf("warm send settled generation %d, want 1", warmFinished.Generation)
 	}
 
-	// A real send-rail diagnostic: a watch send that failed, named by its watch,
-	// arriving on the child's OWN job manager exactly as a real failed watch
-	// delivery does. Nothing durable is pending for the child at this point.
+	// A real send-rail diagnostic: a watch send that failed, carrying the watch
+	// lineage that caused it, arriving on the child's OWN job manager exactly as a
+	// real failed watch delivery does. Nothing durable is pending for the child at
+	// this point.
+	//
+	// It goes through ONE ingress -- the production enqueue -- and nothing else
+	// touches the cause registry. An earlier version of this test enqueued a
+	// provenance-free notice and then persisted a provenance-bearing copy of the
+	// same id directly; the direct call registered the cause whatever the ingress
+	// did, so the assertion below passed with no lineage ever adopted by the
+	// production path (#2340 review). Now the ingress is the only possible
+	// registrar, and reverting its registration fails here.
 	jm := sub.sess.jobManager
 	if jm == nil {
 		t.Fatal("the stable child has no job manager to deliver a watch diagnostic")
 	}
-	jm.enqueueWatchNotifications([]jobNotification{
-		watchSendDiagnosticNotification("watch:life-01", "job:finished", "watch send failed: delivery_id=life-01"),
-	})
-
-	// The conversion to durable attention must NOT drop the notice's causal
-	// provenance (#2340 review). A runaway-watch diagnostic carries the chain the
-	// breaker stopped, and an event the child emits in response has to descend
-	// from it: without that lineage the breaker reads the response as a fresh
-	// trigger and fires again, which is the loop this whole ingress closes. So the
-	// cause registered for the item is the notice's own, before presentation.
 	diagNotification := watchSendDiagnosticNotification("watch:life-01", "job:finished", "watch send failed: delivery_id=life-01")
 	diagNotification.Provenance = provenance.WithWatch(nil, "watch:life-01", "gen:life-01", "delivery:life-01", sub.sess.id, "job:finished")
 	diagAttentionID := stableWatchDiagnosticAttentionID(diagNotification)
-	if _, err := persistStableWatchAttention(sub.sess, root.delegateController, diagNotification); err != nil {
-		t.Fatalf("persist a provenance-bearing watch notice: %v", err)
-	}
-	registered := root.delegateController.attentionCauses.union([]string{diagAttentionID})
-	if !provenance.ContainsWatch(registered, "watch:life-01", "gen:life-01") {
-		t.Fatalf("attention %q carries cause %+v, want the notice's own watch lineage", diagAttentionID, registered)
+	// Watch what the child actually emits: an event's provenance is read when it
+	// is emitted, so an event the leased turn produces after presenting the item
+	// carries the item's cause. This is the observable the design promises and
+	// the one a dropped provenance breaks.
+	var lineageSeen atomic.Bool
+	var lineageEvents atomic.Int64
+	go func() {
+		for ev := range sub.sess.Events() {
+			lineageEvents.Add(1)
+			if provenance.ContainsWatch(ev.Provenance, "watch:life-01", "gen:life-01") {
+				lineageSeen.Store(true)
+			}
+		}
+	}()
+	jm.enqueueWatchNotifications([]jobNotification{diagNotification})
+
+	// The ingress must register the notice's own cause, and it must be the ONE
+	// registrar: reading the registry here would race the turn that adopts and
+	// forgets it, so the assertion is made inside the turn below.
+	if diagAttentionID == "" {
+		t.Fatal("the diagnostic has no attention identity")
 	}
 
 	// First: the diagnostic reaches the provider at all. This is the turn the
@@ -492,6 +507,22 @@ func TestDelegateResourceSupervision_StableChildWatchDiagnosticRunsLeased(t *tes
 	if finished.Generation != warmFinished.Generation+1 {
 		t.Fatalf("provider requests rose to %d but the settled generation stayed at %d (want %d): the diagnostic ran an UNLEASED model turn",
 			supervisionRequestCount(fixture.adapter), finished.Generation, warmFinished.Generation+1)
+	}
+	// The conversion to durable attention must NOT drop the notice's causal
+	// provenance (#2340 review). A runaway-watch diagnostic carries the chain the
+	// breaker stopped, and an event the child emits in response has to descend
+	// from it: without that lineage the breaker reads the response as a fresh
+	// trigger and fires again, which is the loop this whole ingress closes.
+	//
+	// The cause joins the turn at the settled request that presented the item
+	// (promoteStagedAttentionCoverage), so the observable is the turn's active
+	// provenance AFTER the run settles — not the registry before it, which the
+	// turn adopts and forgets.
+	if lineageEvents.Load() == 0 {
+		t.Fatal("the child emitted no events, so the lineage assertion below cannot be read")
+	}
+	if !lineageSeen.Load() {
+		t.Fatalf("no event the child emitted descended from the watch that caused attention %q: the ingress dropped the notice's provenance", diagAttentionID)
 	}
 	// Nothing may be left queued on the child's ordinary rail. A queued notice is
 	// what the unleased turn existed to drain; the diagnostic became attention and
@@ -4909,5 +4940,152 @@ func TestStableSupervisionQuiescenceWaitsForTheChildNamer(t *testing.T) {
 	sub.sess.mu.Unlock()
 	if pending != 0 || name != "Slow Name" {
 		t.Fatalf("quiescence returned with %d child namer runs pending and name %q, want none pending and the slow namer's name", pending, name)
+	}
+}
+
+// Two DIFFERENT failures of the same watch and job must be two attention items.
+//
+// A diagnostic's identity used to be its watch, its job and a hash of its
+// reason. Two failed deliveries of one watch render the SAME sentence when the
+// store returns the same error for both, so the second failure reused the first
+// failure's resolved row: no new item, no wake, and a lost notice (#2340
+// review). The producer now stamps the send's own delivery id, so identity is
+// per delivery while a replay of one delivery still reuses its original id.
+func TestStableWatchDiagnosticsGetOneAttentionItemPerFailedDelivery(t *testing.T) {
+	t.Parallel()
+	const (
+		watchID = "watch:life-04"
+		jobID   = "job:life-04"
+		// The same error text for both sends: identity must not come from it.
+		reason = "watch send pending state failed: store unavailable"
+	)
+	send := func(deliveryID string) jobstore.WatchSendState {
+		return jobstore.WatchSendState{
+			Key:        jobstore.WatchSendKey{WatchID: watchID, ResolvedWatchedIdentity: jobID},
+			DeliveryID: deliveryID,
+		}
+	}
+	first := watchSendDiagnosticForState(send("wd_first"), reason)
+	second := watchSendDiagnosticForState(send("wd_second"), reason)
+	firstID := stableWatchDiagnosticAttentionID(first)
+	secondID := stableWatchDiagnosticAttentionID(second)
+	if firstID == secondID {
+		t.Fatalf("two failed deliveries of %q share attention id %q: the second would reuse the first's resolved row and never wake anyone", watchID, firstID)
+	}
+	// Each id must trace to its OWN delivery, not merely to a different number.
+	if !strings.Contains(first.Occurrence, "wd_first") || !strings.Contains(second.Occurrence, "wd_second") {
+		t.Fatalf("occurrences %q and %q do not carry their own delivery ids", first.Occurrence, second.Occurrence)
+	}
+	if !strings.HasPrefix(firstID, stableWatchAttentionIDPrefix) || !strings.HasPrefix(secondID, stableWatchAttentionIDPrefix) {
+		t.Fatalf("ids %q and %q are not stable watch attention ids", firstID, secondID)
+	}
+	// Replaying one failure folds into the SAME item, or a retry duplicates it.
+	if replay := stableWatchDiagnosticAttentionID(watchSendDiagnosticForState(send("wd_first"), reason)); replay != firstID {
+		t.Fatalf("replay of the first failed delivery got attention id %q, want %q: a retry must not append a second item", replay, firstID)
+	}
+}
+
+// TestStableWatchNoticeGroupIsDurableBeforeItWakes pins review L2: one output
+// chunk can produce several watch notices for the same stable delegate, and
+// arming is what wakes the child. An arm that lands while a later row in the same
+// batch is still unwritten lets the child's next generation miss those notices
+// and start a second generation for one batch.
+//
+// The witness is the arm attempt itself, through the arm seam: it records how
+// many of the batch's rows are already durable at each attempt. Under the
+// per-notice arm the first notice was armed with the second still unwritten, so
+// the first attempt saw one row and there were two attempts.
+func TestStableWatchNoticeGroupIsDurableBeforeItWakes(t *testing.T) {
+	t.Parallel()
+	// A real attached transcript: the durable ingress refuses to append without
+	// one, and a fixture that never wrote a row could not tell a batched arm from
+	// an unbatched one.
+	sess, _ := newCompactableSession(t)
+	sess.owningDelegateID = "dlg_group_batch"
+	notifs := []jobNotification{
+		{WatchID: "watch:l2-a", JobID: "job:l2-a", Terminal: true, Reason: "completed", Status: "completed"},
+		{WatchID: "watch:l2-b", JobID: "job:l2-b", Terminal: true, Reason: "completed", Status: "completed"},
+	}
+	wantIDs := []string{stableWatchDiagnosticAttentionID(notifs[0]), stableWatchDiagnosticAttentionID(notifs[1])}
+
+	var mu sync.Mutex
+	var durableAtEachArm []int
+	updateSessionTestConfig(sess, func(cfg *testConfig) {
+		// Standing in for an arm the controller refused: this test measures WHEN
+		// the wake is attempted, not whether it succeeds.
+		cfg.delegateAttentionArmFault = func() error {
+			pending, err := sess.pendingDelegateAttentionIDs()
+			if err != nil {
+				t.Errorf("read pending attention at arm: %v", err)
+				return err
+			}
+			mu.Lock()
+			durableAtEachArm = append(durableAtEachArm, len(pending))
+			mu.Unlock()
+			return errors.New("arm refused by the test")
+		}
+	})
+
+	persistStableWatchAttentionGroup(sess, nil, notifs)
+	if got := sess.peekNotifications(); got != 0 {
+		t.Fatalf("the group left %d notice(s) on the ordinary queue", got)
+	}
+
+	mu.Lock()
+	attempts := slices.Clone(durableAtEachArm)
+	mu.Unlock()
+	if len(attempts) != 1 {
+		t.Fatalf("the group was armed %d time(s) %v, want exactly 1: one batch is one wake", len(attempts), attempts)
+	}
+	if attempts[0] != len(wantIDs) {
+		t.Fatalf("the wake was attempted with %d of %d notice(s) durable: the child's generation could miss the rest of its own batch", attempts[0], len(wantIDs))
+	}
+	pending, err := sess.pendingDelegateAttentionIDs()
+	if err != nil {
+		t.Fatalf("read pending attention: %v", err)
+	}
+	for _, id := range wantIDs {
+		if !slices.Contains(pending, id) {
+			t.Fatalf("pending attention %v is missing %q: the group did not persist every notice", pending, id)
+		}
+	}
+}
+
+// TestStableWatchNoticeResetsTheJobStatusPollGuard pins review L3: a stable
+// delegate that checks a running shell job and then sets a timer must get current
+// status on its first check after the timer, not a duplicate refusal.
+//
+// The queue resets the guard when it accepts a notice (one implementation,
+// forgetJobStatusPollForNotification). The durable stable-attention ingress did
+// not, so the check after the timer repeated the one before it and was refused.
+// This drives both halves through their real entry points: the ordinary check and
+// the durable notice.
+func TestStableWatchNoticeResetsTheJobStatusPollGuard(t *testing.T) {
+	t.Parallel()
+	sess, _ := newCompactableSession(t)
+	sess.owningDelegateID = "dlg_poll_reset"
+	const jobID = "job:poll-reset"
+	// The production status projection: a running target with an elapsed clock,
+	// which is the shape the repeat guard compares (jobStatusPollState).
+	runningFor := int64(1_000)
+	running := toolpkg.StateResult{State: jobStatusResult{
+		ID: jobID, JobID: jobID, Status: "running", Phase: "running", RunningForMS: &runningFor,
+	}}
+	first, err := sess.refuseRepeatedJobStatus(jobID, running, nil)
+	if err != nil {
+		t.Fatalf("the first job_status check was refused: %v: it is a first call and carries news", err)
+	}
+	if first == nil {
+		t.Fatal("the first job_status check returned nothing")
+	}
+
+	// The timer fires: a durable watch notice about this job reaches the stable
+	// attention ingress.
+	persistStableWatchAttentionGroup(sess, nil, []jobNotification{{
+		WatchID: "watch:poll-reset", JobID: jobID, Terminal: true, Reason: "completed", Status: "completed",
+	}})
+
+	if _, err := sess.refuseRepeatedJobStatus(jobID, running, nil); err != nil {
+		t.Fatalf("the first check after a watch notice about %q was refused: %v: the notice is news, so the repeat guard must be reset", jobID, err)
 	}
 }

@@ -1,3 +1,4 @@
+
 package agent
 
 import (
@@ -2958,4 +2959,35 @@ func attentionTransparentRecentCutoff(history []schema.Turn, preserveRecent int)
 		}
 	}
 	return 0, false
+}
+
+// drainCanPresentWatchAttention reports whether this drain pass may open a turn
+// for the watch attention it is holding.
+//
+// The finalization drain runs under the generation's own lease, so a turn it
+// opens covers what its settled requests present and the ordinary coverage path
+// retires the row — no second settlement route. The predicate is therefore the
+// conjunction that must hold for that to be true:
+//
+//   - this session is a stable delegate child (nothing else has durable watch
+//     attention bound to it);
+//   - at least one watch row is pending;
+//   - a lease is in context, which is what makes staging legal at all
+//     (coversPresentedAttention).
+//
+// A pass that fails any of these presents nothing and must fall to its wait: an
+// attention entry with no lease would stage nothing and retire nothing, which is
+// the spin the drain's own comment warns about (#2340 review M2).
+func (s *Session) drainCanPresentWatchAttention(ctx context.Context) bool {
+	if s == nil || s.owningDelegateID == "" || s.delegateController == nil {
+		return false
+	}
+	if _, leased := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); !leased {
+		return false
+	}
+	pending, err := s.pendingDelegateAttentionIDs()
+	if err != nil {
+		return false
+	}
+	return slices.ContainsFunc(pending, isStableWatchAttentionID)
 }
