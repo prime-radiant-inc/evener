@@ -1818,6 +1818,12 @@ func enrichThreadFileBackedOutputImages(thread appwire.Thread) appwire.Thread {
 	if sessionID == "" || cwd == "" || len(thread.Turns) == 0 {
 		return thread
 	}
+	// argsByCallID carries the arguments a legacy row does not record itself.
+	// A call id can be reused inside one stamped batch (two read_file calls for
+	// different images share it), and the index reserves the FIRST recorded part
+	// under an id, so the first row's arguments are the ones a later result row
+	// inherits. Keeping the last row's would hand that result a descriptor for an
+	// image a different call read (#1166 review).
 	argsByCallID := map[string]string{}
 	for ti := range thread.Turns {
 		for ii := range thread.Turns[ti].Items {
@@ -1826,7 +1832,9 @@ func enrichThreadFileBackedOutputImages(thread appwire.Thread) appwire.Thread {
 				continue
 			}
 			if item.CallID != "" && item.ArgumentsJSON != "" {
-				argsByCallID[item.CallID] = item.ArgumentsJSON
+				if _, seen := argsByCallID[item.CallID]; !seen {
+					argsByCallID[item.CallID] = item.ArgumentsJSON
+				}
 			}
 			if item.Status != appwire.TurnStatusCompleted {
 				continue

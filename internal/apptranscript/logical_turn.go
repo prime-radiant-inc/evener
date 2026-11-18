@@ -656,7 +656,7 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 			// items are already settled against the whole execution, so
 			// merging them here computed a result the execution's own fold had
 			// superseded (#1166 review).
-			items = mergeGroupedItems(group.items, group.itemEntries, group.itemAnnounce, false)
+			items = mergeGroupedItems(group.items)
 		}
 		if len(items) == 0 {
 			continue
@@ -1104,46 +1104,24 @@ func hasRecordedToolCall(turn *schema.Turn) bool {
 // upsert). Ordinals are assigned AFTER merging, across the whole logical
 // turn; items that do not merge keep arrival order.
 //
-// A STAMPED turn scopes the merge to the announcing entry: the index settles a
-// result only against a call of the turn's awaiting ASSISTANT entry
-// (build.go's applyResults), so one entry's calls are the whole settlement
-// batch. A provider that reuses a call id in a later round of the same
-// execution is therefore two calls — each keeps its own arguments and its own
-// result — and merging them by call id alone would overwrite the first call's
-// record with the second's. A legacy group keeps the call-id-wide rule it has
-// always had.
-func mergeGroupedItems(items []appwire.ThreadItem, itemEntries []int, itemAnnounce []bool, stamped bool) []appwire.ThreadItem {
+// This is the LEGACY group's rule, and the only rule this function has: a
+// stamped run's items are already settled across its whole execution by
+// mergeExecutionItems, which is the one place that knows the index's
+// reservation rules. The stamped branches that used to live here were
+// unreachable — the sole caller passes stamped=false — and would have reserved
+// the LAST duplicate announcement where the index reserves the first, so a
+// second implementation sat one flag away from disagreeing with the reader
+// beside it (#1166 review).
+func mergeGroupedItems(items []appwire.ThreadItem) []appwire.ThreadItem {
 	merged := make([]appwire.ThreadItem, 0, len(items))
-	// callIndex is keyed by call id, and for a stamped turn also by the
-	// awaiting entry that announced it, so the same id from a later round
-	// opens an item instead of merging into the earlier round's.
-	type callKey struct {
-		entry int
-		call  string
-	}
-	callIndex := map[callKey]int{}
-	for at, item := range items {
+	callIndex := map[string]int{}
+	for _, item := range items {
 		if MergesByCallID(item) {
-			entry := 0
-			if stamped && at < len(itemEntries) {
-				entry = itemEntries[at]
-			}
-			key := callKey{entry: entry, call: item.CallID}
-			if stamped && at < len(itemAnnounce) && itemAnnounce[at] {
-				// An announcement is never a merge target: the index keeps
-				// every recorded part and settles a result against the FIRST
-				// part carrying the call id. Merging a second announcement into
-				// the first would replace the earlier call's arguments before
-				// either result was applied (#1166 review).
-				callIndex[key] = len(merged)
-				merged = append(merged, item)
-				continue
-			}
-			if prev, ok := callIndex[key]; ok {
+			if prev, ok := callIndex[item.CallID]; ok {
 				merged[prev] = MergeThreadItems(merged[prev], item)
 				continue
 			}
-			callIndex[key] = len(merged)
+			callIndex[item.CallID] = len(merged)
 		}
 		merged = append(merged, item)
 	}

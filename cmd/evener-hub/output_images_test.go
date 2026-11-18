@@ -524,3 +524,73 @@ func TestOutputImagesForToolCallRepairableMalformedReadFile(t *testing.T) {
 		t.Fatalf("repairable-malformed read_file should recover thumbnail, got %+v", imgs)
 	}
 }
+
+// TestEnrichThreadFileBackedOutputImagesKeepsEachRowsOwnArguments covers what
+// the index now projects: a stamped batch whose announced rows each record
+// their own arguments under a reused call id, plus the standalone result row
+// that carries none of its own.
+//
+// Enrichment seeded a call-id argument cache and fell back to it whenever a row
+// carried no arguments, and the cache holds the LAST row's path for the id. The
+// result row then gained a descriptor for the other call's image — a thumbnail
+// of a file it never read. A row that records its own arguments answers for
+// them; a row that records none answers for the reservation the index makes,
+// which is the FIRST recorded part under that id, not the last (#1166 review).
+func TestEnrichThreadFileBackedOutputImagesKeepsEachRowsOwnArguments(t *testing.T) {
+	cwd := t.TempDir()
+	first := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 1, 1, 1}
+	second := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 2, 2, 2, 2}
+	for name, data := range map[string][]byte{"first.png": first, "second.png": second} {
+		if err := os.WriteFile(filepath.Join(cwd, name), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	thread := appwire.Thread{
+		ID:        "01DOC",
+		SessionID: "01DOC",
+		CWD:       cwd,
+		Turns: []appwire.Turn{{Items: []appwire.ThreadItem{
+			{
+				Type:          "commandExecution",
+				ToolName:      "read_file",
+				ID:            "item_tool_0_0",
+				CallID:        "call_img",
+				ArgumentsJSON: `{"file_path":"first.png"}`,
+				Output:        "[image: png, 12 bytes, base64 data follows]",
+				Status:        appwire.TurnStatusCompleted,
+			},
+			{
+				Type:          "commandExecution",
+				ToolName:      "read_file",
+				ID:            "item_tool_0_1",
+				CallID:        "call_img",
+				ArgumentsJSON: `{"file_path":"second.png"}`,
+				Output:        "[image: png, 12 bytes, base64 data follows]",
+				Status:        appwire.TurnStatusCompleted,
+			},
+			// The standalone result row the index keeps when the batch settles:
+			// it records the call id but none of its own arguments.
+			{
+				Type:     "commandExecution",
+				ToolName: "read_file",
+				ID:       "item_tool_result_0_0",
+				CallID:   "call_img",
+				Output:   "[image: png, 12 bytes, base64 data follows]",
+				Status:   appwire.TurnStatusCompleted,
+			},
+		}}},
+	}
+
+	got := enrichThreadFileBackedOutputImages(thread)
+	for at, want := range []string{"first.png", "second.png", "first.png"} {
+		row := got.Turns[0].Items[at]
+		imgs := row.OutputImages
+		if len(imgs) != 1 {
+			t.Fatalf("row %d (%s) OutputImages=%+v, want exactly one descriptor for %s", at, row.ID, imgs, want)
+		}
+		if !strings.Contains(imgs[0].URL, want) {
+			t.Fatalf("row %d (%s) gained a descriptor for %q, want %s: a row answers for its own recorded arguments, and a row with none answers for the first part reserved under the call id",
+				at, row.ID, imgs[0].URL, want)
+		}
+	}
+}

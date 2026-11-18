@@ -814,10 +814,22 @@ function nullishTurnFields(
         : newer.status,
   };
   if (newer.version === undefined) return fields;
-  // A versioned newer turn answers for every field it is authoritative for,
-  // INCLUDING by omission. status is never omitted on the wire, so it keeps the
-  // rank chain above; error can be.
-  return { ...fields, error: newer.error };
+  // A versioned newer turn answers for its own terminal state — status, error
+  // and completion timing together, INCLUDING by omission. They are one answer,
+  // not three: the rank chain above exists for unversioned page fragments,
+  // whose status is the best evidence available, and applying it to a versioned
+  // turn strands a stale `failed` over a newer `inProgress` while clearing that
+  // failure's error — the browser then paints a failure row and offers Retry
+  // for an attempt that is running (#1166 review).
+  const { startedAt: _startedAt, completedAt: _completedAt, durationMs: _durationMs, ...rest } = fields;
+  return {
+    ...rest,
+    startedAt: newer.startedAt ?? older.startedAt,
+    completedAt: newer.completedAt,
+    durationMs: newer.durationMs,
+    error: newer.error,
+    status: newer.status,
+  };
 }
 
 type TurnFragment = {

@@ -383,3 +383,53 @@ describe("mergeTailTurns failure provenance", () => {
     expect(turn?.status, "the turn is still failed: the failure row and Retry remain owed").toBe("failed");
   });
 });
+
+describe("mergeTailTurns status provenance", () => {
+  it("lets a newer versioned turn's status own the merge when the turn reopens", () => {
+    // The replacement window holds the failed attempt. The tail is the same
+    // turn reopened at a higher version: it is in progress again, and it
+    // recorded no error. The status rank gives `failed` precedence over
+    // `inProgress`, so a rank merge keeps the older status while the newer
+    // version clears the error — and the browser then paints a failure row and
+    // offers Retry for an attempt that is running.
+    const window = readResponseFixture();
+    window.thread.turns = [
+      {
+        id: "turn_1",
+        status: "failed",
+        itemsView: "full",
+        version: 2,
+        error: { message: "the first attempt's diagnostic", source: "provider" } as never,
+        items: [],
+      },
+    ];
+    const replaced = hydrateThread(window, "local:thr_1", 7000);
+    const tail: TurnModel[] = [
+      {
+        id: "turn_1",
+        status: "inProgress",
+        version: 5,
+        items: [
+          {
+            id: "item_9",
+            turnId: "turn_1",
+            type: "agentMessage",
+            text: "trying again",
+            status: "completed",
+            position: { entry: 5, item: 0, sub: 0 },
+            version: 5,
+          },
+        ],
+      },
+    ];
+
+    const merged = mergeTailTurns(replaced, tail);
+    const turn = (merged.history?.turns ?? []).find((candidate) => candidate.id === "turn_1");
+    expect(turn?.status, "the newest version owns the status: the attempt is running, not failed").toBe("inProgress");
+    expect(turn?.error, "the newer attempt recorded no diagnostic").toBeUndefined();
+    const retry = (merged.history?.turns ?? [])
+      .flatMap((candidate) => candidate.items)
+      .find((item) => item.id === "item_9");
+    expect(retry, "the replayed tail's item survives the merge").toBeDefined();
+  });
+});
