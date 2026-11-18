@@ -154,6 +154,19 @@ func priceEmittedToolSchemas(req Request, res registry.Resolved) Request {
 	return req
 }
 
+// PriceToolSchemas returns req with its tool count describing the list res's
+// builder emits, so a caller that estimates before admission bills the same
+// list admission will.
+//
+// Every estimate taken over a request whose tools a builder rewrites needs this:
+// a full-history estimate computed over the advertised catalog and then carried
+// past a delta's admission is smaller than the list that dispatches, and the
+// larger of the two is the one the budget takes. A route whose builder rewrites
+// nothing, an override, or a request with no tools returns unchanged.
+func PriceToolSchemas(req Request, res registry.Resolved) Request {
+	return priceEmittedToolSchemas(req, res)
+}
+
 // ToolsJSONBytes returns the byte length of defs' serialized form: the length
 // the local estimate bills a tool list by. A caller that builds one tool list
 // and prices many requests over it can measure the list once and stamp

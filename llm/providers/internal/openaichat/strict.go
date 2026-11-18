@@ -1271,6 +1271,15 @@ func deepCopyWith(v any, path map[containerKey]bool) any {
 		if len(x) == 0 {
 			return v
 		}
+		// The whole value has to be one JSON value before it is decoded. A
+		// decoder reads the first value and stops, so a schema object followed
+		// by trailing bytes decodes cleanly and the suffix is dropped — the
+		// request would then carry a valid prefix where the encoder previously
+		// rejected the tool. Malformed values are left as they are so that
+		// rejection still happens at the encoder.
+		if !json.Valid(x) {
+			return v
+		}
 		var decoded any
 		decoder := json.NewDecoder(bytes.NewReader(x))
 		decoder.UseNumber()

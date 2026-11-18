@@ -81,6 +81,18 @@ func (*Protocol) EmitToolSchemas(baseline []llm.ToolDefinition, res registry.Res
 		if reflect.DeepEqual(params, t.Parameters) {
 			continue
 		}
+		// DeepEqual is the wrong oracle for a byte count. The projection sorts
+		// each object's required list, which reorders a schema without changing
+		// what it serializes to: a catalog whose tools are already strictly
+		// shaped would then be re-measured on every dispatch even though the
+		// count it already holds is exact. What matters here is the emitted
+		// length, so the two schemas are measured instead of trusted to be
+		// equal, and only a schema whose projection really costs bytes is
+		// reported as changed.
+		if llm.ToolsJSONBytes([]llm.ToolDefinition{{Name: t.Name, Parameters: params}}) ==
+			llm.ToolsJSONBytes([]llm.ToolDefinition{{Name: t.Name, Parameters: t.Parameters}}) {
+			continue
+		}
 		sent[i].Parameters = params
 		changed = true
 	}

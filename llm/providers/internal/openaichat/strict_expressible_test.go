@@ -2524,6 +2524,32 @@ func TestRawJSONSubschemaIsReadLikeADecodedOne(t *testing.T) {
 	}
 }
 
+// A raw subschema is decoded so the walk can read it, and decoding reads one
+// value and stops. A schema object followed by trailing bytes therefore decodes
+// cleanly, and normalising it would let the request carry a valid prefix where
+// the encoder rejects the tool. The whole value has to be valid JSON before it
+// is read; anything else is passed through for the encoder to reject.
+func TestMalformedRawSubschemaIsLeftToTheEncoder(t *testing.T) {
+	t.Parallel()
+	const malformed = `{"enum":["fast","safe"]} trailing`
+	child := json.RawMessage(malformed)
+	emitted := SupplyDerivedTypes(map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           map[string]any{"mode": child},
+		"required":             []string{"mode"},
+	})
+	got, ok := emitted["properties"].(map[string]any)["mode"].(json.RawMessage)
+	if !ok {
+		t.Fatalf("emitted argument = %#v, want the raw value untouched: a malformed subschema must reach the "+
+			"encoder as it was advertised so the request is rejected rather than truncated",
+			emitted["properties"].(map[string]any)["mode"])
+	}
+	if string(got) != malformed {
+		t.Fatalf("emitted raw value = %q, want %q: the invalid suffix must not be dropped", got, malformed)
+	}
+}
+
 // additionalProperties may hold a schema rather than a boolean, and it is legal
 // on a node of any type. The rewrite reads the keyword only to write false on an
 // object it closes, so a schema value reaches the provider as advertised: a

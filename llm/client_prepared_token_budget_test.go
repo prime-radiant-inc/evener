@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -688,16 +689,25 @@ func TestARouteWithoutStrictEnforcementPricesTheTypesItAdds(t *testing.T) {
 // on this route either way.
 func TestADirectChatCallIsPricedAsTheChatBuilderEmitsIt(t *testing.T) {
 	t.Parallel()
+	// The catalog is the shapes the two rules disagree about. A strict-capable
+	// Chat route sends a parameterless tool with the closed empty schema even on
+	// a direct call, and it sends a schema the gate refuses with the types that
+	// schema implies. The opted-out tool keeps the omission a direct call has
+	// always had. The count therefore has to move for two of the three, and the
+	// expectation below is read from BuildBody rather than written here.
 	defs := []ToolDefinition{
 		{Name: "strict_one", Strict: new(true)},
 		{Name: "opted_out", Strict: new(false)},
+		{Name: "typed_gate", Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"payload": map[string]any{"const": "fixed"},
+			},
+			"required": []string{"payload"},
+		}},
 	}
 	rawBytes := ToolsJSONBytes(defs)
-	withSchemas := ToolsJSONBytes(asSentToolDefs(defs))
-	if withSchemas <= rawBytes {
-		t.Fatalf("fixture does not distinguish a raw count from one carrying the schemas: raw=%d open=%d",
-			rawBytes, withSchemas)
-	}
 
 	_, res := budgetClientOnRoute(t, &preparedBudgetAdapter{}, 1_000_000, registry.ProtocolOpenAIChat,
 		registry.Caps{StrictTools: new(true)})
@@ -711,59 +721,136 @@ func TestADirectChatCallIsPricedAsTheChatBuilderEmitsIt(t *testing.T) {
 		Tools:          defs,
 		ToolsJSONBytes: rawBytes,
 	}
-	if got := priceEmittedToolSchemas(req, res); got.ToolsJSONBytes != rawBytes {
-		t.Fatalf("count = %d, want %d: the Chat builder omits a parameterless tool's schema on a direct "+
-			"call, so the count over the definitions as written is the dispatched price",
-			got.ToolsJSONBytes, rawBytes)
+	// The oracle is the builder's own body. The agreement this test exists to
+	// check is that the price describes the schemas BuildBody carries: a price
+	// written here would be a second opinion about the same question, which is
+	// the defect the test was added to catch.
+	assertChatWireMatchesPrice(t, req, res)
+	emitted := pricedChatDefs(t, req, res)
+	emittedBytes := ToolsJSONBytes(emitted)
+	if emittedBytes <= rawBytes {
+		t.Fatalf("fixture does not distinguish the two prices: advertised=%d emitted=%d: a strict-capable "+
+			"Chat route has to change something for this test to mean anything", rawBytes, emittedBytes)
 	}
-	// The same catalog through preparation does gain a schema for the strict
-	// tool, so the count must move there: that is what makes the assertion
-	// above about the direct path rather than about a deriver that never
-	// answers.
-	preparedReq := MarkPreparedTools(req)
-	preparedSent, preparedChanged := emitToolSchemas(t, res, preparedReq.Tools)
-	if !preparedChanged {
-		t.Fatal("prepared Chat catalog did not change; the direct-path assertion above would hold for the wrong reason")
-	}
-	preparedBytes := ToolsJSONBytes(preparedSent)
-	if preparedBytes == rawBytes {
-		t.Fatalf("prepared Chat price %d equals the raw price %d; the fixture cannot tell the two paths apart",
-			preparedBytes, rawBytes)
-	}
-	if got := priceEmittedToolSchemas(preparedReq, res); got.ToolsJSONBytes != preparedBytes {
-		t.Fatalf("prepared Chat count = %d, want %d: a prepared parameterless tool is sent with a schema "+
-			"the raw count never carried", got.ToolsJSONBytes, preparedBytes)
+	if got := priceEmittedToolSchemas(req, res); got.ToolsJSONBytes != emittedBytes {
+		t.Fatalf("priced count = %d, want %d: admission must price the schemas BuildBody emits "+
+			"(advertised count %d)", got.ToolsJSONBytes, emittedBytes, rawBytes)
 	}
 
-	// A cap between the two prices: the request fits, because the wire never
-	// carries the schemas the larger count would bill for.
-	rawInput := EstimateInputTokensForResolved(res, req).Tokens
-	padded := req
-	padded.ToolsJSONBytes = preparedBytes
-	paddedInput := EstimateInputTokensForResolved(res, padded).Tokens
-	if paddedInput <= rawInput {
-		t.Fatalf("fixture does not straddle a cap: raw price %d, padded price %d", rawInput, paddedInput)
+	// The opted-out tool is the half that must not move: the builder omits its
+	// parameters key on a direct call, so it contributes the bytes it always
+	// did. A rule that substituted a schema for it would fail this.
+	optOnly := Request{Provider: "prepared-budget", Model: "model", Messages: req.Messages,
+		Tools: defs[1:2], ToolsJSONBytes: ToolsJSONBytes(defs[1:2])}
+	if got := priceEmittedToolSchemas(optOnly, res); got.ToolsJSONBytes != optOnly.ToolsJSONBytes {
+		t.Fatalf("opted-out direct call priced to %d, want %d: the builder omits its parameters key, so the "+
+			"advertised count is the dispatched price", got.ToolsJSONBytes, optOnly.ToolsJSONBytes)
 	}
-	limit := rawInput + minimumTokenSafetyReserve + (paddedInput-rawInput)/2
+
+	// A cap between the two prices: admission reads the priced count, so the
+	// request it must refuse is the one the advertised count would have admitted.
+	advertisedInput := EstimateInputTokensForResolved(res, req).Tokens
+	priced := req
+	priced.ToolsJSONBytes = emittedBytes
+	pricedInput := EstimateInputTokensForResolved(res, priced).Tokens
+	if pricedInput <= advertisedInput {
+		t.Fatalf("fixture does not straddle a cap: advertised price %d, emitted price %d",
+			advertisedInput, pricedInput)
+	}
+	limit := advertisedInput + minimumTokenSafetyReserve + (pricedInput-advertisedInput)/2
 	for range 16 {
-		next := rawInput + SafetyReserveTokens(limit) + (paddedInput-rawInput)/2
+		next := advertisedInput + SafetyReserveTokens(limit) + (pricedInput-advertisedInput)/2
 		if next == limit {
 			break
 		}
 		limit = next
 	}
 	safety := SafetyReserveTokens(limit)
-	if rawInput+safety >= limit {
-		t.Fatalf("cap %d does not admit the raw price %d", limit, rawInput)
+	if advertisedInput+safety >= limit {
+		t.Fatalf("cap %d does not admit the advertised price %d", limit, advertisedInput)
 	}
-	if paddedInput+safety <= limit {
-		t.Fatalf("cap %d does not refuse the padded price %d", limit, paddedInput)
+	if pricedInput+safety <= limit {
+		t.Fatalf("cap %d does not refuse the emitted price %d", limit, pricedInput)
 	}
 	_, cappedRes := budgetClientOnRoute(t, &preparedBudgetAdapter{}, limit, registry.ProtocolOpenAIChat,
 		registry.Caps{StrictTools: new(true)})
-	if _, err := shapeAndApplyTokenBudget(req, cappedRes, true); err != nil {
-		t.Fatalf("admission refused a request priced at %d under a cap of %d: the wire carries no "+
-			"parameters schema for either tool, so the padded price %d is not what dispatches: %v",
-			rawInput+safety, limit, paddedInput+safety, err)
+	if _, err := shapeAndApplyTokenBudget(req, cappedRes, true); err == nil {
+		t.Fatalf("admission accepted a request billed at %d under a cap of %d: the emitted list costs %d "+
+			"and the advertised count does not include the schemas the builder supplies",
+			advertisedInput+safety, limit, pricedInput+safety)
 	}
+}
+
+// assertChatWireMatchesPrice fails unless every schema the Chat builder puts on
+// the wire is the schema the deriver prices for the same tool, and unless the
+// builder's own presence-or-absence of the parameters key agrees with the
+// deriver's. That is the property, and it is checked pairwise rather than by
+// re-serializing the body: the wire entry and the definition list are different
+// JSON shapes, so their byte counts are not comparable, but their schemas are.
+func assertChatWireMatchesPrice(t *testing.T, req Request, res registry.Resolved) {
+	t.Helper()
+	wire := chatWireToolParams(t, req, res)
+	emitted := pricedChatDefs(t, req, res)
+	if len(wire) != len(emitted) {
+		t.Fatalf("wire carries %d tools, price covers %d", len(wire), len(emitted))
+	}
+	for i := range wire {
+		wireParams := wire[i]
+		pricedParams := emitted[i].Parameters
+		if (wireParams != nil) != (pricedParams != nil) {
+			t.Fatalf("tool %d (%s): builder emits parameters present=%v, price describes present=%v",
+				i, emitted[i].Name, wireParams != nil, pricedParams != nil)
+		}
+		if wireParams == nil {
+			continue
+		}
+		if !reflect.DeepEqual(wireParams, pricedParams) {
+			t.Fatalf("tool %d (%s): builder emits %v, price describes %v",
+				i, emitted[i].Name, wireParams, pricedParams)
+		}
+	}
+}
+
+// pricedChatDefs returns the definitions the deriver prices for req's route.
+func pricedChatDefs(t *testing.T, req Request, res registry.Resolved) []ToolDefinition {
+	t.Helper()
+	p, ok := ProtocolFor(res.Protocol)
+	if !ok {
+		t.Fatalf("no protocol registered for %q", res.Protocol)
+	}
+	deriver, ok := p.(ToolSchemaDeriver)
+	if !ok {
+		t.Fatalf("protocol %q does not derive tool schemas", res.Protocol)
+	}
+	emitted, _ := deriver.EmitToolSchemas(req.Tools, res, req.PreparedTools())
+	if emitted == nil {
+		return req.Tools
+	}
+	return emitted
+}
+
+// chatWireToolParams reads the parameter schema of each tool from the body the
+// Chat builder actually produces, with nil for a tool whose parameters key the
+// builder omitted.
+func chatWireToolParams(t *testing.T, req Request, res registry.Resolved) []map[string]any {
+	t.Helper()
+	p, ok := ProtocolFor(res.Protocol)
+	if !ok {
+		t.Fatalf("no protocol registered for %q", res.Protocol)
+	}
+	body, err := p.BuildBody(ShapeRequest(req, res), res)
+	if err != nil {
+		t.Fatalf("BuildBody: %v", err)
+	}
+	raw, ok := body["tools"].([]map[string]any)
+	if !ok {
+		t.Fatalf("body tools = %#v, want the wire tool list", body["tools"])
+	}
+	out := make([]map[string]any, len(raw))
+	for i, entry := range raw {
+		fn, _ := entry["function"].(map[string]any)
+		params, _ := fn["parameters"].(map[string]any)
+		out[i] = params
+	}
+	return out
 }

@@ -738,6 +738,12 @@ func (s *Session) applyResponsesContinuationShadowEstimate(profile *provider.Pro
 	shadowReq.PreviousResponseID = ""
 	shadowReq.ConversationID = ""
 	shadowReq.Continuation = nil
+	// The shadow bills the whole conversation, so it has to bill the tool list
+	// the route will send with it. This runs before the delta is built, and the
+	// estimate it produces is carried past that build: pricing the advertised
+	// catalog here would leave the full-history figure describing schemas the
+	// builder has already replaced, and admission takes the larger of the two.
+	shadowReq = llm.PriceToolSchemas(shadowReq, resolvedTargetOf(profile))
 	tokens, ok := s.estimateResponsesContinuationShadow(profile, shadowReq)
 	if !ok {
 		req.HistoryMode = llm.HistoryModeFullHistory

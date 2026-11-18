@@ -69,69 +69,19 @@ func buildBody(req llm.Request, res registry.Resolved, stream bool) (out map[str
 			if !ok {
 				continue
 			}
-			// A definition that declares no parameters keeps its nil through
-			// preparation, and ToChatTools omits the key for it. On a prepared
-			// request the local validator compiles such a tool against
-			// defaultToolParameters, an open empty object, so the wire has to
-			// carry that same schema: omitting it leaves the provider reading
-			// "no schema" where the validator reads "any object". Only a tool
-			// that is actually sent with strict enforcement gets the closed
-			// form, because that is the only shape strict mode accepts.
-			//
-			// A direct Complete or Stream call never went through preparation,
-			// so its nil is the caller's own no-argument declaration and there
-			// is no validator to agree with. Omit the key there, as every
-			// adapter did before the fallback existed: synthesizing an open
-			// object would tell the provider the tool accepts arbitrary keys.
-			if req.Tools[i].Parameters == nil && req.PreparedTools() {
-				fn["parameters"] = map[string]any{"type": "object", "properties": map[string]any{}}
+			// One decision, shared with the local estimate: the schema a tool is
+			// sent with, whether it rides strict enforcement, and whether the
+			// key is omitted. A second copy of these rules here is what let the
+			// price and the wire disagree about the same tool.
+			params, toolStrict, omit := toolSchema(req, i, strictTools)
+			if !omit {
+				fn["parameters"] = params
 			}
-		}
-		if strictTools {
-			for i, t := range tools {
-				fn, ok := t["function"].(map[string]any)
-				if !ok {
-					continue
-				}
-				// A per-tool opt-out (Strict=&false) applies here too: the
-				// definition said strict mode cannot express its arguments.
-				if def := req.Tools[i].Strict; def != nil && !*def {
-					// The route offers strict enforcement and this tool is
-					// deliberately outside it, so the request says so. Leaving
-					// the key absent leaves enforcement to the endpoint's own
-					// default, which is the thing the opt-out asked not to
-					// happen.
-					fn["strict"] = false
-					continue
-				}
-				// Strict mode force-requires every property, which is lossless
-				// only for a schema that already requires them all. A tool with
-				// a documented-optional argument has no legal strict form, so it
-				// keeps its advertised schema and is sent non-strict.
-				// A parameterless tool takes the closed empty object here: strict
-				// mode needs a schema to validate against, and this is the one
-				// shape that takes an empty argument set. A caller that supplied
-				// its own open empty schema keeps it, and the gate below then
-				// sends that tool non-strict.
-				if req.Tools[i].Parameters == nil {
-					fn["parameters"] = map[string]any{
-						"type":                 "object",
-						"additionalProperties": false,
-						"properties":           map[string]any{},
-						"required":             []string{},
-					}
-				}
-				if params, ok := fn["parameters"].(map[string]any); ok && !openaichat.StrictExpressible(params) {
-					// Refused: the schema has no legal strict projection, so
-					// the tool is sent with its advertised schema and an
-					// explicit false rather than an absent key.
-					fn["strict"] = false
-					continue
-				}
-				fn["strict"] = true
-				if params, ok := fn["parameters"].(map[string]any); ok {
-					fn["parameters"] = openaichat.StrictifyJSONSchema(params)
-				}
+			if strictTools {
+				// The route offers strict enforcement, so every tool says
+				// whether it is inside it: an absent key would leave the
+				// endpoint's own default in charge.
+				fn["strict"] = toolStrict
 			}
 		}
 		body["tools"] = tools
