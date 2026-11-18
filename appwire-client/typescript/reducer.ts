@@ -612,10 +612,23 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
       // notification for any other turn - including one the model has no
       // running turn for yet - records, and one that names no turn is an
       // older daemon's and keeps its turn-agnostic meaning.
+      // A read can beat the bridge the same way a boundary can: the pane
+      // hydrates into a session whose NEXT turn already runs (the stop
+      // happened on another client), so the model knows the running turn
+      // but no retired one. A named quota event for a turn that is neither
+      // the running nor the retired one is a stale delivery against that
+      // knowledge - the running turn's wait would be stamped by a turn that
+      // already ended.
+      const staleAgainstRunningTurn =
+        params.errorClass === "quota_exceeded" &&
+        params.turnId !== undefined &&
+        model.runningTurnId !== undefined &&
+        params.turnId !== model.runningTurnId &&
+        params.turnId !== model.retiredQuotaTurn;
       if (
         params.errorClass === "quota_exceeded" &&
         params.turnId !== undefined &&
-        params.turnId === model.retiredQuotaTurn
+        (params.turnId === model.retiredQuotaTurn || staleAgainstRunningTurn)
       ) {
         return model;
       }

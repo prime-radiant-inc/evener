@@ -257,6 +257,49 @@ test("a read that names a different running turn retires the old turn's quota re
   expect(next.modelRetry).toBeUndefined();
 });
 
+// The same turn can wait twice: the browser disconnects during one wait,
+// another client steers (ending that wait) and the retry hits the limit
+// again, and the pane reconnects into the SECOND wait of the SAME turn. The
+// turn id matching is not evidence the two waits share a call: the fresh
+// snapshot's deadline names the new wait, whose elapsed time the retained
+// metadata (the first call's elapsed time, its model) does not carry. The
+// countdown renders alone until a live announcement of THIS wait arrives.
+test("a read that moves the deadline within the same turn retires the earlier call's retry metadata", () => {
+  const resumesAt = 4_102_400_000;
+  let model = hydrateThread(
+    read([turn("turn_1", 1)], { activeTurnId: "turn_1", quotaWaitResumesAt: resumesAt }),
+    REF,
+    NOW,
+  );
+  model = {
+    ...model,
+    modelRetry: {
+      attempt: 1,
+      maxAttempts: 1,
+      delayMs: resumesAt - NOW,
+      errorClass: "quota_exceeded",
+      turnId: "turn_1",
+      groupElapsedMs: 5_000,
+      attemptCap: 1,
+      receivedAt: NOW,
+    },
+  };
+  // Reconnect: the same turn now waits a LATER wait than the one this client
+  // saw (a different instant than the one the retained retry carries).
+  const secondWaitResumesAt = resumesAt + 30 * 60_000;
+  const fresh = hydrateThread(
+    read([turn("turn_1", 1)], { activeTurnId: "turn_1", quotaWaitResumesAt: secondWaitResumesAt }),
+    REF,
+    NOW + 1,
+  );
+  const next = applyReadModel(model, fresh);
+  // The new wait's deadline installs; the earlier call's retry metadata
+  // clears, so the new wait's line does not render the first call's
+  // elapsed time.
+  expect(next.quotaResumesAt).toBe(secondWaitResumesAt);
+  expect(next.modelRetry).toBeUndefined();
+});
+
 function page(turns: Turn[], options: Snapshot & { authoritative?: boolean } = {}): ThreadTurnsListResponse {
   return {
     data: turns,

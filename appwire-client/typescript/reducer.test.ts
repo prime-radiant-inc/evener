@@ -3344,6 +3344,44 @@ test("a turn boundary retires a turn whose quota announcement has not arrived ye
   expect(fresh.modelRetry?.errorClass).toBe("quota_exceeded");
 });
 
+// A read can beat the bridge: the pane hydrates after a stopped wait's turn
+// ended on another client and the next turn is already running, so the model
+// knows the new running turn but no retired one - no stop boundary was ever
+// observed here. The old turn's queued quota notification must not install
+// its canceled countdown over the new turn: a named event for a turn that
+// is neither the running nor the retired one is a stale delivery.
+test("a quota notification naming a turn that is neither running nor retired does not record", () => {
+  const quotaRetry = (turnId: string) =>
+    ({
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId,
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: 60 * 60_000,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 500,
+        attemptCap: 1,
+      },
+    }) as AnyNotification;
+  let model = testHydrate();
+  // The pane opens into a session whose next turn is already running: the
+  // stop happened before this client hydrated, so no boundary was seen.
+  model = applyNotification(
+    model,
+    {
+      method: "thread/status/changed",
+      params: { threadId: "thr_t", ref: "ref_t", status: { type: "active" }, activeTurnId: "turn_2" },
+    },
+    900_000,
+  );
+  const stale = applyNotification(model, quotaRetry("turn_1"), 1_000_000);
+  expect(stale.quotaResumesAt).toBeUndefined();
+  expect(stale.modelRetry).toBeUndefined();
+});
+
 // A history update that completes an output item can belong to an earlier
 // model round, not the waiting call: the history worker publishes
 // asynchronously, so the round before the quota failure can land its text

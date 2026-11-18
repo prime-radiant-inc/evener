@@ -223,8 +223,11 @@ test("an expired snapshot deadline renders the overdue wait, never a stall", () 
   // snapshot names, distinct from every state derived from the gap.
   const overdueText = el.textContent ?? "";
   expect(overdueText).not.toBe(describeLiveness(STUCK_AFTER_MS * 3, true, 0).text);
-  // No elapsed time: the snapshot alone cannot know one.
-  expect(overdueText).not.toContain("on this call");
+  // No elapsed time renders: the snapshot alone cannot know one, so the
+  // line omits the elapsed duration value (checked by its absence from the
+  // rendered text, not by any phrase the suffix might be reworded into).
+  expect(overdueText).not.toContain(formatExactGap(STUCK_AFTER_MS * 3));
+  expect(overdueText).not.toContain(formatExactGap(0));
 });
 
 // A live quota wait keeps counting down while unrelated activity lands: a

@@ -1019,14 +1019,19 @@ export function applyReadResponse<M extends ThreadModel>(
   // belongs to the old turn's call and would dress the new wait in the old
   // call's history. The new wait renders from its deadline alone until a
   // matching live announcement arrives.
+  // So does a read that MOVES the deadline within the SAME turn: the turn
+  // can wait twice (the first wait ended by a steer, the retry hit the limit
+  // again), and matching turn ids are not evidence the two waits share a
+  // call - the moved deadline names a new wait whose elapsed time the
+  // retained metadata does not carry.
   const readRunningTurnId = runningTurn(resp.thread).runningTurnId;
-  const quotaRetryFromAnotherTurn =
+  const quotaRetryFromAnotherCall =
     base.modelRetry?.errorClass === "quota_exceeded" &&
     base.modelRetry.turnId !== undefined &&
-    readRunningTurnId !== undefined &&
-    readRunningTurnId !== base.modelRetry.turnId;
+    ((readRunningTurnId !== undefined && readRunningTurnId !== base.modelRetry.turnId) ||
+      fields.quotaResumesAt !== model.quotaResumesAt);
   const clearedQuotaRetry =
-    (fields.quotaResumesAt === undefined || quotaRetryFromAnotherTurn) &&
+    (fields.quotaResumesAt === undefined || quotaRetryFromAnotherCall) &&
     base.modelRetry?.errorClass === "quota_exceeded"
       ? { modelRetry: undefined }
       : {};
@@ -1209,17 +1214,17 @@ export function applyReadModel<M extends ThreadModel>(
     fresh.scratchDir === undefined && model.scratchDir !== undefined ? { scratchDir: undefined } : {};
   const clearedQuotaWait =
     fresh.quotaResumesAt === undefined && model.quotaResumesAt !== undefined ? { quotaResumesAt: undefined } : {};
-  // Same cross-turn rule as applyReadResponse: a read naming a different
-  // running turn retires the old turn's retry metadata even while the new
-  // turn waits its own wait - the new deadline renders alone until a
-  // matching live announcement arrives.
-  const quotaRetryFromAnotherTurn =
+  // Same cross-turn and moved-deadline rules as applyReadResponse: a read
+  // naming a different running turn, or moving the deadline within the same
+  // turn, retires the retained retry metadata - the new deadline renders
+  // alone until a matching live announcement arrives.
+  const quotaRetryFromAnotherCall =
     base.modelRetry?.errorClass === "quota_exceeded" &&
     base.modelRetry.turnId !== undefined &&
-    freshRunningTurnId !== undefined &&
-    freshRunningTurnId !== base.modelRetry.turnId;
+    ((freshRunningTurnId !== undefined && freshRunningTurnId !== base.modelRetry.turnId) ||
+      fresh.quotaResumesAt !== model.quotaResumesAt);
   const clearedQuotaRetry =
-    (fresh.quotaResumesAt === undefined || quotaRetryFromAnotherTurn) &&
+    (fresh.quotaResumesAt === undefined || quotaRetryFromAnotherCall) &&
     model.modelRetry?.errorClass === "quota_exceeded"
       ? { modelRetry: undefined }
       : {};
