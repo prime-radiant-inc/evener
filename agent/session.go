@@ -2807,9 +2807,7 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 		// The event is a trigger, not a snapshot: when the root session's bridge
 		// handles this event it samples current context
 		// (server/thread_envelope.go's facetsByEvent), so the sample can reflect
-		// state a later publication moved. Nor does the door order this event
-		// against a fold's own events, which flush only after it is released
-		// (publishFoldTransaction).
+		// state a later publication moved.
 		if hook := s.cfg.testOnly.beforeEnvironmentEventPublish; hook != nil {
 			hook()
 		}
