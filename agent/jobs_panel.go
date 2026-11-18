@@ -171,8 +171,19 @@ type sessionJobRecordRead struct {
 	// can open the job under the ref it read from, which is where the bytes
 	// actually live.
 	sourceSessionID string
-	found           bool
-	diagnostics     sessionJobRecordDiagnostics
+	// artifactSessionID is the session whose directory holds record's own
+	// artifacts — its default-named output log — when ownership was corroborated
+	// but the selected record's status still came from another journal. The two
+	// are different questions: sourceSessionID says where the STATUS came from,
+	// this says where the BYTES were written. Empty means the two coincide, and
+	// routing falls back to sourceSessionID.
+	//
+	// Only a corroborated owner is ever named here. An uncorroborated claim named
+	// a session whose directory was never involved, and routing there hid a
+	// readable log sitting beside the scoped journal.
+	artifactSessionID string
+	found             bool
+	diagnostics       sessionJobRecordDiagnostics
 	// scanErr is the durable-corruption error THIS branch's own scan produced,
 	// or nil. It stays branch-local on purpose: mergeIntegrity carries the
 	// damage report forward, but whether one particular record's state can be
@@ -354,6 +365,11 @@ func loadSessionJobRecord(stateDir, sessionID, jobID string, fence OwnerDeletion
 		}
 		local.diagnostics.mergeIntegrity(corroborated.diagnostics)
 		local.diagnostics.ForwardedFallback = true
+		// Ownership is corroborated even though the scoped copy supplied the
+		// selected status — a torn tail in the owner's journal is why it lost, not a
+		// failed claim. The owner still owns the directory its log was written to,
+		// so carry that separately from the journal that supplied the status.
+		local.artifactSessionID = hint
 		return local, nil
 	}
 	if owner == sessionID {
@@ -591,15 +607,20 @@ func readSessionJobJournal(stateDir, sessionID, jobID string) (sessionJobRecordR
 // the job, and the validated identifier is what says which one that is.
 //
 // For a job ID encoding no owner (a legacy bare UUID) there is no identifier to
-// rank against, so the journal that SUPPLIED the selected record is the answer:
-// that is where the log was written, and the resolution already corroborated any
-// claim before it could speak for that journal. The claim itself is never the
-// routing input — an uncorroborated one named a session whose directory was
-// never involved, and routing there hid a readable log sitting beside the scoped
-// journal.
+// rank against, so the journal that SUPPLIED the selected record is the answer —
+// unless the resolution CORROBORATED a different owner while rejecting that
+// owner's row on evidence grounds. Then the two questions come apart: the status
+// is the scoped journal's, and the bytes are the owner's. The claim itself is
+// never the routing input — an uncorroborated one named a session whose
+// directory was never involved, and routing there hid a readable log sitting
+// beside the scoped journal — but a corroborated owner's directory is exactly
+// where its log was written.
 func routingJobSession(jobID string, read sessionJobRecordRead) string {
 	if owner := encodedJobOwner(jobID); owner != "" {
 		return owner
+	}
+	if read.artifactSessionID != "" {
+		return read.artifactSessionID
 	}
 	return read.sourceSessionID
 }

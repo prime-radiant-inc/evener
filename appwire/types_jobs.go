@@ -65,17 +65,29 @@ type JobActivityJob struct {
 	// clients fall back to startedAt (or hide quiet time for terminal rows).
 	LastOutputAt string `json:"lastOutputAt,omitempty"`
 	// Diagnostics names what a retained read could not establish about the
-	// history behind this row, one code per fact: forwarded_fallback means the
-	// record is a forwarded copy returned because its owner's journal held no
-	// record, owner_unavailable that the owner's journal could not be read,
-	// journal_torn_tail that the journal ended in an unterminated append, and
-	// incomplete_lifecycle that its events do not describe a whole job. A fifth
-	// code, journal_scan_incomplete, means the journal stopped at durable
-	// corruption: the row is the best reconstruction of the intact prefix, and a
-	// non-terminal status there is not a settled state because the finish may be
-	// the line that could not be decoded. Live reads leave it empty. Clients
-	// render or ignore it, but a stale forwarded row is no longer
-	// indistinguishable from a live running one.
+	// history behind this row, one code per fact.
+	//
+	// forwarded_fallback means the SCOPED copy supplied the selected record: the
+	// row is a forwarded one, served because the owner's own record either does
+	// not exist or could not be established as authoritative. It does not mean
+	// the owner's journal was empty.
+	//
+	// owner_unavailable means the owner's journal could not be read at all, so a
+	// forwarded copy had to stand in for it.
+	//
+	// The three integrity codes — journal_torn_tail, incomplete_lifecycle and
+	// journal_scan_incomplete — describe damage in EITHER journal the read
+	// consulted, not only the one that supplied the row: a competing branch being
+	// torn or incoherent is still a fact about this job's history, and a read
+	// that resolved through a damaged owner says so even when the returned row
+	// came from the intact scoped journal. journal_torn_tail means a journal
+	// ended in an unterminated append, incomplete_lifecycle that its events do
+	// not describe a whole job, and journal_scan_incomplete that it stopped at
+	// durable corruption — where a non-terminal status is not a settled state
+	// because the finish may be the line that could not be decoded.
+	//
+	// Live reads leave it empty. Clients render or ignore it, but a stale
+	// forwarded row is no longer indistinguishable from a live running one.
 	Diagnostics []string `json:"diagnostics,omitempty"`
 }
 

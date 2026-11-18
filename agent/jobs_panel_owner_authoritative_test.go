@@ -1341,6 +1341,76 @@ func TestLoadSessionJobGetReportsCorruptOwnerJournalAsDamage(t *testing.T) {
 	}
 }
 
+// TestLoadSessionJobOutputPageRoutesToCorroboratedOwnerLog is the round-8
+// medium-2 regression. A legacy job's hinted owner CORROBORATES ownership — its
+// journal holds this job — but a torn tail means its row cannot state the job's
+// status, so the scoped journal's observed finish is the selected record. The
+// two questions come apart: the status came from the scoped journal, and the
+// bytes were written to the owner's directory. Routing by the journal that
+// supplied the status opened a directory holding no log.
+func TestLoadSessionJobOutputPageRoutesToCorroboratedOwnerLog(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	scopedSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := "job_legacy_f7a8b9c0"
+	started := time.Date(2026, 11, 19, 6, 0, 0, 0, time.UTC)
+	ended := started.Add(time.Minute)
+	exit := 0
+
+	// The owner's journal corroborates ownership but is torn, so its running row
+	// cannot state the job's status.
+	writeJobJournalLines(t, jobsDir(stateDir, ownerSession),
+		jobStartedLine(jobID, ownerSession, started)+"\n",
+		`{"kind":"job_finished","seq":2,"job_id":"`+jobID+`","status":"completed"`,
+	)
+
+	// The scoped journal holds the observed finish and the owner hint.
+	scopedStore := openJobJournal(t, jobsDir(stateDir, scopedSession))
+	appendJobEvent(t, scopedStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: scopedSession,
+		StartedAt: &started,
+	})
+	appendJobEvent(t, scopedStore, jobstore.Event{
+		Kind: jobstore.EventJobFinished, TS: ended, JobID: jobID,
+		Status: jobstore.StatusCompleted, ExitCode: &exit, EndedAt: &ended, TerminalGen: "gen_scoped",
+		OutputBytes: int64(len("owner log")),
+	})
+	closeJobJournal(t, scopedStore)
+
+	// The log lives in the OWNER's directory, because the owner ran the job.
+	ownerLogPath := filepath.Join(jobsDir(stateDir, ownerSession), "jobs", jobID+".log")
+	if err := os.MkdirAll(filepath.Dir(ownerLogPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ownerLogPath, []byte("owner log"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// A decoy in the scoped directory: same job ID, bytes from a different job.
+	scopedLogPath := filepath.Join(jobsDir(stateDir, scopedSession), "jobs", jobID+".log")
+	if err := os.MkdirAll(filepath.Dir(scopedLogPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	// Same length as the owner's log, so a wrong route fails on the CONTENT it read
+	// rather than on a size mismatch.
+	if err := os.WriteFile(scopedLogPath, []byte("other log"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	page, found, err := LoadSessionJobOutputPage(stateDir, scopedSession, jobID, nil, 64, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobOutputPage: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the corroborated owner's log")
+	}
+	if page.Data != "owner log" {
+		t.Fatalf("data = %q, want %q: the log lives in the corroborated owner's directory, not the "+
+			"directory of the journal that supplied the status", page.Data, "owner log")
+	}
+}
+
 // openJobJournal opens a session's jobs.jsonl for a fixture, creating the
 // directory the store lives in.
 func openJobJournal(t *testing.T, dir string) *jobstore.Store {
