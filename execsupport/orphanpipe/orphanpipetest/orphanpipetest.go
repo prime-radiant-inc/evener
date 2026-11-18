@@ -53,14 +53,32 @@ type Holder struct {
 // never ran.
 func New(t testing.TB) *Holder {
 	t.Helper()
-	dir := t.TempDir()
+	return NewIn(t, t.TempDir())
+}
+
+// NewIn creates the FIFOs in a directory it makes under base and removes with
+// the test, for a caller whose holder has to sit beneath a base it has already
+// validated.
+//
+// WriteScript writes an executable into that directory and the test then runs
+// it, so the directory is not only storage: it is where a program is executed
+// from. A caller that has an opinion about which bases it will execute out of --
+// internal/devtool/mergeq's fixtures, whose scripts must not be replaceable by
+// another local user -- can pass the base that opinion accepted instead of
+// taking t.TempDir() and hoping.
+func NewIn(t testing.TB, base string) *Holder {
+	t.Helper()
+	dir, err := os.MkdirTemp(base, "orphanpipes.")
+	if err != nil {
+		t.Fatalf("create a holder directory under %s: %v", base, err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
 	h := &Holder{dir: dir, started: filepath.Join(dir, "started"), release: filepath.Join(dir, "release")}
 	for _, fifo := range []string{h.started, h.release} {
 		if err := syscall.Mkfifo(fifo, 0o600); err != nil {
 			t.Fatalf("mkfifo %s: %v", fifo, err)
 		}
 	}
-	var err error
 	if h.startedEnd, err = os.OpenFile(h.started, os.O_RDWR, 0); err != nil {
 		t.Fatalf("open %s: %v", h.started, err)
 	}
