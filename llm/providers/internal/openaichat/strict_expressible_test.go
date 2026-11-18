@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/santhosh-tekuri/jsonschema/v5"
 )
@@ -2030,5 +2031,189 @@ func TestSupplyDerivedTypesWalksTypedSubschemaLists(t *testing.T) {
 	}
 	if !schemaAccepts(t, emitted, map[string]any{"mode": "fast"}) {
 		t.Fatal("the emitted schema rejects a branch value the advertised schema accepts")
+	}
+}
+
+// A typed nil pointer to a value-receiver encoder is what the request carries
+// as JSON null. (*json.RawMessage)(nil) is the shape: the pointer's method set
+// includes RawMessage's value-receiver MarshalJSON, so calling the method
+// dereferences a nil receiver and panics while building the request. The
+// encoder emits null for that same value without calling the method at all.
+//
+// Both halves are asserted, because either one alone is satisfiable by the
+// wrong change: the type must be inferred from the encoded null rather than
+// from the pointer, and a set whose only member is null still names no scalar,
+// so the supply has to decline it instead of panicking or stating a type.
+func TestTypedNilPointerEncoderDoesNotPanicInInference(t *testing.T) {
+	t.Parallel()
+	var nilRaw *json.RawMessage
+	var nilTime *time.Time
+
+	// The panic itself: every entry point that reads a value reaches
+	// scalarJSONType, so both are driven here.
+	for name, member := range map[string]any{
+		"*json.RawMessage": nilRaw,
+		"*time.Time":       nilTime,
+	} {
+		t.Run(name+" declines without panicking", func(t *testing.T) {
+			t.Parallel()
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("inference panicked on a typed nil pointer: %v", r)
+				}
+			}()
+			emitted := SupplyDerivedTypes(map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties":           map[string]any{"mode": map[string]any{"enum": []any{member}}},
+				"required":             []string{"mode"},
+			})
+			// A set whose every member is null has no scalar type to state,
+			// so nothing may be added: stating one would reject the null the
+			// schema accepts.
+			mode := emitted["properties"].(map[string]any)["mode"].(map[string]any)
+			if _, has := mode["type"]; has {
+				t.Fatalf("emitted type = %#v for an all-null set: a null member names no scalar", mode["type"])
+			}
+			if !schemaAccepts(t, emitted, map[string]any{"mode": nil}) {
+				t.Fatal("the emitted schema rejects the null member the advertised one accepts")
+			}
+		})
+	}
+
+	t.Run("a null beside a string leaves the set unnameable", func(t *testing.T) {
+		t.Parallel()
+		emitted := SupplyDerivedTypes(map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"mode": map[string]any{"enum": []any{"fast", nilRaw}},
+			},
+			"required": []string{"mode"},
+		})
+		mode := emitted["properties"].(map[string]any)["mode"].(map[string]any)
+		if _, has := mode["type"]; has {
+			t.Fatalf("emitted type = %#v for a set containing null: one type cannot name null and a string", mode["type"])
+		}
+	})
+
+	// const reaches scalarJSONType without passing through the enum reader,
+	// which is the shape the panic was reported on: a typeless const whose
+	// value is a typed nil pointer to a value-receiver encoder.
+	for name, member := range map[string]any{
+		"*json.RawMessage": nilRaw,
+		"*time.Time":       nilTime,
+	} {
+		t.Run("const of "+name+" declines without panicking", func(t *testing.T) {
+			t.Parallel()
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("inference panicked on a typed nil const: %v", r)
+				}
+			}()
+			emitted := SupplyDerivedTypes(map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties":           map[string]any{"mode": map[string]any{"const": member}},
+				"required":             []string{"mode"},
+			})
+			mode := emitted["properties"].(map[string]any)["mode"].(map[string]any)
+			if _, has := mode["type"]; has {
+				t.Fatalf("emitted type = %#v for a null const: null names no scalar", mode["type"])
+			}
+		})
+	}
+}
+
+// A named integer type with a pointer-receiver encoder is encoded on the wire
+// through that method when it appears as a slice element: a slice element is
+// addressable, so the encoder reaches *T's method set even though the slice
+// holds T values. Reading each element out into an interface and classifying it
+// drops the method, states "number" beside a set of strings, and leaves a
+// schema that accepts none of its own members.
+//
+// The control is the same set spelled []pointerlyInt: if the type is read from
+// the encoder, the slice of values and the slice of pointers agree.
+type pointerlyInt int
+
+const (
+	pointerlyFast pointerlyInt = iota
+	pointerlySafe
+)
+
+func (p *pointerlyInt) MarshalJSON() ([]byte, error) {
+	if *p == pointerlyFast {
+		return []byte(`"fast"`), nil
+	}
+	return []byte(`"safe"`), nil
+}
+
+func TestEnumReadsAPointerReceiverEncoderPerElement(t *testing.T) {
+	t.Parallel()
+	for name, enum := range map[string]any{
+		"slice of values":   []pointerlyInt{pointerlyFast, pointerlySafe},
+		"slice of pointers": []*pointerlyInt{ptr(pointerlyFast), ptr(pointerlySafe)},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			emitted := SupplyDerivedTypes(map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties":           map[string]any{"mode": map[string]any{"enum": enum}},
+				"required":             []string{"mode"},
+			})
+			mode := emitted["properties"].(map[string]any)["mode"].(map[string]any)
+			if mode["type"] != "string" {
+				t.Fatalf("emitted type = %#v, want \"string\": the encoder sends strings, and it is the encoder that decides", mode["type"])
+			}
+			// The members are the ones the encoder wrote, so both survive.
+			for _, want := range []string{"fast", "safe"} {
+				if !schemaAccepts(t, emitted, map[string]any{"mode": want}) {
+					t.Fatalf("the emitted schema rejects %q, a member the advertised enum lists", want)
+				}
+			}
+		})
+	}
+}
+
+func ptr[T any](v T) *T { return &v }
+
+// properties constrains object instances only, and the rewrite closes only a
+// node whose type is the literal "object". On an array node the keyword reaches
+// the provider as advertised with its children unwalked, so a child that states
+// no type would be sent into a strict-enforcing provider — the same explicit-
+// type rejection this gate exists to prevent, reached through the shape it did
+// not check.
+func TestPropertiesOnANonObjectNodeDeclinesStrict(t *testing.T) {
+	t.Parallel()
+	arrays := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"tags": map[string]any{
+				"type":  "array",
+				"items": map[string]any{"type": "string"},
+				// Legal on an array node: it constrains the object instances
+				// among the array's elements, not the elements themselves.
+				"properties": map[string]any{"label": map[string]any{"description": "untyped"}},
+			},
+		},
+		"required": []string{"tags"},
+	}
+	if StrictExpressible(arrays) {
+		t.Fatal("an array node carrying an unchecked, typeless properties child must not be certified strict")
+	}
+	// The control: the same array without the stray keyword still certifies,
+	// so the refusal is about the unchecked child rather than about arrays.
+	clean := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"tags": map[string]any{"type": "array", "items": map[string]any{"type": "string"}},
+		},
+		"required": []string{"tags"},
+	}
+	if !StrictExpressible(clean) {
+		t.Fatal("an array whose items are typed must still be certifiable")
 	}
 }

@@ -53,8 +53,11 @@ func TestChatStrictToolsKeepOptionalArgumentsOmittable(t *testing.T) {
 
 	body := build(t, req, resolved(func(c *registry.Caps) { c.StrictTools = new(true) }))
 	fn := body["tools"].([]map[string]any)[0]["function"].(map[string]any)
-	if _, has := fn["strict"]; has {
-		t.Fatalf("strict = %#v, want no strict key: a schema with optional arguments cannot be expressed in strict mode", fn["strict"])
+	// Refused, so the route still states that this tool is not enforced
+	// strictly. An absent key would leave the endpoint's default in charge of
+	// the one property this PR exists to guarantee.
+	if strict, has := fn["strict"]; !has || strict != false {
+		t.Fatalf("strict = %#v (present %v), want an explicit false: a schema with optional arguments has no strict projection", strict, has)
 	}
 	params := fn["parameters"].(map[string]any)
 	if got, want := requiredNames(t, params), []string{"file_path"}; !slices.Equal(got, want) {
@@ -101,8 +104,10 @@ func TestChatStrictToolsHonorPerToolOptOut(t *testing.T) {
 
 	body := build(t, req, resolved(caps))
 	fn := body["tools"].([]map[string]any)[0]["function"].(map[string]any)
-	if _, has := fn["strict"]; has {
-		t.Fatalf("strict = %#v, want no strict key for an opted-out tool", fn["strict"])
+	// The route offers strict enforcement and this tool opted out of it, so the
+	// request says so rather than leaving enforcement to the endpoint's default.
+	if strict, has := fn["strict"]; !has || strict != false {
+		t.Fatalf("strict = %#v (present %v), want an explicit false for an opted-out tool on a strict-capable route", strict, has)
 	}
 	if params := fn["parameters"].(map[string]any); params["additionalProperties"] != false || params["required"] == nil {
 		t.Fatalf("an opted-out tool must keep its advertised schema: %#v", params)

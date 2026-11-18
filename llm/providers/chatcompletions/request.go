@@ -79,6 +79,12 @@ func buildBody(req llm.Request, res registry.Resolved, stream bool) (out map[str
 				// A per-tool opt-out (Strict=&false) applies here too: the
 				// definition said strict mode cannot express its arguments.
 				if def := req.Tools[i].Strict; def != nil && !*def {
+					// The route offers strict enforcement and this tool is
+					// deliberately outside it, so the request says so. Leaving
+					// the key absent leaves enforcement to the endpoint's own
+					// default, which is the thing the opt-out asked not to
+					// happen.
+					fn["strict"] = false
 					continue
 				}
 				// Strict mode force-requires every property, which is lossless
@@ -99,6 +105,10 @@ func buildBody(req llm.Request, res registry.Resolved, stream bool) (out map[str
 					}
 				}
 				if params, ok := fn["parameters"].(map[string]any); ok && !openaichat.StrictExpressible(params) {
+					// Refused: the schema has no legal strict projection, so
+					// the tool is sent with its advertised schema and an
+					// explicit false rather than an absent key.
+					fn["strict"] = false
 					continue
 				}
 				fn["strict"] = true

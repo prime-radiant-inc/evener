@@ -1,6 +1,8 @@
 package openaichat
 
 import (
+	"bytes"
+	"encoding"
 	"encoding/json"
 	"reflect"
 	"sort"
@@ -302,6 +304,18 @@ func strictlyExpressibleNode(m map[string]any, visited bool, dialect schemaDiale
 	// matches only a literal type string — transforms neither, so every one of
 	// them has to hold as advertised. Checking them in one switch would walk
 	// only the object side and leave the array side's items unverified.
+	if !isObject {
+		// properties constrains object instances only, and the rewrite closes
+		// only a node whose type is the literal "object". On any other node —
+		// an array, or one with no type — the keyword reaches the provider
+		// exactly as advertised with its children unchecked, so a child that
+		// states no type would be sent into a strict-enforcing provider that
+		// rejects it. Refusing is what keeps the gate's answer true rather
+		// than exempting the one shape it does not walk.
+		if _, has := m["properties"]; has {
+			return false
+		}
+	}
 	var props map[string]any
 	if isObject {
 		var ok bool
@@ -358,9 +372,6 @@ func strictlyExpressibleNode(m map[string]any, visited bool, dialect schemaDiale
 		// An object- or array-shaped node the rewrite does not recognise: it
 		// keeps whatever it advertises, so an optional property behind it stays
 		// optional under strict mode.
-		if _, has := m["properties"]; has {
-			return false
-		}
 		if _, has := m["items"]; has {
 			return false
 		}
@@ -514,7 +525,8 @@ func certifiedByReadableKeyword(m map[string]any) bool {
 	return false
 }
 
-// enumMembers reads an enum's members as a slice of values.
+// enumMembers reads an enum's members as the values the request encoder writes
+// for them.
 //
 // The same JSON enum reaches this package in many concrete shapes. A Go builder
 // writes a typed slice — []string for names, []int for numbers — and a decoded
@@ -524,40 +536,32 @@ func certifiedByReadableKeyword(m map[string]any) bool {
 // only the second an explicit type would make the emitted schema depend on the
 // caller's Go type rather than on the schema.
 //
-// The conversion is by element, not by wholesale type switch, so a typed slice
-// of a numeric element type is read even though it is not listed here: the
-// reflected range covers every slice whose elements are scalars this file can
-// name. A shape that is not a slice at all is unreadable and infers nothing.
+// The members are read from the whole enum's encoding rather than extracted
+// element by element through reflection. Reflection loses encoders that belong
+// to a pointer receiver: a slice of a named integer type whose MarshalJSON is
+// declared on *T encodes as its method's output on the wire, because a slice
+// element is addressable and the encoder therefore reaches the pointer's method
+// set — but an element lifted out with Interface() is a T, whose method set does
+// not include it. Asking the encoder what the enum is avoids that difference
+// entirely, and makes []T and []any of the same values agree by construction.
 //
-// A value with its own JSON representation is read from that representation
-// and not from its Go kind. json.RawMessage is a []byte whose encoder output is
-// the JSON it holds, so reading its bytes as elements would state "number"
-// beside an array of strings and leave a schema accepting nothing the
-// advertised one accepted.
+// A shape that does not encode as a JSON array, or one whose encoding fails, is
+// unreadable and infers nothing.
 func enumMembers(raw any) ([]any, bool) {
-	if list, ok := raw.([]any); ok {
-		return list, true
-	}
-	if marshaler, ok := raw.(json.Marshaler); ok {
-		encoded, err := marshaler.MarshalJSON()
-		if err != nil {
-			return nil, false
-		}
-		var decoded []any
-		if err := json.Unmarshal(encoded, &decoded); err != nil {
-			return nil, false
-		}
-		return decoded, true
-	}
-	rv := reflect.ValueOf(raw)
-	if !rv.IsValid() || rv.Kind() != reflect.Slice {
+	if raw == nil {
 		return nil, false
 	}
-	values := make([]any, rv.Len())
-	for i := 0; i < rv.Len(); i++ {
-		values[i] = rv.Index(i).Interface()
+	encoded, err := json.Marshal(raw)
+	if err != nil {
+		return nil, false
 	}
-	return values, true
+	var decoded []any
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.UseNumber()
+	if err := decoder.Decode(&decoded); err != nil {
+		return nil, false
+	}
+	return decoded, true
 }
 
 // derivedScalarType returns the JSON type implied by a node's closed value set
@@ -640,21 +644,11 @@ func derivedScalarType(m map[string]any, dialect schemaDialect) (string, bool) {
 // reports false, because the caller cannot name it without changing the set.
 func scalarJSONType(value any) (string, bool) {
 	if _, isNumber := value.(json.Number); !isNumber {
-		if marshaler, ok := value.(json.Marshaler); ok {
-			encoded, err := marshaler.MarshalJSON()
-			if err != nil {
-				return "", false
-			}
-			var decoded any
-			decoder := json.NewDecoder(strings.NewReader(string(encoded)))
-			decoder.UseNumber()
-			if err := decoder.Decode(&decoded); err != nil {
-				return "", false
-			}
+		if encoded, ok := encodeAsJSON(value); ok {
 			// The decoded value is a plain scalar in the same spellings the
 			// rest of this function already reads, so classify that rather
 			// than the original.
-			return scalarJSONType(decoded)
+			return scalarJSONType(encoded)
 		}
 	}
 	switch v := value.(type) {
@@ -689,6 +683,58 @@ func scalarJSONType(value any) (string, bool) {
 		return "", false
 	}
 }
+
+// encodeAsJSON returns the value the request encoder sends for v, decoded into
+// the plain spellings scalarJSONType reads, when that differs from v's Go kind.
+// It reports false when v has no encoding of its own, which is the common case.
+//
+// The encoding is produced by json.Marshal rather than by calling the value's
+// MarshalJSON method. A typed nil pointer to a value-receiver encoder — the
+// shape a caller writes as (*json.RawMessage)(nil) or (*time.Time)(nil) — is a
+// json.Marshaler whose method dereferences the nil receiver, so calling it
+// panics during request construction. json.Marshal emits null for exactly that
+// value without invoking the method, because a nil pointer is not encoded
+// through the value's own encoder; asking it instead of the method is what
+// makes this classify the value the request carries.
+//
+// A value with no encoder of its own encodes as itself, so there is nothing
+// here the caller's kind switch cannot already name and the answer is false.
+// That keeps one rule in charge of the decision: ask the encoder, never the Go
+// kind, whenever there is an encoder to ask.
+func encodeAsJSON(value any) (any, bool) {
+	rv := reflect.ValueOf(value)
+	if !rv.IsValid() {
+		return nil, false
+	}
+	// A nil pointer to a method-bearing type has no encoder of its own: the
+	// request carries null. Reporting it as encoded keeps the caller's scalar
+	// switch from reading a Go kind that never reaches the wire.
+	if rv.Kind() == reflect.Ptr && rv.IsNil() {
+		if rv.Type().Implements(jsonMarshalerType) || rv.Type().Implements(textMarshalerType) {
+			return nil, true
+		}
+		return nil, false
+	}
+	if !rv.Type().Implements(jsonMarshalerType) && !rv.Type().Implements(textMarshalerType) {
+		return nil, false
+	}
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil, false
+	}
+	var decoded any
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.UseNumber()
+	if err := decoder.Decode(&decoded); err != nil {
+		return nil, false
+	}
+	return decoded, true
+}
+
+var (
+	jsonMarshalerType = reflect.TypeOf((*json.Marshaler)(nil)).Elem()
+	textMarshalerType = reflect.TypeOf((*encoding.TextMarshaler)(nil)).Elem()
+)
 
 // requiredNamesDeclared reports whether every name in required is a declared
 // property. Strict mode admits required only as exactly the declared property
