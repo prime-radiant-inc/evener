@@ -1114,6 +1114,30 @@ func logValue(t *testing.T, f launcherFixture, prefix string) string {
 	return ""
 }
 
+// refusalReason reads the machine-readable reason the launcher put in its
+// refusal, or "" when it refused without one.
+//
+// The launcher emits `[reason=<value>]` beside the operator-facing sentence for
+// exactly this: the sentence is copy and changes, the value does not. Reading a
+// code is not the same as matching copy, so this does not trip the repository's
+// error-text-assertions rule, and rewording the advice cannot fail a case.
+func refusalReason(t *testing.T, f launcherFixture) string {
+	t.Helper()
+	body, err := os.ReadFile(f.stderr)
+	if err != nil {
+		t.Fatalf("read the launcher's stderr: %v", err)
+	}
+	_, rest, ok := strings.Cut(string(body), "[reason=")
+	if !ok {
+		return ""
+	}
+	reason, _, ok := strings.Cut(rest, "]")
+	if !ok {
+		return ""
+	}
+	return reason
+}
+
 // logPIDAndGroup reads the "pid=N;pgid=G" line a fixture wrote under prefix,
 // waiting for it to appear, and returns both.
 func logPIDAndGroup(t *testing.T, f launcherFixture, prefix string) (pid, group int) {
@@ -3118,12 +3142,12 @@ func TestMergeEnqueueLauncherRefusalNamesExecutionWhenTrustWasNotTheProblem(t *t
 	if lines := f.lines(t); len(lines) > 0 {
 		t.Fatalf("the launcher ran the helper although no candidate could execute a program: %v", lines)
 	}
-	stderr := f.output(t)
-	if !strings.Contains(stderr, "cannot execute") {
-		t.Fatalf("the refusal does not say the filesystem cannot execute a program; a noexec host's operator is sent to look for a trust problem instead: %s", stderr)
-	}
-	if strings.Contains(stderr, "another user can replace") {
-		t.Fatalf("the refusal blames another user for a directory that passed the chain rule; the reason was execution: %s", stderr)
+	// The reason is asserted as a code, not as prose. The message around it is
+	// the operator's copy and will be reworded; `reason=no-executable-root` is the
+	// structured value that says which refusal happened, so a diagnostic edit
+	// cannot break this case and this case cannot pin a sentence.
+	if got := refusalReason(t, f); got != "no-executable-root" {
+		t.Fatalf("the refusal reason is %q, want %q: every candidate passed the chain rule and none could execute a program, so a reason of another kind sends a noexec host's operator to look for a trust problem that is not there", got, "no-executable-root")
 	}
 }
 
@@ -3226,18 +3250,4 @@ func TestMergeEnqueueLauncherFixturesDoNotChmodThroughAReplaceableParent(t *test
 			}
 		}
 	}
-}
-
-// entriesIn returns the names in dir, or nil when it cannot be read.
-func entriesIn(t *testing.T, dir string) []string {
-	t.Helper()
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		return nil
-	}
-	var names []string
-	for _, entry := range entries {
-		names = append(names, entry.Name())
-	}
-	return names
 }

@@ -381,13 +381,26 @@ scratch_resolve() {
 # no prefix is accepted before a component of it has been checked, and a
 # component that is missing when its turn comes is a component that user can
 # still create, so it ends the walk as a refusal rather than being skipped.
+#
+# `/` is checked first and as its own component, before any named one. It is the
+# one directory every absolute path goes through, so leaving it out left the
+# walk short by exactly the component that cannot be skipped: in a chroot whose
+# root is writable and not sticky, another user can replace a top-level entry
+# after it was validated. Root-owned `/` costs one stat and is what every
+# ordinary host and container has; a root that fails this check is a root whose
+# entries another user can move, and refusing to build there is the point.
 scratch_path_is_trusted() {
   local rest probe component
   case "$1" in
     /*) ;;
     *) return 1 ;;
   esac
-  probe=""
+  # The root itself. `probe` then starts at "" and every iteration appends
+  # `/component`, so this is the only place `/` is asked about and the loop below
+  # begins with the first named component.
+  [ -d / ] || return 1
+  dir_entry_is_replaceable / && return 1
+  probe="/"
   rest=${1#/}
   while :; do
     component=""
@@ -398,10 +411,11 @@ scratch_path_is_trusted() {
         *) rest=${rest#*/} ;;
       esac
     fi
-    probe="$probe/$component"
-    # `/` itself is the first component of every absolute path, and it is checked
-    # like any other: root owns it, so this is cheap and the invariant has no
-    # exception.
+    [ -n "$component" ] || break
+    case "$probe" in
+      /) probe="/$component" ;;
+      *) probe="$probe/$component" ;;
+    esac
     [ -d "$probe" ] || return 1
     dir_entry_is_replaceable "$probe" && return 1
     [ -n "$rest" ] || break
@@ -1223,10 +1237,17 @@ fi
 # no trusted root; only building one needs the isolation.
 if [ -z "$scratch_root" ]; then
   scratch_advice="point TMPDIR at a private directory on an exec-capable filesystem, or set EVENER_DEV_BIN to a helper you have built"
+  # The reason as a value, not only as prose. The message below is for the
+  # operator and changes whenever someone words it better; the code beside it is
+  # what a caller or a test branches on, so a diagnostic edit cannot break either
+  # the advice or a check that cares which refusal happened. Same convention as
+  # MERGEQ's own machine-readable lines: the words follow the code.
+  scratch_reason=no-trusted-root
   if [ "$scratch_rejected_noexec" -gt 0 ] && [ "$scratch_rejected_untrusted" -eq 0 ]; then
+    scratch_reason=no-executable-root
     scratch_advice="a trusted root was found but it cannot execute a program (a noexec mount?); point TMPDIR at an exec-capable directory, or set EVENER_DEV_BIN to a helper you have built"
   fi
-  launcher_failed "no usable scratch root for building the helper: ${scratch_rejected#; }; $scratch_advice"
+  launcher_failed "no usable scratch root for building the helper [reason=$scratch_reason]: ${scratch_rejected#; }; $scratch_advice"
 fi
 scratch_dir work merge-enqueue
 # The inode of the directory scratch_dir minted, read once here and compared
