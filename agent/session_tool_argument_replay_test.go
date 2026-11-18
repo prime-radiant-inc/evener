@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/chatcompletions"
@@ -92,7 +93,7 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 				{Kind: schema.TurnToolResults, Message: result},
 			}
 			scope := replayScope{Instance: row.Instance, Model: row.ModelID, Protocol: row.Protocol}
-			scope.setReasoningTextTarget(row)
+			scope.setReasoningTextTarget(provider.FromResolved(row, nil))
 			_, warmBody := send(expandHistory(turns, scope))
 			dir := t.TempDir()
 			writeFindTranscript(t, dir, "argument-replay", time.Unix(1, 0), turns...)

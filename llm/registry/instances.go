@@ -264,27 +264,21 @@ func sameRequestPaths(a, b Transport) bool {
 		a.CountTokensEndpoint == b.CountTokensEndpoint
 }
 
+// RequestPath expands the wire model in a serving endpoint's template.
+func (r *Resolved) RequestPath(template string) string {
+	return strings.ReplaceAll(template, "{model}", url.PathEscape(r.WireID))
+}
+
 // RequestURL resolves an endpoint template exactly as a model request addresses it.
 func (r *Resolved) RequestURL(template string) string {
-	path := strings.ReplaceAll(template, "{model}", url.PathEscape(r.WireID))
-	return strings.TrimRight(r.Transport.BaseURL, "/") + path
+	return strings.TrimRight(r.Transport.BaseURL, "/") + r.RequestPath(template)
 }
 
 // OutboundModelSelector identifies the model selected by an agent request.
 // A body.model constant overrides the model from the protocol builder. A
 // model in the URL also contributes to ReasoningReplayRoute via RequestURL.
 func (r Resolved) OutboundModelSelector() string {
-	value, supplied := r.Transport.Body["model"]
-	for key := range r.Transport.Body {
-		if strings.HasPrefix(key, "model.") {
-			// Dotted constants can replace a model string with an object. Use
-			// the transport's precedence on a copy of its JSON values.
-			body := map[string]any{}
-			ApplyBodyConstants(body, cloneAnyMap(r.Transport.Body))
-			value, supplied = body["model"]
-			break
-		}
-	}
+	value, supplied := r.BodyModelOverride(nil) // A dotted selector replaces the wire ID string.
 	if !supplied {
 		if !strings.HasPrefix(r.WireID, "\x00") {
 			return r.WireID
@@ -299,6 +293,22 @@ func (r Resolved) OutboundModelSelector() string {
 	encoded, _ := json.Marshal(value)
 	sum := sha256.Sum256(encoded)
 	return "\x00" + hex.EncodeToString(sum[:])
+}
+
+// BodyModelOverride applies the transport's model constants to the protocol's
+// built selector without modifying the caller's request options.
+func (r Resolved) BodyModelOverride(builtModel any) (any, bool) {
+	for key := range r.Transport.Body {
+		if strings.HasPrefix(key, "model.") {
+			// Dotted constants can replace a model string with an object. Use
+			// the transport's precedence on a copy of its JSON values.
+			body := map[string]any{"model": cloneAnyValue(builtModel)}
+			ApplyBodyConstants(body, cloneAnyMap(r.Transport.Body))
+			return body["model"], true
+		}
+	}
+	value, supplied := r.Transport.Body["model"]
+	return value, supplied
 }
 
 // ReasoningReplayRoute identifies the destinations that may receive reasoning

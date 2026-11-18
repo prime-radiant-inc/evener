@@ -90,6 +90,26 @@ func TestPlanContinuationIsStableAcrossBuilds(t *testing.T) {
 	if third.StorageScopeFingerprint == first.StorageScopeFingerprint {
 		t.Fatal("the conversation id scopes storage")
 	}
+	t.Run("layered model selector", func(t *testing.T) {
+		client := continuationClient(t, fixtureRegistry(t, srv.URL, map[string]registry.Provider{"gateway": {
+			Base: "openai", APIKey: "key", Transport: registry.Transport{Body: map[string]any{"model.family": "f"}},
+		}}))
+		request := userRequest("gateway", "gpt-5.5")
+		selector := map[string]any{"deployment": "a"}
+		request.ProviderOptions = map[string]any{registry.ProtocolOpenAIResponses: map[string]any{"model": selector}}
+		a, err := client.PlanResponsesContinuation(t.Context(), request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		selector["deployment"] = "b"
+		b, err := client.PlanResponsesContinuation(t.Context(), request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if a.RequestFingerprint == b.RequestFingerprint || len(selector) != 1 {
+			t.Errorf("layered selector changed fingerprint = %t, caller's model fields = %v", a.RequestFingerprint != b.RequestFingerprint, selector)
+		}
+	})
 }
 
 type planningOverride struct {

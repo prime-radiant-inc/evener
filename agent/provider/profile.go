@@ -15,8 +15,9 @@ import (
 // per-session overrides that follow from its surface. Construct one with
 // Resolve or FromResolved; the zero value is not usable.
 type Profile struct {
-	res      registry.Resolved
-	registry *registry.Registry
+	res            registry.Resolved
+	registry       *registry.Registry
+	reasoningRoute string
 
 	toolDefs    []llm.ToolDefinition
 	toolNameMap map[string]string // canonical → provider-specific
@@ -39,7 +40,7 @@ func FromResolved(res registry.Resolved, r *registry.Registry) *Profile {
 	if r == nil {
 		r = EmbeddedRegistry()
 	}
-	p := &Profile{res: res, registry: r}
+	p := &Profile{res: res, registry: r, reasoningRoute: res.ReasoningReplayRoute()}
 	p.docFiles, p.toolNameMap = surfaceConventions(res.Surface)
 	p.toolDefs = toolDefinitionsForCapabilities(p.capabilities(), p.ReasoningEffortLevels())
 	return p
@@ -217,6 +218,10 @@ func (p *Profile) Model() string { return p.res.ModelID }
 
 // Resolved is the registry record the profile wraps.
 func (p *Profile) Resolved() registry.Resolved { return p.res }
+
+// ReasoningReplayRoute is the resolved destination digest shared by request
+// assembly, recording and allocation-free history pressure readings.
+func (p *Profile) ReasoningReplayRoute() string { return p.reasoningRoute }
 
 // Surface is the agent-facing vendor family the model was trained for; it,
 // Protocol, and ProviderID are the three registry keys the agent branches on
@@ -574,6 +579,7 @@ func (p *Profile) WithModel(model string) *Profile {
 func (p *Profile) withModelID(model string) *Profile {
 	clone := *p
 	clone.res.ModelID, clone.res.WireID = model, model
+	clone.reasoningRoute = clone.res.ReasoningReplayRoute()
 	clone.rowFactsInherited = true
 	return &clone
 }

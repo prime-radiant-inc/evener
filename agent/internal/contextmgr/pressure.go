@@ -276,11 +276,11 @@ const UnknownWindowInputTripwire = 200_000
 // when there is no profile: the estimator then falls back to the names the turns
 // carry, exactly as the targetless estimator did before the profile-aware
 // accounting.
-func resolvedTargetOf(prof *provider.Profile) registry.Resolved {
+func resolvedTargetOf(prof *provider.Profile) (registry.Resolved, string) {
 	if prof == nil {
-		return registry.Resolved{}
+		return registry.Resolved{}, ""
 	}
-	return prof.Resolved()
+	return prof.Resolved(), prof.ReasoningReplayRoute()
 }
 
 // profileSnapshot reads the active profile together with the API measurement
@@ -385,7 +385,7 @@ func (cm *Manager) estimateTokens(turns []schema.Turn) int {
 // plain chat reasoning does not size compaction against bytes it never sends
 // (#4563); a request-level estimate keeps billing what the builder serializes.
 func (cm *Manager) estimateTokensFor(prof *provider.Profile, turns []schema.Turn) int {
-	return estimateTokenPartsFor(resolvedTargetOf(prof), turns).Total()
+	return estimateTokenPartsFor(prof, turns).Total()
 }
 
 // estimateTokenPartsFor is the estimator's additive decomposition over turns: it
@@ -401,22 +401,22 @@ func (cm *Manager) estimateTokensFor(prof *provider.Profile, turns []schema.Turn
 // that is the number the compaction thresholds were tuned against. The
 // per-message arithmetic and the single divide-by-four are
 // llm.TokenPartEstimator's.
-func estimateTokenPartsFor(res registry.Resolved, turns []schema.Turn) llm.TokenParts {
+func estimateTokenPartsFor(prof *provider.Profile, turns []schema.Turn) llm.TokenParts {
+	res, route := resolvedTargetOf(prof)
 	dropPlainThinking := !llm.ReplaysAssistantThinking(res)
 	rawReplay := res.ReplaysRawReasoning()
-	var route string
-	if rawReplay {
-		route = res.ReasoningReplayRoute()
-	}
 	estimator := llm.TokenPartEstimatorFor(res)
 	withoutPlain := estimator.WithoutPlainThinking()
+	withoutThinking := estimator.WithoutThinking()
 	var parts llm.TokenParts
 	for _, t := range turns {
 		if t.Kind == schema.TurnAttentionResolution {
 			continue
 		}
 		pricer := estimator
-		if dropPlainThinking || (rawReplay && t.Message.Role == llm.RoleAssistant && !t.MatchesReasoningTextTarget(&res, route)) {
+		if t.DropsResponsesReasoning(&res, route) {
+			pricer = withoutThinking
+		} else if dropPlainThinking || (rawReplay && t.Message.Role == llm.RoleAssistant && !t.MatchesReasoningTextTarget(&res, route)) {
 			pricer = withoutPlain
 		}
 		parts = parts.Add(pricer.Parts(t.Message))

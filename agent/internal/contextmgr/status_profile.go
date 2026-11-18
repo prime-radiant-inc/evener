@@ -164,7 +164,7 @@ func (cm *Manager) estimateUsedTokensMemo(prof *provider.Profile, profileGen uin
 		walked = memo.turns
 	}
 	if history != nil && len(history) > walked-skip {
-		parts = parts.Add(estimateTokenPartsFor(resolvedTargetOf(prof), history[walked-skip:]))
+		parts = parts.Add(estimateTokenPartsFor(prof, history[walked-skip:]))
 		walked = skip + len(history)
 	}
 	// A nil history can only answer for turns already walked. Reporting a prefix

@@ -76,6 +76,7 @@ func (h *ContinuationHasher) HashContinuationStorageScope(scope ContinuationStor
 		EndpointFamily:     strings.TrimSpace(scope.EndpointFamily),
 		BaseURL:            strings.TrimSpace(scope.BaseURL),
 		Path:               strings.TrimSpace(scope.Path),
+		StreamPath:         strings.TrimSpace(scope.StreamPath),
 		AuthSource:         strings.TrimSpace(scope.AuthSource),
 		OrgIDHash:          strings.TrimSpace(scope.OrgIDHash),
 		ProjectIDHash:      strings.TrimSpace(scope.ProjectIDHash),
@@ -192,6 +193,7 @@ type continuationStorageScopeFingerprintInput struct {
 	EndpointFamily     string `json:"endpoint_family,omitempty"`
 	BaseURL            string `json:"base_url,omitempty"`
 	Path               string `json:"path,omitempty"`
+	StreamPath         string `json:"stream_path,omitempty"`
 	AuthSource         string `json:"auth_source,omitempty"`
 	OrgIDHash          string `json:"org_id_hash,omitempty"`
 	ProjectIDHash      string `json:"project_id_hash,omitempty"`

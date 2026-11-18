@@ -258,7 +258,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		// the request copy says so and the transcript keeps the payload (#4465).
 		annotateDroppedToolResult: true,
 	}
-	scope.setReasoningTextTarget(profile.Resolved())
+	scope.setReasoningTextTarget(profile)
 	// presentedTurns is the history this request projects: a leased delegate
 	// turn projects the controller's own later snapshot, which can hold turns
 	// appended after historyTurns was taken.
@@ -695,7 +695,8 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 
 	candidate, anchorDecision := selectResponsesContinuationAnchorCandidate(s.cfg, historyTurns)
 	if anchorDecision.HistoryMode == llm.HistoryModeResponsesDelta &&
-		responsesContinuationCandidateMatchesPlan(candidate, plan) {
+		responsesContinuationCandidateMatchesPlan(candidate, plan) &&
+		candidate.Turn.MatchesRecordedModelRoute(&target, profile.ReasoningReplayRoute()) {
 		fullHistory := append([]llm.Message(nil), req.Messages...)
 		req, _ = llm.ApplyResponsesContinuationStoreOverride(req, plan.StoragePolicyLabel)
 		req.HistoryMode = llm.HistoryModeResponsesDelta
@@ -1731,16 +1732,15 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		// change from racing/leaking into this request's fallback, and lets a
 		// fallback that supports a higher level than the primary use it.
 		origEffort := requestedEffort
-		// Every fallback shares the round's scope for opaque continuation and
-		// web-search items. Only native plaintext needs an issuer-specific
+		// Native plaintext and Responses ciphertext need an issuer-specific
 		// expansion. Other fallbacks can project their own policies on one list.
 		var sharedHistory []llm.Message
-		historyForFallback := func(res registry.Resolved) []llm.Message {
+		historyForFallback := func(fb *provider.Profile) []llm.Message {
 			if !hasFallbackSource {
 				return fullHistory
 			}
 			scope := fallbackSource.scope
-			scope.setReasoningTextTarget(res)
+			scope.setReasoningTextTarget(fb)
 			if scope.reasoningTextTarget == nil && sharedHistory != nil {
 				return sharedHistory
 			}
@@ -1764,7 +1764,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 				continue
 			}
 			res := fbProfile.Resolved()
-			fbReq, ok := responsesContinuationModelFallbackRequest(res, req, historyForFallback(res))
+			fbReq, ok := responsesContinuationModelFallbackRequest(res, req, historyForFallback(fbProfile))
 			if !ok {
 				break
 			}
@@ -2045,8 +2045,8 @@ type replayScope struct {
 	// canonicalModel canonicalizes a model id for the ResponseModel fallback
 	// comparison. Nil ⇒ raw (trimmed) string comparison.
 	canonicalModel func(string) string
-	// reasoningTextTarget scopes a raw-replay row's plain text to its issuer,
-	// including earlier tool rounds of the in-flight turn.
+	// reasoningTextTarget scopes raw text to its issuing model and Responses
+	// ciphertext to its deployment, including earlier rounds of this turn.
 	reasoningTextTarget *registry.Resolved
 	reasoningRoute      string
 	// notesSelfEchoFiltered marks a delta slice whose self-echo TurnNotesContext
@@ -2074,12 +2074,13 @@ type replayScope struct {
 	dropsToolResultMedia func(mediaType string) bool
 }
 
-func (rs *replayScope) setReasoningTextTarget(res registry.Resolved) {
+func (rs *replayScope) setReasoningTextTarget(profile *provider.Profile) {
 	rs.reasoningTextTarget = nil
 	rs.reasoningRoute = ""
-	if res.ReplaysRawReasoning() {
+	res := profile.Resolved()
+	if res.ReplaysRawReasoning() || res.Protocol == registry.ProtocolOpenAIResponses {
 		rs.reasoningTextTarget = &res
-		rs.reasoningRoute = res.ReasoningReplayRoute()
+		rs.reasoningRoute = profile.ReasoningReplayRoute()
 	}
 }
 
@@ -2295,7 +2296,7 @@ func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Messa
 	keepRaw := false
 	if provenanceKeepsThinking {
 		t.Message = t.ProjectReasoningText(rs.reasoningTextTarget, rs.reasoningRoute)
-	} else if rs.reasoningTextTarget != nil && t.Message.Role == llm.RoleAssistant {
+	} else if rs.reasoningTextTarget != nil && rs.reasoningTextTarget.ReplaysRawReasoning() && t.Message.Role == llm.RoleAssistant {
 		keepRaw = t.MatchesReasoningTextTarget(rs.reasoningTextTarget, rs.reasoningRoute)
 	}
 	t.Message = projectVoicePresentation(t)

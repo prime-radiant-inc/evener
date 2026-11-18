@@ -15,28 +15,46 @@ import (
 func TestResponsesContinuationRebuildsAnchorWhenReasoningReplayChanges(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	req := llm.Request{Provider: "gateway", Model: "gpt-5.4", Store: new(true)}
+	req := llm.Request{Provider: "gateway", Model: "reasoner", Store: new(true)}
 	var history []schema.Turn
+	var defaultRaw llm.ContinuationMetadata
 	for i, step := range []struct {
-		replay     *bool
-		wantAnchor string
+		replay                    *bool
+		model, stream, wantAnchor string
+		unqualifiedFingerprint    bool
 	}{
-		{nil, ""},
-		{new(false), "resp_0"},
-		{new(true), ""},
-		{new(true), "resp_2"},
-		{new(false), ""},
-		{nil, "resp_4"},
+		{},
+		{replay: new(false), wantAnchor: "resp_0"},
+		{replay: new(true)},
+		{replay: new(true), wantAnchor: "resp_2"},
+		{replay: new(false)},
+		{wantAnchor: "resp_4"},
+		{replay: new(true), model: "model-a", stream: "/stream/a"},
+		{replay: new(true), model: "model-a", stream: "/stream/a", wantAnchor: "resp_6"},
+		{replay: new(true), model: "model-b", stream: "/stream/a"},
+		{replay: new(true), model: "model-b", stream: "/stream/a", wantAnchor: "resp_8"},
+		{replay: new(true), model: "model-b", stream: "/stream/b"},
+		{replay: new(true), model: "model-b", stream: "/stream/b", wantAnchor: "resp_10"},
+		{replay: new(true), model: "model-a", unqualifiedFingerprint: true},
+		{replay: new(true)},
+		{replay: new(true), stream: "/stream/a", unqualifiedFingerprint: true},
+		{replay: new(true)},
+		{replay: new(true), wantAnchor: "resp_15"},
 	} {
 		instance := openaiInstance("https://gateway.example.invalid/v1")
+		instance.Models = map[string]registry.Model{req.Model: {AliasOf: "gpt-5.4"}}
+		instance.Transport.StreamEndpoint = step.stream
+		if step.model != "" {
+			instance.Transport.Body = map[string]any{"model": step.model}
+		}
 		instance.Caps.ReplayReasoningText = step.replay
 		client := registryClientAt(t, dir, map[string]registry.Provider{"gateway": instance}, []string{"gateway"})
-		profile := resolveClientProfile(t, client, "gateway/gpt-5.4")
+		profile := resolveClientProfile(t, client, req.Provider+"/"+req.Model)
 		s := &Session{client: client, cfg: SessionConfig{OpenAIResponsesContinuation: "auto"}}
 		user := schema.NewTurn(schema.TurnUserInput, llm.User(fmt.Sprintf("u_sentinel_%d", i)))
 		history = append(history, user)
 		req.Messages = append(req.Messages, user.Message)
-		got, _, _ := s.applyResponsesContinuationAnchorPlanning(t.Context(), profile, req, history, false, false)
+		got, _, _ := s.applyResponsesContinuationAnchorPlanning(t.Context(), profile, req, history, true, false)
 		wantMode := llm.HistoryModeFullHistory
 		wantMessages := len(req.Messages)
 		if step.wantAnchor != "" {
@@ -50,12 +68,23 @@ func TestResponsesContinuationRebuildsAnchorWhenReasoningReplayChanges(t *testin
 			t.Errorf("round %d: %q with anchor %q and %d messages, want %q with anchor %q and %d messages", i, got.HistoryMode, got.PreviousResponseID, len(got.Messages), wantMode, step.wantAnchor, wantMessages)
 		}
 		anchor := responsesContinuationEligibleAssistantTurn(fmt.Sprintf("resp_%d", i))
+		row := profile.Resolved()
+		anchor.ResponseProvider, anchor.ResponseRequestModel, anchor.ResponseProtocol = row.Instance, row.ModelID, row.Protocol
+		anchor.ResponseWireModel, anchor.ResponseReasoningRoute = row.OutboundModelSelector(), profile.ReasoningReplayRoute()
 		anchor.Message.Content = append(anchor.Message.Content, llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{ID: fmt.Sprintf("rs_%d", i), Text: "r1"}})
 		anchor.ResponseRequestFingerprint = got.Continuation.RequestFingerprint
 		anchor.ResponseStorageScopeFingerprint = got.Continuation.StorageScopeFingerprint
+		if row.ReplaysRawReasoning() && step.model == "" && step.stream == "" {
+			defaultRaw = *got.Continuation
+		}
+		if step.unqualifiedFingerprint {
+			// This stored response records its actual issuer alongside fingerprints
+			// calculated from only the alias and the completion endpoint.
+			anchor.ResponseRequestFingerprint = defaultRaw.RequestFingerprint
+			anchor.ResponseStorageScopeFingerprint = defaultRaw.StorageScopeFingerprint
+		}
 		if i == 0 {
 			// A stored strict anchor carries the fingerprint of the wire controls alone.
-			row := profile.Resolved()
 			body, err := responses.DefaultProtocol.BuildBody(llm.ShapeRequest(req, row), row)
 			if err != nil {
 				t.Fatal(err)

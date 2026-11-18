@@ -175,6 +175,12 @@ func (e TokenPartEstimator) WithoutPlainThinking() TokenPartEstimator {
 	return e
 }
 
+// WithoutThinking prices messages whose issuing deployment's reasoning is omitted.
+func (e TokenPartEstimator) WithoutThinking() TokenPartEstimator {
+	e.target.omitThinking = true
+	return e
+}
+
 // TokenParts is the additive decomposition of a local token estimate.
 type TokenParts struct {
 	// Chars is the summed character count, divided by four once in Total.
@@ -367,7 +373,7 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 //     non-reasoning row), and drops a redacted part and an opaque Responses blob;
 //   - the Google adapter emits no thinking shape at all.
 func thinkingReplayChars(target targetInfo, role Role, p ContentPart) int {
-	if p.Thinking == nil {
+	if target.omitThinking || p.Thinking == nil {
 		return 0
 	}
 	t := p.Thinking
@@ -536,6 +542,7 @@ type targetInfo struct {
 	// drops images the row cannot see (#4217), so the estimate prices none.
 	seesToolResultImages bool
 	unsignedThinking     bool
+	omitThinking         bool
 }
 
 // vendorNameBasis is the provider name the media-family name rule may read. A

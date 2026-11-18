@@ -558,25 +558,43 @@ type Turn struct {
 }
 
 // ProjectReasoningText keeps raw reasoning for the chat or Responses model
-// that issued it. Opaque continuation items keep their wire-specific rules.
+// that issued it. Responses ciphertext belongs to its issuing deployment.
 // A request projection never edits the stored message.
 func (t *Turn) ProjectReasoningText(res *registry.Resolved, route string) llm.Message {
 	msg := t.Message
-	if res == nil || msg.Role != llm.RoleAssistant || !res.ReplaysRawReasoning() || t.MatchesReasoningTextTarget(res, route) {
+	if res == nil || msg.Role != llm.RoleAssistant {
+		return msg
+	}
+	foreignResponses := t.DropsResponsesReasoning(res, route)
+	if !foreignResponses && (!res.ReplaysRawReasoning() || t.MatchesReasoningTextTarget(res, route)) {
 		return msg
 	}
 	if res.Protocol == registry.ProtocolOpenAIChat {
 		return llm.TrimThinkingForReplayMessage(msg, true)
 	}
-	// An encrypted Responses item carries the ciphertext and its summary
-	// together. Only a plain item's text is eligible for the raw replay path.
-	plain := func(p llm.ContentPart) bool {
-		return p.Kind == llm.ContentThinking && p.Thinking != nil && p.Thinking.EncryptedContent == ""
+	// Within one Responses deployment, a different model can receive opaque
+	// items even when the issuing model's plain reasoning is omitted.
+	omit := func(p llm.ContentPart) bool {
+		return p.Kind == llm.ContentThinking && p.Thinking != nil && (foreignResponses || p.Thinking.EncryptedContent == "")
 	}
-	if slices.ContainsFunc(msg.Content, plain) {
-		msg.Content = slices.DeleteFunc(slices.Clone(msg.Content), plain)
+	if slices.ContainsFunc(msg.Content, omit) {
+		msg.Content = slices.DeleteFunc(slices.Clone(msg.Content), omit)
 	}
 	return msg
+}
+
+// DropsResponsesReasoning reports a recorded route change that makes both
+// plaintext and ciphertext ineligible for this Responses deployment.
+func (t *Turn) DropsResponsesReasoning(res *registry.Resolved, route string) bool {
+	return res.Protocol == registry.ProtocolOpenAIResponses && t.Message.Role == llm.RoleAssistant &&
+		t.ResponseReasoningRoute != "" && t.ResponseReasoningRoute != route
+}
+
+// MatchesRecordedModelRoute checks the serving route and outbound model when
+// the issuing request recorded them, independently of its configured alias.
+func (t *Turn) MatchesRecordedModelRoute(res *registry.Resolved, route string) bool {
+	return (t.ResponseReasoningRoute == "" || t.ResponseReasoningRoute == route) &&
+		(t.ResponseWireModel == "" || t.ResponseWireModel == res.OutboundModelSelector())
 }
 
 // MatchesReasoningTextTarget compares the recorded issuer with a resolved
@@ -584,8 +602,7 @@ func (t *Turn) ProjectReasoningText(res *registry.Resolved, route string) llm.Me
 func (t *Turn) MatchesReasoningTextTarget(res *registry.Resolved, route string) bool {
 	if res.Instance == "" || t.ResponseProvider != res.Instance ||
 		(t.ResponseProtocol != "" && t.ResponseProtocol != res.Protocol) ||
-		(t.ResponseReasoningRoute != "" && t.ResponseReasoningRoute != route) ||
-		(t.ResponseWireModel != "" && t.ResponseWireModel != res.OutboundModelSelector()) {
+		!t.MatchesRecordedModelRoute(res, route) {
 		return false
 	}
 	if t.ResponseProtocol == "" {

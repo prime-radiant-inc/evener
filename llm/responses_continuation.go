@@ -109,6 +109,7 @@ type ContinuationStorageScope struct {
 	EndpointFamily     string
 	BaseURL            string
 	Path               string
+	StreamPath         string
 	AuthSource         string
 	OrgIDHash          string
 	ProjectIDHash      string

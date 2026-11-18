@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/chatcompletions"
+	"primeradiant.com/evener/llm/providers/responses"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -177,6 +178,7 @@ func TestFallbackReplaysOnlyItsIssuersReasoning(t *testing.T) {
 	t.Parallel()
 	primary := replayGateway("work", registry.ProtocolOpenAIResponses)
 	fallback := replayGateway("gw", registry.ProtocolOpenAIChat)
+	const ciphertext = "ciphertext-485"
 	primaryAnswered := false
 	primaryAdapter := &agenttest.ScriptedAdapter{
 		Provider: primary.ID(),
@@ -188,8 +190,10 @@ func TestFallbackReplaysOnlyItsIssuersReasoning(t *testing.T) {
 		},
 		Responder: func(llm.Request) llm.Response {
 			primaryAnswered = true
-			return withReasoningMarker(agenttest.ToolCallResponse(
+			resp := withReasoningMarker(agenttest.ToolCallResponse(
 				llm.ToolCallData{ID: "tool-a", Name: "missing_a", Arguments: []byte(`{}`)}), primary.Protocol(), "primary-42")
+			resp.Message.Content = append(resp.Message.Content, llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{ID: "rs_sealed", EncryptedContent: ciphertext}})
+			return resp
 		},
 	}
 	fallbackAdapter := newFakeAdapter(fallback.ID(),
@@ -200,12 +204,14 @@ func TestFallbackReplaysOnlyItsIssuersReasoning(t *testing.T) {
 		fixedStep(agenttest.FinalResponse("wire-model reply")),
 		fixedStep(agenttest.FinalResponse("deployment reply")),
 		fixedStep(agenttest.FinalResponse("body-model reply")),
+		fixedStep(agenttest.FinalResponse("stream reply")),
+		fixedStep(agenttest.FinalResponse("strict route reply")),
 		fixedStep(agenttest.FinalResponse("same-model reply")),
 	)
 	// The profile used to assemble each request resolves on the same registry
 	// as the client dispatching it. A restart can redirect the selected model
 	// through its wire ID, request URL, or a body.model constant.
-	clientFor := func(wireSuffix, deployment, bodySuffix string) *llm.Client {
+	clientFor := func(wireSuffix, deployment, bodySuffix, stream string, replay bool) *llm.Client {
 		instances := testRegistryInstances()
 		for _, profile := range []*provider.Profile{primary, fallback} {
 			inst := instances[profile.ID()]
@@ -213,19 +219,21 @@ func TestFallbackReplaysOnlyItsIssuersReasoning(t *testing.T) {
 			transport := &registry.Transport{
 				BaseURL:        "https://" + profile.ID() + ".example.test/v1",
 				Endpoint:       "/generate?deployment=" + deployment + "&token=token-75c",
-				StreamEndpoint: "/stream?deployment=" + deployment,
+				StreamEndpoint: "/stream?deployment=" + stream,
 			}
 			if bodySuffix != "" {
 				transport.Body = map[string]any{"model": profile.ID() + bodySuffix}
 			}
+			caps := profile.Resolved().Caps
+			caps.ReplayReasoningText = new(replay)
 			inst.Models = map[string]registry.Model{"reasoner": {
-				WireID: profile.ID() + wireSuffix, Protocol: profile.Protocol(), Caps: profile.Resolved().Caps, Transport: transport,
+				WireID: profile.ID() + wireSuffix, Protocol: profile.Protocol(), Caps: caps, Transport: transport,
 			}}
 			instances[profile.ID()] = inst
 		}
 		return registryClient(t, instances, primaryAdapter, fallbackAdapter)
 	}
-	client := clientFor("-declared", "deployment-1", "-wire-1")
+	client := clientFor("-declared", "deployment-1", "-wire-1", "s1", true)
 	resolve := func(ref string) (*provider.Profile, error) { return provider.Resolve(client.Registry(), ref) }
 	stateDir := t.TempDir()
 	s := newSession(t, withProfile(resolveClientProfile(t, client, "work/reasoner")), withClient(client), withStateDir(stateDir),
@@ -253,15 +261,17 @@ func TestFallbackReplaysOnlyItsIssuersReasoning(t *testing.T) {
 	meta, env := s.Meta(), s.currentEnv()
 	s.Close()
 	for i, redirect := range []struct {
-		wire, deployment, body string
-		replay                 bool
+		wire, deployment, body, stream  string
+		enrolled, wantPlain, wantCipher bool
 	}{
-		{"-wire-2", "deployment-1", "", false},
-		{"-declared", "deployment-2", "-wire-1", false},
-		{"-declared", "deployment-1", "-wire-3", false},
-		{"-wire-1", "deployment-1", "", true},
+		{"-wire-2", "deployment-1", "", "s1", true, false, true},
+		{"-declared", "deployment-2", "-wire-1", "s1", true, false, false},
+		{"-declared", "deployment-1", "-wire-3", "s1", true, false, true},
+		{"-declared", "deployment-1", "-wire-1", "s2", true, false, false},
+		{"-declared", "deployment-1", "-wire-1", "s2", false, false, false},
+		{"-wire-1", "deployment-1", "", "s1", true, true, true},
 	} {
-		client = clientFor(redirect.wire, redirect.deployment, redirect.body)
+		client = clientFor(redirect.wire, redirect.deployment, redirect.body, redirect.stream, redirect.enrolled)
 		resumed, err := RestoreSessionFromMetaWithConfig(client, resolveClientProfile(t, client, "work/reasoner"), env, meta, RestoreSessionConfig{
 			StateDir: stateDir, ResolveProfile: resolve, ModelFallbacks: []string{"gw/reasoner"},
 			testOnly: sharingHostProbe(testConfig{skipGitSnapshot: true}),
@@ -280,7 +290,7 @@ func TestFallbackReplaysOnlyItsIssuersReasoning(t *testing.T) {
 		}
 		for _, req := range []llm.Request{primaryRequests[4+i], fallbackRequests[3+i]} {
 			switch {
-			case !redirect.replay:
+			case !redirect.wantPlain:
 				assertReasoningMarkers(t, req)
 			case req.Provider == primary.ID():
 				assertReasoningMarkers(t, req, "primary-42")
@@ -289,6 +299,18 @@ func TestFallbackReplaysOnlyItsIssuersReasoning(t *testing.T) {
 			}
 			if !requestCarriesText(req, "follow-up") {
 				t.Errorf("%s lost conversation history across the redirect", req.Provider)
+			}
+			if req.Provider == primary.ID() {
+				row := resolveClientProfile(t, client, req.Provider+"/"+req.Model).Resolved()
+				body, err := responses.DefaultProtocol.BuildBody(llm.ShapeRequest(req, row), row)
+				if err != nil {
+					t.Fatal(err)
+				}
+				items := body["input"].([]any)
+				hasCipher := slices.ContainsFunc(items, func(item any) bool { return item.(map[string]any)["encrypted_content"] == ciphertext })
+				if hasCipher != redirect.wantCipher {
+					t.Errorf("redirect %+v sent ciphertext = %t, want %t", redirect, hasCipher, redirect.wantCipher)
+				}
 			}
 		}
 	}

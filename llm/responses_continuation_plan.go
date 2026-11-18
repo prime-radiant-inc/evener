@@ -117,6 +117,9 @@ func (c *Client) planContinuation(ctx context.Context, req Request, res registry
 	if err != nil {
 		return plan, err
 	}
+	if model, supplied := res.BodyModelOverride(body["model"]); supplied {
+		body["model"] = model
+	}
 	fingerprint, err := ResponsesRequestFingerprint(family, body)
 	if err != nil {
 		return plan, err
@@ -153,10 +156,15 @@ func (c *Client) planContinuation(ctx context.Context, req Request, res registry
 	}
 	scope := ContinuationStorageScope{
 		HashVersion: ContinuationScopeHashVersion, Provider: res.Instance, EndpointFamily: string(family),
-		BaseURL: strings.TrimRight(strings.TrimSpace(res.Transport.BaseURL), "/"), Path: strings.TrimSpace(res.Transport.Endpoint),
+		BaseURL: strings.TrimRight(strings.TrimSpace(res.Transport.BaseURL), "/"), Path: strings.TrimSpace(res.RequestPath(res.Transport.Endpoint)),
 		AuthSource: authSource, OrgIDHash: hashes["org_id"], ProjectIDHash: hashes["project_id"],
 		AccountHash: hashes["account"], WorkspaceHash: hashes["workspace"], CredentialHash: credentialHash,
 		ConversationIDHash: hashes["conversation_id"], StoragePolicy: policy,
+	}
+	// One storage address suffices when both operations use it. A separately
+	// routed streaming request can establish an anchor on a different deployment.
+	if streamPath := strings.TrimSpace(res.RequestPath(res.Transport.StreamEndpoint)); streamPath != scope.Path {
+		scope.StreamPath = streamPath
 	}
 	if scope.Fingerprint, err = hasher.HashContinuationStorageScope(scope); err != nil {
 		return plan, err

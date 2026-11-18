@@ -139,6 +139,28 @@ func TestEstimateTokens_WithThinking(t *testing.T) {
 	if got := testEstimateTokens(t, replayable); got != len("answer")/4 {
 		t.Fatalf("responses EstimateTokens = %d, want %d: a signature-only part never rides", got, len("answer")/4)
 	}
+	row := registry.Resolved{Instance: "gateway", ModelID: "alias", WireID: "model", Protocol: registry.ProtocolOpenAIResponses,
+		Transport: registry.Transport{BaseURL: "https://gateway.example.test", Endpoint: "/complete", StreamEndpoint: "/stream/a"},
+	}
+	const cipher = "sealed-48"
+	sealed := []schema.Turn{{Kind: schema.TurnAssistant, ResponseProvider: row.Instance, ResponseRequestModel: row.ModelID,
+		ResponseProtocol: row.Protocol, ResponseReasoningRoute: row.ReasoningReplayRoute(), Message: llm.Assistant("answer"),
+	}}
+	sealed[0].Message.Content = append(sealed[0].Message.Content, llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{EncryptedContent: cipher}})
+	for _, replay := range []bool{true, false} {
+		row.Caps.ReplayReasoningText = new(replay)
+		for _, stream := range []string{"/stream/a", "/stream/b"} {
+			row.Transport.StreamEndpoint = stream
+			cm := NewManager(provider.FromResolved(row, nil), nil, cheapmodel.New(nil))
+			chars := len("answer")
+			if stream == "/stream/a" {
+				chars += len(cipher)
+			}
+			if got := cm.estimateTokens(sealed); got != chars/4 {
+				t.Errorf("stream %s, raw replay %t: got %d tokens, want %d", stream, replay, got, chars/4)
+			}
+		}
+	}
 }
 
 // History accounting follows the resolved row rather than a provider name: an

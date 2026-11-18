@@ -89,10 +89,10 @@ func BenchmarkEstimateTokenPartsFor(b *testing.B) {
 		b.Run(strconv.Itoa(turns), func(b *testing.B) {
 			cm := pressureBenchmarkManager()
 			history := pressureBenchmarkHistory(turns)
-			res := cm.currentProfile().Resolved()
+			prof := cm.currentProfile()
 			b.ReportAllocs()
 			for b.Loop() {
-				_ = estimateTokenPartsFor(res, history)
+				_ = estimateTokenPartsFor(prof, history)
 			}
 		})
 	}
@@ -128,19 +128,22 @@ func TestEstimateTokenPartsForDoesNotAllocate(t *testing.T) {
 		t.Run(strconv.Itoa(turns), func(t *testing.T) {
 			cm := pressureBenchmarkManager()
 			history := pressureBenchmarkHistory(turns)
-			res := cm.currentProfile().Resolved()
-			if allocs := testing.AllocsPerRun(20, func() { _ = estimateTokenPartsFor(res, history) }); allocs != 0 {
+			prof := cm.currentProfile()
+			if allocs := testing.AllocsPerRun(20, func() { _ = estimateTokenPartsFor(prof, history) }); allocs != 0 {
 				t.Fatalf("estimateTokenPartsFor over %d turns allocates %.0f times per reading, want 0", turns, allocs)
 			}
 		})
 	}
 	for _, protocol := range []string{registry.ProtocolOpenAIChat, registry.ProtocolOpenAIResponses} {
 		t.Run(protocol+" after model switch", func(t *testing.T) {
-			res := registry.Resolved{Instance: "gateway", ModelID: "current", Protocol: protocol, Caps: registry.Caps{ReplayReasoningText: new(true)}}
-			history := []schema.Turn{{Kind: schema.TurnAssistant, ResponseProvider: res.Instance, ResponseProtocol: protocol, ResponseRequestModel: "other",
-				Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "prior work"}}}},
+			res := registry.Resolved{Instance: "gateway", ModelID: "current", Protocol: protocol, Caps: registry.Caps{ReplayReasoningText: new(true)},
+				Transport: registry.Transport{BaseURL: "https://gateway.example.test", StreamEndpoint: "/stream"},
+			}
+			prof := provider.FromResolved(res, nil)
+			history := []schema.Turn{{Kind: schema.TurnAssistant, ResponseProvider: res.Instance, ResponseProtocol: protocol, ResponseRequestModel: "other", ResponseReasoningRoute: "old-route",
+				Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "prior work", EncryptedContent: "sealed-48"}}}},
 			}}
-			if allocs := testing.AllocsPerRun(20, func() { _ = estimateTokenPartsFor(res, history) }); allocs != 0 {
+			if allocs := testing.AllocsPerRun(20, func() { _ = estimateTokenPartsFor(prof, history) }); allocs != 0 {
 				t.Fatalf("pricing a prior model's reasoning allocates %.0f times per reading", allocs)
 			}
 		})
@@ -296,7 +299,7 @@ func TestEstimateTokenPartsMatchesFrozenMessageList(t *testing.T) {
 				res := target.profile.Resolved()
 
 				want := referenceEstimateTokens(res, tc.history)
-				got := estimateTokenPartsFor(res, tc.history)
+				got := estimateTokenPartsFor(target.profile, tc.history)
 				if got.Total() != want {
 					t.Fatalf("estimateTokenPartsFor.Total = %d, want %d: the estimator no longer prices this history the way the message-list implementation does", got.Total(), want)
 				}
