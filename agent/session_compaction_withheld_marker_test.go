@@ -21,6 +21,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/anthropic"
 )
 
 // foldTailFaultFS counts Sync calls on the transcript file once armed and
@@ -676,9 +677,14 @@ func TestRequestSnapshotDuringFoldCommitKeepsCoverageKnown(t *testing.T) {
 func TestLeasedRequestSnapshotDuringFoldCommitKeepsCoverageKnown(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	s := newScriptedSummaryCompactSession(t, "leased-fold-commit-window-cheap", func(llm.Request) llm.Response {
+	const summaryProvider = "leased-fold-commit-window-cheap"
+	profile := WithCheapModel(newAnthropicProfile("claude-opus-4-6"), summaryProvider+"/model")
+	adapter := &agenttest.ScriptedAdapter{Provider: profile.ID(), Responder: func(llm.Request) llm.Response {
+		return agenttest.FinalResponse("opaque-leased-fold-commit-window-result")
+	}}
+	s := newScriptedSummaryCompactSession(t, summaryProvider, func(llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nopaque-leased-fold-commit-window-summary\n[END SUMMARY]")}
-	}, withConfig(minimalTestSessionConfig(t)), withStateDir(dir))
+	}, withProfile(profile), withAdapter(adapter), withConfig(minimalTestSessionConfig(t)), withStateDir(dir))
 	c, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, c, "dlg_target", "")
 	lease := delegateLease{delegateID: "dlg_target", generation: 1}
@@ -697,14 +703,6 @@ func TestLeasedRequestSnapshotDuringFoldCommitKeepsCoverageKnown(t *testing.T) {
 	s.mu.Lock()
 	s.strategy = nil
 	s.mu.Unlock()
-	final := func(llm.Request) llm.Response {
-		return agenttest.FinalResponse("opaque-leased-fold-commit-window-result")
-	}
-	steps := make([]func(llm.Request) llm.Response, 0, 4)
-	for range 4 {
-		steps = append(steps, final)
-	}
-	s.client.Register(newFakeAdapter("openai", steps...))
 	const rounds = 4
 	for i := range rounds {
 		if _, err := s.ProcessInput(context.Background(), fmt.Sprintf("opaque-leased-fold-commit-window-input-%d", i), nil); err != nil {
@@ -716,17 +714,22 @@ func TestLeasedRequestSnapshotDuringFoldCommitKeepsCoverageKnown(t *testing.T) {
 		t.Fatalf("admitted inputs before the fold = %v, want %d", original, rounds)
 	}
 
-	// The boundary only decides anything when a turn sits at or after it, so
-	// the round being built needs a turn in flight. This one carries thinking
-	// from an instance the target does not speak for, which means the N4
-	// provenance rule would strip it: only the in-flight exemption keeps it.
-	// It is the newest turn, so the pre-fold boundary points at it and the
-	// fold moves that boundary left with the turn.
+	// Anthropic replays another model's signed block within the in-flight
+	// round. Adjacent turns from that model distinguish both sides of the
+	// boundary after the fold moves it left.
+	const leasedCompletedText = "opaque-leased-fold-commit-window-completed"
 	const leasedInFlightText = "opaque-leased-fold-commit-window-in-flight"
-	s.mu.Lock()
-	inFlight := assistantThinkingTurn("other-work", "gpt-5.2", "gpt-5.2")
+	const priorModel = "claude-sonnet-4-6"
+	completed := assistantThinkingTurn(profile.ID(), priorModel, priorModel)
+	completed.ResponseProtocol = profile.Protocol()
+	completed.Message.Content[0].Thinking.Signature = "sig-completed"
+	completed.Message.Content[1].Text = leasedCompletedText
+	inFlight := assistantThinkingTurn(profile.ID(), priorModel, priorModel)
+	inFlight.ResponseProtocol = profile.Protocol()
+	inFlight.Message.Content[0].Thinking.Signature = "sig-in-flight"
 	inFlight.Message.Content[1].Text = leasedInFlightText
-	s.history = append(s.history, inFlight)
+	s.mu.Lock()
+	s.history = append(s.history, completed, inFlight)
 	s.turnHistoryBaseline = len(s.history) - 1
 	s.mu.Unlock()
 
@@ -835,17 +838,27 @@ func TestLeasedRequestSnapshotDuringFoldCommitKeepsCoverageKnown(t *testing.T) {
 	if beforeFoldBaseline >= beforeFoldTurns {
 		t.Fatalf("the round's pre-fold capture held %d turns and a boundary at %d: no turn was in flight, so this window proves nothing about re-pairing the boundary", beforeFoldTurns, beforeFoldBaseline)
 	}
-	// The in-flight turn is the only history turn carrying thinking, so the
-	// presence check below speaks for that turn alone.
-	if !hasContentKind(req.Messages, llm.ContentThinking) {
-		t.Fatalf("the leased request stripped the in-flight turn's thinking: its boundary did not exempt a turn the fold had moved below the pre-fold index (pre-fold boundary %d, request built from %d turns)", beforeFoldBaseline, len(req.Messages))
+	row := profile.Resolved()
+	body, err := anthropic.DefaultProtocol.BuildBody(llm.ShapeRequest(req, row), row)
+	if err != nil {
+		t.Fatal(err)
 	}
-	carriedInFlight := false
-	for _, m := range req.Messages {
-		carriedInFlight = carriedInFlight || strings.Contains(m.Text(), leasedInFlightText)
+	var signatures []string
+	var carriedCompleted, carriedInFlight bool
+	for _, msg := range body["messages"].([]map[string]any) {
+		for _, part := range msg["content"].([]map[string]any) {
+			if part["type"] == "thinking" {
+				signatures = append(signatures, part["signature"].(string))
+			}
+			carriedCompleted = carriedCompleted || part["text"] == leasedCompletedText
+			carriedInFlight = carriedInFlight || part["text"] == leasedInFlightText
+		}
 	}
-	if !carriedInFlight {
-		t.Fatalf("the leased request dropped the in-flight turn's answer text, so the thinking above came from somewhere else: %d turns", len(req.Messages))
+	if !slices.Equal(signatures, []string{inFlight.Message.Content[0].Thinking.Signature}) {
+		t.Fatalf("the leased request sent signatures %v, want only the in-flight signature (pre-fold boundary %d, request built from %d messages)", signatures, beforeFoldBaseline, len(req.Messages))
+	}
+	if !carriedCompleted || !carriedInFlight {
+		t.Fatalf("leased request carried completed answer = %t, in-flight answer = %t, want both", carriedCompleted, carriedInFlight)
 	}
 	// The divergence the exemption rests on: the fold moved the in-flight turn
 	// left, so the pre-fold boundary no longer indexes it. Reading a fresh
