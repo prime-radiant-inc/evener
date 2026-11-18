@@ -1695,10 +1695,86 @@ func (s *Session) acceptDelegateAttention(reservation *delegateStartReservation)
 	if err != nil {
 		return err
 	}
-	if err := s.delegateController.prepareAttentionStart(reservation, s, pendingIDs); err != nil {
+	// The generation carries the trigger and the rows whose wakes were already
+	// admitted: those are the rows it can present, and the ones whose release
+	// this wake's admission covers. A frame that has landed in the transcript
+	// but whose arm has not passed its gate yet is not one of them — capture it
+	// here and the successor presents it, resolving the row, so the handoff arm
+	// that would have released the older report's quiet finds nothing pending.
+	// That frame's own arm admits its wake and its release together.
+	admitted := s.delegateController.admittedAttentionRows(s.owningDelegateID)
+	captured := make([]string, 0, len(pendingIDs))
+	for _, pendingID := range pendingIDs {
+		if pendingID == attentionID {
+			captured = append(captured, pendingID)
+			continue
+		}
+		if _, known := admitted[pendingID]; known {
+			captured = append(captured, pendingID)
+		}
+	}
+	if err := s.delegateController.prepareAttentionStart(reservation, s, captured); err != nil {
+		return err
+	}
+	// The riders this generation captured have their IDs published above; their
+	// turns are published here, in the same act, so the request that carries the
+	// IDs carries the turns. A frame the capture did not take is left out of
+	// both until its own arm admits its wake, which is what keeps a just-appended
+	// watch frame from riding a generation whose arm never passed its gate.
+	if err := s.retainCapturedDelegateAttentionTurns(captured); err != nil {
 		return err
 	}
 	return nil
+}
+
+// retainCapturedDelegateAttentionTurns puts every captured row's turn into the
+// resident history. The capture published these IDs as the rows this generation
+// carries, so their turns belong in the request it builds. The retain is
+// ID-keyed, so a row the attach already restored keeps its position.
+func (s *Session) retainCapturedDelegateAttentionTurns(attentionIDs []string) error {
+	if s == nil || len(attentionIDs) == 0 {
+		return nil
+	}
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	fold, err := s.delegateAttentionFoldLocked()
+	if err != nil {
+		return err
+	}
+	for _, attentionID := range attentionIDs {
+		turn, ok := fold.turns[attentionID]
+		if !ok {
+			continue
+		}
+		if err := s.retainDelegateAttentionTurn(turn); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// retainAdmittedDelegateAttentionTurn puts one admitted wake's turn into the
+// resident history if the history does not hold it yet. A cold arm can admit a
+// frame the runtime's attach never folded, and the release that follows moves a
+// superseded stop's report to the tail: the frame has to be resident before that
+// move, or it lands behind the report the wake released and the next request
+// ends on the frame instead of the report. The retain is ID-keyed, so a turn the
+// attach already restored keeps the position it has.
+func (s *Session) retainAdmittedDelegateAttentionTurn(attentionID string) error {
+	if s == nil || attentionID == "" {
+		return nil
+	}
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	fold, err := s.delegateAttentionFoldLocked()
+	if err != nil {
+		return err
+	}
+	turn, ok := fold.turns[attentionID]
+	if !ok {
+		return nil
+	}
+	return s.retainDelegateAttentionTurn(turn)
 }
 
 // retainSelectedDelegateAttentionTurn puts attentionID's turn, and every other
@@ -1721,8 +1797,21 @@ func (s *Session) retainSelectedDelegateAttentionTurn(attentionID string) error 
 		return err
 	}
 	defer s.attentionMu.Unlock()
+	// Only rows this generation can carry are restored: the selected trigger and
+	// the rows the controller has already admitted as a wake or captured as a
+	// rider. A frame that has landed in the transcript with no admission behind
+	// it belongs to no request yet — restoring it here would put it in this
+	// generation's request ahead of the gate that admits its wake, so the
+	// successor presents it and resolves the row, and the arm that would have
+	// released the older report's quiet then finds nothing pending.
+	known := s.delegateController.admittedAttentionRows(s.owningDelegateID)
 	pendingTurns := fold.pendingTurns("")
 	for i, turn := range pendingTurns {
+		if turn.AttentionID != attentionID {
+			if _, admitted := known[turn.AttentionID]; !admitted {
+				continue
+			}
+		}
 		if err := s.retainDelegateAttentionTurn(turn, pendingTurns[i+1:]...); err != nil {
 			// The selected row is the one this generation cannot run without;
 			// another row's conflict is not a reason to consume a marker against

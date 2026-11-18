@@ -811,6 +811,44 @@ func TestColdRestoreRetainsPendingReportsBeforeTheAttach(t *testing.T) {
 // trigger consumes only that row, so a request built from the trigger's turn
 // alone omits the captured frame and the frame waits for another generation.
 // Acceptance restores every captured row's turn, not the trigger's alone.
+// A watch frame can land in the transcript with no admission behind it while a
+// successor holds a reservation for another row. Restoring every pending turn
+// at acceptance would put that frame into the successor's request ahead of the
+// gate that admits its wake: the successor presents it and resolves the row, so
+// the handoff arm that would have released the older report's quiet then finds
+// nothing pending. Only admitted rows and the captured riders belong in the
+// request; an unadmitted frame waits for its own arm.
+func TestAcceptanceLeavesAnUnadmittedFrameOutOfTheRequest(t *testing.T) {
+	t.Parallel()
+	sess, triggerID, _ := deriveHeldFixtureWithJournal(t, delegatestore.OutcomeCancelled, "cancelled")
+	controller := sess.delegateController
+	sess.mu.Lock()
+	sess.history = nil
+	sess.mu.Unlock()
+	// The frame is in the transcript, but no arm has admitted its wake.
+	const unadmittedID = "delegate:dlg_hold/delivery/7"
+	appendDelegateAttentionTurn(t, sess.TranscriptPath(), sess.id, unadmittedID)
+
+	reservation, err := controller.ReserveAttention(sess, triggerID)
+	if err != nil {
+		t.Fatalf("reserve the trigger: %v", err)
+	}
+	if err := sess.acceptDelegateAttention(reservation); err != nil {
+		t.Fatalf("accept the trigger: %v", err)
+	}
+
+	// The selected trigger is in the request; the unadmitted frame is not, so a
+	// request that ends on it cannot be one whose wake never passed its gate.
+	projection, holds := sess.delegateAttentionModelProjection()
+	requested, _ := filterHeldDelegateAttentionTurns(projection.turns, holds)
+	if indexOfAttentionTurn(requested, triggerID) < 0 {
+		t.Fatal("the request omits the trigger the reservation selected")
+	}
+	if indexOfAttentionTurn(requested, unadmittedID) >= 0 {
+		t.Fatal("acceptance published a frame no arm had admitted: the successor presents it and resolves the row, so the handoff that would release the older report's quiet finds nothing pending")
+	}
+}
+
 func TestAcceptanceRetainsARiderCapturedAfterTheRestoreRead(t *testing.T) {
 	t.Parallel()
 	sess, triggerID, _ := deriveHeldFixtureWithJournal(t, delegatestore.OutcomeCancelled, "cancelled")
@@ -823,6 +861,12 @@ func TestAcceptanceRetainsARiderCapturedAfterTheRestoreRead(t *testing.T) {
 	// The frame lands after that read: pending in the transcript, in no request.
 	const riderID = "delegate:dlg_hold/delivery/8"
 	appendDelegateAttentionTurn(t, sess.TranscriptPath(), sess.id, riderID)
+	// Its arm reaches it and admits the wake. That is what makes the row a
+	// rider the generation may carry: a frame whose arm has not passed its gate
+	// is left out of the request until it does.
+	if _, _, err := openDelegateAttentionForTest(controller, "dlg_hold", riderID); err != nil {
+		t.Fatalf("admit the late frame's wake: %v", err)
+	}
 
 	// The drive selects the older row; the capture takes both.
 	reservation, err := controller.ReserveAttention(sess, triggerID)
@@ -849,6 +893,73 @@ func TestAcceptanceRetainsARiderCapturedAfterTheRestoreRead(t *testing.T) {
 // evidence than the earlier stop, so its release must reach the journal: asking
 // only the newest run's trigger sees the send and writes nothing, and after a
 // restart the older report keeps its position ahead of the fresh frame.
+
+// Once a stop's quiet has been released, later generations owe it nothing. The
+// scan that decides whether a wake supersedes an unreleased stop must stop at
+// the durable release floor; otherwise the first wake at every later settled
+// generation re-finds that same historical stop and appends another release
+// for it, turning ordinary wakes into durable writes.
+func TestReleasedStopOwesNoFurtherReleaseAtLaterGenerations(t *testing.T) {
+	t.Parallel()
+	sess, _, _ := deriveHeldFixtureWithJournal(t, delegatestore.OutcomeCancelled, "cancelled")
+	controller := sess.delegateController
+	// Generation 1 was the attention stop, and a wake already released it.
+	journalDeriveHeldRelease(t, sess, 1)
+
+	// A later generation settles for another row, then a fresh frame arrives.
+	controller.mu.Lock()
+	_, err := controller.appendLocked(
+		delegatestore.Event{
+			Kind:       delegatestore.EventDelegateRunStarted,
+			DelegateID: "dlg_hold",
+			RunStarted: &delegatestore.RunStarted{Generation: 2, Trigger: delegatestore.TriggerAttention, StartedAt: time.Unix(70, 0).UTC()},
+		},
+		delegatestore.Event{
+			Kind:       delegatestore.EventDelegateRunFinished,
+			DelegateID: "dlg_hold",
+			RunFinished: &delegatestore.RunFinished{
+				Generation:  2,
+				Outcome:     delegatestore.Outcome{Status: delegatestore.OutcomeCompleted, EndedAt: time.Unix(80, 0).UTC()},
+				Disposition: delegatestore.DispositionTerminalError,
+				DeliveryID:  "dlg_hold/delivery/2",
+				Packet:      &delegatestore.TerminalPacket{Kind: delegatestore.PacketTerminalError, Message: json.RawMessage(`"done"`)},
+			},
+		},
+		delegatestore.Event{
+			Kind:                 delegatestore.EventDelegateDeliveryAcknowledged,
+			DelegateID:           "dlg_hold",
+			DeliveryAcknowledged: &delegatestore.DeliveryAcknowledged{DeliveryID: "dlg_hold/delivery/2"},
+		},
+	)
+	controller.mu.Unlock()
+	if err != nil {
+		t.Fatalf("settle the later generation: %v", err)
+	}
+	controller.mu.Lock()
+	before := controller.durable["dlg_hold"].AttentionHoldReleasedGeneration
+	controller.mu.Unlock()
+
+	const freshID = "delegate:dlg_worker/delivery/6"
+	if _, err := sess.appendDelegateNotificationDurably(freshID, acceptedTriggerText); err != nil {
+		t.Fatalf("append the fresh frame: %v", err)
+	}
+	if _, _, err := openDelegateAttentionForTest(controller, "dlg_hold", freshID); err != nil {
+		t.Fatalf("admit the fresh wake: %v", err)
+	}
+
+	// No release event was appended: the floor stayed where the earlier release
+	// left it. A release here would name a stop already superseded.
+	controller.mu.Lock()
+	after := controller.durable["dlg_hold"].AttentionHoldReleasedGeneration
+	controller.mu.Unlock()
+	if after != before {
+		t.Fatalf("the wake at generation 3 re-released the stop already released at floor %d (now %d): the scan must stop at the floor", before, after)
+	}
+	if before != 1 {
+		t.Fatalf("premise broken: the earlier release did not land at generation 1 (floor %d)", before)
+	}
+}
+
 func TestFreshWakeJournalsAReleasePastALaterSendSettle(t *testing.T) {
 	t.Parallel()
 	sess, reopenedID, _ := deriveHeldFixtureWithJournal(t, delegatestore.OutcomeCancelled, "cancelled")

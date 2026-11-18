@@ -607,7 +607,7 @@ func (c *delegateTreeController) attentionHoldReleaseEventLocked(delegateID stri
 		aggregate.AttentionHoldReleasedGeneration >= generation {
 		return delegatestore.Event{}, false
 	}
-	if !c.settledAttentionStopUnreleasedLocked(delegateID, generation) {
+	if !c.settledAttentionStopUnreleasedLocked(delegateID, generation, aggregate.AttentionHoldReleasedGeneration) {
 		return delegatestore.Event{}, false
 	}
 	return delegatestore.Event{
@@ -626,8 +626,12 @@ func (c *delegateTreeController) attentionHoldReleaseEventLocked(delegateID stri
 // rebuilt by a cold restore. A later run of any other trigger settles its own
 // generation and says nothing about the earlier stop, so it neither owes a
 // release nor excuses one. Callers hold c.mu.
-func (c *delegateTreeController) settledAttentionStopUnreleasedLocked(delegateID string, through uint64) bool {
-	for generation := through; generation > 0; generation-- {
+func (c *delegateTreeController) settledAttentionStopUnreleasedLocked(delegateID string, through, released uint64) bool {
+	// The scan stops at the durable release floor: a stop at or below it has
+	// already been superseded, so re-finding it would make the first wake at
+	// every later generation append a release for the same historical stop.
+	// Only a stop newer than the floor can still be owed a release.
+	for generation := through; generation > released; generation-- {
 		lease := delegateLease{delegateID: delegateID, generation: generation}
 		if c.runStarts[lease] != delegatestore.TriggerAttention {
 			continue
@@ -799,6 +803,31 @@ func (c *delegateTreeController) replaceDelegateAttentionLocked(delegateID strin
 		riders = nil
 	}
 	state.riderIDs = riders
+}
+
+// admittedAttentionRows returns the rows a starting generation may already
+// carry: every ID whose wake the controller has admitted, plus every ID it
+// captured as a pending rider. A row outside this set is a frame the
+// transcript holds but no admission has reached, so a request must not present
+// it as though its wake had passed the gate.
+func (c *delegateTreeController) admittedAttentionRows(delegateID string) map[string]struct{} {
+	if c == nil || delegateID == "" {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	state := c.attention[delegateID]
+	if state == nil {
+		return nil
+	}
+	admitted := make(map[string]struct{}, len(state.wakeIDs)+len(state.riderIDs))
+	for attentionID := range state.wakeIDs {
+		admitted[attentionID] = struct{}{}
+	}
+	for attentionID := range state.riderIDs {
+		admitted[attentionID] = struct{}{}
+	}
+	return admitted
 }
 
 // owesDelegateAttention reports whether delegateID still has attention the
@@ -1254,7 +1283,17 @@ func (c *delegateTreeController) armColdDelegateAttention(delegateID, attentionI
 	// the sample, so it stands. An arm that found a runtime resident handed the
 	// whole admission to the resident path, release included, so there is no
 	// cold sample left to apply.
+	//
+	// The admitted frame goes into history before the release, not after it.
+	// The release moves the report a superseded stop quieted to the tail so the
+	// next request ends on it; a frame appended afterwards lands behind that
+	// report and becomes the last message instead, so the request presents the
+	// fresh frame while burying the report the same wake released. Retaining
+	// first makes the wake's own order the order the request sees.
 	if err == nil && armed && !resident && runtime != nil {
+		if retainErr := runtime.retainAdmittedDelegateAttentionTurn(attentionID); retainErr != nil {
+			return retainErr
+		}
 		runtime.releaseAutomaticDriveHolds(delegateHoldReleaseArm, generation)
 	}
 	if err == nil && armed && root != nil {
