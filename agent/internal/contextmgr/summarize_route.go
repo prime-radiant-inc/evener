@@ -11,6 +11,12 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+// errSummarizationRefused reports that the summarization layer's live admission
+// refused this dispatch. It is distinct from a failed sample so a caller does
+// not count a refusal as a summarizer rejection, retry it, or report it as an
+// API failure: nothing was sent.
+var errSummarizationRefused = errors.New("summarization refused by live admission")
+
 // summarizationRoute is one (provider, model) the summarizer tries in order: the
 // configured cheap model on its (possibly cross-provider) cheap provider first,
 // then the active model on the main provider as a fallback.
@@ -145,6 +151,18 @@ func priorSummaryAttempts(attempts []diagnostic.SummaryAttempt) []diagnostic.Sum
 // still a successful API call, so the attempt group settles on the API error
 // alone.
 func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.Profile, prompt string, accept func(llm.Response) error) (summarizationResult, error) {
+	// Admission is asked HERE, at the dispatch boundary, and again before every
+	// later sample this one resolution takes. The layer-level verdict
+	// (summarizeAllowed, compact.go) answers a question about the moment it was
+	// asked: everything between it and this call -- the deterministic
+	// checkpoint, the PreCompact hook, the partner carry's own batches -- can
+	// durably record a stop, and a resample or fallback below can dispatch long
+	// after both. Fencing only at the layer let every one of those reach a
+	// provider against a generation that had already been fenced
+	// (LIFE-01, #2340 review M6).
+	if !summarizeAllowed(ctx) {
+		return summarizationResult{}, errSummarizationRefused
+	}
 	routes := summarizationModels(profile)
 	if len(routes) == 0 {
 		return summarizationResult{}, errSummaryMissingModel
@@ -223,6 +241,12 @@ func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.
 	cheapRejected := false
 	for {
 		var previous []cheapmodel.AttemptFailure
+		if !summarizeAllowed(ctx) {
+			// A resample is another dispatch: a stop recorded while the first
+			// sample was in flight must fence it, not ride out on the verdict
+			// taken before it.
+			return summarizationResult{route: route, role: role}, errSummarizationRefused
+		}
 		resp, ranSessionModel, previous, apiErr = cm.cheap.CompleteConfiguredWithProvenance(callCtx, profile, req)
 		if ranSessionModel {
 			recordSample(sessionRoute, "session", resp, apiErr, previous)
@@ -241,6 +265,11 @@ func (cm *Manager) completeSummarization(ctx context.Context, profile *provider.
 		// More than one route means the second is the session model, distinct
 		// from the configured cheap one; the caller ran only the cheap one.
 		for {
+			if !summarizeAllowed(ctx) {
+				// The fallback rung is a separate provider admission, and it can
+				// start after the cheap rung spent a whole budget of samples.
+				return summarizationResult{route: route, role: role}, errSummarizationRefused
+			}
 			req.Provider, req.Model = sessionRoute.provider, sessionRoute.model
 			resp, apiErr = cm.client.Complete(callCtx, req)
 			recordSample(sessionRoute, "session", resp, apiErr, nil)

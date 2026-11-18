@@ -433,3 +433,60 @@ func TestForkSummarizeErrorCarriesNoReplyText(t *testing.T) {
 		t.Fatalf("fork calls = %v, want three samples", got)
 	}
 }
+
+// TestSummarizationRefusesEveryDispatchAfterALiveRefusal pins that the live
+// admission is re-asked at each provider dispatch, not only once at the layer
+// boundary (LIFE-01, #2340 review M6).
+//
+// The layer verdict is taken before ManageContext runs the deterministic
+// checkpoint, its PreCompact hook and the partner carry's own batches, and one
+// resolution can dispatch a resample and a fallback rung after that. A verdict
+// asked once cannot see a stop those steps durably recorded, so every one of
+// those requests would reach a provider against a fenced generation.
+//
+// Three arms, and each is the reason the next one is evidence:
+//   - control: nothing refused, the fixture reaches the summarizer and resamples,
+//     so a zero in the fenced arms is not a fixture that never called a model.
+//   - refused_before_first: the admission is already false at entry.
+//   - refused_after_first_sample: the admission turns false DURING the first
+//     sample, which is the window that a once-per-layer verdict cannot cover.
+func TestSummarizationRefusesEveryDispatchAfterALiveRefusal(t *testing.T) {
+	t.Parallel()
+	for _, arm := range []struct {
+		name       string
+		refuseWhen func(spent int) bool
+		wantCalls  int
+	}{
+		{name: "control_no_refusal", refuseWhen: func(int) bool { return false }, wantCalls: 3},
+		{name: "refused_before_first_dispatch", refuseWhen: func(spent int) bool { return spent >= 0 }, wantCalls: 0},
+		{name: "refused_after_first_sample", refuseWhen: func(spent int) bool { return spent >= 1 }, wantCalls: 1},
+	} {
+		t.Run(arm.name, func(t *testing.T) {
+			t.Parallel()
+			client, calls := summarizerScript(func(call int, _ llm.Request) (llm.Response, error) {
+				// Two rejected samples then success: the control arm's three
+				// calls are what prove a resample is a fresh dispatch.
+				if call <= 2 {
+					return rejectedSummaryReply, nil
+				}
+				return acceptedSummaryReply, nil
+			})
+			profile := WithCheapModel(testProfile("openai", "active-fixture", 1000), "cheap-fixture")
+			cm := retryTestManager(client, profile)
+			ctx := WithSummarizeAdmission(context.Background(), func() bool {
+				// The callback reads the live call count, so "refused after the
+				// first sample" is decided by what has actually been spent: the
+				// adapter appends before it replies, so a count of n means n
+				// dispatches already went out.
+				return !arm.refuseWhen(len(calls()))
+			})
+			_, err := cm.completeSummarization(ctx, profile, "prompt", summaryAccept(""))
+			if got := len(calls()); got != arm.wantCalls {
+				t.Fatalf("summarizer made %d provider request(s), want %d: the live admission was not re-asked at this dispatch, so a stop recorded after the layer verdict did not fence it", got, arm.wantCalls)
+			}
+			if arm.wantCalls < 3 && !errors.Is(err, errSummarizationRefused) {
+				t.Fatalf("err = %v, want errSummarizationRefused: a refusal must not be reported, retried or counted as a failed sample", err)
+			}
+		})
+	}
+}
