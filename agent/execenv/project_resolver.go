@@ -131,6 +131,14 @@ func envHasGitEntryAncestor(env ExecutionEnvironment, cwd string) bool {
 //   - symlink to a directory: terminal, it is a .git directory. os.Stat follows
 //     the link, so this arrives as the directory case.
 //   - symlink to a regular pointer file: terminal, the pointer cases above.
+//   - dangling symlink (the link exists, its target does not): terminal refusal.
+//     os.Stat reports ErrNotExist here, which is NOT an absence: an entry that
+//     exists and cannot be resolved is a refused entry. The link itself is
+//     Lstat'd to establish which it is before the walk moves on.
+//   - symlink to a readable pseudo-filesystem stream (/proc/kmsg and its
+//     aliases): terminal refusal, decided on the OPENED descriptor so no swap
+//     between stat and open can hide it. Such a file stats regular and can
+//     block in read(2) forever, so the byte cap alone does not bound it.
 //   - symlink that does not resolve, FIFO, socket, device: terminal refusal.
 //     The entry exists and has been read and refused; answering handled=false
 //     would escalate to running a workspace-reachable program instead.
@@ -138,7 +146,10 @@ func envHasGitEntryAncestor(env ExecutionEnvironment, cwd string) bool {
 //     is also never read whole.
 //   - unreadable .git (permission, I/O error): terminal error, again never a
 //     fall-through.
-//   - no .git entry in this directory or any ancestor: terminal non-Git.
+//   - no .git entry in this directory or any ancestor: terminal non-Git. This is
+//     the ONLY row where absence is claimed, and it is established by Lstat
+//     reporting ErrNotExist for the entry itself — never inferred from a read,
+//     open, or stat of something else that failed.
 //   - a stat that failed for a reason other than absence: terminal error,
 //     because nothing established what is there.
 func localStructuralMainRoot(cwd string) (root string, isGit bool, handled bool, err error) {
@@ -156,6 +167,30 @@ func localStructuralMainRoot(cwd string) (root string, isGit bool, handled bool,
 			// condition that produced it. This error is not an exit status, so
 			// mainRepoRootUncached's classification treats it as transient.
 			return "", false, true, fmt.Errorf("stat %q: %w", gitPath, statErr)
+		}
+		if errors.Is(statErr, fs.ErrNotExist) {
+			// ErrNotExist from Stat means the PATH does not resolve, which is not
+			// the same as the ENTRY being absent: a dangling symlink reports
+			// ErrNotExist here while the link itself is plainly there. Absence is
+			// established on the entry, not inferred from the failed resolution.
+			// Walking past a dangling link would let a nested checkout inherit its
+			// enclosing repository's identity.
+			linkInfo, linkErr := os.Lstat(gitPath)
+			if linkErr == nil {
+				// The entry is there: a dangling symlink, or any other entry whose
+				// target cannot be resolved. Refused, not absent.
+				return "", true, true, fmt.Errorf("stat %q: %s: %w", gitPath, linkInfo.Mode().Type(), ErrNotRegularFile)
+			}
+			if !errors.Is(linkErr, fs.ErrNotExist) {
+				return "", true, true, fmt.Errorf("lstat %q: %w", gitPath, linkErr)
+			}
+			// The entry itself is absent: this directory is not a checkout.
+			parent := filepath.Dir(dir)
+			if parent == dir {
+				return "", false, true, nil
+			}
+			dir = parent
+			continue
 		}
 		if statErr == nil {
 			if info.IsDir() {
@@ -204,8 +239,12 @@ const gitPointerMaxBytes = 4096
 // linked checkout whose .git points at a shared pointer file is legitimate), so
 // the link is resolved first; the resolved target must then be a regular file,
 // opened nonblocking, so a FIFO with no writer, a socket, or a device returns
-// ErrNotRegularFile instead of hanging the caller. The read is capped at
-// gitPointerMaxBytes and a longer file is refused with ErrGitPointerTooLarge.
+// ErrNotRegularFile instead of hanging the caller. A regular file that is
+// really a pseudo-filesystem stream — /proc/kmsg and anything reachable through
+// a link to it — stats regular and can block in read(2) forever, so it is
+// refused on the OPENED DESCRIPTOR, which no swap between stat and open can
+// hide. The read is capped at gitPointerMaxBytes and a longer file is refused
+// with ErrGitPointerTooLarge.
 //
 // It is exported because every reader of a workspace-controlled pointer needs
 // exactly this guard: the Git-root resolver and the transcript label lookup both
@@ -224,7 +263,32 @@ func ReadGitPointerFile(path string) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
+	data, readErr := readGitPointerDescriptor(path, f)
+	// The descriptor is read-only, so Close cannot lose buffered writes and its
+	// error cannot change what the read returned: the bytes are already in hand
+	// or the read already failed with the reason that matters. It is still not
+	// dropped silently — a failure here is surfaced only when nothing else went
+	// wrong, so it never masks the refusal that made the caller fall back.
+	closeErr := f.Close()
+	if readErr != nil {
+		return nil, readErr
+	}
+	if closeErr != nil {
+		return nil, fmt.Errorf("close %q: %w", path, closeErr)
+	}
+	return data, nil
+}
+
+// readGitPointerDescriptor reads a pointer from an already-validated descriptor.
+// It refuses a descriptor on a pseudo filesystem first: a genuine .git pointer
+// never lives on procfs, sysfs, or devtmpfs, and a file there stats regular
+// while its read(2) can block indefinitely, so the byte cap bounds the bytes
+// but not the wait. The mount is read from the OPENED descriptor, so no swap
+// between stat and open can hide it.
+func readGitPointerDescriptor(path string, f *os.File) ([]byte, error) {
+	if fdOnPseudoMount(int(f.Fd())) {
+		return nil, fmt.Errorf("open %q: %w", path, ErrNotRegularFile)
+	}
 	data, readErr := io.ReadAll(io.LimitReader(f, gitPointerMaxBytes+1))
 	if readErr != nil {
 		return nil, readErr

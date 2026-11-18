@@ -940,8 +940,21 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 	if home := stateHomeFor(bound); home == "" || !r.isConfiguredStateHome(home) {
 		return "", true
 	}
-	if name, ok := r.bucketProjectCache[bound]; ok {
-		return name, true
+	// A managed worktree records the project it belongs to in its own path
+	// (<stateDir>/worktrees/<projectID>/<lane>). When that ID is not this
+	// bucket's own ID, the worktree belongs to a different repository than the
+	// bucket does, and this bucket's siblings describe the bucket's repository.
+	// A sibling may still answer, but only on evidence about THIS project: its
+	// own recorded canonical path must hash to the worktree's project ID.
+	bucketProjectID := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(bound)).ID
+	foreignProject := managedProjectID != "" && managedProjectID != bucketProjectID
+	// The cache is keyed by bucket and the bucket holds one repository, so it is
+	// only reusable for a project-agnostic answer. A foreign project's answer
+	// describes that project alone and must not stand for the next row.
+	if !foreignProject {
+		if name, ok := r.bucketProjectCache[bound]; ok {
+			return name, true
+		}
 	}
 	// The sibling scan is bucket-wide, so apply discovery's own guard: a
 	// sessions/ dir that is a symlink would otherwise be followed.
@@ -949,14 +962,23 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 		return "", true
 	}
 
+	cache := func(name string) {
+		if !foreignProject {
+			r.bucketProjectCache[bound] = name
+		}
+	}
+
 	// Scan bucket sessions in two passes:
 	// Pass 1: authoritative GitOriginURL or WorktreeRestoreRoot
 	metas, err := schema.ListSessionMetas(bound)
 	if err == nil {
 		for _, sm := range metas {
+			if foreignProject && !r.matchesProjectID(sm, managedProjectID) {
+				continue
+			}
 			if origin := strings.TrimSpace(sm.EnvInfo.GitOriginURL); origin != "" {
 				p := repoBasename(origin)
-				r.bucketProjectCache[bound] = p
+				cache(p)
 				return p, true
 			}
 			if restore := strings.TrimSpace(sm.WorktreeRestoreRoot); restore != "" {
@@ -964,12 +986,15 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 				if root := r.resolveMainRoot(restore); root != "" {
 					p = filepath.Base(root)
 				}
-				r.bucketProjectCache[bound] = p
+				cache(p)
 				return p, true
 			}
 		}
 		// Pass 2: ordinary home directory, resolved via resolveMainRoot
 		for _, sm := range metas {
+			if foreignProject && !r.matchesProjectID(sm, managedProjectID) {
+				continue
+			}
 			home := strings.TrimSpace(sm.HomeDir())
 			if home == "" {
 				home = strings.TrimSpace(sm.EnvInfo.WorkingDir)
@@ -977,18 +1002,31 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 			if home != "" && !strings.Contains(home, "worktrees") {
 				if root := r.resolveMainRoot(home); root != "" {
 					p := filepath.Base(root)
-					r.bucketProjectCache[bound] = p
+					cache(p)
 					return p, true
 				}
 				p := filepath.Base(home)
-				r.bucketProjectCache[bound] = p
+				cache(p)
 				return p, true
 			}
 		}
 	}
 
-	r.bucketProjectCache[bound] = ""
+	cache("")
 	return "", true
+}
+
+// matchesProjectID reports whether a sibling session's own recorded project is
+// the project a managed worktree's path names. It is the evidence a bucket-wide
+// sibling scan needs when the worktree belongs to a different repository than
+// the bucket: without it, this bucket's sessions describe the wrong repository
+// and their label would be a cross-repository guess.
+func (r *projectNameResolver) matchesProjectID(m schema.SessionMeta, projectID string) bool {
+	canonical := r.canonicalProjectPath(m)
+	if canonical == "" {
+		return false
+	}
+	return identifier.ProjectFromCanonicalPath(identifier.ResolveClean(canonical)).ID == projectID
 }
 
 // stateWorktreeOwner classifies wd against the layouts an Evener state dir

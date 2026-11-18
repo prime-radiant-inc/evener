@@ -895,6 +895,55 @@ func TestFind_ProjectName_StateWorktreeWithoutBucketMetadata(t *testing.T) {
 	}
 }
 
+// TestFind_ProjectName_ForeignManagedProjectNeedsMatchingEvidence covers a
+// --state-dir aimed at another repository's bucket. A managed worktree records
+// its project in its path, so when that ID differs from the validated bucket's
+// own ID the worktree belongs to a different repository than every session in
+// the bucket. The sibling scan must not answer for it: with no evidence about
+// this project, the label is omitted.
+func TestFind_ProjectName_ForeignManagedProjectNeedsMatchingEvidence(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	// Bucket A is a real project bucket under the configured root, and it holds
+	// a session of A's repository — the label the sibling scan would otherwise
+	// hand to any managed worktree whose owner is gone.
+	bucketA := filepath.Join(stateHome, "evener", "projects", "repo-a-0123456789")
+	if err := os.MkdirAll(filepath.Join(bucketA, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket A: %v", err)
+	}
+	sibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	sibling.EnvInfo.GitOriginURL = "git@github.com:owner/repo-a.git"
+	if err := schema.SaveSessionMeta(bucketA, sibling); err != nil {
+		t.Fatal(err)
+	}
+
+	// The managed worktree's path carries repo B's project ID, and both lanes of
+	// its originless delegate are gone, so neither the owner nor the parent
+	// lookup can name it. Only the path's project segment says which repository.
+	repoB, _ := gittest.NewLinkedWorktree(t)
+	repoBID := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repoB)).ID
+	if repoBID == identifier.ProjectFromCanonicalPath(identifier.ResolveClean(bucketA)).ID {
+		t.Fatalf("fixture error: repo B and bucket A share project ID %q", repoBID)
+	}
+	mForeign := schema.SessionMeta{ParentSessionID: identifier.MustNewSessionID()}
+	mForeign.EnvInfo.WorkingDir = filepath.Join(bucketA, "worktrees", repoBID, "dlg_foreign")
+	if got := projectName(mForeign, bucketA); got != "" {
+		t.Fatalf("projectName(managed worktree of repo B in repo A's bucket) = %q, want empty (no evidence names repo B)", got)
+	}
+
+	// A sibling that does carry repo B's canonical path is evidence, and then the
+	// label is allowed: the gate requires evidence, it does not forbid the answer.
+	repoBSession := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	repoBSession.EnvInfo.WorkingDir = repoB
+	if err := schema.SaveSessionMeta(bucketA, repoBSession); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := projectName(mForeign, bucketA), filepath.Base(repoB); got != want {
+		t.Fatalf("projectName(managed worktree once a sibling records its project) = %q, want %q", got, want)
+	}
+}
+
 // TestFind_ProjectName_SymlinkedStateHomeKeepsSiblingInference covers the state
 // home itself being a symlink. Startup records buckets under the physical path
 // while this process's configuration keeps the link's spelling, so a bucket

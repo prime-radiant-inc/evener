@@ -256,3 +256,76 @@ func TestResolveMainRepoRoot_RefusedPointerNeverExecutesGit(t *testing.T) {
 		t.Error("resolveMainRepoRoot of a refused .git pointer returned no error, want a terminal structural error")
 	}
 }
+
+// A ".git" symlink whose target has disappeared is a REFUSED entry, not an
+// absent one. os.Stat reports ErrNotExist for it, and treating that as "no
+// repository here" makes the walk continue into the parent, so a nested
+// checkout inherits its enclosing repository's identity. Absence is established
+// on the entry itself; a link that exists and does not resolve is terminal.
+func TestLocalStructuralMainRoot_DanglingGitSymlinkIsRefusedNotAbsent(t *testing.T) {
+	outer, _ := gittest.NewLinkedWorktree(t)
+	nested := filepath.Join(outer, "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested checkout: %v", err)
+	}
+	gone := filepath.Join(t.TempDir(), "gone-pointer")
+	if err := os.Symlink(gone, filepath.Join(nested, ".git")); err != nil {
+		t.Fatalf("symlink .git to a nonexistent target: %v", err)
+	}
+
+	root, isGit, handled, err := localStructuralMainRoot(nested)
+	if err == nil {
+		t.Fatalf("localStructuralMainRoot(dangling .git symlink) = (%q, %v, %v), want a terminal error: resolving to the enclosing repo's root would mislabel a nested checkout", root, isGit, handled)
+	}
+	if !handled {
+		t.Error("handled = false for a .git entry that exists and does not resolve, want true")
+	}
+	if root != "" {
+		t.Errorf("root = %q, want empty", root)
+	}
+
+	// And the enclosing repository is still found from outside the nested
+	// directory, so the refusal is about this entry, not about the walk.
+	outerRoot, _, _, outerErr := localStructuralMainRoot(outer)
+	if outerErr != nil {
+		t.Fatalf("localStructuralMainRoot(enclosing checkout): %v", outerErr)
+	}
+	if want := filepath.Base(outer); filepath.Base(outerRoot) != want {
+		t.Errorf("enclosing checkout root = %q, want a checkout named %q", outerRoot, want)
+	}
+}
+
+// A .git symlink whose target is a readable pseudo-filesystem stream stats
+// regular and can block in read(2) forever, so the byte cap does not bound it.
+// The pseudo-mount is refused on the OPENED DESCRIPTOR, which is the check that
+// covers /proc/kmsg and every alias to it.
+//
+// The fixture is /proc/version, not /proc/kmsg, on purpose: both are regular
+// files on procfs and take the same descriptor check, but /proc/kmsg is
+// root-only here, so a test built on it would skip and prove nothing. What is
+// proven below is the REJECTION. The stall itself is unproven on this host for
+// want of a readable stream, and is not claimed.
+func TestLocalStructuralMainRoot_GitSymlinkToPseudoStreamIsRefused(t *testing.T) {
+	stream := "/proc/version"
+	if f, err := os.Open(stream); err != nil {
+		t.Skipf("%s is not readable on this host: %v", stream, err)
+	} else {
+		_ = f.Close()
+	}
+
+	dir := t.TempDir()
+	if err := os.Symlink(stream, filepath.Join(dir, ".git")); err != nil {
+		t.Fatalf("symlink .git to %s: %v", stream, err)
+	}
+
+	root, _, handled, err := localStructuralMainRoot(dir)
+	if !errors.Is(err, ErrNotRegularFile) {
+		t.Fatalf("localStructuralMainRoot(.git symlink to %s) error = %v, want ErrNotRegularFile so the read cannot park on the stream", stream, err)
+	}
+	if !handled {
+		t.Error("handled = false after the entry was refused, want true")
+	}
+	if root != "" {
+		t.Errorf("root = %q, want empty", root)
+	}
+}
