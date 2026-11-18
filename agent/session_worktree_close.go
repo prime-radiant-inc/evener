@@ -102,6 +102,18 @@ func (s *Session) disposeDelegateLanesAtClose(ctx context.Context) {
 			kept = append(kept, note)
 		}
 	}
+	// Publish this pass's closure announcements on the stop-join half of the
+	// cascade, not on the cascade itself. The announcements are the last thing
+	// the pass does and the least important: a durable closure is already
+	// recorded and its lane is already off disk, so a consumer that cannot accept
+	// the news must not be able to spend the time the remaining removals need.
+	// closeStopJoinContext reserves exactly that half and halves it again for a
+	// nested close, which is the same bound the stop join runs on -- one bound for
+	// both scopes, root pass and resident delegate's nested pass.
+	publishCtx, cancelPublish := closeStopJoinContext(budgetCtx)
+	defer cancelPublish()
+	restoreBound := s.delegateController.setPublicationBound(publishCtx)
+	defer restoreBound()
 	for _, plan := range closureUpdates {
 		s.delegateController.emitDelegateUpdate(plan)
 	}

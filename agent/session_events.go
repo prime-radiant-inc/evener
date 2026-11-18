@@ -441,7 +441,10 @@ func (s *Session) publishHookLifecycle(ctx context.Context, kind events.EventKin
 		return
 	}
 	if isEnd {
-		s.emitHookCompletedContext(bounded, end)
+		// The marked path is the close drain's, which is on the close-join
+		// critical path, so its completion also bounds the ACQUISITION of the
+		// transcript door rather than waiting on the close budget for it.
+		s.emitHookCompletedBounded(bounded, end)
 		return
 	}
 	s.emitContext(bounded, data)
@@ -508,6 +511,19 @@ func (s *Session) emitHookCompletedContext(ctx context.Context, data events.Hook
 	})
 }
 
+// emitHookCompletedBounded is emitHookCompletedContext for a caller on the
+// close-join critical path. It additionally bounds the ACQUISITION of the
+// transcript door: the drain waits for this callback, so a completion that
+// cannot take the door within the bound records nothing and announces the drop
+// rather than parking on a lock the close budget owns.
+func (s *Session) emitHookCompletedBounded(bound context.Context, data events.HookEndData) {
+	s.emitContext(bound, data)
+	s.recordHookCompletionBounded(bound, data, recordDiagnostics{
+		bound: bound,
+		warn:  func(w events.WarningData) { s.emitDiagnosticWarningContext(bound, w) },
+	})
+}
+
 // recordHookCompletion writes the completion turn, and is shared by both
 // publication paths above. warn carries the caller's bound and sink for the
 // transcript-write diagnostics this record raises.
@@ -548,6 +564,23 @@ func (s *Session) recordHookCompletion(data events.HookEndData, diag recordDiagn
 	// caller's, so a responsive consumer still receives the warning and the
 	// record still succeeds.
 	s.recordTurnTo(turn, turn, diag)
+}
+
+// recordHookCompletionBounded is recordHookCompletion with a bounded
+// acquisition: the turn is built exactly as above, and the record is attempted
+// only while the caller's bound still has time.
+func (s *Session) recordHookCompletionBounded(bound context.Context, data events.HookEndData, diag recordDiagnostics) {
+	info := schema.HookInfo{
+		Event:      data.Event,
+		HookType:   data.HookType,
+		Matcher:    data.Matcher,
+		PluginName: data.PluginName,
+		ExitCode:   data.ExitCode,
+		DurationMS: data.DurationMS,
+	}
+	turn := schema.NewTurn(schema.TurnHookCompleted, llm.System(info.Announcement()))
+	turn.Hook = &info
+	_, _ = s.recordTurnBounded(bound, turn, turn, diag)
 }
 
 // emitDiagnosticWarning emits a hook-configuration/matcher diagnostic so the

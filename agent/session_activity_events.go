@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"context"
+
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/appwire"
@@ -25,6 +27,20 @@ func (s *Session) emitSessionActivityChanged(owner string, resource appwire.Sess
 // thread; targets is owner's sessionAncestryLocked chain, which a caller that
 // already holds it passes in rather than walking the tree again.
 func (s *Session) publishSessionActivityChanged(owner string, targets []string, resource appwire.SessionActivityResource) {
+	s.publishSessionActivityChangedContext(context.Background(), owner, targets, resource)
+}
+
+// publishSessionActivityChangedContext is publishSessionActivityChanged on a
+// caller's bound. The invalidation is part of the announcement a close drain's
+// pass publishes, so it must release on that pass's bound rather than the full
+// close budget: a nested pass that parks here still holds the pass open, and the
+// budget it spends is the one that removes the remaining collectible lanes.
+//
+// Only a caller that has a bound passes one. Every other caller reaches this
+// through publishSessionActivityChanged, which supplies context.Background and
+// so keeps today's behavior exactly: the session's published close budget, when
+// there is one, and no caller deadline otherwise.
+func (s *Session) publishSessionActivityChangedContext(ctx context.Context, owner string, targets []string, resource appwire.SessionActivityResource) {
 	if s == nil || owner == "" {
 		return
 	}
@@ -39,7 +55,7 @@ func (s *Session) publishSessionActivityChanged(owner string, targets []string, 
 	}
 	sessionActivityIndexes.Unlock()
 	for _, target := range targets {
-		s.sendEvent(events.SessionActivityChangedData{ThreadID: target, Ref: encodeRef("", target), SessionID: owner, Resources: []appwire.SessionActivityResource{appwire.SessionActivityResourceSummary, resource}}, nil)
+		s.sendEventOnContext(ctx, events.SessionActivityChangedData{ThreadID: target, Ref: encodeRef("", target), SessionID: owner, Resources: []appwire.SessionActivityResource{appwire.SessionActivityResourceSummary, resource}}, nil)
 	}
 }
 

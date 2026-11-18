@@ -3012,6 +3012,88 @@ type recordDiagnostics struct {
 	warn  func(events.WarningData)
 }
 
+// errTranscriptLockSpent reports that a bounded record could not take the
+// transcript door before its caller's bound expired, so nothing was recorded.
+var errTranscriptLockSpent = errors.New("transcript lock unavailable within the caller's bound")
+
+// recordTurnBounded is recordTurnTo for a caller on the close-join critical
+// path: it ACQUIRES the transcript door under the caller's bound instead of
+// waiting for whatever deadline the close has published, and when the bound is
+// spent before the lock is available it records nothing and says so.
+//
+// It bounds the acquisition, not the section. attentionMu stays held across the
+// write, because it is an ordering guard rather than a value guard: a fold
+// snapshots persistedAppendLog and re-appends its tail (session_compaction.go),
+// so a snapshot taken mid-write would re-append a turn whose write had not landed
+// -- duplicated history on restart. Narrowing that section to buy a shortcut on
+// one close path would trade a wedge for corrupt history.
+//
+// The drop is announced through diag, which carries the same bound. A close that
+// loses a completion record must say so; a silent skip would be the dropped thing
+// nobody hears about, which is the defect this whole change exists to fix.
+func (s *Session) recordTurnBounded(bound context.Context, live, persisted schema.Turn, diag recordDiagnostics) (transcript.Record, error) {
+	live.SkillState = live.SkillState.Clone()
+	persisted.SkillState = persisted.SkillState.Clone()
+	if !lockWithin(bound, &s.attentionMu) {
+		diag.warn(events.WarningData{Message: "hook completion not recorded: the transcript was busy past the close drain's deadline"})
+		return transcript.Record{}, errTranscriptLockSpent
+	}
+	s.mu.Lock()
+	s.history = append(s.history, live)
+	s.logPairPersistedLocked(persisted)
+	s.lastRecorded = recordedOrdinal{}
+	s.mu.Unlock()
+	rec, err := s.recordTranscriptLocked(persisted, transcript.DoorBuffered, transcript.PlaceSession)
+	if err == nil {
+		s.mu.Lock()
+		s.markLastPairOrdinalLocked()
+		s.mu.Unlock()
+	} else {
+		s.mu.Lock()
+		s.tombstoneLastPairPersistedLocked()
+		s.mu.Unlock()
+	}
+	s.attentionMu.Unlock()
+	if err != nil {
+		diag.warn(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+	}
+	s.surfaceTranscriptWarningsTo(diag)
+	return rec, err
+}
+
+// lockWithin acquires m, giving up when bound expires first, and reports whether
+// it was taken.
+//
+// It polls TryLock rather than acquiring on a helper goroutine: a helper parked
+// on Lock cannot be recalled, so a bounded caller that gave up would leave a
+// goroutine holding the mutex until it was released -- and then holding it, if
+// nothing was waiting to hand it back. Polling keeps the whole attempt inside the
+// caller, so giving up leaves nothing behind.
+func lockWithin(bound context.Context, m *sync.Mutex) bool {
+	if bound == nil {
+		m.Lock()
+		return true
+	}
+	for {
+		if m.TryLock() {
+			return true
+		}
+		if bound.Err() != nil {
+			return false
+		}
+		select {
+		case <-bound.Done():
+			return false
+		case <-time.After(transcriptLockPollInterval):
+		}
+	}
+}
+
+// transcriptLockPollInterval is how long a bounded acquisition sleeps between
+// TryLock attempts. It is a retry cadence, not a deadline: the caller's bound is
+// what ends the wait.
+const transcriptLockPollInterval = 2 * time.Millisecond
+
 // recordTurnTo is recordTurn with an explicit sink for the transcript-write
 // diagnostics the record itself raises. The ordinary sink is emit, which fires
 // the Notification hook for an EventWarning. A hook's own completion must not

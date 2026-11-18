@@ -111,6 +111,13 @@ func (s *Session) emitDelegateUpdate(plan delegateUpdatePlan) {
 		}
 		target.emitWithProvenance(data, p)
 	}
+	// The activity invalidation is part of the same announcement and takes the
+	// same bound: it is a send on the root's stream, so leaving it unbounded
+	// would park the pass on the close budget that removal needs.
+	activityCtx := context.Background()
+	if bounded {
+		activityCtx = bound
+	}
 	now := s.sclock().Now().UTC()
 	rootID := s.delegateController.rootSessionID
 	for _, row := range plan.rows {
@@ -124,7 +131,7 @@ func (s *Session) emitDelegateUpdate(plan delegateUpdatePlan) {
 		ancestors, ancestorRuntimes := s.delegateController.ancestorSubagentRuntimesLocked(ancestry)
 		ownerRuntime := s.delegateController.runtimeForDelegateOwnerLocked(row)
 		s.delegateController.mu.Unlock()
-		s.publishSessionActivityChanged(logicalOwner, ancestry, appwire.SessionActivityResourceDelegates)
+		s.publishSessionActivityChangedContext(activityCtx, logicalOwner, ancestry, appwire.SessionActivityResourceDelegates)
 		data := delegateUpdatedDataFromStatus(delegateFrameStatusInfo(now, rootID, row))
 		data.AncestorSessionIDs = ancestors
 		// A subagent's own thread lists its subtree, so each live ancestor
