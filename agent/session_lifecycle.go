@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 var errBareTextWithoutResultTool = errors.New("model returned bare text without calling result tool")
@@ -254,36 +255,45 @@ const (
 	entryKindCount
 )
 
-// roundContentClass classifies a model round's assistant content. NoContent marks
-// a round with no text and no tool calls (a model glitch that triggers the
-// empty-retry path). HasPhase marks any content part carrying OpenAI Responses
-// phase metadata (e.g. "final_answer"), which must be preserved in history even
-// when otherwise empty so the model sees its own phase annotation and can
-// course-correct. SkipHistory is a no-content round with no phase metadata — truly
-// nothing to append.
+// NoContent drives empty-answer recovery. A round without a visible answer or
+// tool call can still carry provider state that belongs in the next request.
 type roundContentClass struct {
 	NoContent   bool
-	HasPhase    bool
 	SkipHistory bool
 }
 
-// classifyRoundContent derives the round-content classification from the assistant
-// text, the tool-call count, and the response content parts. It is pure: no
-// locking, I/O, or mutation.
-func classifyRoundContent(txt string, callCount int, content []llm.ContentPart) roundContentClass {
-	noContent := strings.TrimSpace(txt) == "" && callCount == 0
-	hasPhase := false
+func classifyRoundContent(txt string, callCount int, content []llm.ContentPart, target *provider.Profile) roundContentClass {
+	if strings.TrimSpace(txt) != "" || callCount != 0 {
+		return roundContentClass{}
+	}
+	responses := target != nil && target.Protocol() == registry.ProtocolOpenAIResponses
+	replayPlain := responses && target.Resolved().ReplaysRawReasoning()
 	for _, p := range content {
-		if p.Phase != "" {
-			hasPhase = true
-			break
+		if p.Phase != "" || (responses && replayableEmptyResponsesPart(p, replayPlain)) {
+			return roundContentClass{NoContent: true}
 		}
 	}
-	return roundContentClass{
-		NoContent:   noContent,
-		HasPhase:    hasPhase,
-		SkipHistory: noContent && !hasPhase,
+	return roundContentClass{NoContent: true, SkipHistory: true}
+}
+
+// The Responses input encoder always accepts its own ciphertext and refusals.
+// Enrolled issuers also receive native plaintext and empty output_text items.
+func replayableEmptyResponsesPart(p llm.ContentPart, replayPlain bool) bool {
+	if p.Kind == llm.ContentText {
+		return p.ResponsesRefusal || (replayPlain && p.ResponsesMessageStart)
 	}
+	if p.Kind != llm.ContentThinking || p.Thinking == nil {
+		return false
+	}
+	if encrypted := p.Thinking.EncryptedContent; encrypted != "" {
+		return !llm.IsOpenAICompatEncryptedReasoning(encrypted)
+	}
+	if replayPlain {
+		for range p.Thinking.ResponsesReasoningTextParts() {
+			return true
+		}
+	}
+	return false
 }
 
 // noCallsRoute selects how processOneInput handles a round that produced no tool
@@ -1759,13 +1769,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		lastText = txt
 		calls := resp.ToolCalls()
 
-		// Two concepts of "empty":
-		// 1. noContent: no text and no tool calls — triggers retry logic
-		// 2. skipHistory: no text, no tool calls, AND no phase metadata —
-		//    truly nothing to append. Responses with phase annotations
-		//    (e.g., "final_answer") must be preserved in history so the
-		//    model sees its own phase metadata and can course-correct.
-		rc := classifyRoundContent(txt, len(calls), resp.Message.Content)
+		rc := classifyRoundContent(txt, len(calls), resp.Message.Content, usedProfile)
 		noContent := rc.NoContent
 		skipHistory := rc.SkipHistory
 		// A pause_turn response is the provider's partial state. Even when it

@@ -210,9 +210,8 @@ func (acc *responsesOutputAccumulator) terminalItem(kind, id, callID string, ind
 	return item
 }
 
-// A terminal without native reasoning or with a single explicit empty
-// placeholder can use the whole completed item. Other typed slots own their
-// indexes, including a slot whose text is missing in both sources.
+// A terminal can omit native reasoning or supply a single placeholder. An
+// explicit empty array clears the content. Other typed slots own their indexes.
 func (item *responsesOutputItem) settleReasoning(terminalItem map[string]any, terminal *llm.ThinkingData, terminalNative reasoningContent) *llm.ThinkingData {
 	if item.done == nil {
 		return terminal
@@ -220,13 +219,14 @@ func (item *responsesOutputItem) settleReasoning(terminalItem map[string]any, te
 	if terminal == nil {
 		terminal = &llm.ThinkingData{ID: item.reasoningID(terminalItem), Summary: parseReasoningSummary(terminalItem["summary"])}
 	}
-	parts, _ := terminalItem["content"].([]any)
+	parts, supplied := terminalItem["content"].([]any)
+	cleared := supplied && len(parts) == 0
 	var placeholder bool
 	if terminalNative == reasoningEmpty && len(parts) == 1 {
 		part, _ := parts[0].(map[string]any)
 		placeholder = part["text"] == ""
 	}
-	if terminalNative == reasoningAbsent || placeholder {
+	if !cleared && (terminalNative == reasoningAbsent || placeholder) {
 		if prior, native := responsesThinking(item.done, item); prior != nil && native > terminalNative {
 			terminal.Text, terminal.ResponsesTextParts = prior.Text, prior.ResponsesTextParts
 		}
@@ -259,22 +259,28 @@ func (acc *responsesOutputAccumulator) sparseContent(terminal []responsesTermina
 			content = append(content, item.parts...)
 		}
 	}
+	if !terminalReasoning {
+		for _, item := range acc.output {
+			if item.kind != "reasoning" {
+				continue
+			}
+			// An item completion or a declared and finalized native part
+			// supplies this output position before unindexed siblings settle.
+			if thinking, _ := responsesThinking(item.done, item); thinking != nil {
+				item.displayOnly = false
+				item.discardDisplayMirror(thinking)
+				matched[item] = []llm.ContentPart{{Kind: llm.ContentThinking, Thinking: thinking}}
+			}
+		}
+	}
 	acc.orderOutput()
 	for _, item := range acc.output {
-		var thinking *llm.ThinkingData
-		if item.kind == "reasoning" && !terminalReasoning && item.done != nil {
-			thinking, _ = responsesThinking(item.done, item)
-			item.discardDisplayMirror(thinking)
-		}
 		content = item.appendDisplay(content)
 		if parts, ok := matched[item]; ok {
 			content = append(content, parts...)
 			continue
 		}
 		if item.kind == "reasoning" {
-			if thinking != nil {
-				content = append(content, llm.ContentPart{Kind: llm.ContentThinking, Thinking: thinking})
-			}
 			continue
 		}
 		if item.kind == "message" {
@@ -297,21 +303,47 @@ func (acc *responsesOutputAccumulator) sparseContent(terminal []responsesTermina
 	return content
 }
 
+// An item reference can omit the selected message's content. Its completed
+// refusal still selects that message and withdraws unrelated streamed calls.
+func (item *responsesOutputItem) messageWithCompletedRefusal(message map[string]any) map[string]any {
+	if _, supplied := message["content"]; supplied || item == nil || item.done == nil || message == nil {
+		return message
+	}
+	parts, _ := item.done["content"].([]any)
+	for _, entry := range parts {
+		if p, _ := entry.(map[string]any); p["type"] == "refusal" {
+			message = maps.Clone(message)
+			message["content"] = parts
+			break
+		}
+	}
+	return message
+}
+
 // Nonempty terminal text owns its index. An empty slot can be filled from
 // the same observed part; unindexed text can fill only a single-part message.
 func (item *responsesOutputItem) appendMessage(content []llm.ContentPart, message map[string]any, streamOnly bool) ([]llm.ContentPart, bool) {
 	start := len(content)
+	message = item.messageWithCompletedRefusal(message)
 	parts, _ := message["content"].([]any)
 	var observed map[int64]*responsesOutputText
 	if item != nil {
 		observed = item.text
 	}
-	appendText := func(text string) {
-		content = append(content, llm.ContentPart{Kind: llm.ContentText, Text: text, ResponsesMessageStart: len(content) == start})
+	appendText := func(text string, refusal bool) {
+		content = append(content, llm.ContentPart{Kind: llm.ContentText, Text: text, ResponsesMessageStart: len(content) == start, ResponsesRefusal: refusal})
 	}
 	var substantive, recovered bool
 	for index, entry := range parts {
 		p, _ := entry.(map[string]any)
+		if p["type"] == "refusal" {
+			// The refusal selects this message even if its text is empty. An
+			// earlier output_text or tool call cannot fill that selection.
+			text, _ := p["refusal"].(string)
+			appendText(text, true)
+			substantive = true
+			continue
+		}
 		if p["type"] != "output_text" {
 			continue
 		}
@@ -329,7 +361,7 @@ func (item *responsesOutputItem) appendMessage(content []llm.ContentPart, messag
 			}
 		}
 		if ok {
-			appendText(text)
+			appendText(text, false)
 		}
 	}
 	if !substantive && len(parts) <= 1 {
@@ -338,7 +370,7 @@ func (item *responsesOutputItem) appendMessage(content []llm.ContentPart, messag
 			if index >= int64(len(parts)) || onlyUnindexed {
 				text := observed[index].value()
 				recovered = recovered || text != ""
-				appendText(text)
+				appendText(text, false)
 			}
 		}
 	}
@@ -506,14 +538,10 @@ func fromResponses(raw map[string]any, requestedModel string, body []byte) llm.R
 func settleResponsesTerminalOutput(raw map[string]any, requestedModel string, body []byte, acc *responsesOutputAccumulator) llm.Response {
 	out, _ := raw["output"].([]any)
 	r := responseWithContent(raw, requestedModel, responseContentFromOutputItems(out, body, nil, acc))
-	if len(r.Message.Content) == 0 {
-		// A terminal function item without an issued call ID selects no
-		// dispatchable call. Earlier streamed calls cannot fill that selection.
-		r.ContentAuthoritative = slices.ContainsFunc(out, func(entry any) bool {
-			item, _ := entry.(map[string]any)
-			return item["type"] == "function_call"
-		})
-	}
+	// The adapter has already filled recoverable placeholders. An explicit
+	// selection can yield zero represented parts (for example, file_search_call)
+	// and still withdraw an earlier streamed tool call.
+	r.ContentAuthoritative = len(out) != 0
 	if n := acc.completed; len(out) > 0 && n > 0 && len(out) != n {
 		r.Warnings = append(r.Warnings, llm.Warning{
 			Code:    "responses_output_item_count_mismatch",

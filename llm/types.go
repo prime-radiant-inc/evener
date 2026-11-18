@@ -138,9 +138,11 @@ type ContentPart struct {
 	Thinking   *ThinkingData   `json:"thinking,omitempty"`
 	WebSearch  *WebSearchData  `json:"web_search,omitempty"`
 
-	// ResponsesMessageStart marks the first output_text part of a native
+	// ResponsesMessageStart marks the first text or refusal part of a native
 	// assistant message. Two adjacent messages can have the same phase.
 	ResponsesMessageStart bool `json:"responses_message_start,omitempty"`
+	// ResponsesRefusal keeps visible refusal text in its native message field.
+	ResponsesRefusal bool `json:"responses_refusal,omitempty"`
 
 	// Machinery marks a text part as session-manufactured machinery — a
 	// notification for the model the user never typed — rather than

@@ -1381,8 +1381,8 @@ func effectiveRecordedInputTokens(usage llm.Usage, fullHistoryEstimate int, hasS
 }
 
 // emitAssistantResponse emits the assistant text lifecycle events for a round (start
-// /delta/end, skipping start/delta when the assistant already streamed) and appends
-// the assistant turn to history unless the response was empty without phase metadata.
+// /delta/end, skipping start/delta when the assistant already streamed) and
+// records assistant turns selected for replay or continuation.
 // It runs under withResponseSideEffects and returns its abort error.
 func (s *Session) emitAssistantResponse(ctx context.Context, resp llm.Response, modelResp sessionModelResponse, txt string, skipHistory bool, finalAttempt ModelAttemptMetadata) error {
 	var persistErr error

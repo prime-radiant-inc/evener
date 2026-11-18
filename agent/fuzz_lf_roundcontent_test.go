@@ -3,6 +3,7 @@
 package agent
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -10,7 +11,7 @@ import (
 )
 
 // This file fuzzes the pure round-content decision cores lifted out of
-// processOneInput: classifyRoundContent (the noContent/hasPhase/skipHistory split
+// processOneInput: classifyRoundContent (the noContent/skipHistory split
 // that decides what to append to history and whether to retry) and
 // routeNoToolCalls (the no-tool-calls route that finishes idle for a bare-text
 // system turn vs runs the empty-retry budget). Both are pure over their inputs, so
@@ -49,10 +50,10 @@ func FuzzLfClassifyRoundContent(f *testing.F) {
 	f.Fuzz(func(t *testing.T, txt string, callCount int, phaseMask, partCount uint8) {
 		content := lf_buildContent(phaseMask, partCount)
 
-		got := classifyRoundContent(txt, callCount, content)
+		got := classifyRoundContent(txt, callCount, content, nil)
 
 		// Determinism: identical inputs yield an identical classification.
-		if got2 := classifyRoundContent(txt, callCount, content); got != got2 {
+		if got2 := classifyRoundContent(txt, callCount, content, nil); got != got2 {
 			t.Fatalf("nondeterministic: %+v vs %+v", got, got2)
 		}
 
@@ -69,9 +70,10 @@ func FuzzLfClassifyRoundContent(f *testing.F) {
 		if got.SkipHistory && !got.NoContent {
 			t.Fatalf("SkipHistory without NoContent: %+v", got)
 		}
-		// SkipHistory is exactly NoContent AND not HasPhase.
-		if got.SkipHistory != (got.NoContent && !got.HasPhase) {
-			t.Fatalf("SkipHistory=%v but NoContent=%v HasPhase=%v", got.SkipHistory, got.NoContent, got.HasPhase)
+		// An unmarked text part can supply only a phase on an empty round.
+		hasPhase := slices.ContainsFunc(content, func(p llm.ContentPart) bool { return p.Phase != "" })
+		if got.SkipHistory != (got.NoContent && !hasPhase) {
+			t.Fatalf("SkipHistory=%v but NoContent=%v hasPhase=%v", got.SkipHistory, got.NoContent, hasPhase)
 		}
 	})
 }

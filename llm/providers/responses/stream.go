@@ -608,10 +608,12 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 			fallback, _ = acc.uniqueMessage(itemID, responsesEventIndex(payload, "output_index"), true)
 		}
 		output := acc.outputItem(payload, it, itemID, fallback, true)
+		settled := item
 		if it == "message" {
 			output.settleMessage(item, acc.order)
+			settled = output.messageWithCompletedRefusal(item)
 		}
-		output.done, output.raw = item, rawItemToken
+		output.done, output.raw = settled, rawItemToken
 		output.doneOrder = acc.order
 		acc.completed++
 		return item, nil, "", false

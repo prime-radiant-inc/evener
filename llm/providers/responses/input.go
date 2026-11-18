@@ -298,7 +298,7 @@ func appendAssistantInput(items []any, parts []llm.ContentPart, replayReasoningT
 			} else if group == nil || phase != p.Phase {
 				nativeGroup = false
 			}
-			if !nativeGroup && strings.TrimSpace(p.Text) == "" && p.Phase == "" {
+			if !nativeGroup && !p.ResponsesRefusal && strings.TrimSpace(p.Text) == "" && p.Phase == "" {
 				continue
 			}
 			if group == nil || phase != p.Phase {
@@ -310,7 +310,11 @@ func appendAssistantInput(items []any, parts []llm.ContentPart, replayReasoningT
 				items = append(items, group)
 			}
 			content, _ := group["content"].([]any)
-			group["content"] = append(content, map[string]any{"type": "output_text", "text": p.Text})
+			kind, field := "output_text", "text"
+			if p.ResponsesRefusal {
+				kind, field = "refusal", "refusal"
+			}
+			group["content"] = append(content, map[string]any{"type": kind, field: p.Text})
 		case llm.ContentAudio, llm.ContentDocument:
 			return nil, &llm.ConfigurationError{Message: fmt.Sprintf("unsupported content kind for openai: %s", p.Kind)}
 		default:

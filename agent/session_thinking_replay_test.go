@@ -2,6 +2,10 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -10,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
@@ -172,6 +177,119 @@ func TestSessionReplaysReasoningAcrossToolRoundsAndTurns(t *testing.T) {
 			assertReasoningMarkers(t, requests[3], "r17a", "r28b", "r39c")
 		})
 	}
+	t.Run("empty Responses answers", func(t *testing.T) {
+		t.Run("enrolled", func(t *testing.T) { testResponsesEmptyAnswerReplay(t, true) })
+		t.Run("strict", func(t *testing.T) { testResponsesEmptyAnswerReplay(t, false) })
+	})
+}
+
+func testResponsesEmptyAnswerReplay(t *testing.T, enrolled bool) {
+	t.Helper()
+	t.Parallel()
+	part := func(kind, text string) map[string]any { return map[string]any{"type": kind, "text": text} }
+	outputs := []struct {
+		item   map[string]any
+		replay bool
+	}{
+		{map[string]any{"type": "reasoning", "id": "rs_plain", "summary": []any{}, "content": []any{part("reasoning_text", "λ-425"), part("reasoning_text", "")}}, enrolled},
+		{map[string]any{"type": "message", "role": "assistant", "content": []any{part("output_text", "")}}, enrolled},
+		{map[string]any{"type": "reasoning", "id": "rs_opaque", "summary": []any{}, "encrypted_content": "sealed-419"}, true},
+		{map[string]any{"type": "message", "role": "assistant", "content": []any{map[string]any{"type": "refusal", "refusal": ""}}}, true},
+		{map[string]any{"type": "reasoning", "id": "rs_empty", "summary": []any{}, "content": []any{part("reasoning_text", "")}}, enrolled},
+		{map[string]any{"type": "reasoning", "id": "rs_display", "content": []any{part("text", "display-34")}}, false},
+	}
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/responses" {
+			http.NotFound(w, r)
+			return
+		}
+		var req struct {
+			Model string
+			Input []map[string]any
+		}
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Error(err)
+			http.Error(w, "bad request", http.StatusBadRequest)
+			return
+		}
+		if req.Model == "unavailable" {
+			http.NotFound(w, r)
+			return
+		}
+		attempt := int(calls.Add(1)) - 1
+		var got, want []map[string]any
+		for _, item := range req.Input {
+			if item["type"] == "reasoning" || item["role"] == "assistant" {
+				got = append(got, item)
+			}
+		}
+		for _, prior := range outputs[:min(attempt, len(outputs))] {
+			if prior.replay {
+				want = append(want, prior.item)
+			}
+		}
+		if gotJSON, wantJSON := mustJSON(t, got), mustJSON(t, want); gotJSON != wantJSON {
+			t.Errorf("request %d replayed %s, want %s", attempt+1, gotJSON, wantJSON)
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		flush, _ := w.(http.Flusher)
+		if attempt < len(outputs) {
+			writeSSE(t, w, flush, "response.completed", map[string]any{
+				"type": "response.completed", "response": map[string]any{"status": "completed", "output": []any{outputs[attempt].item}},
+			})
+			return
+		}
+		final := agenttest.CommunicateCall("call-done", "recovered")
+		writeResponsesFunctionCall(t, w, flush, "resp-done", final.ID, final.Name, string(final.Arguments))
+	}))
+	t.Cleanup(srv.Close)
+	dir := t.TempDir()
+	inst := openaiInstance(srv.URL)
+	// The answering row has the opposite replay policy to the primary.
+	inst.Models = map[string]registry.Model{
+		"unavailable": {Protocol: registry.ProtocolOpenAIResponses, Caps: registry.Caps{ReplayReasoningText: new(!enrolled)}},
+		"reasoner":    {Protocol: registry.ProtocolOpenAIResponses, Caps: registry.Caps{ReplayReasoningText: new(enrolled)}},
+	}
+	client := registryClientAt(t, dir, map[string]registry.Provider{"work": inst}, []string{"work"})
+	profile := resolveClientProfile(t, client, "work/unavailable")
+	fallbacks := []string{"reasoner"}
+	s := newSession(t, withClient(client), withProfile(profile), withConfig(SessionConfig{StateDir: dir, OpenAIResponsesContinuation: "off", ModelFallbacks: fallbacks}))
+	const beforeResume = 4 // initial answer and the three empty-answer retries
+	if _, err := s.ProcessInput(tripwireCtx(t), "begin", nil); !errors.Is(err, errEmptyResponseExhausted) || int(calls.Load()) != beforeResume {
+		t.Fatalf("empty-answer recovery ended after %d attempts with %v", calls.Load(), err)
+	}
+	s.Close()
+	resumed, err := RestoreSessionFromMetaWithConfig(client, profile, execenv.NewLocalExecutionEnvironment(s.currentEnv().WorkingDirectory()), loadMetaForTest(t, s), RestoreSessionConfig{
+		StateDir: dir, ModelFallbacks: fallbacks, testOnly: sharingHostProbe(testConfig{skipGitSnapshot: true}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(resumed.Close)
+	checkStored := func(replies, finalAnswers int) {
+		t.Helper()
+		want := finalAnswers
+		for _, output := range outputs[:replies] {
+			if output.replay {
+				want++
+			}
+		}
+		got := 0
+		for _, turn := range currentHistory(t, resumed) {
+			if turn.Kind == schema.TurnAssistant {
+				got++
+			}
+		}
+		if got != want {
+			t.Errorf("after %d empty replies and %d answers the session retained %d assistant turns, want %d", replies, finalAnswers, got, want)
+		}
+	}
+	checkStored(beforeResume, 0)
+	if got, err := resumed.ProcessInput(tripwireCtx(t), "resume", nil); err != nil || got != "recovered" || int(calls.Load()) != len(outputs)+1 {
+		t.Fatalf("resumed input returned %q after %d attempts with %v", got, calls.Load(), err)
+	}
+	checkStored(len(outputs), 1)
 }
 
 func TestFallbackReplaysOnlyItsIssuersReasoning(t *testing.T) {

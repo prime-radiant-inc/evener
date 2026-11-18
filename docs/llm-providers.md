@@ -553,14 +553,23 @@ saved the original spelling can replay only the bytes still on disk.
   `reasoning_text` parts in order with the item's ID when supplied. Evener
   saves the type and byte boundaries of each text part, including display-only
   parts. It preserves whitespace in raw parts, item IDs and summaries, and
-  keeps separate assistant messages and their `output_text` parts in order.
+  keeps separate assistant messages and their `output_text` and `refusal`
+  parts in order. A final response that selects only a refusal or a provider-run
+  file search withdraws earlier streamed tool calls. A reference to a completed
+  refusal preserves its message. An empty final output can recover an issued call.
   When the final response repeats only part of a streamed item, Evener keeps
   the matching call's argument bytes, completed message phase, indexed
   answer and reasoning text, and ciphertext from the stream. A reasoning
   item can inherit its announced ID. When it omits its content, a native
   part announcement and the finalized text for that part establish its
-  type, index and exact bytes. Evener uses
-  the stream index and item ID to collect a function's arguments. The
+  type, index and exact bytes. An empty terminal output keeps these finalized
+  parts at the item's stream position. An explicit empty `content` array
+  clears the item's earlier plaintext. A matching encrypted item still
+  carries its ciphertext and selected summary.
+  If a reply contains no visible answer or tool call, Evener still retries
+  within its empty-answer limit. It saves eligible reasoning and native
+  assistant message parts for the next attempt and a cold resume.
+  Evener uses the stream index and item ID to collect a function's arguments. The
   provider must supply a `call_id` before Evener can dispatch the tool and
   return its result under that ID. Reasoning shown only as deltas remains
   visible in the transcript, including when the response ends with an

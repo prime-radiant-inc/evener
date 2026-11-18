@@ -74,6 +74,84 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 		t.Helper()
 		return jsonOf(t, build(t, llm.Request{Model: res.ModelID, Messages: []llm.Message{response.Message}}, res)["input"])
 	}
+	t.Run("terminal selections withdraw earlier calls", func(t *testing.T) {
+		const call = `{"type":"function_call","id":"fc1","call_id":"call1","name":"write_fixture","arguments":"{}"}`
+		const draft = `{"type":"response.output_text.delta","item_id":"msg1","output_index":1,"content_index":0,"delta":"draft"}`
+		const refusal = " \trefusal-17\n"
+		type part = map[string]string
+		refused := part{"type": "refusal", "refusal": refusal}
+		const reference = `{"type":"message","id":"msg1","role":"assistant"}`
+		completedRefusal := jsonOf(t, map[string]any{"type": "message", "id": "msg1", "role": "assistant", "content": []part{refused}})
+		for _, tc := range []struct {
+			name, text, terminal string
+			wantCalls            int
+			parts                []part
+			completed            []string
+		}{
+			{name: "refusal", text: refusal, parts: []part{refused}},
+			{name: "empty selected refusal", parts: []part{{"type": "refusal", "refusal": ""}}},
+			{name: "text and refusal", text: "selected" + refusal, parts: []part{{"type": "output_text", "text": "selected"}, refused}},
+			{name: "selected completed refusal", text: refusal, terminal: `{"output":[` + reference + `]}`, parts: []part{refused}, completed: []string{completedRefusal}},
+			{name: "metadata-only completion retains selected refusal", text: refusal, terminal: `{"output":[` + reference + `]}`, parts: []part{refused}, completed: []string{completedRefusal, reference}},
+			{name: "terminal answer replaces completed refusal", text: "final", parts: []part{{"type": "output_text", "text": "final"}}, completed: []string{completedRefusal}},
+			{name: "only a provider file search", terminal: `{"output":[{"type":"file_search_call","id":"fs1","status":"completed","queries":["fixture"]}]}`},
+			{name: "empty output recovers the stream", text: "draft", terminal: `{"output":[]}`, wantCalls: 1},
+			{name: "metadata-only terminal recovers the stream", text: "draft", terminal: `{"status":"completed"}`, wantCalls: 1},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				terminal := tc.terminal
+				if terminal == "" {
+					terminal = jsonOf(t, map[string]any{"output": []any{map[string]any{"type": "message", "id": "msg1", "role": "assistant", "content": tc.parts}}})
+				}
+				events := []string{
+					`{"type":"response.output_item.added","output_index":0,"item":` + call + `}`,
+					`{"type":"response.function_call_arguments.delta","item_id":"fc1","delta":"{}"}`,
+					draft,
+				}
+				for _, item := range tc.completed {
+					events = append(events, `{"type":"response.output_item.done","output_index":1,"item":`+item+`}`)
+				}
+				events = append(events, `{"type":"response.completed","response":`+terminal+`}`)
+				observed, live := responsesEvents(t, events...)
+				if !hasEventType(observed, llm.StreamEventToolCallDelta) {
+					t.Fatal("live accumulator never received the tentative tool call")
+				}
+				results := []llm.Response{*live, recorded(t, "data: "+strings.Join(events, "\n\ndata: ")+"\n\n")}
+				if tc.wantCalls == 0 && len(tc.completed) == 0 {
+					results = append(results, recorded(t, terminal))
+				}
+				for _, response := range results {
+					calls := response.ToolCalls()
+					if response.Text() != tc.text || len(calls) != tc.wantCalls {
+						t.Errorf("settled text = %q, calls = %d; want %q and %d", response.Text(), len(calls), tc.text, tc.wantCalls)
+					}
+					if tc.parts == nil {
+						if tc.wantCalls != 0 && (len(calls) != 1 || calls[0].ID != "call1" || string(calls[0].Arguments) != "{}") {
+							t.Fatal("empty terminal lost the issued call or its arguments")
+						}
+						continue
+					}
+					var restored llm.Message
+					if err := json.Unmarshal([]byte(jsonOf(t, response.Message)), &restored); err != nil {
+						t.Fatal(err)
+					}
+					warm := nextInput(t, response)
+					if cold := nextInput(t, llm.Response{Message: restored}); warm != cold {
+						t.Fatal("restoring the message changed its native input")
+					}
+					want := jsonOf(t, []any{map[string]any{"type": "message", "role": "assistant", "content": tc.parts}})
+					if warm != want {
+						t.Errorf("next native input = %s, want %s", warm, want)
+					}
+					ordinary := res
+					ordinary.Caps.ReplayReasoningText = new(false)
+					if got := jsonOf(t, build(t, llm.Request{Model: res.ModelID, Messages: []llm.Message{restored}}, ordinary)["input"]); got != want {
+						t.Errorf("ordinary Responses input = %s, want %s", got, want)
+					}
+				}
+			})
+		}
+	})
 	t.Run("completed message phase survives an omitted terminal field", func(t *testing.T) {
 		const commentary = `"phase":"commentary",`
 		const final = `"phase":"final_answer",`
@@ -165,6 +243,8 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 	const absentParts = `{"type":"reasoning","id":"r",` + summary + `}`
 	const nativeParts = `,"content":[{"type":"reasoning_text","text":" λ\t"},{"type":"reasoning_text","text":""},{"type":"reasoning_text","text":"\r\n<&>"}]`
 	const nativeItem = `{"type":"reasoning","id":"r",` + summary + nativeParts + `}`
+	const cleared = `{"type":"reasoning","id":"r","content":[],` + summary + `}`
+	const encrypted = `{"type":"reasoning","id":"r","encrypted_content":"cipher",` + summary + `}`
 	partAdded := func(identity string, index int, kind string) string {
 		return fmt.Sprintf(`{"type":"response.reasoning_part.added",%s,"content_index":%d,"part":{"type":%s,"text":""}}`, identity, index, jsonOf(t, kind))
 	}
@@ -216,12 +296,32 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 		{"empty finalized text keeps a native slot", []string{
 			"{" + display + "}", partAdded(`"item_id":"r"`, 0, "reasoning_text"), finalText(`"item_id":"r"`, 0, ""),
 		}, answer + "," + absentParts, answer + `,{"type":"reasoning","id":"r",` + summary + `,"content":[{"type":"reasoning_text","text":""}]}`},
+		{"empty output keeps the announced and finalized slots at the item position", []string{
+			"{" + display + "}", strings.Replace(toolDone, `"output_index":1`, `"output_index":2`, 1),
+			declaredItem, partAdded(`"item_id":"r"`, 2, "reasoning_text"), finalText(`"output_index":1`, 2, "\r\n<&>"),
+			partAdded(`"output_index":1`, 0, "reasoning_text"), finalText(`"item_id":"r"`, 0, " λ\t"),
+			partAdded(`"item_id":"r"`, 1, "reasoning_text"), finalText(`"item_id":"r"`, 1, ""),
+			partAdded(`"item_id":"r"`, 3, "reasoning_text"), finalText(`"item_id":"other"`, 3, "unmatched"),
+			finalText(`"item_id":"r"`, 4, "undeclared"), answerDelta,
+		}, "", answer + `,{"type":"reasoning","id":"r"` + nativeParts + `},` + tool},
+		{"a named finalized part identifies its sparse item at its output index", []string{
+			"{" + display + "}", partAdded(`"item_id":"r","output_index":1`, 0, "reasoning_text"),
+			finalText(`"item_id":"r"`, 0, " λ\t"), answerDelta,
+		}, "", answer + `,{"type":"reasoning","id":"r","content":[{"type":"reasoning_text","text":" λ\t"}]}`},
 		{"typed terminal content owns its declared indexes", []string{
 			"{" + display + "}", partAdded(`"item_id":"r"`, 3, "reasoning_text"), finalText(`"item_id":"r"`, 3, "withdrawn"),
 		}, answer + "," + nativeItem, answer + "," + nativeItem},
 		{"explicit empty terminal content owns its slots", []string{
 			"{" + display + "}", declaredItem, partAdded(`"item_id":"r"`, 0, "reasoning_text"), finalText(`"item_id":"r"`, 0, "withdrawn"),
-		}, answer + `,{"type":"reasoning","id":"r","content":[]}`, answer},
+			`{"type":"response.output_item.done","item":` + nativeItem + `}`,
+		}, answer + "," + cleared, answer},
+		{"clearing completed text preserves ciphertext and the selected summary", []string{
+			"{" + display + "}", `{"type":"response.output_item.done","item":{"type":"reasoning","id":"r","encrypted_content":"cipher"` + nativeParts + `}}`,
+		}, cleared, encrypted},
+		{"empty output keeps an item completion's empty content selection", []string{
+			"{" + display + "}", partAdded(`"item_id":"r"`, 0, "reasoning_text"), finalText(`"item_id":"r"`, 0, "withdrawn"),
+			`{"type":"response.output_item.done","item":` + cleared + `}`, answerDelta,
+		}, "", answer},
 		{"unknown announced kind cannot use a reasoning text final", []string{
 			"{" + display + "}", partAdded(`"item_id":"r"`, 0, "unknown_text"), finalText(`"item_id":"r"`, 0, "unowned"),
 		}, answer + "," + absentParts, answer},
@@ -247,6 +347,9 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 				}
 				var displays []string
 				for _, part := range stored.Content {
+					if th := part.Thinking; tc.terminal == cleared && th != nil && th.EncryptedContent != "" && (th.Text != "" || len(th.ResponsesTextParts) != 0) {
+						t.Errorf("cleared plaintext survived with the ciphertext: %q", th.Text)
+					}
 					if th := part.Thinking; th != nil && th.ID == "" && th.EncryptedContent == "" && len(th.ResponsesTextParts) == 0 {
 						displays = append(displays, th.Text)
 					}
