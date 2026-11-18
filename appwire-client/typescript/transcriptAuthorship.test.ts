@@ -140,6 +140,45 @@ test("sparse merges retain attribution but authoritative unknown or absent repla
   expect(mergeTranscriptItemVersioned(held, 2, sparse, 1).authorship).toEqual(author);
 });
 
+test("an equal-version refresh fills missing ask evidence without replacing the held row", () => {
+  // A client that cached a reply before resolvedAskCalls existed holds it at
+  // some version. The daemon then serves that SAME version with the evidence,
+  // because the evidence rides the observation rather than the item version.
+  // Version precedence would keep the held row forever, so the field would
+  // never arrive for anyone with a warm cache.
+  const held: ItemModel = { id: "answer", turnId: "turn", type: "userMessage", text: "the reply", version: 4 };
+  const refreshed: ItemModel = {
+    id: "answer",
+    turnId: "turn",
+    type: "userMessage",
+    text: "the reply",
+    version: 4,
+    resolvedAskCalls: [{ turnId: "turn-question", callId: "call-1" }],
+    resolvedAskLegacyCount: 0,
+  };
+  const filled = mergeTranscriptItemVersioned(held, 4, refreshed, 4);
+  expect(filled.resolvedAskCalls).toEqual([{ turnId: "turn-question", callId: "call-1" }]);
+  expect(filled.resolvedAskLegacyCount).toBe(0);
+  expect(filled.text).toBe("the reply");
+  // Evidence the held row already has is not replaced by an equal-version
+  // refresh, and a refresh carrying none leaves the held row untouched.
+  const withEvidence: ItemModel = {
+    ...held,
+    resolvedAskCalls: [{ turnId: "turn-question", callId: "call-held" }],
+  };
+  expect(mergeTranscriptItemVersioned(withEvidence, 4, refreshed, 4).resolvedAskCalls).toEqual([
+    { turnId: "turn-question", callId: "call-held" },
+  ]);
+  expect(
+    mergeTranscriptItemVersioned(
+      held,
+      4,
+      { ...refreshed, resolvedAskCalls: undefined, resolvedAskLegacyCount: undefined },
+      4,
+    ),
+  ).toBe(held);
+});
+
 test("old missing and invalid metadata never borrows thread identity", () => {
   expect(first(hydrated(null)).authorship).toBeUndefined();
   expect(first(hydrated({ author: { kind: "agent", sessionRef: "not a ref" }, inherited: true })).authorship).toEqual({

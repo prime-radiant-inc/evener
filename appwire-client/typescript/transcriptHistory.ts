@@ -181,9 +181,40 @@ export function mergeTranscriptItemVersioned(
     !supersedes(heldVersion, incomingVersion) &&
     !(heldVersion === incomingVersion && itemIsIdentityOnly(held) && !itemIsIdentityOnly(incoming))
   ) {
+    if (heldVersion === incomingVersion && lackingAskEvidence(held) && carriesAskEvidence(incoming)) {
+      return withAskEvidence(held, incoming);
+    }
     return held;
   }
   return mergeReplacedItem(held, incoming);
+}
+
+// lackingAskEvidence reports whether a held row never received admission's
+// per-call resolution evidence. A client that cached a reply before the field
+// existed has text but no call list, and an online refresh of the SAME item
+// version now carries it (#6323). Version precedence would keep the held row
+// and the evidence would never arrive, so the equal-version case is allowed to
+// fill it in.
+function lackingAskEvidence(item: ItemModel): boolean {
+  return item.resolvedAskCalls === undefined && item.resolvedAskLegacyCount === undefined;
+}
+
+function carriesAskEvidence(item: ItemModel): boolean {
+  return item.resolvedAskCalls !== undefined || item.resolvedAskLegacyCount !== undefined;
+}
+
+// withAskEvidence returns the held row plus only the evidence it lacks. Text,
+// identity and every other field stay the held row's: this exists to fill an
+// absence, not to replace a row the version rule chose to keep.
+function withAskEvidence(held: ItemModel, incoming: ItemModel): ItemModel {
+  const filled: ItemModel = { ...held };
+  if (incoming.resolvedAskCalls !== undefined) {
+    filled.resolvedAskCalls = incoming.resolvedAskCalls.map((call) => ({ ...call }));
+  }
+  if (incoming.resolvedAskLegacyCount !== undefined) {
+    filled.resolvedAskLegacyCount = incoming.resolvedAskLegacyCount;
+  }
+  return filled;
 }
 
 /** Applies the recorded turn-version precedence while keeping hydrated items owned by history. */

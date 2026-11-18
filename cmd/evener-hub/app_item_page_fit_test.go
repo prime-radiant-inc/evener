@@ -532,10 +532,8 @@ func TestFitManagerReadUnderCapDropsStampAtThePageCap(t *testing.T) {
 	cursor := "next-page"
 	response := appwire.SessionOperationResponse{
 		Read: &appwire.ThreadHistoryReadResponse{
-			ThreadReadResponse: appwire.ThreadReadResponse{
-				Thread:      appwire.Thread{ID: "thread", Turns: []appwire.Turn{{ID: answerTurn, Items: []appwire.ThreadItem{reply}}}},
-				OlderCursor: cursor,
-			},
+			Thread:      appwire.Thread{ID: "thread", Turns: []appwire.Turn{{ID: answerTurn, Items: []appwire.ThreadItem{reply}}}},
+			OlderCursor: cursor,
 		},
 	}
 	before, err := json.Marshal(response)
@@ -622,10 +620,8 @@ func TestFitManagerReadUnderCapCoversTheTurnsRoute(t *testing.T) {
 	next := "continuation"
 	response := appwire.SessionOperationResponse{
 		Turns: &appwire.ThreadHistoryTurnsListResponse{
-			ThreadTurnsListResponse: appwire.ThreadTurnsListResponse{
-				Data:       []appwire.Turn{{ID: turnID, Items: []appwire.ThreadItem{reply}}},
-				NextCursor: next,
-			},
+			Data:       []appwire.Turn{{ID: turnID, Items: []appwire.ThreadItem{reply}}},
+			NextCursor: next,
 		},
 	}
 	before, err := json.Marshal(response)
@@ -849,6 +845,94 @@ func TestPackTranscriptWindowOmitStampsBeforeWithholdingATurn(t *testing.T) {
 	}
 	if got := len(items[1].Observation.ResolvedAskCalls); got != 0 {
 		t.Fatalf("served %d stamp calls, want the list omitted to keep both turns", got)
+	}
+}
+
+// TestPackTranscriptWindowStrippedPageRespectsItsFollowUps pins the decision
+// the page-level strip branch has to make. The branch is reached only when
+// every turn fits its own budget but the page does not; it strips the call
+// lists, and then must confirm the page it is about to return survives the
+// response cap the Manager enforces. The content budget it just cleared does
+// not include the per-turn recovery follow-ups, which echo the request and can
+// carry a page that fits its budget past the cap. When they do, withholding
+// turns is the only honest answer: the Manager then gets a smaller page and a
+// continuation instead of a refusal with nothing in it.
+//
+// The sizes here are constructed rather than searched for. The serving path is
+// exercised end to end, and the assertions are the relationships the fix
+// creates: what is served fits the cap, served bodies are intact, and withheld
+// turns stay recoverable.
+func TestPackTranscriptWindowStrippedPageRespectsItsFollowUps(t *testing.T) {
+	ref := strings.Repeat("r", 8000)
+	const (
+		turnCount = 4
+		itemCount = 12
+		itemBytes = 4600
+		callCount = 60
+	)
+	var candidates []appitempaging.TranscriptItemCandidate
+	for t := 0; t < turnCount; t++ {
+		turnID := fmt.Sprintf("turn-%02d", t)
+		calls := make([]appwire.PendingAskCall, callCount)
+		for i := range calls {
+			calls[i] = appwire.PendingAskCall{TurnID: turnID, CallID: fmt.Sprintf("2b3c4d5e-6f70-4182-%04d%04x", t, i)}
+		}
+		items := make([]appwire.ThreadItem, itemCount)
+		for j := range items {
+			items[j] = appwire.ThreadItem{
+				Type: "agentMessage",
+				ID:   fmt.Sprintf("%s-i%02d", turnID, j),
+				Text: strings.Repeat("b", itemBytes),
+				Observation: &appwire.SessionObservationMetadata{
+					Ref:              ref,
+					TurnID:           turnID,
+					AnswerToTurnIDs:  []string{turnID},
+					ResolvedAskCalls: calls,
+				},
+				Version: uint64(j + 1),
+			}
+		}
+		turn := appwire.Turn{ID: turnID, Status: appwire.TurnStatusCompleted}
+		for j := range items {
+			position := appwire.ThreadItemPosition{Entry: uint64(t), Item: uint32(j)}
+			items[j].Position = &position
+			items[j].Status = appwire.TurnStatusCompleted
+			items[j].TranscriptKey = "key-" + items[j].ID
+			candidates = append(candidates, appitempaging.TranscriptItemCandidate{TurnID: turnID, Turn: turn, Item: items[j], Position: position})
+		}
+	}
+	options := testWindowPackOptions(appwire.ThreadWindowParams{
+		TurnWindow:        &appwire.ThreadTurnWindow{Latest: turnCount},
+		WindowBudgetBytes: transcriptWindowMaximumContentBudget,
+		MessageBytes:      itemBytes * 2,
+	})
+	configureTranscriptWindowResponseFit(&options, appwire.ThreadTurnsListParams{Ref: ref, ItemLimit: appwire.TranscriptItemPageLimit})
+	got, err := packThreadTurnsWindowItemCandidates(testWindowCandidateResult(candidates), nil, options)
+	if err != nil {
+		t.Fatalf("pack over-budget window: %v", err)
+	}
+	versioned := appwire.HistoryTurnsResponse(got)
+	served, err := json.Marshal(appwire.SessionOperationResponse{
+		Turns:     &versioned,
+		FollowUps: transcriptReadFollowUps(appwire.ThreadTurnsListParams{Ref: ref}, got),
+	})
+	if err != nil {
+		t.Fatalf("marshal served page: %v", err)
+	}
+	if len(served) > managerReadMaxJSONBytes {
+		t.Fatalf("served page = %d bytes, Manager cap %d: the Manager gets nothing", len(served), managerReadMaxJSONBytes)
+	}
+	// A served turn keeps its bodies; only optional metadata or a whole
+	// withheld turn may go.
+	for _, turn := range got.Data {
+		for _, item := range turn.Items {
+			if len(item.Text) != itemBytes {
+				t.Fatalf("served item %s at %d of %d bytes: the body was elided, not the metadata", item.ID, len(item.Text), itemBytes)
+			}
+		}
+	}
+	if got.Window != nil && got.Window.WithheldTurns > 0 && got.Window.ContinuationCursor == "" {
+		t.Fatal("withheld turns without a continuation cursor: the reader cannot recover")
 	}
 }
 
@@ -1406,6 +1490,15 @@ func TestPackTranscriptItemWindowKeepsEmptyBoundaryOnServedPage(t *testing.T) {
 	result := testWindowCandidateResult(candidates)
 	result.TurnIDs = []string{"turn-1", "turn-2", "turn-3"}
 	var continuation transcriptWindowContinuation
+	{
+		heavy := candidates[0].Item
+		withStamp, _ := json.Marshal(appwire.Turn{ID: "turn-heavy", Items: []appwire.ThreadItem{heavy}})
+		noStamp := heavy
+		noStamp.Observation = &appwire.SessionObservationMetadata{Ref: heavy.Observation.Ref, TurnID: heavy.Observation.TurnID, AnswerToTurnIDs: heavy.Observation.AnswerToTurnIDs}
+		strippedTurn, _ := json.Marshal(appwire.Turn{ID: "turn-heavy", Items: []appwire.ThreadItem{noStamp}})
+		stampOnly, _ := json.Marshal(heavy.Observation.ResolvedAskCalls)
+		t.Logf("DIAG turnWithStamp=%d turnStripped=%d stamp=%d budget=%d", len(withStamp), len(strippedTurn), len(stampOnly), transcriptWindowMaximumContentBudget)
+	}
 	options := testWindowPackOptions(appwire.ThreadWindowParams{
 		TurnWindow:        &appwire.ThreadTurnWindow{Latest: 3},
 		WindowBudgetBytes: 1,

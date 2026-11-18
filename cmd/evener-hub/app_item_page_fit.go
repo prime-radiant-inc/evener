@@ -1273,7 +1273,23 @@ func packItemCandidates[T any](
 					return zero, fmt.Errorf("marshal transcript window turns: %w", marshalErr)
 				}
 				if len(strippedBytes) <= effectiveBudget {
-					return stripped, nil
+					// The content measure does not see per-turn recovery
+					// follow-ups. Without this the stripped page returns here
+					// and the final Manager cap rejects it whole, so the reader
+					// gets no turns and no continuation. The budget above is a
+					// content measure; the page has to survive the response cap
+					// it is finally checked against, follow-ups included.
+					structuredFits := true
+					if windowOptions.StructuredFollowUpParams != nil {
+						structuredBytes, structuredErr := transcriptWindowStructuredPageSize(page(stripped), *windowOptions.StructuredFollowUpParams)
+						if structuredErr != nil {
+							return zero, structuredErr
+						}
+						structuredFits = structuredBytes <= managerReadMaxJSONBytes
+					}
+					if structuredFits {
+						return stripped, nil
+					}
 				}
 			}
 			if direction == transcriptWindowContinuationForward {
