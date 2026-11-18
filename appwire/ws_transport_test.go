@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/coder/websocket"
 )
@@ -211,5 +212,63 @@ func TestWSTransportPing(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("ping calls = %d, want 2", calls)
+	}
+}
+
+// TestWSTransportSendDetachesCallerCancellation pins issue #6824 at the library
+// boundary. coder/websocket registers a context.AfterFunc on each write's
+// context and closes the whole connection when that context ends (conn.go's
+// setupWriteTimeout). A transport carries many callers' frames over one
+// connection, so a write that kept one caller's cancellation let that caller's
+// cancel close the shared socket: the hub's cancel of a relay read closed the
+// daemon connection, and the read that followed failed with "use of closed
+// network connection" although nobody had closed it.
+//
+// The seam is the exact context handed to the library write, so the assertion
+// is about what the library is told to watch, not about this package's own
+// bookkeeping. The check happens while the write is still in flight, which is
+// the moment the library's AfterFunc would close the connection. The caller's
+// values and deadline must survive: a deadline still bounds a wedged peer, and
+// only the cancellation is dropped.
+func TestWSTransportSendDetachesCallerCancellation(t *testing.T) {
+	realWrite := writeWebSocket
+	t.Cleanup(func() { writeWebSocket = realWrite })
+	entered, release := make(chan context.Context, 1), make(chan struct{})
+	writeWebSocket = func(_ *websocket.Conn, ctx context.Context, _ websocket.MessageType, _ []byte) error {
+		entered <- ctx
+		<-release
+		return nil
+	}
+	transport := &WSTransport{conn: &websocket.Conn{}}
+
+	deadline := time.Now().Add(time.Minute)
+	callerCtx, cancelCaller := context.WithDeadline(context.WithValue(t.Context(), wsTransportPingContextKey{}, "value"), deadline)
+	done := make(chan error, 1)
+	go func() {
+		done <- transport.Send(callerCtx, RequestMessage(NewIntID(1), MethodThreadList, ThreadListParams{}))
+	}()
+	var writeCtx context.Context
+	select {
+	case writeCtx = <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the write never reached the transport")
+	}
+	if writeCtx == callerCtx {
+		t.Fatal("the write ran on the caller's own context: its cancellation would close the shared connection")
+	}
+	cancelCaller()
+	if err := writeCtx.Err(); err != nil {
+		t.Fatalf("the in-flight write context ended with the caller's cancellation: %v", err)
+	}
+	if got := writeCtx.Value(wsTransportPingContextKey{}); got != "value" {
+		t.Fatalf("write context value = %v, want the caller's value carried through", got)
+	}
+	gotDeadline, ok := writeCtx.Deadline()
+	if !ok || !gotDeadline.Equal(deadline) {
+		t.Fatalf("write context deadline = %v (%t), want the caller's deadline %v kept", gotDeadline, ok, deadline)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("send: %v", err)
 	}
 }

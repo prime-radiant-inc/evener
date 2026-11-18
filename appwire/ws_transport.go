@@ -13,10 +13,31 @@ var (
 	// Frames decode through Message.UnmarshalJSON directly: json.Unmarshal would
 	// first scan the whole frame only to hand the same bytes to that method,
 	// which validates them itself. Both transports decode through it.
-	decodeFrame   = (*Message).UnmarshalJSON
-	pingWebSocket = (*websocket.Conn).Ping
-	readWebSocket = (*websocket.Conn).Read
+	decodeFrame    = (*Message).UnmarshalJSON
+	pingWebSocket  = (*websocket.Conn).Ping
+	readWebSocket  = (*websocket.Conn).Read
+	writeWebSocket = (*websocket.Conn).Write
 )
+
+// frameWriteContext derives the context one frame write runs under. It keeps
+// the caller's values and deadline and drops the caller's cancellation:
+// coder/websocket installs a context.AfterFunc on the write context that closes
+// the whole connection when it ends (conn.go's setupWriteTimeout), so honoring
+// one caller's cancellation there tears down a socket every caller on this
+// transport shares. The next frame then fails with "use of closed network
+// connection" — issue #6824, where a canceled relay read closed the hub's
+// daemon connection under the read that followed it. A deadline still applies,
+// so the server write timeout and any caller deadline keep bounding a wedged
+// peer, and a dropped peer still unblocks the write through the keepalive
+// closing the transport.
+func frameWriteContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	detached := context.WithoutCancel(ctx)
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return detached, func() {}
+	}
+	return context.WithDeadline(detached, deadline)
+}
 
 // FrameObserver receives the exact JSON bytes sent and received by one
 // WebSocket transport. Implementations must consume or copy data before the
@@ -67,7 +88,10 @@ func (t *WSTransport) Send(ctx context.Context, msg Message) error {
 		return err
 	}
 	t.rec.RecordSend(data)
-	if err := t.conn.Write(ctx, websocket.MessageText, data); err != nil {
+	writeCtx, cancelWrite := frameWriteContext(ctx)
+	err = writeWebSocket(t.conn, writeCtx, websocket.MessageText, data)
+	cancelWrite()
+	if err != nil {
 		return err
 	}
 	if t.observer != nil {

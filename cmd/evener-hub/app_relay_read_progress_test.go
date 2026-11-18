@@ -495,8 +495,16 @@ func testHubRelayInterruptedRead(t *testing.T, disconnect bool) {
 	if got := f.relays.relayCommandCount(rootRef); got != 0 {
 		t.Fatalf("interrupted read retained %d command owners", got)
 	}
-	if _, err := client.ThreadRead(f.ctx, appwire.ThreadReadParams{Ref: rootRef, Subscribe: true}); err != nil {
+	// Assert the read the hub served, not the absence of an error string: the
+	// response must describe the ref that was requested. The subscription this
+	// read establishes is proved by the live notes below, which only reach a
+	// subscribed connection.
+	served, err := client.ThreadRead(f.ctx, appwire.ThreadReadParams{Ref: rootRef, Subscribe: true})
+	if err != nil {
 		t.Fatalf("read after interruption: %v", err)
+	}
+	if served.Thread.Evener.Ref != rootRef {
+		t.Fatalf("read after interruption served ref %q, want %q", served.Thread.Evener.Ref, rootRef)
 	}
 	for _, value := range []string{"new-epoch-first", "new-epoch-second"} {
 		f.daemon.RecordAppEvent(events.SessionEvent{Kind: events.EventNotesUpdated, SessionID: rootID, Data: events.NotesUpdatedData{HumanNote: value}})
