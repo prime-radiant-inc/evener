@@ -38,7 +38,21 @@ func escapeWorkingNote(msg llm.Message) string {
 	}
 	// One scan, shared with the replay projection: the note is read as the
 	// adapter would send it, then written out flat.
-	return strings.Join(sysmsg.EscapePhasedText(texts, phases, "openai-responses"), "\n")
+	//
+	// The note has two readers and they disagree, so it is escaped for both.
+	// The replay projection reads the phases as separate messages, and the
+	// checkpoint's own reader reads one flat block. Fence state is what
+	// decides whether an opener is spared, and it differs between those two
+	// readings: a fence left open in commentary hides a frame at the start of
+	// the final answer from the flat reader, while a fence opened in one phase
+	// and closed at the start of the next hides one from the per-phase reader.
+	// Escaping per segment and then once more over the join covers both — an
+	// opener either reading leaves raw gets escaped, and an example both
+	// readings see as fenced keeps its bytes. Escaping is idempotent and never
+	// adds or removes a fence delimiter, so the second pass cannot re-open what
+	// the first closed.
+	joined := strings.Join(sysmsg.EscapePhasedText(texts, phases, "openai-responses"), "\n")
+	return sysmsg.EscapeModelAuthoredFrames(joined)
 }
 
 // maxCheckpointChars caps a checkpoint to avoid ballooning the context. The

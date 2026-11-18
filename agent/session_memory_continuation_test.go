@@ -61,7 +61,14 @@ func TestMemoryContextContinuationRequest(t *testing.T) {
 				sess.history = append(sess.history, schema.NewTurn(tc.boundary, llm.User("opaque-context-boundary-3730")))
 			}
 			if tc.newAnchor {
-				sess.history = append(sess.history, anchor)
+				// A response produced from the compacted history is a distinct
+				// response, stamped after the boundary. Re-appending the
+				// pre-fold turn would model the one thing the eligibility rule
+				// refuses: a provider context built before the fold (#6493
+				// review).
+				newAnchor := phase9MatchingAnchor("resp_memory_3731")
+				newAnchor.Timestamp = time.Now()
+				sess.history = append(sess.history, newAnchor)
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process provider, only fires on a genuine hang.
 			defer cancel()
@@ -74,7 +81,11 @@ func TestMemoryContextContinuationRequest(t *testing.T) {
 			}
 			req := requests[0]
 			if tc.wantDelta {
-				if req.HistoryMode != llm.HistoryModeResponsesDelta || req.PreviousResponseID != "resp_memory_3730" {
+				wantAnchor := "resp_memory_3730"
+				if tc.newAnchor {
+					wantAnchor = "resp_memory_3731"
+				}
+				if req.HistoryMode != llm.HistoryModeResponsesDelta || req.PreviousResponseID != wantAnchor {
 					t.Fatalf("mode=%s previous_response_id=%q, want memory delta", req.HistoryMode, req.PreviousResponseID)
 				}
 				for _, msg := range req.Messages {

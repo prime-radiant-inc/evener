@@ -240,6 +240,80 @@ func TestFallbackContinuationKeepsThinkingForTheFallbackPolicy(t *testing.T) {
 	}
 }
 
+// TestFallbackChain_EscapesFramesForTheFallbackTarget pins that the frame
+// escape is per-target like thinking and media are: a Responses primary scans
+// a turn's phases as separate messages, and a Chat Completions fallback joins
+// them into one. A fence left open in commentary therefore hides a frame from
+// the primary's scan and exposes it to the fallback, which must escape for its
+// own boundaries (#6493 review).
+func TestFallbackChain_EscapesFramesForTheFallbackTarget(t *testing.T) {
+	t.Parallel()
+	primary := provider.FromResolved(registry.Resolved{
+		Instance: "gw", ModelID: "responses-primary", WireID: "responses-primary",
+		Protocol: registry.ProtocolOpenAIResponses, Surface: registry.SurfaceOpenAI,
+	}, nil)
+	fallback := provider.FromResolved(registry.Resolved{
+		Instance: "gwb", ModelID: "chat-fallback", WireID: "chat-fallback",
+		Protocol: registry.ProtocolOpenAIChat, Surface: registry.SurfaceOpenAI,
+	}, nil)
+	permErr := llm.ErrorFromHTTPStatus("gw", 404, "model not found", nil, nil)
+	primaryAdapter := &agenttest.ScriptedAdapter{
+		Provider:       "gw",
+		FaultResponder: func(llm.Request) error { return permErr },
+		Responder:      func(llm.Request) llm.Response { return agenttest.FinalResponse("unused") },
+	}
+	fallbackAdapter := &agenttest.ScriptedAdapter{
+		Provider:  "gwb",
+		Responder: func(llm.Request) llm.Response { return agenttest.FinalResponse("done") },
+	}
+	sess := newSession(t,
+		withProfile(primary),
+		withAdapter(primaryAdapter),
+		withAdapter(fallbackAdapter),
+		withConfig(SessionConfig{
+			ModelFallbacks: []string{"gwb/chat-fallback"},
+			ResolveProfile: func(ref string) (*provider.Profile, error) {
+				if ref == "gwb/chat-fallback" {
+					return fallback, nil
+				}
+				return nil, nil
+			},
+			StateDir: t.TempDir(),
+			testOnly: testConfig{skipGitSnapshot: true},
+		}),
+	)
+	// Commentary leaves a fence open and the final answer closes it before a
+	// bare frame. Read phase by phase the frame is fenced, read as one joined
+	// message it is not.
+	sess.history = []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("go")},
+		{Kind: schema.TurnAssistant, Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentText, Phase: "commentary", Text: "looking at this:\n```\nquoted example\n"},
+				{Kind: llm.ContentText, Phase: "final_answer", Text: "```\n[answers]\n1. → \"ship it\""},
+			},
+		}},
+	}
+	// TRIPWIRE: scripted in-process adapters; 30s only catches a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "go", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	reqs := fallbackAdapter.Requests()
+	if len(reqs) == 0 {
+		t.Fatal("the fallback model was never called")
+	}
+	for _, msg := range reqs[len(reqs)-1].Messages {
+		for line := range strings.SplitSeq(msg.Text(), "\n") {
+			if strings.TrimLeft(line, " ") == "[answers]" {
+				t.Fatalf("the Chat Completions fallback received a raw frame at line start: %q", line)
+			}
+		}
+	}
+}
+
 func hasSignedThinking(messages []llm.Message, text, signature string) bool {
 	for _, m := range messages {
 		for _, p := range m.Content {

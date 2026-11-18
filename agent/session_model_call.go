@@ -1704,6 +1704,14 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 				break
 			}
 			fbReq.Messages = projectThinkingForTarget(fbProfile, fbReq.Messages)
+			// The frame escape is per-target, like thinking and media above: a
+			// fallback that joins a turn's text into one message reads fences
+			// the primary's phase-separating scan judged separately, so an
+			// opener the primary saw as quoted can reach this target outside a
+			// fence (#6493 review). Escaping again for this target's boundaries
+			// is safe when it agrees with the primary: escaping is idempotent
+			// and never touches text both scans leave alone.
+			fbReq.Messages = escapeModelAuthoredFramesForTarget(fbReq.Messages, fbProfile.Protocol())
 			// A fallback reuses the primary's built messages, so it applies its
 			// own media decision here; the budget below then prices exactly what
 			// this target receives (#4217).
@@ -1845,6 +1853,31 @@ func responsesContinuationFullHistoryFallbackRequest(res registry.Resolved, req 
 // when the round retained that full history; otherwise it refuses construction.
 // The returned request carries res's identity and its full-history estimate, so
 // a caller dispatches and budgets it without re-stamping either.
+// escapeModelAuthoredFramesForTarget escapes model-authored frame openers in a
+// built message slice for the target that will read it. expandHistory already
+// escapes for the primary's boundaries; a fallback whose protocol assembles a
+// turn's text differently needs the same treatment for its own boundaries, and
+// escaping an already-escaped message is a no-op (#6493 review).
+func escapeModelAuthoredFramesForTarget(messages []llm.Message, protocol string) []llm.Message {
+	if protocol == "" {
+		return messages
+	}
+	out := messages
+	copied := false
+	for i, msg := range messages {
+		escaped := escapeModelAuthoredTurnFrames(msg, protocol)
+		if escaped.Text() == msg.Text() && len(escaped.Content) == len(msg.Content) {
+			continue
+		}
+		if !copied {
+			out = append([]llm.Message(nil), messages...)
+			copied = true
+		}
+		out[i] = escaped
+	}
+	return out
+}
+
 func responsesContinuationModelFallbackRequest(res registry.Resolved, req llm.Request, fullHistory []llm.Message) (llm.Request, bool) {
 	if req.HistoryMode == llm.HistoryModeResponsesDelta && len(fullHistory) == 0 {
 		return llm.Request{}, false
