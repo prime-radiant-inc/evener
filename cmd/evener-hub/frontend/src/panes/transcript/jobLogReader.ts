@@ -104,6 +104,10 @@ export class JobLogReader {
       if (next.state === "ready") {
         this.liveDueAt = Date.now();
         this.metadataDueAt = Date.now();
+        // A reconnect is a fresh chance to establish the row, so a job whose
+        // output schedule settled because it was unconfirmed reads again and
+        // the next response decides afresh.
+        this.nextReadAt = Date.now();
       }
       this.pump();
     });
@@ -161,11 +165,33 @@ export class JobLogReader {
     if (this.disposed) return;
     this.liveDueAt = Date.now();
     this.metadataDueAt = Date.now();
+    // An explicit refresh is how a person asks again after the schedule settled
+    // on an unconfirmed row, so it clears the output deadline the failed or
+    // unconfirmed attempt parked, not only the two above.
+    this.nextReadAt = Date.now();
     if (this.snapshot.job?.terminal) {
       this.terminalObservation++;
       this.publish({ drainPending: true });
     }
     this.pump();
+  }
+
+  /** Settles or restarts the live output deadline from the confidence of the
+   * row it now holds. Called wherever that confidence can change — a metadata
+   * read landing, a reconnect — so the schedule never depends on which of the
+   * two replies happened to arrive last. A pending drain still finishes,
+   * because those bytes were already written. */
+  private reconcileLiveDeadline(job: JobActivityJob | null, drainPending: boolean) {
+    if (livePollingStopped(job) && !drainPending) {
+      this.liveDueAt = Number.POSITIVE_INFINITY;
+      return;
+    }
+    if (!Number.isFinite(this.liveDueAt)) {
+      // The row is followable now (a confirmed run, or a terminal one whose
+      // drain has work left), so the cadence it had stopped starts again.
+      this.liveDueAt = Date.now();
+      if (!Number.isFinite(this.nextReadAt)) this.nextReadAt = Date.now();
+    }
   }
 
   capture(value: JobLogScrollCapture) {
@@ -269,6 +295,12 @@ export class JobLogReader {
         // journal cannot establish the job's state, so the next read would ask
         // the same unanswerable question.
         this.metadataDueAt = livePollingStopped(job) ? Number.POSITIVE_INFINITY : Date.now() + READ_INTERVAL_MS;
+        // The output deadline follows the METADATA too, not only the page that
+        // happened to arrive last. Metadata may settle after a failed output
+        // attempt, or a refresh may deliver the page before the metadata that
+        // says the row is unconfirmed; reconciling on the read that changed the
+        // answer keeps the schedule honest in both orders.
+        this.reconcileLiveDeadline(job, drainPending);
         this.publish({ job, metadataError: null, drainPending });
       })
       .catch((error: unknown) => {
@@ -339,7 +371,15 @@ export class JobLogReader {
       })
       .catch((error: unknown) => {
         if (!current()) return;
-        this.nextReadAt = Date.now() + READ_INTERVAL_MS;
+        // A failed attempt is a settling observation like any other. For a row
+        // whose status is unconfirmed, retrying the tail once a second asks a
+        // question the journal cannot answer, and shows the reader an error that
+        // keeps re-firing. The error stays visible; refresh(), paging, reconnect
+        // reads and every healthy live row keep their normal retry.
+        const automatic = selection === null && this.snapshot.pendingDemand === null && !this.snapshot.drainPending;
+        const stop = automatic && livePollingStopped(this.snapshot.job);
+        this.nextReadAt = stop ? Number.POSITIVE_INFINITY : Date.now() + READ_INTERVAL_MS;
+        if (stop) this.liveDueAt = Number.POSITIVE_INFINITY;
         const bounds = jobOutputPrunedBounds(error);
         let windows = this.snapshot.windows;
         let outputError = messageOf(error);

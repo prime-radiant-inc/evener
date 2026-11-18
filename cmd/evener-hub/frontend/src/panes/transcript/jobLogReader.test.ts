@@ -464,6 +464,7 @@ test("an unconfirmed nonterminal status schedules no further live reads", async 
   peer.reply(await peer.request(META), {
     ...metadata(false),
     diagnostics: ["journal_scan_incomplete"],
+    statusUnconfirmed: true,
   });
   peer.reply(first, page());
   await observed((snapshot) => snapshot.windows.live !== null && snapshot.job !== null);
@@ -476,6 +477,35 @@ test("an unconfirmed nonterminal status schedules no further live reads", async 
 
   expect(peer.requests(META)).toHaveLength(before.metadata);
   expect(peer.requests(OUTPUT)).toHaveLength(before.output);
+});
+
+// A failed output attempt must not leave the read due. The metadata may already
+// have settled on an unconfirmed row, in which case only the failure was pacing
+// the retry — and a reader would see the same error re-firing every second for
+// a job whose journal cannot answer.
+test("a failed output attempt stops automatic tail reads for an unconfirmed job", async () => {
+  peer.reply(await peer.request(META), { ...metadata(false), statusUnconfirmed: true });
+  peer.fail(await peer.request(OUTPUT), "output unavailable");
+  await observed((snapshot) => snapshot.outputError !== null && snapshot.job !== null);
+
+  const before = { metadata: peer.requests(META).length, output: peer.requests(OUTPUT).length };
+  await vi.advanceTimersByTimeAsync(5000);
+
+  expect(peer.requests(OUTPUT)).toHaveLength(before.output);
+  expect(peer.requests(META)).toHaveLength(before.metadata);
+});
+
+// The counterpart, so the stop above cannot be satisfied by never retrying: a
+// healthy live job whose output read failed retries at the normal cadence.
+test("a failed output attempt for a confirmed running job still retries", async () => {
+  peer.reply(await peer.request(META), metadata());
+  peer.fail(await peer.request(OUTPUT), "output unavailable");
+  const failed = await observed((snapshot) => snapshot.outputError !== null);
+  expect(failed.outputError).toContain("output unavailable");
+
+  const before = peer.requests(OUTPUT).length;
+  await vi.advanceTimersByTimeAsync(1500);
+  expect(peer.requests(OUTPUT).length).toBeGreaterThan(before);
 });
 
 // The counterpart: a healthy live row keeps the normal cadence, so the stop

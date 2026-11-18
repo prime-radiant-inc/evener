@@ -282,17 +282,36 @@ running, and a complete record from the other branch is kept instead of that
 partial one. The three integrity codes describe damage in EITHER journal the
 read consulted, not only the one that supplied the row.
 
-A client that sees an unconfirmed non-terminal status — a retained row carrying
-`journal_scan_incomplete` or `incomplete_lifecycle` and no terminal write — must
-not poll it as if it were live. The status describes the prefix, not the job. The
-recovered command, the output that survived, paging, manual refresh and a
-reconnect read all still work; those are how a person establishes what happened.
+Because those diagnostics describe the whole history, they are not a verdict on
+the row's status. An intact owner record can inherit an ancestor's scan damage
+and still rest on bytes that said, cleanly, that the job is running. The
+response therefore carries a separate `statusUnconfirmed`: the evidence behind
+THIS row's non-terminal status cannot say whether the job is still running — its
+own journal ended in a torn append or stopped at durable corruption, its record
+is a fragment with no start of its own, or the row is a forwarded copy whose
+owner could not be consulted. A terminal row never sets it, and a clean record
+sharing a journal with a damaged neighbour does not either.
+
+A client that sees `statusUnconfirmed` must not poll that row at the live rate.
+The status describes the prefix, not the job. The recovered command, the output
+that survived, paging, manual refresh and a reconnect read all still work; those
+are how a person establishes what happened. A failed output read must settle the
+same way for such a row, or the error re-fires once a second for a question the
+journal cannot answer.
+
+`evener/jobs/get` answers `unavailable` rather than `job not found` when the
+requested journal ends in an unterminated append and its intact prefix does not
+mention the job: the torn line could be that job's own record, so absence is not
+established. The condition is retryable — the append may complete — and a
+clean miss still reports not found.
 
 The deletion fence is applied to the owner before its journal or log is served.
 A deletion records its fence before the on-disk tombstone lands, so a read honors
 both: either standing fence means the job's history is no longer servable, from
-the owner's journal or from any forwarded copy. An abandoned deletion clears the
-fence and reads resume.
+the owner's journal or from any forwarded copy. An output read rechecks the same
+fence at the boundary where the log is opened, so a deletion that became durable
+during the scan discards the page instead of serving bytes already committed to
+removal. An abandoned deletion clears the fence and reads resume.
 
 ## Context, counts and incomplete evidence
 

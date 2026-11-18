@@ -541,7 +541,7 @@ func TestLoadSessionJobGetHonorsOwnerTombstone(t *testing.T) {
 	}
 }
 
-// TestLoadSessionJobGetEchoesRequestedRef is the round-3 medium-1 regression.
+// TestLoadSessionJobGetEchoesRequestedRef pins the ref echo.
 // The activity page opens a forwarded job under the ANCESTOR's ref, and the web
 // job log rejects metadata whose ownerRef differs from the ref it requested —
 // so returning the descendant's ref there threw away the command and terminal
@@ -598,8 +598,8 @@ func TestLoadSessionJobGetEchoesRequestedRef(t *testing.T) {
 	}
 }
 
-// TestLoadSessionJobGetUsesDamagedPrefixAsScope is the round-3 medium-2
-// regression. An ancestor journal holding a valid forwarded start followed by a
+// TestLoadSessionJobGetUsesDamagedPrefixAsScope pins the damaged-prefix rule.
+// An ancestor journal holding a valid forwarded start followed by a
 // malformed durable line used to discard the decoded prefix and fail the whole
 // read, making the descendant's intact record and output unreachable through the
 // ancestor even though the start proved scope. The prefix is scope evidence; the
@@ -644,8 +644,8 @@ func TestLoadSessionJobGetUsesDamagedPrefixAsScope(t *testing.T) {
 	}
 }
 
-// TestLoadSessionJobGetResolvesLegacyIDByOwnerHint is the round-3 low-4
-// regression. A job saved before owner-encoded IDs has a bare UUID job ID and a
+// TestLoadSessionJobGetResolvesLegacyIDByOwnerHint pins the legacy hint path.
+// A job saved before owner-encoded IDs has a bare UUID job ID and a
 // populated owner field. The encoded owner is empty, so that field is the only
 // pointer to the journal that may hold the finish — and it must be corroborated
 // there before being believed, or a forwarded start keeps showing running.
@@ -731,7 +731,7 @@ func TestLoadSessionJobGetRejectsUncorroboratedLegacyHint(t *testing.T) {
 	}
 }
 
-// TestLoadSessionJobGetSurfacesDiagnostics is the round-3 low-1 regression: a
+// TestLoadSessionJobGetSurfacesDiagnostics pins the diagnostic surface: a
 // retained read's fallback and integrity facts must reach a production caller,
 // not die in an internal struct both callers discard.
 func TestLoadSessionJobGetSurfacesDiagnostics(t *testing.T) {
@@ -767,8 +767,8 @@ func TestLoadSessionJobGetSurfacesDiagnostics(t *testing.T) {
 	}
 }
 
-// TestLoadSessionJobGetReportsScanDamageNotHealthyRunning is the round-4
-// medium-3 regression. The owner's journal holds a valid start followed by a
+// TestLoadSessionJobGetReportsScanDamageNotHealthyRunning pins the scan-damage
+// rule. The owner's journal holds a valid start followed by a
 // newline-terminated line that cannot be decoded — so the scan returns the
 // decoded start AND a parse error, and the finish may be the very line that was
 // lost. The read used to drop the error the moment the prefix held a matching
@@ -853,8 +853,8 @@ func TestLoadSessionJobGetKeepsForwardedTerminalOverDamagedOwnerPrefix(t *testin
 	}
 }
 
-// TestLoadSessionJobOutputPageRoutesByValidatedOwner is the round-4 medium-4
-// regression. The job ID encodes session A, but the retained start claims
+// TestLoadSessionJobOutputPageRoutesByValidatedOwner pins owner routing.
+// The job ID encodes session A, but the retained start claims
 // session B. With no explicit OutputPath the log lives under A's job directory,
 // because A is the session that ran it and the validated identifier is what says
 // so. Routing by the record's claim looked in B's directory and lost a readable
@@ -907,8 +907,8 @@ func TestLoadSessionJobOutputPageRoutesByValidatedOwner(t *testing.T) {
 }
 
 // TestLoadSessionJobGetKeepsForwardedTerminalOverDamagedLegacyOwner is the
-// round-5 medium-1 regression, the legacy half of the damaged-prefix rule. The
-// job has a bare-UUID ID and its row claims an owner; that journal corroborates
+// legacy half of the damaged-prefix rule. The job has a bare-UUID ID and its
+// row claims an owner; that journal corroborates
 // with a valid start followed by durable corruption. Corroboration proves the
 // journal owns the job, not that the job finished — so an observed finish in the
 // scoped copy must not be replaced by a running row from a prefix that cannot
@@ -961,8 +961,8 @@ func TestLoadSessionJobGetKeepsForwardedTerminalOverDamagedLegacyOwner(t *testin
 	}
 }
 
-// TestLoadSessionJobOutputPageRoutesLegacyBySupplyingJournal is the round-5
-// medium-2 regression. A legacy row whose owner claim the hinted journal could
+// TestLoadSessionJobOutputPageRoutesLegacyBySupplyingJournal pins supplying-journal
+// routing. A legacy row whose owner claim the hinted journal could
 // NOT corroborate is served from the scoped journal, so its default log lives
 // beside that journal. Routing the output by the rejected claim looked in a
 // directory that never held this job's log.
@@ -1003,9 +1003,9 @@ func TestLoadSessionJobOutputPageRoutesLegacyBySupplyingJournal(t *testing.T) {
 	}
 }
 
-// TestLoadSessionJobGetKeepsForwardedTerminalOverTornOwnerTail is the round-6
-// medium-2 regression, and it is the torn-tail half of the same invariant the
-// scan-damage test pins: a record that is not fully established must not outrank
+// TestLoadSessionJobGetKeepsForwardedTerminalOverTornOwnerTail pins the torn-tail
+// half of the invariant the scan-damage test pins: a record that is not fully
+// established must not outrank
 // one that is. The owner's journal holds a start and then an unterminated append,
 // so the scan returns a NIL error and only the TornTail diagnostic. Treating
 // that nil error as proof of settled state let a running prefix replace the
@@ -1058,8 +1058,8 @@ func TestLoadSessionJobGetKeepsForwardedTerminalOverTornOwnerTail(t *testing.T) 
 	}
 }
 
-// TestLoadSessionJobGetRejectsContradictoryLegacyHint is the round-6 medium-3
-// regression. The hinted journal contains the job ID but its row names a
+// TestLoadSessionJobGetRejectsContradictoryLegacyHint pins corroboration.
+// The hinted journal contains the job ID but its row names a
 // DIFFERENT owner, so it is a forwarded copy living in another ancestor, not the
 // hinted owner's own record. Treating the mere presence of the job ID as
 // corroboration let that running copy replace the scoped journal's finish and
@@ -1114,9 +1114,9 @@ func TestLoadSessionJobGetRejectsContradictoryLegacyHint(t *testing.T) {
 	}
 }
 
-// TestLoadSessionJobGetPreservesLaunchFieldsFromScopedStart is the round-6
-// finding the review did not list but the parent did: an owner journal holding
-// ONLY a finish states the job's end and nothing about what was launched. The
+// TestLoadSessionJobGetPreservesLaunchFieldsFromScopedStart pins the launch-field
+// merge: an owner journal holding ONLY a finish states the job's end and nothing
+// about what was launched. The
 // saved job pane lost the command, type and start time it could previously read.
 // The owner's terminal facts must win, and the launch facts must survive.
 func TestLoadSessionJobGetPreservesLaunchFieldsFromScopedStart(t *testing.T) {
@@ -1341,8 +1341,8 @@ func TestLoadSessionJobGetReportsCorruptOwnerJournalAsDamage(t *testing.T) {
 	}
 }
 
-// TestLoadSessionJobOutputPageRoutesToCorroboratedOwnerLog is the round-8
-// medium-2 regression. A legacy job's hinted owner CORROBORATES ownership — its
+// TestLoadSessionJobOutputPageRoutesToCorroboratedOwnerLog pins corroborated
+// owner routing. A legacy job's hinted owner CORROBORATES ownership — its
 // journal holds this job — but a torn tail means its row cannot state the job's
 // status, so the scoped journal's observed finish is the selected record. The
 // two questions come apart: the status came from the scoped journal, and the
@@ -1461,8 +1461,209 @@ func jobStartedLine(jobID, ownerSession string, started time.Time) string {
 		`","started_at":"` + started.Format(time.RFC3339) + `"}`
 }
 
-// TestLoadSessionJobGetRejectsMalformedOwnerHint is the round-6 medium-3 half
-// the contradiction test does not reach: the hint is read back OUT of a stored
+// TestLoadSessionJobGetReportsUnresolvedScopeOnTornTail pins the difference
+// between "this job is not here" and "this journal cannot say". The requested
+// session's journal is an unterminated append whose intact prefix mentions no
+// other job, so the torn line could BE the requested job's record. Answering
+// not-found asserts an absence the scan never established, and the hub turns
+// that into a permanent "job not found". The condition is retryable, so it must
+// surface as unavailable.
+func TestLoadSessionJobGetReportsUnresolvedScopeOnTornTail(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	sessionID := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(sessionID)
+	otherJob := identifier.MustNewJobID(sessionID)
+	started := time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)
+
+	// A complete record for a DIFFERENT job, then an append that never ended.
+	writeJobJournalLines(t, jobsDir(stateDir, sessionID),
+		jobStartedLine(otherJob, sessionID, started)+"\n",
+		`{"kind":"job_started","seq":2,"job_id":"`+jobID+`","type":"shell"`,
+	)
+
+	_, found, err := LoadSessionJobGet(stateDir, sessionID, jobID, nil)
+	if found {
+		t.Fatal("found = true, want the torn append to leave the job unresolved")
+	}
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) {
+		t.Fatalf("error = %v, want a wire error: an unresolved scope is retryable, not a permanent miss", err)
+	}
+	if wireErr.Code != appwire.CodeUnavailable {
+		t.Fatalf("error code = %d, want %d (unavailable): not-found would assert absence the scan never established",
+			wireErr.Code, appwire.CodeUnavailable)
+	}
+}
+
+// TestLoadSessionJobGetMarksOnlyUnestablishedStatusesUnconfirmed pins the split
+// between "this history has damage" and "this STATUS is not established".
+//
+// Half one: the ancestor's journal is torn, so its diagnostic rides every read
+// that consulted it — but the owner's record was decoded from an intact
+// journal, and a client that treated the inherited warning as doubt about the
+// status would stop following a healthy running job and miss its finish.
+//
+// Half two: the record's OWN journal is torn, so the running row is a statement
+// about the prefix. That is the case the signal exists for, and a client that
+// keeps polling asks a question the journal cannot answer.
+func TestLoadSessionJobGetMarksOnlyUnestablishedStatusesUnconfirmed(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
+
+	// The ancestor's journal: a valid forwarded start, then damage that never
+	// terminated. Its diagnostic is real and must keep travelling.
+	writeJobJournalLines(t, jobsDir(stateDir, rootSession),
+		jobStartedLine(jobID, ownerSession, started)+"\n",
+		`{"kind":"job_finished","seq":2,`,
+	)
+	// The owner's journal is intact and says the job is running.
+	ownerStore := openJobJournal(t, jobsDir(stateDir, ownerSession))
+	appendJobEvent(t, ownerStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: ownerSession,
+		StartedAt: &started,
+	})
+	closeJobJournal(t, ownerStore)
+
+	job, found, err := LoadSessionJobGet(stateDir, rootSession, jobID, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the owner's running record")
+	}
+	if !slices.Contains(job.Diagnostics, "journal_torn_tail") {
+		t.Fatalf("Diagnostics = %v, want the ancestor's torn tail still reported", job.Diagnostics)
+	}
+	if job.StatusUnconfirmed {
+		t.Fatal("StatusUnconfirmed = true: the selected record was decoded from an intact journal, so its status IS established")
+	}
+
+	// The owner's own journal is now the torn one. Its surviving running row
+	// cannot say whether the job finished, so the status is unconfirmed.
+	writeJobJournalLines(t, jobsDir(stateDir, ownerSession),
+		jobStartedLine(jobID, ownerSession, started)+"\n",
+		`{"kind":"job_finished","seq":2,"job_id":"`+jobID+`","status":"completed"`,
+	)
+	job, found, err = LoadSessionJobGet(stateDir, ownerSession, jobID, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet on the torn owner journal: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the owner's running prefix")
+	}
+	if !job.StatusUnconfirmed {
+		t.Fatalf("StatusUnconfirmed = false (diagnostics %v): the supplying journal is torn, so this running row cannot state the job's state",
+			job.Diagnostics)
+	}
+}
+
+// TestLoadSessionJobGetKeepsNeighbourLifecycleGapOffThisRecord pins the other
+// direction of the same split. FoldChecked reports the FIRST structural gap in
+// the journal, not necessarily this job's: a healthy running job sharing a
+// journal with an orphan finish carries incomplete_lifecycle while its own
+// lifecycle is whole. Marking it unconfirmed stops a client following a job
+// that is genuinely running, so the signal must be scoped to the record.
+func TestLoadSessionJobGetKeepsNeighbourLifecycleGapOffThisRecord(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	sessionID := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(sessionID)
+	otherJob := identifier.MustNewJobID(sessionID)
+	started := time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
+
+	// This job starts cleanly; a DIFFERENT job has a finish with no start.
+	writeJobJournalLines(t, jobsDir(stateDir, sessionID),
+		jobStartedLine(jobID, sessionID, started)+"\n",
+		`{"kind":"job_finished","seq":2,"ts":"`+started.Format(time.RFC3339)+
+			`","job_id":"`+otherJob+`","status":"completed","terminal_generation":"gen_orphan"}`+"\n",
+	)
+
+	job, found, err := LoadSessionJobGet(stateDir, sessionID, jobID, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want this job's running row")
+	}
+	if !slices.Contains(job.Diagnostics, "incomplete_lifecycle") {
+		t.Fatalf("Diagnostics = %v, want the neighbour's gap still reported", job.Diagnostics)
+	}
+	if job.StatusUnconfirmed {
+		t.Fatal("StatusUnconfirmed = true: the gap belongs to another job, and this record's own lifecycle is whole")
+	}
+}
+
+// TestLoadSessionJobOutputPageRechecksFenceAtLogBoundary pins the window between
+// the scope fence and the bytes. The fence is consulted before either journal is
+// scanned, so a deletion recorded DURING that scan is invisible to it and the
+// page would be served from a session the hub has already committed to removing.
+// Rechecking at the boundary where the log is opened closes it, and because an
+// abandoned deletion clears its fence, a later read resumes on its own.
+func TestLoadSessionJobOutputPageRechecksFenceAtLogBoundary(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 19, 11, 0, 0, 0, time.UTC)
+
+	writeJobJournalLines(t, jobsDir(stateDir, ownerSession),
+		jobStartedLine(jobID, ownerSession, started)+"\n",
+	)
+	rootStore := openJobJournal(t, jobsDir(stateDir, rootSession))
+	appendJobEvent(t, rootStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: rootSession,
+		StartedAt: &started,
+	})
+	closeJobJournal(t, rootStore)
+	ownerLogPath := filepath.Join(jobsDir(stateDir, ownerSession), "jobs", jobID+".log")
+	if err := os.MkdirAll(filepath.Dir(ownerLogPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ownerLogPath, []byte("secret bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The deletion becomes durable between the first consultation and the log
+	// read: the fence answers clean on the owner once and fenced afterwards.
+	consulted := 0
+	fence := func(sessionID string) (bool, error) {
+		if sessionID != ownerSession {
+			return false, nil
+		}
+		consulted++
+		return consulted > 1, nil
+	}
+
+	page, found, err := LoadSessionJobOutputPage(stateDir, rootSession, jobID, nil, 64, fence)
+	if err != nil {
+		t.Fatalf("LoadSessionJobOutputPage: %v", err)
+	}
+	if found || page.Data != "" {
+		t.Fatalf("found = %v, data = %q: a deletion that became durable during the scan must discard the page",
+			found, page.Data)
+	}
+
+	// Abandoning the deletion clears the fence, and the same read resumes.
+	abandoned := func(string) (bool, error) { return false, nil }
+	page, found, err = LoadSessionJobOutputPage(stateDir, rootSession, jobID, nil, 64, abandoned)
+	if err != nil {
+		t.Fatalf("LoadSessionJobOutputPage after abandonment: %v", err)
+	}
+	if !found || page.Data != "secret bytes" {
+		t.Fatalf("found = %v, data = %q, want the log back once the deletion is abandoned", found, page.Data)
+	}
+}
+
+// TestLoadSessionJobGetRejectsMalformedOwnerHint covers the half the
+// contradiction test does not reach: the hint is read back OUT of a stored
 // row, so it is untrusted input. A value that is not a session id must not be
 // handed to the deletion fence or turned into a path. The scoped record stands
 // as fallback evidence and the fence only ever hears the requested session.

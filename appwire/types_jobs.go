@@ -93,6 +93,21 @@ type JobActivityJob struct {
 	// Live reads leave it empty. Clients render or ignore it, but a stale
 	// forwarded row is no longer indistinguishable from a live running one.
 	Diagnostics []string `json:"diagnostics,omitempty"`
+	// StatusUnconfirmed reports that this row's nonterminal Status is not
+	// established — the evidence behind it cannot say whether the job is still
+	// running. It is a fact about the SELECTED RECORD, which is what makes it
+	// different from Diagnostics: those describe every journal the read
+	// consulted, and a clean owner record can inherit an ancestor's damage while
+	// still resting on intact bytes. A client that gates live polling on the
+	// aggregate would stop following a healthy running job and miss its finish,
+	// so the decision belongs to this field alone.
+	//
+	// Retained reads set it when the supplying journal ended in an unterminated
+	// append, stopped at durable corruption, described no whole lifecycle, or
+	// when the row is a forwarded copy whose owner could not be consulted.
+	// Terminal rows never set it: the first terminal write is a complete
+	// observation on its own. Live reads never set it either.
+	StatusUnconfirmed bool `json:"statusUnconfirmed,omitempty"`
 }
 
 // JobActivityDelegate is one whole delegate in the activity tree. Activity

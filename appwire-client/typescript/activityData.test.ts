@@ -43,26 +43,58 @@ describe("jobStatusDisplay", () => {
 });
 
 describe("jobStatusUnconfirmed", () => {
-  it("is true for a nonterminal row carrying a scan-integrity diagnostic", () => {
-    expect(jobStatusUnconfirmed({ terminal: false, diagnostics: ["journal_scan_incomplete"] })).toBe(true);
-    expect(jobStatusUnconfirmed({ terminal: false, diagnostics: ["incomplete_lifecycle"] })).toBe(true);
-  });
-
-  it("is false for a terminal row even when damage was reported after its finish", () => {
-    expect(jobStatusUnconfirmed({ terminal: true, diagnostics: ["journal_scan_incomplete"] })).toBe(false);
-  });
-
-  it("is false for a live row and for a row whose damage says nothing about its state", () => {
+  it("follows the server's per-record signal", () => {
+    expect(jobStatusUnconfirmed({ terminal: false, statusUnconfirmed: true })).toBe(true);
+    expect(jobStatusUnconfirmed({ terminal: false, statusUnconfirmed: false })).toBe(false);
     expect(jobStatusUnconfirmed({ terminal: false })).toBe(false);
-    expect(jobStatusUnconfirmed({ terminal: false, diagnostics: [] })).toBe(false);
-    expect(jobStatusUnconfirmed({ terminal: false, diagnostics: ["forwarded_fallback", "owner_unavailable"] })).toBe(
-      false,
-    );
+  });
+
+  it("is false for a terminal row even when the read could not establish its history", () => {
+    expect(jobStatusUnconfirmed({ terminal: true, statusUnconfirmed: true })).toBe(false);
+  });
+
+  // The bug the split exists for: an intact owner record can inherit an
+  // ancestor's scan damage. The diagnostic is true and the status is fine.
+  it("ignores aggregate diagnostics, which describe every journal consulted", () => {
+    expect(
+      jobStatusUnconfirmed({ terminal: false, diagnostics: ["journal_scan_incomplete", "journal_torn_tail"] }),
+    ).toBe(false);
   });
 
   it("marks the displayed word rather than replacing it", () => {
     expect(jobStatusDisplayUnconfirmed(jobStatusDisplay("running"))).toContain(jobStatusDisplay("running"));
     expect(jobStatusDisplayUnconfirmed(jobStatusDisplay("running"))).not.toBe(jobStatusDisplay("running"));
+  });
+});
+
+describe("parseActivityJob statusUnconfirmed", () => {
+  const base = {
+    jobId: "job_parse_1",
+    ownerSessionId: "sess_owner",
+    ownerRef: "local:sess_owner",
+    type: "shell",
+    status: "running",
+    terminal: false,
+    background: true,
+    hasOutput: true,
+    description: "shell job",
+    startedAt: "2026-11-18T00:00:00Z",
+    outputBytes: 0,
+  };
+
+  it("keeps the server's signal alongside the aggregate diagnostics", () => {
+    const job = parseActivityJob({ ...base, diagnostics: ["journal_torn_tail"], statusUnconfirmed: true });
+    expect(job?.statusUnconfirmed).toBe(true);
+    expect(job?.diagnostics).toEqual(["journal_torn_tail"]);
+  });
+
+  it("leaves it unset when the row's evidence established the status", () => {
+    const job = parseActivityJob({ ...base, diagnostics: ["journal_torn_tail"] });
+    expect(job?.statusUnconfirmed).toBeUndefined();
+  });
+
+  it("rejects a non-boolean value rather than guessing", () => {
+    expect(parseActivityJob({ ...base, statusUnconfirmed: "yes" })).toBeNull();
   });
 });
 

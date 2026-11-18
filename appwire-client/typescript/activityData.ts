@@ -70,28 +70,22 @@ export function jobStatusDisplay(status: string, reason?: string): string {
   }
 }
 
-// The diagnostic codes a retained read attaches when its own journal did not
-// reach a clean record boundary. A row carrying one of these describes what the
-// intact prefix said, not what the job did: the finish may be the very line
-// that failed to decode. Kept as a set rather than a single code because the
-// distinction a client cares about — "this status is not confirmed" — is the
-// same for all of them.
-const UNCONFIRMED_INTEGRITY_CODES = new Set(["journal_scan_incomplete", "incomplete_lifecycle"]);
-
 // jobStatusUnconfirmed reports whether a retained row's nonterminal status is
-// NOT established. A job whose start survived a corrupt journal line reaches a
-// client as `running` with a diagnostic, and that running word is a statement
-// about the prefix, not about the job: a surface that treats it as live shows a
-// finished job as running and polls for a finish that will never arrive.
+// NOT established, and a client must not follow it at the live rate.
 //
-// Terminal rows are always confirmed — the first terminal write is a complete
-// observation on its own, so damage after it can add nothing. A live row carries
-// no diagnostics at all.
-export function jobStatusUnconfirmed(job: Pick<ActivityJob, "terminal" | "diagnostics">): boolean {
+// The answer comes from the server's `statusUnconfirmed` field, which states a
+// fact about the SELECTED RECORD: the evidence behind this status cannot say
+// whether the job is still running. It is deliberately NOT derived from
+// `diagnostics`, which describe every journal the read consulted — a clean
+// owner record that inherited an ancestor's scan damage carries a diagnostic
+// while resting on intact bytes, and gating on that would stop following a
+// healthy running job and miss its finish.
+//
+// Terminal rows are always confirmed: the first terminal write is a complete
+// observation on its own, so damage after it can add nothing.
+export function jobStatusUnconfirmed(job: Pick<ActivityJob, "terminal" | "statusUnconfirmed">): boolean {
   if (job.terminal) return false;
-  const diagnostics = job.diagnostics;
-  if (!diagnostics || diagnostics.length === 0) return false;
-  return diagnostics.some((code) => UNCONFIRMED_INTEGRITY_CODES.has(code));
+  return job.statusUnconfirmed === true;
 }
 
 // jobStatusDisplayUnconfirmed is the display word for a status the read could
@@ -129,9 +123,14 @@ export interface ActivityJob {
   exitCode?: number;
   outputBytes: number;
   // What a retained read could not establish about the history behind this
-  // row. Only retained rows carry it. A non-terminal row with a diagnostic is
-  // not confirmed running, so a client must not poll it as if it were live.
+  // row, one code per fact. It describes EVERY journal the read consulted, so
+  // it is inspection material, not a verdict on the status: use
+  // statusUnconfirmed for that.
   diagnostics?: string[];
+  // Whether the evidence behind this row's nonterminal status can say the job
+  // is still running. The server derives it from the selected record alone;
+  // see jobStatusUnconfirmed. Absent on live rows and on terminal ones.
+  statusUnconfirmed?: boolean;
 }
 
 export interface ActivityShellEntry {
@@ -461,6 +460,8 @@ export function parseActivityJob(raw: unknown): ActivityJob | null {
   const exitCode = raw.exitCode;
   const diagnostics = parseStringArray(raw.diagnostics);
   if (diagnostics === null) return null;
+  const statusUnconfirmed = raw.statusUnconfirmed;
+  if (typeof statusUnconfirmed !== "undefined" && typeof statusUnconfirmed !== "boolean") return null;
   if (typeof raw.outcome !== "undefined" && typeof raw.outcome !== "string") return null;
   if (typeof raw.transcriptRef !== "undefined" && typeof raw.transcriptRef !== "string") return null;
   if (typeof raw.parentDelegateId !== "undefined" && typeof raw.parentDelegateId !== "string") return null;
@@ -484,6 +485,7 @@ export function parseActivityJob(raw: unknown): ActivityJob | null {
   // indistinguishable from a live one once it reached the browser, which then
   // polled a job that had already finished.
   if (diagnostics) job.diagnostics = diagnostics;
+  if (statusUnconfirmed === true) job.statusUnconfirmed = true;
   return job;
 }
 

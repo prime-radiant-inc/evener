@@ -2450,6 +2450,7 @@ Underlying Go kind: `struct` (no struct fields).
 | `outputBytes` | int64 |  |  |
 | `lastOutputAt` | string | yes |  |
 | `diagnostics` | []string | yes |  |
+| `statusUnconfirmed` | bool | yes |  |
 
 
 ### `JobActivitySession`

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 
@@ -95,6 +96,17 @@ func jobRecordDiagnosticCodes(d sessionJobRecordDiagnostics) []string {
 	return codes
 }
 
+// ErrJobScopeUnresolved reports a saved-job read that could not establish the
+// job's ABSENCE. The requested session's journal ends in an unterminated append
+// and nothing in its intact prefix mentions the job, so the torn line could be
+// that job's own record. Absence is a claim about the whole journal, and a scan
+// that stopped short of one cannot make it.
+//
+// It is retryable rather than permanent: the append may complete, and the next
+// read then answers normally. Callers must not turn it into "job not found",
+// which asserts the job does not exist.
+var ErrJobScopeUnresolved = errors.New("agent: job history ends in an unterminated append and does not establish whether this job exists")
+
 // OwnerDeletionFence reports whether a session is durably fenced for deletion.
 // It is the hub's own record (hubcore.DeletionStore), and it lands BEFORE the
 // on-disk tombstone: a deletion records its fence, then removes the target.
@@ -132,6 +144,30 @@ func retainedOwnerFenced(stateDir, sessionID string, fence OwnerDeletionFence) (
 		}
 	}
 	return ownerSessionTombstoned(stateDir, sessionID), nil
+}
+
+// jobReadFenced reports whether ANY of the sessions a read would serve is
+// durably fenced. Every session whose journal or log a request can carry gets
+// the same check: the one that was asked about, the one whose journal supplied
+// the record, and the one whose directory holds the bytes. Repeats collapse, so
+// a read that resolves to the requested session alone consults the fence once.
+func jobReadFenced(stateDir string, fence OwnerDeletionFence, sessions ...string) (bool, error) {
+	seen := make(map[string]struct{}, len(sessions))
+	for _, sessionID := range sessions {
+		if sessionID == "" {
+			continue
+		}
+		if _, repeat := seen[sessionID]; repeat {
+			continue
+		}
+		seen[sessionID] = struct{}{}
+		if fenced, err := retainedOwnerFenced(stateDir, sessionID, fence); err != nil {
+			return false, err
+		} else if fenced {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // sessionJobRecordDiagnostics reports what a cold per-session job read could
@@ -189,6 +225,20 @@ type sessionJobRecordRead struct {
 	// damage report forward, but whether one particular record's state can be
 	// stated is a fact about that record's journal alone.
 	scanErr error
+	// statusUnconfirmed is set when THIS record's nonterminal status is not
+	// established: the journal that supplied the record ended in a torn append,
+	// stopped at durable corruption, or described no whole lifecycle — anywhere,
+	// including for another job — or the record is a forwarded copy whose owner
+	// could not be consulted. It stays branch-local for the same reason scanErr
+	// does: mergeIntegrity says what the HISTORY could not establish, this says
+	// what the SELECTED STATUS could not.
+	//
+	// The two are deliberately separate. A clean owner record that inherited an
+	// ancestor's scan damage is a record whose status IS established — it was
+	// decoded from an intact journal — and a client that treated the aggregate
+	// warning as doubt about the status would stop following a healthy running
+	// job and miss its finish.
+	statusUnconfirmed bool
 }
 
 // encodedJobOwner names the owner a job ID encodes, or "" when the ID encodes
@@ -287,6 +337,14 @@ func loadSessionJobRecord(stateDir, sessionID, jobID string, fence OwnerDeletion
 	// Scope proof: no record here means this session has no claim on the job,
 	// so there is nothing to resolve the encoded owner AGAINST.
 	if !local.found {
+		// Except when the scan could not reach a record boundary: a torn append
+		// may BE this job's record, so the intact prefix cannot say the job is
+		// absent. "Not found" would assert more than the scan established, and the
+		// hub would report the job does not exist. The condition is retryable —
+		// the append may complete — so it surfaces as unavailable, not not-found.
+		if local.diagnostics.TornTail {
+			return sessionJobRecordRead{}, ErrJobScopeUnresolved
+		}
 		return local, nil
 	}
 	owner := encodedJobOwner(jobID)
@@ -536,6 +594,37 @@ func stateEstablished(read sessionJobRecordRead) bool {
 	return read.scanErr == nil && !read.diagnostics.TornTail
 }
 
+// statusUnconfirmedOnWire reports whether the SELECTED STATUS is unestablished,
+// for the clients that decide whether to keep following a job.
+//
+// It answers a different question from stateEstablished, and the difference is
+// the one that matters on a wire: stateEstablished ranks two records against
+// each other, while this says whether the one record a caller received can
+// state the job's state at all. The inputs are the read's OWN record evidence —
+// its status, its scan error, its journal's lifecycle coherence, whether it is
+// a forwarded copy with no owner behind it — never the merged aggregate. A
+// clean owner record that inherited an ancestor's scan damage still has an
+// established status: the bytes that said "running" were intact, and only the
+// ancestor's journal was torn. Gating the client on the aggregate would make it
+// stop following a healthy running job and miss the finish.
+//
+// A terminal row is always confirmed: the first terminal write is a complete
+// observation, and damage after it can take nothing away. That is the same
+// premise stateEstablished rests on.
+func statusUnconfirmedOnWire(read sessionJobRecordRead) bool {
+	if read.record == nil || read.record.Status == "" || read.record.Status.IsTerminal() {
+		return false
+	}
+	// A forwarded copy stands in for an owner nobody could consult, so nothing
+	// behind it can confirm the run is still going. The invariant: a record that
+	// is not fully established must not be followed as though it were.
+	if read.diagnostics.ForwardedFallback {
+		return true
+	}
+	// The record's own journal could not reach a settled boundary for THIS job.
+	return read.statusUnconfirmed
+}
+
 // mergeIntegrity folds another read's damage report into d. Diagnostics are not
 // a verdict about which branch won: either branch being torn or incoherent is
 // something the caller must still know.
@@ -594,12 +683,37 @@ func readSessionJobJournal(stateDir, sessionID, jobID string) (sessionJobRecordR
 	// stateEstablished. A caller with nothing to compare against still gets the
 	// best-effort record, flagged, rather than an error that erases what survived.
 	return sessionJobRecordRead{
-		record:          rec,
-		sourceSessionID: sessionID,
-		found:           true,
-		diagnostics:     diagnostics,
-		scanErr:         scanErr,
+		record:            rec,
+		sourceSessionID:   sessionID,
+		found:             true,
+		diagnostics:       diagnostics,
+		scanErr:           scanErr,
+		statusUnconfirmed: recordStatusUnconfirmed(rec, scanErr, diagnostics),
 	}, nil
+}
+
+// recordStatusUnconfirmed reports whether THIS record's nonterminal status is
+// not established.
+//
+// TornTail and scanErr are evidence against the record itself: an unterminated
+// append or durable corruption leaves the finish unaccounted for, and the
+// status states only the prefix that survived.
+//
+// IncompleteLifecycle is NOT, on its own. FoldChecked reports the FIRST
+// structural gap anywhere in the journal — including another job's — so using
+// the journal's verdict here would mark a healthy running row unconfirmed
+// because a neighbour is broken, and a client would stop following it. What
+// makes THIS record a fragment is the gap's own shape: a record with a type and
+// a start time was folded from a start, and one without a type is a
+// notification or finish that never had one.
+func recordStatusUnconfirmed(rec *jobstore.JobRecord, scanErr error, d sessionJobRecordDiagnostics) bool {
+	if rec == nil || rec.Status == "" || rec.Status.IsTerminal() {
+		return false
+	}
+	if scanErr != nil || d.TornTail {
+		return true
+	}
+	return d.IncompleteLifecycle && rec.Type == ""
 }
 
 // routingJobSession names the session whose directory holds a record's own
@@ -630,6 +744,17 @@ func routingJobSession(jobID string, read sessionJobRecordRead) string {
 	return read.sourceSessionID
 }
 
+// jobReadError translates the reader's structural sentinels into the wire
+// errors a caller can act on. A scope that a torn append left unresolved is
+// UNAVAILABLE, not not-found: the scan could not establish absence, and the
+// next read may answer normally once the append completes.
+func jobReadError(jobID string, err error) error {
+	if errors.Is(err, ErrJobScopeUnresolved) {
+		return appwire.Unavailable(fmt.Sprintf("job %q: %v", jobID, err))
+	}
+	return err
+}
+
 // LoadSessionJobOutputPage reads a coherent page from a local saved job.
 // It is read-only and uses the same selectors and errors as the live producer.
 //
@@ -640,9 +765,21 @@ func routingJobSession(jobID string, read sessionJobRecordRead) string {
 func LoadSessionJobOutputPage(stateDir, sessionID, jobID string, beforeBytes *int64, maxBytes int64, fence OwnerDeletionFence) (JobOutputPage, bool, error) {
 	read, err := loadSessionJobRecord(stateDir, sessionID, jobID, fence)
 	if err != nil {
-		return JobOutputPage{}, false, err
+		return JobOutputPage{}, false, jobReadError(jobID, err)
 	}
 	if !read.found {
+		return JobOutputPage{}, false, nil
+	}
+	// The fence above was consulted before either journal was scanned. A deletion
+	// recorded DURING that scan is therefore invisible to it, and this read would
+	// open a log the hub has already committed to removing. Re-consult the same
+	// record now, at the boundary where the bytes are opened, for both sessions
+	// whose data this page can carry: the one that was asked about and the one
+	// that owns the bytes. A standing fence discards the page, and an abandoned
+	// deletion clears the record, so a later read resumes by itself.
+	if fenced, fenceErr := jobReadFenced(stateDir, fence, sessionID, routingJobSession(jobID, read)); fenceErr != nil {
+		return JobOutputPage{}, false, fenceErr
+	} else if fenced {
 		return JobOutputPage{}, false, nil
 	}
 	rec := read.record
@@ -700,7 +837,7 @@ func (s *Session) JobGet(jobID string) (JobActivityJob, bool, error) {
 func LoadSessionJobGet(stateDir, sessionID, jobID string, fence OwnerDeletionFence) (JobActivityJob, bool, error) {
 	read, err := loadSessionJobRecord(stateDir, sessionID, jobID, fence)
 	if err != nil {
-		return JobActivityJob{}, false, err
+		return JobActivityJob{}, false, jobReadError(jobID, err)
 	}
 	if !read.found {
 		return JobActivityJob{}, false, nil
@@ -708,5 +845,6 @@ func LoadSessionJobGet(stateDir, sessionID, jobID string, fence OwnerDeletionFen
 	ownerRef := appwire.Ref{SourceID: "local", ThreadID: sessionID}.String()
 	job := projectActivityJob(read.record, ownerRef)
 	job.Diagnostics = jobRecordDiagnosticCodes(read.diagnostics)
+	job.StatusUnconfirmed = statusUnconfirmedOnWire(read)
 	return job, true, nil
 }
