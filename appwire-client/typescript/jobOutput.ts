@@ -1,4 +1,4 @@
-import { CODE_UNAVAILABLE, WireError } from "./errors";
+import { CODE_UNAVAILABLE, refusedBeforeRunning, WireError } from "./errors";
 import type { JobOutputPage } from "./types.gen";
 
 const MAX_PAGE_BYTES = 65536;
@@ -142,4 +142,14 @@ export function jobOutputPrunedBounds(error: unknown): { retainedStartBytes: num
   const { retainedStartBytes, totalBytes } = error.data as Record<string, unknown>;
   if (!isByteOffset(retainedStartBytes) || !isByteOffset(totalBytes) || retainedStartBytes > totalBytes) return null;
   return { retainedStartBytes, totalBytes };
+}
+
+// jobOutputBoundaryRejected reports that the server refused a requested byte
+// boundary on the request's shape alone, before reading any bytes: the offset is
+// outside the log the server would have selected. That is a different fact from
+// "the read failed" — nothing was read, so retrying the same boundary asks the
+// same question — and it is the only signal a reader has that the file it cached
+// is not the file the server is serving now.
+export function jobOutputBoundaryRejected(error: unknown): boolean {
+  return refusedBeforeRunning(error);
 }

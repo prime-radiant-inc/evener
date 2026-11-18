@@ -359,7 +359,13 @@ export {
   isTurnError,
 } from "./itemFailure";
 export type { DecodedJobOutputPage } from "./jobOutput";
-export { decodeJobOutputText, forEachJobOutputScalar, jobOutputPrunedBounds, parseJobOutputPage } from "./jobOutput";
+export {
+  decodeJobOutputText,
+  forEachJobOutputScalar,
+  jobOutputBoundaryRejected,
+  jobOutputPrunedBounds,
+  parseJobOutputPage,
+} from "./jobOutput";
 export { type JobStep, jobListSummary, jobStatusSummary, jobStopSummary } from "./jobSteps";
 export {
   endReasonPhrase,

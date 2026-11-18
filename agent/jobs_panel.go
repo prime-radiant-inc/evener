@@ -1202,32 +1202,32 @@ func LoadSessionJobOutputPage(stateDir, sessionID, jobID string, beforeBytes *in
 	// belongs to a different job.
 	defaultOutPath := filepath.Join(jobsDir(stateDir, routingJobSession(jobID, read)), "jobs", jobID+".log")
 
-	// A record's explicit OutputPath is a LAUNCH FACT, and it is honored only
-	// when the record is a statement about this job. The same owner-claim rule
-	// that governs adopting that field governs trusting it on read: a start
-	// naming a session the job ID contradicts described some other session's
-	// launch, and its path reaches that job's bytes — or a stale file — while
-	// this job's own log sits under the validated owner. An agreeing claim and
-	// an empty one (the pre-owner legacy shape) both keep their explicit path,
-	// because those records do describe this job.
+	// The log is wherever the session that RAN the job wrote it, and the
+	// corroborated owner's own record is what says so. Status precedence answers
+	// a different question — what happened — and its winner is often a forwarded
+	// terminal observation, which copies the owner's finish and so never names a
+	// file. Where the bytes are is decided independently of who won on status.
 	//
-	// This is the counterpart of preserveLaunchFields, not a second rule: that
-	// guard stops a contradiction from being COPIED into another record, and
-	// this one stops a contradictory record's own stored path from being
-	// HONORED. A record that never entered the merge needs both.
+	// A record's explicit OutputPath is a LAUNCH FACT and is honored only when
+	// the record is a statement about this job: a start naming a session the job
+	// ID contradicts described some other session's launch, and its path reaches
+	// that job's bytes — or a stale file. That is the counterpart of
+	// preserveLaunchFields, not a second rule: that guard stops a contradiction
+	// being COPIED into another record, this one stops it being HONORED.
+	//
+	// This is an order of preference, not a probe. It never stats one path and
+	// falls back when the file is missing: a choice that turned on whether a file
+	// exists this instant would serve the forwarded copy's bytes exactly when the
+	// owner's log is the one that moved. A path the owner recorded and does not
+	// exist is a read error the caller can see.
 	contradicts := ownerClaimContradicts(rec)
-	outPath := rec.OutputPath
-	if outPath == "" || contradicts {
-		// The record that says what HAPPENED and the record that says where the
-		// BYTES are can come from different journals, and neither outranks the
-		// other. A finish-only journal states no path at all — an end says nothing
-		// about where the log was written — and a contradictory start's path is
-		// another job's. The corroborated owner's own record is the remaining
-		// source: it is where the bytes its session ran were written, even when
-		// that record LOST on status, because an owner start followed by a torn
-		// finish cannot establish the job's state while it is still the only
-		// record that ever named the file.
-		outPath = read.artifactOutputPath
+	selectedPath := rec.OutputPath
+	if contradicts {
+		selectedPath = ""
+	}
+	outPath := read.artifactOutputPath
+	if outPath == "" {
+		outPath = selectedPath
 	}
 	if outPath == "" {
 		outPath = defaultOutPath
@@ -1256,16 +1256,18 @@ func LoadSessionJobOutputPage(stateDir, sessionID, jobID string, beforeBytes *in
 		return JobOutputPage{}, false, nil
 	}
 	// Terminal byte counts are evidence about a LOG, so they are enforced only
-	// from a record that describes the log this read selected. A contradictory
-	// record's own path was just discarded, which means its counts describe a
-	// different file: checking the encoded owner's readable default log against
-	// them rejects a page that is fine and shows the pane an unavailable error.
-	// That log is read on its own snapshot checks instead. This is not a
-	// leniency — the checks stay exactly as strict for the records that DO
-	// describe the selected artifact, which is the only case where they mean
-	// anything.
+	// from a record whose own explicit path IS the file this read opened. Its
+	// counts describe the bytes its launcher wrote there, and nothing else. When
+	// the path came from the owner's record instead — because the selected
+	// record named a different file, a stale one, or none at all — those counts
+	// describe a file this page did not read, and enforcing them against the
+	// owner's log rejects a page that is fine: 999 bytes of a reported total have
+	// nothing to do with an 11-byte file. The opened log is read on its own
+	// snapshot checks instead. This is not a leniency: the checks stay exactly as
+	// strict for the records that DO describe the artifact, which is the only
+	// case where they mean anything.
 	validationRecord := rec
-	if contradicts {
+	if rec == nil || rec.OutputPath != outPath {
 		validationRecord = nil
 	}
 	page, err := readJobOutputPageForRecord(outPath, validationRecord, beforeBytes, clampJobPageBytes(maxBytes))

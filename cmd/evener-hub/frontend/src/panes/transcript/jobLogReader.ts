@@ -1,6 +1,7 @@
 import {
   errorText,
   type JobActivityJob,
+  jobOutputBoundaryRejected,
   jobOutputPrunedBounds,
   jobStatusUnconfirmed,
   parseActivityJob,
@@ -72,6 +73,15 @@ function statusRecheckable(job: JobActivityJob | null): boolean {
   return job.statusRecheckable === true;
 }
 
+/** forwardedFallback reports that the row was served from the SCOPED session's
+ * copy rather than from the owner's own record, so the bytes behind it are that
+ * copy's log. It is the one diagnostic that says the row's SOURCE, which is what
+ * a recovery has to be measured against; the integrity codes say only how
+ * damaged a journal is. */
+function forwardedFallback(job: JobActivityJob | null): boolean {
+  return job !== null && (job.diagnostics ?? []).includes("forwarded_fallback");
+}
+
 // metadataDeadlineAfter is when to read this row's metadata again. A healthy row
 // keeps the live cadence, a terminal row is settled, and an unconfirmed row is
 // re-checked slowly when a later write could change the answer and never when it
@@ -115,6 +125,12 @@ export class JobLogReader {
    * artifact: the windows and any paging demand measured against the old one are
    * discarded. An unnamed log makes no claim, and nothing is reset for it. */
   private logId: string | null = null;
+  /** Whether the row currently held was served from a FORWARDED copy rather
+   * than from the owner's own record (`forwarded_fallback`). A later metadata
+   * read that stops saying so has recovered the owner, and the log it names may
+   * be a different file — so that transition owes one tail read even though the
+   * previous tail succeeded. */
+  private fellBack = false;
   private nextReadAt = 0;
   private liveDueAt = 0;
   private metadataDueAt = 0;
@@ -305,13 +321,24 @@ export class JobLogReader {
     //
     // Only a permanently blocked row drops it, because only there does reading
     // again ask a question no source can answer.
-    // Re-arming is conditioned on a tail having FAILED, not on the row merely
-    // being unconfirmed: a tail that landed has delivered its bytes, and asking
-    // again on every slow metadata tick would re-read output nobody asked for.
-    // A row that is unconfirmed AND recheckable keeps a FAILED tail owed — that
-    // is the case the re-arm exists for.
-    if (job !== null && !job.terminal && jobStatusUnconfirmed(job))
-      this.liveRetryOwed = this.liveTailFailed && statusRecheckable(job);
+    //
+    // Re-arming is conditioned on a tail having FAILED, or on the row having
+    // MOVED to a different source, not on the job merely being unconfirmed: a
+    // tail that landed has delivered its bytes from the record it was sent
+    // against, and asking again on every slow metadata tick would re-read
+    // output nobody asked for.
+    //
+    // The source move is the other case. A fallback row's bytes came from the
+    // scoped session's copy; when a recheck recovers the owner, the log the
+    // owner wrote can be a different FILE, and nothing else would read it — the
+    // tail already succeeded, so no failure is owed, and the recurring cadence
+    // stays parked for an unconfirmed row. The pane would show the fallback's
+    // bytes under the recovered owner's metadata until a manual refresh. One
+    // tail read is owed for that transition, and only for it.
+    const recoveredOwner = this.fellBack && !forwardedFallback(job);
+    if (job !== null) this.fellBack = forwardedFallback(job);
+    if (job !== null && !job.terminal && (jobStatusUnconfirmed(job) || recoveredOwner))
+      this.liveRetryOwed = recoveredOwner || (this.liveTailFailed && statusRecheckable(job));
     // An owed one-shot read is a demand, not a poll. It keeps the slot due until
     // it is served, so unconfirmed metadata stops the RECURRING cadence without
     // cancelling the read a person asked for.
@@ -513,18 +540,28 @@ export class JobLogReader {
             (page.bytesReturned === 0 && selection.beforeBytes > page.retainedStartBytes))
         )
           throw new Error("output page does not match the requested boundary");
-        // A page that names a DIFFERENT log than the cached bytes came from is a
-        // statement about a different file: the saved job's log can move from the
-        // scoped session's directory to the owner's once that owner becomes
-        // consultable. Merging it into the old window would compare two artifacts
-        // at overlapping offsets and reject the authoritative page, and every
-        // retry would reject it the same way. Start a new artifact instead — the
-        // cached bytes, the scroll capture and any paging demand measured against
-        // the old file are all stale, and the total/retained bounds come from the
-        // page itself.
-        const switched = page.logId !== undefined && this.logId !== null && page.logId !== this.logId;
-        if (page.logId !== undefined) this.logId = page.logId;
+        // A page that names a log the cached bytes are NOT from is a statement
+        // about a different file: a saved job's log can move from the scoped
+        // session's directory to the owner's once that owner becomes consultable,
+        // and a live job's log can move to its retained copy. Merging such a page
+        // into the old window compares two artifacts at overlapping offsets and
+        // rejects the authoritative one, and every retry rejects it the same way.
+        // Start a new artifact instead — the cached bytes, the scroll capture and
+        // any paging demand measured against the old file are all stale, and the
+        // total/retained bounds come from the page itself.
+        //
+        // "Not from" includes a cache that names nothing. An omitted logId claims
+        // nothing, so cached bytes carrying no identity cannot be shown to be
+        // this file, and the first reply that names one replaces them. The cost
+        // is one page; the alternative is comparing bytes from two files that
+        // merely happen to be at the same offsets.
+        const switched = page.logId !== undefined && page.logId !== this.logId;
         const windows = applyJobLogPage(switched ? emptyJobLogWindows() : this.snapshot.windows, page, kind, keep);
+        // The identity is committed only now that the page was ACCEPTED. Assigning
+        // it first meant a page the overlap check rejected still left its name
+        // cached, so every later reply with that name was compared against the
+        // very bytes it had already been refused against — permanently.
+        if (page.logId !== undefined) this.logId = page.logId;
         let pendingDemand = switched ? null : this.snapshot.pendingDemand;
         let drainPending = this.snapshot.drainPending;
         if (kind === "live") {
@@ -638,6 +675,24 @@ export class JobLogReader {
           this.historyServedSinceLive = true;
         }
         this.nextReadAt = Date.now() + READ_INTERVAL_MS;
+        // A history boundary the server REFUSED is not a failure to retry: the
+        // offset was measured against the cached file, and the server says it
+        // does not exist in the log it is serving. Every retry sends the same
+        // doomed boundary, so a pane whose fallback log was longer than the
+        // owner's log would poll that offset once a second forever and never
+        // learn the file was replaced.
+        //
+        // The demand is dropped and one latest-page read is owed instead. It has
+        // no beforeBytes, so it cannot be refused for its offset, and whichever
+        // log the server answers from, the reply that establishes a new identity
+        // replaces the cached bytes and any demand measured against them. The
+        // cached output stays on screen until that reply lands.
+        if (kind === "older" && jobOutputBoundaryRejected(error)) {
+          this.publish({ pendingDemand: null });
+          this.explicitTailOwed = true;
+          this.liveDueAt = Date.now();
+          this.nextReadAt = Date.now();
+        }
         const bounds = jobOutputPrunedBounds(error);
         let windows = this.snapshot.windows;
         let outputError = messageOf(error);

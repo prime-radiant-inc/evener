@@ -1849,6 +1849,70 @@ func TestLoadSessionJobOutputPageUsesOwnerPathWhenAncestorSuppliesTheStatus(t *t
 	}
 }
 
+// TestLoadSessionJobOutputPagePrefersOwnerPathOverForwardedPath: the forwarded
+// terminal record carries its OWN explicit path, left over from the launcher that
+// wrote its bytes somewhere else, and that file is gone. The owner's journal
+// recorded the file it actually wrote, and that log is readable. Preferring the
+// selected record's path makes the page an unreadable error for a log that is
+// right there; if the stale file still existed and matched the byte checks, the
+// same preference would return ANOTHER job's bytes as this one's.
+//
+// The choice is a preference among recorded facts, not a probe of the
+// filesystem: the owner's path wins whether or not the file is there, because a
+// read that switched paths when a stat failed would serve the stale file
+// whenever the owner's log was the one that moved.
+func TestLoadSessionJobOutputPagePrefersOwnerPathOverForwardedPath(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 21, 14, 0, 0, 0, time.UTC)
+	ended := started.Add(time.Minute)
+	exit := 0
+
+	// The owner wrote its log where its own launcher chose.
+	ownerLogPath := filepath.Join(t.TempDir(), "owner-chosen.log")
+	if err := os.WriteFile(ownerLogPath, []byte("owner bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	// The forwarded record names a path that no longer exists, as a copy of a
+	// launch whose bytes have since been removed with their own work directory.
+	stalePath := filepath.Join(t.TempDir(), "gone.log")
+
+	// The owner's journal: a valid start naming its own log, then a torn finish.
+	// Its prefix cannot state the job's status.
+	writeJobJournalLines(t, jobsDir(stateDir, ownerSession),
+		`{"kind":"job_started","seq":1,"ts":"`+started.Format(time.RFC3339)+
+			`","job_id":"`+jobID+`","type":"shell","status":"running","owner_session_id":"`+ownerSession+
+			`","visible_to_session_id":"`+rootSession+`","started_at":"`+started.Format(time.RFC3339)+
+			`","output_path":"`+ownerLogPath+`"}`+"\n",
+		`{"kind":"job_finished","seq":2,"job_id":"`+jobID+`","status":"completed"`,
+	)
+	// The ancestor's journal observed the finish, so it wins on status — and it
+	// carries an explicit path of its own, which is not where this job's log is.
+	writeJobJournalLines(t, jobsDir(stateDir, rootSession),
+		`{"kind":"job_started","seq":1,"ts":"`+started.Format(time.RFC3339)+
+			`","job_id":"`+jobID+`","type":"shell","status":"running","owner_session_id":"`+ownerSession+
+			`","visible_to_session_id":"`+rootSession+`","started_at":"`+started.Format(time.RFC3339)+
+			`","output_path":"`+stalePath+`"}`+"\n",
+		`{"kind":"job_finished","seq":2,"ts":"`+ended.Format(time.RFC3339)+
+			`","job_id":"`+jobID+`","status":"completed","exit_code":`+strconv.Itoa(exit)+
+			`,"ended_at":"`+ended.Format(time.RFC3339)+`","terminal_generation":"gen_forwarded"}`+"\n",
+	)
+
+	page, found, err := LoadSessionJobOutputPage(stateDir, rootSession, jobID, nil, 64, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobOutputPage: %v: the owner recorded the log and that file is readable, "+
+			"so a stale path on the record that won on STATUS must not decide where the bytes are", err)
+	}
+	if !found || page.Data != "owner bytes" {
+		t.Fatalf("found = %v, data = %q, want %q from the owner's recorded path: the forwarded "+
+			"record's path belongs to the launcher that forwarded the finish, not to this job",
+			found, page.Data, "owner bytes")
+	}
+}
+
 // TestLoadSessionJobOutputPageReadsOwnerLogWithoutContradictoryCounts pins the
 // validation INPUT, not its strictness. The selected record's path was discarded
 // because its owner claim contradicts the job ID, so the bytes come from the

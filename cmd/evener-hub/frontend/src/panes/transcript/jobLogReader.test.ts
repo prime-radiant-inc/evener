@@ -211,6 +211,41 @@ test("a response naming a different log replaces the cached bytes instead of fai
   expect(switched.windows.live?.bytes.length).toBe(14);
 });
 
+// A production daemon omitted logId on its pages, so a pane could cache bytes
+// from the daemon's default log with no identity at all. When the daemon exits
+// the hub serves the OWNER's retained log instead, and the first reply that
+// names a file cannot be matched against a cache that names nothing — so it must
+// replace the bytes, or the overlap check refuses the authoritative page against
+// the file it superseded.
+test("an unnamed cache does not defeat the first identity the server states", async () => {
+  // The daemon's page carries no logId, as production daemons' did.
+  await initial(page(90, "DAEMON_DEFAULT\n", 105));
+  expect(reader.getSnapshot().windows.live?.rows.map((row) => row.line[0]?.text)).toContain("DAEMON_DEFAULT");
+
+  reader.refresh();
+  await vi.advanceTimersByTimeAsync(1000);
+  const authoritative = await peer.request(OUTPUT, 1);
+  // The retained read names the owner's log. It overlaps the cached range and
+  // holds different bytes there.
+  peer.reply(authoritative, identifiedPage("owner-log", 90, "OWNER_RETAINED\n", 105));
+  const settled = await observed(
+    (snapshot) =>
+      snapshot.outputError !== null ||
+      snapshot.windows.live?.rows.some((row) => row.line[0]?.text === "OWNER_RETAINED") === true,
+  );
+  expect(settled.outputError).toBeNull();
+  expect(settled.windows.live?.rows.map((row) => row.line[0]?.text)).toContain("OWNER_RETAINED");
+
+  // And the identity was committed only because the page was accepted, so the
+  // next page of that same log merges normally rather than being treated as
+  // another replacement.
+  reader.demand({ direction: "backward", boundaryBytes: 90, limitBytes: 105 }, "start");
+  peer.reply(await peer.request(OUTPUT, 2), identifiedPage("owner-log", 82, "EARLIER\n", 105));
+  const paged = await observed((snapshot) => snapshot.windows.older !== null || snapshot.outputError !== null);
+  expect(paged.outputError).toBeNull();
+  expect(paged.windows.older?.rows.map((row) => row.line[0]?.text)).toContain("EARLIER");
+});
+
 test("a failing history page does not starve the tail a refresh asked for", async () => {
   await initial();
   // A page is queued and takes the one output slot.
@@ -253,6 +288,51 @@ test("a latest reply to a history request preserves bytes and retries without a 
   peer.reply(retry, page(90, "OLDER_ROW\n"));
   const recovered = await observed((snapshot) => snapshot.windows.older !== null && snapshot.outputError === null);
   expect(recovered.windows.older?.rows[0]?.line[0]?.text).toBe("OLDER_ROW");
+});
+
+// A history boundary measured against the cached fallback log can point past the
+// EOF of the log the server is serving now. The server refuses it before reading
+// anything, so retrying it asks the same unanswerable question; the pane would
+// spend the rest of its life doing exactly that, because nothing else in a
+// settled terminal state asks for output. The refused boundary is dropped and a
+// latest read is owed instead: it carries no offset to refuse, and whichever log
+// answers it establishes the identity that replaces the cache.
+test("a refused history boundary asks for the latest page instead of retrying it", async () => {
+  // A TERMINAL pane is the hard case: the recurring cadence stops once the
+  // drain settles, so a boundary retried forever would be the only thing left
+  // asking, and nothing would ever discover the replacement log. A refusal is
+  // the server saying this offset does not exist, so the request has to become
+  // a question about the log that does.
+  peer.reply(await peer.request(META), metadata(true));
+  peer.reply(await peer.request(OUTPUT), identifiedPage("fallback-log"));
+  await observed((snapshot) => snapshot.windows.live !== null && snapshot.job?.terminal === true);
+  reader.demand({ direction: "backward", boundaryBytes: 100, limitBytes: 105 }, "start");
+  const history = await peer.request(OUTPUT, 1);
+  expect(history.params.beforeBytes).toBe(100);
+
+  // The server refuses the offset on its shape: it is outside the log the read
+  // selected. Nothing was read.
+  peer.fail(history, "invalid job output beforeBytes", undefined, -32602);
+  const refused = await observed((snapshot) => snapshot.pendingDemand === null || snapshot.outputError !== null);
+  expect(refused.pendingDemand).toBeNull();
+  // The cached output stays on screen until a reply establishes its replacement.
+  expect(refused.windows.live?.bytes.length).toBeGreaterThan(0);
+
+  // One latest read, not the doomed boundary.
+  const latest = await peer.request(OUTPUT, 2);
+  expect(latest.params.beforeBytes).toBeUndefined();
+  // The owner's log is SHORTER than the fallback's and carries different bytes.
+  peer.reply(latest, identifiedPage("owner-log", 4, "NEW\n", 8));
+  const replaced = await observed(
+    (snapshot) => snapshot.windows.live?.rows.some((row) => row.line[0]?.text === "NEW") === true,
+  );
+  expect(replaced.windows.totalBytes).toBe(8);
+
+  // And the schedule settles: no retry of the boundary, and no repeating latest
+  // read either, because the reply that arrived was a successful tail.
+  const settled = { metadata: peer.requests(META).length, output: peer.requests(OUTPUT).length };
+  await vi.advanceTimersByTimeAsync(5000);
+  expect(peer.requests(OUTPUT)).toHaveLength(settled.output);
 });
 
 test("an empty running EOF still polls and publishes a later append", async () => {
@@ -762,12 +842,17 @@ test("a torn-tail unconfirmed row is re-checked and follows a later finish", asy
   );
   expect(finished.job?.status).toBe("completed");
 
-  // And the finish is drained, so the pane shows the final bytes.
+  // And the finish is drained, so the pane shows the final bytes. The reply
+  // APPENDS to the cached range rather than rewriting it: a page that replaced
+  // the cached bytes at the same offsets would be refused by the overlap guard,
+  // and a predicate that only checked the total would pass on the initial page
+  // while the drain was still pending.
   await vi.advanceTimersByTimeAsync(1000);
   const drain = await peer.request(OUTPUT, settled.output);
-  peer.reply(drain, page(100, "DONE\n", 105));
-  const drained = await observed((snapshot) => snapshot.windows.totalBytes === 105);
-  expect(drained.windows.totalBytes).toBe(105);
+  peer.reply(drain, page(105, "DONE\n", 110));
+  const drained = await observed((snapshot) => !snapshot.drainPending && snapshot.windows.totalBytes === 110);
+  expect(drained.windows.live?.offsetBytes).toBe(100);
+  expect(drained.windows.live?.bytes.length).toBe(10);
 });
 
 // The counterpart that makes the distinction real: durable corruption cannot be
@@ -822,12 +907,16 @@ test("an ancestor's durable corruption does not cancel a torn-tail row's recheck
   );
   expect(finished.job?.status).toBe("completed");
 
-  // The finish is drained, so the record's own evidence really did reach the pane.
+  // The finish is drained, so the record's own evidence really did reach the
+  // pane. Appended, not replaced: see the note in the recheck-and-follow test —
+  // a same-offset rewrite is refused by the overlap guard, and a total-only
+  // predicate would pass before the drain landed.
   await vi.advanceTimersByTimeAsync(1000);
   const drain = await peer.request(OUTPUT, settled.output);
-  peer.reply(drain, page(100, "DONE\n", 105));
-  const drained = await observed((snapshot) => snapshot.windows.totalBytes === 105);
-  expect(drained.windows.totalBytes).toBe(105);
+  peer.reply(drain, page(105, "DONE\n", 110));
+  const drained = await observed((snapshot) => !snapshot.drainPending && snapshot.windows.totalBytes === 110);
+  expect(drained.windows.live?.offsetBytes).toBe(100);
+  expect(drained.windows.live?.bytes.length).toBe(10);
 });
 
 // A tail that fails transiently while the row is provisional must not be dropped
@@ -896,6 +985,66 @@ test("a slow recheck does not re-arm a tail that already loaded", async () => {
     await vi.advanceTimersByTimeAsync(2000);
     expect(peer.requests(OUTPUT)).toHaveLength(loaded);
   }
+});
+
+// The counterpart the recovery case needs: a slow recheck can move the row from
+// a forwarded fallback to the owner's own record. That is the same row with a
+// different SOURCE, and the owner's log can be a different file — but the tail
+// that already loaded left liveTailFailed false, so nothing is owed and the
+// recurring cadence stays parked. The pane then shows the fallback's bytes under
+// the recovered owner's metadata until something else asks for output.
+//
+// One tail read is owed for that transition, and the bytes that arrive are the
+// proof: this asserts on the output, not on a flag.
+test("a recheck that recovers the owner from a fallback re-reads the output", async () => {
+  // The first read is fallback evidence: the scoped copy stood in for an owner
+  // that could not be consulted, and its status is unconfirmed and recheckable.
+  peer.reply(await peer.request(META), {
+    ...metadata(false),
+    diagnostics: ["forwarded_fallback", "owner_unavailable"],
+    statusUnconfirmed: true,
+    statusRecheckable: true,
+  });
+  peer.reply(await peer.request(OUTPUT), page(0, "SCOPED_COPY\n", 12));
+  await observed((snapshot) => snapshot.windows.live !== null && snapshot.job?.statusUnconfirmed === true);
+  const loaded = peer.requests(OUTPUT).length;
+
+  // The recheck reaches the owner. The codes are gone and the row is still
+  // provisional — the owner's finish is torn — so nothing about the status
+  // schedule changes and no FAILED tail is owed.
+  await vi.advanceTimersByTimeAsync(UNCONFIRMED_RECHECK_MS);
+  peer.reply(await peer.request(META, peer.requests(META).length - 1), {
+    ...metadata(false),
+    diagnostics: ["journal_torn_tail"],
+    statusUnconfirmed: true,
+    statusRecheckable: true,
+  });
+  await observed((snapshot) => !(snapshot.job?.diagnostics ?? []).includes("forwarded_fallback"));
+
+  // One tail read follows, and it delivers the owner's bytes. It is a demand
+  // rather than a poll, so it goes out on the tick the recheck settled.
+  await vi.advanceTimersByTimeAsync(1);
+  expect(peer.requests(OUTPUT)).toHaveLength(loaded + 1);
+  const reread = await peer.request(OUTPUT, loaded);
+  expect(reread.params.beforeBytes).toBeUndefined();
+  peer.reply(reread, identifiedPage("owner-log", 0, "OWNER_LOG\n", 10));
+  const recovered = await observed(
+    (snapshot) => snapshot.windows.live?.rows.some((row) => row.line[0]?.text === "OWNER_LOG") === true,
+  );
+  expect(recovered.windows.live?.rows.map((row) => row.line[0]?.text)).not.toContain("SCOPED_COPY");
+
+  // And it is ONE read: the next slow tick, still provisional and with no failed
+  // tail, re-arms nothing.
+  const afterRecovery = peer.requests(OUTPUT).length;
+  await vi.advanceTimersByTimeAsync(UNCONFIRMED_RECHECK_MS);
+  peer.reply(await peer.request(META, peer.requests(META).length - 1), {
+    ...metadata(false),
+    diagnostics: ["journal_torn_tail"],
+    statusUnconfirmed: true,
+    statusRecheckable: true,
+  });
+  await vi.advanceTimersByTimeAsync(2000);
+  expect(peer.requests(OUTPUT)).toHaveLength(afterRecovery);
 });
 
 // A background recheck that FAILS must stay on the cadence it was scheduled at.
