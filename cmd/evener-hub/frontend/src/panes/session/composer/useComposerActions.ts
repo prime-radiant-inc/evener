@@ -45,8 +45,10 @@ import {
   captureRecoverySendIntent,
   pushRecoveryRefusal,
   pushSelectionRefusal,
+  pushUnbackedImageRefusal,
   selectionRefusal,
   submitDraftToStore,
+  unbackedImageMarkersIn,
   withRecoveryDestinationClaim,
 } from "./submitProtocol";
 
@@ -433,6 +435,17 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     const submittedRevision = draftEditRevisionRef.current;
     const submittedDraftRevision = readDraftRevision(ref);
     const payload = attachments.toInputAttachments();
+    // Every route passes here - Send and Queue from the composer, Steer and
+    // drain from its own control, and a typed /queue or /steer which supplies
+    // its own text - so the refusal lives at this one seam. An adopted anchor
+    // with no image behind it would reach the model as literal text (#4826),
+    // and the draft is kept because nothing below this point runs.
+    const unbacked = unbackedImageMarkersIn(submittedText, source.getSnapshot().adoptedImageMarkers);
+    if (unbacked.length > 0) {
+      pushUnbackedImageRefusal("unbacked-image");
+      releaseRecoveryOperation();
+      return;
+    }
     const submittedLease = recoveryOwnerLeaseRef.current;
     const submittedRecoveryId = submittedLease?.clientMutationId ?? null;
     let releaseRecoveryInFlight: (() => void) | null = null;

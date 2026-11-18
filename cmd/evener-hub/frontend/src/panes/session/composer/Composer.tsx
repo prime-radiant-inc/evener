@@ -27,6 +27,7 @@ import {
   SHUT_DOWN_STATUSES,
   sessionActionError,
   slashCommandInvocation,
+  stripMarker,
 } from "@evener/appwire-client";
 import {
   type FormEvent,
@@ -63,6 +64,7 @@ import {
   Button,
   ConfirmDialog,
   Dropzone,
+  InlineNotice,
   PromptCard,
   SendIcon,
   Tooltip,
@@ -100,7 +102,7 @@ import { SlashCompletionMenu } from "./SlashCompletionMenu";
 import { maskSkillAtoms, type SkillEditorValue } from "./skillDocument";
 import type { ComposerSourceState } from "./sourceState";
 import { recordStoplessComposer } from "./stoplessComposer";
-import { pushRecoveryRefusal } from "./submitProtocol";
+import { pushRecoveryRefusal, unbackedImageMarkersIn } from "./submitProtocol";
 import { type ComposerSubmission, useBuiltinSubmission } from "./useBuiltinSubmission";
 import { useInlineStopReady } from "./useInlineStopReady";
 import { useSlashCompletion } from "./useSlashCompletion";
@@ -261,11 +263,14 @@ function ComposerWithSubmission({
     cursorToRestoreRef.current = cursor;
     setCursorRestoreSeq((seq) => seq + 1);
   }, []);
-  const { text, skillNames, commandNames, mentions, restoreEpoch, activeRecoveryId } = useSyncExternalStore(
-    source.subscribe,
-    source.getSnapshot,
-    source.getSnapshot,
-  );
+  const { text, skillNames, commandNames, mentions, restoreEpoch, activeRecoveryId, adoptedImageMarkers } =
+    useSyncExternalStore(source.subscribe, source.getSnapshot, source.getSnapshot);
+  // The anchors this composer read out of a draft it did not write and cannot
+  // back with bytes: the source's adoption record intersected with the text as
+  // it stands. Read once here so the refusal, the reason beside the draft, and
+  // Send's own disabled state all describe the same draft.
+  const unbackedImageMarkers = unbackedImageMarkersIn(text, adoptedImageMarkers);
+  const unbackedImageNoticeId = useId();
   const restoredRecoveryRef = useRef(activeRecoveryId);
   useLayoutEffect(() => {
     if (restoredRecoveryRef.current === activeRecoveryId) return;
@@ -1025,6 +1030,18 @@ function ComposerWithSubmission({
     setSlashToken(parseSlashToken(maskSkillAtoms(value), caret));
   }
 
+  // The repair the notice offers. One edit through the source's editor seam,
+  // so the draft, the atoms between the markers and the undo history all see a
+  // single ordinary edit instead of a reset.
+  function handleRemoveUnbackedMarkers(): void {
+    if (unbackedImageMarkers.length === 0) return;
+    let next = textRef.current;
+    for (const marker of unbackedImageMarkers) next = stripMarker(next, undefined, marker).value;
+    if (next === textRef.current) return;
+    textEditor.write(next, next.length);
+    editorRef.current?.focus();
+  }
+
   // A chip's details: the skill's own description, or - when the live catalog
   // report no longer backs the selection - the name plus why it cannot be
   // found. Command rows never render here, so these details are skill-only by
@@ -1045,6 +1062,11 @@ function ComposerWithSubmission({
       toasts.push("error", "Image attachment is still processing");
       return;
     }
+    // A marker whose bytes this composer does not hold is not sendable: the
+    // request would carry the anchor as literal text and no image item, telling
+    // the model about an image it cannot see (#4826). Refuse, keep the draft,
+    // and let the notice beside it name the repair.
+    if (unbackedImageMarkers.length > 0) return;
     if (submitBuiltin()) return;
     // Hand off before Send becomes disabled. Never refocus on completion:
     // the user may have moved to another control or session while submitting.
@@ -1075,6 +1097,9 @@ function ComposerWithSubmission({
       toasts.push("error", "Image attachment is still processing");
       return;
     }
+    // Steer and drain carry the same composition Send does, so the same
+    // unbacked anchor would reach the model by a second route.
+    if (unbackedImageMarkers.length > 0) return;
     const route = decideSteerRoute({
       hasText,
       hasAttachments,
@@ -1369,6 +1394,30 @@ function ComposerWithSubmission({
             onCompositionStart={handleEditorCompositionStart}
             onCompositionEnd={handleEditorCompositionEnd}
           >
+            {/* An adopted anchor with no image behind it. Kept in the flow with
+                the draft rather than toasted: Send refuses, the draft survives,
+                and the reason stays readable for as long as the anchor does.
+                live is "off" because this is a standing property of the draft,
+                not news arriving after it rendered. */}
+            {unbackedImageMarkers.length > 0 && (
+              <InlineNotice
+                id={unbackedImageNoticeId}
+                tone="danger"
+                live="off"
+                data-testid="composer-unbacked-image"
+                action={
+                  <Button size="sm" type="button" onClick={handleRemoveUnbackedMarkers}>
+                    Remove the reference
+                  </Button>
+                }
+              >
+                {`The image ${unbackedImageMarkers
+                  .map((marker) => `[image ${marker}]`)
+                  .join(
+                    ", ",
+                  )} referred to here is not attached in this composer. Remove the reference, or attach the image again, before sending.`}
+              </InlineNotice>
+            )}
             <Dropzone onFiles={(files) => attachments.ingestFiles(files, (message) => toasts.push("error", message))}>
               <PromptCard
                 data-testid="composer-input-card"
@@ -1442,6 +1491,12 @@ function ComposerWithSubmission({
                           // toast.
                           disabled={
                             actionPending ||
+                            // An adopted anchor with no bytes behind it is not
+                            // sendable content, and the press is refused
+                            // anyway - so do not offer a control that can only
+                            // fail. The notice above the field says why and
+                            // carries the repair.
+                            unbackedImageMarkers.length > 0 ||
                             !hasContent ||
                             !(ended
                               ? (canSendWhenEnded || fence.sendDriven) && canCompose && !fence.stillFenced

@@ -37,7 +37,7 @@ import {
   type SkillEditorValue,
   serializeSkillDocument,
 } from "./skillDocument";
-import { pushRecoveryRefusal } from "./submitProtocol";
+import { pushRecoveryRefusal, spelledImageMarkers } from "./submitProtocol";
 
 type RevisionRef<T> = { current: T };
 export type RecoveryOwnerLease = { clientMutationId: string; compositionRevision: number };
@@ -65,6 +65,14 @@ export interface ComposerSourceSnapshot {
   skillNames: string[];
   commandNames: string[];
   mentions?: ComposerMention[];
+  /** Image anchors this source read out of a draft it did not write, kept
+   * only while `text` still spells them (updateText prunes). In memory and
+   * per source on purpose: bytes never enter localStorage, so this cannot be
+   * a persisted fact about what some other writer held, and it must not
+   * outlive the pair it describes - an adopting source re-reads the text with
+   * its own store, never a remembered flag (submitProtocol's
+   * unbackedImageMarkersIn). */
+  adoptedImageMarkers: number[];
   activeRecoveryId: string | null;
   recoveryActivating: boolean;
   recoveryOperationBusy: boolean;
@@ -190,6 +198,12 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     skillNames: restoredSkillNames(initial),
     commandNames: initial.commandNames ?? [],
     mentions: initial.mentions,
+    // The constructor's read is not an adoption: a fresh source cannot tell a
+    // staged anchor from literal prose a person typed before a reload, and
+    // guessing "anchor" refuses a working draft. Only bindEditor's rebind -
+    // where this source still lives and another writer moved the draft under
+    // it - knows the text is not its own.
+    adoptedImageMarkers: [],
     activeRecoveryId: null,
     recoveryActivating: false,
     recoveryOperationBusy: false,
@@ -294,7 +308,17 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     if (disposed) return;
     if (text.trim() !== "") cancelCleanupRetry();
     textRef.current = text;
-    state.setState({ text });
+    // An adopted anchor stops being adopted the moment the text stops naming
+    // it: the person deleted the reference this composer could not back, and
+    // a marker typed afterwards is their own prose, not the adopted anchor.
+    const previous = state.getState().adoptedImageMarkers;
+    if (previous.length === 0) {
+      state.setState({ text });
+      return;
+    }
+    const spelled = new Set(spelledImageMarkers(text));
+    const retained = previous.filter((marker) => spelled.has(marker));
+    state.setState(retained.length === previous.length ? { text } : { text, adoptedImageMarkers: retained });
   }
   function updateSkillNames(skillNames: string[]): void {
     if (disposed) return;
@@ -888,6 +912,12 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
         updateSelectionMeta(draft);
         currentDraftRevisionId = draft.revisionId;
         ownedDraftRevisionRef.current = readDraftRevision(ref);
+        // The one point this source learns the draft is not its own: the
+        // revision it last held is gone, so another writer produced this text.
+        // Record which anchors that text names and let the send-time check ask
+        // whether this composer's store backs them - the pair as it stands,
+        // never a remembered number.
+        state.setState({ adoptedImageMarkers: spelledImageMarkers(draft.text) });
       }
       markRestore();
       boundEditor = nextEditor;

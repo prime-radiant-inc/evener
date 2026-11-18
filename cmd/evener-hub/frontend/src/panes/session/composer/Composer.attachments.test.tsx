@@ -28,6 +28,7 @@ import {
   installGatedDecodeStub,
   installStalledDecodeStub,
   mountComposer,
+  mountComposerWithHandle,
   seedRejectedRecovery,
   seedRejectedRecoveryWithAttachment,
   submitButton,
@@ -756,4 +757,122 @@ test("a photo taken on Android is staged like any picked image", async () => {
   fireEvent.change(input, { target: { files: [photo] } });
 
   await waitFor(() => expect(screen.getByRole("button", { name: /remove/i })).toBeTruthy());
+});
+
+// Issue #4826's step 4-5 sequence, driven through the real Composer, the real
+// draft store and the real attachment pipeline: one reader stages an image and
+// its draft lands under the shared ref, then the OTHER reader - whose source
+// existed before that write, so it no longer owns the ref's draft revision -
+// is mounted and adopts the text with an empty attachment list. Bytes never
+// enter localStorage, so the adopted anchor has nothing behind it and
+// buildComposerInput would ship it as literal text with no image item: the
+// model is told about an image it cannot see.
+test("an adopted draft with a marker and no bytes refuses to send and keeps the draft", async () => {
+  installCanvasStubs();
+  const user = userEvent.setup();
+  const ref = "ref_a";
+  // The second reader's source is created first, exactly as a session reader
+  // mounted in step 1 predates the cascade reader's typing in step 3.
+  const adoptingSource = createTestComposerSource(ref);
+
+  const first = await mountComposerWithHandle(ref);
+  const firstEditor = textarea();
+  await user.type(firstEditor, "Cascade reader draft");
+  pastePngInto(firstEditor, "cascade.png");
+  await screen.findByRole("button", { name: "View cascade.png" });
+  expect(readComposerDraft(ref)).toEqual({ text: "Cascade reader draft[image 1]", skillNames: [] });
+  first.unmount();
+
+  // The remount: cached text arrives, the attachment list does not.
+  const second = await mountComposerWithHandle(ref, {}, { source: adoptingSource });
+  expect(textarea().textContent).toBe("Cascade reader draft[image 1]");
+  // No tile: the bytes stayed with the reader that staged them.
+  expect(screen.queryByRole("button", { name: "Remove cascade.png" })).toBeNull();
+  const delivered: unknown[] = [];
+  second.fake.on("turn/start", (params) => {
+    delivered.push(params.input);
+    return {
+      receipt: appliedReceipt(params.clientMutationId, "thread_a"),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  second.fake.on("turn/queue", (params) => {
+    delivered.push(params.input);
+    return { receipt: appliedReceipt(params.clientMutationId, "thread_a") };
+  });
+
+  // The form's own submit reaches the request boundary without any button
+  // gating, so this pins the refusal rather than a disabled control.
+  fireEvent.submit(screen.getByTestId("composer-form"));
+  await flushPendingTurnsProjectionForTests();
+  expect(delivered).toEqual([]);
+  expect(screen.getByTestId("composer-unbacked-image")).toBeTruthy();
+  expect(submitButton().disabled).toBe(true);
+  expect(textarea().textContent).toBe("Cascade reader draft[image 1]");
+  expect(readComposerDraft(ref)).toEqual({ text: "Cascade reader draft[image 1]", skillNames: [] });
+
+  // The notice's own action is the repair the refusal asks for: one ordinary
+  // edit that drops the reference, after which the draft sends unchanged.
+  await user.click(screen.getByRole("button", { name: "Remove the reference" }));
+  expect(textarea().textContent).toBe("Cascade reader draft");
+  expect(screen.queryByTestId("composer-unbacked-image")).toBeNull();
+  await waitFor(() => expect(submitButton().disabled).toBe(false));
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  expect(second.fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1);
+});
+
+// The working path the refusal must not block: a composer that staged the
+// image itself holds the bytes, so it sends the marker AND the image item.
+test("a composer holding the image bytes sends the marker with its image item", async () => {
+  installCanvasStubs();
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a");
+  fake.on("turn/start", (params) => ({
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+
+  pastePngInto(textarea(), "shot.png");
+  await screen.findByRole("button", { name: "View shot.png" });
+  expect(screen.queryByTestId("composer-unbacked-image")).toBeNull();
+
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  const call = fake.calls.find((candidate) => candidate.method === "turn/start");
+  if (call === undefined) throw new Error("expected the staged image to send");
+  const input = (call.params as { input: Array<{ type: string; text?: string; data?: string; name?: string }> }).input;
+  expect(input.filter((item) => item.type === "image")).toHaveLength(1);
+  expect(input.find((item) => item.type === "image")?.data).toBeTruthy();
+  const textItem = input.find((item) => item.type === "text");
+  expect(textItem?.text?.includes("[image 1]")).toBe(false);
+  expect(textItem?.text).toContain("shot.png");
+});
+
+// The false positive this fix must not ship: a marker the person typed is
+// prose this composer wrote, so it is never an adopted anchor and still sends
+// as the literal text it is.
+test("a marker the person typed with no attachment still sends as literal text", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a");
+  fake.on("turn/start", (params) => ({
+    receipt: appliedReceipt(params.clientMutationId, "thread_a"),
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+
+  const editor = textarea();
+  // "[[": userEvent reads a single "[" as the start of a key descriptor, so
+  // the escaped input types the same bracket the draft keeps.
+  await user.type(editor, "look at [[image 1]");
+  expect(editor.textContent).toBe("look at [image 1]");
+  expect(screen.queryByTestId("composer-unbacked-image")).toBeNull();
+
+  await user.click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  const calls = fake.calls.filter((candidate) => candidate.method === "turn/start");
+  expect(calls).toHaveLength(1);
+  const call = calls[0];
+  if (call === undefined) throw new Error("expected the typed marker to send");
+  const input = (call.params as { input: Array<{ type: string; text?: string }> }).input;
+  expect(input).toEqual([{ type: "text", text: "look at [image 1]" }]);
 });

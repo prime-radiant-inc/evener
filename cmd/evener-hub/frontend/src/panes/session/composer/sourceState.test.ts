@@ -456,6 +456,45 @@ test("rebound composer adopts and consumes the exact persisted draft revision on
   }
 });
 
+// Issue #4826 at the seam the send-time check reads: a rebind that finds a
+// draft revision it no longer owns records the anchors that text spells, and
+// drops an anchor as soon as an edit stops naming it. A fresh source records
+// nothing, because its constructor read cannot tell a staged anchor from prose
+// typed before a reload.
+test("a rebind records the adopted draft's anchors and prunes them on edit", () => {
+  const source = createTestComposerSource("root");
+  const detach = source.bindEditor({ read: () => source.editor.read(), write: () => {} });
+  detach();
+  writeComposerDraft("root", { text: "Cascade reader draft[image 1][image 2]", skillNames: [] });
+  const unbind = source.bindEditor({ read: () => source.editor.read(), write: () => {} });
+  try {
+    expect(source.getSnapshot().text).toBe("Cascade reader draft[image 1][image 2]");
+    expect(source.getSnapshot().adoptedImageMarkers).toEqual([1, 2]);
+    // An image this source stages afterwards backs nothing: the adopted text is
+    // another writer's, so the send-time check must still see the anchors.
+    source.editText("Cascade reader draft[image 1][image 2] plus more");
+    expect(source.getSnapshot().adoptedImageMarkers).toEqual([1, 2]);
+    source.editText("Cascade reader draft[image 2]");
+    expect(source.getSnapshot().adoptedImageMarkers).toEqual([2]);
+    source.editText("Cascade reader draft");
+    expect(source.getSnapshot().adoptedImageMarkers).toEqual([]);
+  } finally {
+    unbind();
+    source.dispose();
+  }
+});
+
+test("a fresh source records no adopted anchors for a persisted draft", () => {
+  writeComposerDraft("root", { text: "look at [image 1]", skillNames: [] });
+  const source = createTestComposerSource("root");
+  try {
+    expect(source.getSnapshot().text).toBe("look at [image 1]");
+    expect(source.getSnapshot().adoptedImageMarkers).toEqual([]);
+  } finally {
+    source.dispose();
+  }
+});
+
 test("rebound legacy draft is merged without claiming a missing revision", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
