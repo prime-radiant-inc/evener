@@ -248,6 +248,9 @@ describe("liveBandNodes", () => {
     const children = needsYou?.children ?? [];
     expect(children.map((child) => child.kind)).toEqual(["session", "overflow"]);
     expect(children.at(-1)).toMatchObject({ count: 12, pages: [{ section: "needs_you", offset: 1, limit: 50 }] });
+    // The fold above this row already says which list it speaks for, so the
+    // row stays compact and names no band.
+    expect(children.at(-1)).not.toHaveProperty("scope");
   });
 
   test("a settled needs-you tier leaves no overflow row, and no other band grows one", () => {
@@ -275,18 +278,6 @@ describe("liveBandNodes", () => {
     // page row: it names the tier it pages. The copy inside a band does not -
     // the band's fold already says which rows it speaks for.
     expect(nodes.at(-1)).toMatchObject({ scope: "needsYou" });
-  });
-
-  test("the needs-you row inside its band stays unlabeled: the fold supplies that context", () => {
-    const nodes = liveBandNodes(
-      railLiveBands([], [row("local:ask", { state: "awaiting", ask_pending: true })]),
-      sources,
-      open,
-      { remaining: 12, offset: 1, limit: 50 },
-    );
-    const [needsYou] = bandsOf(nodes);
-    expect(needsYou?.children.at(-1)).toMatchObject({ kind: "overflow", count: 12 });
-    expect(needsYou?.children.at(-1)).not.toHaveProperty("scope");
   });
 });
 
