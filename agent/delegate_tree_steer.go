@@ -470,6 +470,15 @@ func (s *Session) delegateAttentionModelProjection() (delegateModelProjection, m
 	defer s.attentionMu.Unlock()
 	s.reconcileAutomaticDriveHoldsLocked()
 	holds := maps.Clone(s.attentionAutomaticDriveHolds)
+	// The returned hold set is always writable: this function adds withheld
+	// rows to it below, and maps.Clone of a nil map is nil. A session that has
+	// never installed a hold — the ordinary cold path — reaches here with no
+	// map at all, so the clone is normalized rather than guarded at each write.
+	// An empty set behaves exactly as a nil one for every consumer: the filter
+	// returns early on len == 0.
+	if holds == nil {
+		holds = make(map[string]uint64)
+	}
 	// The held IDs and the history they filter are taken under this one hold,
 	// so a release — which takes attentionMu to move its rows and drop its
 	// holds — either landed before this capture and is in both, or waits and
