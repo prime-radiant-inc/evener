@@ -1168,6 +1168,179 @@ func TestLoadSessionJobGetPreservesLaunchFieldsFromScopedStart(t *testing.T) {
 	}
 }
 
+// TestLoadSessionJobGetKeepsForwardedTerminalOverStatuslessOwnerRow is invariant
+// A applied to the branch the torn tail did not cover: the owner journal holds
+// only a NOTIFICATION for the job. The fold creates a row for it because the job
+// was named, not because anyone said what it did, so the row has no status, no
+// end time and no exit code. A clean scan of a journal that never described the
+// job's state proves nothing about that state, and the row may not displace the
+// scoped journal's observed finish.
+func TestLoadSessionJobGetKeepsForwardedTerminalOverStatuslessOwnerRow(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 19, 4, 0, 0, 0, time.UTC)
+	ended := started.Add(2 * time.Minute)
+	exit := 9
+
+	// The owner's journal: a notification and nothing else. Applying it creates an
+	// empty-status row and reports an incomplete lifecycle.
+	writeJobJournalLines(t, jobsDir(stateDir, ownerSession),
+		`{"kind":"job_notification_pending","seq":1,"job_id":"`+jobID+`","terminal_generation":"gen_owner"}`+"\n",
+	)
+
+	rootStore := openJobJournal(t, jobsDir(stateDir, rootSession))
+	appendJobEvent(t, rootStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: rootSession,
+		StartedAt: &started,
+	})
+	appendJobEvent(t, rootStore, jobstore.Event{
+		Kind: jobstore.EventJobFinished, TS: ended, JobID: jobID,
+		Status: jobstore.StatusCommandExitedNonzero, Reason: "exit_nonzero", ExitCode: &exit,
+		EndedAt: &ended, TerminalGen: "gen_forwarded",
+	})
+	closeJobJournal(t, rootStore)
+
+	job, found, err := LoadSessionJobGet(stateDir, rootSession, jobID, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the observed finish")
+	}
+	if job.Status != string(jobstore.StatusCommandExitedNonzero) {
+		t.Fatalf("status = %q, want %q: a row that never stated a status cannot displace an observed finish",
+			job.Status, jobstore.StatusCommandExitedNonzero)
+	}
+	if job.ExitCode == nil || *job.ExitCode != exit {
+		t.Fatalf("exitCode = %v, want %d from the observed finish", job.ExitCode, exit)
+	}
+	if job.EndedAt == "" {
+		t.Fatal("endedAt is empty, want the observed finish's end time")
+	}
+	if !slices.Contains(job.Diagnostics, "incomplete_lifecycle") {
+		t.Fatalf("Diagnostics = %v, want incomplete_lifecycle: the owner's diagnostic must still travel", job.Diagnostics)
+	}
+}
+
+// TestLoadSessionJobGetPreservesLaunchFieldsFromLegacyOwner is invariant B
+// applied to the legacy branch: the scoped journal holds the start and the
+// corroborated hint journal holds only the finish. The owner's terminal facts
+// win and the launch facts fill from the scoped start, exactly as the
+// encoded-owner branch already does.
+func TestLoadSessionJobGetPreservesLaunchFieldsFromLegacyOwner(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	scopedSession := identifier.MustNewSessionID()
+	hintedSession := identifier.MustNewSessionID()
+	jobID := "job_legacy_e5f6a7b8"
+	started := time.Date(2026, 11, 19, 4, 30, 0, 0, time.UTC)
+	ended := started.Add(5 * time.Minute)
+	exit := 0
+	outputPath := filepath.Join(t.TempDir(), "explicit.log")
+
+	// The scoped journal holds the start, with the launch details and the hint.
+	scopedStore := openJobJournal(t, jobsDir(stateDir, scopedSession))
+	appendJobEvent(t, scopedStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: hintedSession, VisibleToSession: scopedSession,
+		Command: "make legacy-build", WorkingDir: "/tmp/legacy", OutputPath: outputPath,
+		StartedAt: &started,
+	})
+	closeJobJournal(t, scopedStore)
+
+	// The corroborating hinted journal holds only the finish.
+	hintedStore := openJobJournal(t, jobsDir(stateDir, hintedSession))
+	appendJobEvent(t, hintedStore, jobstore.Event{
+		Kind: jobstore.EventJobFinished, TS: ended, JobID: jobID,
+		Status: jobstore.StatusCompleted, ExitCode: &exit, EndedAt: &ended, TerminalGen: "gen_legacy_owner",
+	})
+	closeJobJournal(t, hintedStore)
+
+	job, found, err := LoadSessionJobGet(stateDir, scopedSession, jobID, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the corroborated owner's finish")
+	}
+	if job.Status != string(jobstore.StatusCompleted) {
+		t.Fatalf("status = %q, want %q from the owner's finish", job.Status, jobstore.StatusCompleted)
+	}
+	if job.Command != "make legacy-build" {
+		t.Fatalf("command = %q, want %q from the scoped start: an end alone cannot say what was launched",
+			job.Command, "make legacy-build")
+	}
+	if job.Type != string(jobstore.JobShell) {
+		t.Fatalf("type = %q, want %q from the scoped start", job.Type, jobstore.JobShell)
+	}
+	if job.StartedAt == "" {
+		t.Fatal("startedAt is empty, want the scoped start's time")
+	}
+	// The wire type carries no working directory or output path, so those two are
+	// checked on the record the read selected.
+	read, err := loadSessionJobRecord(stateDir, scopedSession, jobID, nil)
+	if err != nil {
+		t.Fatalf("loadSessionJobRecord: %v", err)
+	}
+	if read.record == nil {
+		t.Fatal("record = nil, want the corroborated owner's finish")
+	}
+	if read.record.WorkingDir != "/tmp/legacy" {
+		t.Fatalf("workingDir = %q, want %q from the scoped start", read.record.WorkingDir, "/tmp/legacy")
+	}
+	if read.record.OutputPath != outputPath {
+		t.Fatalf("outputPath = %q, want %q from the scoped start", read.record.OutputPath, outputPath)
+	}
+}
+
+// TestLoadSessionJobGetReportsCorruptOwnerJournalAsDamage is the low: an encoded
+// owner journal that hits a malformed line before decoding any record for this
+// job must still hand its damage report back, so the caller serving the
+// forwarded copy can say the owner's history is CORRUPT rather than absent.
+func TestLoadSessionJobGetReportsCorruptOwnerJournalAsDamage(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 19, 5, 0, 0, 0, time.UTC)
+	ended := started.Add(time.Minute)
+
+	// The owner's journal is unreadable before it names this job at all.
+	writeJobJournalLines(t, jobsDir(stateDir, ownerSession), "{not a job event}\n")
+
+	rootStore := openJobJournal(t, jobsDir(stateDir, rootSession))
+	appendJobEvent(t, rootStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: rootSession,
+		StartedAt: &started,
+	})
+	appendJobEvent(t, rootStore, jobstore.Event{
+		Kind: jobstore.EventJobFinished, TS: ended, JobID: jobID,
+		Status: jobstore.StatusCompleted, EndedAt: &ended, TerminalGen: "gen_forwarded",
+	})
+	closeJobJournal(t, rootStore)
+
+	read, err := loadSessionJobRecord(stateDir, rootSession, jobID, nil)
+	if err != nil {
+		t.Fatalf("loadSessionJobRecord: %v", err)
+	}
+	if !read.found || read.record == nil {
+		t.Fatal("found = false, want the forwarded copy as the surviving evidence")
+	}
+	if read.record.Status != jobstore.StatusCompleted {
+		t.Fatalf("status = %q, want %q: the scoped finish is the only settled evidence",
+			read.record.Status, jobstore.StatusCompleted)
+	}
+	if !read.diagnostics.ScanIncomplete {
+		t.Fatal("ScanIncomplete = false, want the owner journal's damage reported: a corrupt owner journal is not a missing one")
+	}
+}
+
 // openJobJournal opens a session's jobs.jsonl for a fixture, creating the
 // directory the store lives in.
 func openJobJournal(t *testing.T, dir string) *jobstore.Store {

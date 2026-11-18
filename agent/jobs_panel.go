@@ -346,6 +346,10 @@ func loadSessionJobRecord(stateDir, sessionID, jobID string, fence OwnerDeletion
 			corroborated.diagnostics.mergeIntegrity(local.diagnostics)
 			corroborated.diagnostics.ForwardedFallback = false
 			corroborated.diagnostics.OwnerUnavailable = false
+			// The owner's journal is the authority on what the job IS; the scoped
+			// journal is the only place the launch facts survive when the owner holds
+			// nothing but the finish. Same rule as the encoded branch, one call.
+			preserveLaunchFields(corroborated.record, local.record)
 			return corroborated, nil
 		}
 		local.diagnostics.mergeIntegrity(corroborated.diagnostics)
@@ -491,12 +495,22 @@ func retainedJobReadOutranks(existingIsOwner bool, existing sessionJobRecordRead
 // and a torn tail is an append that landed without its newline — the in-flight
 // finish, or one that will never complete. Reading either as "still running"
 // would state the job's state without having seen it.
+//
+// A record with NO STATUS established nothing at all. A journal holding only a
+// notification for a job folds into a row for it — the row exists because the
+// job was named, not because anyone said what it did — and such a row has no
+// status, no end time and no exit code to speak of. A clean scan of a journal
+// that never described the job's state is not evidence about that state, so it
+// may not displace a record that does state it.
 func stateEstablished(read sessionJobRecordRead) bool {
 	if read.record == nil {
 		return false
 	}
 	if read.record.Status.IsTerminal() {
 		return true
+	}
+	if read.record.Status == "" {
+		return false
 	}
 	return read.scanErr == nil && !read.diagnostics.TornTail
 }
@@ -542,8 +556,13 @@ func readSessionJobJournal(stateDir, sessionID, jobID string) (sessionJobRecordR
 	if rec == nil {
 		// The prefix holds nothing about this job. If the scan then failed, the
 		// journal cannot answer the question at all, so the damage is the answer.
+		// The diagnostics ride the read anyway: the caller that asked about this
+		// journal is not always the journal's owner, and a competing branch serving
+		// a forwarded copy still has to be able to say that the owner's history is
+		// CORRUPT rather than merely absent. Both travels together; only the error
+		// decides whether this read can stand on its own.
 		if scanErr != nil {
-			return sessionJobRecordRead{}, scanErr
+			return sessionJobRecordRead{diagnostics: diagnostics}, scanErr
 		}
 		return sessionJobRecordRead{diagnostics: diagnostics}, nil
 	}
