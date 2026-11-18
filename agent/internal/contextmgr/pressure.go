@@ -416,6 +416,11 @@ func estimateTokenPartsFor(prof *provider.Profile, turns []schema.Turn) llm.Toke
 		pricer := estimator
 		if t.DropsReasoningForTarget(&res, route) {
 			pricer = withoutThinking
+			if t.ReplaysChatDisplayText(&res) {
+				for _, p := range t.Message.Content {
+					parts.Chars += len(p.UnsignedChatDisplayText())
+				}
+			}
 		} else if dropPlainThinking || (rawReplay && t.Message.Role == llm.RoleAssistant && !t.MatchesReasoningTextTarget(&res, route)) {
 			pricer = withoutPlain
 		}

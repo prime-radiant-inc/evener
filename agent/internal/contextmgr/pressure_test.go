@@ -143,6 +143,39 @@ func TestEstimateTokens_WithThinking(t *testing.T) {
 		Transport: registry.Transport{BaseURL: "https://gateway.example.test", Endpoint: "/complete", StreamEndpoint: "/stream/a"},
 	}
 	const issuerStream = "/stream/a"
+	t.Run("assistant text on another Chat endpoint", func(t *testing.T) {
+		source := row
+		source.Protocol = registry.ProtocolOpenAIChat
+		const scalar, detail, mirrored = " independent-scalar-41 ", " unsigned-display-27 ", " signed-and-scalar-71 "
+		const signed = `[{"type":"reasoning.text","text":"signed-only-47","signature":"sig-47"}]`
+		const opaque = `[{"type":"reasoning.encrypted","data":"cipher-39"}]`
+		turn := schema.Turn{Kind: schema.TurnAssistant, ResponseProtocol: source.Protocol, ResponseProvider: source.Instance,
+			ResponseReasoningRoute: source.ReasoningReplayRoute(), Message: llm.Assistant("answer")}
+		for _, thinking := range []*llm.ThinkingData{
+			{Text: scalar, Signature: "reasoning"},
+			{Text: detail, EncryptedContent: opaque, ChatScalar: &llm.ChatReasoningScalar{Field: "reasoning", Text: "alternate-31"}},
+			{Text: "signed-only-47", EncryptedContent: signed},
+			{Text: "signed-only-47", EncryptedContent: signed, ChatScalar: &llm.ChatReasoningScalar{Field: "reasoning", Text: mirrored}},
+		} {
+			turn.Message.Content = append(turn.Message.Content, llm.ContentPart{Kind: llm.ContentThinking, Thinking: thinking})
+		}
+		target := source
+		target.Transport.StreamEndpoint = "/stream/b"
+		target.ModelID = "replacement"
+		target.Caps.ThinkingAsText = new(true)
+		for _, raw := range []bool{true, false} {
+			target.Caps.ReplayReasoningText = new(raw)
+			usage := estimateTokenPartsFor(provider.FromResolved(target, nil), []schema.Turn{turn})
+			if want := len("answer") + len(scalar) + len(detail) + len(mirrored); usage.Chars != want {
+				t.Errorf("raw replay %t, context pressure counted %d chars, want %d", raw, usage.Chars, want)
+			}
+			otherProtocol := turn
+			otherProtocol.ResponseProtocol = registry.ProtocolAnthropic
+			if got := estimateTokenPartsFor(provider.FromResolved(target, nil), []schema.Turn{otherProtocol}); got.Chars != len("answer") {
+				t.Errorf("raw replay %t, context pressure included foreign-protocol thinking: %+v", raw, got)
+			}
+		}
+	})
 	for _, tc := range []struct{ protocol, ciphertext string }{
 		{registry.ProtocolOpenAIResponses, "sealed-48"},
 		{registry.ProtocolOpenAIChat, `[{"type":"reasoning.text","text":"signed-48","signature":"sig-48"},{"type":"reasoning.encrypted","data":"cipher-48"}]`},

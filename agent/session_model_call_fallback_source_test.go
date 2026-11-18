@@ -197,21 +197,30 @@ func TestFallbackKeepsOpaqueAndWebSearchScopeAcrossProtocols(t *testing.T) {
 			if (tc.raw && !slices.Equal(scalars, []string{"mirror-b52", "native-b27"})) || (!tc.raw && len(scalars) != 0) {
 				t.Errorf("fallback wire scalars = %q", scalars)
 			}
-			t.Run("own tool continuation", func(t *testing.T) { testChatToolContinuation(t, tc.raw, true) })
-			t.Run("direct Chat tool continuation", func(t *testing.T) { testChatToolContinuation(t, tc.raw, false) })
+			t.Run("own tool continuation", func(t *testing.T) { testChatToolContinuation(t, chatContinuationCase{raw: tc.raw, viaFallback: true}) })
+			t.Run("direct Chat tool continuation", func(t *testing.T) { testChatToolContinuation(t, chatContinuationCase{raw: tc.raw}) })
 		})
 	}
 }
 
-func testChatToolContinuation(t *testing.T, raw, viaFallback bool) {
-	const scalar = " \tλ-83\n"
+type chatContinuationCase struct {
+	raw, viaFallback, asText, mirrorSigned bool
+}
+
+func testChatToolContinuation(t *testing.T, tc chatContinuationCase) {
+	scalar := " \tλ-83\n"
+	const signed = " signed-17 "
+	if tc.mirrorSigned {
+		scalar = signed
+	}
 	const answer = "answer-417"
 	details := []any{
-		map[string]any{"type": "reasoning.text", "index": 7, "signature": "sig-17", "text": " signed-17 "},
+		map[string]any{"type": "reasoning.text", "index": 7, "signature": "sig-17", "text": signed},
 		map[string]any{"type": "reasoning.encrypted", "id": "r-23", "data": "cipher-29"},
 	}
+	const unsigned = "unsigned-detail-41"
 	call := map[string]any{"id": "call-9", "type": "function", "function": map[string]any{"name": "missing_tool", "arguments": " { } "}}
-	history := make(chan []json.RawMessage, 8)
+	history := make(chan []json.RawMessage, 10)
 	var calls atomic.Int32
 	var rejectIssuer atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -244,6 +253,9 @@ func testChatToolContinuation(t *testing.T, raw, viaFallback bool) {
 			delta["tool_calls"] = []any{call}
 			delta["reasoning"] = scalar
 			delta["reasoning_details"] = details
+			if tc.asText {
+				delta["reasoning_details"] = append(slices.Clone(details), map[string]any{"type": "reasoning.text", "index": 8, "text": unsigned})
+			}
 		} else {
 			done := agenttest.CommunicateCall("done", "recovered")
 			delta["tool_calls"] = []any{map[string]any{"id": done.ID, "type": "function", "function": map[string]any{"name": done.Name, "arguments": string(done.Arguments)}}}
@@ -255,14 +267,16 @@ func testChatToolContinuation(t *testing.T, raw, viaFallback bool) {
 	t.Cleanup(srv.Close)
 	dir := t.TempDir()
 	clientAt := func(base string) *llm.Client {
-		model := registry.Model{Caps: registry.Caps{Reasoning: new(true), ReplayReasoningText: new(raw)}}
+		model := registry.Model{Caps: registry.Caps{Reasoning: new(true), ReplayReasoningText: new(tc.raw), ThinkingAsText: new(tc.asText)}}
+		redirected := model
+		redirected.Transport = &registry.Transport{StreamEndpoint: "/redirected/chat/completions"}
 		inst := registry.Provider{Base: "openai-compatible", Surface: registry.SurfaceOpenAI, APIKey: "test", Transport: registry.Transport{BaseURL: base},
-			Models: map[string]registry.Model{"reasoner": model, "other": model}}
+			Models: map[string]registry.Model{"reasoner": model, "other": model, "redirected": redirected}}
 		return registryClientAt(t, dir, map[string]registry.Provider{"work": openaiInstance(srv.URL), "gw": inst}, []string{"work", "gw"})
 	}
 	client := clientAt(srv.URL)
 	target := func(model string) (*provider.Profile, []string) {
-		if viaFallback {
+		if tc.viaFallback {
 			return resolveClientProfile(t, client, "work/gpt-5.2"), []string{"gw/" + model}
 		}
 		if model == "reasoner" {
@@ -278,7 +292,7 @@ func testChatToolContinuation(t *testing.T, raw, viaFallback bool) {
 	for _, input := range []string{"begin", "another turn"} {
 		sendOneUserInput(t, s, input)
 	}
-	for _, dest := range []struct{ base, model string }{{srv.URL, "reasoner"}, {srv.URL, "other"}, {srv.URL + "/other", "reasoner"}, {srv.URL, "reasoner"}} {
+	for _, dest := range []struct{ base, model string }{{srv.URL, "reasoner"}, {srv.URL, "other"}, {srv.URL + "/other", "reasoner"}, {srv.URL + "/other", "other"}, {srv.URL, "reasoner"}} {
 		s.Close()
 		client = clientAt(dest.base)
 		profile, fallbacks = target(dest.model)
@@ -295,8 +309,18 @@ func testChatToolContinuation(t *testing.T, raw, viaFallback bool) {
 	type destination struct{ sameRoute, sameModel bool }
 	// Tool continuation, next turn, cold resume, another model, redirected
 	// endpoint, and a return to the original endpoint.
-	targets := []destination{{true, true}, {true, true}, {true, true}, {true, false}, {false, true}, {true, true}}
-	if !viaFallback {
+	targets := []destination{{true, true}, {true, true}, {true, true}, {true, false}, {false, true}, {false, false}, {true, true}}
+	if tc.asText {
+		if err := s.SetModel("gw/redirected"); err != nil {
+			t.Fatal(err)
+		}
+		sendOneUserInput(t, s, "switch to the other endpoint")
+		targets = append(targets, destination{false, false})
+		if err := s.SetModel("gw/reasoner"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if !tc.viaFallback {
 		rejectIssuer.Store(true)
 		sendOneUserInput(t, s, "use the alternate model")
 		targets = append(targets, destination{true, false})
@@ -325,10 +349,16 @@ func testChatToolContinuation(t *testing.T, raw, viaFallback bool) {
 			}
 		}
 		want := map[string]any{"role": "assistant", "content": answer, "tool_calls": []any{call}}
-		if dest.sameRoute && (dest.sameModel || !viaFallback) {
+		if dest.sameRoute && (dest.sameModel || !tc.viaFallback) {
 			want["reasoning_details"] = details
 		}
-		if raw && dest.sameRoute && dest.sameModel {
+		if tc.asText {
+			pieces := []string{scalar}
+			if dest.sameRoute && !tc.mirrorSigned {
+				pieces = append(pieces, signed)
+			}
+			want["content"] = strings.Join(append(pieces, unsigned), "\n") + "\n\n" + answer
+		} else if tc.raw && dest.sameRoute && dest.sameModel {
 			want["reasoning"] = scalar
 		}
 		if string(got) != mustJSON(t, want) {

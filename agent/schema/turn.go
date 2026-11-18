@@ -577,13 +577,41 @@ func (t *Turn) ProjectReasoningText(res *registry.Resolved, route string) llm.Me
 	}
 	// Within one Responses deployment, a different model can receive opaque
 	// items even when the issuing model's plain reasoning is omitted.
-	omit := func(p llm.ContentPart) bool {
+	removeNative := func(p llm.ContentPart) bool {
+		if p.Kind == llm.ContentRedThinking {
+			return foreignDeployment
+		}
 		return p.Kind == llm.ContentThinking && p.Thinking != nil && (foreignDeployment || p.Thinking.EncryptedContent == "")
 	}
-	if slices.ContainsFunc(msg.Content, omit) {
-		msg.Content = slices.DeleteFunc(slices.Clone(msg.Content), omit)
+	first := slices.IndexFunc(msg.Content, removeNative)
+	if first < 0 {
+		return msg
 	}
+	keepDisplay := foreignDeployment && t.ReplaysChatDisplayText(res)
+	out := make([]llm.ContentPart, first, len(msg.Content))
+	copy(out, msg.Content[:first])
+	for _, p := range msg.Content[first:] {
+		if removeNative(p) {
+			if !keepDisplay {
+				continue
+			}
+			text := p.UnsignedChatDisplayText()
+			if text == "" {
+				continue
+			}
+			// The Chat adapter joins display parts and the visible answer.
+			p.Thinking = &llm.ThinkingData{Text: text}
+		}
+		out = append(out, p)
+	}
+	msg.Content = out
 	return msg
+}
+
+// ReplaysChatDisplayText reports whether this Chat turn can contribute
+// ordinary assistant content to a row that selects thinking_as_text.
+func (t *Turn) ReplaysChatDisplayText(res *registry.Resolved) bool {
+	return res.Protocol == registry.ProtocolOpenAIChat && registry.BoolValue(res.Caps.ThinkingAsText) && t.matchesReasoningProtocol(res.Protocol)
 }
 
 // DropsReasoningForTarget reports when the destination cannot receive even

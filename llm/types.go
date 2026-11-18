@@ -352,6 +352,31 @@ func (t *ThinkingData) ChatReplayScalar() (text, field string) {
 	return t.Text, t.ChatScalar.Field
 }
 
+// UnsignedChatDisplayText is the ordinary assistant text a thinking_as_text
+// destination can receive without the issuing endpoint's continuation state.
+// A signed detail owns its display unless Chat also emitted a scalar.
+func (p ContentPart) UnsignedChatDisplayText() string {
+	t := p.Thinking
+	if p.Kind != ContentThinking || t == nil || t.Redacted {
+		return ""
+	}
+	if t.EncryptedContent == "" {
+		return t.Text
+	}
+	details := OpenAICompatReasoningDetails(t.EncryptedContent)
+	if len(details) == 0 {
+		return ""
+	}
+	if OpenAICompatSignedReasoningItem(details) == nil {
+		return t.Text
+	}
+	if t.ChatScalar != nil && IsOpenAICompatReasoningField(t.ChatScalar.Field) {
+		text, _ := t.ChatReplayScalar()
+		return text
+	}
+	return ""
+}
+
 // ResponsesTextPart preserves a reasoning content part's wire type and
 // half-open byte range in ThinkingData.Text without storing its text twice.
 type ResponsesTextPart struct {

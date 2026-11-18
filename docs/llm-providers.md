@@ -536,8 +536,11 @@ recover an encoded object, array or XML parameter. A string field such as
   field or defaults to `reasoning_content`. An ordinary chat session omits
   plain reasoning until its row opts in. The existing `thinking_as_text`
   setting takes precedence and merges reasoning into assistant-visible text
-  across model switches. A scalar replay field can travel alongside opaque
-  `reasoning_details`. An independent scalar retains its original bytes even
+  across Chat model and endpoint switches. On a different endpoint, only
+  unsigned display text or a separately emitted scalar can enter assistant
+  content. Signed details and ciphertext stay with their issuer. A scalar
+  replay field can travel alongside opaque `reasoning_details`.
+  An independent scalar retains its original bytes even
   when the gateway also sent display text in details. If the gateway sends
   identical bytes in a scalar and a signed detail, a scalar route replays
   both fields. On an enrolled `reasoning_details` route, a captured native
@@ -549,7 +552,9 @@ recover an encoded object, array or XML parameter. A string field such as
   scalar or an older transcript saved only display text, an array route
   constructs a text item from the available reasoning. A trailing
   signature can omit its index. Evener keeps it with
-  its identified or uniquely matching text block. A signed detail on its own
+  its identified or uniquely matching text block. When a later fragment names
+  both the ID and index, it joins that item's earlier fragments in arrival
+  order, preserving its original array position. A signed detail on its own
   supplies only that detail. A Chat fallback receives its own signed and
   encrypted details on subsequent turns and cold resumes when the recorded
   model and serving route still match. Moving a Chat row to a new endpoint
@@ -573,11 +578,16 @@ recover an encoded object, array or XML parameter. A string field such as
   omitted or null `content` inherits a refusal finalized at its content index,
   even when the stream omits the completed message. An explicit empty part
   array clears that message's earlier text and refusal, including when the
-  final output is empty. An empty final output can recover an issued call.
+  final output is empty. A finalized `output_text` part can clear its draft
+  with an empty string and keeps its place in the message. An empty final
+  output can recover an issued call.
   When the final response repeats only part of a streamed item, Evener keeps
   the matching call's argument bytes, completed message phase, indexed
   answer and reasoning text, and ciphertext from the stream. A reasoning
-  item can inherit its announced ID. When it omits its content, a native
+  item can inherit its announced ID. Repeated completions update only the
+  reasoning fields they supply. A replacement content or summary array
+  selects its own parts and can inherit omitted text at a matching type and
+  index. When an item omits its content, a native
   part announcement and the finalized text for that part establish its
   type, index and exact bytes. A single `reasoning_text` placeholder with
   `text` set to `""` can recover all finalized native slots of that item in
@@ -592,8 +602,9 @@ recover an encoded object, array or XML parameter. A string field such as
   within its empty-answer limit. It saves eligible reasoning and native
   assistant message parts for the next attempt and a cold resume.
   Evener uses the stream index and item ID to collect a function's arguments.
-  When two issued calls share an index, each keeps its own arguments and
-  further events need an item or call ID to identify it. The provider must
+  When two function items claim an index, each keeps its own arguments and
+  further events need an item or call ID to identify it, even if a call ID
+  arrives later. The provider must
   supply a `call_id` before Evener can dispatch the tool and return its
   result under that ID. Reasoning shown only as deltas remains
   visible in the transcript, including when the response ends with an

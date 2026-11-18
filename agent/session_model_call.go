@@ -1741,8 +1741,12 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		commonScope := fallbackSource.scope
 		commonScope.protocolOf = roundReplayLookup(commonScope.protocolOf)
 		commonScope.canonicalModel = roundReplayLookup(commonScope.canonicalModel)
+		type fallbackHistoryKey struct {
+			protocol, issuer, route string
+			thinkingAsText          bool
+		}
 		var sharedHistory []llm.Message
-		var sharedProtocol, sharedIssuer, sharedRoute string
+		var sharedKey fallbackHistoryKey
 		historyForFallback := func(fb *provider.Profile) []llm.Message {
 			if !hasFallbackSource {
 				return fullHistory
@@ -1750,22 +1754,26 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			scope := commonScope
 			scope.setReasoningTextTarget(fb)
 			target := scope.reasoningTextTarget
-			var protocol, issuer string
+			key := fallbackHistoryKey{route: scope.reasoningRoute}
 			if target != nil {
-				protocol = target.Protocol
-				if protocol == registry.ProtocolOpenAIResponses {
-					issuer = target.Instance
+				key.protocol = target.Protocol
+				switch key.protocol {
+				case registry.ProtocolOpenAIResponses:
+					key.issuer = target.Instance
+				case registry.ProtocolOpenAIChat:
+					key.thinkingAsText = registry.BoolValue(target.Caps.ThinkingAsText)
 				}
 			}
 			// Strict Chat fallbacks on a Chat primary share opaque history by
-			// endpoint. A cross-protocol Chat fallback also checks the model.
-			shareable := target == nil || (!target.ReplaysRawReasoning() && (protocol == registry.ProtocolOpenAIResponses || protocol == commonScope.Protocol))
-			if shareable && sharedHistory != nil && protocol == sharedProtocol && issuer == sharedIssuer && scope.reasoningRoute == sharedRoute {
+			// endpoint and text presentation. A cross-protocol Chat fallback
+			// also checks the model.
+			shareable := target == nil || (!target.ReplaysRawReasoning() && (key.protocol == registry.ProtocolOpenAIResponses || key.protocol == commonScope.Protocol))
+			if shareable && sharedHistory != nil && key == sharedKey {
 				return sharedHistory
 			}
 			messages := s.requestMessages(fallbackSource.system, expandHistory(fallbackSource.turns, scope))
 			if shareable {
-				sharedHistory, sharedProtocol, sharedIssuer, sharedRoute = messages, protocol, issuer, scope.reasoningRoute
+				sharedHistory, sharedKey = messages, key
 			}
 			return messages
 		}
