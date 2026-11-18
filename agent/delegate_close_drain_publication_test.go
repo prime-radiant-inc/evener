@@ -104,9 +104,7 @@ func TestDelegateCloseDrainWarningPublicationKeepsDisposalBudget(t *testing.T) {
 	c := root.delegateController
 
 	stop := seedLostInlineStopForClose(t, c)
-	rootCtx, cancelRoot := context.WithCancel(context.Background())
-	defer cancelRoot()
-	root.sessionCtx = rootCtx
+	root.sessionCtx = t.Context()
 
 	// The authoritative consumer is wedged: an unbuffered buffer with nothing
 	// reading makes every send park until its bound releases it, with no

@@ -378,7 +378,19 @@ func (s *Session) emitHookCompleted(data events.HookEndData) {
 	// SessionStart hooks run inside initSessionState, before the transcript
 	// writer exists (kata d4es). recordTurn holds the turn until it does; no
 	// buffering is needed here.
-	s.recordTurn(turn, turn)
+	//
+	// Recording this completion can fail, and a transcript-write failure is an
+	// EventWarning, which fires the Notification hook. That hook completes here
+	// too, so the ordinary warning path would dispatch hook after hook for as
+	// long as the writer keeps refusing, spending the shutdown budget one
+	// dispatch at a time. This record's own failures are therefore published as
+	// diagnostics: the failure still reaches every reader of the stream, it just
+	// cannot re-enter the dispatcher that caused it. The sink is scoped to this
+	// call rather than to the session, so a concurrent warning from another
+	// goroutine keeps firing its hook as usual. The invariant is directional:
+	// the warning path is what dispatches hooks, so the warning path must never
+	// be reachable from a hook's own completion.
+	s.recordTurnTo(turn, turn, s.emitDiagnosticWarning)
 }
 
 // emitDiagnosticWarning emits a hook-configuration/matcher diagnostic so the

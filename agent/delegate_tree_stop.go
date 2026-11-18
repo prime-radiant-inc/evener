@@ -889,6 +889,15 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 			}
 			return err
 		}
+		// Publication comes before any plan runs. A warning this pass settled
+		// names a receipt that was abandoned during the pass and cannot be
+		// settled again, so a repair or cleanup that fails below must not carry
+		// it out of the drain unpublished. Publishing first also keeps the
+		// warning off the plan-execution path: it is news, not an effect.
+		if root != nil {
+			root.emitCloseDrainWarnings(ctx, plans.warnings)
+		}
+		plans.warnings = nil
 		for _, plan := range plans.shellRepairs {
 			if err := executeDelegateShellRepair(plan, c.now()); err != nil {
 				return err
@@ -910,9 +919,6 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 			c.mu.Lock()
 			c.dropDeliveryPlanClaimsLocked(plans)
 			c.mu.Unlock()
-			if root != nil {
-				root.emitCloseDrainWarnings(ctx, plans.warnings)
-			}
 		} else if root != nil {
 			rootPlans := plans
 			rootPlans.attention = nil

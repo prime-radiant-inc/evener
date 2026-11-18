@@ -2998,6 +2998,17 @@ func (s *Session) appendPairedTurnVia(kind schema.TurnKind, live, persisted llm.
 // only when a tool exposes explicitly private evidence; every other caller
 // passes the same turn twice. It reports the entry's record.
 func (s *Session) recordTurn(live, persisted schema.Turn) transcript.Record {
+	return s.recordTurnTo(live, persisted, func(w events.WarningData) { s.emit(w) })
+}
+
+// recordTurnTo is recordTurn with an explicit sink for the transcript-write
+// diagnostics the record itself raises. The ordinary sink is emit, which fires
+// the Notification hook for an EventWarning. A hook's own completion must not
+// pass that sink: it would dispatch another Notification hook, whose completion
+// fails the same way, spending a shutdown budget one dispatch at a time. Such a
+// caller passes a diagnostic sink, so the failure still reaches every reader of
+// the stream without re-entering the dispatcher that produced it.
+func (s *Session) recordTurnTo(live, persisted schema.Turn, warn func(events.WarningData)) transcript.Record {
 	live.SkillState = live.SkillState.Clone()
 	persisted.SkillState = persisted.SkillState.Clone()
 	s.attentionMu.Lock()
@@ -3024,9 +3035,9 @@ func (s *Session) recordTurn(live, persisted schema.Turn) transcript.Record {
 	}
 	s.attentionMu.Unlock()
 	if err != nil {
-		s.emit(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
+		warn(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
 	}
-	s.surfaceTranscriptWarnings()
+	s.surfaceTranscriptWarningsTo(warn)
 	return rec
 }
 
@@ -3199,7 +3210,13 @@ func (s *Session) drainTranscriptWarnings(sink func(events.WarningData)) {
 // surfaceTranscriptWarnings emits every pending retained-entry diagnostic. Its
 // callers have already released the transcript locks.
 func (s *Session) surfaceTranscriptWarnings() {
-	s.drainTranscriptWarnings(func(w events.WarningData) { s.emit(w) })
+	s.surfaceTranscriptWarningsTo(func(w events.WarningData) { s.emit(w) })
+}
+
+// surfaceTranscriptWarningsTo is surfaceTranscriptWarnings with the caller's
+// sink, for the recordTurnTo callers that must not reach the hook dispatcher.
+func (s *Session) surfaceTranscriptWarningsTo(warn func(events.WarningData)) {
+	s.drainTranscriptWarnings(warn)
 	s.announceFailClosed()
 }
 

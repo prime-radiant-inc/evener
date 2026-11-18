@@ -358,7 +358,14 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 		}
 	}
 	if deliveryErr != nil {
-		return delegateMutationPlans{}, deliveryErr
+		// The delivery acknowledgments failed, but the warnings this pass already
+		// settled are not part of that failure. Each one names a receipt that was
+		// abandoned during this pass and cannot be settled again, so returning
+		// empty plans here would erase the only record of a lost result. Hand the
+		// warnings back with the error: the drain publishes them before it
+		// returns, and every caller that would execute plans returns on the
+		// error instead.
+		return delegateMutationPlans{warnings: deliveryPlans.warnings}, deliveryErr
 	}
 	plans.updates = append(plans.updates, deliveryPlans.updates...)
 	plans.deliveries = append(plans.deliveries, deliveryPlans.deliveries...)
@@ -604,7 +611,13 @@ func (c *delegateTreeController) acknowledgeRetryableStopDeliveriesLocked(stop *
 				// Permanent store failures join errDelegateNotControllable:
 				// production never swaps c.store, so the retry would poll
 				// forever.
-				return delegateMutationPlans{}, buildWakes(), fmt.Errorf("acknowledge stopped delegate delivery %s: %w", token.deliveryID, err)
+				//
+				// The receipts this loop already abandoned stay reported. Their
+				// warnings rode `lost` before this token was reached, and no
+				// later pass can recreate them, so the plans returned with this
+				// error carry the warnings and nothing else: nothing here is
+				// executed, and the caller surfaces them as it unwinds.
+				return delegateMutationPlans{warnings: lost}, buildWakes(), fmt.Errorf("acknowledge stopped delegate delivery %s: %w", token.deliveryID, err)
 			}
 			// A transient append failure keeps the receipt tracked. Re-arm the
 			// stop's progress so the parked drain retries after the store
