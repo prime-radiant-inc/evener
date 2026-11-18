@@ -61,12 +61,15 @@ import type { ForegroundHold } from "./threadOwners";
 import { bodyOwners, foregroundHolds, isMutationPinned, pinMutation, unpinMutation } from "./threadOwners";
 import {
   acquireBackgroundThread,
+  awaitClearReplacementForTests,
   backgroundTranscriptSnapshotForTests,
   clearCachedSessions,
   countCachedSessions,
   installHydrationRetrySchedulerForTests,
   markCacheSessionsDeleted,
   pendingThreadHydrationUpdatesForTests,
+  recordClearDemandForTests,
+  registerClearReplacementForTests,
   resendRecoveryMutation,
   resetThreadsStoreForTests,
   setMutationStorageForTests,
@@ -10720,10 +10723,12 @@ it("a pane that departed inside its restore leaves the replacement's baseline in
   // the one that departs and the one that stays.
   const entered = deferred<void>();
   const released = deferred<void>();
+  let windows = 0;
   // An empty window is the miss that keeps this pane inside the open: the
   // retained rows cannot establish the captured view, so openEntryTranscript
   // answers false and the pane reaches the post-open fence.
   vi.spyOn(storage, "getLatestWindow").mockImplementation(async () => {
+    windows += 1;
     entered.resolve();
     await released.promise;
     return { rows: [], coverage: [], complete: true, stale: false };
@@ -10744,6 +10749,7 @@ it("a pane that departed inside its restore leaves the replacement's baseline in
     released.resolve();
     await expect(departed, "a departed pane's restore must still settle").resolves.toBeUndefined();
     await expect(replacement, "the replacement pane must load").resolves.toBeUndefined();
+    expect(windows, "the pane that stayed certifies the transcript exactly once").toBe(1);
     // The finding: the departed acquisition must not have retired the baseline
     // the replacement's restore is working from.
     expect(
@@ -10760,4 +10766,101 @@ it("a pane that departed inside its restore leaves the replacement's baseline in
   threadsStore.getState().releaseThreadHold(replacementHold);
   expect(foregroundHolds("local:a"), "the replacement's release leaves only the routing lease").toBe(1);
   lease.release();
+}, 20_000);
+
+// A terminal history verdict answers for the Clear that produced it, not for the
+// ref. Two Clears can own two different demands on one ref, and the first
+// Clear's failure says nothing about whether the second replacement verified the
+// destination. Keying the verdict by ref handed the second Clear's claimant the
+// first Clear's error, failing a press the newer replacement had answered.
+//
+// The end-to-end path cannot reach this branch: a press that already holds a
+// terminal verdict ends on that verdict before a second Clear can speak for the
+// ref, so the handoff's own answer is what is asked here.
+it("a Clear that does not own the demand does not answer for it", async () => {
+  const ref = "local:a";
+  const firstClear = new WireError("thread history failed at entry 7", -32603, {
+    evenerErrorInfo: ErrorTranscriptHistoryFailed,
+  });
+  // The first Clear retired the ref's read and its replacement was refused.
+  recordClearDemandForTests(ref, 1);
+  registerClearReplacementForTests(ref, 1, { model: null, terminalError: firstClear });
+  // A second Clear now owns the ref's demand and has issued nothing yet.
+  recordClearDemandForTests(ref, 2);
+
+  // Waiting on the second Clear's replacement, not answered by the first's.
+  const pending = awaitClearReplacementForTests(ref);
+  let settled: string | undefined;
+  void pending.then((answer) => {
+    settled = answer.kind;
+  });
+  for (let i = 0; i < 50; i += 1) await Promise.resolve();
+  expect(settled, "the first Clear's verdict must not answer a demand a later Clear owns").toBeUndefined();
+
+  // The second Clear's replacement verifies the destination, and its answer is
+  // what the claimant receives.
+  registerClearReplacementForTests(ref, 2, { model: null });
+  const answer = await pending;
+  expect(answer.kind, "the owning Clear's replacement is the read the claimant joins").toBe("read");
+  expect(
+    await pending.then((joined) => (joined.kind === "read" ? joined.attempt.clearId : undefined)),
+    "the claimant must join the second Clear's attempt",
+  ).toBe(2);
+}, 10_000);
+// The certification open belongs to the pane that requested it. A routing lease
+// standing on the ref keeps its count positive after the pane that started the
+// read has left, so the count cannot say the requester is gone. Only the pane's
+// own hold can. Without that question a departed acquisition opens the
+// transcript when its read lands: it attaches a reader after the last body
+// owner let the transcript go, and it can supersede the restore a replacement
+// pane has already started.
+//
+// Decision point: the hold is asked at the certification await, the first place
+// in this path where the pane can have left the read it started. Nothing before
+// it awaits, so no earlier question could answer this one.
+it("a pane released mid-read does not certify the transcript its read finally answers", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const readGate = deferred<void>();
+  const client = new FakeClient("ready");
+  client.on("thread/read", async (params) => {
+    await readGate.promise;
+    return { ...response(), requestGeneration: params.requestGeneration };
+  });
+  client.on("thread/unsubscribe", () => ({}));
+  connectionStore.getState().connect(client);
+  let windows = 0;
+  vi.spyOn(storage, "getLatestWindow").mockImplementation(async () => {
+    windows += 1;
+    return { rows: [], coverage: [], complete: true, stale: false };
+  });
+
+  // The pane owns this ref's first read, and the read is parked, so the
+  // departure lands strictly between its issue and its answer.
+  let paneHold: ForegroundHold | undefined;
+  const pane = threadsStore.getState().ensureThread("local:a", { onHold: (taken) => (paneHold = taken) });
+  // The read must be issued by the pane before anything else can answer the
+  // ref: a second acquisition arriving first would publish the model and turn
+  // the pane's own call into the already-hydrated shortcut, which never parks.
+  await vi.waitFor(() => expect(client.calls.filter((c) => c.method === "thread/read")).toHaveLength(1));
+  // A routing lease joins that same read, so the ref stays alive after the pane
+  // goes. That is what makes the count positive at the certification: the count
+  // cannot answer whether the pane is still there.
+  const lease = threadsStore.getState().ensureThread("local:a", { routingOnly: true });
+  try {
+    await vi.waitFor(() => expect(paneHold, "the pane must hand out a hold").toBeDefined());
+    expect(foregroundHolds("local:a"), "the pane and the lease both hold the ref").toBe(2);
+    // The pane departs while the read it started is still outstanding.
+    threadsStore.getState().releaseThreadHold(paneHold as ForegroundHold);
+    expect(foregroundHolds("local:a"), "the lease must still hold the ref").toBe(1);
+    readGate.resolve();
+    await expect(pane, "a released pane's claim must settle").resolves.toBeUndefined();
+    expect(windows, "a pane that left while its read was in flight must not open the transcript after it lands").toBe(
+      0,
+    );
+    await expect(lease, "the lease's claim settles on the same read").resolves.toBeUndefined();
+  } finally {
+    readGate.resolve();
+    vi.restoreAllMocks();
+  }
 }, 20_000);

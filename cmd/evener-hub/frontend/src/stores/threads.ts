@@ -171,6 +171,7 @@ import {
   canonicalThreadOwnerActive,
   clearFinalReleaseOwner,
   type ForegroundHold,
+  foregroundHeldRefs,
   foregroundHoldStanding,
   foregroundHolds,
   hasFinalReleaseOwner,
@@ -418,7 +419,10 @@ export interface ThreadsStoreState {
    * hydration is still pending - a pane that unmounts, a resend's lease - must
    * keep that handle and release it rather than naming a ref later: by then
    * another lifecycle's hold can be the newest one standing. */
-  ensureThread(ref: string, opts?: { routingOnly?: boolean; onHold?: (hold: ForegroundHold) => void }): Promise<void>;
+  ensureThread(
+    ref: string,
+    opts?: { routingOnly?: boolean; onHold?: (hold: ForegroundHold) => void; retainThroughHistoryDiagnostic?: boolean },
+  ): Promise<void>;
   // beforePublish, when given, is evaluated synchronously immediately before
   // this refresh publishes its snapshot. A throw cancels the read's result so
   // a canceled action never republishes over newer authoritative state.
@@ -1471,14 +1475,21 @@ const clearReplacementWaits = new KeyedWaiters<string, () => void>();
 // never seen; and a claimant that joined an already-consumed verdict spun on
 // settled promises, because nothing was left to consume and nothing could
 // change. So the verdict lives on the attempt, and each claimant takes it once.
-type ClearReplacementOutcome = { model: ThreadModel | null; terminalError?: unknown };
+export type ClearReplacementOutcome = { model: ThreadModel | null; terminalError?: unknown };
 type ClearReplacementRead = Promise<ClearReplacementOutcome>;
 // The attempt that owns the read, its joinable promise, and its settled
 // outcome. One record per Clear-replacement attempt; a newer attempt for the
 // same ref replaces the whole record, which is what retires the older verdict.
-interface ClearReplacementAttempt {
+export interface ClearReplacementAttempt {
   read: ClearReplacementRead;
   settled?: ClearReplacementOutcome;
+  // The Clear that issued this replacement. A terminal verdict answers for the
+  // Clear that produced it and no other: a later Clear retires the same ref's
+  // read and owes it a replacement of its own, and handing that claimant the
+  // earlier Clear's failure failed a press the newer replacement would have
+  // verified. Keying the record by ref alone made those two Clears share one
+  // answer.
+  readonly clearId: number;
   // Claimants that have already received this attempt's terminal verdict. Each
   // acquisition is owed the answer exactly once; a second join from the same
   // acquisition would rethrow into the same catch that asked, which is the
@@ -1486,6 +1497,12 @@ interface ClearReplacementAttempt {
   readonly terminalClaimants: Set<object>;
 }
 const clearReplacementAttempts = new Map<string, ClearReplacementAttempt>();
+// Which Clear owns a ref's outstanding demand. Written synchronously when a
+// Clear retires that ref's read, which is the same moment the claimant's wait
+// begins, so a claimant can name the Clear that owes it an answer without that
+// identity being threaded through the lifecycle. A later Clear replaces the
+// entry, which is what makes the earlier Clear's verdict stop applying.
+const clearDemandOwners = new Map<string, number>();
 // The last terminal history verdict a tracked read ended on, per ref, waiting to
 // be claimed by whoever is owed that answer. A refresh reports failures through
 // the lifecycle rather than by rejecting, so this is the one place the terminal
@@ -1556,13 +1573,20 @@ async function awaitClearReplacement(
   { kind: "read"; attempt: ClearReplacementAttempt } | { kind: "deleted" } | { kind: "deferred" } | { kind: "none" }
 > {
   const registered = clearReplacementAttempts.get(ref);
+  // Only the Clear that owns this ref's demand can answer for it. A verdict is
+  // the answer of the Clear whose replacement produced it: when a later Clear
+  // retires this ref's read, that Clear owes a replacement of its own, and
+  // returning the earlier one's terminal error fails a press the newer
+  // replacement would have verified.
+  const owner = clearDemandOwners.get(ref);
+  const answersForOwner = registered !== undefined && (owner === undefined || registered.clearId === owner);
   // An attempt is joinable while it is running, and after it settles only if it
   // settled on a terminal verdict: that verdict is still this ref's answer, and
   // an acquisition whose read the Clear retired can legitimately reach here
   // after an earlier claimant took it. A settled MISS is not joinable - it
   // answers the same absence the caller is trying to escape, so re-joining one
   // would loop.
-  if (registered && (registered.settled === undefined || registered.settled.terminalError !== undefined)) {
+  if (answersForOwner && (registered.settled === undefined || registered.settled.terminalError !== undefined)) {
     return { kind: "read", attempt: registered };
   }
   // The replacement already ran as a miss. Handing that caller `none` is what
@@ -1577,7 +1601,27 @@ async function awaitClearReplacement(
   }
   if (threadsStore.getState().deletedRefs.has(ref)) return { kind: "deleted" };
   const replacement = clearReplacementAttempts.get(ref);
-  if (replacement) return { kind: "read", attempt: replacement };
+  const replacementOwner = clearDemandOwners.get(ref);
+  if (replacement && (replacementOwner === undefined || replacement.clearId === replacementOwner)) {
+    return { kind: "read", attempt: replacement };
+  }
+  // The Clear that owns the demand has not issued its replacement yet. That is
+  // a wait, not an answer: re-joining the older attempt here would hand this
+  // claimant the verdict of a Clear that no longer speaks for the ref.
+  if (clearHydrationDemands.get("thread")?.has(ref) === true) {
+    const yetAnother = parkForClearReplacement(ref);
+    try {
+      await yetAnother.parked;
+    } finally {
+      yetAnother.cancel();
+    }
+    const issued = clearReplacementAttempts.get(ref);
+    const issuedOwner = clearDemandOwners.get(ref);
+    if (issued && (issuedOwner === undefined || issued.clearId === issuedOwner)) {
+      return { kind: "read", attempt: issued };
+    }
+    if (threadsStore.getState().deletedRefs.has(ref)) return { kind: "deleted" };
+  }
   // A reconnecting client owns this ref's convergence: the demand was not
   // dropped, only deferred until something is ready to issue it. That is not
   // the same answer as "this ref never had a demand", and a caller that
@@ -6581,6 +6625,10 @@ async function publishAndReconcileThreadHydration(
   // superseded, so the same rule retires it: it must not outlive the answer the
   // hub has given.
   clearReplacementAttempts.delete(ref);
+  // The demand the Clear owed is answered by the publication above, so no Clear
+  // owns this ref's answer any more. Leaving the owner behind would let a later
+  // attempt inherit an identity nothing recorded.
+  clearDemandOwners.delete(ref);
   pruneConsumedQueueRows(ref, published);
   const snapshotCurrent =
     mutationStateGeneration === undefined || (mutationStateGenerations.get(ref) ?? 0) === mutationStateGeneration;
@@ -8181,6 +8229,10 @@ async function handleReady(
     : new Set([
         ...threadsStore.getState().threads.keys(),
         ...pendingThreadHydrations.keys(),
+        // A mounted pane whose first read the hub refused keeps its ref with no
+        // model to show for it, and a later read is what repairs it - so the
+        // fan-out cannot be limited to refs that published.
+        ...foregroundHeldRefs(),
         ...backgroundHeldRefs(),
         ...mutationPinnedRefs(),
       ]);
@@ -8785,6 +8837,9 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   async ensureThread(ref, opts) {
     let client = requireClient();
     const routingOnly = opts?.routingOnly === true;
+    // A mounted pane's demand outlives the hub's history diagnostic; a
+    // one-shot claim's does not. See the catch below.
+    const retainThroughDiagnostic = opts?.retainThroughHistoryDiagnostic === true;
     // A routing claim on a destination the deletion fence already covers has no
     // hold to take: the answer is "not routable" before any count or claim
     // exists, so the rejection cannot strand a lease for a lifecycle that never
@@ -8876,6 +8931,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       // the first pane to open after an eviction must still spend its open.
       if (paneBodyOwners > 0) return;
       if (await openEntryTranscript(ref)) return;
+      // The same question after the await: the open settles asynchronously, and
+      // the pane can be released while it runs. Everything below is pane work -
+      // a fresh baseline and a published model - and must not run for a pane
+      // that no longer exists.
       if (!claimStanding()) return;
       // Missing or unwritten backing rows cannot establish the captured view.
       // Retire the held source proof so recovery asks for a complete baseline.
@@ -9053,6 +9112,15 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             // just without holding consumers. A display with no older
             // frontier has no demand the gate could strand, and keeps the
             // established hold-publication contract.
+            //
+            // The open is body work, so it needs a body owner. The ref's
+            // foreground count cannot answer that: a routing lease keeps the
+            // count positive after the last pane released, so a pane that left
+            // mid-read would still look held and would attach a reader to a
+            // transcript nobody displays. A pane superseded by a replacement is
+            // not this case - the replacement owns the bodies, and its parked
+            // open is what this certification establishes over.
+            if (!threadBodyOwned(ref)) return;
             if (
               !(await openEntryTranscript(
                 ref,
@@ -9061,7 +9129,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
                 holdsCompleteForegroundWindow(model) && olderTranscriptPageKey(ref) != null,
               ))
             ) {
-              scheduleEntryOpeningRecovery(ref);
+              // The same question after the await: the open settles
+              // asynchronously, and the last body owner can release while it
+              // runs. Arming recovery then would re-read the ref on behalf of a
+              // pane that no longer exists.
+              if (threadBodyOwned(ref)) scheduleEntryOpeningRecovery(ref);
             }
             return;
           }
@@ -9360,7 +9432,19 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       // rollback spent the new pane's count, and that pane lost its reader and
       // model while still mounted. The handle names one hold, so a rollback
       // whose holder already released drops nothing.
-      threadsStore.getState().releaseThreadHold(hold);
+      //
+      // A mounted pane's demand outlives the hub's history diagnostic: the
+      // spec answers that end by waiting for a later read, not by giving the
+      // pane up. Dropping the last hold left the ref with no owner, so a
+      // targeted resync or refresh skipped it and a healthy connection could
+      // not repair the pane. The pane keeps the hold it was given instead, so
+      // the ref stays owned and every later read can serve it - and nothing
+      // here re-reads, so "one visible error, no automatic retry" still holds.
+      // A one-shot claim's hold is spent: it never asks for this, and the
+      // caller has no mount left to release it from.
+      if (!(retainThroughDiagnostic && isTranscriptHistoryFailedError(err) && foregroundHoldStanding(hold))) {
+        threadsStore.getState().releaseThreadHold(hold);
+      }
       throw err;
     }
   },
@@ -10583,6 +10667,11 @@ function reconcileClearInput(): void {
         // fresh read. A later attempt for the ref replaces the whole record, so
         // a stale verdict cannot outlive the answer that superseded it.
         const attempt: ClearReplacementAttempt = {
+          // The Clear that recorded this demand. Stamped here so the record
+          // answers for that Clear and no other: a later Clear replaces the
+          // per-ref owner, and this attempt then stops being joinable instead
+          // of handing its verdict to the newer Clear's claimant.
+          clearId: clearDemandOwners.get(ref) ?? 0,
           read: issued.then(
             () => {
               const outcome: ClearReplacementOutcome = {
@@ -10637,6 +10726,9 @@ function reconcileClearInput(): void {
 export async function clearCachedSessions(): Promise<{ committed: boolean }> {
   const armed = Math.max(observedCacheEpoch() ?? 0, threadsStore.getState().clearInFlight ?? 0) + 1;
   threadsStore.setState({ clearInFlight: armed });
+  // This Clear's own identity, for the demands it records below. `armed` is
+  // already monotonic across clears, so it names one Clear unambiguously.
+  const clearId = armed;
   // The separately installed entry route retires its publication/persistence
   // claims NOW, synchronously, before either clear transaction resolves: an
   // already-installed reader, subscription or repository must not publish or
@@ -10660,6 +10752,10 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
     clearHydrationDemands.set(kind, demands);
     for (const [ref, pending] of [...pendingHydrations]) {
       demands.set(ref, hydrationOwnerGeneration(kind, ref));
+      // This Clear now owns the ref's answer. Recording it beside the demand is
+      // what stops a later Clear's claimant from being handed this one's
+      // verdict: the attempt a claimant joins carries its own Clear's id.
+      if (kind === "thread") clearDemandOwners.set(ref, clearId);
       retirePendingHydration(ref, pending, pendingHydrations);
     }
     // A wait can also be parked without a read on the wire: a routing
@@ -10678,6 +10774,7 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
       owned.cancelRetry?.();
       owned.cancelRetry = null;
       demands.set(ref, hydrationOwnerGeneration(kind, ref));
+      if (kind === "thread") clearDemandOwners.set(ref, clearId);
     }
   }
   residencyIfCreated?.retireClaims();
@@ -10792,6 +10889,43 @@ export async function settleEntryTranscriptForTests(ref: string): Promise<void> 
   // settles at that instant still waits for the convergence it observes.
   await Promise.all([trackedHydrationCompletions.get(ref), openingRecoveryCompletion(ref)]);
   await entryTranscriptRoute(ref)?.repository?.settled();
+}
+
+/** @internal The Clear handoff's own answer for a ref, at the decision point a
+ * claimant reaches after a Clear retired its read. The end-to-end path cannot be
+ * driven to the branch this covers: a press that already holds a terminal
+ * verdict ends on that verdict before a second Clear can speak for the ref, so
+ * only the question itself can be asked here. */
+export function awaitClearReplacementForTests(
+  ref: string,
+): Promise<
+  { kind: "read"; attempt: ClearReplacementAttempt } | { kind: "deleted" } | { kind: "deferred" } | { kind: "none" }
+> {
+  return awaitClearReplacement(ref);
+}
+
+/** @internal Records a Clear demand for a ref, as a Clear's synchronous
+ * retirement step does, so the handoff can be asked what it answers. */
+export function recordClearDemandForTests(ref: string, clearId: number): void {
+  clearDemandOwners.set(ref, clearId);
+  const demands = clearHydrationDemands.get("thread") ?? new Map<string, number>();
+  demands.set(ref, hydrationOwnerGeneration("thread", ref));
+  clearHydrationDemands.set("thread", demands);
+}
+
+/** @internal Registers a replacement attempt the way a Clear's own issue step
+ * does, with its Clear's identity and its settled outcome. */
+export function registerClearReplacementForTests(ref: string, clearId: number, outcome: ClearReplacementOutcome): void {
+  const attempt: ClearReplacementAttempt = {
+    clearId,
+    read: Promise.resolve(outcome),
+    settled: outcome,
+    terminalClaimants: new Set(),
+  };
+  clearReplacementAttempts.set(ref, attempt);
+  // The same ordering the issuing path uses: the read is joinable before any
+  // wake, so a woken claimant can never look through the window between them.
+  for (const wake of clearReplacementWaits.take(ref) ?? []) wake();
 }
 
 export function backgroundTranscriptSnapshotForTests(): TranscriptResidencySnapshot {
@@ -10958,6 +11092,7 @@ export function resetThreadsStoreForTests(): void {
   };
   retireAllOwnedHydrations();
   clearReplacementAttempts.clear();
+  clearDemandOwners.clear();
   terminalHydrationErrors.clear();
   inflightDurableEnqueues.clear();
   undeliveredMutationIds.clear();

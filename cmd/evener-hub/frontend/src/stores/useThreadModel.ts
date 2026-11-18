@@ -8,7 +8,7 @@ import { useEffect } from "react";
 import type { TranscriptReadView } from "../panes/session/transcript/transcriptReadView";
 import { connectionStore } from "./connection";
 import { hasConversationHandoff, registerConversationClaim } from "./conversationClaimHandoff";
-import type { ForegroundHold } from "./threadOwners";
+import { type ForegroundHold, foregroundHoldStanding } from "./threadOwners";
 import { threadsStore, useThreadsStore } from "./threads";
 
 // useThreadClaim holds one ensureThread(ref) claim while the caller is
@@ -38,26 +38,26 @@ export function useThreadClaim(ref: string, readView?: TranscriptReadView): void
           onHold: (taken) => {
             hold = taken;
           },
+          retainThroughHistoryDiagnostic: true,
         })
         .catch(() => {
+          // The history diagnostic is the one failure the store keeps a mounted
+          // pane's hold for: the spec answers it by waiting for a later read
+          // rather than giving the pane up, so the demand stays registered and
+          // the ref stays owned for a resync, refresh or reconnect to serve.
+          // The handle is still this mount's, so unmount releases it like any
+          // other; this mount does not ask again, because asking is not what
+          // recovers it.
+          if (hold && foregroundHoldStanding(hold)) {
+            rejected = false;
+            unregister?.();
+            return;
+          }
           // `started` marks the call, not the claim: a rejected ensureThread
           // rolled its own claim back, so releasing on unmount would consume
           // another reader's ref-keyed hold and retire its lifecycle. A
           // pending or settled claim still belongs to this mount.
           rejected = true;
-          // One rejection is not final for a mounted pane: the hub's history
-          // diagnostic is answered by waiting for a later read, and the store
-          // leaves the demand standing for one. This mount has no claim left to
-          // wait with, and `started` would otherwise make the ready
-          // subscription below a no-op, so the pane would sit on Loading after
-          // the hub repaired the transcript and the connection returned. Only
-          // this end re-arms; every other rejection keeps the pinned behavior
-          // above (the claim is gone and this mount must not ask again).
-          if (threadsStore.getState().historyFailedRefs.has(ref)) {
-            started = false;
-            rejected = false;
-            hold = undefined;
-          }
           unregister?.();
         });
       if (readView) unregister = registerConversationClaim(ref, readView);

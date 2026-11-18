@@ -9,7 +9,7 @@ import { ClientProvider } from "../../shell/clientContext";
 import { resetMobileViewportForTests } from "../../shell/useIsMobile";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { resetActivityPanelStoreForTests } from "../../stores/activityPanel";
-import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
+import { resetConnectionStoreForTests } from "../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../stores/threads";
@@ -47,6 +47,13 @@ stubSessionSlots();
 // the two test files share no test-utils module).
 async function flushUntil(done: () => boolean, maxTurns = 20): Promise<void> {
   for (let i = 0; i < maxTurns && !done(); i += 1) await Promise.resolve();
+}
+
+// The loading face's state as a structured value. Reading the label's text
+// would make these tests hostage to wording: a renamed label would keep them
+// green while the pane showed something else entirely.
+function loadingState(): string | null {
+  return document.querySelector("[data-loading-state]")?.getAttribute("data-loading-state") ?? null;
 }
 
 // jsdom performs no real layout (every element's offsetHeight is 0, no
@@ -247,9 +254,7 @@ test("a repairing ref's loading status differs from a plain in-flight read's", a
       <Session params={{ ref: "ref_plain" }} paneId="p_plain" focused={true} />
     </ClientProvider>,
   );
-  await waitFor(() => expect(screen.getByTestId("loader-label")).toBeTruthy());
-  const whileLoading = screen.getByTestId("loader-label").textContent;
-  expect(whileLoading).toBeTruthy();
+  await waitFor(() => expect(loadingState()).toBe("loading"));
   plainView.unmount();
 
   // A ref whose every read answers the hub's transcriptIndexRebuilding
@@ -269,11 +274,7 @@ test("a repairing ref's loading status differs from a plain in-flight read's", a
   await waitFor(() => expect(threadsStore.getState().repairingRefs.has("ref_repair")).toBe(true));
   // The flag landing in the store and the pane's re-render are two steps; wait
   // for the face to answer the flag, not for a tick.
-  await waitFor(() => {
-    const label = screen.getByTestId("loader-label").textContent;
-    expect(label).toBeTruthy();
-    expect(label).not.toBe(whileLoading);
-  });
+  await waitFor(() => expect(loadingState()).toBe("repairing"));
 });
 
 // A pane's very first read can answer the hub's history diagnostic, before any
@@ -299,25 +300,29 @@ test("a first read answered by the history diagnostic shows the failure and stil
     </ClientProvider>,
   );
   // The face answers the diagnostic rather than presenting an ordinary load.
+  // The state is asserted structurally, not by its wording: a renamed label
+  // must not be able to make a plain load look like a refusal.
   await waitFor(() => expect(threadsStore.getState().historyFailedRefs.has("ref_history_failed")).toBe(true));
-  await waitFor(() => {
-    const label = screen.getByTestId("loader-label").textContent;
-    expect(label).toBeTruthy();
-    expect(label, "a refused history must not be presented as an ordinary load").not.toBe("Loading transcript");
-  });
-  // The hub repairs the history and the connection re-publishes ready. That
-  // is the pane's own recovery path: the rejected claim left this mount with
-  // nothing to wait with, so the ready subscription is what asks again, and
-  // the read it issues is what replaces the loading face with the transcript.
+  await waitFor(() => expect(loadingState()).toBe("history-failed"));
+  // The hub repairs the history on the SAME connection and a resync arrives.
+  // That is the case a released hold could not survive: with no owner left, a
+  // targeted read skipped the ref and the pane stayed unavailable until
+  // something else re-armed it. The demand the pane kept is what lets this
+  // resync serve it.
   failing = false;
   await act(async () => {
-    connectionStore.setState({ state: "ready" });
+    fake.emitNotification({
+      method: "evener/thread/resync",
+      params: { threadId: "thr_ref_history_failed", ref: "ref_history_failed" },
+    });
   });
   await waitFor(() => expect(threadsStore.getState().historyFailedRefs.has("ref_history_failed")).toBe(false));
   expect(
     threadsStore.getState().threads.get("ref_history_failed"),
-    "the pane's demand must survive the diagnostic, so a later read still loads it",
+    "the pane's demand must survive the diagnostic, so a same-connection resync still loads it",
   ).toBeDefined();
+  // The transcript replaces the failure face - structurally, not by its text.
+  await waitFor(() => expect(loadingState()).toBeNull());
   view.unmount();
 });
 

@@ -68,6 +68,14 @@ export function foregroundHolds(ref: string): number {
   return foregroundCounts.get(ref) ?? 0;
 }
 
+/** Refs a mounted holder keeps open, whether or not a model ever arrived. A
+ * pane whose first read was refused by the hub's history diagnostic holds its
+ * ref with no model to show for it, and a later read is what repairs it - so
+ * the reconnect fan-out has to see these, not only the refs that published. */
+export function foregroundHeldRefs(): IterableIterator<string> {
+  return foregroundCounts.keys();
+}
+
 /** Mints the handle for one foreground hold. Minting takes no count, so an
  * acquisition that throws before it owns anything has moved nothing, and a
  * holder can be handed its handle before the work that makes it live. */

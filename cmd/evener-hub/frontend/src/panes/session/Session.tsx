@@ -53,8 +53,15 @@ function SessionLoading({
     const timer = setTimeout(() => setShowRecovery(true), RECOVERY_HINT_DELAY_MS);
     return () => clearTimeout(timer);
   }, [local]);
+  // The face's state is a structured fact, not its wording: a caller has to be
+  // able to tell a refused history from an ordinary load without matching the
+  // label's text, because the text can be reworded without changing what the
+  // pane is doing.
   return (
-    <div className={styles.loading}>
+    <div
+      className={styles.loading}
+      data-loading-state={historyFailed ? "history-failed" : repairing ? "repairing" : "loading"}
+    >
       <Loader
         label={
           repairing ? "Repairing session history" : historyFailed ? "Session history unavailable" : "Loading transcript"
