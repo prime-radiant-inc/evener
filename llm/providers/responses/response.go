@@ -207,8 +207,18 @@ func (acc *responsesOutputAccumulator) terminalItem(kind, id, callID string, ind
 	compatible := func(item *responsesOutputItem) bool {
 		return item.accepts(kind, id, -1) && item.acceptsCallID(callID)
 	}
-	if issued := acc.byCallID[callID]; issued != nil && !acc.bindCallItem(issued, id) {
-		return nil
+	// The issued call ID identifies the record; an item ID is positional
+	// metadata. A terminal that selects the call under a different item ID
+	// still selects it, so the disagreement cannot reject the record and
+	// strand its streamed arguments.
+	if issued := acc.byCallID[callID]; issued != nil {
+		if !issued.accepts(kind, id, -1) {
+			id = ""
+		}
+		if !acc.bindCallItem(issued, id) {
+			return nil
+		}
+		id = cmp.Or(id, issued.id)
 	}
 	named := acc.namedItem(kind, id)
 	if !compatible(named) {
