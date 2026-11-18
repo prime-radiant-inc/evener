@@ -792,16 +792,17 @@ func (c *delegateTreeController) stopForResult(result delegateStopResult) *deleg
 }
 
 func (c *delegateTreeController) drainStopForClose(ctx context.Context, stop *delegateStopState) error {
-	// The close's own drain runs the same reconciliation as the stop driver, so
-	// it must hand its plans to the same root runtime. A nil root drops every
-	// plan the drain settles on the close path, including a lost-result warning
-	// -- the notice a closing session most needs, since the result is gone and
-	// the session is about to stop being the place its owner would look.
-	return c.drainStop(ctx, stop, c.rootRuntime)
+	// The close's drain runs the same reconciliation as the stop driver, so it
+	// hands its warnings to the same root runtime: a nil root would drop the
+	// lost-result notice a closing session most needs, since the result is gone
+	// and the session is about to stop being the place its owner would look.
+	// Its ordinary plans are not this drain's work, though -- see closeDrain in
+	// drainStopAbandonable.
+	return c.drainStopAbandonable(ctx, stop, c.rootRuntime, nil, true)
 }
 
 func (c *delegateTreeController) drainStop(ctx context.Context, stop *delegateStopState, root *Session) error {
-	return c.drainStopAbandonable(ctx, stop, root, nil)
+	return c.drainStopAbandonable(ctx, stop, root, nil, false)
 }
 
 // drainStopAbandonable is drainStop plus an optional abandon signal. The stop
@@ -811,7 +812,16 @@ func (c *delegateTreeController) drainStop(ctx context.Context, stop *delegateSt
 // keep reconciling even after their budget is cancelled, which the stop's final
 // reconciliation relies on, and only the wait at the loop's foot observes their
 // context.
-func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop *delegateStopState, root *Session, abandon <-chan struct{}) error {
+//
+// closeDrain marks the close path's own drains, which settle one subtree at a
+// time. Such a drain publishes its warnings and its snapshots to root, but not
+// the ordinary owner replay a reconciliation plans: the receiver is shared
+// across top-level subtrees, so replaying there would acknowledge -- or fail
+// on -- another subtree's delivery before that subtree's durable stop has been
+// admitted, and a failed append would end the close before later subtrees were
+// stopped at all. Each subtree's own reconciliation retries its own
+// acknowledgments; replay stays on the stop driver.
+func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop *delegateStopState, root *Session, abandon <-chan struct{}, closeDrain bool) error {
 	if stop == nil {
 		return nil
 	}
@@ -860,6 +870,17 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 			}
 			return err
 		}
+		// Publish this pass's warnings before any step below can return or
+		// re-enter the loop. A pass that abandons an inline receipt also drops
+		// it, so that pass alone can report the loss; the next one has no
+		// receipt left to notice. A shell repair or attention cleanup that
+		// fails after this point would otherwise end the pass with the notice
+		// still unpublished, and nothing later would recreate it.
+		if root != nil {
+			for _, warning := range plans.warnings {
+				root.emit(warning)
+			}
+		}
 		for _, plan := range plans.shellRepairs {
 			if err := executeDelegateShellRepair(plan, c.now()); err != nil {
 				return err
@@ -876,6 +897,11 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 		if root != nil {
 			rootPlans := plans
 			rootPlans.attention = nil
+			// Published above, once.
+			rootPlans.warnings = nil
+			if closeDrain {
+				rootPlans.deliveries = nil
+			}
 			if err := root.executeDelegateMutationPlans(rootPlans); err != nil {
 				return err
 			}
@@ -895,7 +921,7 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 }
 
 func (c *delegateTreeController) runStopReconcileDriver(stop *delegateStopState, driver *delegateStopDriver, root *Session) {
-	err := c.drainStopAbandonable(driver.ctx, stop, root, driver.ctx.Done())
+	err := c.drainStopAbandonable(driver.ctx, stop, root, driver.ctx.Done(), false)
 	c.mu.Lock()
 	driver.err = err
 	close(driver.done)
