@@ -1353,13 +1353,14 @@ and preserves keyboard submission, attachment, paste, and screen-reader
 behavior across breakpoints.
 
 Safari's text autosizing is also off: `global.css`'s `body` rule pins
-`text-size-adjust: 100%`. The engine grows text in a block whose measured width
-it judges too narrow, so a truncated caption could outgrow the title above it,
-and no stylesheet rule prevents it. The type ramp owns every rendered size, the
-reader's own scale included, so the engine's guess only ever departs from it;
-and since the engine decides per block at layout time, the pin is document-wide
-rather than gated on the coarse query like the touch rules below.
-`src/styles/text-autosize.test.ts` fails if it goes away.
+`text-size-adjust: 100%`. While autosizing is active, the engine grows text in
+a block whose measured width it judges too narrow, and its choice can outgrow a
+title in the same row; the pin stops it app-wide, so a size the ramp authored is
+the size that renders. The reader's own scale reaches text through
+`var(--font-scale)`, never through the engine's guess, and since the engine
+decides per block at layout time the pin is document-wide rather than gated on
+the coarse query like the touch rules below. `src/styles/text-autosize.test.ts`
+fails if it goes away.
 
 The touch floor query is `@media (max-width: 899px), (any-pointer: coarse)`.
 `--tap-min`, 44px (decision 4 of 2026-07-30-mobile-session-layout-design.md),
