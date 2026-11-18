@@ -2,6 +2,8 @@ package agent
 
 import (
 	"os"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -54,13 +56,17 @@ func TestSystemPromptCarriesCommitTrailer(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		wirePrompt := func(req llm.Request) (string, []string) {
+		wireBody := func(req llm.Request) map[string]any {
 			t.Helper()
 			row := parent.profile.Resolved()
 			body, err := (&responses.Protocol{}).BuildBody(llm.ShapeRequest(req, row), row)
 			if err != nil {
 				t.Fatal(err)
 			}
+			return body
+		}
+		wirePrompt := func(req llm.Request) (string, []string) {
+			body := wireBody(req)
 			instructions, _ := body["instructions"].(string)
 			var history []string
 			for _, item := range body["input"].([]any) {
@@ -78,10 +84,29 @@ func TestSystemPromptCarriesCommitTrailer(t *testing.T) {
 			}
 			return instructions, history
 		}
-		base, parentHistory := wirePrompt(adapter.Requests()[0])
+		parentRequests := adapter.Requests()
+		base, parentHistory := wirePrompt(parentRequests[0])
 		parentTrailer := parent.commitTrailerPrompt()
 		if parentTrailer == "" || !strings.Contains(base, parentTrailer) || strings.Contains(strings.Join(parentHistory, "\n"), parentTrailer) {
 			t.Fatal("ordinary first request did not keep its attribution in its startup prompt")
+		}
+		checkAttribution := func(t *testing.T, req llm.Request, startup, launchTrailer, want string, wantUpdates int) {
+			t.Helper()
+			instructions, history := wirePrompt(req)
+			tracker := envctx.NewTracker(envctx.State{Last: envctx.Snapshot{CommitTrailer: launchTrailer}})
+			updates := 0
+			for _, message := range history {
+				if tracker.ReplayBlock(message) {
+					var block envctx.Tracker
+					block.ReplayBlock(message)
+					if last := block.State().Last; last.CommitTrailer != "" || last.OmitCommitTrailer {
+						updates++
+					}
+				}
+			}
+			if got := tracker.State().Last.CommitTrailer; instructions != startup || got != want || updates != wantUpdates {
+				t.Errorf("frozen instructions = %t, trailer = %q, updates = %d; want %q and %d", instructions == startup, got, updates, want, wantUpdates)
+			}
 		}
 		for _, initial := range []string{commitprovenance.ModeCoauthor, commitprovenance.ModeOff} {
 			t.Run("restore overrides "+initial, func(t *testing.T) {
@@ -95,24 +120,6 @@ func TestSystemPromptCarriesCommitTrailer(t *testing.T) {
 				opposite := commitprovenance.ModeOff
 				if initial == opposite {
 					opposite = commitprovenance.ModeCoauthor
-				}
-				checkAttribution := func(req llm.Request, want string, wantUpdates int) {
-					t.Helper()
-					instructions, history := wirePrompt(req)
-					tracker := envctx.NewTracker(envctx.State{Last: envctx.Snapshot{CommitTrailer: launchTrailer}})
-					updates := 0
-					for _, message := range history {
-						if tracker.ReplayBlock(message) {
-							var block envctx.Tracker
-							block.ReplayBlock(message)
-							if last := block.State().Last; last.CommitTrailer != "" || last.OmitCommitTrailer {
-								updates++
-							}
-						}
-					}
-					if got := tracker.State().Last.CommitTrailer; instructions != startup || got != want || updates != wantUpdates {
-						t.Errorf("frozen instructions = %t, trailer = %q, updates = %d; want %q and %d", instructions == startup, got, updates, want, wantUpdates)
-					}
 				}
 				for i, override := range []string{opposite, "", initial} {
 					meta, err := schema.LoadSessionMeta(dir, original.ID())
@@ -130,7 +137,7 @@ func TestSystemPromptCarriesCommitTrailer(t *testing.T) {
 					if i == 2 {
 						wantUpdates++
 					}
-					checkAttribution(requests[len(requests)-1], want, wantUpdates)
+					checkAttribution(t, requests[len(requests)-1], startup, launchTrailer, want, wantUpdates)
 					if i == 1 {
 						seedNumberedSessionHistory(t, restored, 8)
 						restored.contextMgr.PreserveRecentTurns = 1
@@ -144,7 +151,7 @@ func TestSystemPromptCarriesCommitTrailer(t *testing.T) {
 						if err != nil {
 							t.Fatal(err)
 						}
-						checkAttribution(req, want, 1)
+						checkAttribution(t, req, startup, launchTrailer, want, 1)
 					}
 					restored.Close()
 				}
@@ -197,38 +204,55 @@ func TestSystemPromptCarriesCommitTrailer(t *testing.T) {
 				t.Error("child's commit trailer did not appear exactly once in the wire history")
 			}
 		}
-		t.Run("build upgrade", func(t *testing.T) {
-			oldState := t.TempDir()
-			meta := parent.Meta()
-			old := entries.Header
-			old.BuildVersion = "fixture-earlier-build"
-			oldTrailer, err := commitprovenance.Trailer(old.BuildVersion, old.ProfileID+"/"+old.Model, host, old.SessionID)
-			if err != nil {
-				t.Fatal(err)
-			}
-			old.SystemPrompt = strings.Replace(old.SystemPrompt, parentTrailer, oldTrailer, 1)
-			writer, err := transcript.NewWriter(schema.SessionTranscriptPath(oldState, meta.ID), old)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if err := writer.Close(); err != nil {
-				t.Fatal(err)
-			}
-			if err := schema.SaveSessionMeta(oldState, meta); err != nil {
-				t.Fatal(err)
-			}
-			restored, err := RestoreSessionFromMetaWithConfig(parent.client, parent.profile, execenv.NewLocalExecutionEnvironment(parent.currentEnv().WorkingDirectory()), meta, RestoreSessionConfig{StateDir: oldState, testOnly: testConfig{skipGitSnapshot: true}})
-			if err != nil {
-				t.Fatal(err)
-			}
-			defer restored.Close()
-			sendOneUserInput(t, restored, "after-upgrade-e5")
-			reqs := adapter.Requests()
-			inherited, history := wirePrompt(reqs[len(reqs)-1])
-			if inherited != strings.Replace(base, parentTrailer, oldTrailer, 1) || strings.Count(strings.Join(history, "\n"), parentTrailer) != 1 {
-				t.Error("build upgrade did not preserve the recorded prompt and report the running build to the model")
-			}
-		})
+		for _, tc := range []struct{ name, build, mode, want string }{
+			{"build upgrade", "fixture-earlier-build", "", parentTrailer},
+			{"disable trailer in saved prompt", BuildVersion, commitprovenance.ModeOff, ""},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				oldState := t.TempDir()
+				meta := parent.Meta()
+				old := entries.Header
+				old.BuildVersion = tc.build
+				oldTrailer, err := commitprovenance.Trailer(old.BuildVersion, old.ProfileID+"/"+old.Model, host, old.SessionID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				// This saved instruction requires its original trailer unconditionally.
+				old.SystemPrompt = "## Commit provenance\nWhen you create a git commit, end the commit message with this exact line:\n" +
+					oldTrailer + "\nDo not add it to pull request descriptions. Do not amend a commit only to add it.\n"
+				writer, err := transcript.NewWriter(schema.SessionTranscriptPath(oldState, meta.ID), old)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, entry := range entries.Entries {
+					if err := writer.Append(entry.Turn); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := writer.Close(); err != nil {
+					t.Fatal(err)
+				}
+				if err := schema.SaveSessionMeta(oldState, meta); err != nil {
+					t.Fatal(err)
+				}
+				restored, err := RestoreSessionFromMetaWithConfig(parent.client, parent.profile, execenv.NewLocalExecutionEnvironment(parent.currentEnv().WorkingDirectory()), meta, RestoreSessionConfig{StateDir: oldState, CommitProvenance: tc.mode, testOnly: testConfig{skipGitSnapshot: true}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer restored.Close()
+				sendOneUserInput(t, restored, "after-upgrade-e5")
+				reqs := adapter.Requests()
+				req := reqs[len(reqs)-1]
+				checkAttribution(t, req, old.SystemPrompt, oldTrailer, tc.want, 1)
+				previous := parentRequests[len(parentRequests)-1]
+				previous.Messages = slices.Clone(previous.Messages)
+				previous.Messages[0] = llm.System(old.SystemPrompt)
+				before, after := wireBody(previous)["input"].([]any), wireBody(req)["input"].([]any)
+				if len(after) < len(before) || !reflect.DeepEqual(after[:len(before)], before) {
+					t.Error("restore changed the previously dispatched input items")
+				}
+			})
+		}
 		if err := parent.SetModel("gpt-5.4"); err != nil {
 			t.Fatal(err)
 		}

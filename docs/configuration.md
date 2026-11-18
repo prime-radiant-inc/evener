@@ -188,6 +188,12 @@ commit attribution there. Each request supplies the tools currently available.
 
 A direct `evener` invocation does not read `launch.toml`. Use `--commit-provenance=off` there, or pass the flag to `evener serve`. Hub-spawned sessions receive the resolved value.
 
+Changing this setting on resume sends the new attribution in the conversation.
+Some older saved prompts require their original trailer unconditionally. A
+model resuming or forking one of those sessions may still use that trailer.
+Starting a new session with commit provenance set to `off` omits the trailer
+instruction at launch.
+
 ### Review shared configuration before trusting it
 
 Open the project's menu in the sidebar, choose **Project settings**, then review **Repository settings**. Read the preview, especially commands, MCP servers, extension directories, environment, and prompt files. **Trust this file** approves the displayed content; approve only content you intend to execute. Edit **Local overrides** separately. Trust is stored against a canonical content hash in project metadata, not just a filename. Changed content can require a new decision; known hashes support switching between reviewed versions.
