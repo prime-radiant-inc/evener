@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/internal/openaichat"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -401,15 +402,20 @@ func FuzzResponsesBuildBody(f *testing.F) {
 			} else {
 				toolRows, _ = body["tools"].([]map[string]any)
 			}
-			if len(toolRows) == 0 || toolRows[0]["strict"] != (sel&1 == 1) {
-				t.Fatalf("tools[0].strict = %#v, want the per-tool override %v", toolRows, sel&1 == 1)
+			var schema map[string]any
+			_ = json.Unmarshal(toolParams, &schema)
+			if schema == nil {
+				schema = map[string]any{"type": "object"}
 			}
-			if sel&1 == 1 {
-				var schema map[string]any
-				_ = json.Unmarshal(toolParams, &schema)
-				if schema == nil {
-					schema = map[string]any{"type": "object"}
-				}
+			// Strict mode force-requires every property, so the per-tool
+			// override can only be honored for a schema that already requires
+			// them all. A schema with an optional property is projected
+			// non-strict instead of made mandatory (#6200).
+			wantStrict := sel&1 == 1 && openaichat.StrictExpressible(schema)
+			if len(toolRows) == 0 || toolRows[0]["strict"] != wantStrict {
+				t.Fatalf("tools[0].strict = %#v, want %v (override %v, expressible %v)", toolRows, wantStrict, sel&1 == 1, openaichat.StrictExpressible(schema))
+			}
+			if wantStrict {
 				if typ, _ := schema["type"].(string); typ == "object" {
 					params, _ := toolRows[0]["parameters"].(map[string]any)
 					if params == nil || params["additionalProperties"] != false {

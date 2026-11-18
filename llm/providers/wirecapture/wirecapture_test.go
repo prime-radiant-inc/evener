@@ -157,6 +157,25 @@ func text(s string) []llm.ContentPart { return []llm.ContentPart{{Kind: llm.Cont
 
 var weatherTool = llm.ToolDefinition{Name: "weather", Description: "Current weather", Parameters: map[string]any{"type": "object", "properties": map[string]any{"city": map[string]any{"type": "string"}}}}
 
+// strictWeatherTool is the same tool with its single argument declared
+// required. Rows whose provider sets strict_tools can only project a schema
+// that already requires every property: OpenAI strict mode force-requires
+// them all, so a schema that leaves one optional is sent non-strict instead
+// (#6200). The rewrites agree, so these rows record the same wire schema as
+// before.
+var strictWeatherTool = llm.ToolDefinition{Name: "weather", Description: "Current weather", Parameters: map[string]any{
+	"type":       "object",
+	"properties": map[string]any{"city": map[string]any{"type": "string"}},
+	"required":   []string{"city"},
+}}
+
+// strictToolsRequest is toolsRequest for a row that turns strict mode on.
+func strictToolsRequest(effort string) llm.Request {
+	req := toolsRequest(effort)
+	req.Tools = []llm.ToolDefinition{strictWeatherTool}
+	return req
+}
+
 // toolsRequest is the common fixture: a system prompt, one user turn, one
 // tool with forced tool choice, the session identifiers the Codex headers
 // and the affinity headers read, and a prompt cache key plus 24h retention
@@ -217,12 +236,12 @@ var cases = []wireCase{
 	{"anthropic-opus-4-6-no-effort", "anthropic/claude-opus-4-6", false, toolsRequest("")},
 	{"anthropic-opus-4-7-display", "anthropic/claude-opus-4-7", false, toolsRequest("high")},
 	{"anthropic-opus-4-5-hybrid", "anthropic/claude-opus-4-5", false, toolsRequest("high")},
-	{"openai-gpt-5-5", "openai/gpt-5.5", false, toolsRequest("high")},
-	{"openai-codex-gpt-5-6-lite-stream", "openai-codex/gpt-5.6", true, toolsRequest("")},
+	{"openai-gpt-5-5", "openai/gpt-5.5", false, strictToolsRequest("high")},
+	{"openai-codex-gpt-5-6-lite-stream", "openai-codex/gpt-5.6", true, strictToolsRequest("")},
 	{"groq-chat-stream", "groq/openai/gpt-oss-120b", true, toolsRequest("high")},
 	{"groq-responses", "groq-responses/openai/gpt-oss-120b", false, toolsRequest("high")},
 	{"openrouter-opus-5-signed-tool-turn", "openrouter/anthropic/claude-opus-5", false, signedToolTurn()},
-	{"work-glm-zai-stream", "work/glm-5.2-nvfp4", true, toolsRequest("high")},
+	{"work-glm-zai-stream", "work/glm-5.2-nvfp4", true, strictToolsRequest("high")},
 	{"azure-gpt55-prod", "azure/gpt55-prod", false, toolsRequest("high")},
 	{"azure-claude-prod", "azure/claude-prod", false, toolsRequest("high")},
 	{"bedrock-sonnet-5-stream", "bedrock/anthropic.claude-sonnet-5", true, webSearchRequest()},

@@ -883,6 +883,13 @@ func TestDefAskUserSchema(t *testing.T) {
 // (matching LocalExecutionEnvironment.ReadFile's actual defaults).
 func TestDefReadFileSliceParamsDocumented(t *testing.T) {
 	def := DefReadFile()
+	// offset, limit and vision_prompt are documented optional (vision_prompt
+	// applies to images and PDFs only). OpenAI strict mode requires every
+	// property present and non-null, so the tool opts out rather than forcing
+	// a value for each on every read (#6200).
+	if def.Strict == nil || *def.Strict {
+		t.Fatalf("read_file Strict = %v, want false because offset, limit and vision_prompt are optional", def.Strict)
+	}
 	props, ok := def.Parameters["properties"].(map[string]any)
 	if !ok {
 		t.Fatalf("read_file properties = %T, want map[string]any", def.Parameters["properties"])

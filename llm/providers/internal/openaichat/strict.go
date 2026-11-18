@@ -8,6 +8,11 @@ import "sort"
 // property (sorted); arrays and anyOf/oneOf/allOf recurse. It runs only
 // when Caps.StrictTools is set (spec §8.2), because the rewrite is not
 // reversible by pruning strict afterwards.
+//
+// The rewrite force-requires every property, so callers must gate it on
+// StrictExpressible: a schema that leaves a declared property optional
+// cannot be projected into strict mode without making that argument
+// mandatory (#6200).
 func StrictifyJSONSchema(in map[string]any) map[string]any {
 	// Best-effort deep copy + strictification for OpenAI tool schemas.
 	// This intentionally handles only the constructs we emit (object/array) and is safe to
@@ -15,6 +20,95 @@ func StrictifyJSONSchema(in map[string]any) map[string]any {
 	cp := deepCopyAny(in).(map[string]any)
 	strictifyJSONSchemaInPlace(cp)
 	return cp
+}
+
+// StrictExpressible reports whether schema can be projected into OpenAI
+// strict mode without changing which arguments are optional.
+//
+// Strict mode requires every property of every object to be present and
+// listed in required. StrictifyJSONSchema enforces that by force-requiring
+// every property, which is lossless only for a schema whose every object
+// already lists all of its properties as required. For any other schema the
+// projection makes a documented-optional argument mandatory, so a caller
+// must send the tool non-strict instead (#6200).
+//
+// The walk mirrors StrictifyJSONSchema's reach exactly: object properties,
+// array items, and anyOf/oneOf/allOf subschemas.
+func StrictExpressible(schema map[string]any) bool {
+	return strictlyExpressibleNode(schema)
+}
+
+func strictlyExpressibleNode(m map[string]any) bool {
+	if m == nil {
+		return true
+	}
+	typ, _ := m["type"].(string)
+	switch typ {
+	case "object":
+		props, _ := m["properties"].(map[string]any)
+		if len(props) > 0 && !allPropertiesRequired(props, m["required"]) {
+			return false
+		}
+		for _, child := range props {
+			if childMap, ok := child.(map[string]any); ok && !strictlyExpressibleNode(childMap) {
+				return false
+			}
+		}
+	case "array":
+		if items, ok := m["items"].(map[string]any); ok && !strictlyExpressibleNode(items) {
+			return false
+		}
+	}
+	// The rewrite strictifies combinators whatever the node's own type, so a
+	for _, comb := range []string{"anyOf", "oneOf", "allOf"} {
+		raw, ok := m[comb]
+		if !ok || raw == nil {
+			continue
+		}
+		arr, ok := raw.([]any)
+		if !ok {
+			continue
+		}
+		for _, it := range arr {
+			if child, ok := it.(map[string]any); ok && !strictlyExpressibleNode(child) {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// allPropertiesRequired reports whether required names every property. The
+// required list reaches this package as []string from the builtin builders and
+// as []any from a decoded MCP or provider schema, so both are accepted.
+func allPropertiesRequired(props map[string]any, required any) bool {
+	switch list := required.(type) {
+	case []string:
+		seen := make(map[string]bool, len(list))
+		for _, name := range list {
+			seen[name] = true
+		}
+		for name := range props {
+			if !seen[name] {
+				return false
+			}
+		}
+	case []any:
+		seen := make(map[string]bool, len(list))
+		for _, v := range list {
+			if name, ok := v.(string); ok {
+				seen[name] = true
+			}
+		}
+		for name := range props {
+			if !seen[name] {
+				return false
+			}
+		}
+	default:
+		return false
+	}
+	return true
 }
 
 func strictifyJSONSchemaInPlace(m map[string]any) {

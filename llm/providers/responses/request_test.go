@@ -113,7 +113,13 @@ func TestBuildBody_GroqBaselineSendsOnlyTheSpecFields(t *testing.T) {
 func TestBuildBody_OpenAIRow(t *testing.T) {
 	t.Parallel()
 	req := userReq("hi")
-	req.Tools = []llm.ToolDefinition{{Name: "f", Parameters: map[string]any{"type": "object", "properties": map[string]any{"a": map[string]any{"type": "string"}}}}}
+	// Every property is required: a tool that leaves one optional has no legal
+	// strict projection and is sent non-strict instead (#6200).
+	req.Tools = []llm.ToolDefinition{{Name: "f", Parameters: map[string]any{
+		"type":       "object",
+		"properties": map[string]any{"a": map[string]any{"type": "string"}},
+		"required":   []string{"a"},
+	}}}
 	req.WebSearch = true
 	req.Store = nil
 	req.Include = []string{"web_search_call.results"}

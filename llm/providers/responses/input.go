@@ -57,6 +57,17 @@ func toResponsesTools(tools []llm.ToolDefinition, strict bool) []map[string]any 
 				// - required must include every key in properties (even for "optional" fields)
 				// See API validation errors like:
 				// "Invalid schema for function 'read_file': ... 'required' ... Missing 'limit'."
+				//
+				// That force-requiring is lossless only when the schema already
+				// requires every property. A tool with a documented-optional
+				// argument has no legal strict form: projecting it would make
+				// that argument mandatory on every call (#6200). Such a tool
+				// keeps its advertised schema and is sent non-strict.
+				if !openaichat.StrictExpressible(params) {
+					toolStrict = false
+				}
+			}
+			if toolStrict {
 				params = openaichat.StrictifyJSONSchema(params)
 				entry["parameters"] = params
 			}

@@ -70,9 +70,16 @@ func DefMemoryWrite() llm.ToolDefinition {
 }
 
 func DefReadFile() llm.ToolDefinition {
+	strictFalse := false
 	return llm.ToolDefinition{
 		Name:        "read_file",
 		Description: "Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection. For PDF files, returns the document for content analysis. When reading an image or PDF, put what you hope to learn in the `vision_prompt` argument — the system will provide a detailed description alongside the file.",
+		// Strict is explicitly false: offset, limit and vision_prompt are
+		// documented as optional (vision_prompt applies to images and PDFs
+		// only), and OpenAI strict mode requires every property to be present
+		// and non-null. Projecting this schema strictly would force a value for
+		// each on every read (#6200).
+		Strict: &strictFalse,
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
