@@ -1036,12 +1036,41 @@ type SettingsHubOverview struct {
 	// PastIndex is nil only when no past-session index is configured
 	// (cfg.Past == nil) — e.g. a minimal/test hub config.
 	PastIndex *SettingsPastIndexOverview `json:"pastIndex,omitempty"`
+	// OperationStoreQuarantine is present exactly when the hub's operation
+	// store carries a quarantine signal: a corrupt store file took the
+	// custody-first quarantine and a custody file holds what it carried.
+	// Absent on a hub with no quarantine, and on an older hub that has no
+	// field at all.
+	//
+	// The signal is not an error and needs no operator action: the hub serves
+	// the replacement store. It is a health fact a client shows so an operator
+	// can find the set-aside file and its custody beside the store.
+	// Source: hostops.Store.Quarantine, the signal cmd/evener-hub/main.go also
+	// logs at startup.
+	OperationStoreQuarantine *SettingsOperationStoreQuarantine `json:"operationStoreQuarantine,omitempty"`
 	// DaemonIdleTimeoutMillis is the Hub's configured idle-retirement deadline
 	// for spawned daemons, in integer milliseconds; zero means automatic
 	// retirement is disabled. No omitempty: zero is a real configured state,
 	// not "unknown". Source: cfg.DaemonIdleTimeout (hub.toml
 	// daemon_idle_timeout, default 1h).
 	DaemonIdleTimeoutMillis int64 `json:"daemonIdleTimeoutMillis"`
+}
+
+// SettingsOperationStoreQuarantine is the operation store's quarantine signal
+// as the hub reports it to clients: the corrupt file renamed aside, the custody
+// file that snapshot what it carried, and the quarantine epoch the set-aside
+// advanced to. These are hostops.QuarantineSignal's fields, named as that type
+// names them, and they describe a completed quarantine — never a pending or
+// refused one, which leaves no signal.
+type SettingsOperationStoreQuarantine struct {
+	// QuarantinedFile is the path of the corrupt store file, renamed aside and
+	// never deleted.
+	QuarantinedFile string `json:"quarantinedFile,omitempty"`
+	// CustodyFile is the path of the custody file the quarantine wrote beside
+	// the store.
+	CustodyFile string `json:"custodyFile,omitempty"`
+	// QuarantineEpoch is the durable counter the quarantine advanced to.
+	QuarantineEpoch uint64 `json:"quarantineEpoch,omitempty"`
 }
 
 // SettingsPastIndexOverview describes the past-session SQLite index. Settings

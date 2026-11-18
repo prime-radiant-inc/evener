@@ -149,3 +149,42 @@ test("runtime details start folded while resident controls remain available", as
   expect(settingsFieldIds()).toContain("listen-address");
   expect(settingsFieldIds()).not.toContain("run-dir");
 });
+
+test("reports the operation store's quarantine signal when the hub carries one", async () => {
+  const fake = connectReadyFakeClient();
+  const quarantined: SettingsOverviewResponse = {
+    ...SAMPLE_RESPONSE,
+    hub: {
+      listenAddr: "127.0.0.1:9180",
+      runDir: "/tmp/evener-run",
+      spawnTimeout: "30s",
+      bearerTokenAge: "fixture-token-age",
+      daemonIdleTimeoutMillis: 3600000,
+      operationStoreQuarantine: {
+        quarantinedFile: "/fixture/state/hub-ops.json",
+        custodyFile: "/fixture/state/hub-ops.json.custody-20260101T000000.000000000Z.json",
+        quarantineEpoch: 3,
+      },
+    },
+  };
+  fake.on("evener/settings/overview", () => quarantined);
+  fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
+
+  render(<HubSection />);
+
+  // The oracle is the notice's presence and its reason, not its wording: a
+  // person opening Settings -> Hub must be able to see that the store was
+  // quarantined. Copy changes must not fail this.
+  await waitFor(() => expect(statusReasons()).toContain("operation-store-quarantined"));
+});
+
+test("shows no quarantine notice for a hub whose store carries no signal", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("evener/settings/overview", () => SAMPLE_RESPONSE);
+  fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
+
+  render(<HubSection />);
+
+  await waitFor(() => expect(fake.calls.length).toBeGreaterThan(0));
+  expect(statusReasons()).not.toContain("operation-store-quarantined");
+});

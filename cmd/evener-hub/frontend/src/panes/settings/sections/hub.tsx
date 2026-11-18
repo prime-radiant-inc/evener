@@ -1,3 +1,4 @@
+import type { SettingsOperationStoreQuarantine } from "@evener/appwire-client";
 import { useEffect, useState } from "react";
 import { settingsOverviewStore, useSettingsOverviewStore } from "../../../stores/settingsOverview";
 import { Button, Disclosure, InlineNotice, PropertyList, Skeleton } from "../../../widgets";
@@ -53,6 +54,7 @@ export function HubSection() {
     <div className={CLASS.root}>
       <HubUpdates />
       <HubResidents />
+      <OperationStoreQuarantineNotice quarantine={hub?.operationStoreQuarantine} />
       <Disclosure summary="Technical details" open={detailsOpen} onOpenChange={setDetailsOpen}>
         <PropertyList
           layout="stacked"
@@ -90,5 +92,40 @@ export function HubSection() {
         />
       </Disclosure>
     </div>
+  );
+}
+
+// OperationStoreQuarantineNotice reports the operation store's quarantine
+// signal: a corrupt store file was renamed aside under a custody file, and the
+// hub now serves the replacement. It is a health fact, not a failure the reader
+// can act on here — the hub already recovered — so it is a neutral status
+// notice that names the set-aside file and its custody for whoever has to go
+// look at them. Nothing renders when the hub reports no quarantine, and an
+// older hub sends no field at all.
+function OperationStoreQuarantineNotice({ quarantine }: { quarantine: SettingsOperationStoreQuarantine | undefined }) {
+  if (!quarantine) return null;
+  return (
+    <InlineNotice
+      tone="neutral"
+      live="status"
+      data-reason="operation-store-quarantined"
+      title="Host operation store was quarantined"
+    >
+      <p>A corrupt store file was moved aside and the hub is serving a replacement. Its contents were kept here:</p>
+      <PropertyList
+        layout="stacked"
+        rows={[
+          {
+            label: "Set aside",
+            value: <FieldValue field="quarantined-file">{quarantine.quarantinedFile ?? ""}</FieldValue>,
+          },
+          { label: "Custody", value: <FieldValue field="custody-file">{quarantine.custodyFile ?? ""}</FieldValue> },
+          {
+            label: "Quarantine epoch",
+            value: <FieldValue field="quarantine-epoch">{quarantine.quarantineEpoch ?? 0}</FieldValue>,
+          },
+        ]}
+      />
+    </InlineNotice>
   );
 }

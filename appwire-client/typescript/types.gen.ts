@@ -4387,6 +4387,20 @@ export interface SettingsHubOverview {
    */
   pastIndex?: SettingsPastIndexOverview;
   /**
+   * OperationStoreQuarantine is present exactly when the hub's operation
+   * store carries a quarantine signal: a corrupt store file took the
+   * custody-first quarantine and a custody file holds what it carried.
+   * Absent on a hub with no quarantine, and on an older hub that has no
+   * field at all.
+   *
+   * The signal is not an error and needs no operator action: the hub serves
+   * the replacement store. It is a health fact a client shows so an operator
+   * can find the set-aside file and its custody beside the store.
+   * Source: hostops.Store.Quarantine, the signal cmd/evener-hub/main.go also
+   * logs at startup.
+   */
+  operationStoreQuarantine?: SettingsOperationStoreQuarantine;
+  /**
    * DaemonIdleTimeoutMillis is the Hub's configured idle-retirement deadline
    * for spawned daemons, in integer milliseconds; zero means automatic
    * retirement is disabled. No omitempty: zero is a real configured state,
@@ -4406,6 +4420,23 @@ export interface SettingsMCPServerEntry {
   transport?: string;
   status?: string;
   error?: string;
+}
+
+export interface SettingsOperationStoreQuarantine {
+  /**
+   * QuarantinedFile is the path of the corrupt store file, renamed aside and
+   * never deleted.
+   */
+  quarantinedFile?: string;
+  /**
+   * CustodyFile is the path of the custody file the quarantine wrote beside
+   * the store.
+   */
+  custodyFile?: string;
+  /**
+   * QuarantineEpoch is the durable counter the quarantine advanced to.
+   */
+  quarantineEpoch?: number;
 }
 
 export interface SettingsOverviewResponse {

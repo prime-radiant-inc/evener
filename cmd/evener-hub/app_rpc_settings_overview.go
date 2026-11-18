@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/mcpprobe"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hostops"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
@@ -60,9 +61,28 @@ func settingsHubOverview(cfg hubcore.WebConfig) *appwire.SettingsHubOverview {
 		SpawnTimeout:   cfg.SpawnTimeout.String(),
 		BearerTokenAge: bearerTokenAge,
 		PastIndex:      pastIndex,
+		// The quarantine signal is the same one startup logs: a completed
+		// custody-first quarantine leaves it on the store for as long as the
+		// custody file keeps the names it closed closed. A hub with no store
+		// configured, or a store with no custody file, reports none.
+		OperationStoreQuarantine: operationStoreQuarantine(cfg.RemoteHostOpsStore),
 		// Milliseconds, zero included: "disabled" and "not yet reported" must
 		// never decode as the same value.
 		DaemonIdleTimeoutMillis: appwire.DurationMillis(cfg.DaemonIdleTimeout),
+	}
+}
+
+// operationStoreQuarantine reports the store's health signal, or nil when there
+// is no store or no completed quarantine to describe.
+func operationStoreQuarantine(store *hostops.Store) *appwire.SettingsOperationStoreQuarantine {
+	signal := store.Quarantine()
+	if signal == nil {
+		return nil
+	}
+	return &appwire.SettingsOperationStoreQuarantine{
+		QuarantinedFile: signal.QuarantinedFile,
+		CustodyFile:     signal.CustodyFile,
+		QuarantineEpoch: signal.QuarantineEpoch,
 	}
 }
 

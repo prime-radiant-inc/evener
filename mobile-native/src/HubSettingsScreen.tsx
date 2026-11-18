@@ -4,13 +4,17 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { type ConnectionState, createHubOverviewStore } from "@evener/appwire-client";
+import {
+	type ConnectionState,
+	createHubOverviewStore,
+	type SettingsOperationStoreQuarantine,
+} from "@evener/appwire-client";
 import type { ConversationClientLike } from "./conversation/services/conversation";
 import { isReady, whenReady } from "./connectionDisplay";
 import { HUB_NO_LONGER_SELECTED, useRetainedScreenConnection } from "./retainedScreen";
 import { FirstLoad, SheetStatus } from "./sheet/SheetStatus";
 import type { HubRoutes } from "./hub/hubSheetContext";
-import { allowFontScaling, Copy, ErrorMessage, styles, useColors } from "./ui";
+import { allowFontScaling, Copy, ErrorMessage, styles, useColors, WarningMessage } from "./ui";
 import { Spinner } from "./sheet/Spinner";
 import { Button, Group, GroupedPage, GroupFooter, Row } from "./sheet/Grouped";
 
@@ -231,6 +235,7 @@ function HubSettings({
 				</View>
 				{data && (
 					<>
+						<OperationStoreQuarantineNotice quarantine={hub?.operationStoreQuarantine} />
 						<Section title="Runtime and storage">
 							<Detail label="Version" value={hub?.version} />
 							<Detail label="Commit" value={hub?.commit} />
@@ -293,5 +298,25 @@ function HubSettings({
 				)}
 			</GroupedPage>
 		</SafeAreaView>
+	);
+}
+
+/** OperationStoreQuarantineNotice reports the hub's operation-store quarantine
+ * signal: a corrupt store file was moved aside under a custody file and the hub
+ * serves a replacement. The hub already recovered, so this is a standing fact
+ * rather than a failure, and it is never shown for a hub that reports none (an
+ * older hub sends no field at all). The paths are the ones to go look at. */
+function OperationStoreQuarantineNotice({ quarantine }: { quarantine: SettingsOperationStoreQuarantine | undefined }) {
+	if (!quarantine) return null;
+	const lines = [
+		"The hub's operation store was quarantined: a corrupt store file was moved aside and the hub is serving a replacement.",
+		quarantine.quarantinedFile ? `Set aside: ${quarantine.quarantinedFile}` : null,
+		quarantine.custodyFile ? `Custody: ${quarantine.custodyFile}` : null,
+		quarantine.quarantineEpoch === undefined ? null : `Quarantine epoch: ${quarantine.quarantineEpoch}`,
+	].filter((line): line is string => line !== null);
+	return (
+		<View testID="operation-store-quarantine">
+			<WarningMessage message={lines.join("\n")} />
+		</View>
 	);
 }
