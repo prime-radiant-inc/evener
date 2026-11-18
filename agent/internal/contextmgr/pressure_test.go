@@ -335,6 +335,63 @@ func TestContextManager_SetProfileInvalidatesMeasurementsOnlyWhenTargetChanges(t
 		}
 	})
 
+	t.Run("Chat scalar replay field", func(t *testing.T) {
+		row := func(field *string, replay bool) *provider.Profile {
+			return provider.FromResolved(registry.Resolved{
+				Instance: "gateway", ModelID: "reasoner", Protocol: registry.ProtocolOpenAIChat,
+				Caps: registry.Caps{ReplayReasoningText: &replay, ReasoningField: field},
+			}, nil)
+		}
+		for _, tc := range []struct {
+			name          string
+			before, after *string
+			replay        bool
+			want          int
+		}{
+			{"follow observed field", nil, nil, true, 321},
+			{"empty setting follows observed field", nil, new(""), true, 321},
+			{"same explicit field", new("reasoning"), new("reasoning"), true, 321},
+			{"observed to explicit", nil, new("reasoning_content"), true, 0},
+			{"literal observed field from a resolved caller", nil, new("observed"), true, 0},
+			{"explicit to observed", new("reasoning_content"), nil, true, 0},
+			{"replace explicit field", new("reasoning"), new("reasoning_content"), true, 0},
+			{"alternate spelling", new("reasoning_content"), new("reasoning_text"), true, 0},
+			{"scalar replay off", nil, new("reasoning_content"), false, 321},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				cm := NewManager(row(tc.before, tc.replay), nil, cheapmodel.New(nil))
+				cm.RecordInputTokens(321, 7)
+				tokens, prefix, key := cm.InputMeasurement()
+				next := row(tc.after, tc.replay)
+				cm.SetProfile(next)
+				cold := NewManager(next, nil, cheapmodel.New(nil))
+				cold.RestoreInputMeasurement(tokens, prefix, key)
+				if live, saved := cm.LastInputTokens(), cold.LastInputTokens(); live != tc.want || saved != tc.want {
+					t.Errorf("live and restored counts = %d, %d; want %d", live, saved, tc.want)
+				}
+			})
+		}
+		// These saved keys identify whether this row replayed a scalar, but
+		// carry no record of which field the gateway received.
+		const savedScalar = "66bb07f910e805adb1f43afbe8156162cb19f2f7f9f27b768b38e0f0be95b9af"
+		const savedWithoutScalar = "81ecf5fc94caacf8f269a5290a2073f9177851064e2d068af90914ce28dcb15c"
+		for _, tc := range []struct {
+			profile *provider.Profile
+			key     string
+			want    int
+		}{
+			{row(nil, true), savedScalar, 0},
+			{row(new("reasoning_content"), true), savedScalar, 0},
+			{row(new("reasoning_content"), false), savedWithoutScalar, 321},
+		} {
+			cold := NewManager(tc.profile, nil, cheapmodel.New(nil))
+			cold.RestoreInputMeasurement(321, 7, tc.key)
+			if got := cold.LastInputTokens(); got != tc.want {
+				t.Errorf("restored count without a recorded field selection = %d, want %d", got, tc.want)
+			}
+		}
+	})
+
 	for _, tc := range []struct {
 		name   string
 		mutate func(*registry.Resolved)

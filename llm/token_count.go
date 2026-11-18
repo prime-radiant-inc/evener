@@ -1027,11 +1027,8 @@ func localInputEstimate(req Request, callerProvider string, t dispatchTarget) In
 	return EstimateInputTokensForResolved(t.res, estimateReq)
 }
 
-// EstimatorTargetsEquivalent reports whether two resolved rows are one estimator
-// target: the fields the local estimate reads decide -- including the model id,
-// which the media-family name rule reads when the row's own facts do not -- so a
-// caller that keeps a measurement keyed to a target does not have to re-list them
-// and drift when the rules grow.
+// EstimatorTargetsEquivalent reports whether two resolved rows can share an input
+// token measurement. Both the local estimate and the provider's replay shape matter.
 func EstimatorTargetsEquivalent(a, b registry.Resolved) bool {
 	return estimatorTargetFor(a) == estimatorTargetFor(b)
 }
@@ -1041,10 +1038,11 @@ type estimatorTarget struct {
 	Model, WireModel, Protocol, Surface, Family, ImageDetail, RequestRoute string
 	ThinkingAsText, RawReplay, ChatScalar, ReasoningDisabled               bool
 	MultimodalToolResults, SeesImages, SeesDocuments                       bool
+	ChatScalarSelection                                                    string `json:",omitempty"`
 }
 
 func estimatorTargetFor(r registry.Resolved) estimatorTarget {
-	return estimatorTarget{
+	target := estimatorTarget{
 		Model: r.ModelID, WireModel: r.OutboundModelSelector(), Protocol: r.Protocol,
 		Surface: r.Surface, Family: r.Model.Family,
 		RequestRoute:          r.ReasoningReplayRoute(),
@@ -1057,6 +1055,12 @@ func estimatorTargetFor(r registry.Resolved) estimatorTarget {
 		SeesImages:            RowSeesToolResultMedia(r, "image/png"),
 		SeesDocuments:         RowSeesToolResultMedia(r, "application/pdf"),
 	}
+	if target.ChatScalar {
+		// An empty setting follows the observed wire field. Include the setting
+		// even then so only targets without scalar replay omit it from the key.
+		target.ChatScalarSelection = "reasoning_field=" + registry.StringValue(r.Caps.ReasoningField)
+	}
+	return target
 }
 
 func replaysChatScalar(r registry.Resolved) bool {
