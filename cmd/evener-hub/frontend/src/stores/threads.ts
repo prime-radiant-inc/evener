@@ -6186,18 +6186,116 @@ function beginWatchedHydration(
 // that published them in charge, and the new read's buffer is the only place
 // its hold exists.
 //
-// KNOWN LIMIT, measured rather than assumed: the delegate delete below is
-// POSITIONAL because a buffered delegate frame names no publisher.
-// EvenerDelegateParams is {threadId, ref, delegate}, and `ref` names the
-// WORKSPACE, which a replacement keeps (server/appwire_identity.go's
-// PrepareAppIdentityForRef). An A/B experiment on identical frame order showed
-// no client-side predicate separates the two cases: retiring by the confirming
-// frame's own hand-off keeps the incoming source's live hold but lets a
-// departed daemon's 901 outrank the replacement ("expected 901 to be
-// undefined"), while deleting positionally retires the departed sample but
-// loses the live one ("expected undefined to be 1"). The separating fact is not
-// on the wire; attaching the publishing boot to evener/delegate/updated is
-// #6815, after which this delete becomes a filter on the frame's own publisher.
+// A buffered delegate frame names no publisher: EvenerDelegateParams is
+// {threadId, ref, delegate}, and `ref` names the WORKSPACE, which a replacement
+// keeps (server/appwire_identity.go's PrepareAppIdentityForRef). So "which
+// source published this sample" is answered from the buffer's own structure,
+// and "is that claim newer or older than the one I hold" is answered before
+// any sample is touched. See provenRetiredSamples.
+//
+// provenRetiredSamples answers "which buffered delegate samples can this
+// buffer PROVE came from the outgoing source", and it answers only what it can
+// prove. A delegate frame names no source (`EvenerDelegateParams` is threadId,
+// ref and the row, and `ref` names the workspace, which a replacement keeps),
+// so identity has to come from the buffer's own structure.
+//
+// Position alone is NOT that structure, and treating it as if it were is the
+// error this function exists to avoid: on a bootless recovery the replacement
+// publishes its FIRST hold before its first `history/updated`, so a pre-naming
+// delegate sample may be either source's. Stripping it positionally took the
+// replacement's live wait with the retired daemon's, and an unchanged hold
+// emits no update of its own to restore it.
+//
+// The proof is a later sample of the SAME delegate after the naming frame:
+// that is the incoming source publishing that delegate, so an earlier sample of
+// it was published under the line it replaced. A delegate with no such later
+// sample has no proof either way, and its sample is kept whole - keeping a
+// stale sequence is corrected by the incoming source's next sample, while
+// dropping a live hold is permanent.
+function provenRetiredSamples(
+  notifications: readonly ReceivedTranscriptUpdate[],
+  retiredBy: string | undefined,
+): ReadonlySet<ReceivedTranscriptUpdate> {
+  const proven = new Set<ReceivedTranscriptUpdate>();
+  if (retiredBy === undefined) return proven;
+  // Where the incoming source named itself, if it did.
+  let namedAt = -1;
+  for (let index = 0; index < notifications.length; index += 1) {
+    const buffered = notifications[index];
+    if (buffered === undefined) continue;
+    const { method, params } = buffered.notification as AnyNotification;
+    if (method !== "history/updated") continue;
+    const boot = (params as { bootGeneration?: string }).bootGeneration;
+    if (boot !== undefined && boot !== "" && boot === retiredBy) {
+      namedAt = index;
+      break;
+    }
+  }
+  if (namedAt === -1) return proven;
+  // Proof one: delegates the incoming source published AFTER naming itself.
+  // Every earlier sample of one of those is the outgoing line's.
+  const publishedAfterNaming = new Set<string>();
+  // Proof two: the highest sequence each delegate reached after the naming
+  // frame. The source bumps its sequence under the controller lock, so a later
+  // sample that is LOWER means the numbering restarted - and every pre-naming
+  // sample above that value belongs to the line that ended.
+  const postNamingSequences = new Map<string, number>();
+  for (let index = namedAt + 1; index < notifications.length; index += 1) {
+    const buffered = notifications[index];
+    if (buffered === undefined) continue;
+    const { method, params } = buffered.notification as AnyNotification;
+    if (method !== "evener/delegate/updated") continue;
+    const delegate = (params as { delegate?: { delegateId?: string; holdSequence?: number } }).delegate;
+    const id = delegate?.delegateId;
+    if (!id) continue;
+    publishedAfterNaming.add(id);
+    const sequence = delegate?.holdSequence;
+    if (sequence === undefined) continue;
+    const seen = postNamingSequences.get(id);
+    if (seen === undefined || sequence > seen) postNamingSequences.set(id, sequence);
+  }
+  for (let index = 0; index < namedAt; index += 1) {
+    const update = notifications[index];
+    if (!update) continue;
+    const { method, params } = update.notification as AnyNotification;
+    if (method !== "evener/delegate/updated") continue;
+    const delegate = (params as { delegate?: { delegateId?: string; holdSequence?: number } }).delegate;
+    const id = delegate?.delegateId;
+    // Only a sample that CARRIES a hold has a sequence to retire; a durable
+    // update with no hold strips to itself and needs no proof.
+    const sequence = delegate?.holdSequence;
+    if (id === undefined || sequence === undefined) continue;
+    if (publishedAfterNaming.has(id)) {
+      proven.add(update);
+      continue;
+    }
+    const later = postNamingSequences.get(id);
+    if (later !== undefined && sequence > later) {
+      proven.add(update);
+      continue;
+    }
+    // A LATER sample of the same delegate anywhere in the buffer with a lower
+    // sequence is proof too: the source bumps its sequence under the controller
+    // lock, so a decrease can only be a different line starting over. This is
+    // the shape where the replacement publishes its first hold BEFORE it names
+    // itself - its `1` follows the outgoing daemon's `900`, and only the `900`
+    // belongs to the line that ended.
+    for (let after = index + 1; after < notifications.length; after += 1) {
+      const successor = notifications[after];
+      if (successor === undefined) continue;
+      const { method: m, params: p } = successor.notification as AnyNotification;
+      if (m !== "evener/delegate/updated") continue;
+      const laterDelegate = (p as { delegate?: { delegateId?: string; holdSequence?: number } }).delegate;
+      if (laterDelegate?.delegateId !== id || laterDelegate.holdSequence === undefined) continue;
+      if (laterDelegate.holdSequence < sequence) {
+        proven.add(update);
+        break;
+      }
+    }
+  }
+  return proven;
+}
+
 // stripDelegateHold removes the HOLD from a buffered delegate sample while
 // keeping every durable field. A sample whose sequence belongs to a replaced
 // source must not outrank the incoming source's numbering, but its lifecycle,
@@ -6465,6 +6563,10 @@ function replayHydrationNotifications(
     preFailureOwner !== "" &&
     confirmedBootReplacement(preFailureOwner, retiredBy, "authoritative");
   let incomingNamed = false;
+  // Which buffered delegate samples the buffer PROVES belong to the outgoing
+  // line. See the strip below for the rule; it is computed once, before the
+  // fold, because it needs the whole buffer rather than one frame.
+  const retiredLineSamples = provenRetiredSamples(notifications, liveReplacement ? retiredBy : undefined);
   for (const update of notifications) {
     let notification =
       retiredBy === undefined
@@ -6480,20 +6582,40 @@ function replayHydrationNotifications(
       } else if (notification.method === "evener/delegate/updated" && !incomingNamed) {
         // A delegate sample is DURABLE - its row, lifecycle and terminal
         // outcome do not belong to the replaced source's numbering - but the
-        // HOLD it carries does. A sample buffered before the replacement named
-        // itself was published while the retired source was the only writer on
-        // this buffer, so its hold sequence is numbered from a source that no
-        // longer serves the thread.
+        // HOLD it carries may. A sample buffered before the replacement named
+        // itself was published while the retired source was writing this
+        // buffer - but the replacement publishes its own first hold in that
+        // same window on a bootless recovery, so position alone cannot say
+        // which one this is.
         //
-        // Folding it whole reinstates that sequence AFTER the hand-off already
-        // retired the base model's copy, and the incoming source's own history
-        // update then finds itself already recorded as owner and clears
+        // Positions before the naming frame are where the outgoing source and
+        // the replacement OVERLAP, and the retired daemon's sample must leave
+        // while the replacement's first hold stays. The buffer has to PROVE
+        // which is which, because losing a live hold is permanent - an
+        // unchanged hold emits no update to restore it - while keeping a stale
+        // sequence is corrected by the next sample.
+        //
+        // `retiredLineSamples` holds exactly the samples the buffer proves
+        // belong to the outgoing line. A delegate sample is one when the
+        // replacement later names itself in a `history/updated` (everything
+        // before that frame predates the transition), or when a later sample of
+        // the same delegate carries a LOWER sequence - the source bumps its
+        // sequence under the controller lock, so a decrease can only be a
+        // different line starting over. A sample neither fact covers is kept.
+        //
+        // Folding such a sequence whole reinstates it AFTER the hand-off
+        // already retired the base model's copy, and the incoming source's own
+        // history update then finds itself already recorded as owner and clear
         // nothing: the retired daemon's larger sequence outranks the
         // replacement's first unheld frame and a wait that ended presents as
         // still pending. Strip only the hold fields, exactly as a departed
-        // source's sample is stripped on a confirmed absence.
-        const stripped = stripDelegateHold({ ...update, notification });
-        notification = stripped.notification;
+        // source's sample is stripped on a confirmed absence - and strip
+        // NOTHING when the buffer cannot prove the sample belongs to the
+        // retired line, because the live wait it carries would be lost.
+        if (retiredLineSamples.has(update)) {
+          const stripped = stripDelegateHold({ ...update, notification });
+          notification = stripped.notification;
+        }
       } else if (!incomingNamed && notification.method.startsWith("overlay/")) {
         // An overlay upsert carries NO source identity
         // (`OverlayUpsertedParams` is threadId, ref, item), so position is the

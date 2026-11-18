@@ -490,6 +490,66 @@ it("does not let a saved fallback's retained boot supersede a buffered replaceme
   expect(after?.history?.holdOwner).toBe("2@other");
 });
 
+// The mirror of the case above, and the one a symmetric "did this boot differ"
+// test cannot separate. A read is issued while the thread is served by a parent
+// daemon at `5@root`; before that read answers, the thread resumes under its OWN
+// daemon at bare `1` and publishes a history update. `confirmedBootReplacement`
+// calls any two differing qualified owners a replacement in BOTH directions, so
+// the older reply treats the newer daemon's frame as the source it superseded
+// and drops it - and with it the invalidation that tells the repository to
+// recover.
+//
+// The only sound order is the source the read demonstrably replaced, and this
+// read replaced nothing: it answered under the very token the model already
+// held. A frame from any other source is therefore a takeover it knows nothing
+// about and must keep.
+it("keeps the newer daemon's frame when the accepted read superseded no source", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const baseline = readMany(3);
+  baseline.bootGeneration = "5@root";
+  baseline.snapshot = { incarnation: identity.incarnation, length: 3 };
+  expect(owner.acceptRead(baseline, { lifetime: 1, readId: "parent-seed", boundary: "parent-seed" })).toBe(true);
+  await owner.settled();
+  expect(owner.getSnapshot()?.history?.bootGeneration).toBe("5@root");
+
+  // The read that answers while the newer daemon is publishing: same source the
+  // model already held, so it supersedes nothing.
+  const same: ThreadHistoryReadResponse = read("same", 3);
+  same.bootGeneration = "5@root";
+  same.epoch = 1;
+  same.snapshot = { incarnation: identity.incarnation, length: 3 };
+  expect(owner.acceptRead(same, { lifetime: 1, readId: "same", boundary: "same" })).toBe(true);
+  expect(owner.getSnapshot()?.history?.bootGeneration).toBe("5@root");
+
+  // Buffered before that answer: the thread's own daemon, naming itself as its
+  // own root with a bare counter. It is NEWER than `5@root`, which is exactly
+  // what an ownership-only comparison cannot see.
+  owner.acceptBeforeReadCut(
+    [
+      {
+        method: "history/updated",
+        params: {
+          ref,
+          threadId,
+          bootGeneration: "1",
+          epoch: 2,
+          snapshot: { incarnation: identity.incarnation, length: 6 },
+        },
+      } as AnyNotification,
+    ],
+    { lifetime: 1 },
+  );
+
+  const after = owner.getSnapshot();
+  // The newer daemon's frame was folded as a takeover, not discarded.
+  expect(after?.history?.awaited?.bootGeneration).toBe("1");
+  expect(after?.history?.holdOwner).toBe("1");
+  // And its invalidation survives, which is the signal recovery runs on.
+  expect(after?.history?.invalidatedAtGeneration).toBeDefined();
+});
+
 it("persists the page observation snapshot rather than the latest completeness watermark", async () => {
   const { fixture, owner, reader, rows } = await repositoryWithPage();
   try {

@@ -879,6 +879,13 @@ type HistoryReadErrorData struct {
 	ErrorData
 	BootGeneration string  `json:"bootGeneration"`
 	Epoch          *uint64 `json:"epoch,omitempty"`
+	// AbsenceAttested says the stamping hub ESTABLISHED that no daemon serves
+	// the thread: its roster answered that nobody owns it, or the ref names a
+	// source it does not serve. It is the peer's own account of how it knows,
+	// and it is what lets a forwarding layer tell a confirmed `daemonless`
+	// from a legacy peer's unqualified one. A peer too old to attest omits it,
+	// so absence from this field is "did not say", never "not absent".
+	AbsenceAttested bool `json:"absenceAttested,omitempty"`
 }
 
 // WithHistoryReadIdentity stamps a history read's error with the boot
@@ -893,6 +900,26 @@ func WithHistoryReadIdentity(err WireError, bootGeneration string, epoch uint64)
 // subscription) with the boot generation alone.
 func WithReadBootGeneration(err WireError, bootGeneration string) WireError {
 	return withReadIdentity(err, bootGeneration, nil)
+}
+
+// WithAttestedAbsence stamps a failed read with DaemonlessBootGeneration and
+// records that the stamping hub ESTABLISHED the absence rather than guessing
+// at it. Only the paths that actually ask the roster (or that name a source
+// this hub does not serve) may use it.
+//
+// The attestation is what survives forwarding. A hub re-stamping a peer's
+// failure cannot tell a confirmed `daemonless` from a legacy peer's blanket
+// one by the token alone - they are the same string - so the peer says which
+// it is. Without this a controller would have to demote both, turning a real
+// exit into "unknown", and a client holding a wait on the exited daemon would
+// keep showing it until the saved history became readable again.
+func WithAttestedAbsence(err WireError, epoch uint64) WireError {
+	stamped := withReadIdentity(err, DaemonlessBootGeneration, &epoch)
+	if data, ok := stamped.Data.(HistoryReadErrorData); ok {
+		data.AbsenceAttested = true
+		stamped.Data = data
+	}
+	return stamped
 }
 
 // NormalizeForwardedHistoryError makes a FORWARDED history read's ownership
@@ -924,6 +951,15 @@ func WithReadBootGeneration(err WireError, bootGeneration string) WireError {
 //
 // An error that carries no history identity, or carries any other token, is
 // returned unchanged.
+//
+// ATTESTED absence is the exception, and it is the one case where the peer's
+// `daemonless` is its own finding rather than a blanket stamp: it records that
+// the peer established no daemon serves the thread (see
+// HistoryReadErrorData.AbsenceAttested). Demoting that would be this layer
+// overriding evidence it does not have - the client would keep a wait on a
+// daemon that has exited, and an unchanged hold emits no update of its own to
+// correct it. So an attested stamp passes through, and only an UNQUALIFIED
+// `daemonless` becomes `unknown-owner`.
 func NormalizeForwardedHistoryError(err error) error {
 	if err == nil {
 		return nil
@@ -934,7 +970,7 @@ func NormalizeForwardedHistoryError(err error) error {
 	}
 	switch data := wire.Data.(type) {
 	case HistoryReadErrorData:
-		if data.BootGeneration != DaemonlessBootGeneration {
+		if data.BootGeneration != DaemonlessBootGeneration || data.AbsenceAttested {
 			return err
 		}
 		wire.Data = HistoryReadErrorData{
@@ -946,6 +982,11 @@ func NormalizeForwardedHistoryError(err error) error {
 	case map[string]any:
 		token, _ := data["bootGeneration"].(string)
 		if token != DaemonlessBootGeneration {
+			return err
+		}
+		// The same distinction over the decoder's generic map: a peer that
+		// attested its absence is preserved whole, every other field with it.
+		if attested, _ := data["absenceAttested"].(bool); attested {
 			return err
 		}
 		updated := maps.Clone(data)

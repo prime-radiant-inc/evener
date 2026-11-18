@@ -248,12 +248,23 @@ A **failed** saved read is the case that does carry ownership: it stamps
 snapshot, ancestry included, showed that nobody owns the thread; or the
 requested ref names a source this hub does not serve at all, in which case no
 daemon here could be serving it and no roster is needed — that holds even for a
-hub configured without one. Everywhere else it stamps `unknown-owner`: an
-incomplete scan, an unverified claim, a live or incompatible owner,
-unverifiable delegate ancestry, or no roster to ask. `unknown-owner` is not a
-claim that no daemon runs; it is the hub saying it does not know. A failed read
-must never claim a daemon is gone, because the only evidence it has is that it
-failed.
+hub configured without one. That stamp also carries an absence attestation, so
+a hub forwarding it onward can tell an established `daemonless` from an
+unqualified one and preserves it.
+
+When a **live** reply already named the serving daemon — it answered with a boot
+generation and epoch and no items — and the saved-history enrichment that
+follows it then fails, the failure carries that live reply's boot generation and
+epoch rather than `unknown-owner`. The hub did look, and it found the owner: a
+client uses that identity to retire the sequence it holds from the daemon the
+reply replaced, so the outgoing sequence cannot outrank the replacement's first
+update.
+
+Everywhere else a failed read stamps `unknown-owner`: an incomplete scan, an
+unverified claim, a live or incompatible owner, unverifiable delegate ancestry,
+or no roster to ask. `unknown-owner` is not a claim that no daemon runs; it is
+the hub saying it does not know. A failed read must never claim a daemon is gone
+on evidence that only shows it failed.
 
 The shared history reducer preserves higher item versions across overlapping
 pages. `HistoryState.replacementScopes` records closed page intervals and their

@@ -6,7 +6,6 @@ import {
   applyReadResponse,
   type CachedSessionItem,
   comparePositions,
-  confirmedBootReplacement,
   decodeTranscriptItem,
   encodeTranscriptItem,
   type HistoryState,
@@ -14,6 +13,7 @@ import {
   historyAnsweredLive,
   historyFallback,
   historyReplacesWindow,
+  holdOwnerOf,
   hydrateThread,
   type ItemModel,
   invalidateHistory,
@@ -564,6 +564,20 @@ export class TranscriptRepository {
   // established no source at all - a `live-read-failed` fallback - which
   // supersedes nothing.
   #acceptedReadSource = "";
+  // The source that accepted read REPLACED, captured at the same instant from
+  // the model the read was applied to. Two different owners cannot be ordered
+  // by their counters - `5@root` and `1@other` are both "a different boot" -
+  // so the only sound evidence that a frame's source is the OLDER one is that
+  // it is the source the read itself just superseded. Empty when the read
+  // replaced nothing, and a frame from any other source is then a candidate
+  // takeover that must survive to reach recovery.
+  #acceptedReadSuperseded = "";
+  // Whether that read installed the repository's FIRST model. With no model
+  // before it there is no source the buffer could be NEWER than: every
+  // buffered frame was produced before this answer, so a frame from any other
+  // source predates it. That case may exclude on identity alone, and only
+  // that case may.
+  #acceptedReadFreshHydration = false;
   #recoveryNeeded = false;
   #disposed = false;
   #invalidated = false;
@@ -929,6 +943,12 @@ export class TranscriptRepository {
       }
     }
     this.#model = candidate;
+    // The source this read REPLACED, read from the model it was applied to
+    // while that is still visible. A saved fallback designs to merge, so it
+    // usually replaces nothing (`holdOwnerOf(before)` equals what it retains)
+    // and the field stays empty; a live read that took over from another owner
+    // records that owner here and nowhere else.
+    const superseded = before?.history === undefined ? "" : holdOwnerOf(before.history);
     // The read's OWN evidence of the source it serves under, which is what the
     // pre-cut replay may treat as superseding a buffered frame. A saved
     // fallback suppresses the token for history VALIDITY - its rows came from
@@ -941,6 +961,16 @@ export class TranscriptRepository {
         ? (response.bootGeneration ?? "")
         : ""
       : (response.bootGeneration ?? "");
+    // A read supersedes that owner only when it actually installed a DIFFERENT
+    // source. Same token, or a read that established no source, replaced
+    // nothing - and an empty record must never be read as "everything is the
+    // superseded source".
+    this.#acceptedReadSuperseded =
+      this.#acceptedReadSource !== "" && this.#acceptedReadSource !== superseded ? superseded : "";
+    // A read that installed the FIRST model had no predecessor to name, and it
+    // still outranks every frame buffered before its answer - those frames were
+    // produced while the repository held nothing at all.
+    this.#acceptedReadFreshHydration = before === undefined;
     // A read installs the view the repository now serves, so a previous view's
     // exhaustion does not survive it. A saved fallback that names no
     // continuation is the whole saved transcript: the view starts exhausted,
@@ -1190,17 +1220,34 @@ export class TranscriptRepository {
     // reports, so dropping it loses nothing that is still true. Other methods
     // from the same interval (a queue change, an overlay the response did not
     // cover) are not history authority and still replay below.
-    const readSource = this.#acceptedReadSource;
+    // Which buffered frames this read may discard is an ORDER question, and
+    // `confirmedBootReplacement` cannot answer it: two qualified tokens from
+    // different owners confirm a replacement in BOTH directions, so "I am the
+    // older source" and "I am the newer one" read alike. Ordering by counter
+    // alone fails the same way, because two owners number from their own
+    // starts.
+    //
+    // The one sound discriminator is the source the read itself REPLACED. A
+    // frame from that source is demonstrably older than the installed one, so
+    // its identity cannot reassert itself. A frame from any OTHER source is
+    // evidence of a hand-off this read knows nothing about - the case where a
+    // read captured `5@root` and the thread's own daemon at `1` answered
+    // before the response arrived - and discarding it drops the invalidation
+    // that triggers recovery. It is kept so the reducer can record the
+    // takeover.
+    const superseded = this.#acceptedReadSuperseded;
+    // A first hydration has no predecessor source to name, yet it still
+    // outranks every frame buffered before it answered. There the accepted
+    // read's own token is the discriminator, and only there.
+    const firstHydration = this.#acceptedReadFreshHydration ? this.#acceptedReadSource : "";
     for (const notification of notifications) {
       if (notification.method === "history/updated") {
         const boot = notification.params.bootGeneration;
-        if (
-          readSource !== "" &&
-          boot !== undefined &&
-          boot !== "" &&
-          boot !== readSource &&
-          confirmedBootReplacement(boot, readSource, "authoritative")
-        ) {
+        if (boot === undefined || boot === "") {
+          this.accept(notification, context);
+          continue;
+        }
+        if ((superseded !== "" && boot === superseded) || (firstHydration !== "" && boot !== firstHydration)) {
           continue;
         }
         this.accept(notification, context);

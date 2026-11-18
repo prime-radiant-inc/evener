@@ -294,6 +294,102 @@ describe("useThreadsStore.watchThread", () => {
     threadsStore.getState().releaseWatchedThread("ref_a");
   });
 
+  // The mirror of the case above, and the one position alone cannot tell apart.
+  // On a bootless recovery the replacement publishes its FIRST hold before its
+  // first `history/updated`, so the buffer holds: the outgoing daemon's held
+  // sample at 900, then the replacement's own held sample at 1, then the frame
+  // naming the replacement. Stripping positionally (before the naming frame)
+  // took the replacement's live hold with the retired one, and an unchanged
+  // hold emits no update of its own to restore it.
+  //
+  // What separates them is publisher identity, and the only proof of a second
+  // numbering line in this buffer is a sample the incoming source published
+  // AFTER naming itself. Here there is none, so the replacement's hold is kept.
+  test("a replacement's first hold survives when no sample proves a second numbering line", async () => {
+    const a = connectReadyFakeClient();
+    a.on("thread/read", () => versionedReadResponse("ref_a", { name: "Held" }));
+    await threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+
+    const b = new FakeClient("ready");
+    let failRead: (() => void) | null = null;
+    b.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((_resolve, reject) => {
+          failRead = () =>
+            reject(
+              new WireError("thread history failed at entry 3", -32000, {
+                evenerErrorInfo: "transcriptHistoryFailed",
+                bootGeneration: "2",
+                epoch: 4,
+              }),
+            );
+        }),
+    );
+    connectionStore.getState().connect(b);
+    await flushUntil(() => failRead !== null);
+
+    // The outgoing daemon's sample, numbered from its own line.
+    b.emitNotification({
+      method: "evener/delegate/updated",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        delegate: {
+          delegateId: "dlg_a",
+          ownerSessionId: "s1",
+          rootSessionId: "s1",
+          transcriptRef: "ref_a",
+          status: "running",
+          holdSequence: 900,
+          drainHeldByJobs: true,
+          runningJobCount: 2,
+        },
+      },
+    } as unknown as AnyNotification);
+    // The replacement's OWN hold, published before it names itself - the bootless
+    // recovery shape.
+    b.emitNotification({
+      method: "evener/delegate/updated",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        delegate: {
+          delegateId: "dlg_a",
+          ownerSessionId: "s1",
+          rootSessionId: "s1",
+          transcriptRef: "ref_a",
+          status: "running",
+          holdSequence: 1,
+          drainHeldByJobs: true,
+          runningJobCount: 1,
+        },
+      },
+    } as unknown as AnyNotification);
+    // Only now does it name itself.
+    b.emitNotification({
+      method: "history/updated",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        bootGeneration: "2",
+        epoch: 4,
+        snapshot: { incarnation: "inc-1", length: 2 },
+        turns: [],
+      },
+    } as unknown as AnyNotification);
+
+    (failRead as unknown as () => void)();
+    await flushUntil(() => threadsStore.getState().watchedThreads.get("ref_a")?.history?.failed !== undefined);
+
+    const model = threadsStore.getState().watchedThreads.get("ref_a");
+    const replacement = model?.delegates?.find((delegate) => delegate.delegateId === "dlg_a");
+    // The replacement's live wait is still on screen, numbered from its own line.
+    expect(replacement?.holdSequence).toBe(1);
+    expect(model?.history?.failed).toBeDefined();
+    threadsStore.getState().releaseWatchedThread("ref_a");
+  });
+
   test("a watched refresh preserves a live active turn omitted by the snapshot cut", async () => {
     const a = connectReadyFakeClient();
     a.on("thread/read", () =>
