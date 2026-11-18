@@ -467,7 +467,19 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
       restored: snapshot.restoredImageIds,
     });
     const sendableMarkers = new Set(submittedAttachments.map((item) => item.marker));
+    // The outgoing request carries the sendable subset and nothing else: a
+    // tile the submitted text does not ask for must never reach the wire.
     const payload = attachments.toInputAttachments().filter((item) => sendableMarkers.has(item.marker));
+    // The DURABLE row keeps the whole owned composition, released bytes
+    // included. These two lists answer different questions - what may ship,
+    // and what the person can still see - and writing the sendable subset over
+    // the row destroys the difference. A resend whose delivery then fails used
+    // to leave the row already rewritten without the excluded tile, so
+    // recovery restored a composition the person never had. `owned` is handed
+    // over unfiltered; `queueRecoveryPersistence` removes tiles this
+    // composition does not own by id and records each tile's eligibility
+    // separately.
+    const ownedAttachments = attachments.toInputAttachments();
     const submittedLease = recoveryOwnerLeaseRef.current;
     const submittedRecoveryId = submittedLease?.clientMutationId ?? null;
     let releaseRecoveryInFlight: (() => void) | null = null;
@@ -533,7 +545,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
               const persisted = await queueRecoveryPersistence(
                 submittedRecoveryId,
                 submittedText,
-                payload,
+                ownedAttachments,
                 submittedSkillNames,
                 submittedCommandNames,
                 submittedMentions,

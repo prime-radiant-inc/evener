@@ -17,10 +17,10 @@ import {
   markDraftEdited,
   readComposerDraft,
   readComposerDraftRevisionId,
+  readCompositionImageRecord,
   readDraftRevision,
-  readRecoveryImageMarkers,
   writeComposerDraft,
-  writeRecoveryImageMarkers,
+  writeCompositionImageRecord,
 } from "./draft";
 import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
 import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
@@ -1021,7 +1021,10 @@ test("deleting the last missing reference retires the row's tag", async () => {
   await storage.transferToRecovery(original.clientMutationId, "rejected");
   const row = await storage.getRecovery(original.clientMutationId);
   if (!row) throw new Error("missing recovery fixture");
-  writeRecoveryImageMarkers("root", original.clientMutationId, [1]);
+  // The composition declared one anchor and no tiles: a reference with no
+  // bytes. Seeded through the record so the test exercises the same shape the
+  // writer produces.
+  writeCompositionImageRecord(original.clientMutationId, { anchors: [1], tiles: [] });
 
   const source = createTestComposerSource("root");
   try {
@@ -1032,7 +1035,7 @@ test("deleting the last missing reference retires the row's tag", async () => {
     await source.flushRecoveryWrites();
 
     // The tag is retired, not carried: the committed text spells no reference.
-    expect(readRecoveryImageMarkers("root", original.clientMutationId)).toEqual([]);
+    expect(readCompositionImageRecord(original.clientMutationId)?.anchors).toEqual([]);
   } finally {
     source.dispose();
     storage.close();

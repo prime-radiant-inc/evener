@@ -338,58 +338,99 @@ export function readComposerDraftImageMarkers(ref: string): number[] {
   return readImageProvenance(ref) ?? [];
 }
 
-// A recovery row owns a composition of its own, and that composition can hold
-// a missing image the row's attachment list cannot describe - the list carries
-// only tiles that still have bytes. The tag therefore lives beside the row,
-// keyed by the row's own client mutation id.
+// ── The composition image record ────────────────────────────────────────────
 //
-// NOT by ref: several panes share a ref, and a tag filed per ref lets any other
-// pane's draft write replace the row's list - which both drops the row's
-// missing reference (it then sends as prose) and lets the row's numbers block a
-// different pane's literal text. The row is the composition, so the row is the
-// key.
-function recoveryImageProvenanceStorageKey(ref: string, clientMutationId: string): string {
-  return `${IMAGE_PROVENANCE_PREFIX}${ref}.recovery.${clientMutationId}`;
+// THE INVARIANT. An image's marker number is a NAME THE TEXT USES, not an
+// identity and not a durable key. Numbers are reassigned on every merge,
+// every rebind and every activation, so any fact stored against a number can
+// be read later against a different image - or against prose that merely
+// spells the same glyph. This record therefore keys every fact by ATTACHMENT
+// IDENTITY and stores the number only as the label the committed text
+// currently uses.
+//
+// It is ONE record per composition, written with the composition it describes
+// and read as a whole, because the facts are only meaningful together:
+//
+//   anchors  - marker numbers the committed text references that have NO
+//              bytes. These are what refuse a send. Stored by number because
+//              an anchor has no attachment to be keyed by: its whole nature is
+//              that no tile carries it.
+//   tiles    - per OWNED attachment: its id, the marker the committed text
+//              gives it, whether it is eligible for Send, and whether it
+//              still holds bytes. Eligible and hasBytes are different facts:
+//              a released tile (reference deleted, tile kept) keeps its bytes
+//              so a reload restores it, and is not eligible so the reload
+//              cannot send it.
+//
+// It is keyed by the COMPOSITION'S OWN identity - the recovery row's client
+// mutation id - and never by ref. A retarget moves a row to another session
+// while keeping its id, so a ref-keyed record is orphaned by exactly the event
+// that should carry it. It also means two panes on one ref cannot overwrite
+// each other's facts.
+//
+// Everything the composer decides about images reads this record instead of
+// re-deriving from `[image N]` spellings: reserved numbers come from the
+// composition's text plus its attached markers, the sendable subset is a
+// projection of `tiles`, and a reopen restores both lists or neither.
+export type CompositionTileFacts = {
+  /** Attachment identity: minted at tile creation, stable through renumbering. */
+  id: string;
+  /** The label the committed text gives this tile right now. */
+  marker: number;
+  /** Whether a send of this composition may carry this tile's bytes. */
+  eligible: boolean;
+  /** Whether this tile still holds bytes (false: a markerless restored image). */
+  hasBytes: boolean;
+};
+
+export type CompositionImageRecord = {
+  anchors: number[];
+  tiles: CompositionTileFacts[];
+};
+
+// The row's own id is the whole key. See THE INVARIANT above.
+function compositionImageRecordKey(clientMutationId: string): string {
+  return `${IMAGE_PROVENANCE_PREFIX}recovery.${clientMutationId}`;
 }
 
-/** The markers a recovery row's composition recorded as having had image bytes. */
-export function readRecoveryImageMarkers(ref: string, clientMutationId: string): number[] {
-  return readMarkerList(recoveryImageProvenanceStorageKey(ref, clientMutationId)) ?? [];
-}
-
-export function writeRecoveryImageMarkers(ref: string, clientMutationId: string, markers: readonly number[]): void {
+/** The image facts recorded with this composition, or undefined when none has been written. */
+export function readCompositionImageRecord(clientMutationId: string): CompositionImageRecord | undefined {
   try {
-    const next = [...new Set(markers)].sort((left, right) => left - right);
-    localStorage.setItem(recoveryImageProvenanceStorageKey(ref, clientMutationId), JSON.stringify(next));
+    const raw = localStorage.getItem(compositionImageRecordKey(clientMutationId));
+    if (raw === null) return undefined;
+    const parsed: unknown = JSON.parse(raw);
+    if (typeof parsed !== "object" || parsed === null) return undefined;
+    const record = parsed as Partial<CompositionImageRecord>;
+    const anchors = Array.isArray(record.anchors)
+      ? record.anchors.filter((marker): marker is number => Number.isSafeInteger(marker) && marker > 0)
+      : [];
+    const tiles = Array.isArray(record.tiles)
+      ? record.tiles.filter(
+          (tile): tile is CompositionTileFacts =>
+            typeof tile === "object" &&
+            tile !== null &&
+            typeof (tile as CompositionTileFacts).id === "string" &&
+            Number.isSafeInteger((tile as CompositionTileFacts).marker),
+        )
+      : [];
+    return { anchors, tiles };
   } catch {
-    // Best-effort, like every other composer persistence.
+    return undefined;
   }
 }
 
-// A recovery row can hold tile bytes that its text does not reference. Those
-// bytes must survive a reload - the person never removed the tile - but they
-// must NOT become sendable on reopen. The row's attachment list cannot say
-// which is which: every restored attachment is exempt by default, because a
-// row that carried an image without spelling it is exactly the case that
-// exemption exists for. So the row records the markers it kept WITHOUT that
-// exemption, and adoption withholds it for those.
-function recoveryIneligibleStorageKey(ref: string, clientMutationId: string): string {
-  return `${IMAGE_PROVENANCE_PREFIX}${ref}.recoveryIneligible.${clientMutationId}`;
-}
-
-/** Markers a row keeps staged but must not offer to Send on reopen. */
-export function readRecoveryIneligibleMarkers(ref: string, clientMutationId: string): number[] {
-  return readMarkerList(recoveryIneligibleStorageKey(ref, clientMutationId)) ?? [];
-}
-
-export function writeRecoveryIneligibleMarkers(
-  ref: string,
-  clientMutationId: string,
-  markers: readonly number[],
-): void {
+export function writeCompositionImageRecord(clientMutationId: string, record: CompositionImageRecord): void {
   try {
-    const next = [...new Set(markers)].sort((left, right) => left - right);
-    localStorage.setItem(recoveryIneligibleStorageKey(ref, clientMutationId), JSON.stringify(next));
+    const next: CompositionImageRecord = {
+      anchors: [...new Set(record.anchors)].sort((left, right) => left - right),
+      tiles: record.tiles.map((tile) => ({
+        id: tile.id,
+        marker: tile.marker,
+        eligible: tile.eligible,
+        hasBytes: tile.hasBytes,
+      })),
+    };
+    localStorage.setItem(compositionImageRecordKey(clientMutationId), JSON.stringify(next));
   } catch {
     // Best-effort, like every other composer persistence.
   }
