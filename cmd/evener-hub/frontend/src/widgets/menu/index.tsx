@@ -202,6 +202,11 @@ interface RowObservation {
   width: number;
   portHeight: number;
   portWidth: number;
+  /** The popup's scroll offset when this look was taken. Each observation is
+   * read against its own offset: a clamp moves the whole list under a still
+   * viewport, and judging the old frame at the new offset invents clipping
+   * that no layout produced. */
+  scrolledTo: number;
 }
 
 const observeRow = (popup: HTMLElement, row: HTMLElement): RowObservation => ({
@@ -210,6 +215,7 @@ const observeRow = (popup: HTMLElement, row: HTMLElement): RowObservation => ({
   width: row.offsetWidth,
   portHeight: popup.offsetHeight,
   portWidth: popup.offsetWidth,
+  scrolledTo: popup.scrollTop,
 });
 
 /** What one look at a scroller saw: how far it was scrolled, and where the
@@ -304,10 +310,19 @@ function classifyScrollerScroll(
   // tolerance cannot turn an ordinary scroll into a correction.
   if (previous.scrollTop > maximum && Math.abs(now - maximum) <= CLAMP_ROUNDING) return "clamp";
   const moved = now - previous.scrollTop;
-  // The offset grew by exactly as much as the trigger moved deeper into the
-  // content: what changed is the content above the trigger, not the reader's
-  // place in it.
-  if (moved !== 0 && contentTop - previous.contentTop === moved) return "anchoring";
+  const contentMoved = contentTop - previous.contentTop;
+  // The offset grew, and the trigger moved deeper into the content by AT LEAST
+  // that much. That is the browser holding the anchor still: it moves the
+  // offset by whatever arrived above the anchor, and the trigger - which can
+  // sit below the anchor - moves by that plus whatever arrived between the
+  // two. One refresh can put rows on both sides of the anchor, so the offset
+  // is a lower bound and not the whole story: requiring the two numbers to be
+  // equal dismisses exactly that case.
+  //
+  // A reader's own scroll never looks like this. Their drag moves the offset
+  // with the content untouched, so `contentMoved` is zero and nothing above
+  // them explains the movement.
+  if (moved > 0 && contentMoved >= moved) return "anchoring";
   return "scrolled";
 }
 
@@ -442,6 +457,11 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   // it) AND the row is now outside the visible area. Anything else - a list
   // change, a vanished id, a resized popup - is only a REASON to re-ask.
   const rowObservationRef = useRef<RowObservation | null>(null);
+  // Whether the row focus landed on still has to be brought into the popup's
+  // view. Armed whenever focus settles on a row by the widget's own doing -
+  // the open, and a replacement after a list change - and spent by the next
+  // placement pass, which is the first moment the popup's box is known.
+  const initialRevealPendingRef = useRef(false);
 
   // Where the trigger's rect was at the last placement pass, and whether the
   // window has grown since the pass before it. A scroll of a scroller that
@@ -503,60 +523,42 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         // `before === null` is the first look: the row was just focused and the
         // popup was placed around it, so layout has not moved it out of view.
         if (before === null) return;
-        // Did layout make the clip worse? Both observations are measured at the
-        // reader's CURRENT scroll, so the comparison holds the reader still and
-        // asks only what layout did to the row. That is what separates the two
-        // directions:
-        //
-        // - a row pushed below the scrollport, a row inserted above it, a label
-        //   above it wrapping taller, or a scrollport that SHORTENED under it
-        //   all add hidden pixels, so the row is revealed;
-        // - a scrollport that GREW while still short of the row, or a reader who
-        //   scrolled away from a row that is clipped anyway, add none - the clip
-        //   is the same or smaller than it was, and nothing is revealed.
-        //
-        // "The row is clipped" alone is not the question; a reader who moved the
-        // scroll is entitled to what the new clip shows them, and pulling them
-        // back is the bug this asks about. A row that was never visible and
-        // stayed exactly as hidden as it was is not a row layout hid, either.
-        //
-        // The question is whether the row got HARDER to see, and the answer is
-        // counted in the row's own pixels - how many of them the scrollport
-        // shows. Counting hidden pixels instead answers a different question:
-        // a row can gain hidden pixels above it and lose none of what it had
-        // on screen, because it grew. A first row the reader scrolled 50px
-        // past is 44px entirely hidden; the popup narrows, the label wraps,
-        // and the same 50px offset leaves 10px of the now-60px row showing.
-        // That is 50 hidden pixels against 44 - "worse" by the count, and
-        // plainly better on screen. Scrolling back to it there takes the lower
-        // actions the reader reached out of their hands.
-        //
-        // A row with no visible pixels in either observation is a row the
-        // reader scrolled away from, and it stays that way however it grows.
-        // A row that had visible pixels and lost them is the case this reveal
-        // is for. Both fall out of the one comparison: more visible is never a
-        // reason to move the reader.
-        const scrollTop = popup.scrollTop;
+        // The offset both looks are judged at. It is the reader's present one,
+        // because that is the world they are looking at - EXCEPT when the
+        // browser moved it. A popup whose content shrank clamps an offset that
+        // is now past the end, and judging the old row at the clamped offset
+        // makes a row that was never in sight look as though it had been, which
+        // scrolls the reader back to it. So a clamp is judged where it started:
+        // that is a fact read before the correction, not after it.
+        const rangeNow = popup.scrollHeight - popup.offsetHeight;
+        const clamped = before.scrolledTo > rangeNow && Math.abs(now.scrolledTo - rangeNow) <= CLAMP_ROUNDING;
+        const viewportTop = clamped ? before.scrolledTo : now.scrolledTo;
         const hiddenBelow = (obs: RowObservation) =>
-          Math.min(obs.height, Math.max(0, obs.top + obs.height - (scrollTop + obs.portHeight)));
-        const hiddenAbove = (obs: RowObservation) => Math.min(obs.height, Math.max(0, scrollTop - obs.top));
-        // The gap between a row and the scrollport is not the row's, so each
-        // side is clamped to the row's own height: an equally-hidden row stays
+          Math.min(obs.height, Math.max(0, obs.top + obs.height - (viewportTop + obs.portHeight)));
+        const hiddenAbove = (obs: RowObservation) => Math.min(obs.height, Math.max(0, viewportTop - obs.top));
+        // Each side is clamped to the row's own height: the gap between a row
+        // and the scrollport is not the row's, so an equally hidden row stays
         // equal when the scrollport shrinks under it.
         const visiblePixels = (obs: RowObservation) => obs.height - hiddenAbove(obs) - hiddenBelow(obs);
         const fullyVisible = (obs: RowObservation) => hiddenAbove(obs) === 0 && hiddenBelow(obs) === 0;
-        // Gaining visible pixels is not the same as being fully in sight. A row
-        // that fit when it was 44px tall and wraps to 60px at the same offset
-        // shows MORE of itself - 48 pixels instead of 44 - while 12 pixels of
-        // it slide out of the scrollport. Counted by pixels alone that is an
-        // improvement, and the row the reader is on goes half out of sight with
-        // nothing said. So the one comparison keeps two ways to fail: fewer
-        // pixels on screen than before, or a row that was fully in sight and is
-        // not any more.
         if (fullyVisible(now)) return;
-        const lostPixels = visiblePixels(now) < visiblePixels(before);
+        // Two ways layout can take a visible row out of sight, and one for rows
+        // it never showed:
+        //
+        // - the row was fully in sight and is not any more. A label that wraps
+        //   at the bottom edge slides 12px past it this way, and the row was
+        //   never hidden, so nothing about its hidden pixels says so;
+        // - the row was partly in sight and the scrollport now hides more of
+        //   it. That is a row pushed below the edge, or one the list above grew
+        //   under;
+        // - a row with NO visible pixels in the earlier look is a row the reader
+        //   or the list had already taken away. It stays that way however it
+        //   grows or however the scrollport shrinks, because no pixel of it was
+        //   ever on screen to lose.
         const becameClipped = fullyVisible(before);
-        if (!lostPixels && !becameClipped) return;
+        const wasOnScreen = visiblePixels(before) > 0;
+        const hidesMore = hiddenAbove(now) > hiddenAbove(before) || hiddenBelow(now) > hiddenBelow(before);
+        if (!becameClipped && !(wasOnScreen && hidesMore)) return;
       }
       // A row inserted BELOW the focused one moves nothing above it, and the
       // reader's own scroll to the lower actions must survive that: the guards
@@ -673,6 +675,14 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // the popup's new coordinates, it pans toward where the popup used to be.
     // Arithmetic in the popup's own scroll space has no such reach.
     revealFocusedRowIfClipped(popupEl);
+    // The one reveal that is not about layout moving a row: the row focus
+    // landed on when the menu opened. FocusScope focuses it with
+    // `preventScroll` so the page never moves, which also means the browser
+    // will not scroll the popup for it - and in a capped or zoomed popup that
+    // row can already be below the scrollport before anything has changed.
+    // Enter would then invoke an action the reader has never seen. This runs
+    // once, on the first pass after the open, and only ever moves the popup's
+    // own scroll.
     // Only write when it actually moved: the observers below can report a
     // mutation that changes nothing about placement (a text node elsewhere in
     // the same scroller), and a state write per notification would re-render
@@ -745,6 +755,10 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   // mount effect - moving focus nowhere instead of the first item.
   useLayoutEffect(() => {
     if (!isOpen) return;
+    // The open is the one moment focus is placed on a row the reader has not
+    // seen yet. Whatever the popup's box turns out to be, that row has to be
+    // inside it before the menu is anyone's to press Enter on.
+    initialRevealPendingRef.current = true;
     placeMenu();
   }, [isOpen, placeMenu]);
 
@@ -827,6 +841,14 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // widget happened to look.
     const popup = popupRef.current;
     if (popup !== null) rowObservationRef.current = observeRow(popup, target as HTMLElement);
+    // The open's reveal belongs here when it is still pending: the first
+    // placement pass runs before FocusScope has moved focus onto a row, so this
+    // is the first moment there is a row to bring into view. It is still the
+    // open's reveal - once per open, and only ever the popup's own scroll.
+    if (initialRevealPendingRef.current && popup !== null) {
+      initialRevealPendingRef.current = false;
+      revealRow(popup, target as HTMLElement);
+    }
   }
 
   // `reveal` is for a replacement focused OUT of a keypress: a row the reader
@@ -1245,12 +1267,28 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     if (popupMutations !== null && popupEl !== null) {
       popupMutations.observe(popupEl, { childList: true, characterData: true, subtree: true });
     }
+    // The reader scrolling INSIDE the popup never reaches the capture handler
+    // above: the popup is portalled out of rootRef, so it is not "a scroller
+    // that holds the trigger" and it must not be - a popup scroll is not a
+    // dismissal. It IS however the offset every later look must be judged
+    // against, because the reader is entitled to where they scrolled. Without
+    // this the recorded frame stays at the offset from when focus arrived, and
+    // a later clamp reads a row the reader had long since scrolled past as a
+    // row that was on screen.
+    const onPopupScroll = () => {
+      const popup = popupRef.current;
+      const row = itemRefs.current.find((node) => node !== null && node === ownerDocument.activeElement) ?? null;
+      if (popup === null || row === null) return;
+      rowObservationRef.current = observeRow(popup, row);
+    };
+    popupEl?.addEventListener("scroll", onPopupScroll, { passive: true });
     return () => {
       visualViewport?.removeEventListener("resize", placeAfterLayout);
       visualViewport?.removeEventListener("scroll", placeAfterLayout);
       observer?.disconnect();
       mutations?.disconnect();
       popupMutations?.disconnect();
+      popupEl?.removeEventListener("scroll", onPopupScroll);
     };
   }, [isOpen, ownerDocument, placeAfterLayout]);
 
