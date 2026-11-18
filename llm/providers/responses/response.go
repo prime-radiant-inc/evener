@@ -1,6 +1,7 @@
 package responses
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"strings"
@@ -23,6 +24,7 @@ func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.R
 	var rawBodyItems []json.RawMessage
 	var rawBodyCaptured bool
 	var content []llm.ContentPart
+	var callsByID map[string]*llm.ToolCallData
 	for itemIdx, itemAny := range out {
 		item, ok := itemAny.(map[string]any)
 		if !ok {
@@ -80,16 +82,30 @@ func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.R
 					args = string(content)
 				}
 			}
-			content = append(content, llm.ContentPart{
-				Kind: llm.ContentToolCall,
-				ToolCall: &llm.ToolCallData{
-					ID:        callID,
-					ItemID:    itemID,
-					Name:      name,
-					Arguments: json.RawMessage(args),
-					Type:      "function",
-				},
-			})
+			if prior := callsByID[callID]; prior != nil {
+				// One issued call occupies its first position. Later references
+				// can complete missing fields while preserving bytes it supplied.
+				prior.ItemID = cmp.Or(prior.ItemID, itemID)
+				prior.Name = cmp.Or(prior.Name, name)
+				if len(prior.Arguments) == 0 {
+					prior.Arguments = json.RawMessage(args)
+				}
+				continue
+			}
+			call := &llm.ToolCallData{
+				ID:        callID,
+				ItemID:    itemID,
+				Name:      name,
+				Arguments: json.RawMessage(args),
+				Type:      "function",
+			}
+			if callID != "" {
+				if callsByID == nil {
+					callsByID = make(map[string]*llm.ToolCallData)
+				}
+				callsByID[callID] = call
+			}
+			content = append(content, llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: call})
 		case "web_search_call":
 			query := ""
 			if action, _ := item["action"].(map[string]any); action != nil {

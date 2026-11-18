@@ -66,6 +66,37 @@ func TestResponsesStreamToolStateMapping(t *testing.T) {
 	t.Parallel()
 	completed := `{"type":"response.completed","response":{"id":"resp_ts","status":"completed","output":[]}}`
 
+	t.Run("repeated terminal call ID settles at its first position", func(t *testing.T) {
+		const terminal = `{"type":"response.completed","response":{"status":"completed","output":[
+			{"type":"function_call","id":"fc_first","call_id":"call_a"},
+			{"type":"function_call","id":"fc_first","call_id":"call_b","name":"other","arguments":"{}"},
+			{"type":"function_call","id":"fc_repeat","call_id":"call_a","name":"chosen","arguments":"{ \"a\" : 1 }"},
+			{"type":"function_call","id":"fc_later","call_id":"call_a","name":"ignored","arguments":"{}"}
+		]}}`
+		// An SSE data field is one line on the wire.
+		event := strings.ReplaceAll(terminal, "\n", "")
+		_, live := responsesEvents(t, event)
+		recorded, err := ExtractRecordedResponse([]byte("data: "+event+"\n\n"), "gpt-5.5")
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, response := range []struct {
+			source string
+			result *llm.Response
+		}{{"live", live}, {"recorded", &recorded}} {
+			calls := response.result.ToolCalls()
+			if len(calls) != 2 {
+				t.Errorf("%s calls = %d, want one for each of the two issued IDs", response.source, len(calls))
+				continue
+			}
+			if calls[0].ID != "call_a" || calls[0].ItemID != "fc_first" ||
+				calls[0].Name != "chosen" || string(calls[0].Arguments) != `{ "a" : 1 }` ||
+				calls[1].ID != "call_b" || calls[1].Name != "other" || string(calls[1].Arguments) != "{}" {
+				t.Fatalf("%s calls = %+v", response.source, calls)
+			}
+		}
+	})
+
 	t.Run("delta keyed by a foreign call id falls back to item state", func(t *testing.T) {
 		events, final := responsesEvents(t,
 			`{"type":"response.output_item.added","item":{"type":"function_call","call_id":"call_a","id":"fc_a","name":"orig"}}`,

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -23,6 +24,7 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 	t.Parallel()
 	dir := t.TempDir()
 	const malformedArgs = `{"value": broken`
+	const correctedArgs = `{"value":"\u0066ixed"}`
 
 	var mu sync.Mutex
 	var requestBodies [][]byte
@@ -52,8 +54,10 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 		case 1:
 			writeResponsesFunctionCall(t, w, flusher, "resp_bad", "call_bad", "my_strict_tool", malformedArgs)
 		case 2:
-			args := mustJSON(t, map[string]any{"value": "fixed"})
-			writeResponsesFunctionCall(t, w, flusher, "resp_fixed", "call_fixed", "my_strict_tool", args)
+			writeResponsesTerminal(t, w, flusher, "resp_fixed", []any{
+				map[string]any{"type": "function_call", "id": "fc_fixed", "call_id": "call_fixed"},
+				map[string]any{"type": "function_call", "id": "fc_repeat", "call_id": "call_fixed", "name": "my_strict_tool", "arguments": correctedArgs},
+			})
 		case 3:
 			args := mustJSON(t, map[string]any{
 				"message":  "recovered",
@@ -277,6 +281,50 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 	if !strings.Contains(output, "near byte") {
 		t.Fatalf("function_call_output.output = %q, want failing-input excerpt", output)
 	}
+
+	var firstReplay []json.RawMessage
+	for _, requestIndex := range []int{2, 3} {
+		var request struct {
+			Input []json.RawMessage `json:"input"`
+		}
+		if err := json.Unmarshal(bodies[requestIndex], &request); err != nil {
+			t.Fatal(err)
+		}
+		if requestIndex == 2 {
+			firstReplay = request.Input
+		} else {
+			if len(request.Input) <= len(firstReplay) {
+				t.Fatalf("cold replay input has %d items after %d on first replay", len(request.Input), len(firstReplay))
+			}
+			for i, want := range firstReplay {
+				if got := request.Input[i]; !bytes.Equal(want, got) {
+					t.Fatalf("cold replay input[%d] = %s, first replay = %s", i, got, want)
+				}
+			}
+		}
+		var calls int
+		for _, rawItem := range request.Input {
+			var item struct {
+				Type      string `json:"type"`
+				CallID    string `json:"call_id"`
+				Name      string `json:"name"`
+				Arguments string `json:"arguments"`
+			}
+			if err := json.Unmarshal(rawItem, &item); err != nil {
+				t.Fatal(err)
+			}
+			if item.Type != "function_call" || item.CallID != "call_fixed" {
+				continue
+			}
+			calls++
+			if item.Name != "my_strict_tool" || item.Arguments != correctedArgs {
+				t.Fatalf("request %d replayed call = %s", requestIndex+1, rawItem)
+			}
+		}
+		if calls != 1 {
+			t.Fatalf("request %d replayed the corrected call %d times, want once", requestIndex+1, calls)
+		}
+	}
 }
 
 // TestSession_OpenAIUnquotedKeyToolCallRecoversAndExecutes drives the real
@@ -455,13 +503,18 @@ func writeResponsesFunctionCall(t *testing.T, w io.Writer, flusher http.Flusher,
 		"type": "response.output_item.done",
 		"item": item,
 	})
+	writeResponsesTerminal(t, w, flusher, responseID, []any{item})
+}
+
+func writeResponsesTerminal(t *testing.T, w io.Writer, flusher http.Flusher, responseID string, output []any) {
+	t.Helper()
 	writeSSE(t, w, flusher, "response.completed", map[string]any{
 		"type": "response.completed",
 		"response": map[string]any{
 			"id":     responseID,
 			"model":  "gpt-5.2",
 			"status": "completed",
-			"output": []any{item},
+			"output": output,
 			"usage": map[string]any{
 				"input_tokens":  1,
 				"output_tokens": 1,
