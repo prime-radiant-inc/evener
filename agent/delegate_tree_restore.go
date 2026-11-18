@@ -805,7 +805,24 @@ func (c *delegateTreeController) wakeDeliveryReceiver(bound context.Context, rec
 		// receiver synchronously: a hold still in place at the drive's
 		// list read would present the delivered row alone and leave
 		// the stopped report for a later generation.
-		receiver.releaseAutomaticDriveHolds(delegateHoldReleaseDelivery)
+		//
+		// The release takes the receiver's attention lock, and a close drain's
+		// retry runs it BEFORE the bounded arm below: taking it unconditionally
+		// parked the reconciliation behind a receiver holding that lock across an
+		// environment event stalled in synchronous descendant forwarding, past the
+		// publication cutoff. Bound the acquisition the same way the arm is
+		// bound; a spent bound leaves the holds standing, which is what a failed
+		// arm leaves them doing anyway.
+		if !receiver.releaseAutomaticDriveHoldsBounded(bound, delegateHoldReleaseDelivery) {
+			// The bound expired. Nothing was presented and nothing is woken: the
+			// notify below drives the receiver synchronously, and a hold still in
+			// place at the drive's list read presents the delivered row alone and
+			// leaves the stopped report for a later generation. The committed
+			// acknowledgment stands and so does the durable row, so a later drive
+			// presents them together. Report the skip rather than parking here.
+			c.reportDelegateWakeError(bound, errDelegateAttentionArmSpent)
+			return nil
+		}
 		// A non-root receiver gets the same durable arm the root gets
 		// (#6330): armDelegateAttentions opens the receiver's attention
 		// in the controller, waits out a racing attention start, and

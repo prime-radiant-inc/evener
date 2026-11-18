@@ -200,6 +200,12 @@ type Session struct {
 	closeCtx                     context.Context // shared shutdown deadline for blocked authoritative sends
 	closeSignal                  chan struct{}
 	testOnlyBlockedSendEntered   func()
+	// testOnlyCloseWarningRetry, when set, sees the context the close hands its
+	// post-removal warning retry. A retained warning is only worth holding if that
+	// context still has a window, and "which context" is otherwise unobservable
+	// from outside the close: a spent one and a live one differ only in an outcome
+	// that host scheduling also moves. Nil in production.
+	testOnlyCloseWarningRetry func(context.Context)
 	// testOnlyPublicationRoute reports which publication path a hook lifecycle
 	// event took: true when its dispatcher supplied a bound. nil in production.
 	testOnlyPublicationRoute func(bounded bool)

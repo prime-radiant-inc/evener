@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -175,11 +176,20 @@ func TestIncompleteCloseWarningBeforeDisposalRunsOnTheCascadeCutoff(t *testing.T
 	root.ownsDelegateController = true
 	// A real subtree to stop, so the close reaches a durable append at all: an
 	// empty tree never writes and the fault below would never fire.
-	seedDelegateControllerRunning(t, c, "dlg_target", "")
+	//
+	// IDLE, not running. A running delegate carries an active generation whose
+	// cancel function is a no-op, so its stop can never settle: the drain parks
+	// until the stop's half of the cascade expires and returns a deadline error,
+	// and the close then publishes the warning for THAT failure. The injected
+	// stop-completion append fault below would never be reached, and the test
+	// would pass while exercising a different branch than the one it names.
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+	var faultFired atomic.Bool
 	c.mu.Lock()
 	c.appendFault = func(appended []delegatestore.Event) error {
 		for _, event := range appended {
 			if event.Kind == delegatestore.EventDelegateSubtreeStopCompleted {
+				faultFired.Store(true)
 				return errors.New("journal unavailable")
 			}
 		}
@@ -187,6 +197,14 @@ func TestIncompleteCloseWarningBeforeDisposalRunsOnTheCascadeCutoff(t *testing.T
 	}
 	c.mu.Unlock()
 	root.closeDelegateRuntimeTree(cascade)
+
+	// Assert the PREMISE before the conclusion. Without this, a fixture whose stop
+	// never reaches the append passes the cutoff assertion while proving nothing
+	// about the failure path it was built for.
+	if !faultFired.Load() {
+		t.Fatal("the injected stop-completion append fault never fired: the subtree's stop did not " +
+			"reach its durable append, so this test exercised a different failure than the one it names")
+	}
 
 	if len(saw) != 1 {
 		t.Fatalf("the pre-disposal close warning published through %d bounded send(s), want 1: "+

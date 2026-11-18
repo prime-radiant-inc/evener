@@ -874,6 +874,16 @@ func (s *Session) armDelegateAttentionInControllerBounded(bound context.Context,
 			continue
 		}
 		if emit {
+			// The announcement this arm publishes is on the same critical path
+			// as the arm: emitting to the root takes the root's stream, and on a
+			// close drain that stream's full budget is what removes the remaining
+			// collectible lanes. Stamp the arm's own bound on the plan so the send
+			// to a closing target releases on it. A target that is not closing
+			// never supplied this bound, and emitDelegateUpdate leaves that send
+			// alone.
+			if suppliedCallerBound(bound) {
+				plan.bound = withPublicationBound(bound)
+			}
 			s.delegateController.emitDelegateUpdate(plan)
 		}
 		// The holds end here, before the caller's wake: the notify func
@@ -881,7 +891,13 @@ func (s *Session) armDelegateAttentionInControllerBounded(bound context.Context,
 		// the drive's list read would present the armed row alone and leave
 		// the stopped report for a later generation. A failed arm never
 		// reaches this point; the holds stand.
-		s.releaseAutomaticDriveHolds(delegateHoldReleaseArm)
+		if !s.releaseAutomaticDriveHoldsBounded(bound, delegateHoldReleaseArm) {
+			// The bound expired between the arm and its hold release. Nothing was
+			// presented: the holds still stand, so a later drive presents the
+			// stopped report together with the armed row rather than the armed row
+			// alone. Report the skip instead of parking here.
+			return false, errDelegateAttentionArmSpent
+		}
 		return true, nil
 	}
 }
@@ -1191,14 +1207,44 @@ const (
 // touched keep their presentation either way, and a failed arm or an
 // uncommitted delivery woke nothing, so the holds stand.
 func (s *Session) releaseAutomaticDriveHolds(site delegateHoldReleaseSite) {
+	// The ordinary path supplies no bound, so this takes the lock outright
+	// exactly as it always has. The bounded form exists for the close drain,
+	// which cannot park here: see releaseAutomaticDriveHoldsBounded.
+	s.releaseAutomaticDriveHoldsBounded(noBound, site)
+}
+
+// releaseAutomaticDriveHoldsBounded is releaseAutomaticDriveHolds on a caller's
+// bound, and reports whether the release ran.
+//
+// A close drain retries a committed acknowledgment for a resident NON-ROOT
+// receiver, and this release sits in front of the arm that retry performs. It
+// took attentionMu unconditionally, so a receiver holding that lock across an
+// environment event stalled in synchronous descendant forwarding parked the
+// reconciliation past the publication cutoff -- and the budget it spent is the
+// one the remaining collectible lanes need. The arm that follows is already
+// bounded; bounding only the arm left this wait, one call earlier, eating the
+// same budget.
+//
+// The ordinary path is untouched: noBound makes lockWithin take the lock
+// outright, and every caller that supplied no bound gets today's behavior.
+func (s *Session) releaseAutomaticDriveHoldsBounded(bound context.Context, site delegateHoldReleaseSite) bool {
+	if s == nil {
+		return true
+	}
 	// The seam is runtime-mutable through updateSessionTestConfig, so its
 	// read shares the setter's session mutex — the convention every
 	// mid-run-mutable test seam follows.
 	s.mu.Lock()
 	hook := s.cfg.testOnly.delegateAttentionHoldReleased
 	s.mu.Unlock()
+	// The holds are released under the same bound as the arm they precede. A
+	// spent bound reports false and releases nothing: the holds stand, the
+	// durable row stands, and a later drive finds the row instead of a wake
+	// that presented it with the stopped report still held back.
+	if !lockWithin(bound, &s.attentionMu) {
+		return false
+	}
 	var released []string
-	s.attentionMu.Lock()
 	if len(s.attentionAutomaticDriveHolds) != 0 {
 		s.moveHeldDelegateAttentionTurnsToTail()
 		released = make([]string, 0, len(s.attentionAutomaticDriveHolds))
@@ -1212,6 +1258,7 @@ func (s *Session) releaseAutomaticDriveHolds(site delegateHoldReleaseSite) {
 		sort.Strings(released)
 		hook(site, released)
 	}
+	return true
 }
 
 // moveHeldDelegateAttentionTurnsToTail moves each still-pending held row's

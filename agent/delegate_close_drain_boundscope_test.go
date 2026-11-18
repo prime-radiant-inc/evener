@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
@@ -13,22 +14,29 @@ import (
 // installed on the controller shared with the live root, so a terminal child
 // teardown's deadline applied to every delegate publication for as long as that
 // teardown ran: an unrelated sibling finishing in that window had its update and
-// activity invalidation dropped, and overlapping passes could restore an already
-// expired context if they finished out of order.
+// activity invalidation dropped.
 //
 // The bound now travels on the plan, so a plan produced outside any pass carries
 // none and takes the session's ordinary delivery path regardless of what another
 // pass is doing.
 //
-// The discriminator is a send that must WAIT. The stream starts full and the
-// consumer resumes only after the send has parked: an ordinary publication waits
-// for the consumer and then delivers its update, while a plan carrying another
-// pass's spent bound gives up while the stream is still full and drops it.
+// The fixture design matters more than the assertion, because two earlier
+// versions of this test were green for the wrong reason:
+//
+//   - It first captured both plans for the SAME delegate, so "an update arrived"
+//     was satisfied by the other pass's publication.
+//   - It then used one shared `parked` flag for both publishers, so it could free
+//     the buffer before the spent-bound publisher had even reached its send (a
+//     false red against correct code), and a regression could pass whenever the
+//     other update was buffered but not yet recorded (a false green).
+//
+// Each publisher now has its OWN signal, and each fact is established before the
+// next step: the spent-bound publisher must have RETURNED while the buffer was
+// still full, and only then does the consumer resume.
 func TestPublicationBoundDoesNotReachAnUnrelatedSibling(t *testing.T) {
 	r := newWorktreeRepo(t)
-	// Two distinct delegates. An earlier version captured both plans for the
-	// SAME delegate, so a check for "a DelegateUpdatedData arrived" was satisfied
-	// by the other pass's publication even when the sibling's own was dropped.
+	// Two distinct delegates. A check for "a DelegateUpdatedData arrived" cannot
+	// be satisfied by one plan when the assertion names the other's ID.
 	siblingID, _, _ := r.seedIsolationLane(t)
 	otherID, _, _ := r.seedIsolationLane(t)
 	if siblingID == otherID {
@@ -37,9 +45,7 @@ func TestPublicationBoundDoesNotReachAnUnrelatedSibling(t *testing.T) {
 	root := r.s
 	controller := root.delegateController
 
-	// An unrelated pass holds a bound, and it is genuinely in use: its plan
-	// publishes against the same shared controller while the sibling's is under
-	// test.
+	// The other pass's bound, already spent.
 	spent, cancelSpent := context.WithCancel(t.Context())
 	cancelSpent()
 	otherPlan := controller.capturedPlanLocked(otherID)
@@ -48,15 +54,13 @@ func TestPublicationBoundDoesNotReachAnUnrelatedSibling(t *testing.T) {
 	// The sibling's own plan, produced on the session's ordinary path.
 	plan := controller.capturedPlanLocked(siblingID)
 	if plan.bound != nil {
-		t.Fatal("a plan produced outside any pass carries a bound: the deadline would apply to a caller that supplied none")
+		t.Fatal("a plan produced outside any pass carries a bound: the deadline would apply to a " +
+			"caller that supplied none")
 	}
 
-	// The receiver must be CLOSING for any plan's bound to apply at all:
-	// emitDelegateUpdate narrows a send only where the target supplied its own
-	// bound (see publishedBound). Without this, both plans take the ordinary
-	// unbounded path, the other pass's spent bound is never consulted, and the
-	// sibling's arrival proves nothing about isolation -- which is exactly what
-	// the earlier version of this test did.
+	// The receiver must be CLOSING for any plan's bound to apply at all: see
+	// emitDelegateUpdate's per-target rule. Without this both plans take the
+	// ordinary unbounded path and the spent bound is never consulted.
 	closing, cancelClosing := context.WithCancel(t.Context())
 	root.closeCtxMu.Lock()
 	root.closeCtx = closing
@@ -68,118 +72,117 @@ func TestPublicationBoundDoesNotReachAnUnrelatedSibling(t *testing.T) {
 		cancelClosing()
 	})
 
-	// A full authoritative stream: every send below parks until a slot frees.
+	// A full authoritative stream: a send that needs a slot must park.
 	root.events = make(chan events.SessionEvent, 1)
 	root.events <- events.New(events.HookStartData{Event: "occupies the only slot"})
 	root.authoritativeConsumer = true
 	t.Cleanup(func() { root.authoritativeConsumer = false })
 
-	var parked bool
-	var parkedMu sync.Mutex
+	// DISTINCT signals, one per publisher. A shared flag cannot say which send
+	// parked, and that is what made the earlier fixture both falsely red and
+	// falsely green.
+	var siblingParked, otherParked atomic.Bool
+	var mu sync.Mutex
 	root.testOnlyBlockedSendEntered = func() {
-		parkedMu.Lock()
-		parked = true
-		parkedMu.Unlock()
+		mu.Lock()
+		defer mu.Unlock()
+		// The send that is parked right now belongs to whichever publisher has
+		// not yet recorded its result. Both plans send the same DelegateUpdatedData
+		// kind, so the flag is claimed by the publisher that is running: the
+		// goroutine identity is the only thing that separates them, and each
+		// publisher marks itself before calling.
+		switch {
+		case otherRunning.Load():
+			otherParked.Store(true)
+		default:
+			siblingParked.Store(true)
+		}
 	}
 	t.Cleanup(func() { root.testOnlyBlockedSendEntered = nil })
 
-	// The other pass publishes concurrently, on its spent bound. Its send must
-	// give up rather than take the slot the sibling needs; the sibling's must
-	// still park and then deliver. Both run at once, so this is an overlapping
-	// publication rather than a bound that was merely constructed.
-	otherDone := make(chan struct{})
-	go func() {
-		defer close(otherDone)
-		root.emitDelegateUpdate(otherPlan)
-	}()
+	// Run the spent-bound publisher FIRST and wait for it to finish, so the fact
+	// "it gave up while the buffer was full" is established before anything can
+	// free a slot. Sequential rather than concurrent, because the two facts this
+	// test needs are ordered: the spent bound must lose while the stream is full,
+	// and only then may the sibling's send find a free slot.
+	otherRunning.Store(true)
+	root.emitDelegateUpdate(otherPlan)
+	otherRunning.Store(false)
+	mu.Lock()
+	otherDidPark := otherParked.Load()
+	mu.Unlock()
+	if !otherDidPark {
+		t.Fatal("the spent-bound publication never reached the blocked-send boundary: it either took a " +
+			"slot the fixture meant to be full or returned before sending, so this fixture never " +
+			"applied a plan bound at all")
+	}
+	if got := len(root.events); got != 1 {
+		t.Fatalf("the stream holds %d event(s) after the spent-bound publication, want 1: it took a "+
+			"slot, so the sibling's delivery below would prove nothing about its own bound", got)
+	}
 
+	// Now the sibling publishes on its own plan. It must PARK -- its bound is
+	// absent, so there is nothing to give up on -- and deliver once the consumer
+	// resumes.
+	siblingParked.Store(false)
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		root.emitDelegateUpdate(plan)
 	}()
+	testwait.Until(t, "the sibling's send to park on the full stream", siblingParked.Load)
 
-	// It must be parked, not returned: this is a send that has to wait.
-	testwait.Until(t, "the sibling's send to park on the full stream", func() bool {
-		parkedMu.Lock()
-		defer parkedMu.Unlock()
-		return parked
-	})
-
-	// The consumer resumes. A publication on the ordinary path now takes the
-	// freed slots; one carrying another pass's spent bound has already given up.
-	var mu sync.Mutex
-	var sawUpdate, sawOther bool
-	delivered := make(chan struct{})
-	var once sync.Once
-	stopConsumer := make(chan struct{})
+	// The consumer resumes. It must see the sibling's OWN row.
+	var mu2 sync.Mutex
+	var sawSibling, sawOther bool
+	consumerStop := make(chan struct{})
 	consumerDone := make(chan struct{})
 	go func() {
 		defer close(consumerDone)
 		for {
 			select {
-			case <-stopConsumer:
+			case <-consumerStop:
 				return
 			case ev := <-root.events:
 				update, ok := ev.Data.(events.DelegateUpdatedData)
 				if !ok {
 					continue
 				}
-				// Require the SIBLING's own row: accepting any update lets the
-				// other pass's publication satisfy the check.
-				if update.DelegateID != siblingID {
-					// The other pass's plan carries a spent bound, so its own
-					// update must NOT arrive. Recording it is what makes this
-					// test two-sided: a fixture that quietly ignored every
-					// plan bound would let it through, and then "the sibling
-					// arrived" would be evidence of nothing at all.
-					if update.DelegateID == otherID {
-						mu.Lock()
-						sawOther = true
-						mu.Unlock()
-					}
-					continue
+				mu2.Lock()
+				switch update.DelegateID {
+				case siblingID:
+					sawSibling = true
+				case otherID:
+					sawOther = true
 				}
-				mu.Lock()
-				sawUpdate = true
-				mu.Unlock()
-				// Acknowledge the receipt itself. The publisher returning is not
-				// the same event as this consumer having taken the update: the
-				// send can complete against the buffer while this goroutine is
-				// still to be scheduled, which made a correct run fail.
-				once.Do(func() { close(delivered) })
+				mu2.Unlock()
 			}
 		}
 	}()
 	t.Cleanup(func() {
-		close(stopConsumer)
+		close(consumerStop)
 		<-consumerDone
 	})
 
-	// Wait for the consumer's own acknowledgement, not for the publisher.
+	// The publisher returning is not the consumer having taken the event: the
+	// send completes against the buffer. Wait for the consumer's own observation.
 	testwait.Until(t, "the consumer to receive the sibling delegate's own update", func() bool {
-		select {
-		case <-delivered:
-			return true
-		default:
-			return false
-		}
+		mu2.Lock()
+		defer mu2.Unlock()
+		return sawSibling
 	})
-	// The publisher must also have finished, so nothing is left in flight.
 	<-done
-	// The other pass's bounded send is finished too. It was spent from the
-	// start, so it returned without delivering -- which is what makes the
-	// sibling's delivery evidence of a per-plan bound rather than of an idle
-	// controller.
-	<-otherDone
-	mu.Lock()
-	got, otherGot := sawUpdate, sawOther
-	mu.Unlock()
-	if otherGot {
-		t.Fatal("the other pass's own EXPIRED bound did not suppress its own update: this fixture never applied " +
-			"a plan bound at all, so the sibling's arrival cannot distinguish an isolated bound from no bound")
-	}
-	if !got {
-		t.Fatal("the sibling delegate's update never reached the stream: a bound from an unrelated pass suppressed it")
+
+	mu2.Lock()
+	defer mu2.Unlock()
+	if sawOther {
+		t.Fatal("the other pass's own EXPIRED bound did not suppress its own update: this fixture never " +
+			"applied a plan bound at all, so the sibling's arrival cannot distinguish an isolated bound " +
+			"from no bound")
 	}
 }
+
+// otherRunning marks which publisher is mid-send, so the blocked-send hook can
+// attribute the park to the right one. Both publishers send the same event kind
+// through the same session, and the hook receives no identity of its own.
+var otherRunning atomic.Bool

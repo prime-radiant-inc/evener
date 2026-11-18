@@ -258,11 +258,20 @@ func (s *Session) closeTerminal(ctx context.Context, options closeOptions) {
 	// delegate tree. Persist and join recursive stop before generic Session
 	// teardown can close a child out from under that durable operation. The
 	// store stays open until worktree disposal has recorded its evidence.
+	// childCtx bounds the SUBAGENT teardowns below, and only them. A hopeless
+	// delegate stop cancels it so the same wedged child is not joined again
+	// through its generic Session.Close path -- but that cancellation is
+	// deliberately not the cascade's own. The retained-warning and fail-closed
+	// retries near the end of this close publish on budgetCtx, and cancelling
+	// the cascade here discarded a lost-result warning that a consumer
+	// resuming before the original deadline would still have received.
+	childCtx, cancelChildJoins := context.WithCancel(budgetCtx)
+	defer cancelChildJoins()
 	if failed := s.closeDelegateRuntimeTree(budgetCtx); failed {
 		// A hopeless stop has already consumed its dedicated half of the
 		// cascade budget. Do not spend the remaining half joining the same
 		// wedged child again through its generic Session.Close path.
-		cancelBudget()
+		cancelChildJoins()
 	}
 
 	// Reacquire the pair and drain the subagent map. Marking closing BEFORE
@@ -303,7 +312,7 @@ func (s *Session) closeTerminal(ctx context.Context, options closeOptions) {
 	// cleanup of that env, so a child's teardown never runs it; what a child
 	// owns is its scratch, which its teardown ends.
 	for _, sub := range subs {
-		teardownChildSession(budgetCtx, sub.sess)
+		teardownChildSession(childCtx, sub.sess)
 	}
 	s.warnIncompleteClose("artifact store", s.closeOwnedArtifactStore())
 	// Dispose the isolation delegate lanes this session created and unlock its

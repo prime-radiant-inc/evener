@@ -847,6 +847,17 @@ func (s *Session) emitCloseDrainWarnings(ctx context.Context, warnings []events.
 	// consumer that resumes after the stop's half has expired.
 	for _, warning := range warnings {
 		data, ev, delivered := s.sendEventContext(ctx, warning, s.activeCausalProvenance())
+		if !delivered && s.forwardsEventsToParent() {
+			// A resident delegate whose unread local channel is full still
+			// FORWARDS every event to its parent synchronously, and that parent is
+			// the authority this warning had to reach. Counting only the local
+			// channel send as delivery made this publisher treat a warning that
+			// already arrived as failed: it skipped the Notification hook and
+			// retained the warning, and the retry forwarded a SECOND copy to
+			// AppWire. A warning that reached the stream by either route is
+			// published, so the hook fires here and nothing is retained.
+			delivered = true
+		}
 		if !delivered {
 			// The bound expired before the warning reached the stream. The
 			// receipt that produced this warning is already abandoned and gone
@@ -864,6 +875,24 @@ func (s *Session) emitCloseDrainWarnings(ctx context.Context, warnings []events.
 		}
 		s.fireNotificationHookBounded(ctx, warningHookMessage(data), warningHookTitle(data))
 	}
+}
+
+// forwardsEventsToParent reports whether this session forwards every event it
+// emits to its parent, which is how a resident delegate reaches the authoritative
+// stream when its own unread channel cannot take another event.
+//
+// The callback is read under the session mutex, the same way emitDelegateUpdate
+// reads it: installed at spawn, cleared at teardown. A close does not move it.
+func (s *Session) forwardsEventsToParent() bool {
+	if s == nil {
+		return false
+	}
+	// Read under s.mu like every other read of the field, though it is immutable
+	// after spawn; the test seam sets it through SetDescendantEventFunc.
+	s.mu.Lock()
+	forward := s.descendantEvent
+	s.mu.Unlock()
+	return forward != nil
 }
 
 // retainUndeliveredCloseWarning holds a lost-result warning whose publication
@@ -897,12 +926,20 @@ func (s *Session) retainUndeliveredCloseWarning(warning events.WarningData) {
 // close's tail would let a warning's own dispatch fail the shutdown it was
 // reported during.
 func (s *Session) retryCloseDrainWarnings(ctx context.Context) {
+	if observe := s.testOnlyCloseWarningRetry; observe != nil {
+		observe(ctx)
+	}
 	held := s.closeDrainWarnings.Swap(nil)
 	if held == nil || len(*held) == 0 {
 		return
 	}
 	for _, warning := range *held {
 		_, ev, delivered := s.sendEventContext(ctx, warning, s.activeCausalProvenance())
+		if !delivered && s.forwardsEventsToParent() {
+			// Same rule as the first attempt: the warning reached the parent's
+			// stream, so it is published and must not be dropped here.
+			delivered = true
+		}
 		if !delivered {
 			// Nothing is left to spend and no later pass can rebuild the receipt.
 			// This is the one case the close cannot report, and it is known and
