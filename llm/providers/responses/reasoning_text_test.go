@@ -111,9 +111,18 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 	const idArguments = `{"type":"response.function_call_arguments.delta","id":"fc_1","name":"f","delta":"{}"}`
 	const linkedCall = `{"type":"function_call","id":"fc_1","call_id":"call_1","arguments":""}`
 	const linkedFinalCall = `{"type":"function_call","id":"fc_1","call_id":"call_1","arguments":" \t{ \"k\": 1 }\n"}`
+	const callFinalArguments = `{"type":"response.function_call_arguments.done","call_id":"call_1","arguments":" \t{ \"k\": 1 }\n"}`
+	const indexedArguments = `{"type":"response.function_call_arguments.delta","delta":"{}"}`
+	const indexedFinalArguments = `{"type":"response.function_call_arguments.done","arguments":" \t{ \"k\": 1 }\n"}`
+	const indexedItemFinal = `{"type":"function_call","id":"fc_1","arguments":" \t{ \"k\": 1 }\n"}`
+	const sameIDAdded = `{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","call_id":"fc_1","name":"f"}}`
+	const conflictingCallDelta = `{"type":"response.function_call_arguments.delta","call_id":"call_other","item_id":"fc_1","delta":"{}"}`
 	const plainWithSummary = `{"type":"reasoning","id":"rs_1","content":[{"type":"reasoning_text","text":" r_terminal "}],"summary":[{"type":"summary_text","text":" s_terminal "}]}`
 	const longReasoning = `{"type":"reasoning","id":"rs_1","content":[{"type":"reasoning_text","text":"old"},{"type":"reasoning_text","text":" r_observed "},{"type":"summary_text","text":"display_3"},{"type":"reasoning_text","text":"withdrawn"}]}`
 	const partialReasoning = `{"type":"reasoning","id":"rs_1","content":[{"type":"reasoning_text","text":"new"},{"type":"reasoning_text","text":""},{"type":"reasoning_text","text":""}],"summary":[]}`
+	const missingReasoningFields = `{"type":"reasoning","id":"rs_1","content":[{"type":"reasoning_text","text":"new"},{"type":"reasoning_text"},{"type":"reasoning_text"},{"type":"reasoning_text","text":"\t"},{"type":"reasoning_text","text":""},{"type":"reasoning_text"}],"summary":[]}`
+	const missingReasoningField = `{"type":"reasoning","id":"rs_1","content":[{"type":"reasoning_text"}]}`
+	const differentReasoningType = `{"type":"reasoning","id":"rs_1","content":[{"type":"summary_text","text":"display_0"},{"type":"reasoning_text","text":"r_1"}]}`
 	const shortMessage = `{"type":"message","id":"msg_2","content":[{"type":"output_text","text":"m1"}]}`
 	var prefix strings.Builder
 	for _, ev := range []string{
@@ -155,6 +164,7 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 	cryptoWithSummary.Summary = []replayText{{"summary_text", " s_terminal "}}
 	partial := replayItem{Type: "message", Content: []replayText{{"output_text", "m_terminal"}, {"output_text", " m_part "}, {"output_text", "m_done"}, {"output_text", ""}}}
 	filledReasoning := replayItem{Type: "reasoning", ID: "rs_1", Content: []replayText{{"reasoning_text", "new"}, {"reasoning_text", " r_observed "}, {"reasoning_text", ""}}, Summary: []replayText{}}
+	recoveredFields := replayItem{Type: "reasoning", ID: "rs_1", Content: []replayText{{"reasoning_text", "new"}, {"reasoning_text", " r_observed "}, {"reasoning_text", "\t"}, {"reasoning_text", ""}}, Summary: []replayText{}}
 	otherRaw := replayItem{Type: "reasoning", ID: "rs_other", Content: []replayText{{"reasoning_text", "r_other"}}, Summary: []replayText{}}
 	for _, tc := range []struct {
 		name   string
@@ -182,11 +192,25 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 		{"arguments completion identifies a previously completed provisional call", []string{toolItemAdded, done(emptyToolByItem), namedFinalArguments}, nil, []replayItem{finalTool}},
 		{"item completion links interleaved argument fragments", []string{toolItemAdded, toolStart, toolMiddle, toolEnd, done(linkedCall)}, nil, []replayItem{linkedTool}},
 		{"terminal call links interleaved argument fragments", []string{toolItemAdded, toolStart, toolMiddle, toolEnd}, []string{linkedCall}, []replayItem{linkedTool}},
+		{"indexed argument delta names a provisional call", []string{at(2, toolItemAdded), at(2, toolDelta)}, nil, []replayItem{tool}},
+		{"indexed final arguments name a provisional call", []string{at(2, toolItemAdded), itemArguments, at(2, callFinalArguments)}, nil, []replayItem{finalTool}},
+		{"indexed item completion names a provisional call", []string{at(2, toolItemAdded), itemArguments, at(2, done(emptyToolByCall))}, nil, []replayItem{tool}},
+		{"indexed call retains its call ID when the item ID arrives", []string{at(2, toolDelta), at(2, toolItemAdded), finalArguments}, nil, []replayItem{finalTool}},
+		{"indexed provisional call accepts arguments without repeated IDs", []string{at(2, toolItemAdded), at(2, indexedArguments), at(2, done(emptyToolByCall))}, nil, []replayItem{tool}},
+		{"indexed named call accepts final arguments without repeated IDs", []string{at(2, toolAdded), itemArguments, at(2, indexedFinalArguments)}, nil, []replayItem{finalTool}},
+		{"indexed final arguments precede their terminal call ID", []string{at(0, indexedFinalArguments)}, []string{emptyToolByCall}, []replayItem{finalTool}},
+		{"indexed completed item precedes its terminal call ID", []string{at(0, done(indexedItemFinal))}, []string{emptyToolByCall}, []replayItem{finalTool}},
+		{"an explicit call ID matching its item ID is already settled", []string{sameIDAdded, conflictingCallDelta}, nil, []replayItem{{Type: "function_call", CallID: "fc_1", Name: "f", Arguments: "{}"}}},
+		{"indexed arguments without an eventual call ID stay undispatched", []string{at(2, indexedArguments)}, nil, nil},
 		{"item completion links interleaved message fragments", []string{at(0, answerDelta), noPartIndex, at(0, answerDelta), at(1, done(emptyFinal)), at(0, done(emptyCommentary))}, nil, []replayItem{linkedAnswer, blankFinal}},
 		{"terminal message links interleaved fragments", []string{at(0, answerDelta), noPartIndex, at(0, answerDelta)}, []string{emptyCommentary}, []replayItem{linkedAnswer}},
 		{"terminal plaintext keeps matching ciphertext", []string{done(encryptedItem)}, []string{answerItem, plainWithSummary}, []replayItem{answer, cryptoWithSummary}},
 		{"substantive message selects content membership", []string{laterPart, blankPart}, []string{shortMessage}, []replayItem{answer}},
 		{"terminal reasoning fills only matching raw slots", []string{done(longReasoning)}, []string{partialReasoning}, []replayItem{filledReasoning}},
+		{"missing terminal reasoning fields take only their matching typed bytes", []string{done(longReasoning)}, []string{missingReasoningFields}, []replayItem{recoveredFields}},
+		{"an indexed terminal recovers missing reasoning fields without repeating the item ID", []string{at(0, done(longReasoning))}, []string{strings.Replace(missingReasoningFields, `"id":"rs_1",`, "", 1)}, []replayItem{recoveredFields}},
+		{"single missing reasoning field takes only its own index", []string{done(longReasoning), answerDelta}, []string{missingReasoningField}, []replayItem{{Type: "reasoning", ID: "rs_1", Summary: []replayText{}, Content: []replayText{{"reasoning_text", "old"}}}, answer}},
+		{"missing reasoning field has no bytes of its type at its index", []string{done(differentReasoningType), answerDelta}, []string{missingReasoningField}, []replayItem{answer}},
 		{"empty terminal keeps display beside another native reasoning item", []string{done(otherItem), done(answerItem)}, nil, []replayItem{otherRaw, answer}},
 		{"empty terminal keeps display beside ciphertext", []string{done(encryptedItem), done(answerItem)}, nil, []replayItem{encrypted, answer}},
 		{"anonymous terminal call leaves the explicitly matched call available", []string{at(0, toolAdded), finalArguments}, []string{emptyToolByIndex, emptyToolByCall}, []replayItem{{Type: "function_call", Arguments: "{}"}, finalTool}},
@@ -305,7 +329,7 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 				if len(calls) != count {
 					t.Errorf("dispatchable calls = %d, want %d", len(calls), count)
 				}
-				if len(tc.output) == 0 || slices.Equal(tc.output, []string{emptyReasoning}) {
+				if len(tc.output) == 0 || slices.Equal(tc.output, []string{emptyReasoning}) || slices.Equal(tc.output, []string{missingReasoningField}) {
 					want := &llm.ThinkingData{Text: live.String()}
 					hasDisplay := slices.ContainsFunc(resp.Message.Content, func(p llm.ContentPart) bool { return reflect.DeepEqual(p.Thinking, want) })
 					hasNativeText := slices.ContainsFunc(tc.want, func(it replayItem) bool {

@@ -154,7 +154,7 @@ func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawM
 
 func (acc *responsesOutputAccumulator) terminalItem(kind, id, callID string, index int, out []any) *responsesOutputItem {
 	compatible := func(item *responsesOutputItem) bool {
-		return item.accepts(kind, id, -1) && (callID == "" || item.tool == nil || item.tool.id == item.tool.itemID || item.tool.id == callID)
+		return item.accepts(kind, id, -1) && (callID == "" || item.tool == nil || !item.tool.hasCallID || item.tool.id == callID)
 	}
 	named := acc.namedItem(kind, id)
 	if !compatible(named) {
@@ -188,22 +188,25 @@ func (acc *responsesOutputAccumulator) terminalItem(kind, id, callID string, ind
 	return item
 }
 
-// A matched item supplies missing continuation metadata independently of
-// the terminal's text. Only an absent or single empty part needs whole-item text.
+// A terminal without native reasoning or with a single explicit empty
+// placeholder can use the whole completed item. Other typed slots own their
+// indexes, including a slot whose text is missing in both sources.
 func (item *responsesOutputItem) settleReasoning(terminalItem map[string]any, terminal *llm.ThinkingData, terminalNative reasoningContent) *llm.ThinkingData {
 	if item.done == nil {
 		return terminal
 	}
-	if terminalNative <= reasoningEmpty && (terminalNative == reasoningAbsent || len(terminal.ResponsesTextParts) == 1) {
-		prior, native := responsesThinking(item.done, nil)
-		if prior == nil || (native == reasoningAbsent && prior.EncryptedContent == "") {
-			return terminal
-		}
-		if terminal == nil {
-			id, _ := terminalItem["id"].(string)
-			terminal = &llm.ThinkingData{ID: id, Summary: parseReasoningSummary(terminalItem["summary"])}
-		}
-		if native > terminalNative {
+	if terminal == nil {
+		id, _ := terminalItem["id"].(string)
+		terminal = &llm.ThinkingData{ID: id, Summary: parseReasoningSummary(terminalItem["summary"])}
+	}
+	parts, _ := terminalItem["content"].([]any)
+	var placeholder bool
+	if terminalNative == reasoningEmpty && len(parts) == 1 {
+		part, _ := parts[0].(map[string]any)
+		placeholder = part["text"] == ""
+	}
+	if terminalNative == reasoningAbsent || placeholder {
+		if prior, native := responsesThinking(item.done, nil); prior != nil && native > terminalNative {
 			terminal.Text, terminal.ResponsesTextParts = prior.Text, prior.ResponsesTextParts
 		}
 	}
@@ -211,6 +214,9 @@ func (item *responsesOutputItem) settleReasoning(terminalItem map[string]any, te
 	ciphertext, _ := item.done["encrypted_content"].(string)
 	terminal.ID = cmp.Or(terminal.ID, id)
 	terminal.EncryptedContent = cmp.Or(terminal.EncryptedContent, ciphertext)
+	if terminal.EncryptedContent == "" && len(terminal.ResponsesTextParts) == 0 {
+		return nil
+	}
 	if terminal.Summary == nil {
 		terminal.Summary = parseReasoningSummary(item.done["summary"])
 	}
@@ -236,14 +242,16 @@ func (acc *responsesOutputAccumulator) sparseContent(terminal []responsesTermina
 	acc.orderOutput()
 	for _, item := range acc.output {
 		if len(item.display) != 0 {
-			parts, _ := item.done["content"].([]any)
-			hasText := slices.ContainsFunc(parts, func(p any) bool {
-				part, _ := p.(map[string]any)
-				text, _ := part["text"].(string)
-				return text != ""
-			})
+			var hasText bool
 			if m := matched[item]; len(m) != 0 && m[0].Thinking != nil {
 				hasText = slices.ContainsFunc(m[0].Thinking.ResponsesTextParts, func(p llm.ResponsesTextPart) bool { return p.End > p.Start })
+			} else if !terminalReasoning {
+				parts, _ := item.done["content"].([]any)
+				hasText = slices.ContainsFunc(parts, func(p any) bool {
+					part, _ := p.(map[string]any)
+					text, _ := part["text"].(string)
+					return text != ""
+				})
 			}
 			if !hasText {
 				if display := item.display.value(); display != "" {
@@ -269,7 +277,7 @@ func (acc *responsesOutputAccumulator) sparseContent(terminal []responsesTermina
 				continue
 			}
 		}
-		if st := item.tool; st != nil && st.hasOutput {
+		if st := item.tool; st != nil && st.hasOutput && st.id != "" {
 			content = append(content, llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
 				ID: st.id, ItemID: st.itemID, Name: st.name, Type: "function", Arguments: json.RawMessage(st.args.value()),
 			}})
@@ -373,9 +381,8 @@ func responsesThinking(item, prior map[string]any) (*llm.ThinkingData, reasoning
 		p, _ := part.(map[string]any)
 		text, ok := p["text"].(string)
 		kind, _ := p["type"].(string)
-		if !ok || (kind == "" && strings.TrimSpace(text) == "") {
-			continue
-		}
+		// Only the terminal's own bytes determine whether it selects output
+		// membership. Recovering a part does not withdraw sparse siblings.
 		if kind == "reasoning_text" && native < reasoningSubstantive {
 			switch {
 			case text == "":
@@ -386,11 +393,16 @@ func responsesThinking(item, prior map[string]any) (*llm.ThinkingData, reasoning
 				native = reasoningSubstantive
 			}
 		}
-		if text == "" && kind != "" && i < len(priorParts) {
+		if text == "" && (ok || p["text"] == nil) && kind != "" && i < len(priorParts) {
 			source, _ := priorParts[i].(map[string]any)
 			if source["type"] == kind {
-				text, _ = source["text"].(string)
+				if observed, present := source["text"].(string); present {
+					text, ok = observed, true
+				}
 			}
+		}
+		if !ok || (kind == "" && strings.TrimSpace(text) == "") {
+			continue
 		}
 		if len(textParts) != 0 {
 			display.WriteString(reasoningPartSeparator)
@@ -400,7 +412,7 @@ func responsesThinking(item, prior map[string]any) (*llm.ThinkingData, reasoning
 		textParts = append(textParts, llm.ResponsesTextPart{Type: kind, Start: start, End: display.Len()})
 	}
 	text := display.String()
-	if encrypted == "" && native == reasoningAbsent && strings.TrimSpace(text) == "" {
+	if encrypted == "" && (len(textParts) == 0 || native == reasoningAbsent && strings.TrimSpace(text) == "") {
 		return nil, native
 	}
 	return &llm.ThinkingData{

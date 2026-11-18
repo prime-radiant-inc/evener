@@ -20,6 +20,7 @@ import (
 type responsesToolState struct {
 	id, itemID, name   string
 	started, hasOutput bool
+	hasCallID          bool // The provider supplied call_id, even if it equals its item ID.
 	args               responsesOutputText
 }
 
@@ -212,11 +213,11 @@ func (acc *responsesOutputAccumulator) join(item, other *responsesOutputItem) *r
 		return item
 	}
 	if a, b := item.tool, other.tool; a != nil && b != nil {
-		if a.id != a.itemID && b.id != b.itemID && a.id != b.id {
+		if a.hasCallID && b.hasCallID && a.id != b.id {
 			return item
 		}
-		if a.id == a.itemID {
-			a.id = b.id
+		if !a.hasCallID && (b.hasCallID || a.id == "") {
+			a.id, a.hasCallID = b.id, b.hasCallID
 		}
 		a.itemID = cmp.Or(a.itemID, b.itemID)
 		a.name = cmp.Or(a.name, b.name)
@@ -387,27 +388,25 @@ func (item *responsesOutputItem) settleMessage(message map[string]any, order int
 	}
 }
 
-func (acc *responsesOutputAccumulator) registeredCallID(itemID string) string {
-	if item := acc.byID[itemID]; item != nil && item.tool != nil {
-		return item.tool.id
-	}
-	return ""
-}
-
 // Both native IDs name the same call. A call known only by item ID can gain
 // its call ID and function name from a later event.
-func (acc *responsesOutputAccumulator) toolOutput(payload map[string]any, callID, itemID, name string) *responsesOutputItem {
+func (acc *responsesOutputAccumulator) toolOutput(payload map[string]any, callID, itemID, name string, explicit bool) *responsesOutputItem {
+	if callID == "" && itemID == "" && responsesEventIndex(payload, "output_index") < 0 {
+		return nil
+	}
 	item := acc.outputItem(payload, "function_call", itemID, acc.byCallID[callID], true)
 	if item.tool == nil {
-		item.tool = &responsesToolState{id: callID}
+		item.tool = new(responsesToolState)
 	}
 	st := item.tool
-	if st.id == itemID {
-		st.id = callID
+	if callID != "" && (st.id == "" || explicit && !st.hasCallID) {
+		st.id, st.hasCallID = callID, explicit
 	}
 	st.name = cmp.Or(st.name, name)
 	st.itemID = item.id
-	acc.byCallID[st.id] = item
+	if st.id != "" {
+		acc.byCallID[st.id] = item
+	}
 	return item
 }
 
@@ -430,11 +429,28 @@ func (acc *responsesOutputAccumulator) HandleOutputItemAdded(payload, item map[s
 	}
 	callID, _ := item["call_id"].(string)
 	name, _ := item["name"].(string)
-	stateID := cmp.Or(callID, itemID)
-	if stateID == "" {
-		return
+	acc.toolOutput(payload, cmp.Or(callID, itemID), itemID, name, callID != "")
+}
+
+func (acc *responsesOutputAccumulator) argumentOutput(payload map[string]any) *responsesOutputItem {
+	callID, _ := payload["call_id"].(string)
+	itemID, _ := payload["item_id"].(string)
+	explicit := callID != ""
+	var alias string
+	if callID == "" && itemID == "" {
+		alias, _ = payload["id"].(string)
+		callID = alias
+		if known := acc.byID[alias]; known != nil && known.tool != nil && known.id == alias {
+			itemID, callID = known.id, known.tool.id
+		}
 	}
-	acc.toolOutput(payload, stateID, itemID, name)
+	name, _ := payload["name"].(string)
+	output := acc.toolOutput(payload, cmp.Or(callID, itemID), itemID, name, explicit)
+	if alias != "" && output.id == "" && acc.byID[alias] == nil {
+		// A bare id can later be identified as either the item_id or call_id.
+		acc.byID[alias] = output
+	}
+	return output
 }
 
 // HandleFunctionCallArgumentsDelta merges one
@@ -450,29 +466,13 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDelta(payload 
 	if delta == "" {
 		delta, _ = payload["arguments"].(string)
 	}
-	callID, _ := payload["call_id"].(string)
-	itemID, _ := payload["item_id"].(string)
-	unqualified := itemID == "" && callID == ""
-	if callID == "" && itemID != "" {
-		callID = acc.registeredCallID(itemID)
-	}
-	if callID == "" {
-		callID = itemID
-	}
-	if callID == "" {
-		callID, _ = payload["id"].(string)
-		if known := acc.byID[callID]; known != nil && known.tool != nil && known.id == callID {
-			itemID, callID = known.id, known.tool.id
-		}
-	}
 	name, _ := payload["name"].(string)
-	if callID == "" || (delta == "" && name == "") {
+	if delta == "" && name == "" {
 		return nil, "", false
 	}
-	output := acc.toolOutput(payload, callID, itemID, name)
-	if unqualified && output.id == "" && acc.byID[callID] == nil {
-		// A bare id can later be identified as either the item_id or call_id.
-		acc.byID[callID] = output
+	output := acc.argumentOutput(payload)
+	if output == nil {
+		return nil, "", false
 	}
 	st := output.tool
 	st.hasOutput = true
@@ -488,7 +488,7 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDelta(payload 
 			acc.write(&st.args.deltas, delta)
 		}
 	}
-	return st, delta, true
+	return st, delta, st.id != ""
 }
 
 // HandleFunctionCallArgumentsDone applies a
@@ -500,19 +500,11 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDelta(payload 
 // caller should pass the raw payload through.
 func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDone(payload map[string]any, eventData []byte) (state *responsesToolState, ok bool) {
 	argsStr, _ := payload["arguments"].(string)
-	callID, _ := payload["call_id"].(string)
-	itemID, _ := payload["item_id"].(string)
-	if callID == "" && itemID != "" {
-		callID = acc.registeredCallID(itemID)
-	}
-	if callID == "" {
-		callID = itemID
-	}
-	if callID == "" {
+	output := acc.argumentOutput(payload)
+	if output == nil {
 		return nil, false
 	}
-	name, _ := payload["name"].(string)
-	st := acc.toolOutput(payload, callID, itemID, name).tool
+	st := output.tool
 	if argsStr != "" {
 		st.hasOutput = true
 		if rawArgs, rawOK := captureResponsesArgumentsDoneRaw(eventData); rawOK && rawArgs != nil {
@@ -523,7 +515,7 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDone(payload m
 		acc.order++
 		st.args.settle(argsStr, false, acc.order)
 	}
-	return st, true
+	return st, st.id != ""
 }
 
 // HandleOutputItemDone processes a response.output_item.done event's item,
@@ -574,18 +566,16 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 			argsStr = string(content)
 		}
 	}
-	if callID == "" && itemID != "" {
-		callID = acc.registeredCallID(itemID)
-	}
-	if callID == "" {
+	output := acc.toolOutput(payload, callID, itemID, name, callID != "")
+	if output == nil {
 		return item, nil, "", false
 	}
-	st := acc.toolOutput(payload, callID, itemID, name).tool
+	st := output.tool
 	st.hasOutput = true
 	st.args.settle(argsStr, true, acc.order)
 	argsStr = st.args.value()
 	acc.completed++
-	return item, st, argsStr, true
+	return item, st, argsStr, st.id != ""
 }
 
 // responsesInbandError decodes a Responses-API failure event delivered on an
