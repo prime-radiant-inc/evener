@@ -203,6 +203,31 @@ func TestTranscriptAuthorshipNestedParent(t *testing.T) {
 	}
 	sub := middle.getSub(result.ChildSessionID)
 	leaf := sub.sess
+	// Joining the namers is a cleanup, not just a tail statement. A failure at
+	// any assertion below exits the test goroutine before the explicit join
+	// runs, and the fixture's own Close cannot replace it: closeOnce is already
+	// spent by the expired close, so that Close is a no-op and the parked namer
+	// would still be running when the temporary directories are removed. This
+	// runs before the fixture's cleanups and releases the gates itself, so every
+	// exit path ends with both namers joined.
+	joinNamers := func() {
+		// TRIPWIRE: a wait group cannot report a namer that exits without calling
+		// Done, and there is no channel to select on, so this ceiling is the only
+		// way a missing Done fails this test by name instead of stalling the shard
+		// until the binary's timeout with the fixture never cleaned up. With the
+		// gates released both namers answer from a scripted adapter with no real
+		// I/O, so this normally returns in well under a second; 30s only fires on
+		// a missing Done.
+		awaitWithin(t, 30*time.Second, "the middle and leaf children's namers to finish", func() {
+			joinRetirementTreeEmitters(middle)
+			joinRetirementTreeEmitters(leaf)
+		})
+	}
+	t.Cleanup(func() {
+		releaseNamer()
+		middleRun.release()
+		joinNamers()
+	})
 	sub.mu.Lock()
 	done := sub.done
 	sub.mu.Unlock()
@@ -295,11 +320,12 @@ func TestTranscriptAuthorshipNestedParent(t *testing.T) {
 	// The fixture's close must not outlive the namers this test started. The
 	// close budget is spent before the close begins, so closeEventStream's
 	// joinWithinCloseBudget gives up on the parked namer and returns with it
-	// still running. sendersWG cannot answer whether it ended (it also counts
-	// delegate runs, and the close abandons it), so the proof is the namer's own
-	// unbudgeted join. The close is bounded here by the tripwire, not by the
-	// join: a close that stopped giving up would otherwise hold the test
-	// goroutine until the binary's timeout instead of failing at this assertion.
+	// still running, and closeOnce is spent by that pass. The proof that the
+	// namer died is therefore the cleanup's own unbudgeted wait on sendersWG:
+	// both delegate runs were settled above, so the only emitter these sessions
+	// still hold is the parked namer. The close is bounded here by the tripwire,
+	// not by that join: a close that stopped giving up would otherwise hold the
+	// test goroutine until the binary's timeout instead of failing here.
 	// The run's state is read here, next to the close and outside the settle
 	// above, so moving that settle after the close leaves this reading a run in
 	// flight and fails below instead of passing on a run the close stopped.
@@ -332,23 +358,10 @@ func TestTranscriptAuthorshipNestedParent(t *testing.T) {
 		t.Fatal("the close reached the middle child's event stream with its namer already done, so this test never crossed the window it exists to prove")
 	}
 	releaseNamer()
-	// The namer's own completion signal is what proves the parked goroutine is
-	// gone, and the production close budget plays no part in it: this joins the
-	// detached emitters directly, not through closeEventStream's budget. Both
-	// delegate runs were settled above, so the only emitter these two sessions
-	// still hold is the namer this test parked.
-	//
-	// TRIPWIRE: a wait group cannot report a namer that exits without calling
-	// Done, and there is no channel to select on, so this ceiling is the only
-	// way a missing Done fails this test by name instead of stalling the shard
-	// until the binary's timeout with the fixture never cleaned up. With the gate
-	// released both namers answer from a scripted adapter with no real I/O, so
-	// this normally returns in well under a second; 30s only fires on a missing
-	// Done.
-	awaitWithin(t, 30*time.Second, "the middle and leaf children's namers to finish", func() {
-		joinRetirementTreeEmitters(middle)
-		joinRetirementTreeEmitters(leaf)
-	})
+	// The join is the same one the cleanup registers, run here so a failure in
+	// the pending assertion below is reported against the join that caused it;
+	// the cleanup's second run is a no-op on an already-drained group.
+	joinNamers()
 	middle.mu.Lock()
 	stillNaming := middle.naming.pending
 	middle.mu.Unlock()
