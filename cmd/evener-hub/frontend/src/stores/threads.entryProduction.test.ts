@@ -9982,6 +9982,7 @@ it("a resident model does not fulfil the claim for a deleted destination", async
   // The model stays resident and its routing state stays verified; only the
   // deletion fence changed. The shortcut is the exit this presses.
   markCacheSessionsDeleted(["local:a"]);
+  const holdsBefore = foregroundHolds("local:a");
   try {
     const resent = withRecoveryDestinationClaim("local:a", () =>
       resendRecoveryMutation(row.clientMutationId, "local:a", "send", "retry me", []),
@@ -9997,9 +9998,18 @@ it("a resident model does not fulfil the claim for a deleted destination", async
     expect(await outboxStorage.listRecovery("local:a"), "the recovery draft must survive the rejection").toHaveLength(
       1,
     );
+    // The rejection took no hold, so there is none to strand: a rejected
+    // acquisition hands its caller no lease, and a count left behind here would
+    // keep a deleted ref's model and subscription alive for the tab's lifetime.
+    expect(foregroundHolds("local:a"), "a rejected routing claim must leave the hold count unchanged").toBe(
+      holdsBefore,
+    );
   } finally {
     background.release();
   }
+  // With the last legitimate owner gone the ref retires, which is the property
+  // a leaked hold would break.
+  expect(foregroundHolds("local:a"), "the deleted ref must retire once its last owner releases").toBe(0);
 }, 20_000);
 
 // The rejection exit asks the same question as the success exit. A deletion can
@@ -10086,4 +10096,79 @@ it("a second rollback does not spend a routing lease's hold", async () => {
   expect(threadsStore.getState().threads.has("local:a"), "the model must retire once the last holder releases").toBe(
     false,
   );
+}, 20_000);
+
+// Clear retires a read's claim to publish and only issues its replacement after
+// the transaction settles. A resend verifying a displayed cached shell is
+// waiting on exactly that retired read, so when it settles without publishing
+// there is momentarily nothing to join - and rejecting there costs the person a
+// second Send for a replacement the Clear is about to run. The claim waits for
+// that replacement instead, and the original press reaches the outbox.
+it("a Clear's replacement carries the press the retired read could not", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const outboxStorage = new MutationOutboxIndexedDB({ indexedDB: factory });
+  setMutationStorageForTests(outboxStorage);
+  const client = connect();
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  await settleEntryTranscriptForTests("local:a");
+  const route = entryTranscriptRoute("local:a");
+  if (!route) throw new Error("expected an entry route");
+  route.cachedUnverified = true;
+  const outbox = await outboxStorage.enqueueIntent({
+    targetRef: "local:a",
+    threadId: "thread-a",
+    method: "turn/start",
+    payload: { ref: "local:a", input: [{ type: "text", text: "retry me" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "retry me" }] },
+  });
+  const row = await outboxStorage.transferToRecovery(outbox.clientMutationId, "rejected");
+  if (!row) throw new Error("expected the recovery row to be durable");
+  // The claim's verification read is parked, and the Clear retires it.
+  const claimRead = deferred<ThreadReadResponse>();
+  let reads = 0;
+  client.on("thread/read", (params) => {
+    reads += 1;
+    if (reads === 1) return claimRead.promise;
+    return { ...response(), requestGeneration: params.requestGeneration };
+  });
+  const realClear = SessionEntryCache.prototype.clear;
+  const clearGate = deferred<void>();
+  const clearSpy = vi.spyOn(SessionEntryCache.prototype, "clear").mockImplementation(async function (
+    this: SessionEntryCache,
+  ) {
+    await clearGate.promise;
+    return realClear.call(this);
+  });
+  let outcome: { ok: boolean } | undefined;
+  try {
+    const resent = withRecoveryDestinationClaim("local:a", () =>
+      resendRecoveryMutation(row.clientMutationId, "local:a", "send", "retry me", []),
+    );
+    await vi.waitFor(() => expect(reads, "the claim must spend its verification read").toBe(1));
+    const clearing = clearCachedSessions();
+    // clearCachedSessions retires pending reads before its first await, so the
+    // claim's read has already lost its claim to publish by now.
+    expect(threadsStore.getState().clearInFlight, "the Clear must be in flight").toBeDefined();
+    // The retired read succeeds, and publishes nothing.
+    claimRead.resolve({ ...response(), requestGeneration: 0 });
+    // The transaction settles, so the Clear can issue its replacement.
+    clearGate.resolve();
+    await clearing;
+    outcome = await resent.then(
+      () => ({ ok: true as const }),
+      () => ({ ok: false as const }),
+    );
+    if (!outcome.ok) throw new Error("the Clear cost the press its destination");
+    expect(
+      await outboxStorage.listOutbox("local:a"),
+      "the Clear's replacement read must carry the original press to the outbox",
+    ).toHaveLength(1);
+  } finally {
+    clearSpy.mockRestore();
+    background.release();
+  }
 }, 20_000);

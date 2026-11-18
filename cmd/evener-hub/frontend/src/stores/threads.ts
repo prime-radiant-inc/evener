@@ -715,7 +715,13 @@ function isFallbackInvalidatingPush(method: string): boolean {
 class InflightHydrations {
   readonly #entries = new Map<
     string,
-    { promise: Promise<ThreadModel | null>; client: AppwireClientLike; epoch: number; includeTurns: boolean }
+    {
+      promise: Promise<ThreadModel | null>;
+      client: AppwireClientLike;
+      epoch: number;
+      includeTurns: boolean;
+      routing: boolean;
+    }
   >();
 
   get(ref: string): Promise<ThreadModel | null> | undefined {
@@ -733,6 +739,14 @@ class InflightHydrations {
   includeTurns(ref: string): boolean {
     return this.#entries.get(ref)?.includeTurns ?? false;
   }
+  // Whether the read in flight for this ref exists to verify routing state for
+  // a caller that routes, rather than to open a pane. A routing read publishes
+  // authoritative routing state but no pane bodies, so a pane opening over it
+  // still owes its own bounded local lookup; a pane's read owns that lookup and
+  // the pane joins it instead.
+  routing(ref: string): boolean {
+    return this.#entries.get(ref)?.routing ?? false;
+  }
   // The entry leaves when its own read settles, unless a newer read has
   // replaced it since.
   start(
@@ -741,8 +755,9 @@ class InflightHydrations {
     client: AppwireClientLike,
     epoch: number,
     includeTurns = false,
+    routing = false,
   ): void {
-    this.#entries.set(ref, { promise, client, epoch, includeTurns });
+    this.#entries.set(ref, { promise, client, epoch, includeTurns, routing });
     void promise
       .finally(() => {
         if (this.#entries.get(ref)?.promise === promise) this.#entries.delete(ref);
@@ -1388,6 +1403,27 @@ const pendingMutationReconciliations = new Map<string, Promise<void>>();
 const pendingWatchedHydrations = new Map<string, PendingThreadHydration>();
 // Clear retires response ownership, not the mounted owner's need for a read.
 const clearHydrationDemands = new Map<HydrationOwnerKind, Map<string, number>>();
+// The replacement read a Clear issued for a recorded demand. A claim waiting on
+// a ref whose read the Clear retired has no registered read to join at the
+// moment the retired attempt settles - the transaction has not finished, so the
+// replacement does not exist yet. It parks here instead of rejecting, and the
+// read Clear issues wakes it.
+const clearReplacementWaits = new KeyedWaiters<string, () => void>();
+
+function parkForClearReplacement(ref: string): { parked: Promise<void>; cancel: () => void } {
+  let wake!: () => void;
+  const parked = new Promise<void>((resolve) => {
+    wake = resolve;
+  });
+  clearReplacementWaits.add(ref, wake);
+  return {
+    parked,
+    cancel: () => {
+      clearReplacementWaits.remove(ref, wake);
+      wake();
+    },
+  };
+}
 
 // --- Notification routing index ---------------------------------------------
 //
@@ -4501,7 +4537,17 @@ async function readThreadHydration(
       // wait on a verdict about routing state the replacement is about to
       // publish. This is the same currency check the success path applies
       // before it records a failure on the route.
-      if (tracked && pendingThreadHydrations.get(ref) !== pending) throw err;
+      //
+      // The pending map is the read's OWN kind, not tracked's: an already-open
+      // delegate watch answers from pendingWatchedHydrations, and a watched
+      // read that a newer same-connection resync superseded is no longer in
+      // that map. Checking only the tracked map let that obsolete response
+      // through to the settlement below, which retires the newer read's
+      // lifecycle and cancels the retry it armed - leaving the delegate
+      // transcript stale until some other refresh. A diagnostic from the
+      // attempt that is still current in its own map still ends the wait.
+      const pendingHydrations = read.kind === "watched" ? pendingWatchedHydrations : pendingThreadHydrations;
+      if (pendingHydrations.get(ref) !== pending) throw err;
       if (pending.client !== getWiredClient() || pending.epoch !== getReadyEpoch()) throw err;
       settleHydrationReadEnd(read.kind, ref, { kind: "historyFailed", error: err });
     } else {
@@ -8447,6 +8493,15 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   async ensureThread(ref, opts) {
     let client = requireClient();
     const routingOnly = opts?.routingOnly === true;
+    // A routing claim on a destination the deletion fence already covers has no
+    // hold to take: the answer is "not routable" before any count or claim
+    // exists, so the rejection cannot strand a lease for a lifecycle that never
+    // received one. Asked here, before this call's own hold, because a
+    // rejection after the increment reaches the caller as a failed acquisition
+    // whose rollback already ran - and nothing is left to release it.
+    if (routingOnly && threadsStore.getState().deletedRefs.has(ref)) {
+      throw new Error("The destination was deleted before its routing state was verified");
+    }
     const count = foregroundHolds(ref);
     // The pane-only count, also read before this call's own hold: a history
     // hold or a mutation pin keeps the ref alive after a Clear but is not the
@@ -8541,7 +8596,16 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // status and capabilities, and that open attaches a reader and can spend a
     // body-restoring read in front of its outbox write. The shell the open
     // would publish is for a pane, so a claim reads directly instead.
-    if (!routingOnly && !threadsStore.getState().threads.has(ref) && !inflightHydrates.has(ref)) {
+    //
+    // A PANE opening over a claim's read still owes that lookup. The claim's
+    // read verifies routing state and publishes no pane bodies, so `has(ref)`
+    // being true here says a model exists, not that a pane may show what the
+    // cache holds: skipping the lookup for the claim's registration is what
+    // left the opening pane blank over a usable cached copy. A pane's own read
+    // is a different registration and still owns its lookup - the pane joins
+    // it rather than spending a second local open beside it.
+    const routedByClaim = inflightHydrates.has(ref) && inflightHydrates.routing(ref);
+    if (!routingOnly && !threadsStore.getState().threads.has(ref) && (!inflightHydrates.has(ref) || routedByClaim)) {
       await openCachedEntryTranscript(ref, generation);
       if (threadsStore.getState().deletedRefs.has(ref)) return endDeletedDestination();
       if (foregroundHolds(ref) === 0 || ensureGenerations.get(ref) !== generation) return;
@@ -8594,7 +8658,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       // excludes this registration from its wait (see exceptRegistration), so
       // the certification still promotes rather than self-certifying.
       registerHydrationSettlement(ref, hydration);
-      inflightHydrates.start(ref, hydration, hydrationClient, hydrationEpoch);
+      inflightHydrates.start(ref, hydration, hydrationClient, hydrationEpoch, false, routingOnly);
       // A read started while a lifecycle is waiting on this ref is the one
       // answering that lifecycle's question: a waiter parked there adopts it
       // rather than judging the shell it replaced. Recorded here because this
@@ -8801,6 +8865,27 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           if (fulfilment.kind === "join") {
             inflight = fulfilment.read;
             continue;
+          }
+          // Nothing is verifying the ref and no verified model stands, but a
+          // Clear has already recorded a demand to re-read it: the replacement
+          // it will issue owns this destination's routing state, and issuing it
+          // waits on a transaction that has not finished. Rejecting here costs
+          // the person a second Send for a replacement that is about to
+          // succeed, so park until that read exists and then join it.
+          if (clearHydrationDemands.get("thread")?.has(ref) === true) {
+            const parked = parkForClearReplacement(ref);
+            try {
+              await parked.parked;
+            } finally {
+              parked.cancel();
+            }
+            if (foregroundHolds(ref) <= 0) return;
+            const replacement = inflightHydrates.get(ref);
+            if (replacement) {
+              inflight = replacement;
+              continue;
+            }
+            throw lastReadError ?? new Error("routing state is unverified after the read settled");
           }
           throw lastReadError ?? new Error("routing state is unverified after the read settled");
         }
@@ -9988,7 +10073,12 @@ function reconcileClearInput(): void {
       // Ordinary refresh preserves publication fences and the held cache
       // lifetime's suppression. Reconnect owns a non-ready client.
       const retry = kind === "watched" ? retryWatchedHydration : retryTrackedHydration;
-      void retry(client, getReadyEpoch(), ref).catch(() => {});
+      const issued = retry(client, getReadyEpoch(), ref);
+      void issued.catch(() => {});
+      // A claim that was waiting on this demand when the retired read settled
+      // has nothing registered to join until this read exists. Wake it now, so
+      // it joins the replacement rather than judging the shell it replaced.
+      for (const wake of clearReplacementWaits.take(ref) ?? []) wake();
     }
   }
 }
