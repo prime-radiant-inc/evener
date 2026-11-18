@@ -504,7 +504,10 @@ test("a usage-limit retry with no read at all still says when the wait resumes",
 
   const el = screen.getByTestId("liveness-line");
   expect(el.getAttribute("data-level")).toBe("quota");
-  expect(el.textContent).toBe(waitingForQuotaText(sixHours - 5_000));
+  // The countdown is the announcement's own delay counting down from receipt
+  // (no read named an instant); the announcement's live elapsed sample rides
+  // beside it, so assert the countdown's own words, not the whole line.
+  expect(el.textContent).toContain(waitingForQuotaText(sixHours - 5_000));
 });
 
 // A stamped wait has one time basis: the daemon's. Its instant is the start
@@ -879,6 +882,44 @@ test("a quota wait's elapsed time advances past its announcement, and survives t
   expect(pending.getAttribute("data-level")).toBe("quota");
   expect(pending.textContent).toContain("gpt-5");
   expect(pending.textContent).toContain(formatExactGap(60_000 + 5_000));
+});
+
+// A legacy daemon's unstamped announcement carries no instant to count to,
+// so the pane's own receipt clock is the countdown's only basis. Reaching the
+// end of that countdown is not the wait ending - the daemon keeps a delegate
+// at its reset published as waiting until it reacquires a slot and emits the
+// wake - so the pane holds the wait as PENDING, exactly as a stamped wait
+// crossing its daemon deadline does, instead of dropping to an in-progress
+// retry or a stall warning while the request is still waiting.
+test("an unstamped quota wait holds its pending state past the receipt-based countdown", () => {
+  const now = 1_000_000;
+  render(
+    <LivenessLine
+      lastFrameAt={now}
+      now={now + 120_000}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      retry={rawRetry({
+        attempt: 1,
+        attemptCap: 4,
+        delayMs: 60_000,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        turnId: "turn_0",
+        receivedAt: now,
+      })}
+    />,
+  );
+  const el = screen.getByTestId("liveness-line");
+  // The wait is still the level - not the retry's own countdown, and not a
+  // stall - and the line says pending, the same state a stamped wait shows
+  // past its daemon deadline.
+  expect(el.getAttribute("data-level")).toBe("quota");
+  expect(el.textContent ?? "").not.toContain(compactDuration(60_000));
+  expect(el.className).not.toContain("stalled");
+  // A wake ends it, as it ends every held wait.
+  expect(describeLiveness(120_000, true, 0, undefined, { remainingMs: 0, passedReset: true }).level).toBe("quota");
 });
 
 // --- the hub's count (#3797) ------------------------------------------------

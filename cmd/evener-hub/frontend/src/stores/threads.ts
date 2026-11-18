@@ -1078,10 +1078,19 @@ async function acceptEntryTranscriptHydration(
     ...(hydration.announcedAt === undefined ? {} : { announcedAt: hydration.announcedAt }),
     ...nextTranscriptReadIdentity(),
   });
-  repository.acceptBeforeReadCut(
-    hydration.fixtureNotifications.map((update) => update.notification),
-    { lifetime: fixture.lifetime },
-  );
+  // The buffered pre-cut frames were ordered against THIS read - the buffer
+  // replay belongs to the snapshot the pane adopted, so a read the repository
+  // rejected (its history older than a live newer one) leaves the buffer
+  // unordered against anything: folding it would install a turn the live
+  // model never saw, and the live frames the cut displaced arrive after as
+  // themselves. Versioned history updates replay through the recorded merge
+  // below this cut, genuinely new post-cut frames reach accept directly.
+  if (adoptedRead) {
+    repository.acceptBeforeReadCut(
+      hydration.fixtureNotifications.map((update) => update.notification),
+      { lifetime: fixture.lifetime },
+    );
+  }
   return adoptedRead;
 }
 

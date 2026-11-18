@@ -3187,6 +3187,73 @@ it("accepts a matching recorded append into a seeded model's current source auth
   owner.dispose();
 });
 
+// A refresh can buffer a turn's active status before the read it was cut
+// against is judged. When the repository REJECTS the read - its history is
+// older than the live one - the buffered pre-cut frames were ordered against
+// a snapshot the pane never adopted, so replaying them folds a turn
+// establishment onto a model that still holds the live idle state: the pane
+// shows a stopped turn as running, and the post-cut Stop then lands as a
+// duplicate the live model already carries. Pre-cut replay belongs to the
+// read that was adopted, not to the buffer alone.
+it("does not replay buffered pre-cut frames when the repository rejects the read", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  // A live history authority: the baseline read, then a newer history
+  // update that makes every older-generation read stale.
+  owner.acceptRead(read("baseline"), {
+    lifetime: 1,
+    readId: "read-authority",
+    boundary: "read-authority-boundary",
+  });
+  await owner.settled();
+  owner.accept(
+    {
+      method: "history/updated",
+      params: {
+        ref,
+        threadId,
+        bootGeneration: "2",
+        epoch: 0,
+        snapshot: { incarnation: identity.incarnation, length: 2 },
+        items: [],
+      },
+    } as AnyNotification,
+    { lifetime: 1 },
+  );
+  // The stale read the buffered active status was cut against: rejected.
+  const staleRead = read("stale", 2);
+  staleRead.requestGeneration = 0;
+  expect(owner.acceptRead(staleRead, { lifetime: 1, readId: "stale", boundary: "stale" })).toBe(false);
+  owner.acceptBeforeReadCut(
+    [
+      {
+        method: "thread/status/changed",
+        params: { threadId, ref, status: { type: "active" }, activeTurnId: "turn_9" },
+      } as AnyNotification,
+      {
+        method: "evener/thread/modelRetry",
+        params: {
+          threadId,
+          ref,
+          turnId: "turn_9",
+          attempt: 1,
+          maxAttempts: 1,
+          delayMs: 7_200_000,
+          errorClass: "quota_exceeded",
+          groupElapsedMs: 5_000,
+          attemptCap: 1,
+          waitStartedAt: 4_000_000_000,
+        },
+      } as AnyNotification,
+    ],
+    { lifetime: 1 },
+  );
+  const model = owner.getSnapshot();
+  expect(model?.runningTurnId).toBeUndefined();
+  expect(model?.quotaResumesAt).toBeUndefined();
+});
+
 it("does not certify stale cached coverage as current for a newer invalidated seed", async () => {
   const fixture = createEntryCacheFixture();
   fixtures.push(fixture);

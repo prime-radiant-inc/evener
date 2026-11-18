@@ -652,6 +652,12 @@ export class TranscriptRepository {
   // whose demand the eviction policy consults.
   #unregisterPreferred: (() => void) | undefined;
   readonly #endClaims = new Set<string>();
+  // Whether the most recent read was adopted. The buffered pre-cut frames
+  // were ordered against THAT read: a read the versioned history rule refused
+  // leaves its buffer unordered against anything the model holds, so replay
+  // must not fold it - the live frames the cut displaced arrive after, and
+  // versioned history updates replay through the recorded merge.
+  #lastReadAdopted = false;
   readonly #resolvedEscalations: Set<string>;
   #endWork: Promise<void> | undefined;
   #endRetryCancel: (() => void) | undefined;
@@ -931,7 +937,10 @@ export class TranscriptRepository {
         })();
     // Local overlay preservation must not turn a rejected server read into
     // accepted history or recovery authority.
-    if (candidate === before) return false;
+    if (candidate === before) {
+      this.#lastReadAdopted = false;
+      return false;
+    }
     if (request.preserveEnded && before?.overlay) {
       for (const item of Object.values(before.overlay)) {
         if (item.kind !== "notice" && (!item.roundId || !this.#endClaims.has(item.roundId))) continue;
@@ -950,6 +959,7 @@ export class TranscriptRepository {
       }
     }
     this.#model = candidate;
+    this.#lastReadAdopted = true;
     // A read installs the view the repository now serves, so a previous view's
     // exhaustion does not survive it. A saved fallback that names no
     // continuation is the whole saved transcript: the view starts exhausted,
@@ -1171,6 +1181,9 @@ export class TranscriptRepository {
    * The shared reducer prunes any overlay the versioned recorded history covers.
    */
   acceptBeforeReadCut(notifications: readonly AnyNotification[], context: { lifetime: number }): void {
+    // The buffer belongs to the read that was adopted; a refused read's
+    // buffer stays unordered against the model the pane serves.
+    if (!this.#lastReadAdopted) return;
     const responseOverlayKeys = new Set(Object.keys(this.#model?.overlay ?? {}));
     // Replay is ONE reconciliation, not a filter per method. The buffer's
     // entries were ordered against the read when they arrived; the model they

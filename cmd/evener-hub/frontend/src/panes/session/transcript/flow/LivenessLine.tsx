@@ -161,6 +161,21 @@ export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId, ret
     retry.errorClass === "quota_exceeded" &&
     retry.delayMs > 0 &&
     retry.waitStartedAt !== undefined;
+  // An UNSTAMPED wait (an older daemon's announcement) has no daemon instant
+  // to count to, so this pane's receipt clock is its only countdown basis -
+  // and reaching the end of that countdown is not the wait ending, exactly
+  // as crossing a stamped wait's daemon deadline is not: a delegate held at
+  // its reset while every execution slot is occupied stays published as
+  // waiting until the daemon reacquires a slot and emits the wake. The wait
+  // is held for as long as the announcement names the running turn, past the
+  // receipt clock, in the pending state.
+  const unstampedQuotaWait =
+    retry !== undefined &&
+    retry.errorClass === "quota_exceeded" &&
+    retry.delayMs > 0 &&
+    retry.waitStartedAt === undefined &&
+    retry.turnId !== undefined &&
+    retry.turnId === turnId;
   const liveRemaining =
     retry !== undefined &&
     retry.errorClass === "quota_exceeded" &&
@@ -183,13 +198,15 @@ export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId, ret
   // we are in. The model's own route clears `quotaResumesAt` on the wake, a
   // turn boundary, or an authoritative read; only then does ordinary liveness
   // take over.
-  const waitStillRecorded = quotaResumesAt !== undefined || stampedQuotaWait;
+  const waitStillRecorded = quotaResumesAt !== undefined || stampedQuotaWait || unstampedQuotaWait;
   // The matching announcement's model tag and the call's elapsed time ride
   // the quota line only when a stamped same-turn announcement established
   // them: the snapshot alone cannot attribute a model or a duration to the
   // waiting call.
   const matchingAnnouncement =
-    stampedQuotaWait && retry?.turnId !== undefined && retry.turnId === turnId ? retry : undefined;
+    (stampedQuotaWait || unstampedQuotaWait) && retry?.turnId !== undefined && retry.turnId === turnId
+      ? retry
+      : undefined;
   // The announcement's elapsed sample is a snapshot from when the daemon
   // sent it, not a fact frozen at receipt: an hour into the wait the call is
   // an hour older than the sample, so the line advances it by the time since
