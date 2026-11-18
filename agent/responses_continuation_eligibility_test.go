@@ -195,7 +195,8 @@ func TestResponsesContinuationAnchorRefusesResponseWhoseRequestPredatesAFold(t *
 		t.Fatalf("a response published behind a later checkpoint kept anchor metadata: marker %q endpoint %q fingerprint %q",
 			carried.ResponseContextMarker, carried.ResponseEndpoint, carried.ResponseRequestFingerprint)
 	}
-	next := append(afterPublish, schema.NewTurn(schema.TurnUserInput, llm.User("and then?")))
+	next := append([]schema.Turn{}, afterPublish...)
+	next = append(next, schema.NewTurn(schema.TurnUserInput, llm.User("and then?")))
 	if _, decision := selectResponsesContinuationAnchorCandidate(published.cfg, next); decision.HistoryMode != llm.HistoryModeFullHistory ||
 		decision.Reason != "continuation_anchor_metadata_missing" {
 		t.Fatalf("a response published behind a later checkpoint anchored the next request: %+v", decision)
