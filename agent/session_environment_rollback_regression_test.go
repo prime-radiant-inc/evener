@@ -1040,16 +1040,12 @@ func TestPoisonedWriterDoesNotPopAQueuedMessage(t *testing.T) {
 }
 
 // TestEnvironmentEventPublishesInsideTheTranscriptOrderingBoundary: the entry
-// and the live event that announces it are one publication. Emitted after the
-// transcript door is released, a concurrent fold can take that door in between,
-// commit its compaction markers and flush its own events, so a live reader sees
-// the compaction ahead of the environment block while the transcript holds them
-// the other way round. The projector reads an environment event as a turn
-// boundary, so live then splits or closes a turn cold replay does not.
-//
-// The door is the statement: while it is held, no fold can publish, so live
-// order is transcript order. A publication that can take the door is a
-// publication that happens outside it.
+// and the live event that announces it are one publication. The entry is in
+// history before the event exists, so no reader observes the event ahead of
+// the entry that explains it, and no fold commits its markers between
+// those two steps. The bridge samples the thread envelope's context when it
+// handles the event, so that refresh is a trigger rather than a snapshot the
+// door ordered.
 func TestEnvironmentEventPublishesInsideTheTranscriptOrderingBoundary(t *testing.T) {
 	t.Parallel()
 	sess := newTestSessionForEnvctx(t)

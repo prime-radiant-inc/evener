@@ -179,11 +179,12 @@ func (s *Session) bumpHistoryRevisionLocked() {
 //     effects re-enter emit/steering/transcript machinery that itself takes
 //     these locks, and none of them need the ordering guarantee. The lone
 //     deliberate exception is appendEnvironmentContext's EventEnvironment,
-//     which publishes under attentionMu so the entry is in history before the
-//     event exists. The door does NOT stop a turn from being split: the
-//     projector no longer builds turns from events, and this event is a
-//     context facet (server/thread_envelope.go's facetsByEvent). Whether it
-//     needs the door at all is #6513's open question. It is one emit of known
+//     which publishes under attentionMu. The door makes it one publication:
+//     the entry is in history before the event exists, so no reader observes
+//     the event ahead of the entry that explains it, and no fold commits
+//     its markers between those two steps. The bridge samples the thread
+//     envelope's context when it handles the event, so that refresh is a
+//     trigger, not a snapshot the door ordered. It is one emit of known
 //     content; this flush is unbounded work (naming, hook user messages) that
 //     re-enters these very locks, so it stays out here.
 //
