@@ -42,6 +42,7 @@ import { SessionHeader } from "./session/SessionHeader";
 import { LiveSessionTitle } from "./session/LiveSessionTitle";
 import { readerKey } from "./readerPosition";
 import { sessionInfoHosts } from "./session/SessionInfoSheet";
+import { modelHosts } from "./session/ModelSheet";
 import { sheetKey } from "./sheet/sheetHosts";
 import { archivedListStoreFor } from "./archivedLists";
 import { activeConversation } from "./navigationRoutes";
@@ -670,6 +671,61 @@ it("reads the catalog again when the hub announces a refreshed model list", asyn
 	} finally {
 		act(() => tree.unmount());
 	}
+});
+
+// A return is not always a moment the catalog can be read: an action already
+// on its way holds the read back, and the read has to happen once that
+// action settles rather than being dropped with nothing to replace it. The
+// picker would otherwise keep the list this pane read before the reader left.
+it("reads the catalog on return once an action that held the read settles", async () => {
+	let modelReads = 0;
+	let answer!: () => void;
+	const { tree } = mount(
+		{
+			...thread,
+			modelProvider: "lunaroute/deepseek-4.1-flash",
+			evener: { ...thread.evener!, capabilities: { ...thread.evener!.capabilities, rename: true } },
+		},
+		{
+			"model/list": () => {
+				modelReads++;
+				return { data: [{ provider: "lunaroute", model: "deepseek-4.1-flash", displayName: "DeepSeek 4.1 Flash" }] };
+			},
+			"evener/thread/name/set": () =>
+				new Promise<never>((_, reject) => {
+					answer = () => reject(new Error("refused"));
+				}),
+		},
+	);
+	await settle();
+	expect(modelReads).toBe(1);
+	const controls = modelHosts.get(sheetKey("hub-1", ref))?.controls;
+	if (!controls) throw new Error("the screen provides no model host");
+	// A rename is out on the wire while the reader leaves and comes back.
+	let renaming!: Promise<void>;
+	await act(async () => {
+		renaming = controls.rename("Settle race").then(
+			() => {},
+			() => {},
+		);
+	});
+	await settle();
+	expect(controls.getSnapshot().pending).toBe("rename");
+	stack.state = { index: 1, routes: [session, { key: "reader", name: "Reader" }] };
+	act(() => tree.update(screen()));
+	await settle();
+	stack.state = { index: 0, routes: [session] };
+	act(() => tree.update(screen()));
+	await settle();
+	// Nothing could read while the rename was out, so the read is still owed.
+	expect(modelReads).toBe(1);
+	await act(async () => {
+		answer();
+		await renaming;
+	});
+	await settle();
+	expect(modelReads).toBe(2);
+	await act(async () => tree.unmount());
 });
 
 // The phone switched to another hub while this session stayed open: the

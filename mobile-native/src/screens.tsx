@@ -2466,16 +2466,27 @@ function ConversationScreenView({
 	// longer a rebuild and the read has to be asked for: a model list can change
 	// while the reader is on another screen, and the chip should not show the
 	// list this pane read before they left.
-	const wasCovered = useRef(false);
+	//
+	// The return is remembered rather than acted on once. `loadModels` declines
+	// while an action is pending, and clearing that action does not re-run an
+	// effect, so a read asked for at the wrong moment would be dropped and the
+	// catalog left stale with nothing to replace it.
+	const covered = useRef(false);
+	const returnReadOwed = useRef(false);
+	const controlsBusy = controlsState?.pending != null || controlsState?.loadingModels === true;
 	useEffect(() => {
 		if (!focused) {
-			wasCovered.current = true;
+			covered.current = true;
 			return;
 		}
-		const returning = wasCovered.current;
-		wasCovered.current = false;
-		if (returning && controls && hasConversation && sessionOpen) void controls.loadModels();
-	}, [focused, controls, hasConversation, sessionOpen]);
+		if (covered.current) {
+			covered.current = false;
+			returnReadOwed.current = true;
+		}
+		if (!returnReadOwed.current || !controls || !hasConversation || !sessionOpen || controlsBusy) return;
+		returnReadOwed.current = false;
+		void controls.loadModels();
+	}, [focused, controls, hasConversation, sessionOpen, controlsBusy]);
 	// The hub announces a refreshed model list on evener/auth/updated (it
 	// serves a stale list at once and refreshes it behind the request), so a
 	// loaded catalog is read again in place (#3539).

@@ -555,6 +555,23 @@ describe("the vision model (ruling 17)", () => {
 		await settle();
 		expect(calls.filter((call) => call.startsWith("toast:"))).toHaveLength(1);
 	});
+	// The row already shows as selected, so tapping it asks for what is already
+	// set. The daemon would acknowledge the unchanged value, and reporting that
+	// as a change tells the reader something happened when nothing did.
+	it("closes on an already-selected choice without asking for it or announcing it", async () => {
+		const { calls } = provide(conversation({ visionModel: "off" }));
+		const tree = sheet("vision");
+		act(() => pressable(tree, "Off")?.props.onPress());
+		await settle();
+		expect(calls).toEqual(["goBack"]);
+	});
+	it("closes on the already-selected session model without asking for it", async () => {
+		const { calls } = provide(conversation({ visionModel: "" }));
+		const tree = sheet("vision");
+		act(() => pressable(tree, "Session model")?.props.onPress());
+		await settle();
+		expect(calls).toEqual(["goBack"]);
+	});
 });
 
 describe("when nothing can change", () => {

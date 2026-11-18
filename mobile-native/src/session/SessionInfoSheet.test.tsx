@@ -33,6 +33,10 @@ const navigation = vi.hoisted(() => {
 	 * the detail stack, and an alert opens another conversation on the root
 	 * stack over it. */
 	const outerCovered = { value: false };
+	/** Whether a sheet is presented over this one on the same stack: the Model
+	 * sheet opens from a row here, and it leaves this sheet below the top while
+	 * both are still sheets. */
+	const sheetOver = { value: false };
 	const detail = {
 		index: 1,
 		routes: [
@@ -46,8 +50,9 @@ const navigation = vi.hoisted(() => {
 		dispatch: vi.fn(),
 		covered,
 		outerCovered,
+		sheetOver,
 		getState: () => ({
-			index: covered.value ? 2 : 1,
+			index: covered.value ? 2 : sheetOver.value ? 2 : 1,
 			routes: [
 				{ key: "conversation", name: "Conversation" },
 				...(covered.value
@@ -55,7 +60,12 @@ const navigation = vi.hoisted(() => {
 							{ key: "session-info", name: "SessionInfoSheet" },
 							{ key: "conversation-elsewhere", name: "Conversation" },
 						]
-					: [{ key: "session-info", name: "SessionInfoSheet" }]),
+					: sheetOver.value
+						? [
+								{ key: "session-info", name: "SessionInfoSheet" },
+								{ key: "model-sheet", name: "ModelSheet" },
+							]
+						: [{ key: "session-info", name: "SessionInfoSheet" }]),
 			],
 		}),
 		getParent: () => ({
@@ -627,6 +637,23 @@ describe("renaming", () => {
 		act(() => field.props.onChangeText("Settle race"));
 		navigation.outerCovered.value = true;
 		await act(async () => field.props.onSubmitEditing());
+		expect(controls.rename).toHaveBeenCalledWith("Settle race");
+		expect(markers(tree, "toast")).toEqual([]);
+		expect(tree.root.findAll((node) => String(node.type) === "TextInput")).toEqual([]);
+	});
+	// A sheet over this one counts as "in front" for the screen under it, this
+	// sheet included, so the reader's presence has to be asked of this sheet's
+	// own stack: the Model sheet's rows are what they are looking at while this
+	// reply is out, and the toast would speak over them.
+	it("settles a rename a sheet opened over it covers, and says nothing there", async () => {
+		const { controls } = provide(conversation({ capabilities: { ...NONE, rename: true } }));
+		const tree = sheet();
+		press(tree, "Fix the settle race, rename");
+		const field = tree.root.find((node) => String(node.type) === "TextInput");
+		act(() => field.props.onChangeText("Settle race"));
+		navigation.sheetOver.value = true;
+		await act(async () => field.props.onSubmitEditing());
+		navigation.sheetOver.value = false;
 		expect(controls.rename).toHaveBeenCalledWith("Settle race");
 		expect(markers(tree, "toast")).toEqual([]);
 		expect(tree.root.findAll((node) => String(node.type) === "TextInput")).toEqual([]);

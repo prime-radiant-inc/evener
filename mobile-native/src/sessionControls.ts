@@ -91,7 +91,15 @@ export class SessionControls {
 	 * to it. A failure keeps its report for the reader who comes back, and
 	 * returns before a notice would overwrite it. */
 	private ends(error: string | null = null): boolean {
-		if (this.disposed) return true;
+		if (this.disposed) {
+			// A disposed controller has no listeners, so nothing is told. Its own
+			// record still has to say what the hub answered: the step that asked
+			// this controller reads the outcome from here, and a rejection left
+			// unrecorded reads as an acknowledgement, which is how a refused stop
+			// used to be followed by a resume.
+			this.state = { ...this.state, pending: null, ...(error === null ? {} : { error }) };
+			return true;
+		}
 		if (this.isCurrent()) return false;
 		if (!this.isCurrent("session")) return true;
 		if (error === null) return false;

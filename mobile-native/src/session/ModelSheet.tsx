@@ -178,13 +178,24 @@ function ModelSheetBody({
 									title="Session model"
 									selected={session.visionModel === ""}
 									disabled={busy || !canChange}
-									onPress={() => controls && closeOn(controls.setVisionModel(""), changedVision)}
+									// Already the setting: the daemon would acknowledge an
+									// unchanged value, and announcing that as a change tells the
+									// reader something happened when nothing did.
+									onPress={() =>
+										session.visionModel === ""
+											? finish()
+											: controls && closeOn(controls.setVisionModel(""), changedVision)
+									}
 								/>
 								<ChoiceRow
 									title="Off"
 									selected={session.visionModel === "off"}
 									disabled={busy || !canChange}
-									onPress={() => controls && closeOn(controls.setVisionModel("off"), changedVision)}
+									onPress={() =>
+										session.visionModel === "off"
+											? finish()
+											: controls && closeOn(controls.setVisionModel("off"), changedVision)
+									}
 								/>
 							</>
 						) : null}

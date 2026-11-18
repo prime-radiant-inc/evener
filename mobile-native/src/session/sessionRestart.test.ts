@@ -65,6 +65,58 @@ describe("one step of a restart", () => {
 		expect(await step).toBe("done");
 	});
 
+	// The stop travels on its own recovery connection, so the primary one can
+	// reconnect and dispose these controls before the hub answers. A refusal
+	// that lands then used to read as an acknowledgement, and the restart went
+	// on to resume a runtime the hub had just refused to stop.
+	it("fails a stop the hub refused after its controls were gone", async () => {
+		let refuse!: (cause: Error) => void;
+		const swapped = controls({
+			forceStop: () =>
+				new Promise<void>((_, reject) => {
+					refuse = reject;
+				}),
+		});
+		const step = attemptControl(swapped.made, "forceStop");
+		swapped.made.dispose();
+		refuse(new Error("refused"));
+		expect(await step).toBe("failed");
+	});
+
+	it("sends no resume for a stop the hub refused after its controls were gone", async () => {
+		let sent = 0;
+		let refuse!: (cause: Error) => void;
+		const made = new SessionControls(
+			{
+				forceStop: () =>
+					new Promise<void>((_, reject) => {
+						refuse = reject;
+					}),
+				resume: async () => {
+					sent += 1;
+				},
+			} as unknown as ConstructorParameters<typeof SessionControls>[0],
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		const hook = renderHook(() => useSessionRestart(made, "open"));
+		await act(async () => {
+			const restarting = hook.result.current.restart();
+			await settle();
+			// The primary connection reconnects while the stop is still out on
+			// the recovery one, which disposes the controls that sent it.
+			made.dispose();
+			refuse(new Error("refused"));
+			await restarting;
+		});
+		await settle();
+		expect(sent).toBe(0);
+		expect(hook.result.current.error).not.toBeNull();
+	});
+
 	// The stop was acknowledged, so the resume is owed. Another screen can cover
 	// the pane between the two steps; refusing the resume there leaves the
 	// daemon stopped with the restart unfinished, and nothing else sends it.

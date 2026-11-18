@@ -19,6 +19,7 @@ import type { Routes } from "../screens";
 import { type SessionControls, useControlsState } from "../sessionControls";
 import { Group, GroupFooter, GroupedPage, Row } from "../sheet/Grouped";
 import { Sheet } from "../sheet/Sheet";
+import { onTop } from "../sheet/sheetRoutes";
 import { screenInFront } from "../sheet/useScreenInFront";
 import { useSheet } from "../sheet/useSheet";
 import { sheetHosts, sheetKey, useSheetHost } from "../sheet/sheetHosts";
@@ -157,7 +158,12 @@ function SessionInfoBody({
 			// another conversation over the pane this sheet is nested in while the
 			// reply is out, and announcing there speaks to someone reading
 			// something else.
-			if (screenInFront(navigation, routeKey)) toast.show({ kind: "rename:done", text: "Session renamed" });
+			// Announcing needs this sheet itself to be the top of its stack: a
+			// sheet counts as in front for the screen under it, so a Model sheet
+			// presented over this one leaves `screenInFront` true while the reader
+			// is looking at that sheet's rows instead.
+			if (screenInFront(navigation, routeKey) && onTop(navigation.getState(), routeKey))
+				toast.show({ kind: "rename:done", text: "Session renamed" });
 		}
 	};
 	const error = state?.error && !(state.lastAction && MODEL_ACTIONS.has(state.lastAction)) ? state.error : null;

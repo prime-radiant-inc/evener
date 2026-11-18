@@ -702,6 +702,13 @@ describe("conversation-owned session controls", () => {
 				expect(publications).toBe(2);
 				expect(controls.getSnapshot().pending).toBeNull();
 				expect(controls.getSnapshot().error).not.toBeNull();
+			} else if (outcome === "dispose") {
+				// Nothing is told to a disposed controller, but its own record has
+				// to carry the rejection: the step that asked it reads the outcome
+				// from here, and an unrecorded refusal reads as an acknowledgement.
+				expect(publications).toBe(1);
+				expect(controls.getSnapshot().pending).toBeNull();
+				expect(controls.getSnapshot().error).not.toBeNull();
 			} else {
 				expect(publications).toBe(1);
 				expect(controls.getSnapshot().error).toBeNull();
