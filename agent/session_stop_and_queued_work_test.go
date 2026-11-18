@@ -597,7 +597,7 @@ func TestStopParksTheQueueAgainstBothRestartRails(t *testing.T) {
 // returns the same ("", false, nil) a wake that found nothing returns -- so the
 // serve loop drops the armed runner and blocks without a word. The message is
 // durably accepted and the user holds its Applied receipt, so nothing will
-// arrive to look again until the user speaks (#6468).
+// arrive to look again until the user speaks.
 //
 // The window is opened with the claim's own seam rather than by racing: the
 // Stop is applied at the moment the queue head has been sampled and before the
@@ -645,7 +645,7 @@ func TestQueuedInputWakeReportsTheQueueGateClosingAfterTheProbe(t *testing.T) {
 // wake -- its acceptance sends one -- so it is nothing this claim refused. A
 // second read of the store cannot tell the two apart: it sees the fresh entry
 // and reports a stand-down over work the claim never evaluated, which is the
-// same defect as naming a gate that never closed (#6468).
+// same defect as naming a gate that never closed.
 //
 // The claim's own observation separates them, and the seam below queues the
 // fresh entry at exactly the point the claim has committed its decision.

@@ -682,11 +682,17 @@ func TestRetirementIdleQueuedInputWakeKeepsInterval(t *testing.T) {
 func TestRetirementUncarriableSteeringWakeKeepsInterval(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
-		name  string
-		block func(t *testing.T, root *Session)
+		name string
+		// wantStandDown is the outcome the wake must report. A failed attempt's
+		// park is accepted input standing still, and the park is what filters
+		// the steer out of the probe, so the wake that follows it has to name
+		// the park. A Stop's hold is the same steer behind a gate the user set,
+		// and stays quiet: the probe never called it runnable.
+		wantStandDown PendingInputOutcome
+		block         func(t *testing.T, root *Session)
 	}{
-		{"parked", func(_ *testing.T, root *Session) { root.parkSteering() }},
-		{"held", func(t *testing.T, root *Session) {
+		{"parked", PendingInputSteeringParked, func(_ *testing.T, root *Session) { root.parkSteering() }},
+		{"held", PendingInputNothingRunnable, func(t *testing.T, root *Session) {
 			if err := root.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
 				snapshot.SteeringHeld = true
 				return nil
@@ -713,16 +719,11 @@ func TestRetirementUncarriableSteeringWakeKeepsInterval(t *testing.T) {
 			if err != nil || processed {
 				t.Fatalf("wake = processed %v, err %v; want the steer left for the user", processed, err)
 			}
-			// The block is already in place when the wake re-runs the probe, so
-			// the probe itself reports nothing runnable. That is the right
-			// reading and it must not be dressed up as a refusal: no gate
-			// opened and closed around this wake, so nothing is standing still
-			// that a gate could release (#6468).
-			if outcome != PendingInputNothingRunnable {
-				t.Fatalf("outcome for a steer blocked before the probe = %v, want nothing-runnable", outcome)
+			if outcome != tc.wantStandDown {
+				t.Fatalf("outcome for a %s steer = %v, want %v", tc.name, outcome, tc.wantStandDown)
 			}
-			if outcome.RefusedRunnableInput() {
-				t.Fatal("a steer the probe never called runnable is reported as runnable input a gate refused")
+			if outcome.RefusedRunnableInput() != (tc.wantStandDown != PendingInputNothingRunnable) {
+				t.Fatalf("outcome %v reports refused-runnable-input=%v; a park is standing input, a Stop hold is not", outcome, outcome.RefusedRunnableInput())
 			}
 			if got := c.Snapshot().EligibleSince; !got.Equal(settled) {
 				t.Fatalf("wake moved the settled instant from %v to %v; it ran nothing", settled, got)

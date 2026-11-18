@@ -519,8 +519,7 @@ func (s *Session) popQueueHead() queuedInput {
 // work from a claim that found nothing -- without asking the store a second
 // time. A second read answers a different question: it sees entries the claim
 // never evaluated, such as one the user queued after the claim found the queue
-// empty, and calling that a refusal reports a cause the claim did not observe
-// (#6468).
+// empty, and calling that a refusal reports a cause the claim did not observe.
 type queueClaimObservation int
 
 const (

@@ -387,7 +387,7 @@ func TestProcessNextServeInputRunsNoDurableWorkAfterCancel(t *testing.T) {
 
 // TestQueuedInputStandDownIsReportedOnlyForRunnableWork pins the serve loop's
 // decision to say something about a wake, which is the whole of what the loop
-// can do with the condition (#6468).
+// can do with the condition.
 //
 // A queued-input wake that uses up its work and a wake that finds runnable work
 // a gate refuses are the same three values to this loop -- no result, no turn,

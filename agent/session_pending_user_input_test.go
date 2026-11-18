@@ -70,7 +70,7 @@ func TestProcessPendingUserInputIsANoOpWithAnEmptyQueue(t *testing.T) {
 	}
 	// The routine idle wake must never read as accepted work left standing, or
 	// every wake the daemon coalesces would be reported and the condition the
-	// report exists for would be noise (#6468).
+	// report exists for would be noise.
 	if outcome.RefusedRunnableInput() {
 		t.Fatal("an empty wake is reported as runnable input a gate refused")
 	}

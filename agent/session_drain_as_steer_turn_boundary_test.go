@@ -993,18 +993,28 @@ func TestCarrierProceedsWhenOnlyTheIncorporationWriteFails(t *testing.T) {
 // arm is not answered.
 func runPendingInputOnEachWake(t *testing.T, s *Session, wakes <-chan struct{}, limit int) (runs int) {
 	t.Helper()
+	runs, _ = answerPendingInputWakes(t, s, wakes, limit)
+	return runs
+}
+
+// answerPendingInputWakes is runPendingInputOnEachWake for a test that also
+// needs what each answered wake reported.
+func answerPendingInputWakes(t *testing.T, s *Session, wakes <-chan struct{}, limit int) (runs int, outcomes []PendingInputOutcome) {
+	t.Helper()
 	for runs < limit {
 		select {
 		case <-wakes:
 		default:
-			return runs
+			return runs, outcomes
 		}
 		runs++
-		if _, _, _, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil && !strings.Contains(err.Error(), "stays queued") {
+		_, _, outcome, err := s.ProcessPendingUserInput(context.Background(), nil)
+		if err != nil && !strings.Contains(err.Error(), "stays queued") {
 			t.Fatalf("ProcessPendingUserInput on wake %d: %v", runs, err)
 		}
+		outcomes = append(outcomes, outcome)
 	}
-	return runs
+	return runs, outcomes
 }
 
 // externalWake is the attach-time wake, the one external trigger a parked
@@ -1348,7 +1358,7 @@ func TestRefusedCarrierClaimParksTheSteerForTheNextExternalWake(t *testing.T) {
 	}
 	// The refused write is what parked the steer, and the wake reports that. It
 	// used to report the active-turn slot, which the claim never saw close: the
-	// store's write failed with the slot still free (#6468).
+	// store's write failed with the slot still free.
 	if outcome != PendingInputSteeringParked {
 		t.Fatalf("outcome after a refused carrier claim write = %v, want steering-parked", outcome)
 	}
@@ -1516,11 +1526,16 @@ func TestRefusedLadderClaimRunsNoAutonomousTurnBehindIt(t *testing.T) {
 	}
 }
 
-// TestBufferedAcceptanceWakeDoesNotRetryAFailedInlineCarrier (round 13, M3):
-// the steer's acceptance mid-turn arms the pending-input wake, which the daemon
-// holds until the input ends. The inline carrier then fails. The buffered wake
-// must not spend a second attempt on the failed steer: one attempt per external
-// wake, and that wake was consumed by the attempt the ladder already made.
+// TestBufferedAcceptanceWakeDoesNotRetryAFailedInlineCarrier: the steer's
+// acceptance mid-turn arms the pending-input wake, which the daemon holds until
+// the input ends. The inline carrier then fails, which parks the steer. The
+// buffered wake must not spend a second attempt on the failed steer: one
+// attempt per external wake, and that wake was consumed by the attempt the
+// ladder already made.
+//
+// It owes the daemon the reason too. The park is what the probe filters the
+// steer out on, so a wake that reports "nothing runnable" while the steer is
+// still accepted and pending is the same invisibility the outcome exists to end.
 func TestBufferedAcceptanceWakeDoesNotRetryAFailedInlineCarrier(t *testing.T) {
 	t.Parallel()
 	adapter := newHeldLegAdapter()
@@ -1539,10 +1554,24 @@ func TestBufferedAcceptanceWakeDoesNotRetryAFailedInlineCarrier(t *testing.T) {
 		t.Fatalf("ProcessInput returned %v, want the carrier's failure", err)
 	}
 	// The daemon now answers the wake the acceptance buffered mid-turn.
-	runs := runPendingInputOnEachWake(t, s, wakes, 5)
+	runs, outcomes := answerPendingInputWakes(t, s, wakes, 5)
 	t.Logf("trace: buffered wakes answered=%d append attempts=%d", runs, refusal.refusals.Load())
 	if refusal.refusals.Load() != 1 {
 		t.Fatalf("append attempts = %d after the buffered acceptance wake, want 1: that wake was spent by the inline attempt", refusal.refusals.Load())
+	}
+	// The steer the failed inline attempt parked is still accepted, and the park
+	// is what the probe filters it out on. A wake that answers "nothing
+	// runnable" here tells the daemon an accepted steer is gone.
+	if runs == 0 {
+		t.Fatal("the failed inline carrier armed no wake at all; this test would then measure nothing about what a wake reports")
+	}
+	for _, outcome := range outcomes {
+		if outcome != PendingInputSteeringParked {
+			t.Fatalf("buffered acceptance wake over a parked steer = %v, want steering-parked", outcome)
+		}
+		if !outcome.RefusedRunnableInput() {
+			t.Fatal("a parked accepted steer is not reported as runnable input standing still")
+		}
 	}
 
 	// The disk has room again; a genuinely external wake carries the steer.

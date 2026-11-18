@@ -615,7 +615,7 @@ func TestWakeStandsDownWhenAStopParksTheSteerBeforeTheClaim(t *testing.T) {
 	}
 	// The stand-down is quiet in its error and its booleans, which is exactly
 	// why the reason has to travel separately: the steer is accepted, runnable,
-	// and a gate refused it (#6468).
+	// and a gate refused it.
 	//
 	// The gate is the Stop's hold, and the claim saw that: reporting the
 	// active-turn slot here would name a gate nothing closed -- no turn holds

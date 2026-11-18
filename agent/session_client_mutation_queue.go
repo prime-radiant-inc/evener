@@ -236,7 +236,7 @@ func (s *Session) hasPendingUserInputToRun() bool {
 // Every stand-down below used to be the same ("", false, nil), which the serve
 // loop could only answer by dropping the runner and blocking: runnable work
 // refused by a gate and an empty wake were indistinguishable in the log, and
-// the first is accepted input left standing (#6468). A refusal that travels as
+// the first is accepted input left standing. A refusal that travels as
 // an error already reaches the caller as one; this covers the ones that
 // deliberately do not, because answering every idle wake with an error would
 // turn the wake channel into a logged failure for the session's life.
@@ -302,7 +302,7 @@ func (o PendingInputOutcome) String() string {
 // RefusedRunnableInput reports whether the wake found work the probe called
 // runnable and a gate refused it, so accepted input is standing still.
 //
-// This is the condition #6468 is about: it is not an error, it ends in the same
+// This is the condition the type exists for: it is not an error, it ends in the
 // ("", false, nil) the routine idle wake returns, and the serve loop's response
 // -- drop the armed runner, block on a channel -- is identical. A caller that
 // only has the boolean cannot see it at all.
@@ -359,6 +359,15 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 	// themselves retirement evidence (retirementInputBlockers). Input that is
 	// present here is claimed under the lease below, which re-decides it.
 	if !s.hasPendingUserInputToRun() {
+		// A steer a failed attempt parked is accepted input the user already
+		// holds a receipt for, and the park is what filters it out of the probe
+		// above -- so no later branch can report it. Wakes are answered one per
+		// external trigger while it stays parked, and it clears on the next
+		// attempt that succeeds, so this repeats no more than the condition
+		// lasts.
+		if s.steeringParkedNow() {
+			return "", false, PendingInputSteeringParked, nil
+		}
 		return "", false, PendingInputNothingRunnable, nil
 	}
 	release, admissionErr := s.beginRetirementMutation("turn")
@@ -400,7 +409,7 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 			// than run unaddressable -- the steering stays queued for whichever
 			// turn runs next, the same stand-down contract mintRunningTurnID's
 			// callers rely on -- and report the cause the claim observed rather
-			// than a cause this wake guessed (#6468).
+			// than a cause this wake guessed.
 			return "", false, carrierSaw, nil
 		}
 		queued = carrier
@@ -471,7 +480,7 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 	// claim itself saw of the head, not what the store holds now: a message the
 	// user queues after an empty claim is work this claim never evaluated, and
 	// it carries its own wake. Asking the store a second time would report a
-	// refusal for an entry that arrived too late to be refused (#6468).
+	// refusal for an entry that arrived too late to be refused.
 	switch claimSaw {
 	case queueClaimQueueEmpty:
 		return "", false, PendingInputNothingRunnable, nil
@@ -502,7 +511,7 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 // that prompted the wake, if still queued, stays queued for whichever turn runs
 // next; nothing is lost by waiting. The cause is reported rather than assumed:
 // a wake that said "an active turn owns the slot" after its own write failed
-// named a gate it never saw refuse (#6468).
+// named a gate it never saw refuse.
 //
 // It returns a refusal instead when it would have claimed on a poisoned
 // transcript. That refusal is decided on the same generation the claim acts on

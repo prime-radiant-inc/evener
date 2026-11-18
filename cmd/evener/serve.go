@@ -964,7 +964,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			// pendingInput names what a queued-input wake did with the work
 			// it found. The success and stand-down paths both return a nil
 			// error, so this is the only thing that distinguishes accepted
-			// input a gate refused from a wake that found nothing (#6468).
+			// input a gate refused from a wake that found nothing.
 			// It is declared rather than seeded: PendingInputNoOutcome is the
 			// type's zero value, and an explicit assignment of it is what
 			// ineffassign reads as dead.
@@ -1020,9 +1020,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 					bridge.clearMutationRunner(runnerDone)
 					srv.SetCancelFunc(nil)
 				}
-				if pendingInputStoodDown(processErr, pendingInput) {
-					serveLogf(logOut, sess.ID(), "queued input stood down: %s", pendingInput)
-				}
 			} else {
 				result, processErr = sess.ProcessInputKind(turnCtx, msg.Text, msg.Images, msg.Kind)
 			}
@@ -1036,6 +1033,14 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			bridge.clearMutationRunner(runnerDone)
 			if processErr != nil {
 				serveLogf(logOut, sess.ID(), "error: %s", turnFailureSummary(processErr))
+			}
+			// Reported after runnerDone closes, never before: a Stop that
+			// captured the runner waits on that channel to finalize its fence,
+			// and a stderr pipe that has backed up would hold the fence open for
+			// as long as the write takes. The claim refused, so no turn is
+			// waiting on the line.
+			if msg.QueuedInput && pendingInputStoodDown(processErr, pendingInput) {
+				serveLogf(logOut, sess.ID(), "queued input stood down: %s", pendingInput)
 			}
 			_ = result
 			return processed
@@ -1182,7 +1187,7 @@ func closeSupersededSession(sess *agent.Session, shutdownClaimed bool) {
 // pendingInputStoodDown reports whether a queued-input wake found runnable work
 // and left it standing. That is accepted input the client already holds an
 // Applied receipt for, refused by a gate that the serve loop's next act --
-// block on the input channel -- will not look at again (#6468).
+// block on the input channel -- will not look at again.
 //
 // It is silent on every other path: the wake returns no error, and !processed on
 // its own is the routine idle wake, which fires unconditionally on acceptance
