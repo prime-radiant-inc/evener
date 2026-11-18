@@ -4041,6 +4041,11 @@ export async function updateRecoveryMutation(
   expectedRecoveryRevisions?: Readonly<Record<string, number>>,
   compositionOwnerId?: string,
   composerText?: string,
+  // The composition this row owns, when the request is only its sendable
+  // subset. See `updateRecoveryInput`: the two lists answer different
+  // questions, and collapsing them is how a released tile's bytes are lost on
+  // one side or the other.
+  ownedAttachments?: InputAttachment[],
 ): Promise<MutationRecoveryRecord | undefined> {
   const runtime = requireMutationRuntime();
   await runtime.start;
@@ -4055,6 +4060,7 @@ export async function updateRecoveryMutation(
     expectedCompositionRevision,
     expectedRecoveryRevisions,
     compositionOwnerId,
+    ownedAttachments === undefined ? undefined : durableAttachments(ownedAttachments),
   );
   if (!record) return undefined;
   notifyMutationPersistence([targetRef]);

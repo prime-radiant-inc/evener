@@ -383,6 +383,30 @@ export type CompositionTileFacts = {
   hasBytes: boolean;
 };
 
+/** One reference with no bytes behind it, and WHICH spelling it was.
+ *
+ * The number alone is not the fact. A text can spell `[image 1]` twice - once
+ * as literal prose the person typed, once as the reference a row's missing
+ * image used to have - and a number cannot say which of the two the warning
+ * belonged to. Stored by number alone, a merge tags the first spelling it
+ * finds, so deleting the prose clears a warning about the real missing image
+ * and the next Send ships that reference as text.
+ *
+ * `offset` is the start of the reference in the committed text, so the
+ * occurrence survives an edit that moves it and retires when the person
+ * deletes that spelling rather than an identical one elsewhere.
+ *
+ * Absent on records written before this field existed. Such an anchor means
+ * "the first spelling of this number", which is exactly how those records were
+ * read before the field existed - an upgrade therefore changes nothing about
+ * unsent work, and never invents an offset that would make an old draft refuse
+ * a send it used to allow.
+ */
+export type CompositionImageAnchor = {
+  marker: number;
+  offset?: number;
+};
+
 export type CompositionImageRecord = {
   /** The recovery composition revision these facts describe.
    *
@@ -401,7 +425,7 @@ export type CompositionImageRecord = {
    * Absent on records an older build wrote; a missing revision is treated as
    * unknown, which also withholds. */
   revision?: number;
-  anchors: number[];
+  anchors: CompositionImageAnchor[];
   tiles: CompositionTileFacts[];
 };
 
@@ -418,8 +442,26 @@ export function readCompositionImageRecord(clientMutationId: string): Compositio
     const parsed: unknown = JSON.parse(raw);
     if (typeof parsed !== "object" || parsed === null) return undefined;
     const record = parsed as Partial<CompositionImageRecord>;
-    const anchors = Array.isArray(record.anchors)
-      ? record.anchors.filter((marker): marker is number => Number.isSafeInteger(marker) && marker > 0)
+    // Two shapes reach this reader. The current one is an object carrying the
+    // marker and the offset of the spelling it names; the older one is the bare
+    // marker number. Both are read, because an upgrade must not invalidate
+    // somebody's unsent work: a bare number becomes an anchor with NO offset,
+    // which every consumer resolves to that number's first spelling - exactly
+    // what those records meant before offsets existed.
+    const anchors: CompositionImageAnchor[] = Array.isArray(record.anchors)
+      ? record.anchors.flatMap((anchor): CompositionImageAnchor[] => {
+          if (typeof anchor === "number") return Number.isSafeInteger(anchor) && anchor > 0 ? [{ marker: anchor }] : [];
+          if (typeof anchor !== "object" || anchor === null) return [];
+          const entry = anchor as Partial<CompositionImageAnchor>;
+          if (!Number.isSafeInteger(entry.marker) || (entry.marker ?? 0) <= 0) return [];
+          const offset =
+            typeof entry.offset === "number" && Number.isSafeInteger(entry.offset) && entry.offset >= 0
+              ? entry.offset
+              : undefined;
+          return [
+            offset === undefined ? { marker: entry.marker as number } : { marker: entry.marker as number, offset },
+          ];
+        })
       : [];
     const tiles = Array.isArray(record.tiles)
       ? record.tiles.filter(
@@ -471,10 +513,32 @@ export function moveCompositionImageRecord(
   writeCompositionImageRecord(toClientMutationId, { ...record, revision: toCompositionRevision });
 }
 
+// Two anchors are the same anchor when they name the same occurrence. A bare
+// number is not "offset 0": it means "this number's first spelling", so it
+// agrees with another bare number of the same marker and with nothing that
+// carries an offset.
+function dedupeAnchors(anchors: readonly CompositionImageAnchor[]): CompositionImageAnchor[] {
+  const seen = new Set<string>();
+  const out: CompositionImageAnchor[] = [];
+  for (const anchor of anchors) {
+    const key = `${anchor.marker}@${anchor.offset === undefined ? "*" : anchor.offset}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(
+      anchor.offset === undefined ? { marker: anchor.marker } : { marker: anchor.marker, offset: anchor.offset },
+    );
+  }
+  return out.sort((left, right) => left.marker - right.marker || (left.offset ?? -1) - (right.offset ?? -1));
+}
+
 export function writeCompositionImageRecord(clientMutationId: string, record: CompositionImageRecord): void {
   try {
     const next: CompositionImageRecord = {
-      anchors: [...new Set(record.anchors)].sort((left, right) => left - right),
+      // Deduplicated by IDENTITY, not by number: two anchors can name the same
+      // marker at different offsets, and they are different references. An
+      // anchor without an offset is the "first spelling" one, so it agrees with
+      // another offsetless entry of the same number and with nothing else.
+      anchors: dedupeAnchors(record.anchors),
       tiles: record.tiles.map((tile) => ({
         id: tile.id,
         marker: tile.marker,

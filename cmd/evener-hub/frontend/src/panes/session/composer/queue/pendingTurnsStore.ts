@@ -726,6 +726,10 @@ export function updateRecoveryPendingTurn(
   expectedRecoveryRevisions?: Readonly<Record<string, number>>,
   compositionOwnerId?: string,
   composerText?: string,
+  // The composition this row owns, when `attachments` is only its sendable
+  // subset. Two lists, because "what ships" and "what the person can still
+  // see" are different questions and the row must answer both.
+  ownedAttachments?: InputAttachment[],
 ): ReturnType<typeof updateRecoveryMutation> {
   // Composer serializes edits before resending. A committed edit must release
   // that chain even when the recovery tray cannot refresh yet.
@@ -745,6 +749,7 @@ export function updateRecoveryPendingTurn(
         expectedRecoveryRevisions,
         compositionOwnerId,
         composerText,
+        ownedAttachments,
       );
       void refreshPendingTurnsProjection(ref);
       return updated;

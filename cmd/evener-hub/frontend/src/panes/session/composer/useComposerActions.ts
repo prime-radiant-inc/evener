@@ -310,8 +310,26 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     }
     let cancelled = false;
     void (async () => {
+      // The draft revision at the moment the read started. Reading a Blob is
+      // asynchronous, and the person can type while it is in flight - they are
+      // looking at an empty composer, not at a promised restore.
+      //
+      // Effect cancellation is NOT the answer: typing does not re-run this
+      // effect (the guard above has already passed, and the draft it would
+      // test is this mount's own). Restoring regardless would overwrite the
+      // text they just typed and clear its persisted copy, which is their work
+      // lost to a restore they never asked for. The revision they moved is the
+      // fact that says "a draft started"; the row stays available for explicit
+      // Edit, which is a decision they make rather than one made for them.
+      const revisionBeforeRead = draftEditRevisionRef.current;
       const excluded = await excludedRecoveryImages(chosen);
       if (cancelled) return;
+      if (
+        draftEditRevisionRef.current !== revisionBeforeRead ||
+        textRef.current.trim() !== "" ||
+        attachments.items.length > 0
+      )
+        return;
       restore(excluded);
     })();
     return () => {

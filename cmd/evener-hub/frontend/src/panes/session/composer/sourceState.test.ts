@@ -454,7 +454,7 @@ test("reusing a peer's row does not overwrite its image facts with a stale pane'
   const recovery = await storage.getRecovery(original.clientMutationId);
   if (!recovery) throw new Error("missing recovery fixture");
   // This pane's composition carries a missing reference on marker 1.
-  writeCompositionImageRecord(original.clientMutationId, { anchors: [1], tiles: [] });
+  writeCompositionImageRecord(original.clientMutationId, { anchors: [{ marker: 1 }], tiles: [] });
   const source = createTestComposerSource("root");
   const peer = new MutationOutboxIndexedDB();
   try {
@@ -525,7 +525,7 @@ test("deleting an anchor retires its tag even while the same spelling survives a
   if (!row) throw new Error("missing recovery fixture");
   // One reference with no bytes. The text spells the number twice, so a
   // number-only rule cannot tell which occurrence this describes.
-  writeCompositionImageRecord(original.clientMutationId, { anchors: [1], tiles: [] });
+  writeCompositionImageRecord(original.clientMutationId, { anchors: [{ marker: 1 }], tiles: [] });
 
   const source = createTestComposerSource("root");
   try {
@@ -1138,7 +1138,7 @@ test("deleting the last missing reference retires the row's tag", async () => {
   // The composition declared one anchor and no tiles: a reference with no
   // bytes. Seeded through the record so the test exercises the same shape the
   // writer produces.
-  writeCompositionImageRecord(original.clientMutationId, { anchors: [1], tiles: [] });
+  writeCompositionImageRecord(original.clientMutationId, { anchors: [{ marker: 1 }], tiles: [] });
 
   const source = createTestComposerSource("root");
   try {
@@ -1227,7 +1227,7 @@ test("a preserved fork whose image facts differ gets its own row, not the peer's
   const recovery = await storage.getRecovery(original.clientMutationId);
   if (!recovery) throw new Error("missing recovery fixture");
   // The row as it stands: this spelling is an anchor with no bytes.
-  writeCompositionImageRecord(original.clientMutationId, { anchors: [1], tiles: [] });
+  writeCompositionImageRecord(original.clientMutationId, { anchors: [{ marker: 1 }], tiles: [] });
 
   const source = createTestComposerSource("root");
   const peer = new MutationOutboxIndexedDB();
@@ -1263,7 +1263,7 @@ test("a preserved fork whose image facts differ gets its own row, not the peer's
     );
     if (!preserved) throw new Error("the stale composition was not preserved in its own row");
     // The fork keeps the anchor it actually held, in a row of its own.
-    expect(readCompositionImageRecord(preserved.clientMutationId)?.anchors).toEqual([1]);
+    expect(readCompositionImageRecord(preserved.clientMutationId)?.anchors.map((anchor) => anchor.marker)).toEqual([1]);
   } finally {
     source.dispose();
     peer.close();
@@ -1286,7 +1286,7 @@ test("a stale editor's preserved fork keeps its own anchors, not the peer's", as
   const recovery = await storage.getRecovery(original.clientMutationId);
   if (!recovery) throw new Error("missing recovery fixture");
   // This pane's composition carries a missing reference on 1.
-  writeCompositionImageRecord(original.clientMutationId, { anchors: [1], tiles: [] });
+  writeCompositionImageRecord(original.clientMutationId, { anchors: [{ marker: 1 }], tiles: [] });
 
   const source = createTestComposerSource("root");
   const peer = new MutationOutboxIndexedDB();
@@ -1326,7 +1326,7 @@ test("a stale editor's preserved fork keeps its own anchors, not the peer's", as
     );
     if (!preserved) throw new Error("the stale composition was not preserved");
     // The fork carries its OWN anchor, so a reopen blocks the send it should.
-    expect(readCompositionImageRecord(preserved.clientMutationId)?.anchors).toEqual([1]);
+    expect(readCompositionImageRecord(preserved.clientMutationId)?.anchors.map((anchor) => anchor.marker)).toEqual([1]);
     // And the peer's row is untouched.
     expect(await storage.getRecovery(original.clientMutationId)).toMatchObject({ composerText: peerText });
   } finally {
@@ -1501,4 +1501,170 @@ test("a released tile stays ineligible after the row is reopened", async () => {
   } finally {
     storage.close();
   }
+});
+
+// ── The six findings on 96176d3 ─────────────────────────────────────────────
+
+// Medium (sourceState.ts:1517-1519). A literal `[image 1]` in the pane's own
+// prose and a REAL missing `[image 1]` in the incoming row are two references
+// that share a glyph. The merge used to install only the number, so the tag
+// landed on the first spelling in the combined text - the prose - and deleting
+// the prose cleared the warning while the real missing reference went on to
+// send as literal text.
+test("a merged missing reference keeps its own occurrence when local prose spells the same marker", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  // The row's text carries the REAL missing reference.
+  const row = await storage.enqueueIntent({
+    targetRef: "root",
+    threadId: "thread-a",
+    method: "turn/start",
+    payload: { ref: "root", input: [{ type: "text", text: "row says [image 1] missing" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "row says [image 1] missing" }] },
+  });
+  await storage.transferToRecovery(row.clientMutationId, "rejected");
+  const saved = await storage.getRecovery(row.clientMutationId);
+  if (!saved) throw new Error("missing recovery fixture");
+  // The row's record names the occurrence it means: the only spelling in ITS
+  // text, at offset 9.
+  writeCompositionImageRecord(row.clientMutationId, { anchors: [{ marker: 1, offset: 9 }], tiles: [] });
+
+  const source = createTestComposerSource("root");
+  try {
+    // Local prose spells the same marker FIRST in the combined text.
+    source.updateText("my prose [image 1] here");
+    await source.activateRecovery(saved);
+    const merged = source.getSnapshot().text;
+    expect(merged.startsWith("my prose [image 1] here")).toBe(true);
+    // The warning is live for the row's real reference.
+    expect(source.getSnapshot().unbackedImageMarkers).toEqual([1]);
+
+    // Deleting the LOCAL PROSE spelling must not clear the warning about the
+    // row's reference - that one is still there.
+    source.updateText("my prose here\n\nrow says [image 1] missing");
+    expect(source.getSnapshot().unbackedImageMarkers).toEqual([1]);
+  } finally {
+    source.dispose();
+    storage.close();
+  }
+});
+
+// Medium (sourceState.ts:1146-1154). The person deletes a missing reference
+// and types the same spelling as prose while another image is decoding, so the
+// save is paused. Reading the ROW's stored anchors when the write finally lands
+// stamps the retired tag onto the new revision, and a reopen blocks the Send
+// they had already repaired.
+test("a save queued after the last reference was removed records an empty anchor set", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const row = await storage.enqueueIntent({
+    targetRef: "root",
+    threadId: "thread-a",
+    method: "turn/start",
+    payload: { ref: "root", input: [{ type: "text", text: "edit [image 1] please" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "edit [image 1] please" }] },
+  });
+  await storage.transferToRecovery(row.clientMutationId, "rejected");
+  const saved = await storage.getRecovery(row.clientMutationId);
+  if (!saved) throw new Error("missing recovery fixture");
+  // A NUMBER-ONLY anchor: the shape an older build wrote, which this reader
+  // still accepts. It states "marker 1 had no bytes" and cannot say which
+  // spelling. Re-derived at save time it would take the first spelling in the
+  // NEW text - the prose below - and the reopen would block a repaired Send.
+  writeCompositionImageRecord(row.clientMutationId, { anchors: [{ marker: 1 }], tiles: [] });
+
+  const source = createTestComposerSource("root");
+  try {
+    await source.activateRecovery(saved);
+    expect(source.getSnapshot().unbackedImageMarkers).toEqual([1]);
+    // The person repairs it: the REFERENCE is deleted and the same spelling is
+    // typed as ordinary prose. The live tag retires immediately, because the
+    // occurrence it named is gone.
+    source.updateText("keep [image 1] as prose");
+    expect(source.getSnapshot().unbackedImageMarkers).toEqual([]);
+    // The save that follows must record the EMPTY answer, not the row's stored
+    // tag. An empty set is the answer that says "nothing is reserved".
+    await source.queueRecoveryPersistence(row.clientMutationId, "keep [image 1] as prose", [], []);
+    await source.flushRecoveryWrites();
+    expect(readCompositionImageRecord(row.clientMutationId)?.anchors).toEqual([]);
+  } finally {
+    source.dispose();
+    storage.close();
+  }
+});
+
+// Medium (sourceState.ts:560-563) is fixed but NOT tested from the composer
+// side. The comparison in `storedImageFacts` now drops each tile's per-pane id
+// and the record's own revision, so two panes holding the same image compare
+// equal. No fixture reached that comparison: a pane that activates a row
+// renumbers any tile whose marker collides with an anchor, so the two panes'
+// compositions then genuinely differ and storage correctly mints a second row.
+// Deleting the test rather than shipping one whose premise the code cannot
+// produce; see the PR body for the named gap.
+
+// High (sourceState.ts:1398-1403). A pane already owns a tile whose reference
+// the person deleted, and a recovery row merges into it. The row's durable
+// payload must describe the REQUEST - the sendable subset - while its attachment
+// list keeps every owned tile, so a reopen whose image-facts write failed still
+// knows that tile was excluded, rather than reading it as part of the request and
+// granting it the markerless-image exemption.
+test("a merge keeps a released tile's bytes without writing them into the request", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const row = await storage.enqueueIntent({
+    targetRef: "root",
+    threadId: "thread-a",
+    method: "turn/start",
+    payload: { ref: "root", input: [{ type: "text", text: "row prose" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "row prose" }] },
+  });
+  await storage.transferToRecovery(row.clientMutationId, "rejected");
+  const saved = await storage.getRecovery(row.clientMutationId);
+  if (!saved) throw new Error("missing recovery fixture");
+
+  // An OWNER row exists so the merge has somewhere to write.
+  const owner = await storage.enqueueIntent({
+    targetRef: "root",
+    threadId: "thread-a",
+    method: "turn/queue",
+    payload: { ref: "root", input: [{ type: "text", text: "mine" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: "mine" }] },
+  });
+  await storage.transferToRecovery(owner.clientMutationId, "editing");
+  const ownerRow = await storage.getRecovery(owner.clientMutationId);
+  if (!ownerRow) throw new Error("missing owner fixture");
+
+  const source = createTestComposerSource("root");
+  try {
+    await source.activateRecovery(ownerRow);
+    // A tile this composition owns, whose reference the person deleted.
+    source.attachments.setState({
+      items: [{ id: "released", marker: 1, name: "kept.png", mediaType: "image/png", data: "KEPT", pending: false }],
+    });
+    source.updateText("mine");
+    // The facts write fails the way a full quota makes it fail.
+    const setItem = Storage.prototype.setItem;
+    vi.spyOn(Storage.prototype, "setItem").mockImplementation(function (this: Storage, key: string, value: string) {
+      if (key.includes("composition-image-record")) throw new Error("quota exceeded");
+      return setItem.call(this, key, value);
+    });
+    // Merging the row runs the durable write at issue.
+    await source.activateRecovery(saved).catch(() => false);
+  } finally {
+    source.dispose();
+  }
+
+  const durable = await storage.getRecovery(owner.clientMutationId);
+  if (!durable) throw new Error("owner row vanished");
+  // The row OWNS the released tile...
+  expect(durable.attachments.map((attachment) => attachment.marker)).toContain(1);
+  // ...and its request does NOT. That gap is the exclusion, and it is what stops
+  // a reopen from reading those bytes as the request's own image.
+  const carried = (durable.payload.input as InputItem[]).filter((item) => item.type === "image").length;
+  expect(carried).toBe(0);
+  storage.close();
 });

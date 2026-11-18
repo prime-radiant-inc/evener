@@ -1934,6 +1934,17 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
     expectedCompositionRevision?: number,
     expectedRecoveryRevisions?: Readonly<Record<string, number>>,
     compositionOwnerId?: string,
+    // The composition this row OWNS, when it is not what the request carries.
+    //
+    // `input` is what a Send would put on the wire - the sendable selection.
+    // This is every tile the person can still see, the released ones included,
+    // and the row keeps their bytes so a reopen restores them. Two lists,
+    // because they answer two different questions and the row has to survive
+    // whichever one the next reader asks.
+    //
+    // Absent means "the request is the whole composition", which is what every
+    // caller meant before the distinction existed.
+    ownedAttachments?: MutationAttachment[],
   ): Promise<MutationRecoveryRecord | undefined> {
     const outcome = await this.#write([RECOVERY_STORE, OUTBOX_STORE], "updateRecoveryInput", async (transaction) => {
       const store = transaction.objectStore(RECOVERY_STORE);
@@ -1973,7 +1984,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
           record.optimisticDisplay && typeof record.optimisticDisplay === "object"
             ? { ...record.optimisticDisplay, input }
             : { method: record.method, input },
-        attachments: attachments ?? record.attachments,
+        attachments: ownedAttachments ?? attachments ?? record.attachments,
         composerText: composerText ?? record.composerText,
         localDraftRevisionId: localDraftRevisionId ?? record.localDraftRevisionId,
         // Locations belong to composerText. A full replacement can omit them
