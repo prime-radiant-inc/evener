@@ -1150,6 +1150,11 @@ test("a popup wider than the visible viewport is capped to it so its labels wrap
     // cap keeps, and narrow enough that min-width no longer governs.
     expect(popup.style.maxBlockSize).toBe("784px");
     expect(popup.style.maxInlineSize).toBe("144px");
+    // The cap only binds if the stylesheet's 180px floor yields to it: max-width
+    // cannot beat min-width in CSS, so a popup left at 180 would still be wider
+    // than the 160px the reader can see. Both halves are asserted because either
+    // one alone leaves the popup off the right edge.
+    expect(popup.style.minWidth).toBe("0px"); // jsdom normalises the unit
     // Capping alone would clip the label: `.item` is nowrap, so it runs past
     // the 144px scrollport and reading it needs a horizontal scroll. The row
     // has to wrap instead, which is what makes the cap worth having. jsdom does
@@ -1341,6 +1346,82 @@ test("a fractional width cap still wraps the labels it forces to the break", asy
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     if (originalInnerWidth) Object.defineProperty(window, "innerWidth", originalInnerWidth);
+  }
+});
+
+// The case a cap-flip guard misses: the popup is ALREADY capped and
+// already wrapping, and the pane narrows once more. Another line wraps above
+// the focused row - which pushes it below the scrollport - while the popup's
+// box height stays exactly what it was and `capped` stays true. Only the width
+// changing says anything happened.
+test("a second narrowing still keeps the focused row in view when the popup is already capped", async () => {
+  const user = userEvent.setup();
+  const originalInnerWidth = Object.getOwnPropertyDescriptor(window, "innerWidth");
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 800 });
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  const fakeViewport = new EventTarget() as EventTarget & {
+    width: number;
+    height: number;
+    offsetLeft: number;
+    offsetTop: number;
+  };
+  fakeViewport.width = 260;
+  fakeViewport.height = 800;
+  fakeViewport.offsetLeft = 0;
+  fakeViewport.offsetTop = 0;
+  vi.stubGlobal("visualViewport", fakeViewport);
+  // Capped from the start (244 <= 260 - 16). The narrowing below takes it to
+  // 204, still capped, still 120px tall.
+  let popupWidth = 244;
+  // The row grows when wrapping adds a line, so the narrowing below moves
+  // Delete's offset inside the popup without changing the popup's box.
+  let rowHeight = 44;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(20, 100, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, popupWidth, 120);
+    return box(0, 0, 0, 0);
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "UL" ? popupWidth : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "UL") return 120;
+    return this.tagName === "LI" ? rowHeight : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName !== "LI" || !this.parentElement) return 0;
+    return Array.prototype.indexOf.call(this.parentElement.children, this) * rowHeight;
+  });
+  const { flush } = captureFrames();
+  try {
+    render(<Menu trigger="Actions" items={items()} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    const popup = screen.getByRole("menu");
+    expect(popup.className).toContain("popupNarrow");
+
+    const last = screen.getByRole("menuitem", { name: "Delete" });
+    last.focus();
+    expect(document.activeElement).toBe(last);
+    expect(popup.scrollTop).toBe(0);
+
+    // Narrowed again: another line wraps above Delete, so its bottom moves
+    // from 132 to 176. The popup is no taller, and it was already wrapping.
+    rowHeight = 60;
+    fakeViewport.width = 220;
+    popupWidth = 204;
+    fakeViewport.dispatchEvent(new Event("resize"));
+    flush();
+
+    expect(popup.className).toContain("popupNarrow");
+    // Delete now spans 120..180; a 120px scrollport from 0 ends at 120.
+    expect(popup.scrollTop).toBe(60);
+    expect(document.activeElement).toBe(last);
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerWidth) Object.defineProperty(window, "innerWidth", originalInnerWidth);
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
   }
 });
 
