@@ -384,21 +384,34 @@ function isAnswerCarrier(item: ItemModel): boolean {
 //     tries to reason about the sibling set keeps admitting a case where the
 //     line lands under the wrong question. One call is the only shape where
 //     the mapping is provable.
+//   - this call asks exactly ONE question. Two questions in one call may
+//     share a header, and the recap's header-keyed parse keeps only the last
+//     line, so a shared header inside a single call repeats the same defect
+//     the multi-call rule refuses.
 //   - admission left no question unnamed (resolvedAskLegacyCount). Those
 //     questions' headers never reach the wire, so one of them may be the
 //     header an answer line names and no named call can account for it.
-//   - the questions the call RECORDED, when the page loaded them, are the
-//     same ones its arguments carry - headers, prompts, and what each option
-//     means. The transcript rows draw their question from the arguments, so
-//     where the two disagree a recap would print an answer beneath a question
-//     it does not answer; that disagreement is a product decision,
-//     deliberately not made here.
+//   - the questions the call RECORDED are the same ones its arguments carry -
+//     headers (with an empty header and an omitted one read alike), prompts,
+//     what each option means, and the if-unanswered fallback. The transcript
+//     rows draw their question from the arguments, so where the two disagree a
+//     recap would print an answer beneath a question it does not answer; that
+//     disagreement is a product decision, deliberately not made here.
+//   - no SIBLING question shares this call's header. A sibling outside the
+//     loaded page is invisible to the heuristic below, so it cannot be asked
+//     to make this call safe - only the stamp can, and it cannot name which
+//     call a shared header belonged to.
 //
 // False means "use the behavior this client had before the field existed",
 // which is the heuristic in findAnswerReply and its shape fallback. That is
 // why an unloaded recorded state is not a refusal: nothing can disagree yet,
 // and the heuristic's own header comparison still stands in the way of a
 // wrong pairing.
+//
+// Each clause can only make a recap DISAPPEAR, never invent one: the direction
+// is safe by construction. A recap that does not appear is a small loss; a
+// recap printed against the wrong question is the defect #6323 exists to
+// remove, so where the two trades conflict, this rule declines.
 function resolvesThisCallExactly(items: readonly ItemModel[], item: ItemModel, reply: ItemModel): boolean {
   const calls = reply.resolvedAskCalls;
   if (calls === undefined || item.callId === undefined) return false;
@@ -406,39 +419,30 @@ function resolvesThisCallExactly(items: readonly ItemModel[], item: ItemModel, r
   if (reply.resolvedAskLegacyCount !== undefined && reply.resolvedAskLegacyCount > 0) return false;
   const [only] = calls;
   if (only === undefined || only.turnId !== item.turnId || only.callId !== item.callId) return false;
-  const recorded = recordedAskQuestions(items, item);
-  if (recorded === undefined) return true;
   const sent = parseAskUserQuestions(item);
-  if (sent === undefined) return true;
-  return sameAskQuestions(recorded, sent);
-}
-
-// stampedReplyRulesOutCall answers whether admission's stamp is EVIDENCE
-// AGAINST attributing this reply to this call, as opposed to merely failing to
-// prove it. The two are not the same, and the difference decides whether the
-// heuristic below may still speak:
-//
-//   - the stamp omits this call: admission says the reply answered other
-//     calls, so handing this one to the heuristic would re-pair the reply with
-//     a call admission did not name. Reachable whenever the named call is not
-//     on the loaded page. Evidence against.
-//   - the stamp names this call but the questions it recorded differ from the
-//     ones the row displays: the reply answers a question this row does not
-//     show, so a recap would print it beneath the wrong prompt. Evidence
-//     against.
-//   - the stamp names this call and the two question sets agree, but claims
-//     several calls: the stamp simply cannot say which line belongs to which.
-//     That is not evidence against this call - the heuristic may still prove
-//     the line by a header no sibling shares, and does. Falls back.
-function stampedReplyRulesOutCall(items: readonly ItemModel[], item: ItemModel, reply: ItemModel): boolean {
-  if (reply.resolvedAskCalls === undefined) return false;
-  if (item.callId === undefined) return true;
-  if (!reply.resolvedAskCalls.some((call) => call.turnId === item.turnId && call.callId === item.callId)) return true;
+  if (sent === undefined || sent.length !== 1) return false;
+  // No recorded state on the loaded page means agreement cannot be shown at
+  // all, and a clause that cannot be shown is a clause that fails: the whole
+  // point is to decline where the two sources are not both visible.
   const recorded = recordedAskQuestions(items, item);
   if (recorded === undefined) return false;
-  const sent = parseAskUserQuestions(item);
-  if (sent === undefined) return false;
-  return !sameAskQuestions(recorded, sent);
+  if (!sameAskQuestions(recorded, sent)) return false;
+  const ownHeader = sent[0]?.header;
+  for (const sibling of items) {
+    if (sibling === item || sibling.turnId !== item.turnId || !isAckedAskCall(sibling)) continue;
+    for (const question of parseAskUserQuestions(sibling) ?? []) {
+      if (question.header === ownHeader) return false;
+    }
+  }
+  return true;
+}
+
+// stampedReplyNamesCall answers the one question that decides whether a
+// stamped reply ends this call's search or merely is not its answer: does the
+// stamp name this call?
+function stampedReplyNamesCall(item: ItemModel, reply: ItemModel): boolean {
+  if (reply.resolvedAskCalls === undefined || item.callId === undefined) return false;
+  return reply.resolvedAskCalls.some((call) => call.turnId === item.turnId && call.callId === item.callId);
 }
 
 // recordedAskQuestions reads the questions a call ACTUALLY asked, from the
@@ -497,16 +501,25 @@ function askQuestionsFromRecord(item: Pick<ItemModel, "raw">): AskUserQuestion[]
 
 // sameAskQuestions compares the two question sets a recap must reconcile: the
 // header each answer is keyed by, the text the row displays, AND what each
-// option means. A hook may keep the header and the question while rewriting
-// an option's label or detail, so neither headers alone nor the prompt can
-// stand for "the row shows what the reply answers".
+// option means, and the fallback it promises when unanswered. A hook may keep
+// the header and the question while rewriting an option's label, its detail,
+// or what happens if nobody answers, so none of those alone can stand for "the
+// row shows what the reply answers".
 function sameAskQuestions(recorded: readonly AskUserQuestion[], sent: readonly AskUserQuestion[]): boolean {
   if (recorded.length !== sent.length) return false;
   for (let index = 0; index < recorded.length; index += 1) {
     const a = recorded[index];
     const b = sent[index];
     if (a === undefined || b === undefined) return false;
-    if (a.header !== b.header || a.question !== b.question) return false;
+    // An omitted header and an explicitly empty one are the same question to
+    // the user, but the two parsers default them differently: the recorded
+    // state's parser substitutes "Question N" while the arguments parser keeps
+    // "". Reading both as the same value keeps an unchanged batch question
+    // from looking like a rewrite, which would cost an unambiguous prose
+    // answer its recap.
+    if (normalizeHeader(a.header, index) !== normalizeHeader(b.header, index)) return false;
+    if (a.question !== b.question) return false;
+    if ((a.ifUnanswered ?? "") !== (b.ifUnanswered ?? "")) return false;
     if (a.options.length !== b.options.length) return false;
     for (let option = 0; option < a.options.length; option += 1) {
       const left = a.options[option];
@@ -516,6 +529,12 @@ function sameAskQuestions(recorded: readonly AskUserQuestion[], sent: readonly A
     }
   }
   return true;
+}
+
+// normalizeHeader gives an empty header the same placeholder the parsers'
+// omitted-header form yields, so "no header" reads one way in both sets.
+function normalizeHeader(header: string, index: number): string {
+  return header === "" ? `Question ${index + 1}` : header;
 }
 
 function findAnswerReply(
@@ -528,24 +547,25 @@ function findAnswerReply(
     if (candidate.answerToTurnIds !== undefined) {
       if (!isAnswerCarrier(candidate)) continue;
       if (!candidate.answerToTurnIds.includes(item.turnId)) return shapeMatch;
-      // INVARIANT (#6323): the stamp is consumed ONLY where its recap is
-      // provable, which means a stamp naming exactly one call. A composed
-      // reply's lines are keyed by header, so a stamp naming several calls
-      // leaves one line standing for several questions and no rule can say
-      // which - that shape is refused and takes the pre-stamp path below.
-      // Within the single-call shape the remaining conditions make the line
-      // and the question a bijection: no question unnamed, and the recorded
-      // questions equal the ones the row displays. Every other case FALLS
-      // BACK to this client's behavior before the field existed, which is why
-      // the narrowed rule loses no recap it cannot prove.
-      if (resolvesThisCallExactly(items, item, candidate)) return candidate;
-      // A stamped reply is authoritative about which calls it answered. When
-      // it rules this call out - or cannot attribute its own recap to it -
-      // stop considering it rather than letting the header heuristic adopt
-      // it, which would re-pair the reply with a call admission did not name.
-      if (stampedReplyRulesOutCall(items, item, candidate)) continue;
-      if (linkedReplyAnswersThisCall(items, item, candidate)) return candidate;
-      continue;
+      // A stamped reply is decided ENTIRELY by the stamp (#6323), and the
+      // stamp's production use here is REFUSAL: the read that decides a recap
+      // must not appear.
+      //
+      // A stamp that omits this call says admission answered others, so this
+      // reply is not this call's answer - keep looking, and never let the
+      // header heuristic adopt it, which would re-pair the reply with a call
+      // admission never named (reachable whenever the named call is not on the
+      // loaded page). A stamp that NAMES this call but fails any clause of the
+      // conjunction is declined outright: no recap, and no later message may
+      // claim this call's answer instead.
+      // No stamp at all: this client's pre-existing matching decides, exactly
+      // as it did before the field existed.
+      if (candidate.resolvedAskCalls === undefined) {
+        if (linkedReplyAnswersThisCall(items, item, candidate)) return candidate;
+        continue;
+      }
+      if (!stampedReplyNamesCall(item, candidate)) continue;
+      return resolvesThisCallExactly(items, item, candidate) ? candidate : undefined;
     }
     if (shapeMatch === undefined && candidate.type === "userMessage" && candidate.text.startsWith("[answers]")) {
       shapeMatch = candidate;

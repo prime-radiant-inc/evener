@@ -671,13 +671,52 @@ test("a free-prose recap carries only the reply's first line, with an ellipsis f
 });
 
 // Admission's per-call evidence (observation.resolvedAskCalls) names the exact
-// ask_user calls an answer consumed, so a reply beside same-header siblings is
-// attributed by (turnId, callId) instead of by guessed header (#6323).
-test("a call-stamped composed answer naming ONE of two same-header calls recaps only it", () => {
-  // Two calls ask the same header, which the header heuristic must refuse for
-  // both (one line cannot say which it answered). Admission's stamp says this
-  // reply answered the first, and the second call's recorded questions agree
-  // with its arguments, so neither source disagrees about what was asked.
+// ask_user calls an answer consumed (#6323). Its production use here is
+// REFUSAL: the read that decides a recap must not appear. These cases pin the
+// conjunction's two directions - the narrow shape it allows, and each clause
+// that makes it decline.
+test("a call-stamped completed measurement recaps where every clause holds", () => {
+  // One call, one question, no unnamed questions, recorded state equal to the
+  // arguments, and no sibling sharing the header. This is the only shape the
+  // conjunction allows, and it must still recap or the rule would be silence
+  // rather than a narrower match.
+  const only = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_1",
+    callId: "call_1",
+    toolName: "ask_user",
+    status: "completed",
+    raw: {
+      version: 1,
+      questions: [
+        {
+          header: "Deploy?",
+          question: "Should I deploy this to production now?",
+          options: [
+            { label: "Yes", detail: "Ship it", recommended: true },
+            { label: "No", detail: "Wait" },
+          ],
+        },
+      ],
+    },
+  });
+  const reply = userMessage({
+    text: '[answers]\n1. [Deploy?] → "Yes"',
+    turnId: "turn_2",
+    answerToTurnIds: ["turn_1"],
+    resolvedAskCalls: [{ turnId: "turn_1", callId: "call_1" }],
+  });
+  const model = turnsModel([only], [reply]);
+  expect(answeredAskUserReply(model, only)).toBe(reply);
+  expect(answeredAskUserSuffix(model, only)).toBeDefined();
+});
+
+test("a stamp naming one of two same-header calls recaps NEITHER", () => {
+  // The stamp proves admission answered the first call, but the second asks
+  // the same header and a composed line is keyed by header: nothing can say
+  // the line is not the sibling's answer, and the sibling may be outside the
+  // loaded page. Declining both is the conservative reading.
   const first = item({
     argumentsJSON: askUserArgs(ONE_QUESTION),
     turnId: "turn_1",
@@ -701,9 +740,8 @@ test("a call-stamped composed answer naming ONE of two same-header calls recaps 
     resolvedAskCalls: [{ turnId: "turn_1", callId: "call_1" }],
   });
   const model = turnsModel([first, second], [reply]);
-  expect(answeredAskUserReply(model, first)).toBe(reply);
+  expect(answeredAskUserSuffix(model, first)).toBeUndefined();
   expect(answeredAskUserSuffix(model, second)).toBeUndefined();
-  expect(answeredAskUserReply(model, second)).toBeUndefined();
 });
 
 test("a stamp whose recorded question disagrees with the arguments is not consumed", () => {
@@ -797,13 +835,11 @@ test("a stamp naming two same-header calls recaps neither, because one line answ
   expect(answeredAskUserSuffix(model, second)).toBeUndefined();
 });
 
-test("a multi-call stamp still recaps where the pre-stamp path can prove it", () => {
-  // The single-call narrowing must FALL BACK, not silently produce an empty
-  // recap. Two calls with distinct headers and a reply answering only the
-  // first: the stamp claims both, so the stamp path is closed, but the
-  // pre-stamp heuristic proves the attribution on its own - the reply names a
-  // header this call asks and no sibling asks. A fallback that returned
-  // nothing would pass the same-header tests and quietly lose this recap.
+test("a multi-call stamp recaps neither call, even with distinct headers", () => {
+  // A stamp claiming two calls cannot say which composed line belongs to which
+  // when the lines are keyed by header. The conjunction declines both rather
+  // than handing either to the heuristic, whose view of the sibling set stops
+  // at the loaded page.
   const first = item({
     argumentsJSON: askUserArgs(ONE_QUESTION),
     turnId: "turn_1",
@@ -832,9 +868,7 @@ test("a multi-call stamp still recaps where the pre-stamp path can prove it", ()
     ],
   });
   const model = turnsModel([first, second], [reply]);
-  expect(answeredAskUserReply(model, first)).toBe(reply);
-  // Defined, not empty: the recap exists without asserting on its wording.
-  expect(answeredAskUserSuffix(model, first)).toBeDefined();
+  expect(answeredAskUserSuffix(model, first)).toBeUndefined();
   expect(answeredAskUserSuffix(model, second)).toBeUndefined();
 });
 
@@ -860,6 +894,84 @@ test("a stamp naming only an unloaded call does not let a loaded sibling claim t
   const model = turnsModel([loaded], [reply]);
   expect(answeredAskUserSuffix(model, loaded)).toBeUndefined();
   expect(answeredAskUserReply(model, loaded)).toBeUndefined();
+});
+
+test("a stamped call holding two questions that share a header recaps neither line", () => {
+  // A single call can post two questions with the same header. The recap is
+  // keyed by header, so both lines collapse to the last one and one of the two
+  // answers would print under the other's prompt. The second question here
+  // shares the first's header, so the single-question clause declines.
+  const twoSameHeader = [
+    { header: "Deploy?", question: "Should I deploy now?", options: [{ label: "Yes", detail: "ok" }] },
+    { header: "Deploy?", question: "Should I deploy the worker too?", options: [{ label: "Yes", detail: "ok" }] },
+  ];
+  const ask = item({
+    argumentsJSON: askUserArgs(twoSameHeader),
+    turnId: "turn_1",
+    id: "ask_1",
+    callId: "call_1",
+    toolName: "ask_user",
+    status: "completed",
+    raw: { version: 1, questions: twoSameHeader },
+  });
+  const reply = userMessage({
+    text: '[answers]\n1. [Deploy?] → "Yes"\n2. [Deploy?] → "No"',
+    turnId: "turn_2",
+    answerToTurnIds: ["turn_1"],
+    resolvedAskCalls: [{ turnId: "turn_1", callId: "call_1" }],
+  });
+  const model = turnsModel([ask], [reply]);
+  expect(answeredAskUserSuffix(model, ask)).toBeUndefined();
+  expect(answeredAskUserReply(model, ask)).toBeUndefined();
+});
+
+test("a stamp whose reply also consumed unnamed legacy questions is declined", () => {
+  // Admission also resolved a question it could not name, restored from a
+  // record that predates call ids. That question's header never reaches the
+  // wire, so it may be exactly the header this reply's line names - and
+  // nothing on the page can rule it out.
+  const ask = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_1",
+    callId: "call_1",
+    toolName: "ask_user",
+    status: "completed",
+    raw: { version: 1, questions: ONE_QUESTION },
+  });
+  const reply = userMessage({
+    text: '[answers]\n1. [Deploy?] → "Yes"',
+    turnId: "turn_2",
+    answerToTurnIds: ["turn_1"],
+    resolvedAskCalls: [{ turnId: "turn_1", callId: "call_1" }],
+    resolvedAskLegacyCount: 1,
+  });
+  const model = turnsModel([ask], [reply]);
+  expect(answeredAskUserSuffix(model, ask)).toBeUndefined();
+  expect(answeredAskUserReply(model, ask)).toBeUndefined();
+});
+
+test("a stamped reply whose call has no loaded recorded state is declined", () => {
+  // The conjunction's agreement clause cannot be shown without the recorded
+  // state, and a clause that cannot be shown fails. This is the same page
+  // split that made the completeness rule necessary on #6702.
+  const ask = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_1",
+    callId: "call_1",
+    toolName: "ask_user",
+    status: "completed",
+  });
+  const reply = userMessage({
+    text: '[answers]\n1. [Deploy?] → "Yes"',
+    turnId: "turn_2",
+    answerToTurnIds: ["turn_1"],
+    resolvedAskCalls: [{ turnId: "turn_1", callId: "call_1" }],
+  });
+  const model = turnsModel([ask], [reply]);
+  expect(answeredAskUserSuffix(model, ask)).toBeUndefined();
+  expect(answeredAskUserReply(model, ask)).toBeUndefined();
 });
 
 test("a hook that rewrites an option's meaning is not consumed as agreement", () => {

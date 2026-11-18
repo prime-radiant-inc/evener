@@ -106,13 +106,19 @@ An answer's observation carries that capture to clients as
 `resolvedAskCalls:[{turnId,callId}]`, beside the turn-granular
 `answerToTurnIds`. The link alone cannot say which of several calls in one
 execution a reply answered, so a client matching a settled ask to its answer
-reads the calls and compares the ask row's own `(turnId, callId)`. A client
-takes that match only where the call's recorded questions and its arguments
-agree: where a pre-tool hook rewrote a question, the row and the recap would
-disagree about what was asked, and the reply is left unattributed until that
-disagreement gets a product decision. The turn link and the composed
-`[answers]` text shape remain the fallback for unfenced whole-set answers and
-for records stamped before the call list existed.
+reads the calls and compares the ask row's own `(turnId, callId)`.
+
+A client reads that stamp to REFUSE, not to construct: where a reply carries
+one, it allows a recap only when the call has exactly one question, it is the
+only call named, admission left no question unnamed, the call's recorded
+questions equal its arguments, and no sibling question shares its header. Any
+other stamped reply shows no recap at all. The direction is deliberate - a
+recap that does not appear loses little, while a recap printed against the
+wrong question is the defect this evidence exists to remove. Replies carrying
+no stamp keep the earlier matching, including the composed `[answers]` shape.
+Where a pre-tool hook rewrote a question, the row and the recap would disagree
+about what was asked, so the stamp is refused until that gets a product
+decision.
 
 A ref-addressed `thread/read` carrying the expected pair, `offset` and `limit`
 returns `pendingAskPage:{composites,total,nextOffset,calllessCount}`. Any page
