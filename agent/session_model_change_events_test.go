@@ -119,6 +119,73 @@ func TestSetModel_ModelChangedEventCarriesNewDefaultEffort(t *testing.T) {
 
 // TestSetModel_FailedSwitch_DoesNotEmitModelChangedEvent verifies that a
 // rejected SetModel call (unknown instance) emits no EventModelChanged.
+//
+// TestSetModel_ReselectAfterDefaultTierRefreshStillEmitsModelChangedEvent pins
+// the reselect path against a roster refresh that moves only the default
+// reasoning tier. A Codex listing can keep a model's id, its effort ladder and
+// its context window while changing the effort the model says it runs at when
+// nothing is asked. Reselecting installs that refreshed profile, and the switch
+// event is the only frame that carries the default tier, so a same-model check
+// that ignored it left every client displaying the tier the model no longer
+// defaults to.
+func TestSetModel_ReselectAfterDefaultTierRefreshStillEmitsModelChangedEvent(t *testing.T) {
+	instances := map[string]registry.Provider{"work": {
+		Base: "openai", APIKey: "test",
+		Models: map[string]registry.Model{"roster-model": {Caps: registry.Caps{
+			Reasoning:     new(true),
+			EffortValues:  []string{"low", "medium", "high"},
+			ContextWindow: new(200000),
+		}}},
+	}}
+	client := registryClient(t, instances)
+	// The roster before the refresh: the tier the model states it runs at.
+	client.Registry().ApplyLive("work", []registry.Model{{ID: "roster-model", Caps: registry.Caps{
+		Reasoning:     new(true),
+		EffortValues:  []string{"low", "medium", "high"},
+		ContextWindow: new(200000),
+		DefaultEffort: new("low"),
+	}}})
+	sess := newSession(t,
+		withClient(client),
+		withProfile(resolveClientProfile(t, client, "work/roster-model")),
+		withConfig(SessionConfig{testOnly: testConfig{skipGitSnapshot: true}}),
+	)
+
+	if got := profileDefaultReasoningEffort(sess.currentProfile()); got != "low" {
+		t.Fatalf("setup: session launched on default tier %q, want %q", got, "low")
+	}
+	// The roster refresh a Codex listing performs: same id, same ladder, same
+	// window, only the tier an unset session runs at has moved.
+	client.Registry().ApplyLive("work", []registry.Model{{ID: "roster-model", Caps: registry.Caps{
+		Reasoning:     new(true),
+		EffortValues:  []string{"low", "medium", "high"},
+		ContextWindow: new(200000),
+		DefaultEffort: new("high"),
+	}}})
+	if err := sess.SetModel("work/roster-model"); err != nil {
+		t.Fatalf("SetModel: %v", err)
+	}
+
+	var found *events.ModelChangedData
+drain:
+	for {
+		select {
+		case ev := <-sess.Events():
+			if d, ok := ev.Data.(events.ModelChangedData); ok {
+				found = &d
+			}
+		default:
+			break drain
+		}
+	}
+	if found == nil {
+		t.Fatal("no EventModelChanged emitted for a reselect that changed the model's default reasoning tier")
+	}
+	if found.DefaultReasoningEffort != "high" {
+		t.Fatalf("DefaultReasoningEffort = %q, want %q: the refreshed tier", found.DefaultReasoningEffort, "high")
+	}
+}
+
 func TestSetModel_FailedSwitch_DoesNotEmitModelChangedEvent(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t,

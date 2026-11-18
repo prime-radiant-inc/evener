@@ -106,7 +106,7 @@ a request that carries no model-control authority.
    ```javascript
    const after = await rpc("thread/read", { ref: "local:<SID>" });
    ({
-     live: after.thread.evener.modelProvider,
+     live: after.thread.modelProvider,
      activeModel: after.thread.evener.modelControl.active.model,
      desired: after.thread.evener.modelControl.desired,
    })

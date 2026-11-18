@@ -2364,10 +2364,17 @@ func (s *Session) applyModelSwitchControl(model, primedInstance string, primedLi
 	commitPrev := s.profile
 	prevWindow, prevWindowSource := budgetingWindow(commitPrev)
 	nextWindow, nextWindowSource := budgetingWindow(nextProfile)
+	// "Same model" means the published metadata is genuinely unchanged, so the
+	// switch event below may stay quiet. The default reasoning tier is part of
+	// that metadata: a Codex roster refresh can keep an id, its ladder and its
+	// window while moving the default tier, and reselecting then installs a
+	// profile whose clients-visible default differs. Omitting it here
+	// suppressed the only event carrying the new default.
 	sameModel := commitPrev.ID() == nextProfile.ID() &&
 		commitPrev.Model() == nextProfile.Model() &&
 		commitPrev.SupportsReasoning() == nextProfile.SupportsReasoning() &&
 		slices.Equal(commitPrev.ReasoningEffortLevels(), nextProfile.ReasoningEffortLevels()) &&
+		profileDefaultReasoningEffort(commitPrev) == profileDefaultReasoningEffort(nextProfile) &&
 		prevWindow == nextWindow && prevWindowSource == nextWindowSource
 	if commitPrev.CrossProviderRef(model) {
 		nextProfile = nextProfile.WithCommunicateOverridesFrom(commitPrev)

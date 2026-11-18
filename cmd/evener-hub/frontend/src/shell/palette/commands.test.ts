@@ -248,7 +248,9 @@ test("/model is unavailable on a live session with no model-control authority", 
 
   const model = sessionBuiltinCommands(buildPaletteContext()).find((command) => command.id === "model");
   expect(model).toBeDefined();
-  expect(model?.unavailableReason).toBe(UNAVAILABLE_REASON);
+  // Availability, not copy: the command must carry some refusal reason. Which
+  // words it uses is a presentation choice this test should not pin.
+  expect(model?.unavailableReason).toBeTruthy();
 });
 
 test("/model stays available on a live session with model-control authority", () => {

@@ -17,7 +17,6 @@ import {
   itemIsIdentityOnly,
   itemTextPresence,
   type ModelControlInput,
-  type ModelControlSnapshot,
   mergeOlderItemPage,
   mergeSavedViewPage,
   mergeTranscriptItemVersioned,
@@ -1236,11 +1235,6 @@ export class TranscriptRepository {
       this.#reclaimBackgroundModel();
     }
     return { accepted: true, replacementReadRequired: reduced.replacementReadRequired };
-  }
-
-  /** Admit a model-control response through the repository that owns this transcript. */
-  acceptModelControlResponse(snapshot: ModelControlSnapshot, context: { lifetime: number }): boolean {
-    return this.acceptModelControlTransition({ kind: "snapshot", source: "response", snapshot }, context).accepted;
   }
 
   /** Accept a notification only when the captured authority still matches this repository. */
