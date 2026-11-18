@@ -83,11 +83,13 @@ func TestScanEventsWithDiagnostics_CorruptJournalIsClassified(t *testing.T) {
 	}
 }
 
-// TestScanEventsWithDiagnostics_LineTooLongIsCorruption: an over-long line is
-// damage to the bytes, not an access failure, and the scan reports it as such.
-// The two errors stay distinguishable at the same time: ErrLineTooLong still
-// matches, because callers documented against it depend on that.
-func TestScanEventsWithDiagnostics_LineTooLongIsCorruption(t *testing.T) {
+// TestScanEventsWithDiagnostics_LineTooLongIsNotCorruption: a line over a
+// CALLER's MaxLineBytes is not observed journal damage. The cap is the bound
+// the caller asked for, and the same bytes decode under the default scan, so
+// reporting Corrupt would describe damage nobody saw and would mark every
+// journal with one long legitimate record as corrupt for that caller alone.
+// ErrLineTooLong carries the over-cap condition, and the result stays empty.
+func TestScanEventsWithDiagnostics_LineTooLongIsNotCorruption(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	path := filepath.Join(dir, "jobs.jsonl")
@@ -95,12 +97,23 @@ func TestScanEventsWithDiagnostics_LineTooLongIsCorruption(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, diagnostics, err := ScanEventsWithDiagnostics(context.Background(), path, ScanLimits{MaxLineBytes: 128})
+	// The same bytes reach the decoder when no caller cap binds: this is the
+	// contrast that makes Corrupt wrong. The line is not JSON, so the default
+	// scan fails at the decode — but it never calls the line over-cap.
+	if _, _, defaultErr := ScanEventsWithDiagnostics(context.Background(), path, ScanLimits{}); errors.Is(defaultErr, ErrLineTooLong) {
+		t.Fatalf("default scan error = %v, want the line to reach the decoder rather than be called over-cap", defaultErr)
+	}
+
+	events, diagnostics, err := ScanEventsWithDiagnostics(context.Background(), path, ScanLimits{MaxLineBytes: 128})
 	if !errors.Is(err, ErrLineTooLong) {
 		t.Fatalf("err = %v, want ErrLineTooLong", err)
 	}
-	if !diagnostics.Corrupt {
-		t.Fatal("ReadDiagnostics.Corrupt = false for an over-long line: that is damage to the bytes")
+	if diagnostics.Corrupt {
+		t.Fatal("ReadDiagnostics.Corrupt = true for a line over the caller's MaxLineBytes: " +
+			"the cap is the caller's bound, not evidence that the bytes are damaged")
+	}
+	if len(events) != 0 {
+		t.Fatalf("got %d events, want none: an over-cap line has no safe partial result", len(events))
 	}
 }
 
@@ -123,7 +136,7 @@ func TestScanEventsWithDiagnostics_ReportsTornTail(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a torn trailing append must stay tolerated: %v", err)
 	}
-	if _, err := FoldChecked(events); err != nil {
+	if _, err := FoldCheckedOrdered(events); err != nil {
 		t.Fatalf("the events before a torn tail must still fold: %v", err)
 	}
 	if !diagnostics.TornTail {
@@ -211,8 +224,8 @@ func TestScanEventsAndFoldChecked_ReportOrphanFinish(t *testing.T) {
 	if err != nil {
 		t.Fatalf("a complete but incoherent journal is a fold problem, not a read problem: %v", err)
 	}
-	if _, err := FoldChecked(events); !errors.Is(err, ErrIncompleteLifecycle) {
-		t.Fatalf("FoldChecked error = %v, want ErrIncompleteLifecycle for a finish with no start", err)
+	if _, err := FoldCheckedOrdered(events); !errors.Is(err, ErrIncompleteLifecycle) {
+		t.Fatalf("FoldCheckedOrdered error = %v, want ErrIncompleteLifecycle for a finish with no start", err)
 	}
 }
 
@@ -229,12 +242,12 @@ func TestFoldChecked_AcceptsWholeLifecycle(t *testing.T) {
 		{Kind: EventJobFinished, Seq: 2, TS: started, JobID: jobID, Status: StatusCompleted, EndedAt: &started, TerminalGen: "gen_A"},
 	}
 
-	recs, err := FoldChecked(events)
+	recs, err := FoldCheckedOrdered(events)
 	if err != nil {
-		t.Fatalf("FoldChecked on a whole lifecycle: %v", err)
+		t.Fatalf("FoldCheckedOrdered on a whole lifecycle: %v", err)
 	}
-	if rec := recs[jobID]; rec == nil || rec.Status != StatusCompleted {
-		t.Fatalf("FoldChecked folded %+v, want a completed %s", rec, jobID)
+	if len(recs) != 1 || recs[0].Status != StatusCompleted {
+		t.Fatalf("FoldCheckedOrdered folded %+v, want a completed %s", recs, jobID)
 	}
 }
 
@@ -256,8 +269,8 @@ func TestFoldChecked_RejectsStartWithoutType(t *testing.T) {
 	for name, event := range cases {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			if _, err := FoldChecked([]Event{event}); !errors.Is(err, ErrIncompleteLifecycle) {
-				t.Fatalf("FoldChecked(%s) error = %v, want ErrIncompleteLifecycle", name, err)
+			if _, err := FoldCheckedOrdered([]Event{event}); !errors.Is(err, ErrIncompleteLifecycle) {
+				t.Fatalf("FoldCheckedOrdered(%s) error = %v, want ErrIncompleteLifecycle", name, err)
 			}
 		})
 	}
@@ -273,8 +286,8 @@ func TestFoldChecked_AcceptsLegacyEmptyOwner(t *testing.T) {
 		{Kind: EventJobStarted, Seq: 1, TS: started, JobID: "job_legacy", Type: JobShell, StartedAt: &started},
 		{Kind: EventJobFinished, Seq: 2, TS: started, JobID: "job_legacy", Status: StatusCompleted, EndedAt: &started, TerminalGen: "gen"},
 	}
-	if _, err := FoldChecked(events); err != nil {
-		t.Fatalf("FoldChecked on a legacy owner-empty lifecycle: %v", err)
+	if _, err := FoldCheckedOrdered(events); err != nil {
+		t.Fatalf("FoldCheckedOrdered on a legacy owner-empty lifecycle: %v", err)
 	}
 }
 
@@ -290,8 +303,8 @@ func TestFoldChecked_RejectsJobEventWithNoJobID(t *testing.T) {
 		Kind: EventJobFinished, Seq: 1, TS: started,
 		Status: StatusCompleted, EndedAt: &started, TerminalGen: "gen",
 	}
-	if _, err := FoldChecked([]Event{finished}); !errors.Is(err, ErrIncompleteLifecycle) {
-		t.Fatalf("FoldChecked error = %v, want ErrIncompleteLifecycle for a finish with no job ID", err)
+	if _, err := FoldCheckedOrdered([]Event{finished}); !errors.Is(err, ErrIncompleteLifecycle) {
+		t.Fatalf("FoldCheckedOrdered error = %v, want ErrIncompleteLifecycle for a finish with no job ID", err)
 	}
 }
 
@@ -309,8 +322,8 @@ func TestFoldChecked_RejectsFinishWithNonterminalStatus(t *testing.T) {
 		{Kind: EventJobStarted, Seq: 1, TS: started, JobID: jobID, Type: JobShell, OwnerSessionID: owner, StartedAt: &started},
 		{Kind: EventJobFinished, Seq: 2, TS: started, JobID: jobID, Status: StatusRunning, TerminalGen: "gen_no_end"},
 	}
-	if _, err := FoldChecked(events); !errors.Is(err, ErrIncompleteLifecycle) {
-		t.Fatalf("FoldChecked error = %v, want ErrIncompleteLifecycle for a finish declaring a nonterminal status", err)
+	if _, err := FoldCheckedOrdered(events); !errors.Is(err, ErrIncompleteLifecycle) {
+		t.Fatalf("FoldCheckedOrdered error = %v, want ErrIncompleteLifecycle for a finish declaring a nonterminal status", err)
 	}
 }
 
@@ -327,8 +340,8 @@ func TestFoldChecked_IgnoresNonJobKinds(t *testing.T) {
 		{Kind: EventWatchCleared, Seq: 2, TS: started, WatchID: "w_1"},
 		{Kind: EventJobFinished, Seq: 3, TS: started, JobID: jobID, Status: StatusCompleted, EndedAt: &started, TerminalGen: "gen"},
 	}
-	if _, err := FoldChecked(events); err != nil {
-		t.Fatalf("FoldChecked on a journal with a non-job event: %v", err)
+	if _, err := FoldCheckedOrdered(events); err != nil {
+		t.Fatalf("FoldCheckedOrdered on a journal with a non-job event: %v", err)
 	}
 }
 
@@ -346,11 +359,17 @@ func TestFoldChecked_ReturnsRecordsWithDamage(t *testing.T) {
 		{Kind: EventJobStarted, Seq: 1, TS: started, JobID: jobID, Type: JobShell, OwnerSessionID: owner, StartedAt: &started},
 		{Kind: EventJobFinished, Seq: 2, TS: started, JobID: identifier.MustNewJobID(owner), Status: StatusCompleted, EndedAt: &started, TerminalGen: "gen"},
 	}
-	recs, err := FoldChecked(events)
+	recs, err := FoldCheckedOrdered(events)
 	if !errors.Is(err, ErrIncompleteLifecycle) {
-		t.Fatalf("FoldChecked error = %v, want ErrIncompleteLifecycle", err)
+		t.Fatalf("FoldCheckedOrdered error = %v, want ErrIncompleteLifecycle", err)
 	}
-	if rec := recs[jobID]; rec == nil || rec.Status != StatusRunning {
-		t.Fatalf("recs[%s] = %+v, want the best-effort running record alongside the damage", jobID, rec)
+	var found *JobRecord
+	for _, rec := range recs {
+		if rec.JobID == jobID {
+			found = rec
+		}
+	}
+	if found == nil || found.Status != StatusRunning {
+		t.Fatalf("records = %+v, want the best-effort running record for %s alongside the damage", recs, jobID)
 	}
 }

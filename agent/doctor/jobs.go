@@ -105,28 +105,43 @@ func Jobs(ctx context.Context, stateBase, selector string, opts JobOpts) (JobRep
 	if err != nil {
 		return JobReport{}, err
 	}
-	events, err := jobstore.ScanEvents(ctx, paths.JobsPath, jobstore.ScanLimits{})
+	events, readDiagnostics, err := jobstore.ScanEventsWithDiagnostics(ctx, paths.JobsPath, jobstore.ScanLimits{})
 	if err != nil {
 		return JobReport{}, err
 	}
-	report := buildJobReport(paths, events, opts)
+	// The rows and the lifecycle verdict come from ONE fold: a journal cannot
+	// be folded one way for display and judged another way for its
+	// diagnostics. (legacyDelegateFailures below folds again for its own
+	// retired-record scan, which this report does not otherwise carry.)
+	records, foldErr := jobstore.FoldCheckedOrdered(events)
+	report := buildJobReport(paths, records, opts)
 	delegatesPath, delegates, diagnostics, err := stableDoctorDelegates(ctx, paths)
 	if err != nil {
 		return JobReport{}, err
 	}
 	report.DelegatesPath = delegatesPath
 	report.Delegates = projectDoctorDelegates(stateBase, paths.SessionID, delegates)
+	// Job-journal integrity rides the same list, in the same shape, as the
+	// delegate journal's: a torn trailing append is named here instead of
+	// being silently dropped, and a history whose lifecycles do not hold
+	// together is called out rather than presented as an ordinary job list.
+	if readDiagnostics.TornTail {
+		diagnostics = append(diagnostics, "job_journal_torn_tail: ignored unterminated trailing event")
+	}
+	if foldErr != nil {
+		diagnostics = append(diagnostics, "job_journal_incomplete_lifecycle: "+foldErr.Error())
+	}
 	report.Diagnostics = diagnostics
 	report.Failures = legacyDelegateFailures(events)
 	return report, nil
 }
 
-func buildJobReport(paths Paths, events []jobstore.Event, opts JobOpts) JobReport {
+func buildJobReport(paths Paths, records []*jobstore.JobRecord, opts JobOpts) JobReport {
 	report := JobReport{SessionID: paths.SessionID, JobsPath: paths.JobsPath, Jobs: []JobView{}}
 	if opts.JobID != "" {
 		report.Filtered = "job:" + opts.JobID
 	}
-	for _, rec := range jobstore.FoldOrdered(events) {
+	for _, rec := range records {
 		if opts.JobID != "" && rec.JobID != opts.JobID {
 			continue
 		}
@@ -391,6 +406,7 @@ func RenderJobs(r JobReport) string {
 	if len(r.Jobs) == 0 && len(r.Delegates) == 0 && len(r.Failures) == 0 {
 		b.WriteString(emptyJobsMessage(r.Filtered))
 		b.WriteString("\n")
+		renderJobDiagnostics(&b, r.Diagnostics)
 		return b.String()
 	}
 	for _, j := range r.Jobs {
@@ -430,7 +446,21 @@ func RenderJobs(r JobReport) string {
 	for _, failure := range r.Failures {
 		fmt.Fprintf(&b, "\n%s: %s\n", failure.Code, failure.Detail)
 	}
+	renderJobDiagnostics(&b, r.Diagnostics)
 	return b.String()
+}
+
+// renderJobDiagnostics prints what the read could not establish about the
+// journals behind this report. It is the text counterpart of the JSON
+// diagnostics field, and it prints in the NO-ROWS case too: a journal whose
+// only content is a torn trailing append folds to zero rows, and without this
+// line that session reads as one that never ran a job. The codes are the same
+// ones the JSON carries, so an operator can move between the two outputs
+// without translating.
+func renderJobDiagnostics(b *strings.Builder, diagnostics []string) {
+	for _, d := range diagnostics {
+		fmt.Fprintf(b, "\ndiagnostic: %s\n", d)
+	}
 }
 
 // jobStateLabel is the parenthetical state a job block leads with: the status,

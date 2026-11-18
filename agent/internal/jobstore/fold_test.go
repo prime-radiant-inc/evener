@@ -270,6 +270,61 @@ func TestFoldAppliesFinishAndKeepsFirstGeneration(t *testing.T) {
 	}
 }
 
+// TestFoldStatusFromMalformedFinishTracksTheSupplyingEvent pins the flag to the
+// event that actually supplied the current status. A finish that declares no
+// status marks the record; a later start that FILLS that empty status makes the
+// status the start's, so the flag must clear — otherwise the record keeps
+// claiming its "running" came from an end that named no end. A start that
+// leaves a finish-supplied status in place changes nothing, so the flag stays.
+func TestFoldStatusFromMalformedFinishTracksTheSupplyingEvent(t *testing.T) {
+	start := time.Unix(1, 0).UTC()
+	cases := map[string]struct {
+		events []Event
+		want   bool
+		status Status
+	}{
+		"a start fills the empty status and clears the flag": {
+			events: []Event{
+				ev(EventJobFinished, 1, "job_A", func(e *Event) { e.TerminalGen = "GEN1" }),
+				ev(EventJobStarted, 2, "job_A", func(e *Event) {
+					e.Type = JobShell
+					e.StartedAt = &start
+				}),
+			},
+			want:   false,
+			status: StatusRunning,
+		},
+		"a start leaves the finish-supplied status and keeps the flag": {
+			events: []Event{
+				ev(EventJobFinished, 1, "job_A", func(e *Event) {
+					e.Status = StatusRunning
+					e.TerminalGen = "GEN1"
+				}),
+				ev(EventJobStarted, 2, "job_A", func(e *Event) {
+					e.Type = JobShell
+					e.StartedAt = &start
+				}),
+			},
+			want:   true,
+			status: StatusRunning,
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			r := Fold(tc.events)["job_A"]
+			if r == nil {
+				t.Fatal("no record folded")
+			}
+			if r.Status != tc.status {
+				t.Fatalf("Status = %q, want %q", r.Status, tc.status)
+			}
+			if r.StatusFromMalformedFinish != tc.want {
+				t.Fatalf("StatusFromMalformedFinish = %t, want %t", r.StatusFromMalformedFinish, tc.want)
+			}
+		})
+	}
+}
+
 func TestFold_ExhaustedPreservesBudgetMetadataAndFirstTerminalWins(t *testing.T) {
 	start := time.Unix(1, 0).UTC()
 	events := []Event{

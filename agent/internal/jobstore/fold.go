@@ -31,20 +31,8 @@ func Fold(events []Event) map[string]*JobRecord {
 // encodes, or a job event carrying no job ID at all. Fold accepts these
 // fragments by design — it reconstructs the best record the log supports, and
 // the live runtime repairs what it can — so a reader that must report whether a
-// history is COMPLETE checks this sentinel from FoldChecked instead.
+// history is COMPLETE checks this sentinel from FoldCheckedOrdered instead.
 var ErrIncompleteLifecycle = errors.New("jobstore: incomplete job lifecycle")
-
-// FoldChecked folds events exactly like Fold and additionally reports the first
-// structural gap in the lifecycle the log describes. Both answers come from ONE
-// ordering of the events: the records are Fold's own best-effort reconstruction
-// and are returned even when the error is non-nil, so a caller that must both
-// show retained history and be honest about its damage needs one call rather
-// than folding the same journal twice. Errors wrap ErrIncompleteLifecycle; match
-// them with errors.Is.
-func FoldChecked(events []Event) (map[string]*JobRecord, error) {
-	sorted := orderedBySeq(events)
-	return foldOrderedEvents(sorted), checkJobLifecycles(sorted)
-}
 
 // foldOrderedEvents applies already-ordered events to a record map.
 func foldOrderedEvents(sorted []Event) map[string]*JobRecord {
@@ -358,6 +346,11 @@ func applyEvent(r *JobRecord, e Event) {
 			r.StartedAt = *e.StartedAt
 		}
 		if r.Status == "" {
+			// The start supplied this status, so the record's status is no
+			// longer the one a malformed finish named. Without this the flag
+			// keeps claiming "running" came from an end that declared no end,
+			// and a reader ranking that row treats a live job as a fragment.
+			r.StatusFromMalformedFinish = false
 			r.Status = StatusRunning
 		}
 	case EventJobFinished:

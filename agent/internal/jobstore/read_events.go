@@ -106,9 +106,9 @@ func ScanEvents(ctx context.Context, path string, limits ScanLimits) ([]Event, e
 }
 
 // ScanEventsWithDiagnostics is ScanEvents starting at byte 0 that also returns
-// the read's diagnostics. See ScanEventsFromWithDiagnostics for the contract.
+// the read's diagnostics. See scanEventsFromWithDiagnostics for the contract.
 func ScanEventsWithDiagnostics(ctx context.Context, path string, limits ScanLimits) ([]Event, ReadDiagnostics, error) {
-	events, _, diagnostics, err := ScanEventsFromWithDiagnostics(ctx, path, 0, limits)
+	events, _, diagnostics, err := scanEventsFromWithDiagnostics(ctx, path, 0, limits)
 	return events, diagnostics, err
 }
 
@@ -156,19 +156,20 @@ func ScanEventsWithDiagnostics(ctx context.Context, path string, limits ScanLimi
 //
 //   - ErrScanLimitExceeded: the prefix. The limit fired after those events.
 //   - a malformed-JSON error: the prefix. The scan stopped at one bad line.
-//   - ErrLineTooLong: NOTHING (nil events, toOffset 0). A single line that long
-//     is corruption serious enough that there is nothing safe to salvage.
+//   - ErrLineTooLong: NOTHING (nil events, toOffset 0). The line exceeded the
+//     caller's own MaxLineBytes, so there is nothing safe to salvage — but no
+//     damage was observed, and ReadDiagnostics stays at its zero value.
 //   - every other failure — open, seek, a read error, a cancelled context, and
 //     the missing-file case that returns no error at all — also carries NO
 //     prefix, but for an unrelated reason: the scan never got far enough to
 //     decode one. An empty slice is therefore NOT evidence that the journal is
 //     oversized or corrupt; only matching ErrLineTooLong says that.
 func ScanEventsFrom(ctx context.Context, path string, fromOffset int64, limits ScanLimits) ([]Event, int64, error) {
-	events, offset, _, err := ScanEventsFromWithDiagnostics(ctx, path, fromOffset, limits)
+	events, offset, _, err := scanEventsFromWithDiagnostics(ctx, path, fromOffset, limits)
 	return events, offset, err
 }
 
-// ScanEventsFromWithDiagnostics is ScanEventsFrom plus the scan's diagnostics:
+// scanEventsFromWithDiagnostics is ScanEventsFrom plus the scan's diagnostics:
 // whether it stopped at a torn trailing line instead of at a clean record
 // boundary, and whether it stopped at a line it could not decode. Those are
 // different outcomes with different consequences — a torn tail is an append that
@@ -181,7 +182,7 @@ func ScanEventsFrom(ctx context.Context, path string, fromOffset int64, limits S
 // failures establish nothing about the bytes, so reporting damage for them would
 // describe something no scan observed. A torn tail or Corrupt is reported in
 // addition to the events the scan did keep.
-func ScanEventsFromWithDiagnostics(ctx context.Context, path string, fromOffset int64, limits ScanLimits) ([]Event, int64, ReadDiagnostics, error) {
+func scanEventsFromWithDiagnostics(ctx context.Context, path string, fromOffset int64, limits ScanLimits) ([]Event, int64, ReadDiagnostics, error) {
 	f, err := openScanEventsFile(path)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -229,10 +230,14 @@ func ScanEventsFromWithDiagnostics(ctx context.Context, path string, fromOffset 
 		line, terminated, consumed, readErr := linecap.ReadLine(ctx, reader, maxLineBytes)
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
 			if errors.Is(readErr, linecap.ErrTooLong) {
-				// A single line this long is damage to the bytes, the same
-				// category as a line that will not decode — not a failure to
-				// reach the file.
-				return nil, 0, ReadDiagnostics{Corrupt: true}, fmt.Errorf("%w: %s line %d", ErrLineTooLong, path, lineNum+1)
+				// The scan never decoded this line, so it cannot say the bytes
+				// are damaged: the cap is the CALLER's own bound, and the
+				// default scan decodes the same journal fine. Corrupt is for
+				// damage a scan observed, so this leaves it at its zero value
+				// and reports the over-cap condition through ErrLineTooLong
+				// alone — with no partial result, because a line over the cap
+				// is not safely salvageable.
+				return nil, 0, ReadDiagnostics{}, fmt.Errorf("%w: %s line %d", ErrLineTooLong, path, lineNum+1)
 			}
 			return nil, 0, ReadDiagnostics{}, fmt.Errorf("jobstore: read %s: %w", path, readErr)
 		}
