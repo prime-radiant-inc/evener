@@ -123,7 +123,12 @@ questions after the model sent them — and keeps the raw reply whenever a heade
 appears more than once across the calls a reply names. It also keeps the raw
 reply when a named call's questions cannot be enumerated: when the recorded
 state is present but unreadable, or when no state exists and the original
-arguments hold a question that does not parse.
+arguments hold a question that does not parse. So does a named call outside the
+loaded transcript page, because a partial view cannot say which question a line
+belongs to; loading that call can enable the recap once attribution is
+unambiguous. The same rule covers free prose: a stamped recap is withheld
+whenever the question the row displays differs from the one the call ran, since
+the rows draw their question from the arguments the model sent.
 
 A ref-addressed `thread/read` carrying the expected pair, `offset` and `limit`
 returns `pendingAskPage:{composites,total,nextOffset,calllessCount}`. Any page
