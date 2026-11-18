@@ -21,9 +21,7 @@ import (
 func TestSessionTokenBudgetPrimaryUsesFullHistoryEstimate(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
-	adapter := &fakeAdapter{name: "budget-gw", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
-	}}
+	adapter := newFakeAdapter("budget-gw", func(llm.Request) llm.Response { return agenttest.FinalResponse("ok") })
 	client.Register(adapter)
 
 	profile := testOpenAICompatProfile("budget-gw", "test", 0)
@@ -96,9 +94,7 @@ func TestBudgetModelDispatchUsesEffectiveContextWindowOverride(t *testing.T) {
 func TestSessionContinuationTokenBudgetShadowBlocksUnsafeDelta(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
-	adapter := &fakeAdapter{name: "budget-gw", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("unsafe") },
-	}}
+	adapter := newFakeAdapter("budget-gw", func(llm.Request) llm.Response { return agenttest.FinalResponse("unsafe") })
 	client.Register(adapter)
 	profile := testOpenAICompatProfile("budget-gw", "test", 0)
 	resolved := profile.Resolved()
@@ -131,9 +127,7 @@ func TestSessionContinuationTokenBudgetShadowBlocksUnsafeDelta(t *testing.T) {
 func TestSessionContinuationTokenBudgetPreClientCarriesAdmittedShadow(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
-	adapter := &fakeAdapter{name: "budget-cont-observe", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("continuation") },
-	}}
+	adapter := newFakeAdapter("budget-cont-observe", func(llm.Request) llm.Response { return agenttest.FinalResponse("continuation") })
 	client.Register(adapter)
 	var mu sync.Mutex
 	var observed []llm.Request
@@ -228,9 +222,7 @@ func TestSessionFallbackTokenBudgetUsesFallbackCap(t *testing.T) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("budget-gw", 403, "primary rejected", nil, nil)
 		},
 	})
-	fallbackAdapter := &fakeAdapter{name: "budget-fallback", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("fallback") },
-	}}
+	fallbackAdapter := newFakeAdapter("budget-fallback", func(llm.Request) llm.Response { return agenttest.FinalResponse("fallback") })
 	client.Register(primaryAdapter)
 	client.Register(fallbackAdapter)
 
@@ -280,13 +272,11 @@ func TestSessionFallbackResponseUsageBelongsToFallbackTarget(t *testing.T) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("usage-primary", 403, "primary rejected", nil, nil)
 		},
 	}))
-	client.Register(&fakeAdapter{name: "usage-fallback", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response {
-			resp := agenttest.FinalResponse("fallback")
-			resp.Usage = llm.Usage{InputTokens: 77, OutputTokens: 3, TotalTokens: 80}
-			return resp
-		},
-	}})
+	client.Register(newFakeAdapter("usage-fallback", func(llm.Request) llm.Response {
+		resp := agenttest.FinalResponse("fallback")
+		resp.Usage = llm.Usage{InputTokens: 77, OutputTokens: 3, TotalTokens: 80}
+		return resp
+	}))
 	primary := testOpenAICompatProfile("usage-primary", "primary", 0)
 	fallback := testOpenAICompatProfile("usage-fallback", "fallback", 0)
 	sess, err := NewSession(client, primary, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
@@ -331,9 +321,7 @@ func TestSessionDeltaWithoutFullHistoryDoesNotDispatchModelFallback(t *testing.T
 			return llm.Response{}, llm.ErrorFromHTTPStatus("delta-primary", 403, "primary rejected", nil, nil)
 		},
 	})
-	fallbackAdapter := &fakeAdapter{name: "delta-fallback", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("unsafe fallback") },
-	}}
+	fallbackAdapter := newFakeAdapter("delta-fallback", func(llm.Request) llm.Response { return agenttest.FinalResponse("unsafe fallback") })
 	client.Register(primaryAdapter)
 	client.Register(fallbackAdapter)
 	primary := testOpenAICompatProfile("delta-primary", "primary", 0)
@@ -363,9 +351,7 @@ func TestSessionDeltaWithoutFullHistoryDoesNotDispatchModelFallback(t *testing.T
 func TestSessionContextBudgetCompactRetry(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
-	adapter := &fakeAdapter{name: "budget-gw", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "recovered") },
-	}}
+	adapter := newFakeAdapter("budget-gw", func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "recovered") })
 	client.Register(adapter)
 	profile := testOpenAICompatProfile("budget-gw", "test", 0)
 	resolved := profile.Resolved()
@@ -388,9 +374,7 @@ func TestSessionContextBudgetCompactRetry(t *testing.T) {
 func TestSessionContextBudgetCompactRetryTerminalNoProgress(t *testing.T) {
 	t.Parallel()
 	client := llm.NewClient()
-	adapter := &fakeAdapter{name: "budget-gw", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "unexpected") },
-	}}
+	adapter := newFakeAdapter("budget-gw", func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "unexpected") })
 	client.Register(adapter)
 	profile := testOpenAICompatProfile("budget-gw", "test", 0)
 	resolved := profile.Resolved()
@@ -504,9 +488,7 @@ func TestSessionProviderContextRecoveryPrecedesConfiguredFallback(t *testing.T) 
 		},
 		func(llm.Request) (llm.Response, error) { return agenttest.CommunicateResponse(true, "recovered"), nil },
 	})
-	fallback := &fakeAdapter{name: "budget-fallback", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "fallback") },
-	}}
+	fallback := newFakeAdapter("budget-fallback", func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "fallback") })
 	client.Register(primary)
 	client.Register(fallback)
 	profile := testOpenAICompatProfile("budget-primary", "primary", 0)
@@ -539,9 +521,7 @@ func TestSessionProviderContextRecoverySecondErrorSkipsConfiguredFallback(t *tes
 			return llm.Response{}, llm.ErrorFromHTTPStatus("budget-primary-terminal", 413, "context length exceeded", nil, nil)
 		},
 	})
-	fallback := &fakeAdapter{name: "budget-fallback-terminal", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "unexpected fallback") },
-	}}
+	fallback := newFakeAdapter("budget-fallback-terminal", func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "unexpected fallback") })
 	client.Register(primary)
 	client.Register(fallback)
 	profile := testOpenAICompatProfile("budget-primary-terminal", "primary", 0)
@@ -571,9 +551,7 @@ func TestSessionFallbackBudgetObservationBeforeClientAdmission(t *testing.T) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("budget-observe-primary", 403, "primary rejected", nil, nil)
 		},
 	})
-	fallback := &fakeAdapter{name: "budget-observe-fallback", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("fallback") },
-	}}
+	fallback := newFakeAdapter("budget-observe-fallback", func(llm.Request) llm.Response { return agenttest.FinalResponse("fallback") })
 	client.Register(primary)
 	client.Register(fallback)
 	var mu sync.Mutex
@@ -621,9 +599,7 @@ func TestSessionFallbackRecomputesProviderSensitiveFullHistoryEstimate(t *testin
 			return llm.Response{}, llm.ErrorFromHTTPStatus("budget-media-primary", 403, "primary rejected", nil, nil)
 		},
 	})
-	fallback := &fakeAdapter{name: "budget-gemini", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("fallback") },
-	}}
+	fallback := newFakeAdapter("budget-gemini", func(llm.Request) llm.Response { return agenttest.FinalResponse("fallback") })
 	client.Register(primary)
 	client.Register(fallback)
 	primaryProfile := testOpenAICompatProfile("budget-media-primary", "gpt-primary", 0)
@@ -725,12 +701,8 @@ func TestSessionUnsafeFallbackSkippedBeforeLaterFallbackSucceeds(t *testing.T) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("budget-chain-primary", 403, "primary rejected", nil, nil)
 		},
 	})
-	unsafe := &fakeAdapter{name: "budget-chain-unsafe", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("must not run") },
-	}}
-	later := &fakeAdapter{name: "budget-chain-later", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("later fallback") },
-	}}
+	unsafe := newFakeAdapter("budget-chain-unsafe", func(llm.Request) llm.Response { return agenttest.FinalResponse("must not run") })
+	later := newFakeAdapter("budget-chain-later", func(llm.Request) llm.Response { return agenttest.FinalResponse("later fallback") })
 	client.Register(primary)
 	client.Register(unsafe)
 	client.Register(later)
@@ -802,9 +774,7 @@ func TestSessionFallbackContextRecoveryPrecedesLaterFallback(t *testing.T) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("budget-round2-fallback-a", 413, "context length exceeded", nil, nil)
 		},
 	})
-	fallbackB := &fakeAdapter{name: "budget-round2-fallback-b", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("must not bypass context recovery") },
-	}}
+	fallbackB := newFakeAdapter("budget-round2-fallback-b", func(llm.Request) llm.Response { return agenttest.FinalResponse("must not bypass context recovery") })
 	client.Register(primary)
 	client.Register(fallbackA)
 	client.Register(fallbackB)
@@ -853,9 +823,7 @@ func TestSessionFallbackNonContextErrorContinuesConfiguredChain(t *testing.T) {
 			return llm.Response{}, llm.ErrorFromHTTPStatus("budget-round2-chain-a", 404, "fallback unavailable", nil, nil)
 		},
 	})
-	fallbackB := &fakeAdapter{name: "budget-round2-chain-b", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("ordinary fallback") },
-	}}
+	fallbackB := newFakeAdapter("budget-round2-chain-b", func(llm.Request) llm.Response { return agenttest.FinalResponse("ordinary fallback") })
 	client.Register(primary)
 	client.Register(fallbackA)
 	client.Register(fallbackB)

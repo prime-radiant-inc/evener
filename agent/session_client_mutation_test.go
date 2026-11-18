@@ -993,12 +993,7 @@ func TestClientMutation_StartTranscriptIOFailureRemainsRunnable(t *testing.T) {
 func TestClientMutation_StartTranscriptIOFailureProcessPathRemainsRunnable(t *testing.T) {
 	dir := t.TempDir()
 	client := llm.NewClient()
-	client.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response { return agenttest.FinalResponse("must not run") },
-		},
-	})
+	client.Register(newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("must not run") }))
 	sess, err := NewSession(
 		client,
 		NewOpenAIProfile("gpt-5.2"),
@@ -1047,12 +1042,7 @@ func TestClientMutation_StartLifecycleTerminalizesAfterRunnerCompletion(t *testi
 	t.Parallel()
 	dir := t.TempDir()
 	client := llm.NewClient()
-	client.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response { return agenttest.FinalResponse("done") },
-		},
-	})
+	client.Register(newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("done") }))
 	sess, err := NewSession(
 		client,
 		withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")),

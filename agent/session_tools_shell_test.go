@@ -791,29 +791,24 @@ func TestParentCloseRejectsSubagentShellStartedDuringClose(t *testing.T) {
 		releaseOnce.Do(func() { close(releaseModel) })
 	}
 	defer release()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response {
-				close(modelEntered)
-				<-releaseModel
-				return llm.Response{
-					Message: llm.Message{
-						Role: llm.RoleAssistant,
-						Content: []llm.ContentPart{{
-							Kind: llm.ContentToolCall,
-							ToolCall: &llm.ToolCallData{
-								ID:        "late-shell",
-								Name:      "shell",
-								Arguments: idleShellJSON(`,"mode":"background"`),
-								Type:      "function",
-							},
-						}},
+	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response {
+		close(modelEntered)
+		<-releaseModel
+		return llm.Response{
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{{
+					Kind: llm.ContentToolCall,
+					ToolCall: &llm.ToolCallData{
+						ID:        "late-shell",
+						Name:      "shell",
+						Arguments: idleShellJSON(`,"mode":"background"`),
+						Type:      "function",
 					},
-				}
+				}},
 			},
-		},
-	}
+		}
+	})
 	c := llm.NewClient()
 	c.Register(adapter)
 

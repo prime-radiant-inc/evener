@@ -463,7 +463,7 @@ func stableSupervisionFailureSnapshot(root *Session, sub *subagent, adapter *fak
 		// fakeAdapter holds this mutex across a scripted provider step. Blocking
 		// Requests() here would hide a provider stuck inside that step.
 		if adapter.mu.TryLock() {
-			snapshot["provider_cursor"], snapshot["provider_steps"] = adapter.i, len(adapter.steps)
+			snapshot["provider_cursor"], snapshot["provider_steps"] = adapter.cursor(), adapter.scriptLen()
 			snapshot["provider_requests"] = append([]llm.Request(nil), adapter.requests...)
 			adapter.mu.Unlock()
 		} else {

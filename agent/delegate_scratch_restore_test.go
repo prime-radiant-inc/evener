@@ -26,11 +26,7 @@ func TestDelegateIdleRelease_ColdRestoreReopensItsScratch(t *testing.T) {
 	_, home := sbxLane(t)
 	facts := sbxBwrapFacts(home)
 	client := llm.NewClient()
-	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("done one") },
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("done two") },
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("done three") },
-	}})
+	client.Register(newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("done one") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("done two") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("done three") }))
 	// Teardown completes after the resident pointer is cleared. Key its
 	// completion by runtime, not session ID, which both restores reuse.
 	var teardownMu sync.Mutex

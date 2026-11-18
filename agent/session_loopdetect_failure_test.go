@@ -77,7 +77,7 @@ func loopDetectionSession(t *testing.T, window int, present []string, reads []st
 		})
 	}
 	steps = append(steps, func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") })
-	c.Register(&fakeAdapter{name: "openai", steps: steps})
+	c.Register(newFakeAdapter("openai", steps...))
 
 	enableLoop := true
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir),

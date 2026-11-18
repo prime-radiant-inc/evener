@@ -19,30 +19,20 @@ func TestWebSearch_MakesGroundingCall(t *testing.T) {
 	// Track the grounding call request.
 	var groundingReq llm.Request
 
-	fa := &fakeAdapter{
-		name: "google",
-		steps: []func(req llm.Request) llm.Response{
-			// Step 0: main agent calls web_search tool.
-			func(req llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(llm.ToolCallData{
-					ID:        "ws1",
-					Name:      "web_search",
-					Arguments: json.RawMessage(`{"query": "Go 1.23 release date"}`),
-				})
-			},
-			// Step 1: the grounding call made by webSearch().
-			func(req llm.Request) llm.Response {
-				groundingReq = req
-				return llm.Response{
-					Message: llm.Assistant("Go 1.23 was released in August 2024."),
-				}
-			},
-			// Step 2: main agent receives grounding result and responds.
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("Go 1.23 was released in August 2024.")
-			},
-		},
-	}
+	fa := newFakeAdapter("google", func(req llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(llm.ToolCallData{
+			ID:        "ws1",
+			Name:      "web_search",
+			Arguments: json.RawMessage(`{"query": "Go 1.23 release date"}`),
+		})
+	}, func(req llm.Request) llm.Response {
+		groundingReq = req
+		return llm.Response{
+			Message: llm.Assistant("Go 1.23 was released in August 2024."),
+		}
+	}, func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("Go 1.23 was released in August 2024.")
+	})
 
 	c := llm.NewClient()
 	c.Register(fa)
@@ -93,17 +83,11 @@ func TestWebSearch_DirectCall(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 
-	fa := &fakeAdapter{
-		name: "google",
-		steps: []func(req llm.Request) llm.Response{
-			// The grounding call.
-			func(req llm.Request) llm.Response {
-				return llm.Response{
-					Message: llm.Assistant("Search result for test query."),
-				}
-			},
-		},
-	}
+	fa := newFakeAdapter("google", func(req llm.Request) llm.Response {
+		return llm.Response{
+			Message: llm.Assistant("Search result for test query."),
+		}
+	})
 
 	c := llm.NewClient()
 	c.Register(fa)

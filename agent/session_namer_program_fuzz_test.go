@@ -129,11 +129,9 @@ func FuzzSessionNamerProgram(f *testing.F) {
 		if err != nil {
 			t.Fatalf("marshal scripted name: %v", err)
 		}
-		adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant(string(body)), Usage: llm.Usage{TotalTokens: 7}}
-			},
-		}}
+		adapter := newFakeAdapter("openai", func(llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant(string(body)), Usage: llm.Usage{TotalTokens: 7}}
+		})
 		client := llm.NewClient()
 		client.Register(adapter)
 		result, err := nameSession(context.Background(), client, profile, source, text, "", noNamerSleep)
@@ -192,9 +190,7 @@ func namerFuzzSessionLifecycle(t *testing.T, mode byte, text, name string) {
 	if err != nil {
 		t.Fatalf("marshal lifecycle name: %v", err)
 	}
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(string(body))} },
-	}}
+	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant(string(body))} })
 	client := llm.NewClient()
 	client.Register(adapter)
 	sess, err := NewSession(client, profile, &agenttest.DenyEnv{WorkDir: dir}, SessionConfig{StateDir: dir})

@@ -4529,7 +4529,7 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileWokenDescendantWorks(t *testing.T
 		}
 		ctl.mu.Unlock()
 		fixture.adapter.mu.Lock()
-		fmt.Fprintf(&b, "adapter requests=%d cursor=%d: ", len(fixture.adapter.requests), fixture.adapter.i)
+		fmt.Fprintf(&b, "adapter requests=%d cursor=%d: ", len(fixture.adapter.requests), fixture.adapter.cursor())
 		for i, req := range fixture.adapter.requests {
 			marks := ""
 			if requestMentions(req, coordinatorMarker) {
@@ -4655,7 +4655,7 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileWokenDescendantWorks(t *testing.T
 		dRunning, dDriving, dFinalizing, dClosed := descendantSub.running, descendantSub.driving, descendantSub.finalizing, descendantSub.closed
 		descendantSub.mu.Unlock()
 		fixture.adapter.mu.Lock()
-		requestCount, cursor := len(fixture.adapter.requests), fixture.adapter.i
+		requestCount, cursor := len(fixture.adapter.requests), fixture.adapter.cursor()
 		fixture.adapter.mu.Unlock()
 		_, subLocked, subReason := r.laneLocked(t, lanePath)
 		t.Fatalf("the woken descendant's shell never started (sub running=%v driving=%v finalizing=%v closed=%v, adapter requests=%d cursor=%d, coordinator lane locked=%v reason=%q)",

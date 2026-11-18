@@ -54,7 +54,7 @@ func newImagePersistenceSession(t *testing.T, stateDir string, steps ...func(req
 func newImagePersistenceSessionWithEnv(t *testing.T, stateDir string, env execenv.ExecutionEnvironment, steps ...func(req llm.Request) llm.Response) *Session {
 	t.Helper()
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai", steps: steps})
+	c.Register(newFakeAdapter("openai", steps...))
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), env, SessionConfig{StateDir: stateDir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)

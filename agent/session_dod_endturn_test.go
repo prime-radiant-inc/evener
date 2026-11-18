@@ -16,24 +16,18 @@ func TestSession_EndTurnQuestionAllowsNextInput(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(communicateCallArgs("ask2", map[string]any{
-					"end_turn":   true,
-					"end_reason": "needs_response",
-					"message":    "What language?",
-				}))
-			},
-			func(req llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(communicateCallArgs("msg2", map[string]any{
-					"end_turn": true,
-					"message":  "Done writing Go code.",
-				}))
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(communicateCallArgs("ask2", map[string]any{
+			"end_turn":   true,
+			"end_reason": "needs_response",
+			"message":    "What language?",
+		}))
+	}, func(req llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(communicateCallArgs("msg2", map[string]any{
+			"end_turn": true,
+			"message":  "Done writing Go code.",
+		}))
+	})
 	c.Register(f)
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{testOnly: immediateRestConfig()})
@@ -72,14 +66,9 @@ func TestSession_MaxTurns_SetsStateToIdle(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return wrapCommunicateResponse(llm.Response{Message: llm.Assistant("ok"), Finish: llm.FinishReason{Reason: "stop"}})
-			},
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return wrapCommunicateResponse(llm.Response{Message: llm.Assistant("ok"), Finish: llm.FinishReason{Reason: "stop"}})
+	}))
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{MaxTurns: 1})
 	if err != nil {
@@ -109,14 +98,9 @@ func TestSession_SessionEnd_AfterProcessInput(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return wrapCommunicateResponse(llm.Response{Message: llm.Assistant("hello"), Finish: llm.FinishReason{Reason: "stop"}})
-			},
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return wrapCommunicateResponse(llm.Response{Message: llm.Assistant("hello"), Finish: llm.FinishReason{Reason: "stop"}})
+	}))
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
 	if err != nil {

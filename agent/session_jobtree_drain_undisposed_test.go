@@ -74,10 +74,7 @@ type drainResult struct {
 // only when a turn completes with the job still undisposed.
 func TestOneShotDrainEscalatesAndExitsOnAnUndisposedBackgroundJob(t *testing.T) {
 	t.Parallel()
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("I hear you, doing nothing") },
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("still doing nothing") },
-	}}
+	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("I hear you, doing nothing") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("still doing nothing") })
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
 		TurnEndsProcess: true,
 	}))
@@ -584,9 +581,7 @@ func startControlledBackgroundShell(t *testing.T, sess *Session, command string)
 func TestOneShotDrainKeepsAnswerWhenCompletionRidesAnnouncement(t *testing.T) {
 	t.Parallel()
 	const answer = "FINAL-ANSWER: the build passed"
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.FinalResponse(answer) },
-	}}
+	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse(answer) })
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
 		TurnEndsProcess: true,
 	}))
@@ -642,9 +637,7 @@ func TestOneShotDrainKeepsAnswerWhenCompletionRidesAnnouncement(t *testing.T) {
 func TestOneShotDrainDeliversInsteadOfAnnouncingAFinalizingJob(t *testing.T) {
 	t.Parallel()
 	const answer = "FINAL-ANSWER: the build passed"
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.FinalResponse(answer) },
-	}}
+	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse(answer) })
 	sess := newSession(t, withAdapter(adapter), withConfig(SessionConfig{
 		TurnEndsProcess: true,
 	}))

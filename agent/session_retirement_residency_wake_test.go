@@ -102,9 +102,7 @@ func (r *residencyWakeRig) refuseClaim(t *testing.T) RetirementSnapshot {
 // response.
 func TestResidencyReturnWakesRunnableQueuedInput(t *testing.T) {
 	t.Parallel()
-	rig := newResidencyWakeRig(t, &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "the queued message ran") },
-	}})
+	rig := newResidencyWakeRig(t, newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "the queued message ran") }))
 	if _, err := rig.root.AcceptClientMutationQueue(appwire.TurnQueueParams{
 		ClientMutationID: "residency-return-queue",
 		Input:            clientMutationInput("run me when residency returns", nil, nil),
@@ -140,9 +138,7 @@ func TestResidencyReturnWakesRunnableQueuedInput(t *testing.T) {
 // queued-input wake alone would leave it durably accepted and unrun.
 func TestResidencyReturnWakesRunnableClientMutationStart(t *testing.T) {
 	t.Parallel()
-	rig := newResidencyWakeRig(t, &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "the accepted start ran") },
-	}})
+	rig := newResidencyWakeRig(t, newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "the accepted start ran") }))
 	response, err := rig.root.AcceptClientMutationStart(appwire.TurnStartParams{
 		ClientMutationID: "residency-return-start",
 		Input:            clientMutationInput("run me when residency returns", nil, nil),
