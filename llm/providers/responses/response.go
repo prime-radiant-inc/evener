@@ -325,23 +325,6 @@ func (acc *responsesOutputAccumulator) sparseContent(terminal []responsesTermina
 	return content
 }
 
-// A message reference inherits its completed refusal or explicit empty list.
-// A completed refusal withdraws unrelated streamed calls.
-func (item *responsesOutputItem) messageWithCompletedSelection(message map[string]any) map[string]any {
-	if _, supplied := message["content"].([]any); supplied || item == nil || item.done == nil || message == nil {
-		return message
-	}
-	parts, supplied := item.done["content"].([]any)
-	if supplied && (len(parts) == 0 || slices.ContainsFunc(parts, func(entry any) bool {
-		p, _ := entry.(map[string]any)
-		return p["type"] == "refusal"
-	})) {
-		message = maps.Clone(message)
-		message["content"] = parts
-	}
-	return message
-}
-
 func responsesMessagePartText(kind string, part map[string]any) (string, bool) {
 	switch kind {
 	case "output_text":
@@ -355,14 +338,14 @@ func responsesMessagePartText(kind string, part map[string]any) (string, bool) {
 	}
 }
 
-// Nonempty terminal text owns its index. An empty slot can be filled from
-// the same observed part; unindexed text can fill only a single-part message.
+// The terminal or completed content array selects the message's slots. A
+// selected slot may inherit its own text. Only a finalized answer or a refusal
+// makes a message reference substantive enough to withdraw unselected calls.
 func (item *responsesOutputItem) appendMessage(content []llm.ContentPart, message map[string]any, streamOnly bool) ([]llm.ContentPart, bool) {
 	start := len(content)
-	message = item.messageWithCompletedSelection(message)
-	parts, explicitParts := message["content"].([]any)
-	if explicitParts && len(parts) == 0 {
-		return content, false
+	parts, terminalParts := message["content"].([]any)
+	if !terminalParts && item != nil {
+		parts = item.messageParts
 	}
 	var observed map[int64]*responsesOutputText
 	if item != nil {
@@ -371,7 +354,15 @@ func (item *responsesOutputItem) appendMessage(content []llm.ContentPart, messag
 	appendText := func(text string, refusal bool) {
 		content = append(content, llm.ContentPart{Kind: llm.ContentText, Text: text, ResponsesMessageStart: len(content) == start, ResponsesRefusal: refusal})
 	}
-	var substantive, recovered bool
+	var substantive, terminalValue, recovered bool
+	observedText := func(part *responsesOutputText) string {
+		text := part.value()
+		if text != "" {
+			recovered = true
+			substantive = substantive || part.finalType == "output_text"
+		}
+		return text
+	}
 	for index, entry := range parts {
 		p, _ := entry.(map[string]any)
 		kind, _ := p["type"].(string)
@@ -383,7 +374,7 @@ func (item *responsesOutputItem) appendMessage(content []llm.ContentPart, messag
 				text = part.final
 			}
 			appendText(text, true)
-			substantive = true
+			substantive, terminalValue = true, true
 			continue
 		}
 		if kind != "output_text" {
@@ -391,49 +382,44 @@ func (item *responsesOutputItem) appendMessage(content []llm.ContentPart, messag
 		}
 		if text != "" {
 			substantive = true
+			terminalValue = terminalValue || terminalParts
+			recovered = recovered || !terminalParts
 		} else {
 			source := observed[int64(index)]
 			if len(parts) == 1 && (source == nil || source.finalType == "" && len(source.deltas) == 0) {
 				source = observed[-1]
 			}
 			if source != nil && source.finalType != "refusal" {
-				text, ok = source.value(), true
-				recovered = recovered || text != ""
+				text, ok = observedText(source), true
+				if text != "" && !substantive && index < len(item.messageParts) {
+					completed, _ := item.messageParts[index].(map[string]any)
+					substantive = completed["type"] == kind
+				}
 			}
 		}
 		if ok {
 			appendText(text, false)
 		}
 	}
-	if !substantive && len(parts) <= 1 {
-		// A completed refusal can select a message whose parts were omitted.
-		// An explicit part list owns the membership of that message.
-		if !explicitParts && item != nil {
-			_, explicitParts = item.done["content"].([]any)
-		}
+	if parts == nil {
 		for _, index := range slices.Sorted(maps.Keys(observed)) {
-			onlyUnindexed := index == -1 && len(parts) == 0 && len(observed) == 1
-			if index < int64(len(parts)) && !onlyUnindexed {
+			if index < 0 && len(observed) != 1 {
 				continue
 			}
 			part := observed[index]
 			if part.finalType == "refusal" {
-				if !explicitParts {
-					appendText(part.final, true)
-					substantive = true
-				}
+				appendText(part.final, true)
+				substantive, terminalValue = true, true
 				continue
 			}
-			text := part.value()
-			recovered = recovered || text != ""
-			appendText(text, false)
+			appendText(observedText(part), false)
 		}
 	}
 	// Explicit terminal and completed phases can clear an announcement. Only
 	// a message recovered from the stream can inherit an announcement alone.
 	phaseValue, hasPhase := message["phase"]
 	phase, _ := phaseValue.(string)
-	if !hasPhase && item != nil && (item.phase.completed || streamOnly || recovered && !substantive) {
+	if !hasPhase && item != nil && (item.phase.completed || streamOnly || recovered && !terminalValue) {
 		phase = item.phase.value
 	}
 	if phase != "" {
@@ -489,13 +475,8 @@ func (item *responsesOutputItem) settledReasoningText(index int, kind string) (t
 		return "", false
 	}
 	parts, _ := item.done["content"].([]any)
-	if index < len(parts) {
-		part, _ := parts[index].(map[string]any)
-		if part["type"] == kind {
-			text, present = part["text"].(string)
-		}
-	}
-	if final := item.text[int64(index)]; text == "" && kind == "reasoning_text" && final != nil && final.reasoningFinal {
+	text, present = reasoningPartAt(parts, int64(index), kind)["text"].(string)
+	if final := item.text[int64(index)]; !present && kind == "reasoning_text" && final != nil && final.reasoningFinal {
 		return final.final, true
 	}
 	return text, present
@@ -517,11 +498,18 @@ func (item *responsesOutputItem) reasoningID(terminal map[string]any) string {
 }
 
 func (item *responsesOutputItem) reasoningSummary(raw any) []string {
-	if summary := parseReasoningSummary(raw); summary != nil || item == nil {
-		return summary
+	selected, supplied := raw.([]any)
+	if item == nil {
+		return parseReasoningSummary(selected, nil)
 	}
-	if summary := parseReasoningSummary(item.done["summary"]); summary != nil {
-		return summary
+	completed, _ := item.done["summary"].([]any)
+	if supplied {
+		selected = completedReasoningParts(completed, selected)
+	} else {
+		selected = completed
+	}
+	if selected != nil {
+		return parseReasoningSummary(selected, item.finalSummaries)
 	}
 	// Summary arrays have no index field. A missing slot cannot be filled
 	// by shifting a later finalized part into its position.
@@ -624,8 +612,7 @@ func settleResponsesTerminalOutput(raw map[string]any, requestedModel string, bo
 		// A completed message can clear the generic accumulator's draft
 		// even when the terminal omits the completed item.
 		r.ContentAuthoritative = slices.ContainsFunc(acc.output, func(item *responsesOutputItem) bool {
-			parts, supplied := item.done["content"].([]any)
-			return item.kind == "message" && supplied && len(parts) == 0
+			return item.messagePartsOrder != 0
 		})
 	}
 	if n := acc.completed; len(out) > 0 && n > 0 && len(out) != n {

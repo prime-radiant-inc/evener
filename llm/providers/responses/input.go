@@ -388,18 +388,22 @@ func reasoningSummaryInput(summary []string) []any {
 	return out
 }
 
-func parseReasoningSummary(raw any) []string {
-	items, ok := raw.([]any)
-	if !ok {
+func parseReasoningSummary(items []any, finals map[int64]responsesSummaryFinal) []string {
+	if items == nil {
 		return nil
 	}
 	out := make([]string, 0, len(items))
-	for _, itemAny := range items {
+	for i, itemAny := range items {
 		item, ok := itemAny.(map[string]any)
 		if !ok {
 			continue
 		}
 		text, ok := item["text"].(string)
+		if item["text"] == nil && item["type"] == "summary_text" {
+			if final, found := finals[int64(i)]; found {
+				text, ok = final.text, true
+			}
+		}
 		if !ok {
 			continue
 		}

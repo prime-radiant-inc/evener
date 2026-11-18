@@ -46,6 +46,8 @@ func (phase *responsesMessagePhase) observe(message map[string]any, order int, c
 type responsesOutputItem struct {
 	kind, id           string
 	phase              responsesMessagePhase
+	messageParts       []any // Most recently supplied message content array, including an explicit empty list.
+	messagePartsOrder  int
 	index              int64
 	done               map[string]any
 	doneOrder          int
@@ -79,7 +81,33 @@ func (item *responsesOutputItem) completeReasoning(completed map[string]any, ord
 	} else {
 		item.unlinkedReasoning = nil
 	}
+	item.discardUnselectedFinals(completed, order)
 	item.applyReasoningCompletion(completed)
+}
+
+// An explicit part array withdraws older finals for slots it excludes. A
+// later reference can select those indexes again and receive fresh finals.
+func (item *responsesOutputItem) discardUnselectedFinals(completed map[string]any, order int) {
+	if parts, ok := completed["content"].([]any); ok {
+		maps.DeleteFunc(item.text, func(index int64, part *responsesOutputText) bool {
+			return part.reasoningFinal && part.finalOrder <= order && reasoningPartAt(parts, index, "reasoning_text") == nil
+		})
+	}
+	if parts, ok := completed["summary"].([]any); ok {
+		maps.DeleteFunc(item.finalSummaries, func(index int64, final responsesSummaryFinal) bool {
+			return final.order <= order && reasoningPartAt(parts, index, "summary_text") == nil
+		})
+	}
+}
+
+func reasoningPartAt(parts []any, index int64, kind string) map[string]any {
+	if index >= 0 && index < int64(len(parts)) && kind != "" {
+		part, _ := parts[index].(map[string]any)
+		if part["type"] == kind {
+			return part
+		}
+	}
+	return nil
 }
 
 func (item *responsesOutputItem) applyReasoningCompletion(completed map[string]any) {
@@ -106,10 +134,9 @@ func completedReasoningParts(previous, selected []any) []any {
 	var filled []any
 	for i := range min(len(previous), len(selected)) {
 		part, _ := selected[i].(map[string]any)
-		prior, _ := previous[i].(map[string]any)
 		kind, _ := part["type"].(string)
-		text, ok := prior["text"].(string)
-		if part["text"] != nil || kind == "" || prior["type"] != kind || !ok {
+		text, ok := reasoningPartAt(previous, int64(i), kind)["text"].(string)
+		if part["text"] != nil || !ok {
 			continue
 		}
 		if filled == nil {
@@ -411,6 +438,9 @@ func (acc *responsesOutputAccumulator) join(item, other *responsesOutputItem) *r
 	item.id = cmp.Or(item.id, other.id)
 	item.hasNativeID = item.hasNativeID || other.hasNativeID
 	item.phase.merge(other.phase)
+	if other.messagePartsOrder > item.messagePartsOrder {
+		item.messageParts, item.messagePartsOrder = other.messageParts, other.messagePartsOrder
+	}
 	item.index = max(item.index, other.index)
 	item.ambiguousCallIndex = item.ambiguousCallIndex || other.ambiguousCallIndex
 	item.displayOnly = item.displayOnly && other.displayOnly
@@ -427,13 +457,19 @@ func (acc *responsesOutputAccumulator) join(item, other *responsesOutputItem) *r
 			item.summaries[index] = joined
 		}
 	}
+	for index, part := range other.text {
+		item.textPart(index, false).merge(part)
+	}
 	if item.kind == "reasoning" {
+		updates := slices.Concat(item.unlinkedReasoning, other.unlinkedReasoning)
+		for _, update := range updates {
+			item.discardUnselectedFinals(update.item, update.order)
+		}
 		if item.done == nil {
 			item.done = other.done
 		} else if other.done != nil {
 			// Two distinct completed records can meet only while their item
 			// ID and index are still separate. Apply all fields in stream order.
-			updates := slices.Concat(item.unlinkedReasoning, other.unlinkedReasoning)
 			slices.SortFunc(updates, func(a, b responsesReasoningCompletion) int { return cmp.Compare(a.order, b.order) })
 			item.done = nil
 			for _, update := range updates {
@@ -444,9 +480,6 @@ func (acc *responsesOutputAccumulator) join(item, other *responsesOutputItem) *r
 		item.doneOrder = max(item.doneOrder, other.doneOrder)
 	} else if other.doneOrder > item.doneOrder {
 		item.done, item.raw, item.doneOrder = other.done, other.raw, other.doneOrder
-	}
-	for index, part := range other.text {
-		item.textPart(index, false).merge(part)
 	}
 	if unknown := item.text[-1]; unknown != nil && len(item.text) == 2 {
 		delete(item.text, -1)
@@ -600,7 +633,11 @@ func (acc *responsesOutputAccumulator) handleTextPartDone(payload map[string]any
 // Completion can supply a different subset of parts from the deltas.
 func (item *responsesOutputItem) settleMessage(message map[string]any, order int) {
 	item.phase.observe(message, order, true)
-	parts, _ := message["content"].([]any)
+	parts, present := message["content"].([]any)
+	if !present {
+		return
+	}
+	item.messageParts, item.messagePartsOrder = parts, order
 	for index, entry := range parts {
 		part, _ := entry.(map[string]any)
 		kind, _ := part["type"].(string)
@@ -790,7 +827,7 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 			output.completeReasoning(item, acc.order)
 		case "message":
 			output.settleMessage(item, acc.order)
-			output.done = output.messageWithCompletedSelection(item)
+			output.done = item
 		default:
 			output.done = item
 		}

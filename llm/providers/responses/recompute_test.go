@@ -85,6 +85,11 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 		const selected = `{"output":[` + reference + `]}`
 		const nullReference = `{"type":"message","id":"msg1","role":"assistant","content":null}`
 		const emptyMessage = `{"type":"message","id":"msg1","content":[]}`
+		const answer = " \tanswer-31\n"
+		const selectedDraft = `{"type":"message","id":"msg1","content":[{"type":"output_text","text":""}]}`
+		answered := part{"type": "output_text", "text": answer}
+		completedAnswer := jsonOf(t, map[string]any{"type": "message", "id": "msg1", "role": "assistant", "content": []part{answered}})
+		answerDone := `{"type":"response.output_text.done","item_id":"msg1","output_index":1,"content_index":0,"text":` + jsonOf(t, answer) + `}`
 		refusalDone := func(index int, value string) string {
 			return fmt.Sprintf(`{"type":"response.refusal.done","item_id":"msg1","output_index":1,"content_index":%d,"refusal":%s}`, index, jsonOf(t, value))
 		}
@@ -101,6 +106,14 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 			{name: "refusal", text: refusal, parts: []part{refused}},
 			{name: "empty selected refusal", parts: []part{{"type": "refusal", "refusal": ""}}},
 			{name: "text and refusal", text: "selected" + refusal, parts: []part{{"type": "output_text", "text": "selected"}, refused}},
+			{name: "selected completed answer withdraws omitted call", text: answer, terminal: selected, parts: []part{answered}, completed: []string{completedAnswer}},
+			{name: "null reference after a repeated completion selects its answer", text: answer, terminal: `{"output":[` + nullReference + `]}`, parts: []part{answered}, completed: []string{completedAnswer, reference}},
+			{name: "selected indexed answer final withdraws omitted call", text: answer, terminal: selected, parts: []part{answered}, frames: []string{answerDone}},
+			{name: "selected completed slot confirms its earlier answer bytes", text: "draft", terminal: selected, parts: []part{{"type": "output_text", "text": "draft"}}, completed: []string{selectedDraft}},
+			{name: "repeated selected slot confirms its earlier answer bytes", text: "draft", terminal: `{"output":[` + selectedDraft + `]}`, parts: []part{{"type": "output_text", "text": "draft"}}, completed: []string{selectedDraft}},
+			{name: "a message reference to provisional text keeps the issued call", text: "draft", terminal: selected, wantCalls: 1},
+			{name: "empty terminal recovers completed answer and issued call", text: answer, terminal: `{"output":[]}`, completed: []string{completedAnswer}, wantCalls: 1},
+			{name: "terminal selects completed answer and issued call", text: answer, terminal: `{"output":[{"type":"function_call","call_id":"call1"},` + reference + `]}`, completed: []string{completedAnswer}, wantCalls: 1},
 			{name: "selected completed refusal", text: refusal, terminal: `{"output":[` + reference + `]}`, parts: []part{refused}, completed: []string{completedRefusal}},
 			{name: "metadata-only completion retains selected refusal", text: refusal, terminal: `{"output":[` + reference + `]}`, parts: []part{refused}, completed: []string{completedRefusal, reference}},
 			{name: "selected refusal final without an item completion", text: refusal, terminal: selected, parts: []part{refused}, frames: []string{refusalDone(0, refusal)}},
@@ -191,6 +204,10 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 		const emptyPart = `{"type":"response.content_part.done","item_id":"m","content_index":0,"part":{"type":"output_text","text":""}}`
 		const emptyRefusal = `{"type":"response.content_part.done","item_id":"m","content_index":0,"part":{"type":"refusal","refusal":""}}`
 		const selectedPart = `{"type":"message","id":"m","content":[{"type":"output_text"`
+		const laterDraft = `{"type":"response.output_text.delta","item_id":"m","output_index":0,"content_index":1,"delta":"later"}`
+		const firstOnly = selectedPart + `,"text":""}]}`
+		const completedFirst = `{"type":"response.output_item.done","output_index":0,"item":` + firstOnly + `}`
+		const missingFirst = `{"type":"response.output_item.done","output_index":0,"item":` + selectedPart + `}]}}`
 		emptyText := []replayText{{"output_text", ""}}
 		draftText := []replayText{{"output_text", "draft"}}
 		for _, tc := range []struct {
@@ -200,6 +217,12 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 			parts    []replayText
 		}{
 			{"completed empty array clears its earlier draft", []string{draft, emptyMessage}, "", nil},
+			{"completed single blank slot selects only its own draft", []string{draft, laterDraft, completedFirst}, "", draftText},
+			{"terminal reference keeps completed slot membership", []string{draft, laterDraft, completedFirst, reference}, `{"type":"message","id":"m"}`, draftText},
+			{"explicit terminal slot selects only its own draft", []string{draft, laterDraft}, firstOnly, draftText},
+			{"completed single blank slot keeps its finalized empty value", []string{draft, laterDraft, emptyPart, completedFirst}, "", emptyText},
+			{"a missing selected value cannot recover a different slot", []string{laterDraft, missingFirst}, "", nil},
+			{"a reference without a part selection keeps both drafts", []string{draft, laterDraft, reference}, `{"type":"message","id":"m","content":null}`, []replayText{{"output_text", "draft"}, {"output_text", "later"}}},
 			{"repeated item reference preserves its clear", []string{draft, emptyMessage, reference}, "", nil},
 			{"cleared message leaves another draft selected", []string{draft, other, emptyMessage}, "", []replayText{{"output_text", "other"}}},
 			{"item reference keeps its draft", []string{draft, reference}, "", draftText},
@@ -412,6 +435,8 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 	const summaryCompleted = `{"type":"reasoning","id":"r",` + streamSummary + nativeParts + `}`
 	const completedCipher = `{"type":"reasoning","id":"r","encrypted_content":"cipher",` + streamSummary + nativeParts + `}`
 	const reference = `{"type":"reasoning","id":"r"}`
+	const blankContent = `{"type":"reasoning","id":"r","content":[{"type":"reasoning_text","text":""}]}`
+	const partialSummary = `{"type":"reasoning","id":"r","summary":[{"type":"summary_text","text":null}]}`
 	reasoningDone := func(item string) string { return `{"type":"response.output_item.done","item":` + item + `}` }
 	atReasoning := func(item string) string {
 		return `{"type":"response.output_item.done","output_index":1,"item":` + item + `}`
@@ -467,9 +492,10 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 			"{" + display + "}", finalText(`"item_id":"r","output_index":0`, 0, "unmatched"), answerDelta, toolDone,
 		}, "", answer + "," + tool},
 		{"completed item owns text before part fallback", []string{
-			"{" + display + "}", finalText(`"item_id":"r"`, 0, "earlier"), finalText(`"item_id":"r"`, 2, "\t"),
+			"{" + display + "}", finalText(`"item_id":"r"`, 0, "earlier"),
+			finalText(`"item_id":"r"`, 1, "\t"), finalText(`"item_id":"r"`, 2, "withdrawn"),
 			`{"type":"response.output_item.done","item":` + reasoning(nil, "") + `}`,
-		}, placeholder + "," + answer, reasoning(nil, "\t") + "," + answer},
+		}, placeholder + "," + answer, reasoning(new("\t"), "") + "," + answer},
 		{"single placeholder preserves both finalized completed slots", completedSlots, answer + "," + placeholder, answer + "," + twoParts},
 		{"single placeholder preserves finalized announced slots without an item completion", announcedSlots, answer + "," + placeholder, answer + "," + twoParts},
 		{"placeholder recovers missing siblings along with completed slots", slices.Concat(completedSlots, []string{answerDelta, strings.Replace(toolDone, `"output_index":1`, `"output_index":2`, 1)}),
@@ -533,6 +559,17 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 			"{" + display + "}", partAdded(`"item_id":"r","output_index":1`, 0, "reasoning_text"), finalText(`"item_id":"other","output_index":1`, 0, "unowned"),
 		}, answer + "," + absentParts, answer},
 		{"finalized summaries recover the selected item's exact slots", summaryEvents(summaryOmitted), answer + "," + placeholder, answer + "," + summaryCompleted},
+		{"a selected summary slot inherits its completed item value", summaryEvents(nativeItem), answer + "," + partialSummary, answer + "," + nativeItem},
+		{"selected summary slots recover finals by type and index", summaryEvents(summaryOmitted),
+			answer + `,{"type":"reasoning","id":"r","summary":[{"type":"summary_text"},{"type":"summary_text","text":""},{"type":"summary_text","text":null}]}`,
+			answer + "," + summaryCompleted},
+		{"a partial item summary receives its own finalized slot", summaryEvents(`{"type":"reasoning","id":"r","summary":[{"type":"summary_text"}]}`),
+			answer + "," + summaryOmitted, answer + `,{"type":"reasoning","id":"r","summary":[{"type":"summary_text","text":" §λ\t"}]` + nativeParts + `}`},
+		{"explicit empty and unknown summary slots cannot borrow final text", summaryEvents(summaryOmitted),
+			answer + `,{"type":"reasoning","id":"r","summary":[{"type":"summary_text","text":""},{"type":"other"}]}`,
+			answer + `,{"type":"reasoning","id":"r","summary":[{"type":"summary_text","text":""}]` + nativeParts + `}`},
+		{"a cleared summary cannot restore stale indexed finals", summaryEvents(`{"type":"reasoning","id":"r","summary":[]` + nativeParts + `}`),
+			answer + "," + partialSummary, answer + "," + summaryOmitted},
 		{"a finalized summary identifies a selected native item", []string{"{" + display + "}",
 			`{"type":"response.reasoning_summary_text.done","item_id":"r","output_index":1,"summary_index":0,"text":" §λ\t"}`,
 		}, answer + `,{"type":"reasoning"` + nativeParts + `}`, answer + `,{"type":"reasoning","id":"r","summary":[{"type":"summary_text","text":" §λ\t"}]` + nativeParts + `}`},
@@ -563,6 +600,21 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 		{"repeated reasoning completions keep an explicit blank native part", []string{"{" + display + "}",
 			reasoningDone(summaryCompleted), reasoningDone(`{"type":"reasoning","id":"r","content":[{"type":"reasoning_text","text":""}]}`), reasoningDone(reference),
 		}, reference, `{"type":"reasoning","id":"r",` + streamSummary + `,"content":[{"type":"reasoning_text","text":""}]}`},
+		{"completed blank reasoning text clears the indexed text final", []string{"{" + display + "}",
+			finalText(`"item_id":"r"`, 0, "withdrawn"), reasoningDone(blankContent), reasoningDone(reference),
+		}, reference, blankContent},
+		{"terminal placeholder retains a completed blank reasoning slot", []string{"{" + display + "}",
+			finalText(`"item_id":"r"`, 0, "withdrawn"), reasoningDone(blankContent),
+		}, placeholder, blankContent},
+		{"a cleared content array cannot restore stale indexed text", []string{"{" + display + "}",
+			finalText(`"item_id":"r"`, 0, "withdrawn"), reasoningDone(cleared),
+		}, answer + `,{"type":"reasoning","id":"r","content":[{"type":"reasoning_text"}]}`, answer},
+		{"linked reasoning slots retain only finals after their withdrawal", []string{"{" + display + "}",
+			finalText(`"item_id":"r"`, 0, "old"), firstSummary,
+			atReasoning(`{"type":"reasoning","content":[],"summary":[]}`),
+			finalText(`"item_id":"r"`, 0, " new\t"), declaredItem,
+		}, answer + `,{"type":"reasoning","id":"r","content":[{"type":"reasoning_text"}],"summary":[{"type":"summary_text"}]}`,
+			answer + `,{"type":"reasoning","id":"r","content":[{"type":"reasoning_text","text":" new\t"}],"summary":[]}`},
 		{"a missing ID inherits the selected completion's ID", []string{"{" + display + "}",
 			atReasoning(summaryCompleted), atReasoning(`{"type":"reasoning","id":null}`),
 		}, answer + `,{"type":"reasoning","id":null}`, answer + "," + summaryCompleted},

@@ -536,7 +536,8 @@ recover an encoded object, array or XML parameter. A string field such as
   field or defaults to `reasoning_content`. An ordinary chat session omits
   plain reasoning until its row opts in. The existing `thinking_as_text`
   setting takes precedence and merges reasoning into assistant-visible text
-  across Chat model and endpoint switches. On a different endpoint, only
+  across Chat model and endpoint switches, including when a Responses
+  primary falls back to Chat. On a different endpoint, only
   unsigned display text or a separately emitted scalar can enter assistant
   content. Signed details and ciphertext stay with their issuer. A scalar
   replay field can travel alongside opaque `reasoning_details`.
@@ -573,11 +574,11 @@ recover an encoded object, array or XML parameter. A string field such as
   saves the type and byte boundaries of each text part, including display-only
   parts. It preserves whitespace in raw parts, item IDs and summaries, and
   keeps separate assistant messages and their `output_text` and `refusal`
-  parts in order. A final response that selects only a refusal or a provider-run
-  file search withdraws earlier streamed tool calls. A message reference with
-  omitted or null `content` inherits a refusal finalized at its content index,
-  even when the stream omits the completed message. An explicit empty part
-  array clears that message's earlier text and refusal, including when the
+  parts in order. A final response selecting only a completed answer, a
+  refusal or a provider-run file search withdraws earlier streamed tool calls.
+  A message reference with omitted or null `content` inherits its completed
+  answer or refusal. An explicitly selected content array keeps only its own
+  slots. An empty array clears earlier text and refusal, including when the
   final output is empty. A finalized `output_text` part can clear its draft
   with an empty string and keeps its place in the message. An empty final
   output can recover an issued call.
@@ -596,8 +597,10 @@ recover an encoded object, array or XML parameter. A string field such as
   earlier plaintext. A matching encrypted item still carries its ciphertext
   and selected summary. When the terminal omits `summary`, the item inherits
   its completed summary array or the finalized summary parts at consecutive
-  indexes starting at zero. An explicit `summary` array, including `[]`,
-  takes precedence.
+  indexes starting at zero. An explicit `summary` array selects its slots.
+  A selected `summary_text` can inherit missing text from the matching
+  completion or indexed final. An empty string clears the slot and `[]`
+  clears the summary.
   If a reply contains no visible answer or tool call, Evener still retries
   within its empty-answer limit. It saves eligible reasoning and native
   assistant message parts for the next attempt and a cold resume.
@@ -661,10 +664,11 @@ replay_reasoning_text = true
 replay_reasoning_text = true
 ```
 
-For a Lunaroute connection using `openai-chat`, set
-`reasoning_field = "reasoning_content"` on the enrolled model rows. The
-chat endpoint emits `reasoning`. GLM and Inkling read `reasoning_content`
-on input, and DeepSeek reads either spelling.
+For a Lunaroute connection using `openai-chat`, leave `reasoning_field`
+unset on `deepseek-4.1-flash`. Evener then replays the original `reasoning`
+field and its exact value. On `glm-5.3-flash` and `inkling-2-small`, set
+`reasoning_field = "reasoning_content"` because those models read their
+replayed text from that field.
 
 What changed structurally: `thinking_format` is now a `Caps` field set in
 `providers.toml`/the curated overlay (a provider- or model-level TOML key),

@@ -40,6 +40,8 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 	}}
 	const first, second = " \tλ<&>\n", "  next\r\n"
 	const summary = " \tΣ<&>\r\n"
+	const answer = " \tanswer<&>\r\n"
+	const finalAnswer = " \tfinal λ\n"
 	good, bad := mustJSON(t, valid), mustJSON(t, malformed)
 	const serial = "9007199254740993"
 	const scale = "6.250e+3"
@@ -68,6 +70,7 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 	}{
 		{&responses.Protocol{}, "input", "", `{"output":[
 			{"type":"reasoning","id":"r1"},
+			{"type":"message","id":"m1","role":"assistant"},
 			{"type":"function_call","call_id":"c1","name":"write_file","arguments":` + good + `},
 			{"type":"function_call","call_id":"c2","name":"f","arguments":` + bad + `}
 		]}`, []string{first, second}},
@@ -88,6 +91,9 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 					`{"type":"response.reasoning_summary_text.done","output_index":0,"item_id":"r1","summary_index":0,"text":` + mustJSON(t, summary) + `}`,
 					`{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"r1","content":[{"type":"reasoning_text","text":` + mustJSON(t, first) + `},{"type":"reasoning_text","text":` + mustJSON(t, second) + `}]}}`,
 					`{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"r1"}}`,
+					`{"type":"response.output_text.delta","output_index":1,"item_id":"m1","content_index":0,"delta":` + mustJSON(t, answer) + `}`,
+					`{"type":"response.output_text.delta","output_index":1,"item_id":"m1","content_index":1,"delta":"withdrawn"}`,
+					`{"type":"response.output_item.done","output_index":1,"item":{"id":"m1","type":"message","role":"assistant","content":[{"type":"output_text","text":""}]}}`,
 					mustJSON(t, map[string]any{"type": "response.completed", "response": json.RawMessage(tc.response)}),
 				}, "\n\ndata: ") + "\n\n"
 			}
@@ -209,6 +215,23 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 				},
 				{Kind: schema.TurnToolResults, Message: result},
 			}
+			if tc.field == "input" {
+				// The answer after the tools completed selects only its message.
+				// The tentative call must stay out of the persisted history.
+				stream := "data: " + strings.Join([]string{
+					`{"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","id":"dropped","call_id":"dropped","name":"f"}}`,
+					`{"type":"response.function_call_arguments.delta","item_id":"dropped","delta":"{}"}`,
+					`{"type":"response.output_item.done","output_index":1,"item":{"type":"message","id":"final","role":"assistant","content":[{"type":"output_text","text":` + mustJSON(t, finalAnswer) + `}]}}`,
+					`{"type":"response.completed","response":{"output":[{"type":"message","id":"final","role":"assistant"}]}}`,
+				}, "\n\ndata: ") + "\n\n"
+				final, err := responses.ExtractRecordedResponse([]byte(stream), row.ModelID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				assistant := turns[1]
+				assistant.Message = assistantHistoryMessage(final.Message)
+				turns = append(turns, assistant)
+			}
 			scope := replayScope{Instance: row.Instance, Model: row.ModelID, Protocol: row.Protocol}
 			scope.setReasoningTextTarget(provider.FromResolved(row, nil))
 			_, warmBody := send(expandHistory(turns, scope), row)
@@ -256,6 +279,25 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 				}
 				if tc.field == "input" && !slices.Equal(summaries, []capturedSummaryPart{{"summary_text", summary}, {"summary_text", ""}}) {
 					t.Errorf("outbound finalized summary parts = %q", summaries)
+				}
+				if tc.field == "input" {
+					type part struct{ Type, Text string }
+					var items []struct {
+						Role    string
+						Content []part
+					}
+					if err := json.Unmarshal(history, &items); err != nil {
+						t.Fatal(err)
+					}
+					var answers []part
+					for _, item := range items {
+						if item.Role == "assistant" {
+							answers = append(answers, item.Content...)
+						}
+					}
+					if _, withdrawn := got["dropped"]; withdrawn || !slices.Equal(answers, []part{{"output_text", answer}, {"output_text", finalAnswer}}) {
+						t.Errorf("outbound selected answer parts = %q, withdrawn call present = %t", answers, withdrawn)
+					}
 				}
 				var want []capturedChatDetail
 				switch tc.replayField {
