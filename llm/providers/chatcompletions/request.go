@@ -52,7 +52,25 @@ func buildBody(req llm.Request, res registry.Resolved, stream bool) (out map[str
 	body["messages"] = msgs
 	if len(req.Tools) > 0 {
 		tools := openaichat.ToChatTools(req.Tools)
-		if registry.BoolValue(caps.StrictTools) {
+		strictTools := registry.BoolValue(caps.StrictTools)
+		for i, t := range tools {
+			fn, ok := t["function"].(map[string]any)
+			if !ok {
+				continue
+			}
+			// A definition that declares no parameters keeps its nil through
+			// preparation, and ToChatTools omits the key for it. The local
+			// validator compiles such a tool against defaultToolParameters, an
+			// open empty object, so the wire has to carry that same schema:
+			// omitting it leaves the provider reading "no schema" where the
+			// validator reads "any object". Only a tool that is actually sent
+			// with strict enforcement gets the closed form, because that is the
+			// only shape strict mode accepts.
+			if req.Tools[i].Parameters == nil {
+				fn["parameters"] = map[string]any{"type": "object", "properties": map[string]any{}}
+			}
+		}
+		if strictTools {
 			for i, t := range tools {
 				fn, ok := t["function"].(map[string]any)
 				if !ok {
@@ -67,12 +85,12 @@ func buildBody(req llm.Request, res registry.Resolved, stream bool) (out map[str
 				// only for a schema that already requires them all. A tool with
 				// a documented-optional argument has no legal strict form, so it
 				// keeps its advertised schema and is sent non-strict.
-				// A tool that declares no parameters keeps its nil through
-				// preparation rather than advertising the open empty object, so
-				// the closed empty object is supplied here: strict mode needs a
-				// schema to validate against, and this is the one shape that
-				// takes an empty argument set.
-				if _, has := fn["parameters"]; !has {
+				// A parameterless tool takes the closed empty object here: strict
+				// mode needs a schema to validate against, and this is the one
+				// shape that takes an empty argument set. A caller that supplied
+				// its own open empty schema keeps it, and the gate below then
+				// sends that tool non-strict.
+				if req.Tools[i].Parameters == nil {
 					fn["parameters"] = map[string]any{
 						"type":                 "object",
 						"additionalProperties": false,

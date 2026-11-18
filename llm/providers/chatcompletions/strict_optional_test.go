@@ -137,6 +137,38 @@ func TestChatStrictToolsStillStrictifyFullyRequiredSchemas(t *testing.T) {
 	}
 }
 
+// On a route without strict enforcement a parameterless tool still has to carry
+// a parameter schema, because the local validator compiles it against the open
+// empty object. Omitting the key leaves the provider reading "no schema" where
+// the validator reads "any object", so the wire and the validator would
+// disagree about the same tool. The open form is the one the validator uses;
+// the closed form belongs only to strict mode, which needs it to admit exactly
+// the empty argument set.
+func TestChatNonStrictToolsKeepParameterlessToolsOpen(t *testing.T) {
+	t.Parallel()
+	req := userReq("hi")
+	req.Tools = []llm.ToolDefinition{{Name: "current_time"}}
+
+	body := build(t, req, resolved(func(c *registry.Caps) { c.StrictTools = new(false) }))
+	fn := body["tools"].([]map[string]any)[0]["function"].(map[string]any)
+	if _, has := fn["strict"]; has {
+		t.Fatalf("strict = %#v, want no strict key on a route without strict tools", fn["strict"])
+	}
+	params, ok := fn["parameters"].(map[string]any)
+	if !ok {
+		t.Fatalf("parameters = %#v, want the open empty object the validator compiles against", fn["parameters"])
+	}
+	if params["type"] != "object" {
+		t.Fatalf("type = %#v, want object", params["type"])
+	}
+	if props, ok := params["properties"].(map[string]any); !ok || len(props) != 0 {
+		t.Fatalf("properties = %#v, want an empty object", params["properties"])
+	}
+	if _, has := params["additionalProperties"]; has {
+		t.Fatalf("additionalProperties = %#v, want it absent: an open object admits any key, which is what the validator allows", params["additionalProperties"])
+	}
+}
+
 // The chat adapter carries the same parameterless-tool rule as Responses. A
 // definition that declares no parameters keeps its nil through preparation, so
 // the adapter has to supply the closed empty object itself: omitting
