@@ -1007,6 +1007,12 @@ type RosterSnapshot struct {
 	// from. Live may hold several entries naming one session; this holds the
 	// one Find would return, so both answers come from the same publication.
 	BySession map[string]LiveEntry
+	// Confirmed holds every confirmed process, one per PID, before the
+	// per-session deduplication Live applies. A caller asking "does anyone own
+	// this ref?" must read this: two daemons can overlap on one session, and
+	// the entry Live drops may be the one whose workspace ref or reported
+	// children name the thread. Navigation keeps reading Live.
+	Confirmed []LiveEntry
 }
 
 // Snapshot is OwnershipError, List, UnconfirmedEntries and the session-keyed
@@ -1017,11 +1023,16 @@ type RosterSnapshot struct {
 func (r *Roster) Snapshot() RosterSnapshot {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	confirmed := make([]LiveEntry, 0, len(r.byPID))
+	for _, entry := range r.byPID {
+		confirmed = append(confirmed, CloneLiveEntry(entry))
+	}
 	return RosterSnapshot{
 		OwnershipError: r.ownershipErr,
 		Live:           r.listLocked(),
 		Unconfirmed:    slices.Clone(r.unconfirmed),
 		BySession:      maps.Clone(r.bySess),
+		Confirmed:      confirmed,
 	}
 }
 
