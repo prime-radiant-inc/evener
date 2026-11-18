@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/envctx"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -89,6 +90,12 @@ func TestDelegateForkContext_OptInHistory(t *testing.T) {
 				t.Errorf("inherited image = %v, want %v", foundImage, wantHistory)
 			}
 			child := root.getSub(result.ChildSessionID).sess
+			for _, msg := range request.Messages {
+				tracker := envctx.NewTracker(envctx.State{})
+				if tracker.ReplayBlock(msg.Text()) && tracker.State().Last.SessionID != "" {
+					t.Error("delegate repeated its startup identity without an inherited identity update")
+				}
+			}
 			meta := child.Meta()
 			if !meta.IsSubagent || meta.OriginalPrompt != "child-assignment-sentinel" || meta.CumulativeUsage.TotalTokens != 0 {
 				t.Errorf("child identity or accounting inherited: %+v", meta)
@@ -172,6 +179,8 @@ func TestDelegateForkContext_ColdResumePreservesSnapshot(t *testing.T) {
 	root, client, _ := newDelegateResourceBootstrapSession(t)
 	root.appendTurn(schema.TurnUserInput, llm.User("archived-parent-sentinel"))
 	root.appendTurn(schema.TurnCheckpoint, llm.User("parent-summary-sentinel"))
+	oldIdentity := envctx.NewTracker(envctx.State{}).RenderDiff(envctx.Snapshot{SessionID: root.ID(), CommitTrailer: root.commitTrailerPrompt()})
+	root.appendTurn(schema.TurnEnvironment, llm.User(oldIdentity))
 	root.appendTurn(schema.TurnUserInput, llm.User("recent-parent-sentinel"))
 	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("child-result-sentinel") })
 	client.Register(adapter)
@@ -222,6 +231,15 @@ func TestDelegateForkContext_ColdResumePreservesSnapshot(t *testing.T) {
 		}
 	}
 	child := root.getSub(result.ChildSessionID).sess
+	for _, captured := range []llm.Request{adapter.Requests()[0], req} {
+		tracker := envctx.NewTracker(envctx.State{})
+		for _, msg := range captured.Messages {
+			tracker.ReplayBlock(msg.Text())
+		}
+		if last := tracker.State().Last; last.SessionID != child.ID() || last.CommitTrailer != child.commitTrailerPrompt() {
+			t.Errorf("delegate kept inherited attribution: %+v", last)
+		}
+	}
 	meta := child.Meta()
 	if !meta.IsSubagent || meta.DivergenceTurn == 0 || meta.OriginalPrompt != "child-unit-sentinel" || child.reg.Get("ask_user") != nil {
 		t.Fatalf("restored delegate lost identity or gained permissions: %+v", meta)

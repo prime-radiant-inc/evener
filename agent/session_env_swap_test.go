@@ -17,17 +17,12 @@ import (
 	"primeradiant.com/evener/gittest"
 )
 
-// TestSwapEnvAndRefresh_UpdatesEnvInfoAndPromptCache proves swapEnvAndRefresh
-// (a) installs the new env, (b) recomputes envInfo (working dir, git branch,
-// etc.) against the NEW root rather than leaving it frozen at the old one,
-// and (c) the eagerly-rendered system prompt cache reflects the new
-// directory — the exact staleness spec §7 exists to prevent (before this
-// fix the model would believe it's still in the old directory).
-func TestSwapEnvAndRefresh_UpdatesEnvInfoAndPromptCache(t *testing.T) {
+func TestSwapEnvAndRefresh_AppendsCurrentEnvironmentToStartupPromptHistory(t *testing.T) {
 	t.Parallel()
 	sess := newSession(t, withEnvironmentSnapshot())
 
 	oldWD := sess.currentEnv().WorkingDirectory()
+	startup := sess.cachedSystemPrompt
 
 	repoDir := t.TempDir()
 	gittest.Run(t, repoDir, "init")
@@ -68,11 +63,14 @@ func TestSwapEnvAndRefresh_UpdatesEnvInfoAndPromptCache(t *testing.T) {
 		t.Errorf("envInfo.GitBranch = %q, want %q", ei.GitBranch, "feature-branch")
 	}
 
-	if !strings.Contains(prompt, repoDir) {
-		t.Errorf("cachedSystemPrompt does not mention the new working dir %q:\n%s", repoDir, prompt)
+	if prompt != startup {
+		t.Error("changing directory changed the startup prompt")
 	}
-	if !strings.Contains(prompt, "feature-branch") {
-		t.Errorf("cachedSystemPrompt does not mention the new git branch %q:\n%s", "feature-branch", prompt)
+	if err := sess.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatal(err)
+	}
+	if got := sess.envTracker.State().Last; got.Cwd != repoDir || got.GitBranch != "feature-branch" {
+		t.Errorf("projected environment = %q, %q", got.Cwd, got.GitBranch)
 	}
 }
 
@@ -281,11 +279,8 @@ func TestSwapEnvAndRefresh_NoGitForkWhileLocked(t *testing.T) {
 	}
 }
 
-// TestSession_RegisterTool_NoRaceWithConcurrentEnvSwap is the carry-over
-// finding from Task 4: registerTool's cache rebuild (rebuildToolDefsCache +
-// refreshSystemPromptCache) used to run unlocked, racing swapEnvAndRefresh's
-// locked cache rebuild on the same s.cachedToolDefs/s.cachedSystemPrompt
-// fields. Run under -race, this hammers both concurrently.
+// Tool registration and environment changes publish tool definitions under
+// the same lock.
 func TestSession_RegisterTool_NoRaceWithConcurrentEnvSwap(t *testing.T) {
 	if !raceDetectorEnabled {
 		t.Skip("race-detector stress test; run with -race")

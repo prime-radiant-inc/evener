@@ -25,11 +25,15 @@ type Pressure struct {
 // strings so Snapshot is comparable with == (the nothing-changed fast path)
 // and marshals directly into session meta.
 type Snapshot struct {
-	Cwd           string   `json:"cwd,omitempty"`             // absolute working directory
-	LocalDateHour string   `json:"local_date_hour,omitempty"` // "2026-08-06 14:00 PDT"
-	Sandbox       string   `json:"sandbox,omitempty"`         // always populated; "off" included
-	GitBranch     string   `json:"git_branch,omitempty"`      // "" outside a git repo
-	Pressure      Pressure `json:"pressure,omitzero"`
+	Cwd             string   `json:"cwd,omitempty"`             // absolute working directory
+	LocalDateHour   string   `json:"local_date_hour,omitempty"` // "2026-08-06 14:00 PDT"
+	Sandbox         string   `json:"sandbox,omitempty"`         // always populated; "off" included
+	GitBranch       string   `json:"git_branch,omitempty"`      // "" outside a git repo
+	Pressure        Pressure `json:"pressure,omitzero"`
+	SessionID       string   `json:"session_id,omitempty"`
+	Model           string   `json:"model,omitempty"`
+	KnowledgeCutoff string   `json:"knowledge_cutoff,omitempty"`
+	CommitTrailer   string   `json:"commit_trailer,omitempty"`
 }
 
 // State is the Tracker's persistable form, stored in session meta so resume
@@ -43,6 +47,9 @@ type State struct {
 type Tracker struct {
 	st State
 }
+
+const commitTrailerPrefix = "For new commits in this session, use this trailer: "
+const omitCommitTrailer = "Omit the Co-authored-by trailer on new commits in this session."
 
 func NewTracker(st State) *Tracker { return &Tracker{st: st} }
 
@@ -86,6 +93,20 @@ func (t *Tracker) ReplayBlock(block string) bool {
 				value = ""
 			}
 			t.st.Last.GitBranch = value
+		case strings.HasPrefix(line, "session id: "):
+			t.st.Last.SessionID = strings.TrimPrefix(line, "session id: ")
+		case strings.HasPrefix(line, "model: "):
+			if value, err := strconv.Unquote(strings.TrimPrefix(line, "model: ")); err == nil {
+				t.st.Last.Model = value
+			}
+		case strings.HasPrefix(line, "knowledge cutoff: "):
+			if value, err := strconv.Unquote(strings.TrimPrefix(line, "knowledge cutoff: ")); err == nil {
+				t.st.Last.KnowledgeCutoff = value
+			}
+		case strings.HasPrefix(line, commitTrailerPrefix):
+			t.st.Last.CommitTrailer = strings.TrimPrefix(line, commitTrailerPrefix)
+		case line == omitCommitTrailer:
+			t.st.Last.CommitTrailer = ""
 		case strings.HasPrefix(line, "load pressure: "):
 			t.st.Last.Pressure.Load = pressureValue(line, "load")
 		case strings.HasPrefix(line, "memory pressure: "):
@@ -134,6 +155,18 @@ func (t *Tracker) RenderDiff(cur Snapshot) string {
 		add(cur.GitBranch != prev.GitBranch, "git branch: "+cur.GitBranch)
 	case !first && prev.GitBranch != "":
 		lines = append(lines, "git branch: (not in a git repository)")
+	}
+	if cur.SessionID != "" {
+		add(cur.SessionID != prev.SessionID, "session id: "+cur.SessionID)
+	}
+	if cur.Model != "" {
+		add(cur.Model != prev.Model, "model: "+strconv.Quote(cur.Model))
+		add(cur.Model != prev.Model || cur.KnowledgeCutoff != prev.KnowledgeCutoff, "knowledge cutoff: "+strconv.Quote(cur.KnowledgeCutoff))
+	}
+	if cur.CommitTrailer != "" {
+		add(cur.CommitTrailer != prev.CommitTrailer, commitTrailerPrefix+cur.CommitTrailer)
+	} else if prev.CommitTrailer != "" || cur.SessionID != prev.SessionID {
+		lines = append(lines, omitCommitTrailer)
 	}
 	for _, p := range []struct{ label, cur, prev string }{
 		{"load", cur.Pressure.Load, prev.Pressure.Load},

@@ -13,10 +13,8 @@ import (
 var errSwapWhileClosing = errors.New("manage_worktree: the session is closing; environment swap refused")
 
 // swapEnvAndRefresh atomically installs next as the session's execution
-// environment and refreshes everything derived from it (envInfo, the git
-// snapshot, and the tool/prompt caches). See spec §7 "envInfo +
-// system-prompt refresh" for the full rationale; the two steps below are
-// normative, not incidental structure.
+// environment and refreshes its environment facts, git snapshot and tool
+// definitions. The next environment context turn carries the change.
 //
 // Callers must always construct next via WithWorkingDirectory on the current
 // env (never execenv.NewLocalExecutionEnvironment), so PID tracking and the
@@ -123,9 +121,7 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	// git snapshot forks several `git` subprocesses and `git status` can take
 	// seconds on a big repo; s.mu must never be held across a subprocess (it
 	// would stall every event emit, Meta() autosave, and hub poll while
-	// forking). Step 2's refreshSystemPromptCache runs under s.mu, so the
-	// prompt render must never start a subprocess either: it reads session
-	// state and files only.
+	// forking).
 	newWD := next.WorkingDirectory()
 	ei := s.snapshotEnvironmentInfo(next)
 	if !s.cfg.testOnly.skipGitSnapshot {
@@ -142,9 +138,7 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 		}
 	}
 	// Step 2 — under s.mu: atomically install env+envInfo (so the two are
-	// never observed in a torn intermediate state) and rebuild the caches that
-	// derive from them. The prompt render here reads session state and files
-	// only and starts no subprocess.
+	// never observed in a torn intermediate state) and rebuild the tool definitions.
 	s.mu.Lock()
 	if s.closing {
 		s.mu.Unlock()
@@ -184,10 +178,8 @@ func (s *Session) swapEnvAndRefresh(next *execenv.LocalExecutionEnvironment, rec
 	// still mint a scratch on it, so the close has to keep a reference.
 	s.recordAbandonedEnvironmentLocked(prior, next)
 	s.rebuildToolDefsCache()
-	promptWarning, _ := s.refreshSystemPromptCache(next)
 	installedWorkingDir := s.envInfo.WorkingDir
 	s.mu.Unlock()
 	s.emit(events.EnvironmentChangedData{WorkingDir: installedWorkingDir})
-	s.reportPromptRenderFailure(promptWarning)
 	return nil
 }

@@ -107,6 +107,9 @@ func effectiveReasoningEffort(cfg, override string, escalated bool) string {
 // cut from. That list is the round's, not the request's: the retry after a
 // rejected anchor rebuilds from it, and nothing on the wire ever carries it.
 func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t *events.RoundTimings) (profile *provider.Profile, sys string, history []llm.Message, req llm.Request, fullHistory []llm.Message, reasoningEffort string, err error) {
+	if err := s.appendChangedEnvironmentIdentity(); err != nil {
+		return nil, "", nil, llm.Request{}, nil, "", err
+	}
 	if err := s.flushPendingDelegateDeliveries(); err != nil {
 		return nil, "", nil, llm.Request{}, nil, "", err
 	}

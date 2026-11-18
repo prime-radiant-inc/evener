@@ -650,7 +650,7 @@ func (s *Session) seedFrozenSkillPreloads() {
 // descriptor replays the body frozen at creation, so construction is the first
 // point either path can ask this session's own registry. It runs after the
 // tool registry is final (filterUnavailableMemoryTools) and before
-// refreshSystemPromptCache and seedFrozenSkillPreloads.
+// rendering the startup prompt and seeding the frozen skill preloads.
 //
 // The name and body slices are parallel; every production producer appends or
 // replaces them together. A body without a parallel name (a direct fixture that

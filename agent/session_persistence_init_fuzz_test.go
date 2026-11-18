@@ -95,7 +95,7 @@ func FuzzPersistentSessionInitRestoreProgram(f *testing.F) {
 		}
 		defer restored.Close()
 
-		pifAssertRestoredSession(t, restored, meta, program, workspace, promptFile, appendFile, restoreAdapter)
+		pifAssertRestoredSession(t, restored, meta, program, workspace, restoreAdapter)
 		restoredEvents := pifDrainEvents(restored)
 		pifAssertStartEvents(t, restoredEvents, true, false)
 	})
@@ -292,7 +292,12 @@ func pifAssertFreshSession(
 	if s.TranscriptPath() == "" {
 		t.Fatal("persistent session has an empty transcript path")
 	}
-	pifAssertPromptAndTools(t, s, program, workspace, promptFile, appendFile)
+	pifAssertPromptAndTools(t, s, program, workspace)
+	for _, source := range []string{"cli:" + promptFile, "append:" + appendFile} {
+		if !pifHasPromptSource(s.promptSourceLog, source) {
+			t.Fatalf("source %q missing from launch prompt sources: %+v", source, s.promptSourceLog)
+		}
+	}
 	pifAssertHookDelivery(t, s, adapter, true)
 }
 
@@ -301,7 +306,7 @@ func pifAssertRestoredSession(
 	s *Session,
 	meta schema.SessionMeta,
 	program pifProgram,
-	workspace, promptFile, appendFile string,
+	workspace string,
 	adapter *agenttest.ScriptedAdapter,
 ) {
 	t.Helper()
@@ -314,7 +319,10 @@ func pifAssertRestoredSession(
 	if got := s.Meta().Origin; got != "test" {
 		t.Fatalf("restored origin = %q, want persisted test origin", got)
 	}
-	pifAssertPromptAndTools(t, s, program, workspace, promptFile, appendFile)
+	pifAssertPromptAndTools(t, s, program, workspace)
+	if len(s.promptSourceLog) != 1 || s.promptSourceLog[0] != (promptSource{Label: "transcript:system_prompt", Size: len(s.cachedSystemPrompt)}) {
+		t.Fatalf("restored prompt sources = %+v, want the saved header", s.promptSourceLog)
+	}
 	// Resume hooks are always deferred until an accepted user turn. The broader
 	// restore-side-effects flag changes job/watch recovery timing, but does not
 	// make a resume hook run during construction.
@@ -324,7 +332,7 @@ func pifAssertRestoredSession(
 	}
 }
 
-func pifAssertPromptAndTools(t *testing.T, s *Session, program pifProgram, workspace, promptFile, appendFile string) {
+func pifAssertPromptAndTools(t *testing.T, s *Session, program pifProgram, workspace string) {
 	t.Helper()
 	if s.envInfo.WorkingDir != workspace {
 		t.Fatalf("env working dir = %q, want %q", s.envInfo.WorkingDir, workspace)
@@ -338,13 +346,6 @@ func pifAssertPromptAndTools(t *testing.T, s *Session, program pifProgram, works
 	if program.pluginAgent && !strings.Contains(prompt, "PIF_AGENT_ROLE") {
 		t.Fatalf("plugin role prompt missing from cached system prompt:\n%s", prompt)
 	}
-	if !pifHasPromptSource(s.promptSourceLog, "cli:"+promptFile) {
-		t.Fatalf("prompt source log lacks system prompt override %q: %+v", promptFile, s.promptSourceLog)
-	}
-	if !pifHasPromptSource(s.promptSourceLog, "append:"+appendFile) {
-		t.Fatalf("prompt source log lacks append %q: %+v", appendFile, s.promptSourceLog)
-	}
-
 	resultTool := s.resultToolName()
 	if resultTool == "" || s.reg.Get(resultTool) == nil {
 		t.Fatalf("result tool %q is not registered", resultTool)

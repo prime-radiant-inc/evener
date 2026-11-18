@@ -610,7 +610,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	// environment at restore time.
 	s.origin = envvars.EVENERSessionOrigin.Getenv()
 
-	promptSources, err := s.initSessionState(cfg.SessionStartKind, true)
+	promptSources, err := s.initSessionState(true, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -666,13 +666,14 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	// opened any earlier than this — the SessionStart hooks that initSessionState
 	// just ran had nowhere to write (kata d4es). attachTranscript below is what
 	// releases what they recorded, and it runs on every path, writer or not.
+	hdr := s.transcriptHeader(s.sclock().Now().UTC())
+	s.setPromptEnvironmentOrigin(hdr)
 	var tw *transcript.Writer
 	if s.stateDir != "" {
 		var agentTasks []task.Task
 		if s.taskStore != nil {
 			agentTasks = s.taskStore.View()
 		}
-		hdr := s.transcriptHeader(s.sclock().Now().UTC())
 		hdr.AgentTasks = agentTasks
 		var twErr error
 		tw, twErr = s.createTranscript("new_transcript", hdr)
@@ -871,18 +872,9 @@ type RestoreSessionConfig struct {
 	ExportATIFPath            string
 	ExportATIFProviderHandles string
 
-	// AgentsDocPath carries through to the restored Session's SessionConfig,
-	// REPLACING the persisted value rather than merging with it, exactly like
-	// TurnEndsProcess above. Which personal AGENTS.md a session reads belongs
-	// to whoever is restoring it — a hub hands over its own concrete config
-	// root, the same one Settings edits — not to the session on disk, whose
-	// snapshot predates the flag or names a root the hub has since left. Empty
-	// is the restorer's own answer as much as a path is, and means the one thing
-	// it means everywhere: no personal doc resolves in this environment. A hub
-	// whose config root is unresolvable and a plain `evener serve --resume` both
-	// read the file their own environment names and never one a departed hub
-	// persisted. The persisted field exists so a CHILD built from its parent's
-	// snapshot inherits the parent's answer; it does not outlive the run.
+	// AgentsDocPath selects the current host's personal instructions for new
+	// delegates and for the initial prompt when a transcript is missing.
+	// Resuming an existing transcript uses its saved prompt.
 	AgentsDocPath string
 
 	// OnRestoredTranscript, when set, receives the transcript this resume
@@ -1408,10 +1400,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		}
 	}
 
-	// Re-enter the persisted active worktree BEFORE initSessionState runs, so
-	// the session is rooted in it before the environment snapshot, system
-	// prompt, and tool registry are built (native worktree tools spec §7
-	// "Persistence and resume": this ordering is load-bearing).
+	// Re-enter the persisted active worktree before probing the environment
+	// and building the tool registry that will serve this session.
 	if err := s.resumeWorktreeReentry(meta); err != nil {
 		return nil, err
 	}
@@ -1435,7 +1425,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		endEnvironmentScratch(reenteredEnv)
 	}()
 
-	promptSources, err := s.initSessionState(cfg.SessionStartKind, !restoreCfg.deferRestoreSideEffects)
+	var savedHeader *transcript.Header
+	if restoredTranscriptOpened {
+		savedHeader = &restoredTranscriptHeader
+	}
+	s.setPromptEnvironmentOrigin(restoredTranscriptHeader)
+	promptSources, err := s.initSessionState(!restoreCfg.deferRestoreSideEffects, savedHeader)
 	if err != nil {
 		return nil, err
 	}
@@ -1680,12 +1675,10 @@ func cacheReadPtr(n int64) *int {
 	return &v
 }
 
-// initSessionState performs the shared initialization steps for both
-// NewSession and RestoreSession: environment snapshot, system prompt
-// resolution, skills discovery, tool registry setup, and MCP connection.
-// The Session struct fields (client, profile, env, cfg) must already be set.
-// Returns the prompt sources so the caller can emit events after SessionStart.
-func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, runSessionStartHooks bool) ([]promptSource, error) {
+// initSessionState prepares the live environment, skills and tools on every
+// start. A saved header supplies the complete prompt, including an empty one.
+// Without a transcript the session captures its initial prompt from launch inputs.
+func (s *Session) initSessionState(runSessionStartHooks bool, savedHeader *transcript.Header) ([]promptSource, error) {
 	s.cheap = cheapmodel.New(s.client)
 	s.cheap.AdapterTimeout = s.providerAdapterTimeout()
 	env := s.currentEnv()
@@ -1742,7 +1735,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	}
 	s.pluginAgents = builtins
 
-	if s.cfg.SystemPromptFile != "" && !s.isSubagentSession() {
+	if savedHeader == nil && s.cfg.SystemPromptFile != "" && !s.isSubagentSession() {
 		b, err := os.ReadFile(s.cfg.SystemPromptFile)
 		if err != nil {
 			return nil, fmt.Errorf("reading system prompt override %s: %w", s.cfg.SystemPromptFile, err)
@@ -1774,7 +1767,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	s.pluginCommands = make(map[string]plugin.Command)
 
 	// Initialize plugins (skills, agents, hooks). Plugin agents override builtins.
-	if err := s.restoreSideEffect("init_plugins", func() error { return s.initPlugins(sessionStartKind, runSessionStartHooks) }); err != nil {
+	if err := s.restoreSideEffect("init_plugins", func() error { return s.initPlugins(s.cfg.SessionStartKind, runSessionStartHooks) }); err != nil {
 		return nil, fmt.Errorf("plugin initialization: %w", err)
 	}
 	// Evener-wide commands (project .evener/commands + user-global config dir)
@@ -1786,8 +1779,6 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	evenerwide, cmdWarnings := plugin.DiscoverEvenerWideCommands(s.currentEnv())
 	s.pluginCommands = plugin.MergeCommands(s.plugins, evenerwide)
 	s.pendingHookWarnings = append(s.pendingHookWarnings, cmdWarnings...)
-	s.applyAgentRolePromptOverride()
-
 	if err := s.validateModelFallbacks(); err != nil {
 		return nil, err
 	}
@@ -1896,35 +1887,19 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	s.hubEnabled = s.cfg.Manager
 	s.mu.Unlock()
 
-	// Cache instruction docs once; reused every round for system prompt rebuilds.
-	s.projectDocs, s.projectDocsTruncated = LoadInstructionDocs(s.currentEnv(), personalDocPath(s.cfg.AgentsDocPath), s.profile.ProjectDocFiles()...)
-	if s.projectDocsTruncated {
-		// A truncated doc silently drops the tail of the user's standing
-		// instructions from the prompt. Buffer the diagnostic here and let
-		// emitSessionStartEnvelope release it after SESSION_START (#1048).
-		s.pendingInstructionWarnings = append(s.pendingInstructionWarnings, events.WarningData{
-			Source:  "evener",
-			Code:    "instruction_docs_truncated",
-			Message: fmt.Sprintf("instruction docs exceeded the %dKB budget and were truncated; the prompt carries only the beginning of the oversized file", projectDocByteBudget/1024),
-		})
-	}
-
-	// Cache tool definitions and the rendered prompt. A render failure here is a
-	// construction-time diagnostic, so it BUFFERS rather than emitting: nothing
-	// may reach the stream before SESSION_START (see emitSessionStartEnvelope).
 	s.rebuildToolDefsCache()
-	warning, renderFailed := s.refreshSystemPromptCache(env)
-	if warning != "" {
-		s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings,
-			events.WarningData{Message: warning})
-	}
-	// A disclosed unreadable append degrades the prompt but does not fail the
-	// render: the permanent prompt carrying the role preloads was admitted, so
-	// they still join the skill inventory. Only a failed render skips them.
-	if !renderFailed {
-		// Role preloads join the skill inventory only after the permanent
-		// prompt carrying their complete instructions was admitted.
-		s.seedFrozenSkillPreloads()
+	if savedHeader != nil {
+		s.cachedSystemPrompt = savedHeader.SystemPrompt
+		s.promptSourceLog = []promptSource{{Label: "transcript:system_prompt", Size: len(savedHeader.SystemPrompt)}}
+	} else {
+		warning, failed := s.initializeSystemPrompt(env)
+		if warning != "" {
+			s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{Message: warning})
+		}
+		if !failed {
+			// Admit role preloads only when the prompt contains their instructions.
+			s.seedFrozenSkillPreloads()
+		}
 	}
 	if warning := s.commitProvenanceWarning(); warning != "" {
 		s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings,
@@ -2784,9 +2759,7 @@ func (s *Session) retryFailedMCP(ctx context.Context) {
 	}
 	s.mcpTools = s.mcpMgr.ToolDefinitions()
 	s.rebuildToolDefsCache()
-	promptWarning, _ := s.refreshSystemPromptCache(s.env) // already holding s.mu; currentEnv() would deadlock
 	s.mu.Unlock()
-	s.reportPromptRenderFailure(promptWarning)
 	for _, notice := range notices {
 		s.emitDiagnosticWarning(notice)
 	}

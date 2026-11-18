@@ -370,7 +370,6 @@ func wppPromptDataAndRender(t *testing.T, token string) {
 	}
 
 	sess.cfg.testOnly.minimalSystemPrompt = false
-	sess.refreshSystemPromptCache(env)
 	prompt, warning, failed := sess.renderSystemPrompt(env)
 	// The fixture deliberately configures a missing append file: the render
 	// itself must still succeed, and the omission must be disclosed rather than
@@ -382,8 +381,8 @@ func wppPromptDataAndRender(t *testing.T, token string) {
 		t.Fatal("a configured but unreadable append file was not disclosed")
 	}
 	again, _, _ := sess.renderSystemPrompt(env)
-	if prompt != again || prompt != sess.cachedSystemPrompt {
-		t.Fatal("system prompt cache/render was not deterministic")
+	if prompt != again {
+		t.Fatal("rendering identical startup inputs produced different prompts")
 	}
 	for _, want := range []string{token, "append " + token} {
 		if !strings.Contains(prompt, want) {

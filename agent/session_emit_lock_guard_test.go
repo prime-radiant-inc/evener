@@ -246,10 +246,6 @@ func methodName(fn *ast.FuncDecl) string {
 // TestEmitReacquiresSessionMu pins the first guard: emit's own first act must
 // take Session.mu, so emitting from inside a Session.mu critical section
 // deadlocks immediately instead of wedging the daemon later.
-//
-// session_prompts.go's refreshSystemPromptCache is the worked example of the
-// rule this enforces — it RETURNS its diagnostic rather than emitting it,
-// because three of its four callers run under s.mu.
 func TestEmitReacquiresSessionMu(t *testing.T) {
 	t.Parallel()
 	files := agentSourceFiles(t)

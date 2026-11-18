@@ -122,19 +122,32 @@ func TestReplayBlockFollowsRenderedChanges(t *testing.T) {
 	initial.Cwd = "/work/</environment_context>/\"quoted\""
 	initial.Pressure.Load = "load pressure: warn level"
 	initial.Pressure.Memory = "memory pressure: warn level"
+	initial.SessionID = "child-a1"
+	initial.Model = "provider/m1"
+	initial.KnowledgeCutoff = "2025-01"
+	initial.CommitTrailer = "Co-authored-by: Evener v1 (provider/m1) <child-a1@host>"
 	writer := NewTracker(State{})
 	first := writer.RenderDiff(initial)
 	changed := initial
 	changed.GitBranch = ""
 	changed.Pressure.Load = ""
 	changed.Pressure.Memory = ""
+	changed.Model = "provider/m2"
+	changed.KnowledgeCutoff = ""
+	changed.CommitTrailer = ""
 	second := writer.RenderDiff(changed)
 
 	reader := NewTracker(State{})
-	if !reader.ReplayBlock(first) || !reader.ReplayBlock(second) {
-		t.Fatal("ReplayBlock rejected rendered environment blocks")
+	if !reader.ReplayBlock(first) || reader.State().Last != initial {
+		t.Fatalf("initial environment did not round-trip: %+v", reader.State())
+	}
+	if !reader.ReplayBlock(second) {
+		t.Fatal("ReplayBlock rejected the changed environment")
 	}
 	if got := reader.State(); got.Last != changed || !got.HasSent {
 		t.Fatalf("replayed state = %+v, want %+v with HasSent", got, changed)
+	}
+	if reader.RenderDiff(changed) != "" {
+		t.Fatal("unchanged environment was repeated after restore")
 	}
 }

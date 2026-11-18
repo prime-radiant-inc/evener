@@ -1599,34 +1599,87 @@ func TestOpenTranscriptWriter_SingleFileHandle(t *testing.T) {
 }
 
 func TestSession_TranscriptHeaderContainsSystemPrompt(t *testing.T) {
-	t.Parallel()
 	dir := t.TempDir()
 	stateDir := t.TempDir()
+	base := filepath.Join(dir, "base.md")
+	appendFile := filepath.Join(dir, "append.md")
+	const launchBase = "BASE_AT_LAUNCH_A63"
+	const launchAppend = "APPEND_AT_LAUNCH_4F8"
+	writeTestFile(t, base, launchBase)
+	writeTestFile(t, appendFile, launchAppend)
 
+	adapter := &agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response {
+		return agenttest.FinalResponse("ack")
+	}}
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai"})
-
-	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
-		StateDir: stateDir,
+	c.Register(adapter)
+	profile := withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2"))
+	sess, err := NewSession(c, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir:           stateDir,
+		SystemPromptFile:   base,
+		SystemPromptAppend: []string{appendFile},
 	})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
-	defer sess.Close()
-
-	tpath := schema.SessionTranscriptPath(stateDir, sess.ID())
-	header, _, _, err := readTranscript(context.Background(), tpath, "")
+	t.Cleanup(sess.Close)
+	sendInput := func(t *testing.T, s *Session) string {
+		t.Helper()
+		prior := len(adapter.Requests())
+		if _, err := s.ProcessInput(t.Context(), "input", nil); err != nil {
+			t.Fatal(err)
+		}
+		requests := adapter.Requests()[prior:]
+		if len(requests) != 1 || len(requests[0].Messages) == 0 || requests[0].Messages[0].Role != llm.RoleSystem {
+			t.Fatal("expected one request with its leading system message")
+		}
+		return requests[0].Messages[0].Text()
+	}
+	launch := sendInput(t, sess)
+	sess.Close()
+	header, entries, _, err := readTranscript(t.Context(), schema.SessionTranscriptPath(stateDir, sess.ID()), "")
 	if err != nil {
-		t.Fatalf("readTranscript: %v", err)
+		t.Fatal(err)
+	}
+	if !strings.Contains(launch, launchBase) || !strings.Contains(launch, launchAppend) || launch != header.SystemPrompt {
+		t.Fatal("the first provider request and transcript must carry the same complete launch prompt")
 	}
 
-	if header.SystemPrompt == "" {
-		t.Fatal("expected non-empty system_prompt in transcript header")
+	firstUser := 0
+	for i, entry := range entries {
+		if entry.Turn.Kind == schema.TurnUserInput {
+			firstUser = i + 1
+			break
+		}
 	}
-
-	if header.SystemPrompt != sess.cachedSystemPrompt {
-		t.Errorf("transcript header system_prompt differs from the rendered prompt (%d vs %d bytes)",
-			len(header.SystemPrompt), len(sess.cachedSystemPrompt))
+	child, _, err := ForkSessionAtUserTurn(stateDir, sess.ID(), firstUser, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeTestFile(t, appendFile, "APPEND_AFTER_LAUNCH_841")
+	originalTemplate := executeSystemPromptTemplate
+	executeSystemPromptTemplate = func(promptData) (string, error) { return "TEMPLATE_AFTER_LAUNCH_7B6", nil }
+	t.Cleanup(func() { executeSystemPromptTemplate = originalTemplate })
+	for _, tc := range []struct{ name, id string }{{"resume", sess.ID()}, {"fork", child}} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.id == child {
+				if err := os.Remove(base); err != nil {
+					t.Fatal(err)
+				}
+			}
+			meta, err := schema.LoadSessionMeta(stateDir, tc.id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			resumed, err := RestoreSessionFromMeta(c, profile, execenv.NewLocalExecutionEnvironment(dir), meta, stateDir)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer resumed.Close()
+			if got := sendInput(t, resumed); got != launch {
+				t.Fatalf("provider received %d prompt bytes, want the original %d bytes", len(got), len(launch))
+			}
+		})
 	}
 }
 

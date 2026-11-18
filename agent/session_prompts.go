@@ -49,57 +49,25 @@ func prependSystemPromptToUserMessage(systemPrompt string, user llm.Message) llm
 	return combined
 }
 
-// rebuildPromptCache caches system prompt components that don't change between
-// renders. env is the execution environment to render against: callers that
-// already hold s.mu (e.g. SetModel) must pass s.env directly; callers that
-// don't must resolve it via currentEnv() first — renderSystemPrompt cannot
-// call currentEnv() itself since it is invoked from both locked and unlocked
-// contexts and s.mu is not reentrant.
-// It RETURNS the diagnostic for a failed render rather than emitting it, and
-// that is a lock-safety requirement, not a style choice. Five of its six
-// callers run under s.mu, and emit's first act is activeCausalProvenance(),
-// which takes s.mu — so emitting from in here self-deadlocks a non-reentrant
-// mutex with no concurrency involved at all.
-//
-// This RELOCATES the rule, it does not retire it. What the callee can no longer
-// do, the caller now must: report only after unlocking (reportPromptRenderFailure),
-// or buffer instead, which is what initSessionState does because nothing may
-// reach the stream before SESSION_START. Each of the five locked call sites
-// carries its own regression test, because moving the report back inside any one
-// of those critical sections leaves the whole package green otherwise.
-//
-// The empty warning means nothing was omitted or failed; failed reports whether
-// renderSystemPrompt returned its diagnostic text instead of a prompt.
-func (s *Session) refreshSystemPromptCache(env execenv.ExecutionEnvironment) (warning string, failed bool) {
+// initializeSystemPrompt captures the launch inputs after the tool registry is
+// complete. Construction buffers diagnostics until the SessionStart envelope.
+func (s *Session) initializeSystemPrompt(env execenv.ExecutionEnvironment) (warning string, failed bool) {
+	s.applyAgentRolePromptOverride()
+	s.projectDocs, s.projectDocsTruncated = LoadInstructionDocs(env, personalDocPath(s.cfg.AgentsDocPath), s.profile.ProjectDocFiles()...)
+	if s.projectDocsTruncated {
+		s.pendingInstructionWarnings = append(s.pendingInstructionWarnings, events.WarningData{
+			Source:  "evener",
+			Code:    "instruction_docs_truncated",
+			Message: fmt.Sprintf("instruction docs exceeded the %dKB budget and were truncated; the prompt carries only the beginning of the oversized file", projectDocByteBudget/1024),
+		})
+	}
 	if s.cfg.testOnly.minimalSystemPrompt {
 		s.cachedSystemPrompt = "test system prompt"
 		s.promptSourceLog = nil
 		return "", false
 	}
-	prompt, warning, failed := s.renderSystemPrompt(env)
-	// A failed render returns diagnostic prose, not a prompt. Keep the last
-	// prompt that rendered so dependent work does not run on "Template rendering
-	// failed: ..." text; only a session with no earlier prompt installs that
-	// text, so the model is still told why it has none.
-	if !failed || s.cachedSystemPrompt == "" {
-		s.cachedSystemPrompt = prompt
-	}
+	s.cachedSystemPrompt, warning, failed = s.renderSystemPrompt(env)
 	return warning, failed
-}
-
-// reportPromptRenderFailure emits the diagnostic refreshSystemPromptCache
-// returned, if any. Callers MUST call it after releasing s.mu: it goes through
-// emit, which takes s.mu to stamp provenance.
-//
-// It is a named function rather than an inline `if` at each site so the lock
-// contract has somewhere to be written down once, and so a reader at a call
-// site can see that the emit is deliberately outside the critical section
-// above it rather than incidentally after it.
-func (s *Session) reportPromptRenderFailure(warning string) {
-	if warning == "" {
-		return
-	}
-	s.emit(events.WarningData{Message: warning})
 }
 
 // commitTrailerPrompt returns the exact Co-authored-by line, or "" when
@@ -143,10 +111,7 @@ func (s *Session) commitProvenanceWarning() string {
 
 // buildPromptData assembles a promptData from session state for template
 // rendering, plus the PROMPT_LOADED sources for the inputs it read: the role
-// and each append file. env is the ALREADY-RESOLVED execution environment
-// (passed by renderSystemPrompt, which runs under a held s.mu): it must not be
-// re-fetched via s.currentEnv(), which would re-lock the non-reentrant s.mu
-// and deadlock.
+// and each append file. env is the session's launch environment.
 func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData, []promptSource) {
 	agentName := s.cfg.AgentName
 	if agentName == "" {
@@ -331,10 +296,8 @@ func sandboxPromptBoundary(rp *sandbox.ResolvedPolicy) string {
 }
 
 // renderSystemPrompt renders the system prompt from the embedded template. It
-// returns the prompt, the diagnostic its caller must report, and whether the
-// render failed (in which case the prompt is diagnostic text, not a prompt);
-// see refreshSystemPromptCache for why the diagnostic is returned rather than
-// emitted here, and for the env-locking contract.
+// returns the prompt, any startup diagnostic, and whether the render failed.
+// A failure supplies the model with an explanation in place of the instructions.
 func (s *Session) renderSystemPrompt(env execenv.ExecutionEnvironment) (string, string, bool) {
 	data, inputSources := s.buildPromptData(env)
 	result, err := executeSystemPromptTemplate(data)

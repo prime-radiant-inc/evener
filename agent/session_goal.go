@@ -70,13 +70,10 @@ func (s *Session) SetGoal(ctx context.Context, objective string) (started bool, 
 	// A fresh objective never waited on the old goal's dependents: void any
 	// pending hold so the settle cannot suppress this goal's kick with it.
 	s.goalDependentsHeld = false
-	var promptWarning string
 	if s.reg != nil {
 		s.rebuildToolDefsCache()
-		promptWarning, _ = s.refreshSystemPromptCache(s.env)
 	}
 	s.mu.Unlock()
-	s.reportPromptRenderFailure(promptWarning)
 	s.emitCurrentGoalState()
 	s.goalUpdateMu.Unlock()
 
@@ -104,13 +101,10 @@ func (s *Session) ClearGoal() error {
 	s.mu.Lock()
 	s.getOrCreateGoalStore().Clear()
 	s.goalDependentsHeld = false
-	var promptWarning string
 	if s.reg != nil {
 		s.rebuildToolDefsCache()
-		promptWarning, _ = s.refreshSystemPromptCache(s.env)
 	}
 	s.mu.Unlock()
-	s.reportPromptRenderFailure(promptWarning)
 	s.emitCurrentGoalState()
 	s.goalUpdateMu.Unlock()
 	return nil

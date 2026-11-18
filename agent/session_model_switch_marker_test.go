@@ -9,8 +9,7 @@ package agent
 // (d) the marker carries a warning line when estimated context usage
 //     exceeds the new profile's compaction threshold, and another when the
 //     switch dropped now-invalid cfg.ModelFallbacks entries;
-// (e) the cached system prompt reflects the new model's knowledge cutoff
-//     after a switch.
+// (e) a change of model updates the model-facing environment.
 //
 // (b), the live-projector systemMessage echo, is covered in
 // internal/appprojector/appwire_projection_test.go
@@ -418,10 +417,7 @@ func TestSetModel_MarkerWarnsOnDroppedFallbacks(t *testing.T) {
 	}
 }
 
-// TestSetModel_RecomputesKnowledgeCutoffBeforePromptRefresh verifies (e) and
-// G15: after a switch, the cached system prompt reflects the NEW model's
-// knowledge cutoff, not the launch model's.
-func TestSetModel_RecomputesKnowledgeCutoffBeforePromptRefresh(t *testing.T) {
+func TestSetModel_ProjectsKnowledgeCutoffAfterStartupPrompt(t *testing.T) {
 	t.Parallel()
 	launch := NewOpenAIProfile("gpt-5.4")
 	switched := newAnthropicProfile("claude-opus-4-6")
@@ -453,10 +449,13 @@ func TestSetModel_RecomputesKnowledgeCutoffBeforePromptRefresh(t *testing.T) {
 	if got := sess.envInfo.KnowledgeCutoff; got != switchedCutoff {
 		t.Fatalf("post-switch KnowledgeCutoff = %q, want %q", got, switchedCutoff)
 	}
-	if !strings.Contains(sess.cachedSystemPrompt, switchedCutoff) {
-		t.Fatalf("post-switch cachedSystemPrompt does not mention the new cutoff %s:\n%s", switchedCutoff, sess.cachedSystemPrompt)
+	if !strings.Contains(sess.cachedSystemPrompt, launchCutoff) {
+		t.Fatal("switch changed the startup prompt")
 	}
-	if strings.Contains(sess.cachedSystemPrompt, launchCutoff) {
-		t.Fatalf("post-switch cachedSystemPrompt still mentions the launch model's cutoff %s:\n%s", launchCutoff, sess.cachedSystemPrompt)
+	if err := sess.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatal(err)
+	}
+	if got := sess.envTracker.State().Last.KnowledgeCutoff; got != switchedCutoff {
+		t.Fatalf("projected cutoff = %q, want %q", got, switchedCutoff)
 	}
 }

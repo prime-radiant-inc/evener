@@ -88,8 +88,9 @@ scope's index next projects. Topic files and logs are not preloaded.
 
 Enabled sessions also receive core memory guidance. It is the last section of
 the system prompt, rendered from what the session can do when the prompt is
-built. The guidance is cached with the prompt and re-rendered when the tool
-registry, model or environment changes. It says what each scope holds
+built. That text stays in the [session-start prompt](../configuration.md#session-system-prompt)
+for the life of the session. The current tool definitions and projected indexes
+reflect later changes in access. The guidance says what each scope holds
 (personal memory: what applies beyond the current project, such as how the
 human partner works and how tools and systems behave here; project
 memory: knowledge about this project), when to read a page, and that stored memory is fallible evidence, never

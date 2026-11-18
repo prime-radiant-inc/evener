@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -11,7 +12,7 @@ import (
 // be read is still skipped, but the omission must be disclosed through the
 // existing render-warning channel instead of silently dropping the operator's
 // instructions (CORE-08).
-func TestRefreshSystemPromptCacheDisclosesUnreadableAppend(t *testing.T) {
+func TestStartupPromptDisclosesUnreadableAppend(t *testing.T) {
 	dir := t.TempDir()
 	good := filepath.Join(dir, "extra.md")
 	const goodSentinel = "GOOD_APPEND_SENTINEL"
@@ -24,8 +25,9 @@ func TestRefreshSystemPromptCacheDisclosesUnreadableAppend(t *testing.T) {
 		MaxSubagentDepth:   1,
 		SystemPromptAppend: []string{good, missing},
 	}))
-	warning, _ := sess.refreshSystemPromptCache(sess.env)
-	if warning == "" {
+	if !slices.ContainsFunc(drainBufferedWarnings(sess), func(warning string) bool {
+		return strings.Contains(warning, missing)
+	}) {
 		t.Fatal("an unreadable SystemPromptAppend file was skipped without any diagnostic")
 	}
 	if !strings.Contains(sess.cachedSystemPrompt, goodSentinel) {
@@ -33,22 +35,24 @@ func TestRefreshSystemPromptCacheDisclosesUnreadableAppend(t *testing.T) {
 	}
 }
 
-// A failed refresh must not replace a valid cached prompt with diagnostic
-// prose: the model would then run on "Template rendering failed: ..." instead
-// of the last prompt that rendered (CORE-08).
-func TestRefreshSystemPromptCacheKeepsValidPromptOnRenderFailure(t *testing.T) {
-	const cachedSentinel = "CACHED_VALID_PROMPT_SENTINEL"
-	sess := newSession(t)
-	sess.mu.Lock()
-	sess.cachedSystemPrompt = cachedSentinel
-	sess.mu.Unlock()
-
-	forceSystemPromptRenderFailure(t)
-	warning, _ := sess.refreshSystemPromptCache(sess.env)
-	if warning == "" {
-		t.Fatal("the render failure was not reported")
+func TestStartupPromptRetainsAppendedFileAfterRemoval(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "instructions")
+	const contents = "append-27\t \r\nappend-61\n"
+	if err := os.WriteFile(path, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if sess.cachedSystemPrompt != cachedSentinel {
-		t.Fatalf("cached prompt after a failed refresh = %q, want the previous valid prompt", sess.cachedSystemPrompt)
+	sess := newSession(t, withConfig(SessionConfig{SystemPromptAppend: []string{path}}))
+	startup := sess.cachedSystemPrompt
+	if !strings.Contains(startup, "append-27\t \r\nappend-61") {
+		t.Fatal("startup omitted the append file")
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	if err := sess.SetModel("gpt-5.4"); err != nil {
+		t.Fatal(err)
+	}
+	if sess.cachedSystemPrompt != startup {
+		t.Fatal("model switch changed the saved prompt after its append file disappeared")
 	}
 }

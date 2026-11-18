@@ -160,6 +160,7 @@ Not a git repository.
 ## Commit provenance
 When you create a git commit, end the commit message with this exact line:
 Co-authored-by: Evener [version] ([instance]/[model]) <[session]@[host]>
+When later environment context updates commit attribution, use its latest instruction.
 Do not add it to pull request descriptions. Do not amend a commit only to add it.
 
 <skill-catalog>

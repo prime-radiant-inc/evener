@@ -29,7 +29,7 @@ import (
 // enterWorktree/swapEnvAndRefresh: nothing else can observe s yet at this
 // point in construction (mirrors the struct literal's own unlocked `env:
 // env` assignment a few lines above the call site), and swapEnvAndRefresh's
-// cache rebuild (tool defs, rendered system prompt) depends on state
+// tool definition rebuild depends on state
 // initSessionState has not built yet.
 func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 	path := strings.TrimSpace(meta.WorktreePath)

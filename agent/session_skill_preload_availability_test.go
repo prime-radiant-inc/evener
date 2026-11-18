@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/skill"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
@@ -152,23 +153,35 @@ func TestRolePreloadDropsUnfollowableSkillForIncapableDelegate(t *testing.T) {
 	requirePreloadRecords(t, sub.sess, followablePreloadName)
 }
 
-// A delegate created before this fix can have a gardening-memory preload record
-// in its persisted SessionMeta.Skills. Restoring it through the exact
-// delegateRuntime.restoreIdle path must drop both the body and the preload
-// record, while an ordinary activation record for the same name stays as the
-// retained-but-unavailable record #4458 established.
+// The prompt carries the preloads admitted at creation. A restored descriptor
+// may name additional preloads. The inventory keeps authorized saved records
+// and the ordinary activation of a skill whose preload is no longer usable.
 func TestRestoredDelegateDropsUnfollowablePreloadRecord(t *testing.T) {
 	t.Parallel()
 	gardenMetadata := preloadMetadataFixture(gardeningMemorySkillName)
 	followableMetadata := preloadMetadataFixture(followablePreloadName)
 	fixture := newColdDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
-		descriptor.FrozenSkillNames = []string{gardeningMemorySkillName, followablePreloadName}
+		descriptor.FrozenSkillNames = []string{gardeningMemorySkillName, followablePreloadName, secondPreloadName}
 		descriptor.FrozenSkillBodies = []string{
 			renderedPreloadFixture(gardeningMemorySkillName, gardeningPreloadSentinel),
 			renderedPreloadFixture(followablePreloadName, followablePreloadSentinel),
+			renderedPreloadFixture(secondPreloadName, secondPreloadSentinel),
 		}
-		descriptor.FrozenSkillMetadata = []schema.FrozenSkillPreload{gardenMetadata, followableMetadata}
+		descriptor.FrozenSkillMetadata = []schema.FrozenSkillPreload{gardenMetadata, followableMetadata, preloadMetadataFixture(secondPreloadName)}
 	})
+	path := schema.SessionTranscriptPath(fixture.stateDir, fixture.childID)
+	header, _, _, err := readTranscript(t.Context(), path, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	header.SystemPrompt = renderedPreloadFixture(followablePreloadName, followablePreloadSentinel)
+	writer, err := transcript.NewWriter(path, header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
 	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.ToolCallResponse(communicateCall("done-1", "ok")) },
 	})
@@ -203,8 +216,6 @@ func TestRestoredDelegateDropsUnfollowablePreloadRecord(t *testing.T) {
 		t.Fatalf("restore root: %v", err)
 	}
 	defer root.Close()
-	// The restored child's construction reads this test config from the parent.
-	root.cfg.testOnly.minimalSystemPrompt = false
 	reservation, err := root.delegateController.ReserveStart(rootDelegateActor(root.id), fixture.delegateID)
 	if err != nil {
 		t.Fatalf("ReserveStart: %v", err)

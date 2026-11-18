@@ -3398,15 +3398,11 @@ func TestMemoryIndexQuotesOpaqueBytes(t *testing.T) {
 // system template renders last.
 const memoryGuidanceHeading = "\n\n## Memory\n\n"
 
-// refreshModelFacingCaches rebuilds the tool definitions and the system
-// prompt after a test changes the registry or memory binding mid-session, as
-// production paths that change the registry (registerTool, SetModel) do.
+// Tool definitions reflect the current registry and memory binding.
 func refreshModelFacingCaches(s *Session) {
 	s.mu.Lock()
 	s.rebuildToolDefsCache()
-	warning, _ := s.refreshSystemPromptCache(s.env)
 	s.mu.Unlock()
-	s.reportPromptRenderFailure(warning)
 }
 
 var updatePromptGoldens = flag.Bool("update-prompt", false,
@@ -3443,6 +3439,9 @@ func TestMemoryGuidanceFollowsCapabilities(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			var system strings.Builder
+			if tc.revoke != "" {
+				tc.cfg.spawn.deniedToolNames = []string{tc.revoke}
+			}
 			s := newSession(t, withConfig(tc.cfg), withSteps(func(req llm.Request) llm.Response {
 				for _, msg := range req.Messages {
 					if msg.Role == llm.RoleSystem {
@@ -3451,10 +3450,6 @@ func TestMemoryGuidanceFollowsCapabilities(t *testing.T) {
 				}
 				return agenttest.FinalResponse("done")
 			}))
-			if tc.revoke != "" {
-				s.reg.Remove(tc.revoke)
-				refreshModelFacingCaches(s)
-			}
 			if _, err := s.ProcessInput(context.Background(), "go", nil); err != nil {
 				t.Fatal(err)
 			}

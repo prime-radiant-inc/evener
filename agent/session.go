@@ -231,8 +231,7 @@ type Session struct {
 
 	// capabilities is the toolchain measurement the capability preamble renders
 	// (see session_capabilities.go). It is taken ONCE, at session start, by one
-	// short-timeout probe: the prompt is re-rendered often (model switch, env
-	// swap, every restore) and none of those may fork a probe. Its zero value
+	// short-timeout probe to describe the launch environment. Its zero value
 	// renders "unprobed", which is what a session whose probe could not run
 	// truthfully reports. Written during init before the session is shared, read
 	// under s.mu by the prompt render.
@@ -261,6 +260,10 @@ type Session struct {
 	// via foldCommit.resetEnvContextTrackerLocked, and handleCompactionTurn.
 	envCollector *envctx.Collector
 	envTracker   *envctx.Tracker
+	// The frozen prompt describes the provider, model and build at launch. A
+	// changed value belongs in the next environment context.
+	promptProvider, promptModel, promptBuild string
+	inheritedEnvironmentIdentity             bool
 	// envContextState mirrors envTracker.State() for Meta()/SessionMeta.EnvContext:
 	// nil until the first ENVIRONMENT turn is emitted (or restored from a prior
 	// session), so a session that has said nothing about its environment yet
@@ -2267,11 +2270,7 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 		s.reapplyProviderSpecificTools(commitPrev, nextProfile)
 	}
 	s.rebuildToolDefsCache()
-	// Knowledge cutoff must be recomputed BEFORE the prompt-cache refresh
-	// below, or the cached prompt keeps claiming the launch model's cutoff
-	// forever (G15).
 	s.envInfo.KnowledgeCutoff = nextProfile.KnowledgeCutoff()
-	promptWarning, _ := s.refreshSystemPromptCache(s.env) // already holding s.mu; currentEnv() would deadlock
 	// Post-swap fallback re-validation: cfg.ModelFallbacks entries that no
 	// longer validate against the new profile are dropped; their names are
 	// surfaced in the switch marker's warning line below.
@@ -2324,7 +2323,6 @@ func (s *Session) applyModelSwitch(model, primedInstance string, primedListing *
 	if hook := s.cfg.testOnly.beforeModelSwitchPublish; hook != nil {
 		hook()
 	}
-	s.reportPromptRenderFailure(promptWarning)
 	// Persisted marker turn (N5): a new schema.Turn kind rendered as a
 	// systemMessage by both projection paths and excluded from
 	// expandHistory. Must be appended (and thus visible to a replaying
@@ -2754,6 +2752,7 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 		return nil
 	}
 	before := tracker.State()
+	s.setEnvironmentIdentity(&snap, before.Last)
 	block := tracker.RenderDiff(snap)
 	var st envctx.State
 	if block != "" {

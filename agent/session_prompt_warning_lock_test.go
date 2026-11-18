@@ -9,7 +9,6 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
-	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/llm"
 )
 
@@ -47,72 +46,50 @@ func awaitOrFail(t *testing.T, what string, fn func()) {
 	}
 }
 
-// TestSetModelReportsRenderFailureWithoutSelfDeadlock is the third site that
-// refreshes the prompt cache under s.mu, and the one an earlier lexical scan of
-// mine missed: SetModel's guard clauses unlock and return, which fooled a
-// held-lock counter into thinking the region had closed by the time it reached
-// the refresh.
-//
-// That miss is the reason the rule is enforced in the callee rather than at the
-// call sites -- but reportPromptRenderFailure still says callers MUST invoke it
-// after releasing s.mu, so the rule was RELOCATED, not retired, and each of the
-// three unlocked call sites needs its own pin. Moving this one above
-// s.mu.Unlock() leaves the whole package green without this test.
-//
-// Unlike its two siblings this drives a real session, because SetModel resolves
-// a profile and rewrites session state before it ever reaches the refresh.
-func TestSetModelReportsRenderFailureWithoutSelfDeadlock(t *testing.T) {
-	// Built directly rather than through newSession: that helper registers
-	// t.Cleanup(sess.Close), and Close needs s.mu -- the exact mutex the failure
-	// under test leaves held. The cleanup would then block forever and convert a
-	// named 10s failure into a package timeout that reads as a flake. This is the
-	// same fixture hazard, one layer down.
-	client := llm.NewClient()
-	client.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"),
-		execenv.NewLocalExecutionEnvironment(t.TempDir()),
-		SessionConfig{testOnly: testConfig{skipGitSnapshot: true, noSyncJobStore: true}})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
+// Mutations update the session's live capabilities and environment. Every
+// provider request keeps the prompt established at construction.
+func TestSessionChangesPreserveSystemPrompt(t *testing.T) {
+	s := newSession(t)
+	startup := s.cachedSystemPrompt
+	render := executeSystemPromptTemplate
+	calls := 0
+	executeSystemPromptTemplate = func(data promptData) (string, error) {
+		calls++
+		return render(data)
 	}
-	const cachedSentinel = "CACHED_VALID_PROMPT_SENTINEL"
-	sess.mu.Lock()
-	sess.cachedSystemPrompt = cachedSentinel
-	sess.mu.Unlock()
-	forceSystemPromptRenderFailure(t)
+	t.Cleanup(func() { executeSystemPromptTemplate = render })
 
-	awaitOrFail(t, "SetModel with a failing prompt render", func() {
-		if err := sess.SetModel("gpt-5.2"); err != nil {
-			t.Errorf("SetModel: %v", err)
-		}
-	})
-
-	if !sawRenderFailureWarning(sess) {
-		t.Fatal("no warning emitted: the render failure was swallowed")
+	for _, tc := range []struct {
+		name   string
+		change func() error
+	}{
+		{"model", func() error { return s.SetModel("gpt-5.4") }},
+		{"tool", func() error {
+			s.registerTool("probe", "d", map[string]any{}, func(context.Context, any) (any, error) { return nil, nil })
+			return nil
+		}},
+		{"directory", func() error {
+			next := s.currentEnv().(*execenv.LocalExecutionEnvironment).WithWorkingDirectory(t.TempDir())
+			return s.swapEnvAndRefresh(next, nil)
+		}},
+		{"set goal", func() error { _, err := s.SetGoal(t.Context(), "goal-27"); return err }},
+		{"clear goal", s.ClearGoal},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			before := calls
+			awaitOrFail(t, tc.name, func() {
+				if err := tc.change(); err != nil {
+					t.Errorf("change session: %v", err)
+				}
+			})
+			if calls != before || s.cachedSystemPrompt != startup {
+				t.Errorf("session change rendered the system prompt %d times, identical bytes = %t", calls-before, s.cachedSystemPrompt == startup)
+			}
+		})
 	}
-	if sess.cachedSystemPrompt != cachedSentinel {
-		t.Fatalf("cached prompt after a failed SetModel refresh = %q, want the previous valid prompt", sess.cachedSystemPrompt)
-	}
-	// Closed here rather than in a t.Cleanup, and deliberately: the failure this
-	// test exists to catch leaves s.mu held by a parked goroutine, and Close
-	// needs that mutex. A cleanup would hang on it and turn a named 10s failure
-	// into a package timeout that reads as a flake. Reached only when SetModel
-	// returned, so the lock is free.
-	sess.Close()
 }
 
-// TestConstructionRenderFailureArrivesAfterSessionStart pins the fourth call
-// site, which is the one that must NOT emit.
-//
-// initSessionState refreshes the prompt cache during construction, before
-// SESSION_START has been emitted. A diagnostic that reaches the stream first has
-// no tracked thread to land on and is lost for good rather than merely reordered
-// (see emitSessionStartEnvelope), so this site buffers into
-// pendingTranscriptWarnings instead of reporting immediately.
-//
-// Asserting ORDER rather than presence is what makes this a pin: replacing the
-// buffer with a direct report still emits the warning, and only its position
-// relative to SESSION_START says which one happened.
+// Startup diagnostics are delivered after the event that establishes the session.
 func TestConstructionRenderFailureArrivesAfterSessionStart(t *testing.T) {
 	forceSystemPromptRenderFailure(t)
 	client := llm.NewClient()
@@ -145,145 +122,5 @@ func TestConstructionRenderFailureArrivesAfterSessionStart(t *testing.T) {
 		default:
 			t.Fatal("construction never reported the render failure")
 		}
-	}
-}
-
-// sawRenderFailureWarning drains what the session has emitted and reports
-// whether the prompt render failure is among it. SetModel emits a model-changed
-// event too, so this cannot just read the first event off the channel.
-func sawRenderFailureWarning(s *Session) bool {
-	for {
-		select {
-		case ev := <-s.events:
-			if warning, ok := ev.Data.(events.WarningData); ok &&
-				strings.Contains(warning.Message, "forced render failure") {
-				return true
-			}
-		default:
-			return false
-		}
-	}
-}
-
-func promptWarningSession(t *testing.T) *Session {
-	t.Helper()
-	return &Session{
-		id:      "prompt-warning",
-		profile: NewOpenAIProfile("gpt-5.2"),
-		reg:     tool.NewRegistry(),
-		env:     execenv.NewLocalExecutionEnvironment(t.TempDir()),
-		events:  make(chan events.SessionEvent, 16),
-	}
-}
-
-// TestRegisterToolReportsRenderFailureWithoutSelfDeadlock pins the lock
-// discipline for the system prompt's own failure warning.
-//
-// registerTool rebuilds the prompt cache under s.mu, and it must: the cache and
-// the env it derives from are both guarded by that mutex. But the render can
-// fail, and reporting that failure means emitting -- and emit's very first act
-// is activeCausalProvenance(), which takes s.mu. On a non-reentrant mutex that
-// is a self-deadlock, reached with no concurrency at all.
-//
-// So the warning must leave the critical section before it is emitted. This
-// test drives the real entry point rather than renderSystemPrompt directly:
-// calling the renderer straight only proves the failure path returns a string,
-// which it did while the lock bug was live.
-func TestRegisterToolReportsRenderFailureWithoutSelfDeadlock(t *testing.T) {
-	forceSystemPromptRenderFailure(t)
-	s := promptWarningSession(t)
-
-	awaitOrFail(t, "RegisterTool with a failing prompt render", func() {
-		s.registerTool("probe", "d", map[string]any{}, func(context.Context, any) (any, error) { return nil, nil })
-	})
-
-	// The failure must still be reported. A fix that silences the warning to
-	// dodge the lock would pass a liveness-only assertion.
-	select {
-	case ev := <-s.events:
-		warning, ok := ev.Data.(events.WarningData)
-		if !ok {
-			t.Fatalf("emitted %T, want WarningData", ev.Data)
-		}
-		if !strings.Contains(warning.Message, "forced render failure") {
-			t.Fatalf("warning = %q, want it to name the render failure", warning.Message)
-		}
-	default:
-		t.Fatal("no warning emitted: the render failure was swallowed")
-	}
-}
-
-// TestSwapEnvAndRefreshReportsRenderFailureWithoutSelfDeadlock is the same
-// contract at the other call site that refreshes the prompt cache under s.mu.
-// The two are pinned separately because they are separate critical sections:
-// fixing one does not fix the other, and only a per-site test says so.
-func TestSwapEnvAndRefreshReportsRenderFailureWithoutSelfDeadlock(t *testing.T) {
-	forceSystemPromptRenderFailure(t)
-	s := promptWarningSession(t)
-	// Built via WithWorkingDirectory, never NewLocalExecutionEnvironment:
-	// swapEnvAndRefresh's contract requires it, and a test that violates the
-	// contract is testing a state production cannot reach.
-	next := s.env.(*execenv.LocalExecutionEnvironment).WithWorkingDirectory(t.TempDir())
-
-	awaitOrFail(t, "swapEnvAndRefresh with a failing prompt render", func() {
-		s.swapEnvAndRefresh(next, nil)
-	})
-
-	select {
-	case ev := <-s.events:
-		changed, ok := ev.Data.(events.EnvironmentChangedData)
-		if ev.Kind != events.EventEnvironmentChanged || !ok || changed.WorkingDir != next.WorkingDirectory() {
-			t.Fatalf("installed cwd event = %#v, want EnvironmentChangedData for %q", ev, next.WorkingDirectory())
-		}
-	default:
-		t.Fatal("no installed cwd event emitted")
-	}
-
-	select {
-	case ev := <-s.events:
-		warning, ok := ev.Data.(events.WarningData)
-		if !ok {
-			t.Fatalf("emitted %T, want WarningData", ev.Data)
-		}
-		if !strings.Contains(warning.Message, "forced render failure") {
-			t.Fatalf("warning = %q, want it to name the render failure", warning.Message)
-		}
-	default:
-		t.Fatal("no warning emitted: the render failure was swallowed")
-	}
-	select {
-	case ev := <-s.events:
-		t.Fatalf("unexpected event after installed cwd and warning: %#v", ev)
-	default:
-	}
-}
-
-func TestSetGoalReportsRenderFailureWithoutSelfDeadlock(t *testing.T) {
-	forceSystemPromptRenderFailure(t)
-	s := promptWarningSession(t)
-
-	awaitOrFail(t, "SetGoal with a failing prompt render", func() {
-		if _, err := s.SetGoal(context.Background(), "test goal"); err != nil {
-			t.Errorf("SetGoal: %v", err)
-		}
-	})
-
-	if !sawRenderFailureWarning(s) {
-		t.Fatal("no warning emitted: the render failure was swallowed")
-	}
-}
-
-func TestClearGoalReportsRenderFailureWithoutSelfDeadlock(t *testing.T) {
-	forceSystemPromptRenderFailure(t)
-	s := promptWarningSession(t)
-
-	awaitOrFail(t, "ClearGoal with a failing prompt render", func() {
-		if err := s.ClearGoal(); err != nil {
-			t.Errorf("ClearGoal: %v", err)
-		}
-	})
-
-	if !sawRenderFailureWarning(s) {
-		t.Fatal("no warning emitted: the render failure was swallowed")
 	}
 }

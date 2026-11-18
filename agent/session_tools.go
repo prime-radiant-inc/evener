@@ -100,12 +100,8 @@ func (s *Session) resultToolName() string {
 
 // registerTool registers a custom tool at runtime.
 func (s *Session) registerTool(name, description string, params map[string]any, fn func(ctx context.Context, args any) (any, error)) {
-	// s.reg self-synchronizes (see the Session.mu lock discipline comment), so
-	// Register itself can happen outside s.mu. But the cache rebuild below
-	// writes s.cachedToolDefs/s.cachedSystemPrompt and reads s.env/s.envInfo,
-	// all of which mu guards — those must happen under lock, mirroring
-	// SetModel's pattern, so they can't race a concurrent env swap or model
-	// switch.
+	// The registry synchronizes registration. The session lock protects the
+	// provider-visible tool definitions during a model or environment change.
 	_ = s.reg.Register(tool.RegisteredTool{
 		Definition: llm.ToolDefinition{
 			Name:        name,
@@ -116,12 +112,9 @@ func (s *Session) registerTool(name, description string, params map[string]any, 
 			return fn(ctx, args)
 		},
 	})
-	// Rebuild caches so the new tool appears in tool defs and system prompt.
 	s.mu.Lock()
 	s.rebuildToolDefsCache()
-	promptWarning, _ := s.refreshSystemPromptCache(s.env) // already holding s.mu; currentEnv() would deadlock
 	s.mu.Unlock()
-	s.reportPromptRenderFailure(promptWarning)
 }
 
 func (s *Session) canonicalToolName(name string) string {

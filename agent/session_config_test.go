@@ -1369,9 +1369,8 @@ func TestSession_CustomRegisteredTool_AppearsInSystemPrompt(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	// Refresh caches to pick up tool registered after session creation.
+	// Publish the registered tool in the next request's tool definitions.
 	sess.rebuildToolDefsCache()
-	sess.refreshSystemPromptCache(sess.env)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()

@@ -455,7 +455,7 @@ func TestCachedSystemPromptComponents_DoesNotDuplicateMCPToolDescriptions(t *tes
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 
-	// Add an MCP tool and rebuild to test that the rendered prompt includes it.
+	// A tool added during the session belongs in its live definitions.
 	mcpTool := llm.ToolDefinition{
 		Name:        "mcp__test__tool",
 		Description: "Test MCP tool",
@@ -467,7 +467,6 @@ func TestCachedSystemPromptComponents_DoesNotDuplicateMCPToolDescriptions(t *tes
 			return "ok", nil
 		},
 	})
-	sess.refreshSystemPromptCache(sess.env)
 	sess.rebuildToolDefsCache()
 
 	if strings.Contains(sess.cachedSystemPrompt, "Test MCP tool") {
@@ -1049,12 +1048,15 @@ func TestRestoreSessionFromMeta_NoTranscript_StartsClean(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	stateDir := t.TempDir()
+	appendFile := filepath.Join(dir, "append.md")
+	const instruction = "RECOVERED_PROMPT_APPEND_126"
+	writeTestFile(t, appendFile, instruction)
 
 	meta := schema.SessionMeta{
 		ID:        "01JTEST_META_CLEAN_001",
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
-		Config:    schema.ConfigSnapshot{MaxToolRoundsPerInput: 200},
+		Config:    schema.ConfigSnapshot{MaxToolRoundsPerInput: 200, SystemPromptAppend: []string{appendFile}},
 		EnvInfo:   schema.EnvironmentInfo{WorkingDir: dir},
 		CreatedAt: time.Now(),
 		UpdatedAt: time.Now(),
@@ -1082,6 +1084,13 @@ func TestRestoreSessionFromMeta_NoTranscript_StartsClean(t *testing.T) {
 	if len(reqs) == 0 {
 		t.Fatal("expected at least 1 LLM request")
 	}
+	header, _, _, err := readTranscript(t.Context(), schema.SessionTranscriptPath(stateDir, meta.ID), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(header.SystemPrompt, instruction) || reqs[0].Messages[0].Text() != header.SystemPrompt {
+		t.Fatal("the replacement transcript must contain the initial prompt sent to the provider")
+	}
 }
 
 func TestRestoreSessionFromMeta_TranscriptWithCompaction(t *testing.T) {
@@ -1100,7 +1109,7 @@ func TestRestoreSessionFromMeta_TranscriptWithCompaction(t *testing.T) {
 		TurnCount: 5,
 	}
 
-	// Write a transcript with compaction.
+	// Write a transcript with compaction and an empty saved system prompt.
 	tpath := schema.SessionTranscriptPath(stateDir, meta.ID)
 	tw, err := transcript.NewWriter(tpath, transcript.Header{
 		SessionID: meta.ID,
@@ -1141,6 +1150,9 @@ func TestRestoreSessionFromMeta_TranscriptWithCompaction(t *testing.T) {
 
 	var userTexts []string
 	for _, m := range reqs[0].Messages {
+		if m.Role == llm.RoleSystem && m.Text() != "" {
+			t.Fatalf("restored empty system prompt was replaced with %d bytes", len(m.Text()))
+		}
 		if m.Role == llm.RoleUser {
 			userTexts = append(userTexts, m.Text())
 		}

@@ -169,6 +169,19 @@ reasoning_effort = "high"
 
 The next hub launch uses `high`, keeps `workspace-write` and network off, and keeps `LANG`. A per-launch effort of `low` wins over both files. Leaving that field at its default inherits `high`; it does not erase the project setting. Network off limits tools, not the model connection; see [Sandboxing](sandboxing.md).
 
+### Session system prompt
+
+Evener renders the system prompt once when a new session starts and saves its
+exact text in the transcript header. Every later request uses those bytes,
+including after a restart or upgrade. Edits to prompt files apply to newly
+started sessions. A fork or aside inherits its parent’s exact prompt. A
+delegate starts with its own role and permissions, including when
+`fork_context` copies the parent's conversation into the delegate.
+
+If a session switches models or working directories, its next request carries
+the new facts in conversation context. A fork receives its own session ID and
+commit attribution there. Each request supplies the tools currently available.
+
 ### Commit provenance
 
 `commit_provenance` in the global launch layer controls whether the system prompt tells the model to end commit messages with an Evener `Co-authored-by` trailer naming the version, model, host and session ID. `coauthor` is the default; `off` omits the instruction. The New session form offers the same field as a per-launch override. It is not offered in project settings. The trailer covers only commits whose message the model writes; a scripted commit, `git merge --no-edit`, a rebase or a GitHub-created commit does not gain one.

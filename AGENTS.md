@@ -226,6 +226,19 @@ run load app modules that import the package by name. `npm run check:scripts`
 (part of `make test-native`) resolves those scripts' module graphs without
 loading them, since each opens a socket the moment its body runs.
 
+## Session-start system prompt
+
+Render the system prompt once when creating an independent session. Store the
+exact string in its transcript header and send those bytes on every request,
+including after a cold resume or binary upgrade. A fork or aside inherits the
+parent's literal header prompt, including whitespace. Re-rendering it can
+invalidate the provider cache for the entire conversation.
+
+Append changes to the model, environment or commit attribution as new
+conversation context. Supply current tool definitions on the request. Tests
+for these paths must compare the provider-facing prompt bytes with the saved
+header after a live change, cold resume and fork.
+
 ## Code conventions
 
 - A production symbol needs a production caller. A test-only seam needs a

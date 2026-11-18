@@ -131,7 +131,6 @@ func TestMCPIntegration_ToolCallThroughSession(t *testing.T) {
 	sess.mcpTools = mgr.ToolDefinitions()
 	// Rebuild caches to pick up the MCP tools added after session creation.
 	sess.rebuildToolDefsCache()
-	sess.refreshSystemPromptCache(sess.env)
 
 	tctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: in-memory MCP transport + scripted adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
