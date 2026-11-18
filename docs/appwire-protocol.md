@@ -4449,6 +4449,7 @@ Underlying Go kind: `string` (no struct fields).
 | `spawnTimeout` | string | yes |  |
 | `bearerTokenAge` | string | yes |  |
 | `pastIndex` | \*[appwire.SettingsPastIndexOverview](#settingspastindexoverview) | yes |  |
+| `operationStoreQuarantine` | \*[appwire.SettingsOperationStoreQuarantine](#settingsoperationstorequarantine) | yes |  |
 | `daemonIdleTimeoutMillis` | int64 |  |  |
 
 
@@ -4468,6 +4469,16 @@ Underlying Go kind: `string` (no struct fields).
 | `transport` | string | yes |  |
 | `status` | string | yes |  |
 | `error` | string | yes |  |
+
+
+### `SettingsOperationStoreQuarantine`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `quarantinedFile` | string | yes |  |
+| `asideFile` | string | yes |  |
+| `custodyFile` | string | yes |  |
+| `quarantineEpoch` | uint64 | yes |  |
 
 
 ### `SettingsOverviewResponse`
