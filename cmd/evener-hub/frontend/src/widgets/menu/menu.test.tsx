@@ -288,6 +288,90 @@ test("a document scroll closes the menu", async () => {
   expect(screen.queryByRole("menu")).toBeNull();
 });
 
+// A scroller emits `scroll` for two reasons, and only one takes the trigger
+// away. The reader scrolling it slides a trigger out from under a popup that is
+// fixed in the viewport's coordinates. A browser CLAMPING the offset does not:
+// make the window taller and the rail's maximum offset drops, so the browser
+// pulls scrollTop back to a valid place with no user behind it. A popup asked to
+// trust the event rather than the geometry closes on that correction, which is
+// the menu vanishing because the window got taller.
+test("a taller viewport that clamps an ancestor's scroll leaves the menu open and re-anchored", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 400 });
+  const triggerTop = 300;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  const { flush } = captureFrames();
+  try {
+    render(
+      <div data-testid="owning-scroller">
+        <Menu trigger="Actions" items={items()} />
+      </div>,
+    );
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu")).toBeTruthy();
+
+    // The window gets taller. The trigger stays exactly where the last pass
+    // anchored it, and the browser corrects the scroller's now-invalid offset.
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+    fireEvent(window, new Event("resize"));
+    flush();
+    const anchoredTop = screen.getByRole("menu").style.top;
+
+    fireEvent.scroll(screen.getByTestId("owning-scroller"));
+    flush();
+
+    // Still open, and still sitting on its trigger.
+    expect(screen.getByRole("menu")).toBeTruthy();
+    expect(screen.getByRole("menu").style.top).toBe(anchoredTop);
+  } finally {
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// The other half, and the one that keeps the dismissal: a scroll of the
+// trigger's own container that really does move the trigger still closes the
+// menu. Without this, "stop closing on scroll" would pass the test above and be
+// worse than the bug it replaced. The viewport is unchanged here, so the clamp
+// reading has nothing to stand on.
+test("a scroll that moves the trigger out from under the popup still closes the menu", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  let triggerTop = 400;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  try {
+    render(
+      <div data-testid="owning-scroller">
+        <Menu trigger="Actions" items={items()} />
+      </div>,
+    );
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu")).toBeTruthy();
+
+    // The reader scrolls the trigger's container: the trigger slides up under
+    // the fixed popup with the window exactly as tall as it was.
+    triggerTop = 260;
+    fireEvent.scroll(screen.getByTestId("owning-scroller"));
+
+    expect(screen.queryByRole("menu")).toBeNull();
+  } finally {
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
 // A viewport resize re-anchors the menu to the trigger's new rect. It used to
 // close: on Android the resize that matters is the software keyboard leaving
 // when the menu's own FocusScope takes focus out of the composer's editor,
@@ -1660,6 +1744,61 @@ test("a position-only placement leaves the reader's scroll where they put it", a
     expect(reveal).not.toHaveBeenCalled();
   } finally {
     vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// A wider popup is not a moved row. An activity count on a label BELOW the
+// focused one can widen the popup without wrapping anything: the row holding
+// focus keeps its own top and height, and the scrollport is as tall as it was.
+// A guard that treats any changed box as movement then scrolls back up to the
+// focused row and takes the reader's own place in the list away from them.
+test("a width-only change leaves the reader's scroll where they put it", async () => {
+  const user = userEvent.setup();
+  const originalInnerWidth = Object.getOwnPropertyDescriptor(window, "innerWidth");
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 800 });
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  let popupWidth = 160;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(20, 100, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, popupWidth, 120);
+    return box(0, 0, 0, 0);
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "UL" ? popupWidth : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "UL") return 120;
+    return this.tagName === "LI" ? 44 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName !== "LI" || !this.parentElement) return 0;
+    return Array.prototype.indexOf.call(this.parentElement.children, this) * 44;
+  });
+  const { flush } = captureFrames();
+  try {
+    render(<Menu trigger="Actions" items={items()} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    // Focus stays on the first row, and the reader scrolls down to the last.
+    const first = screen.getByRole("menuitem", { name: "Rename" });
+    expect(document.activeElement).toBe(first);
+    const popup = screen.getByRole("menu");
+    popup.scrollTop = 40;
+    expect(popup.scrollTop).toBe(40);
+
+    // A label further down the list widens the popup. No row's top or height
+    // changes, and the scrollport is exactly as tall as it was.
+    popupWidth = 200;
+    fireEvent(window, new Event("resize"));
+    flush();
+
+    // Still where the reader put it: nothing they can see moved.
+    expect(popup.scrollTop).toBe(40);
+    expect(document.activeElement).toBe(first);
+  } finally {
+    vi.restoreAllMocks();
+    if (originalInnerWidth) Object.defineProperty(window, "innerWidth", originalInnerWidth);
     if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
   }
 });

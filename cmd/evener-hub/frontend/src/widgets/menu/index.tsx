@@ -340,6 +340,24 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   // change, a vanished id, a resized popup - is only a REASON to re-ask.
   const rowObservationRef = useRef<RowObservation | null>(null);
 
+  // Where the trigger's rect was at the last placement pass, and whether the
+  // window has grown since the pass before it. A scroll of a scroller that
+  // holds the trigger means "the trigger moved out from under the fixed popup",
+  // and that is true exactly when the trigger's rect is no longer where this
+  // recorded it. A browser CLAMPING an offset is a scroll event with no user
+  // behind it: the rail's maximum offset shrinks, the browser pulls scrollTop
+  // back, and the trigger does not move on screen at all.
+  //
+  // The growth is recorded separately from the rect because a clamp has a CAUSE
+  // and only one: a taller viewport leaves less content below the current
+  // offset. It cannot be read off the rect's own record, because the pass the
+  // resize itself runs would have overwritten it before the clamp arrived. It
+  // is consumed by the next scroll, so it can only ever excuse the one
+  // correction that resize caused.
+  const anchoredTriggerRef = useRef<{ left: number; top: number } | null>(null);
+  const grewBeforeScrollRef = useRef(false);
+  const lastViewportHeightRef = useRef(0);
+
   /** Reveal the focused row if it is outside the popup's visible area, and do
    * nothing in every other case.
    *
@@ -368,16 +386,24 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
       const now = observeRow(popup, row);
       const before = rowObservationRef.current;
       rowObservationRef.current = now;
-      // `before === null` is the first look: the row was just focused and the
-      // popup was placed around it, so layout has not moved it out of view.
-      if (reason === "layout" && (before === null || !movedSince(now, before))) return;
-      // Already visible on BOTH axes: a row inserted BELOW this one moves nothing
-      // above it, and the reader's own scroll to the lower actions must survive
-      // that. Width counts because a narrower popup wraps labels and can clip a
-      // row sideways without changing the scrollport's height at all.
-      const visibleVertically = now.top >= popup.scrollTop && now.top + now.height <= popup.scrollTop + now.portHeight;
-      const visibleHorizontally = now.width <= popup.clientWidth;
-      if (visibleVertically && visibleHorizontally) return;
+      if (reason === "layout") {
+        // `before === null` is the first look: the row was just focused and the
+        // popup was placed around it, so layout has not moved it out of view.
+        if (before === null || !movedSince(now, before)) return;
+        // Clipping has a SIDE, and only one side is layout's to fix. A row
+        // hanging BELOW the scrollport is one content above it pushed out from
+        // under the reader. A row clipped ABOVE is a row the reader scrolled
+        // past - unless layout moved its top UP, which puts the clip back on
+        // layout. Anything else here is the reader's own place in the list, and
+        // a pass that ran for some other reason (a popup that changed width, a
+        // trigger that moved) must not take it away from them.
+        const clippedBelow = now.top + now.height > popup.scrollTop + now.portHeight;
+        const clippedAbove = now.top < popup.scrollTop;
+        if (!clippedBelow && !(clippedAbove && now.top < before.top)) return;
+      }
+      // A row inserted BELOW the focused one moves nothing above it, and the
+      // reader's own scroll to the lower actions must survive that: the guards
+      // above are what return there, since the row's own frame did not move.
       revealRow(popup, row);
     },
     [ownerDocument],
@@ -396,6 +422,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // clamp against that window's edges, not the opener's.
     const ownerWindow = ownerDocument.defaultView ?? window;
     const triggerRect = triggerEl.getBoundingClientRect();
+    anchoredTriggerRef.current = { left: triggerRect.left, top: triggerRect.top };
     // The popup's own size is its untransformed layout box (offset*), not its
     // rect: this runs in the commit that mounts it, while the entrance still
     // holds it at its scaled-down `from` keyframe, and a rect would place a
@@ -794,11 +821,34 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   // listener is capture-phase because "scroll" doesn't bubble - capture
   // still reaches every ancestor on the way down to whatever actually
   // scrolled, so one window listener sees every scroller.
+  //
+  // The event is not the decision, though. A scroller that holds the trigger
+  // emits `scroll` for two different reasons, and only one of them moves the
+  // trigger:
+  //
+  // - the reader scrolled it, which slides the trigger out from under a popup
+  //   that is fixed in the viewport's coordinates, and
+  // - the browser CLAMPED it, because a viewport that grew left less content
+  //   below the current offset than the offset assumed. The rail near its end
+  //   is the everyday case: make the window taller and its maximum scroll
+  //   offset drops, so the browser pulls scrollTop back with no user behind it
+  //   and emits `scroll` for the correction.
+  //
+  // Reading which happened is one geometry question, and the same one the
+  // reveal path asks: did the thing I anchored to move? A clamp leaves the
+  // trigger's rect exactly where the last placement pass recorded it. Anything
+  // that does move it is a scroll that really did take the trigger away, so
+  // the dismissal stands.
   useEffect(() => {
     if (!isOpen) return;
     // The widget's own window: a popout's scrolls and resizes never reach the
     // opener's window.
     const ownerWindow = ownerDocument.defaultView ?? window;
+    // The height the next resize is compared against, and no growth to excuse
+    // yet. Seeded here rather than at module scope so a popout's own window is
+    // the one measured.
+    lastViewportHeightRef.current = ownerWindow.innerHeight;
+    grewBeforeScrollRef.current = false;
     function onScrollCapture(event: Event) {
       const target = event.target;
       if (target === null) return;
@@ -814,7 +864,20 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         target === ownerWindow ||
         (nodeType === 1 && rootRef.current !== null && (target as Element).contains(rootRef.current))
       ) {
-        closeMenu();
+        // A clamp has two facts, and it takes both of them: the window GREW
+        // since the previous scroll, and the trigger is still exactly where the
+        // last pass anchored it. Either one alone is not a clamp - a scroll with
+        // no growth behind it is the reader, however the rect happens to read,
+        // and growth on its own moves nothing. The flag is spent here, so one
+        // resize can excuse at most one corrected offset.
+        const anchored = anchoredTriggerRef.current;
+        const rect = triggerRef.current?.getBoundingClientRect();
+        const grew = grewBeforeScrollRef.current;
+        grewBeforeScrollRef.current = false;
+        const clamped =
+          grew && anchored !== null && rect !== undefined && rect.left === anchored.left && rect.top === anchored.top;
+        if (clamped) placeNowAndAfterLayout();
+        else closeMenu();
       }
     }
     // A resize re-anchors, it never dismisses. The resize this menu actually
@@ -836,7 +899,18 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
       placeMenu();
       placeAfterLayout();
     };
-    return watchViewport(rootRef.current, onScrollCapture, placeNowAndAfterLayout);
+    // A clamp can only follow a window that GREW, and the scroll it emits comes
+    // after this handler has already re-anchored. Recording the growth here is
+    // what lets the scroll be read as the browser's correction rather than the
+    // reader's. Shrinking the window cannot clamp anything up: it makes more
+    // content below the offset, not less.
+    const resizeToPlace = () => {
+      const now = ownerWindow.innerHeight;
+      if (now > lastViewportHeightRef.current) grewBeforeScrollRef.current = true;
+      lastViewportHeightRef.current = now;
+      placeNowAndAfterLayout();
+    };
+    return watchViewport(rootRef.current, onScrollCapture, resizeToPlace);
   }, [isOpen, closeMenu, ownerDocument, placeMenu, placeAfterLayout]);
 
   // A resize event is not the only thing that moves the trigger, and the

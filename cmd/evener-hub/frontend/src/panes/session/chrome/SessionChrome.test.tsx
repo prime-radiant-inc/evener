@@ -981,16 +981,25 @@ test("moving a mounted pane into a short popout drops Find and moving it back br
     fireEvent.keyDown(document.activeElement ?? trigger, { key: "ArrowDown" });
     expect(document.activeElement).toBe(find);
 
-    // The pane is moved into a popout only 390px tall: the same mounted tree,
-    // its DOM adopted by the popout window, and the published document changed
-    // to that window's - the opener stays 520px and hears nothing.
-    Object.defineProperty(win, "innerHeight", { configurable: true, value: 390 });
+    // The pane is moved into a popout that is still 520px tall - the same
+    // mounted tree, its DOM adopted by the popout window, and the published
+    // document changed to that window's, with the opener staying 520px. The
+    // move alone changes nothing about Find, so the popout must be the same
+    // height here: shortening it before the move would let the document-change
+    // effect read the new height and drop Find on the move, and this test would
+    // then pass with the popout's resize listener removed.
     act(() => {
       doc.body.append(container);
     });
     act(() => {
       view.rerender(pane(doc));
     });
+    expect(within(doc.body).getByRole("menuitem", { name: /^Find in session/ })).toBeTruthy();
+
+    // ONLY NOW does the popout get shorter. Nothing re-renders and no document
+    // changes: the popout's own resize is the only thing that can tell the pane
+    // its window shrank.
+    Object.defineProperty(win, "innerHeight", { configurable: true, value: 390 });
     act(() => {
       win.dispatchEvent(new Event("resize"));
     });
