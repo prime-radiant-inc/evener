@@ -98,6 +98,19 @@ func (s *Session) emitDelegateUpdate(plan delegateUpdatePlan) {
 	if s == nil || s.delegateController == nil {
 		return
 	}
+	// A close drain's pass is on the close-join critical path: an announcement it
+	// causes must not reach the session's full close budget, because that budget
+	// is what removes the remaining collectible lanes. A nested pass publishing
+	// the root's stream on the full budget could take the slots the root's own
+	// removals need. The bound travels with the pass.
+	bound, bounded := s.delegateController.publicationBoundFor()
+	publish := func(target *Session, data events.DelegateUpdatedData, p *provenance.Causal) {
+		if bounded {
+			target.emitWithProvenanceContext(bound, data, p)
+			return
+		}
+		target.emitWithProvenance(data, p)
+	}
 	now := s.sclock().Now().UTC()
 	rootID := s.delegateController.rootSessionID
 	for _, row := range plan.rows {
@@ -122,11 +135,11 @@ func (s *Session) emitDelegateUpdate(plan delegateUpdatePlan) {
 		// session owns, whose owner stream already carries it.
 		for _, runtime := range ancestorRuntimes {
 			if runtime != ownerRuntime {
-				runtime.emitWithProvenance(data, provenance.Clone(row.descriptor.Provenance))
+				publish(runtime, data, provenance.Clone(row.descriptor.Provenance))
 			}
 		}
 		if ownerRuntime != nil {
-			ownerRuntime.emitWithProvenance(data, provenance.Clone(row.descriptor.Provenance))
+			publish(ownerRuntime, data, provenance.Clone(row.descriptor.Provenance))
 			continue
 		}
 		s.mu.Lock()

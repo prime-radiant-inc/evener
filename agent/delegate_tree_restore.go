@@ -739,7 +739,19 @@ func (c *delegateTreeController) reportDelegateWakeError(err error) {
 	root := c.rootRuntime
 	c.mu.Unlock()
 	if root != nil {
-		root.emit(warningDataFromError("delegate delivery wake failed", err))
+		// A close drain is waiting for this pass, and the acknowledgment it
+		// retried already succeeded: the wake is best-effort news. Publishing it
+		// on the session's own path let a stalled authoritative stream spend the
+		// budget reserved for worktree disposal before the drain ever reached its
+		// bounded warning publisher. On the drain's bound the warning still
+		// reaches a consumer that can accept it and releases the drain on one that
+		// cannot.
+		data := warningDataFromError("delegate delivery wake failed", err)
+		if bound, ok := c.publicationBoundFor(); ok {
+			root.emitWithProvenanceContext(bound, data, root.activeCausalProvenance())
+			return
+		}
+		root.emit(data)
 	}
 }
 

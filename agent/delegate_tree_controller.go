@@ -47,6 +47,11 @@ type delegateTreeControllerConfig struct {
 type delegateTreeController struct {
 	mu sync.Mutex
 
+	// publicationBound is set for the duration of a close drain's pass, so the
+	// publications that pass causes are made on the drain's deadline instead of
+	// the session's full close budget. Guarded by mu.
+	publicationBound context.Context
+
 	store   *delegatestore.Store
 	durable delegatestore.State
 	// delegateChildren is the parent→children edge set over durable — the
@@ -1397,6 +1402,35 @@ func (c *delegateTreeController) emitDelegateUpdate(plan delegateUpdatePlan) {
 	if emit != nil {
 		emit(plan)
 	}
+}
+
+// setPublicationBound installs ctx as the bound for publications this pass
+// causes, and reports a func that restores the previous one.
+func (c *delegateTreeController) setPublicationBound(ctx context.Context) func() {
+	if c == nil {
+		return func() {}
+	}
+	c.mu.Lock()
+	previous := c.publicationBound
+	c.publicationBound = ctx
+	c.mu.Unlock()
+	return func() {
+		c.mu.Lock()
+		c.publicationBound = previous
+		c.mu.Unlock()
+	}
+}
+
+// publicationBoundFor reports the bound publications must use, and whether a
+// drain installed one. A nil bound means the session's own delivery path.
+func (c *delegateTreeController) publicationBoundFor() (context.Context, bool) {
+	if c == nil {
+		return nil, false
+	}
+	c.mu.Lock()
+	ctx := c.publicationBound
+	c.mu.Unlock()
+	return ctx, ctx != nil
 }
 
 func (c *delegateTreeController) emitDelegateUpdates(plans delegateMutationPlans) {
