@@ -112,12 +112,13 @@ type TurnGrouper struct {
 func (g *TurnGrouper) Place(entry *schema.Turn, entryIndex int) (turnID string, newTurn bool) {
 	if entry.Format == schema.TurnFormatIdentity && entry.TurnID != "" {
 		// A stamped entry joins the turn the writer named, and the id is the
-		// whole join key — matching the index, whose summaries are keyed by
-		// id across both formats. Entries of one turn are contiguous in the
-		// file: the writer closes a turn with a completion entry, so the
-		// next stamped entry carries a different id and opens the next
-		// group. Both closing kinds (TURN_COMPLETION, TURN_REOPEN) are
-		// transcript-only, so they never reach here and never need to.
+		// whole join key — matching the index, whose summaries are keyed by id
+		// across both formats. Runs of one turn need not be contiguous: another
+		// turn's entries (a standalone delivery) can sit between them, which is
+		// why a stamped entry with a DIFFERENT id opens a new group while the
+		// same id joins the existing one whenever it returns. A TURN_REOPEN
+		// resumes a turn under its own id and projects nothing, so it joins the
+		// group it names like any other stamped entry.
 		//
 		// Without this branch a stamped entry fell through to the kind rules
 		// below, which invent a turn id from the entry's ordinal instead of
@@ -430,6 +431,24 @@ func executionItems(runs []int, groups []groupedTurn) map[int][]appwire.ThreadIt
 		kind := entryKind[entryIndex]
 		return kind == schema.TurnToolResults || kind == schema.TurnTool
 	}
+	// announcedIn is, per entry index, whether that entry announced any tool
+	// call at all. A call can be announced and still project no row — a
+	// communicate call renders only when its result arrives — so the ROW a
+	// result may settle is decided by the entry, not by which rows exist.
+	announcedIn := map[int]bool{}
+	for _, run := range runs {
+		for k, entryIndex := range groups[run].entryIndexes {
+			if k >= len(groups[run].entries) || isResult(entryIndex) {
+				continue
+			}
+			for _, part := range groups[run].entries[k].Message.Content {
+				if part.Kind == llm.ContentToolCall && part.ToolCall != nil {
+					announcedIn[entryIndex] = true
+					break
+				}
+			}
+		}
+	}
 
 	out := make(map[int][]appwire.ThreadItem, len(runs))
 	announcements := map[string][]announcement{}
@@ -447,21 +466,37 @@ func executionItems(runs []int, groups []groupedTurn) map[int][]appwire.ThreadIt
 			out[run] = append(out[run], item)
 		}
 	}
-	// A result settles the announcement it answers: the last one recorded at or
-	// before the result's own entry. That announcement may sit in an EARLIER
-	// run, which is exactly how a delivery between a call and its result leaves
-	// one settled row rather than two. A reused call id keeps both rows, each
-	// settled by the result that answers it.
+	// A result settles the announcement it answers: the latest ASSISTANT entry
+	// at or before the result's own entry that announced a tool call, which is
+	// how build.go's applyResults picks the turn's awaiting entry. That entry
+	// may sit in an EARLIER run, which is exactly how a delivery between a call
+	// and its result leaves one settled row rather than two. A reused call id
+	// keeps both rows, each settled by the result that answers it.
+	//
+	// The row must belong to the SAME entry. When that entry announced the call
+	// but projected no row for it — a rejected communicate renders only its
+	// result — there is nothing to settle into, and folding the result into an
+	// earlier row of the same call id would delete that row and move the
+	// rejection ahead of the delivery. The result then keeps its own position.
+	announcing := make([]int, 0, len(announcedIn))
+	for entryIndex := range announcedIn {
+		announcing = append(announcing, entryIndex)
+	}
+	sort.Ints(announcing)
 	for _, run := range runs {
 		for j, item := range groups[run].items {
 			entry := groups[run].itemEntries[j]
 			if !MergesByCallID(item) || !isResult(entry) {
 				continue
 			}
+			latest := sort.Search(len(announcing), func(k int) bool { return announcing[k] > entry })
+			if latest == 0 {
+				continue // no announcement at or before this result
+			}
 			calls := announcements[item.CallID]
-			at := sort.Search(len(calls), func(k int) bool { return calls[k].entry > entry })
-			if at == 0 {
-				continue // no announcement to settle: keep the row as recorded
+			at := sort.Search(len(calls), func(k int) bool { return calls[k].entry > announcing[latest-1] })
+			if at == 0 || calls[at-1].entry != announcing[latest-1] {
+				continue // that entry opened no row for this call: keep the position
 			}
 			target := calls[at-1]
 			merged := out[target.run][target.at]

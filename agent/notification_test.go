@@ -328,7 +328,7 @@ func TestNotificationTurnOwnsDirectRetrySteering(t *testing.T) {
 	}
 	// The index and the whole-file read spell item keys under their own
 	// versions, so identity across the two readers is the turn and the status.
-	if coldItem.TurnID != saved.turn || string(coldItem.Status) != saved.status {
+	if coldItem.TurnID != saved.turn || coldItem.Status != saved.status {
 		t.Fatalf("whole-file/index NoToolCalls identity whole-file=(turn %q, status %q) index=(turn %q, status %q)", coldItem.TurnID, coldItem.Status, saved.turn, saved.status)
 	}
 	// The warm-up writes an environment entry and the user's input as two
@@ -426,7 +426,7 @@ func indexedNotificationSteering(t *testing.T, path, dir string) indexedSteering
 	for _, candidate := range window.Candidates {
 		found.keys = append(found.keys, candidate.Item.TranscriptKey)
 		if candidate.Item.SteeringKind == events.SteeringKindNoToolCalls {
-			found.key, found.turn, found.status = candidate.Item.TranscriptKey, candidate.TurnID, string(candidate.Item.Status)
+			found.key, found.turn, found.status = candidate.Item.TranscriptKey, candidate.TurnID, candidate.Item.Status
 		}
 	}
 	if found.key == "" {

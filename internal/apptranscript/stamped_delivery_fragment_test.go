@@ -297,3 +297,104 @@ func TestReusedCallIDAcrossADeliveryKeepsBothCalls(t *testing.T) {
 		t.Fatalf("index kept call d1 as %v and the full read kept it as %v: the two readers disagree", indexed, outputs)
 	}
 }
+
+// hiddenCallTranscript writes a shell round whose result settles, then a
+// delivery, then an assistant round whose ONLY tool call is a communicate —
+// which projects no opener item — reusing the shell call's id, then that
+// communicate's rejection. The index resolves the rejection against the latest
+// assistant entry that announced a call, so it never folds a hidden call's
+// result into a visible row of another call.
+func hiddenCallTranscript(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "hidden_call"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := func(turn schema.Turn, place transcript.Placement) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: place}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	w.BeginExecution("t_hidden", false)
+	record(schema.NewTurn(schema.TurnUserInput, llm.User("run once")), transcript.PlaceSession)
+	record(schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "d1", Name: "shell", Arguments: []byte(`{"cmd":"ls"}`)}},
+	}}), transcript.PlaceSession)
+	record(schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "d1", Name: "shell", Content: "listing"}},
+	}}}, transcript.PlaceSession)
+	// A standalone delivery between the rounds.
+	record(schema.NewTurn(schema.TurnSteering, llm.User("a delivered note")), transcript.PlaceDelivery)
+	// The next round's only call is a communicate, which projects no opener:
+	// only its result renders, so the call itself has no row to settle into.
+	hiddenCall := schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "d1", Name: "communicate", Arguments: []byte(`{}`), RawArguments: `{message: "hello"}`}},
+	}})
+	hiddenCall.Authorship = &schema.TranscriptAuthorship{Author: schema.TranscriptAuthor{Kind: schema.TranscriptAuthorAgent}, Inherited: true}
+	record(hiddenCall, transcript.PlaceSession)
+	record(schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "d1", Name: "communicate", IsError: true, PrevalOnly: true}},
+	}}}, transcript.PlaceSession)
+	record(schema.Turn{Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}}, transcript.PlaceCompletion)
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// A rejected communicate that reuses a settled shell call's id is its own
+// call. Its announcement projects no row, so the whole-file merge must NOT
+// fold the rejection into the shell row: that would delete the command and
+// move the rejection ahead of the delivery. With no opener row to settle, the
+// rejection keeps its recorded position.
+func TestHiddenCommunicateReusingACallIDKeepsTheShellRow(t *testing.T) {
+	path := hiddenCallTranscript(t)
+	turns := fullTurns(t, path)
+
+	var shell []appwire.ThreadItem
+	var rejected []appwire.ThreadItem
+	for _, turn := range turns {
+		for _, item := range turn.Items {
+			if item.Type != "commandExecution" {
+				continue
+			}
+			switch item.ToolName {
+			case "shell":
+				shell = append(shell, item)
+			case "communicate":
+				rejected = append(rejected, item)
+			}
+		}
+	}
+	if len(shell) != 1 {
+		t.Fatalf("shell call kept %d rows, want 1: the rejection folded into it and deleted the command", len(shell))
+	}
+	if shell[0].Output != "listing" || shell[0].ToolName != "shell" {
+		t.Fatalf("shell row = {name %q output %q}, want the shell command's own settled row", shell[0].ToolName, shell[0].Output)
+	}
+	if len(rejected) != 1 {
+		t.Fatalf("rejected communicate kept %d rows, want 1: a call with no opener row keeps its recorded position", len(rejected))
+	}
+	if rejected[0].Status != appwire.TurnStatusFailed {
+		t.Errorf("rejection status = %q, want failed", rejected[0].Status)
+	}
+
+	// The index is the oracle: one shell row, one rejected communicate row.
+	var indexShell, indexRejected int
+	for _, candidate := range indexCandidates(t, path) {
+		if candidate.Item.Type != "commandExecution" {
+			continue
+		}
+		switch candidate.Item.ToolName {
+		case "shell":
+			indexShell++
+		case "communicate":
+			indexRejected++
+		}
+	}
+	if indexShell != len(shell) || indexRejected != len(rejected) {
+		t.Fatalf("index kept %d shell and %d communicate rows and the full read kept %d and %d: the two readers disagree", indexShell, indexRejected, len(shell), len(rejected))
+	}
+}
