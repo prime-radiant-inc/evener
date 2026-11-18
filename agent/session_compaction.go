@@ -180,12 +180,13 @@ func (s *Session) bumpHistoryRevisionLocked() {
 //     these locks, and none of them need the ordering guarantee. The lone
 //     deliberate exception is appendEnvironmentContext's EventEnvironment,
 //     which publishes under attentionMu so the entry is in history before the
-//     event exists, so no reader can observe the event ahead of the
-//     transcript that explains it. What that order keeps fresh is the thread
-//     envelope's context facet: the event refreshes it
-//     (server/thread_envelope.go's facetsByEvent) from the session's context
-//     state, and publishing under the door places that refresh after the
-//     entry it describes, never ahead of it. It is one emit of known
+//     event exists. No reader can observe the event ahead of the transcript
+//     that explains it. The door's whole guarantee is that no fold commits
+//     between that append and the event's enqueue. The thread envelope's
+//     context facet is a sample taken later: the bridge reads the session's
+//     current context when it handles the event, after the enqueue, so a fold
+//     that commits in between is already reflected there. The door does not
+//     order that refresh. It is one emit of known
 //     content; this flush is unbounded work (naming, hook user messages) that
 //     re-enters these very locks, so it stays out here.
 //

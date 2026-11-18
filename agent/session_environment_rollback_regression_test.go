@@ -1045,10 +1045,12 @@ func TestPoisonedWriterDoesNotPopAQueuedMessage(t *testing.T) {
 // commit its compaction markers and flush its own events, so a live reader sees
 // the compaction ahead of the environment block while the transcript holds them
 // the other way round. The entry is in history before the event exists, so no
-// reader observes the event ahead of the transcript that explains it, and what
-// that order keeps fresh is the thread envelope's context facet: the event
-// refreshes it from the session's context state, so publishing under the door
-// places that refresh after the entry it describes.
+// reader observes the event ahead of the transcript that explains it, and the
+// door's whole guarantee is that no fold commits between that append and the
+// event's enqueue. The thread envelope's context facet is a sample taken
+// later: the bridge reads the session's current context when it handles the
+// event, after the enqueue, so a fold that commits in between is already
+// reflected there. The door does not order that refresh.
 //
 // The door is the statement: while it is held, no fold can publish, so live
 // order is transcript order. A publication that can take the door is a
