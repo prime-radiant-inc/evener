@@ -43,7 +43,7 @@ func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawM
 		case "message":
 			if stream != nil {
 				id, _ := item["id"].(string)
-				observed = stream.terminalItem("message", id, itemIdx, out)
+				observed = stream.terminalItem("message", id, "", itemIdx, out)
 			}
 			phase, _ := item["phase"].(string)
 			var substantive bool
@@ -84,12 +84,13 @@ func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawM
 				}
 			}
 			if stream != nil {
-				if prior := stream.terminalTool(callID, itemID, itemIdx, out); prior != nil {
+				if observed := stream.terminalItem("function_call", itemID, callID, itemIdx, out); observed != nil && observed.tool != nil {
+					prior := observed.tool
 					callID = cmp.Or(callID, prior.id)
 					itemID = cmp.Or(itemID, prior.itemID)
 					name = cmp.Or(name, prior.name)
 					if args == "" {
-						args = prior.args.String()
+						args = prior.args.value()
 					}
 				}
 			}
@@ -121,7 +122,7 @@ func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawM
 			var prior map[string]any
 			if stream != nil {
 				id, _ := item["id"].(string)
-				observed = stream.terminalItem("reasoning", id, itemIdx, out)
+				observed = stream.terminalItem("reasoning", id, "", itemIdx, out)
 				if observed != nil {
 					prior = observed.done
 				}
@@ -146,58 +147,42 @@ func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawM
 		}
 	}
 	if sparse {
-		return stream.sparseContent(placeholders, terminalReasoning, len(out) == 0)
+		return stream.sparseContent(placeholders, terminalReasoning)
 	}
 	return content
 }
 
-func (acc *responsesOutputAccumulator) terminalTool(callID, itemID string, index int, out []any) *responsesToolState {
-	state := acc.toolStates[callID]
-	if state == nil {
-		state = acc.toolStates[itemID]
+func (acc *responsesOutputAccumulator) terminalItem(kind, id, callID string, index int, out []any) *responsesOutputItem {
+	compatible := func(item *responsesOutputItem) bool {
+		return item.accepts(kind, id, -1) && (callID == "" || item.tool == nil || item.tool.id == item.tool.itemID || item.tool.id == callID)
 	}
-	if state == nil {
-		if item := acc.byIndex[int64(index)]; item != nil {
-			state = item.tool
-		}
-		if state != nil {
-			for i, entry := range out {
-				other, _ := entry.(map[string]any)
-				if i != index && other["type"] == "function_call" &&
-					((state.id != "" && other["call_id"] == state.id) ||
-						(state.itemID != "" && (other["id"] == state.itemID || other["item_id"] == state.itemID))) {
-					return nil
-				}
-			}
-		}
+	named := acc.namedItem(kind, id)
+	if !compatible(named) {
+		named = nil
 	}
-	if state == nil || (itemID != "" && state.itemID != "" && itemID != state.itemID) ||
-		(callID != "" && state.id != state.itemID && callID != state.id) {
-		return nil
-	}
-	return state
-}
-
-func (acc *responsesOutputAccumulator) terminalItem(kind, id string, index int, out []any) *responsesOutputItem {
-	if item := acc.byID[id]; item != nil && item.kind == kind {
-		return item
+	if called := acc.byCallID[callID]; compatible(called) {
+		named = acc.join(named, called)
 	}
 	indexed := acc.byIndex[int64(index)]
-	if indexed != nil && (indexed.kind != kind || (id != "" && indexed.id != "" && indexed.id != id)) {
+	if !compatible(indexed) {
 		indexed = nil
+	}
+	if indexed == named && (named != nil || kind != "message") {
+		return named
 	}
 	onlyItem := true
 	for i, entry := range out {
 		item, _ := entry.(map[string]any)
 		if i != index && item["type"] == kind {
 			onlyItem = false
-			if indexed != nil && indexed.id != "" && item["id"] == indexed.id {
-				indexed = nil // Another terminal message explicitly owns this stream item.
+			if indexed != nil && ((indexed.id != "" && (item["id"] == indexed.id || item["item_id"] == indexed.id)) ||
+				(indexed.tool != nil && item["call_id"] == indexed.tool.id)) {
+				indexed = nil // Another terminal item explicitly owns this stream item.
 			}
 		}
 	}
-	if indexed != nil || !onlyItem || kind != "message" {
-		return indexed
+	if observed := acc.join(named, indexed); observed != nil || !onlyItem || kind != "message" {
+		return observed
 	}
 	item, _ := acc.uniqueMessage(id, -1, false)
 	return item
@@ -234,7 +219,7 @@ func (item *responsesOutputItem) settleReasoning(terminalItem map[string]any, te
 
 // Empty terminals and placeholders admit observed answers and calls at their
 // stream positions. A named reasoning placeholder admits only its own reasoning.
-func (acc *responsesOutputAccumulator) sparseContent(terminal []responsesTerminalItem, terminalReasoning, emptyTerminal bool) []llm.ContentPart {
+func (acc *responsesOutputAccumulator) sparseContent(terminal []responsesTerminalItem, terminalReasoning bool) []llm.ContentPart {
 	matched := make(map[*responsesOutputItem][]llm.ContentPart, len(terminal))
 	var content []llm.ContentPart
 	var previous *responsesOutputItem
@@ -250,15 +235,20 @@ func (acc *responsesOutputAccumulator) sparseContent(terminal []responsesTermina
 	}
 	acc.orderOutput()
 	for _, item := range acc.output {
-		if emptyTerminal && item.display.Len() != 0 {
+		if len(item.display) != 0 {
 			parts, _ := item.done["content"].([]any)
 			hasText := slices.ContainsFunc(parts, func(p any) bool {
 				part, _ := p.(map[string]any)
 				text, _ := part["text"].(string)
 				return text != ""
 			})
+			if m := matched[item]; len(m) != 0 && m[0].Thinking != nil {
+				hasText = slices.ContainsFunc(m[0].Thinking.ResponsesTextParts, func(p llm.ResponsesTextPart) bool { return p.End > p.Start })
+			}
 			if !hasText {
-				content = append(content, llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: item.display.String()}})
+				if display := item.display.value(); display != "" {
+					content = append(content, llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: display}})
+				}
 			}
 		}
 		if parts, ok := matched[item]; ok {
@@ -279,9 +269,9 @@ func (acc *responsesOutputAccumulator) sparseContent(terminal []responsesTermina
 				continue
 			}
 		}
-		if st := item.tool; st != nil {
+		if st := item.tool; st != nil && st.hasOutput {
 			content = append(content, llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-				ID: st.id, ItemID: st.itemID, Name: st.name, Type: "function", Arguments: st.args.Bytes(),
+				ID: st.id, ItemID: st.itemID, Name: st.name, Type: "function", Arguments: json.RawMessage(st.args.value()),
 			}})
 		}
 	}

@@ -18,35 +18,99 @@ import (
 )
 
 type responsesToolState struct {
-	id, itemID, name string
-	started          bool
-	args             bytes.Buffer
-	output           *responsesOutputItem
+	id, itemID, name   string
+	started, hasOutput bool
+	args               responsesOutputText
 }
 
 type responsesOutputItem struct {
 	kind, id, phase string
 	index           int64
 	done            map[string]any
+	doneOrder       int
 	raw             json.RawMessage
 	text            map[int64]*responsesOutputText
 	tool            *responsesToolState
-	display         strings.Builder
-	displayPart     bool
+	display         responsesFragments
 	displayOnly     bool
 }
 
+// Fragments from different provisional items can interleave before the provider
+// links their identifiers. Adjacent writes to the same part share one buffer.
+type responsesFragment struct {
+	order int
+	data  []byte
+}
+type responsesFragments []responsesFragment
+
+func (acc *responsesOutputAccumulator) write(f *responsesFragments, text string) {
+	if n := len(*f); n > 0 {
+		last := &(*f)[n-1]
+		if last.order == acc.order && len(last.data) != 0 && text != "" {
+			last.data = append(last.data, text...)
+			return
+		}
+	}
+	acc.order++
+	*f = append(*f, responsesFragment{acc.order, []byte(text)})
+}
+
+func (f responsesFragments) value() string {
+	if len(f) == 1 {
+		return string(f[0].data)
+	}
+	var text strings.Builder
+	var displayPart bool
+	for _, fragment := range f {
+		if len(fragment.data) != 0 {
+			text.Write(fragment.data)
+		} else {
+			// An empty fragment marks the start of a display reasoning part.
+			if displayPart {
+				text.WriteString(reasoningPartSeparator)
+			}
+			displayPart = true
+		}
+	}
+	return text.String()
+}
+
+func (f *responsesFragments) merge(other responsesFragments) {
+	if len(other) != 0 {
+		*f = append(*f, other...)
+		slices.SortFunc(*f, func(a, b responsesFragment) int { return cmp.Compare(a.order, b.order) })
+	}
+}
+
 type responsesOutputText struct {
-	deltas    strings.Builder
-	final     string
-	itemFinal bool
+	deltas     responsesFragments
+	final      string
+	finalOrder int
+	itemFinal  bool
 }
 
 func (p *responsesOutputText) value() string {
-	return cmp.Or(p.final, p.deltas.String())
+	if p.final != "" {
+		return p.final
+	}
+	return p.deltas.value()
 }
 
-func (item *responsesOutputItem) textPart(index int64) *responsesOutputText {
+func (item *responsesOutputItem) textPart(index int64, single bool) *responsesOutputText {
+	if single && index < 0 && len(item.text) > 1 {
+		return nil
+	}
+	if single && len(item.text) == 1 {
+		for known, part := range item.text {
+			if index < 0 {
+				return part
+			}
+			if known < 0 {
+				delete(item.text, known)
+				item.text[index] = part
+			}
+		}
+	}
 	if item.text == nil {
 		item.text = make(map[int64]*responsesOutputText)
 	}
@@ -56,12 +120,18 @@ func (item *responsesOutputItem) textPart(index int64) *responsesOutputText {
 	return item.text[index]
 }
 
-func (item *responsesOutputItem) settleText(index int64, value string, itemFinal bool) {
-	part := item.textPart(index)
-	if value != "" && (itemFinal || !part.itemFinal) {
-		part.final = value
-		part.itemFinal = itemFinal
-		part.deltas.Reset()
+func (p *responsesOutputText) settle(value string, itemFinal bool, order int) {
+	if value != "" && (itemFinal || !p.itemFinal) && (itemFinal != p.itemFinal || order >= p.finalOrder) {
+		p.final, p.itemFinal, p.finalOrder = value, itemFinal, order
+		p.deltas = nil
+	}
+}
+
+func (p *responsesOutputText) merge(other *responsesOutputText) {
+	if other.final != "" {
+		p.settle(other.final, other.itemFinal, other.finalOrder)
+	} else if p.final == "" {
+		p.deltas.merge(other.deltas)
 	}
 }
 
@@ -69,12 +139,12 @@ func (item *responsesOutputItem) settleText(index int64, value string, itemFinal
 // tool output when a terminal response omits them. The live decoder and
 // recorded SSE reader use the same item identities and settlement rules.
 type responsesOutputAccumulator struct {
-	toolStates       map[string]*responsesToolState
-	itemToCallID     map[string]string
+	byCallID         map[string]*responsesOutputItem
 	output           []*responsesOutputItem
 	byID             map[string]*responsesOutputItem
 	byIndex          map[int64]*responsesOutputItem
 	completed        int
+	order            int
 	anonymousDisplay *responsesOutputItem
 	reasoningStarted bool
 }
@@ -87,27 +157,22 @@ func (acc *responsesOutputAccumulator) reasoningDisplay(typ string, payload map[
 	}
 	id, _ := payload["item_id"].(string)
 	source := acc.outputItem(payload, "reasoning", id, nil, false)
+	acc.write(&source.display, delta)
 	if added {
-		if source.displayPart {
-			source.display.WriteString(reasoningPartSeparator)
-		}
-		source.displayPart = true
 		if acc.reasoningStarted {
 			return reasoningPartSeparator
 		}
 		acc.reasoningStarted = true
 		return ""
 	}
-	source.display.WriteString(delta)
 	return delta
 }
 
 func newResponsesOutputAccumulator() *responsesOutputAccumulator {
 	return &responsesOutputAccumulator{
-		toolStates:   map[string]*responsesToolState{},
-		itemToCallID: map[string]string{},
-		byID:         map[string]*responsesOutputItem{},
-		byIndex:      map[int64]*responsesOutputItem{},
+		byCallID: map[string]*responsesOutputItem{},
+		byID:     map[string]*responsesOutputItem{},
+		byIndex:  map[int64]*responsesOutputItem{},
 	}
 }
 
@@ -120,26 +185,106 @@ func responsesEventIndex(payload map[string]any, field string) int64 {
 	return -1
 }
 
+func (item *responsesOutputItem) accepts(kind, id string, index int64) bool {
+	return item != nil && item.kind == kind && (item.id == "" || id == "" || id == item.id) &&
+		(item.index < 0 || index < 0 || index == item.index)
+}
+
+func (acc *responsesOutputAccumulator) namedItem(kind, id string) *responsesOutputItem {
+	item := acc.byID[id]
+	if !item.accepts(kind, id, -1) {
+		return nil
+	}
+	if item.tool != nil && item.id == "" {
+		// An earlier unqualified delta ID is now confirmed as the item ID.
+		item.id, item.tool.itemID = id, id
+	}
+	return item
+}
+
+// One native event can link two previously disjoint identities. A joined
+// item owns their fields and keeps the first observed place in the stream.
+func (acc *responsesOutputAccumulator) join(item, other *responsesOutputItem) *responsesOutputItem {
+	if item == nil {
+		return other
+	}
+	if other == nil || other == item || !other.accepts(item.kind, item.id, item.index) {
+		return item
+	}
+	if a, b := item.tool, other.tool; a != nil && b != nil {
+		if a.id != a.itemID && b.id != b.itemID && a.id != b.id {
+			return item
+		}
+		if a.id == a.itemID {
+			a.id = b.id
+		}
+		a.itemID = cmp.Or(a.itemID, b.itemID)
+		a.name = cmp.Or(a.name, b.name)
+		a.started = a.started || b.started
+		a.hasOutput = a.hasOutput || b.hasOutput
+		a.args.merge(&b.args)
+	} else if item.tool == nil {
+		item.tool = other.tool
+	}
+	item.id = cmp.Or(item.id, other.id)
+	item.phase = cmp.Or(item.phase, other.phase)
+	item.index = max(item.index, other.index)
+	item.displayOnly = item.displayOnly && other.displayOnly
+	item.display.merge(other.display)
+	if other.doneOrder > item.doneOrder {
+		item.done, item.raw, item.doneOrder = other.done, other.raw, other.doneOrder
+	}
+	for index, part := range other.text {
+		item.textPart(index, false).merge(part)
+	}
+	if unknown := item.text[-1]; unknown != nil && len(item.text) == 2 {
+		delete(item.text, -1)
+		for _, only := range item.text {
+			only.merge(unknown)
+		}
+	}
+	if item.index >= 0 {
+		acc.byIndex[item.index] = item
+	}
+	for _, aliases := range []map[string]*responsesOutputItem{acc.byID, acc.byCallID} {
+		for id, observed := range aliases {
+			if observed == other {
+				aliases[id] = item
+			}
+		}
+	}
+	first, last := slices.Index(acc.output, item), slices.Index(acc.output, other)
+	if first > last {
+		first, last = last, first
+	}
+	acc.output[first] = item
+	acc.output = slices.Delete(acc.output, last, last+1)
+	return item
+}
+
 // An item can be identified before its contents arrive. Retain the position
 // supplied by any of its events and keep first appearance for unindexed items.
 func (acc *responsesOutputAccumulator) outputItem(payload map[string]any, kind, id string, fallback *responsesOutputItem, native bool) *responsesOutputItem {
 	index := responsesEventIndex(payload, "output_index")
-	item := acc.byID[id]
-	if item == nil {
-		item = acc.byIndex[index]
-	}
+	named, indexed := acc.byID[id], acc.byIndex[index]
 	if !native {
-		if item != nil && item.kind != kind {
+		if (named != nil && named.kind != kind) || (indexed != nil && indexed.kind != kind) {
 			id, index = "", -1 // A display delta cannot claim a different native output.
+			indexed = nil
 		}
 		if id == "" && index < 0 {
-			item = acc.anonymousDisplay
+			fallback = acc.anonymousDisplay
 		}
 	}
-	if item == nil {
-		item = fallback
+	named = acc.namedItem(kind, id)
+	if !indexed.accepts(kind, id, index) {
+		indexed = nil
 	}
-	if item == nil || item.kind != kind || (id != "" && item.id != "" && id != item.id) {
+	item := acc.join(named, indexed)
+	if fallback.accepts(kind, id, index) {
+		item = acc.join(item, fallback)
+	}
+	if item == nil {
 		item = &responsesOutputItem{kind: kind, index: -1, displayOnly: !native}
 		acc.output = append(acc.output, item)
 	} else if native && item.displayOnly {
@@ -154,7 +299,7 @@ func (acc *responsesOutputAccumulator) outputItem(payload map[string]any, kind, 
 		item.id = id
 		acc.byID[id] = item
 	}
-	if index >= 0 {
+	if index >= 0 && (acc.byIndex[index] == nil || acc.byIndex[index] == item) && (item.index < 0 || item.index == index) {
 		item.index = index
 		acc.byIndex[index] = item
 	}
@@ -168,10 +313,7 @@ func (acc *responsesOutputAccumulator) outputItem(payload map[string]any, kind, 
 func (acc *responsesOutputAccumulator) uniqueMessage(id string, index int64, pendingOnly bool) (*responsesOutputItem, bool) {
 	var candidate *responsesOutputItem
 	for _, item := range acc.output {
-		if item.kind != "message" || (id != "" && item.id != "" && item.id != id) || (pendingOnly && item.done != nil) {
-			continue
-		}
-		if index >= 0 && item.index >= 0 && item.index != index {
+		if !item.accepts("message", id, index) || (pendingOnly && item.done != nil) {
 			continue
 		}
 		if candidate != nil {
@@ -202,21 +344,9 @@ func (acc *responsesOutputAccumulator) handleOutputTextDelta(payload map[string]
 	}
 	if delta != "" {
 		if item := acc.textOutput(payload); item != nil {
-			index := responsesEventIndex(payload, "content_index")
-			if len(item.text) == 1 {
-				for known, part := range item.text {
-					if index < 0 {
-						index = known
-					} else if known < 0 {
-						delete(item.text, known)
-						item.text[index] = part
-					}
-					break
-				}
-			}
-			p := item.textPart(index)
-			if p.final == "" {
-				p.deltas.WriteString(delta)
+			p := item.textPart(responsesEventIndex(payload, "content_index"), true)
+			if p != nil && p.final == "" {
+				acc.write(&p.deltas, delta)
 			}
 		}
 	}
@@ -234,14 +364,17 @@ func (acc *responsesOutputAccumulator) handleTextPartDone(payload map[string]any
 	text, ok := part["text"].(string)
 	if ok {
 		if item := acc.textOutput(payload); item != nil {
-			item.settleText(responsesEventIndex(payload, "content_index"), text, false)
+			acc.order++
+			if p := item.textPart(responsesEventIndex(payload, "content_index"), true); p != nil {
+				p.settle(text, false, acc.order)
+			}
 		}
 	}
 	return typ == "response.output_text.done" || text != ""
 }
 
 // Completion can supply a different subset of parts from the deltas.
-func (item *responsesOutputItem) settleMessage(message map[string]any) {
+func (item *responsesOutputItem) settleMessage(message map[string]any, order int) {
 	if phase, _ := message["phase"].(string); phase != "" {
 		item.phase = phase
 	}
@@ -249,39 +382,33 @@ func (item *responsesOutputItem) settleMessage(message map[string]any) {
 	for index, entry := range parts {
 		part, _ := entry.(map[string]any)
 		if text, ok := part["text"].(string); ok && part["type"] == "output_text" {
-			item.settleText(int64(index), text, true)
+			item.textPart(int64(index), len(parts) == 1).settle(text, true, order)
 		}
 	}
 }
 
-func (acc *responsesOutputAccumulator) toolOutput(payload map[string]any, st *responsesToolState, itemID string) *responsesOutputItem {
-	st.output = acc.outputItem(payload, "function_call", itemID, st.output, true)
-	return st.output
+func (acc *responsesOutputAccumulator) registeredCallID(itemID string) string {
+	if item := acc.byID[itemID]; item != nil && item.tool != nil {
+		return item.tool.id
+	}
+	return ""
 }
 
 // Both native IDs name the same call. A call known only by item ID can gain
 // its call ID and function name from a later event.
-func (acc *responsesOutputAccumulator) toolStateFor(callID, itemID, name string) *responsesToolState {
-	st := acc.toolStates[callID]
-	if st == nil {
-		st = acc.toolStates[itemID]
+func (acc *responsesOutputAccumulator) toolOutput(payload map[string]any, callID, itemID, name string) *responsesOutputItem {
+	item := acc.outputItem(payload, "function_call", itemID, acc.byCallID[callID], true)
+	if item.tool == nil {
+		item.tool = &responsesToolState{id: callID}
 	}
-	if st == nil {
-		st = &responsesToolState{id: callID}
-	}
-	if st.id == itemID && callID != itemID {
+	st := item.tool
+	if st.id == itemID {
 		st.id = callID
 	}
-	if st.name == "" {
-		st.name = name
-	}
-	acc.toolStates[st.id] = st
-	if itemID != "" {
-		st.itemID = itemID
-		acc.toolStates[itemID] = st
-		acc.itemToCallID[itemID] = st.id
-	}
-	return st
+	st.name = cmp.Or(st.name, name)
+	st.itemID = item.id
+	acc.byCallID[st.id] = item
+	return item
 }
 
 // HandleOutputItemAdded retains item positions and message phases before
@@ -297,20 +424,17 @@ func (acc *responsesOutputAccumulator) HandleOutputItemAdded(payload, item map[s
 			}
 		}
 		output := acc.outputItem(payload, kind, itemID, fallback, true)
-		output.phase, _ = item["phase"].(string)
+		phase, _ := item["phase"].(string)
+		output.phase = cmp.Or(phase, output.phase)
 		return
 	}
 	callID, _ := item["call_id"].(string)
 	name, _ := item["name"].(string)
-	stateID := callID
-	if stateID == "" {
-		stateID = itemID
-	}
+	stateID := cmp.Or(callID, itemID)
 	if stateID == "" {
 		return
 	}
-	st := acc.toolStateFor(stateID, itemID, name)
-	acc.toolOutput(payload, st, itemID)
+	acc.toolOutput(payload, stateID, itemID, name)
 }
 
 // HandleFunctionCallArgumentsDelta merges one
@@ -328,21 +452,30 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDelta(payload 
 	}
 	callID, _ := payload["call_id"].(string)
 	itemID, _ := payload["item_id"].(string)
+	unqualified := itemID == "" && callID == ""
 	if callID == "" && itemID != "" {
-		callID = acc.itemToCallID[itemID]
+		callID = acc.registeredCallID(itemID)
 	}
 	if callID == "" {
 		callID = itemID
 	}
 	if callID == "" {
 		callID, _ = payload["id"].(string)
+		if known := acc.byID[callID]; known != nil && known.tool != nil && known.id == callID {
+			itemID, callID = known.id, known.tool.id
+		}
 	}
 	name, _ := payload["name"].(string)
 	if callID == "" || (delta == "" && name == "") {
 		return nil, "", false
 	}
-	st := acc.toolStateFor(callID, itemID, name)
-	acc.toolOutput(payload, st, itemID).tool = st
+	output := acc.toolOutput(payload, callID, itemID, name)
+	if unqualified && output.id == "" && acc.byID[callID] == nil {
+		// A bare id can later be identified as either the item_id or call_id.
+		acc.byID[callID] = output
+	}
+	st := output.tool
+	st.hasOutput = true
 	if delta != "" {
 		fragment := []byte(delta)
 		if rawDelta, rawOK := captureResponsesDeltaRaw(eventData); rawOK && rawDelta != nil {
@@ -350,8 +483,10 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDelta(payload 
 				fragment = content
 			}
 		}
-		st.args.Write(fragment)
 		delta = string(fragment)
+		if st.args.final == "" {
+			acc.write(&st.args.deltas, delta)
+		}
 	}
 	return st, delta, true
 }
@@ -368,7 +503,7 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDone(payload m
 	callID, _ := payload["call_id"].(string)
 	itemID, _ := payload["item_id"].(string)
 	if callID == "" && itemID != "" {
-		callID = acc.itemToCallID[itemID]
+		callID = acc.registeredCallID(itemID)
 	}
 	if callID == "" {
 		callID = itemID
@@ -377,17 +512,16 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDone(payload m
 		return nil, false
 	}
 	name, _ := payload["name"].(string)
-	st := acc.toolStateFor(callID, itemID, name)
+	st := acc.toolOutput(payload, callID, itemID, name).tool
 	if argsStr != "" {
-		acc.toolOutput(payload, st, itemID).tool = st
-		st.args.Reset()
+		st.hasOutput = true
 		if rawArgs, rawOK := captureResponsesArgumentsDoneRaw(eventData); rawOK && rawArgs != nil {
 			if content, err := protocolhttp.RawStringContent(rawArgs); err == nil {
-				st.args.Write(content)
-				return st, true
+				argsStr = string(content)
 			}
 		}
-		st.args.WriteString(argsStr)
+		acc.order++
+		st.args.settle(argsStr, false, acc.order)
 	}
 	return st, true
 }
@@ -415,6 +549,7 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 		return nil, nil, "", false
 	}
 	rawItemToken := captureResponsesOutputItemRaw(eventData)
+	acc.order++
 	it, _ := item["type"].(string)
 	itemID, _ := item["id"].(string)
 	if it != "function_call" {
@@ -424,9 +559,10 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 		}
 		output := acc.outputItem(payload, it, itemID, fallback, true)
 		if it == "message" {
-			output.settleMessage(item)
+			output.settleMessage(item, acc.order)
 		}
 		output.done, output.raw = item, rawItemToken
+		output.doneOrder = acc.order
 		acc.completed++
 		return item, nil, "", false
 	}
@@ -439,29 +575,15 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 		}
 	}
 	if callID == "" && itemID != "" {
-		callID = acc.itemToCallID[itemID]
+		callID = acc.registeredCallID(itemID)
 	}
 	if callID == "" {
 		return item, nil, "", false
 	}
-	st := acc.toolStateFor(callID, itemID, name)
-	if argsStr != "" {
-		st.args.Reset()
-		st.args.WriteString(argsStr)
-	}
-	if argsStr == "" {
-		argsStr = st.args.String()
-	}
-	output := acc.toolOutput(payload, st, itemID)
-	output.done = map[string]any{
-		"type":      "function_call",
-		"call_id":   st.id,
-		"id":        st.itemID,
-		"name":      st.name,
-		"arguments": argsStr,
-	}
-	output.raw = rawItemToken
-	output.tool = st
+	st := acc.toolOutput(payload, callID, itemID, name).tool
+	st.hasOutput = true
+	st.args.settle(argsStr, true, acc.order)
+	argsStr = st.args.value()
 	acc.completed++
 	return item, st, argsStr, true
 }

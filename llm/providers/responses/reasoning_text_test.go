@@ -102,6 +102,15 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 	const lateTextPart = `{"type":"response.output_text.done","item_id":"msg_2","content_index":2,"text":"m_late"}`
 	const indexedFirst = `{"type":"response.output_text.delta","item_id":"msg_2","content_index":0,"delta":"a"}`
 	const noPartIndex = `{"type":"response.output_text.delta","item_id":"msg_2","delta":"b"}`
+	const unindexedTextDone = `{"type":"response.output_text.done","item_id":"msg_2","text":" final "}`
+	const unindexedPartDone = `{"type":"response.content_part.done","item_id":"msg_2","part":{"type":"output_text","text":" final "}}`
+	const toolItemAdded = `{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","name":"f"}}`
+	const toolStart = `{"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{ \"k\": "}`
+	const toolMiddle = `{"type":"response.function_call_arguments.delta","call_id":"call_1","delta":"1"}`
+	const toolEnd = `{"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":" }"}`
+	const idArguments = `{"type":"response.function_call_arguments.delta","id":"fc_1","name":"f","delta":"{}"}`
+	const linkedCall = `{"type":"function_call","id":"fc_1","call_id":"call_1","arguments":""}`
+	const linkedFinalCall = `{"type":"function_call","id":"fc_1","call_id":"call_1","arguments":" \t{ \"k\": 1 }\n"}`
 	const plainWithSummary = `{"type":"reasoning","id":"rs_1","content":[{"type":"reasoning_text","text":" r_terminal "}],"summary":[{"type":"summary_text","text":" s_terminal "}]}`
 	const longReasoning = `{"type":"reasoning","id":"rs_1","content":[{"type":"reasoning_text","text":"old"},{"type":"reasoning_text","text":" r_observed "},{"type":"summary_text","text":"display_3"},{"type":"reasoning_text","text":"withdrawn"}]}`
 	const partialReasoning = `{"type":"reasoning","id":"rs_1","content":[{"type":"reasoning_text","text":"new"},{"type":"reasoning_text","text":""},{"type":"reasoning_text","text":""}],"summary":[]}`
@@ -132,6 +141,9 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 	tool := replayItem{Type: "function_call", CallID: "call_1", Name: "f", Arguments: "{}"}
 	finalTool := tool
 	finalTool.Arguments = " \t{ \"k\": 1 }\n"
+	linkedTool := tool
+	linkedTool.Arguments = `{ "k": 1 }`
+	linkedAnswer := replayItem{Type: "message", Phase: "commentary", Content: []replayText{{"output_text", "m1bm1"}}}
 	announcedAnswer := answer
 	announcedAnswer.Phase = "commentary"
 	blankCommentary := replayItem{Type: "message", Phase: "commentary", Content: []replayText{{"output_text", ""}}}
@@ -160,6 +172,18 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 		{"completed content part restores its own text", []string{blankPart, laterPart, completedContentPart, done(partialMessage)}, []string{partialTerminal}, []replayItem{partial}},
 		{"completed item owns supplied text over a late part event", []string{done(partialMessage), lateTextPart, completedTextPart}, []string{partialTerminal}, []replayItem{partial}},
 		{"a single text part accepts intermittent indexes", []string{noPartIndex, indexedFirst, noPartIndex}, nil, []replayItem{{Type: "message", Content: []replayText{{"output_text", "bab"}}}}},
+		{"unindexed text completion owns the only indexed part", []string{indexedFirst, unindexedTextDone}, nil, []replayItem{{Type: "message", Content: []replayText{{"output_text", " final "}}}}},
+		{"unindexed content completion owns the only indexed part", []string{laterPart, unindexedPartDone}, nil, []replayItem{{Type: "message", Content: []replayText{{"output_text", " final "}}}}},
+		{"unindexed completion has no owner among multiple parts", []string{indexedFirst, laterPart, unindexedTextDone}, nil, []replayItem{{Type: "message", Content: []replayText{{"output_text", "a"}, {"output_text", "m2"}}}}},
+		{"ambiguous completion cannot fill a sparse terminal slot", []string{blankPart, laterPart, unindexedTextDone}, []string{emptyAnswer}, []replayItem{{Type: "message", Content: []replayText{{"output_text", ""}, {"output_text", " \t"}, {"output_text", "m2"}}}}},
+		{"item completion links the call IDs and supplies final arguments once", []string{toolItemAdded, toolDelta, done(linkedFinalCall)}, nil, []replayItem{finalTool}},
+		{"a delta addressed by the registered item ID stays on the call", []string{toolAdded, idArguments, done(linkedCall)}, nil, []replayItem{tool}},
+		{"an initially unqualified ID resolves to the completed item", []string{idArguments, done(linkedFinalCall)}, nil, []replayItem{finalTool}},
+		{"arguments completion identifies a previously completed provisional call", []string{toolItemAdded, done(emptyToolByItem), namedFinalArguments}, nil, []replayItem{finalTool}},
+		{"item completion links interleaved argument fragments", []string{toolItemAdded, toolStart, toolMiddle, toolEnd, done(linkedCall)}, nil, []replayItem{linkedTool}},
+		{"terminal call links interleaved argument fragments", []string{toolItemAdded, toolStart, toolMiddle, toolEnd}, []string{linkedCall}, []replayItem{linkedTool}},
+		{"item completion links interleaved message fragments", []string{at(0, answerDelta), noPartIndex, at(0, answerDelta), at(1, done(emptyFinal)), at(0, done(emptyCommentary))}, nil, []replayItem{linkedAnswer, blankFinal}},
+		{"terminal message links interleaved fragments", []string{at(0, answerDelta), noPartIndex, at(0, answerDelta)}, []string{emptyCommentary}, []replayItem{linkedAnswer}},
 		{"terminal plaintext keeps matching ciphertext", []string{done(encryptedItem)}, []string{answerItem, plainWithSummary}, []replayItem{answer, cryptoWithSummary}},
 		{"substantive message selects content membership", []string{laterPart, blankPart}, []string{shortMessage}, []replayItem{answer}},
 		{"terminal reasoning fills only matching raw slots", []string{done(longReasoning)}, []string{partialReasoning}, []replayItem{filledReasoning}},
@@ -264,17 +288,29 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 				t.Errorf("recorded input = %#v, want %#v", got, tc.want)
 			}
 			for _, resp := range []*llm.Response{acc.Response(), &recorded} {
-				for _, call := range resp.ToolCalls() {
-					for _, want := range tc.want {
-						if want.Type == "function_call" && want.CallID != "" && want.CallID == call.ID && string(call.Arguments) != want.Arguments {
-							t.Errorf("dispatch arguments = %q, want %q", call.Arguments, want.Arguments)
+				calls := resp.ToolCalls()
+				var count int
+				for _, want := range tc.want {
+					if want.Type != "function_call" {
+						continue
+					}
+					if count < len(calls) && want.CallID != "" {
+						call := calls[count]
+						if call.ID != want.CallID || call.Name != want.Name || string(call.Arguments) != want.Arguments {
+							t.Errorf("dispatch call = %+v, want %+v", call, want)
 						}
 					}
+					count++
 				}
-				if len(tc.output) == 0 {
+				if len(calls) != count {
+					t.Errorf("dispatchable calls = %d, want %d", len(calls), count)
+				}
+				if len(tc.output) == 0 || slices.Equal(tc.output, []string{emptyReasoning}) {
 					want := &llm.ThinkingData{Text: live.String()}
 					hasDisplay := slices.ContainsFunc(resp.Message.Content, func(p llm.ContentPart) bool { return reflect.DeepEqual(p.Thinking, want) })
-					hasNativeText := slices.ContainsFunc(tc.want, func(it replayItem) bool { return it.Type == "reasoning" && it.ID == "rs_1" && len(it.Content) > 0 })
+					hasNativeText := slices.ContainsFunc(tc.want, func(it replayItem) bool {
+						return it.Type == "reasoning" && it.ID == "rs_1" && slices.ContainsFunc(it.Content, func(part replayText) bool { return part.Text != "" })
+					})
 					if hasDisplay == hasNativeText {
 						t.Errorf("display reasoning present = %v, matching native text = %v", hasDisplay, hasNativeText)
 					}
