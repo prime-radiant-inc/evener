@@ -283,13 +283,22 @@ func constrainsSomething(m map[string]any, isObject, isArray bool) bool {
 		raw, has := m["items"]
 		return has && raw != nil
 	default:
-		// Any other node must name a type or carry a value constraint: without
-		// one it is the empty schema, which admits every value.
+		// Any other node must name a type or carry a constraint that narrows
+		// the value set whatever type the value has: without one it is the
+		// empty schema, which admits every value.
 		if _, has := m["type"]; has {
 			return true
 		}
-		for kw := range modeledKeywords {
-			if _, has := m[kw]; has && !annotationKeywords[kw] {
+		// A typeless node accepts values of every type, so a keyword qualifies
+		// it only when the walk can read the set it leaves. enum and const name
+		// a closed set, which the walk can read. Every other modeled keyword
+		// either annotates the value — description, title, default, examples,
+		// format — or narrows one type while leaving the rest open, and the
+		// walk cannot read that set. Its bound may also be the identity form
+		// that rejects nothing at all: minLength: 0, minItems: 0,
+		// uniqueItems: false and pattern: "" each admit every value.
+		for _, keyword := range []string{"enum", "const"} {
+			if _, has := m[keyword]; has {
 				return true
 			}
 		}
@@ -404,28 +413,6 @@ func keywordsModeled(m map[string]any) bool {
 		}
 	}
 	return true
-}
-
-// annotationKeywords lists the modeled keywords that describe a value without
-// narrowing the set of values it admits. A node carrying only these accepts
-// exactly what the empty schema accepts, so it states no constraint: a
-// parameter declared that way is as unverifiable under strict mode as one
-// declared {}, and certifying it hands the provider a schema it refuses.
-//
-// Every other member of modeledKeywords is treated as a constraint. That
-// direction is the safe one: a keyword wrongly left out here loses strictness
-// on one tool, while one wrongly included here would certify a node the
-// projection cannot verify. Annotation keywords outside modeledKeywords —
-// $comment, deprecated and the rest — never reach this set, because
-// keywordsModeled refuses the whole node before the predicate runs.
-var annotationKeywords = map[string]bool{
-	"title":       true,
-	"description": true,
-	"default":     true,
-	"examples":    true,
-	// format is an annotation under JSON Schema 2020-12 unless a caller opts
-	// into assertion, and the projection neither reads nor rewrites it.
-	"format": true,
 }
 
 func strictifyJSONSchemaInPlace(m map[string]any) {

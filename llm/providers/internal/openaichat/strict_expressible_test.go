@@ -285,6 +285,84 @@ func TestStrictExpressible(t *testing.T) {
 			},
 			want: false,
 		},
+		// A keyword is a constraint only if it can reject some value. Every
+		// scalar bound is type-conditional and has an identity form that
+		// rejects nothing at all, so its presence on an untyped node proves
+		// nothing: {"minLength": 0} admits exactly what {} admits.
+		{
+			name: "closed object with a required identity-bound argument",
+			in: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"payload": map[string]any{"minLength": 0},
+				},
+				"required": []string{"payload"},
+			},
+			want: false,
+		},
+		{
+			name: "closed object with a required identity minItems argument",
+			in: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"payload": map[string]any{"minItems": 0},
+				},
+				"required": []string{"payload"},
+			},
+			want: false,
+		},
+		{
+			name: "closed object with a required identity uniqueItems argument",
+			in: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"payload": map[string]any{"uniqueItems": false},
+				},
+				"required": []string{"payload"},
+			},
+			want: false,
+		},
+		{
+			name: "closed object with a required empty-pattern argument",
+			in: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"payload": map[string]any{"pattern": ""},
+				},
+				"required": []string{"payload"},
+			},
+			want: false,
+		},
+		// A closed value set does constrain an untyped node, so these are the
+		// keywords that still qualify one.
+		{
+			name: "closed object with a required enumerated argument",
+			in: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"payload": map[string]any{"enum": []any{"a", "b"}},
+				},
+				"required": []string{"payload"},
+			},
+			want: true,
+		},
+		{
+			name: "closed object with a required const argument",
+			in: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"payload": map[string]any{"const": "fixed"},
+				},
+				"required": []string{"payload"},
+			},
+			want: true,
+		},
 		{
 			name: "nullable array type list leaves items optional",
 			in: map[string]any{

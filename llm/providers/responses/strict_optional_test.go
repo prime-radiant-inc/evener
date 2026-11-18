@@ -383,6 +383,14 @@ func TestStrictToolProjectionRefusesUnconstrainedArguments(t *testing.T) {
 			},
 			"required": []string{"payload"},
 		},
+		"identity-bound argument": {
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"payload": map[string]any{"minLength": 0},
+			},
+			"required": []string{"payload"},
+		},
 	}
 	for name, schema := range schemas {
 		t.Run(name, func(t *testing.T) {
