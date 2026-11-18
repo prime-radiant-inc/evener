@@ -1481,7 +1481,8 @@ func (s *Session) deriveHeldDelegateAttentionFromOutcome() {
 	generation := uint64(0)
 	released := uint64(0)
 	// restoreErr carries a released turn that could not be put back in history
-	// out to the warning emit below, which must run with attentionMu released.
+	// out to the warning emit below, which runs with attentionMu released so the
+	// emit fan-out does not run under it.
 	var restoreErr error
 	if aggregate := controller.durable[s.owningDelegateID]; aggregate != nil {
 		generation = aggregate.Generation
@@ -1579,9 +1580,12 @@ func (s *Session) deriveHeldDelegateAttentionFromOutcome() {
 		}
 		for i, turn := range releasedTurns {
 			if err := s.retainDelegateAttentionTurn(turn, releasedTurns[i+1:]...); err != nil {
-				// The warning is emitted after attentionMu is released: emit
-				// reads the session mutex, and holding both here would invert
-				// the order the rest of the session takes them in.
+				// The warning is emitted after attentionMu is released, the
+				// same way this file's other warning site emits: attentionMu
+				// is held across this whole derivation, and emit fans out to
+				// the event lock, the job manager and a plugin notification
+				// hook. Holding it across that would stall every attention
+				// path in the session for the length of a hook call.
 				restoreErr = err
 				break
 			}
