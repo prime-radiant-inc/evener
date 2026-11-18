@@ -503,7 +503,14 @@ func appendStableWatchAttention(owner *Session, controller *delegateTreeControll
 	// snapshot queued behind an older one listing jobs that had already
 	// finished. The queue folded both across callbacks; this is the same rule
 	// (#2340 review M2).
-	folded, superseded := owner.foldPendingStableWatchNotice(n)
+	folded, superseded, stale := owner.foldPendingStableWatchNotice(n)
+	if stale {
+		// An older listing arrived after the newer one it describes was
+		// already pending. Nothing to append and nothing to arm: the newer row
+		// is the current statement of that reminder, and persisting this one
+		// would present finished jobs as still running (#2340 review).
+		return "", nil
+	}
 	n = folded
 	attentionID := stableWatchDiagnosticAttentionID(n)
 	// Register the notice's own cause BEFORE the item can be presented: a
@@ -578,8 +585,26 @@ func appendCallerWatchSendAttention(owner *Session, controller *delegateTreeCont
 		// the first attempt can have landed the append and then failed the
 		// settle, and a retry that reports "nothing to arm" leaves a durable
 		// row no wake ever points at (#2340 review).
+		// The row is durable from an earlier attempt, so record its notice
+		// facts and keep it ELIGIBLE for presentation even when this
+		// acknowledgment fails: returning "" here left a durable, unread row
+		// with no wake pointing at it, and the memory-only settle after three
+		// failures removed the send that would have re-minted the token, so the
+		// row waited for unrelated activity (#2340 review).
+		owner.notePendingStableWatchNotice(jobNotification{
+			WatchSend: &watchSendToken{
+				Key:       state.Key,
+				UpdateSeq: state.UpdateSeq,
+			},
+			Provenance: state.Provenance,
+		}, attentionID)
 		if err := jm.settleTranscribedWatchSend(cfg, state); err != nil {
-			return "", err
+			// The frame is already the model's to read; the acknowledgment is
+			// owed to the SENDER and retried on the next pass, which re-enters
+			// here through the transcribed mark.
+			owner.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf(
+				"watch-send acknowledgement for %q is owed; the frame stays pending for presentation: %v",
+				state.DeliveryID, err)})
 		}
 		return attentionID, nil
 	}
@@ -612,6 +637,17 @@ func appendCallerWatchSendAttention(owner *Session, controller *delegateTreeCont
 		}
 		return "", err
 	}
+	// The row is durable, so record its notice facts WITH that append: the
+	// caller-frame rail returned before the diagnostic rail's own record, so
+	// supersedeStaleSenderFrames could never find a frame's key or sequence and
+	// two frames of one watch key both stayed pending (#2340 review).
+	owner.notePendingStableWatchNotice(jobNotification{
+		WatchSend: &watchSendToken{
+			Key:       state.Key,
+			UpdateSeq: state.UpdateSeq,
+		},
+		Provenance: state.Provenance,
+	}, attentionID)
 	// The frame is durable, so from here a settle failure must not render it a
 	// second time: the transcribed mark turns the retry into an acknowledgement
 	// only.
@@ -765,9 +801,9 @@ func stableWatchNoticeOccurrence(n jobNotification) string {
 // occurrence, and the rows it supersedes are discarded durably once that append
 // has landed. Until the append lands the superseded rows stay pending, which is
 // the at-least-once side of the trade: a failed append loses no firing.
-func (s *Session) foldPendingStableWatchNotice(n jobNotification) (jobNotification, []string) {
+func (s *Session) foldPendingStableWatchNotice(n jobNotification) (folded jobNotification, superseded []string, stale bool) {
 	if s == nil {
-		return n, nil
+		return n, nil, false
 	}
 	family := stableWatchPendingFamily(n)
 	occurrence := stableWatchNoticeOccurrence(n)
@@ -777,7 +813,6 @@ func (s *Session) foldPendingStableWatchNotice(n jobNotification) (jobNotificati
 		s.stableWatchPending = make(map[string]stableWatchPendingNotice)
 	}
 	s.stableWatchPendingSeq++
-	var superseded []string
 	if family != "" {
 		for _, held := range s.stableWatchPending {
 			if held.family != family || held.occurrence == occurrence {
@@ -799,7 +834,12 @@ func (s *Session) foldPendingStableWatchNotice(n jobNotification) (jobNotificati
 			// have already finished and hide the ones still running
 			// (#2340 review).
 			if !held.snapshotAt.IsZero() && !n.SnapshotAt.IsZero() && n.SnapshotAt.Before(held.snapshotAt) {
-				continue
+				// Not merely "do not retire the newer row": the stale listing
+				// must not be appended BESIDE it either. Persisting and arming
+				// it handed the model two listings, one describing finished
+				// jobs as still running (#2340 review). The newer pending row
+				// already says everything this retry would.
+				return n, nil, true
 			}
 			// A tick of one watch folds its count into the survivor; every other
 			// family member is simply replaced, because the survivor's content is
@@ -811,7 +851,7 @@ func (s *Session) foldPendingStableWatchNotice(n jobNotification) (jobNotificati
 			superseded = append(superseded, held.attentionID)
 		}
 	}
-	return n, superseded
+	return n, superseded, false
 }
 
 // attentionIDCoveredLocked reports whether a settled round of the running turn
@@ -821,8 +861,17 @@ func (s *Session) attentionIDCoveredLocked(attentionID string) bool {
 	if attentionID == "" {
 		return false
 	}
-	_, covered := s.attentionCoveredIDs[attentionID]
-	return covered
+	if _, covered := s.attentionCoveredIDs[attentionID]; covered {
+		return true
+	}
+	// A row the round's IN-FLIGHT request already staged has been shown to the
+	// model even though promotion into attentionCoveredIDs waits for the call
+	// to settle. Counting it unread folded its fire count into a newer tick and
+	// retired it, so the next request presented a reminder counting a fire the
+	// model had already seen (#2340 review). A failed round clears the staged
+	// set, so the row folds again if no request presented it.
+	_, staged := s.attentionStagedIDs[attentionID]
+	return staged
 }
 
 // notePendingStableWatchNotice records that n's row is pending under its own

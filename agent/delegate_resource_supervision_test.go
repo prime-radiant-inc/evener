@@ -630,7 +630,7 @@ func TestDelegateResourceSupervision_FoldLeavesAPresentedTickAlone(t *testing.T)
 	sess.attentionCoveredIDs = map[string]struct{}{firstID: {}}
 	sess.attentionMu.Unlock()
 
-	folded, superseded := sess.foldPendingStableWatchNotice(second)
+	folded, superseded, _ := sess.foldPendingStableWatchNotice(second)
 	if slices.Contains(superseded, firstID) {
 		t.Fatalf("the fold superseded %q, a row a settled request already presented: retiring it discards the coverage its reader acquired and the count it holds is re-presented on the next request", firstID)
 	}
@@ -646,7 +646,7 @@ func TestDelegateResourceSupervision_FoldLeavesAPresentedTickAlone(t *testing.T)
 		t.Fatalf("persist the third tick: %v", err)
 	}
 	sess.notePendingStableWatchNotice(third, thirdID)
-	folded, superseded = sess.foldPendingStableWatchNotice(tick(4))
+	folded, superseded, _ = sess.foldPendingStableWatchNotice(tick(4))
 	if !slices.Contains(superseded, thirdID) {
 		t.Fatalf("an UNREAD tick of the same family was not superseded: the fold stopped folding, so this fixture no longer distinguishes read from unread")
 	}
@@ -666,46 +666,70 @@ func TestDelegateResourceSupervision_FoldLeavesAPresentedTickAlone(t *testing.T)
 func TestDelegateResourceSupervision_ANewerCallerFrameSupersedesAnOlderOne(t *testing.T) {
 	t.Parallel()
 	sess, _ := newCompactableSession(t)
+	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, controller, "dlg_frames", "")
+	sess.mu.Lock()
+	sess.delegateController = controller
+	sess.owningDelegateID = "dlg_frames"
+	sess.mu.Unlock()
+	controller.mu.Lock()
+	controller.live["dlg_frames"].binding.runtime = sess
+	controller.mu.Unlock()
+	// Bound as the stable owner through the production binder, so the ingress
+	// below is the one production uses for this child.
+	sess.jobManager.bindDelegateParent(controller, delegateLease{delegateID: "dlg_frames", generation: 1}, nil, sess)
+
+	installWatchBelowValidation(t, sess.jobManager, watchArgs{
+		Target: runtimeMessageAliasCaller,
+		Events: []string{"communicate"},
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "ping"},
+	})
+	cfg := sess.jobManager.watches[watchKey{VisibleSessionID: sess.jobManager.sessionID, Target: runtimeMessageAliasCaller, SendTo: runtimeMessageAliasCaller}]
+	if cfg == nil {
+		t.Fatal("setup: the caller watch config was not installed")
+	}
 	key := jobstore.WatchSendKey{
-		VisibleSessionID:        "sess_sender",
-		WatchID:                 "watch:caller-frames",
-		WatchTarget:             "job_frame",
-		ResolvedWatchedIdentity: "job_frame",
+		VisibleSessionID:        sess.jobManager.sessionID,
+		WatchID:                 cfg.watchID,
+		WatchTarget:             runtimeMessageAliasCaller,
+		ResolvedWatchedIdentity: "job_frames",
 		ResolvedSendTo:          runtimeMessageAliasCaller,
-		WatchGeneration:         "gen-1",
+		WatchGeneration:         cfg.generation,
 	}
 	stateAt := func(seq uint64) jobstore.WatchSendState {
 		return jobstore.WatchSendState{Key: key, DeliveryID: "dlv_frames", UpdateSeq: seq, Frame: "frame at sequence"}
 	}
-	// The older frame landed first and is what this receiver still holds.
-	older := watchSendTokenNotification("", stateAt(1))
-	if _, err := sess.appendDelegateNotificationDurably(stableWatchAttentionID(stateAt(1)), "older frame body"); err != nil {
-		t.Fatalf("persist the older frame: %v", err)
-	}
-	sess.notePendingStableWatchNotice(older, stableWatchAttentionID(stateAt(1)))
 
-	stale := sess.supersedeStaleSenderFrames(stateAt(2))
-	if !slices.Contains(stale, stableWatchAttentionID(stateAt(1))) {
-		t.Fatal("a newer caller frame did not supersede the older frame of its own watch key: both rows stay pending, so the next leased request presents two frames for one key where the send rail keeps only the latest")
+	// The older frame is delivered through PRODUCTION ingress, not seeded by
+	// hand. The finding was that the caller-frame path never recorded the
+	// frame's key and sequence, so a fixture that writes that record itself
+	// passes while production records nothing (#2340 review).
+	sess.jobManager.rememberUnpersistedTerminalPendingWatchSend(cfg, stateAt(1))
+	if !sess.jobManager.persistStableWatchPendings([]jobNotification{watchSendTokenNotification("", stateAt(1))}) {
+		t.Fatal("the production stable ingress declined a caller watch token")
+	}
+	// Non-vacuity for the record itself: ingress must have retained the frame's
+	// notice facts, which is exactly what the hand-seeded fixture skipped.
+	olderID := stableWatchAttentionID(stateAt(1))
+	if _, ok := sess.pendingStableWatchNotice(olderID); !ok {
+		t.Fatal("caller-frame ingress made the row durable without recording its key and sequence: superseding can never find it, so both frames of one key stay pending and the next leased request presents both")
 	}
 
-	// Non-vacuity: an OLDER frame does not supersede a newer one, so this cannot
-	// pass by superseding everything in the family.
-	newer := watchSendTokenNotification("", stateAt(3))
-	if _, err := sess.appendDelegateNotificationDurably(stableWatchAttentionID(stateAt(3)), "newer frame body"); err != nil {
-		t.Fatalf("persist the newer frame: %v", err)
+	// A second, newer frame for the SAME key arrives while the child is busy.
+	sess.jobManager.rememberUnpersistedTerminalPendingWatchSend(cfg, stateAt(2))
+	if !sess.jobManager.persistStableWatchPendings([]jobNotification{watchSendTokenNotification("", stateAt(2))}) {
+		t.Fatal("the production stable ingress declined the newer caller watch token")
 	}
-	sess.notePendingStableWatchNotice(newer, stableWatchAttentionID(stateAt(3)))
-	if stale := sess.supersedeStaleSenderFrames(stateAt(2)); slices.Contains(stale, stableWatchAttentionID(stateAt(3))) {
-		t.Fatalf("an older frame superseded %v: latest-frame-wins runs backwards, so a stale frame would replace the current one", stale)
+	remaining, err := sess.pendingDelegateAttentionIDs()
+	if err != nil {
+		t.Fatalf("read pending attention: %v", err)
 	}
-	// A DIFFERENT watch is a different family and is never superseded.
-	other := stateAt(1)
-	other.Key.WatchID = "watch:some-other"
-	other.Key.WatchTarget = "job_other"
-	other.Key.ResolvedWatchedIdentity = "job_other"
-	if stale := sess.supersedeStaleSenderFrames(other); len(stale) != 0 {
-		t.Fatalf("a frame from another watch superseded %v: one watch's frame would retire an unrelated watch's row", stale)
+	newerID := stableWatchAttentionID(stateAt(2))
+	if slices.Contains(remaining, olderID) {
+		t.Fatalf("the older frame %q stayed pending beside the newer one: both frames of one key reach the next leased request, where the send rail keeps only the latest", olderID)
+	}
+	if !slices.Contains(remaining, newerID) {
+		t.Fatalf("the newer frame %q is not pending after ingress: the supersede retired the frame it was meant to keep (%v)", newerID, remaining)
 	}
 }
 
@@ -737,15 +761,22 @@ func TestDelegateResourceSupervision_ARetriedOlderSnapshotKeepsTheNewerListing(t
 	sess.notePendingStableWatchNotice(newer, stableWatchDiagnosticAttentionID(newer))
 
 	// The retried OLDER listing must not supersede it.
-	_, superseded := sess.foldPendingStableWatchNotice(older)
+	_, superseded, stale := sess.foldPendingStableWatchNotice(older)
 	if slices.Contains(superseded, stableWatchDiagnosticAttentionID(newer)) {
 		t.Fatal("a retried older snapshot superseded the newer listing: the model would be shown jobs that already finished while the ones still running are hidden")
+	}
+	// Refusing to retire the newer row is not enough: persisting and arming the
+	// stale listing put TWO listings in front of the model, one describing
+	// finished jobs as still running. The fold must report it stale so ingress
+	// appends nothing (#2340 review).
+	if !stale {
+		t.Fatal("a retried older snapshot was accepted beside the newer listing: the model reads both, one of them describing finished jobs as running")
 	}
 
 	// Non-vacuity: a GENUINELY newer listing still replaces the older one, or
 	// this fixture would pass with the snapshot fold disabled entirely.
 	newest := makeSnapshot(15, "newest-listing")
-	_, superseded = sess.foldPendingStableWatchNotice(newest)
+	_, superseded, _ = sess.foldPendingStableWatchNotice(newest)
 	if !slices.Contains(superseded, stableWatchDiagnosticAttentionID(newer)) {
 		t.Fatal("a newer snapshot failed to supersede an older pending one: the snapshot fold stopped folding, so the arm above no longer distinguishes age from arrival")
 	}
