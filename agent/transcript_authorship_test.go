@@ -333,12 +333,21 @@ func TestTranscriptAuthorshipNestedParent(t *testing.T) {
 	}
 	releaseNamer()
 	// The namer's own completion signal is what proves the parked goroutine is
-	// gone, and nothing here bounds it: a budget is exactly what this join
-	// exists to be independent of. Waiting on the group directly is that join.
-	// A signal that never fires hangs here rather than failing by name, which is
-	// the honest report: the stack shows the namer still on it.
-	middle.namerWG.Wait()
-	leaf.namerWG.Wait()
+	// gone, and the production close budget plays no part in it: a budget is
+	// exactly what this join exists to be independent of. Both namers must drain
+	// for the test to pass, so the wait itself is unbudgeted.
+	//
+	// TRIPWIRE: a wait group cannot report a namer that exits without calling
+	// Done, and there is no channel to select on, so this ceiling is the only
+	// way a missing Done fails this test by name instead of stalling the shard
+	// until the binary's timeout with the fixture never cleaned up. With the gate
+	// released both namers answer from a scripted adapter with no real I/O, so
+	// this normally returns in well under a second; 30s only fires on a missing
+	// Done.
+	awaitWithin(t, 30*time.Second, "the middle and leaf children's namers to finish", func() {
+		middle.namerWG.Wait()
+		leaf.namerWG.Wait()
+	})
 	middle.mu.Lock()
 	stillNaming := middle.naming.pending
 	middle.mu.Unlock()
