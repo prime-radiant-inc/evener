@@ -126,24 +126,17 @@ func outcomeFromRun(err error, stderr string) probeOutcome {
 	return out
 }
 
-// probeRunRecorder is the production probe's own host boundary, with the raw
-// result of its last run kept. Production decides capability through
-// bwrapUsernsCheck, which takes a probeSystem; handing it a recorder means the
-// helper measures what production actually runs — its argv, its cleanup, and
-// whatever it does about an abandoned reaper — rather than a second launcher
-// that would agree with production today and drift from it tomorrow.
-type probeRunRecorder struct {
-	hostProbeSystem
-	outcome probeOutcome
-}
-
-func (r *probeRunRecorder) run(ctx context.Context, name string, args ...string) error {
-	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Stderr = &stderr
-	err := cmd.Run()
-	r.outcome = outcomeFromRun(err, stderr.String())
-	return err
+// checkOutcomeName names a capability verdict for a failure message. It is a
+// message, never an oracle: the test asserts the CheckOutcome itself.
+func checkOutcomeName(outcome CheckOutcome) string {
+	switch outcome {
+	case CheckPassed:
+		return "passed"
+	case CheckFailed:
+		return "failed"
+	default:
+		return "inconclusive"
+	}
 }
 
 // fate is the outcome as one clause for a failure message: the exit status and
@@ -185,7 +178,14 @@ type bwrapProbeOrphanReport struct {
 	// not reap what bwrap abandons, so it should leave a reaper behind: a zero
 	// here means this harness cannot see the leak it is looking for.
 	ControlLeft int `json:"control_left"`
-	// Probe is the probe under test.
+	// ProbeVerdict is what production's own bwrapUsernsCheck concluded, run
+	// through the real hostProbeSystem: its argv, its launch, its cleanup. This
+	// is the verdict the test asserts, because it is the one the product acts on.
+	ProbeVerdict CheckOutcome `json:"probe_verdict"`
+	// Probe is a diagnostic-only re-run of the probe's argv, used to explain a
+	// verdict that did not pass. It is never the oracle: it is a second executor,
+	// so asserting on it would measure this file's launcher rather than
+	// production's.
 	Probe probeOutcome `json:"probe"`
 	// ProbeLeft lists the processes the probe abandoned, which is the leak.
 	ProbeLeft []int `json:"probe_left"`
@@ -270,8 +270,8 @@ func TestBwrapProbeLeavesNoAdoptedChild(t *testing.T) {
 	}
 	// The pair is the evidence: the same harness sees the plain run leak and the
 	// probe run not, so a clean result cannot be a harness that sees nothing.
-	t.Logf("plain namespaced run (not the probe's argv): %s, %d adopted; probe: %s, adopted %v",
-		report.Control.fate(), report.ControlLeft, report.Probe.fate(), report.ProbeLeft)
+	t.Logf("plain namespaced run (not the probe's argv): %s, %d adopted; production's probe check: %s, adopted %v",
+		report.Control.fate(), report.ControlLeft, checkOutcomeName(report.ProbeVerdict), report.ProbeLeft)
 
 	if len(report.ProbeLeft) > 0 {
 		t.Fatalf("bwrap's capability probe left processes %v adopted and unreaped: the probe asked for a PID-namespace reaper whose exit no owner waits for", report.ProbeLeft)
@@ -280,15 +280,20 @@ func TestBwrapProbeLeavesNoAdoptedChild(t *testing.T) {
 		unmeasurable(t, fmt.Sprintf("this host's bwrap cannot create a namespaced sandbox (plain run %s)", report.Control.fate()))
 		return
 	}
-	if !report.Probe.ok() {
-		// A launch failure never reached the probe's arguments, so it cannot be
-		// evidence that one of them was refused. Only a probe that ran has an
-		// argument to blame, and only the control passing makes that the
-		// difference between the two runs.
-		if report.Probe.Start != probeRan {
-			t.Fatalf("the capability probe never started (%s) on a host whose bwrap ran a plain namespaced sandbox (%s): the launch failed before bwrap saw any probe argument", report.Probe.fate(), report.Control.fate())
+	// Production's own verdict is the oracle: it is what the product acts on, and
+	// it was reached through the real hostProbeSystem, so its launch and cleanup
+	// are the shipped ones.
+	if report.ProbeVerdict != CheckPassed {
+		// What follows explains a verdict that did not pass. It attributes the
+		// failure only to what it observed, because a launch that never reached
+		// bwrap, or a probe the deadline killed, is not evidence about the probe's
+		// arguments.
+		switch {
+		case report.Probe.Start != probeRan:
+			t.Fatalf("the capability probe never started (%s) on a host whose bwrap ran a plain namespaced sandbox (%s): production's check could not launch the probe, so the failure says nothing about its arguments", report.Probe.fate(), report.Control.fate())
+		default:
+			t.Fatalf("production's capability check concluded %s while a plain namespaced run %s on this host; the probe's own invocation %s", checkOutcomeName(report.ProbeVerdict), report.Control.fate(), report.Probe.fate())
 		}
-		t.Fatalf("the capability probe failed (%s) on a host whose bwrap ran a plain namespaced sandbox (%s), so an argument the probe passes and the control does not made it fail", report.Probe.fate(), report.Control.fate())
 	}
 	if report.ControlLeft == 0 {
 		t.Fatalf("the plain namespaced run left no adopted child either, so this harness cannot see the leak it is measuring for: if this bwrap now reaps its own reaper, the regression is obsolete rather than broken")
@@ -416,16 +421,23 @@ func TestBwrapProbeOrphanHelperProcess(t *testing.T) {
 		report.Control = runProbeArgv(t, control)
 		report.ControlLeft = len(reapAdopted(t))
 
-		// The probe is production's own function, not this file's copy of its
-		// argv: bwrapUsernsCheck decides capability and owns whatever the probe
-		// does about an abandoned reaper. Running its argv through a launcher of
-		// this file's own would measure a second executor, so a fix that reaps
-		// inside production would show up as a leak this harness reports and
-		// production does not have.
-		recorder := &probeRunRecorder{}
-		bwrapUsernsCheck(recorder, path)
-		report.Probe = recorder.outcome
+		// The probe is production's own function driven through the real
+		// hostProbeSystem: its argv, its launch, and whatever it does about an
+		// abandoned reaper. Substituting a boundary here — even one that only
+		// records — would put this file's launcher in place of production's, so a
+		// fix that reaps inside run would show up as a leak production does not
+		// have.
+		report.ProbeVerdict = bwrapUsernsCheck(hostProbeSystem{}, path)
 		report.ProbeLeft = reapAdopted(t)
+
+		// Explain a verdict that did not pass with a second invocation of the
+		// probe's argv. It runs after the leak has been measured, because it is
+		// diagnostic only: it must not add processes to the count the leak is
+		// judged on, and its outcome is never the oracle.
+		if report.ProbeVerdict != CheckPassed {
+			report.Probe = runProbeArgv(t, bwrapProbeArgs(path))
+			reapAdopted(t)
+		}
 	}
 
 	writeAdoptionReport(t, reportPath, report)
@@ -490,22 +502,10 @@ func runProbeArgv(t *testing.T, argv []string) probeOutcome {
 	var stderr bytes.Buffer
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Stderr = &stderr
-	err := cmd.Run()
-	out := probeOutcome{Start: probeRan, Exit: -1, Stderr: stderr.String()}
-	if err == nil {
-		out.Exit = 0
-		return out
-	}
-	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
-		out.Exit = exitErr.ExitCode()
-		return out
-	}
-	// The command never started, so there is no exit status to report and no
-	// stderr to explain it: the cause is the launch error itself, and dropping
-	// it is what would make this failure look like a silent exit.
-	out.Start = classifyProbeStart(err)
-	out.StartErr = err.Error()
-	return out
+	// outcomeFromRun is the same classifier the helper's launcher uses, so the
+	// regression that pins the classification cannot pass while the report's own
+	// path drops it.
+	return outcomeFromRun(cmd.Run(), stderr.String())
 }
 
 // roundTripOutcome encodes and decodes an outcome the way the helper hands it
