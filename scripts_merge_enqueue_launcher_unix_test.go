@@ -8,11 +8,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
 	"runtime"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -1115,7 +1117,21 @@ func runLauncher(t *testing.T, cmd *exec.Cmd, f launcherFixture, fixturePIDs ...
 				pids = append(pids, *p)
 			}
 		}
-		for _, proc := range fixtureDescendants(t, f.dir, os.Getpid()) {
+		// The walk is rooted at the LAUNCHER, not at a path in argv.
+		//
+		// A case can hand the launcher a scratch root outside f.dir -- the
+		// ancestor-refusal case builds under its own c.tmp -- and no build it
+		// starts would then name f.dir at all. Matching argv missed that build,
+		// killed only the launcher, and left the build reparented to init where the
+		// later c.tmp sweep could do nothing but report it.
+		//
+		// Ancestry is the ownership fact: everything under the launcher pid is
+		// this case's, whatever it is called. It is read here, before the launcher
+		// is killed, because the kill is what cuts those links.
+		// Every process under the launcher pid, by parent links, plus the ones
+		// naming f.dir under this test -- the latter keeps the coverage of a
+		// process whose parent exited before the census.
+		for _, proc := range append(launcherDescendants(t, launcherPID), fixtureDescendants(t, f.dir, os.Getpid())...) {
 			pids = append(pids, proc.pid)
 			if proc.pgid > 1 && proc.pgid != proc.pid {
 				pids = append(pids, proc.pgid)
@@ -1125,30 +1141,67 @@ func runLauncher(t *testing.T, cmd *exec.Cmd, f launcherFixture, fixturePIDs ...
 	})
 }
 
+// launcherDescendants returns every live process under root by parent links,
+// whatever its command line says.
+//
+// This is the handle that reaches a build the launcher started under a scratch
+// root outside the fixture directory: a case can give the launcher a c.tmp of its
+// own, and a build there never names f.dir. Ownership is ancestry -- the same rule
+// assertNoSurvivors applies to what it signals -- so it is read while the launcher
+// is still alive, because killing the launcher reparents its children to init.
+func launcherDescendants(t *testing.T, root int) []procLine {
+	t.Helper()
+	if root <= 1 {
+		return nil
+	}
+	procs := scanProcs(t)
+	live := make([]procLine, 0, len(procs))
+	for _, proc := range procs {
+		if !proc.zombie() {
+			live = append(live, proc)
+		}
+	}
+	// Breadth-first over the parent links. Bounded by the process count, so a
+	// parent cycle cannot spin here.
+	seen := map[int]bool{root: true}
+	frontier := []int{root}
+	var found []procLine
+	for range len(live) {
+		var next []int
+		for _, proc := range live {
+			if seen[proc.pid] || !slices.Contains(frontier, proc.ppid) {
+				continue
+			}
+			seen[proc.pid] = true
+			found = append(found, proc)
+			next = append(next, proc.pid)
+		}
+		if len(next) == 0 {
+			break
+		}
+		frontier = next
+	}
+	return found
+}
+
 // reapLauncherQuietly waits for the launcher to be reaped and reports nothing.
 //
 // Cleanup runs whether the case passed, failed, or already asserted the launcher's
-// exit with mustExit, and mustExit called cmd.Wait itself. A second Wait on a
-// reaped process returns "no child processes", which waitExit treats as a real
-// error and would turn every ordinary passing case into a failure. ProcessState is
-// set exactly when Wait has returned, so it is the guard.
+// exit with mustExit. It joins the ONE waiter for the command rather than calling
+// Wait again: a second Wait returns "no child processes", and asking ProcessState
+// while a Wait is still in flight is a data race. A command that was never waited
+// on has no waiter yet, and asking for one here starts it -- so a case that fails
+// before its assertion still reaps its launcher.
 func reapLauncherQuietly(t *testing.T, cmd *exec.Cmd) {
 	t.Helper()
-	if cmd.ProcessState != nil {
-		return
-	}
 	if cmd.Process == nil {
 		return
 	}
-	done := make(chan struct{})
-	go func() {
-		_ = cmd.Wait()
-		close(done)
-	}()
+	w := waiterFor(cmd)
 	// The group was KILLed just before this, so the wait is short; the bound is
 	// only so a launcher that somehow survives cannot hold the test's cleanup open.
 	select {
-	case <-done:
+	case <-w.done:
 	case <-time.After(launcherExitDeadline):
 	}
 }
@@ -1194,24 +1247,49 @@ func TestMergeEnqueueLauncherCleanupStopsAFixtureBuildInItsOwnGroup(t *testing.T
 	// Not parallel: the case is about this process's cleanup order and the
 	// census it reads is the whole machine's.
 	//
-	// The build is a script by path, not `sleep 300` by name, because the sweep
-	// finds a process by the fixture path in its argv -- which is what a
-	// `go build -o <fixture>/evener-dev` gives it. A `bash -c 'sleep 300'` execs
-	// sleep, whose argv no longer names the fixture, and a fixture like that makes
-	// the mutant below pass by being invisible rather than by being clean.
-	build := filepath.Join(f.dir, "pending-build")
+	// The build is a script by path, not `sleep 300` by name, because a stop reads
+	// the group census by command line and a `bash -c 'sleep 300'` execs sleep,
+	// whose argv no longer names anything this case chose.
+	//
+	// Its directory is OUTSIDE f.dir, on purpose. That is the shape the review
+	// found: a case can hand the launcher a scratch root of its own
+	// (`c.tmp`), and a build there names nothing under the fixture. Cleanup that
+	// matched argv text was blind to exactly this build. Ancestry is not.
+	outside := t.TempDir()
+	build := filepath.Join(outside, "pending-build")
 	writeTestFile(t, build, []byte("#!/bin/sh\nsleep 300\n"), 0o755)
 	script := "set -m\n" +
 		"bash \"$1/pending-build\" </dev/null >/dev/null 2>&1 &\n" +
 		"wait\n"
-	cmd := exec.Command("bash", "-c", script, "stand-in-launcher", f.dir)
+	cmd := exec.Command("bash", "-c", script, "stand-in-launcher", outside)
 	// Own group, like the real launcher, so cleanup's kill reaches exactly what a
 	// kill of the real launcher would reach -- and not the build beside it.
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	// The assertion is a CLEANUP, registered before runLauncher's own.
+	//
+	// Cleanups run last-registered-first, so this runs after runLauncher's -- which
+	// is the only place the answer exists. The body ends before cleanup runs, so a
+	// body-level check would look for a build that cleanup has not killed yet and
+	// fail on a correct harness.
+	//
+	// And it is about THIS build, by pid, learned while the process existed. The
+	// f.dir sweep cannot answer for it: the build lives outside f.dir, which is the
+	// whole point of the case, so that sweep is blind to it by construction. An
+	// earlier version of this case relied on the sweep and passed while leaking.
+	var buildPID int
+	t.Cleanup(func() {
+		if buildPID == 0 {
+			t.Fatalf("the stand-in launcher's build was never observed, so this case proved nothing about stopping one")
+		}
+		testwait.Until(t, fmt.Sprintf("the stand-in launcher's build %d to be stopped", buildPID), func() bool {
+			return pidGone(buildPID)
+		})
+	})
 	runLauncher(t, cmd, f)
 	testwait.Until(t, "the stand-in launcher's build to appear in a group of its own", func() bool {
 		for _, proc := range scanProcs(t) {
 			if strings.Contains(proc.cmd, build) && proc.pgid == proc.pid {
+				buildPID = proc.pid
 				return true
 			}
 		}
@@ -1474,25 +1552,130 @@ func descendsFrom(procs []procLine, pid, root int) bool {
 	return false
 }
 
+// launcherWaiter owns the ONE cmd.Wait for a launcher command.
+//
+// Exactly one goroutine calls Wait, and every later question about the exit is
+// answered from the fields it filled in before it closed done. A second Wait on
+// the same command returns "no child processes", and reading ProcessState beside
+// a Wait that is still running is a data race -- so neither the deadline path nor
+// cleanup may own a wait of its own.
+type launcherWaiter struct {
+	done chan struct{}
+	err  error
+	code int
+}
+
+// launcherWaiters holds one waiter per command for the life of the process.
+//
+// The key is the command pointer, which is unique per case: runLauncher builds a
+// fresh exec.Cmd for each. It is never cleaned up because a case's command lives
+// as long as the case does, and the map costs one entry per launcher started --
+// tens over a suite, not millions.
+var launcherWaiters sync.Map
+
+// waiterFor returns the waiter for cmd, starting the single Wait goroutine the
+// first time it is asked for.
+func waiterFor(cmd *exec.Cmd) *launcherWaiter {
+	if existing, ok := launcherWaiters.Load(cmd); ok {
+		return existing.(*launcherWaiter)
+	}
+	w := &launcherWaiter{done: make(chan struct{})}
+	actual, loaded := launcherWaiters.LoadOrStore(cmd, w)
+	if loaded {
+		return actual.(*launcherWaiter)
+	}
+	go func() {
+		w.err = cmd.Wait()
+		if w.err != nil {
+			var exitErr *exec.ExitError
+			if errors.As(w.err, &exitErr) {
+				w.code = exitErr.ExitCode()
+			}
+		}
+		// Close is the publish: every field above is written before it, and a
+		// reader that has received from a closed channel sees those writes.
+		close(w.done)
+	}()
+	return w
+}
+
 // waitExit waits for cmd to exit, bounded. It reports the exit code and true,
 // or 0 and false when the deadline passed first -- which is a regression, not a
 // hang, and the caller says so.
+//
+// On the timeout path the Wait goroutine keeps running and stays the only owner
+// of the wait: cleanup joins it through the same waiter rather than starting a
+// second one.
 func waitExit(t *testing.T, cmd *exec.Cmd, within time.Duration) (int, bool) {
 	t.Helper()
-	done := make(chan error, 1)
-	go func() { done <- cmd.Wait() }()
+	w := waiterFor(cmd)
 	select {
-	case err := <-done:
-		if err == nil {
+	case <-w.done:
+		if w.err == nil {
 			return 0, true
 		}
 		var exitErr *exec.ExitError
-		if !errors.As(err, &exitErr) {
-			t.Fatalf("wait for the launcher: %v", err)
+		if !errors.As(w.err, &exitErr) {
+			t.Fatalf("wait for the launcher: %v", w.err)
 		}
-		return exitErr.ExitCode(), true
+		return w.code, true
 	case <-time.After(within):
 		return 0, false
+	}
+}
+
+// TestMergeEnqueueLauncherTimeoutSharesItsOneWait pins the harness property the
+// review named: a timeout must not start a second wait.
+//
+// waitExit gives up at the deadline and leaves its goroutine inside cmd.Wait.
+// Cleanup then has to learn whether the process is gone without calling Wait
+// again -- a second Wait returns "no child processes" and turns a passing case
+// into a failure -- and without reading ProcessState beside a Wait that is still
+// running, which is a data race. Both are exercised here in the order a timed-out
+// case hits them: a wait that expires, then cleanup's reap.
+//
+// The process outlives the deadline on purpose, so the expiry is real and the
+// second caller really does arrive while the first Wait is in flight. Under
+// -race, a harness that read ProcessState or re-waited would be reported here
+// rather than while it was reporting some other case's regression.
+func TestMergeEnqueueLauncherTimeoutSharesItsOneWait(t *testing.T) {
+	t.Parallel()
+	// A process that outlives the deadline: `sleep` would be exec'd and its pid
+	// would still be the command's, but a shell keeps the fixture's own name in
+	// argv and survives TERM long enough for the reap below to arrive first.
+	cmd := exec.Command("sh", "-c", "trap '' TERM; while :; do sleep 1; done")
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start the fixture process: %v", err)
+	}
+	pid := cmd.Process.Pid
+	t.Cleanup(func() {
+		killGroups(pid)
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	})
+	// Short deadline, and the process is still running when it passes.
+	if _, exited := waitExit(t, cmd, 50*time.Millisecond); exited {
+		t.Fatalf("the fixture process %d exited inside the deadline, so this case never reached the timeout path", pid)
+	}
+	// No reading of cmd.ProcessState here. That is the pattern the finding bans,
+	// and doing it in the test would be the same race the harness had: the wait is
+	// still in flight, and ProcessState is written by the goroutine that owns it.
+	// What this case proves instead is behavioural -- the reap below joins the
+	// wait, and the exit is readable afterwards -- and the race detector is what
+	// says no field was read unsynchronised.
+	// Cleanup's reap, arriving while the first Wait is still running. It must join
+	// that wait rather than start its own, and it must return once the process is
+	// gone.
+	killGroups(pid)
+	_ = syscall.Kill(pid, syscall.SIGKILL)
+	reapLauncherQuietly(t, cmd)
+	if !pidGone(pid) {
+		t.Fatalf("the fixture process %d survived the reap", pid)
+	}
+	// And the exit is now readable without waiting again: the same waiter answers,
+	// with the signal that killed it rather than "no child processes".
+	if _, exited := waitExit(t, cmd, launcherExitDeadline); !exited {
+		t.Fatalf("the exit was not readable after the reap, so the waiter did not record it")
 	}
 }
 
@@ -4565,6 +4748,72 @@ func TestMergeEnqueueLauncherReadsANumericAclPrincipalByItsId(t *testing.T) {
 	}
 }
 
+// TestMergeEnqueueLauncherReadsTheAclInTheModeItComparesIn pins the ONE identity
+// mode the high was about: the caller's getfacl and the reader's comparison must
+// agree about what a principal is, and here they agree on the uid.
+//
+// The listing-level cases above feed the reader text this test wrote. That proves
+// the comparison; it cannot prove the CALLER produces text in that mode, and the
+// gap between them is the defect: with `getfacl -p -c`, an ordinary grant to this
+// user prints `user:jesse:rwx` (the uid has a name), the numeric exclusion does not
+// match it, and a directory granting this user alone is refused. The other
+// direction is the security hole the review named: a foreign account whose login
+// name is the decimal spelling of this uid prints exactly `user:1000:rwx`, which
+// the exclusion would skip. This case is about the first direction because it is
+// the one a test can manufacture without root -- a passwd entry cannot be added
+// here, but an ACL naming the invoking user can -- and it fails for the same
+// reason along the same seam: the mode.
+func TestMergeEnqueueLauncherReadsTheAclInTheModeItComparesIn(t *testing.T) {
+	t.Parallel()
+	if _, err := exec.LookPath("setfacl"); err != nil {
+		t.Skip("setfacl is not installed here, so no ACL naming this user can be made")
+	}
+	base := resolvePath(t, fixtureScratchBase(t))
+	dir := filepath.Join(base, "acl-principal")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("create %s: %v", dir, err)
+	}
+	t.Cleanup(func() { _ = exec.Command("setfacl", "-b", dir).Run() })
+	// Named by ACCOUNT NAME, which is how an operator's tooling and any
+	// `setfacl -m u:$(id -un):rwx` spells it. getfacl renders it back as the name
+	// under -p and as the uid under -n, and the launcher has to be reading the uid.
+	name, err := user.Current()
+	if err != nil || name.Username == "" {
+		t.Skipf("cannot resolve this user's account name: %v", err)
+	}
+	if out, err := exec.Command("setfacl", "-m", "u:"+name.Username+":rwx", dir).CombinedOutput(); err != nil {
+		t.Skipf("setfacl cannot set an ACL here (%v): %s", err, out)
+	}
+	// The premise: this grant really does name this user and nobody else, and it
+	// really is rendered as a name in the mode the old caller used. If the host
+	// prints the uid in both modes there is nothing to distinguish and the case
+	// would be about nothing.
+	plain, err := exec.Command("getfacl", "-p", "-c", dir).Output()
+	if err != nil {
+		t.Fatalf("read the ACL in name mode: %v", err)
+	}
+	if !strings.Contains(string(plain), "user:"+name.Username+":rwx") {
+		t.Skipf("getfacl -p does not render this grant as the account name, so this host cannot show the mismatch: %s", plain)
+	}
+	// The predicate, from the launcher, over the directory's real ACL.
+	if err := runLauncherFunc(t, validatorFuncs, `dir_acl_grants_foreign_write "$2"`, dir); err == nil {
+		t.Fatalf("a directory whose only named-user grant is this user (%s, uid %d) was read as foreign-writable: the caller read names while the reader compared uids", name.Username, os.Geteuid())
+	}
+	// And the other direction still holds through the same path: a uid that is
+	// neither root nor this user is foreign, read from a real ACL as well.
+	other := filepath.Join(base, "acl-foreign")
+	if err := os.MkdirAll(other, 0o700); err != nil {
+		t.Fatalf("create %s: %v", other, err)
+	}
+	t.Cleanup(func() { _ = exec.Command("setfacl", "-b", other).Run() })
+	if out, err := exec.Command("setfacl", "-m", "u:4242424:rwx", other).CombinedOutput(); err != nil {
+		t.Skipf("setfacl cannot grant to an unknown uid here (%v): %s", err, out)
+	}
+	if err := runLauncherFunc(t, validatorFuncs, `dir_acl_grants_foreign_write "$2"`, other); err != nil {
+		t.Fatalf("a directory granting write to uid 4242424 was not read as foreign-writable (%v): the numeric comparison must keep refusing a uid that is neither root nor this user", err)
+	}
+}
+
 // TestMergeEnqueueLauncherRefusalNamesExecutionWhenATrustedRootWasFound pins the
 // reason the launcher reports when selection DID reach the execution probe.
 //
@@ -4706,14 +4955,18 @@ func TestMergeEnqueueLauncherRefusesScratchThatBecameReplaceableDuringTheBuild(t
 	cmd.Env = slices.DeleteFunc(cmd.Env, func(kv string) bool {
 		return strings.HasPrefix(kv, "EVENER_DEV_BIN=")
 	})
-	var buildPID int
+	var buildPID, buildGroupRoot int
 	t.Cleanup(func() { killGroups(buildPID) })
 	runLauncher(t, cmd, f)
 	// The build names the scratch directory it will write to, which is how the case
 	// learns the path the launcher minted without guessing at mktemp's name.
 	testwait.UntilSeen(t, "the fixture build to block on the gate", func() (bool, string) {
-		buildPID, _ = buildIn(t, c.tmp)
+		var group int
+		buildPID, group = buildIn(t, c.tmp)
 		if buildPID != 0 {
+			// Recorded, so the later assertion is about what was SEEN and not about
+			// a pid the case happened to be told.
+			buildGroupRoot = group
 			return true, ""
 		}
 		return false, "no build names the fixture scratch yet"
@@ -4740,6 +4993,24 @@ func TestMergeEnqueueLauncherRefusesScratchThatBecameReplaceableDuringTheBuild(t
 	// launcher refuses to run a helper from it. Exit 0 would be a helper executed
 	// through an ancestor another user can swap an entry in.
 	mustExit(t, cmd, f, 2)
+	// The refusal has to be the TRUST refusal, and it has to be distinguishable
+	// from a build that simply broke.
+	//
+	// Exit 2 alone does not say that: every launcher failure exits 2, including
+	// `build_helper ... || launcher_failed "building the evener-dev helper failed"`.
+	// A gate that serves the wrong number of `package main` declarations makes the
+	// build fail, and the resulting exit 2 with no helper sentinel is exactly what
+	// this case used to accept as a pass. So the reason token is required: it is
+	// emitted only by the post-build chain recheck.
+	if got := refusalReason(t, f); got != "scratch-became-replaceable" {
+		t.Fatalf("the refusal reason is %q, want %q: exit 2 with no helper is also what a failed build produces, so the reason is what shows the chain recheck refused", got, "scratch-became-replaceable")
+	}
+	// The build DID run -- that is the window this case is about -- and the
+	// refusal came after it. A case where the build never started would satisfy a
+	// bare "no helper ran" check without exercising the post-build check at all.
+	if buildGroupRoot == 0 {
+		t.Fatalf("the fixture build %d was never observed under %s: the refusal cannot have come from the post-build check if no build happened", buildPID, c.tmp)
+	}
 	if _, err := os.Stat(c.sentinel); err == nil {
 		t.Fatalf("the launcher built and ran a helper from scratch under a TMPDIR that became replaceable during the build: %s exists", c.sentinel)
 	}
@@ -4986,8 +5257,8 @@ func TestMergeEnqueueLauncherBuildHelperStopsAGroupItsBuildLeftBehind(t *testing
 			t.Fatalf("create %s: %v", d, err)
 		}
 	}
-	// The member is a script by path under the fixture, so the census -- the
-	// launcher's and this case's -- finds it by its command line.
+	// The member is a script by path under the fixture, so the census can find it
+	// by its command line.
 	//
 	// A bare `sleep 300` would be exec'd over the script and the member's argv
 	// would stop naming that path, which would make the census blind to it and the
@@ -4999,19 +5270,22 @@ func TestMergeEnqueueLauncherBuildHelperStopsAGroupItsBuildLeftBehind(t *testing
 	if err := os.MkdirAll(bin, 0o700); err != nil {
 		t.Fatalf("create %s: %v", bin, err)
 	}
-	// The stand-in go starts the member by that same path and then exits the way a
-	// build does when it is killed mid-compile.
+	// The stand-in go starts the member by that same path, records the group it
+	// leads, and then exits the way a build does when it is killed mid-compile.
+	//
+	// The group is RECORDED rather than discovered later by matching the member's
+	// command line. A test that signalled everything naming that file would kill a
+	// developer's shell if anyone happened to be tailing it -- and several agents
+	// run on one box here. The recorded group is the case's own process; nothing
+	// else can be in it.
+	groupFile := filepath.Join(dir, "member-group")
 	writeTestFile(t, filepath.Join(bin, "go"), []byte(
-		"#!/bin/sh\n'"+memberScript+"' </dev/null >/dev/null 2>&1 &\nexit 1\n"), 0o755)
-	// Nothing this case starts may outlive it: the testwait below is the
-	// assertion, this is only the net under a failing run.
-	t.Cleanup(func() {
-		for _, proc := range scanProcs(t) {
-			if strings.Contains(proc.cmd, memberScript) {
-				killGroups(proc.pid, proc.pgid)
-			}
-		}
-	})
+		"#!/bin/sh\n"+
+			"'"+memberScript+"' </dev/null >/dev/null 2>&1 &\n"+
+			"printf '%s\\n' \"$!\" > '"+groupFile+"'\n"+
+			"exit 1\n"), 0o755)
+	var memberPID int
+	t.Cleanup(func() { stopRecordedMember(memberPID, groupFile) })
 	out := filepath.Join(work, "evener-dev")
 	// build_helper calls the group census and the group stopper, so both are
 	// sourced from the launcher alongside it. A case that took build_helper alone
@@ -5021,7 +5295,7 @@ func TestMergeEnqueueLauncherBuildHelperStopsAGroupItsBuildLeftBehind(t *testing
 	script := `. "${GATE_BOUNDED_LIB:?}"; ` +
 		`eval "$(sed -n '` + launcherStopFuncs + `' "$1")"; ` +
 		`eval "$(sed -n '/^build_helper()/,/^}/p' "$1")"; ` +
-		`command -v build_helper >/dev/null || { printf 'build_helper is not defined\\n' >&2; exit 9; }; ` +
+		`command -v build_helper >/dev/null || { printf 'build_helper is not defined\n' >&2; exit 9; }; ` +
 		`root="$2"; work="$3"; launching=false; cancel_requested=false; child=""; child_group=""; ` +
 		`build_helper "$4"`
 	cmd := exec.Command("bash", "-c", script, "bash", mergeEnqueueLauncher, root, work, out)
@@ -5043,14 +5317,105 @@ func TestMergeEnqueueLauncherBuildHelperStopsAGroupItsBuildLeftBehind(t *testing
 	if code := exitCodeOf(t, err); code != 1 {
 		t.Fatalf("build_helper exited %d, want the stand-in go's 1: the launcher's own build body did not run", code)
 	}
-	testwait.Until(t, "the build's leftover member to be stopped once its leader exited", func() bool {
-		for _, proc := range scanProcs(t) {
-			if strings.Contains(proc.cmd, memberScript) {
-				return false
-			}
-		}
-		return true
+	// The member's pid is known from the file the stand-in go wrote, and the check
+	// is about THAT process: a process naming the same path that the case did not
+	// start is not evidence either way.
+	body, readErr := os.ReadFile(groupFile)
+	if readErr != nil {
+		t.Fatalf("read the member's pid: %v", readErr)
+	}
+	memberPID, convErr := strconv.Atoi(strings.TrimSpace(string(body)))
+	if convErr != nil || memberPID <= 1 {
+		t.Fatalf("the stand-in go recorded %q, which is not a pid: %v", string(body), convErr)
+	}
+	testwait.Until(t, fmt.Sprintf("the build's leftover member %d to be stopped once its leader exited", memberPID), func() bool {
+		return pidGone(memberPID)
 	})
+}
+
+// TestMergeEnqueueLauncherCleanupLeavesABystanderThatNamesTheFixture pins the
+// ownership rule the review insisted on: cleanup must not select victims by
+// command-line text.
+//
+// The shape is exactly the review's: a clean-up that killed every process group
+// whose command line mentioned the member's script would kill a developer's shell
+// if anyone happened to be tailing that file, and several agents run on this box
+// at once. This case manufactures the bystander -- a process in its own group,
+// not started by any fixture, whose argv names the member's path -- and then runs
+// the recorded-handle cleanup beside it.
+//
+// The bystander must survive. If a future version of the cleanup goes back to
+// matching text, this case kills it and says so.
+func TestMergeEnqueueLauncherCleanupLeavesABystanderThatNamesTheFixture(t *testing.T) {
+	t.Parallel()
+	dir := resolvePath(t, fixtureScratchBase(t))
+	memberScript := filepath.Join(dir, "left-behind")
+	writeTestFile(t, memberScript, []byte("#!/bin/sh\nwhile :; do sleep 1; done\n"), 0o755)
+	// The bystander: its own group, its own session, and a command line that names
+	// the member's path without descending from this test's fixture at all. It is
+	// started here and is not a fixture process.
+	bystander := exec.Command("sh", "-c", "while :; do sleep 1; done", memberScript)
+	bystander.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	if err := bystander.Start(); err != nil {
+		t.Fatalf("start the bystander: %v", err)
+	}
+	bystanderPID := bystander.Process.Pid
+	t.Cleanup(func() {
+		killGroups(bystanderPID)
+		_ = syscall.Kill(bystanderPID, syscall.SIGKILL)
+		_ = bystander.Wait()
+	})
+	// The premise: the bystander really does name the file, so a text-matching
+	// cleanup would find it and this case is about the rule.
+	found := false
+	for _, proc := range scanProcs(t) {
+		if proc.pid == bystanderPID && strings.Contains(proc.cmd, memberScript) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("the bystander %d does not name %s in its argv, so this case cannot show what a text-matching cleanup would do", bystanderPID, memberScript)
+	}
+	// The cleanup runs for a member group this case never started -- group 0 is
+	// skipped by killGroups -- so the only thing it can act on is what it records.
+	// Nothing is recorded here, which is the point: a text-matching cleanup would
+	// have a victim; a recorded-handle one has none.
+	stopRecordedMember(0, filepath.Join(dir, "no-group-file"))
+	// And the bystander is still there. A small wait so a kill delivered by the
+	// cleanup above would have been visible by now: SIGKILL takes effect
+	// immediately, so this is not a race against a slow signal.
+	testwait.Until(t, fmt.Sprintf("bystander %d to still be alive after cleanup", bystanderPID), func() bool {
+		return !pidGone(bystanderPID)
+	})
+	if pidGone(bystanderPID) {
+		t.Fatalf("the cleanup killed the bystander %d, which merely names the member's path: cleanup must signal only what it recorded", bystanderPID)
+	}
+}
+
+// stopRecordedMember stops the member process this case RECORDED, and nothing
+// else.
+//
+// The pid comes from the file the stand-in go wrote before it exited, and the
+// group from the pid. Nothing here reads a command line: a test that signalled
+// every process whose argv named the member's script would kill a developer's
+// shell if anyone happened to be tailing that file -- and several agents run on
+// this box at once. Recorded handles cannot select a stranger.
+//
+// The group is signalled as well as the pid because the member may lead one of
+// its own, and a stop that reached only the pid would leave its descendants.
+func stopRecordedMember(memberPID int, groupFile string) {
+	killGroups(memberPID)
+	body, err := os.ReadFile(groupFile)
+	if err != nil {
+		return
+	}
+	pid, convErr := strconv.Atoi(strings.TrimSpace(string(body)))
+	if convErr != nil || pid <= 1 {
+		return
+	}
+	killGroups(pid)
+	_ = syscall.Kill(pid, syscall.SIGKILL)
 }
 
 // exitCodeOf reports the exit status of a finished command, and -1 when it did not

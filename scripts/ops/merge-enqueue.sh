@@ -239,20 +239,34 @@ dir_is_owned_by_trusted() {
 # and without one the permission cannot be shown to be limited. That keeps the
 # "answer unsafe when it cannot answer" convention.
 #
-# A NUMERIC principal is resolved before it counts. `getfacl -p -c` prints a name
-# when one resolves and a bare number when none does, so a root-owned directory
-# whose ACL grants write to this user alone prints `user:1000:rwx`, with the
-# invoking user's own uid as the principal. Every named-user entry used to count
-# as foreign, which rejected that directory and moved scratch somewhere else --
-# or exited 2 when there was nowhere else. The entry grants nothing another user
-# gains: it names this user. Root is excluded for the same reason, and it is
-# already trusted by dir_is_owned_by_trusted. A numeric principal that is neither
-# stays foreign, and the group check is not narrowed at all.
+# A principal is compared as a NUMBER, and the caller reads the ACL in the same
+# mode it compares in: `getfacl -n` (see dir_acl_grants_foreign_write), so every
+# named user arrives as a uid and never as an account name.
+#
+# The mode has to be one mode on both sides. Reading with names and comparing as
+# numbers is wrong in BOTH directions, and the second is a security hole:
+#
+#   - An ordinary grant to this user prints `user:1000:rwx` only when the uid has
+#     no name; on a host with a passwd entry it printed `user:jesse:rwx`, which
+#     matched nothing numeric and was counted foreign. Every legitimate run on
+#     such a host was refused, or moved to another scratch root, for a grant that
+#     names the caller alone.
+#   - A foreign account whose NAME is the decimal spelling of this uid -- `1000`
+#     as a login name -- printed `user:1000:rwx` for ITS grant. That matched the
+#     numeric exclusion and was ignored, so this script would build and execute
+#     through a directory that account can replace. That is the exact guarantee
+#     this file exists to provide, defeated by an account name.
+#
+# In numeric mode neither can happen: `user:1000:` is uid 1000, whatever anyone
+# is called. Root is excluded because it is already trusted by
+# dir_is_owned_by_trusted, and the invoking user is excluded because an entry
+# naming them grants nothing another user gains. Any other uid stays foreign, and
+# the group check is not narrowed at all.
 #
 # The effective uid is read once here rather than in awk: `ENVIRON["EUID"]` is a
 # gawk extension, and this script runs under whatever awk the host provides. An
-# euid that cannot be read leaves `me` at -1, so no numeric principal matches and
-# the answer stays "foreign" -- unsafe when it cannot answer.
+# euid that cannot be read leaves `me` at -1, so no named uid matches and the
+# answer stays "foreign" -- unsafe when it cannot answer.
 acl_getfacl_grants_foreign_write() {
   local me
   me=$(id -u 2>/dev/null) || me=""
@@ -416,7 +430,16 @@ dir_acl_grants_foreign_write() {
     *) return 1 ;;
   esac
   if command -v getfacl >/dev/null 2>&1; then
-    acl=$(getfacl -p -c "$dir" 2>/dev/null) || return 0
+    # -n, because the reader compares principals as uids and this is the only
+    # place that decides what a principal looks like. Reading names here and
+    # comparing numbers in acl_getfacl_grants_foreign_write is wrong both ways:
+    # it refuses an ordinary grant to the invoking user (their uid has a name on
+    # this host) and it IGNORES a writable grant to a foreign account whose login
+    # name is the decimal spelling of that uid. One mode, both sides.
+    #
+    # A getfacl that cannot answer in this mode answers nothing, which the
+    # `|| return 0` below turns into "this ACL grants", the refusing direction.
+    acl=$(getfacl -n -p -c "$dir" 2>/dev/null) || return 0
     [ -n "$acl" ] || return 0
     printf '%s\n' "$acl" | acl_getfacl_grants_foreign_write
     return $?
@@ -527,7 +550,10 @@ dir_entry_is_replaceable() {
   # The owning group. With an access ACL the mode's group position is the mask,
   # so the group's own permission has to be read from `group::` and capped by it.
   if [ -n "$(ls -ldn "$dir" 2>/dev/null | awk 'NR == 1 { print }' | grep -F '+')" ] && command -v getfacl >/dev/null 2>&1; then
-    acl=$(getfacl -p -c "$dir" 2>/dev/null) || return 0
+    # Numeric as well, for the same reason as the reader in
+    # dir_acl_grants_foreign_write: one identity mode for every ACL read, so no
+    # two of them can disagree about who a principal is.
+    acl=$(getfacl -n -p -c "$dir" 2>/dev/null) || return 0
     if printf '%s\n' "$acl" | acl_getfacl_has_mask; then
       # A mask means the group position is not the group. The ACL is authoritative.
       printf '%s\n' "$acl" | acl_getfacl_group_grants_write && return 0
@@ -1656,11 +1682,16 @@ build_helper "$work/evener-dev" || launcher_failed "building the evener-dev help
 # start_helper, and only on a host where no root protects its entries. On every
 # ordinary host -- 1777 /tmp, a per-user TMPDIR, a private HOME -- the root
 # chosen above already makes the swap impossible and this check cannot fail.
+#
+# Both refusals here carry a reason token, the way the no-root refusal does: the
+# exit status is 2 for every launcher failure, so a caller -- or a test -- that
+# has to tell "the chain changed under me" from "the build broke" needs the value
+# and not the prose. The words may change; the token is what is branched on.
 scratch_path_is_trusted "$work" ||
-  launcher_failed "the scratch root above $work became replaceable by another user during the build; refusing to run a helper from it"
+  launcher_failed "the scratch root above $work became replaceable by another user during the build; refusing to run a helper from it [reason=scratch-became-replaceable]"
 work_now=$(ls -di "$work" 2>/dev/null | awk '{print $1}') || work_now=""
 if [ -z "$work_inode" ] || [ "$work_now" != "$work_inode" ]; then
-  launcher_failed "scratch $work was replaced by another user after the build; refusing to run a helper from it"
+  launcher_failed "scratch $work was replaced by another user after the build; refusing to run a helper from it [reason=scratch-was-replaced]"
 fi
 [ -x "$work/evener-dev" ] || launcher_failed "the built helper is not executable: $work/evener-dev"
 start_helper "$work/evener-dev" "$work" || exit $?
