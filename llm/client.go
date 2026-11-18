@@ -380,6 +380,15 @@ func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 		req = ShapeRequest(req, t.res)
 	}
 	base := func(ctx context.Context, req Request) (Response, error) {
+		// The parameterless fallback runs before budget admission, not after it,
+		// because it changes the tool list the budget prices: restoring the open
+		// schema adds bytes, and admitting a request on a count that omits them
+		// can dispatch something the budget would have rejected. It applies only
+		// to the override branch and only to prepared requests, so a protocol
+		// request and a direct override call keep the list they came with.
+		if t.override != nil {
+			req = withOpenParameterlessSchemas(req)
+		}
 		if t.resolved {
 			var err error
 			req, err = shapeAndApplyTokenBudget(req, t.res)
@@ -389,7 +398,7 @@ func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 		}
 		observeRequestSent(ctx)
 		if t.override != nil {
-			return t.override.Complete(ctx, withOpenParameterlessSchemas(req))
+			return t.override.Complete(ctx, req)
 		}
 		return t.protocol.Complete(c.withHasher(ctx), req, t.res)
 	}
@@ -422,6 +431,12 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 		req = ShapeRequest(req, t.res)
 	}
 	base := func(ctx context.Context, req Request) (Stream, error) {
+		// Same ordering as Complete: restore the parameterless schema before the
+		// budget prices the tool list, so the admitted request is the one that
+		// will be sent. Override branch only, and prepared requests only.
+		if t.override != nil {
+			req = withOpenParameterlessSchemas(req)
+		}
 		if t.resolved {
 			var err error
 			req, err = shapeAndApplyTokenBudget(req, t.res)
@@ -435,7 +450,7 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 			err error
 		)
 		if t.override != nil {
-			st, err = t.override.Stream(ctx, withOpenParameterlessSchemas(req))
+			st, err = t.override.Stream(ctx, req)
 		} else {
 			st, err = t.protocol.Stream(c.withHasher(ctx), req, t.res)
 		}

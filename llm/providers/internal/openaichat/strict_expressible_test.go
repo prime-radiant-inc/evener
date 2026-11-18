@@ -1643,3 +1643,173 @@ func TestSupplyDerivedTypesDoesNotReadAPropertyNameAsAKeyword(t *testing.T) {
 		t.Fatal("the emitted schema rejects the argument set the advertised one accepts")
 	}
 }
+
+// An enum written as a typed Go slice and the same enum written as a decoded
+// []any serialize identically, so they must receive the same explicit type.
+// Reading only the decoded spelling makes the emitted schema depend on the
+// caller's Go type: a builder that writes []int{0, 1} would leave the node
+// typeless and cost the whole request.
+func TestSupplyDerivedTypesReadsEveryTypedEnumSlice(t *testing.T) {
+	t.Parallel()
+	schemas := map[string]map[string]any{
+		"[]any":     {"enum": []any{0, 1}},
+		"[]int":     {"enum": []int{0, 1}},
+		"[]int64":   {"enum": []int64{0, 1}},
+		"[]float64": {"enum": []float64{0, 1}},
+		"strings":   {"enum": []string{"fast", "safe"}},
+		"bools":     {"enum": []bool{true, false}},
+	}
+	for name, argument := range schemas {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			want := "number"
+			if name == "strings" {
+				want = "string"
+			}
+			if name == "bools" {
+				want = "boolean"
+			}
+			emitted := SupplyDerivedTypes(map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties":           map[string]any{"mode": argument},
+				"required":             []string{"mode"},
+			})
+			mode := emitted["properties"].(map[string]any)["mode"].(map[string]any)
+			if mode["type"] != want {
+				t.Fatalf("emitted argument type = %#v, want %q: the same JSON enum must not depend on the Go type it was written with", mode["type"], want)
+			}
+			// The members are untouched.
+			if _, has := mode["enum"]; !has {
+				t.Fatal("the enum members were dropped")
+			}
+		})
+	}
+}
+
+// A heterogeneous typed slice is still not nameable by one type, and a typed
+// slice of containers is not a scalar set. Both must keep declining.
+func TestTypedEnumSlicesStillDeclineWhatTheyCannotName(t *testing.T) {
+	t.Parallel()
+	for name, argument := range map[string]map[string]any{
+		"mixed typed": {"enum": []any{"a", 1}},
+		"containers":  {"enum": []any{map[string]any{"a": "b"}}},
+		"nil members": {"enum": []any{nil}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			emitted := SupplyDerivedTypes(map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties":           map[string]any{"mode": argument},
+				"required":             []string{"mode"},
+			})
+			mode := emitted["properties"].(map[string]any)["mode"].(map[string]any)
+			if _, has := mode["type"]; has {
+				t.Fatalf("type = %#v, want none: this set has no single scalar type", mode["type"])
+			}
+		})
+	}
+}
+
+// items is legal on a node of any type, and a strict-enforcing provider rejects
+// a typeless node wherever it sits. A closed, fully required object that also
+// carries an items subschema must not be certified unless that subschema is
+// itself verifiable; an unverifiable one sends the tool non-strict with its
+// advertised schema instead of certifying a node nobody checked.
+func TestItemsOnAnObjectNodeIsChecked(t *testing.T) {
+	t.Parallel()
+	// An items that names a readable type is strict-valid on its own terms, so
+	// the object stays certifiable and nothing is lost.
+	verifiable := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           map[string]any{"a": map[string]any{"type": "string"}},
+		"required":             []string{"a"},
+		"items":                map[string]any{"type": "string"},
+	}
+	if !StrictExpressible(verifiable) {
+		t.Fatal("an items naming a readable type must not refuse the schema: it is strict-valid where it sits")
+	}
+	// An empty items constrains nothing, so it cannot be certified.
+	emptyItems := deepCopyAny(verifiable).(map[string]any)
+	emptyItems["items"] = map[string]any{}
+	if StrictExpressible(emptyItems) {
+		t.Fatal("an object carrying an empty items subschema must not be certified: the node is typeless and the rewrite never visits it")
+	}
+	// Neither can one whose subschema is a typeless node.
+	typelessItems := deepCopyAny(verifiable).(map[string]any)
+	typelessItems["items"] = map[string]any{"description": "free-form"}
+	if StrictExpressible(typelessItems) {
+		t.Fatal("an object carrying an annotation-only items subschema must not be certified")
+	}
+}
+
+// const arrived in draft 6. A tool that declares an older dialect and writes
+// {"const": "fixed"} accepts every value there, because the keyword asserts
+// nothing; stating a type would make the emitted schema reject values the
+// advertised schema accepted, which is the one thing the supply must never do.
+func TestConstIsOnlyReadInADialectThatAssertsIt(t *testing.T) {
+	t.Parallel()
+	fixed := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           map[string]any{"payload": map[string]any{"const": "fixed"}},
+		"required":             []string{"payload"},
+	}
+	for _, tc := range []struct {
+		name      string
+		dialect   string
+		wantTyped bool
+	}{
+		{"draft 4", "http://json-schema.org/draft-04/schema#", false},
+		{"draft 7", "http://json-schema.org/draft-07/schema#", true},
+		{"draft 2020-12", "https://json-schema.org/draft/2020-12/schema", true},
+		{"undeclared", "", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			schema := deepCopyAny(fixed).(map[string]any)
+			if tc.dialect != "" {
+				schema["$schema"] = tc.dialect
+			}
+			emitted := SupplyDerivedTypes(schema)
+			payload := emitted["properties"].(map[string]any)["payload"].(map[string]any)
+			_, typed := payload["type"]
+			if typed != tc.wantTyped {
+				t.Fatalf("type present = %v, want %v under %q: const asserts nothing before draft 6, and stating a type there would reject values the advertised schema accepts", typed, tc.wantTyped, tc.dialect)
+			}
+			// The members are untouched either way.
+			if payload["const"] != "fixed" {
+				t.Fatalf("const = %#v, want the advertised value", payload["const"])
+			}
+			// And every value the advertised schema accepts is still accepted.
+			if !schemaAccepts(t, emitted, map[string]any{"payload": "fixed"}) {
+				t.Fatal("the emitted schema rejects the value the advertised schema accepts")
+			}
+		})
+	}
+}
+
+// enum asserts in every dialect, so it is read regardless of the declaration.
+// This is the control for the const test: the dialect question is about the
+// keyword, not about the schema.
+func TestEnumIsReadInEveryDialect(t *testing.T) {
+	t.Parallel()
+	for _, dialect := range []string{"", "http://json-schema.org/draft-04/schema#"} {
+		schema := map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties":           map[string]any{"payload": map[string]any{"enum": []any{"a", "b"}}},
+			"required":             []string{"payload"},
+		}
+		if dialect != "" {
+			schema["$schema"] = dialect
+		}
+		emitted := SupplyDerivedTypes(schema)
+		payload := emitted["properties"].(map[string]any)["payload"].(map[string]any)
+		if payload["type"] != "string" {
+			t.Fatalf("enum under %q has type %#v, want \"string\": enum is an assertion in every dialect", dialect, payload["type"])
+		}
+	}
+}

@@ -1,6 +1,68 @@
 package openaichat
 
-import "sort"
+import (
+	"encoding/json"
+	"reflect"
+	"sort"
+	"strings"
+)
+
+// schemaDialect says which JSON Schema dialect a node was written against, to
+// the extent this package needs that answer.
+//
+// Only one keyword's meaning differs among the dialects a tool definition can
+// plausibly arrive in: const, which asserts nothing before draft 6 and a single
+// value from draft 6 on. The question this file has to answer is narrow — does
+// const constrain anything here — so a dialect is modeled as that answer rather
+// than as a version. A schema that declares no dialect, or one this file cannot
+// place, is read as modern: every schema this repository builds states no
+// $schema, every one of those uses const as an assertion, and reading it as an
+// annotation instead would drop strict mode from tools that are expressible.
+type schemaDialect int
+
+const (
+	// dialectNoConst: the node declares a dialect in which const accepts every
+	// value, which is draft 4 and earlier.
+	dialectNoConst schemaDialect = iota
+	// dialectConst: the node declares a dialect in which const asserts its
+	// single value.
+	dialectConst
+)
+
+// readsConst reports whether const constrains a value under the dialect.
+func (d schemaDialect) readsConst() bool { return d == dialectConst }
+
+// dialectOf decides the dialect an entire schema was written against, from
+// its root, which is the only place the declaration has to appear.
+//
+// JSON Schema takes $schema at the root. A root that declares an older dialect
+// makes const an annotation everywhere below it; a root that declares a modern
+// dialect, or declares none at all, has const assert.
+func dialectOf(schema map[string]any) schemaDialect {
+	raw, has := schema["$schema"]
+	if !has {
+		// An undeclared dialect is treated as modern. Every schema this
+		// repository builds states no $schema and every one of those uses const
+		// as an assertion; refusing to read it there would drop strict mode from
+		// tools that are otherwise expressible.
+		return dialectConst
+	}
+	s, _ := raw.(string)
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return dialectConst
+	}
+	// Draft 4 and earlier have no const. The declarations are written as a URI
+	// and are matched case-insensitively because the draft number is the only
+	// part that matters.
+	lower := strings.ToLower(s)
+	for _, older := range []string{"draft-03", "draft-04", "draft-3", "draft-4"} {
+		if strings.Contains(lower, older) {
+			return dialectNoConst
+		}
+	}
+	return dialectConst
+}
 
 // StrictifyJSONSchema returns a deep copy of a tool parameter schema
 // rewritten for OpenAI strict mode: every object gets
@@ -32,7 +94,7 @@ func StrictifyJSONSchema(in map[string]any) map[string]any {
 		cp = map[string]any{}
 	}
 	strictifyJSONSchemaInPlace(cp)
-	supplyDerivedTypes(cp)
+	supplyDerivedTypes(cp, dialectOf(cp))
 	return cp
 }
 
@@ -52,7 +114,7 @@ func SupplyDerivedTypes(schema map[string]any) map[string]any {
 	if cp == nil {
 		return map[string]any{}
 	}
-	supplyDerivedTypes(cp)
+	supplyDerivedTypes(cp, dialectOf(cp))
 	return cp
 }
 
@@ -93,18 +155,18 @@ var (
 	}
 )
 
-func supplyDerivedTypes(m map[string]any) {
+func supplyDerivedTypes(m map[string]any, dialect schemaDialect) {
 	if m == nil {
 		return
 	}
 	if _, has := m["type"]; !has {
-		if name, ok := derivedScalarType(m); ok {
+		if name, ok := derivedScalarType(m, dialect); ok {
 			m["type"] = name
 		}
 	}
 	for _, keyword := range singleSubschemaKeywords {
 		if sub, ok := m[keyword].(map[string]any); ok {
-			supplyDerivedTypes(sub)
+			supplyDerivedTypes(sub, dialect)
 		}
 	}
 	for _, keyword := range listSubschemaKeywords {
@@ -114,7 +176,7 @@ func supplyDerivedTypes(m map[string]any) {
 		}
 		for _, it := range arr {
 			if sub, ok := it.(map[string]any); ok {
-				supplyDerivedTypes(sub)
+				supplyDerivedTypes(sub, dialect)
 			}
 		}
 	}
@@ -125,7 +187,7 @@ func supplyDerivedTypes(m map[string]any) {
 		}
 		for _, v := range named {
 			if sub, ok := v.(map[string]any); ok {
-				supplyDerivedTypes(sub)
+				supplyDerivedTypes(sub, dialect)
 			}
 		}
 	}
@@ -164,7 +226,7 @@ func supplyDerivedTypes(m map[string]any) {
 // type-asserts the same way, so an unreadable properties map would be replaced
 // with an empty one, dropping every advertised argument.
 func StrictExpressible(schema map[string]any) bool {
-	return strictlyExpressibleNode(schema, true)
+	return strictlyExpressibleNode(schema, true, dialectOf(schema))
 }
 
 // strictlyExpressibleNode walks one node of a schema already known to use only
@@ -172,7 +234,7 @@ func StrictExpressible(schema map[string]any) bool {
 // this node: the root is visited, and a property or items subschema is visited
 // only when its parent is visited and carries the literal object or array type
 // the rewrite matches.
-func strictlyExpressibleNode(m map[string]any, visited bool) bool {
+func strictlyExpressibleNode(m map[string]any, visited bool, dialect schemaDialect) bool {
 	if m == nil {
 		return true
 	}
@@ -204,8 +266,27 @@ func strictlyExpressibleNode(m map[string]any, visited bool) bool {
 	// enforces is decided by the provider rather than by this walk. An empty
 	// schema, a missing type, an object with no properties, and an array with
 	// no items are all that shape.
-	if !constrainsSomething(m, isObject, isArray) {
+	if !constrainsSomething(m, isObject, isArray, dialect) {
 		return false
+	}
+	// items is legal on a node of any type, and validators apply it wherever it
+	// appears. The rewrite descends into it only when the node's type is the
+	// literal "array", so an items on an object node — or on a node with no type
+	// at all — reaches the provider exactly as advertised. It is walked here on
+	// every node, with visited false wherever the rewrite does not follow, so a
+	// node inside it has to be strict-valid on its own terms rather than being
+	// certified unchecked.
+	if raw, has := m["items"]; has && raw != nil {
+		items, ok := raw.(map[string]any)
+		if !ok {
+			// An unreadable items is one neither the rewrite nor this walk can
+			// verify.
+			return false
+		}
+		childVisited := visited && literal == "array"
+		if !strictlyExpressibleNode(items, childVisited, dialect) {
+			return false
+		}
 	}
 	// A type list may name both shapes at once, as in ["object", "array"].
 	// Both are then constraints on the same node, and the rewrite — which
@@ -249,7 +330,7 @@ func strictlyExpressibleNode(m map[string]any, visited bool) bool {
 				// never verified either.
 				return false
 			}
-			if !strictlyExpressibleNode(childMap, visited && literal == "object") {
+			if !strictlyExpressibleNode(childMap, visited && literal == "object", dialect) {
 				return false
 			}
 		}
@@ -258,16 +339,9 @@ func strictlyExpressibleNode(m map[string]any, visited bool) bool {
 		// An array side of a type list has to name its items. Without them it
 		// admits any element, which strict mode cannot verify, and the rewrite
 		// cannot supply one: it matches only the literal "array" type string,
-		// so a list never reaches the branch that would walk items.
-		raw, has := m["items"]
-		if !has || raw == nil {
-			return false
-		}
-		items, ok := raw.(map[string]any)
-		if !ok {
-			return false
-		}
-		if !strictlyExpressibleNode(items, visited && literal == "array") {
+		// so a list never reaches the branch that would walk items. The walk
+		// itself happened above, on every node carrying the keyword.
+		if raw, has := m["items"]; !has || raw == nil {
 			return false
 		}
 	}
@@ -382,7 +456,7 @@ func allPropertiesRequired(props map[string]any, required any) bool {
 // exactly the empty object, which is the one argument set a parameterless tool
 // takes. An array that names items is likewise constrained, whether or not the
 // walk transforms it.
-func constrainsSomething(m map[string]any, isObject, isArray bool) bool {
+func constrainsSomething(m map[string]any, isObject, isArray bool, dialect schemaDialect) bool {
 	switch {
 	case isObject:
 		props, ok := inspectProperties(m)
@@ -412,7 +486,7 @@ func constrainsSomething(m map[string]any, isObject, isArray bool) bool {
 		// on every node. A closed value set whose members all share one scalar
 		// type supplies that type without changing the set, and the projection
 		// states it; anything else would have to guess, so it is refused.
-		_, typed := derivedScalarType(m)
+		_, typed := derivedScalarType(m, dialect)
 		return typed
 	}
 }
@@ -433,23 +507,31 @@ func certifiedByReadableKeyword(m map[string]any) bool {
 
 // enumMembers reads an enum's members as a slice of values.
 //
-// The same JSON enum reaches this package in two concrete shapes: a Go builder
-// writes []string, and a decoded provider or MCP schema yields []any. They
-// describe the same set, so they must reach the inference the same way. A shape
-// that is neither is unreadable and infers nothing.
+// The same JSON enum reaches this package in many concrete shapes. A Go builder
+// writes a typed slice — []string for names, []int for numbers — and a decoded
+// provider or MCP schema yields []any. They describe the same set of JSON
+// values, so they have to reach the inference the same way: an enum spelled
+// []int{0, 1} and one spelled []any{0, 1} serialize identically, and giving
+// only the second an explicit type would make the emitted schema depend on the
+// caller's Go type rather than on the schema.
+//
+// The conversion is by element, not by wholesale type switch, so a typed slice
+// of a numeric element type is read even though it is not listed here: the
+// reflected range covers every slice whose elements are scalars this file can
+// name. A shape that is not a slice at all is unreadable and infers nothing.
 func enumMembers(raw any) ([]any, bool) {
-	switch list := raw.(type) {
-	case []any:
+	if list, ok := raw.([]any); ok {
 		return list, true
-	case []string:
-		values := make([]any, len(list))
-		for i, member := range list {
-			values[i] = member
-		}
-		return values, true
-	default:
+	}
+	rv := reflect.ValueOf(raw)
+	if !rv.IsValid() || rv.Kind() != reflect.Slice {
 		return nil, false
 	}
+	values := make([]any, rv.Len())
+	for i := 0; i < rv.Len(); i++ {
+		values[i] = rv.Index(i).Interface()
+	}
+	return values, true
 }
 
 // derivedScalarType returns the JSON type implied by a node's closed value set
@@ -458,17 +540,37 @@ func enumMembers(raw any) ([]any, bool) {
 // which a strict-enforcing provider requires on every node, and the accepted
 // set is unchanged because every member already has that type.
 //
+// One rule with three inputs decides it, because the three failures it has had
+// were each one input read partially:
+//
+//   - representation: how the caller spelled the value. A typed slice, a
+//     decoded []any and a json.Number all carry the same JSON scalar, and
+//     reading only one spelling made the emitted schema depend on the caller's
+//     Go type.
+//   - the keyword: const or enum. Both name a closed set; neither is a
+//     constraint the caller can rely on having.
+//   - the dialect: whether the keyword is an assertion at all. Draft 4 has no
+//     const, so {"const": "fixed"} accepts every value there; adding a type
+//     would reject values the advertised schema accepted, which is the one
+//     thing this function must never do.
+//
 // Anything else reports false rather than guessing. A mixed set, a container
 // value, or a set containing null cannot be named by one type without dropping
 // or widening a member, and a node typed from a guess is exactly the
 // certification this gate exists to withhold.
-func derivedScalarType(m map[string]any) (string, bool) {
+func derivedScalarType(m map[string]any, dialect schemaDialect) (string, bool) {
 	if _, has := m["type"]; has {
 		return "", false
 	}
 	var values []any
 	switch {
 	case m["const"] != nil:
+		// const arrived in draft 6. Under an older dialect the keyword asserts
+		// nothing, so the node's accepted set is unconstrained and no type may
+		// be stated for it.
+		if !dialect.readsConst() {
+			return "", false
+		}
 		values = []any{m["const"]}
 	case m["enum"] != nil:
 		list, ok := enumMembers(m["enum"])
@@ -484,15 +586,8 @@ func derivedScalarType(m map[string]any) (string, bool) {
 	}
 	name := ""
 	for _, value := range values {
-		var this string
-		switch value.(type) {
-		case string:
-			this = "string"
-		case bool:
-			this = "boolean"
-		case float64, int, int64:
-			this = "number"
-		default:
+		this, ok := scalarJSONType(value)
+		if !ok {
 			return "", false
 		}
 		if name == "" {
@@ -502,6 +597,46 @@ func derivedScalarType(m map[string]any) (string, bool) {
 		}
 	}
 	return name, true
+}
+
+// scalarJSONType names the JSON type of one scalar value in any spelling this
+// package can receive: the Go scalars a builder writes, the types a
+// json.Number-carrying decode yields, and the concrete aliases of them.
+//
+// A container, a nil, or a numeric type that does not marshal as a JSON number
+// reports false, because the caller cannot name it without changing the set.
+func scalarJSONType(value any) (string, bool) {
+	switch v := value.(type) {
+	case string:
+		return "string", true
+	case bool:
+		return "boolean", true
+	case json.Number:
+		// Only a number literal is a JSON number. Anything else the decoder
+		// stored in a Number is not one this can name.
+		if _, err := v.Float64(); err != nil {
+			if _, intErr := v.Int64(); intErr != nil {
+				return "", false
+			}
+		}
+		return "number", true
+	}
+	rv := reflect.ValueOf(value)
+	if !rv.IsValid() {
+		return "", false
+	}
+	switch rv.Kind() {
+	case reflect.String:
+		return "string", true
+	case reflect.Bool:
+		return "boolean", true
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64:
+		return "number", true
+	default:
+		return "", false
+	}
 }
 
 // requiredNamesDeclared reports whether every name in required is a declared
