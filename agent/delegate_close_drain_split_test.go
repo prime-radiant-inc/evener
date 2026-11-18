@@ -18,10 +18,9 @@ var errInjectedAttentionCleanup = errors.New("injected attention cleanup failure
 // A single reconciliation pass can both abandon an inline receipt and plan
 // attention cleanup. The abandon bumps the evidence version and drops the
 // receipt, so its lost-result warning exists only in that pass: the next pass
-// has no receipt to abandon and therefore nothing to report. When a cleanup
-// step then ends the pass with an error, the warning must already have been
-// published -- otherwise the user never learns the result was lost, and no
-// later pass can tell them.
+// has no receipt left to notice. A shell repair or attention cleanup that then
+// ends the pass with an error must therefore find the warning already
+// published -- otherwise the user never learns the result was lost.
 func TestDelegateStopCloseDrainReportsLostResultBeforeCleanupEndsThePass(t *testing.T) {
 	const (
 		childSessionID = "child-dlg_target"
@@ -65,6 +64,12 @@ func TestDelegateStopCloseDrainReportsLostResultBeforeCleanupEndsThePass(t *test
 // and a failed append would end the close before that subtree was stopped at
 // all. The close drain must publish warnings and snapshots without running the
 // ordinary owner replay, leaving each subtree to retry its own acknowledgment.
+//
+// The receipts carry real claims, as a delivery awaiting its acknowledgment
+// does, so a replay admitted by BeginDelivery would reach the acknowledgment
+// append rather than being refused as stale. The injected failure is armed only
+// once the second subtree's durable stop request exists, so the assertions
+// below distinguish "replayed and failed early" from "settled by its own stop".
 func TestDelegateStopCloseDrainLeavesOtherSubtreeReplayToItsOwnStop(t *testing.T) {
 	c, storePath := newDelegateControllerTestHarness(t, 2, 2)
 	root := newRootRuntimeForClose(t, c)
@@ -86,28 +91,47 @@ func TestDelegateStopCloseDrainLeavesOtherSubtreeReplayToItsOwnStop(t *testing.T
 			c.mu.Unlock()
 			t.Fatalf("delegate %q has no single pending delivery: %#v", id, aggregate)
 		}
+		head := aggregate.PendingDeliveries[0]
 		c.nextToken++
-		token := delegateDeliveryToken{processID: c.nextToken, deliveryID: aggregate.PendingDeliveries[0].DeliveryID}
+		token := delegateDeliveryToken{processID: c.nextToken, deliveryID: head.DeliveryID}
+		// A real claim under the pending delivery, as claimDelegateDeliveryLocked
+		// builds it: without one, BeginDelivery refuses the replay as stale
+		// before it can reach an acknowledgment append.
+		claim := &delegateDeliveryClaim{
+			token:      delegateDeliveryClaimToken{processID: token.processID, deliveryID: head.DeliveryID},
+			delegateID: id,
+			ownerID:    head.OwnerDelegateID,
+		}
+		c.deliveryClaims[head.DeliveryID] = claim
 		c.deliveries[token.processID] = &delegateDeliveryAdmission{
 			token:      token,
 			delegateID: id,
-			// Both are owned by the root, so both resolve to the same receiver.
-			ownerID:   "",
-			retryable: true,
-			inline:    true,
+			ownerID:    head.OwnerDelegateID,
+			claim:      claim.token,
+			retryable:  true,
+			inline:     true,
 		}
 		tokens = append(tokens, token)
 	}
-	// Fail exactly one acknowledgment append, for the second subtree's receipt.
-	// Reached through the first subtree's replay, it aborts the close before the
-	// second subtree is stopped; reached through the second subtree's own drain,
-	// it leaves that receipt retryable for the drain's own retry.
-	faults := 0
+	// Fail one acknowledgment append, for the second subtree's receipt, and only
+	// once that subtree's durable stop request exists. Replayed through the
+	// first subtree it fires before that request is appended, which is the bug;
+	// reached through the second subtree's own drain it fires after, which
+	// leaves the receipt retryable for the drain's retry.
+	faults, stopRequested := 0, false
 	c.appendFault = func(batch []delegatestore.Event) error {
+		for _, event := range batch {
+			if event.Kind == delegatestore.EventDelegateSubtreeStopRequested && event.DelegateID == second {
+				stopRequested = true
+			}
+		}
 		for _, event := range batch {
 			if event.Kind == delegatestore.EventDelegateDeliveryAcknowledged && event.DeliveryAcknowledged != nil &&
 				event.DeliveryAcknowledged.DeliveryID == tokens[1].deliveryID && faults == 0 {
 				faults++
+				if !stopRequested {
+					return errors.Join(errInjectedAckAppend, errors.New("acknowledged the second subtree before its stop was requested"))
+				}
 				return errInjectedAckAppend
 			}
 		}
@@ -124,9 +148,18 @@ func TestDelegateStopCloseDrainLeavesOtherSubtreeReplayToItsOwnStop(t *testing.T
 		t.Fatalf("read delegate events: %v", err)
 	}
 	stopped := make(map[string]bool)
-	for _, event := range stored {
+	stopRequestedIndex := make(map[string]int)
+	ackIndex := -1
+	for i, event := range stored {
+		if event.Kind == delegatestore.EventDelegateSubtreeStopRequested {
+			stopRequestedIndex[event.DelegateID] = i
+		}
 		if event.Kind == delegatestore.EventDelegateSubtreeStopCompleted {
 			stopped[event.DelegateID] = true
+		}
+		if event.Kind == delegatestore.EventDelegateDeliveryAcknowledged && event.DeliveryAcknowledged != nil &&
+			event.DeliveryAcknowledged.DeliveryID == tokens[1].deliveryID {
+			ackIndex = i
 		}
 	}
 	for _, id := range []string{first, second} {
@@ -136,6 +169,16 @@ func TestDelegateStopCloseDrainLeavesOtherSubtreeReplayToItsOwnStop(t *testing.T
 	}
 	if faults == 0 {
 		t.Fatal("the injected acknowledgment append failure never fired")
+	}
+	if ackIndex < 0 {
+		t.Fatal("the second subtree's receipt was never acknowledged")
+	}
+	requestIndex, ok := stopRequestedIndex[second]
+	if !ok {
+		t.Fatalf("subtree %q has no durable stop request", second)
+	}
+	if ackIndex < requestIndex {
+		t.Fatal("the second subtree's delivery was acknowledged before its own stop was requested: another subtree's replay reached it")
 	}
 }
 

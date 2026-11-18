@@ -801,11 +801,7 @@ func (c *delegateTreeController) drainStopForClose(ctx context.Context, stop *de
 	return c.drainStopAbandonable(ctx, stop, c.rootRuntime, nil, true)
 }
 
-func (c *delegateTreeController) drainStop(ctx context.Context, stop *delegateStopState, root *Session) error {
-	return c.drainStopAbandonable(ctx, stop, root, nil, false)
-}
-
-// drainStopAbandonable is drainStop plus an optional abandon signal. The stop
+// drainStopAbandonable is the stop drain plus an optional abandon signal. The stop
 // driver passes its own cancellable context's Done channel, so a close join
 // timeout -- which cancels that context -- can break the drain out of a busy
 // branch that never waits on the context. The close's own drains pass nil: they

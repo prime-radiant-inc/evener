@@ -1389,3 +1389,10 @@ func startDelegateSuccessorGeneration(t *testing.T, c *delegateTreeController, d
 	}
 	return started.lease
 }
+
+// drainStop drives a stop's reconciliation to completion in tests. Production
+// has no plain-drain caller: the stop driver and the close path both go through
+// drainStopAbandonable, which adds the abandon signal and the close flag.
+func (c *delegateTreeController) drainStop(ctx context.Context, stop *delegateStopState, root *Session) error {
+	return c.drainStopAbandonable(ctx, stop, root, nil, false)
+}
