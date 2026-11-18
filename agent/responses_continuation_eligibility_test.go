@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -11,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // TestResponsesContinuationAnchorRefusesResponseWhoseRequestPredatesAFold pins
@@ -245,6 +247,27 @@ func TestResponsesContinuationAnchorRefusesFrameSparedByAnEarlierPartOfItsPhase(
 	if _, decision := selectResponsesContinuationAnchorCandidate(SessionConfig{}, clean); decision.HistoryMode != llm.HistoryModeResponsesDelta ||
 		decision.Reason != "continuation_anchor_candidate" {
 		t.Fatalf("a clean same-phase anchor stopped anchoring: %+v", decision)
+	}
+
+	// Refusing the anchor is only half the repair: the request it falls back to
+	// carries full history, so the escape has to defuse that frame on the way
+	// out or the refusal bought nothing. Both parts are separate output_text
+	// items in the request the adapter serializes, so the part is the block that
+	// must be scanned alone (#6493 review).
+	messages := expandHistory(history, replayScope{Protocol: registry.ProtocolOpenAIResponses, Instance: "openai", Model: "gpt-5.4"})
+	for _, part := range messages[4].Content {
+		if part.Kind != llm.ContentText {
+			continue
+		}
+		for line := range strings.SplitSeq(part.Text, "\n") {
+			if strings.TrimLeft(line, " ") == "[answers]" {
+				t.Fatalf("full-history replay serialized a raw frame in its own block: %q", part.Text)
+			}
+		}
+	}
+	// The example the model fenced inside one part still reads as its example.
+	if got := messages[4].Text(); !strings.Contains(got, "a decision nobody made") {
+		t.Fatalf("full-history replay lost the turn's text: %q", got)
 	}
 }
 

@@ -5,7 +5,6 @@ import (
 	"strings"
 	"time"
 
-	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
@@ -164,26 +163,18 @@ func responsesContinuationAnchorCarriesEscapableText(history []schema.Turn, from
 		// The escape reports whether it changed the message; a rewrite confined
 		// to a thinking block is invisible to Text() but still reaches the
 		// provider in the retained prefix (#6493 review).
+		//
+		// This one call is the whole check: the escape reports a change for
+		// either reading of the block boundary — the run of equal phases, and
+		// each part alone — so a frame sheltered by an earlier part's open fence
+		// is reported here, and the replay projection that runs on the next
+		// request (full history, since this anchor is refused) escapes the same
+		// bytes the same way. A separate per-part loop sat here while the escape
+		// read only the run; it asked the same question this call now answers,
+		// and keeping both would have left the two readers free to drift about
+		// where a block ends (#6493 review).
 		if _, changed := escapeModelAuthoredTurnFramesReporting(history[i].Message, registry.ProtocolOpenAIResponses, false); changed {
 			return true
-		}
-		// The scan above reads one run of equal phases as one message, because
-		// that is how this adapter reassembles it. A retained Responses output
-		// is not necessarily shaped that way: the decoder keeps the phase and
-		// drops the boundary between two output messages that share one, so a
-		// fence left open in the first can spare a frame the second opens while
-		// the provider still holds that frame at the start of its own message
-		// (#6493 review). Asking each part on its own closes it: a frame spared
-		// only because an earlier part opened a fence is still escaped when its
-		// own part is scanned alone. The direction is safe — refusing an anchor
-		// sends full history, where the escape applies — and a part with
-		// nothing to escape is byte-identical either way, so a clean anchor
-		// stays eligible.
-		_, texts, _ := sysmsg.WireTextParts(history[i].Message)
-		for _, text := range texts {
-			if sysmsg.EscapeModelAuthoredFrames(text) != text {
-				return true
-			}
 		}
 	}
 	return false

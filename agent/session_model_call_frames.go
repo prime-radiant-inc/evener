@@ -214,6 +214,39 @@ func escapeModelAuthoredTurnFramesReporting(msg llm.Message, protocol string, pr
 			parts[indexes[span[0]+k]].Text = piece
 		}
 	}
+	// A phase-separating adapter serializes one output_text item per part, so a
+	// part is a block of its own to the provider even though the parts share a
+	// phase. Fence state therefore has two readings, and they disagree exactly
+	// where a fence crosses a part boundary: a fence left open in one part
+	// shelters the next part's opener when the run is read as one block, and a
+	// delimiter that closes a fence in the second part reads as a fresh opener
+	// when that part is read alone. Each reading spares a frame the other
+	// escapes, so the run scan above is followed by one pass per part, and
+	// neither reading can shelter an opener the other sees. Escaping is
+	// idempotent and never adds or removes a delimiter, so the second pass
+	// cannot re-open what the first closed; an example fenced inside a single
+	// part stays fenced under both readings and keeps its bytes (#6493 review).
+	//
+	// The allocation sits inside the loop because this pass can be the first to
+	// change anything — the case it exists for. A fence the run reading treats as
+	// open leaves the segment pass above with nothing to rewrite, and only the
+	// per-part reading sees the frame in the next part.
+	if sysmsg.PhaseSeparatesMessages(protocol) {
+		for _, at := range indexes {
+			text := msg.Content[at].Text
+			if parts != nil {
+				text = parts[at].Text
+			}
+			defused := sysmsg.EscapeModelAuthoredFrames(text)
+			if defused == text {
+				continue
+			}
+			if parts == nil {
+				parts = slices.Clone(msg.Content)
+			}
+			parts[at].Text = defused
+		}
+	}
 	if parts == nil {
 		return msg, false
 	}
