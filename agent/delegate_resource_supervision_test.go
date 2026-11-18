@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/clock"
@@ -27,6 +28,7 @@ import (
 	toolpkg "primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/internal/worktree"
 	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/internal/testwait"
@@ -400,6 +402,101 @@ func TestDelegateResourceSupervision_EarlyCommittedSendStartRefusesASecondTurn(t
 	}
 }
 
+// TestDelegateResourceSupervision_StableChildRefusesOnlyUnleasedModelWork pins
+// BOTH directions of the admission half of LIFE-01 (#2340). A stable delegate's
+// model-bearing turn requires an exact generation, so a turn that would present
+// a watch notice with no lease in context is refused. A zero-model maintenance
+// drain is not that turn and must keep running, because it is the mechanism that
+// settles watch sends without spending a provider call at all.
+//
+// The two halves are one test on purpose: a guard that refuses every unleased
+// child turn passes the refusal half and is WORSE than the bug, because it
+// strands the drain paths the audit says to preserve. Only both together
+// describe the invariant.
+func TestDelegateResourceSupervision_StableChildRefusesOnlyUnleasedModelWork(t *testing.T) {
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
+	})
+	root := restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableSupervisionDelegate(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	// The refusal must come BEFORE request preparation, not after it. Preparation
+	// is not a pure builder: its context-management phase elicits a compaction
+	// note and summarizes history, and both are provider calls. So the child is
+	// put under enough pressure to make that phase call the model if it runs at
+	// all, and the assertion is the PROVIDER CALL COUNT -- a refusal that arrives
+	// after a spent request still left an unleased provider call, which is the
+	// whole finding.
+	seedSessionHistory(t, sub.sess, 10)
+	forcePressureAbove(t, sub.sess, sub.sess.contextMgr.CheckpointThreshold)
+	warmRequests := supervisionRequestCount(fixture.adapter)
+	elicited := 0
+	sub.sess.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) {
+		elicited++
+		resp, err := sub.sess.client.Complete(context.Background(), llm.Request{
+			Model:    sub.sess.profile.Model(),
+			Messages: []llm.Message{llm.User("elicit a note")},
+		})
+		if err != nil {
+			return "", err
+		}
+		return resp.Text(), nil
+	}
+
+	// DIRECTION ONE -- the refusal. The case is the issue's own: a watch notice
+	// sitting on the child's ordinary queue. Production ingress turns a stable
+	// child's watch notice into durable attention, so a queued one is the legacy
+	// rail this gate defends against. Asserted structurally -- the typed sentinel
+	// and the absent provider call -- never by message text.
+	sub.sess.enqueueJobNotification(jobNotification{
+		Kind:   jobNotificationKindWatch,
+		JobID:  "job:unleased-admission",
+		Status: jobNotificationEventWatch,
+		Reason: "watch send failed",
+	})
+	if !sub.sess.hasPendingWatchNotification() {
+		t.Fatal("the queued watch notice is not visible to admission")
+	}
+	_, _, _, _, _, _, err := sub.sess.prepareModelRequestWithError(context.Background(), 0, new(events.RoundTimings))
+	if !errors.Is(err, errDelegateStableModelTurnUnleased) {
+		t.Fatalf("unleased model request on the stable child = %v, want the unleased-turn refusal", err)
+	}
+	if got := supervisionRequestCount(fixture.adapter); got != warmRequests {
+		t.Fatalf("provider requests after an unleased round = %d, want %d: the refusal came after a provider call", got, warmRequests)
+	}
+	if elicited != 0 {
+		t.Fatalf("note elicitation ran %d time(s) for an unleased round, want 0: the refusal came after request preparation", elicited)
+	}
+	// The notice is still owed: a refusal must not settle the very reminder it
+	// declined to carry, or the watch result is lost instead of deferred.
+	if pending := sub.sess.peekNotifications(); pending == 0 {
+		t.Fatal("the refused watch notice was settled, want it left owed to a leased turn")
+	}
+	sub.sess.drainJobNotifications()
+
+	// DIRECTION TWO -- unleased work that is NOT watch work still runs. This is
+	// the assertion a "refuse everything without a lease" guard fails, and that
+	// guard is worse than the bug: it strands every legitimate unleased path the
+	// audit says to preserve (a restored delegate's first task, a completion
+	// drive). An ordinary terminal completion is the sharpest case, because it is
+	// the one a stable child must still be able to consume.
+	seedOwnedDurablePending(t, sub.sess.jobManager, "job_ordinary_unleased", jobstore.JobShell)
+	sub.sess.enqueueJobNotification(jobNotification{
+		JobID:   "job_ordinary_unleased",
+		JobType: "shell",
+		Status:  "completed",
+	})
+	if sub.sess.hasPendingWatchNotification() {
+		t.Fatal("an ordinary completion is being read as a watch notice")
+	}
+	markProcessing(sub.sess)
+	if !sub.sess.acceptNotificationInput(context.Background(), "unleased-ordinary") {
+		t.Fatal("an unleased turn carrying an ordinary completion was refused: the guard broke the fallback it must preserve")
+	}
+}
+
 // TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesDroppedWake
 // pins the deferred-wake regression the id-keyed committed-send-start claim
 // introduced (#940). While the claim is held a wake-edge drive refuses, so a
@@ -410,6 +507,14 @@ func TestDelegateResourceSupervision_EarlyCommittedSendStartRefusesASecondTurn(t
 // the claim -- here its start reservation is aborted before the commit -- no run
 // is handed over, and unless the non-handoff rollback re-drives the child's
 // undelivered attention the queued notification sits undriven forever.
+//
+// The notice is an ORDINARY terminal completion, not a watch delivery. A watch
+// notice is the one payload a stable child's unleased turn must refuse (LIFE-01,
+// #2340), so seeding one here would pin the drop against a drive the gate is
+// required to deny. What this test pins is the rollback's re-drive, which every
+// other kind of queued notification still needs, so the payload is the kind the
+// gate permits: a terminal shell completion with a durable pending record, which
+// is what makes it deliverable at all.
 //
 // This test is load-bearing for that fix: with the rollback's re-drive removed,
 // the notification enqueued while the claim was held is never drained and the
@@ -435,10 +540,11 @@ func TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesDroppedWa
 			// A child notification arrives with the claim held: enqueue it and
 			// fire the child's notify exactly as a real arrival would. The wake
 			// edge reads the claim and refuses, leaving the queue undelivered.
+			seedOwnedDurablePending(t, candidate.sess.jobManager, "job_redrive_dropped_wake", jobstore.JobShell)
 			candidate.sess.enqueueJobNotification(jobNotification{
-				Kind:   jobNotificationKindWatch,
-				JobID:  "redrive-dropped-wake",
-				Status: jobNotificationEventWatch,
+				JobID:   "job_redrive_dropped_wake",
+				JobType: "shell",
+				Status:  "completed",
 			})
 			candidate.sess.notify()
 			mu.Lock()

@@ -192,6 +192,24 @@ func (c *delegateTreeController) AbortSteerPersistence(claim *delegateSteeringCl
 	return nil
 }
 
+// admitModelRequestLease reports whether lease is still an admitted generation
+// of a running delegate with no stop pending, using the same predicate every
+// other leased provider call goes through. Request preparation calls it before
+// the context-management phase, which reaches a provider through the compaction
+// note elicitor and the summarizer; the round's own BeginModelRequest comes
+// later and would otherwise refuse a fenced generation only after those calls
+// (LIFE-01, #2340).
+//
+// It takes no claim: the request's own BeginModelRequest still records the
+// provider claim and its steering snapshot. This is the earlier, cheaper gate
+// that a phase reaching a provider BEFORE that claim must not skip.
+func (c *delegateTreeController) admitModelRequestLease(lease delegateLease) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	_, _, err := c.admitLeaseLocked(lease, delegatestore.PhaseRunning)
+	return err
+}
+
 func (c *delegateTreeController) BeginModelRequest(lease delegateLease) (*delegateModelRequestClaim, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

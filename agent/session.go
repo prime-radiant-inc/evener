@@ -1576,6 +1576,103 @@ func (s *Session) drainJobNotifications() []jobNotification {
 	return drained
 }
 
+// stableChildTurnNeedsLease reports whether THIS turn is the unleased
+// stable-delegate model turn the issue closes: a stable child, with no lease in
+// context, whose turn is carrying a watch notice (LIFE-01, #2340).
+//
+// It is the ONE statement of that predicate. Model admission, tool admission
+// and the notification accept all ask it, so a rule that must agree in three
+// places cannot drift between them. A lease in context is not this predicate's
+// business: admission validates the lease itself against the controller,
+// because a lease can be stale or fenced while still being present.
+//
+// The delegate identity is the structural test, not a flag: owningDelegateID is
+// set exactly on a stable delegate's child session, and an ephemeral subagent
+// carries none, so the ephemeral notification drive keeps its fallback. The
+// controller check is what makes the refusal actionable -- without a controller
+// there is no generation to hold and no admission to consult.
+func (s *Session) stableChildTurnNeedsLease(ctx context.Context) bool {
+	if s == nil || s.owningDelegateID == "" || s.delegateController == nil {
+		return false
+	}
+	if _, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); ok {
+		return false
+	}
+	return true
+}
+
+// hasPendingWatchNotification reports whether the model notifications this
+// session still owes include a watch notice. A watch notice's ingress turns it
+// into durable attention precisely so a governed generation presents it; a turn
+// that finds one queued instead is the legacy rail admission refuses.
+//
+// The kind is the whole test. Nothing here reads reason or body text, so a
+// caller cannot be refused for what a notice says -- only for what it is.
+func (s *Session) hasPendingWatchNotification() bool {
+	if s == nil {
+		return false
+	}
+	s.pendingJobNotifsMu.Lock()
+	defer s.pendingJobNotifsMu.Unlock()
+	for _, n := range s.pendingJobNotifs {
+		if n.isWatch() {
+			return true
+		}
+	}
+	for _, a := range s.jobNotifsAwaitingRequest {
+		if a.deliverable.notification.isWatch() {
+			return true
+		}
+	}
+	return false
+}
+
+// hasPendingOrdinaryNotification reports whether the session's ordinary
+// notification rail holds anything that is NOT a watch notice: a terminal shell
+// completion, a forwarded nested report, steering owed to the model.
+//
+// It exists so the parent drain can tell the two kinds of queued work apart on a
+// stable child. Watch work is refused an unleased turn, so driving it would
+// launch a turn that stands straight back down; an ordinary notification is
+// drained only by an EntryNotification turn, and skipping that retry would
+// strand a recovered completion once a drive slot frees.
+func (s *Session) hasPendingOrdinaryNotification() bool {
+	if s == nil {
+		return false
+	}
+	s.pendingJobNotifsMu.Lock()
+	defer s.pendingJobNotifsMu.Unlock()
+	for _, n := range s.pendingJobNotifs {
+		if !n.isWatch() {
+			return true
+		}
+	}
+	for _, a := range s.jobNotifsAwaitingRequest {
+		if !a.deliverable.notification.isWatch() {
+			return true
+		}
+	}
+	return false
+}
+
+// refuseUnleasedWatchNotice reports whether this turn would carry a watch
+// notice without a lease. acceptNotificationInput asks BEFORE it writes the
+// reminder, because the drain below empties the queue: a watch notice has no
+// terminal generation, so awaitRequestForJobNotifications settles it before the
+// first request is prepared and a queue-reading admission would find nothing
+// left to refuse (LIFE-01, #2340).
+func (s *Session) refuseUnleasedWatchNotice(ctx context.Context, jobNotifs []deliverableJobNotification) bool {
+	if !s.stableChildTurnNeedsLease(ctx) {
+		return false
+	}
+	for _, d := range jobNotifs {
+		if d.notification.isWatch() {
+			return true
+		}
+	}
+	return false
+}
+
 // peekNotifications reports how many notifications are still owed to the model
 // WITHOUT draining them: those queued, and those whose reminder no dispatched
 // request has carried yet. The drain-loop tail uses it to decide whether to run

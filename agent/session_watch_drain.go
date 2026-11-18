@@ -82,6 +82,16 @@ func (s *Session) driveChildrenWithUndeliveredAttention() {
 			continue
 		}
 		if child.peekNotifications() > 0 || child.jobManager.hasPendingWatchSends() {
+			// LIFE-01 (#2340): the skip is scoped to WATCH work, exactly as at
+			// the wake edge. A stable child's watch notice is refused an
+			// unleased turn, so driving it here would launch a turn that stands
+			// straight back down. An ordinary notification -- a recovered shell
+			// completion whose immediate wake declined on a full drive budget --
+			// is drained only by an EntryNotification turn, and skipping it here
+			// would strand it once a slot frees, so it keeps the retry.
+			if stableDelegateChild(child) && !child.hasPendingOrdinaryNotification() {
+				continue
+			}
 			if s.driveSubagentNotificationTurn(sub) {
 				// Settle the parent's forwarded drive signal on a successful
 				// handoff so the same stale pending does not re-drive forever; the
@@ -134,6 +144,14 @@ func (s *Session) redriveLiveChild(childSessionID string) {
 	}
 }
 
+// stableDelegateChild reports whether sess belongs to a STABLE delegate child: a
+// delegate whose runs are exact generations under a controller lease. Ephemeral
+// subagents carry no owning delegate id (subagents.go sets it empty), so they are
+// not covered and keep the notification-turn fallback they legitimately use.
+func stableDelegateChild(sess *Session) bool {
+	return sess != nil && sess.owningDelegateID != "" && sess.delegateController != nil
+}
+
 // driveChildIfNotStopGated is the wake-edge drive: it skips a stop-gated child so
 // a deliberately stopped child is not resurrected by its own pre-stop notify
 // (spec §3 stop-gating), and a child the one-shot drain has abandoned for the
@@ -147,6 +165,24 @@ func (s *Session) driveChildIfNotStopGated(sub *subagent) {
 		return
 	}
 	if s.driveDelegateAttention(sub) {
+		return
+	}
+	// LIFE-01 (#2340): a stable delegate child has no model-bearing fallback for
+	// a WATCH notice. driveDelegateAttention above is the only drive a watch
+	// notice may use, because its ingress made it durable attention whose whole
+	// point is a governed generation; the notification drive below launches an
+	// UNLEASED EntryNotification turn, which the controller would report as an
+	// idle child making a provider call. A watch notice reaching this point was
+	// demoted to the ordinary queue by some path other than production ingress,
+	// so it is refused here as well as at admission rather than run unleased.
+	//
+	// Every OTHER notice keeps this fallback, and the skip is scoped to a
+	// watch-ONLY queue. A terminal shell completion, a nested delegate's
+	// forwarded report and the rest are ordinary queued notifications with no
+	// lease to inherit, and the queue is drained only by an EntryNotification
+	// turn -- so skipping the drive here would strand them forever instead of
+	// closing this issue.
+	if stableDelegateChild(sub.sess) && sub.sess.hasPendingWatchNotification() && !sub.sess.hasPendingOrdinaryNotification() {
 		return
 	}
 	if s.driveSubagentNotificationTurn(sub) {

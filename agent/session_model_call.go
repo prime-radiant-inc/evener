@@ -107,6 +107,35 @@ func effectiveReasoningEffort(cfg, override string, escalated bool) string {
 // cut from. That list is the round's, not the request's: the retry after a
 // rejected anchor rebuilds from it, and nothing on the wire ever carries it.
 func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t *events.RoundTimings) (profile *provider.Profile, sys string, history []llm.Message, req llm.Request, fullHistory []llm.Message, reasoningEffort string, err error) {
+	// Admission comes FIRST, before any phase that can reach a provider
+	// (LIFE-01, #2340). This function is not only a request builder: the
+	// context-management phase below elicits a compaction note
+	// (maybeElicitNoteBeforeCompaction) and summarizes history inside
+	// ManageContext, both of which are provider calls. A check placed after
+	// those phases would refuse the round only after the unleased turn had
+	// already spent one, which is the very thing it exists to prevent.
+	//
+	// A root session is not a delegate and has no generation to hold, so it
+	// keeps the ordinary path: the refusal applies only to a stable delegate
+	// child, and zero-model maintenance drains never reach this function at all.
+	if lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); ok && s.delegateController != nil {
+		// A lease in context is not enough: it must still be the child's live
+		// generation, and no stop may be pending. The fold's provider calls are
+		// cancelled by the round's context, but a stop recorded between that
+		// cancellation check and compaction's own start would otherwise let a
+		// fenced turn spend a summarizer request.
+		if err := s.delegateController.admitModelRequestLease(lease); err != nil {
+			return nil, "", nil, llm.Request{}, nil, "", err
+		}
+	} else if s.stableChildTurnNeedsLease(ctx) && s.hasPendingWatchNotification() {
+		// Several legitimate paths run a stable child's turn with no lease in
+		// context -- a restored delegate's first task, an unserved session's
+		// framed entry, a completion drive -- and refusing those would break
+		// work the product permits. The watch notice is the one payload that
+		// must never arrive this way, because its ingress made it durable
+		// attention whose whole point is a governed generation.
+		return nil, "", nil, llm.Request{}, nil, "", errDelegateStableModelTurnUnleased
+	}
 	if err := s.flushPendingDelegateDeliveries(); err != nil {
 		return nil, "", nil, llm.Request{}, nil, "", err
 	}
