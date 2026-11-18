@@ -97,7 +97,32 @@ function measureFrame({ spec, frame }) {
       const metaStyle = win.getComputedStyle(meta);
       const canvas = doc.createElement("canvas").getContext("2d");
       canvas.font = `${nameStyle.fontWeight} ${nameStyle.fontSize} ${nameStyle.fontFamily}`;
-      const prefixEllipsisWidth = canvas.measureText(name.textContent.slice(0, 1) + "…").width;
+      // The first complete GRAPHEME, not the first UTF-16 code unit: slice(0,1)
+      // takes half of an emoji's surrogate pair, and the canvas then measures a
+      // replacement glyph - so the guard would not be checking the emoji it
+      // names. Segmenter splits the same way rendering does.
+      const firstGrapheme = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+      const [first] = firstGrapheme.segment(name.textContent);
+      // Widths of unclipped text, measured by LAYOUT in the name's own font.
+      // Canvas measureText resolves its own font stack and picked a different
+      // emoji face than layout did, and the `font` shorthand reads back empty
+      // in Chrome often enough to be a trap. The probe is parented to the NAME,
+      // not the row: denseNameLive sets the medium weight, so a probe under
+      // the row measured the normal-weight advance (44.45px against the
+      // 45.23px the name renders). Absolute positioning keeps it out of the
+      // name's flow and out of its clipping.
+      const probeWidth = (text) => {
+        const probe = doc.createElement("span");
+        probe.textContent = text;
+        probe.style.cssText =
+          "position:absolute;left:-99999px;top:0;width:auto;min-width:0;max-width:none;white-space:pre;overflow:visible;text-overflow:clip";
+        name.appendChild(probe);
+        const width = probe.getBoundingClientRect().width;
+        probe.remove();
+        return width;
+      };
+      const prefixEllipsisWidth = probeWidth(`${first.segment}…`);
+      const nameFullWidth = probeWidth(name.textContent);
       const nameRange = doc.createRange();
       nameRange.selectNodeContents(name);
       const target = box(button);
@@ -117,6 +142,7 @@ function measureFrame({ spec, frame }) {
       }
       return {
         depth, level: Number(row.getAttribute("aria-level")), box: box(row),
+        nameFullWidth,
         contentWidth: row.getBoundingClientRect().width - parseFloat(rowStyle.paddingLeft) - parseFloat(rowStyle.paddingRight),
         // The fixed controls the name competes with, measured rather than
         // restated: the gap between the row's children, the disclosure
@@ -130,17 +156,19 @@ function measureFrame({ spec, frame }) {
         fontSize: parseFloat(nameStyle.fontSize),
         button: target, disabled: button.disabled || button.getAttribute("aria-disabled") === "true",
         iconVisible: button.querySelector("svg").checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }),
-        meta: { ...box(meta), clientWidth: meta.clientWidth, scrollWidth: meta.scrollWidth, overflowX: metaStyle.overflowX, textOverflow: metaStyle.textOverflow, whiteSpace: metaStyle.whiteSpace, lineHeight: parseFloat(metaStyle.lineHeight) },
+        meta: { ...box(meta), maxWidth: metaStyle.maxWidth, clientWidth: meta.clientWidth, scrollWidth: meta.scrollWidth, overflowX: metaStyle.overflowX, textOverflow: metaStyle.textOverflow, whiteSpace: metaStyle.whiteSpace, lineHeight: parseFloat(metaStyle.lineHeight) },
         hits, opened: opened.slice(beforeOpen), disclosures: disclosures.length - beforeDisclosure,
       };
   });
-  // Reference geometry, measured with the name's floor switched off in THIS
-  // same document: the same fonts, the same rounding, the same run. Comparing
-  // against numbers recorded on one machine would fail on a font-metric
-  // update even when the floor moved nothing; comparing two live measurements
-  // cannot, so the "already readable rows do not move" contract stays exact.
+  // Reference geometry, measured WITHOUT the fix in THIS same document: the
+  // same fonts, the same rounding, the same run. The fix is the meta's cap, so
+  // the reference restores the pre-fix cap alone - the 60% share and nothing
+  // else. Comparing against numbers recorded on one machine would fail on a
+  // font-metric update even when the fix moved nothing; comparing two live
+  // measurements cannot, so the "already readable rows do not move" contract
+  // stays exact and any movement the FIX causes is still caught.
   const floorOff = doc.createElement("style");
-  floorOff.textContent = ".denseName { min-width: 0 !important; }";
+  floorOff.textContent = ".denseMeta { max-width: 60% !important; }";
   doc.head.appendChild(floorOff);
   const reference = rows.map((row) => {
     const name = row.querySelector(".denseName");

@@ -7,19 +7,10 @@ const EPS = 0.5;
 // measurements, so a font-metric update moves them together instead of
 // failing the gate on its own.
 const EXACT = 0.01;
-// The name floor the stylesheet declares, in em of the row's own font size.
-// CSS cannot measure a grapheme, so the shipped floor is one constant that
-// clears the widest first glyph measured in the bundled fonts: 1.78em for an
-// emoji, 1.75em for a full-width ideograph, 1.61em for a Latin capital, and
-// 0.97em for "inspect"'s first letter. The guard re-derives the expectation
-// from the row's MEASURED font size, so a px floor, or a `ch` floor (which
-// measures the digit "0" and is 1.23em here), fails it.
-const FLOOR_EM = 1.8;
-
 // The issue's own table plus the combinations the fix must not disturb. The
-// floor is a text-relative budget, so the matrix carries labels: Latin,
-// full-width CJK and emoji (the widest common grapheme) prove the floor
-// covers the glyph rather than the digit `ch` measures.
+// fix reserves the name a glyph-plus-ellipsis prefix, so the matrix carries
+// labels: Latin, full-width CJK and emoji (the widest common grapheme) prove
+// the reservation covers the glyph rather than the digit `ch` measures.
 // contentWidth is the tree pane: the wide Sheet is
 // min(--sheet-inline-size, 100vw) and Dialog's .body holds 16px per side.
 // openWidth is the row's Open control: --tap-min on phones, 28px at desktop.
@@ -34,10 +25,10 @@ const EXPECTED = [
   { id: "390-8", width: 390, contentWidth: 358, depth: 8, openWidth: 44, label: "inspect" },
   { id: "390-8-cjk", width: 390, contentWidth: 358, depth: 8, openWidth: 44, label: "\u8abf\u67fb" },
   { id: "390-8-emoji", width: 390, contentWidth: 358, depth: 8, openWidth: 44, label: "\u{1F600}\u{1F680}" },
-  { id: "430-0", width: 430, contentWidth: 398, depth: 0, openWidth: 44, label: "inspect" },
+  { id: "430-0", width: 430, contentWidth: 398, depth: 0, openWidth: 44, label: "inspect", fitFullText: true },
   { id: "430-4", width: 430, contentWidth: 398, depth: 4, openWidth: 44, label: "inspect" },
   { id: "430-8", width: 430, contentWidth: 398, depth: 8, openWidth: 44, label: "inspect" },
-  { id: "900-0", width: 900, contentWidth: 772, depth: 0, openWidth: 28, label: "inspect" },
+  { id: "900-0", width: 900, contentWidth: 772, depth: 0, openWidth: 28, label: "inspect", fitFullText: true },
   // A larger text preference must earn a wider prefix: the floor is in em, so
   // the same row at the `xl` font scale reserves 1.8 of a LARGER em. The guard
   // compares the name against the first glyph measured at whatever size the
@@ -71,38 +62,36 @@ function deviation(actual, expected) {
 }
 
 /** Every per-row contract except the name's own size decision, which the
- * caller makes from the live reference and the measured floor.
+ * caller makes from the live reference.
  *
  * `room` is the row's content box less the fixed controls that sit beside the
  * name: the row's four inter-child gaps, the disclosure toggle, the kind glyph
  * and the Open control - all measured on this row, in this run. When room
  * cannot hold a glyph and its ellipsis the row has nothing to give, so the
  * name is allowed to fall back rather than buying a clipped tap target. */
-function assertRow(row, where, expected, pane, failures, room, floorPx) {
-  const affordable = room >= row.prefixEllipsisWidth;
+function assertRow(row, where, expected, pane, failures, room) {
+  // A label shorter than its own glyph-plus-ellipsis prefix cannot show that
+  // prefix inside its own text width; the most it can hold is the whole label.
+  // That is why the reservation is capped at the label's width - a box wider
+  // than the text it holds is padding, not a readable name.
+  const need = Math.min(row.prefixEllipsisWidth, row.nameFullWidth);
+  const affordable = room >= need;
   // The whole point: whatever the intent holds, the name keeps a box wide
-  // enough for one glyph plus its ellipsis. The comparison is against the
-  // measured first glyph of THIS row's label, which is why a floor derived
-  // from the digit "0" fails on a full-width ideograph.
-  if (affordable && row.name.width < row.prefixEllipsisWidth - EXACT) {
+  // enough for one glyph plus its ellipsis, or for the whole label when the
+  // label is shorter than that. The comparison is against the measured first
+  // glyph of THIS row's label, which is why a reservation derived from the
+  // digit "0" fails on a full-width ideograph.
+  if (affordable && row.name.width < need - EXACT) {
     failures.push(
-      `${where}: name ${row.name.width.toFixed(2)}px < its ${row.prefixEllipsisWidth.toFixed(2)}px glyph-plus-ellipsis prefix, with ${room.toFixed(2)}px available`,
+      `${where}: name ${row.name.width.toFixed(2)}px < its ${need.toFixed(2)}px glyph-plus-ellipsis prefix, with ${room.toFixed(2)}px available`,
     );
   }
-  if (row.name.width > row.nameTextWidth + EXACT) {
-    failures.push(`${where}: name ${row.name.width.toFixed(2)}px exceeds its ${row.nameTextWidth.toFixed(2)}px text`);
+  // The name box never exceeds the label it holds. A min-width above the
+  // label's advance pads the box - the CI failure this guard exists to catch -
+  // so the box is bounded by the canvas-measured advance, capped at the label.
+  if (row.name.width > Math.min(row.nameFullWidth, row.nameTextWidth) + EXACT) {
+    failures.push(`${where}: name ${row.name.width.toFixed(2)}px exceeds its ${row.nameFullWidth.toFixed(2)}px text`);
   }
-  // The floor never spends more than the row can spare: whatever is left
-  // after the fixed controls, and never a negative claim.
-  if (row.name.width > Math.max(0, room) + EXACT) {
-    failures.push(
-      `${where}: name ${row.name.width.toFixed(2)}px claims more than the ${Math.max(0, room).toFixed(2)}px the row has left after its controls`,
-    );
-  }
-  // A floor is a minimum, so a wider name is fine: comfortable rows keep
-  // their full label. `floorPx` is used below as the bound the name lands on
-  // when the floor is what sets its width.
-  void floorPx;
   for (const [part, box] of Object.entries({ name: row.name, Open: row.button, meta: row.meta })) {
     if (box.height <= 0 || !box.visible) failures.push(`${where}: ${part} is not visibly measurable`);
     // A fully-starved meta is a legitimate zero-width yield: it keeps its line
@@ -204,26 +193,21 @@ export default function assert(fixtures) {
       // inter-child gaps, the disclosure toggle, the kind glyph and the Open
       // target this row actually rendered.
       const room = row.contentWidth - (4 * row.gap + row.toggleWidth + row.kindWidth + row.button.width);
-      const floorPx = FLOOR_EM * row.fontSize;
-      assertRow(row, where, expected, fixture.pane, failures, room, floorPx);
-      // The floor is min(font-derived budget, room left after the controls).
-      // A row that already measured at or above the budget is untouched; any
-      // other row lands exactly on that bound. `row.reference` is the SAME row
-      // with the floor switched off, measured in this same run, so a font
-      // metric change cannot fail this and any movement the FLOOR causes is
-      // still caught to the hundredth of a pixel.
-      const expectedName =
-        row.reference.name >= floorPx - EXACT ? row.reference.name : Math.max(0, Math.min(floorPx, room));
-      const drift = deviation(row.name.width, expectedName);
-      if (drift)
-        failures.push(
-          `${where}: name ${drift} from ${expectedName === row.reference.name ? "its floor-off" : "the floor"} geometry`,
-        );
-      if (row.reference.name >= floorPx - EXACT) {
+      assertRow(row, where, expected, fixture.pane, failures, room);
+      // The fix is the meta's cap, so `row.reference` is the SAME row with the
+      // pre-fix 60%-only cap, measured in this same run: a font-metric change
+      // moves both sides together, while any movement the CAP causes is still
+      // caught to the hundredth of a pixel.
+      if (row.reference.name >= row.nameFullWidth - EXACT) {
+        // The row showed its WHOLE label before this change, so it was never
+        // under pressure: it must be exactly where it was. A row squeezed to a
+        // prefix was not comfortable, and the fix is allowed to give it more.
         held++;
+        const nameDrift = deviation(row.name.width, row.reference.name);
+        if (nameDrift) failures.push(`${where}: name moved to ${nameDrift} from the same row without the fix`);
         const metaDrift = deviation(row.meta.width, row.reference.meta);
-        if (metaDrift) failures.push(`${where}: meta moved to ${metaDrift} from the same row without the floor`);
-      } else if (row.name.width >= row.prefixEllipsisWidth - EXACT) {
+        if (metaDrift) failures.push(`${where}: meta moved to ${metaDrift} from the same row without the fix`);
+      } else if (row.name.width >= Math.min(row.prefixEllipsisWidth, row.nameFullWidth) - EXACT) {
         // Rescued: the name now shows an identifying glyph beside its
         // ellipsis where the intent had reduced it to a bare sliver.
         rescued++;
@@ -231,17 +215,25 @@ export default function assert(fixtures) {
         // Too narrow for any prefix even after the meta yielded to zero: the
         // name gives the space back so the Open target keeps its full width.
         yielded++;
-        if (room >= row.prefixEllipsisWidth) {
+        if (room >= Math.min(row.prefixEllipsisWidth, row.nameFullWidth)) {
           failures.push(
             `${where}: name ${row.name.width.toFixed(2)}px fell short of its ${row.prefixEllipsisWidth.toFixed(2)}px prefix with ${room.toFixed(2)}px available`,
           );
         }
       }
+      // A comfortable row keeps its whole label: the cap must never truncate a
+      // name the row had room to show in full. This is what stops a too-small
+      // max-width on the name from passing - both sides of the live comparison
+      // above would then measure the same truncated width.
+      if (expected.fitFullText && row.name.width < row.nameFullWidth - EXACT) {
+        failures.push(
+          `${where}: name ${row.name.width.toFixed(2)}px truncates a ${row.nameFullWidth.toFixed(2)}px label the row had room for in full`,
+        );
+      }
       // A clipped Open target is a smaller target: wherever the fixed
-      // controls fit in the row at all, the floor must leave the target
-      // inside the pane. Where they do not fit, the name has already yielded
-      // to zero and the overflow is the row's own minimum, unchanged by the
-      // floor.
+      // controls fit in the row at all, the name must not push the target
+      // outside the pane. Where they do not fit, the overflow is the row's own
+      // minimum, unchanged by this change.
       if (room >= 0 && row.button.right > fixture.pane.right + EPS) {
         failures.push(
           `${where}: Open ${row.button.right.toFixed(2)}px overhangs the pane edge ${fixture.pane.right.toFixed(2)}px`,
