@@ -1708,11 +1708,8 @@ func (s *Session) initSessionState(runSessionStartHooks bool, savedHeader *trans
 	s.envInfo = ei
 	s.workspaceWritableRoots = installedWritableRoots(env)
 
-	// The capability preamble's measured half, taken once here (see
-	// Session.capabilities). It rides the same testOnly gate as the git
-	// snapshot: both are the launch-time environment snapshot, and a test whose
-	// contract sits below that layer must not fork for either.
-	if !s.cfg.testOnly.skipGitSnapshot {
+	// The toolchain probes supply only the startup prompt's capability preamble.
+	if savedHeader == nil && !s.cfg.testOnly.skipGitSnapshot {
 		s.capabilities = probeCapabilities(env, ei.WorkingDir)
 	}
 

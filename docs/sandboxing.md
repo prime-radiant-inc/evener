@@ -167,7 +167,9 @@ file tools are unconfined, which receives a world-usable temp container as
 and two probes (the exit status of `git config --list`, and which of `go`,
 `node`, `rg` are on PATH). An unsandboxed session gets the same block minus the
 sandbox-derived lines. It exists so a session reads its box instead of
-discovering it by failing at it.
+discovering it by failing at it. Evener runs the toolchain probes when
+rendering a new prompt. A cold resume with a saved prompt reuses its
+measurements. Git branch reconciliation still observes the installed checkout.
 
 The startup prompt records the session's writable scratch directory. If a
 resume installs scratch elsewhere, the next request carries the installed path

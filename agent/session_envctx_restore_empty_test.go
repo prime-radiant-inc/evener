@@ -15,15 +15,13 @@ import (
 )
 
 func TestRestoreEnvironmentWithNoRetainedEntriesReemitsFullBlock(t *testing.T) {
-	for _, transcriptState := range []string{"missing", "header-only"} {
+	for _, transcriptState := range []string{"missing", "header-only", "empty saved prompt"} {
 		t.Run(transcriptState, func(t *testing.T) {
 			dir := t.TempDir()
 			probes := &envctx.Probes{Now: func() time.Time { return envctxFixedTime }}
 			testCfg := testConfig{
-				skipGitSnapshot:     true,
-				minimalSystemPrompt: true,
-				noSyncJobStore:      true,
-				envProbes:           probes,
+				noSyncJobStore: true,
+				envProbes:      probes,
 			}
 			client := llm.NewClient()
 			client.Register(newFakeAdapter("openai", repeatFinalResponse(1, "ok")...))
@@ -33,6 +31,9 @@ func TestRestoreEnvironmentWithNoRetainedEntriesReemitsFullBlock(t *testing.T) {
 			})
 			if err != nil {
 				t.Fatal(err)
+			}
+			if !sess.capabilities.toolsProbed || !sess.capabilities.gitProbed {
+				t.Fatal("fresh launch did not measure the capabilities in its prompt")
 			}
 			if _, err := sess.ProcessInput(context.Background(), "hello", nil); err != nil {
 				t.Fatalf("ProcessInput setup: %v", err)
@@ -63,7 +64,10 @@ func TestRestoreEnvironmentWithNoRetainedEntriesReemitsFullBlock(t *testing.T) {
 				if err := os.Remove(transcriptPath); err != nil {
 					t.Fatalf("remove transcript fixture: %v", err)
 				}
-			case "header-only":
+			case "header-only", "empty saved prompt":
+				if transcriptState == "empty saved prompt" {
+					header.SystemPrompt = ""
+				}
 				body, err := json.Marshal(header)
 				if err != nil {
 					t.Fatalf("marshal transcript header: %v", err)
@@ -76,10 +80,16 @@ func TestRestoreEnvironmentWithNoRetainedEntriesReemitsFullBlock(t *testing.T) {
 
 			restoreClient := llm.NewClient()
 			restoreClient.Register(newFakeAdapter("openai", repeatFinalResponse(1, "restored")...))
+			local := execenv.NewLocalExecutionEnvironment(dir)
+			// Count shell probes while ordinary Git observations use direct argv.
+			restoreEnv := struct {
+				*execRecordingEnv
+				execenv.ArgvExecutor
+			}{&execRecordingEnv{ExecutionEnvironment: local}, local}
 			restored, err := RestoreSessionFromMetaWithConfig(
 				restoreClient,
 				NewOpenAIProfile("gpt-5.2"),
-				execenv.NewLocalExecutionEnvironment(dir),
+				restoreEnv,
 				meta,
 				RestoreSessionConfig{StateDir: dir, testOnly: testCfg},
 			)
@@ -87,6 +97,13 @@ func TestRestoreEnvironmentWithNoRetainedEntriesReemitsFullBlock(t *testing.T) {
 				t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
 			}
 			defer restored.Close()
+			needsPrompt := transcriptState == "missing"
+			if ran := restoreEnv.calls.Load(); (ran > 0) != needsPrompt || restored.capabilities.toolsProbed != needsPrompt || restored.capabilities.gitProbed != needsPrompt {
+				t.Errorf("restore ran %d shell commands and measured tools %t, Git %t; needs a new prompt %t", ran, restored.capabilities.toolsProbed, restored.capabilities.gitProbed, needsPrompt)
+			}
+			if !needsPrompt && restored.cachedSystemPrompt != header.SystemPrompt {
+				t.Error("restore changed the saved prompt bytes")
+			}
 			if _, err := restored.ProcessInput(context.Background(), "again", nil); err != nil {
 				t.Fatalf("ProcessInput after %s restore: %v", transcriptState, err)
 			}
