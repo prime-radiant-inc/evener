@@ -2801,15 +2801,19 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 		// The entry and the event announcing it are one publication, and the
 		// transcript door is the statement that says so: the entry is in
 		// history before the event exists, so no reader can observe the event
-		// ahead of the transcript that explains it. Held across the publish, the
-		// door also keeps a fold from committing its markers and flushing its
-		// own events between those two steps, so a reader sees the order the
-		// transcript holds.
+		// ahead of the transcript that explains it. Held across both steps, the
+		// door also keeps a fold from committing its markers between them.
 		//
-		// What that order keeps fresh is the thread envelope's context facet:
-		// the event refreshes it (server/thread_envelope.go's facetsByEvent)
-		// from the session's context state, and publishing under the door
-		// places that refresh after the entry it describes, never ahead of it.
+		// The event is a trigger for the bridge to resample current context,
+		// not a snapshot of the context at emit time: publishing it under the
+		// door places that resample (server/thread_envelope.go's
+		// facetsByEvent) after the entry it announces, never ahead of it.
+		//
+		// The door does not order this event against a fold's own events: a
+		// fold commits its markers under the door and flushes its buffered
+		// events only after releasing it (publishFoldTransaction), so a reader
+		// can observe a fold's events after a transcript entry that another
+		// publication wrote in the meantime.
 		//
 		// This is the one event published under the door, and the trade is
 		// real: emit is not a bounded send. It parks indefinitely against the
