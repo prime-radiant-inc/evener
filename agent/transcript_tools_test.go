@@ -2873,3 +2873,216 @@ func TestFind_ProjectName_SavedOriginOutranksCheckoutName(t *testing.T) {
 		t.Fatalf("projectName(session-owned lane with a resolving checkout sibling and an origin sibling) = %q, want the recorded origin's %q", got, want)
 	}
 }
+
+// TestFind_ProjectName_LegacyBucketKeepsOriginOnlySiblingFallback covers the
+// three conditions of the legacy-bucket rule at once, because they are one
+// classification and a test for each would let two of them rot.
+//
+// A bucket under the configured state root whose basename is not a project ID
+// records no project. That is UNKNOWN, not conflicting: its sessions all describe
+// one repository, so a sibling's saved origin still answers for a deleted managed
+// lane stored there. Treating the unknown ID as a conflict marked every such lane
+// foreign and threw the fallback away.
+//
+// The other two conditions stay in force and are asserted here rather than
+// assumed: a sibling that positively names a DIFFERENT project is still rejected,
+// and a flat override outside the configured root is still ineligible even when
+// its basename happens to look like a project ID.
+func TestFind_ProjectName_LegacyBucketKeepsOriginOnlySiblingFallback(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	// A legacy bucket: under the configured root, basename is not a project ID.
+	legacy := filepath.Join(stateHome, "evener", "projects", "legacy-shared-bucket")
+	if err := os.MkdirAll(filepath.Join(legacy, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir legacy bucket: %v", err)
+	}
+	if err := identifier.ValidateProjectID(filepath.Base(legacy)); err == nil {
+		t.Fatalf("fixture basename %q is a valid project ID, so it cannot exercise the legacy case", filepath.Base(legacy))
+	}
+
+	// An origin-only sibling: the only thing the bucket can say about its project.
+	originOnly := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	originOnly.EnvInfo.GitOriginURL = "git@github.com:owner/legacy-repo.git"
+	originOnly.EnvInfo.WorkingDir = filepath.Join(t.TempDir(), "deleted-checkout")
+	if err := schema.SaveSessionMeta(legacy, originOnly); err != nil {
+		t.Fatal(err)
+	}
+
+	// The lane records a project in its path; the bucket records none, so nothing
+	// conflicts and the origin answers.
+	laneProject := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(newNamedCheckout(t, "legacy-repo")))
+	lane := schema.SessionMeta{}
+	lane.EnvInfo.WorkingDir = filepath.Join(legacy, "worktrees", laneProject.ID, "dlg_legacy")
+	if got, want := projectName(lane, legacy), "legacy-repo"; got != want {
+		t.Fatalf("projectName(managed lane in a legacy bucket with an origin-only sibling) = %q, want %q (an unknown bucket project is not a conflict)", got, want)
+	}
+
+	// Condition two: a sibling that POSITIVELY names a different project is still
+	// rejected, legacy bucket or not. A fresh legacy bucket keeps the origin-only
+	// sibling from answering.
+	legacy2 := filepath.Join(stateHome, "evener", "projects", "legacy-shared-bucket-two")
+	if err := os.MkdirAll(filepath.Join(legacy2, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir second legacy bucket: %v", err)
+	}
+	conflicting := schema.SessionMeta{ID: identifier.MustNewSessionID(), WorktreeRestoreRoot: newNamedCheckout(t, "intruder-repo")}
+	conflicting.EnvInfo.WorkingDir = conflicting.WorktreeRestoreRoot
+	if err := schema.SaveSessionMeta(legacy2, conflicting); err != nil {
+		t.Fatal(err)
+	}
+	lane2 := schema.SessionMeta{}
+	lane2.EnvInfo.WorkingDir = filepath.Join(legacy2, "worktrees", laneProject.ID, "dlg_legacy_conflict")
+	if got := projectName(lane2, legacy2); got != "" {
+		t.Fatalf("projectName(legacy bucket lane whose only sibling names another project) = %q, want empty", got)
+	}
+
+	// Condition three: a flat override outside the configured root is ineligible
+	// even when its basename is a valid project ID, which is what a date-stamped
+	// --state-dir looks like.
+	flat := filepath.Join(t.TempDir(), laneProject.ID)
+	if err := os.MkdirAll(filepath.Join(flat, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir flat: %v", err)
+	}
+	flatSibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	flatSibling.EnvInfo.GitOriginURL = "git@github.com:owner/legacy-repo.git"
+	flatSibling.EnvInfo.WorkingDir = filepath.Join(t.TempDir(), "deleted-checkout-flat")
+	if err := schema.SaveSessionMeta(flat, flatSibling); err != nil {
+		t.Fatal(err)
+	}
+	flatLane := schema.SessionMeta{}
+	flatLane.EnvInfo.WorkingDir = filepath.Join(flat, "worktrees", laneProject.ID, "dlg_flat")
+	if got := projectName(flatLane, flat); got != "" {
+		t.Fatalf("projectName(lane in a flat override whose basename looks like a project ID) = %q, want empty (inference is ineligible outside the configured root)", got)
+	}
+}
+
+// TestFind_ProjectName_ClassifiesWhereThePathReallyIs covers the two ways the
+// resolver used to decide what kind of path it had from the path's spelling
+// rather than from where it points, in one fixture because they are one
+// classification.
+//
+// M3: a sibling records a working directory that is a symlink to a repository
+// subdirectory. Walking the symlink's lexical parents misses the repository's
+// .git, so the later canonicalization hands the subdirectory a project of its
+// own and a deleted managed lane rejects the sibling's valid saved origin as
+// conflicting evidence.
+//
+// M4: a configured state directory sits inside repository A's own .worktrees
+// checkout. Every lane in it therefore has an ancestral ".worktrees" segment, and
+// the in-repo marker fallback names A — before the lane's verified parent can
+// name the project the lane actually belongs to. A path already classified as a
+// state lane must not fall through to an ancestry-based marker.
+func TestFind_ProjectName_ClassifiesWhereThePathReallyIs(t *testing.T) {
+	// The state directory lives inside checkout A, which is what gives every lane
+	// below it an ancestral ".worktrees" segment.
+	checkoutA := newNamedCheckout(t, "repo-a")
+	stateHome := filepath.Join(checkoutA, ".worktrees", "state")
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	repoB := newNamedCheckout(t, "repo-b")
+	projectB := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repoB))
+	bucket := filepath.Join(stateHome, "evener", "projects", projectB.ID)
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	// M3's sibling: repo B has a subdirectory "pkg", and the sibling records a
+	// SYMLINK to it rather than the path itself.
+	repoSub := filepath.Join(repoB, "pkg")
+	if err := os.MkdirAll(repoSub, 0o755); err != nil {
+		t.Fatalf("mkdir repo sub: %v", err)
+	}
+	aliasParent := t.TempDir()
+	alias := filepath.Join(aliasParent, "aliased-subdir")
+	if err := os.Symlink(repoSub, alias); err != nil {
+		t.Fatalf("symlink alias: %v", err)
+	}
+	sibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	sibling.EnvInfo.GitOriginURL = "git@github.com:owner/repo-b.git"
+	sibling.EnvInfo.WorkingDir = alias
+	if err := schema.SaveSessionMeta(bucket, sibling); err != nil {
+		t.Fatal(err)
+	}
+
+	// The row is a deleted managed lane for B with no owner metadata and no parent,
+	// so the sibling's saved origin is the only thing that can name it.
+	lane := schema.SessionMeta{}
+	lane.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", projectB.ID, "dlg_aliased")
+	if got, want := projectName(lane, bucket), "repo-b"; got != want {
+		t.Fatalf("projectName(deleted lane whose only sibling records a symlinked subdirectory) = %q, want the sibling's saved origin %q", got, want)
+	}
+
+	// M4's fixture: the same arrangement, but with an originless lane whose
+	// verified parent names B. The enclosing checkout A must not answer for it,
+	// even though A's ".worktrees" is an ancestor of the lane path.
+	parent := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	parent.EnvInfo.GitOriginURL = "git@github.com:owner/repo-b.git"
+	parent.EnvInfo.WorkingDir = repoB
+	if err := schema.SaveSessionMeta(bucket, parent); err != nil {
+		t.Fatal(err)
+	}
+	orphan := schema.SessionMeta{ParentSessionID: parent.ID}
+	orphan.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", projectB.ID, "dlg_orphan")
+	if got, want := projectName(orphan, bucket), "repo-b"; got != want {
+		t.Fatalf("projectName(deleted lane inside a state dir under another checkout's .worktrees) = %q, want its parent's %q (not the enclosing checkout)", got, want)
+	}
+}
+
+// TestFind_ProjectName_SiblingScanSkippedWhenRowEvidenceWins covers the cost the
+// review measured: several originless deleted lanes from one bucket, each already
+// answered by its own owner, still walked every sibling's recorded checkout. The
+// scan is bucket-wide, so that is one checkout resolution per sibling per row.
+//
+// The assertion is on the work, not on the answer: an answer cannot distinguish
+// the two implementations, because row-specific evidence outranks the bucket
+// whatever the scan says. siblingEvidence is only built when the scan actually
+// runs, so an empty map after an owner-resolved row proves the scan was skipped.
+// The last case proves the short-circuit is not a blanket suppression.
+func TestFind_ProjectName_SiblingScanSkippedWhenRowEvidenceWins(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	repo := newNamedCheckout(t, "owner-named-repo")
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repo))
+	bucket, err := RuntimeDirForProjectWithStateHome(project, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	ownerID := identifier.MustNewSessionID()
+	owner := schema.SessionMeta{ID: ownerID}
+	owner.EnvInfo.GitOriginURL = "git@github.com:owner/owner-named-repo.git"
+	if err := schema.SaveSessionMeta(bucket, owner); err != nil {
+		t.Fatal(err)
+	}
+
+	// Discovery's snapshot, which is the case that reuses sibling evidence. It is
+	// also what makes the reuse observable: without a snapshot nothing is
+	// remembered, deliberately, so a later write cannot be masked by stale work.
+	metas, err := schema.ListSessionMetas(bucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := newProjectNameResolver(map[string][]schema.SessionMeta{bucket: metas})
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	row.EnvInfo.WorkingDir = filepath.Join(bucket, "sessions", ownerID, "worktrees", "dlg_owned")
+	if got, want := resolver.projectName(row, bucket), "owner-named-repo"; got != want {
+		t.Fatalf("projectName(owner-resolved row) = %q, want the owner's %q", got, want)
+	}
+	if _, scanned := resolver.siblingEvidence[bucket]; scanned {
+		t.Fatalf("owner-resolved row built the bucket's sibling evidence: the scan ran for a row that needed nothing from it")
+	}
+
+	// The short-circuit must not suppress a row that genuinely needs the scan.
+	unowned := schema.SessionMeta{}
+	unowned.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", project.ID, "dlg_unowned")
+	if got, want := resolver.projectName(unowned, bucket), "owner-named-repo"; got != want {
+		t.Fatalf("projectName(unowned lane needing the sibling scan) = %q, want %q", got, want)
+	}
+	if _, scanned := resolver.siblingEvidence[bucket]; !scanned {
+		t.Fatalf("lane with no row-specific evidence did not build the bucket's sibling evidence: the scan was suppressed for a row that needed it")
+	}
+}
