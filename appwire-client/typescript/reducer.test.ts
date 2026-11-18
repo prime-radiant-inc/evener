@@ -3120,6 +3120,123 @@ test("evener/thread/modelRetry with a non-quota class records no resume instant"
   expect(model.quotaResumesAt).toBeUndefined();
 });
 
+// A wait belongs to the turn whose call met the limit. When the running turn
+// ends or is replaced (a Stop, a new turn started), the deadline must not
+// survive: the pane would count down the canceled turn's reset while a new
+// turn runs, hiding its own retry or stall line.
+test("thread/status/changed clearing the running turn drops the quota deadline", () => {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: 60 * 60_000,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 500,
+        attemptCap: 1,
+      },
+    },
+    1_000_000,
+  );
+  expect(model.quotaResumesAt).toBeDefined();
+  const ended = applyNotification(
+    model,
+    {
+      method: "thread/status/changed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        status: { type: "idle" },
+      },
+    },
+    1_100_000,
+  );
+  expect(ended.quotaResumesAt).toBeUndefined();
+
+  model = applyNotification(
+    ended,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: 60 * 60_000,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 500,
+        attemptCap: 1,
+      },
+    },
+    1_200_000,
+  );
+  const replaced = applyNotification(
+    model,
+    {
+      method: "thread/status/changed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        status: { type: "active" },
+        activeTurnId: "turn_2",
+      },
+    },
+    1_300_000,
+  );
+  expect(replaced.quotaResumesAt).toBeUndefined();
+});
+
+// The wake's zero-delay announcement is the request going out after a
+// scheduled pause. The stall clock must restart there, or the first ordinary
+// retry of the resumed request reads "no updates for 3h" for a pause the
+// provider named in advance.
+test("the quota wake restamps lastFrameAt; the wait's own announcement does not", () => {
+  let model = testHydrate();
+  const before = model.lastFrameAt;
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: 3 * 60 * 60_000,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 500,
+        attemptCap: 1,
+      },
+    },
+    before + 1_000,
+  );
+  expect(model.lastFrameAt).toBe(before);
+
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: 0,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 500,
+        attemptCap: 1,
+      },
+    },
+    before + 2_000,
+  );
+  expect(model.lastFrameAt).toBe(before + 2_000);
+});
+
 // Component 1 (docs/superpowers/specs/2026-08-07-provider-failure-feedback-
 // design.md): the retry state answers "what is happening now, in this retry
 // group" and must survive ordinary mid-grind progress (deltas, a

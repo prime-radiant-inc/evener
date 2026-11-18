@@ -97,3 +97,46 @@ func TestThreadSnapshotsCarryAQuotaWaitWhileWorking(t *testing.T) {
 		}
 	}
 }
+
+// A delegate waits out a usage limit like any turn, but its row is served by
+// the parent daemon: thread/list attaches the wait live from the session
+// tree, and a delegate's own thread/read serves its stored projection. A
+// pane opened on the delegate - or reloaded while it waits - reads that
+// projection, so the projection must carry the wait's summary the same way,
+// and drop it when the wait ends.
+func TestDescendantReadCarriesAQuotaWaitWhileWorking(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_root")
+	srv.RecordDescendantAppEvent("th_root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "th_child"})
+	read := func() *appwire.ThreadFailure {
+		t.Helper()
+		response, err := srv.handleAppThreadRead(context.Background(), appwire.ThreadReadParams{ThreadID: "th_child"})
+		if err != nil {
+			t.Fatalf("thread/read: %v", err)
+		}
+		return response.Thread.Evener.Failure
+	}
+
+	// The wait begins: the MODEL_RETRY announcement whose delay runs to the
+	// reset must reach the delegate's stored projection.
+	srv.RecordDescendantAppEvent("th_root", events.SessionEvent{
+		Kind:      events.EventModelRetry,
+		SessionID: "th_child",
+		Data:      events.ModelRetryData{Attempt: 1, DelayMS: 7_200_000, ErrorClass: "quota_exceeded"},
+	})
+	if got := read(); got == nil || got.ResumesAt == 0 {
+		t.Fatalf("a waiting delegate's read carries %+v, want the usage limit and its resume time", got)
+	}
+
+	// The wait ends (the retry goes out): the zero-delay announcement must
+	// drop it, so a reload during the retry shows the delegate working, not
+	// still waiting.
+	srv.RecordDescendantAppEvent("th_root", events.SessionEvent{
+		Kind:      events.EventModelRetry,
+		SessionID: "th_child",
+		Data:      events.ModelRetryData{Attempt: 1, DelayMS: 0, ErrorClass: "quota_exceeded"},
+	})
+	if got := read(); got != nil {
+		t.Fatalf("after the retry starts the delegate's read still carries the wait %+v", got)
+	}
+}

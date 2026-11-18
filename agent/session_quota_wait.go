@@ -104,7 +104,7 @@ func (s *Session) waitingForQuota() bool {
 // Before the retry it applies a model switch picked meanwhile and delivers
 // steering that arrived, as a round boundary does, so the retry runs on the
 // model the user picked and carries what they said.
-func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model string, wakesBefore uint64) (retry bool, err error) {
+func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model string, wakesBefore uint64, callStart time.Time) (retry bool, err error) {
 	resetAt, ok := llm.UsageLimitResetAt(callErr)
 	if !ok || llm.Kind(callErr) != llm.KindQuotaExceeded || s.cfg.TurnEndsProcess {
 		return false, nil
@@ -147,7 +147,7 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 	defer end()
 
 	s.noteParentJobActivity(jobPhaseModelRetrying)
-	s.emitQuotaRetry(callErr, model, resetAt.Sub(now))
+	s.emitQuotaRetry(callErr, model, resetAt.Sub(now), callStart)
 	select {
 	case <-ctx.Done():
 		return false, ctx.Err()
@@ -172,7 +172,7 @@ func (s *Session) waitOutUsageLimit(ctx context.Context, callErr error, model st
 	// event re-samples the session's failure summary (now clear), so a list
 	// row stops saying the session waits as soon as the retry goes out,
 	// not when its response ends.
-	s.emitQuotaRetry(callErr, model, 0)
+	s.emitQuotaRetry(callErr, model, 0, callStart)
 	s.injectDrainedSteering()
 	return true, nil
 }
@@ -215,13 +215,14 @@ func quotaWaitFailure(callErr error, model string, resetAt time.Time) appwire.Th
 // goes out. Like a wall-budgeted rate limit, it counts no attempts against a
 // budget, so every announcement says attempt 1 and clients read only its
 // delay.
-func (s *Session) emitQuotaRetry(callErr error, model string, delay time.Duration) {
+func (s *Session) emitQuotaRetry(callErr error, model string, delay time.Duration, callStart time.Time) {
 	data := events.ModelRetryData{
-		Attempt:    1,
-		DelayMS:    delay.Milliseconds(),
-		ErrorClass: llm.Kind(callErr).String(),
-		Message:    callErr.Error(),
-		Model:      model,
+		Attempt:        1,
+		DelayMS:        delay.Milliseconds(),
+		ErrorClass:     llm.Kind(callErr).String(),
+		Message:        callErr.Error(),
+		Model:          model,
+		GroupElapsedMS: s.sclock().Now().Sub(callStart).Milliseconds(),
 	}
 	if le, ok := errors.AsType[llm.Error](callErr); ok {
 		data.StatusCode = le.StatusCode()

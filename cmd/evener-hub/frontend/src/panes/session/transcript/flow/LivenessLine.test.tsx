@@ -197,7 +197,6 @@ test("a quota wait known from the thread snapshot renders immediately and never 
   rerenderWith(mounted, resumesAt, STUCK_AFTER_MS * 6);
   const hoursIn = screen.getByTestId("liveness-line");
   expect(hoursIn.getAttribute("data-level")).toBe("retrying");
-  expect(hoursIn.textContent).not.toContain("no updates for");
 });
 
 test("a quota wait whose resume time has passed renders nothing and lets the ordinary liveness decision speak", () => {

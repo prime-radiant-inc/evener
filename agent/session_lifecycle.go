@@ -1631,7 +1631,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			for _, callID := range modelResp.CommunicatePreviewCallIDs {
 				communicatePreviewCalls[callID] = struct{}{}
 			}
-			retry, waitErr := s.waitOutUsageLimit(ctx, err, req.Model, quotaWakes)
+			retry, waitErr := s.waitOutUsageLimit(ctx, err, req.Model, quotaWakes, tPhaseStart)
 			if waitErr != nil {
 				err = waitErr
 			}

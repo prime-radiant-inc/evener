@@ -1086,7 +1086,7 @@ func TestQuotaWaitRetriesAtOnceForASteerNoDrainCovered(t *testing.T) {
 	s.mu.Unlock()
 	retried := make(chan bool, 1)
 	go func() {
-		retry, err := s.waitOutUsageLimit(trip, limit, "gpt-5.6", wakes)
+		retry, err := s.waitOutUsageLimit(trip, limit, "gpt-5.6", wakes, s.sclock().Now())
 		retried <- retry && err == nil
 	}()
 	select {
@@ -1291,7 +1291,7 @@ func TestCapacityReclamationDoesNotRaceALaunchingDrive(t *testing.T) {
 // which is what makes a session list drop the quota wait from the row,
 // rather than leaving it until the retry's response ends.
 func TestAWaitEndingAnnouncesTheRetry(t *testing.T) {
-	s, _, _, adapter := newAttentionLivelockSession(t, usageLimitError(t, "openai", quotaResetAt))
+	s, clk, _, adapter := newAttentionLivelockSession(t, usageLimitError(t, "openai", quotaResetAt))
 	var mu sync.Mutex
 	var retries []events.ModelRetryData
 	s.ConsumeEventsLossless(func(ev events.SessionEvent) {
@@ -1307,6 +1307,11 @@ func TestAWaitEndingAnnouncesTheRetry(t *testing.T) {
 	trip := tripwireCtx(t).Done()
 	run := startInput(context.Background(), s, "start the work", EntryUserInput)
 	run.awaitQuotaWait(t, s)
+	// An hour passes inside the wait, so the retry's announcement can be
+	// judged on the call's elapsed time: the wake reports how long the call
+	// has been running, the same honesty field an ordinary retry reports.
+	clk.Advance(time.Hour)
+	clk.Drain()
 
 	// The retry's response does not come until the test lets it.
 	answer := make(chan struct{})
@@ -1335,6 +1340,12 @@ func TestAWaitEndingAnnouncesTheRetry(t *testing.T) {
 	mu.Unlock()
 	if announced.DelayMS != 0 {
 		t.Fatalf("the retry after the wait announced a %d ms delay, want none", announced.DelayMS)
+	}
+	mu.Lock()
+	announcedElapsed := announced.GroupElapsedMS
+	mu.Unlock()
+	if announcedElapsed < int64(time.Hour/time.Millisecond) {
+		t.Fatalf("the wake's announcement carries %d ms elapsed, want the hour the call waited", announcedElapsed)
 	}
 	if failure := s.RestingFailure(); failure != nil {
 		t.Fatalf("while the retry streams the session still reports the wait %+v", failure)

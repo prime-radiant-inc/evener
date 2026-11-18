@@ -2,6 +2,7 @@ package server
 
 import (
 	"strings"
+	"time"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/events"
@@ -451,6 +452,29 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 				pending = append(pending, pendingAppNotification{threadID: threadID, method: item.Method, params: params})
 			case appwire.ThreadStatusChangedParams:
 				projection.thread.Status = params.Status
+				pending = append(pending, pendingAppNotification{threadID: threadID, method: item.Method, params: params})
+			case appwire.ThreadModelRetryParams:
+				// usageLimitFailureTitle matches the diagnostic classifier's
+				// own headline for an exhausted allowance, so a delegate's
+				// read shows the same words its session-resting row would.
+				const usageLimitFailureTitle = "Usage limit reached"
+				// A delegate's read serves its stored projection, so a quota
+				// wait must land here the way thread/list attaches it live
+				// from the session tree: the announcement whose delay runs to
+				// the reset carries the wait's summary, and the zero-delay
+				// announcement that starts the retry drops it.
+				if params.ErrorClass == "quota_exceeded" {
+					if params.DelayMS > 0 {
+						resumesAt := time.Now().UTC().Add(time.Duration(params.DelayMS) * time.Millisecond)
+						projection.thread.Evener.Failure = &appwire.ThreadFailure{
+							Title:     appwire.Excerpt(usageLimitFailureTitle, appwire.MaxFailureTitleRunes),
+							ResumesAt: resumesAt.UnixMilli(),
+							Cause:     &appwire.DiagnosticCause{Kind: "provider", Status: params.StatusCode},
+						}
+					} else {
+						projection.thread.Evener.Failure = nil
+					}
+				}
 				pending = append(pending, pendingAppNotification{threadID: threadID, method: item.Method, params: params})
 			case appwire.TaskUpdatedParams:
 				if !s.acceptTaskUpdatePublicationLocked(item.TaskStoreOwnerSessionID, item.TaskPublicationEpoch, item.TaskPublicationRevision) {

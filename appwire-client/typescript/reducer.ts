@@ -354,8 +354,16 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
       // The running turn is the frame's activeTurnId, and none when it names
       // none: an idle frame ends the running turn.
       const { runningTurnId: _previous, ...rest } = model;
+      // A quota wait belongs to the turn whose call met the limit. A frame
+      // that ends or replaces the running turn ends that wait's turn: the
+      // deadline must not survive into whatever runs next, or the pane would
+      // count down the old turn's reset while a new turn runs. The daemon's
+      // own zero-delay announcement already cleared a wait that ended inside
+      // the same turn; this is the turn-boundary half.
+      const turnEnded = status.type !== "active" || n.params.activeTurnId !== model.runningTurnId;
       return {
         ...(rest as M),
+        ...(turnEnded ? { quotaResumesAt: undefined } : {}),
         ...(n.params.activeTurnId ? { runningTurnId: n.params.activeTurnId } : {}),
         status,
         // The work-clock anchor (activeTurnStartedAt) has no live push to
@@ -586,6 +594,14 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
             : params.errorClass === "quota_exceeded"
               ? undefined
               : model.quotaResumesAt,
+        // The wake's zero-delay announcement is the request going out: real
+        // motion, unlike the wait that preceded it. Restamping here gives the
+        // resumed request its own stall clock - otherwise the first ordinary
+        // retry of the new request reads "no updates for 3h" for a pause the
+        // provider scheduled. The wait's own announcement restamps nothing:
+        // the model has produced nothing, and the wait line explains the
+        // silence instead.
+        lastFrameAt: params.errorClass === "quota_exceeded" && params.delayMs === 0 ? now : model.lastFrameAt,
         modelRetry: {
           attempt: params.attempt,
           maxAttempts: params.maxAttempts,
