@@ -209,15 +209,35 @@ func TestPrepareModelRequest_LosingFoldAttemptEmitsNoCompactionEvent(t *testing.
 // its EventContextCompaction (exactly once for a checkpoint-only fold).
 func TestPrepareModelRequest_WinningFoldEmitsCompactionEvent(t *testing.T) {
 	t.Parallel()
-	s := newTestSession(t)
+	s := newSession(t, withConfig(minimalTestSessionConfig(t)), withEnvironmentSnapshot())
 	evs, evMu, doneCh := collectEvents(s)
+	if err := s.SetModel("gpt-5.4"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.maybeAppendEnvironmentContext(); err != nil {
+		t.Fatal(err)
+	}
+	trailer := s.commitTrailerPrompt()
+	if trailer == "" || s.envTracker.State().Last.CommitTrailer != trailer {
+		t.Fatal("model switch did not project the new attribution before the fold")
+	}
 	seedNumberedSessionHistory(t, s, 12) // > PreserveRecentTurns(6): forces an actual checkpoint fold
 	s.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) { return "", nil }
 	forcePressureAbove(t, s, 0.92) // > CheckpointThreshold(0.90), < SummarizeThreshold: exactly one layer emits
 
 	var rt events.RoundTimings
-	if _, _, _, _, _, _, err := s.prepareModelRequestWithError(context.Background(), 1, &rt); err != nil {
+	_, _, _, req, _, _, err := s.prepareModelRequestWithError(context.Background(), 1, &rt)
+	if err != nil {
 		t.Fatalf("prepareModelRequestWithError: %v", err)
+	}
+	var attributions int
+	for _, msg := range req.Messages {
+		if msg.Role == llm.RoleUser {
+			attributions += strings.Count(msg.Text(), trailer)
+		}
+	}
+	if attributions != 1 {
+		t.Errorf("the first request after folding contains the current attribution %d times, want once", attributions)
 	}
 
 	s.Close()

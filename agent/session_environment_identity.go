@@ -55,21 +55,15 @@ func (s *Session) setEnvironmentIdentity(snap *envctx.Snapshot, last envctx.Snap
 	}
 }
 
-// A quota retry or a resumed fork can issue a request without accepting a new
-// user input. Publish the same durable context before that request takes its
-// history snapshot. Unchanged rounds need no environment probes or writes.
-func (s *Session) appendChangedEnvironmentIdentity() error {
-	s.mu.RLock()
-	if s.envTracker == nil {
-		s.mu.RUnlock()
-		return nil
+// A fork, a model switch, or a fold can leave the current attribution
+// absent from the history a request will see. The caller holds the session
+// and transcript locks so the check refers to the same history snapshot.
+func (s *Session) needsEnvironmentIdentityLocked() bool {
+	if s.envTracker == nil || s.envCollector == nil || s.closingOrClosedLocked() {
+		return false
 	}
 	last := s.envTracker.State().Last
 	next := last
 	s.setEnvironmentIdentity(&next, last)
-	s.mu.RUnlock()
-	if next == last {
-		return nil
-	}
-	return s.maybeAppendEnvironmentContext()
+	return next != last
 }

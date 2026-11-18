@@ -68,9 +68,10 @@ func TestSystemPromptCarriesCommitTrailer(t *testing.T) {
 				parts, _ := msg["content"].([]any)
 				for _, part := range parts {
 					text, _ := part.(map[string]any)["text"].(string)
-					if msg["role"] == "developer" {
+					switch msg["role"] {
+					case "developer":
 						instructions = text
-					} else if msg["role"] == "user" {
+					case "user":
 						history = append(history, text)
 					}
 				}

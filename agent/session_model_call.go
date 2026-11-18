@@ -107,9 +107,6 @@ func effectiveReasoningEffort(cfg, override string, escalated bool) string {
 // cut from. That list is the round's, not the request's: the retry after a
 // rejected anchor rebuilds from it, and nothing on the wire ever carries it.
 func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t *events.RoundTimings) (profile *provider.Profile, sys string, history []llm.Message, req llm.Request, fullHistory []llm.Message, reasoningEffort string, err error) {
-	if err := s.appendChangedEnvironmentIdentity(); err != nil {
-		return nil, "", nil, llm.Request{}, nil, "", err
-	}
 	if err := s.flushPendingDelegateDeliveries(); err != nil {
 		return nil, "", nil, llm.Request{}, nil, "", err
 	}
@@ -215,8 +212,24 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// hold of that door, so a snapshot that waits for the door can never
 	// observe the half-committed span between the two. The door-then-session
 	// order is the lock order every transcript writer already follows.
-	s.attentionMu.Lock()
-	s.mu.Lock()
+	// A fold can remove an earlier model or fork attribution. Recheck under
+	// the snapshot locks after appending, since another fold may have won
+	// the door while the environment was being sampled.
+	for {
+		s.attentionMu.Lock()
+		s.mu.Lock()
+		if !s.needsEnvironmentIdentityLocked() {
+			break
+		}
+		s.mu.Unlock()
+		s.attentionMu.Unlock()
+		if err := ctx.Err(); err != nil {
+			return nil, "", nil, llm.Request{}, nil, "", err
+		}
+		if err := s.maybeAppendEnvironmentContext(); err != nil {
+			return nil, "", nil, llm.Request{}, nil, "", err
+		}
+	}
 	historyTurns := append([]schema.Turn{}, s.history...)
 	// A request's coverage belongs to its history snapshot. A later fold may
 	// replace a retracted frontier before this request stages its inputs.
