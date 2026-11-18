@@ -656,7 +656,23 @@ function classifyScrollerScroll(
   // scroller last reported pointed PAST the range it now allows. A reader who
   // scrolls to the end arrives from an offset that was already legal, so the
   // tolerance cannot turn an ordinary scroll into a correction.
-  if (verticalClamped) return "clamp";
+  // The mirror of that reading, and the same trap: a rail wide enough to scroll
+  // sideways can be scrolled sideways at the moment its vertical range
+  // contracts. The browser gives back a vertical offset it can no longer honour
+  // (a taller scrollport) and the reader drags along the other axis - one event
+  // carrying both. Reading the vertical correction first and returning on it
+  // excused the drag with it, and the popup stayed anchored to a row the reader
+  // had just scrolled away from.
+  //
+  // The inline reading above cannot rescue it: that block has already returned
+  // for every inline offset that WAS a correction, so an inline offset that
+  // moved and reached here came from a place that was already legal. The reader
+  // is the only one who moves a scroller to a legal place, so this is their
+  // scroll. Returning "scrolled" rather than falling through matters, because a
+  // clamp's own geometry - the trigger held still while the offset gives back -
+  // satisfies the anchoring test below exactly, and would re-anchor the popup
+  // over a gesture the reader made.
+  if (verticalClamped) return scroller.scrollLeft === previous.scrollLeft ? "clamp" : "scrolled";
   // The offset moved, in the same direction as the trigger's place in the
   // content, by exactly as much. Nothing but an insertion or removal above the
   // trigger moves the two together like that: a reader's drag moves the offset
@@ -1817,9 +1833,11 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     //     the viewport had already taken is not one layout just hid, and a
     //     delivery per re-placement must not turn it into a dismissal.
     //
-    // The height and the signature are taken here and nowhere else, so one
-    // viewport move can excuse at most one observation - the frame after it
-    // records the new values, and a chip arriving later is judged on its own.
+    // The height is taken here and nowhere else, so one viewport move can
+    // excuse at most one box delivery - the call after it records the new value,
+    // and a chip arriving later is judged on its own. A delivery that finds the
+    // trigger visible only re-places, so it spends nothing: it has no dismissal
+    // to excuse.
     // A delivery that names ONLY the popup is placement's own consequence:
     // the cap written from the visible viewport changes the popup's box in the
     // same pass that re-anchors it after a zoom. Such a delivery can say the
@@ -1828,15 +1846,20 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // not this case, so it is judged by the same rule as any other.)
     const popupOnly = (entries: ResizeObserverEntry[]) =>
       entries.length > 0 && entries.every((entry) => entry.target === popupRef.current);
+    // Has the region placement answers to moved since the last placement pass?
+    // A pinch zoom and iOS's keyboard inset both move the VISUAL viewport and
+    // leave `innerHeight` alone, so the layout height cannot answer this on its
+    // own. Read, never consumed: it is the placement pass that moves the
+    // baseline, so a delivery that only re-places leaves this reading intact for
+    // whichever notification judges the same move next.
+    const viewportMovedSincePlacement = (): boolean =>
+      visibleViewportAtPlacementRef.current !== visibleViewportSignature(ownerWindow);
     const onObservedSize = (entries: ResizeObserverEntry[]) => {
       const viewportChanged = ownerWindow.innerHeight !== observedViewportHeightRef.current;
       observedViewportHeightRef.current = ownerWindow.innerHeight;
-      // The visual viewport is the region placement answers to, and it can move
-      // with `innerHeight` untouched: a pinch zoom, or the same keyboard inset
-      // on iOS. An observation that lands between that move and its placement
-      // frame is still the viewport's, never layout's - so the signature taken
-      // at the last placement is the other half of the reading.
-      const viewportMoved = visibleViewportAtPlacementRef.current !== visibleViewportSignature(ownerWindow);
+      // An observation that lands between that move and its placement frame is
+      // still the viewport's, never layout's.
+      const viewportMoved = viewportMovedSincePlacement();
       const el = triggerRef.current;
       if (el !== null && triggerMeasurablyHidden(el, ownerWindow)) {
         // A viewport change owns what the observation shows, and so does the
@@ -1946,11 +1969,27 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         ? null
         : new Mutations((records) => {
             if (!movedTheTrigger(records)) return;
-            // Focus goes back to a trigger the reader cannot see, and a plain
-            // restore scrolls the rail to it. Preserve the offsets so the
-            // dismissal costs them nothing.
-            if (triggerMeasurablyHidden(triggerEl, ownerWindow)) closeMenuRestoringFocusWithoutScroll();
-            else placeAfterLayout();
+            // A content change asks the same question the box observer asks -
+            // "is the trigger hidden" - and has to take the same answer with
+            // it. A rail's timestamp update arrives one beat after the resize
+            // or the zoom that clipped its row, and nothing in that update hid
+            // the trigger: the viewport already had it. Dismissing there takes
+            // the menu away for the very viewport move the placement pass had
+            // just kept it through - the bug this widget exists to fix,
+            // arriving late. So the two readings the placement pass records
+            // decide: a viewport that moved since, or a trigger that was
+            // already out of sight when the popup was placed, both make this
+            // change placement's. Only a trigger that WAS in sight at that
+            // placement and is not now was hidden by this content change.
+            const hidden = triggerMeasurablyHidden(triggerEl, ownerWindow);
+            if (hidden && !viewportMovedSincePlacement() && triggerVisibleAtLastPlacementRef.current) {
+              // Focus goes back to a trigger the reader cannot see, and a
+              // plain restore scrolls the rail to it. Preserve the offsets so
+              // the dismissal costs them nothing.
+              closeMenuRestoringFocusWithoutScroll();
+              return;
+            }
+            placeAfterLayout();
           });
     if (mutations !== null && triggerEl !== null) {
       // characterData, because a heading above the trigger can be RENAMED in

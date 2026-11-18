@@ -440,7 +440,11 @@ test("a second box delivery from one window resize leaves the menu open", async 
 test("a layout dismissal does not scroll back to a recorded control that left the screen", async () => {
   const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
   Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
-  let triggerTop = 300;
+  // Inside the scroller's 0..300 client area at the open, because the case this
+  // test drives is an insertion pushing the trigger OUT of it: a trigger that
+  // began outside was never in sight, and its dismissal is the viewport's to
+  // excuse rather than this change's to make.
+  let triggerTop = 260;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
     if (this.getAttribute("data-testid") === "owning-scroller") return box(0, 0, 300, 300);
@@ -1902,6 +1906,66 @@ test("an inline clamp does not excuse a vertical scroll the reader made", async 
   }
 });
 
+// The other pairing of those two axes, and the one the clamp-first reading got
+// backwards. Here the VERTICAL range contracts while the reader drags sideways:
+// the browser gives back a vertical offset it can no longer honour, and the
+// reader's inline movement rides the same event. A vertical reading on its own
+// is a textbook clamp - the offset arrives from past the new endpoint, exactly
+// on it - so returning on it re-anchored the popup to a row the reader had just
+// scrolled away from. The inline offset is the witness: it moved to a place
+// that was legal before the event, and only the reader moves a scroller to a
+// place that was already legal.
+test("an inline drag in the same event as a vertical clamp dismisses the menu", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  // The browser holds the row the trigger is on exactly where it is on screen
+  // while it gives back the vertical offset, which is what makes the clamp a
+  // clamp - and also what makes the anchoring branch below it agree.
+  const triggerTop = 300;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.getAttribute("data-testid") === "rail-port") return box(0, 0, 300, 600);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  const { flush } = captureFrames();
+  try {
+    render(
+      <div data-testid="rail-port" style={{ overflowY: "auto", overflowX: "auto" }}>
+        <Menu trigger="Actions" items={items()} />
+      </div>,
+    );
+    const scroller = screen.getByTestId("rail-port");
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 1200 });
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 600 });
+    Object.defineProperty(scroller, "scrollWidth", { configurable: true, value: 500 });
+    Object.defineProperty(scroller, "clientWidth", { configurable: true, value: 300 });
+    scroller.scrollTop = 500;
+    // 200 is the furthest inline offset the rail allows, and that is where the
+    // reader left it, so the next inline offset is judged against 200.
+    scroller.scrollLeft = 200;
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu")).toBeTruthy();
+
+    // The rail's list gets SHORTER, so its vertical range falls from 600 to
+    // 200 and the browser pulls 500 back to the new endpoint. In the same
+    // moment the reader drags 80 sideways - to 120, which the rail allowed
+    // before the event and still allows, so the inline half is theirs.
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 800 });
+    scroller.scrollTop = 200;
+    scroller.scrollLeft = 120;
+    fireEvent.scroll(scroller);
+    flush();
+
+    expect(screen.queryByRole("menu")).toBeNull();
+  } finally {
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
 // A live update can move the trigger twice before any scroll is classified, and
 // only the SECOND of those movements is the browser's correction. A row
 // arriving inside the visible area moves the trigger down while the offset
@@ -1971,6 +2035,186 @@ test("a clamp after a live insertion still leaves the menu open and re-anchored"
     // open and still on its trigger.
     expect(screen.getByRole("menu")).toBeTruthy();
     expect(screen.getByRole("menu").style.top).toBe("372px");
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// The dismissal above is right, and it is right for one reason: the trigger was
+// IN SIGHT when the popup was placed. Take that away and the same reading
+// inverts. A window resize (or a pinch zoom) shrinks what the reader can see
+// under a rail row, the menu stays open and re-anchors - that is what this
+// widget does - and the rail's next timestamp update lands a beat later. Asking
+// only "is the trigger hidden" closes the menu there, for a row the viewport
+// took and a content change did not, one frame after the resize kept it open.
+// The trigger never moved. This is the bug the whole change exists to fix,
+// arriving through the mutation path instead of the resize one.
+test("a rail content change after a resize clipped the row leaves the menu open", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  const RAIL_TOP = 100;
+  let railHeight = 400;
+  // The trigger keeps its own screen position throughout: the viewport moved
+  // under it, and then a text node changed. Nothing moved it.
+  const triggerTop = 360;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.getAttribute("data-testid") === "rail-port") return box(0, RAIL_TOP, 300, railHeight);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.getAttribute("data-testid") === "rail-port") return railHeight;
+    return this.tagName === "UL" ? 120 : 0;
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  const callbacks = new Map<Element, MutationCallback>();
+  class CapturingMutationObserver {
+    constructor(private readonly callback: MutationCallback) {}
+    observe(target: Element): void {
+      callbacks.set(target, this.callback);
+    }
+    disconnect(): void {}
+    takeRecords(): MutationRecord[] {
+      return [];
+    }
+  }
+  vi.stubGlobal("MutationObserver", CapturingMutationObserver);
+  // Every box stays silent: the resize reaches the widget through the window's
+  // own event, and the mutation is the only other notification this test hands
+  // it. What the boxes would have said is already in the resize handler.
+  class SilentResizeObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  vi.stubGlobal("ResizeObserver", SilentResizeObserver);
+  const { flush } = captureFrames();
+  try {
+    render(
+      <div data-testid="rail-port" style={{ overflowY: "auto" }}>
+        <Menu trigger="Actions" items={items()} />
+      </div>,
+    );
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu")).toBeTruthy();
+    const onRailChange = callbacks.get(screen.getByTestId("rail-port"));
+    if (onRailChange === undefined) throw new Error("the menu observed no mutation for the rail scroller");
+
+    // The reader shortens the window by 200 and the rail with it, so the row
+    // the trigger sits on falls below the rail's client area. The menu stays
+    // open and re-anchors - the placement pass that does it is the one that
+    // records the trigger as already out of sight.
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 600 });
+    railHeight = 200;
+    fireEvent(window, new Event("resize"));
+    flush();
+    expect(screen.getByRole("menu")).toBeTruthy();
+
+    // The rail's timestamp update for the row that just changed, arriving after
+    // the resize. The trigger is hidden, and it was hidden when the popup was
+    // placed: no layout change of this update's did that.
+    act(() => {
+      const record = { addedNodes: [], removedNodes: [] } as unknown as MutationRecord;
+      Object.defineProperty(record, "target", { value: screen.getByTestId("rail-port") });
+      onRailChange([record], {} as MutationObserver);
+    });
+    flush();
+
+    expect(screen.getByRole("menu")).toBeTruthy();
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// The half of that reading a window resize cannot stand in for. A PINCH ZOOM
+// moves the visual viewport and leaves both `innerHeight` and every observed
+// box exactly as they were, so the rail's own client area still holds the
+// trigger and only the region the reader is looking at does not. The zoom's
+// re-placement is a frame, and the rail's next content change lands before it:
+// at that moment the recorded visibility still says "in sight", because it
+// describes the placement from before the zoom. The viewport signature the
+// placement pass recorded is then the only fact that separates this move from
+// layout - without it the trigger reads as newly hidden and the menu closes on
+// a gesture that is supposed to keep it.
+test("a rail content change after a pinch zoom clipped the row leaves the menu open", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  const fakeViewport = new EventTarget() as EventTarget & {
+    width: number;
+    height: number;
+    offsetLeft: number;
+    offsetTop: number;
+  };
+  fakeViewport.width = 800;
+  fakeViewport.height = 400;
+  fakeViewport.offsetLeft = 0;
+  fakeViewport.offsetTop = 0;
+  vi.stubGlobal("visualViewport", fakeViewport);
+  // The trigger sits at 300: inside the 0..400 the reader sees at the open, and
+  // outside the 0..200 the zoom leaves them. The rail's own client area runs
+  // 0..600 throughout, so the rail clips nothing either side of the gesture.
+  const triggerTop = 300;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.getAttribute("data-testid") === "rail-port") return box(0, 0, 300, 600);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.getAttribute("data-testid") === "rail-port") return 600;
+    return this.tagName === "UL" ? 120 : 0;
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  const callbacks = new Map<Element, MutationCallback>();
+  class CapturingMutationObserver {
+    constructor(private readonly callback: MutationCallback) {}
+    observe(target: Element): void {
+      callbacks.set(target, this.callback);
+    }
+    disconnect(): void {}
+    takeRecords(): MutationRecord[] {
+      return [];
+    }
+  }
+  vi.stubGlobal("MutationObserver", CapturingMutationObserver);
+  class SilentResizeObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  vi.stubGlobal("ResizeObserver", SilentResizeObserver);
+  const { flush } = captureFrames();
+  try {
+    render(
+      <div data-testid="rail-port" style={{ overflowY: "auto" }}>
+        <Menu trigger="Actions" items={items()} />
+      </div>,
+    );
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu")).toBeTruthy();
+    const onRailChange = callbacks.get(screen.getByTestId("rail-port"));
+    if (onRailChange === undefined) throw new Error("the menu observed no mutation for the rail scroller");
+
+    // The reader pinches, and the visible region shrinks under the trigger. The
+    // queued re-placement has NOT run when the next record arrives.
+    fakeViewport.width = 800;
+    fakeViewport.height = 200;
+    fakeViewport.dispatchEvent(new Event("resize"));
+    act(() => {
+      const record = { addedNodes: [], removedNodes: [] } as unknown as MutationRecord;
+      Object.defineProperty(record, "target", { value: screen.getByTestId("rail-port") });
+      onRailChange([record], {} as MutationObserver);
+    });
+    flush();
+
+    expect(screen.getByRole("menu")).toBeTruthy();
   } finally {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
