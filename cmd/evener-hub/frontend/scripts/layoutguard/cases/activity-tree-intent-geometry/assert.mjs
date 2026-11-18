@@ -33,6 +33,20 @@ const EXPECTED = [
     noIntent: true,
     labelChars: 160,
   },
+  // The case the name cap exists for: a name long enough to want the whole row,
+  // on a row that DOES state an intent. This is the only column where the cap
+  // binds, so it is the only one that proves the name's upper bound and the
+  // Open containment check bite together - without it the long-name row has no
+  // intent, and the intent rows all have short names that never reach the cap.
+  {
+    id: "320-0-long-intent",
+    width: 320,
+    contentWidth: 288,
+    depth: 0,
+    openWidth: 44,
+    label: "inspect",
+    labelChars: 160,
+  },
   { id: "360-0", width: 360, contentWidth: 328, depth: 0, openWidth: 44, label: "inspect" },
   { id: "360-3", width: 360, contentWidth: 328, depth: 3, openWidth: 44, label: "inspect" },
   { id: "390-2", width: 390, contentWidth: 358, depth: 2, openWidth: 44, label: "inspect" },

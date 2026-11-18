@@ -149,25 +149,26 @@ function terminalSegment(durationMs: number | undefined, statusText: string): Me
 }
 
 // liveMetaSegments is the one place the live meta grammar is built (#1388): the
-// leading segment is the delegate's standing intent when one states work,
-// else the usage pair when the daemon sent one, else the row's status text;
-// the quiet age follows when its anchor is known. Sharing it keeps the two row
-// kinds reading the same - a shell job's ActivityJob carries no usage field or
-// intent at all, so it always takes the status branch, while a delegate's
-// tokens displace only the bare status word, never a standing intent.
+// leading segment is the delegate's standing intent when one states work, else
+// the row's wait on its own running job, else the usage pair when the daemon
+// sent one, else the row's status text; the quiet age follows when its anchor
+// is known. Sharing it keeps the two row kinds reading the same - a shell job's
+// ActivityJob carries no usage field, intent or wait at all, so it always takes
+// the status branch, while a delegate's tokens displace only the bare status
+// word, never a standing intent.
 // Neither renders a placeholder dash: the empty token slot carried no
 // information and read as a value that failed to load.
 function liveMetaSegments(
   tokens: string | undefined,
   statusText: string,
   quietMs: number | undefined,
-  intent?: string,
+  lead?: MetaSegment,
 ): MetaSegment[] {
-  // A standing intent leads the meta — the row's live action, which a token
-  // count must not displace. Without one, tokens keep displacing the bare
+  // A standing intent or a wait leads the meta — the row's live action, which a
+  // token count must not displace. Without one, tokens keep displacing the bare
   // status word exactly as before.
-  if (intent) {
-    const segments: MetaSegment[] = [{ key: "intent", text: intent }];
+  if (lead) {
+    const segments: MetaSegment[] = [lead];
     if (tokens) segments.push({ key: "tokens", text: tokens });
     if (quietMs !== undefined) segments.push({ key: "quiet", text: compactDuration(quietMs), tone: "quiet" });
     return segments;
@@ -202,16 +203,20 @@ function delegateMetaSegments(row: ActivityDelegateRow, now: number): MetaSegmen
   // word: the row's aria-description keeps the word and the dot below keeps
   // the state, so the status stays reachable and the hue stays true.
   const work = delegateWorkText(delegate, rowStatusText(row));
-  if (row.live)
-    return liveMetaSegments(
-      tokens ?? undefined,
-      work,
-      timing.quietForMs,
-      // A delegate held open by its own running job leads with that wait: its
-      // stated intent stopped moving for the whole hold, so the intent would
-      // name work the row is no longer waiting on.
-      delegateWaitText(delegate) || delegateStatedIntent(delegate) || undefined,
-    );
+  if (row.live) {
+    // A delegate held open by its own running job leads with that wait: its
+    // stated intent stopped moving for the whole hold, so the intent would name
+    // work the row is no longer waiting on. The wait keeps its OWN key: it is
+    // not an intent the row stated, and the name-priority rule keys on a stated
+    // intent (RowSegments below), so lending it that key would hand name
+    // priority to a row that never stated one - starving the wait and the
+    // timing on exactly the narrow rows this rule exists to protect.
+    const stated = delegateStatedIntent(delegate);
+    const wait = delegateWaitText(delegate);
+    const lead: MetaSegment | undefined =
+      wait !== "" ? { key: "wait", text: wait } : stated !== "" ? { key: "intent", text: stated } : undefined;
+    return liveMetaSegments(tokens ?? undefined, work, timing.quietForMs, lead);
+  }
   const segments: MetaSegment[] = [];
   if (tokens) segments.push({ key: "tokens", text: tokens });
   segments.push(terminalSegment(timing.durationMs, work));
@@ -233,8 +238,11 @@ function RowSegments({ segments }: { segments: MetaSegment[] }): ReactNode {
   return (
     // data-intent says "this row displays a stated intent". The intent yields
     // to the name only where it exists: a row with no stated intent shows
-    // ordinary status and timing, and those must not be starved by a rule
-    // meant to arbitrate between a name and an intent that is not there.
+    // ordinary status, timing or its wait on a running job, and none of those
+    // may be starved by a rule meant to arbitrate between a name and an intent
+    // that is not there. That is why the wait carries its own segment key
+    // (delegateMetaSegments): a wait is the row's state, not something it
+    // stated, so it must not trigger the name's priority.
     <span className={CLASS.denseMeta} data-intent={segments.some((s) => s.key === "intent") ? "true" : undefined}>
       {segments.map((segment, index) => (
         <Fragment key={segment.key}>

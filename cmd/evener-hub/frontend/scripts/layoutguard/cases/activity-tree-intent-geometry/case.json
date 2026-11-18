@@ -52,6 +52,13 @@
       "labelChars": 160
     },
     {
+      "id": "320-0-long-intent",
+      "width": 320,
+      "depth": 0,
+      "label": "inspect",
+      "labelChars": 160
+    },
+    {
       "id": "360-0",
       "width": 360,
       "depth": 0,

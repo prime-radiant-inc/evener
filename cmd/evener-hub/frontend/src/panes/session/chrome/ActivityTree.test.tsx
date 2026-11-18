@@ -697,6 +697,44 @@ describe("ActivityTree", () => {
     expect(row.querySelector("[data-state]")).toBeNull();
   });
 
+  // The name-priority rule is scoped to rows that DISPLAY a stated intent
+  // (activitypanel.module.css's `:has(.denseMeta[data-intent="true"])`). A
+  // delegate held open by its own running job shows a WAIT there instead -
+  // work it is waiting on, not work it stated - so the wait must not hand the
+  // name priority, or the wait and the timing are starved on exactly the
+  // narrow rows the rule exists to protect. Both directions are pinned here:
+  // a wait alone must not set the attribute, and a stated intent still must.
+  test("a wait on a running job does not grant the name priority a stated intent does", () => {
+    // Held open by its own shell job, with no intent of its own.
+    const waiting = intentDelegateTree(
+      {
+        delegateId: "dlg_waiting",
+        latestIntent: undefined,
+        drainHeldByJobs: true,
+        runningJobCount: 1,
+      },
+      { active: 1, failed: 0, completed: 0, complete: false },
+    );
+    const first = render(<ActivityTree tree={waiting} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
+    const waitingRow = screen.getByRole("treeitem", { name: "inspect" });
+    // The wait is displayed rather than starved, and it does not claim to be
+    // an intent the row stated. Compared by presence, not by production copy.
+    expect(metaText(waitingRow).trim()).not.toBe("");
+    expect(waitingRow.querySelector("[class*='denseMeta']")?.getAttribute("data-intent")).toBeNull();
+    first.unmount();
+
+    // The same row with nothing holding it: its stated intent is displayed,
+    // and that is what earns the name its priority.
+    const stated = intentDelegateTree(
+      { delegateId: "dlg_stated", latestIntent: "Reading the board." },
+      { active: 1, failed: 0, completed: 0, complete: false },
+    );
+    render(<ActivityTree tree={stated} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
+    const statedRow = screen.getByRole("treeitem", { name: "inspect" });
+    expect(metaText(statedRow)).toContain("Reading the board.");
+    expect(statedRow.querySelector("[class*='denseMeta']")?.getAttribute("data-intent")).toBe("true");
+  });
+
   test("a terminal delegate row keeps its status word over a stale intent", () => {
     const tree = intentDelegateTree(
       {
