@@ -3,6 +3,8 @@ package llm
 import (
 	"bytes"
 	"encoding/json"
+	"encoding/json/jsontext"
+	jsonv2 "encoding/json/v2"
 )
 
 type toolCallFields ToolCallData
@@ -27,14 +29,14 @@ func (tc ToolCallData) MarshalJSON() ([]byte, error) {
 	return json.Marshal(record)
 }
 
-// UnmarshalJSON restores the original spelling only for the same structured
+// UnmarshalJSONFrom restores the original spelling only for the same structured
 // argument value. A missing or inconsistent companion leaves arguments intact.
-func (tc *ToolCallData) UnmarshalJSON(data []byte) error {
+func (tc *ToolCallData) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
 	record := struct {
 		*toolCallFields
 		ArgumentBytes json.RawMessage `json:"arguments_bytes"`
 	}{toolCallFields: (*toolCallFields)(tc)}
-	if err := json.Unmarshal(data, &record); err != nil {
+	if err := jsonv2.UnmarshalDecode(dec, &record); err != nil {
 		return err
 	}
 	if len(record.ArgumentBytes) == 0 || len(tc.Arguments) == 0 || tc.RawArguments != "" {
