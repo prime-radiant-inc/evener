@@ -319,11 +319,6 @@ type turnExecution struct {
 	settled   bool
 	merged    []appwire.ThreadItem
 	mergedGrp []int
-	// mergedEntry is, per merged item, the awaiting entry whose recorded parts
-	// announced its call. A completion resolves against THESE, never against a
-	// bare call-id match: a retry that reuses an id is a different
-	// announcement, and the index settles per announcing entry (#1166 review).
-	mergedEntry []int
 	// callIndex is, per announcing entry and call id, the merged item a result
 	// settled. Settlement and the completion fold both read THIS table: one
 	// statement of "which item a call owns" rather than a copy each.
@@ -341,7 +336,7 @@ func (ex *turnExecution) settle() {
 		return
 	}
 	ex.settled = true
-	ex.merged, ex.mergedGrp, ex.mergedEntry, ex.callIndex = mergeExecutionItems(ex.items, ex.itemEntries, ex.itemAnnounce, ex.groupOfItem)
+	ex.merged, ex.mergedGrp, ex.callIndex = mergeExecutionItems(ex.items, ex.itemEntries, ex.itemAnnounce, ex.groupOfItem, ex.entriesByIndex)
 	ex.interruptAwaitedCalls()
 	seen := make(map[int]bool, len(ex.runs))
 	for _, group := range ex.mergedGrp {
@@ -904,6 +899,35 @@ type awaitKey struct {
 	call  string
 }
 
+// recordedPart reports which content part an entry reserves for a call id, and
+// whether the entry records that id at all.
+func recordedPart(entries map[int]schema.Turn, entry int, callID string) (int, bool) {
+	turn, ok := entries[entry]
+	if !ok {
+		return 0, false
+	}
+	part, recorded := ReservedCalls(&turn)[callID]
+	return part, recorded
+}
+
+// partProjectsItem reports whether the part an entry reserves for a call yields
+// a projected item. A communicate call does not: its message is rendered from
+// the paired result, which is what lets live and reload agree on a call the
+// assistant entry alone cannot describe. Reading the part rather than the item
+// stream is the difference between reserving what the entry recorded and
+// reserving whatever happened to project (#1166 review).
+func partProjectsItem(entries map[int]schema.Turn, entry, part int) bool {
+	turn, ok := entries[entry]
+	if !ok || part < 0 || part >= len(turn.Message.Content) {
+		return false
+	}
+	content := turn.Message.Content[part]
+	if content.Kind != llm.ContentToolCall || content.ToolCall == nil {
+		return false
+	}
+	return content.ToolCall.Name != "communicate"
+}
+
 func ReservedCalls(entry *schema.Turn) map[string]int {
 	if entry == nil {
 		return nil
@@ -1010,10 +1034,9 @@ func mergeGroupedItems(items []appwire.ThreadItem, itemEntries []int, itemAnnoun
 //     recorded, wherever in the execution that announcement sits, so a
 //     delivery that splits the turn cannot orphan the result;
 //   - a result whose call the execution never announced projects on its own.
-func mergeExecutionItems(items []appwire.ThreadItem, itemEntries []int, itemAnnounce []bool, groupOfItem []int) ([]appwire.ThreadItem, []int, []int, map[awaitKey]int) {
+func mergeExecutionItems(items []appwire.ThreadItem, itemEntries []int, itemAnnounce []bool, groupOfItem []int, entries map[int]schema.Turn) ([]appwire.ThreadItem, []int, map[awaitKey]int) {
 	merged := make([]appwire.ThreadItem, 0, len(items))
 	mergedGrp := make([]int, 0, len(items))
-	mergedEntry := make([]int, 0, len(items))
 	// callIndex keys an announcement by its awaiting entry and call id, which
 	// is how the index decides what a result settles. The FIRST announcement
 	// for a key owns it: a second part recording the same id is a distinct
@@ -1032,12 +1055,25 @@ func mergeExecutionItems(items []appwire.ThreadItem, itemEntries []int, itemAnno
 		if MergesByCallID(item) {
 			if at < len(itemAnnounce) && itemAnnounce[at] {
 				key := awaitKey{entry: entry, call: item.CallID}
+				// The reservation belongs to a recorded PART, not to whichever
+				// item carries the id: ReservedCalls names the part a result
+				// settles. When that part projects no item — a communicate call
+				// is deferred to its result — the reservation has no item here,
+				// so a LATER part reusing the id is a visible announcement of its
+				// own and the result stays standalone. Reserving from projected
+				// items instead did the opposite: it gave the hidden part's
+				// reservation to the visible command and let a result overwrite
+				// it, while the index left the command untouched (#1166 review).
+				if reservedPart, announced := recordedPart(entries, entry, item.CallID); announced && !partProjectsItem(entries, entry, reservedPart) {
+					merged = append(merged, item)
+					mergedGrp = append(mergedGrp, group)
+					continue
+				}
 				if _, claimed := callIndex[key]; !claimed {
 					callIndex[key] = len(merged)
 				}
 				merged = append(merged, item)
 				mergedGrp = append(mergedGrp, group)
-				mergedEntry = append(mergedEntry, entry)
 				continue
 			}
 			key := awaitKey{entry: entry, call: item.CallID}
@@ -1056,9 +1092,8 @@ func mergeExecutionItems(items []appwire.ThreadItem, itemEntries []int, itemAnno
 		}
 		merged = append(merged, item)
 		mergedGrp = append(mergedGrp, group)
-		mergedEntry = append(mergedEntry, entry)
 	}
-	return merged, mergedGrp, mergedEntry, callIndex
+	return merged, mergedGrp, callIndex
 }
 
 // MergeThreadItems merges a later projected item into an earlier one of

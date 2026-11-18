@@ -1113,15 +1113,20 @@ func TestReopenKeepsTheInterruptedCall(t *testing.T) {
 			reopened.Status, appwire.TurnStatusInProgress)
 	}
 	// The retry's own item belongs to the reopened turn, not to a new gap turn.
+	// It is identified by the stable id its source entry gives it — entry 5 of
+	// the transcript, which is the assistant entry after the reopen marker —
+	// never by its text: wording is the writer's to change, and an assertion on
+	// it measures the fixture rather than the grouping.
+	const retryItemID = "item_assistant_5_0"
 	var retry bool
 	for i := range reopened.Items {
-		if reopened.Items[i].Text == "trying again" {
+		if reopened.Items[i].ID == retryItemID {
 			retry = true
 		}
 	}
 	if !retry {
-		t.Errorf("reopened turn items = %+v, want the retry's item in it: PlaceSession must join the reopened turn",
-			reopened.Items)
+		t.Errorf("reopened turn items = %+v, want item %q in it: PlaceSession must join the reopened turn",
+			reopened.Items, retryItemID)
 	}
 }
 
@@ -1648,5 +1653,88 @@ func TestCompletionInterruptsOnlyTheReservedPart(t *testing.T) {
 	if unreserved.Status != appwire.TurnStatusInProgress {
 		t.Errorf("unreserved part status = %q, want %q: nothing answered it",
 			unreserved.Status, appwire.TurnStatusInProgress)
+	}
+}
+
+// TestHiddenReservationDoesNotClaimAVisibleReuse covers one assistant entry
+// that records a communicate call and then a visible tool call sharing its
+// provider id. The communicate part projects no item of its own — its message
+// is rendered from the paired result — so the entry's RESERVED part is the
+// hidden one, and that is what the index reserves (ReservedCalls, shared by
+// both readers). Reserving from the projected items instead gave the
+// reservation to the visible command, and a later named result then settled the
+// visible call while the index left it untouched: two readers disagreeing about
+// one call, reached without any duplicate entry (#1166 review).
+func TestHiddenReservationDoesNotClaimAVisibleReuse(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "hidden_reservation"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := func(turn schema.Turn, place transcript.Placement) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: place}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	// One provider id, two parts: the first is a communicate (which projects no
+	// item), the second a visible read_file with the same id.
+	hidden := llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+		ID: "call_shared", Name: "communicate", Arguments: json.RawMessage(`{"message":"hi"}`),
+	}}
+	visible := llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+		ID: "call_shared", Name: "read_file", Arguments: json.RawMessage(`{"path":"a"}`),
+	}}
+	w.BeginExecution("t_hidden", false)
+	record(schema.NewTurn(schema.TurnUserInput, llm.User("go")), transcript.PlaceSession)
+	record(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{
+		Role: llm.RoleAssistant, Content: []llm.ContentPart{hidden, visible},
+	}}, transcript.PlaceSession)
+	// The result for that id settles the entry's RESERVED part, which is the
+	// hidden communicate. The visible read_file announcement was never
+	// reserved, so nothing answered it.
+	record(schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{
+		Role: llm.RoleTool,
+		Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
+			ToolCallID: "call_shared", Name: "read_file", Content: "a",
+		}}},
+	}}, transcript.PlaceSession)
+	record(schema.Turn{Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}}, transcript.PlaceCompletion)
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	// The visible announcement is its own item and stays in progress: the
+	// reservation belonged to the hidden part, so no result and no completion
+	// may settle or interrupt it.
+	// The announcement is the item the entry's part 2 projected; the result is
+	// a separate item with its own id. Selecting by call id alone would find
+	// either one, so this matches the announcement's own id.
+	const announcementID = "item_tool_2_1"
+	var command *appwire.ThreadItem
+	for _, turn := range turns {
+		if turn.ID != "t_hidden" {
+			continue
+		}
+		for i := range turn.Items {
+			if turn.Items[i].ID == announcementID && turn.Items[i].CallID == "call_shared" {
+				command = &turn.Items[i]
+			}
+		}
+	}
+	if command == nil {
+		t.Fatalf("full read turns = %+v, want the visible announcement %q kept", shapesFromTurns(turns), announcementID)
+	}
+	if command.Status != appwire.TurnStatusInProgress {
+		t.Errorf("visible announcement status = %q, want %q: the entry reserved its hidden part, so nothing answered the command",
+			command.Status, appwire.TurnStatusInProgress)
 	}
 }
