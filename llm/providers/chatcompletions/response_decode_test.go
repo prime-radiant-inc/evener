@@ -196,6 +196,15 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 			}
 		}
 	}
+	checkDisabled := func(t *testing.T, msg llm.Message) {
+		t.Helper()
+		res := resolved(nil)
+		res.Caps = registry.Caps{Reasoning: new(false), ReplayReasoningText: new(true)}
+		out := build(t, llm.Request{Model: "m", Messages: []llm.Message{msg}}, res)["messages"].([]map[string]any)
+		if len(out) != 0 {
+			t.Fatalf("disabled destination received %d messages for a reasoning-only reply, want none", len(out))
+		}
+	}
 	tests := []struct {
 		name, scalarField, scalar, display string
 		details                            []any
@@ -242,6 +251,7 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 					if source := saved.Content[0].Thinking.ChatScalar; tt.scalar == tt.display && source != nil && source.Text != "" {
 						t.Fatal("persisted scalar duplicates its display text")
 					}
+					checkDisabled(t, saved)
 					req := llm.Request{Model: "m", Messages: []llm.Message{saved}}
 					for _, route := range []struct {
 						caps        registry.Caps
@@ -251,12 +261,15 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 						{registry.Caps{ReplayReasoningText: new(true), ReasoningField: new("reasoning_content")}, "reasoning_content", tt.scalar},
 						{registry.Caps{ReplayReasoningText: new(true), ReasoningField: new("reasoning_details")}, "reasoning_details", tt.display},
 						{registry.Caps{}, "reasoning_content", tt.display},
-						{registry.Caps{Reasoning: new(false), ReplayReasoningText: new(true)}, "content", ""},
 						{registry.Caps{ReplayReasoningText: new(true), ThinkingAsText: new(true)}, "content", tt.display},
 					} {
 						res := resolved(nil)
 						res.Caps = route.caps
-						msg := build(t, req, res)["messages"].([]map[string]any)[0]
+						messages := build(t, req, res)["messages"].([]map[string]any)
+						if len(messages) != 1 || messages[0]["role"] != "assistant" {
+							t.Fatalf("%s replay = %v, want one assistant message", route.field, messages)
+						}
+						msg := messages[0]
 						if route.field == "reasoning_details" {
 							details, _ := msg[route.field].([]map[string]any)
 							if jsonOf(t, details) != jsonOf(t, tt.details) {
@@ -443,6 +456,7 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 					if err := json.Unmarshal([]byte(jsonOf(t, resp.Message)), &saved); err != nil {
 						t.Fatal(err)
 					}
+					checkDisabled(t, saved)
 					if tc.scalar != "" && tc.scalar == tc.detail {
 						if len(saved.Content) != 1 || saved.Content[0].Thinking == nil {
 							t.Fatalf("signed mirror settled as %#v", saved.Content)
@@ -474,19 +488,17 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 						}
 					}
 					if tc.scalar != "" && tc.scalar == tc.detail {
-						for _, caps := range []registry.Caps{{}, {ReplayReasoningText: new(false)}, {Reasoning: new(false), ReplayReasoningText: new(true)}} {
+						for _, caps := range []registry.Caps{{}, {ReplayReasoningText: new(false)}} {
 							out, err := toChatMessages([]llm.Message{saved}, caps, false)
 							if err != nil {
 								t.Fatal(err)
 							}
-							checkScalar(t, out[0], "", "")
-							details, _ := out[0]["reasoning_details"].([]map[string]any)
-							wantDetails := 1
-							if caps.ReasoningDisabled() {
-								wantDetails = 0
+							if len(out) != 1 || out[0]["role"] != "assistant" {
+								t.Fatalf("unenrolled replay = %v, want one signed assistant message", out)
 							}
-							if len(details) != wantDetails {
-								t.Errorf("unenrolled replay = %#v", out[0])
+							checkScalar(t, out[0], "", "")
+							if got := jsonOf(t, out[0]["reasoning_details"]); got != wantSigned {
+								t.Errorf("unenrolled signed detail = %s, want %s", got, wantSigned)
 							}
 						}
 					}
