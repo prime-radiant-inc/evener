@@ -162,30 +162,39 @@ import type { SessionEntryCache } from "./sessionEntryCache";
 import { ShardedMap, shardedMap } from "./shardedMap";
 import { resetTasksPanelStoreForTests } from "./tasksPanel";
 import {
+  attachForegroundHold,
   backgroundHeldRefs,
   backgroundHolds,
   backgroundLeaseSequence,
+  bodyOwners,
   bumpOwnerGeneration,
   canonicalThreadOwnerActive,
   clearFinalReleaseOwner,
+  type ForegroundHold,
+  foregroundHeldRefs,
+  foregroundHoldStanding,
   foregroundHolds,
   hasFinalReleaseOwner,
   heldCountsAtStore,
   holdBackground,
-  holdForeground,
+  holdBodyOwnership,
   holdHistory,
   isFinalReleaseOwner,
   isMutationPinned,
+  mintForegroundHold,
   mutationPinnedRefs,
   nextBackgroundLeaseSequence,
   ownedOnlyByMutationPin,
   ownerGeneration,
   pinMutation,
   releaseBackground,
+  releaseBodyOwnership,
   releaseForeground,
+  releaseForegroundHold,
   releaseHistory,
   resetThreadOwnersForTests,
   setFinalReleaseOwner,
+  threadBodyOwned,
   unpinMutation,
 } from "./threadOwners";
 import { appendFrameTime, isStorageFailure, isStorageTimeout, mapConflict, StopCanceledError } from "./threadsErrors";
@@ -393,7 +402,26 @@ export interface ThreadsStoreState {
    * that arrived while the clear was in flight. undefined when no clear is
    * in flight. */
   clearInFlight: number | undefined;
-  ensureThread(ref: string): Promise<void>;
+  // routingOnly takes the keep-alive hold and returns on a resident
+  // authoritative model without claiming its transcript bodies or waiting for
+  // their restoration. A caller that routes - it reads the destination's
+  // identity, status and capabilities, not its bodies - must not become the
+  // reader a later pane defers to, and must not be held behind a body read.
+  /** `onHold` receives this acquisition's handle the moment the hold exists,
+   * before hydration finishes. A holder whose release can arrive while the
+   * hydration is still pending - a pane that unmounts, a resend's lease - must
+   * keep that handle and release it rather than naming a ref later: by then
+   * another lifecycle's hold can be the newest one standing. */
+  // `retainThroughHistoryDiagnostic` is accepted but NOT honoured here: the
+  // end it names (a mounted pane keeping its hold through the hub's history
+  // diagnostic so a later read repairs it) belongs to the refusal face, which
+  // this change does not land. Accepting it keeps the call shape stable for the
+  // pane hook that asks; a failed acquisition rolls its own hold back exactly
+  // as main does, so no count is stranded either way.
+  ensureThread(
+    ref: string,
+    opts?: { routingOnly?: boolean; onHold?: (hold: ForegroundHold) => void; retainThroughHistoryDiagnostic?: boolean },
+  ): Promise<void>;
   // beforePublish, when given, is evaluated synchronously immediately before
   // this refresh publishes its snapshot. A throw cancels the read's result so
   // a canceled action never republishes over newer authoritative state.
@@ -405,7 +433,15 @@ export interface ThreadsStoreState {
   // settles; a failure is published to resumeFailures rather than thrown, and
   // the identity-follow effect carries the draft and navigates.
   resumeSession(ref: string): Promise<void>;
-  releaseThread(ref: string): void;
+  // routingOnly names a release whose acquisition was routing-only: it drops
+  // the keep-alive hold without spending a body-ownership count it never took.
+  releaseThread(ref: string, opts?: { routingOnly?: boolean }): void;
+  /** Releases the hold this handle names. Idempotent with the holder's own
+   * unmount release: a handle already released has nothing left to drop, so
+   * neither exit can spend a neighbouring lifecycle's hold. */
+  releaseThreadHold(hold: ForegroundHold): void;
+  /** The retirement work both release shapes run once a hold has been dropped. */
+  releaseThreadAfterHoldDrop(ref: string, count: number): void;
   releaseThreadAndWait(ref: string): Promise<TranscriptRetirementOutcome | undefined>;
   // Additive, leaner subscription to a child thread for a delegate card's
   // row's live view (see this file's own doc comment). opts.includeTurns
@@ -666,7 +702,9 @@ async function endHistoryHold(ref: string): Promise<void> {
 }
 
 function hydrationIntentFor(ref: string): HydrationIntent {
-  return foregroundHolds(ref) > 0 || isMutationPinned(ref) ? "foreground" : "background";
+  // Body owners, not keep-alive holders: a routing hold never owns the bodies a
+  // foreground refresh restores.
+  return bodyOwners(ref) > 0 || isMutationPinned(ref) ? "foreground" : "background";
 }
 // A generation changes at every local human-note request and every accepted
 // notes authority (a matching evener/notes/updated or full hydration). Same
@@ -702,7 +740,13 @@ function isFallbackInvalidatingPush(method: string): boolean {
 class InflightHydrations {
   readonly #entries = new Map<
     string,
-    { promise: Promise<ThreadModel | null>; client: AppwireClientLike; epoch: number; includeTurns: boolean }
+    {
+      promise: Promise<ThreadModel | null>;
+      client: AppwireClientLike;
+      epoch: number;
+      includeTurns: boolean;
+      routing: boolean;
+    }
   >();
 
   get(ref: string): Promise<ThreadModel | null> | undefined {
@@ -720,6 +764,30 @@ class InflightHydrations {
   includeTurns(ref: string): boolean {
     return this.#entries.get(ref)?.includeTurns ?? false;
   }
+  // Whether the read in flight for this ref exists to verify routing state for
+  // a caller that routes, rather than to open a pane. A routing read publishes
+  // authoritative routing state but no pane bodies, so a pane opening over it
+  // still owes its own bounded local lookup; a pane's read owns that lookup and
+  // the pane joins it instead.
+  routing(ref: string): boolean {
+    return this.#entries.get(ref)?.routing ?? false;
+  }
+  // A read is pane-backed once any explicit pane open of the ref stands behind
+  // it. A routing claim's retry is registered by machinery that never opened
+  // the cache, so it carries no pane and must not stand in for one: the pane
+  // opening over it still owes the lookup, and adopts the same read for its
+  // source answer rather than spending a second read beside it.
+  markPaneBacked(ref: string): void {
+    const entry = this.#entries.get(ref);
+    if (entry) entry.routing = false;
+  }
+  // A pane that leaves before the lookup it marked can publish never spent that
+  // lookup, so the registration goes back to meaning what it did before the
+  // pane arrived: a read that verifies routing state and owes no cached open.
+  clearPaneBacked(ref: string, registration: Promise<ThreadModel | null> | undefined): void {
+    const entry = this.#entries.get(ref);
+    if (entry && entry.promise === registration) entry.routing = true;
+  }
   // The entry leaves when its own read settles, unless a newer read has
   // replaced it since.
   start(
@@ -728,8 +796,9 @@ class InflightHydrations {
     client: AppwireClientLike,
     epoch: number,
     includeTurns = false,
+    routing = false,
   ): void {
-    this.#entries.set(ref, { promise, client, epoch, includeTurns });
+    this.#entries.set(ref, { promise, client, epoch, includeTurns, routing });
     void promise
       .finally(() => {
         if (this.#entries.get(ref)?.promise === promise) this.#entries.delete(ref);
@@ -791,7 +860,7 @@ async function runEntryHistoryRequest<T>(
     await residency
       .scheduleHydration(
         fixture.ref,
-        heldCountsAtStore(fixture.ref) ? "foreground" : "background",
+        threadBodyOwned(fixture.ref) ? "foreground" : "background",
         async (scheduledSignal) => {
           activated = true;
           if (!current() || scheduledSignal.aborted) throw new Error("entry history request was retired");
@@ -1070,7 +1139,7 @@ async function acceptEntryTranscriptHydration(
   const repository = fixture.repository;
   fixture.cachedUnverified = false;
   fixture.unsubscribeRepository ??= repository.subscribe(() => publishEntryTranscriptModel(ref));
-  if (productionRoute && heldCountsAtStore(ref) && !fixture.reader) fixture.reader = repository.attachReader();
+  if (productionRoute && threadBodyOwned(ref) && !fixture.reader) fixture.reader = repository.attachReader();
   if (productionRoute && authorities && lifetime?.freshForegroundLifetime) settleCacheLifetimeAfterHydration(ref);
   const adoptedRead = repository.acceptRead(response, {
     lifetime: fixture.lifetime,
@@ -5819,7 +5888,9 @@ function ensureCacheLease(ref: string): void {
 // pre-clear holders release, the next explicit foreground acquisition is fresh;
 // background churn and reconnect never make one.
 function syncCacheLifetimeForeground(ref: string): void {
-  const nowHeld = heldCountsAtStore(ref);
+  // Body-owned, not keep-alive: a routing hold must not look like a pre-Clear
+  // holder whose release opens the next acquisition's fresh lifetime.
+  const nowHeld = threadBodyOwned(ref);
   const wasHeld = cacheLifetimeHeld.get(ref) ?? false;
   cacheLifetimeHeld.set(ref, nowHeld);
   if (wasHeld === nowHeld) return;
@@ -5859,7 +5930,7 @@ function acquireCacheLifetimeForeground(ref: string): void {
 function settleCacheLifetimeAfterHydration(ref: string): void {
   threadsStore.setState((state) => {
     const lifetime = state.cacheLifetimes.get(ref);
-    if (lifetime?.clearSuppressed && lifetime.freshForegroundLifetime && heldCountsAtStore(ref)) {
+    if (lifetime?.clearSuppressed && lifetime.freshForegroundLifetime && threadBodyOwned(ref)) {
       const cacheLifetimes = new Map(state.cacheLifetimes);
       cacheLifetimes.set(ref, { leaseEpoch: observedCacheEpoch() ?? 0 });
       return { cacheLifetimes };
@@ -5875,7 +5946,7 @@ function settleCacheLifetimeAfterHydration(ref: string): void {
 // path is untouched (no clear suppression, no fresh lifetime).
 function needsClearLifetimeReconciliation(ref: string): boolean {
   const lifetime = threadsStore.getState().cacheLifetimes.get(ref);
-  return lifetime?.clearSuppressed === true && lifetime.freshForegroundLifetime === true && heldCountsAtStore(ref);
+  return lifetime?.clearSuppressed === true && lifetime.freshForegroundLifetime === true && threadBodyOwned(ref);
 }
 
 // Final release removes every part of the lifetime, but only after the
@@ -7272,6 +7343,17 @@ function retireOwnedHydration(kind: HydrationOwnerKind, ref: string): void {
   closeOwnedHydration(kind, ref, null);
 }
 
+// Routing state is verified when this ref's route has accepted a source read,
+// or when no production route exists to verify against. The cache lifetime's
+// `shell` marker is not used here: nothing in the tree sets it, and the route's
+// own flag is the one real code maintains. One predicate, because "may this
+// model's identity, status and capabilities be routed on" is asked by the claim
+// that resolves on it and by the read registration that decides whether a
+// waiting claim can join.
+function routingStateVerified(ref: string): boolean {
+  return entryTranscriptRoute(ref)?.cachedUnverified !== true;
+}
+
 // A new client or a new ready epoch owns convergence for every ref: cancel the
 // retries the retired generation scheduled and wake its owners so they re-arm
 // against the current one.
@@ -7593,6 +7675,10 @@ async function handleReady(
     : new Set([
         ...threadsStore.getState().threads.keys(),
         ...pendingThreadHydrations.keys(),
+        // A mounted pane whose first read the hub refused keeps its ref with no
+        // model to show for it, and a later read is what repairs it - so the
+        // fan-out cannot be limited to refs that published.
+        ...foregroundHeldRefs(),
         ...backgroundHeldRefs(),
         ...mutationPinnedRefs(),
       ]);
@@ -8193,9 +8279,24 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     });
   },
 
-  async ensureThread(ref) {
+  async ensureThread(ref, opts) {
     let client = requireClient();
+    const routingOnly = opts?.routingOnly === true;
+    // A routing claim on a destination the deletion fence already covers has no
+    // hold to take: the answer is "not routable" before any count or claim
+    // exists, so the rejection cannot strand a lease for a lifecycle that never
+    // received one. Asked here, before this call's own hold, because a
+    // rejection after the increment reaches the caller as a failed acquisition
+    // whose rollback already ran - and nothing is left to release it.
+    if (routingOnly && threadsStore.getState().deletedRefs.has(ref)) {
+      throw new Error("The destination was deleted before its routing state was verified");
+    }
     const count = foregroundHolds(ref);
+    // The pane-only count, also read before this call's own hold: a history
+    // hold or a mutation pin keeps the ref alive after a Clear but is not the
+    // first pane open, and must not stop that pane from beginning the fresh
+    // lifetime its read needs to resume cached writes.
+    const paneBodyOwners = bodyOwners(ref);
     if (count === 0) {
       ensureGenerations.set(ref, (ensureGenerations.get(ref) ?? 0) + 1);
       beginCanonicalThreadClaim(ref, true);
@@ -8203,17 +8304,61 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       ensureCacheLease(ref);
     }
     const generation = ensureGenerations.get(ref) ?? 0;
-    holdForeground(ref);
+    // This acquisition's handle. Both exits below release it and nothing else:
+    // the caller that unmounts mid-hydration and the rollback that runs when the
+    // hydration fails each name the same hold, so whichever runs second finds it
+    // already released and drops nothing. That is why no exit has to ask "is the
+    // standing count mine" - by construction it can only be this handle's.
+    const hold = mintForegroundHold(ref, routingOnly);
+    attachForegroundHold(hold);
+    // The one question every post-await exit below asks. The ref's count cannot
+    // answer it: a routing lease keeps the count positive after the pane that
+    // took it has left, so a retired pane would pass a count check and go on
+    // doing pane work - recovering a baseline, certifying a transcript - over a
+    // replacement pane's restore. The handle names one hold, so standing means
+    // this acquisition is still the live one, whatever else holds the ref.
+    const claimStanding = (): boolean => ensureGenerations.get(ref) === generation && foregroundHoldStanding(hold);
+    // Handed out here, not when the hydration settles: a caller that unmounts
+    // or gives up before then still owns this handle, and releasing a ref later
+    // would name whichever hold is newest by that point instead of this one.
+    opts?.onHold?.(hold);
+    if (!routingOnly) holdBodyOwnership(ref);
     syncTranscriptResidencyOwners(ref);
-    if (count === 0) acquireCacheLifetimeForeground(ref);
+    // Retention alone grants no write permission: only an explicit pane open
+    // begins the fresh foreground lifetime that lifts a Clear's suppression.
+    // The pane-only count as it stood BEFORE this call's own hold, not the
+    // total foreground count: a routing hold already standing here must not be
+    // what decides this pane's lifetime is not the fresh one, and neither must
+    // a history hold or mutation pin, which keep the ref alive after a Clear
+    // without being a pane.
+    if (paneBodyOwners === 0 && !routingOnly) acquireCacheLifetimeForeground(ref);
     syncThreadSubscription(ref, client);
+    // A routing hold needs verified routing state and nothing else: identity,
+    // status and capabilities from a model whose read has landed. A resident
+    // verified model answers it here - no transcript open, no cached lookup and
+    // no post-Clear reconciliation, all of which are the pane's work and each
+    // of which can block on storage or a reconnect. Owning the hold is what
+    // makes this a claim rather than a check: the count is already taken above,
+    // so the pane that tracks this model cannot retire it out from under the
+    // resend between this question and the caller's write.
+    //
+    // A resident model is not enough on its own: it can be real and the
+    // destination can be gone. A deleted destination is not a verified one -
+    // the read that settled the ref answered it as absent, not as routable - so
+    // the claim rejects and its rollback drops exactly the count it took.
+    if (routingOnly && threadsStore.getState().threads.has(ref) && routingStateVerified(ref)) {
+      if (threadsStore.getState().deletedRefs.has(ref)) {
+        throw new Error("The destination was deleted before its routing state was verified");
+      }
+      return;
+    }
     // Already hydrated: no re-read. The exception is a clear-suppressed ref
     // whose new explicit foreground lifetime owes an authoritative hydration
     // even while its stale display model is still resident.
-    if (threadsStore.getState().threads.has(ref) && !needsClearLifetimeReconciliation(ref)) {
-      if (count > 0) return; // Another mounted reader already owns the live bodies.
+    if (threadsStore.getState().threads.has(ref) && !needsClearLifetimeReconciliation(ref) && !routingOnly) {
+      if (bodyOwners(ref) > 1) return; // Another mounted pane already owns the live bodies.
       if (await openEntryTranscript(ref)) return;
-      if (ensureGenerations.get(ref) !== generation || foregroundHolds(ref) <= 0) return;
+      if (!claimStanding()) return;
       // Missing or unwritten backing rows cannot establish the captured view.
       // Retire the held source proof so recovery asks for a complete baseline.
       entryTranscriptRoute(ref)?.repository?.beginFreshBaseline();
@@ -8242,14 +8387,38 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // bounded by its own 250 ms deadline. The creator alone publishes and
     // arms; a joiner sees the shell (threads.has) or the hydration
     // (inflightHydrates) and joins that instead.
-    if (!threadsStore.getState().threads.has(ref) && !inflightHydrates.has(ref)) {
-      await openCachedEntryTranscript(ref, generation);
-      if (
-        foregroundHolds(ref) === 0 ||
-        ensureGenerations.get(ref) !== generation ||
-        threadsStore.getState().deletedRefs.has(ref)
-      )
+    // A routing claim skips the cached-transcript open: it routes on identity,
+    // status and capabilities, and that open attaches a reader and can spend a
+    // body-restoring read in front of its outbox write. The shell the open
+    // would publish is for a pane, so a claim reads directly instead.
+    //
+    // A PANE opening over a claim's read still owes that lookup. The claim's
+    // read verifies routing state and publishes no pane bodies, so `has(ref)`
+    // being true here says a model exists, not that a pane may show what the
+    // cache holds: skipping the lookup for the claim's registration is what
+    // left the opening pane blank over a usable cached copy. A pane's own read
+    // is a different registration and still owns its lookup - the pane joins it
+    // rather than spending a second local open beside it.
+    const routedByClaim = inflightHydrates.has(ref) && inflightHydrates.routing(ref);
+    if (!routingOnly && !threadsStore.getState().threads.has(ref) && (!inflightHydrates.has(ref) || routedByClaim)) {
+      // A pane opening over a routing claim's read owns the local lookup that
+      // read never performed. From here the registration has a pane behind it,
+      // so a second pane opening joins it instead of opening the cache again.
+      if (routedByClaim) inflightHydrates.markPaneBacked(ref);
+      const backedRegistration = inflightHydrates.get(ref);
+      if (!claimStanding()) {
+        inflightHydrates.clearPaneBacked(ref, backedRegistration);
         return;
+      }
+      await openCachedEntryTranscript(ref, generation);
+      if (threadsStore.getState().deletedRefs.has(ref)) return;
+      // Again after the await: the attachment and the publication above run
+      // inside the lookup, so a departure during it must not arm the recovery
+      // or the hydration that follows.
+      if (!claimStanding()) {
+        inflightHydrates.clearPaneBacked(ref, backedRegistration);
+        return;
+      }
     }
     let cachedBase: ThreadModel | undefined = threadsStore.getState().threads.get(ref);
 
@@ -8299,7 +8468,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       // excludes this registration from its wait (see exceptRegistration), so
       // the certification still promotes rather than self-certifying.
       registerHydrationSettlement(ref, hydration);
-      inflightHydrates.start(ref, hydration, hydrationClient, hydrationEpoch);
+      inflightHydrates.start(ref, hydration, hydrationClient, hydrationEpoch, false, routingOnly);
       return hydration;
     };
 
@@ -8339,12 +8508,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           }
         } catch (err) {
           const replacement = inflightHydrates.get(ref);
-          const lifecycleActive = ensureGenerations.get(ref) === generation && foregroundHolds(ref) > 0;
+          const lifecycleActive = claimStanding();
           if (lifecycleActive && replacement && replacement !== inflight) {
             inflight = replacement;
             continue;
           }
-          if (lifecycleActive && threadsStore.getState().threads.has(ref)) {
+          if (lifecycleActive && threadsStore.getState().threads.has(ref) && !routingOnly) {
             // The held model may be the shell a missed open published after
             // fencing its local read: a failed source read must not strand a
             // body-suppressed display on the next successful read. The
@@ -8367,7 +8536,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             // hydration that outlived it. Same shape as the re-arm below and
             // as both of watchThread's.
             client = await requireReadyClient();
-            if (ensureGenerations.get(ref) !== generation || foregroundHolds(ref) <= 0) return;
+            if (!claimStanding()) return;
             inflight = inflightHydrates.get(ref) ?? startHydration(client, getReadyEpoch());
             continue;
           }
@@ -8375,6 +8544,9 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           // because this pane lost the ref. The failed attempt owns one
           // scheduled retry for this owner generation, and every concurrent
           // owner waits on that one lifecycle rather than reading again here.
+          // A routing hold cannot accept presence as verification: the model
+          // standing here may be the shell whose read just failed, so it falls
+          // through to join the retry that is about to verify the destination.
           const owned = ownedThreadHydrations.get(ref);
           if (owned?.generation !== hydrationOwnerGeneration("thread", ref)) throw err;
           await owned.firstHydration;
@@ -8383,12 +8555,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           // attempt on the current client.
         }
 
-        if (foregroundHolds(ref) <= 0) return;
-        if (threadsStore.getState().threads.has(ref)) return;
+        if (!claimStanding()) return;
+        if (threadsStore.getState().threads.has(ref) && (!routingOnly || routingStateVerified(ref))) return;
         if (threadsStore.getState().deletedRefs.has(ref)) return;
 
         client = await requireReadyClient();
-        if (foregroundHolds(ref) <= 0) return;
+        if (!claimStanding()) return;
         // Recheck after the possibly-long ready wait: a deletion fence can
         // land while this loop is waiting out a reconnect, and a ref known
         // deleted must not start another read on becoming ready.
@@ -8407,9 +8579,15 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       // releaseThread() rather than hand-rolling the decrement also means
       // its own <=0 guard already makes this safe if a concurrent
       // releaseThread() consumed this exact claim first.
-      if (ensureGenerations.get(ref) === generation && foregroundHolds(ref) > 0) {
-        threadsStore.getState().releaseThread(ref);
-      }
+      //
+      // It releases the kind this acquisition took, through this acquisition's
+      // own handle: the count standing here is not necessarily this call's - a
+      // pane that closed while the read was in flight already released, and
+      // what remains can be a resend's routing lease. Releasing against the
+      // total, or against the ref, would spend that lease's hold and retire the
+      // model under the press. The handle names one hold, so a rollback whose
+      // holder already released drops nothing.
+      threadsStore.getState().releaseThreadHold(hold);
       throw err;
     }
   },
@@ -8419,12 +8597,54 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     return entryTranscriptRoute(ref)?.retirement;
   },
 
-  releaseThread(ref) {
+  releaseThread(ref, opts) {
+    const routing = opts?.routingOnly === true;
+    // A caller with only a ref to release the newest hold of its kind. Every
+    // holder whose release outlives its own frame carries a handle instead (see
+    // releaseThreadHold); this shape exists for the paired same-frame callers.
+    //
+    // A routing hold is not this shape's to drop. The ref-keyed release names
+    // the NEWEST pane hold, and a pane that unmounts while a resend holds a
+    // routing lease must release the pane's own count rather than the lease's:
+    // spending the lease here would retire the model out from under the resend.
+    const before = foregroundHolds(ref);
+    releaseForeground(ref, routing);
     const count = foregroundHolds(ref);
-    if (count <= 0) return; // never tracked, or already released
-    releaseForeground(ref);
+    if (count === before) return; // nothing of this kind to drop
+    // One release drops exactly what its own acquisition took: a routing hold
+    // never took the bodies, so it must not spend a pane's body count.
+    if (!routing) releaseBodyOwnership(ref);
+    return threadsStore.getState().releaseThreadAfterHoldDrop(ref, count);
+  },
+
+  releaseThreadHold(hold) {
+    const { ref, routing } = hold;
+    // The handle-shaped release. A hold this handle no longer has standing was
+    // already dropped by the other exit that owns it - its pane released on
+    // unmount, or this same rollback ran once - so there is nothing of its own
+    // to drop and the counts standing here belong to another lifecycle. That is
+    // what makes the two exits idempotent instead of a second bookkeeping path
+    // that could double-drop.
+    const before = foregroundHolds(ref);
+    releaseForegroundHold(hold);
+    const count = foregroundHolds(ref);
+    if (count === before) return; // this handle's hold was already gone
+    if (!routing) releaseBodyOwnership(ref);
+    return threadsStore.getState().releaseThreadAfterHoldDrop(ref, count);
+  },
+
+  releaseThreadAfterHoldDrop(ref, count) {
     syncTranscriptResidencyOwners(ref);
-    if (count > 1) return;
+    if (count > 0) {
+      // Another holder keeps the ref alive, so nothing below is this release's
+      // to do — except the bodies. When this was the last body owner, the pane
+      // that owned the display is gone even though a routing lease still holds
+      // the model and the subscription for a resend to dispatch on. Disposing
+      // the reader and pruning keeps the pane's transcript bodies from
+      // outliving the pane that rendered them; the routing fields stay.
+      if (bodyOwners(ref) === 0) releaseEntryTranscriptReader(ref, true);
+      return;
+    }
     const retirement = retireEntryTranscriptIfUnowned(ref);
     if (retirement) {
       releaseSubagentRows(ref);
@@ -9436,7 +9656,7 @@ installEntryRouteHost({
 function onCacheEpochObserved(observed: number): void {
   if (!observeCacheEpoch(observed)) return;
   threadsStore.setState((s) => ({
-    cacheLifetimes: suppressCacheLifetimesBefore(s.cacheLifetimes, observed, heldCountsAtStore),
+    cacheLifetimes: suppressCacheLifetimesBefore(s.cacheLifetimes, observed, threadBodyOwned),
   }));
 }
 
@@ -9628,7 +9848,7 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
   // same set the marker refused during the flight, re-derived at commit so a
   // lease captured mid-flight is covered too.
   threadsStore.setState((s) => {
-    const cacheLifetimes = suppressCacheLifetimesBefore(s.cacheLifetimes, result.epoch, heldCountsAtStore);
+    const cacheLifetimes = suppressCacheLifetimesBefore(s.cacheLifetimes, result.epoch, threadBodyOwned);
     return s.clearInFlight === armed ? { cacheLifetimes, clearInFlight: undefined } : { cacheLifetimes };
   });
   postCacheChannelMessage({ kind: "clear", epoch: result.epoch });
@@ -9674,7 +9894,9 @@ function syncTranscriptResidencyOwners(ref: string): void {
   if (!route?.repository) return;
   // A history or mutation hold owns repository retention, not the lifetime of
   // the already-published display. Pane release drops its display separately.
-  if (heldCountsAtStore(ref)) route.reader ??= route.repository.attachReader();
+  // Body ownership, not the keep-alive count: a routing lease keeps the model
+  // and subscription for dispatch and never reads the bodies.
+  if (threadBodyOwned(ref)) route.reader ??= route.repository.attachReader();
   else if (route.reader) releaseEntryTranscriptReader(ref);
 }
 
