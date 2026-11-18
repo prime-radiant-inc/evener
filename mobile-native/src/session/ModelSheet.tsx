@@ -12,7 +12,7 @@ import { ChoiceRow, ModelPicker } from "../ModelPicker";
 import type { ModelPickerEntry, ModelSection } from "../modelPickerEntries";
 import type { MobileConversation } from "../projectedRows";
 import type { Routes } from "../screens";
-import { type SessionControls, useControlsState } from "../sessionControls";
+import { type SessionControls, type Unread, useControlsState, verifiedSetting } from "../sessionControls";
 import { SearchField } from "../sheet/SearchField";
 import { Segmented } from "../sheet/Grouped";
 import { Sheet } from "../sheet/Sheet";
@@ -21,6 +21,8 @@ import { sheetHosts, sheetKey, useSheetHost } from "../sheet/sheetHosts";
 import type { ToastMessage } from "../Toast";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { effortName } from "./sessionFacts";
+
+const NOTHING_UNREAD: Unread = { model: null, vision: null };
 
 export interface ModelHost {
 	session: MobileConversation;
@@ -77,30 +79,41 @@ function ModelSheetBody({
 	const levels = vision ? [] : sessionEffortLevels(session.reasoningEffortLevels, session.supportsReasoning);
 	const current = vision ? session.visionModel : session.modelProvider;
 	const canChange = vision ? session.capabilities.changeVisionModel : session.capabilities.changeModel;
+	// The rows below decide "already set" by comparing against the session's
+	// projection, and that is only the answer once a read has landed after the
+	// last set. A set the hub acknowledged whose readback could not run leaves
+	// the projection showing the value from before it, so a match there means
+	// "not written yet". The record of the value the hub did take is what says
+	// which of the two a match is.
+	const verified = (setting: "model" | "vision", value: string) =>
+		verifiedSetting(state?.unread ?? NOTHING_UNREAD, setting, value);
 	const error = state?.modelError ?? (state?.lastAction && MODEL_ACTIONS.has(state.lastAction) ? state.error : null);
-	const revealError = () => {
-		// Each refusal reveals the first header row, even when it repeats the
-		// previous message after the user has scrolled away to try again.
-		if (controls?.getSnapshot().error) list.current?.getScrollResponder()?.scrollTo({ y: 0, animated: true });
+	// Each refusal reveals the first header row, even when it repeats the
+	// previous message after the user has scrolled away to try again. The
+	// refusal belongs to the set that dispatched it: a recycle can replace this
+	// sheet's set while the answer is out, and the set that sent the write is
+	// the one that recorded what the hub said.
+	const revealError = (from: SessionControls | null = controls) => {
+		if (from?.getSnapshot().error) list.current?.getScrollResponder()?.scrollTo({ y: 0, animated: true });
 	};
-	const closeOn = (change: Promise<boolean>, then?: () => void) =>
+	const closeOn = (sentWith: SessionControls | null, change: Promise<boolean>, then?: () => void) =>
 		void change.then((changed) => {
 			if (!changed) {
-				revealError();
+				revealError(sentWith);
 				return;
 			}
 			finish();
 			then?.();
 		});
 	const choose = (model: ModelDescriptor) => {
-		if (`${model.provider}/${model.model}` === current) {
+		if (verified(vision ? "vision" : "model", current) && `${model.provider}/${model.model}` === current) {
 			finish();
 			return;
 		}
 		if (!controls) return;
-		if (vision) closeOn(controls.changeVisionModel(model.provider, model.model));
+		if (vision) closeOn(controls, controls.changeVisionModel(model.provider, model.model));
 		else
-			closeOn(controls.changeModel(model.provider, model.model), () =>
+			closeOn(controls, controls.changeModel(model.provider, model.model), () =>
 				host.toast({ text: "Model changed. Applies from the next turn." }),
 			);
 	};
@@ -120,7 +133,7 @@ function ModelSheetBody({
 					levels={levels}
 					current={session.reasoningEffort ?? ""}
 					disabled={busy}
-					choose={(level) => void controls?.setReasoningEffort(level).then(revealError)}
+					choose={(level) => void controls?.setReasoningEffort(level).then(() => revealError())}
 				/>
 			) : null}
 		</View>
@@ -153,13 +166,24 @@ function ModelSheetBody({
 									title="Session model"
 									selected={session.visionModel === ""}
 									disabled={busy || !canChange}
-									onPress={() => controls && closeOn(controls.setVisionModel(""))}
+									// Already the setting: the daemon would acknowledge an
+									// unchanged value, and announcing that as a change tells the
+									// reader something happened when nothing did.
+									onPress={() =>
+										verified("vision", session.visionModel) && session.visionModel === ""
+											? finish()
+											: controls && closeOn(controls, controls.setVisionModel(""))
+									}
 								/>
 								<ChoiceRow
 									title="Off"
 									selected={session.visionModel === "off"}
 									disabled={busy || !canChange}
-									onPress={() => controls && closeOn(controls.setVisionModel("off"))}
+									onPress={() =>
+										verified("vision", session.visionModel) && session.visionModel === "off"
+											? finish()
+											: controls && closeOn(controls, controls.setVisionModel("off"))
+									}
 								/>
 							</>
 						) : null}

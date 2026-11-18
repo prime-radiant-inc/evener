@@ -1,9 +1,41 @@
+// The hub's receipt is the acknowledgement; the read that follows is
+// catch-up. A read that fails must not turn an accepted action into an
+// unconfirmed one, or the reader is told to retry something already done.
+it.each(["rename", "compact", "setReasoningEffort"] as const)(
+	"settles an acknowledged %s whose readback fails",
+	async (kind) => {
+		const controls = new SessionControls(
+			await boundary({
+				rename: async () => {},
+				compact: async () => {},
+				reasoning: async () => {},
+			}),
+			async () => {
+				throw new Error("The session read failed.");
+			},
+			() => {},
+			(scope) => (scope === "route" ? true : true),
+			() => ({ supportsReasoning: true, reasoningEffortLevels: ["low", "high"], reasoningEffort: "low" }),
+			() => true,
+		);
+		const settled =
+			kind === "rename"
+				? controls.rename("New name")
+				: kind === "compact"
+					? controls.compact()
+					: controls.setReasoningEffort("high");
+		// The hub took it, so the caller learns that and no error is left
+		// claiming the action is unconfirmed.
+		expect(await settled).toBe(true);
+		expect(controls.getSnapshot()).toMatchObject({ pending: null, error: null });
+	},
+);
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { describe, expect, it, vi } from "vitest";
 import { WireError } from "@evener/appwire-client";
 import type { ModelListResponse, Thread } from "@evener/appwire-client";
 import { type ConversationClientLike, createConversationService } from "./conversation/services/conversation";
-import { SessionControls } from "./sessionControls";
+import { SessionControls, sessionFacts, verifiedSetting } from "./sessionControls";
 
 async function boundary(actions: {
 	rename?: (name: string) => Promise<void>;
@@ -122,6 +154,34 @@ describe("conversation-owned session controls", () => {
 		expect(controls.getSnapshot()).toMatchObject({ pending: null, error: null, notice: null });
 	});
 
+	it("settles an acknowledged shutdown after another screen covers the conversation", async () => {
+		let inFront = true;
+		let resolve!: () => void;
+		let stopped = 0;
+		const controls = new SessionControls(
+			await boundary({
+				shutdown: () =>
+					new Promise<void>((done) => {
+						resolve = done;
+					}),
+			}),
+			async () => {},
+			() => {
+				stopped += 1;
+			},
+			(scope) => (scope === "session" ? true : inFront),
+			() => null,
+			() => true,
+		);
+		const request = controls.shutdown();
+		// An outer screen covers the conversation while the hub's reply is out.
+		inFront = false;
+		resolve();
+		expect(await request).toBe(true);
+		expect(stopped).toBe(1);
+		expect(controls.getSnapshot()).toMatchObject({ pending: null, error: null });
+	});
+
 	it("does not claim force stop success when recovery fails", async () => {
 		let stopped = 0;
 		const controls = new SessionControls(
@@ -163,21 +223,68 @@ describe("conversation-owned session controls", () => {
 		expect(refreshes).toBe(0);
 		expect(controls.getSnapshot().notice).toBeNull();
 	});
+	// The session's ref survives a reconnect, but no thread is open on the
+	// service yet. An owed resume sent into that gap reaches nobody, and the
+	// restart records it as failed and stops retrying, leaving the daemon
+	// stopped. It has to be refused before dispatch so the retry stays alive.
+	it("refuses an owed resume before dispatch while its binding cannot send", async () => {
+		let sent = 0;
+		let ready = true;
+		let opened = true;
+		const controls = new SessionControls(
+			await boundary({
+				resume: async () => {
+					sent += 1;
+				},
+			}),
+			async () => {},
+			() => {},
+			// The binding answers: the session is this one, the transport is the
+			// client, and an open thread is what decides whether a write can go
+			// out. Reading needs only the first two.
+			(scope) => (scope === "session" ? true : scope === "send" ? ready && opened : ready),
+			() => null,
+			() => true,
+		);
+		ready = false;
+		expect(await controls.resume()).toBe(false);
+		expect(sent).toBe(0);
+		// Nothing was left pending, so the restart's next attempt is free to go.
+		expect(controls.getSnapshot().pending).toBeNull();
+		// The reconnect has restored the client and the replacement service has
+		// not opened its thread yet. The resume is still owed, and sending into
+		// this gap would be recorded as a failed attempt and dropped.
+		ready = true;
+		opened = false;
+		expect(await controls.resume()).toBe(false);
+		expect(sent).toBe(0);
+		expect(controls.getSnapshot().pending).toBeNull();
+		opened = true;
+		ready = true;
+		expect(await controls.resume()).toBe(true);
+		expect(sent).toBe(1);
+	});
 
-	it("does not publish resume success when the fresh projection fails", async () => {
+	// The resume's reply is the acknowledgement, and the read after it is
+	// catch-up. Another resume queued on the same connection can recycle the
+	// socket while that read is out, and a rejected read then reports a resume
+	// the hub already confirmed as one that could not start the session - the
+	// restart records that and gives up on a daemon that is running. A read
+	// that fails leaves the acknowledgement standing; the live binding's own
+	// recovery brings the projection up to date.
+	it("settles a resume the hub acknowledged when its catch-up read fails", async () => {
 		const controls = new SessionControls(
 			await boundary({ resume: async () => {} }),
 			async () => {
-				throw new Error("snapshot unavailable");
+				throw new Error("The socket recycled before the read settled.");
 			},
 			() => {},
 			() => true,
 			() => null,
 			() => false,
 		);
-		expect(await controls.resume()).toBe(false);
-		expect(controls.getSnapshot().notice).toBeNull();
-		expect(controls.getSnapshot().error).not.toBeNull();
+		expect(await controls.resume()).toBe(true);
+		expect(controls.getSnapshot()).toMatchObject({ pending: null, error: null });
 	});
 
 	it("does not recover a stale binding", async () => {
@@ -513,6 +620,51 @@ describe("conversation-owned session controls", () => {
 		expect(refreshed).toBe(1);
 		expect(controls.getSnapshot().error).not.toBeNull();
 	});
+	// A covering route does not take the refusal away from the picker under it:
+	// the detail stack keeps its local focus, so the row is still there to press
+	// when the reader comes back. The binding can still read, so the read that
+	// catches the picker up runs even though this pane is not the one in front.
+	// The refusal itself is still what the reader is told, and nothing is sent
+	// twice.
+	it("reads a refused pick back when a covering route took the pane out of front", async () => {
+		let inFront = true;
+		let attempts = 0;
+		let refreshed = 0;
+		const sent = Promise.withResolvers<void>();
+		const ack = Promise.withResolvers<void>();
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => ({ data: [{ provider: "one", model: "vision" }] }),
+				vision: async () => {
+					attempts++;
+					sent.resolve();
+					await ack.promise;
+					throw new WireError("Vision is unavailable", -32000, {
+						evenerErrorInfo: "actionUnavailable",
+					});
+				},
+			}),
+			async () => {
+				refreshed++;
+			},
+			() => {},
+			// The session, its transport and its binding are live, so settlement
+			// and the readback both hold; the route is what the covering screen
+			// takes away, and it is what the announcement reads.
+			(scope) => (scope === undefined || scope === "route" ? inFront : true),
+			() => null,
+			() => true,
+		);
+		await controls.loadModels();
+		const pick = controls.changeVisionModel("one", "vision");
+		await sent.promise;
+		inFront = false;
+		ack.resolve();
+		expect(await pick).toBe(false);
+		expect(attempts).toBe(1);
+		expect(refreshed).toBe(1);
+		expect(controls.getSnapshot().error).not.toBeNull();
+	});
 	it.each(["switch", "dispose", "reject"] as const)(
 		"handles %s during rejected-action refresh without replay or stale publication",
 		async (outcome) => {
@@ -554,6 +706,13 @@ describe("conversation-owned session controls", () => {
 			expect(attempts).toBe(1);
 			if (outcome === "reject") {
 				expect(publications).toBe(2);
+				expect(controls.getSnapshot().pending).toBeNull();
+				expect(controls.getSnapshot().error).not.toBeNull();
+			} else if (outcome === "dispose") {
+				// Nothing is told to a disposed controller, but its own record has
+				// to carry the rejection: the step that asked it reads the outcome
+				// from here, and an unrecorded refusal reads as an acknowledgement.
+				expect(publications).toBe(1);
 				expect(controls.getSnapshot().pending).toBeNull();
 				expect(controls.getSnapshot().error).not.toBeNull();
 			} else {
@@ -628,6 +787,7 @@ describe("conversation-owned session controls", () => {
 	});
 	it("invalidates old confirmation callbacks and late completions when leaving a conversation", async () => {
 		let resolve!: () => void;
+		let left = false;
 		let callbacks = 0,
 			stops = 0;
 		const controls = new SessionControls(
@@ -647,11 +807,14 @@ describe("conversation-owned session controls", () => {
 			() => {
 				callbacks++;
 			},
-			() => true,
+			// The reader has left the conversation, so no scope is current any
+			// more: the session binding moved away from this reader.
+			() => !left,
 			() => null,
 			() => true,
 		);
 		const request = controls.compact();
+		left = true;
 		controls.dispose();
 		resolve();
 		await request;
@@ -798,6 +961,827 @@ describe("conversation-owned session controls", () => {
 		resolve();
 		expect(await request).toBe(true);
 		expect(reads).toBe(1);
+	});
+	// An acknowledged pick can outlive the binding that sent it: the screen's
+	// memo disposes the controls that are mid-pick while the same session stays
+	// in front. The mutation landed, so the pick reports a change — the sheet
+	// closes and the screen confirms it — instead of reading as a pick that
+	// never happened. A pick that did not apply, and one whose screen left,
+	// claim nothing.
+	it.each([
+		{ outcome: "applied while the destination stays current", mutate: "apply", destination: true, refreshes: 1 },
+		{ outcome: "applied after the destination left", mutate: "apply", destination: false, refreshes: 0 },
+		{ outcome: "refused while the destination stays current", mutate: "refuse", destination: true, refreshes: 0 },
+	] as const)(
+		"reports a pick the recycle disposed its binding for: $outcome",
+		async ({ mutate, destination, refreshes }) => {
+			const applied: string[] = [];
+			let inFront = true;
+			let current = true;
+			// The binding goes, the transport does not: this is a controller
+			// disposal, not a socket recycle.
+			const ready = true;
+			let refreshed = 0;
+			const sent = Promise.withResolvers<void>();
+			const ack = Promise.withResolvers<void>();
+			// The session's record outlives the binding, so the destination reads
+			// what the pick established from here rather than from the instance
+			// that sent it.
+			const session = sessionFacts(() => false);
+			const controls = new SessionControls(
+				await boundary({
+					models: async () => ({ data: [{ provider: "two", model: "next" }] }),
+					model: async (provider, model) => {
+						applied.push(`${provider}/${model}`);
+						sent.resolve();
+						await ack.promise;
+						// A refusal names what the hub would not do, so it is not a
+						// write that may have applied: nothing is recorded for it.
+						if (mutate === "refuse")
+							throw new WireError("The hub refused the change.", -32000, {
+								evenerErrorInfo: "invalidParams",
+							});
+					},
+				}),
+				async () => {
+					refreshed++;
+				},
+				() => {},
+				// The screen's fence: `inFront` is the session being the route still
+				// in front, `ready` is the transport, and `current` is this
+				// instance's own binding generation.
+				(scope) => (scope === "route" ? inFront : inFront && (scope === "destination" ? ready : current)),
+				() => null,
+				() => true,
+				null,
+				session,
+			);
+			await controls.loadModels();
+			const pick = controls.changeModel("two", "next");
+			await sent.promise;
+			expect(controls.getSnapshot().pending).toBe("changeModel");
+			// The recycle: the screen's memo disposes this binding, its generation
+			// moves on, and the same session stays (or leaves) the one in front.
+			controls.dispose();
+			current = false;
+			inFront = destination;
+			ack.resolve();
+			expect(await pick).toBe(mutate === "apply" && destination);
+			expect(applied).toEqual(["two/next"]);
+			expect(refreshed).toBe(refreshes);
+			// What the session's record says, which is what any binding reads. An
+			// applied pick leaves the value the hub took there whichever screen is
+			// current, so a replacement drawn from the projection cannot treat the
+			// stale row as already set. A refusal says nothing applied, so the
+			// projection still answers for that setting.
+			expect(session.unread().model).toEqual(mutate === "apply" ? { state: "acknowledged", value: "two/next" } : null);
+			// The other direction: a pick that did not apply still fails, and the
+			// set that dispatched it keeps the hub's refusal for the sheet's own
+			// report rather than swallowing the false.
+			if (mutate === "refuse") expect(controls.getSnapshot().error).not.toBeNull();
+		},
+	);
+	// A pick the hub accepted is confirmed even when the read that follows it
+	// fails on the connection the pick was sent on: the acknowledgement is what
+	// applied it, and the read is catch-up. The live binding still settles its
+	// pending state so nothing reads as in flight afterwards.
+	it("confirms an acknowledged pick whose follow-up read fails", async () => {
+		const applied: string[] = [];
+		let refreshed = 0;
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => ({ data: [{ provider: "two", model: "next" }] }),
+				model: async (provider, model) => {
+					applied.push(`${provider}/${model}`);
+				},
+			}),
+			async () => {
+				refreshed++;
+				throw new Error("The read lost its connection.");
+			},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		await controls.loadModels();
+		expect(await controls.changeModel("two", "next")).toBe(true);
+		expect(applied).toEqual(["two/next"]);
+		expect(refreshed).toBe(1);
+		expect(controls.getSnapshot()).toMatchObject({ pending: null, error: null });
+	});
+	// A vision pick is a pick: the same acknowledgement confirms it, and its
+	// readback is catch-up. Off and Session model are the same action with a
+	// different value.
+	it.each(["off", "", "one/vision"])("confirms an acknowledged vision pick %j whose read fails", async (value) => {
+		const applied: string[] = [];
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => ({ data: [{ provider: "one", model: "vision" }] }),
+				vision: async (set) => {
+					applied.push(set);
+				},
+			}),
+			async () => {
+				throw new Error("The read lost its connection.");
+			},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		await controls.loadModels();
+		const run = value === "one/vision" ? controls.changeVisionModel("one", "vision") : controls.setVisionModel(value);
+		expect(await run).toBe(true);
+		expect(applied).toEqual([value]);
+		expect(controls.getSnapshot()).toMatchObject({ pending: null, error: null });
+	});
+	// A set the hub took whose readback never landed leaves the session's
+	// projection showing the value from before it. That projection is what a
+	// picker compares a choice against, so without a record of the value the
+	// hub did take, the next tap on the value it still shows reads as "already
+	// set" - and the sheet closes without writing the choice the reader made.
+	it("records the value an acknowledged set reached the hub with when its read did not", async () => {
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => ({ data: [{ provider: "two", model: "next" }] }),
+				model: async () => {},
+			}),
+			async () => {
+				throw new Error("The read lost its connection.");
+			},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		await controls.loadModels();
+		expect(await controls.changeModel("two", "next")).toBe(true);
+		expect(controls.getSnapshot().unread).toEqual({
+			model: { state: "acknowledged", value: "two/next" },
+			vision: null,
+		});
+	});
+	// A read that landed puts the projection where the set left it, so there is
+	// nothing left for a picker to be misled by.
+	it("records nothing when the readback landed", async () => {
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => ({ data: [{ provider: "two", model: "next" }] }),
+				model: async () => {},
+			}),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		await controls.loadModels();
+		expect(await controls.changeModel("two", "next")).toBe(true);
+		expect(controls.getSnapshot().unread).toEqual({ model: null, vision: null });
+	});
+	// A publication is the daemon's report, not a receipt for the pick. During a
+	// running turn the hub acknowledges a pick for the next turn while the
+	// projection correctly still names the model that is running, so a read that
+	// published has answered the pick only when it shows the picked value.
+	// Treating any publication as confirmation clears the record while the
+	// projection still draws the running model as selected - and the reader who
+	// taps that row to undo the queued change closes the sheet without sending.
+	it("keeps a next-turn pick recorded while the projection still names the running model", async () => {
+		let reads = 0;
+		const session = sessionFacts(
+			() => true,
+			() => reads,
+			// The read landed and reports the model that is running, which is the
+			// truth: the pick applies from the next turn.
+			() => "one/running",
+		);
+		session.record("model", { state: "acknowledged", value: "two/next" });
+		// The readback after the pick starts, and reports the running model.
+		reads += 1;
+		session.retirePublished();
+		expect(session.unread()).toEqual({ model: { state: "acknowledged", value: "two/next" }, vision: null });
+		// What the reader then sees: the running model's row is a correction, not
+		// an already-set value, so tapping it sends the change back.
+		expect(verifiedSetting(session.unread(), "model", "one/running")).toBe(false);
+		// A read that does show the pick is the readback, and it retires it.
+		let later = 0;
+		const shown = sessionFacts(
+			() => true,
+			() => later,
+			() => "two/next",
+		);
+		shown.record("model", { state: "acknowledged", value: "two/next" });
+		later += 1;
+		shown.retirePublished();
+		expect(shown.unread()).toEqual({ model: null, vision: null });
+	});
+	// A read that resolves is not a read that published. The store discards a
+	// projection a newer read superseded without throwing, and the refresh
+	// callback sees only a store that is open with no error - so treating a
+	// resolved refresh as the readback clears the record while the projection
+	// still shows the value from before the set. The value the hub took has to
+	// stay recorded until a projection actually lands.
+	it("keeps the value an acknowledged set reached the hub with when the read published nothing", async () => {
+		let published = true;
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => ({ data: [{ provider: "two", model: "next" }] }),
+				model: async () => {},
+			}),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+			null,
+			// The read returned normally and the store discarded it: no error,
+			// and no fresh projection either.
+			sessionFacts(() => published),
+		);
+		await controls.loadModels();
+		published = false;
+		expect(await controls.changeModel("two", "next")).toBe(true);
+		expect(controls.getSnapshot().unread).toEqual({
+			model: { state: "acknowledged", value: "two/next" },
+			vision: null,
+		});
+	});
+	// A cold pick replaces the runtime, so the controls that sent it are gone
+	// before the hub's answer lands on them. A replacement built from the
+	// screen's projection alone starts believing the value the pick has just
+	// invalidated - and tapping that value closes the picker without writing.
+	// The record therefore belongs to the session, and the replacement starts
+	// from it.
+	it("hands a replacement the value the session was acknowledged for", async () => {
+		const session = sessionFacts(() => true);
+		session.record("vision", { state: "acknowledged", value: "lunaroute/glm-5.3-vision" });
+		const replacement = new SessionControls(
+			await boundary({ vision: async () => {} }),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+			null,
+			session,
+		);
+		expect(replacement.getSnapshot().unread).toEqual({
+			model: null,
+			vision: { state: "acknowledged", value: "lunaroute/glm-5.3-vision" },
+		});
+	});
+	// The other direction: the retired set's own answer still has to reach the
+	// session, or the replacement's clean start loses it again.
+	it("records the acknowledged value on the session even when this set was replaced", async () => {
+		const session = sessionFacts(() => false);
+		const sent = new SessionControls(
+			await boundary({
+				models: async () => ({ data: [{ provider: "two", model: "next" }] }),
+				model: async () => {},
+			}),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+			null,
+			session,
+		);
+		await sent.loadModels();
+		const pick = sent.changeModel("two", "next");
+		// The cold pick replaced the runtime: these controls are retired before
+		// the hub's answer lands on them.
+		sent.dispose();
+		await pick;
+		expect(session.unread()).toEqual({ model: { state: "acknowledged", value: "two/next" }, vision: null });
+	});
+	// A replacement is built while the write it did not send is still out, so
+	// sampling the record once at construction misses the answer when it lands
+	// afterwards. The picker reads the replacement's own snapshot, so a stale
+	// Off row would close it without sending the corrective write, and vision
+	// would stay enabled.
+	it("tells a binding that already exists about a write it did not send", async () => {
+		const session = sessionFacts(() => false);
+		const answer = Promise.withResolvers<void>();
+		const sent = new SessionControls(
+			await boundary({
+				models: async () => ({ data: [{ provider: "one", model: "vision" }] }),
+				vision: async () => {
+					await answer.promise;
+				},
+			}),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+			null,
+			session,
+		);
+		await sent.loadModels();
+		const pick = sent.changeVisionModel("one", "vision");
+		// The reader's screen rebinds while the hub has not answered: this is the
+		// set the picker now renders from, and it has never heard of that write.
+		const replacement = new SessionControls(
+			await boundary({ vision: async () => {} }),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+			null,
+			session,
+		);
+		expect(replacement.getSnapshot().unread).toEqual({ model: null, vision: null });
+		// The answer lands on the retired set, whose readback never published.
+		sent.dispose();
+		answer.resolve();
+		await pick;
+		// The replacement now says the value it would otherwise trust is unread.
+		expect(replacement.getSnapshot().unread).toEqual({
+			model: null,
+			vision: { state: "acknowledged", value: "one/vision" },
+		});
+	});
+	// A write the hub never answered is not a write it refused, and it is not a
+	// value either. A request that times out while the phone is reconnecting can
+	// still reach the hub, and a cold set is applied inside the hub's own resume,
+	// after the client has given up - so the hub may hold the new value, the old
+	// one, or nothing. Recording the value the write was for would make the next
+	// tap on the row that already shows it read as "already set": the reader who
+	// enabled vision behind a stale Off tick and taps Off to undo it closes the
+	// sheet without sending anything, and vision stays on. The outcome is
+	// unknown, so the projection is not trusted for that setting at all.
+	it("records an unknown outcome for a vision write that was never answered", async () => {
+		const session = sessionFacts(() => true);
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => ({ data: [{ provider: "two", model: "next" }] }),
+				vision: async () => {
+					throw new Error("The connection closed before the hub answered.");
+				},
+			}),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+			null,
+			session,
+		);
+		await controls.loadModels();
+		expect(await controls.changeVisionModel("two", "next")).toBe(false);
+		expect(session.unread()).toEqual({ model: null, vision: { state: "unknown" } });
+		expect(controls.getSnapshot().unread).toEqual({ model: null, vision: { state: "unknown" } });
+		// What the reader then sees: Off is still drawn as selected, and tapping
+		// it has to send the correction rather than dismiss.
+		expect(verifiedSetting(session.unread(), "vision", "off")).toBe(false);
+	});
+	// The hub's own way of saying the same thing. It answers sessionUnavailable
+	// when it lost the daemon's reply to a write it had already forwarded, so
+	// this is a wire rejection whose outcome is not known - unlike a refusal,
+	// which names what the hub would not do.
+	it("records an unknown outcome when the hub lost the daemon's reply", async () => {
+		const session = sessionFacts(() => true);
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => ({ data: [{ provider: "two", model: "next" }] }),
+				vision: async () => {
+					throw new WireError("the daemon's reply was lost", -32000, {
+						evenerErrorInfo: "sessionUnavailable",
+					});
+				},
+			}),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+			null,
+			session,
+		);
+		await controls.loadModels();
+		expect(await controls.changeVisionModel("two", "next")).toBe(false);
+		expect(session.unread()).toEqual({ model: null, vision: { state: "unknown" } });
+		expect(verifiedSetting(session.unread(), "vision", "off")).toBe(false);
+	});
+	// The other direction, and the reason this is not simply "record on every
+	// failure": a refusal is the hub's answer, so the projection still shows
+	// what the hub holds and a tap on it is a genuine no-op. Recording there
+	// would turn every refused pick into a redundant write.
+	it("records nothing when the hub refused the vision write", async () => {
+		const session = sessionFacts(() => true);
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => ({ data: [{ provider: "two", model: "next" }] }),
+				vision: async () => {
+					throw new WireError("vision model is not available", -32000, {
+						evenerErrorInfo: "actionUnavailable",
+					});
+				},
+			}),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+			null,
+			session,
+		);
+		await controls.loadModels();
+		expect(await controls.changeVisionModel("two", "next")).toBe(false);
+		expect(session.unread()).toEqual({ model: null, vision: null });
+		expect(controls.getSnapshot().unread).toEqual({ model: null, vision: null });
+	});
+	// The two settings are independent facts. A record with room for one throws
+	// the other away, and the setting it discarded goes back to trusting a
+	// projection its own unanswered write may have invalidated: a named vision
+	// pick that timed out, then a model pick that timed out too, and the Off row
+	// is selectable again while vision may still be on.
+	it("keeps a vision write's record through a later model write", async () => {
+		const session = sessionFacts(() => true);
+		let models = 0;
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => ({
+					data: [
+						{ provider: "two", model: "next" },
+						{ provider: "one", model: "vision" },
+					],
+				}),
+				vision: async () => {
+					throw new Error("The connection closed before the hub answered.");
+				},
+				model: async () => {
+					models += 1;
+					throw new Error("The connection closed before the hub answered.");
+				},
+			}),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+			null,
+			session,
+		);
+		await controls.loadModels();
+		expect(await controls.changeVisionModel("one", "vision")).toBe(false);
+		expect(await controls.changeModel("two", "next")).toBe(false);
+		expect(models).toBe(1);
+		// Neither reply arrived, so neither setting has an answer: the later
+		// model write leaves the vision write's unknown outcome in place, and the
+		// two are recorded apart rather than one overwriting the other.
+		expect(session.unread()).toEqual({ model: { state: "unknown" }, vision: { state: "unknown" } });
+	});
+	// The unknown is a doubt, not a fact, so the read that settles the doubt has
+	// to retire it. Without that, the doubt outlives every read: a vision write
+	// loses its reply, a reconnect establishes that vision is still Off, and the
+	// Off row the projection already draws as selected still sends a setter -
+	// which on a stopped session starts the daemon to reapply what it has.
+	it("retires an unknown outcome once a later read establishes the setting", async () => {
+		let reads = 0;
+		let published = false;
+		const session = sessionFacts(
+			() => published,
+			() => reads,
+		);
+		session.record("vision", { state: "unknown" });
+		// The read that establishes the setting starts after the write was
+		// recorded, and its publication is what answers the doubt.
+		reads += 1;
+		published = true;
+		session.retirePublished();
+		expect(session.unread()).toEqual({ model: null, vision: null });
+		// What the reader then sees: the Off row matches the projection, so a tap
+		// on it is a verified no-op and the picker closes without writing.
+		expect(verifiedSetting(session.unread(), "vision", "off")).toBe(true);
+	});
+	// The other direction, and the reason the record counts reads rather than
+	// trusting the next publication: a read already out when the write was
+	// recorded may have sampled the session before that write, so its answer
+	// cannot clear the doubt. Retiring on any publication would put the stale
+	// Off row back and reproduce the silent dismissal the record exists to stop.
+	it("keeps an unknown outcome that a read already out cannot answer", async () => {
+		let reads = 1;
+		const session = sessionFacts(
+			() => true,
+			() => reads,
+			// An unknown is answered by any newer publication, so its fence is
+			// about the read count alone.
+			() => "off",
+		);
+		// The write is recorded while that read is in flight.
+		session.record("vision", { state: "unknown" });
+		// Its publication lands without a newer read having started.
+		session.retirePublished();
+		expect(session.unread()).toEqual({ model: null, vision: { state: "unknown" } });
+		expect(verifiedSetting(session.unread(), "vision", "off")).toBe(false);
+	});
+	// The fence belongs to the write, not to the setting. Two vision writes can
+	// both lose their replies, with a read starting between them; the second
+	// record matching the first is not evidence they are one write. If it kept
+	// the first one's fence, that intervening read - which may have sampled the
+	// session before the second write applied - could publish and retire both
+	// doubts, putting the stale Off row back within one round trip of the second
+	// lost reply.
+	it("keeps the fence of a second unanswered write with a read between them", async () => {
+		let reads = 0;
+		const session = sessionFacts(
+			() => true,
+			() => reads,
+			() => "off",
+		);
+		session.record("vision", { state: "unknown" });
+		// A read starts, and a second vision write loses its reply behind it.
+		reads += 1;
+		session.record("vision", { state: "unknown" });
+		// That read publishes: it may have sampled the session before the second
+		// write, so it answers the first doubt and not the second.
+		session.retirePublished();
+		expect(session.unread()).toEqual({ model: null, vision: { state: "unknown" } });
+		expect(verifiedSetting(session.unread(), "vision", "off")).toBe(false);
+		// The read the second write deserves is the one begun after it.
+		reads += 1;
+		session.retirePublished();
+		expect(session.unread()).toEqual({ model: null, vision: null });
+	});
+	// The hub's acknowledgement, not the read that follows it, is the record
+	// that the pick applied. A phone that reconnects while that read is still
+	// out has not left the session it is looking at, so the pick still reports
+	// the change; the reconnect read is what brings it on screen.
+	it("confirms an acknowledged pick when the transport reconnects before its read settles", async () => {
+		let ready = true;
+		let refreshed = 0;
+		const started = Promise.withResolvers<void>();
+		const reading = Promise.withResolvers<void>();
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => ({ data: [{ provider: "two", model: "next" }] }),
+				model: async () => {},
+			}),
+			async () => {
+				refreshed++;
+				started.resolve();
+				await reading.promise;
+			},
+			() => {},
+			// The screen's fence: presence is route and identity alone, and
+			// `ready` is the transport.
+			(scope) => (scope === "route" ? true : ready),
+			() => null,
+			() => true,
+		);
+		await controls.loadModels();
+		const pick = controls.changeModel("two", "next");
+		await started.promise;
+		// The socket goes away while the confirmation read is still out.
+		ready = false;
+		reading.resolve();
+		expect(await pick).toBe(true);
+		expect(refreshed).toBe(1);
+		expect(controls.getSnapshot()).toMatchObject({ pending: null, error: null });
+	});
+	// Settlement is not visibility: an outer screen can cover this conversation
+	// without disposing its controls, and whatever was in flight still has to
+	// end, or the picker under that screen stays disabled for good.
+	// An acknowledgement is not a read. The hub took the value, but the other
+	// mounted view of this session still draws the projection's Off row as
+	// selected, and only the shared record tells it that row is no longer the
+	// truth. Waiting for the readback to write that down leaves the second view
+	// dismissing the picker on a row the hub no longer holds, and vision stays
+	// on with nothing sent to undo it.
+	it("records an acknowledged vision change before its readback lands", async () => {
+		const readback = Promise.withResolvers<void>();
+		const entered = Promise.withResolvers<void>();
+		const session = sessionFacts(
+			() => false,
+			() => 0,
+			() => "off",
+		);
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => ({ data: [{ provider: "one", model: "vision" }] }),
+				vision: async () => {},
+			}),
+			async () => {
+				entered.resolve();
+				await readback.promise;
+			},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+			null,
+			session,
+		);
+		await controls.loadModels();
+		const pick = controls.changeVisionModel("one", "vision");
+		await entered.promise;
+		// The readback is still out and the projection still says Off. The other
+		// view is deciding whether its Off row may dismiss on that match.
+		expect(verifiedSetting(session.unread(), "vision", "off")).toBe(false);
+		expect(verifiedSetting(session.unread(), "vision", "one/vision")).toBe(true);
+		readback.resolve();
+		await pick;
+	});
+	it.each([
+		{ name: "a successful rename", settle: "applies" },
+		{ name: "a rejected rename", settle: "refuses" },
+	] as const)("settles the in-flight state of a covered controller after $name", async ({ settle }) => {
+		let covered = false;
+		let refreshed = 0;
+		const controls = new SessionControls(
+			await boundary({
+				rename: async () => {
+					if (settle === "refuses") throw new Error("The hub refused the name.");
+				},
+			}),
+			async () => {
+				refreshed++;
+			},
+			() => {},
+			// The screen's own fence: the session and its transport are live and
+			// can read, and an outer screen covering the pane is what only the
+			// route answer loses.
+			(scope) => (scope === undefined || scope === "route" ? !covered : true),
+			() => null,
+			() => true,
+		);
+		const rename = controls.rename("New name");
+		covered = true;
+		// The hub's word is what settles the rename, so a covered editor does not
+		// stay dirty over a name the hub took, and its readback still runs. The
+		// notice is the reader's: nobody in front is owed one.
+		expect(await rename).toBe(settle === "applies");
+		expect(refreshed).toBe(settle === "applies" ? 1 : 0);
+		expect(controls.getSnapshot().pending).toBeNull();
+		expect(controls.getSnapshot().notice).toBeNull();
+	});
+	// The reply can arrive before the push that replaces these controls, and the
+	// readback outlives both. The hub took the name, so the sheet that asked has
+	// to learn that: reporting a refusal here would leave its editor open over a
+	// name the hub already has, and a cold session showing its old name.
+	it("settles an acknowledged rename whose readback outlives the controls", async () => {
+		const started = Promise.withResolvers<void>();
+		const reading = Promise.withResolvers<void>();
+		const controls = new SessionControls(
+			await boundary({ rename: async () => {} }),
+			async () => {
+				started.resolve();
+				await reading.promise;
+			},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		const rename = controls.rename("New name");
+		await started.promise;
+		// The push lands while the readback is still out.
+		controls.dispose();
+		reading.resolve();
+		expect(await rename).toBe(true);
+	});
+	// A rename acknowledged after a push replaced the controls still has to
+	// read the session back: a cold rename lands in the hub's past index, so a
+	// session whose read is still considered current never fetches the new
+	// title, and the sheet shows the old name on return.
+	it("reads an acknowledged rename back after its controls were replaced", async () => {
+		let refreshed = 0;
+		const controls = new SessionControls(
+			await boundary({ rename: async () => {} }),
+			async () => {
+				refreshed++;
+			},
+			() => {},
+			// The session and its transport outlive the push; the controls do not.
+			() => true,
+			() => null,
+			() => true,
+		);
+		const rename = controls.rename("New name");
+		controls.dispose();
+		expect(await rename).toBe(true);
+		expect(refreshed).toBe(1);
+	});
+
+	// The reader can leave while the pick's refresh is still out. Whoever left
+	// is owed no confirmation on the screen they left, so the pick reports no
+	// change there — including when that refresh itself fails.
+	it.each([{ settle: "resolves" }, { settle: "rejects" }] as const)(
+		"claims no pick for a destination that left while its refresh %s",
+		async ({ settle }) => {
+			let inFront = true;
+			let current = true;
+			const ready = true;
+			const sent = Promise.withResolvers<void>();
+			const ack = Promise.withResolvers<void>();
+			const started = Promise.withResolvers<void>();
+			const reading = Promise.withResolvers<void>();
+			const controls = new SessionControls(
+				await boundary({
+					models: async () => ({ data: [{ provider: "two", model: "next" }] }),
+					model: async () => {
+						sent.resolve();
+						await ack.promise;
+					},
+				}),
+				async () => {
+					started.resolve();
+					await reading.promise;
+				},
+				() => {},
+				(scope) => (scope === "route" ? inFront : inFront && (scope === "destination" ? ready : current)),
+				() => null,
+				() => true,
+			);
+			await controls.loadModels();
+			const pick = controls.changeModel("two", "next");
+			await sent.promise;
+			// The recycle disposes this binding; the session is still in front when
+			// the confirmation read starts.
+			controls.dispose();
+			current = false;
+			ack.resolve();
+			await started.promise;
+			// The reader leaves while that read is out.
+			inFront = false;
+			if (settle === "rejects") reading.reject(new Error("The read lost its connection."));
+			else reading.resolve();
+			expect(await pick).toBe(false);
+		},
+	);
+	// The readback belongs to the live session and its transport, not to the
+	// reader's presence: a pane another screen covers still reads the new choice
+	// back, so the picker shows it on return. The announcement stays off, since
+	// nobody is looking at it.
+	it("reads a covered pick back without announcing it", async () => {
+		let inFront = true;
+		let refreshed = 0;
+		const sent = Promise.withResolvers<void>();
+		const ack = Promise.withResolvers<void>();
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => ({ data: [{ provider: "two", model: "next" }] }),
+				model: async () => {
+					sent.resolve();
+					await ack.promise;
+				},
+			}),
+			async () => {
+				refreshed++;
+			},
+			() => {},
+			// A covered pane: another screen is in front, while the session and its
+			// transport are live and still able to read it.
+			(scope) => (scope === "route" ? inFront : true),
+			() => null,
+			() => true,
+		);
+		await controls.loadModels();
+		const pick = controls.changeModel("two", "next");
+		await sent.promise;
+		inFront = false;
+		ack.resolve();
+		// The pick reads back so the picker shows the new choice on return, and
+		// says nothing to a reader who is not looking at it.
+		expect(await pick).toBe(false);
+		expect(refreshed).toBe(1);
+		expect(controls.getSnapshot()).toMatchObject({ pending: null, notice: null });
+	});
+	it("keeps a covered picker's catalog so its choices are there on return", async () => {
+		let inFront = true;
+		const started = Promise.withResolvers<void>();
+		const reply = Promise.withResolvers<ModelListResponse>();
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => {
+					started.resolve();
+					return await reply.promise;
+				},
+			}),
+			async () => {},
+			() => {},
+			// The picker's first catalog is being read when another screen opens
+			// over it. The session and its transport are still live, so the reply
+			// is this pane's to keep. Both the route question and the plain
+			// "starting an action" fence follow visibility here, the way the
+			// screen answers them.
+			(scope) => (scope === "session" || scope === "destination" ? true : inFront),
+			() => null,
+			() => true,
+		);
+		const loading = controls.loadModels();
+		await started.promise;
+		inFront = false;
+		reply.resolve({ data: [{ provider: "two", model: "next" }] });
+		await loading;
+		// Reading choices back is not an announcement: the reader finds them, and
+		// nothing was said to a reader who is not looking at the sheet.
+		expect(controls.getSnapshot().catalog).toMatchObject({ data: [{ provider: "two", model: "next" }] });
+		expect(controls.getSnapshot().loadingModels).toBe(false);
 	});
 	it("ignores a catalog that resolves after the controller is disposed", async () => {
 		let resolve!: (value: ModelListResponse) => void;

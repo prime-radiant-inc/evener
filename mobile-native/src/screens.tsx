@@ -849,16 +849,37 @@ function ConversationScreenView({
 	// the model keeps its name across a screen pushed over this one and a
 	// rebinding, while the catalog reads again (audit N6).
 	const knownCatalog = useRef<ModelListResponse | null>(null);
+	// The values a pick was written for and never read back, per setting. They
+	// belong to the session, so the entry owns them: a cold pick can replace the
+	// runtime before its own answer lands, and another view of the same session
+	// reads the same projection, so a record per view would let one dismiss a
+	// correction the other knew was outstanding. Every binding therefore reads
+	// the entry's record rather than a copy of it.
+	const session = entry.sessionFacts;
 	// The last catalog whose read succeeded, kept for naming only: a later
 	// failed read clears the picker's catalog so it offers no stale choices,
 	// but the chip and the Session sheet must keep the model's name rather
 	// than fall back to its raw id (#2988).
 	const namedCatalog = useRef<ModelListResponse | null>(null);
 	const controls = useMemo(() => {
+		// A covering push still rebuilds the controls, as it always has, and the
+		// replacement reads the catalog again. What this binding keeps across a
+		// transport recycle is the session's own record and service: the fence
+		// below answers the destination's question, not this instance's, so a
+		// step the hub already acknowledged can settle on the screen that is
+		// still looking at it (issue #6696).
 		if (!service || !connected || !focused) return null;
 		const refreshSession = async () => {
-			if (store.getState().status === "open") await store.getState().rehydrate(service);
-			else await store.getState().resumeProjected(service, route.params.ref);
+			// The acknowledgement can outlive the service this controller was
+			// built with: a restart replaces the session's service while its
+			// reply is still out. Reading through the captured one would install
+			// a retired service as the store's own binding, and the screen's
+			// replacement would then be ignored by Send and by older-history
+			// reads. The entry is the live binding, so the read resolves it here.
+			const live = entry.service;
+			if (live === null) throw new Error("Could not read the session.");
+			if (store.getState().status === "open") await store.getState().rehydrate(live);
+			else await store.getState().resumeProjected(live, route.params.ref);
 			const current = store.getState();
 			if (current.status !== "open" || current.error) throw new Error("Could not read the session.");
 		};
@@ -872,6 +893,48 @@ function ConversationScreenView({
 			},
 			(scope) => {
 				const current = store.getState();
+				// Whether the reader is still on this session is a question of route
+				// and session identity alone. A transport that is away is not a reader
+				// who left: it reconnects and reads the same session again, and an
+				// action that outlived its binding is still owed to the screen that
+				// is looking at it. The client is that transport, and going inactive
+				// replaces it with none, so it cannot answer this question — the
+				// session's own store can, because it outlives every client.
+				//
+				// A stack that still contains this conversation and a reader still
+				// looking at it are two questions. The Duo split keeps the detail
+				// stack's routes while an alert opens another conversation on the
+				// root stack over it, so the nested state alone would answer the
+				// first. screenInFront asks the stacks the screen is nested in too,
+				// which is what the announcement needs.
+				if (scope === "route") {
+					return (
+						currentDestination.current.store === store &&
+						screenInFront(navigation, route.key) &&
+						current.ref === route.params.ref
+					);
+				}
+				// The same session, whether or not its screen is the one in front:
+				// an outer screen can cover this conversation without moving the
+				// binding to another one. A cold pick's acknowledgement asks this, so
+				// a covered picker is not left with an action in flight forever.
+				if (scope === "session") {
+					return currentDestination.current.store === store && current.ref === route.params.ref;
+				}
+				// The destination answers "can this binding still read the session
+				// it dispatched to", so a ready transport and the same store decide
+				// it. A pane another screen covers keeps reading back: the picker
+				// has to show the new choice when the reader returns.
+				if (scope === "destination") {
+					return (
+						currentDestination.current.store === store &&
+						currentDestination.current.client === client &&
+						connectionReady.current &&
+						current.ref === route.params.ref
+					);
+				}
+				// Starting an action is a reader's question, so it keeps the route
+				// fence: a covered pane offers nothing to press.
 				if (
 					currentDestination.current.store !== store ||
 					currentDestination.current.client !== client ||
@@ -879,7 +942,6 @@ function ConversationScreenView({
 					!screenInFront(navigation, route.key)
 				)
 					return false;
-				if (scope === "destination") return current.ref === route.params.ref;
 				return (
 					current.status === "open" &&
 					current.conversationGeneration === bindingGeneration &&
@@ -889,8 +951,15 @@ function ConversationScreenView({
 			() => store.getState().conversation,
 			() => !commandBusy.current && !document.getSnapshot().submitting && store.getState().pendingSubmission === null,
 			knownCatalog.current,
+			// A read the store discarded still returns normally, so "the refresh
+			// resolved" is not the same fact as "the projection these controls
+			// read from is the one that read published". The store says which it
+			// is; a discarded read leaves its last accepted projection in place and
+			// never marks a fresh one ready.
+			session,
 		);
 	}, [
+		entry,
 		service,
 		store,
 		client,

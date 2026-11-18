@@ -104,6 +104,7 @@ function fakeControls(calls: string[], over: Partial<ControlsState> = {}) {
 		catalog: CATALOG,
 		loadingModels: false,
 		modelError: null,
+		unread: { model: null, vision: null },
 		...over,
 	};
 	return {
@@ -249,6 +250,27 @@ describe("choosing a model (spec 8.5)", () => {
 		act(() => pressable(tree, "Claude Haiku 5")?.props.onPress());
 		await settle();
 		expect(calls).toEqual(["changeModel"]);
+	});
+
+	// A set the hub acknowledged whose readback never landed leaves the
+	// projection showing the value from before it. That stale row must not read
+	// as "already set": tapping it is the correction the reader means to make,
+	// and dismissing there is how the change disappears with nothing sent.
+	it("sends the correction for the value a prior pick was acknowledged for", async () => {
+		const { calls } = provide(conversation(), {
+			// The hub took the haiku pick; the projection is still one change
+			// behind and draws the sonnet row as selected.
+			unread: { model: { state: "acknowledged", value: "anthropic/claude-haiku-5" }, vision: null },
+		});
+		const tree = sheet();
+		// Tapping the shown row is the correction: it writes sonnet back.
+		act(() => pressable(tree, "Claude Sonnet 5")?.props.onPress());
+		await settle();
+		expect(calls).toEqual([
+			"changeModel:anthropic/claude-sonnet-5",
+			"goBack",
+			"toast:Model changed. Applies from the next turn.",
+		]);
 	});
 
 	it("searches the models", () => {
