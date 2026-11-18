@@ -931,10 +931,13 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 
 	// Sibling inference answers only for a worktree with no owner metadata, and
 	// it is bucket-wide, so it is trustworthy only where the bucket holds one
-	// repository. stateHomeFor is that layout test: a flat --state-dir override
-	// has no state home and is skipped, whatever its basename looks like, while
-	// every recognized project bucket keeps the fallback, legacy names included.
-	if stateHomeFor(bound) == "" {
+	// repository. The test is the same independent identification that makes a
+	// path a state bucket: its state home must be the configured one. A flat
+	// --state-dir override has no state home at all, and a shared override such
+	// as /srv/archive/evener/projects/shared merely spells the layout, so both
+	// are skipped; every project bucket under the configured root keeps the
+	// fallback, legacy names included.
+	if home := stateHomeFor(bound); home == "" || !r.isConfiguredStateHome(home) {
 		return "", true
 	}
 	if name, ok := r.bucketProjectCache[bound]; ok {
@@ -1046,6 +1049,14 @@ func (r *projectNameResolver) isStateBucket(candidate, bucket string) bool {
 	if home == "" {
 		return false
 	}
+	return r.isConfiguredStateHome(home)
+}
+
+// isConfiguredStateHome reports whether home is the state home this process
+// computes from its own configuration. It is the one independent
+// identification of the state tree, so a path that merely spells the layout
+// under some other archive root is not part of it.
+func (r *projectNameResolver) isConfiguredStateHome(home string) bool {
 	for _, root := range r.stateRoots() {
 		if filepath.Dir(root) == home {
 			return true

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -135,8 +136,16 @@ func localStructuralMainRoot(cwd string) (root string, isGit bool, handled bool,
 			if info.IsDir() {
 				return identifier.ResolveClean(dir), true, true, nil
 			}
-			content, readErr := os.ReadFile(gitPath)
+			content, readErr := readGitPointerNoBlock(gitPath)
 			if readErr != nil {
+				// A .git entry that is not a directory and cannot be opened as a
+				// regular file (a FIFO with no writer, a socket, a device, an
+				// unreadable file) is not a pointer this walk can read. Report it
+				// as unsupported rather than as an error, so the caller's
+				// restore-path fallback answers instead of the search failing.
+				if errors.Is(readErr, ErrNotRegularFile) {
+					return "", true, false, nil
+				}
 				return "", true, true, fmt.Errorf("read Git pointer %q: %w", gitPath, readErr)
 			}
 			contentString := string(content)
@@ -160,6 +169,24 @@ func localStructuralMainRoot(cwd string) (root string, isGit bool, handled bool,
 		}
 		dir = parent
 	}
+}
+
+// readGitPointerNoBlock reads a .git pointer file through the same open every
+// other untrusted-leaf read in this package uses: it never blocks and it
+// admits only a regular file. A .git entry that is a FIFO with no writer, a
+// socket, or a device therefore returns ErrNotRegularFile instead of hanging
+// the caller or handing back bytes that are not a pointer.
+func readGitPointerNoBlock(path string) ([]byte, error) {
+	f, err := OpenRegularNoFollow(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	data, readErr := io.ReadAll(f)
+	if readErr != nil {
+		return nil, readErr
+	}
+	return data, nil
 }
 
 func gitBinaryMainRootStrict(env ExecutionEnvironment, cwd string) (string, bool, error) {

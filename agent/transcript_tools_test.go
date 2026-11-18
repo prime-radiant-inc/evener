@@ -13,6 +13,7 @@ import (
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/gittest"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
@@ -549,7 +550,7 @@ func TestFind_ProjectName_FallbacksAndOrdinaryDirectories(t *testing.T) {
 
 	// 6. Two-pass bucket scan: GitOriginURL on sibling session takes precedence over older non-worktree home.
 	// The bucket must be a real project bucket: sibling inference is scoped to those (see 10).
-	twoPassDir := newBucket(t)
+	twoPassDir := newConfiguredBucket(t)
 	s1 := schema.SessionMeta{ID: identifier.MustNewSessionID()}
 	s1.EnvInfo.WorkingDir = "/tmp/some-plain-dir"
 	if err := schema.SaveSessionMeta(twoPassDir, s1); err != nil {
@@ -585,7 +586,7 @@ func TestFind_ProjectName_FallbacksAndOrdinaryDirectories(t *testing.T) {
 	restoreSID := identifier.MustNewSessionID()
 	restoreMeta := schema.SessionMeta{ID: restoreSID, WorktreeRestoreRoot: restoreSub}
 	restoreMeta.EnvInfo.WorkingDir = restoreSub
-	restoreBucket := newBucket(t)
+	restoreBucket := newConfiguredBucket(t)
 	if err := schema.SaveSessionMeta(restoreBucket, restoreMeta); err != nil {
 		t.Fatal(err)
 	}
@@ -597,7 +598,7 @@ func TestFind_ProjectName_FallbacksAndOrdinaryDirectories(t *testing.T) {
 
 	// 9. Same resolution for the bucket-wide pass that reads a sibling's
 	// WorktreeRestoreRoot when the worktree's own session has no meta.
-	restoreSiblingBucket := newBucket(t)
+	restoreSiblingBucket := newConfiguredBucket(t)
 	siblingRestore := schema.SessionMeta{ID: identifier.MustNewSessionID(), WorktreeRestoreRoot: restoreSub}
 	if err := schema.SaveSessionMeta(restoreSiblingBucket, siblingRestore); err != nil {
 		t.Fatal(err)
@@ -669,7 +670,7 @@ func TestFind_ProjectName_FallbacksAndOrdinaryDirectories(t *testing.T) {
 	// 12b. In a project bucket sibling inference does cache a name, so the same
 	// ordering rule must hold there: a worktree whose own owner names a project
 	// reports that project, never the cached sibling name.
-	orderBucket := newBucket(t)
+	orderBucket := newConfiguredBucket(t)
 	orderSibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
 	orderSibling.EnvInfo.GitOriginURL = "git@github.com:owner/sibling-repo.git"
 	if err := schema.SaveSessionMeta(orderBucket, orderSibling); err != nil {
@@ -718,7 +719,14 @@ func TestFind_ProjectName_FallbacksAndOrdinaryDirectories(t *testing.T) {
 	// 14. A recognized project bucket keeps the sibling fallback even when its
 	// name fails identifier.ValidateProjectID: transcript search still enumerates
 	// legacy-named buckets, so their sessions must still get a project label.
-	legacyDir := filepath.Join(newStateHome(t), "evener", "projects", "0123456789abcdef")
+	legacyRoot, err := userdirs.DefaultStateRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	legacyDir := filepath.Join(legacyRoot, "projects", "0123456789abcdef")
+	if err := os.MkdirAll(filepath.Join(legacyDir, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
 	if err := identifier.ValidateProjectID(filepath.Base(legacyDir)); err == nil {
 		t.Fatalf("fixture bucket name %q must fail ValidateProjectID", filepath.Base(legacyDir))
 	}
@@ -775,6 +783,25 @@ func TestFind_ProjectName_FallbacksAndOrdinaryDirectories(t *testing.T) {
 	mManagedOther.EnvInfo.WorkingDir = filepath.Join(managedDir, "worktrees", managedProjectID, "dlg_managed_other")
 	if got := projectName(mManagedOther, managedDir); got != "" {
 		t.Fatalf("projectName(managed worktree whose parent names another project) = %q, want empty (the parent does not own this project)", got)
+	}
+
+	// 17. A shared --state-dir override whose path spells the state layout
+	// (…/evener/projects/shared) is still not a project bucket: it lies under an
+	// archive root, not under the configured state home, so an originless
+	// worktree there must not inherit a sibling's label.
+	sharedOverride := filepath.Join(t.TempDir(), "srv", "archive", "evener", "projects", "shared")
+	if err := os.MkdirAll(filepath.Join(sharedOverride, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sharedSibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	sharedSibling.EnvInfo.GitOriginURL = "git@github.com:owner/unrelated-archive-repo.git"
+	if err := schema.SaveSessionMeta(sharedOverride, sharedSibling); err != nil {
+		t.Fatal(err)
+	}
+	mSharedOverride := schema.SessionMeta{}
+	mSharedOverride.EnvInfo.WorkingDir = filepath.Join(sharedOverride, "sessions", identifier.MustNewSessionID(), "worktrees", "dlg_shared")
+	if got := projectName(mSharedOverride, sharedOverride); got != "" {
+		t.Fatalf("projectName(originless worktree in a shared override spelling the layout) = %q, want empty (not a project bucket under the configured root)", got)
 	}
 }
 

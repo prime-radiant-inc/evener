@@ -101,6 +101,11 @@ func TestMain(m *testing.M) {
 		// walks it), and XDG_CACHE_HOME outranks HOME there, so a developer's own
 		// value would hand the tests the real cache.
 		_ = os.Setenv("XDG_CACHE_HOME", filepath.Join(testHome, ".cache"))
+		// The state root is derived from XDG_STATE_HOME when it is set, else from
+		// HOME. Pinning it makes the derivation explicit: a developer with
+		// XDG_STATE_HOME exported would otherwise hand tests that resolve the
+		// configured root their real state directory.
+		_ = os.Setenv("XDG_STATE_HOME", filepath.Join(testHome, ".local", "state"))
 	}
 	// Production code spawns git with the process environment, so the isolation
 	// has to be the process's: a fixture-only setting would leave the code under

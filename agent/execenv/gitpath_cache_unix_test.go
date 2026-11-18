@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"syscall"
 	"testing"
 )
 
@@ -92,5 +93,32 @@ func TestResolveMainRepoRoot_UnreadableAncestorIsNotMemoized(t *testing.T) {
 	}
 	if got != want {
 		t.Errorf("resolution once the ancestor became readable = %q, want %q: the stat error was memoized as an absence", got, want)
+	}
+}
+
+// A ".git" entry that exists but is not a directory and cannot be opened as a
+// regular file — here a FIFO with no writer — is not a pointer this walk can
+// read. Reading it would block forever, so the entry must be reported as
+// unsupported (handled=false, no error) and the caller's own fallback answers.
+// The guard is the property "open only regular files, nonblocking", which
+// covers a socket or a device without naming them.
+func TestLocalStructuralMainRoot_GitFIFOIsUnsupportedNotBlocking(t *testing.T) {
+	dir := t.TempDir()
+	if err := syscall.Mkfifo(filepath.Join(dir, ".git"), 0o600); err != nil {
+		t.Fatalf("mkfifo .git: %v", err)
+	}
+
+	root, isGit, handled, err := localStructuralMainRoot(dir)
+	if err != nil {
+		t.Fatalf("localStructuralMainRoot(.git FIFO): %v, want the entry reported as unsupported", err)
+	}
+	if handled {
+		t.Error("handled = true for a .git this walk cannot read, want false so the caller falls back")
+	}
+	if !isGit {
+		t.Error("isGit = false for a .git entry that exists, want true")
+	}
+	if root != "" {
+		t.Errorf("root = %q, want empty", root)
 	}
 }

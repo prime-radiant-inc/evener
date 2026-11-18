@@ -61,3 +61,34 @@ func TestProjectName_WorkspaceSpellingNeverOpensMeta(t *testing.T) {
 		}
 	})
 }
+
+// TestProjectName_RestoreRootGitFIFONeverBlocks pins the review finding that a
+// deleted delegate's owner metadata can point its restore root at a directory
+// whose ".git" entry is a FIFO. The shared Git-root resolver reads every
+// non-directory ".git" entry, so opening it blocks the whole search. The
+// resolver must decline that entry and the label must fall back to the restore
+// directory's own name. It runs on the test goroutine: a blocking open hangs
+// here rather than failing.
+func TestProjectName_RestoreRootGitFIFONeverBlocks(t *testing.T) {
+	restore := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(restore, 0o755); err != nil {
+		t.Fatalf("mkdir restore: %v", err)
+	}
+	if err := syscall.Mkfifo(filepath.Join(restore, ".git"), 0o600); err != nil {
+		t.Fatalf("Mkfifo .git: %v", err)
+	}
+
+	bucket := newBucket(t)
+	ownerID := identifier.MustNewSessionID()
+	owner := schema.SessionMeta{ID: ownerID, WorktreeRestoreRoot: restore}
+	owner.EnvInfo.WorkingDir = restore
+	if err := schema.SaveSessionMeta(bucket, owner); err != nil {
+		t.Fatalf("save owner meta: %v", err)
+	}
+
+	m := schema.SessionMeta{}
+	m.EnvInfo.WorkingDir = filepath.Join(bucket, "sessions", ownerID, "worktrees", "notes")
+	if got := projectName(m, bucket); got != "repo" {
+		t.Fatalf("projectName(owner restore root with .git FIFO) = %q, want %q from the restore directory", got, "repo")
+	}
+}
