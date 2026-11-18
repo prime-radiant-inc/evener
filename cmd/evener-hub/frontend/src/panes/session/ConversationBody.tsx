@@ -115,7 +115,12 @@ export interface ConversationSeat {
 }
 
 export interface ConversationParts {
-  state: "deleted" | "loading" | "live";
+  // "refused" is the no-model state a transcript read ends in when the hub
+  // answered its history diagnostic: the read is over and automatic retries
+  // have stopped, so there is nothing left that will clear a loading face.
+  // It is the seat's own fact rather than its summary's, which is why a
+  // cascade column whose summary is healthy still reports it.
+  state: "deleted" | "loading" | "refused" | "live";
   content: React.ReactNode;
   footer: React.ReactNode;
   cadence: React.ReactNode;
@@ -276,6 +281,10 @@ function LiveConversationBody({
     cancelFindOlder,
   } = useTranscript(ref, seat.readView, ownerDocument);
   const deletedRef = useThreadsStore((s) => s.deletedRefs.has(ref));
+  // The ref's most recent read answered the hub's history diagnostic. Read
+  // here rather than only in the session pane so every seat sharing this body
+  // - a cascade column included - reports the refusal instead of a load.
+  const historyFailed = useThreadsStore((s) => s.historyFailedRefs.has(ref));
   const restartPending = useThreadsStore((s) => s.restartBlockingObligations.has(ref));
   const mutationStateAuthoritative = useThreadsStore((s) => s.mutationAuthorityRefs.has(ref));
   const isMobile = useIsMobile();
@@ -528,6 +537,10 @@ function LiveConversationBody({
   // A deleted ref never hydrates a fresh model and its cached snapshot is
   // stale: the seat's deleted face outranks anything this body could render.
   if (deletedRef) return render({ state: "deleted", content: null, footer: null, cadence: null });
+  // A refused history leaves this seat with no model and no read: reporting
+  // "loading" here is what kept a mounted cascade column spinning after the
+  // read had ended and its retries had stopped.
+  if (historyFailed) return render({ state: "refused", content: null, footer: null, cadence: null });
   if (!model) return render({ state: "loading", content: null, footer: null, cadence: null });
 
   // A pending row is mounted content even on a turnless transcript: the

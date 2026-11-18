@@ -23,7 +23,6 @@ import {
   backgroundHolds,
   canonicalThreadOwnerActive,
   clearFinalReleaseOwner,
-  foregroundHolds,
   heldCountsAtStore,
   isFinalReleaseOwner,
   nextBackgroundLeaseSequence,
@@ -1108,7 +1107,7 @@ export function scheduleEntryOpeningRecovery(ref: string): void {
   const route = entryTranscriptRoute(ref);
   if (!route || route.ref !== ref) return;
   if (pendingOpeningRecoveries.get(ref) === route) return;
-  if (foregroundHolds(ref) <= 0) return; // no live foreground holder to recover for
+  if (!threadBodyOwned(ref)) return; // no live foreground holder to recover for
   // The per-open marker paces the chain's own attempts; the route-level
   // unresolvedOpenMiss keeps the chain armed across the follow-up opens that
   // reset the per-open marker — a pane whose promotion or certification open
@@ -1135,7 +1134,7 @@ export function scheduleReplacementEntryRecovery(ref: string): void {
   const route = entryTranscriptRoute(ref);
   if (!route || route.ref !== ref) return;
   if (pendingOpeningRecoveries.get(ref) === route) return;
-  if (foregroundHolds(ref) <= 0) return;
+  if (!threadBodyOwned(ref)) return;
   if (holdsCompleteForegroundWindow(store().getState().threads.get(ref), route.repository)) return;
   launchEntryOpeningRecovery(ref, route);
 }
@@ -1157,7 +1156,7 @@ function launchEntryOpeningRecovery(ref: string, route: EntryTranscriptRoute): v
       if (entryTranscriptRoute(ref) !== route) {
         return;
       }
-      if (foregroundHolds(ref) <= 0) {
+      if (!threadBodyOwned(ref)) {
         return;
       }
       // Another path healed the display mid-chain only while the repository
@@ -1208,7 +1207,7 @@ function launchEntryOpeningRecovery(ref: string, route: EntryTranscriptRoute): v
         const client = await routeHost().requireReadyClient();
         const epoch = getReadyEpoch();
         if (entryTranscriptRoute(ref) !== route) return;
-        if (foregroundHolds(ref) <= 0) return;
+        if (!threadBodyOwned(ref)) return;
         // The chain's own registration spans this read and the re-open after
         // it; the tracked read joins under it rather than displacing it, so
         // a consumer that starts waiting mid-read still captures a promise
@@ -1222,7 +1221,7 @@ function launchEntryOpeningRecovery(ref: string, route: EntryTranscriptRoute): v
         return;
       }
       if (entryTranscriptRoute(ref) !== route) return;
-      if (foregroundHolds(ref) <= 0) return;
+      if (!threadBodyOwned(ref)) return;
       // Mirror the raced recovery's full sequence: the read that replaced
       // the view is followed by the local re-open that promotes its
       // restored bodies into the display — the loop's next attempt. A source
@@ -1277,7 +1276,7 @@ export function scheduleEntryRecordedReconciliation(ref: string): void {
   const repository = route.repository;
   if (!repository || repository.unreconciledRecorded().size === 0) return;
   if (pendingRecordedReconciliations.get(ref) === repository) return;
-  if (foregroundHolds(ref) <= 0) return;
+  if (!threadBodyOwned(ref)) return;
   pendingRecordedReconciliations.set(ref, repository);
   void (async () => {
     try {
@@ -1287,7 +1286,7 @@ export function scheduleEntryRecordedReconciliation(ref: string): void {
       // reconciles nothing (offline, exhausted, superseded).
       for (let pages = 0; pages < 8; pages += 1) {
         if (entryTranscriptRoute(ref) !== route) return;
-        if (foregroundHolds(ref) <= 0) return;
+        if (!threadBodyOwned(ref)) return;
         const owed = repository.unreconciledRecorded();
         if (owed.size === 0) return;
         const paged = await routeHost().reconcileRecordedRange(ref);

@@ -2164,6 +2164,75 @@ it("the last pane closing during a resend releases its reader", async () => {
   lease.release();
 }, 20_000);
 
+// The pane that opens over a routing claim's read marks that read pane-backed,
+// so a second pane joins it instead of opening the cache again. A pane that
+// leaves before its lookup can publish never spent that lookup: the marker must
+// go back with it, or the replacement pane reads it as "a pane already opened
+// this" and stays blank over cached history that is still on disk.
+it("a replacement pane still runs its own cached lookup after the first pane abandons one", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  await seedCursorlessCacheRecord(storage);
+  const client = connect();
+  // The routing claim's read is still in flight while the panes open, so each
+  // pane owes its own cached lookup rather than joining a pane's read that
+  // owned it. It answers only after the first pane has gone, which is what lets
+  // the replacement reach its lookup instead of parking on this registration.
+  const claimRead = deferred<ThreadReadResponse>();
+  let claimEntered = false;
+  client.on("thread/read", () => {
+    claimEntered = true;
+    return claimRead.promise;
+  });
+  const claim = threadsStore.getState().ensureThread("local:a", { routingOnly: true });
+  await vi.waitFor(() => expect(claimEntered).toBe(true));
+  // Stall only the FIRST lookup. The replacement's lookup must run freely, and
+  // its row is what proves the cache was read rather than skipped.
+  const original = SessionEntryCache.prototype.getSessionForRequestedRef;
+  const firstLookupEntered = deferred<void>();
+  const releaseFirstLookup = deferred<void>();
+  let lookups = 0;
+  const lookup = vi.spyOn(SessionEntryCache.prototype, "getSessionForRequestedRef").mockImplementation(async function (
+    this: SessionEntryCache,
+    clientId,
+    ref,
+  ) {
+    const row = await original.call(this, clientId, ref);
+    lookups += 1;
+    if (lookups === 1) {
+      firstLookupEntered.resolve();
+      await releaseFirstLookup.promise;
+    }
+    return row;
+  });
+  try {
+    const first = threadsStore.getState().ensureThread("local:a");
+    await firstLookupEntered.promise;
+    // The first pane closes inside its lookup, so the lookup it marked cannot
+    // publish; the routing lease keeps the destination standing.
+    threadsStore.getState().releaseThread("local:a");
+    releaseFirstLookup.resolve();
+    await first;
+    expect(bodyOwners("local:a"), "the first pane owned no bodies once it left").toBe(0);
+    claimRead.resolve(response());
+    // The replacement pane owes the cached open the first pane never spent.
+    const replacement = threadsStore.getState().ensureThread("local:a");
+    await replacement;
+    // The decision point, not the display: the source read answers here and
+    // publishes over any shell, so what distinguishes the two behaviours is
+    // whether the replacement read the cache at all. A pane that skips the
+    // lookup stays blank for as long as its source read takes; this asserts
+    // the lookup ran, which is the branch the marker decides.
+    expect(lookups, "the replacement pane must run its own cached lookup").toBe(2);
+  } finally {
+    releaseFirstLookup.resolve();
+    await Promise.all(lookup.mock.results.map((result) => result.value));
+    claimRead.resolve(response());
+    await claim;
+    threadsStore.getState().releaseThread("local:a");
+  }
+}, 20_000);
+
 it("a pane opening after a routing hold still begins its fresh cache lifetime", async () => {
   const storage = cache();
   setProductionEntryCacheForTests(storage);

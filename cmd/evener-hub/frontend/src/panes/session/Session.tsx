@@ -241,7 +241,10 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
             </PaneScaffold>
           );
         }
-        if (state === "loading") {
+        // "refused" carries no model either, and it is the state a read ends
+        // in: the loading face with its failure flag is the pane's own answer
+        // to it, so both no-model states share this seat.
+        if (state === "loading" || state === "refused") {
           return (
             <PaneScaffold
               paneId={paneId}

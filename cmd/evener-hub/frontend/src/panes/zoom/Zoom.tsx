@@ -167,6 +167,15 @@ function ScopeConversation({
                 content={
                   state === "deleted" ? (
                     <EmptyState title="This session was deleted" hint="Its transcript is gone." reason="deleted" />
+                  ) : state === "refused" ? (
+                    // The column's own read was refused. Its summary can be
+                    // perfectly healthy and still say nothing about this
+                    // transcript, so the refusal outranks the spinner below.
+                    <EmptyState
+                      title="Transcript unavailable"
+                      reason="unavailable"
+                      hint="The hub refused this transcript's history. It will load again once a later read succeeds."
+                    />
                   ) : state === "loading" ? (
                     snapshot?.summaryState?.permanent && snapshot.summaryState.unavailable ? (
                       <EmptyState

@@ -782,6 +782,15 @@ class InflightHydrations {
     const entry = this.#entries.get(ref);
     if (entry) entry.routing = false;
   }
+  // A pane that leaves before the lookup it marked can publish never spent that
+  // lookup, so the registration goes back to meaning what it did before the
+  // pane arrived: a read that verifies routing state and owes no cached open.
+  // The promise identity keeps a registration another pane is still sharing
+  // untouched - only the marker THIS pane set on THIS read is undone.
+  clearPaneBacked(ref: string, registration: Promise<ThreadModel | null> | undefined): void {
+    const entry = this.#entries.get(ref);
+    if (entry && entry.promise === registration) entry.routing = true;
+  }
   // The entry leaves when its own read settles, unless a newer read has
   // replaced it since.
   start(
@@ -8255,7 +8264,16 @@ async function handleReady(
       ]);
   const watchRefs = targetRef
     ? new Set([targetRef])
-    : new Set([...threadsStore.getState().watchedThreads.keys(), ...pendingWatchedHydrations.keys()]);
+    : new Set([
+        ...threadsStore.getState().watchedThreads.keys(),
+        ...pendingWatchedHydrations.keys(),
+        // A held watch whose first read the hub refused is the watched twin of
+        // a refused pane: the card keeps its hold but has neither a model nor a
+        // pending read, so enumerating only those two leaves the mounted card
+        // empty until something else resyncs it. The hold IS the demand, and a
+        // reconnect is the read that repairs it.
+        ...watchRefCounts.keys(),
+      ]);
   const authoritativePublishedRefs = options?.authoritativePublishedRefs ?? new Set<string>();
   await Promise.all([
     ...Array.from(refs, (ref) =>
@@ -8999,19 +9017,27 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       // read never performed. From here the registration has a pane behind it,
       // so a second pane opening joins it instead of opening the cache again.
       if (routedByClaim) inflightHydrates.markPaneBacked(ref);
+      const backedRegistration = inflightHydrates.get(ref);
       // The pane can close while this lookup is pending - it is the one await
       // before the model exists. The routing hold keeps the foreground count
       // positive, so neither the count nor the deletion fence can see that the
       // only pane left; asking THIS pane's hold before the lookup keeps a
       // closed pane from attaching a reader and restoring cached bodies over a
-      // transcript nobody displays.
-      if (!claimStanding()) return;
+      // transcript nobody displays. The marker this pane set goes with it: a
+      // replacement pane still owes the lookup this one never spent.
+      if (!claimStanding()) {
+        inflightHydrates.clearPaneBacked(ref, backedRegistration);
+        return;
+      }
       await openCachedEntryTranscript(ref, generation);
       if (threadsStore.getState().deletedRefs.has(ref)) return endDeletedDestination();
       // Again after the await: the attachment and the publication above run
       // inside the lookup, so a departure during it must not arm the recovery
       // or the hydration that follows.
-      if (!claimStanding()) return;
+      if (!claimStanding()) {
+        inflightHydrates.clearPaneBacked(ref, backedRegistration);
+        return;
+      }
     }
     let cachedBase: ThreadModel | undefined = threadsStore.getState().threads.get(ref);
 
