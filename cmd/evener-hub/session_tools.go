@@ -653,9 +653,16 @@ func (o *sessionOperations) Invoke(ctx context.Context, caller appwire.ManagerVi
 		response.Stop = &stop
 	}
 	if request.Discover != nil || request.Read != nil || request.Turns != nil || request.Fetch != nil || request.Activity != nil || request.Tasks != nil || request.Job != nil || request.JobOutput != nil || request.Models != nil {
-		if err := managerReadWithinCap(response); err != nil {
-			return appwire.SessionOperationResponse{}, err
+		// A per-item stamp bound cannot enforce a per-response cap, and the
+		// response assembled above can carry an oversized call list on any of
+		// the Manager read paths (initial read, continuation, saved session).
+		// Rebuild it once with the call lists off so the Manager gets a page
+		// rather than a refusal; the wider node read keeps the full stamp.
+		fitted, fitErr := managerReadFitUnderCap(response)
+		if fitErr != nil {
+			return appwire.SessionOperationResponse{}, fitErr
 		}
+		response = fitted
 	}
 	return response, nil
 }
@@ -1193,7 +1200,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 		if isTargetDeletedError(err) || params.IsPendingAskPage() {
 			return appwire.ThreadReadResponse{}, err
 		}
-		resp, ok, pastErr := unavailableThreadReadResponseOwned(ctx, cfg, sources, params, func(options *transcriptWindowPackOptions) {
+		resp, ok, pastErr := unavailableThreadReadResponseOwned(ctx, cfg, sources, params, savedHistoryStampFor(ctx, cfg, params, err), func(options *transcriptWindowPackOptions) {
 			o.retainCanonicalWindowOptions(options)
 		})
 		if pastErr != nil {
@@ -1246,7 +1253,10 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 			if daemon, ok := source.(*appsource.LocalDaemonSource); ok {
 				_, admissionErr := daemon.ResolveSubscriptionAdmission(params)
 				if isDeadSessionError(admissionErr) {
-					saved, found, savedErr := unavailableThreadReadResponseOwned(ctx, cfg, sources, params, func(options *transcriptWindowPackOptions) {
+					// The admission refusal is a local route miss, which also
+					// happens for a confirmed incompatible owner the route
+					// lookup skips. The roster decides whether that is absence.
+					saved, found, savedErr := unavailableThreadReadResponseOwned(ctx, cfg, sources, params, savedHistoryStampFor(ctx, cfg, params, admissionErr), func(options *transcriptWindowPackOptions) {
 						o.retainCanonicalWindowOptions(options)
 					})
 					if savedErr != nil {
@@ -1382,7 +1392,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 		// Keep the first attempt's saved-history eligibility if the
 		// discovered owner disappears before the retry lands.
 		if !recovered && allowPast {
-			saved, ok, pastErr := unavailableThreadReadResponseOwned(ctx, cfg, sources, params, func(options *transcriptWindowPackOptions) {
+			saved, ok, pastErr := unavailableThreadReadResponseOwned(ctx, cfg, sources, params, savedHistoryStampFor(ctx, cfg, params, err), func(options *transcriptWindowPackOptions) {
 				o.retainCanonicalWindowOptions(options)
 			})
 			if pastErr != nil {
@@ -1442,7 +1452,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 		})
 		if pastErr != nil {
 			read.finish(false)
-			return appwire.ThreadReadResponse{}, daemonlessReadError(pastErr)
+			return appwire.ThreadReadResponse{}, stampSavedHistoryReadError(pastErr, appwire.UnknownOwnerBootGeneration)
 		}
 		if ok {
 			pastPage = &past

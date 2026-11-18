@@ -356,11 +356,29 @@ func (jm *jobManager) currentCausalProvenance() *provenance.Causal {
 	return provenance.Clone(jm.currentProvenance())
 }
 
-// hasSupervisedRunningJobs reports whether any live job is guaranteed to keep
-// waking the session even if it never exits: a running job covered by an
-// active watch with a progress interval (periodic ticks, on top of the
-// automatic terminal notification every jm.running entry gets — detached
-// processes are deliberately kept out of the manager, session_tools_jobs.go).
+// hasSupervisedRunningJobs reports whether a live job is guaranteed to deliver
+// the session another wake: a running job covered by a progress-interval watch
+// that can still deliver a tick, on top of the automatic terminal notification
+// every jm.running entry gets (detached processes are deliberately kept out of
+// the manager, session_tools_jobs.go).
+//
+// The goal gate's hold keys on this. A hold is a promise about the future, so
+// only a wake that will actually arrive may sustain it — never a dependent
+// merely existing. Progress watches coalesce ticks that carry no new output
+// (decideProgressTick), so a watch that already delivered its first tick over a
+// target that has written nothing since is not a wake source: counting it would
+// park a goal whose next continuation makes no progress with the no-progress
+// breaker unreachable and no scheduled tick to end the wait. A watch that
+// already delivered therefore qualifies only while a later tick is still
+// certain — output the watch has not delivered yet, or a target in transition
+// (a state change is never coalesced).
+//
+// Only a concrete job target can qualify at all, because the scan below keys on
+// a live jm.running entry: a timer and a session target both name the session,
+// which is never a running job. The cadences that decideProgressTick never
+// coalesces are unreachable here for that reason, not because this predicate
+// carves them out.
+//
 // A bare running job does NOT qualify: jobs have no watchdog, so a
 // never-exiting unwatched job delivers nothing, and the goal gate's
 // wake-pending hold must not park the goal on it with the no-progress breaker
@@ -382,11 +400,36 @@ func (jm *jobManager) hasSupervisedRunningJobs() bool {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
 	for _, cfg := range jm.watches {
-		if cfg.progressIntervalMS > 0 && jm.running[cfg.target] != nil {
+		run := jm.running[cfg.target]
+		if cfg.progressIntervalMS > 0 && run != nil && watchGuaranteesFutureWakeLocked(cfg, run) {
 			return true
 		}
 	}
 	return false
+}
+
+// watchGuaranteesFutureWakeLocked reports whether one progress watch over a
+// running target is certain to deliver another model-bearing tick, i.e. whether
+// holding a goal on it is waiting on a wake rather than on the passage of time.
+// It is the per-watch half of hasSupervisedRunningJobs and mirrors the gates
+// decideProgressTick applies, so the two cannot disagree about what counts as a
+// guaranteed wake: a tick is never coalesced outside those gates, and a tick
+// inside them is never delivered.
+//
+// A target in transition answers first: its next tick is never coalesced. Then
+// the two shapes that make the next tick certain to carry something — an
+// undelivered first tick, and output that outruns the last delivered baseline.
+// The second is certain because the store's length only ever grows and only a
+// delivered tick moves the baseline, so the next tick compares a larger length
+// against the same baseline. The caller must hold jm.mu.
+func watchGuaranteesFutureWakeLocked(cfg *watchConfig, run *runningJob) bool {
+	if run.terminal != nil || run.finalize != nil || run.stopStatus != "" {
+		return true
+	}
+	if !cfg.tickFired {
+		return true
+	}
+	return runOutputBytesLocked(run) > cfg.lastTickOutputBytes
 }
 
 type runningJob struct {

@@ -4,13 +4,25 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/internal/testwait"
 )
+
+// waitSignalLabel is the label the deadline regression's child waits for. It is
+// the test's own input, so the parent can look for it in the child's output
+// without reading production copy.
+const waitSignalLabel = "sentinel-waitsignal-7f3a"
+
+// waitSignalDeadlineHelperEnv marks the re-exec'd child of
+// TestWaitForTestSignalReportsBeforeTheBinaryDeadline, so the parent never
+// re-enters the guard and the child never recurses.
+const waitSignalDeadlineHelperEnv = "EVENER_WAIT_SIGNAL_DEADLINE_HELPER"
 
 // onSessionEventKD drives the jobManager's session-event entry point with a kind
 // and data, wrapping them in a SessionEvent envelope the way Session.emit does.
@@ -63,14 +75,54 @@ func installWatchBelowValidation(t *testing.T, jm *jobManager, a watchArgs) {
 	jm.startProgressTimer(key, cfg, stop)
 }
 
+// waitForTestSignal waits for ch to close, failing with label if it does not.
+//
+// The guard's length comes from testwait.Budget, not a fixed 30s: when the test
+// binary's own deadline is nearer than that budget, a fixed guard would lose to
+// the deadline and the failure would arrive as a goroutine dump instead of this
+// labelled report. Budget keeps the guard short of the deadline, using the same
+// rule testwait.Until polls under, so the two waits cannot disagree about how
+// much of the binary's time a hang guard may spend.
 func waitForTestSignal(t *testing.T, ch <-chan struct{}, label string) {
 	t.Helper()
+	// TRIPWIRE: callers signal in-process with no real I/O; the guard only
+	// fires on a genuine hang.
 	select {
 	case <-ch:
-	// TRIPWIRE: callers signal in-process with no real I/O; this only fires on
-	// a genuine hang.
-	case <-time.After(30 * time.Second):
+	case <-time.After(testwait.Budget(t)):
 		t.Fatalf("timed out waiting for %s", label)
+	}
+}
+
+// Regression for #6788. The guard must report its own label before the test
+// binary's deadline; with a fixed 30s it lost to a nearer deadline and the
+// failure arrived as the runtime's goroutine dump instead.
+//
+// The deadline is the real one: a re-exec'd child of this binary runs under
+// -test.timeout=5s and calls the helper on a channel that never closes. Before
+// the fix the guard outlived the deadline, so the child died in the timeout
+// panic and printed no label; after it the guard gives up halfway there, at
+// 2.5s, and the child reports the label through t.Fatalf.
+func TestWaitForTestSignalReportsBeforeTheBinaryDeadline(t *testing.T) {
+	t.Parallel()
+	if os.Getenv(waitSignalDeadlineHelperEnv) == "1" {
+		waitForTestSignal(t, make(chan struct{}), waitSignalLabel)
+		t.Fatal("the guard returned on a channel that never closes")
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestWaitForTestSignalReportsBeforeTheBinaryDeadline$", "-test.timeout=5s")
+	cmd.Env = append(os.Environ(), waitSignalDeadlineHelperEnv+"=1")
+	out, err := cmd.CombinedOutput()
+	if err == nil {
+		t.Fatalf("a guard that never sees its signal passed its test\n%s", out)
+	}
+	if !strings.Contains(string(out), waitSignalLabel) {
+		t.Fatalf("the guard did not report %q before the binary's deadline, so the failure is the runtime's dump rather than the helper's label\n%s", waitSignalLabel, out)
+	}
+	// Name the shape that made this fail before the fix, so a future regression
+	// says which of the two it is: the guard lost to the deadline, or the label
+	// went missing some other way.
+	if strings.Contains(string(out), "panic: test timed out") {
+		t.Fatalf("the guard lost to the binary's deadline instead of reporting %q first\n%s", waitSignalLabel, out)
 	}
 }
 

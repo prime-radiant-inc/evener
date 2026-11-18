@@ -4135,6 +4135,38 @@ export interface SessionObservationMetadata {
   generationId?: string;
   turnId?: string;
   answerToTurnIds?: string[];
+  /**
+   * ResolvedAskCalls carries admission's own per-call resolution evidence:
+   * the exact ask_user calls (execution turn AND call id) this accepted
+   * input's admission CAPTURED, from schema.Turn.AskResolution. It is the
+   * captured set, not a record of which calls this reply cleared: two fenced
+   * replies admitted against the same pending revision can carry the same
+   * capture, and the first to settle is the one that clears those calls.
+   * Do NOT read AnswerToTurnIDs as a turn-granular collapse of this list. It
+   * is usually coarser - several calls in one execution share one link - but
+   * it is not a superset: a fenced steer that captures an older ask plus an
+   * ask in its own still-active execution records links only for the settled
+   * executions, because admission will not link a turn to an execution that
+   * is still running. A client that treated the links as authoritative would
+   * discard a valid captured call. Match against these calls instead.
+   * Absent on turns admitted before the evidence existed and on unfenced
+   * whole-set answers, which carry no call list at all. A BOUNDED read may
+   * omit this list as a unit while keeping AnswerToTurnIDs and
+   * ResolvedAskLegacyCount, so a large capture cannot displace the reply.
+   */
+  resolvedAskCalls?: PendingAskCall[];
+  /**
+   * ResolvedAskLegacyCount says admission's capture ALSO held this many
+   * questions it could not name - the call-less population restored from
+   * records that predate call ids (schema.AskResolution.LegacyCount).
+   * ResolvedAskCalls cannot see them, so a client pairing a composed answer
+   * line to a named call by header must treat a nonzero count as
+   * unattributable: those questions' headers never reach the wire, and one of
+   * them may share the header the line names. Absent when every captured
+   * question is named. A bounded read KEEPS this count even when it omits
+   * ResolvedAskCalls, because it is what makes the omission safe to see.
+   */
+  resolvedAskLegacyCount?: number;
   entryId?: string;
   endTurn?: boolean;
   endReason?: string;

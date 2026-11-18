@@ -304,8 +304,11 @@ func TestHubRPCItemListPreservesSavedErrorsAndCursorFallback(t *testing.T) {
 		t.Fatalf("source-accepted terminal cursor error = %T %v, want saved stale-cursor WireError", err, err)
 	}
 	data, ok := wireErr.Data.(appwire.HistoryReadErrorData)
-	if !ok || data.EvenerErrorInfo != appwire.ErrorTranscriptItemCursorStale || data.BootGeneration != appwire.DaemonlessBootGeneration {
-		t.Fatalf("source-accepted terminal cursor error data = %#v, want the saved read's daemonless stale-cursor info", wireErr.Data)
+	// The live source is registered and bound to the thread, and its refusal
+	// named no absence, so the saved read's failure cannot claim one: it
+	// carries the unknown-owner generation rather than daemonless (#6815).
+	if !ok || data.EvenerErrorInfo != appwire.ErrorTranscriptItemCursorStale || data.BootGeneration != appwire.UnknownOwnerBootGeneration {
+		t.Fatalf("source-accepted terminal cursor error data = %#v, want the saved read's unknown-owner stale-cursor info", wireErr.Data)
 	}
 
 	fallback, err := dispatch(savedFirst.OlderCursor)
