@@ -409,13 +409,17 @@ func TestStrictExpressible(t *testing.T) {
 			},
 			want: false,
 		},
-		// The gate only certifies a parent that requires every property it
-		// declares, so a branch narrowing required to a subset of those names
-		// was already redundant. Closing the branch against the parent's
-		// properties keeps that so, where closing it against an empty map
-		// would have made it accept only {}.
+		// A branch that declares no properties of its own has no faithful
+		// strict form under a transformed parent. Closing it against its own
+		// empty map makes it accept only {}, while the parent requires every
+		// property it declares, so the union admits nothing. Closing it against
+		// the parent's properties instead widens it: a branch that originally
+		// rejected its siblings' objects begins accepting every one the parent
+		// allows, and copying the parent's subtrees into each branch grows the
+		// projection with nesting. The tool is sent non-strict with the schema
+		// it advertises, which keeps every argument it documented.
 		{
-			name: "branch requires a key the parent declares",
+			name: "branch requires a key the parent declares but declares no properties",
 			in: map[string]any{
 				"type":                 "object",
 				"additionalProperties": false,
@@ -429,7 +433,7 @@ func TestStrictExpressible(t *testing.T) {
 					map[string]any{"type": "object", "required": []string{"name"}},
 				},
 			},
-			want: true,
+			want: false,
 		},
 		// The rewrite gives such a branch the enclosing object's declared
 		// properties before closing it, so the branch still admits the object
@@ -455,6 +459,31 @@ func TestStrictExpressible(t *testing.T) {
 				},
 			},
 			want: false,
+		},
+		// A branch the rewrite leaves exactly as it was is the one shape a
+		// transformed parent can carry: it is already closed and already
+		// requires everything it declares, so closing it again is a no-op and
+		// the union of branches is unchanged.
+		{
+			name: "branch is already closed and fully required",
+			in: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"id":   map[string]any{"type": "string"},
+					"name": map[string]any{"type": "string"},
+				},
+				"required": []string{"id", "name"},
+				"anyOf": []any{
+					map[string]any{
+						"type":                 "object",
+						"additionalProperties": false,
+						"properties":           map[string]any{"id": map[string]any{"type": "string"}},
+						"required":             []string{"id"},
+					},
+				},
+			},
+			want: true,
 		},
 		// A type list naming both object and array has two shapes to satisfy,
 		// and the node is not transformed, so the array side is never
@@ -506,6 +535,65 @@ func TestStrictExpressible(t *testing.T) {
 			},
 			want: false,
 		},
+		// Closing an object to additionalProperties: false leaves it admitting
+		// exactly its declared keys, so a minimum above that count cannot be
+		// met by any object the projection accepts.
+		{
+			name: "required labels object needs more keys than it declares",
+			in: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"labels": map[string]any{
+						"type":          "object",
+						"minProperties": 1,
+						"properties":    map[string]any{},
+					},
+				},
+				"required": []string{"labels"},
+			},
+			want: false,
+		},
+		// allOf constrains the same object, so a key it requires must remain
+		// reachable once the enclosing node is closed. The branch carries no
+		// type and no properties, so nothing but this check sees it.
+		{
+			name: "allOf branch requires a key the closed parent never declares",
+			in: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties":           map[string]any{"id": map[string]any{"type": "string"}},
+				"required":             []string{"id"},
+				"allOf": []any{
+					map[string]any{"required": []string{"scope"}},
+				},
+			},
+			want: false,
+		},
+		// The rewrite descends into items only, so a tuple's prefixItems reach
+		// the provider as advertised.
+		{
+			name: "array prefixItems hold an object with an optional property",
+			in: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"pair": map[string]any{
+						"type": "array",
+						"prefixItems": []any{
+							map[string]any{
+								"type": "object",
+								"properties": map[string]any{
+									"a": map[string]any{"type": "string"},
+									"b": map[string]any{"type": "string"},
+								},
+								"required": []string{"a"},
+							},
+						},
+					},
+				},
+				"required": []string{"pair"},
+			},
+			want: false,
+		},
 	}
 
 	for _, tc := range cases {
@@ -537,12 +625,118 @@ func TestStrictExpressibleAgreesWithTheProjection(t *testing.T) {
 	}
 }
 
-// A schema StrictExpressible accepts must still accept the arguments its
-// original form accepted. Closing a combinator branch sets
-// additionalProperties: false against the branch's own properties, so a
-// branch that only requires keys accepts the empty object once closed and
-// then admits nothing the enclosing object requires.
-func TestStrictProjectionKeepsRequiredBranchesSatisfiable(t *testing.T) {
+// A property-less branch must not start accepting objects its siblings reject.
+// Closing it against the enclosing object's properties would do exactly that:
+// the union would widen from "one of the alternatives" to "anything the parent
+// allows", and the registry still validates against the original schema, so
+// the widened calls would be refused after the model made them.
+func TestRefusedBranchKeepsItsExclusion(t *testing.T) {
+	t.Parallel()
+	// The safe branch admits {mode: "safe", note: "n"}. The second branch
+	// declares no properties and closes itself, so it admits only {}, which the
+	// parent rejects: the union is the safe branch alone. Giving that branch
+	// the parent's properties would make it admit {mode: "fast", note: "n"}.
+	schema := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"mode": map[string]any{"type": "string"},
+			"note": map[string]any{"type": "string"},
+		},
+		"required": []string{"mode", "note"},
+		"anyOf": []any{
+			map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"mode": map[string]any{"const": "safe"}},
+				"required":   []string{"mode"},
+			},
+			map[string]any{"type": "object", "additionalProperties": false, "properties": map[string]any{}},
+		},
+	}
+	if StrictExpressible(schema) {
+		t.Fatal("a parent with a property-less branch must not be certified")
+	}
+	safe := map[string]any{"mode": "safe", "note": "n"}
+	fast := map[string]any{"mode": "fast", "note": "n"}
+	if !schemaAccepts(t, schema, safe) {
+		t.Fatal("the advertised schema rejects the alternative it documents")
+	}
+	if schemaAccepts(t, schema, fast) {
+		t.Fatal("the advertised schema has stopped excluding the undocumented alternative")
+	}
+}
+
+// A refused schema is sent as advertised, so the projection is never built and
+// no subtree is duplicated into each branch. Nesting many levels of such a
+// parent would otherwise grow the projection with the depth.
+func TestRefusedSchemaIsNotProjectedAtAll(t *testing.T) {
+	t.Parallel()
+	var nested map[string]any
+	for range 12 {
+		child := map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"a": map[string]any{"type": "string"},
+				"b": map[string]any{"type": "string"},
+			},
+			"required": []string{"a", "b"},
+			"anyOf": []any{
+				map[string]any{"type": "object", "required": []string{"a"}},
+				map[string]any{"type": "object", "required": []string{"b"}},
+			},
+		}
+		if nested == nil {
+			nested = child
+			continue
+		}
+		nested = map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties":           map[string]any{"a": map[string]any{"type": "string"}, "b": map[string]any{"type": "string"}, "inner": nested},
+			"required":             []string{"a", "b", "inner"},
+			"anyOf": []any{
+				map[string]any{"type": "object", "required": []string{"a"}},
+				map[string]any{"type": "object", "required": []string{"b"}},
+			},
+		}
+	}
+	if StrictExpressible(nested) {
+		t.Fatal("a nested property-less branch must not be certified")
+	}
+	// The caller sends the advertised schema untouched. Confirm it is still the
+	// same size it always was, so nothing was expanded.
+	if got, want := countSchemaNodes(nested), countSchemaNodes(deepCopyAny(nested)); got != want {
+		t.Fatalf("schema grew from %d to %d nodes", want, got)
+	}
+}
+
+// countSchemaNodes counts every map and slice reachable from a schema, which
+// is enough to show an expansion.
+func countSchemaNodes(v any) int {
+	switch x := v.(type) {
+	case map[string]any:
+		n := 1
+		for _, vv := range x {
+			n += countSchemaNodes(vv)
+		}
+		return n
+	case []any:
+		n := 1
+		for _, vv := range x {
+			n += countSchemaNodes(vv)
+		}
+		return n
+	default:
+		return 0
+	}
+}
+
+// A schema the gate refuses is sent non-strict with the schema it advertised,
+// so every argument it documented still reaches the model unchanged. This is
+// what keeps a refused combinator schema usable: the tool loses strict mode,
+// not the arguments its branches select between.
+func TestRefusedBranchSchemaKeepsItsAdvertisedArguments(t *testing.T) {
 	t.Parallel()
 	schema := map[string]any{
 		"type":                 "object",
@@ -557,15 +751,19 @@ func TestStrictProjectionKeepsRequiredBranchesSatisfiable(t *testing.T) {
 			map[string]any{"type": "object", "required": []string{"name"}},
 		},
 	}
+	if StrictExpressible(schema) {
+		t.Fatal("a parent whose property-less branches would collapse or be widened must not be certified")
+	}
+	// The caller keeps the advertised schema, which still accepts the object
+	// its required list demands and still enforces the branch selection.
 	args := map[string]any{"id": "a", "name": "b"}
 	if !schemaAccepts(t, schema, args) {
-		t.Fatal("the declared schema does not accept both required keys")
+		t.Fatal("the advertised schema rejects the object its own required list demands")
 	}
-	if !StrictExpressible(schema) {
-		t.Fatal("a schema whose branches only require declared keys must be expressible")
-	}
-	if !schemaAccepts(t, StrictifyJSONSchema(schema), args) {
-		t.Fatal("the projection rejects the object its own required list demands")
+	// And the projection is never consulted for it, so no subtree is copied
+	// into the branches. Assert that the schema the tool sends is unmodified.
+	if !schemaAccepts(t, deepCopyAny(schema).(map[string]any), args) {
+		t.Fatal("the schema sent non-strict must accept what the advertised one accepts")
 	}
 }
 
