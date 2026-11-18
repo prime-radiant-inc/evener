@@ -1410,6 +1410,9 @@ type Session struct {
 	systemPromptOverride string
 	cachedSystemPrompt   string
 	promptSourceLog      []promptSource
+	// An existing transcript supplies the prompt for the session's lifetime,
+	// including when the header's prompt is empty.
+	systemPromptFrozen bool
 }
 
 type sessionDetachedProcess struct {

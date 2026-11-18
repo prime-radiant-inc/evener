@@ -71,6 +71,9 @@ func prependSystemPromptToUserMessage(systemPrompt string, user llm.Message) llm
 // The empty warning means nothing was omitted or failed; failed reports whether
 // renderSystemPrompt returned its diagnostic text instead of a prompt.
 func (s *Session) refreshSystemPromptCache(env execenv.ExecutionEnvironment) (warning string, failed bool) {
+	if s.systemPromptFrozen {
+		return "", false
+	}
 	if s.cfg.testOnly.minimalSystemPrompt {
 		s.cachedSystemPrompt = "test system prompt"
 		s.promptSourceLog = nil
@@ -124,6 +127,9 @@ func (s *Session) commitTrailerPrompt() string {
 // cannot honor. It is a pending session diagnostic, not a prompt-render
 // failure: the prompt omits the section and the rest of the session proceeds.
 func (s *Session) commitProvenanceWarning() string {
+	if s.systemPromptFrozen {
+		return ""
+	}
 	mode, err := commitprovenance.Normalize(s.cfg.CommitProvenance)
 	if err != nil {
 		return err.Error()

@@ -169,6 +169,16 @@ reasoning_effort = "high"
 
 The next hub launch uses `high`, keeps `workspace-write` and network off, and keeps `LANG`. A per-launch effort of `low` wins over both files. Leaving that field at its default inherits `high`; it does not erase the project setting. Network off limits tools, not the model connection; see [Sandboxing](sandboxing.md).
 
+### System prompt on resume
+
+Reopening an existing transcript uses the exact system prompt saved in its
+header for every conversation request, including tool rounds, later turns,
+and subsequent restores. Whitespace and empty prompts are preserved. Forks
+and asides copy the parent transcript's saved prompt into their own headers.
+Current runtime settings such as compaction still apply. Changes to prompt
+files, personal instructions, and commit provenance apply when Evener renders
+a prompt for a new session or a session without a saved transcript.
+
 ### Commit provenance
 
 `commit_provenance` in the global launch layer controls whether the system prompt tells the model to end commit messages with an Evener `Co-authored-by` trailer naming the version, model, host and session ID. `coauthor` is the default; `off` omits the instruction. The New session form offers the same field as a per-launch override. It is not offered in project settings. The trailer covers only commits whose message the model writes; a scripted commit, `git merge --no-edit`, a rebase or a GitHub-created commit does not gain one.

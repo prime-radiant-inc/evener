@@ -1255,6 +1255,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		ownsArtifactStore:           ownsArtifactStore,
 		subscriberCountFn:           cfg.spawn.subscriberCount,
 	}
+	if restoredTranscriptOpened {
+		s.cachedSystemPrompt = restoredTranscriptHeader.SystemPrompt
+		s.systemPromptFrozen = true
+		s.promptSourceLog = []promptSource{{Label: "transcript", Size: len(s.cachedSystemPrompt)}}
+	}
 	s.bindDescendantTranscriptPublication()
 	defer func() {
 		if !restoreComplete {
@@ -1742,7 +1747,7 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	}
 	s.pluginAgents = builtins
 
-	if s.cfg.SystemPromptFile != "" && !s.isSubagentSession() {
+	if !s.systemPromptFrozen && s.cfg.SystemPromptFile != "" && !s.isSubagentSession() {
 		b, err := os.ReadFile(s.cfg.SystemPromptFile)
 		if err != nil {
 			return nil, fmt.Errorf("reading system prompt override %s: %w", s.cfg.SystemPromptFile, err)
@@ -1896,8 +1901,10 @@ func (s *Session) initSessionState(sessionStartKind plugin.SessionStartKind, run
 	s.hubEnabled = s.cfg.Manager
 	s.mu.Unlock()
 
-	// Cache instruction docs once; reused every round for system prompt rebuilds.
-	s.projectDocs, s.projectDocsTruncated = LoadInstructionDocs(s.currentEnv(), personalDocPath(s.cfg.AgentsDocPath), s.profile.ProjectDocFiles()...)
+	// Cache instruction docs once for system prompt rebuilds.
+	if !s.systemPromptFrozen {
+		s.projectDocs, s.projectDocsTruncated = LoadInstructionDocs(s.currentEnv(), personalDocPath(s.cfg.AgentsDocPath), s.profile.ProjectDocFiles()...)
+	}
 	if s.projectDocsTruncated {
 		// A truncated doc silently drops the tail of the user's standing
 		// instructions from the prompt. Buffer the diagnostic here and let
