@@ -939,6 +939,15 @@ func (s *Session) steeringParkOutcome() PendingInputOutcome {
 	return PendingInputSteeringParked
 }
 
+// markSteeringParkReported records that a wake reported the park it found, so
+// no later wake repeats the same failed attempt. A later failed attempt parks
+// again and reports again.
+func (s *Session) markSteeringParkReported() {
+	s.mu.Lock()
+	s.steeringParkUnreported = false
+	s.mu.Unlock()
+}
+
 // steeringParkedNow reports whether user steering is parked: a failed attempt
 // left Session.steeringParked set and the steer is still queued. Every
 // autonomous path -- the drain ladder's notification and goal rungs, the

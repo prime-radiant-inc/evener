@@ -1098,7 +1098,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		retirementLoopDone = make(chan struct{})
 		go func() {
 			defer close(retirementLoopDone)
-			_ = retiring.retirement.Run(ctx, retiring.consumeClaim, nil)
+			_ = retiring.retirement.Run(ctx, retiring.consumeClaim, func(attempt agent.RetirementAttempt) {
+				serveLogf(logOut, live.session().ID(), "%s", retirementAttemptSummary(attempt))
+			})
 		}()
 	}
 

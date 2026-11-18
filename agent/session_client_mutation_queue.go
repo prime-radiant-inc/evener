@@ -425,10 +425,14 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 			// turn runs next, the same stand-down contract mintRunningTurnID's
 			// callers rely on -- and report the cause the claim observed rather
 			// than a cause this wake guessed.
-			// The park is not consumed here: whether the daemon's sink took
-			// the line is known only to the caller that owns it, and
-			// clearing the flag on an offer that was refused would leave
-			// the park permanently unreported.
+			//
+			// This return is the report, so it consumes the park: the next
+			// wake answers quietly instead of naming the same failed attempt
+			// again. The inline drain path parks steering without returning an
+			// outcome, so its park stays unreported for a later wake to name.
+			if carrierSaw == PendingInputSteeringParked {
+				s.markSteeringParkReported()
+			}
 			return "", false, carrierSaw, nil
 		}
 		queued = carrier
