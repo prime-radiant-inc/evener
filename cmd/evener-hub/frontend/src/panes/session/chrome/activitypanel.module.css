@@ -131,10 +131,23 @@
  * gaps, a 12px disclosure toggle, a 14px kind glyph and the Open control
  * before the name gets anything, so a name may claim all of that remainder and
  * no more - otherwise a long name would push the Open target past the pane
- * edge. A short name never reaches this cap. */
+ * edge. A short name never reaches this cap.
+ *
+ * It also leaves the META its own identifying prefix. Without that, a name at
+ * this cap keeps the name and the Open target and leaves the intent at exactly
+ * zero - measured on the 320px long-name row: name 162.00px, meta 0.00px,
+ * clientWidth 0 - and nothing else in the row or its expanded detail states
+ * the intent, so the row shows neither its name nor what it is doing. Two
+ * glyphs and an ellipsis of the meta's own font is enough to identify it; the
+ * share cap is what keeps this from starving the name instead on the deep
+ * rows, where the remainder is too small to afford both and the name's floor
+ * (documented above) is the precedence that wins. */
 .denseRow:has(.denseMeta[data-intent="true"]) .denseName {
   flex: 0 0 auto;
-  max-width: calc(100% - 4 * var(--space-2) - 12px - 14px - var(--tap-min, 28px));
+  max-width: calc(
+    100% - 4 * var(--space-2) - 12px - 14px - var(--tap-min, 28px) -
+      min(2.8 * var(--font-size-caption), (100% - 4 * var(--space-2) - 12px - 14px - var(--tap-min, 28px)) * 0.35)
+  );
 }
 .denseNameLive {
   font-weight: var(--font-weight-medium);

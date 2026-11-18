@@ -130,6 +130,24 @@ function measureFrame({ spec, frame }) {
       };
       const prefixEllipsisWidth = probeWidth(`${first.segment}…`);
       const nameFullWidth = probeWidth(name.textContent);
+      // The meta's own identifying prefix, measured in the META's font (the
+      // caption size), so a rule that leaves the meta a few glyphs is checked
+      // against what those glyphs actually cost rather than against the name's
+      // size. Parented to the meta for the same reason the name's probe is
+      // parented to the name: an inherited size/weight must be the real one.
+      const metaPrefixEllipsisWidth = (() => {
+        const metaText = meta.textContent ?? "";
+        const [firstMeta] = new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(metaText);
+        if (!firstMeta) return 0;
+        const probe = doc.createElement("span");
+        probe.textContent = `${firstMeta.segment}…`;
+        probe.style.cssText =
+          "position:absolute;left:-99999px;top:0;width:auto;min-width:0;max-width:none;white-space:pre;overflow:visible;text-overflow:clip";
+        meta.appendChild(probe);
+        const width = probe.getBoundingClientRect().width;
+        probe.remove();
+        return width;
+      })();
       const nameRange = doc.createRange();
       nameRange.selectNodeContents(name);
       const target = box(button);
@@ -165,6 +183,7 @@ function measureFrame({ spec, frame }) {
         noIntent: !row.querySelector(".denseMeta[data-intent='true']"),
         statusDot: box(row.querySelector("[data-status-dot]")),
         name: box(name), nameTextWidth: nameRange.getBoundingClientRect().width, prefixEllipsisWidth,
+        metaPrefixEllipsisWidth,
         fontSize: parseFloat(nameStyle.fontSize),
         button: target, disabled: button.disabled || button.getAttribute("aria-disabled") === "true",
         iconVisible: button.querySelector("svg").checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }),

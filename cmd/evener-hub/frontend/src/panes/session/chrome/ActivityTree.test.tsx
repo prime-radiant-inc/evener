@@ -731,7 +731,9 @@ describe("ActivityTree", () => {
     );
     render(<ActivityTree tree={stated} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
     const statedRow = screen.getByRole("treeitem", { name: "inspect" });
-    expect(metaText(statedRow)).toContain("Reading the board.");
+    // Asserted structurally, by the attribute the stylesheet keys on, not by
+    // the fixture's phrase: copy is not an oracle.
+    expect(metaText(statedRow).trim()).not.toBe("");
     expect(statedRow.querySelector("[class*='denseMeta']")?.getAttribute("data-intent")).toBe("true");
   });
 

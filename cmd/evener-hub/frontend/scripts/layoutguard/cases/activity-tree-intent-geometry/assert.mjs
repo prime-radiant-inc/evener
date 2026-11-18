@@ -115,6 +115,21 @@ function assertRow(row, where, expected, pane, failures, room) {
       `${where}: name ${row.name.width.toFixed(2)}px < its ${need.toFixed(2)}px glyph-plus-ellipsis prefix, with ${room.toFixed(2)}px available`,
     );
   }
+  // A long name must not take the WHOLE room. The meta is the only place the
+  // row states what it is doing - its expanded detail does not repeat it - so a
+  // meta squeezed to nothing leaves a row that shows neither its name nor its
+  // work. Required wherever the room affords BOTH floors; not demanded where it
+  // does not, because there the name's floor is the documented precedence and
+  // the check above already holds the name to it. Compared against the floors,
+  // not the name's full text: the row never promised the name its whole label,
+  // and using the full width made this check pass in the state it exists to
+  // catch.
+  const metaNeed = Math.min(row.metaPrefixEllipsisWidth, row.meta.scrollWidth);
+  if (need + metaNeed <= room - EXACT && row.meta.width < metaNeed - EXACT) {
+    failures.push(
+      `${where}: meta ${row.meta.width.toFixed(2)}px is under its ${metaNeed.toFixed(2)}px prefix though the row could afford it`,
+    );
+  }
   // The name box never exceeds the label it holds. A min-width above the
   // label's advance pads the box - the CI failure this guard exists to catch -
   // so the box is bounded by the canvas-measured advance, capped at the label.
