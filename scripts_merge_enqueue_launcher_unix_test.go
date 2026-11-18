@@ -425,12 +425,133 @@ func launcherTrustsPath(t *testing.T, path string) bool {
 // to path will run. It is the same function the launcher uses to pass over a
 // noexec root, so the fixture cannot disagree with the launcher about what
 // "executable" means.
+//
+// This runs a program, so it belongs after the base has been validated: see
+// noexecFixtureProbeDir, which is the only caller that should reach a mkdir or an
+// execution, and which validates first for exactly this reason.
 func launcherCanExecuteIn(t *testing.T, path string) bool {
 	t.Helper()
 	err := exec.Command("bash", "-c",
 		`eval "$(sed -n '/^gate_scratch_root_executes()/,/^}/p' "$1")"; gate_scratch_root_executes "$2"`,
 		"bash", filepath.Join("scripts", "lib", "gate-scratch-root.sh"), path).Run()
 	return err == nil
+}
+
+// noexecFixtureProbeDir creates a private directory under a real noexec mount
+// and returns it, or skips by name when this host cannot supply the condition.
+//
+// The order of operations is the point, and it is why this is one helper rather
+// than the same six lines in three cases. The fixtures here create a directory,
+// chmod it, write a script into it and execute that script -- and all of that
+// used to happen before anything asked whether the base could be trusted. A
+// fixture that runs a program from a directory it never validated is the same
+// defect the launcher was fixed for: a check that comes after the first use is
+// not a check. So the base is resolved and validated against the launcher's own
+// chain rule first, and only a base that passes gets a mkdir, a chmod, a write or
+// an exec beneath it.
+//
+// The later validation of the created directory is still done by each case: the
+// base being trustworthy does not say the new entry is, and the case's premise is
+// about that entry.
+//
+// The returned string is empty and the reason says why when the host cannot
+// supply the condition. It is a value rather than only a skip so a case can
+// assert that an untrusted base created nothing -- which is the ordering this
+// helper exists to hold, and the thing the pre-fix shape got wrong.
+func noexecFixtureProbeDir(t *testing.T, noexecRoot, marker string) (dir, reason string) {
+	t.Helper()
+	base, err := filepath.EvalSymlinks(noexecRoot)
+	if err != nil {
+		return "", fmt.Sprintf("cannot resolve %s (%v)", noexecRoot, err)
+	}
+	// Before the mkdir, the chmod, the probe write and the probe run. A base that
+	// is replaceable makes every one of those a write into somebody else's
+	// directory, and the probe in particular would run their file.
+	if !launcherTrustsPath(t, base) {
+		return "", fmt.Sprintf("%s does not pass the chain rule on this host, so a fixture under it would be about trust and not execution", base)
+	}
+	dir, err = os.MkdirTemp(base, "merge-enqueue-noexec.")
+	if err != nil {
+		return "", fmt.Sprintf("cannot create a directory under %s (%v): this host offers no writable noexec mount", base, err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	if err := os.Chmod(dir, 0o700); err != nil { //nolint:govet // a new err here is the chmod's, not the named return
+		t.Fatalf("make %s private: %v", dir, err)
+	}
+	// The premise, checked rather than assumed: a script written here does not run.
+	//
+	// The probe records that it ran, when the caller asked for that, because "did
+	// this execute" is otherwise only observable as an exit status the helper eats.
+	// A marker survives the directory's removal, so a caller can ask the question
+	// after the fact instead of racing the cleanup.
+	body := "#!/bin/sh\nexit 0\n"
+	if marker != "" {
+		body = "#!/bin/sh\nprintf 'ran\\n' > " + shellquote.Literal(marker) + "\nexit 0\n"
+	}
+	probe := filepath.Join(dir, "probe.sh")
+	writeTestFile(t, probe, []byte(body), 0o700)
+	if err := exec.Command(probe).Run(); err == nil {
+		_ = os.RemoveAll(dir)
+		return "", fmt.Sprintf("%s executes after all: this host cannot supply the noexec condition", dir)
+	}
+	return dir, ""
+}
+
+// TestMergeEnqueueLauncherNoexecFixturesValidateTheirBaseFirst pins the order of
+// operations in the noexec fixtures: the base is validated before anything is
+// created, chmodded or executed beneath it.
+//
+// The fixtures under /run/lock used to run mkdir, chmod and a probe script
+// first, and only then ask whether that base was trustworthy. That is the
+// launcher's own defect in miniature -- a check that comes after the first use is
+// not a check -- and it has a live consequence for the probe in particular, which
+// executes a file it wrote into a directory it never validated. A base another
+// user can replace turns that write into their directory and that exec into
+// their file.
+//
+// The oracle is a base the launcher's own rule rejects, with its entries counted
+// before and after: a refused base must be refused with nothing created in it.
+// Counting is the assertion, because a helper that created and then cleaned up
+// would leave an error-only check looking right.
+func TestMergeEnqueueLauncherNoexecFixturesValidateTheirBaseFirst(t *testing.T) {
+	t.Parallel()
+	untrusted := filepath.Join(resolvePath(t, fixtureScratchBase(t)), "noexec-untrusted-base")
+	if err := os.MkdirAll(untrusted, 0o700); err != nil {
+		t.Fatalf("create %s: %v", untrusted, err)
+	}
+	if err := os.Chmod(untrusted, 0o777); err != nil {
+		t.Fatalf("make %s replaceable: %v", untrusted, err)
+	}
+	if launcherTrustsPath(t, untrusted) {
+		t.Skipf("%s is trusted on this host, so the case cannot show the refusal", untrusted)
+	}
+	countEntries := func() int {
+		entries, err := os.ReadDir(untrusted)
+		if err != nil {
+			t.Fatalf("read %s: %v", untrusted, err)
+		}
+		return len(entries)
+	}
+	before := countEntries()
+	marker := filepath.Join(t.TempDir(), "probe-ran")
+	dir, reason := noexecFixtureProbeDir(t, untrusted, marker)
+	if dir != "" {
+		_ = os.RemoveAll(dir)
+		t.Fatalf("the helper created %s under %s, a base another user can replace", dir, untrusted)
+	}
+	if reason == "" {
+		t.Fatalf("the helper refused %s without saying why", untrusted)
+	}
+	if after := countEntries(); after != before {
+		t.Fatalf("%s held %d entries before the helper ran and %d after: the refusal left something behind", untrusted, before, after)
+	}
+	// The probe must not have run either. This is the half that survives cleanup:
+	// the helper removes the directory it made, so a count taken afterwards reads
+	// the same whether or not something was written and executed in between. A
+	// marker written by the probe is still there.
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatalf("the probe ran from %s before that base was validated: an exec under a directory another user can replace is their file, not this fixture's", untrusted)
+	}
 }
 
 // fixtureScratchBase returns a directory whose full ancestry the launcher
@@ -928,47 +1049,6 @@ func buildIn(t *testing.T, marker string) (pid, group int) {
 		}
 	}
 	return 0, 0
-}
-
-// buildBlockedOn reports whether pid is blocked where the fixture FIFO catches
-// it, that is, past module resolution and into the package's sources.
-//
-// The window state is the oracle. A process opening a FIFO with no writer sits in
-// the open call, and the kernel shows that as `S` or `D` with a wchan naming the
-// fifo; a build that is merely running has not reached the file that proves its
-// ordering. Reading the wchan is what separates "the build exists" from "the
-// build already accepted the module file", and the case this serves is exactly
-// about that difference.
-//
-// A wchan is not available everywhere -- on Linux it needs no privilege, on
-// Darwin `ps` prints no such column -- so an unreadable one falls back to the
-// process having a FIFO open, which is the same fact from the other side.
-func buildIsBlockedOnFIFO(t *testing.T, pid int) bool {
-	t.Helper()
-	// The kernel names the wait a process is in, and a FIFO opened for reading
-	// with no writer sits in wait_for_partner. That is the positive evidence: the
-	// build is inside the open call, which is past the module graph, the require
-	// list and every other source file.
-	//
-	// The file table cannot answer this: a reader blocked in open has no
-	// descriptor for the FIFO yet, which is exactly why the first version of this
-	// helper found nothing and would have reported a correct build as unstarted.
-	//
-	// A wchan is a Linux detail. Elsewhere -- Darwin, where this suite also runs --
-	// there is no equivalent, so the fallback is the scheduler state: a process
-	// waiting in a FIFO open is sleeping, and the compile and link steps that
-	// follow are what make a build busy. It is weaker evidence than the wchan and
-	// is named as such; the platform this gate runs on is the one with the strong
-	// oracle.
-	if state, err := os.ReadFile(fmt.Sprintf("/proc/%d/wchan", pid)); err == nil {
-		return strings.Contains(string(state), "wait_for_partner")
-	}
-	out, err := exec.Command("ps", "-o", "state=", "-p", strconv.Itoa(pid)).Output()
-	if err != nil {
-		return false
-	}
-	state := strings.TrimSpace(string(out))
-	return state == "S" || state == "D"
 }
 
 // assertNoSurvivors fails when any process still names marker and KILLs it
@@ -2061,20 +2141,9 @@ printf 'helper-ran\n' >> "$EVENER_FIXTURE_LOG"
 		if err != nil || !info.IsDir() {
 			t.Skipf("%s is not present on this host", noexecRoot)
 		}
-		probe, err := os.MkdirTemp(noexecRoot, "merge-enqueue-noexec.")
-		if err != nil {
-			t.Skipf("cannot create a directory under %s (%v): this host offers no writable noexec mount to test against", noexecRoot, err)
-		}
-		t.Cleanup(func() { _ = os.RemoveAll(probe) })
-		if err := os.Chmod(probe, 0o700); err != nil {
-			t.Fatalf("make %s private: %v", probe, err)
-		}
-		// The premise, checked rather than assumed: a script written there does not
-		// run.
-		script := filepath.Join(probe, "probe.sh")
-		writeTestFile(t, script, []byte("#!/bin/sh\nexit 0\n"), 0o700)
-		if err := exec.Command(script).Run(); err == nil {
-			t.Skipf("%s executes after all: this host cannot supply the noexec condition", probe)
+		probe, reason := noexecFixtureProbeDir(t, noexecRoot, "")
+		if probe == "" {
+			t.Skip(reason)
 		}
 		if !launcherTrustsPath(t, probe) {
 			t.Skipf("%s does not pass the chain rule on this host, so the case would be about the chain and not about execution", probe)
@@ -2788,21 +2857,6 @@ while :; do sleep 0.05; done
 	}
 }
 
-// TestMergeEnqueueLauncherBuildsDespiteASavedModfile pins that the helper build
-// is decided by this script and not by the developer's saved go env.
-//
-// `GOFLAGS=` in the environment does not win against the file. The go command
-// skips an empty value and falls back to `go env -w`'s stored one, so a saved
-// `GOFLAGS=-modfile=/some/other/checkout/go.mod` shapes this build: it fails
-// opening a file that belongs to another checkout, and the launcher reports a
-// build failure where the caller should have had a queue answer. The fixture
-// builds in this file already set GOENV=off, which is exactly why they cannot
-// see it -- the production path keeps whatever file the developer has saved.
-//
-// The oracle is the build reaching its FIFO. A build that failed on the module
-// file exits before it reads the package, so no process appears and this case
-// fails on readiness; a build given its own environment blocks there and the
-// case cancels it like the cold-build one.
 // TestMergeEnqueueLauncherCancelsAStalledGoEnvRead pins the placement of the
 // saved-goenv read. Reading it is a file read on a path the caller chose, and on
 // a stalled network home directory that read does not return. Run in the
@@ -2859,11 +2913,40 @@ func TestMergeEnqueueLauncherCancelsAStalledGoEnvRead(t *testing.T) {
 	})
 }
 
+// TestMergeEnqueueLauncherBuildsDespiteASavedModfile pins that the helper build
+// is decided by this script and not by the developer's saved go env.
+//
+// `GOFLAGS=` in the environment does not win against the file. The go command
+// skips an empty value and falls back to `go env -w`'s stored one, so a saved
+// `GOFLAGS=-modfile=/some/other/checkout/go.mod` shapes this build: it fails
+// opening a file that belongs to another checkout, and the launcher reports a
+// build failure where the caller should have had a queue answer. The fixture
+// builds in this file already set GOENV=off, which is exactly why they cannot
+// see it -- the production path keeps whatever file the developer has saved.
+//
+// The oracle is the built helper running, the same one the cross-build case
+// uses: a build handed the saved modfile never produces a binary, so the
+// fixture's sentinel never appears, while a build given its own environment
+// writes the helper that writes it.
+//
+// This case used to cancel the build at the fixture FIFO instead, and that
+// oracle was wrong in both directions. On Linux it read the wait channel of the
+// go command's leader, but a multi-threaded build is not its leader: another
+// thread opening the FIFO leaves the leader in a different wait state, so a
+// correct build was reported as not past the module file yet and the case timed
+// out with the blocked build still running in its own group. On Darwin there is
+// no wait channel, so the fallback accepted any sleeping process and the case
+// could signal before Go had read the modfile, passing on exit 130 for a reason
+// it did not have. Letting the build finish needs no intermediate observation.
 func TestMergeEnqueueLauncherBuildsDespiteASavedModfile(t *testing.T) {
 	t.Parallel()
 	c := newFixtureCheckout(t, fixtureTmpDir(t, "tmp"))
 	c.requireIsolated(t)
-	marker := c.tmp
+	// A plain source file, not the fixture's FIFO: this build has to finish, and
+	// the artifact it produces is the whole answer.
+	if err := os.Remove(filepath.Join(c.root, "cmd", "evener-dev", "bin", "hold.go")); err != nil {
+		t.Fatalf("remove the blocking fifo: %v", err)
+	}
 	f := newLauncherFixture(t, "#!/usr/bin/env bash\nexit 0\n")
 	envFile := filepath.Join(f.dir, "go-env")
 	writeTestFile(t, envFile, []byte("GOFLAGS=-modfile="+filepath.Join(f.dir, "no-such.mod")+"\n"), 0o600)
@@ -2882,37 +2965,13 @@ func TestMergeEnqueueLauncherBuildsDespiteASavedModfile(t *testing.T) {
 		return strings.HasPrefix(kv, "EVENER_DEV_BIN=")
 	})
 	runLauncher(t, cmd, f)
-	// Readiness is "the build got past the module file", not "a go build exists".
-	// The difference is the whole finding: the saved GOFLAGS names a modfile that
-	// does not exist, so a launcher that passes it through fails while reading the
-	// module graph -- and that failure and the FIFO-blocked build are the same
-	// process at different moments. Signalling as soon as `go build` appears can
-	// therefore cancel Go before it ever rejects the modfile, and the case would
-	// then pass on exit 130 while proving nothing about the saved setting.
-	//
-	// The ordering is pinned by the FIFO: the fixture's hold.go is the last source
-	// in the package, so the build reaches it only after the module file, the
-	// require list and every other source have been read and accepted. A build
-	// blocked reading the FIFO has therefore passed module resolution, and one that
-	// failed on the modfile never opens it.
-	var buildPID, buildGroup int
-	testwait.UntilSeen(t, "the fixture build to reach the fifo, which is past the module file", func() (bool, string) {
-		buildPID, buildGroup = buildIn(t, marker)
-		if buildPID == 0 {
-			return false, "no process names the fixture scratch: the build exited before it read the package, so the saved GOFLAGS was used"
-		}
-		if !buildIsBlockedOnFIFO(t, buildPID) {
-			return false, fmt.Sprintf("build pid %d is running but is not blocked reading the fixture fifo yet, so it may not have passed the module file", buildPID)
-		}
-		return true, ""
-	})
-	if buildGroup != buildPID {
-		t.Fatalf("the build child %d is in group %d: stop_command cannot signal the build's tree by group", buildPID, buildGroup)
-	}
-	signalLauncher(t, cmd, syscall.SIGTERM)
-	mustExit(t, cmd, f, 130)
-	testwait.Until(t, fmt.Sprintf("build pid %d to terminate", buildPID), func() bool {
-		return pidGone(buildPID)
+	// Exit 0 is the launcher reaching a queue decision through a helper it built
+	// itself. It is 2 when the build failed, which is what passing the saved
+	// modfile through produces.
+	mustExit(t, cmd, f, 0)
+	testwait.Until(t, "the helper this build produced to run", func() bool {
+		_, err := os.Stat(c.sentinel)
+		return err == nil
 	})
 }
 
@@ -3107,18 +3166,9 @@ func TestMergeEnqueueLauncherRefusalNamesExecutionWhenTrustWasNotTheProblem(t *t
 	if info, err := os.Stat(noexecRoot); err != nil || !info.IsDir() {
 		t.Skipf("%s is not present on this host", noexecRoot)
 	}
-	noexec, err := os.MkdirTemp(noexecRoot, "merge-enqueue-noexec.")
-	if err != nil {
-		t.Skipf("cannot create a directory under %s (%v): this host offers no writable noexec mount", noexecRoot, err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(noexec) })
-	if err := os.Chmod(noexec, 0o700); err != nil {
-		t.Fatalf("make %s private: %v", noexec, err)
-	}
-	probe := filepath.Join(noexec, "probe.sh")
-	writeTestFile(t, probe, []byte("#!/bin/sh\nexit 0\n"), 0o700)
-	if err := exec.Command(probe).Run(); err == nil {
-		t.Skipf("%s executes after all: this host cannot supply the noexec condition", noexec)
+	noexec, why := noexecFixtureProbeDir(t, noexecRoot, "")
+	if noexec == "" {
+		t.Skip(why)
 	}
 	if !launcherTrustsPath(t, noexec) {
 		t.Skipf("%s does not pass the chain rule on this host, so the case would be about trust and not execution", noexec)
@@ -3233,19 +3283,27 @@ func TestMergeEnqueueLauncherFixturesDoNotChmodThroughAReplaceableParent(t *test
 	// refused for that reason, not for the chain. /run/lock is noexec on this
 	// host, and the case skips by name where it is not.
 	const noexecRoot = "/run/lock"
+	//
+	// Not noexecFixtureProbeDir: that helper skips a host whose base cannot
+	// execute, and this subtest exists to exercise exactly that host. The ordering
+	// rule is the same though, and applies here first: the base is validated before
+	// anything is created, chmodded or executed beneath it, because all three of
+	// those are operations inside a directory this fixture never checked.
 	if _, err := os.Stat(noexecRoot); err == nil {
-		probe, err := os.MkdirTemp(noexecRoot, "merge-enqueue-noexec.")
-		if err == nil {
-			t.Cleanup(func() { _ = os.RemoveAll(probe) })
-			_ = os.Chmod(probe, 0o700)
-			if launcherTrustsPath(t, probe) && !launcherCanExecuteIn(t, probe) {
-				dir, reason := createPrivateFixtureDir(t, probe)
-				if reason != "the filesystem cannot execute a program" {
-					t.Fatalf("a trusted noexec base was refused with %q, want the execution reason: a fixture that launches a script there fails at the script's start", reason)
-				}
-				if dir != "" {
-					_ = os.RemoveAll(dir)
-					t.Fatalf("the selector returned %s for a noexec base", dir)
+		if base, err := filepath.EvalSymlinks(noexecRoot); err == nil && launcherTrustsPath(t, base) {
+			probe, err := os.MkdirTemp(base, "merge-enqueue-noexec.")
+			if err == nil {
+				t.Cleanup(func() { _ = os.RemoveAll(probe) })
+				_ = os.Chmod(probe, 0o700)
+				if launcherTrustsPath(t, probe) && !launcherCanExecuteIn(t, probe) {
+					dir, reason := createPrivateFixtureDir(t, probe)
+					if reason != "the filesystem cannot execute a program" {
+						t.Fatalf("a trusted noexec base was refused with %q, want the execution reason: a fixture that launches a script there fails at the script's start", reason)
+					}
+					if dir != "" {
+						_ = os.RemoveAll(dir)
+						t.Fatalf("the selector returned %s for a noexec base", dir)
+					}
 				}
 			}
 		}
