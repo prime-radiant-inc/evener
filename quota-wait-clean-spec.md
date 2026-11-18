@@ -175,11 +175,12 @@ each transition against the adopted snapshot. **The adopted snapshot is
 authoritative for pre-cut turn ownership and wait presence**: turn
 establishment and replacement are post-cut transitions delivered in order.
 The evidence question the rules below all turn on is *who supplies turn
-ownership*: a pre-cut terminal status names no turn, so it applies only when
-the snapshot itself names the running turn AND no buffered frame replaces
-it. A snapshot naming turn B after the buffer's Stop for turn A does not
-hand that Stop ownership of B — the snapshot's newer transition wins and
-the Stop retires nothing.
+ownership*: a pre-cut terminal status applies only when its own
+`endedTurnId` matches the turn the snapshot shows running AND no buffered
+frame replaces that turn. A Stop with a missing or different id — including
+one for an older turn the snapshot has already replaced — preserves the
+snapshot's running turn and retires nothing. Live (post-cut) Stops keep
+ordinary delivery-order handling, whatever their vintage.
 
 - **Establishment** (active status): never admissible pre-cut — an idle
   snapshot already reflects every pre-cut Stop the pane could have buffered
@@ -278,15 +279,18 @@ all of them. Tests assert behavior (levels, computed values, class presence)
     no chip, no stall restamp.
 16. A delegate pane reloaded mid-wait during a slot hold past reset shows the
     pending wait (not silence), and clears it when the retry begins; the
-    sidebar row agrees once its navigation summary refreshes (the row is a
-    read-sampled surface; with no pane open it trails by one refresh, per
-    the surface-authority rule — agreement is eventual, not immediate).
+    sidebar row agrees after its next navigation summary refresh — an open
+    pane does not force one; the row is a read-sampled surface and trails
+    by one refresh whether or not a pane is open (per the
+    surface-authority rule; agreement is eventual, not immediate).
 17. An early wake clears the open pane immediately; the row with no pane
     trails until its next navigation refresh, then agrees.
 18. An idle snapshot followed by a genuine post-cut wait start publishes the
     new wait over the idle snapshot.
-19. An older buffered Stop followed by a snapshot naming a newer running
-    turn: the snapshot wins; the Stop retires nothing.
+19. An older buffered Stop (the buffer holds no replacement frame after it)
+    followed by a snapshot naming a newer running turn: the snapshot wins;
+    the Stop retires nothing — its `endedTurnId` names a turn that is not
+    the snapshot's running one, and nothing infers ownership.
 20. The producer's elapsed sample at wait start reflects real call time
     (nonzero for a call that ran before hitting the limit).
 
@@ -306,8 +310,12 @@ all of them. Tests assert behavior (levels, computed values, class presence)
 Dependency order — each stage's acceptance gates the next:
 
 1. **Stage 0, wire:** daemon stamp on all three producers; AppWire fields;
-   older-daemon fallback. Gated on producer behavior: the stamp is strictly
-   increasing per turn and present on start, wake, and read summary.
+   older-daemon fallback. Gated on the complete Stage 0 producer contract:
+   the stamp is strictly increasing per turn and present on start, wake,
+   and read summary; the live start announcement's `resumesAt` matches the
+   read summary's for the same wait; and emitted root and delegate Stop
+   frames carry the correct `endedTurnId` (captured before settlement
+   clears it).
 2. **Stage 1, projection:** the delegate's wait materialized on its projected
    thread; the elapsed sample produced real at wait start. Gated on read
    behavior: a delegate read restores the wait and clears it at retry.
