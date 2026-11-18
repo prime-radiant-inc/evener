@@ -782,7 +782,7 @@ func writeSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta, newPrompt
 		if !errors.Is(err, os.ErrNotExist) {
 			_, syntax := errors.AsType[*json.SyntaxError](err)
 			_, shape := errors.AsType[*json.UnmarshalTypeError](err)
-			if !newPrompt || !(syntax || shape) {
+			if !newPrompt || (!syntax && !shape) {
 				return err
 			}
 			// The caller supplied a usable snapshot for the missing transcript.
