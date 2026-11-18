@@ -15,6 +15,7 @@ import type {
 } from "@evener/appwire-client";
 import {
   acquireThreadSubscription,
+  DAEMONLESS_BOOT_GENERATION,
   ErrorTranscriptHistoryFailed,
   type ThreadSubscriptionLease,
   WireError,
@@ -1692,6 +1693,158 @@ describe("useThreadsStore.ensureThread", () => {
   // buffer. A structured failure publishes the repository's own snapshot, not a
   // base model captured before the frame, so that hold is not discarded. This is
   // the sweep's third path, asserted rather than assumed.
+  test("a named resync after a bootless start keeps the hold the buffer's own history named", async () => {
+    // A bootless relay-recovery resync starts the read from boot 1's model.
+    // Boot 2 then publishes its history/updated and, behind it, its hold - so
+    // both land in the buffer and the base model never learned about boot 2.
+    // A named boot-2 resync then supersedes the read. Judging the buffer by the
+    // base model's owner compares boot 2 against boot 1 and throws the hold
+    // away, though the buffer itself names boot 2 as the owner.
+    const fake = connectReadyFakeClient();
+    const ref = "local:watched";
+    const threadId = `thr_${ref}`;
+    const initial = versionedReadResponse(
+      ref,
+      {
+        status: { type: "active" },
+        evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+      },
+      0,
+    );
+    const refused: Array<(error: Error) => void> = [];
+    let readCount = 0;
+    fake.on("thread/read", (params) => {
+      readCount += 1;
+      if (readCount === 1) return echoRead(initial, params.requestGeneration);
+      return new Promise<ThreadReadResponse>((_resolve, reject) => {
+        refused.push(reject);
+      });
+    });
+
+    await threadsStore.getState().watchThread(ref, { includeTurns: true });
+    fake.emitNotification({
+      method: "evener/delegate/updated",
+      params: { threadId, ref, delegate: heldDelegateRow() },
+    });
+    await flushUntil(() => threadsStore.getState().watchedThreads.get(ref)?.delegates?.[0]?.holdSequence === 900);
+
+    // BOOTLESS: a relay-recovery resync names no source, so it retires nothing
+    // and starts a read from boot 1's model.
+    fake.emitNotification({
+      method: "evener/thread/resync",
+      params: { threadId, ref, epoch: 2 },
+    });
+    await flushUntil(() => refused.length === 1);
+
+    // Boot 2's own frames arrive while that read is pending: its history first,
+    // then its hold. Both are buffered, so the base model still says boot 1.
+    emitHistoryUpdatedFor(fake, ref, threadId, {
+      bootGeneration: "2",
+      epoch: 2,
+      snapshot: { incarnation: "inc-2", length: 1 },
+      turns: [],
+      items: [],
+    });
+    fake.emitNotification({
+      method: "evener/delegate/updated",
+      params: {
+        threadId,
+        ref,
+        delegate: { ...heldDelegateRow(), holdSequence: 1, projectionRevision: 4 },
+      },
+    });
+    await Promise.resolve();
+    // Non-vacuous: the bootless resync retires nothing, so boot 1's 900 is
+    // still what the published model shows. Boot 2's 1 exists only in the
+    // pending read's buffer.
+    expect(threadsStore.getState().watchedThreads.get(ref)?.delegates?.[0]?.holdSequence).toBe(900);
+
+    // A NAMED boot-2 resync supersedes the read. Boot 2 is the source the
+    // buffer already names, so its hold comes along rather than being judged
+    // against boot 1's base model.
+    fake.emitNotification({
+      method: "evener/thread/resync",
+      params: { threadId, ref, bootGeneration: "2", epoch: 3 },
+    });
+    await flushUntil(() => refused.length === 2);
+
+    refused[1]?.(
+      new WireError("thread history failed at entry 7", -32603, {
+        evenerErrorInfo: ErrorTranscriptHistoryFailed,
+      }),
+    );
+    await flushUntil(() => threadsStore.getState().watchedThreads.get(ref)?.history?.failed !== undefined);
+    const published = threadsStore.getState().watchedThreads.get(ref);
+    expect(published?.history?.failed).toBeDefined();
+    expect(published?.delegates?.[0]?.holdSequence).toBe(1);
+
+    threadsStore.getState().releaseWatchedThread(ref);
+  });
+
+  test("a failed read's own boot token retires the hold it identifies", async () => {
+    // A daemon exit sends a bootless resync, so the browser correctly keeps the
+    // hold while it reads. If that read then FAILS, the hub stamps the failure
+    // with the identity it read (appwire.HistoryReadErrorData) - here
+    // "daemonless", the hub's transcript-only answer, which names a definite
+    // absence of a daemon. Without a successful read there is no other evidence
+    // of the replacement, so the retired daemon's 900 would outlive its owner
+    // for the whole duration of the wait.
+    const fake = connectReadyFakeClient();
+    const ref = "local:watched";
+    const threadId = `thr_${ref}`;
+    const initial = versionedReadResponse(
+      ref,
+      {
+        status: { type: "active" },
+        evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+      },
+      0,
+    );
+    let readCount = 0;
+    // The holder defeats control-flow narrowing after the awaits: the callback
+    // runs later, so the compiler cannot prove `reject` was never reassigned.
+    const refusedHolder: { reject: ((error: Error) => void) | null } = { reject: null };
+    fake.on("thread/read", (params) => {
+      readCount += 1;
+      if (readCount === 1) return echoRead(initial, params.requestGeneration);
+      return new Promise<ThreadReadResponse>((_resolve, reject) => {
+        refusedHolder.reject = reject;
+      });
+    });
+
+    await threadsStore.getState().watchThread(ref, { includeTurns: true });
+    fake.emitNotification({
+      method: "evener/delegate/updated",
+      params: { threadId, ref, delegate: heldDelegateRow() },
+    });
+    await flushUntil(() => threadsStore.getState().watchedThreads.get(ref)?.delegates?.[0]?.holdSequence === 900);
+
+    // The daemon exits: a bootless resync names no source, so it retires
+    // nothing, and starts the read.
+    fake.emitNotification({
+      method: "evener/thread/resync",
+      params: { threadId, ref, epoch: 2 },
+    });
+    await flushUntil(() => refusedHolder.reject !== null);
+    expect(threadsStore.getState().watchedThreads.get(ref)?.delegates?.[0]?.holdSequence).toBe(900);
+
+    refusedHolder.reject?.(
+      new WireError("thread history failed at entry 7", -32603, {
+        evenerErrorInfo: ErrorTranscriptHistoryFailed,
+        bootGeneration: DAEMONLESS_BOOT_GENERATION,
+      }),
+    );
+    await flushUntil(() => threadsStore.getState().watchedThreads.get(ref)?.history?.failed !== undefined);
+    const published = threadsStore.getState().watchedThreads.get(ref);
+    // The diagnostic stands, and the hold the failed read's own identity
+    // retired is gone rather than outliving the daemon that numbered it.
+    expect(published?.history?.failed).toBeDefined();
+    expect(published?.delegates?.[0]?.holdSequence).toBeUndefined();
+    expect(published?.delegates?.[0]?.delegateId).toBe("dlg_held");
+
+    threadsStore.getState().releaseWatchedThread(ref);
+  });
+
   test("a tracked read that fails keeps the hold the entry repository already accepted", async () => {
     const fake = connectReadyFakeClient();
     const ref = "ref_a";

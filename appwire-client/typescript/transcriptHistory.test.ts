@@ -1724,3 +1724,98 @@ test("an uninterpretable boot token preserves the hold instead of retiring it", 
   // And no owner was recorded from the uninterpretable token.
   expect(model.history?.holdOwner).toBeUndefined();
 });
+
+test("a legacy bare resync preserves the hold, and the root's next reboot retires it", () => {
+  // Both halves over ONE fixture, because they are one property: the legacy
+  // hint must not be mistaken for a replacement, AND it must not leave the
+  // ownership question answered by an ambiguous token either. A daemon
+  // served by its root at "5@root" publishes a hold of 900. Its older
+  // daemon's worktree-change resync spells the same controller "5".
+  const base = hydrateThread(
+    { thread: testThread(), bootGeneration: "5@root", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 } },
+    "ref_t",
+    1000,
+  );
+  let model = applyNotification(
+    base,
+    { method: "evener/delegate/updated", params: { ref: "ref_t", delegate: heldDelegate(900, 3) } } as AnyNotification,
+    2000,
+  );
+  expect(model.delegates?.[0]?.holdSequence).toBe(900);
+
+  // FIRST HALF: the bare "5" names the controller that is still sampling, so
+  // the hold survives and nothing is recorded from a token that names no root.
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/resync",
+      params: { threadId: base.threadId, ref: "ref_t", bootGeneration: "5", epoch: 3 },
+    } as AnyNotification,
+    3000,
+  );
+  expect(model.delegates?.[0]?.holdSequence).toBe(900);
+  expect(model.history?.holdOwner).toBeUndefined();
+  // `awaited` still advanced - it is the ordering field and history validity
+  // depends on it. That is exactly why ownership must not be read from it.
+  expect(model.history?.awaited?.bootGeneration).toBe("5");
+
+  // SECOND HALF: that awaited "5" is ambiguous. When the root reboots to
+  // "6@root" before any read succeeds, the comparison must be against the
+  // QUALIFIED owner "5@root" - so the reboot is a confirmed replacement and
+  // the retired sequence is cleared, rather than 900 outranking the new
+  // source's first sample at 1.
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/resync",
+      params: { threadId: base.threadId, ref: "ref_t", bootGeneration: "6@root", epoch: 4 },
+    } as AnyNotification,
+    4000,
+  );
+  expect(model.delegates?.[0]?.holdSequence).toBeUndefined();
+  // The durable fields survive the retirement, and so does the wait's shape.
+  expect(model.delegates?.[0]?.delegateId).toBe("dlg_held");
+  expect(model.delegates?.[0]?.lifecycle).toBe("stable");
+  expect(model.history?.holdOwner).toBe("6@root");
+});
+
+test("a standalone daemon's bare history update retires the root-served hold", () => {
+  // A descendant served by its root at "5@root" switches to its own daemon.
+  // That daemon's authoritative `history/updated` carries a BARE counter,
+  // because it serves the thread as its own root - the hub qualifies only a
+  // descendant it serves on a root's behalf. The old hold at 900 would beat
+  // that daemon's first sample at 1 forever.
+  const base = hydrateThread(
+    { thread: testThread(), bootGeneration: "5@root", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 } },
+    "ref_t",
+    1000,
+  );
+  let model = applyNotification(
+    base,
+    { method: "evener/delegate/updated", params: { ref: "ref_t", delegate: heldDelegate(900, 3) } } as AnyNotification,
+    2000,
+  );
+  expect(model.delegates?.[0]?.holdSequence).toBe(900);
+
+  model = applyNotification(
+    model,
+    {
+      method: "history/updated",
+      params: {
+        ref: "ref_t",
+        threadId: base.threadId,
+        bootGeneration: "1",
+        epoch: 1,
+        snapshot: { incarnation: "inc-2", length: 1 },
+        turns: [],
+        items: [],
+      },
+    } as AnyNotification,
+    3000,
+  );
+  // The takeover is confirmed by the frame's own identity, so the retired
+  // sequence is gone and the durable row remains.
+  expect(model.delegates?.[0]?.holdSequence).toBeUndefined();
+  expect(model.delegates?.[0]?.delegateId).toBe("dlg_held");
+  expect(model.history?.holdOwner).toBe("1");
+});

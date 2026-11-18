@@ -50,6 +50,7 @@ import {
   frontierFromCursor,
   handOffReplacedSource,
   historyFallback,
+  holdOwnerOf,
   hydrateThread,
   type InputAttachment,
   invalidateHistory,
@@ -66,6 +67,7 @@ import {
   retireThreadSubscriptions,
   SHUT_DOWN_STATUSES,
   type ThreadSubscriptionLease,
+  transcriptHistoryFailedBootGeneration,
   WireError,
   wireThreadSubscriptions,
 } from "@evener/appwire-client";
@@ -4452,9 +4454,21 @@ async function readThreadHydration(
       // decide whether anything is published at all.
       const failedBase = applyHistoryReadFailure(pending.baseModel, errorText(err), pending.requestGeneration ?? 0);
       const failedModel = replayHydrationNotifications(failedBase, pending.notifications).model;
+      // A failed read is still EVIDENCE about who serves the thread: the hub
+      // stamps it with the identity it read (appwire.HistoryReadErrorData), a
+      // daemon's own token or "daemonless" for the hub's transcript-only
+      // answer. Without a successful read there is nothing else to confirm a
+      // replacement, so a hold the replaced source still carries would outlive
+      // its owner for the whole duration of the wait. The hand-off is the same
+      // rule every other fold runs - retire a CONFIRMED replacement's samples
+      // and record the incoming owner - and it leaves the diagnostic, the
+      // recorded history, and any still-unconfirmed hold exactly as they are.
+      const failureOwner = transcriptHistoryFailedBootGeneration(err);
+      const handed = failureOwner ? handOffReplacedSource(failedModel, failureOwner, "authoritative") : undefined;
+      const published = handed ?? failedModel;
       const entry = tracked ? existingEntryRoute(ref) : undefined;
       if (!tracked) {
-        putWatchedThreadModel(ref, failedModel);
+        putWatchedThreadModel(ref, published);
       } else if (entry?.repository) {
         if (
           pending.client === getWiredClient() &&
@@ -4463,10 +4477,11 @@ async function readThreadHydration(
         ) {
           entry.repository.acceptReadFailure(errorText(err), pending.requestGeneration ?? 0, {
             lifetime: entry.lifetime,
+            bootGeneration: failureOwner,
           });
         }
       } else {
-        putThreadModel(ref, failedModel);
+        putThreadModel(ref, published);
       }
     } else {
       scheduleOwnedHydrationRetry(read.kind, ref, pending);
@@ -5980,10 +5995,7 @@ function beginWatchedHydration(
   // failure replay has nothing to publish. When the supersession IS a
   // confirmed replacement, the buffer belongs to the replaced source and goes
   // with it.
-  const carried =
-    previousPending && carriesBufferedHolds(previousPending, resyncBootGeneration)
-      ? previousPending.notifications.filter((update) => update.notification.method === "evener/delegate/updated")
-      : [];
+  const carried = previousPending ? carriedHydrationUpdates(previousPending, resyncBootGeneration) : [];
   if (previousPending) retirePendingHydration(ref, previousPending, pendingWatchedHydrations);
   // Only a history-requesting read orders the repair-status sequence: a
   // lean watch the hub can answer without touching the transcript index
@@ -6019,19 +6031,50 @@ function beginWatchedHydration(
   return pending;
 }
 
-// carriesBufferedHolds decides whether a superseded watched read's buffered
-// updates belong to the incoming source or to a source that is gone.
+// carriedHydrationUpdates decides which of a superseded watched read's buffered
+// updates belong to the source still serving the ref, and returns them.
 //
-// Only a CONFIRMED replacement takes them: a same-boot resync, a bootless one,
-// and a token that cannot be interpreted all leave the daemon that published
-// them in charge, and the new read's buffer is the only place its hold exists.
-// A confirmed replacement discards them with the source that numbered them.
-function carriesBufferedHolds(pending: PendingThreadHydration, resyncBootGeneration: string | undefined): boolean {
-  if (!resyncBootGeneration) return true;
+// The base model cannot answer this on its own. A bootless relay-recovery
+// resync starts the read from the model it holds, and a REPLACEMENT may then
+// publish its own history/updated and a delegate hold into the buffer before
+// the read settles. Judging the buffer by the base model's owner compares the
+// successor resync against a source the buffer has already moved past, and
+// discards a hold that source still owns.
+//
+// So walk the buffer in order and let its versioned signals say who serves the
+// ref by the end. A history frame is the serving daemon's own account of
+// itself, so a genuine replacement inside the buffer moves the owner there and
+// retires the samples that preceded it, which belong to the source it
+// replaced. A sample published after that frame belongs to the current owner
+// and is carried.
+//
+// Only a CONFIRMED replacement then discards what is left: a same-boot resync,
+// a bootless one, and a token that cannot be interpreted all leave the daemon
+// that published them in charge, and the new read's buffer is the only place
+// its hold exists.
+function carriedHydrationUpdates(
+  pending: PendingThreadHydration,
+  resyncBootGeneration: string | undefined,
+): PendingThreadHydration["notifications"] {
   const held = pending.baseModel?.history;
-  if (!held) return true;
-  const owner = held.holdOwner ?? held.awaited?.bootGeneration ?? held.bootGeneration;
-  return !confirmedBootReplacement(owner, resyncBootGeneration);
+  if (!held) return [];
+  let owner = holdOwnerOf(held);
+  let carried: PendingThreadHydration["notifications"] = [];
+  for (const update of pending.notifications) {
+    const { method } = update.notification;
+    if (method === "history/updated") {
+      const boot = update.notification.params.bootGeneration;
+      if (boot && confirmedBootReplacement(owner, boot, "authoritative")) {
+        owner = boot;
+        // Samples buffered before this frame were numbered by the source it
+        // replaced; they lose to the incoming source's first sample.
+        carried = carried.filter((buffered) => buffered.notification.method !== "evener/delegate/updated");
+      }
+    }
+    carried.push(update);
+  }
+  if (!resyncBootGeneration) return carried;
+  return confirmedBootReplacement(owner, resyncBootGeneration, "authoritative") ? [] : carried;
 }
 
 function bufferPendingNotification(

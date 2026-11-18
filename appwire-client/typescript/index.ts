@@ -105,7 +105,12 @@ export {
 export type { MarkerAttachment } from "./attachmentMarkers";
 export { translateAttachmentMarkers } from "./attachmentMarkers";
 export type { BootGenerationAction } from "./bootGeneration";
-export { compareBootGeneration, confirmedBootReplacement, DAEMONLESS_BOOT_GENERATION } from "./bootGeneration";
+export {
+  type BootTokenEvidence,
+  compareBootGeneration,
+  confirmedBootReplacement,
+  DAEMONLESS_BOOT_GENERATION,
+} from "./bootGeneration";
 export type { BuiltinMatch } from "./builtinInvocation";
 export { findBuiltinArgument, matchBuiltinInvocation } from "./builtinInvocation";
 export { slashCommandInvocation, visibleCatalogCommands } from "./catalogCommands";
@@ -286,6 +291,7 @@ export {
   sessionActionError,
   sessionActionHeadline,
   storeErrorText,
+  transcriptHistoryFailedBootGeneration,
   WireError,
   wireRejectionPayload,
 } from "./errors";
@@ -917,6 +923,7 @@ export {
 export {
   copyItemTextPresence,
   handOffReplacedSource,
+  holdOwnerOf,
   imageSessionRouteForSession,
   isToolCallItemId,
   isToolResultItemId,

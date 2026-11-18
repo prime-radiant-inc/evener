@@ -48,12 +48,15 @@ function applyHistoryUpdated<M extends ThreadModel>(model: M, params: HistoryUpd
     // No invalidation fold runs here, so the hand-off supplies both halves: the
     // retire of the replaced source's samples and the record of the incoming
     // owner. The diagnostic and the recovery behaviour stay as they were.
-    return handOffReplacedSource(live, params.bootGeneration) ?? live;
+    return handOffReplacedSource(live, params.bootGeneration, "authoritative") ?? live;
   }
   const signal: HistorySignal = {
     bootGeneration: params.bootGeneration,
     epoch: params.epoch,
     incarnation: params.snapshot.incarnation,
+    // The serving daemon's own frame, qualified by its root for a descendant:
+    // a bare counter here names that daemon serving the thread as its own root.
+    bootEvidence: "authoritative",
   };
   const action = classifySignal(held, signal);
   // History validity and hold ownership are different questions. Invalidating
@@ -69,7 +72,7 @@ function applyHistoryUpdated<M extends ThreadModel>(model: M, params: HistoryUpd
     // `invalidated` recorded the incoming owner at the one place awaited is
     // written. What remains is the retire, decided against the pre-invalidation
     // model so it still sees the owner that is being replaced.
-    const retired = handOffReplacedSource(live, params.bootGeneration);
+    const retired = handOffReplacedSource(live, params.bootGeneration, "authoritative");
     return { ...(retired ?? live), history };
   }
   if (action === "ignore" || held.invalidatedAtGeneration !== undefined) return live;

@@ -21,6 +21,23 @@ export const DAEMONLESS_BOOT_GENERATION = "daemonless";
 export type BootGenerationAction = "apply" | "ignore" | "replace";
 
 /**
+ * Which producer the incoming token came from, which decides whether a bare
+ * counter names an owner.
+ *
+ * `authoritative`: a read response, a versioned page, a `history/updated`, or
+ * a structured read failure. These are the serving daemon's own account of
+ * itself, and the hub qualifies a descendant with its root on every one of
+ * them (`bootGenerationFor`). A bare counter here therefore names the daemon
+ * serving the thread as its own root — the descendant's own daemon took over.
+ *
+ * `resync`: a `evener/thread/resync` hint. An older daemon stamps a
+ * descendant's worktree-change resync with a bare counter while its reads name
+ * the same controller qualified, so a bare token from this producer may be the
+ * same owner under another name, and names nothing it can be retired by.
+ */
+export type BootTokenEvidence = "resync" | "authoritative";
+
+/**
  * Compares boot generation tokens: "<n>" (a daemon's own session),
  * "<n>@<rootSessionID>" (a descendant served by its root's daemon) or
  * "daemonless". Two tokens compare numerically only when both are counters of
@@ -59,7 +76,11 @@ const MAX_UINT64 = (1n << 64n) - 1n;
  * `daemonless` names a definite absence of a daemon, so it confirms. A token
  * that parses as neither is malformed and names nothing.
  */
-export function confirmedBootReplacement(held: string, incoming: string): boolean {
+export function confirmedBootReplacement(
+  held: string,
+  incoming: string,
+  evidence: BootTokenEvidence = "resync",
+): boolean {
   if (held === incoming) return false;
   // An empty `held` means this model has recorded no source yet, so there is
   // nothing whose replacement could be confirmed - not even by daemonless.
@@ -73,8 +94,20 @@ export function confirmedBootReplacement(held: string, incoming: string): boolea
   }
   if (heldCounter.owner !== incomingCounter.owner) {
     // Both sides name their root, so the owners really differ. A bare counter
-    // on either side leaves the owner unstated, which is not a difference.
-    return heldCounter.owner !== "" && incomingCounter.owner !== "";
+    // on either side leaves the owner unstated.
+    if (heldCounter.owner !== "" && incomingCounter.owner !== "") return true;
+    // An AUTHORITATIVE frame is the serving daemon's own account of itself,
+    // and the hub qualifies a descendant with its root on every one of them
+    // (server/appwire_histories.go's bootGenerationFor). A bare counter here
+    // therefore names the daemon serving the thread as its own root: a
+    // descendant previously served by "5@root" resumed under its own daemon
+    // at "1", and its first hold is numbered from that daemon's start.
+    //
+    // A resync hint is different: an older daemon stamps a descendant's
+    // worktree-change resync with a bare counter while its reads name the same
+    // controller qualified, so a bare token from one may be the same owner
+    // under another name and confirms nothing.
+    return evidence === "authoritative";
   }
   return compareBootGeneration(held, incoming) === "replace";
 }

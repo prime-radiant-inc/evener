@@ -2,10 +2,10 @@
 // stable-delegate helpers, and the wire-to-model item conversions. A leaf over
 // model types, identity validation and generated wire types.
 
-import { confirmedBootReplacement } from "./bootGeneration";
+import { type BootTokenEvidence, confirmedBootReplacement } from "./bootGeneration";
 import { pendingTextJoined } from "./chunkview";
 import { historyServingFacts } from "./historyServing";
-import type { ItemImage, ItemModel, ThreadModel, TurnModel } from "./model";
+import type { HistoryState, ItemImage, ItemModel, ThreadModel, TurnModel } from "./model";
 import { joinDelegateState, revisionOf } from "./stableDelegate";
 import { isValidTranscriptRef } from "./steeringNotifications";
 import { isRecord } from "./transcriptValidators";
@@ -104,6 +104,19 @@ export function retireStableDelegateHolds(
   });
 }
 
+// holdOwnerOf resolves the boot token that OWNS the hold samples on a history.
+//
+// This is the one place that question is answered. `awaited` is an ORDERING
+// field: it advances on every invalidating signal, including a resync whose
+// bare token may be another name for the owner that is still sampling, and a
+// structured read failure drops it entirely. Neither may decide ownership, so
+// `holdOwner` - written only where a signal confirmed a replacement - wins,
+// and only a model that has never recorded one falls back to the identity the
+// last applied read left.
+export function holdOwnerOf(held: HistoryState): string {
+  return held.holdOwner ?? held.bootGeneration;
+}
+
 // retireReplacedSourceHoldOnModel is THE hold-retirement rule, for every site
 // that folds a source-identity change into a transcript model.
 //
@@ -126,16 +139,17 @@ export function retireStableDelegateHolds(
 export function retireReplacedSourceHoldOnModel<M extends ThreadModel>(
   model: M,
   bootGeneration: string | undefined,
+  evidence: BootTokenEvidence = "resync",
 ): M | undefined {
   if (!bootGeneration) return undefined;
   const held = model.history;
   if (!held) return undefined;
-  const owner = held.holdOwner ?? held.awaited?.bootGeneration ?? held.bootGeneration;
+  const owner = holdOwnerOf(held);
   // A CONFIRMED replacement, never merely a name mismatch: an older daemon
   // stamps a descendant's worktree-change resync with a bare "5" while its
   // reads name the same controller "5@root", and that difference retires a
   // hold nothing replaced. An unchanged hold emits no update to restore one.
-  if (!confirmedBootReplacement(owner, bootGeneration)) return undefined;
+  if (!confirmedBootReplacement(owner, bootGeneration, evidence)) return undefined;
   const delegates = retireStableDelegateHolds(model.delegates);
   if (delegates === undefined || delegates === model.delegates) return undefined;
   return { ...model, delegates };
@@ -154,15 +168,16 @@ export function retireReplacedSourceHoldOnModel<M extends ThreadModel>(
 export function recordSourceOwnerOnModel<M extends ThreadModel>(
   model: M,
   bootGeneration: string | undefined,
+  evidence: BootTokenEvidence = "resync",
 ): M | undefined {
   if (!bootGeneration) return undefined;
   const held = model.history;
   if (!held) return undefined;
-  const owner = held.holdOwner ?? held.awaited?.bootGeneration ?? held.bootGeneration;
+  const owner = holdOwnerOf(held);
   // Same confirmation as the retire: an uninterpretable token must not become
   // the recorded owner, or the next well-formed token for that same controller
   // reads as another replacement.
-  if (!confirmedBootReplacement(owner, bootGeneration)) return undefined;
+  if (!confirmedBootReplacement(owner, bootGeneration, evidence)) return undefined;
   return { ...model, history: { ...held, holdOwner: bootGeneration } };
 }
 
@@ -183,9 +198,10 @@ export function recordSourceOwnerOnModel<M extends ThreadModel>(
 export function handOffReplacedSource<M extends ThreadModel>(
   model: M,
   bootGeneration: string | undefined,
+  evidence: BootTokenEvidence = "resync",
 ): M | undefined {
-  const retired = retireReplacedSourceHoldOnModel(model, bootGeneration);
-  const owned = recordSourceOwnerOnModel(retired ?? model, bootGeneration);
+  const retired = retireReplacedSourceHoldOnModel(model, bootGeneration, evidence);
+  const owned = recordSourceOwnerOnModel(retired ?? model, bootGeneration, evidence);
   return owned ?? retired;
 }
 

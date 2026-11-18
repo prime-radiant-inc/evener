@@ -849,11 +849,19 @@ export class TranscriptRepository {
   }
 
   /** Adopt a source failure under the same captured lifetime as a read. */
-  acceptReadFailure(message: string, generation: number, context: { lifetime: number }): void {
+  acceptReadFailure(message: string, generation: number, context: { lifetime: number; bootGeneration?: string }): void {
     if (!this.#acceptsLifetime(context.lifetime) || !this.#model) return;
     const failed = applyHistoryReadFailure(this.#model, message, generation);
     if (failed === this.#model) return;
-    this.#model = failed;
+    // A failed read still names the source it read (the hub stamps
+    // appwire.HistoryReadErrorData on it). Run the same hand-off every other
+    // fold runs: a CONFIRMED replacement retires the old samples and records
+    // the incoming owner, and an unconfirmed one leaves both alone. The
+    // diagnostic `applyHistoryReadFailure` just set is carried untouched.
+    const handed = context.bootGeneration
+      ? handOffReplacedSource(failed, context.bootGeneration, "authoritative")
+      : undefined;
+    this.#model = handed ?? failed;
     this.#advanceSourceRevision();
     this.#recoveryNeeded = true;
     this.#publish();

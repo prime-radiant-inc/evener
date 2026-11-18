@@ -3,7 +3,7 @@
 // `turnHistoryMerge` and `transcriptItems`; the notification folds that drive
 // these live in `reducer.ts`.
 
-import { compareBootGeneration, confirmedBootReplacement } from "./bootGeneration";
+import { type BootTokenEvidence, compareBootGeneration, confirmedBootReplacement } from "./bootGeneration";
 import { historyFallback, historyReplacesWindow, historyServingFacts } from "./historyServing";
 import type { HistoryState, ItemModel, OlderFrontier, ThreadModel, TurnModel } from "./model";
 import { comparePositions, SYSTEM_PRELUDE_TURN_ID } from "./model";
@@ -14,6 +14,7 @@ export { frontierFromCursor, olderFrontierOf, olderHistoryExhausted, withOlderFr
 
 import {
   copyItemTextPresence,
+  holdOwnerOf,
   imageSessionRouteForSession,
   itemIsIdentityOnly,
   itemTextPresence,
@@ -810,6 +811,15 @@ export interface HistorySignal {
   bootGeneration?: string;
   epoch?: number;
   incarnation?: string;
+  /**
+   * Which producer named `bootGeneration`. Only a hold OWNER record consults
+   * it: a bare counter from a resync hint may be another name for the owner
+   * that is still sampling, while a bare counter on the serving daemon's own
+   * authoritative frame names that daemon taking the thread as its own root.
+   * Defaults to "resync", the cautious reading: a signal that does not say
+   * which it is may not confirm a replacement.
+   */
+  bootEvidence?: BootTokenEvidence;
 }
 
 // What a signal does to held history. It compares against what an invalid
@@ -863,12 +873,13 @@ export function invalidated(history: HistoryState, signal: HistorySignal = {}): 
   // alone: that daemon's delegate controller is still sampling, and an
   // unchanged hold emits no update of its own to restore one dropped here.
   const explicit = signal.bootGeneration || undefined;
-  const owner = history.holdOwner ?? history.awaited?.bootGeneration ?? history.bootGeneration;
+  const owner = holdOwnerOf(history);
   // Confirmed replacement, not a bare token mismatch: an older daemon names a
   // descendant's controller "5" on a worktree-change resync and "5@root" on
   // its reads, and recording that "5" as the owner makes the next read's
   // well-formed token for the SAME controller read as another replacement.
-  const record = explicit !== undefined && confirmedBootReplacement(owner, explicit) ? explicit : undefined;
+  const record =
+    explicit !== undefined && confirmedBootReplacement(owner, explicit, signal.bootEvidence) ? explicit : undefined;
   return {
     ...history,
     invalidatedAtGeneration: history.issuedGeneration,
@@ -1311,11 +1322,14 @@ function mergeVersionedPage<M extends ThreadModel>(
     case "invalidate": {
       // A page of the incarnation it just announced waits for that
       // incarnation's latest window.
-      const history = invalidated(held, readIdentity(resp));
+      const history = invalidated(held, {
+        ...readIdentity(resp),
+        bootEvidence: "authoritative",
+      });
       const deferred = history.pendingIncarnation === resp.snapshot?.incarnation;
       // `invalidated` recorded the incoming source as the hold owner; this is
       // the retire, decided against the model that still names the old owner.
-      const retired = retireReplacedSourceHoldOnModel(model, resp.bootGeneration);
+      const retired = retireReplacedSourceHoldOnModel(model, resp.bootGeneration, "authoritative");
       return {
         ...(retired ?? model),
         history: deferred ? { ...history, deferredPages: [...history.deferredPages, resp] } : history,

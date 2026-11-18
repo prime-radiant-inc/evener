@@ -118,6 +118,25 @@ export function wireRejectionPayload<T>(
 // reads the Go constant.
 export const ErrorTranscriptHistoryFailed = "transcriptHistoryFailed";
 
+/**
+ * The boot generation a failed history read ran under.
+ *
+ * The hub stamps every history-read failure with the identity it read
+ * (appwire.HistoryReadErrorData, via WithHistoryReadIdentity): a daemon's own
+ * qualified or bare token, or "daemonless" when the hub served the read from
+ * the transcript with no daemon running. A client never adopts that identity
+ * as history, but it is the only evidence a FAILED read carries about who was
+ * serving the thread, so the hold rule needs it: a hold retired on a
+ * replacement that no successful read then confirms would otherwise survive
+ * for its whole duration. Returns undefined for any other rejection, and for a
+ * payload with no string token.
+ */
+export function transcriptHistoryFailedBootGeneration(error: unknown): string | undefined {
+  return wireRejectionPayload(error, ErrorTranscriptHistoryFailed, "bootGeneration", (value) =>
+    typeof value === "string" && value !== "" ? value : undefined,
+  );
+}
+
 export function isTranscriptHistoryFailedError(err: unknown): boolean {
   return err instanceof WireError && err.evenerErrorInfo === ErrorTranscriptHistoryFailed;
 }

@@ -2,6 +2,7 @@
 import { expect, test } from "vitest";
 import {
   type BootGenerationAction,
+  type BootTokenEvidence,
   compareBootGeneration,
   confirmedBootReplacement,
   DAEMONLESS_BOOT_GENERATION,
@@ -97,4 +98,36 @@ const confirmCases: Array<[held: string, incoming: string, want: boolean]> = [
 
 test.each(confirmCases)("confirmedBootReplacement(%j, %j) is %s", (held, incoming, want) => {
   expect(confirmedBootReplacement(held, incoming)).toBe(want);
+});
+
+// The evidence kind is the second half of the same question. A resync hint is
+// a request to re-read, and an older daemon stamps a descendant's
+// worktree-change resync with a bare counter while its reads name the same
+// controller qualified - so a bare token there names nothing it can be retired
+// by. An AUTHORITATIVE frame is the serving daemon's own account of itself, and
+// the hub qualifies a descendant with its root on every one of them, so a bare
+// counter there names that daemon serving the thread as its own root.
+//
+// Both directions are asserted over the same fixture: "5" preserves the hold
+// on a resync, and the following "6@root" retires it.
+const confirmEvidenceCases: Array<[held: string, incoming: string, evidence: BootTokenEvidence, want: boolean]> = [
+  // The legacy resync: bare against qualified confirms nothing.
+  ["5@root", "5", "resync", false],
+  // The same token from the serving daemon's own frame is the takeover.
+  ["5@root", "5", "authoritative", true],
+  // And a qualified successor retires either way - the reboot the legacy
+  // resync must not hide behind the ambiguity it created.
+  ["5@root", "6@root", "resync", true],
+  ["5@root", "6@root", "authoritative", true],
+  // Qualified against bare, authoritative: a descendant again served by its
+  // root's daemon is a different owner from the daemon that took it over.
+  ["5", "5@root", "authoritative", true],
+  // A same-source pair stays a non-replacement under either reading.
+  ["5@root", "5@root", "authoritative", false],
+  ["3", "3", "authoritative", false],
+  ["3", "4", "authoritative", true],
+];
+
+test.each(confirmEvidenceCases)("confirmedBootReplacement(%j, %j, %s) is %s", (held, incoming, evidence, want) => {
+  expect(confirmedBootReplacement(held, incoming, evidence)).toBe(want);
 });
