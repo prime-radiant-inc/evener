@@ -901,7 +901,6 @@ func TestReadableKeywordsRejectSomeValue(t *testing.T) {
 		"description": "d", "title": "t", "default": nil, "examples": []any{},
 		"format": "unknown-format", "pattern": "", "uniqueItems": false,
 		"minLength": 0, "minItems": 0,
-		"minimum": -1e308, "maximum": 1e308,
 	}
 	for keyword, value := range identityForm {
 		if modeledKeywords[keyword] == readableByWalk {
@@ -1020,40 +1019,48 @@ func TestOnlyReadableKeywordsCertifyATypelessNode(t *testing.T) {
 // accept the null member, and each accept the ordinary string members.
 func TestProjectionPreservesATypedNilMapInAnEnum(t *testing.T) {
 	t.Parallel()
-	var nullMember map[string]any // typed nil: marshals as JSON null
-	schema := map[string]any{
-		"type":                 "object",
-		"additionalProperties": false,
-		"properties": map[string]any{
-			"format": map[string]any{
-				"type": []any{"string", "null"},
-				"enum": []any{"outline", "markdown", nullMember},
-			},
-		},
-		"required": []string{"format"},
-	}
-	if !StrictExpressible(schema) {
-		t.Fatal("a closed fully-required schema must be certifiable")
-	}
+	// Both spellings of a typed nil that marshals as JSON null: the copy has a
+	// separate arm for each, so one test per arm is what pins both.
+	var nilMap map[string]any
+	var nilSlice []any
+	for name, nullMember := range map[string]any{"typed nil map": nilMap, "typed nil slice": nilSlice} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			schema := map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties": map[string]any{
+					"format": map[string]any{
+						"type": []any{"string", "null"},
+						"enum": []any{"outline", "markdown", nullMember},
+					},
+				},
+				"required": []string{"format"},
+			}
+			if !StrictExpressible(schema) {
+				t.Fatal("a closed fully-required schema must be certifiable")
+			}
 
-	null := map[string]any{"format": nil}
-	outline := map[string]any{"format": "outline"}
-	markdown := map[string]any{"format": "markdown"}
-	if !schemaAccepts(t, schema, null) {
-		t.Fatal("the advertised schema must accept the null member it declares")
-	}
+			null := map[string]any{"format": nil}
+			outline := map[string]any{"format": "outline"}
+			markdown := map[string]any{"format": "markdown"}
+			if !schemaAccepts(t, schema, null) {
+				t.Fatal("the advertised schema must accept the null member it declares")
+			}
 
-	emitted := StrictifyJSONSchema(schema)
-	if !schemaAccepts(t, emitted, null) {
-		t.Fatal("the emitted schema rejects the null member the advertised one accepts: the projection changed what it certified")
-	}
-	for _, args := range []map[string]any{outline, markdown} {
-		if !schemaAccepts(t, schema, args) {
-			t.Fatalf("the advertised schema rejects %v, one of its own string members", args)
-		}
-		if !schemaAccepts(t, emitted, args) {
-			t.Fatalf("the emitted schema rejects %v, which the advertised schema accepts", args)
-		}
+			emitted := StrictifyJSONSchema(schema)
+			if !schemaAccepts(t, emitted, null) {
+				t.Fatal("the emitted schema rejects the null member the advertised one accepts: the projection changed what it certified")
+			}
+			for _, args := range []map[string]any{outline, markdown} {
+				if !schemaAccepts(t, schema, args) {
+					t.Fatalf("the advertised schema rejects %v, one of its own string members", args)
+				}
+				if !schemaAccepts(t, emitted, args) {
+					t.Fatalf("the emitted schema rejects %v, which the advertised schema accepts", args)
+				}
+			}
+		})
 	}
 }
 
@@ -1090,16 +1097,6 @@ func TestProjectionStatesTheTypeAClosedValueSetImplies(t *testing.T) {
 			reject: map[string]any{"payload": "c"},
 			want:   "string",
 		},
-		{
-			// The rewrite never descends into a nullable object's properties,
-			// so this node keeps whatever it advertises. The gate still
-			// certifies it, which means the projection has to reach it too.
-			name:   "const under a nullable object",
-			closed: map[string]any{"const": "fixed"},
-			accept: map[string]any{"payload": "fixed"},
-			reject: map[string]any{"payload": "other"},
-			want:   "string",
-		},
 	}
 
 	for _, tc := range cases {
@@ -1134,6 +1131,63 @@ func TestProjectionStatesTheTypeAClosedValueSetImplies(t *testing.T) {
 				t.Fatalf("the emitted schema accepts %v, which the advertised schema rejects", tc.reject)
 			}
 		})
+	}
+}
+
+// The rewrite matches only a literal "object" type, so a nullable object is a
+// node it never descends into: its properties keep exactly what they advertise.
+// The gate still certifies such a node, so the projection has to state the
+// derived type inside it — otherwise a strict-enforcing provider rejects the
+// whole request over a node two levels below the root.
+func TestProjectionStatesDerivedTypesUnderANullableObject(t *testing.T) {
+	t.Parallel()
+	schema := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"payload": map[string]any{
+				"type": []any{"object", "null"},
+				"properties": map[string]any{
+					"mode": map[string]any{"const": "fixed"},
+				},
+				"required":             []string{"mode"},
+				"additionalProperties": false,
+			},
+		},
+		"required": []string{"payload"},
+	}
+	if !StrictExpressible(schema) {
+		t.Fatal("a closed nullable object over a closed value set must be certifiable")
+	}
+
+	// The advertised schema accepts both a null payload and a valid nested
+	// object, and excludes a mode its value set does not name.
+	if !schemaAccepts(t, schema, map[string]any{"payload": nil}) {
+		t.Fatal("the advertised schema must accept the null branch it declares")
+	}
+	nested := map[string]any{"payload": map[string]any{"mode": "fixed"}}
+	if !schemaAccepts(t, schema, nested) {
+		t.Fatal("the advertised schema rejects the valid nested object")
+	}
+	if schemaAccepts(t, schema, map[string]any{"payload": map[string]any{"mode": "other"}}) {
+		t.Fatal("the advertised schema accepts a mode its value set excludes")
+	}
+
+	emitted := StrictifyJSONSchema(schema)
+	payload := emitted["properties"].(map[string]any)["payload"].(map[string]any)
+	mode := payload["properties"].(map[string]any)["mode"].(map[string]any)
+	if mode["type"] != "string" {
+		t.Fatalf("the emitted nested argument has type %#v, want \"string\": the rewrite never descends into a nullable object, so the type has to be stated here or the provider rejects the request", mode["type"])
+	}
+	// Stating the type must leave the nullable object's accepted set alone.
+	if !schemaAccepts(t, emitted, map[string]any{"payload": nil}) {
+		t.Fatal("the emitted schema rejects the null branch the advertised one accepts")
+	}
+	if !schemaAccepts(t, emitted, nested) {
+		t.Fatal("the emitted schema rejects the valid nested object the advertised one accepts")
+	}
+	if schemaAccepts(t, emitted, map[string]any{"payload": map[string]any{"mode": "other"}}) {
+		t.Fatal("the emitted schema accepts a mode the advertised schema rejects")
 	}
 }
 

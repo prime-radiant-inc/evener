@@ -21,15 +21,37 @@ func StrictifyJSONSchema(in map[string]any) map[string]any {
 	// Best-effort deep copy + strictification for OpenAI tool schemas.
 	// This intentionally handles only the constructs we emit (object/array) and is safe to
 	// apply repeatedly (idempotent for our shapes).
-	cp := deepCopyAny(in).(map[string]any)
 	// A nil root is an absent schema rather than a JSON null to preserve: the
 	// projection of it is the empty schema, which is what this returns for it.
 	// Only a nil nested inside the schema is a value, and deepCopyAny keeps
-	// those so a null enum member survives the copy.
+	// those so a null enum member survives the copy. The copy reports a nil
+	// interface for either, so the root is read with a comma-ok assertion
+	// rather than an unchecked one.
+	cp, _ := deepCopyAny(in).(map[string]any)
 	if cp == nil {
 		cp = map[string]any{}
 	}
 	strictifyJSONSchemaInPlace(cp)
+	supplyDerivedTypes(cp)
+	return cp
+}
+
+// SupplyDerivedTypes returns a deep copy of schema with the explicit type a
+// closed scalar value set implies stated on every node that carries one, and
+// nothing else changed.
+//
+// An adapter sends a refused tool with the schema it advertised, which is the
+// right shape for the accepted set but not for a provider that requires an
+// explicit type on every node: an argument declared {"const": "fixed"} keeps
+// its single accepted value and still fails the request. This step states that
+// type without narrowing or widening anything, so a refusal costs the tool its
+// strict mode and nothing else. A node whose value set implies no single type
+// is left exactly as advertised.
+func SupplyDerivedTypes(schema map[string]any) map[string]any {
+	cp, _ := deepCopyAny(schema).(map[string]any)
+	if cp == nil {
+		return map[string]any{}
+	}
 	supplyDerivedTypes(cp)
 	return cp
 }
@@ -614,9 +636,12 @@ func deepCopyAny(v any) any {
 	switch x := v.(type) {
 	case map[string]any:
 		// A typed nil map marshals as JSON null. Rebuilding it as an empty map
-		// would emit {} and change what the schema accepts.
+		// would emit {} and change what the schema accepts. The nil interface
+		// returned here is indistinguishable from a nil map to every caller of
+		// this function: a map read from a nil interface panics either way, and
+		// StrictifyJSONSchema handles the root with a comma-ok assertion.
 		if x == nil {
-			return x
+			return nil
 		}
 		out := make(map[string]any, len(x))
 		for k, vv := range x {
@@ -624,8 +649,9 @@ func deepCopyAny(v any) any {
 		}
 		return out
 	case []any:
+		// A typed nil slice marshals as JSON null for the same reason.
 		if x == nil {
-			return x
+			return nil
 		}
 		out := make([]any, len(x))
 		for i := range x {

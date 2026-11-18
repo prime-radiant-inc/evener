@@ -84,6 +84,18 @@ func toResponsesTools(tools []llm.ToolDefinition, strict bool) []map[string]any 
 			if toolStrict {
 				params = openaichat.StrictifyJSONSchema(params)
 				entry["parameters"] = params
+			} else {
+				// A refused tool keeps the schema it advertised, because the
+				// projection would change which arguments it accepts. The
+				// provider still requires an explicit type on every node, so a
+				// closed value set that implies one gets it stated here: the
+				// accepted values are identical either way, and an argument
+				// declared {"const": "fixed"} would otherwise be rejected along
+				// with the whole request. This runs on the non-strict path too
+				// because the requirement is the schema dialect's, not strict
+				// mode's — additional_tools on this route carries strict:false
+				// and is still rejected for a typeless node.
+				entry["parameters"] = openaichat.SupplyDerivedTypes(params)
 			}
 			entry["strict"] = toolStrict
 		}

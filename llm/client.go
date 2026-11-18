@@ -185,6 +185,39 @@ func (c *Client) withHasher(ctx context.Context) context.Context {
 	return ctx
 }
 
+// withOpenParameterlessSchemas restores the open empty schema for a tool that
+// declared no parameters, for the override adapter boundary only.
+//
+// prepareTools preserves a nil Parameters so an adapter can tell "this tool
+// takes no arguments" from "this tool advertises an open schema" — the built-in
+// providers need that distinction, because strict mode needs the closed empty
+// object and the local validator compiles against the open one. A registered
+// override never participated in that contract: it marshals a definition
+// straight through, or hands it to something else that does, so a nil
+// Parameters silently drops the key. The open empty schema is what every
+// override saw before the distinction existed, so it is restored here and the
+// built-in adapters keep the nil.
+func withOpenParameterlessSchemas(req Request) Request {
+	if len(req.Tools) == 0 {
+		return req
+	}
+	changed := false
+	tools := make([]ToolDefinition, len(req.Tools))
+	copy(tools, req.Tools)
+	for i := range tools {
+		if tools[i].Parameters == nil {
+			tools[i].Parameters = defaultToolParameters()
+			changed = true
+		}
+	}
+	if !changed {
+		return req
+	}
+	req.Tools = tools
+	req.ToolsJSONBytes = ToolsJSONBytes(tools)
+	return req
+}
+
 // Register adds an override adapter keyed by its Name. The first override
 // becomes the default when nothing was pinned and the registry names no
 // default instance. Adapters implementing Initializer are initialized
@@ -350,7 +383,7 @@ func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 		}
 		observeRequestSent(ctx)
 		if t.override != nil {
-			return t.override.Complete(ctx, req)
+			return t.override.Complete(ctx, withOpenParameterlessSchemas(req))
 		}
 		return t.protocol.Complete(c.withHasher(ctx), req, t.res)
 	}
@@ -396,7 +429,7 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 			err error
 		)
 		if t.override != nil {
-			st, err = t.override.Stream(ctx, req)
+			st, err = t.override.Stream(ctx, withOpenParameterlessSchemas(req))
 		} else {
 			st, err = t.protocol.Stream(c.withHasher(ctx), req, t.res)
 		}

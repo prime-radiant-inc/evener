@@ -442,3 +442,45 @@ func TestStrictToolProjectionRefusesUnconstrainedArguments(t *testing.T) {
 		})
 	}
 }
+
+// A refused tool keeps the schema it advertised, but the provider still
+// requires an explicit type on every node. An argument declared
+// {"const": "fixed"} next to an optional argument is exactly that shape: the
+// refusal is right, because the projection would force the optional argument,
+// and the typeless const node would still cost the whole request. The emitted
+// schema must state the implied type, keep strict false, and keep the values
+// and the required set the tool documents.
+func TestRefusedToolStillStatesTheTypeAClosedValueSetImplies(t *testing.T) {
+	t.Parallel()
+	schema := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"payload": map[string]any{"const": "fixed"},
+			"note":    map[string]any{"type": "string"},
+		},
+		"required": []string{"payload"},
+	}
+	req := userReq("hi")
+	req.Tools = []llm.ToolDefinition{{Name: "job_status", Parameters: schema}}
+
+	body := build(t, req, resolved(strictCaps))
+	tool := body["tools"].([]map[string]any)[0]
+	if tool["strict"] != false {
+		t.Fatalf("strict = %#v, want false: an optional argument cannot be expressed in strict mode", tool["strict"])
+	}
+	params := tool["parameters"].(map[string]any)
+	payload := params["properties"].(map[string]any)["payload"].(map[string]any)
+	if payload["type"] != "string" {
+		t.Fatalf("the emitted argument has type %#v, want \"string\": a provider enforcing the strict subset rejects a typeless node, and additional_tools on this route carries strict:false too", payload["type"])
+	}
+	if payload["const"] != "fixed" {
+		t.Fatalf("const = %#v, want the advertised single value", payload["const"])
+	}
+	if got, want := requiredNames(t, params), []string{"payload"}; !slices.Equal(got, want) {
+		t.Fatalf("required = %v, want the advertised set %v: a refusal keeps what the tool documents", got, want)
+	}
+	if _, has := params["additionalProperties"]; !has {
+		t.Fatal("additionalProperties is missing: the advertised root was explicitly closed")
+	}
+}

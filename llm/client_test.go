@@ -1236,3 +1236,63 @@ func TestNilClientMiddlewareSnapshotIsEmpty(t *testing.T) {
 		t.Fatalf("nil client middleware = %v, want nil", got)
 	}
 }
+
+// A registered override never participated in the nil-Parameters contract the
+// built-in adapters rely on: it marshals a definition straight through, or
+// hands it to something that does. Before preparation preserved the nil, an
+// override received the open empty schema for a parameterless tool; it must
+// still receive exactly that, or the wire silently loses the key.
+func TestClient_OverrideReceivesOpenSchemaForParameterlessTools(t *testing.T) {
+	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
+	c := NewClient()
+	a := &recordReqAdapter{name: "openai"}
+	c.Register(a)
+
+	// A tool with no Parameters and no Execute is advertised only, which is
+	// what a provider-side definition looks like here.
+	if _, err := c.Complete(context.Background(), Request{
+		Model:    "m",
+		Messages: []Message{User("hi")},
+		Tools:    []ToolDefinition{{Name: "current_time"}},
+	}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+
+	a.mu.Lock()
+	tools := a.lastReq.Tools
+	a.mu.Unlock()
+	if len(tools) != 1 {
+		t.Fatalf("tools = %d, want 1", len(tools))
+	}
+	params := tools[0].Parameters
+	if params == nil {
+		t.Fatal("parameters = nil: an override adapter marshals the definition directly, so the key must be present")
+	}
+	if params["type"] != "object" {
+		t.Fatalf("type = %#v, want object", params["type"])
+	}
+	if props, ok := params["properties"].(map[string]any); !ok || len(props) != 0 {
+		t.Fatalf("properties = %#v, want an empty object", params["properties"])
+	}
+	if _, has := params["additionalProperties"]; has {
+		t.Fatalf("additionalProperties = %#v, want it absent: this is the open schema", params["additionalProperties"])
+	}
+
+	// A tool that supplies its own schema keeps it untouched.
+	if _, err := c.Complete(context.Background(), Request{
+		Model:    "m",
+		Messages: []Message{User("hi")},
+		Tools: []ToolDefinition{{
+			Name:       "read_file",
+			Parameters: map[string]any{"type": "object", "properties": map[string]any{"file_path": map[string]any{"type": "string"}}},
+		}},
+	}); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	a.mu.Lock()
+	declared := a.lastReq.Tools[0].Parameters
+	a.mu.Unlock()
+	if _, has := declared["additionalProperties"]; has {
+		t.Fatalf("additionalProperties = %#v, want the supplied schema unchanged", declared["additionalProperties"])
+	}
+}
