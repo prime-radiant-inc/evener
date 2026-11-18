@@ -756,6 +756,58 @@ func TestSessionScopesReasoningTextToTheIssuingModel(t *testing.T) {
 
 func TestChatThinkingAsTextAcrossModels(t *testing.T) {
 	t.Parallel()
+	t.Run("strict Chat rows", func(t *testing.T) { testChatToolContinuation(t, chatContinuationCase{asText: true}) })
+	t.Run("enrolled Chat rows", func(t *testing.T) { testChatToolContinuation(t, chatContinuationCase{raw: true, asText: true}) })
+	t.Run("scalar mirrors a signed detail", func(t *testing.T) {
+		testChatToolContinuation(t, chatContinuationCase{raw: true, asText: true, mirrorSigned: true})
+	})
+	t.Run("fallbacks on one endpoint select their own presentation", func(t *testing.T) {
+		adapter := &agenttest.ModelTrackingAdapter{Provider: "gw", Respond: func(req llm.Request) (llm.Response, error) {
+			if req.Model == "last" {
+				return agenttest.FinalResponse("done"), nil
+			}
+			return llm.Response{}, llm.ErrorFromHTTPStatus(req.Provider, 404, "", nil, nil)
+		}}
+		instance := registry.Provider{Base: "openai-compatible", Surface: registry.SurfaceOpenAI, Transport: registry.Transport{BaseURL: "https://chat.example.invalid"},
+			Models: map[string]registry.Model{
+				"source":  {Caps: registry.Caps{ThinkingAsText: new(true)}, Transport: &registry.Transport{StreamEndpoint: "/original"}},
+				"primary": {}, "strict": {}, "as-text": {Caps: registry.Caps{ThinkingAsText: new(true)}}, "last": {},
+			},
+		}
+		client := registryClient(t, map[string]registry.Provider{"gw": instance}, adapter)
+		source := resolveClientProfile(t, client, "gw/source")
+		primary := resolveClientProfile(t, client, "gw/primary")
+		s := newSession(t, withClient(client), withProfile(primary), withConfig(SessionConfig{ModelFallbacks: []string{"strict", "as-text", "last"}}))
+		reply := []byte(`{"choices":[{"message":{"content":"answer-64","reasoning":"scalar-29","reasoning_details":[{"type":"reasoning.encrypted","id":"r-71","data":"cipher-61","text":"opaque-extension-84"},{"type":"reasoning.text","text":"display-53"}]}}]}`)
+		prior, err := chatcompletions.ExtractRecordedResponse(reply, source.Model())
+		if err != nil {
+			t.Fatal(err)
+		}
+		prior.Provider = source.ID()
+		if err := s.appendAssistantTurn(prior, ModelAttemptMetadata{Protocol: source.Protocol(), RequestModel: source.Model(), ReasoningRoute: source.ReasoningReplayRoute()}); err != nil {
+			t.Fatal(err)
+		}
+		sendOneUserInput(t, s, "followup")
+		if len(adapter.Requests()) != 4 {
+			t.Fatalf("got %d requests, want the primary and all three fallbacks", len(adapter.Requests()))
+		}
+		for _, req := range adapter.Requests() {
+			row := resolveClientProfile(t, client, "gw/"+req.Model).Resolved()
+			body, err := chatcompletions.DefaultProtocol.BuildBody(req, row)
+			if err != nil {
+				t.Fatal(err)
+			}
+			want := "answer-64"
+			if req.Model == "as-text" {
+				want = "display-53\n\n" + want
+			}
+			messages := body["messages"].([]map[string]any)
+			i := slices.IndexFunc(messages, func(m map[string]any) bool { return m["role"] == "assistant" })
+			if i == -1 || messages[i]["content"] != want || messages[i]["reasoning_content"] != nil || messages[i]["reasoning_details"] != nil {
+				t.Errorf("%s omitted or changed the assistant's selected representation", req.Model)
+			}
+		}
+	})
 	row := replayGateway("gw", registry.ProtocolOpenAIChat).Resolved()
 	row.Caps.ThinkingAsText = new(true)
 	profile := provider.FromResolved(row, nil)

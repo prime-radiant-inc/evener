@@ -149,6 +149,7 @@ func TestEstimateTokens_WithThinking(t *testing.T) {
 		const scalar, detail, mirrored = " independent-scalar-41 ", " unsigned-display-27 ", " signed-and-scalar-71 "
 		const signed = `[{"type":"reasoning.text","text":"signed-only-47","signature":"sig-47"}]`
 		const opaque = `[{"type":"reasoning.encrypted","data":"cipher-39"}]`
+		const opaqueWithText = `[{"type":"reasoning.encrypted","id":"r-71","data":"cipher-39","thinking":"private-84"}]`
 		turn := schema.Turn{Kind: schema.TurnAssistant, ResponseProtocol: source.Protocol, ResponseProvider: source.Instance,
 			ResponseReasoningRoute: source.ReasoningReplayRoute(), Message: llm.Assistant("answer")}
 		for _, thinking := range []*llm.ThinkingData{
@@ -156,6 +157,8 @@ func TestEstimateTokens_WithThinking(t *testing.T) {
 			{Text: detail, EncryptedContent: opaque, ChatScalar: &llm.ChatReasoningScalar{Field: "reasoning", Text: "alternate-31"}},
 			{Text: "signed-only-47", EncryptedContent: signed},
 			{Text: "signed-only-47", EncryptedContent: signed, ChatScalar: &llm.ChatReasoningScalar{Field: "reasoning", Text: mirrored}},
+			{Text: "private-84", EncryptedContent: opaqueWithText},
+			{Text: "private-84", EncryptedContent: opaqueWithText, ChatScalar: &llm.ChatReasoningScalar{Field: "reasoning", Text: scalar}},
 		} {
 			turn.Message.Content = append(turn.Message.Content, llm.ContentPart{Kind: llm.ContentThinking, Thinking: thinking})
 		}
@@ -166,7 +169,7 @@ func TestEstimateTokens_WithThinking(t *testing.T) {
 		for _, raw := range []bool{true, false} {
 			target.Caps.ReplayReasoningText = new(raw)
 			usage := estimateTokenPartsFor(provider.FromResolved(target, nil), []schema.Turn{turn})
-			if want := len("answer") + len(scalar) + len(detail) + len(mirrored); usage.Chars != want {
+			if want := len("answer") + 2*len(scalar) + len(detail) + len(mirrored); usage.Chars != want {
 				t.Errorf("raw replay %t, context pressure counted %d chars, want %d", raw, usage.Chars, want)
 			}
 			otherProtocol := turn

@@ -367,12 +367,39 @@ func (p ContentPart) UnsignedChatDisplayText() string {
 	if len(details) == 0 {
 		return ""
 	}
-	if OpenAICompatSignedReasoningItem(details) == nil {
-		return t.Text
+	if OpenAICompatSignedReasoningItem(details) != nil {
+		if t.ChatScalar == nil {
+			return ""
+		}
+	} else {
+		// An encrypted item's optional text can occur in the combined display.
+		// Recover display from its unsigned siblings, or from an observed scalar.
+		hasOpaqueText := slices.ContainsFunc(details, func(item map[string]any) bool {
+			text, _ := item["text"].(string)
+			thinking, _ := item["thinking"].(string)
+			return text != "" || thinking != ""
+		})
+		if !hasOpaqueText {
+			return t.Text
+		}
+		var pieces []string
+		for _, raw := range t.ChatDetails {
+			var item struct{ Text, Thinking string }
+			if len(raw) == 0 || raw[0] != '{' || json.Unmarshal(raw, &item) != nil {
+				continue
+			}
+			if item.Text != "" {
+				pieces = append(pieces, item.Text)
+			} else if item.Thinking != "" {
+				pieces = append(pieces, item.Thinking)
+			}
+		}
+		if len(pieces) > 0 {
+			return strings.Join(pieces, "\n")
+		}
 	}
-	if t.ChatScalar != nil && IsOpenAICompatReasoningField(t.ChatScalar.Field) {
-		text, _ := t.ChatReplayScalar()
-		return text
+	if scalar, field := t.ChatReplayScalar(); IsOpenAICompatReasoningField(field) {
+		return scalar
 	}
 	return ""
 }
