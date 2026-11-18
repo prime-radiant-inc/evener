@@ -370,7 +370,26 @@ func UserFacingText(msg llm.Message) string {
 
 // ProjectTurn maps a typed transcript turn into AppWire transcript items.
 func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRegistry, imageProjector ImageProjector, outputImageProjector OutputImageProjector) []appwire.ThreadItem {
-	return projectTurn(turnID, turnIndex, turn, reg, imageProjector, outputImageProjector, nil)
+	items := projectTurn(turnID, turnIndex, turn, reg, imageProjector, outputImageProjector, nil)
+	if turn.Format != schema.TurnFormatIdentity || turn.Kind != schema.TurnAssistant {
+		// A legacy entry projects exactly as it did before this change,
+		// including omitting any round it carries on disk: the round is the
+		// new-format grouping's identity, and only a stamped announcement
+		// adopts it.
+		return items
+	}
+	for i := range items {
+		if items[i].ToolName == "" || items[i].CallID == "" {
+			continue
+		}
+		// A stamped tool announcement carries its entry's recorded round. A
+		// settled result has no round of its own, so a merge that cannot read
+		// it from the announcement drops it and the item loses the round a
+		// client groups by. ProjectEntryParts sets this on its own path; the
+		// plain projector the hub's whole-file fallback calls did not.
+		items[i].RoundID = turn.RoundID
+	}
+	return items
 }
 
 // communicateRawFallbackMaxRunes bounds the raw-arguments fallback a healed
@@ -1095,12 +1114,6 @@ func toolCallItem(turnID string, turnIndex, part int, turn schema.Turn) appwire.
 		ArgumentsJSON: argumentsJSON,
 		Description:   description,
 		Status:        appwire.TurnStatusInProgress,
-		// The entry's recorded round belongs on its announcement: a settled
-		// result carries no round of its own, so a merge that cannot read it
-		// from the announcement drops it and the item loses the round a
-		// client groups by. ProjectEntryParts sets this too; the plain
-		// projector did not, so the whole-file fallback lost it.
-		RoundID: turn.RoundID,
 	}
 	if p := turn.ConversationProvenance; call.Name == "ask_user" && p != nil {
 		item.ConversationProvenance = &appwire.ConversationOutputProvenance{Version: p.Version, InstanceID: p.InstanceID,

@@ -181,3 +181,194 @@ func TestDeliveryBeforePreludeKeepsPositionsIncreasing(t *testing.T) {
 		t.Errorf("bounded index candidates rejected: %v", err)
 	}
 }
+
+// TestReusedCallIDKeepsBothRounds covers a provider that reuses one tool call
+// id across two rounds of ONE execution, separated by a hook completion. The
+// index settles a result only against a call of the turn's awaiting assistant
+// entry (build.go's applyResults), so a reused id is two calls there. A full
+// read that merges by call id alone overwrites the first call's arguments with
+// the second's, losing a record the transcript still holds.
+func TestReusedCallIDKeepsBothRounds(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "call_reuse"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := func(turn schema.Turn, place transcript.Placement) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: place}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	call := func(args string) schema.Turn {
+		tc := llm.ToolCallData{ID: "call_x", Name: "read_file", Arguments: json.RawMessage(args)}
+		return schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &tc}}}}
+	}
+	w.BeginExecution("t_exec", false)
+	record(schema.NewTurn(schema.TurnUserInput, llm.User("go")), transcript.PlaceSession)
+	record(call(`{"round":1}`), transcript.PlaceSession)
+	record(schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call_x", "read_file", "first-out", false)), transcript.PlaceSession)
+	record(newHookTurn("Stop"), transcript.PlaceSession)
+	record(call(`{"round":2}`), transcript.PlaceSession)
+	record(schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call_x", "read_file", "second-out", false)), transcript.PlaceSession)
+	record(schema.Turn{Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}}, transcript.PlaceCompletion)
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	// Both readers keep two commandExecution items for the reused id, each
+	// carrying the arguments its own round announced.
+	wantCalls := []string{`{"round":1}`, `{"round":2}`}
+	var indexedCalls []string
+	for _, candidate := range indexCandidates(t, path) {
+		if candidate.Item.CallID == "call_x" && candidate.Item.Type == "commandExecution" {
+			indexedCalls = append(indexedCalls, candidate.Item.ArgumentsJSON)
+		}
+	}
+	if !reflect.DeepEqual(indexedCalls, wantCalls) {
+		t.Errorf("index call arguments = %v, want %v", indexedCalls, wantCalls)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	var calls []string
+	for _, turn := range turns {
+		for _, item := range turn.Items {
+			if item.CallID == "call_x" && item.Type == "commandExecution" {
+				calls = append(calls, item.ArgumentsJSON)
+			}
+		}
+	}
+	if !reflect.DeepEqual(calls, wantCalls) {
+		t.Errorf("full read call arguments = %v, want %v: a reused call id is two calls", calls, wantCalls)
+	}
+}
+
+// TestSettledCallKeepsAnnouncementRound covers the round a settled call must
+// keep. A stamped announcement carries the assistant entry's RoundID; the
+// result entry carries only the call id, so a merge that does not inherit the
+// round drops it and a client grouping by round loses the call's round once it
+// settles.
+func TestSettledCallKeepsAnnouncementRound(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "settled_round"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := func(turn schema.Turn, place transcript.Placement) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: place}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	tc := llm.ToolCallData{ID: "call_r", Name: "read_file", Arguments: json.RawMessage(`{"path":"a"}`)}
+	announce := schema.Turn{Kind: schema.TurnAssistant, RoundID: "r_announce",
+		Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &tc}}}}
+	w.BeginExecution("t_exec", false)
+	record(schema.NewTurn(schema.TurnUserInput, llm.User("go")), transcript.PlaceSession)
+	record(announce, transcript.PlaceSession)
+	record(schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call_r", "read_file", "out", false)), transcript.PlaceSession)
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	var settled *appwire.ThreadItem
+	for i := range turns {
+		for j := range turns[i].Items {
+			if turns[i].Items[j].CallID == "call_r" {
+				settled = &turns[i].Items[j]
+			}
+		}
+	}
+	if settled == nil {
+		t.Fatalf("full read turns = %+v, want the settled call", shapesFromTurns(turns))
+	}
+	if settled.RoundID != "r_announce" {
+		t.Errorf("settled call round = %q, want %q: the result carries no round of its own", settled.RoundID, "r_announce")
+	}
+	if settled.Output != "out" {
+		t.Errorf("settled call output = %q, want %q: the result must still settle the call", settled.Output, "out")
+	}
+}
+
+// TestLegacySplitPreludeReplaysAsFragments covers a transcript written before
+// the writer ended the prelude's span at a delivery: a prelude-stamped startup
+// hook, an idle delivery, then a model switch carrying the same prelude id.
+// The writer change only affects new appends, so replay is the only place this
+// shape can be observed. The index reports one summary for the id; a full read
+// that emits two turns with that id and calls both "full" tells a client two
+// complete turns exist where the index has one.
+func TestLegacySplitPreludeReplaysAsFragments(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "legacy_split_prelude"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// PlaceVerbatim records each entry with the id it carries, reproducing a
+	// file whose prelude spans a delivery.
+	record := func(turn schema.Turn) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceVerbatim}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	stamp := func(turn schema.Turn, id string, span schema.TurnSpanKind) schema.Turn {
+		turn.Format = schema.TurnFormatIdentity
+		turn.TurnID = id
+		turn.TurnKind = span
+		return turn
+	}
+	record(stamp(newHookTurn("SessionStart"), appwire.SystemPreludeTurnID, schema.TurnSpanPrelude))
+	record(stamp(schema.NewTurn(schema.TurnSteering, llm.User("attention")), "turn_delivery", schema.TurnSpanDelivery))
+	record(stamp(schema.NewTurn(schema.TurnModelSwitch, llm.System("switch")), appwire.SystemPreludeTurnID, schema.TurnSpanPrelude))
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	// The id must not name two full turns. Either the runs coalesce into one
+	// turn or each is marked a fragment — never two "full" turns with one id.
+	seen := 0
+	for _, turn := range turns {
+		if turn.ID != appwire.SystemPreludeTurnID {
+			continue
+		}
+		seen++
+		if turn.ItemsView != appwire.TurnItemsViewFragment && seen > 1 {
+			t.Errorf("turn %q appears %d times and one is %q, want fragments: a turn id names one turn",
+				turn.ID, seen, turn.ItemsView)
+		}
+	}
+	if seen == 0 {
+		t.Fatalf("full read turns = %+v, want the prelude", shapesFromTurns(turns))
+	}
+	// Chronology must still hold across whatever it emits.
+	candidates, err := appitempaging.CandidatesFromTurns(turns)
+	if err != nil {
+		t.Fatalf("CandidatesFromTurns: %v", err)
+	}
+	if err := appitempaging.ValidateCandidates(candidates); err != nil {
+		t.Fatalf("full read candidates rejected: %v", err)
+	}
+}
