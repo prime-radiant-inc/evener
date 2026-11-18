@@ -29,7 +29,14 @@ func indexedCandidates(t testing.TB, fx fixture, n int) []appitempaging.Transcri
 	if n >= 0 {
 		fx.lines = fx.lines[:n]
 	}
-	x := openIndex(t, writeFixture(t, fx), t.TempDir())
+	return allCandidates(t, openIndex(t, writeFixture(t, fx), t.TempDir()))
+}
+
+// allCandidates pages an already-open index back to its oldest candidate, so a
+// test that holds its own handle (a rebuilt one, say) reads the same window the
+// served read does.
+func allCandidates(t testing.TB, x *Index) []appitempaging.TranscriptItemCandidate {
+	t.Helper()
 	var all []appitempaging.TranscriptItemCandidate
 	window, err := x.Latest(appwire.TranscriptItemPageLimit)
 	for {

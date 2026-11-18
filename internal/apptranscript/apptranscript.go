@@ -32,6 +32,15 @@ type ToolCallRegistry struct {
 	CommRawArgs       map[string]string
 	CommAuthorship    map[string]*schema.TranscriptAuthorship
 	LastAssistantText string
+	// knownThisEntry is the set of call ids the CURRENT assistant entry
+	// announced, so first-part-wins stays inside one entry. Reset at the start
+	// of that entry's projection: across entries a LATER entry's name must win
+	// for an id it reuses, because the index advances the turn's awaiting entry
+	// on every assistant entry that records a call (transcriptindex build.go's
+	// stampFold), so the later entry is the one whose reserved part settles a
+	// later unnamed result. An earlier name kept across entries made replay
+	// settle a call the index left unanswered (#1166 review).
+	knownThisEntry map[string]struct{}
 	// LastAssistantTurnID is the logical turn ID of the ASSISTANT record that
 	// set LastAssistantText. The healed-communicate echo check scopes by turn
 	// to mirror the live projector's matchesLastAssistantMessage: an echo
@@ -950,6 +959,9 @@ func answerObservation(turnID string, turn schema.Turn) *appwire.SessionObservat
 func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRegistry, parts *[]int) []appwire.ThreadItem {
 	var items []appwire.ThreadItem
 	var lastAssistantText string
+	// first-part-wins is a rule about ONE entry's recorded parts, so the set of
+	// ids this entry has already announced starts empty.
+	reg.knownThisEntry = nil
 	reasoningPart, reasoningText := identityReasoning(turn.Message.Content)
 	var run strings.Builder
 	runStart := -1
@@ -1005,14 +1017,16 @@ func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, re
 			if part.ToolCall == nil {
 				continue
 			}
-			// First recorded part wins, like the reservation itself. A provider
-			// that reuses one id in a later part must not rename the call the
-			// entry RESERVED: an unnamed result resolves through this map, and
-			// a later communicate part overwriting it made the result classify
-			// as a communicate before settlement could see it — the same
-			// mutable-lookup-by-id defect the reservation fix closed, one table
-			// over (#1166 review).
-			if _, named := reg.Names[part.ToolCall.ID]; !named {
+			// First recorded part wins WITHIN this entry, like the reservation
+			// itself: a provider that reuses one id in a later part must not
+			// rename the call the entry RESERVED. Across entries the later
+			// entry's name wins, because that entry is the one the index makes
+			// awaiting — see knownThisEntry.
+			if _, known := reg.knownThisEntry[part.ToolCall.ID]; !known {
+				if reg.knownThisEntry == nil {
+					reg.knownThisEntry = map[string]struct{}{}
+				}
+				reg.knownThisEntry[part.ToolCall.ID] = struct{}{}
 				reg.Names[part.ToolCall.ID] = part.ToolCall.Name
 			}
 			if part.ToolCall.Name == "communicate" {

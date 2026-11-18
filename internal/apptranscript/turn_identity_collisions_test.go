@@ -1889,3 +1889,87 @@ func TestUnnamedResultResolvesTheReservedCall(t *testing.T) {
 			settled.Status, appwire.TurnStatusCompleted)
 	}
 }
+
+// TestALaterEntrysNameWinsForItsOwnCall covers first-part-wins INSIDE one
+// entry, which is the rule ReservedCalls applies: a provider that reuses one
+// id twice in the same entry reserves the first part, so the later part must
+// not rename the call. Across entries the opposite holds. The index advances
+// the turn's awaiting entry on EVERY assistant entry that records a call
+// (transcriptindex build.go's stampFold), so a later entry that reuses an id
+// is the one whose reserved part settles a later unnamed result. A registry
+// that kept the first name for the whole transcript made replay settle the
+// earlier command, so a saved read showed a command result where the index
+// recorded an assistant message (#1166 review).
+func TestALaterEntrysNameWinsForItsOwnCall(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "later_name"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := func(turn schema.Turn, place transcript.Placement) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: place}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	inherited := func(turn schema.Turn) schema.Turn {
+		turn.Authorship = &schema.TranscriptAuthorship{
+			Author:    schema.TranscriptAuthor{Kind: schema.TranscriptAuthorAgent, SessionID: "parent"},
+			Inherited: true,
+		}
+		return turn
+	}
+	command := llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+		ID: "call_reused", Name: "read_file", Arguments: json.RawMessage(`{"path":"a"}`),
+	}}
+	delivery := llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+		ID: "call_reused", Name: "communicate", Arguments: json.RawMessage(`{"message":"hi"}`),
+	}}
+	w.BeginExecution("t_later", false)
+	record(schema.NewTurn(schema.TurnUserInput, llm.User("go")), transcript.PlaceSession)
+	// The first entry announces the command with visible text.
+	record(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{
+		Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "reading"}, command},
+	}}, transcript.PlaceSession)
+	// A later INHERITED entry reuses the id for a hidden communicate, adding no
+	// text of its own.
+	record(inherited(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{
+		Role: llm.RoleAssistant, Content: []llm.ContentPart{delivery},
+	}}), transcript.PlaceSession)
+	// The result names no tool, so it resolves through the registry.
+	record(schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{
+		Role: llm.RoleTool,
+		Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
+			ToolCallID: "call_reused", Content: "delivered",
+		}}},
+	}}, transcript.PlaceSession)
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	// The later entry is the turn's awaiting entry, so its reserved part is the
+	// communicate and the unnamed result must not settle the earlier command.
+	for _, turn := range turns {
+		if turn.ID != "t_later" {
+			continue
+		}
+		for i := range turn.Items {
+			it := &turn.Items[i]
+			if it.CallID != "call_reused" {
+				continue
+			}
+			if it.ToolName == "read_file" && it.Status == appwire.TurnStatusCompleted {
+				t.Errorf("item %q = {%s, %s}, want the earlier command left unanswered: the later entry reserved the id",
+					it.ID, it.ToolName, it.Status)
+			}
+		}
+	}
+}

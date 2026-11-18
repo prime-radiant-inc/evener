@@ -7,10 +7,12 @@ import (
 	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
@@ -632,6 +634,91 @@ func TestOldFailureRuleSidecarIsNeverServed(t *testing.T) {
 	if failures != 0 {
 		t.Fatalf("failures = %d, want 0: a nonzero exit alone is not a failure", failures)
 	}
+}
+
+// TestOldFailurePointerSidecarIsNeverServed pins the SECOND reason
+// projectionID must move: a sidecar an older build wrote records the recovered
+// attempt's FailureOffset on a turn that was reopened and then failed again
+// without a diagnostic of its own. The record layout and the JSON shapes are
+// unchanged, and the reopen marker that cleared the pointer lives in the
+// transcript — which a valid sidecar means the reader never replays. So only
+// the projection name can tell the two folds apart, and without a bump the
+// fixed reader serves the stale pointer and reports the first attempt's
+// diagnostic as the retry's error. This is the same shape of sidecar shift as
+// TestOldFailureRuleSidecarIsNeverServed, one fold over.
+func TestOldFailurePointerSidecarIsNeverServed(t *testing.T) {
+	path := writeFixture(t, newFormatFixture(t, "failed retry without its own diagnostic"))
+	dir := t.TempDir()
+
+	// A build under the CURRENT projection, then rewritten to hold what the
+	// OLD fold recorded: the first attempt's TURN_FAILURE, kept through the
+	// reopen. Only that one turn is touched, so the test isolates the pointer.
+	x := openIndex(t, path, dir)
+	for slot := uint64(0); slot < x.turns.n; slot++ {
+		buf, err := x.turns.read(slot, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		record := decodeTurn(buf)
+		id, err := x.strings.get(record.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(id) != "turn_m24" {
+			continue
+		}
+		record.FailureOffset, record.FailureLength = entryOffsetOf(t, path, "first attempt failed")
+		if err := x.turns.write(slot, encodeTurnInto(make([]byte, turnRecordSize), record)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := x.Close(); err != nil {
+		t.Fatal(err)
+	}
+	// The literal v11, not a constant and not a name derived from the current
+	// one. The question this test asks is "does a sidecar the PREVIOUS BINARY
+	// wrote get rebuilt?", and only a fixed historical name asks it: deriving
+	// the name from today's projectionID would relabel the sidecar relative to
+	// whatever the constant happens to be, so it would pass with the bump and
+	// pass without it. Same reasoning as the v7 literal in
+	// TestOldFailureRuleSidecarIsNeverServed.
+	rewriteMetaField(t, dir, "projection", strconv.Quote("transcript-read-model-v11"+":"+schemaID+":format"+strconv.Itoa(formatVersion)))
+
+	reopened := openIndex(t, path, dir)
+	if reopened.rebuilds != 1 {
+		t.Fatalf("builds = %d, want the old-pointer sidecar rebuilt, not served", reopened.rebuilds)
+	}
+	// The rebuilt answer is the current fold's: still failed, but with no
+	// diagnostic borrowed from the attempt the reopen recovered.
+	retried := turnOf(t, allCandidates(t, reopened), "turn_m24")
+	if retried.Status != appwire.TurnStatusFailed {
+		t.Fatalf("turn = %s, want failed: only its completion says failed", dump(retried))
+	}
+	if retried.Error != nil {
+		t.Errorf("turn error = %q, want none: the stale pointer names the recovered attempt",
+			retried.Error.Message)
+	}
+}
+
+// entryOffsetOf returns the transcript offset and length of the entry whose
+// text is want, so a test can plant the pointer an older build recorded.
+func entryOffsetOf(t testing.TB, path, want string) (int64, uint32) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var offset int64
+	for len(data) > 0 {
+		line, rest, _ := bytes.Cut(data, []byte("\n"))
+		if entry, err := transcript.DecodeValidatedEntry(line); err == nil && entry.Turn.Kind == schema.TurnFailure && strings.Contains(string(line), want) {
+			return offset, uint32(len(line) + 1)
+		}
+		offset += int64(len(line) + 1)
+		data = rest
+	}
+	t.Fatalf("no %s entry in %s", want, path)
+	return 0, 0
 }
 
 // TestFailedRebuildsLeaveNoBuildBehind: a transcript rewritten with a header

@@ -31,7 +31,12 @@ const (
 	formatVersion = 8
 	// Dedicated COMMUNICATE records consume inherited call reconstruction.
 	// Older sidecars can contain duplicate messages from ordinary forks.
-	projectionID = "transcript-read-model-v11"
+	// v12 clears a turn's failure pointer on TURN_REOPEN: v11 sidecars keep the
+	// recovered attempt's diagnostic, so a retry that later failed without one
+	// of its own would report the earlier attempt's error. The record layout
+	// and the JSON shapes did not change, so the projection name is the only
+	// thing that can tell the two folds apart.
+	projectionID = "transcript-read-model-v12"
 
 	// tailBytes is how much of the covered prefix's end validation compares,
 	// the check the attention fold cursor uses (agent/session_attention.go).
