@@ -344,8 +344,14 @@ func EscapeModelAuthoredFrames(text string) string {
 
 // escapeFrameOpener rewrites the opening character of content's frame prefix,
 // reporting false when content starts with no frame.
+//
+// The indentation is skipped as bytes and written back unchanged, because it is
+// the line's own Markdown indentation: a tab-indented continuation line under a
+// two-digit ordered item reaches the item's content column, so it is prose to
+// the code check and only a tab is left ahead of the frame. Skipping spaces
+// alone left the tab in place and passed the frame through unescaped (#6493).
 func escapeFrameOpener(content string) (string, bool) {
-	trimmed := strings.TrimLeft(content, " ")
+	trimmed := strings.TrimLeft(content, " \t")
 	if trimmed == "" {
 		return "", false
 	}
@@ -401,8 +407,9 @@ func isQuotedLine(content string) bool {
 // four columns while being the item's ordinary continuation text. Measuring
 // from the page exempted that prose and left its opener raw in both replay and
 // checkpoint excerpts, while real code inside the item — four columns past the
-// item's content, which is where Markdown puts it — keeps its bytes (#6493
-// review). container is the item's content indentation, 0 outside a list.
+// item's content, which is where Markdown puts it — keeps its bytes.
+//
+// container is the item's content indentation, 0 outside a list.
 func indentedCode(content string, container int) bool {
 	if strings.TrimSpace(content) == "" {
 		return false
@@ -410,38 +417,46 @@ func indentedCode(content string, container int) bool {
 	return mdfence.LeadingColumns(content) >= container+4
 }
 
-// listContainer tracks the content indentation of the Markdown list item the
+// listContainer tracks the content indentation of every Markdown list item the
 // scan is inside, so an item's own text is not mistaken for page-indented code.
 //
-// It models what the escape needs and nothing more: the current item's content
-// indentation and, when the item is nested, the one that encloses it. A line
-// indented less than the current item's content leaves that item, and the scope
-// that applies to it is its parent's rather than the top level: a nested list
-// resuming at its parent's indentation is the parent's continuation prose, and
-// clearing to zero there made that prose read as page-indented code, so a frame
-// in it survived (#6493 review). A blank line stays inside the current item,
-// since a blank line neither ends an item nor opens code.
+// It is a stack because the structure is one: an item may contain an item that
+// contains an item, and a line dedenting out of the innermost one belongs to
+// whichever enclosing item it still fits inside. Holding only the current item
+// and the one above it lost the rest, so a line dedenting two levels at once
+// fell through to column zero, and prose in an outer item whose content starts
+// at column four read as page-indented code with the frame in it surviving.
+//
+// A blank line stays inside the current item, since a blank line neither ends
+// an item nor opens code.
 type listContainer struct {
-	content int
-	parent  int
+	// items is the content indentation of each enclosing item, outermost
+	// first. The last one is the current item; an empty stack is the top level.
+	items []int
 }
 
-// step returns the content indentation that applies to line: the item's, taken
-// from a marker line, or 0 when the line sits outside any item.
+// current returns the content indentation of the item the scan is inside, or 0
+// at the top level.
+func (l *listContainer) current() int {
+	if len(l.items) == 0 {
+		return 0
+	}
+	return l.items[len(l.items)-1]
+}
+
+// step returns the content indentation that applies to line: the innermost item
+// whose content the line still reaches, taken from a marker line, or 0 when the
+// line sits outside any item.
 func (l *listContainer) step(content string) int {
-	trimmed := strings.TrimSpace(content)
-	if trimmed == "" {
-		return l.content
+	if strings.TrimSpace(content) == "" {
+		return l.current()
 	}
 	indent := mdfence.LeadingColumns(content)
-	if l.content > 0 && indent < l.content {
-		// Left the item: the scope that applies is the enclosing one. A line that
-		// is also indented less than the parent leaves that too, and the walk
-		// continues to the top level.
-		l.content, l.parent = l.parent, 0
-		for l.content > 0 && indent < l.content {
-			l.content, l.parent = l.parent, 0
-		}
+	// Leave every item the line is indented out of. Popping one level at a time
+	// is what keeps the enclosing item that the line DOES fit inside, which a
+	// two-slot walk could not: it had nowhere to put the level above.
+	for len(l.items) > 0 && indent < l.items[len(l.items)-1] {
+		l.items = l.items[:len(l.items)-1]
 	}
 	rest := content[mdfence.LeadingSpaces(content):]
 	if marker, ok := mdfence.ListMarker(rest); ok {
@@ -449,17 +464,11 @@ func (l *listContainer) step(content string) int {
 		spaces := len(after) - len(strings.TrimLeft(after, " "))
 		if spaces >= 1 && spaces <= 4 {
 			// The content starts after the marker and its following spaces, at
-			// this line's own indentation. The item it nests inside is the one
-			// whose content it is indented past, and a marker at the top level
-			// nests inside nothing.
-			if l.content > 0 && indent >= l.content {
-				l.parent = l.content
-			} else {
-				l.parent = 0
-			}
-			l.content = indent + marker + spaces
-			return l.content
+			// this line's own indentation, and the item it opens sits inside
+			// whichever item the line still fits in.
+			l.items = append(l.items, indent+marker+spaces)
+			return l.current()
 		}
 	}
-	return l.content
+	return l.current()
 }

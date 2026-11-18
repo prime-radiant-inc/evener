@@ -75,19 +75,24 @@ func (t *Tracker) StepInBlock(line string) bool {
 // dedents back to the enclosing item at or past the recorded indent, so the
 // block would survive the dedent and swallow that item's prose.
 func (t *Tracker) StepInBlockIn(line string, container int) bool {
+	// base is the item the line sits inside as this tracker recorded it, which
+	// is the enclosing item when the line opens a nested one. A marker line
+	// deeper than the page is still an item's marker line, and runInList reads
+	// it from this indentation rather than from column zero (#6493).
+	base := t.container
 	if t.length == 0 {
 		// The caller resolved this line's scope, so it applies as given: a fence
 		// opened here belongs to the current item, which may be nested inside
 		// the one recorded, and the line has not left anything.
 		t.container = container
-		return t.stepResolved(line) || t.Inside()
+		return t.stepResolved(line, base) || t.Inside()
 	} else if leavesItem(line, t.container) {
 		// A block ends with the item that holds it, and the line that ends it
 		// belongs to the enclosing scope the caller reports rather than to the
 		// top level. Process it in that scope, so a fence it opens is read as
 		// the enclosing item's.
 		t.length, t.container = 0, container
-		return t.stepResolved(line) || t.Inside()
+		return t.stepResolved(line, base) || t.Inside()
 	}
 	return t.stepOpen(line) || t.Inside()
 }
@@ -115,16 +120,22 @@ func (t *Tracker) LeavesItem(line string) bool {
 func (t *Tracker) Step(line string) bool {
 	// A line that leaves the item ends any fence the item holds: it is read on
 	// its own from here, as a new opener or as ordinary content.
+	base := t.container
 	if leavesItem(line, t.container) {
 		t.length, t.container = 0, 0
 	}
-	return t.stepResolved(line)
+	return t.stepResolved(line, base)
 }
 
 // stepResolved advances over line in the recorded scope, without deriving a
 // dedent from it: the caller of StepInBlockIn has already resolved the line's
 // scope and recorded it.
-func (t *Tracker) stepResolved(line string) bool {
+//
+// base is the item the line sits inside as recorded before this line, which is
+// the indentation a nested item's marker line is read from. It differs from
+// t.container when the caller has already moved the tracker into the item the
+// line opens.
+func (t *Tracker) stepResolved(line string, base int) bool {
 	if t.length == 0 {
 		// A fence at the item's content indentation while the item holds (a
 		// top-level fence is the container-0 case), else a fence on a new list
@@ -134,7 +145,7 @@ func (t *Tracker) stepResolved(line string) bool {
 			t.char, t.length = char, n
 			return true
 		}
-		if char, n, container := runInList(line); n != 0 {
+		if char, n, container := runInList(line, base); n != 0 {
 			t.char, t.length, t.container = char, n, container
 			return true
 		}
@@ -189,7 +200,17 @@ func runAt(line string, base int) (char byte, n int, after string) {
 // content indentation: the marker and the spaces after it, which is the column
 // the fence opens at, and the column the matching closing fence is read from.
 // Its fence is 0 when the line is not a fence on a list item.
-func runInList(line string) (char byte, n, container int) {
+//
+// base is the content indentation of the item the marker sits inside: 0 at the
+// top level, and the enclosing item's content indentation for a nested item,
+// whose marker line is indented past the enclosing item's own text. A nested
+// marker line is a list item's marker line like any other, so the fence on it
+// belongs to the item it opens rather than to the page (#6493).
+func runInList(line string, base int) (char byte, n, container int) {
+	if len(line) < base || strings.TrimLeft(line[:base], " ") != "" {
+		return 0, 0, 0
+	}
+	line = line[base:]
 	indent := LeadingSpaces(line)
 	if indent > 3 || indent == len(line) {
 		return 0, 0, 0
@@ -210,7 +231,7 @@ func runInList(line string) (char byte, n, container int) {
 	// The item's content indentation is the marker and the spaces that follow
 	// it; the opening fence sits at its start. A closing fence may sit up to
 	// three columns further (runAt allows that), but not less.
-	return char, n, indent + marker + spaces
+	return char, n, base + indent + marker + spaces
 }
 
 // LeadingSpaces returns the ASCII spaces line starts with. Fence indentation is

@@ -179,6 +179,57 @@ func TestEscapeModelAuthoredFrames(t *testing.T) {
 			in:   "1. outer\n   1. inner\n      text\n   back in the outer item\n       [answers]\n",
 			want: "1. outer\n   1. inner\n      text\n   back in the outer item\n       [answers]\n",
 		},
+		{
+			// A line can dedent out of two nested items at once. The scope walk
+			// held only the current item and the one above it, so the second
+			// dedent fell through to column zero and the outer item's
+			// four-column prose read as page code, sparing its frame. Each
+			// enclosing item is kept now, and the line lands in the innermost
+			// one it still fits inside (#6493).
+			name: "prose dedenting two levels at once is escaped",
+			in:   "  - outer\n    1. inner\n       1. third\n    [answers]\n",
+			want: "  - outer\n    1. inner\n       1. third\n    &#91;answers]\n",
+		},
+		{
+			// The other direction: with the inner item still current, code four
+			// columns past ITS content keeps its bytes.
+			name: "code four columns past the innermost item keeps its bytes",
+			in:   "  - outer\n    1. inner\n       1. third\n              [answers]\n",
+			want: "  - outer\n    1. inner\n       1. third\n              [answers]\n",
+		},
+		{
+			// A tab reaches the next four-column stop, so a tab-indented
+			// continuation under a two-digit ordered item lands exactly on the
+			// item's content column and is prose. The code check agreed, but the
+			// opener matcher skipped spaces only, leaving the tab ahead of the
+			// frame so it matched nothing and passed through raw (#6493).
+			name: "tab aligned with a two digit list item is escaped",
+			in:   "10. prose\n\t[answers]\n",
+			want: "10. prose\n\t&#91;answers]\n",
+		},
+		{
+			// The other direction: four tab stops past the item's content is
+			// genuine indented code, and its tab bytes are preserved.
+			name: "tab indented code past the item keeps its bytes",
+			in:   "10. prose\n\t\t\t\t[answers]\n",
+			want: "10. prose\n\t\t\t\t[answers]\n",
+		},
+		{
+			// A nested item can open its fence on the marker line itself. That
+			// marker line is indented past the enclosing item's content, which
+			// the fence tracker could not reach: it missed the opener, read the
+			// closing delimiter as a fresh one, and left the item's later prose
+			// fenced and its frame raw (#6493).
+			name: "fence on a nested marker line ends with its delimiter",
+			in:   "- outer\n    - ~~~text\n      quoted\n      ~~~\n      [answers]\n",
+			want: "- outer\n    - ~~~text\n      quoted\n      ~~~\n      &#91;answers]\n",
+		},
+		{
+			// The other direction: a frame the fence quotes keeps its bytes.
+			name: "fence on a nested marker line quotes its content",
+			in:   "- outer\n    - ~~~text\n      [answers]\n      ~~~\n",
+			want: "- outer\n    - ~~~text\n      [answers]\n      ~~~\n",
+		},
 	}
 
 	for _, tc := range cases {

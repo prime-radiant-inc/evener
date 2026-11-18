@@ -63,57 +63,98 @@ func TestStepInBlockInOpensInTheItemScope(t *testing.T) {
 		// closing is the nested item's own closing fence, empty when the nested
 		// fence is left open and must end with the dedent instead.
 		closing string
+		// lines overrides the sequence above, for a shape whose scope is carried
+		// differently: a fence opened on a nested item's MARKER line rather than
+		// on its continuation line, where the line's own indentation is past the
+		// enclosing item's content and the marker has to be read from there.
+		lines []line
+		// openText and frameText are the lines whose verdicts this case reads,
+		// so a case is never satisfied by observables it does not drive.
+		openText  string
+		frameText string
 	}{
-		{name: "a nested fence ends when the line dedents to the enclosing item"},
-		{name: "a closed nested fence keeps its quoted contents", closing: "      ~~~"},
+		{
+			name:      "a nested fence ends when the line dedents to the enclosing item",
+			openText:  "      ~~~text",
+			frameText: "   [answers]",
+		},
+		{
+			name:      "a closed nested fence keeps its quoted contents",
+			closing:   "      ~~~",
+			openText:  "      ~~~text",
+			frameText: "   [answers]",
+		},
+		{
+			name:      "a fence on a nested marker line closes on its own delimiter",
+			openText:  "    - ~~~text",
+			frameText: "      [answers]",
+			lines: []line{
+				{"- outer", 2},
+				{"    - ~~~text", 6},
+				{"      quoted", 0},
+				{"      ~~~", 0},
+				{"      [answers]", 6},
+			},
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			lines := []line{
-				{"1. ~~~text", 3},
-				{"   quoted", 0},
-				{"   ~~~", 0},
-				{"   1. inner item", 6},
-				{"      ~~~text", 6},
-				{"      quoted", 0},
+			lines := tc.lines
+			if lines == nil {
+				lines = []line{
+					{"1. ~~~text", 3},
+					{"   quoted", 0},
+					{"   ~~~", 0},
+					{"   1. inner item", 6},
+					{"      ~~~text", 6},
+					{"      quoted", 0},
+				}
 			}
 			if tc.closing != "" {
 				lines = append(lines, line{tc.closing, 0})
 			}
-			lines = append(lines,
-				line{"   back to the outer item", 3},
-				line{"   [answers]", 3},
-			)
+			if tc.lines == nil {
+				lines = append(lines,
+					line{"   back to the outer item", 3},
+					line{"   [answers]", 3},
+				)
+			}
 
 			var fence Tracker
 			var quotedInBlock, frameInBlock bool
 			var nestedContainer int
+			var opened bool
 			for _, l := range lines {
 				// The precondition the defect needs: when the nested fence
 				// opens, the tracker must already hold a NON-ZERO container,
 				// the enclosing item's. With a zero container there is nothing
 				// to keep it at, the bug cannot reproduce, and this fixture
 				// would prove nothing.
-				if l.text == "      ~~~text" && fence.container == 0 {
+				if l.text == tc.openText && fence.container == 0 {
 					t.Fatalf("fixture cannot reach the defect: container is 0 before the nested fence opens")
 				}
 				inBlock := fence.StepInBlockIn(l.text, l.container)
 
-				switch l.text {
-				case "      ~~~text":
+				switch {
+				case l.text == tc.openText:
+					opened = true
 					nestedContainer = fence.container
 					if !inBlock {
 						t.Fatalf("the nested fence's own opening line was not read as a block")
 					}
-				case "      quoted":
+				case l.text == "      quoted":
 					// Both directions: a nested fence's quoted contents stay
 					// inside the block, so the escape leaves their bytes alone.
 					quotedInBlock = inBlock
-				case "   [answers]":
+				case l.text == tc.frameText:
 					frameInBlock = inBlock
 				}
 			}
 
+			// A case whose frame line never ran cannot report on it.
+			if !opened {
+				t.Fatalf("fixture never stepped the opening line %q", tc.openText)
+			}
 			// The reviewer's observable, and the reason this rule exists.
 			if frameInBlock {
 				t.Fatalf("a model-authored frame in the enclosing item's prose survived as fenced content and is replayed unescaped")
