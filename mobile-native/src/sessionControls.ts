@@ -216,7 +216,7 @@ export class SessionControls {
 				}
 				await this.refresh();
 			}
-			if (kind === "changeModel") {
+			if (kind === "changeModel" || kind === "setVisionModel") {
 				// An acknowledged pick can outlive the binding that sent it: a
 				// re-render may dispose these controls, and a read can fail or wait
 				// out a reconnect. The acknowledgement, not the read, is the record
@@ -247,7 +247,11 @@ export class SessionControls {
 				// state never outlives the acknowledgement. The notice follows the
 				// reader's presence, which the return value also reports.
 				if (!this.disposed) {
-					this.publish({ pending: null, error: null, notice: stayed ? "Model updated." : null });
+					this.publish({
+						pending: null,
+						error: null,
+						notice: stayed ? (kind === "changeModel" ? "Model updated." : "Vision model updated.") : null,
+					});
 				}
 				return stayed;
 			}
@@ -284,9 +288,7 @@ export class SessionControls {
 							? "Compaction requested. Progress appears in the conversation."
 							: kind === "setReasoningEffort"
 								? "Reasoning effort updated."
-								: kind === "setVisionModel"
-									? "Vision model updated."
-									: "Session renamed.",
+								: "Session renamed.",
 			});
 			return true;
 		} catch (cause) {

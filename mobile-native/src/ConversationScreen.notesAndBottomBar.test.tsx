@@ -70,6 +70,10 @@ const navigationState = vi.hoisted(() => ({
 	state: { index: 0, routes: [] as { key: string; name: string }[] },
 }));
 
+// The root stack above this screen's own, as the Duo split nests it: a route
+// pushed there covers the conversation without touching its own routes.
+const rootStack = vi.hoisted(() => ({ pushed: null as { key: string; name: string } | null }));
+
 // Who alerted you most recently, and Next's word that it moved you on.
 const alerts = vi.hoisted(() => ({ recent: [] as string[], nextUsed: vi.fn() }));
 
@@ -127,6 +131,18 @@ function SessionScreen(props: ConversationScreenProps) {
 const navigation = {
 	isFocused: () => true,
 	getState: () => navigationState.state,
+	// The root stack as the split really nests it: its front route holds this
+	// screen's own stack as that route's nested state, so a route pushed there
+	// covers this pane without touching its routes.
+	getParent: () => ({
+		getState: () => ({
+			index: rootStack.pushed ? 1 : 0,
+			routes: [
+				{ key: "sessions", name: "Sessions", state: navigationState.state },
+				...(rootStack.pushed ? [rootStack.pushed] : []),
+			],
+		}),
+	}),
 	navigate: vi.fn(),
 	push: vi.fn(),
 	replace: vi.fn(),
@@ -440,6 +456,7 @@ async function mount(
 		params: { hubId: "hub-1", ref, title: "Session", ...(openedBy ? { openedBy } : {}) },
 	} as unknown as ConversationScreenProps["route"];
 	navigationState.state = { index: 0, routes: [route] };
+	rootStack.pushed = null;
 	// Await mount-time accessibility and navigation reads, not the session
 	// read's clock, before handing the live renderer back to the case.
 	let tree!: ReactTestRenderer;
@@ -1719,6 +1736,46 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 		await press(tree, "Deny");
 		expect(toasts(tree)).toEqual(["approval:denied"]);
 		expect(playedHaptics).toEqual([]);
+	});
+
+	it("settles a decision taken while the root stack covers the pane, and inherits no error", async () => {
+		const ref = "ref-approval-covered";
+		const served = withApproval(ref);
+		const evener = (served as unknown as { evener: { pendingEscalations: Record<string, unknown>[] } }).evener;
+		// A second approval waits behind the first, so the next one is the place
+		// a stale unconfirmed error would surface.
+		evener.pendingEscalations.push({
+			...evener.pendingEscalations[0],
+			escalationId: "esc-2",
+			tool: "read_file",
+			mode: "restricted",
+			deniedPath: "/Users/jesse/notes/todo.md",
+		});
+		const { tree, hub } = await mount(served);
+
+		// Another conversation opens on the root stack: the pane settles for a
+		// reader who cannot see it, and says nothing about it.
+		rootStack.pushed = { key: "conversation-elsewhere", name: "Conversation" };
+		await press(tree, "Allow this file only");
+		expect(hub.requests.filter((request) => request.method === "evener/sandbox/escalation/resolve")).toHaveLength(1);
+		expect(toasts(tree)).toEqual([]);
+
+		// Returning, the next approval takes the dock with no error left over
+		// from the decision that settled behind the covering screen.
+		rootStack.pushed = null;
+		act(() =>
+			hub.notify({
+				method: "evener/sandbox/escalation/resolved",
+				params: { threadId: served.id, ref, escalationId: "esc-1" },
+			} as unknown as AnyNotification),
+		);
+		await settle();
+		const shown = renderedText(tree).replaceAll("\u200b", "");
+		expect(shown).toContain("read_file");
+		// An error holds Allow and Deny until its re-read settles, and the dock
+		// offers them again only once nothing is unconfirmed. A stale error from
+		// the covered decision would leave this press out of reach.
+		expect(pressable(tree, "Allow this file only")?.props.accessibilityState).toMatchObject({ disabled: false });
 	});
 });
 

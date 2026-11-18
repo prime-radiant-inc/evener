@@ -938,9 +938,13 @@ function ConversationScreenView({
 						client,
 						route.params.ref,
 						() => store.getState().conversation?.pendingEscalations ?? [],
+						// Settlement belongs to the live session binding. Whether
+						// another screen now covers this pane is a question for the
+						// announcement, and asking it here would turn a decision the
+						// hub already took into an unconfirmed error that the next
+						// queued approval would inherit.
 						() =>
 							connectionReady.current &&
-							screenInFront(navigation, route.key) &&
 							store.getState().status === "open" &&
 							store.getState().conversationGeneration === bindingGeneration &&
 							store.getState().conversation?.instanceId === bindingInstance,
@@ -3890,6 +3894,12 @@ function ConversationScreenView({
 									controls={approvalControls}
 									waiting={(conversation?.pendingEscalations.length ?? 1) - 1}
 									onDecided={(allowed) => {
+										// The decision is the hub's answer, taken and read
+										// back whatever the reader is looking at. Its
+										// announcement belongs to the pane still in front: a
+										// covered one settles silently rather than telling a
+										// reader who has moved on that something happened.
+										if (!screenInFront(navigation, route.key)) return;
 										if (allowed) haptic("success");
 										toaster.show({
 											text: allowed ? "Allowed once" : "Denied",

@@ -59,10 +59,14 @@ export class ApprovalControls {
 		if (this.disposed || !this.current() || this.state.pending !== null || this.state.refreshing) return;
 		await this.refreshAuthoritative();
 	}
-	async resolve(displayed: SandboxEscalationRequested, approve: boolean) {
-		if (this.disposed || !this.current() || this.state.pending || this.state.refreshing) return;
+	/** Makes the decision at the hub. True when the hub took it and the
+	 * session's own read confirms it, whatever the reader is looking at now;
+	 * whether to announce it is the screen's question, since the pane that
+	 * asked may have been covered by the time the answer arrived. */
+	async resolve(displayed: SandboxEscalationRequested, approve: boolean): Promise<boolean> {
+		if (this.disposed || !this.current() || this.state.pending || this.state.refreshing) return false;
 		const pending = this.approvals().find((value) => value.escalationId === displayed.escalationId);
-		if (!pending || JSON.stringify(pending) !== JSON.stringify(displayed)) return;
+		if (!pending || JSON.stringify(pending) !== JSON.stringify(displayed)) return false;
 		this.publish({ pending: displayed.escalationId, refreshing: false, error: null });
 		try {
 			const receipt = await this.client.request("evener/sandbox/escalation/resolve", {
@@ -72,16 +76,18 @@ export class ApprovalControls {
 			});
 			if (!receipt || typeof receipt !== "object" || Array.isArray(receipt))
 				throw new Error("Malformed resolution receipt");
-			if (this.disposed) return;
+			if (this.disposed) return false;
 			if (!this.current()) throw new Error("Session changed");
 			await this.refreshAuthoritative();
+			return this.state.error === null;
 		} catch {
-			if (this.disposed) return;
+			if (this.disposed) return false;
 			this.publish({
 				pending: null,
 				refreshing: false,
 				error: UNCONFIRMED,
 			});
+			return false;
 		}
 	}
 }

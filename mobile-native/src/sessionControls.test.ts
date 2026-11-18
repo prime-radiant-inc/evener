@@ -914,6 +914,32 @@ describe("conversation-owned session controls", () => {
 		expect(refreshed).toBe(1);
 		expect(controls.getSnapshot()).toMatchObject({ pending: null, error: null });
 	});
+	// A vision pick is a pick: the same acknowledgement confirms it, and its
+	// readback is catch-up. Off and Session model are the same action with a
+	// different value.
+	it.each(["off", "", "one/vision"])("confirms an acknowledged vision pick %j whose read fails", async (value) => {
+		const applied: string[] = [];
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => ({ data: [{ provider: "one", model: "vision" }] }),
+				vision: async (set) => {
+					applied.push(set);
+				},
+			}),
+			async () => {
+				throw new Error("The read lost its connection.");
+			},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		await controls.loadModels();
+		const run = value === "one/vision" ? controls.changeVisionModel("one", "vision") : controls.setVisionModel(value);
+		expect(await run).toBe(true);
+		expect(applied).toEqual([value]);
+		expect(controls.getSnapshot()).toMatchObject({ pending: null, error: null });
+	});
 	// The hub's acknowledgement, not the read that follows it, is the record
 	// that the pick applied. A phone that reconnects while that read is still
 	// out has not left the session it is looking at, so the pick still reports

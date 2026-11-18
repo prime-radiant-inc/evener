@@ -86,6 +86,9 @@ export function ApprovalDock({ request, controls, onDecided, waiting = 0 }: Appr
 		// resolve says nothing of its own: a decision went out when this
 		// approval went pending.
 		let sent = false;
+		// Whether the hub took this dock's decision: settlement is the live
+		// binding's, and the screen decides whether the reader is told.
+		let settledAtHub = false;
 		const stop = controls.subscribe(() => {
 			if (controls.getSnapshot().pending !== request.escalationId) return;
 			sent = true;
@@ -93,7 +96,7 @@ export function ApprovalDock({ request, controls, onDecided, waiting = 0 }: Appr
 			setDecisionSent(true);
 		});
 		try {
-			await controls.resolve(request, allowed);
+			settledAtHub = await controls.resolve(request, allowed);
 		} finally {
 			stop();
 		}
@@ -103,7 +106,7 @@ export function ApprovalDock({ request, controls, onDecided, waiting = 0 }: Appr
 		// It held when these controls settled with no error. Controls still
 		// pending were disposed mid-decision: nothing confirmed it, so the
 		// dock holds and says nothing.
-		else if (settled.pending === null) onDecided(allowed);
+		else if (settledAtHub && settled.pending === null) onDecided(allowed);
 	}
 	const body = { allowFontScaling, style: { fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkMid } };
 	return (

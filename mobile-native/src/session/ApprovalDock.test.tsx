@@ -33,6 +33,7 @@ function fakeControls(initial: Partial<State> = {}, outcome: Partial<State> = {}
 			publish({ pending: request.escalationId });
 			await Promise.resolve();
 			publish({ pending: null, refreshing: false, error: null, ...outcome });
+			return (outcome.error ?? null) === null;
 		}),
 		refresh: vi.fn(async () => {
 			publish({ refreshing: true });
@@ -169,6 +170,7 @@ describe("the approval dock (spec 8.4)", () => {
 			await new Promise<void>((resolve) => {
 				settle = resolve;
 			});
+			return true;
 		});
 		const onDecided = vi.fn<(allowed: boolean) => void>();
 		const tree = render(<ApprovalDock request={approval} controls={first.asControls} onDecided={onDecided} />);
@@ -201,7 +203,8 @@ describe("the approval dock (spec 8.4)", () => {
 		const first = fakeControls();
 		first.controls.resolve.mockImplementation(async (sent: SandboxEscalationRequested) => {
 			first.publish({ pending: sent.escalationId });
-			await new Promise<void>(() => {});
+			await new Promise<boolean>(() => {});
+			return true;
 		});
 		const tree = render(<ApprovalDock request={approval} controls={first.asControls} onDecided={vi.fn()} />);
 		await press(tree, "Allow this file only");
@@ -225,7 +228,8 @@ describe("the approval dock (spec 8.4)", () => {
 		const first = fakeControls();
 		first.controls.resolve.mockImplementation(async (sent: SandboxEscalationRequested) => {
 			first.publish({ pending: sent.escalationId });
-			await new Promise<void>(() => {});
+			await new Promise<boolean>(() => {});
+			return true;
 		});
 		const tree = render(<ApprovalDock request={approval} controls={first.asControls} onDecided={vi.fn()} />);
 		await press(tree, "Allow this file only");
@@ -270,7 +274,8 @@ describe("the approval dock (spec 8.4)", () => {
 		const first = fakeControls();
 		first.controls.resolve.mockImplementation(async (sent: SandboxEscalationRequested) => {
 			first.publish({ pending: sent.escalationId });
-			await new Promise<void>(() => {});
+			await new Promise<boolean>(() => {});
+			return true;
 		});
 		const tree = render(<ApprovalDock request={approval} controls={first.asControls} onDecided={vi.fn()} />);
 		await press(tree, "Allow this file only");
