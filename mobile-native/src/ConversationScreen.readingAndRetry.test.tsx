@@ -64,6 +64,12 @@ const navigationState = vi.hoisted(() => ({
 	state: { index: 0, routes: [] as { key: string; name: string; params?: object }[] },
 }));
 
+// The stack above this screen's: in the Duo split the conversation sits in a
+// detail stack that the root stack's Sessions route holds. A root push leaves
+// the detail stack's own routes untouched, so an alert that opens another
+// conversation moves this and not that.
+const rootStack = vi.hoisted(() => ({ pushed: null as { key: string; name: string } | null }));
+
 // Who alerted you most recently, and Next's word that it moved you on.
 const alerts = vi.hoisted(() => ({ recent: [] as string[], nextUsed: vi.fn() }));
 
@@ -127,6 +133,17 @@ function RegistryProbe({ seen }: { seen: { current: NativeConversationSessions |
 const navigation = {
 	isFocused: () => true,
 	getState: () => navigationState.state,
+	// The root stack as the split really nests it: its front route holds this
+	// screen's own stack as that route's nested state.
+	getParent: () => ({
+		getState: () => ({
+			index: rootStack.pushed ? 1 : 0,
+			routes: [
+				{ key: "sessions", name: "Sessions", state: navigationState.state },
+				...(rootStack.pushed ? [rootStack.pushed] : []),
+			],
+		}),
+	}),
 	navigate: vi.fn(),
 	push: vi.fn(),
 	replace: vi.fn(),
@@ -277,6 +294,7 @@ afterEach(async () => {
 	displayPrefs.config = null;
 	catalogHub.fails = false;
 	catalogHub.alsoLeaves = false;
+	rootStack.pushed = null;
 	readHistory.live = false;
 	keyboard.reset();
 	systemGlass.reset();
@@ -2370,6 +2388,111 @@ it("confirms an acknowledged model pick when the phone goes inactive before its 
 	// sheet that asked to close has already gone.
 	expect(navigation.goBack).toHaveBeenCalledTimes(1);
 	// The confirmation is the screen's own toast, shown as the sheet goes.
+	expect(tree.root.findAllByType(Toast)).toHaveLength(1);
+});
+
+// The same stack, moved from further out: the split's detail stack still holds
+// the conversation and its picker, while an alert has opened another
+// conversation on the root stack. The picker is not on screen any more, so the
+// pick the hub acknowledged reports nothing to a reader who has gone.
+it("keeps a pick quiet when the root stack moved while its acknowledgement was out", async () => {
+	catalogHub.alsoLeaves = true;
+	const served = thread("ref-elsewhere", "idle");
+	(served as unknown as { modelProvider: string }).modelProvider = "anthropic/claude-sonnet-5";
+	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = {
+		...CAPABILITIES,
+		changeModel: true,
+	};
+	const { tree, hub, route } = await mount(served);
+	const host = modelHosts.get(sheetKey("hub-1", "ref-elsewhere"));
+	if (!host?.controls) throw new Error("the screen provides no model controls");
+	const held = Promise.withResolvers<void>();
+	const request = hub.client.request.bind(hub.client);
+	(hub.client as unknown as { request: typeof request }).request = async (
+		method: string,
+		params: Record<string, unknown>,
+	) => {
+		if (method === "thread/read") await held.promise;
+		return request(method, params);
+	};
+	const sheet = render(
+		<ModelSheet
+			route={
+				{
+					key: "model-sheet",
+					name: "ModelSheet",
+					params: { hubId: "hub-1", ref: "ref-elsewhere", setting: "model" },
+				} as unknown as ComponentProps<typeof ModelSheet>["route"]
+			}
+			navigation={navigation as unknown as ComponentProps<typeof ModelSheet>["navigation"]}
+		/>,
+	);
+	vi.mocked(navigation.goBack).mockClear();
+	act(() => pressable(sheet, "Claude Haiku 5")?.props.onPress());
+	await settle();
+	expect(host.controls.getSnapshot().pending).toBe("changeModel");
+	// The picker sits as a sheet route over the conversation, as the detail
+	// stack holds it while the reader is still there.
+	navigationState.state = { index: 1, routes: [route, { key: "model-sheet", name: "ModelSheet" }] };
+	// An alert opens another conversation on the root stack while the pick's
+	// read is out. The detail stack under it is unchanged.
+	rootStack.pushed = { key: "conversation-elsewhere", name: "Conversation" };
+	act(() => tree.update(<SessionScreen route={route} navigation={navigation} />));
+	held.resolve();
+	await settle();
+	// The pick did reach the hub, so this is a settled result and not a pick
+	// that never went out. It just has no reader left to tell.
+	expect(hub.requests.some((entry) => entry.method === "thread/model/set")).toBe(true);
+	expect(host.controls.getSnapshot().pending).toBeNull();
+	// Nothing was dismissed and no success was announced on a screen the reader
+	// has left.
+	expect(navigation.goBack).not.toHaveBeenCalled();
+	expect(tree.root.findAllByType(Toast)).toHaveLength(0);
+});
+
+// The inverse: with the root stack still on the split's own route, the pick
+// the hub acknowledged closes the picker and confirms it.
+it("confirms a pick the root stack is still showing", async () => {
+	catalogHub.alsoLeaves = true;
+	const served = thread("ref-root-front", "idle");
+	(served as unknown as { modelProvider: string }).modelProvider = "anthropic/claude-sonnet-5";
+	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = {
+		...CAPABILITIES,
+		changeModel: true,
+	};
+	const { tree, hub, route } = await mount(served);
+	const host = modelHosts.get(sheetKey("hub-1", "ref-root-front"));
+	if (!host?.controls) throw new Error("the screen provides no model controls");
+	const held = Promise.withResolvers<void>();
+	const request = hub.client.request.bind(hub.client);
+	(hub.client as unknown as { request: typeof request }).request = async (
+		method: string,
+		params: Record<string, unknown>,
+	) => {
+		if (method === "thread/read") await held.promise;
+		return request(method, params);
+	};
+	const sheet = render(
+		<ModelSheet
+			route={
+				{
+					key: "model-sheet",
+					name: "ModelSheet",
+					params: { hubId: "hub-1", ref: "ref-root-front", setting: "model" },
+				} as unknown as ComponentProps<typeof ModelSheet>["route"]
+			}
+			navigation={navigation as unknown as ComponentProps<typeof ModelSheet>["navigation"]}
+		/>,
+	);
+	vi.mocked(navigation.goBack).mockClear();
+	act(() => pressable(sheet, "Claude Haiku 5")?.props.onPress());
+	await settle();
+	expect(host.controls.getSnapshot().pending).toBe("changeModel");
+	navigationState.state = { index: 1, routes: [route, { key: "model-sheet", name: "ModelSheet" }] };
+	held.resolve();
+	await settle();
+	expect(hub.requests.some((entry) => entry.method === "thread/model/set")).toBe(true);
+	expect(navigation.goBack).toHaveBeenCalledTimes(1);
 	expect(tree.root.findAllByType(Toast)).toHaveLength(1);
 });
 

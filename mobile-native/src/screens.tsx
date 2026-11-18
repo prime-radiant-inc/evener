@@ -879,6 +879,13 @@ function ConversationScreenView({
 				// is looking at it. The client is that transport, and going inactive
 				// replaces it with none, so it cannot answer this question — the
 				// session's own store can, because it outlives every client.
+				//
+				// A stack that still contains this conversation and a reader still
+				// looking at it are two questions. The Duo split keeps the detail
+				// stack's routes while an alert opens another conversation on the
+				// root stack over it, so the nested state alone would answer the
+				// first. screenInFront asks the stacks the screen is nested in too,
+				// which is what the announcement needs.
 				if (scope === "route") {
 					return (
 						currentDestination.current.store === store &&
