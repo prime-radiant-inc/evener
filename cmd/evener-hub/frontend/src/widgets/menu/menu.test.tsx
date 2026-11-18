@@ -458,6 +458,83 @@ test("a live row arriving above the trigger anchors the scroll and leaves the me
   }
 });
 
+// A clamp can move the row and the offset up by the same amount, and then the
+// same part of the row is on screen at both looks.
+//
+// Four rows of 44 below an 88px leading group: 264 of content in a 120px
+// scrollport, so the end of the range is 144 and that is where the reader is.
+// Rename, the second row, spans 132..176, so the scrollport clips its first 12
+// pixels and shows 144..176 - its last 32. It is clipped rather than whole only
+// because three rows follow it: a row must sit at least a scrollport's worth of
+// content from the end for a bottom-of-range offset to cut into its top.
+//
+// The leading group then shrinks by 44: every row moves up 44, the content ends
+// at 220, the new maximum is 100, and the browser clamps 144 down to it. Rename
+// now spans 88..132 and the scrollport runs 100..220, showing 100..132 - the
+// same 12..44 of the row, so the same 32 pixels of it. Absolute coordinates name
+// different numbers in both looks; relative to the row, the two are identical.
+test("a clamp that moves the row and the offset together keeps the reader's place", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  const PORT = 120;
+  const rowHeight = 44;
+  // The leading Stop/Steer block, which a turn's end shrinks.
+  let leadingRows = 88;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, 300, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, PORT);
+    return box(0, 0, 0, 0);
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "UL") return PORT;
+    return this.tagName === "LI" ? rowHeight : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "UL" ? 160 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName !== "LI" || !this.parentElement) return 0;
+    return leadingRows + Array.prototype.indexOf.call(this.parentElement.children, this) * rowHeight;
+  });
+  const { flush } = captureFrames();
+  const four: MenuItem[] = [
+    { id: "overview", label: "Overview", onSelect: vi.fn() },
+    { id: "rename", label: "Rename", onSelect: vi.fn() },
+    { id: "delete", label: "Delete", onSelect: vi.fn() },
+    { id: "pin", label: "Pin", onSelect: vi.fn() },
+  ];
+  try {
+    render(<Menu trigger="Actions" items={four} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    const focused = screen.getByRole("menuitem", { name: "Rename" });
+    const popup = screen.getByRole("menu");
+    // 88 + four rows of 44 = 264 of content in a 120px scrollport.
+    Object.defineProperty(popup, "scrollHeight", { configurable: true, value: 264 });
+    focused.focus();
+    expect(document.activeElement).toBe(focused);
+    // The reader scrolls to the end, 144 of 144, and Rename's top is clipped.
+    popup.scrollTop = 144;
+    fireEvent.scroll(popup);
+    expect(popup.scrollTop).toBe(144);
+
+    // A turn ends: 44px of leading content goes, every row moves up with it, and
+    // the offset is past the new maximum of 100 - so the browser clamps it.
+    leadingRows = 44;
+    Object.defineProperty(popup, "scrollHeight", { configurable: true, value: 220 });
+    popup.scrollTop = 100;
+    fireEvent(window, new Event("resize"));
+    flush();
+
+    // The same 12..44 of Rename is on screen as before the update.
+    expect(popup.scrollTop).toBe(100);
+    expect(document.activeElement).toBe(focused);
+  } finally {
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
 // The reader's scroll and the list change race, and the list change can win.
 // They swipe the popup toward the lower actions and a session update adds an
 // entry in the same tick, before the popup's own `scroll` event is delivered.
@@ -487,10 +564,14 @@ test("a list change that lands before the popup's scroll event leaves the reader
     return Array.prototype.indexOf.call(this.parentElement.children, this) * 44;
   });
   const { flush } = captureFrames();
+  // Four rows: three 44px rows in a 120px scrollport would allow only 12px of
+  // scrolling, so the 40px swipe below would be a position no browser could
+  // reach. Four give 56px of range, which holds it.
   const three: MenuItem[] = [
     { id: "overview", label: "Overview", onSelect: vi.fn() },
     { id: "archive", label: "Archive", onSelect: vi.fn() },
     { id: "rename", label: "Rename", onSelect: vi.fn() },
+    { id: "pin", label: "Pin", onSelect: vi.fn() },
   ];
   function WithDelete({ added }: { added: boolean }) {
     const extra: MenuItem[] = added ? [{ id: "delete", label: "Delete", onSelect: vi.fn() }] : [];
@@ -534,13 +615,18 @@ test("a live row changing bands leaves the menu open on its trigger", async () =
   const user = userEvent.setup();
   const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
   Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
-  // A witness row above the trigger - the row the browser anchors on and holds
-  // still - and the trigger's own screen position, which slides as the rest of
-  // the content moves under it.
+  // The rail as it actually nests: a Live SECTION wrapper around the row the
+  // browser anchors on and holds still. The wrapper is fixed in the CONTENT -
+  // the rows move between bands inside it, so it neither grows nor moves
+  // relative to the rail - which means its own content position is unchanged
+  // while the offset moves. A witness taken at the wrapper reports that nothing
+  // happened, and the row inside it is the only reference that can answer.
+  let sectionTop = 100;
   const witnessTop = 120;
   let triggerTop = 300;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.getAttribute("data-testid") === "live-section") return box(100, sectionTop, 200, 200);
     if (this.getAttribute("data-testid") === "live-row") return box(100, witnessTop, 200, 40);
     if (this.tagName === "UL") return box(0, 0, 160, 120);
     return box(0, 0, 0, 0);
@@ -550,7 +636,9 @@ test("a live row changing bands leaves the menu open on its trigger", async () =
   try {
     render(
       <div data-testid="owning-scroller" style={{ overflowY: "auto" }}>
-        <div data-testid="live-row">Live session</div>
+        <div data-testid="live-section">
+          <div data-testid="live-row">Live session</div>
+        </div>
         <Menu trigger="Actions" items={items()} />
       </div>,
     );
@@ -564,9 +652,12 @@ test("a live row changing bands leaves the menu open on its trigger", async () =
     // The session crosses from Idle into Working. Nothing changes height, so the
     // trigger sits at exactly the same place in the CONTENT - but the browser
     // holds the row it anchored at the same place on SCREEN, and gives back 24
-    // of offset to do it. The trigger slides down those 24 on screen.
+    // of offset to do it. The trigger slides down those 24 on screen, and the
+    // section wrapper - fixed in the content - slides down with the offset so
+    // that its own content position stays exactly where it was.
     scroller.scrollTop = 316;
     triggerTop = 324;
+    sectionTop = 124;
     fireEvent.scroll(scroller);
     flush();
 

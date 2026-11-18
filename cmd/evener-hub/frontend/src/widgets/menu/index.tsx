@@ -245,23 +245,52 @@ function contentTopOf(triggerEl: HTMLElement, scroller: Element): number {
   return triggerEl.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
 }
 
-/** A row the browser could have anchored on: any element in the scroller with a
- * box of its own, outside the trigger's subtree. An element with no height is
- * no reference at all - it says nothing about where the content is - so it is
- * skipped rather than recorded as a row that never moves. */
-function witnessIn(scroller: Element, triggerEl: HTMLElement): Element | null {
-  for (const candidate of Array.from(scroller.querySelectorAll("*"))) {
-    if (candidate.contains(triggerEl) || triggerEl.contains(candidate)) continue;
-    if (candidate.getBoundingClientRect().height > 0) return candidate;
+/** A row the browser could have anchored on: the INNERMOST boxed element in the
+ * scroller, outside the trigger's subtree.
+ *
+ * Inner-most rather than first-with-a-box, because the two differ exactly where
+ * this matters. A section wrapper around the rows - the rail's Live band - has a
+ * box, but its top does not move when a session changes bands INSIDE it, so a
+ * witness taken there reports that nothing happened while the rows under it
+ * moved. The innermost box is inside a row, and anything inside a row moves
+ * with that row. A box that is glued to the viewport (fixed or sticky) does not
+ * move with the content either, so it is not a witness; those are rare enough
+ * in a scroller that skipping them is cheap. */
+function witnessIn(scroller: Element, triggerEl: HTMLElement, ownerWindow: Window): Element | null {
+  let candidate: Element | null = null;
+  for (const node of Array.from(scroller.querySelectorAll("*"))) {
+    if (node.contains(triggerEl) || triggerEl.contains(node)) continue;
+    if (node.getBoundingClientRect().height <= 0) continue;
+    // A box with a boxed descendant is a container, and the movement this looks
+    // for happens BELOW it. Descending as far as the boxes go lands inside a
+    // row, where the movement is visible.
+    const inner = Array.from(node.querySelectorAll("*")).some(
+      (child) => !child.contains(triggerEl) && child.getBoundingClientRect().height > 0,
+    );
+    if (inner) continue;
+    const position = ownerWindow.getComputedStyle(node).position;
+    if (position === "fixed" || position === "sticky") continue;
+    candidate = node;
+    break;
   }
-  return null;
+  return candidate;
 }
 
 /** One look at a scroller: its offset, the trigger's place in the content, and
  * a witness row's place. Both positions are content coordinates, so a
  * difference between two looks is something the CONTENT did. */
-function recordFor(triggerEl: HTMLElement, scroller: Element): ScrollerRecord {
-  const witness = witnessIn(scroller, triggerEl);
+function recordFor(
+  triggerEl: HTMLElement,
+  scroller: Element,
+  ownerWindow: Window,
+  previous?: ScrollerRecord,
+): ScrollerRecord {
+  // The witness must be the SAME element in both looks or its two positions
+  // cannot be compared at all. Reusing the previous one while it is still in the
+  // scroller is both cheaper and the only way the difference means anything; a
+  // fresh one is taken only when the old one is gone.
+  const kept = previous?.witness ?? null;
+  const witness = kept?.isConnected && scroller.contains(kept) ? kept : witnessIn(scroller, triggerEl, ownerWindow);
   return {
     scrollTop: scroller.scrollTop,
     contentTop: contentTopOf(triggerEl, scroller),
@@ -294,7 +323,7 @@ function refreshScrollerBaselines(
     if (!isScrollContainer(node, ownerWindow)) continue;
     const recorded = records.get(node);
     if (recorded !== undefined && recorded.scrollTop !== node.scrollTop) continue;
-    records.set(node, recordFor(triggerEl, node));
+    records.set(node, recordFor(triggerEl, node, ownerWindow, recorded));
   }
 }
 
@@ -331,7 +360,7 @@ function classifyScrollerScroll(
   const now = scroller.scrollTop;
   const previous = records.get(scroller);
   const contentTop = contentTopOf(triggerEl, scroller);
-  records.set(scroller, recordFor(triggerEl, scroller));
+  records.set(scroller, recordFor(triggerEl, scroller, scroller.ownerDocument.defaultView ?? window, previous));
   if (previous === undefined) return "scrolled";
   const maximum = scroller.scrollHeight - scroller.clientHeight;
   // The browser may land a correction a fraction short of the endpoint the
@@ -602,15 +631,18 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         // at the earlier offset says the same thing backwards. Measured where
         // each was taken, a clamp cancels: the row moved by exactly what the
         // offset gave back, so the part of it on screen is the part that was.
-        // The part of the row the scrollport shows, as an interval in the row's
-        // own coordinates. Hidden-pixel counts cannot answer this: a row that
-        // grew by 16 adds 16 hidden pixels, and so does a row that was pushed
-        // 16 further under the edge - one is new content below the fold, the
-        // other is the reader's view of the row going away.
-        const showStart = (obs: RowObservation) => Math.max(obs.top, obs.scrolledTo);
-        const showEnd = (obs: RowObservation) => Math.min(obs.top + obs.height, obs.scrolledTo + obs.portHeight);
-        const fullyVisible = (obs: RowObservation) =>
-          showStart(obs) === obs.top && showEnd(obs) === obs.top + obs.height;
+        // The part of the row the scrollport shows, measured from the row's OWN
+        // top. Hidden-pixel counts cannot answer this: a row that grew by 16
+        // adds 16 hidden pixels, and so does a row pushed 16 further under the
+        // edge - one is new content below the fold, the other is the reader's
+        // view of the row going away. Absolute coordinates cannot either: a
+        // clamp moves the row and the offset together, so the two looks differ
+        // in absolute terms while the same part of the row is on screen.
+        // Relative to the row, a clamp cancels and only the row's own geometry
+        // is left in the numbers.
+        const showStart = (obs: RowObservation) => Math.max(0, obs.scrolledTo - obs.top);
+        const showEnd = (obs: RowObservation) => Math.min(obs.height, obs.scrolledTo + obs.portHeight - obs.top);
+        const fullyVisible = (obs: RowObservation) => showStart(obs) === 0 && showEnd(obs) === obs.height;
         if (fullyVisible(now)) return;
         // Three ways layout can take a row out of sight, and one for rows it
         // never showed:
@@ -618,9 +650,9 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         // - the row was fully in sight and is not any more. A label that wraps
         //   at the bottom edge slides past it this way, and the row was never
         //   hidden, so nothing about its hidden pixels says so;
-        // - the part on show now starts lower than it did: the row's beginning
-        //   went under the top edge;
-        // - the part on show now ends higher than it did AND the row did not
+        // - the part on show now starts further into the row than it did: the
+        //   beginning went under the top edge;
+        // - the part on show now ends sooner than it did AND the row did not
         //   shrink. A row that shrinks (an unwrapped label) pulls its own end up
         //   without the scrollport cutting anything, and one that grows pushes
         //   its end down into space that was never on screen - neither takes
@@ -1115,7 +1147,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     const triggerEl = triggerRef.current;
     for (let node: HTMLElement | null = triggerEl; node !== null; node = node.parentElement) {
       if (!isScrollContainer(node, ownerWindow)) continue;
-      if (triggerEl !== null) seeded.set(node, recordFor(triggerEl, node));
+      if (triggerEl !== null) seeded.set(node, recordFor(triggerEl, node, ownerWindow));
     }
     function onScrollCapture(event: Event) {
       const target = event.target;
