@@ -256,12 +256,18 @@ export function writeComposerDraft(
   imageMarkers?: readonly number[],
 ): string | undefined {
   markDraftEdited(ref);
-  const revisionId = (() => {
+  // Three outcomes, and they differ: a stored draft, a deliberate blank
+  // removal (provenance must go too), and a failed write (provenance must
+  // stay describing the draft that is still there). Collapsing the last two
+  // into "undefined" is what let a smaller marker list overwrite the old one
+  // while the old text survived - a reload then paired text with markers from
+  // a write that never happened.
+  const outcome = (() => {
     try {
       if (isBlankDraft(value)) {
         localStorage.removeItem(composerDraftStorageKey(ref));
         localStorage.removeItem(draftStorageKey(ref));
-        return undefined;
+        return { kind: "removed" } as const;
       }
       // The one choke point every persisted draft edit goes through, so the stamp
       // is the draft's actual last-write time.
@@ -280,18 +286,21 @@ export function writeComposerDraft(
       } catch {
         // The structured snapshot is committed and takes precedence on read.
       }
-      return revisionId;
+      return { kind: "stored", revisionId } as const;
     } catch {
       // Best-effort: a full quota or Safari private-mode must never be fatal
       // to the composer itself, only to draft persistence across reloads.
-      return undefined;
+      return { kind: "failed" } as const;
     }
   })();
-  // Only after the draft write has settled. A failed write must leave the
-  // previous draft AND the provenance that describes it untouched, or a
-  // reload would pair the old text with a newer marker list.
-  if (imageMarkers !== undefined) writeComposerImageMarkers(ref, imageMarkers);
-  return revisionId;
+  // Provenance describes the revision that actually committed. A failed write
+  // changes nothing here, so the previous draft keeps the markers that
+  // describe it, and a removal takes them with the text.
+  if (imageMarkers !== undefined) {
+    if (outcome.kind === "stored") writeComposerImageMarkers(ref, imageMarkers);
+    else if (outcome.kind === "removed") clearComposerImageMarkers(ref);
+  }
+  return outcome.kind === "stored" ? outcome.revisionId : undefined;
 }
 
 export function readComposerDraftRevisionId(ref: string): string | undefined {

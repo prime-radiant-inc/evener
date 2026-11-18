@@ -18,6 +18,18 @@ export interface RecoveredComposerDraft {
 
 const unavailableImageReferences = new WeakSet<RecoveredComposerDraft>();
 
+// Markers the record named in its own attachment list, kept beside the draft
+// rather than in it: they are provenance the record already stated, and adding
+// a field to the draft's public shape would make every reader carry a fact
+// only the adoption path needs. Same technique as the image-reference flag
+// above - the wrapper owns facts about the decoded record by identity.
+const declaredImageMarkers = new WeakMap<RecoveredComposerDraft, number[]>();
+
+/** The markers a record's own attachment list named, in declaration order. */
+export function recoveryDeclaredMarkers(draft: RecoveredComposerDraft): number[] {
+  return declaredImageMarkers.get(draft) ?? [];
+}
+
 // The shared recovery owns portable record decoding: composer text and marker
 // metadata identify associations, while payload input owns image bytes. This
 // browser wrapper converts those images to settled PendingAttachment tiles and
@@ -36,6 +48,10 @@ export function recoveryComposerDraft(record: MutationRecoveryRecord): Recovered
     ...(recovered.mentions ? { mentions: recovered.mentions } : {}),
   };
   if (recovered.imageReferences === "unavailable") unavailableImageReferences.add(draft);
+  declaredImageMarkers.set(
+    draft,
+    record.attachments.map((attachment) => attachment.marker),
+  );
   return draft;
 }
 

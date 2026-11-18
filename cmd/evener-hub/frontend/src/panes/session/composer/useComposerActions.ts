@@ -271,6 +271,11 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     updateSkillNames(restoredSkillNames(recovered));
     updateSelectionMeta(recovered);
     attachments.replaceWithSettled(recovered.attachments);
+    // This path restores a row without going through activateRecovery, so it
+    // must record the same image facts: which markers the row declared and
+    // which of those still carry bytes. Skipping it is what let a row's image
+    // be dropped from the request that consumed the row.
+    source.adoptRecoveredImageFacts(recovered);
     clearPersistedDraft(ref);
   }, [
     activeRecoveryId,
@@ -285,6 +290,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     setActiveRecoveryId,
     skillNamesRef,
     selectionMetaRef,
+    source.adoptRecoveredImageFacts,
     source.compositionOwnerId,
     textRef,
     updateText,
@@ -441,21 +447,42 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     }
     const submittedText = options.text ?? textRef.current;
     const clearDraftText = options.clearDraftText ?? submittedText;
-    const submittedAttachments = attachments.items;
     const submittedSkillNames = [...skillNamesRef.current];
     const submittedCommandNames = [...selectionMetaRef.current.commandNames];
     const submittedMentions = selectionMetaRef.current.mentions;
     const submittedRevision = draftEditRevisionRef.current;
     const submittedDraftRevision = readDraftRevision(ref);
-    // An image ships only when the submitted text still names it. Staging an
-    // attachment writes "[image N]" into the text, so this drops nothing on an
-    // ordinary send; what it excludes is work that is staged here but no
-    // longer referenced - notably a peer's attachments this pane kept when it
-    // rebound to that peer's draft. Marker numbers are not identity, so a
-    // number match between our store and their text would otherwise send an
-    // unrelated image under their anchor.
-    const spelledMarkers = new Set(Array.from(submittedText.matchAll(markerPattern()), (match) => Number(match[1])));
-    const payload = attachments.toInputAttachments().filter((item) => spelledMarkers.has(item.marker));
+    // ONE selection drives BOTH halves of the operation: what ships, and what
+    // cleanup may retire. Selecting twice is how an image gets excluded from
+    // the request and destroyed by the cleanup anyway - the model never sees
+    // it and the person loses it. So the sets below are computed once and the
+    // cleanup is handed exactly what the request carried.
+    //
+    // A staged image ships when the submitted text names its marker, because
+    // staging writes "[image N]" into that text. Two exceptions, and neither
+    // is a number match:
+    //
+    // - A marker this source was already holding when it adopted a foreign
+    //   draft is NOT sendable under that draft, even when the text spells the
+    //   same number. Marker numbers are not identity: that is a different
+    //   image, and shipping it would rewrite the adopted prose into an
+    //   attachment reference with somebody else's bytes. Those tiles stay in
+    //   the store for their own draft.
+    // - A marker a recovery row restored from its own payload stays sendable
+    //   even when the row's text does not spell it. The row carried real bytes
+    //   and never recorded that their reference was dropped; the spelling rule
+    //   exists to drop work whose reference is gone, not to second-guess a row.
+    const snapshot = source.getSnapshot();
+    const foreign = new Set(snapshot.foreignImageMarkers);
+    const restored = new Set(snapshot.restoredImageMarkers);
+    const spelled = new Set(Array.from(submittedText.matchAll(markerPattern()), (match) => Number(match[1])));
+    const sendableMarkers = new Set(
+      attachments.items
+        .filter((item) => !foreign.has(item.marker) && (spelled.has(item.marker) || restored.has(item.marker)))
+        .map((item) => item.marker),
+    );
+    const payload = attachments.toInputAttachments().filter((item) => sendableMarkers.has(item.marker));
+    const submittedAttachments = attachments.items.filter((item) => sendableMarkers.has(item.marker));
     const submittedLease = recoveryOwnerLeaseRef.current;
     const submittedRecoveryId = submittedLease?.clientMutationId ?? null;
     let releaseRecoveryInFlight: (() => void) | null = null;

@@ -30,7 +30,13 @@ import {
   subscribeComposerSubmissionCommitted,
   updateRecoveryPendingTurn,
 } from "./queue/pendingTurnsStore";
-import { compositionIsEmpty, mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recovery/recoveryDraft";
+import {
+  compositionIsEmpty,
+  mergeRecoveryComposerDraft,
+  type RecoveredComposerDraft,
+  recoveryComposerDraft,
+  recoveryDeclaredMarkers,
+} from "./recovery/recoveryDraft";
 import {
   materializeSelectionReferences,
   parseSkillDocument,
@@ -82,6 +88,21 @@ export interface ComposerSourceSnapshot {
    * typed is theirs to send.
    */
   unbackedImageMarkers: number[];
+  /**
+   * Marker numbers of attachments this source was holding when it rebound to
+   * another draft. Their bytes belong to the composition that was replaced, so
+   * they are not sendable under the adopted text - even when that text happens
+   * to spell the same number. Marker numbers are not identity, and the number
+   * is all the surfaced text can offer.
+   */
+  foreignImageMarkers: number[];
+  /**
+   * Marker numbers a recovery row restored from its own payload whose text
+   * does not spell them. The row carried real bytes and never recorded that
+   * their reference was dropped, so they stay sendable: the text-spelling rule
+   * exists to drop work whose reference is gone, not to second-guess a row.
+   */
+  restoredImageMarkers: number[];
   activeRecoveryId: string | null;
   recoveryActivating: boolean;
   recoveryOperationBusy: boolean;
@@ -114,6 +135,10 @@ export interface ComposerSourceState {
   getSnapshot(): ComposerSourceSnapshot;
   subscribe(listener: () => void): () => void;
   bindEditor(editor: TextEditor): () => void;
+  /** Record what a restored recovery composition declares about its images.
+   * Both adoption paths call this - activation and the mount-time auto
+   * restore - because each replaces the snapshot's provenance wholesale. */
+  adoptRecoveredImageFacts(recovered: RecoveredComposerDraft): void;
   updateText(text: string): void;
   editText(text: string): void;
   updateSkillNames(names: string[]): void;
@@ -208,6 +233,8 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     commandNames: initial.commandNames ?? [],
     mentions: initial.mentions,
     unbackedImageMarkers: [],
+    foreignImageMarkers: [],
+    restoredImageMarkers: [],
     activeRecoveryId: null,
     recoveryActivating: false,
     recoveryOperationBusy: false,
@@ -472,6 +499,35 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   function adoptUnbackedImageMarkers(recorded: readonly number[]): void {
     adoptedUnbackedMarkers = new Set(recorded);
     refreshUnbackedImageMarkers();
+  }
+
+  // A restored recovery composition is authoritative about its own images: its
+  // attachment list says which markers were images, and its payload says which
+  // of those still carry bytes. Marker numbers the list never named were
+  // prose, so they are not adopted; numbers it named whose bytes did not
+  // survive are anchors with nothing behind them.
+  //
+  // The local tags surviving the merge are kept: a reference this composer
+  // adopted before the row arrived is still an anchor with no bytes, and
+  // replacing the set is what cleared that refusal.
+  function adoptRecoveredImageFacts(recovered: RecoveredComposerDraft): void {
+    const restored = new Set(recovered.attachments.map((item) => item.marker));
+    const declared = new Set(recoveryDeclaredMarkers(recovered));
+    const spoken = new Set(markerNumbersIn(recovered.text));
+    adoptUnbackedImageMarkers([
+      ...adoptedUnbackedMarkers,
+      ...[...declared]
+        .filter((marker) => spoken.has(marker) && !restored.has(marker))
+        .sort((left, right) => left - right),
+    ]);
+    // Bytes the row restored that its own text does not name stay sendable:
+    // the row carried them, and a resend consumes the row.
+    state.setState({
+      restoredImageMarkers: [...restored].filter((marker) => !spoken.has(marker)).sort((left, right) => left - right),
+      // The row owns this composition now, so nothing staged here is foreign
+      // to it in the rebind sense.
+      foreignImageMarkers: [],
+    });
   }
 
   // The mount read is an adoption too: this source starts with an empty
@@ -778,21 +834,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
           updateSkillNames(restoredSkillNames(latest));
           updateSelectionMeta(latest);
           operations.replaceWithSettled(latest.attachments);
-          // Opening a row is an adoption like the mount read and the rebind:
-          // the restored text is not this source's typing, and the images the
-          // row could not carry have no bytes here. The record that described
-          // the draft before the row took it still names those markers, and it
-          // names only markers that had bytes - so a "[image N]" the person
-          // typed as prose is not in it and is never adopted. Filter to what
-          // the ROW's text spells (never the local text the merge appended)
-          // and to what the row did not restore bytes for.
-          const restoredMarkers = new Set(recovered.attachments.map((item) => item.marker));
-          const rowMarkers = new Set(markerNumbersIn(recovered.text));
-          adoptUnbackedImageMarkers(
-            readComposerDraftImageMarkers(ref).filter(
-              (marker) => rowMarkers.has(marker) && !restoredMarkers.has(marker),
-            ),
-          );
+          adoptRecoveredImageFacts(recovered);
           markRestore();
           committedRecoveryComposition = recoveryCompositionFingerprint({
             text: merged.text,
@@ -979,6 +1021,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     updateSelectionMeta,
     setActiveRecoveryId,
     markRestore,
+    adoptRecoveredImageFacts,
     persistDraft,
     writeDraft,
     compositionOwnerId,
@@ -992,6 +1035,15 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
       if (disposed) return () => {};
       if (!ownsDraft() && currentRecoveryId() === null) {
         const draft = readComposerDraftSnapshot(ref);
+        // Whatever this source already staged predates the draft it is about
+        // to adopt, so those bytes belong to a composition that is being
+        // replaced. Recorded here because this is the only point that knows
+        // it: afterwards a staged tile and an adopted marker look identical.
+        const stagedBeforeAdoption = operations.items.map((item) => item.marker);
+        state.setState({
+          foreignImageMarkers: [...new Set([...stagedBeforeAdoption])].sort((left, right) => left - right),
+          restoredImageMarkers: [],
+        });
         updateText(draft.text);
         updateSkillNames(restoredSkillNames(draft));
         updateSelectionMeta(draft);
@@ -1046,6 +1098,20 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
       if (disposed) return;
       const markers = new Set(operations.items.filter((item) => items.includes(item)).map((item) => item.marker));
       operations.clearSubmitted(markers);
+      // Sent bytes belong to the request that carried them. Retiring the
+      // markers here keeps a later composition from inheriting either an
+      // unbacked tag or an exemption meant for the composition now gone.
+      if (markers.size > 0) {
+        const unbacked = new Set([...adoptedUnbackedMarkers].filter((marker) => !markers.has(marker)));
+        if (unbacked.size !== adoptedUnbackedMarkers.size) adoptedUnbackedMarkers = unbacked;
+        const snapshot = state.getState();
+        const restored = snapshot.restoredImageMarkers.filter((marker) => !markers.has(marker));
+        if (restored.length !== snapshot.restoredImageMarkers.length)
+          state.setState({
+            restoredImageMarkers: restored,
+            unbackedImageMarkers: [...adoptedUnbackedMarkers].sort((left, right) => left - right),
+          });
+      }
     },
     dispose() {
       if (disposed) return;

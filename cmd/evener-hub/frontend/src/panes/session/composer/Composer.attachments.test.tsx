@@ -31,6 +31,7 @@ import {
   mountComposerWithHandle,
   seedRejectedRecovery,
   seedRejectedRecoveryWithAttachment,
+  stampRecoveryOwner,
   submitButton,
   testThread,
   textarea,
@@ -844,6 +845,68 @@ test("a staged image whose marker left the text does not ride the send", async (
   expect(delivered).toHaveLength(1);
   const input = delivered[0] as Array<{ type: string }>;
   expect(input.filter((item) => item.type === "image")).toEqual([]);
+  // And the bytes are still here. Excluding an image from the request while the
+  // cleanup retires it anyway is the same loss by a different route: the model
+  // never saw it and the person cannot send it later.
+  expect(screen.getByRole("button", { name: "View orphan.png" })).toBeTruthy();
+});
+
+// A recovery row restores real image bytes. A resend consumes the row, so an
+// image left out of that request is not deferred, it is destroyed: the model
+// never saw it and nothing durable still holds it.
+test("a recovery row's restored image ships on the send that consumes it", async () => {
+  installCanvasStubs();
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  // A row whose payload carries image bytes but no composer snapshot: its text
+  // never spells the marker, so the text-spelling rule alone would drop these
+  // bytes from the very request that consumes the row.
+  const outbox = await storage.enqueueIntent({
+    targetRef: "ref_a",
+    threadId: "thread_a",
+    method: "turn/start",
+    attachments: [
+      {
+        presentationId: "presentation-1",
+        marker: 1,
+        name: "proof.png",
+        mediaType: "image/png",
+        blob: new Blob([new Uint8Array([1, 2, 3])], { type: "image/png" }),
+      },
+    ],
+    payload: {
+      ref: "ref_a",
+      input: [
+        { type: "text", text: "sent with an image" },
+        { type: "image", mediaType: "image/png", data: "AQID", name: "proof.png" },
+      ],
+    },
+    optimisticDisplay: { method: "turn/start", input: [] },
+  });
+  const transferred = await storage.transferToRecovery(outbox.clientMutationId, "rejected");
+  if (!transferred) throw new Error("failed to seed image-only recovery");
+  const recovered = await stampRecoveryOwner(storage, transferred);
+  const source = createTestComposerSource("ref_a");
+  const { fake } = await mountComposerWithHandle("ref_a", {}, { source });
+  const delivered: unknown[][] = [];
+  fake.on("turn/start", (params) => {
+    delivered.push((params.input ?? []) as unknown[]);
+    return {
+      receipt: appliedReceipt(params.clientMutationId, "thread_a"),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  await flushPendingTurnsProjectionForTests();
+  expect(source.getSnapshot().activeRecoveryId).toBe(recovered.clientMutationId);
+  expect(screen.getByRole("button", { name: "Remove proof.png" })).toBeTruthy();
+
+  await userEvent.setup().click(submitButton());
+  await flushPendingTurnsProjectionForTests();
+  expect(delivered).toHaveLength(1);
+  // The bytes are on the wire. This is the whole point: the row is consumed by
+  // this request, so prose alone would lose the attachment for good.
+  const sent = delivered[0] as Array<{ type: string; name?: string }>;
+  expect(sent.filter((item) => item.type === "image").map((item) => item.name)).toEqual(["proof.png"]);
 });
 
 test("an image this reader staged keeps its marker sendable with no refusal", async () => {
