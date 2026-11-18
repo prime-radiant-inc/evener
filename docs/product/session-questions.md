@@ -102,6 +102,18 @@ active execution from answer links without discarding the resolution evidence.
 Unfenced input and legacy records retain whole-set behavior. An accepted
 interrupt and session close also retain their explicit whole-set clear behavior.
 
+An answer's observation carries that capture to clients as
+`resolvedAskCalls:[{turnId,callId}]`, beside the turn-granular
+`answerToTurnIds`. The link alone cannot say which of several calls in one
+execution a reply answered, so a client matching a settled ask to its answer
+reads the calls and compares the ask row's own `(turnId, callId)`. A client
+takes that match only where the call's recorded questions and its arguments
+agree: where a pre-tool hook rewrote a question, the row and the recap would
+disagree about what was asked, and the reply is left unattributed until that
+disagreement gets a product decision. The turn link and the composed
+`[answers]` text shape remain the fallback for unfenced whole-set answers and
+for records stamped before the call list existed.
+
 A ref-addressed `thread/read` carrying the expected pair, `offset` and `limit`
 returns `pendingAskPage:{composites,total,nextOffset,calllessCount}`. Any page
 key selects this grammar, which requires the pair and refuses subscriptions,
