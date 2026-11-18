@@ -32,8 +32,15 @@
 # install an INT trap, nor reset an inherited-ignored SIGINT, in a job started
 # with `&` from a non-interactive shell -- the kernel already had it ignored, so
 # a PID-directed SIGINT is ignored by the launcher and never reaches the
-# helper. SIGTERM always works, and so does Ctrl-C in a terminal, which the
-# tty's process group delivers to the helper directly.
+# helper. SIGTERM always works.
+#
+# Ctrl-C in a terminal signals this script, and this script signals the helper:
+# the helper runs in a process group of its own, so the tty's foreground group
+# does not contain it and the terminal does not reach it directly. The launcher
+# takes the interrupt and forwards cancellation as SIGTERM to the helper's PID,
+# which lets the helper's own context stop its GitHub call and report the
+# interrupt rather than a queue decision. A helper that does not act on SIGTERM
+# within a couple of seconds has its process tree stopped.
 #
 # The exit codes are the contract. 0 means merged or queued, 1 means the queue
 # ended the attempt (dropped or timed out), 2 means nothing was decided: bad
@@ -51,9 +58,9 @@
 # harness around the fake.
 set -euo pipefail
 
-# The contract block above is lines 2-36; the rationale after it is for a
+# The contract block above is lines 2-50; the rationale after it is for a
 # reader of this file, not for --help.
-usage() { sed -n '2,36p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+usage() { sed -n '2,50p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 # A value-taking option at the end of the line has no value: reading $2 there is
 # an "unbound variable" abort under set -u, which exits 1 -- the code that means

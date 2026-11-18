@@ -3,6 +3,7 @@
 package evener_test
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"os"
@@ -40,10 +41,213 @@ import (
 //     timeout, which reads as an unrelated hang instead of the regression.
 const mergeEnqueueLauncher = "scripts/ops/merge-enqueue.sh"
 
+// TestMergeEnqueueLauncherLeavesNothingRunningAfterCancellation is the leak the
+// review's own reproduction found: three real `evener-dev dev merge-enqueue
+// --pr 6499 --wait 570` processes, reparented to PID 1 and still polling more
+// than an hour after the tests that started them had finished. Each had a real
+// `gh` child. PR 6499 happened to be merged, so the re-enqueue was a no-op; an
+// unmerged PR would have been put in the merge queue by a test run.
+//
+// The property is stated as the operator sees it: after the case ends, no
+// process from it survives. Two oracles, both structural rather than textual:
+//
+//   - the helper the launcher ran is the fixture, proven by the fixture's own
+//     marker in its argv. A real helper names `merge-enqueue --repo
+//     prime-radiant-inc/evener` and writes no such marker, so this could not
+//     pass with the real one.
+//   - cleanup leaves nothing behind, checked by scanning for the case's own
+//     marker after the group kills rather than by observing that the direct
+//     child exited. A `kill` of the direct child is what left the review's
+//     orphans alive: the helper runs in a group of its own, so
+//     `cmd.Process.Kill()` cannot reach it. The fixture's grandchild stands in
+//     for that shape -- it ignores TERM, so only a group signal stops it.
+func TestMergeEnqueueLauncherLeavesNothingRunningAfterCancellation(t *testing.T) {
+	t.Parallel()
+	f := newLauncherFixture(t, `#!/usr/bin/env bash
+set -uo pipefail
+trap 'printf "helper-termed\n" >> "$EVENER_FIXTURE_LOG"; exit 130' TERM
+"$EVENER_FIXTURE_GRANDCHILD" &
+grandchild=$!
+printf 'helper-pid=%s;pgid=%s\n' "$$" "$(ps -o pgid= -p "$$" | tr -d ' ')" >> "$EVENER_FIXTURE_LOG"
+printf 'grandchild-pid=%s;pgid=%s\n' "$grandchild" "$(ps -o pgid= -p "$grandchild" | tr -d ' ')" >> "$EVENER_FIXTURE_LOG"
+while :; do sleep 0.05; done
+`)
+	// A grandchild the fixture does not signal itself: it survives a TERM to
+	// the fixture's PID alone, which is exactly the shape that outlived the
+	// review's tests.
+	grandchild := filepath.Join(f.dir, "grandchild.sh")
+	if err := os.WriteFile(grandchild, []byte(`#!/usr/bin/env bash
+trap '' TERM
+while :; do sleep 0.05; done
+`), 0o755); err != nil {
+		t.Fatalf("write fixture grandchild: %v", err)
+	}
+	var helperPID int
+	var grandchildPID int
+	cmd := f.launcherCmd(t, "--pr", "6499", "--wait", "570", "--repo", "example.invalid/none")
+	cmd.Env = append(cmd.Env, "EVENER_FIXTURE_GRANDCHILD="+grandchild)
+	runLauncher(t, cmd, f, &helperPID, &grandchildPID)
+	helperPID, helperGroup := logPIDAndGroup(t, f, "helper-pid=")
+	_, grandchildGroup := logPIDAndGroup(t, f, "grandchild-pid=")
+	if grandchildGroup != helperGroup {
+		t.Fatalf("the fixture grandchild is in group %d, want the helper's group %d: this case needs it reachable only by a group signal", grandchildGroup, helperGroup)
+	}
+	// The helper is the fixture, not the real one. EVENER_DEV_BIN is the only
+	// way the launcher can have started this pid, and it is a path inside this
+	// case's fixture directory.
+	helperCmd := commandLineOf(t, helperPID)
+	if !strings.Contains(helperCmd, f.path) {
+		t.Fatalf("the launcher ran %q, want the fixture helper at %s: a case that starts the real helper can enqueue a real pull request", helperCmd, f.path)
+	}
+	signalLauncher(t, cmd, syscall.SIGTERM)
+	mustExit(t, cmd, f, 130)
+	// The helper stopped. That is what the launcher owes: it forwards the
+	// cancellation and reaps the helper before reclaiming scratch.
+	testwait.Until(t, fmt.Sprintf("helper pid %d to terminate", helperPID), func() bool {
+		return pidGone(helperPID)
+	})
+	// The grandchild is deliberately not asserted here. The launcher does not
+	// own a helper's descendants -- the real helper's cancelled context is what
+	// stops its `gh` -- so requiring this one to die would be asserting the
+	// fixture, not the launcher. What must hold is that nothing from the case
+	// outlives the case, which is what cleanup's sweep proves: it runs after
+	// the group kills and fails naming every survivor.
+}
+
+// commandLineOf returns the full argv of pid, or "" when it is gone.
+func commandLineOf(t *testing.T, pid int) string {
+	t.Helper()
+	for _, proc := range scanProcs(t) {
+		if proc.pid == pid {
+			return proc.cmd
+		}
+	}
+	return ""
+}
+
 // launcherExitDeadline bounds how long a case waits for the launcher to exit.
 // It is generous against a loaded host and still far below the package's
 // ceiling: the paths under test return in well under a second.
 const launcherExitDeadline = 30 * time.Second
+
+// fixtureCheckout is a stand-in checkout the launcher can be pointed at: a copy
+// of the script and the libraries it sources, and a Go module whose only
+// package under ./cmd/evener-dev/bin writes a sentinel and exits.
+//
+// The point is that the real helper cannot be built here, let alone started:
+// this module has no `dev` subcommand, no merge-queue client and no code that
+// could run `gh`. A launcher that reached the build path against *this*
+// checkout and then ran the result would run the stub, which writes a file and
+// exits.
+type fixtureCheckout struct {
+	root     string
+	script   string
+	tmp      string
+	sentinel string
+}
+
+// newFixtureCheckout copies the launcher and its libraries into a fresh
+// directory and writes the fixture module.
+//
+// tmp is the checkout's TMPDIR: the launcher mints its scratch under it, so the
+// scratch path appears in the build's argv and the built helper runs from it.
+//
+// The build is held open by a FIFO source file rather than by a cold cache. A
+// cold build is a race -- how long it takes depends on the host and on what the
+// developer's cache already holds -- and the old case lost that race in the one
+// direction that matters. A FIFO has no writer, so the go command blocks opening
+// it and the build stays in flight until the case signals.
+func newFixtureCheckout(t *testing.T, tmp string) fixtureCheckout {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), "checkout")
+	c := fixtureCheckout{
+		root:     root,
+		script:   filepath.Join(root, "scripts", "ops", "merge-enqueue.sh"),
+		tmp:      tmp,
+		sentinel: filepath.Join(root, "helper-ran"),
+	}
+	for _, copy := range []struct{ src, dst string }{
+		{mergeEnqueueLauncher, filepath.Join("scripts", "ops", "merge-enqueue.sh")},
+		{filepath.Join("scripts", "lib", "scratch-lib.sh"), filepath.Join("scripts", "lib", "scratch-lib.sh")},
+		{filepath.Join("scripts", "lib", "gate-scratch-root.sh"), filepath.Join("scripts", "lib", "gate-scratch-root.sh")},
+		{filepath.Join("scripts", "lib", "gate-bounded.sh"), filepath.Join("scripts", "lib", "gate-bounded.sh")},
+	} {
+		body, err := os.ReadFile(copy.src)
+		if err != nil {
+			t.Fatalf("read %s: %v", copy.src, err)
+		}
+		path := filepath.Join(root, copy.dst)
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir for %s: %v", path, err)
+		}
+		if err := os.WriteFile(path, body, 0o755); err != nil {
+			t.Fatalf("write %s: %v", path, err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(root, "cmd", "evener-dev", "bin"), 0o755); err != nil {
+		t.Fatalf("mkdir fixture package: %v", err)
+	}
+	// go.mod's directive stays below the toolchain's own version: a newer one
+	// makes the go command try to download a toolchain, which would need the
+	// network this suite must not touch.
+	if err := os.WriteFile(filepath.Join(root, "go.mod"), []byte("module example.invalid/fixture\n\ngo 1.21\n"), 0o644); err != nil {
+		t.Fatalf("write fixture go.mod: %v", err)
+	}
+	main := "package main\n\nimport \"os\"\n\nfunc main() { _ = os.WriteFile(" + strconv.Quote(c.sentinel) + ", []byte(\"ran\"), 0o644) }\n"
+	if err := os.WriteFile(filepath.Join(root, "cmd", "evener-dev", "bin", "main.go"), []byte(main), 0o644); err != nil {
+		t.Fatalf("write fixture main: %v", err)
+	}
+	// A FIFO named *.go: the build has to read every source in the package, so
+	// it blocks in open until a writer appears. Nothing ever opens it.
+	if err := syscall.Mkfifo(filepath.Join(root, "cmd", "evener-dev", "bin", "hold.go"), 0o600); err != nil {
+		t.Fatalf("mkfifo: %v", err)
+	}
+	if err := os.MkdirAll(tmp, 0o755); err != nil {
+		t.Fatalf("mkdir fixture TMPDIR: %v", err)
+	}
+	return c
+}
+
+// requireIsolated states this checkout's two isolation facts, so a case that
+// drifts back to the repository's own checkout fails at once with the reason
+// instead of timing out looking for a build.
+//
+//   - The script under test is the fixture copy. It is byte-identical to the
+//     repository's script, so what runs is the real launcher; only the checkout
+//     around it is a stand-in.
+//   - The only package ./cmd/evener-dev/bin can find here is the fixture's
+//     stub. The repository's helper lives in the repository's module, and this
+//     module's go.mod is the only one on the path, so `go build
+//     ./cmd/evener-dev/bin` from here cannot produce it.
+func (c fixtureCheckout) requireIsolated(t *testing.T) {
+	t.Helper()
+	rootPrefix := c.root + string(filepath.Separator)
+	if !strings.HasPrefix(c.script, rootPrefix) {
+		t.Fatalf("the script under test is %s, want a copy under %s: a case that runs the repository's launcher builds the real helper, and the real helper can enqueue a real pull request", c.script, c.root)
+	}
+	repo, err := os.ReadFile(mergeEnqueueLauncher)
+	if err != nil {
+		t.Fatalf("read %s: %v", mergeEnqueueLauncher, err)
+	}
+	copied, err := os.ReadFile(c.script)
+	if err != nil {
+		t.Fatalf("read %s: %v", c.script, err)
+	}
+	if !bytes.Equal(repo, copied) {
+		t.Fatalf("%s differs from %s: this case would be testing a script nobody ships", c.script, mergeEnqueueLauncher)
+	}
+	entries, err := os.ReadDir(filepath.Join(c.root, "cmd", "evener-dev", "bin"))
+	if err != nil {
+		t.Fatalf("read the fixture package: %v", err)
+	}
+	for _, entry := range entries {
+		switch entry.Name() {
+		case "main.go", "hold.go":
+		default:
+			t.Fatalf("the fixture package holds %s: the fixture must contain only its stub, or the build could produce something other than it", entry.Name())
+		}
+	}
+}
 
 // launcherFixture is a stand-in helper: a script the launcher starts through
 // EVENER_DEV_BIN and then signals.
@@ -120,9 +324,18 @@ func (f launcherFixture) launcherCmd(t *testing.T, args ...string) *exec.Cmd {
 		"EVENER_DEV_BIN="+f.path,
 		"EVENER_FIXTURE_LOG="+f.log,
 		"PATH="+os.Getenv("PATH"),
+		// TMPDIR is the case's own directory, so a helper the launcher builds
+		// and runs carries this case's marker in its argv. That is what lets
+		// cleanup find a helper whose PID the case never learned -- including
+		// the real one, were a case ever to reach it.
+		"TMPDIR="+f.tmpDir(),
 	)
 	return cmd
 }
+
+// tmpDir is the TMPDIR this fixture's launcher runs under: inside the case's own
+// directory, so the scratch path the launcher mints names the case.
+func (f launcherFixture) tmpDir() string { return filepath.Join(f.dir, "tmp") }
 
 // killGroups KILLs each pid's process group, ignoring ones already gone. It is
 // the cleanup path: it must never fail the case it is cleaning up after.
@@ -138,7 +351,18 @@ func killGroups(pids ...int) {
 }
 
 // runLauncher starts cmd with its output redirected, and registers cleanup that
-// KILLs the launcher's process group and every fixture pid named so far.
+// KILLs the launcher's process group, every fixture pid named so far, and every
+// process still naming the fixture directory.
+//
+// That last sweep is what the review's reproduction showed was missing: three
+// real helpers from this suite were found orphaned to PID 1 for over an hour,
+// each holding a --wait 570 budget the tests believed bounded them. A pid list
+// only covers the processes a case managed to learn before its assertion failed;
+// a helper that published nothing, or one the launcher started into a group of
+// its own, was outside every list. The fixture directory is unique per case and
+// appears in the argv of every process a case starts (the fixture helper by
+// path, a build or a real helper by the scratch path under it), so it is the one
+// handle that does not depend on the case getting that far.
 func runLauncher(t *testing.T, cmd *exec.Cmd, f launcherFixture, fixturePIDs ...*int) {
 	t.Helper()
 	out, err := os.Create(f.stdout)
@@ -152,10 +376,16 @@ func runLauncher(t *testing.T, cmd *exec.Cmd, f launcherFixture, fixturePIDs ...
 	}
 	t.Cleanup(func() { _ = errOut.Close() })
 	cmd.Stdout, cmd.Stderr = out, errOut
+	if err := os.MkdirAll(f.tmpDir(), 0o755); err != nil {
+		t.Fatalf("mkdir fixture TMPDIR: %v", err)
+	}
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start %s: %v", mergeEnqueueLauncher, err)
 	}
 	launcherPID := cmd.Process.Pid
+	// Cleanups run last-registered-first, so the sweep is registered first and
+	// runs after the kills: it reports what the kills missed.
+	t.Cleanup(func() { assertNoSurvivors(t, f.dir) })
 	t.Cleanup(func() {
 		pids := []int{launcherPID}
 		for _, p := range fixturePIDs {
@@ -163,6 +393,129 @@ func runLauncher(t *testing.T, cmd *exec.Cmd, f launcherFixture, fixturePIDs ...
 		}
 		killGroups(pids...)
 	})
+}
+
+// launcherCmdAt is launcherCmd for a copy of the script, which is how the
+// build-path case runs the launcher without the real checkout's sources in
+// reach.
+func (f launcherFixture) launcherCmdAt(t *testing.T, script string, args ...string) *exec.Cmd {
+	t.Helper()
+	cmd := exec.Command("bash", append([]string{script}, args...)...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Env = envOverride(os.Environ(),
+		"EVENER_DEV_BIN="+f.path,
+		"EVENER_FIXTURE_LOG="+f.log,
+		"PATH="+os.Getenv("PATH"),
+		// TMPDIR is the case's own directory, so a helper the launcher builds
+		// and runs carries this case's marker in its argv. That is what lets
+		// cleanup find a helper whose PID the case never learned -- including
+		// the real one, were a case ever to reach it.
+		"TMPDIR="+f.tmpDir(),
+	)
+	return cmd
+}
+
+// scanProcs returns every process on the machine as pid, parent pid, process
+// group and command line.
+//
+// It is `ps -axo`, the form scripts/lib/gate-bounded.sh already uses, because
+// `ps --ppid` is a GNU extension that BSD `ps` -- which is what macOS ships, and
+// this repo builds Darwin -- rejects with a usage error. The helper that used
+// it turned that error into an empty answer, so on a macOS host the case waited
+// for a build it could never see and timed out.
+func scanProcs(t *testing.T) []procLine {
+	t.Helper()
+	out, err := exec.Command("ps", "-ww", "-axo", "pid=,ppid=,pgid=,command=").Output()
+	if err != nil {
+		t.Fatalf("ps -axo: %v", err)
+	}
+	var procs []procLine
+	for line := range strings.SplitSeq(string(out), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 4 {
+			continue
+		}
+		pid, pidErr := strconv.Atoi(fields[0])
+		ppid, ppidErr := strconv.Atoi(fields[1])
+		pgid, pgidErr := strconv.Atoi(fields[2])
+		if pidErr != nil || ppidErr != nil || pgidErr != nil {
+			continue
+		}
+		procs = append(procs, procLine{
+			pid:  pid,
+			ppid: ppid,
+			pgid: pgid,
+			cmd:  strings.Join(fields[3:], " "),
+		})
+	}
+	return procs
+}
+
+// procLine is one row of scanProcs.
+type procLine struct {
+	pid, ppid, pgid int
+	cmd             string
+}
+
+// processesNaming returns the processes whose command line contains marker,
+// excluding the test binary itself, which is not a process a case started.
+//
+// The scan's own `ps` child is not excluded and needs no exclusion: it is handed
+// no marker, so its argv cannot match.
+func processesNaming(t *testing.T, marker string) []procLine {
+	t.Helper()
+	var found []procLine
+	for _, proc := range scanProcs(t) {
+		if proc.pid == os.Getpid() || !strings.Contains(proc.cmd, marker) {
+			continue
+		}
+		found = append(found, proc)
+	}
+	return found
+}
+
+// buildIn returns the pid and process group of the process building the fixture
+// checkout, or zeros while there is none.
+//
+// Identification is positive: the launcher builds into scratch under the
+// fixture's TMPDIR, so the build's argv names the fixture checkout. "The
+// launcher's first child" was the old test, and it identified a scratch
+// preflight child as the build on a correct launcher.
+func buildIn(t *testing.T, marker string) (pid, group int) {
+	t.Helper()
+	for _, proc := range processesNaming(t, marker) {
+		if strings.Contains(proc.cmd, "go build") {
+			return proc.pid, proc.pgid
+		}
+	}
+	return 0, 0
+}
+
+// assertNoSurvivors fails when any process still names marker and KILLs it
+// first, so a failing case reports a leak without leaving one.
+func assertNoSurvivors(t *testing.T, marker string) {
+	t.Helper()
+	// A zombie is dead and this process cannot reap it: it is another process's
+	// exit this one has no business reporting as a leak.
+	var survivors []procLine
+	for _, proc := range processesNaming(t, marker) {
+		if pidGone(proc.pid) {
+			continue
+		}
+		survivors = append(survivors, proc)
+	}
+	if len(survivors) == 0 {
+		return
+	}
+	var described []string
+	for _, proc := range survivors {
+		described = append(described, fmt.Sprintf("%d(pgid %d) %s", proc.pid, proc.pgid, proc.cmd))
+	}
+	for _, proc := range survivors {
+		_ = syscall.Kill(-proc.pgid, syscall.SIGKILL)
+		_ = syscall.Kill(proc.pid, syscall.SIGKILL)
+	}
+	t.Fatalf("left behind after cleanup: %s", strings.Join(described, " | "))
 }
 
 // waitExit waits for cmd to exit, bounded. It reports the exit code and true,
@@ -299,34 +652,62 @@ func logPIDAndGroup(t *testing.T, f launcherFixture, prefix string) (pid, group 
 	return pid, group
 }
 
-// TestMergeEnqueueLauncherInterruptsAColdBuildInItsOwnGroup is the medium from
-// the review at 4adeb894e2: the launcher tracked the background subshell while
-// `setsid` ran *inside* it, so `$!` named a wrapper whose group did not hold the
-// build. `stop_command` then walked PIDs from the wrapper, and a compiler
-// spawned after that walk's snapshot was reparented when `go build` exited,
-// keeping the caller's output open after the launcher returned 130.
+// TestMergeEnqueueLauncherInterruptsAColdBuildInItsOwnGroup covers two findings
+// from the review at 092f60f468.
 //
-// This drives a real cold build -- a fresh GOCACHE makes it slow enough to
-// catch -- and asserts the property the fix is about: the tracked child leads
-// the process group that holds the build, so one signal reaches the whole tree.
-// It stops after the child appears, so it costs a second, not a build.
+// The build property is the medium from the review at 4adeb894e2: the launcher
+// tracked the background subshell while `setsid` ran *inside* it, so `$!` named
+// a wrapper whose group did not hold the build, and a compiler forked after
+// stop_command's PID snapshot was reparented when `go build` exited. The fix
+// runs the build under bash job control, so the tracked child leads the group
+// that holds the build's whole tree, and one signal reaches all of it.
+//
+// The reachability property is the review's next medium: this case used to run
+// the *real* launcher from this checkout with no EVENER_DEV_BIN, so it built the
+// real helper and -- with an authenticated `gh` on PATH -- the helper could query
+// prime-radiant-inc/evener and enqueue PR 6499 from a test run. It did run: the
+// review's reproduction found the real `evener-dev dev merge-enqueue --pr 6499
+// --wait 570` orphaned to PID 1 for over an hour, each with a fixture `gh.sh`.
+//
+// So the case runs the script under test from a *fixture checkout*: the script
+// and the libraries it sources are copies, and the only package
+// ./cmd/evener-dev/bin can build is the fixture's own module. No real helper
+// exists here to start, whatever completes the build. The build is held open by
+// a FIFO source file instead of a cold cache, so "the build is running" is a
+// fact the case can wait for rather than a race it hopes to win.
 func TestMergeEnqueueLauncherInterruptsAColdBuildInItsOwnGroup(t *testing.T) {
 	t.Parallel()
+	c := newFixtureCheckout(t, filepath.Join(t.TempDir(), "tmp"))
+	// The marker names the build: the launcher builds into scratch under the
+	// fixture's TMPDIR, so the build's argv carries that path and no other
+	// process on the machine does. That is positive identification -- the old
+	// case asked for "the launcher's first child", which during scratch
+	// preflight is whichever probe binary happens to be running.
+	marker := c.tmp
+	c.requireIsolated(t)
+	// The checkout's scratch is outside launcherFixture's directory, so this
+	// case sweeps its own markers. Registered before runLauncher, so it runs
+	// after the group kills: a build the launcher leaked is reported here
+	// rather than left running on the machine.
+	for _, m := range []string{c.root, c.tmp} {
+		t.Cleanup(func() { assertNoSurvivors(t, m) })
+	}
 	f := newLauncherFixture(t, "#!/usr/bin/env bash\nexit 0\n")
-	cache := filepath.Join(t.TempDir(), "gocache")
-	cmd := f.launcherCmd(t, "--pr", "6499")
-	// No EVENER_DEV_BIN: this case has to reach the build path.
-	cmd.Env = envOverride(cmd.Env, "GOCACHE="+cache)
+	cmd := f.launcherCmdAt(t, c.script, "--pr", "6499", "--repo", "example.invalid/none")
+	// No EVENER_DEV_BIN: this case has to reach the build path. TMPDIR points at
+	// the fixture and GOWORK=off keeps the build inside the fixture module even
+	// when the fixture sits under a checkout that has a go.work.
+	cmd.Env = envOverride(cmd.Env, "TMPDIR="+c.tmp, "GOWORK=off")
 	cmd.Env = slices.DeleteFunc(cmd.Env, func(kv string) bool {
 		return strings.HasPrefix(kv, "EVENER_DEV_BIN=")
 	})
 	runLauncher(t, cmd, f)
 	launcherPID := cmd.Process.Pid
 	var buildPID, buildGroup int
-	testwait.UntilSeen(t, "the launcher to start its build", func() (bool, string) {
-		buildPID, buildGroup = childPIDAndGroup(launcherPID)
+	testwait.UntilSeen(t, "the launcher's build to appear", func() (bool, string) {
+		buildPID, buildGroup = buildIn(t, marker)
 		if buildPID == 0 {
-			return false, "no child yet"
+			return false, "no process names the fixture scratch yet"
 		}
 		return true, ""
 	})
@@ -343,31 +724,15 @@ func TestMergeEnqueueLauncherInterruptsAColdBuildInItsOwnGroup(t *testing.T) {
 	testwait.Until(t, fmt.Sprintf("build pid %d to terminate", buildPID), func() bool {
 		return pidGone(buildPID)
 	})
-}
-
-// childPIDAndGroup returns the pid and process group of launcherPID's first
-// child, or zeros when it has none yet.
-func childPIDAndGroup(launcherPID int) (pid, group int) {
-	out, err := exec.Command("ps", "--ppid", strconv.Itoa(launcherPID), "-o", "pid=,pgid=").Output()
-	if err != nil {
-		return 0, 0
+	// The stub never ran: the build was cancelled, so there was nothing to
+	// start. This is the sentinel the review's reproduction needed -- proof the
+	// helper the launcher would have run is the fixture's own, and that no
+	// merge-queue helper exists in this checkout to run at all.
+	if _, err := os.Stat(c.sentinel); err == nil {
+		t.Fatalf("the fixture helper ran: the build finished after all, so this case did not exercise cancellation")
+	} else if !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stat fixture sentinel: %v", err)
 	}
-	for _, line := range strings.Split(strings.TrimSpace(string(out)), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) != 2 {
-			continue
-		}
-		parsedPID, err := strconv.Atoi(fields[0])
-		if err != nil {
-			continue
-		}
-		parsedGroup, err := strconv.Atoi(fields[1])
-		if err != nil {
-			continue
-		}
-		return parsedPID, parsedGroup
-	}
-	return 0, 0
 }
 
 // TestMergeEnqueueLauncherForwardsSigtermToAPrebuiltHelper is the medium from
@@ -389,7 +754,7 @@ printf 'helper-pid=%s\n' "$$" >> "$EVENER_FIXTURE_LOG"
 while :; do sleep 0.05; done
 `)
 	var helperPID int
-	cmd := f.launcherCmd(t, "--pr", "6499", "--wait", "570")
+	cmd := f.launcherCmd(t, "--pr", "6499", "--wait", "570", "--repo", "example.invalid/none")
 	runLauncher(t, cmd, f, &helperPID)
 	helperPID = logPID(t, f, "helper-pid=")
 	signalLauncher(t, cmd, syscall.SIGTERM)
@@ -442,7 +807,7 @@ printf 'helper-pid=%s;pgid=%s\n' "$$" "$(ps -o pgid= -p "$$" | tr -d ' ')" >> "$
 while :; do sleep 0.05; done
 `)
 	var helperPID, ghPID int
-	cmd := f.launcherCmd(t, "--pr", "6499", "--wait", "570")
+	cmd := f.launcherCmd(t, "--pr", "6499", "--wait", "570", "--repo", "example.invalid/none")
 	cmd.Env = append(cmd.Env, "EVENER_FIXTURE_GH="+gh)
 	runLauncher(t, cmd, f, &helperPID, &ghPID)
 	launcherGroup := cmd.Process.Pid
@@ -487,7 +852,7 @@ set -uo pipefail
 printf 'helper-ran=%s\n' "$PWD" >> "$EVENER_FIXTURE_LOG"
 exit 0
 `)
-	cmd := f.launcherCmd(t, "--pr", "6499")
+	cmd := f.launcherCmd(t, "--pr", "6499", "--repo", "example.invalid/none")
 	cmd.Env = envOverride(cmd.Env, "CDPATH="+wd)
 	runLauncher(t, cmd, f)
 	mustExit(t, cmd, f, 0)

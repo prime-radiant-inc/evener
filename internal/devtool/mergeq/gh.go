@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"primeradiant.com/evener/execsupport/orphanpipe"
 )
 
 // GHClient answers the queue's questions with the GitHub CLI: one `gh api
@@ -30,6 +32,17 @@ func (c GHClient) ghName() string {
 	return c.GH
 }
 
+// ghDrainGrace bounds how long a gh that has exited successfully may keep the
+// caller waiting for its captured pipes. A `gh` that is a wrapper script
+// starting the real CLI without `exec` hands the pipe to that CLI, and killing
+// the wrapper on cancellation does not kill it: without this bound, cmd.Run
+// waits for the descendant and a cancelled wait reports its 130 minutes late.
+// It is short on purpose: the answer is already in the buffer by the time the
+// child exits, so the grace only covers a descendant that lingers after
+// writing. One second stays well under the helper's measured 0.7s interrupt
+// path even with process creation on a loaded runner.
+const ghDrainGrace = time.Second
+
 // run executes gh and returns its stdout. The error carries gh's own stderr
 // when it wrote one, because that text is what the operator needs to read;
 // the caller adds the context that says which call failed.
@@ -37,7 +50,10 @@ func (c GHClient) run(ctx context.Context, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, c.ghName(), args...)
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	if err := cmd.Run(); err != nil {
+	cmd.WaitDelay = ghDrainGrace
+	// ChildErr keeps a gh that answered and exited 0 a success even when only
+	// the drain timed out, and leaves a gh the context killed an error.
+	if err := orphanpipe.ChildErr(cmd, cmd.Run()); err != nil {
 		if detail := strings.TrimSpace(stderr.String()); detail != "" {
 			return nil, errors.New(detail)
 		}
