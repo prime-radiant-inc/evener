@@ -1070,6 +1070,146 @@ func (c *spendingEnqueueClient) Enqueue(context.Context, string, string, bool) e
 	return nil
 }
 
+// TestAConfirmationThatStartsBeforeTheDeadlineStillGetsTheAllowance pins the
+// half of the rule the previous case could not see: the confirmation is not stuck
+// with the fraction of the wait the mutation happened to leave.
+//
+// An enqueue accepted a moment before expiry leaves, say, a millisecond of the
+// caller's wait. The read then got that millisecond and nothing else, so it
+// failed -- while the identical read starting a moment later, after the deadline,
+// drew the whole post-deadline allowance. Whether an accepted enqueue is
+// confirmed must not depend on which side of a boundary the mutation landed on.
+//
+// The assertion is on the budget the read RECEIVES, because that is the whole of
+// the finding and waiting the allowance out would spend the suite's time proving
+// that a timer fires. A run that honours only the leftover hands the read
+// about a millisecond; one that honours the shared cutoff hands it the allowance.
+func TestAConfirmationThatStartsBeforeTheDeadlineStillGetsTheAllowance(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	c := &confirmationBudgetClient{now: &now}
+	c.statuses = []Status{
+		{ID: "PR_6499", State: "OPEN"},
+		{ID: "PR_6499", State: "OPEN", Entry: queueEntry(6)},
+	}
+	clock := Clock{
+		Now:   func() time.Time { return now },
+		Sleep: func(_ context.Context, d time.Duration) bool { now = now.Add(d); return true },
+	}
+	// A two-second wait and a mutation that spends all but a millisecond of it:
+	// the confirmation starts BEFORE the deadline, with 1ms of the wait left.
+	c.spend = 2*time.Second - time.Millisecond
+	if _, exitErr := Execute(context.Background(), opts(2*time.Second), c, clock); exitErr != nil {
+		t.Fatalf("Execute: %v, want the confirmation to answer", exitErr)
+	}
+	if c.confirmationBudget <= time.Second {
+		t.Fatalf("the confirmation was handed %v of budget, want the shared post-deadline allowance: a mutation accepted just before expiry leaves it a sliver of the wait, and the same read one moment later would have had the whole allowance", c.confirmationBudget)
+	}
+}
+
+// confirmationBudgetClient records the budget the read after the mutation
+// receives, read back from the deadline the run builds its context with.
+type confirmationBudgetClient struct {
+	fakeClient
+	now *time.Time
+	// spend is what the mutation costs, measured on the run's clock.
+	spend time.Duration
+	// enqueueCalled says the mutation has run, so the reads being seen are the
+	// confirmation and the wait's own polls rather than the starting lookup.
+	enqueueCalled bool
+	// confirmationBudget is the time the FIRST read after the mutation was given,
+	// as the run's context reports it.
+	confirmationBudget time.Duration
+	confirmationReads  int
+}
+
+func (c *confirmationBudgetClient) Enqueue(context.Context, string, string, bool) error {
+	*c.now = c.now.Add(c.spend)
+	c.enqueueCalled = true
+	return nil
+}
+
+func (c *confirmationBudgetClient) Status(ctx context.Context, repo, pr string) (Status, error) {
+	if c.enqueueCalled {
+		c.confirmationReads++
+		if c.confirmationReads == 1 {
+			// The context's deadline is wall-clock, and the run built it from the
+			// budget it computed: the distance to it is that budget.
+			if deadline, ok := ctx.Deadline(); ok {
+				c.confirmationBudget = time.Until(deadline)
+			}
+		}
+	}
+	return c.fakeClient.Status(ctx, repo, pr)
+}
+
+// TestANoWaitMutationCostsTheConfirmationItsAllowance pins the `--wait 0` half of
+// the same finding.
+//
+// With no wait there is no wait deadline for the post-deadline cutoff to hang
+// off, so it was anchored to the instant BEFORE the mutation ran. A mutation that
+// spends the allowance then leaves the reconciliation read an already-expired
+// context: the read never starts, the run cannot learn whether the enqueue
+// landed, and it reports failure for work that may have succeeded. The cutoff now
+// starts when the reconciliation read starts.
+//
+// The mutation's ending here is a lost reply rather than an expired context, and
+// that is deliberate. Both are the unknown-outcome branch, and this case is about
+// the confirmation's budget on that branch. Driving it through a genuinely
+// expired mutation would cost a real enqueue allowance -- thirty seconds of
+// suite time for a branch this reaches directly.
+func TestANoWaitMutationCostsTheConfirmationItsAllowance(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	c := &spentAllowanceClient{now: &now}
+	c.statuses = []Status{
+		{ID: "PR_6499", State: "OPEN"},
+		{ID: "PR_6499", State: "OPEN", Entry: queueEntry(1)},
+	}
+	// The clock has to read the same variable the fake advances. fakeClock copies
+	// the instant into a field of its own, so a run given its clock would see a
+	// clock that never moved -- and the pre-fix budget, anchored to the deadline,
+	// would then look exactly like the fixed one. That is how this case passed
+	// against the mutant on its first run.
+	clock := Clock{
+		Now:   func() time.Time { return now },
+		Sleep: func(_ context.Context, d time.Duration) bool { now = now.Add(d); return true },
+	}
+	out, exitErr := Execute(context.Background(), opts(0), c, clock)
+	if exitErr != nil {
+		t.Fatalf("Execute: %v, want the confirmation read to happen and report where the enqueue landed: with no wait, the only limit that read has is the allowance, and it must be counted from when the read starts", exitErr)
+	}
+	if out.Kind != Queued || out.Position != 1 {
+		t.Fatalf("outcome = %+v, want Queued at position 1: the mutation's ending was unknown, the read that followed found the entry", out)
+	}
+}
+
+// spentAllowanceClient spends more than a whole post-deadline allowance inside
+// the mutation, and then reports its outcome as unknown -- the shape of a
+// mutation that ate the allowance and left nothing for its own reconciliation.
+type spentAllowanceClient struct {
+	fakeClient
+	now           *time.Time
+	enqueueCalled bool
+}
+
+func (c *spentAllowanceClient) Enqueue(context.Context, string, string, bool) error {
+	*c.now = c.now.Add(2 * finalObservationAllowance)
+	c.enqueueCalled = true
+	return fmt.Errorf("gh: %w", ErrIncompleteReply)
+}
+
+func (c *spentAllowanceClient) Status(ctx context.Context, repo, pr string) (Status, error) {
+	if c.enqueueCalled {
+		// A read handed an already-expired context never starts, which is what the
+		// real gh call does too: refuse rather than answer.
+		if err := ctx.Err(); err != nil {
+			return Status{}, err
+		}
+	}
+	return c.fakeClient.Status(ctx, repo, pr)
+}
+
 // TestAStalledRecheckKeepsTheConfirmedPosition pins that a recheck which never
 // answers does not throw away an answer that already arrived.
 //
@@ -1110,6 +1250,77 @@ type stallAfterFirstPostDeadlineClient struct {
 	// context: the case would cost a minute and never reach the branch it names.
 	waited   bool
 	answered bool
+}
+
+// TestAPostDeadlineConfirmationKeepsItsPosition pins that an answer learned by
+// the confirmation is not thrown away by a later recheck.
+//
+// The confirmation is the read that follows an enqueue. When it starts after the
+// deadline it is the same observation a post-deadline poll makes -- this instant's
+// queue -- and the timeout verdict is built from exactly that observation. The
+// wait loop's own flag was the only thing that could say so, and a run whose
+// confirmation had done the reading never set it. A stalled recheck then discarded
+// a confirmed position and answered exit 2, where the same status from the loop
+// would have printed `MERGEQ timeout` at exit 1 -- the documented retry path.
+func TestAPostDeadlineConfirmationKeepsItsPosition(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	c := &stallAfterConfirmationClient{fakeClient: fakeClient{statuses: []Status{
+		{ID: "PR_6499", State: "OPEN"},
+		{ID: "PR_6499", State: "OPEN", Entry: queueEntry(7)},
+	}}}
+	c.now = &now
+	// The mutation spends the whole wait, so the confirmation is a post-deadline
+	// read -- the shape the finding names. It answers with position 7.
+	c.spend = 2 * time.Second
+	c.stall = finalObservationAllowance
+	clock := Clock{
+		Now:   func() time.Time { return now },
+		Sleep: func(_ context.Context, d time.Duration) bool { now = now.Add(d); return true },
+	}
+	var stdout, stderr strings.Builder
+	if code := Run(context.Background(), opts(2*time.Second), c, clock, &stdout, &stderr); code != 1 {
+		t.Fatalf("Run = exit %d (stdout %q, stderr %q), want 1: the confirmation read the queue after the deadline and confirmed position 7, so this is the repeat-on-timeout verdict and not a launcher failure", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "position=7") {
+		t.Fatalf("stdout %q does not name the position the post-deadline confirmation read: the confirmed answer was discarded", stdout.String())
+	}
+}
+
+// stallAfterConfirmationClient spends the whole wait in the mutation, answers the
+// confirmation, and then lets every later read run out of its allowance.
+type stallAfterConfirmationClient struct {
+	fakeClient
+	now   *time.Time
+	spend time.Duration
+	stall time.Duration
+	// enqueueCalled separates the starting lookup from the confirmation.
+	enqueueCalled bool
+	// confirmed says the confirmation has answered, so a read after it is the
+	// recheck the finding is about.
+	confirmed bool
+}
+
+func (c *stallAfterConfirmationClient) Enqueue(context.Context, string, string, bool) error {
+	*c.now = c.now.Add(c.spend)
+	c.enqueueCalled = true
+	return nil
+}
+
+func (c *stallAfterConfirmationClient) Status(ctx context.Context, repo, pr string) (Status, error) {
+	if !c.enqueueCalled {
+		return c.fakeClient.Status(ctx, repo, pr)
+	}
+	if !c.confirmed {
+		c.confirmed = true
+		// The confirmation answers, and it leaves the shared allowance spent: the
+		// recheck after the wait loop then has nothing and stalls on what is left,
+		// which is the ending the finding describes.
+		*c.now = c.now.Add(c.stall - time.Millisecond)
+		return c.fakeClient.Status(ctx, repo, pr)
+	}
+	<-ctx.Done()
+	return Status{}, ctx.Err()
 }
 
 func (c *stallAfterFirstPostDeadlineClient) Status(ctx context.Context, repo, pr string) (Status, error) {

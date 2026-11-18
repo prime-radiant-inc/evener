@@ -1102,7 +1102,7 @@ func (f launcherFixture) launcherCmdAt(t *testing.T, script string, args ...stri
 }
 
 // scanProcs returns every process on the machine as pid, parent pid, process
-// group and command line.
+// group, leading state character and command line.
 //
 // It is `ps -axo`, the form scripts/lib/gate-bounded.sh already uses, because
 // `ps --ppid` is a GNU extension that BSD `ps` -- which is what macOS ships, and
@@ -1119,7 +1119,13 @@ func (f launcherFixture) launcherCmdAt(t *testing.T, script string, args ...stri
 // survived it.
 func scanProcs(t *testing.T) []procLine {
 	t.Helper()
-	out, err := exec.Command("ps", "-ww", "-axo", "pid=,ppid=,pgid=,command=").Output()
+	//
+	// The state column is read here rather than by a `ps` per process. The sweep used
+	// to ask each candidate's state with its own `ps -o stat=`, which is one
+	// subprocess per process on the host for every sweep -- hundreds of them on a busy
+	// runner, in a cleanup path that runs even when nothing survived. One column in
+	// the census already being taken answers the same question.
+	out, err := exec.Command("ps", "-ww", "-axo", "pid=,ppid=,pgid=,stat=,command=").Output()
 	if err != nil {
 		t.Fatalf("ps -axo: %v", err)
 	}
@@ -1133,7 +1139,11 @@ func scanProcs(t *testing.T) []procLine {
 		if !ok {
 			continue
 		}
-		pgid, cmd, ok := leadingField(rest)
+		pgid, rest, ok := leadingField(rest)
+		if !ok {
+			continue
+		}
+		stat, cmd, ok := leadingField(rest)
 		if !ok {
 			continue
 		}
@@ -1147,6 +1157,7 @@ func scanProcs(t *testing.T) []procLine {
 			pid:  pidNum,
 			ppid: ppidNum,
 			pgid: pgidNum,
+			stat: stat,
 			cmd:  cmd,
 		})
 	}
@@ -1175,7 +1186,17 @@ func leadingField(line string) (field, rest string, ok bool) {
 // procLine is one row of scanProcs.
 type procLine struct {
 	pid, ppid, pgid int
-	cmd             string
+	// stat is the state field `ps` printed, of which only the first character is
+	// meaningful: `Z` for a zombie and `T`/`t` for a stopped process. Empty when a
+	// case built the row by hand and does not care.
+	stat string
+	cmd  string
+}
+
+// zombie reports whether the census says this process has already exited. A row
+// built by hand carries no state, which is not a claim that it is dead.
+func (p procLine) zombie() bool {
+	return strings.HasPrefix(p.stat, "Z")
 }
 
 // processesNaming returns the processes whose command line contains marker,
@@ -1238,14 +1259,21 @@ func buildIn(t *testing.T, marker string) (pid, group int) {
 // started, directly or through the launcher. Everything else is reported with
 // its pid and command line and left alone, because a test must not signal what
 // it cannot show it owns.
+//
+// One census answers the whole question. It used to ask each candidate's state
+// with its own `ps -o stat=`, which is one subprocess per process on the host for
+// every sweep -- hundreds of them on a busy runner, in a cleanup path that runs
+// even when nothing survived. The state column now comes from the same `ps` the
+// marker filter needs.
 func assertNoSurvivors(t *testing.T, marker string) {
 	t.Helper()
 	procs := scanProcs(t)
 	// A zombie is dead and this process cannot reap it: it is another process's
-	// exit this one has no business reporting as a leak.
+	// exit this one has no business reporting as a leak. The state came from the
+	// census itself, so deciding this costs no further subprocess.
 	live := make([]procLine, 0, len(procs))
 	for _, proc := range procs {
-		if !pidGone(proc.pid) {
+		if !proc.zombie() {
 			live = append(live, proc)
 		}
 	}
@@ -1563,6 +1591,15 @@ func TestMergeEnqueueLauncherInterruptsAColdBuildInItsOwnGroup(t *testing.T) {
 	runLauncher(t, cmd, f)
 	launcherPID := cmd.Process.Pid
 	var buildPID, buildGroup int
+	// Registered before the observation, not after it. The branch that observes
+	// no build at all is the branch a regression takes, and the build this case is
+	// missing is a FIFO-blocked one in a group of its own: a cleanup registered
+	// after the wait would never run on the failure it exists for, and the build
+	// would outlive the test with nothing left that could claim it.
+	t.Cleanup(func() {
+		killGroups(buildPID)
+		killGroups(buildGroup)
+	})
 	testwait.UntilSeen(t, "the launcher's build to appear", func() (bool, string) {
 		buildPID, buildGroup = buildIn(t, marker)
 		if buildPID == 0 {
@@ -3933,10 +3970,21 @@ while :; do sleep 0.05; done
 	)
 	t.Cleanup(func() { assertNoSurvivors(t, f.dir) })
 	runLauncher(t, cmd, f)
-	innerPID, _ := logPIDAndGroup(t, f, "inner-pid=")
+	innerPID, innerGroup := logPIDAndGroup(t, f, "inner-pid=")
 	if innerPID == 0 {
 		t.Fatalf("the wrapper never recorded the helper it started: %s", f.output(t))
 	}
+	// Registered before the assertion below, and by the group the fixture
+	// verified rather than by the pid alone: a launcher that regresses here leaves
+	// this helper running, and a cleanup that only ran after the status matched
+	// would never run on exactly the failure it exists for. The helper is
+	// `trap '' TERM` in a loop, so nothing else in the case would stop it.
+	//
+	// The sweep that matches the fixture path stays: it reports what this cannot
+	// name. But a match it can no longer show it owns -- a helper reparented to
+	// init -- is only reported, so the group has to be registered while the case
+	// can still prove whose it is.
+	t.Cleanup(func() { killGroups(innerGroup) })
 	// 1 is the wrapper's own status and would read as a queue drop. The launcher
 	// must answer 2, which is its own failure, and must not leave the helper alive.
 	mustExit(t, cmd, f, 2)
@@ -4056,10 +4104,28 @@ while :; do sleep 0.05; done
 	)
 	t.Cleanup(func() { assertNoSurvivors(t, f.dir) })
 	runLauncher(t, cmd, f)
-	innerPID, _ := logPIDAndGroup(t, f, "inner-pid=")
+	innerPID, innerGroup := logPIDAndGroup(t, f, "inner-pid=")
 	if innerPID == 0 {
 		t.Fatalf("the wrapper never recorded the helper it started: %s", f.output(t))
 	}
+	// Both handles are read and registered before the status is asserted, because
+	// a launcher that regresses to reporting 0 leaves both loops running and
+	// mustExit fails right here. The helper is in its own group and the call it
+	// published the handle for is in a third one, so neither the launcher's group
+	// kill nor the path sweep can be relied on to reach them: this is the case
+	// whose regression is a live `merge-enqueue` child polling against a queue
+	// nobody is waiting for.
+	//
+	// The wrapper waits for the helper's readiness marker before exiting, and the
+	// helper sets it only after publishing the call, so both lines are already in
+	// the log here. Reading them before mustExit costs nothing and is the whole
+	// point: after a failed mustExit the t.Fatalf below would never run.
+	t.Cleanup(func() { killGroups(innerGroup) })
+	callPID, callGroup := logPIDAndGroup(t, f, "call-pid=")
+	if callPID == 0 {
+		t.Fatalf("the helper never published a call: the fixture did not reach the second half; %s", f.output(t))
+	}
+	t.Cleanup(func() { killGroups(callGroup) })
 	// The launcher must not answer for a queue it heard nothing from. Both halves
 	// matter: the status must be the launcher failure 2, and the helper must be
 	// stopped -- a refusal that leaves a polling helper behind is the leak this
@@ -4070,10 +4136,6 @@ while :; do sleep 0.05; done
 	})
 	// And the call the helper published, which is a group of its own: the forced
 	// stop reads the handle, so this is what proves the second half was reached.
-	callPID, _ := logPIDAndGroup(t, f, "call-pid=")
-	if callPID == 0 {
-		t.Fatalf("the helper never published a call: the fixture did not reach the second half; %s", f.output(t))
-	}
 	testwait.Until(t, fmt.Sprintf("the published call (pid %d) to be stopped before the launcher exits 2", callPID), func() bool {
 		return pidGone(callPID)
 	})

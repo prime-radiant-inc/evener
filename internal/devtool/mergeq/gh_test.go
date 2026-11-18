@@ -381,6 +381,94 @@ exit 0
 	})
 }
 
+// TestGHKilledWhileWaitingForItsReplyIsNotARefusal pins the three endings a GitHub
+// call can have, and the one this client used to confuse with a refusal.
+//
+// A gh wrapper prints a diagnostic to stderr -- a progress note, a warning about
+// the gh version -- and is then killed while it is still waiting for the reply,
+// because the enqueue deadline expired. GitHub may have accepted the mutation
+// before the kill. If stderr alone were treated as the refusal, the client would
+// report a definite rejection, Execute would skip the read that finds out, and the
+// operator would be told the enqueue failed for a pull request that is queued.
+//
+// What separates a refusal from an unknown ending is that the process reached its
+// OWN exit status. This case distinguishes them by killing the wrapper with
+// SIGKILL from inside itself -- an exit status is impossible, exactly as it is
+// when the deadline kills the group -- after writing the diagnostic.
+func TestGHKilledWhileWaitingForItsReplyIsNotARefusal(t *testing.T) {
+	t.Parallel()
+	dir := fixtureExecDir(t)
+	killed := filepath.Join(dir, "gh-killed")
+	// SIGKILL, not TERM: this is the ending the enqueue deadline produces (the
+	// client cancels with a group KILL), and it is the one with no exit status.
+	// The diagnostic goes to stderr first, so a client that reads stderr alone
+	// calls this a refusal.
+	writeExecutable(t, killed, `#!/usr/bin/env bash
+printf 'gh: fetching the merge queue\n' >&2
+kill -9 "$$"
+`)
+	c := GHClient{GH: killed, GroupFile: filepath.Join(dir, "group")}
+	_, err := c.run(context.Background(), "api", "graphql")
+	if err == nil {
+		t.Fatal("a killed call was read as success: nothing answered it")
+	}
+	var refusal *RefusalError
+	if errors.As(err, &refusal) {
+		t.Fatalf("error = %v, reported as a refusal: the process never reached an exit status, so its outcome is unknown and an enqueue that GitHub accepted must still be reconciled", err)
+	}
+	// The diagnostic is still carried, so the operator keeps what gh said.
+	if !strings.Contains(err.Error(), "fetching the merge queue") {
+		t.Fatalf("error = %v, want gh's stderr carried as detail: the diagnostic is context a reader needs and is not what makes this a refusal", err)
+	}
+
+	// And a call that DID run to its own non-zero exit is still a refusal, with
+	// the same stderr: the classification is the ending, not the text.
+	rejected := filepath.Join(dir, "gh-rejected")
+	writeExecutable(t, rejected, `#!/usr/bin/env bash
+printf 'gh: could not enqueue: protected branch\n' >&2
+exit 1
+`)
+	c = GHClient{GH: rejected, GroupFile: filepath.Join(dir, "group")}
+	_, err = c.run(context.Background(), "api", "graphql")
+	if !errors.As(err, &refusal) {
+		t.Fatalf("error = %v, want a RefusalError: the process exited 1 on its own, so its answer is no and reconciling it would report another operator's entry as this invocation's work", err)
+	}
+}
+
+// TestGHPublishDoesNotRemoveAHandleItNeverWrote pins that the client only removes
+// a handle it published.
+//
+// The handle path is configuration -- EVENER_MERGEQ_GH_GROUP_FILE or
+// GroupFile -- and a caller can point it anywhere. Publication renames a fresh
+// file over that name; when the rename fails, whatever was at the name is not this
+// client's and must survive the call. Removing it anyway deleted a user's
+// directory: an existing empty directory at the configured path made the rename
+// fail and the deferred cleanup then removed the directory itself.
+func TestGHPublishDoesNotRemoveAHandleItNeverWrote(t *testing.T) {
+	t.Parallel()
+	dir := fixtureExecDir(t)
+	// A directory at the handle name: the rename onto it fails, which is the
+	// publication failure this case needs. It is also the thing a careless cleanup
+	// deletes, because os.Remove removes an empty directory.
+	handle := filepath.Join(dir, "gh-group")
+	if err := os.Mkdir(handle, 0o700); err != nil {
+		t.Fatalf("make a directory at the handle name: %v", err)
+	}
+	gh := filepath.Join(dir, "gh")
+	writeExecutable(t, gh, "#!/usr/bin/env bash\nprintf '{\"data\":{}}'\n")
+	c := GHClient{GH: gh, GroupFile: handle}
+	if _, err := c.run(context.Background(), "api", "graphql"); err != nil {
+		t.Fatalf("run: %v, want the call to succeed: a handle that cannot be published costs the launcher a fallback and must not fail a GitHub call", err)
+	}
+	info, err := os.Lstat(handle)
+	if err != nil {
+		t.Fatalf("the configured handle name is gone: %v -- the client removed something it never wrote, and a caller that pointed it at an existing directory lost it", err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("the name is now %v, want the directory the caller had there left untouched", info.Mode())
+	}
+}
+
 // TestGHPublishRefusesAPlantedSymlink pins that the publisher cannot be made to
 // truncate a file an attacker chose.
 //

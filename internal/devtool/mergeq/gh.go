@@ -78,9 +78,9 @@ const ghGroupFileEnv = "EVENER_MERGEQ_GH_GROUP_FILE"
 // Both are best effort: a handle that cannot be written costs the launcher the
 // fallback for a wrapper's orphan, and that is not a reason to fail a GitHub
 // call the queue can still answer.
-func publishGHGroup(path string, pid int) {
+func publishGHGroup(path string, pid int) bool {
 	if path == "" || pid <= 1 {
-		return
+		return false
 	}
 	// Written to a fresh file in the same directory and renamed over the handle:
 	// the launcher may read the handle at any moment, so the only write it can
@@ -98,7 +98,7 @@ func publishGHGroup(path string, pid int) {
 	// client any path and the publisher is the last step before a write.
 	file, err := os.CreateTemp(filepath.Dir(path), ".gh-group-*")
 	if err != nil {
-		return
+		return false
 	}
 	temp := file.Name()
 	_, writeErr := file.WriteString(strconv.Itoa(pid) + "\n")
@@ -114,14 +114,19 @@ func publishGHGroup(path string, pid int) {
 	closeErr := file.Close()
 	if writeErr != nil || chmodErr != nil || closeErr != nil {
 		_ = os.Remove(temp)
-		return
+		return false
 	}
 	if err := os.Rename(temp, path); err != nil {
 		_ = os.Remove(temp)
+		return false
 	}
+	return true
 }
 
-// clearGHGroup removes the handle once the call it named has ended.
+// clearGHGroup removes the handle once the call it named has ended. It is called
+// only for a handle this client published: path came from configuration, and a
+// caller that pointed it at something that already existed would otherwise have
+// this remove it. A failed publication leaves the name alone -- it is not ours.
 func clearGHGroup(path string) {
 	if path == "" {
 		return
@@ -156,8 +161,8 @@ func clearGHGroup(path string) {
 // lost, so a run must read the state back before calling the call a failure.
 var ErrIncompleteReply = errors.New("gh exited before its reply arrived, and a descendant it left behind kept the pipe open past the drain bound")
 
-// RefusalError is a call that completed and was refused: gh exited non-zero
-// with something to say, or exited zero with a decodable answer that says no.
+// RefusalError is a call that COMPLETED and was refused: gh ran to its own exit
+// and reported failure.
 //
 // It is a distinct type because the run has to tell a refusal from an unknown
 // ending, and the context cannot make that distinction. A refusal can arrive
@@ -166,6 +171,15 @@ var ErrIncompleteReply = errors.New("gh exited before its reply arrived, and a d
 // as uncertain spends a read looking for this invocation's work and finds
 // whatever is there, including an entry another operator made for the same pull
 // request. The answer is an answer.
+//
+// What makes it a refusal is that the process reached its OWN end with a
+// non-zero status -- not that it wrote to stderr. A `gh` wrapper that prints a
+// diagnostic and is then killed by the enqueue deadline wrote to stderr too, and
+// its ending is not an answer: GitHub may have accepted the mutation before the
+// kill. Reporting that as a refusal skips the read that would find out, and the
+// operator is told the enqueue failed for a pull request that is queued. Three
+// endings, not two: completed and rejected, succeeded, and ended without a
+// result -- and only the last is reconciled.
 type RefusalError struct {
 	Detail string
 }
@@ -207,8 +221,14 @@ func (c GHClient) run(ctx context.Context, args ...string) ([]byte, error) {
 		return nil, err
 	}
 	groupFile := c.groupFile()
-	publishGHGroup(groupFile, cmd.Process.Pid)
-	defer clearGHGroup(groupFile)
+	// Only a handle this call published is removed when the call ends. The path is
+	// configuration, and a publication that failed has left whatever was there
+	// untouched: removing the name then deletes something this call did not create.
+	// A directory named at EVENER_MERGEQ_GH_GROUP_FILE was the sharp case -- the
+	// rename failed and the deferred removal deleted it.
+	if publishGHGroup(groupFile, cmd.Process.Pid) {
+		defer clearGHGroup(groupFile)
+	}
 	rawErr := cmd.Wait()
 	err := orphanpipe.ChildErr(cmd, rawErr)
 	// The group dies with the call whether or not the context fired: on a clean
@@ -227,11 +247,27 @@ func (c GHClient) run(ctx context.Context, args ...string) ([]byte, error) {
 		return nil, ErrIncompleteReply
 	}
 	if err != nil {
-		if detail := strings.TrimSpace(stderr.String()); detail != "" {
-			// A call that ran, failed, and said why has answered: the answer is
-			// no. Reported as a RefusalError so a caller cannot confuse it with a
-			// reply that was lost, whatever the context did in the meantime.
+		// A call that ran to its own end, failed, and said why has answered: the
+		// answer is no. Reported as a RefusalError so a caller cannot confuse it
+		// with a reply that was lost, whatever the context did in the meantime.
+		//
+		// "Ran to its own end" is the load-bearing half, and stderr alone does not
+		// establish it. A gh wrapper that prints a diagnostic and is then killed by
+		// the enqueue deadline wrote to stderr as well, and its ending is not an
+		// answer: GitHub may have accepted the mutation before the group kill. A
+		// process this call killed reports no exit status at all -- ExitCode is -1
+		// for a signal -- which is exactly the distinction between a refusal and an
+		// unknown outcome. Reporting the killed one as a refusal skips the read that
+		// would find out, and the operator is told the enqueue failed for a pull
+		// request that is queued.
+		completed := cmd.ProcessState != nil && cmd.ProcessState.ExitCode() >= 0
+		if detail := strings.TrimSpace(stderr.String()); detail != "" && completed {
 			return nil, &RefusalError{Detail: detail}
+		} else if detail != "" {
+			// The call ended without a result. Its stderr is still the diagnostic a
+			// reader needs, so it is carried, and the error itself stays wrapped so
+			// errors.Is still sees the termination cause.
+			return nil, fmt.Errorf("%w: %s", err, detail)
 		}
 		return nil, err
 	}
