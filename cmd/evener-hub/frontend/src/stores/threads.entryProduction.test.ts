@@ -57,6 +57,7 @@ import {
 } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { pumpIndexedDBUntil } from "./testing/indexedDBPump";
+import type { ForegroundHold } from "./threadOwners";
 import { bodyOwners, foregroundHolds, isMutationPinned, pinMutation, unpinMutation } from "./threadOwners";
 import {
   acquireBackgroundThread,
@@ -10395,5 +10396,42 @@ it("a Clear's replacement carries the press the retired read could not", async (
   } finally {
     clearSpy.mockRestore();
     background.release();
+  }
+}, 20_000);
+
+// A hold is released by the holder that took it, not by whoever closes first.
+// Two panes over one ref each own a handle; pane A's unmount releases A's, so it
+// cannot remove B's, and A's own rollback then finds its handle already spent.
+// The old shape popped the newest hold of the kind, so A's close removed B's and
+// B finished opening with no model and no subscription while still mounted.
+it("a closing pane releases only its own hold", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const client = connect();
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  const held: ForegroundHold[] = [];
+  const capture = (h: ForegroundHold) => {
+    held.push(h);
+  };
+  try {
+    // Pane A's hydration is still pending when pane B opens over the same ref.
+    const paneA = threadsStore.getState().ensureThread("local:a", { onHold: capture });
+    const paneB = threadsStore.getState().ensureThread("local:a", { onHold: capture });
+    await vi.waitFor(() => expect(held, "both panes must be handed their own hold").toHaveLength(2));
+    const [holdA, holdB] = held;
+    if (!holdA || !holdB) throw new Error("expected two holds");
+    expect(foregroundHolds("local:a"), "two panes hold the ref").toBe(2);
+    // A closes while B is still mounting.
+    threadsStore.getState().releaseThreadHold(holdA);
+    expect(foregroundHolds("local:a"), "B's hold must survive A's close").toBe(1);
+    // A's failed acquisition then rolls back its own handle a second time.
+    threadsStore.getState().releaseThreadHold(holdA);
+    expect(foregroundHolds("local:a"), "a spent handle must drop nothing on its second release").toBe(1);
+    await Promise.allSettled([paneA, paneB]);
+    // B's own release is the one that retires the ref.
+    threadsStore.getState().releaseThreadHold(holdB);
+    expect(foregroundHolds("local:a"), "the last holder still releases the ref").toBe(0);
+  } finally {
+    await threadsStore.getState().releaseThreadAndWait("local:a");
   }
 }, 20_000);

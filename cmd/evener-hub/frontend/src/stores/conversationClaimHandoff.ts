@@ -1,5 +1,6 @@
 import type { ViewportClass } from "@evener/appwire-client";
 import type { TranscriptReadView } from "../panes/session/transcript/transcriptReadView";
+import type { ForegroundHold } from "./threadOwners";
 import { threadsStore } from "./threads";
 
 interface Reader {
@@ -10,6 +11,10 @@ interface Overlap extends Reader {
   generation: number;
   sessionId: string | undefined;
   unsubscribe: () => void;
+  // This overlap's own hold. The release below runs from a validate callback,
+  // arbitrarily later than the acquisition, so naming the ref there would drop
+  // whichever hold is newest by then - another pane's - instead of this one's.
+  hold: ForegroundHold | undefined;
 }
 
 const readers = new Set<Reader>();
@@ -38,7 +43,9 @@ function forget(overlap: Overlap): boolean {
 }
 
 function release(overlap: Overlap): void {
-  if (forget(overlap)) threadsStore.getState().releaseThread(overlap.ref);
+  if (!forget(overlap)) return;
+  if (overlap.hold) threadsStore.getState().releaseThreadHold(overlap.hold);
+  else threadsStore.getState().releaseThread(overlap.ref);
 }
 
 function validate(overlap: Overlap): void {
@@ -92,14 +99,19 @@ export function prepareConversationHandoff(target: ViewportClass): void {
       continue;
     }
     if (pending || (presented && !presented.has(view.paneId))) continue;
-    const claim = threadsStore.getState().ensureThread(ref);
     const overlap: Overlap = {
       ref,
       view,
       generation,
       sessionId: threadsStore.getState().threads.get(ref)?.imageSessionId,
       unsubscribe: () => {},
+      hold: undefined,
     };
+    const claim = threadsStore.getState().ensureThread(ref, {
+      onHold: (taken) => {
+        overlap.hold = taken;
+      },
+    });
     overlaps.set(view, overlap);
     const unsubscribeView = view.subscribe(() => validate(overlap));
     const unsubscribeThread = threadsStore.subscribe(() => validate(overlap));

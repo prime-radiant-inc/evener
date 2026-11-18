@@ -8,6 +8,7 @@ import { useEffect } from "react";
 import type { TranscriptReadView } from "../panes/session/transcript/transcriptReadView";
 import { connectionStore } from "./connection";
 import { hasConversationHandoff, registerConversationClaim } from "./conversationClaimHandoff";
+import type { ForegroundHold } from "./threadOwners";
 import { threadsStore, useThreadsStore } from "./threads";
 
 // useThreadClaim holds one ensureThread(ref) claim while the caller is
@@ -19,6 +20,12 @@ export function useThreadClaim(ref: string, readView?: TranscriptReadView): void
     let started = false;
     let rejected = false;
     let unregister: (() => void) | undefined;
+    // This mount's own hold, handed over when the store takes it. The unmount
+    // releases this handle and not the ref: a second pane opening the same ref
+    // while this one's hydration was still pending would otherwise have its
+    // hold removed by this pane's close, and then finish mounting with no model
+    // and no subscription.
+    let hold: ForegroundHold | undefined;
     const tryStart = () => {
       if (started) return;
       // A retained, started claim survives connection loss. A never-started
@@ -27,7 +34,11 @@ export function useThreadClaim(ref: string, readView?: TranscriptReadView): void
       started = true;
       threadsStore
         .getState()
-        .ensureThread(ref)
+        .ensureThread(ref, {
+          onHold: (taken) => {
+            hold = taken;
+          },
+        })
         .catch(() => {
           // `started` marks the call, not the claim: a rejected ensureThread
           // rolled its own claim back, so releasing on unmount would consume
@@ -46,7 +57,10 @@ export function useThreadClaim(ref: string, readView?: TranscriptReadView): void
       // started AND not rejected: a reader that never called ensureThread
       // (mounted during reconnect, unmounted before readiness) owns nothing,
       // and a rejected call rolled its own claim back.
-      if (started && !rejected) threadsStore.getState().releaseThread(ref);
+      if (started && !rejected) {
+        if (hold) threadsStore.getState().releaseThreadHold(hold);
+        else threadsStore.getState().releaseThread(ref);
+      }
     };
   }, [ref, readView]);
 }
@@ -81,13 +95,21 @@ export interface ThreadClaimLease {
  * and falls through to the ordinary hydration, so the resend never routes on
  * unverified state. */
 export async function acquireUnreadThreadClaim(ref: string): Promise<ThreadClaimLease> {
-  await threadsStore.getState().ensureThread(ref, { routingOnly: true });
+  let hold: ForegroundHold | undefined;
+  await threadsStore.getState().ensureThread(ref, {
+    routingOnly: true,
+    onHold: (taken) => {
+      hold = taken;
+    },
+  });
+  const lease = hold;
+  if (!lease) throw new Error("a resolved routing acquisition must hold a lease");
   let released = false;
   return {
     release() {
       if (released) return;
       released = true;
-      threadsStore.getState().releaseThread(ref, { routingOnly: true });
+      threadsStore.getState().releaseThreadHold(lease);
     },
   };
 }

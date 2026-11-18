@@ -162,6 +162,7 @@ import type { SessionEntryCache } from "./sessionEntryCache";
 import { ShardedMap, shardedMap } from "./shardedMap";
 import { resetTasksPanelStoreForTests } from "./tasksPanel";
 import {
+  attachForegroundHold,
   backgroundHeldRefs,
   backgroundHolds,
   backgroundLeaseSequence,
@@ -169,15 +170,16 @@ import {
   bumpOwnerGeneration,
   canonicalThreadOwnerActive,
   clearFinalReleaseOwner,
+  type ForegroundHold,
   foregroundHolds,
   hasFinalReleaseOwner,
   heldCountsAtStore,
   holdBackground,
   holdBodyOwnership,
-  holdForeground,
   holdHistory,
   isFinalReleaseOwner,
   isMutationPinned,
+  mintForegroundHold,
   mutationPinnedRefs,
   nextBackgroundLeaseSequence,
   ownedOnlyByMutationPin,
@@ -186,7 +188,7 @@ import {
   releaseBackground,
   releaseBodyOwnership,
   releaseForeground,
-  releaseForegroundAcquisition,
+  releaseForegroundHold,
   releaseHistory,
   resetThreadOwnersForTests,
   setFinalReleaseOwner,
@@ -403,7 +405,12 @@ export interface ThreadsStoreState {
   // their restoration. A caller that routes - it reads the destination's
   // identity, status and capabilities, not its bodies - must not become the
   // reader a later pane defers to, and must not be held behind a body read.
-  ensureThread(ref: string, opts?: { routingOnly?: boolean }): Promise<void>;
+  /** `onHold` receives this acquisition's handle the moment the hold exists,
+   * before hydration finishes. A holder whose release can arrive while the
+   * hydration is still pending - a pane that unmounts, a resend's lease - must
+   * keep that handle and release it rather than naming a ref later: by then
+   * another lifecycle's hold can be the newest one standing. */
+  ensureThread(ref: string, opts?: { routingOnly?: boolean; onHold?: (hold: ForegroundHold) => void }): Promise<void>;
   // beforePublish, when given, is evaluated synchronously immediately before
   // this refresh publishes its snapshot. A throw cancels the read's result so
   // a canceled action never republishes over newer authoritative state.
@@ -418,10 +425,10 @@ export interface ThreadsStoreState {
   // routingOnly names a release whose acquisition was routing-only: it drops
   // the keep-alive hold without spending a body-ownership count it never took.
   releaseThread(ref: string, opts?: { routingOnly?: boolean }): void;
-  /** Releases exactly the foreground hold one acquisition took. Idempotent with
-   * that acquisition's own unmount release: a hold it no longer owns is already
-   * gone, so nothing of its own is dropped. */
-  releaseThreadAcquisition(ref: string, acquisition: number, opts?: { routingOnly?: boolean }): void;
+  /** Releases the hold this handle names. Idempotent with the holder's own
+   * unmount release: a handle already released has nothing left to drop, so
+   * neither exit can spend a neighbouring lifecycle's hold. */
+  releaseThreadHold(hold: ForegroundHold): void;
   /** The retirement work both release shapes run once a hold has been dropped. */
   releaseThreadAfterHoldDrop(ref: string, count: number): void;
   releaseThreadAndWait(ref: string): Promise<TranscriptRetirementOutcome | undefined>;
@@ -1061,8 +1068,19 @@ async function acceptEntryTranscriptHydration(
       : (authorities?.clearEpoch ?? fixture.clearEpoch ?? 0);
   const historyGeneration = authorities?.historyGeneration ?? fixture.historyGeneration ?? 0;
   const threadChanged = fixture.repository?.getSnapshot()?.threadId !== response.thread.id;
+  // A cache-only shell holds no authoritative state, whatever it displays: a
+  // pane installed it from disk while this read awaited its durable authorities,
+  // and its own issued generation is not this read's. Accepting the response
+  // into that repository lets the shell's generation fence discard it as stale,
+  // and the store then records routing as verified on the shell's empty
+  // capabilities - a destination that looks ready and refuses to send. So a
+  // shell is always replaced rather than written into, even when its thread id
+  // and generations happen to match: it is a provisional baseline, and this
+  // response is the authoritative one that supersedes it.
+  const replacedByShell = fixture.cachedUnverified === true && fixture.repository !== undefined;
   if (
     !fixture.repository ||
+    replacedByShell ||
     (hydration.discardHeldHistory && !accumulatesHeldHistory) ||
     threadChanged ||
     historyChanged ||
@@ -1072,13 +1090,6 @@ async function acceptEntryTranscriptHydration(
     // Only rebuild the route this acquisition owns; a concurrent replacement is
     // not this response's to replace.
     //
-    // A cache-only shell is not that concurrent replacement. It holds no
-    // authoritative state and its empty thread identity is exactly what made
-    // this response want a rebuild, so a pane that installed one while this
-    // read awaited its durable authorities must not fence the response off.
-    // Fencing it discarded a successful source read and rejected a press the
-    // source had already answered, on the display of a shell nobody verified.
-    const replacedByShell = fixture.cachedUnverified === true && fixture.repository !== undefined;
     if (fixture.repository !== claimedRepository && !replacedByShell) return;
     // The pending recorded-range work is the route's fact, not the repository
     // instance's: identities the display restored but no current-baseline
@@ -1450,8 +1461,14 @@ const clearReplacementReads = new Map<string, ClearReplacementRead>();
 // The last terminal history verdict a tracked read ended on, per ref, waiting to
 // be claimed by whoever is owed that answer. A refresh reports failures through
 // the lifecycle rather than by rejecting, so this is the one place the terminal
-// end survives to be read; a handoff takes it, so a stale verdict cannot fail a
-// later press that a successful read has since answered.
+// end survives to be read.
+//
+// A verdict describes the read that produced it and nothing later: a successful
+// tracked read clears it, and a later attempt that ends the same way replaces
+// it. Without the clear the map outlives its answer, and a Clear's replacement
+// resolving after a successful read hands its handoff an error the hub has since
+// answered. The claim's caller re-arms on that throw rather than failing, so the
+// cost is a read the destination does not need, not a lost press.
 const terminalHydrationErrors = new Map<string, unknown>();
 function takeTerminalHydrationError(ref: string): unknown {
   const error = terminalHydrationErrors.get(ref);
@@ -4671,6 +4688,12 @@ async function readThreadHydration(
     if (lease !== ownerLease) lease.release();
   }
   if (signal?.aborted) throw new Error("Thread hydration attempt was retired");
+  // The hub answered this ref's history: whatever terminal verdict an earlier
+  // attempt recorded is spent, and leaving it here would let a later Clear's
+  // replacement throw it at a press the successful read has since answered.
+  // Tracked only: a lean watched read asks no history, so its success says
+  // nothing about the index a tracked verdict was about.
+  if (read.kind !== "watched") terminalHydrationErrors.delete(ref);
   // The read succeeded: any repairing status from this attempt's earlier
   // read is over — a superseded attempt leaves the newer one's say standing.
   // Only a history-requesting read observed the index: a lean watch the hub
@@ -8677,13 +8700,17 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       ensureCacheLease(ref);
     }
     const generation = ensureGenerations.get(ref) ?? 0;
-    // The kind this hold is taken as, so the rollback below releases this
-    // acquisition's count and never one belonging to another lifecycle.
-    // The id is that lifecycle's identity for its own hold: two panes over one
-    // ref can share a kind AND an ensure generation when a routing lease keeps
-    // the generation alive between them, so the generation is not enough to
-    // say which hold a rollback owns. See releaseForegroundAcquisition.
-    const acquisition = holdForeground(ref, routingOnly);
+    // This acquisition's handle. Both exits below release it and nothing else:
+    // the caller that unmounts mid-hydration and the rollback that runs when the
+    // hydration fails each name the same hold, so whichever runs second finds it
+    // already released and drops nothing. That is why no exit has to ask "is the
+    // standing count mine" - by construction it can only be this handle's.
+    const hold = mintForegroundHold(ref, routingOnly);
+    attachForegroundHold(hold);
+    // Handed out here, not when the hydration settles: a caller that unmounts
+    // or gives up before then still owns this handle, and releasing a ref later
+    // would name whichever hold is newest by that point instead of this one.
+    opts?.onHold?.(hold);
     if (!routingOnly) holdBodyOwnership(ref);
     syncTranscriptResidencyOwners(ref);
     // Retention alone grants no write permission: only an explicit pane open
@@ -9116,6 +9143,26 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           inflight = inflightHydrates.get(ref) ?? startHydration(client, getReadyEpoch());
           continue;
         }
+        // The same demand, on a destination no pane has opened: Clear can retire
+        // a routing claim's first read for a ref with no resident model, and
+        // issuing that demand's replacement waits on a transaction that has not
+        // finished. Starting a read here would answer the demand twice - this
+        // claim's read and the Clear's replacement - so join the replacement
+        // instead, where the retired attempt's terminal verdict travels with it.
+        const unopenedHandoff = await awaitClearReplacement(ref);
+        if (unopenedHandoff.kind === "deleted") return endDeletedDestination();
+        if (unopenedHandoff.kind === "read") {
+          inflight = adoptClearReplacement(unopenedHandoff.read);
+          continue;
+        }
+        if (unopenedHandoff.kind === "deferred") {
+          // The connection owes this demand its read. Re-arm from the top
+          // against whatever generation is current when it returns.
+          client = await requireReadyClient();
+          if (ensureGenerations.get(ref) !== generation || foregroundHolds(ref) <= 0) return;
+          inflight = inflightHydrates.get(ref) ?? startHydration(client, getReadyEpoch());
+          continue;
+        }
         if (threadsStore.getState().deletedRefs.has(ref)) return endDeletedDestination();
 
         client = await requireReadyClient();
@@ -9140,14 +9187,14 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       // routing lease. Releasing against the total would spend that lease's hold
       // and retire the model under the press, which is how a resend came to
       // resolve with no verified routing state behind it.
-      // Bound to the acquisition id, not the generation: a routing lease keeps
-      // the ensure generation alive across a pane close and reopen, so a pane
-      // that closed while waiting for a retry shared its generation with the
-      // pane that replaced it. The generation check passed, the rollback spent
-      // the new pane's count, and that pane lost its reader and model while
-      // still mounted. Releasing the acquisition's own id drops that hold or
-      // nothing, which is what makes this idempotent with an unmount release.
-      threadsStore.getState().releaseThreadAcquisition(ref, acquisition, { routingOnly });
+      // Bound to this acquisition's own handle, not the generation: a routing
+      // lease keeps the ensure generation alive across a pane close and reopen,
+      // so a pane that closed while waiting for a retry shared its generation
+      // with the pane that replaced it. The generation check passed, the
+      // rollback spent the new pane's count, and that pane lost its reader and
+      // model while still mounted. The handle names one hold, so a rollback
+      // whose holder already released drops nothing.
+      threadsStore.getState().releaseThreadHold(hold);
       throw err;
     }
   },
@@ -9159,12 +9206,9 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
 
   releaseThread(ref, opts) {
     const routing = opts?.routingOnly === true;
-    // Whether this release owns a hold is releaseForeground's answer, not a
-    // second predicate asked here: the two would drift, and the answer has to
-    // be "a hold of this release's own kind", because the total count standing
-    // is not necessarily this release's. A pane that closed while its read was
-    // in flight has already released, and what remains can be a resend's
-    // routing lease; spending it retires the model under the press.
+    // A caller with only a ref to release the newest hold of its kind. Every
+    // holder whose release outlives its own frame carries a handle instead (see
+    // releaseThreadHold); this shape exists for the paired same-frame callers.
     const before = foregroundHolds(ref);
     releaseForeground(ref, routing);
     const count = foregroundHolds(ref);
@@ -9175,17 +9219,18 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     return threadsStore.getState().releaseThreadAfterHoldDrop(ref, count);
   },
 
-  releaseThreadAcquisition(ref, acquisition, opts) {
-    const routing = opts?.routingOnly === true;
-    // The acquisition-shaped release. A hold this acquisition no longer owns is
-    // already gone - the pane released it on unmount - so there is nothing of
-    // its own to drop and the counts standing here are another pane's. That
-    // makes the rollback idempotent with the unmount release instead of a
-    // second bookkeeping path that could double-drop.
+  releaseThreadHold(hold) {
+    const { ref, routing } = hold;
+    // The handle-shaped release. A hold this handle no longer has standing was
+    // already dropped by the other exit that owns it - its pane released on
+    // unmount, or this same rollback ran once - so there is nothing of its own
+    // to drop and the counts standing here belong to another lifecycle. That is
+    // what makes the two exits idempotent instead of a second bookkeeping path
+    // that could double-drop.
     const before = foregroundHolds(ref);
-    releaseForegroundAcquisition(ref, acquisition, routing);
+    releaseForegroundHold(hold);
     const count = foregroundHolds(ref);
-    if (count === before) return; // this acquisition's hold was already gone
+    if (count === before) return; // this handle's hold was already gone
     if (!routing) releaseBodyOwnership(ref);
     return threadsStore.getState().releaseThreadAfterHoldDrop(ref, count);
   },
@@ -10332,6 +10377,18 @@ function reconcileClearInput(): void {
         // rollback, and a not-ready client hands the claim to the reconnect by
         // waking it, which re-arms against whatever the current generation
         // reads.
+        //
+        // A waiter can be parked somewhere the wake below does not reach: Clear
+        // cancels a scheduled retry when it retires a read, so a claim waiting
+        // on that lifecycle's firstHydration is not in clearReplacementWaits at
+        // all. Waking the parked set leaves it with no retry, no read and - if
+        // the connection never returns - no ready event. The lifecycle is the
+        // thing being deferred, so the bound goes on it, and the reconnect that
+        // does arrive retires it through the ordinary generation change.
+        if (!threadsStore.getState().deletedRefs.has(ref)) {
+          const deferred = ownedHydrationsFor(kind).get(ref);
+          if (deferred) armReadinessBound(kind, ref, deferred);
+        }
         for (const wake of clearReplacementWaits.take(ref) ?? []) wake();
         continue;
       }
@@ -10707,6 +10764,8 @@ export function resetThreadsStoreForTests(): void {
     });
   };
   retireAllOwnedHydrations();
+  clearReplacementReads.clear();
+  terminalHydrationErrors.clear();
   inflightDurableEnqueues.clear();
   undeliveredMutationIds.clear();
   mutationStateGenerations.clear();

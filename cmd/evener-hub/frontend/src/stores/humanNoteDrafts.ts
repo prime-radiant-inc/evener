@@ -8,6 +8,7 @@ import {
   type MutationRecoveryRecord,
 } from "./mutationOutbox";
 import { registerPanelStoreEvictor, schedulePanelStoreEviction } from "./panelStoreEviction";
+import type { ForegroundHold } from "./threadOwners";
 import { readMutationPersistence, retryBlockedMutation, subscribeMutationPersistence, threadsStore } from "./threads";
 
 export interface HumanNoteDraft {
@@ -221,11 +222,26 @@ export function blurHumanNote(ref: string, owner: symbol): void {
   if (!draft?.dirty || draft.focusOwners.size || draft.timer !== undefined) return;
   if (draft.submitted?.generation === draft.generation && draft.submitted.state === "submitting") return;
   const state = threadsStore.getState();
-  const retained = state.ensureThread(ref).then(
-    () => null,
-    (error: unknown) => ({ error }),
-  );
-  const release = () => state.releaseThread(ref);
+  // The handle is captured when the store takes the hold, not read off the ref
+  // when this save finally runs: `release` below is retained in the draft and
+  // called after awaits, by which point another lifecycle's hold can be the
+  // newest one standing for this ref. Releasing the ref there would drop that
+  // lifecycle's hold instead of this save's.
+  let hold: ForegroundHold | undefined;
+  const retained = state
+    .ensureThread(ref, {
+      onHold: (taken) => {
+        hold = taken;
+      },
+    })
+    .then(
+      () => null,
+      (error: unknown) => ({ error }),
+    );
+  const release = () => {
+    if (hold) state.releaseThreadHold(hold);
+    else state.releaseThread(ref);
+  };
   // The debounce coalesces one typing session's blurs into a single write; it
   // must never mean "no write at all", so the same save is reachable from
   // teardown (flushPendingHumanNoteSaves).
