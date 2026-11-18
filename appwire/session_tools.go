@@ -477,17 +477,34 @@ type SessionWatchRequest struct {
 }
 
 type SessionObservationMetadata struct {
-	Ref              string             `json:"ref"`
-	InstanceID       string             `json:"instanceId,omitempty"`
-	GenerationID     string             `json:"generationId,omitempty"`
-	TurnID           string             `json:"turnId,omitempty"`
-	AnswerToTurnIDs  []string           `json:"answerToTurnIds,omitempty"`
-	EntryID          string             `json:"entryId,omitempty"`
-	EndTurn          bool               `json:"endTurn,omitempty"`
-	EndReason        string             `json:"endReason,omitempty"`
-	TerminalAccepted *bool              `json:"terminalAccepted,omitempty"`
-	CausalKnown      bool               `json:"causalKnown"`
-	Causal           *provenance.Causal `json:"causal,omitempty"`
+	Ref             string   `json:"ref"`
+	InstanceID      string   `json:"instanceId,omitempty"`
+	GenerationID    string   `json:"generationId,omitempty"`
+	TurnID          string   `json:"turnId,omitempty"`
+	AnswerToTurnIDs []string `json:"answerToTurnIds,omitempty"`
+	// ResolvedAskCalls carries admission's own per-call resolution evidence:
+	// the exact ask_user calls (execution turn AND call id) this accepted
+	// input consumed, from schema.Turn.AskResolution. AnswerToTurnIDs is the
+	// turn-granular collapse of the same evidence, so several calls in one
+	// execution share one link; a client that must say WHICH call a reply
+	// answered matches these calls instead of guessing. Absent on turns
+	// admitted before the evidence existed and on unfenced whole-set
+	// answers, which carry no call list at all.
+	ResolvedAskCalls []PendingAskCall `json:"resolvedAskCalls,omitempty"`
+	// ResolvedAskLegacyCount says admission ALSO consumed this many questions
+	// it could not name - the call-less population restored from records that
+	// predate call ids (schema.AskResolution.LegacyCount). ResolvedAskCalls
+	// cannot see them, so a client pairing a composed answer line to a named
+	// call by header must treat a nonzero count as unattributable: those
+	// questions' headers never reach the wire, and one of them may share the
+	// header the line names. Absent when every consumed question is named.
+	ResolvedAskLegacyCount int                `json:"resolvedAskLegacyCount,omitempty"`
+	EntryID                string             `json:"entryId,omitempty"`
+	EndTurn                bool               `json:"endTurn,omitempty"`
+	EndReason              string             `json:"endReason,omitempty"`
+	TerminalAccepted       *bool              `json:"terminalAccepted,omitempty"`
+	CausalKnown            bool               `json:"causalKnown"`
+	Causal                 *provenance.Causal `json:"causal,omitempty"`
 }
 
 type SessionWatchUpdate struct {
