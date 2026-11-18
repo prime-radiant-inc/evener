@@ -455,6 +455,34 @@ func seedLiveShellStarts(t *testing.T, s *Session, n int) {
 			OwnerSessionID: s.ID(), VisibleToSession: s.ID(), StartedAt: &started,
 		})
 	}
+	// Pin the journal's modification time BEFORE the seeding append, not after
+	// it.
+	//
+	// The store decides whether its own appends are distinguishable by length
+	// and mtime, and it decides that ON the append: an append that changes the
+	// length while the filesystem reports the same mtime proves the timestamps
+	// here cannot resolve a write, and the store gives metadata-based reuse up
+	// for good. On a coarse clock the journal's creation and the seed append can
+	// land in one tick, which disables it before any caller can pin anything —
+	// and the flag is sticky, so a later pin cannot restore what the append
+	// already discarded.
+	//
+	// Moving the mtime into the past first makes the append's own write
+	// unambiguously later on any clock, so the assertion the callers make —
+	// "a later append folds only the delta" — measures the delta path rather
+	// than the host's timestamp resolution.
+	// The journal's location comes from the store's own boundary read, which
+	// reports where it is without taking a cursor sample.
+	located, err := s.jobManager.store.CommittedJournal()
+	if err != nil {
+		t.Fatalf("locate the journal before seeding: %v", err)
+	}
+	if info, err := os.Stat(located.Path); err == nil {
+		pinned := info.ModTime().Add(-time.Hour)
+		if err := os.Chtimes(located.Path, pinned, pinned); err != nil {
+			t.Fatalf("pin journal mtime before seeding: %v", err)
+		}
+	}
 	if err := s.jobManager.store.AppendBatch(seed); err != nil {
 		t.Fatalf("seed journal: %v", err)
 	}
@@ -536,23 +564,6 @@ func TestLiveActivityBase_FoldsOnlyCommittedBytes(t *testing.T) {
 		t.Fatal("test session has no job store")
 	}
 	seedLiveShellStarts(t, s, 3)
-
-	// Pin the seeded journal's modification time to a fixed instant BEFORE the
-	// store samples it. The assertion below is that an append folds only the
-	// DELTA, and the store decides whether its own appends are distinguishable
-	// by length and mtime: on a coarse clock the seed and the append can land in
-	// the same timestamp tick, the store then correctly gives up its cursor, and
-	// the next load refolds from zero by design. Pinning the seed makes the
-	// append unambiguously later, so the delta property is what is measured
-	// rather than the host's clock resolution.
-	seeded, err := s.jobManager.store.CommittedJournal()
-	if err != nil {
-		t.Fatalf("CommittedJournal after seeding: %v", err)
-	}
-	pinned := time.Unix(1_600_000_000, 0).UTC()
-	if err := os.Chtimes(seeded.Path, pinned, pinned); err != nil {
-		t.Fatalf("pin seeded mtime: %v", err)
-	}
 
 	calls := spyLiveActivityScans(t)
 	base, err := loadLiveActivityBase(context.Background(), s)
@@ -2215,6 +2226,128 @@ func TestLiveActivityBase_DoesNotReadTheIndexWhileAnExtensionOwnsIt(t *testing.T
 	row, ok := rows["job_000001"]
 	if !ok || !row.row {
 		t.Fatalf("live rows while an extension owned the index = %+v, want job_000001 placed in the list", rows)
+	}
+}
+
+// TestLiveActivityBase_RewriteThatChangesACountedRowAdvancesTheEpoch pins
+// medium 2.
+//
+// A continuation's resume index is an ordinal among the SHELL rows a session
+// owns, not among all rows. A rewrite can keep every job ID in place and in the
+// same order while turning an earlier row from a shell job into an unsupported
+// one, or handing it to a different owner. Every index after that row moves, so
+// resuming at the old index names a different job and skips one the reader never
+// saw.
+//
+// A fingerprint of the job IDs alone reads that rewrite as no change at all and
+// leaves the epoch alone. The epoch has to cover what paging counts.
+func TestLiveActivityBase_RewriteThatChangesACountedRowAdvancesTheEpoch(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "jobs.jsonl")
+	const session = "session-a"
+	original := `{"seq":1,"kind":"job_started","job_id":"job_000001","type":"shell","owner_session_id":"session-a"}` + "\n" +
+		`{"seq":2,"kind":"job_started","job_id":"job_000002","type":"shell","owner_session_id":"session-a"}` + "\n"
+	if err := os.WriteFile(target, []byte(original), 0o644); err != nil {
+		t.Fatalf("write journal: %v", err)
+	}
+	state := func(size int64, gen uint64) jobstore.CommittedJournalState {
+		return jobstore.CommittedJournalState{
+			Path: target, Size: size, Generation: gen,
+			MetadataResolvesWrites: true,
+		}
+	}
+
+	var f liveJobFold
+	first, err := f.records(context.Background(), target, state(int64(len(original)), 1), nil)
+	if err != nil {
+		t.Fatalf("first read: %v", err)
+	}
+	if got := first.jobs.counts(session).shell; got != 2 {
+		t.Fatalf("first read has %d owned shell rows, want the 2 the journal carries", got)
+	}
+
+	// The rewrite keeps both job IDs, in order and at the same length, and
+	// changes the FIRST row's class. The resume index counts one fewer row
+	// before job_000002, so any continuation past it now names the wrong job.
+	rewritten := `{"seq":1,"kind":"job_started","job_id":"job_000001","type":"other","owner_session_id":"session-a"}` + "\n" +
+		`{"seq":2,"kind":"job_started","job_id":"job_000002","type":"shell","owner_session_id":"session-a"}` + "\n"
+	if len(rewritten) != len(original) {
+		t.Fatalf("fixture rewrite is %d bytes, want the %d that keeps the length unchanged", len(rewritten), len(original))
+	}
+	if err := os.WriteFile(target, []byte(rewritten), 0o644); err != nil {
+		t.Fatalf("write rewrite: %v", err)
+	}
+
+	second, err := f.records(context.Background(), target, state(int64(len(rewritten)), 2), nil)
+	if err != nil {
+		t.Fatalf("read after the rewrite: %v", err)
+	}
+	if got := second.jobs.counts(session).shell; got != 1 {
+		t.Fatalf("after the rewrite there are %d owned shell rows, want the 1 the rewrite leaves", got)
+	}
+	if second.epoch == first.epoch {
+		t.Fatalf("epoch = %d after a rewrite that changed a row the resume index counts, want it above the %d the previous page was minted over: resuming would skip an unread job", second.epoch, first.epoch)
+	}
+}
+
+// TestLiveActivityBase_SameLengthRewriteThenAppendOnUnreliableMetadata pins
+// medium 6.
+//
+// A same-length rewrite is invisible to a store whose timestamps cannot resolve
+// writes: nothing moved, so nothing says the bytes moved either. The rewrite
+// leaves the pre-write sample untouched, and an ordinary append afterwards books
+// a LARGER length under the SAME generation. That is enough for a length-based
+// rule to call the extension ordinary: the boundary grew, and the fold's
+// recorded length differs from the caller's — so the extension resumes from the
+// cached prefix.
+//
+// But that prefix was decoded from the file the rewrite replaced. Extending it
+// serves rows the rewrite removed alongside the append that followed. On this
+// filesystem nothing available can vouch for the prefix, so the only honest
+// answer is to rebuild it.
+func TestLiveActivityBase_SameLengthRewriteThenAppendOnUnreliableMetadata(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "jobs.jsonl")
+	first := []byte(`{"seq":1,"kind":"job_started","job_id":"job_000001"}` + "\n")
+	if err := os.WriteFile(target, first, 0o644); err != nil {
+		t.Fatalf("write journal: %v", err)
+	}
+	state := func(size int64) jobstore.CommittedJournalState {
+		return jobstore.CommittedJournalState{
+			Path: target, Size: size, Generation: 0,
+			// This filesystem cannot tell one of the store's own writes from no
+			// write at all, so a length is not evidence the prefix is intact.
+			MetadataResolvesWrites: false,
+		}
+	}
+
+	var f liveJobFold
+	if _, err := f.records(context.Background(), target, state(int64(len(first))), nil); err != nil {
+		t.Fatalf("first read: %v", err)
+	}
+
+	// Rewrite the prefix to a different job of exactly the same length, then
+	// append: the store's generation does not move, only the length does.
+	rewritten := []byte(`{"seq":1,"kind":"job_started","job_id":"job_999999"}` + "\n")
+	if len(rewritten) != len(first) {
+		t.Fatalf("fixture rewritten line is %d bytes, want the %d that keeps the length unchanged", len(rewritten), len(first))
+	}
+	appended := []byte(`{"seq":2,"kind":"job_started","job_id":"job_000002"}` + "\n")
+	body := append(append([]byte(nil), rewritten...), appended...)
+	if err := os.WriteFile(target, body, 0o644); err != nil {
+		t.Fatalf("write rewritten journal: %v", err)
+	}
+
+	result, err := f.records(context.Background(), target, state(int64(len(body))), nil)
+	if err != nil {
+		t.Fatalf("read after a same-length rewrite and an append: %v", err)
+	}
+	var ids []string
+	for rec := range result.jobs.all() {
+		ids = append(ids, rec.JobID)
+	}
+	if len(ids) != 2 || ids[0] != "job_999999" || ids[1] != "job_000002" {
+		t.Fatalf("rows after the rewrite and append = %v, want [job_999999 job_000002]: the page must not keep the row the rewrite removed", ids)
 	}
 }
 

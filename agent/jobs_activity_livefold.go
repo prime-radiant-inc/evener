@@ -448,17 +448,37 @@ func (f *liveJobFold) records(ctx context.Context, path string, committed jobsto
 	var refoldedAt uint64
 	hasRefolded := false
 	// inheritedEvidence reports whether a fold this call did NOT build can be
-	// trusted for the generation it names.
-	inheritedEvidence := func(gen uint64, foldSize int64) bool {
-		if committed.MetadataResolvesWrites || (hasRefolded && refoldedAt == gen) {
+	// trusted for the generation it names — that is, whether anything vouches
+	// for the prefix it consumed still being the file's prefix.
+	//
+	// This call's own rebuild is such a voucher: it read those bytes.
+	//
+	// So is a filesystem whose metadata resolves writes. There a fold whose
+	// recorded length DIFFERS from this caller's boundary saw a different file
+	// length, which an append explains — the fold is either ahead of the caller
+	// or extending to it, and either way the bytes it holds are bytes the store
+	// wrote. A length that matches exactly is the unexplained case and refolds.
+	//
+	// A filesystem that has already proved it cannot tell one of the store's own
+	// writes from no write at all offers no such voucher, and a length
+	// difference is NOT one there. That is the case a rewrite hides in: it keeps
+	// the length, so the pre-write sample cannot see it, and the following
+	// append books a larger length under an unchanged generation. The boundary
+	// grew, so an extension from the cached prefix looks ordinary — and the page
+	// then serves rows the rewrite removed alongside the new append. Nothing
+	// available can show the prefix is intact, so the only honest answer is to
+	// rebuild it, and the delta path is kept for every filesystem whose metadata
+	// can vouch for a write.
+	inheritedEvidence := func(gen uint64) bool {
+		if hasRefolded && refoldedAt == gen {
 			return true
 		}
-		return foldSize != endOffset
+		return committed.MetadataResolvesWrites
 	}
 	for {
 		f.mu.Lock()
 		covers := f.built && committed.Generation == f.gen && endOffset <= f.lastSize
-		if covers && inheritedEvidence(f.gen, f.lastSize) {
+		if covers && inheritedEvidence(f.gen) {
 			result := f.resultLocked()
 			f.mu.Unlock()
 			return result, nil
@@ -469,7 +489,7 @@ func (f *liveJobFold) records(ctx context.Context, path string, committed jobsto
 		// they went away. A fold that covers this boundary but whose evidence
 		// this call cannot accept is rebuilt for the same reason: the bytes it
 		// describes cannot be shown to be these bytes.
-		rebuild := !f.built || committed.Generation != f.gen || (covers && !inheritedEvidence(f.gen, f.lastSize))
+		rebuild := !f.built || committed.Generation != f.gen || (covers && !inheritedEvidence(f.gen))
 		// Where the fold stood when this iteration's scan began. A scan that
 		// leaves it there has nothing left to give this caller, and extending
 		// again would read the same bytes forever.
@@ -563,7 +583,7 @@ func (f *liveJobFold) records(ctx context.Context, path string, committed jobsto
 			// evidence even where a stat would not be.
 			refoldedAt, hasRefolded = committed.Generation, true
 		}
-		covered := covers && inheritedEvidence(f.gen, f.lastSize)
+		covered := covers && inheritedEvidence(f.gen)
 		progress := f.built && f.lastSize > before
 		staleGeneration := f.gen < committed.Generation
 		f.mu.Unlock()
@@ -718,7 +738,7 @@ func (f *liveJobFold) run(ctx context.Context, scan *liveJobScan, path string) {
 			// fold's own order fingerprint answers exactly that, and it is
 			// maintained by every rebuild and every extension, so it describes
 			// the list a page was built over rather than a recount of it.
-			if f.fold.orderCount != next.orderCount || f.fold.orderHash != next.orderHash {
+			if f.fold.orderCount != next.orderCount || f.fold.orderHash != next.orderHash || f.fold.pagingSum != next.pagingSum {
 				f.epoch++
 			}
 		} else if reordered {

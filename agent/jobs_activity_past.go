@@ -88,6 +88,14 @@ type historicalJobFold struct {
 	// hands the refold a zero prior.
 	orderCount int
 	orderHash  uint64
+	// pagingSum accumulates what each row contributes to the order a
+	// continuation counts — see foldJobPagingContribution. It is a sum rather
+	// than a sequential hash so an extension can subtract a row it replaces and
+	// add the replacement in O(1), which is what keeps a warm extension linear
+	// in the delta. orderCount and orderHash cover the order of the job IDs;
+	// this covers the class and owner of those same IDs, which is the other half
+	// of "would a continuation's index name the same job".
+	pagingSum uint64
 }
 
 // activityJobPositions maps each job ID in list to its index. Extending a
@@ -127,6 +135,29 @@ const foldJobOrderFNVPrime = 1099511628211
 func foldJobOrderHash(h uint64, jobID string) uint64 {
 	for i := 0; i < len(jobID); i++ {
 		h ^= uint64(jobID[i])
+		h *= foldJobOrderFNVPrime
+	}
+	h ^= 0xff
+	h *= foldJobOrderFNVPrime
+	return h
+}
+
+// foldJobPagingContribution fingerprints what one record contributes to the
+// order a continuation counts: its job ID, its projection class, and its owner.
+//
+// The class and owner belong here because a session's resume index is an
+// ordinal among the SHELL rows it OWNS, not among all rows. A rewrite that keeps
+// every job ID in place, in the same order, while turning an earlier row from a
+// shell job into an unsupported one — or handing it to a different owner — moves
+// every index after it. A fingerprint of the job IDs alone reads that as no
+// change, leaves the epoch alone, and lets a continuation resume at an index
+// that now names a different job, skipping one it never rendered.
+func foldJobPagingContribution(rec *jobstore.JobRecord) uint64 {
+	h := foldJobOrderHash(0, rec.JobID)
+	h ^= uint64(classifyActivityJob(rec)) + 1
+	h *= foldJobOrderFNVPrime
+	for i := 0; i < len(rec.OwnerSessionID); i++ {
+		h ^= uint64(rec.OwnerSessionID[i])
 		h *= foldJobOrderFNVPrime
 	}
 	h ^= 0xff
@@ -275,14 +306,15 @@ func sortJobEventsBySeq(ctx context.Context, events []jobstore.Event) error {
 // replaces a slot that does not exist in the published list.
 func (f historicalJobFold) extend(ctx context.Context, events []jobstore.Event) (historicalJobFold, error) {
 	positions := f.positions
-	orderCount, orderHash := f.orderCount, f.orderHash
+	orderCount, orderHash, pagingSum := f.orderCount, f.orderHash, f.pagingSum
 	if positions == nil || positions.list != f.jobs {
 		positions = &activityJobPositions{of: make(map[string]int, f.jobs.len())}
-		orderCount, orderHash = 0, 0
+		orderCount, orderHash, pagingSum = 0, 0, 0
 		for rec := range f.jobs.all() {
 			positions.of[rec.JobID] = len(positions.of)
 			orderCount++
 			orderHash = foldJobOrderHash(orderHash, rec.JobID)
+			pagingSum += foldJobPagingContribution(rec)
 		}
 	}
 	b := newActivityJobListBuilder(f.jobs, positions.of)
@@ -303,10 +335,12 @@ func (f historicalJobFold) extend(ctx context.Context, events []jobstore.Event) 
 		}
 		at, known := positions.of[event.JobID]
 		if !known {
-			b.push(jobstore.ApplyJob(nil, event))
+			rec := jobstore.ApplyJob(nil, event)
+			b.push(rec)
 			created[event.JobID] = true
 			orderCount++
 			orderHash = foldJobOrderHash(orderHash, event.JobID)
+			pagingSum += foldJobPagingContribution(rec)
 			continue
 		}
 		b.replace(at, func(rec *jobstore.JobRecord) *jobstore.JobRecord {
@@ -314,7 +348,12 @@ func (f historicalJobFold) extend(ctx context.Context, events []jobstore.Event) 
 				rec = rec.Clone()
 				created[event.JobID] = true
 			}
-			return jobstore.ApplyJob(rec, event)
+			next := jobstore.ApplyJob(rec, event)
+			// The row's own contribution moves with its class and owner. It is
+			// subtracted and re-added here so a warm extension stays O(delta)
+			// yet still notices a change a continuation would feel.
+			pagingSum += foldJobPagingContribution(next) - foldJobPagingContribution(rec)
+			return next
 		})
 	}
 	if err := ctx.Err(); err != nil {
@@ -322,7 +361,7 @@ func (f historicalJobFold) extend(ctx context.Context, events []jobstore.Event) 
 		return historicalJobFold{}, err
 	}
 	positions.list = b.list()
-	return historicalJobFold{jobs: positions.list, positions: positions, lastSeq: lastSeq, orderCount: orderCount, orderHash: orderHash}, nil
+	return historicalJobFold{jobs: positions.list, positions: positions, lastSeq: lastSeq, orderCount: orderCount, orderHash: orderHash, pagingSum: pagingSum}, nil
 }
 
 // loadCachedJobRecords returns jobsPath's complete, folded history via
