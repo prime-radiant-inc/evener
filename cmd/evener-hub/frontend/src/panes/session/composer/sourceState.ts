@@ -1803,15 +1803,39 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     // image whose reference the person had deleted.
     const preservedOwnedTiles = ownedCompositionAttachments(operations.toInputAttachments());
     const preservedSendable = sendableCompositionAttachments(preservedOwnedTiles, preservedText);
-    // ONE order, the same one autosave writes. Recovery pairs a payload image
-    // with its durable metadata BY INDEX, so a payload holding only the second
-    // image while the durable list still starts with the first makes the
-    // reopen assign the second image's bytes to the first marker, restore the
-    // second again as an excluded tile, and lose the first image outright.
+    // THE INVARIANT LIVES IN THE WRITERS, AND THIS IS ONE OF THEM.
     //
-    // Sendable first in payload order, excluded after: the two orders the
-    // reader assumes are one order here, instead of a pairing rule discovered
-    // at the reader.
+    // Recovery pairs a payload image with its durable metadata BY INDEX, so a
+    // payload holding only the second image while the durable list still starts
+    // with the first makes a reopen assign the second image's bytes to the first
+    // marker, restore the second again as an excluded tile, and lose the first
+    // image outright. The reader is not going to be taught to pair another way;
+    // two lists it must zip are one list to it.
+    //
+    // `queueRecoveryPersistence` applies the same normalisation, but ONLY to its
+    // own local argument (`nextAttachments`) before writing its row - it does
+    // not reorder the attachment store. The store keeps staging order, so in
+    // principle a composition whose earlier marker lost its reference while a
+    // later one kept it can reach THIS function as [excluded, sendable], and
+    // preserve must not trust incoming order. That is what the next two lines
+    // prevent.
+    //
+    // MEASURED CAVEAT, stated rather than glossed: I could not build a fixture
+    // that makes these two lines change the persisted row. Two attempts - one
+    // staging [excluded, sendable] and one advancing the row out from under the
+    // pane - both produced a correctly ordered row with the normalisation
+    // REMOVED, so on the paths a test can drive, some earlier writer has already
+    // ordered the list. Either this is hardening for an ordering that only an
+    // untested path produces, or the normalisation is duplicated upstream. This
+    // comment does not settle which. The two lines are kept because the reader's
+    // by-index pairing makes the wrong order silently destructive rather than
+    // merely wrong, and they cost nothing when the order is already right.
+    //
+    // Put the other way, for the next caller: a writer that reorders a durable
+    // list must reorder the payload it commits with it. This function is where
+    // that rule would otherwise be discovered, and it is stated here rather than
+    // encoded once in a shared helper because the two writers do not share a
+    // code path - autosave has the caller's list and this one has the store.
     const preservedOwned = [
       ...preservedSendable,
       ...preservedOwnedTiles.filter((candidate) => !preservedSendable.includes(candidate)),
