@@ -3709,3 +3709,119 @@ func TestFind_ProjectName_RecordedProjectOutranksForeignOrigin(t *testing.T) {
 		t.Fatalf("projectName(managed lane whose only sibling records an origin) = %q, want the origin-only inference %q", got, want)
 	}
 }
+
+// TestFind_ProjectName_MatchingSiblingOutranksForeignOrigin covers a managed
+// lane whose bucket was reached by another repository through --state-dir. A
+// sibling from that other repository records an origin but no project, so it is
+// unknown-project evidence; another sibling resolves to the lane's own live
+// checkout. Ranking by source alone lets the unverified origin win, because its
+// rank is stronger than a resolved checkout — and the lane takes another
+// repository's name even though its own checkout is still on disk.
+func TestFind_ProjectName_MatchingSiblingOutranksForeignOrigin(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	laneRepo := newNamedCheckout(t, "own-checkout-repo")
+	laneProject := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(laneRepo))
+	bucket, err := RuntimeDirForProjectWithStateHome(laneProject, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	// The intruder's origin is recorded and its checkout is gone, which is the
+	// shape that makes its rank the strongest a sibling can reach.
+	intruder := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	intruder.EnvInfo.GitOriginURL = "git@github.com:owner/intruder-repo.git"
+	intruder.EnvInfo.WorkingDir = filepath.Join(t.TempDir(), "deleted-intruder")
+
+	// The lane's own checkout, still live. It names the lane's project by
+	// resolving to it, which is a positive identification rather than an origin
+	// recorded in a bucket that stopped belonging to this repository.
+	own := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	own.EnvInfo.WorkingDir = laneRepo
+
+	resolver := newProjectNameResolver(map[string][]schema.SessionMeta{
+		bucket: {intruder, own},
+	})
+	row := schema.SessionMeta{}
+	row.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", laneProject.ID, "dlg_matching_sibling")
+	if got, want := resolver.projectName(row, bucket), "own-checkout-repo"; got != want {
+		t.Fatalf("projectName(lane whose own checkout sibling resolves while another sibling's origin names a different repo) = %q, want %q", got, want)
+	}
+}
+
+// TestFind_ProjectName_MovedCheckoutKeepsItsRecordedProject covers an originless
+// repository moved away from its recorded path, and its delegate lane pruned, so
+// the only surviving record of the repository is an absolute path that no longer
+// exists. Hashing that path yields the project ID the lane's own path stores, so
+// the recording still proves which project the lane served. Discarding it for
+// want of a directory loses a label the basename fallback used to supply.
+func TestFind_ProjectName_MovedCheckoutKeepsItsRecordedProject(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	// The recorded path is what the lane was created under; it no longer exists.
+	moved := filepath.Join(t.TempDir(), "moved-repo")
+	movedProject := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(moved))
+	bucket, err := RuntimeDirForProjectWithStateHome(movedProject, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	// The parent is the only row left, and all it keeps is the moved checkout as
+	// its working directory.
+	parent := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	parent.EnvInfo.WorkingDir = moved
+	if err := schema.SaveSessionMeta(bucket, parent); err != nil {
+		t.Fatal(err)
+	}
+
+	row := schema.SessionMeta{ParentSessionID: parent.ID}
+	row.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", movedProject.ID, "dlg_moved")
+	if got, want := projectName(row, bucket), "moved-repo"; got != want {
+		t.Fatalf("projectName(pruned lane whose only surviving record is a moved checkout path matching the lane's project) = %q, want %q", got, want)
+	}
+}
+
+// TestFind_ProjectName_RelativeRecordNeverUsesTheSearchersCheckout covers a
+// legacy row that saved --dir . with no origin. The record names no checkout:
+// resolving it would answer with whichever repository THIS process runs in. A
+// search started from a linked worktree would then label the row with that
+// worktree's main checkout, which the session never ran in.
+//
+// The test runs from a checkout of its own, built here, so the wrong answer is
+// distinguishable from the right one: a walk of "." resolves to that checkout and
+// returns its directory name, which is a name no fixture in this test carries.
+func TestFind_ProjectName_RelativeRecordNeverUsesTheSearchersCheckout(t *testing.T) {
+	stateDir := canonicalStateDir(t.TempDir())
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+
+	// The searcher's directory is a real checkout named for this test, so a walk of
+	// "." has an answer to give and that answer is visibly not the row's.
+	searcher := newNamedCheckout(t, "searchers-own-repo")
+	previous, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	if err := os.Chdir(searcher); err != nil {
+		t.Fatalf("chdir: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(previous); err != nil {
+			t.Fatalf("restore chdir: %v", err)
+		}
+	})
+
+	row := schema.SessionMeta{EnvInfo: schema.EnvironmentInfo{WorkingDir: "."}}
+	if got := projectName(row, stateDir); got != "" {
+		t.Fatalf("projectName(legacy row whose only record is a relative --dir, searched from %q) = %q, want empty", "searchers-own-repo", got)
+	}
+}

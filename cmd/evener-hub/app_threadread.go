@@ -263,7 +263,7 @@ func pastThreadTurnsListOwned(
 			return appwire.ThreadTurnsListResponse{}, true, err
 		}
 		candidates := loaded.Result
-		base := appwire.Thread{ID: entry.Meta.ID, SessionID: entry.Meta.ID, CWD: entry.Meta.EnvInfo.WorkingDir}
+		base := appwire.Thread{ID: entry.Meta.ID, SessionID: entry.Meta.ID, CWD: entry.Meta.EnvInfo.BindingDir()}
 		options := transcriptWindowOptionsFor(
 			candidates, params.ThreadWindowParams, itemLimit,
 			transcriptWindowAppliedBySavedIndex, appitempaging.FetchCursorOriginSavedIndex,
@@ -1371,7 +1371,11 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 	if name == "" || name == strings.TrimSpace(entry.Meta.ID) {
 		name = hubcore.ShortID(strings.TrimSpace(entry.Meta.ID))
 	}
-	cwd := entry.Meta.EnvInfo.WorkingDir
+	// CWD is what the client binds a file reference to, so it is the spelling the
+	// session was launched with; Path stays the canonical directory's name, because
+	// it labels the row rather than locating anything. See
+	// schema.EnvironmentInfo.BindingDir for why those are two fields.
+	cwd := entry.Meta.EnvInfo.BindingDir()
 	ref := appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: entry.Meta.ID}.String()
 	parentRef := ""
 	if entry.Meta.ParentSessionID != "" {

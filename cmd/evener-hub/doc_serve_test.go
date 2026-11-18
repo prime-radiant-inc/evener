@@ -27,6 +27,66 @@ import (
 	daemonserver "primeradiant.com/evener/server"
 )
 
+// TestDocFile_AbsoluteReferenceThroughLaunchAliasStillOpens covers the archived
+// half of the launch-path decision. A session launched through an absolute
+// symlink records the canonical directory as its working directory, because that
+// is what project identity hashes. The archived thread's CWD is what the client
+// binds an absolute file reference to, and it binds by LEXICAL prefix, so a
+// document written as <alias>/plan.md stops opening once the launch spelling is
+// erased even though the symlink and the file both still exist.
+//
+// The alias is constructed here rather than assumed, so the test fails on any
+// filesystem that supports symlinks. It asserts the body served for the aliased
+// reference, which is what the client does: bind against CWD, then open.
+func TestDocFile_AbsoluteReferenceThroughLaunchAliasStillOpens(t *testing.T) {
+	web, cwd, sessionID := docServeTestServer(t)
+	if err := os.WriteFile(filepath.Join(cwd, "plan.md"), []byte("launch alias body"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "checkout-alias")
+	if err := os.Symlink(cwd, alias); err != nil {
+		t.Skipf("filesystem does not support symlinks: %v", err)
+	}
+
+	entry, ok := web.cfg.Past.Find(sessionID)
+	if !ok {
+		t.Fatal("fixture session is missing from the past index")
+	}
+	meta, err := schema.LoadSessionMeta(entry.StateDir, entry.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	meta.EnvInfo.WorkingDir = cwd
+	meta.EnvInfo.LaunchDir = alias
+	if err := schema.SaveSessionMeta(entry.StateDir, meta); err != nil {
+		t.Fatal(err)
+	}
+	// The warm past snapshot is what the archived projection reads, and a session
+	// that launched through the alias recorded it there at launch time. Saving it
+	// to disk as well is what the doc route reads, so both halves see the same
+	// record.
+	entry.Meta.EnvInfo = meta.EnvInfo
+
+	thread, err := pastEntryThreadForList(t.Context(), web.cfg, entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if thread.CWD != alias {
+		t.Fatalf("archived thread CWD = %q, want the launch alias %q", thread.CWD, alias)
+	}
+
+	// The reference as the user typed it, bound by lexical prefix against the
+	// served CWD. If the alias is not the CWD, the client cannot bind it at all.
+	reference := filepath.Join(alias, "plan.md")
+	if !strings.HasPrefix(reference, thread.CWD+string(filepath.Separator)) {
+		t.Fatalf("reference %q does not lexically prefix the served CWD %q", reference, thread.CWD)
+	}
+	response := docRawRequest(t, web, sessionID, reference)
+	if response.Code != http.StatusOK || response.Body.String() != "launch alias body" {
+		t.Fatalf("aliased reference served %d %q, want the file through the alias", response.Code, response.Body.String())
+	}
+}
+
 // docServeTestServer seeds a past session whose cwd is a real temp directory,
 // then returns the WebServer plus that cwd so a test can drop files into it.
 func docServeTestServer(t *testing.T) (*WebServer, string, string) {

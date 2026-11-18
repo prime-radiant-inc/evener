@@ -987,7 +987,13 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 	// process: see resolveMainRootOutcome. Gated on the directory existing for the
 	// reason step 1 gives: a walk from a path that is gone describes its
 	// surroundings, not the checkout that used to sit there.
-	if directoryExists(wd) {
+	//
+	// It is gated on being absolute for the reason step 1 gives, and that reason
+	// applies to wd even though step 1 skipped it: a relative record names no
+	// checkout of its own. Walking "." resolves against THIS process, so a legacy
+	// row that saved --dir . would take the label of whichever repository the
+	// search happens to be running in.
+	if filepath.IsAbs(wd) && directoryExists(wd) {
 		if root := r.resolveMainRoot(wd); root != "" {
 			return filepath.Base(root)
 		}
@@ -998,7 +1004,14 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 		return name
 	}
 
-	// 4. For any ordinary directory (e.g. /home/jesse/my-notes), return filepath.Base(wd)
+	// 4. For any ordinary directory (e.g. /home/jesse/my-notes), return
+	// filepath.Base(wd). A record that is not absolute names no checkout, which is
+	// the rule steps 1 and 3 already apply to every recorded path; answering "."
+	// here would label the row with a directory name that is not a name at all,
+	// and one that every relative record shares.
+	if !filepath.IsAbs(wd) {
+		return ""
+	}
 	return filepath.Base(wd)
 }
 
@@ -1148,8 +1161,27 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 	// lane, and that must not stop the parent or a sibling from answering.
 	if sameBucket(stateDir, bound) && ownerSessionID != "" {
 		if meta, ok := r.loadOwnedSessionMeta(bound, ownerSessionID); ok {
-			if origin := strings.TrimSpace(meta.EnvInfo.GitOriginURL); origin != "" {
-				found = append(found, projectEvidence{name: repoBasename(origin), rank: evidenceRankOwnerOrigin})
+			ownerOrigin := strings.TrimSpace(meta.EnvInfo.GitOriginURL)
+			// The saved origin is the strongest thing this owner can say, and it is
+			// the only candidate here that needs nothing on disk. It is returned
+			// before anything below is touched: reading the owner's record resolves
+			// its recorded paths, which is a filesystem call on a directory that may
+			// be gone, or on a network mount that has stalled, and returning here also
+			// skips the parent metadata read and the bucket-wide sibling scan. A
+			// read-only search must not wait on a mount to answer a question its own
+			// metadata already answered.
+			//
+			// Nothing admissible can outrank it. Every other owner-derived candidate
+			// ranks below the origin (the restore root and the home directory), and a
+			// parent or sibling ranks below the owner outright. The one rank above it
+			// — the project ID in a managed lane's own path — carries no display name
+			// and never coexists with an owner, because a managed lane records no
+			// owner session.
+			//
+			// An inadmissible origin does not license the shortcut, so the record is
+			// still read for it: it may hold the only evidence this row accepts.
+			if ownerOrigin != "" && admissible("") {
+				return repoBasename(ownerOrigin), true
 			}
 			// The owner's record is read as a record, through the same lookup as
 			// every other record. Its restore root leads because it is the preferred
@@ -1248,23 +1280,31 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 	// repository test applied to every source, so a refused interpretation of one
 	// source leaves the others untouched.
 	//
-	// Among equally strong candidates a verified identifier outranks an inference.
-	// A sibling that records an origin but no project is unknown-project evidence:
-	// it is admissible, and it is the fallback that keeps a pruned lane's label
-	// alive, but it is not a claim about THIS lane. When another candidate at the
-	// same rank positively names the project the lane's path records, that one
-	// answers — otherwise the label depends on which sibling happened to be read
-	// first. Rank still decides across sources, so nothing below the tie changes.
+	// A verified identifier outranks an inference, and that outranking crosses
+	// ranks rather than only breaking ties. A candidate whose project ID is empty is
+	// unknown-project evidence: admissible, and the fallback that keeps a pruned
+	// lane's label alive, but not a claim about THIS lane. One that positively names
+	// the lane's recorded project IS that claim. Comparing them by rank alone lets
+	// the empty one win — an origin recorded in a bucket that later served another
+	// repository outranks a sibling that resolves to the lane's own checkout — and
+	// the answer then depends on which sibling happened to be read first.
+	//
+	// So a positive match is tried first and rank decides only among the candidates
+	// of the same standing. The unverified candidates remain the answer whenever no
+	// positive match exists, which is what keeps origin-only inference working.
 	best := projectEvidence{rank: evidenceRankBasename + 1}
-	bestNamed := false
+	bestMatches := false
 	for _, cand := range found {
 		if cand.name == "" || !admissible(cand.projectID) {
 			continue
 		}
-		named := managedProjectID != "" && cand.projectID == managedProjectID
-		if cand.rank < best.rank || (cand.rank == best.rank && named && !bestNamed) {
+		matches := managedProjectID != "" && cand.projectID == managedProjectID
+		switch {
+		case matches && !bestMatches:
 			best = cand
-			bestNamed = named
+			bestMatches = true
+		case matches == bestMatches && cand.rank < best.rank:
+			best = cand
 		}
 	}
 	if best.name == "" {
@@ -1407,6 +1447,17 @@ func (r *projectNameResolver) siblingEvidenceFor(bucketDir string) []projectEvid
 		// supplies nothing rather than its lane name.
 		if checkout != "" {
 			evidence = append(evidence, projectEvidence{name: filepath.Base(checkout), projectID: recorded, rank: evidenceRankSiblingCheckout})
+		} else if !isLane {
+			// The checkout is gone and the record names an ordinary directory, so
+			// nothing on disk can say what it was. The recording still can: hashing
+			// its absolute path yields the project ID a managed lane would have been
+			// created under. Offering that ID rather than a bare name is what keeps
+			// this the same predicate as every other candidate — the ROW decides
+			// whether the ID is its project, so a sibling from another repository is
+			// still refused, and a lane name never reaches here at all.
+			if gone, projectID := recordedOrdinaryProject(sm); projectID != "" {
+				evidence = append(evidence, projectEvidence{name: filepath.Base(gone), projectID: projectID, rank: evidenceRankSiblingCheckout})
+			}
 		}
 	}
 	if snapshot {
@@ -1449,6 +1500,30 @@ func recordPaths(m schema.SessionMeta) []string {
 		}
 	}
 	return paths
+}
+
+// recordedOrdinaryProject names the project an ordinary recorded path belonged
+// to after the path itself is gone. Nothing on disk can answer then, so the
+// recording does: an absolute path hashes to the same project ID a managed lane
+// for it would have been created under, so offering that ID is a claim the row
+// can check rather than a bare name it must trust.
+//
+// It answers only for a path that is gone. An existing directory's project comes
+// from its Git ancestry, which is projectAt's answer and stays there: reading a
+// surviving checkout here would give a second, weaker way to name the same
+// thing, and the two could disagree.
+func recordedOrdinaryProject(m schema.SessionMeta) (gone, projectID string) {
+	for _, recorded := range recordPaths(m) {
+		if !filepath.IsAbs(recorded) {
+			continue
+		}
+		clean := identifier.ResolveClean(recorded)
+		if directoryExists(clean) {
+			return "", ""
+		}
+		return clean, identifier.ProjectFromCanonicalPath(clean).ID
+	}
+	return "", ""
 }
 
 // projectRecord answers what a session's record names, trying each recorded path

@@ -3,6 +3,7 @@ package agent
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
@@ -77,10 +78,33 @@ func TestEnvInfoFromEnvDoesNotFoldDotDotAcrossSymlink(t *testing.T) {
 	}
 
 	// The kernel resolves link/.. to physical; a lexical clean gives sibling.
-	got := envInfoFromEnv(execenv.NewLocalExecutionEnvironment(link+string(filepath.Separator)+".."), clock.Real()).WorkingDir
+	env := execenv.NewLocalExecutionEnvironment(link + string(filepath.Separator) + "..")
+	got := envInfoFromEnv(env, clock.Real()).WorkingDir
 	if want := canonicalStateDir(physical); got != want {
 		t.Fatalf("envInfoFromEnv(--dir %s/..).WorkingDir = %q, want the physical parent %q", link, got, want)
 	}
+
+	// The snapshot is not the only thing that has to agree: a relative write is
+	// joined to the environment's root and cleaned lexically, so a root that kept
+	// the launch spelling would put the write in sibling while the snapshot named
+	// physical. The assertion is where the bytes land, not what the record says.
+	if _, err := env.WriteFile("landed.txt", "x"); err != nil {
+		t.Fatalf("write relative to the resolved root: %v", err)
+	}
+	landed := filepath.Join(physical, "landed.txt")
+	if _, err := os.Stat(landed); err != nil {
+		t.Fatalf("relative write did not land in the reported checkout %q: %v", landed, err)
+	}
+	if stray := filepath.Join(sibling, "landed.txt"); fileExists(stray) {
+		t.Fatalf("relative write landed in the lexical parent %q instead of the reported checkout %q", stray, landed)
+	}
+}
+
+// fileExists reports whether path exists, for assertions about where a write did
+// NOT land.
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // TestFind_ProjectName_RelativeWorkDirStillNamesItsLane covers a parent launched
@@ -160,5 +184,53 @@ func TestFind_ProjectName_LegacyRelativeRecordIsNoEvidence(t *testing.T) {
 	lane.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", project.ID, "dlg_legacy")
 	if got, want := projectName(lane, bucket), "legacy-repo"; got != want {
 		t.Fatalf("projectName(lane whose only sibling is a legacy relative record) = %q, want that sibling's saved origin %q", got, want)
+	}
+}
+
+// TestEnvInfoKeepsLaunchAliasForClientBinding covers a session launched through an
+// absolute symlink. Project identity must come from the canonical path, but the
+// transcript client binds an absolute file reference by LEXICAL prefix against the
+// session's CWD, so a document written with the launch alias no longer opens once
+// the alias is erased — even though the symlink and the file both still exist.
+// Both facts have to be recorded: identity canonical, binding from the spelling
+// the user typed.
+func TestEnvInfoKeepsLaunchAliasForClientBinding(t *testing.T) {
+	root := t.TempDir()
+	physical := filepath.Join(root, "physical-checkout")
+	if err := os.MkdirAll(physical, 0o755); err != nil {
+		t.Fatalf("mkdir physical: %v", err)
+	}
+	alias := filepath.Join(root, "checkout-alias")
+	if err := os.Symlink(physical, alias); err != nil {
+		t.Skipf("filesystem does not support symlinks: %v", err)
+	}
+
+	info := envInfoFromEnv(execenv.NewLocalExecutionEnvironment(alias), clock.Real())
+
+	// Identity is canonical: it is a hash of this path, and it must match the
+	// project a lane created from the checkout would record.
+	wantWorking := canonicalStateDir(physical)
+	if info.WorkingDir != wantWorking {
+		t.Fatalf("WorkingDir for a session launched through %q = %q, want the canonical %q", alias, info.WorkingDir, wantWorking)
+	}
+
+	// Binding is the alias the user typed, so an absolute reference under it still
+	// lexically prefixes the served CWD.
+	if got, want := info.BindingDir(), alias; got != want {
+		t.Fatalf("BindingDir for a session launched through %q = %q, want the launch alias %q", alias, got, want)
+	}
+	reference := filepath.Join(alias, "notes.md")
+	if !strings.HasPrefix(reference, info.BindingDir()+string(filepath.Separator)) {
+		t.Fatalf("reference %q does not lexically prefix the bound CWD %q", reference, info.BindingDir())
+	}
+
+	// A launch that needed no alias records none, so BindingDir falls back to the
+	// canonical path and no second spelling is invented.
+	plain := envInfoFromEnv(execenv.NewLocalExecutionEnvironment(physical), clock.Real())
+	if plain.LaunchDir != "" {
+		t.Fatalf("LaunchDir for a direct launch = %q, want empty", plain.LaunchDir)
+	}
+	if plain.BindingDir() != plain.WorkingDir {
+		t.Fatalf("BindingDir for a direct launch = %q, want the working directory %q", plain.BindingDir(), plain.WorkingDir)
 	}
 }

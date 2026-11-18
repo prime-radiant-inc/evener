@@ -18,6 +18,7 @@ import (
 // started processes so they can be terminated on cleanup.
 type LocalExecutionEnvironment struct {
 	RootDir     string        // directory that file operations and commands are rooted at
+	LaunchRoot  string        // the root spelling this environment was constructed with, before resolution
 	EnvPolicy   EnvVarPolicy  // which env vars child processes inherit
 	runningPIDs *sync.Map     // pid (int) → commandRuntime; legacy marker entries are tolerated by Cleanup
 	gitRoots    *gitRootCache // active working-tree root per cwd (GitRootOrEmpty)
@@ -241,14 +242,54 @@ func (c *gitRootCache) lookup(cwd string, compute func() (root string, definitiv
 
 // NewLocalExecutionEnvironment returns a LocalExecutionEnvironment rooted at
 // rootDir with a fresh PID tracker.
+//
+// The root is resolved to the directory the kernel would use. Relative file
+// operations join a path to RootDir and clean it LEXICALLY, so a root of
+// "/launch/link/.." writes into /launch even when link points at
+// /checkout/subdir, whose physical parent is /checkout. Anything that reports
+// the working directory — the environment snapshot, the prompt — resolves the
+// same string and would therefore disagree with where the writes land. Resolving
+// once, here, is what keeps the two in agreement: a path the user can see and a
+// path the filesystem uses.
+//
+// The resolution is delegated rather than reimplemented. agent.canonicalStateDir
+// is the one component walk that pops ".." against the resolved parent, and a
+// second copy here would be a second answer the two could disagree about. The
+// callback is injected by the agent package for exactly that reason: execenv
+// cannot import agent, so the owner of the rule supplies it.
 func NewLocalExecutionEnvironment(rootDir string) *LocalExecutionEnvironment {
 	return &LocalExecutionEnvironment{
-		RootDir:        rootDir,
+		RootDir:        resolveLaunchRoot(rootDir),
+		LaunchRoot:     rootDir,
 		runningPIDs:    &sync.Map{},
 		gitRoots:       &gitRootCache{m: map[string]string{}},
 		mainRoots:      &gitRootCache{m: map[string]string{}},
 		fs:             afero.NewOsFs(),
 		ignoreMatchers: newIgnoreMatcherCache(),
+	}
+}
+
+// LaunchSpelling returns the root string this environment was constructed with,
+// before it was resolved. It is what the session was launched with, not
+// necessarily a path the filesystem uses: a launch through an absolute symlink
+// keeps the alias here while RootDir holds the directory the alias resolves to.
+// Callers must decide for themselves whether the spelling is usable (agent's
+// envInfoFromEnv keeps it only when it is an already-clean absolute alias of the
+// resolved root), so this reports the raw input and no policy.
+func (e *LocalExecutionEnvironment) LaunchSpelling() string { return e.LaunchRoot }
+
+// resolveLaunchRoot is the root resolver the environment is built with. It is a
+// variable so the agent package — which owns the canonical path rule — can install
+// it without execenv importing agent. Nil means the platform's own cleaning is
+// all that is available, which is the correct answer for a root that names
+// nothing resolvable.
+var resolveLaunchRoot = func(rootDir string) string { return rootDir }
+
+// SetLaunchRootResolver installs the canonical resolver used for every local
+// environment root. Called once at package init by the agent package.
+func SetLaunchRootResolver(resolve func(string) string) {
+	if resolve != nil {
+		resolveLaunchRoot = resolve
 	}
 }
 
@@ -362,6 +403,7 @@ func (e *LocalExecutionEnvironment) filesystem() afero.Fs {
 func (e *LocalExecutionEnvironment) WithWorkingDirectory(dir string) *LocalExecutionEnvironment {
 	child := &LocalExecutionEnvironment{
 		RootDir:             dir,
+		LaunchRoot:          dir,
 		EnvPolicy:           e.EnvPolicy,
 		runningPIDs:         e.runningPIDs,
 		gitRoots:            &gitRootCache{m: map[string]string{}},
