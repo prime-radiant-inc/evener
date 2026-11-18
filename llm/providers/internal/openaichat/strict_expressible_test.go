@@ -1975,6 +1975,63 @@ func TestConstIsOnlyReadInADialectThatAssertsIt(t *testing.T) {
 	}
 }
 
+// A $schema declaration selects the same dialect however the caller spelled it.
+//
+// The URI reaches this package as a plain string, a json.RawMessage, a *string
+// or a named string type, and every one of those encodes to the same JSON
+// string. Reading only the plain spelling left the pointer and the named type
+// looking undeclared, which selects the modern dialect, and a typeless string
+// const then acquired `type: "string"` under a Draft 4 declaration that says
+// const asserts nothing. The emitted schema then rejects the number the
+// advertised one accepted, so the assertion below is permissive-of-numbers
+// rather than a comparison of the declaration.
+func TestADialectDeclarationSelectsByItsValueNotItsSpelling(t *testing.T) {
+	t.Parallel()
+	const draft4 = "http://json-schema.org/draft-04/schema#"
+	fixed := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           map[string]any{"payload": map[string]any{"const": "fixed"}},
+		"required":             []string{"payload"},
+	}
+	for _, tc := range []struct {
+		name string
+		decl any
+	}{
+		{"plain string", draft4},
+		{"pointer", new(draft4)},
+		{"named string", namedDialect(draft4)},
+		{"raw message", json.RawMessage(`"` + draft4 + `"`)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			schema := copySchema(fixed).(map[string]any)
+			schema["$schema"] = tc.decl
+			emitted := SupplyDerivedTypes(schema)
+			payload := emitted["properties"].(map[string]any)["payload"].(map[string]any)
+			if _, typed := payload["type"]; typed {
+				t.Fatalf("emitted %v under the %s declaration: const asserts nothing before draft 6, so stating "+
+					"a type narrows a node the advertised schema leaves open to every value",
+					payload["type"], tc.name)
+			}
+			// The advertised schema accepts a number here because `const` is an
+			// annotation under this dialect and the node states no type. The
+			// emitted schema has to keep accepting it.
+			if !schemaAccepts(t, emitted, map[string]any{"payload": 7}) {
+				t.Fatalf("the emitted schema rejects the number the advertised Draft 4 schema accepts under the "+
+					"%s declaration", tc.name)
+			}
+			if !schemaAccepts(t, emitted, map[string]any{"payload": "fixed"}) {
+				t.Fatalf("the emitted schema rejects the declared value under the %s declaration", tc.name)
+			}
+		})
+	}
+}
+
+// namedDialect is a string type with its own name, which is how a caller can
+// carry a declaration without it being a Go string of the plain kind.
+type namedDialect string
+
 // enum asserts in every dialect, so it is read regardless of the declaration.
 // This is the control for the const test: the dialect question is about the
 // keyword, not about the schema.

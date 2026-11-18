@@ -119,8 +119,7 @@ func estimateInputTokens(t targetInfo, req Request) InputTokenCount {
 //
 // The deriver is handed the definitions the builder is handed, nil Parameters
 // included, and answers with the list the wire carries. That answer is the
-// price: the emitted list is measured and the measurement is assigned, whatever
-// the incoming count described.
+// price: the emitted list is measured and the measurement is assigned.
 //
 // Assigning the measurement rather than adjusting the incoming count is what
 // makes this idempotent. A count measured over the substituted form is already
@@ -132,6 +131,15 @@ func estimateInputTokens(t targetInfo, req Request) InputTokenCount {
 // of a difference is a count larger than the list either of them sends, and an
 // input cap between the two refuses a request that fits. Measuring once and
 // assigning cannot compound.
+//
+// A count produced for one target is not a count for another. The same request
+// can be priced against a strict Responses row and then reused on a non-strict
+// Chat route, and the second route's decision may leave the definitions
+// unchanged — the case a deriver reports as "nothing to change" and which would
+// then leave the first route's charge standing for a schema this one never
+// emits. So the target and the unprojected baseline are recorded with the count,
+// and a price for a different target starts from the baseline rather than from
+// another target's answer.
 func priceEmittedToolSchemas(req Request, res registry.Resolved) Request {
 	if len(req.Tools) == 0 {
 		return req
@@ -144,6 +152,15 @@ func priceEmittedToolSchemas(req Request, res registry.Resolved) Request {
 	if !ok {
 		return req
 	}
+	target := emittedToolTargetFor(res)
+	// Retargeting starts from the list, not from the previous route's emission.
+	// The baseline is the count the serialized list measures on its own, so
+	// restoring it is exact rather than approximate.
+	if req.emittedToolTarget != (emittedToolTargetKey{}) && req.emittedToolTarget != target {
+		req.ToolsJSONBytes = req.emittedToolBaseline
+		req.emittedToolTarget = emittedToolTargetKey{}
+		req.emittedToolBaseline = 0
+	}
 	emitted, changed := deriver.EmitToolSchemas(req.Tools, res, req.PreparedTools())
 	if !changed {
 		return req
@@ -154,7 +171,28 @@ func priceEmittedToolSchemas(req Request, res registry.Resolved) Request {
 	// one" no longer holds and is cleared rather than left to authorize a reuse
 	// that would reprice from the wrong baseline.
 	req.preparedToolList = toolListIdentity{}
+	req.emittedToolTarget = target
+	req.emittedToolBaseline = ToolsJSONBytes(req.Tools)
 	return req
+}
+
+// emittedToolTargetKey names the target whose schema decision a count was
+// produced by. Only the parts a deriver reads belong here: the protocol that
+// owns the builder and the capability that decides whether it projects at all.
+// A row that differs only in fields no builder reads prices identically and is
+// the same target.
+type emittedToolTargetKey struct {
+	protocol    string
+	strictTools bool
+}
+
+// emittedToolTargetFor returns the key a count produced for res is recorded
+// under.
+func emittedToolTargetFor(res registry.Resolved) emittedToolTargetKey {
+	return emittedToolTargetKey{
+		protocol:    res.Protocol,
+		strictTools: registry.BoolValue(res.Caps.StrictTools),
+	}
 }
 
 // PriceToolSchemas returns req with its tool count describing the list res's
@@ -284,6 +322,17 @@ func (c *Client) CountInputTokens(ctx context.Context, req Request) (InputTokenC
 	if t.resolved {
 		req = ShapeRequest(req, t.res)
 	}
+	// An override receives the open empty schema where a prepared request left a
+	// nil, because Complete and Stream restore it at that boundary before
+	// dispatching. Counting the request as it arrived would hand an override's
+	// exact counter a nil Parameters for a tool it will actually be given a
+	// schema for, so the counter would measure a different request than the one
+	// sent. The rewrite is the same one the dispatch boundary applies and keeps
+	// its own rule: a direct call never went through preparation and keeps its
+	// nil.
+	if t.override != nil {
+		req = withOpenParameterlessSchemas(req)
+	}
 	localEstimate := func() InputTokenCount {
 		// The local reading is the fallback for a route with no exact counter,
 		// which is exactly the caller who sizes a request from it and then
@@ -293,7 +342,7 @@ func (c *Client) CountInputTokens(ctx context.Context, req Request) (InputTokenC
 		// request to that number meets the shortfall as a context-budget
 		// rejection from Complete. The emitted list is the one to price, and
 		// only a protocol route has one: an override marshals the definition it
-		// was handed, so its received list is its wire list.
+		// was handed, so the list restored above is its wire list.
 		priced := req
 		if t.override == nil && t.resolved {
 			priced = priceEmittedToolSchemas(priced, t.res)

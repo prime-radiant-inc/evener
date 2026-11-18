@@ -505,6 +505,22 @@ type Request struct {
 	// count describes, so a replaced list never matches and is always repriced.
 	preparedToolList toolListIdentity
 
+	// emittedToolTarget names the target whose schema decision produced
+	// ToolsJSONBytes, and emittedToolBaseline is the count the list measures
+	// without that decision applied. Both are set together with the emitted
+	// count and only by priceEmittedToolSchemas.
+	//
+	// A request can be priced for one target and then dispatched to another: a
+	// caller may build a request, price it against a strict Responses row, and
+	// reuse it on a non-strict Chat route. The second target's builder may leave
+	// the definitions unchanged, and an unchanged decision is exactly the case
+	// that would otherwise keep the first target's charge — the count is already
+	// set, so a deriver reporting no change leaves a price for a schema this
+	// route never emits. Recording the target and the baseline is what lets the
+	// next price start from the list rather than from another route's answer.
+	emittedToolTarget   emittedToolTargetKey
+	emittedToolBaseline int
+
 	AdapterTimeout *AdapterTimeout `json:"adapter_timeout,omitempty"`
 }
 

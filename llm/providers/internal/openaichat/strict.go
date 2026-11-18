@@ -72,23 +72,33 @@ func dialectOf(schema map[string]any) schemaDialect {
 	return dialectConst
 }
 
-// dialectURI returns the text of a $schema declaration in either spelling it
-// reaches this package: a Go string, or the raw JSON a caller supplied. A raw
-// value that does not decode to a string yields "", which dialectOf reads as a
-// declaration it cannot place.
+// dialectURI returns the text of a $schema declaration as the value it will be
+// emitted as, whatever Go representation carries it.
+//
+// The declaration reaches this package as a plain string, a json.RawMessage, a
+// *string or a named string type, and all of those are the same URI once
+// encoded. Reading only the first two made the emitted schema depend on how the
+// caller happened to spell the value rather than on the value itself: a Draft 4
+// URI through a pointer read as "no declaration", the walk assumed a modern
+// dialect, and a typeless string const acquired a type under a schema that says
+// const asserts nothing. The answer a caller's encoding gives is therefore the
+// answer this reads, and a value that does not encode to a JSON string yields
+// "", which dialectOf reads as a declaration it cannot place.
 func dialectURI(raw any) string {
-	switch x := raw.(type) {
-	case string:
-		return x
-	case json.RawMessage:
-		var decoded string
-		if err := json.Unmarshal(x, &decoded); err != nil {
-			return ""
-		}
-		return decoded
-	default:
+	if s, ok := raw.(string); ok {
+		// The overwhelming majority of declarations are this spelling, and the
+		// round trip would allocate for each of them.
+		return s
+	}
+	encoded, err := json.Marshal(raw)
+	if err != nil {
 		return ""
 	}
+	var decoded string
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		return ""
+	}
+	return decoded
 }
 
 // StrictifyJSONSchema returns a deep copy of a tool parameter schema

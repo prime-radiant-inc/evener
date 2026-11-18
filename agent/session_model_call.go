@@ -329,7 +329,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	s.setRoundFallbackSource(sys, untrimmedHistory)
 	req = s.attachFullHistoryInputEstimate(req, historyTurns, len(sys))
 	var budget llm.TokenBudget
-	if req, budget, err = budgetModelDispatchRequestWithBudget(profile, req); err != nil {
+	if req, budget, err = s.budgetModelDispatchRequestForSession(profile, req); err != nil {
 		return profile, sys, history, req, nil, reasoningEffort, err
 	}
 	initialBudget := budget
@@ -345,7 +345,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// the inline deliveries this call actually presents.
 	var deltaTurns []schema.Turn
 	req, fullHistory, deltaTurns = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, presentedTurns, true, heldDropped)
-	if req, budget, err = budgetModelDispatchRequestWithBudget(profile, req); err != nil {
+	if req, budget, err = s.budgetModelDispatchRequestForSession(profile, req); err != nil {
 		return profile, sys, history, req, fullHistory, reasoningEffort, err
 	}
 	// Admission runs before and after continuation planning because the latter
@@ -394,13 +394,13 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort, toolDefsJSONBytes)
 		s.setRoundFallbackSource(sys, untrimmedHistory)
 		req = s.attachFullHistoryInputEstimate(req, historyTurns, len(sys))
-		budgetedReq, budgeted, budgetErr := budgetModelDispatchRequestWithBudget(profile, req)
+		budgetedReq, budgeted, budgetErr := s.budgetModelDispatchRequestForSession(profile, req)
 		if budgetErr != nil {
 			return true, budgetErr
 		}
 		req, budget = budgetedReq, budgeted
 		req, fullHistory, deltaTurns = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, historyTurns, true, heldDropped)
-		budgetedReq, budgeted, budgetErr = budgetModelDispatchRequestWithBudget(profile, req)
+		budgetedReq, budgeted, budgetErr = s.budgetModelDispatchRequestForSession(profile, req)
 		if budgetErr != nil {
 			return true, budgetErr
 		}
@@ -1657,7 +1657,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		s.disableResponsesContinuationForRequest(req, true)
 		retryReq := responsesContinuationFullHistoryFallbackRequest(profile.Resolved(), req, fullHistory)
 		var budget llm.TokenBudget
-		retryReq, budget, budgetErr := budgetModelDispatchRequestWithBudget(profile, retryReq)
+		retryReq, budget, budgetErr := s.budgetModelDispatchRequestForSession(profile, retryReq)
 		if budgetErr == nil {
 			s.warnOutputReduction(profile, budget)
 		}
@@ -1749,7 +1749,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			fbReq.ProviderOptions = fbProfile.ProviderOptions()
 			s.applyModelRequestMetadata(&fbReq)
 			var budget llm.TokenBudget
-			fbReq, budget, budgetErr := budgetModelDispatchRequestWithBudget(fbProfile, fbReq)
+			fbReq, budget, budgetErr := s.budgetModelDispatchRequestForSession(fbProfile, fbReq)
 			if budgetErr == nil {
 				s.warnOutputReduction(fbProfile, budget)
 			}
@@ -1899,6 +1899,23 @@ func responsesContinuationModelFallbackRequest(res registry.Resolved, req llm.Re
 func budgetModelDispatchRequest(profile *provider.Profile, req llm.Request) (llm.Request, error) {
 	budgeted, _, err := budgetModelDispatchRequestWithBudget(profile, req)
 	return budgeted, err
+}
+
+// budgetModelDispatchRequestForSession shapes and admits req for a session's
+// dispatch, pricing the tool list the serving route will actually emit.
+//
+// The session budgets the request to decide its output allocation, and that
+// allocation drives the warning a user sees. Budgeting the advertised catalog
+// answers with fewer input tokens than the dispatch carries whenever the
+// route's builder adds a type or a schema, so the admitted output comes out
+// larger here than the client later admits, and the warning either never fires
+// or reports an allocation the wire never had. A route an override serves is
+// left alone: the override marshals the definition it was handed.
+func (s *Session) budgetModelDispatchRequestForSession(profile *provider.Profile, req llm.Request) (llm.Request, llm.TokenBudget, error) {
+	if profile != nil && !s.servesAnOverride(profile) {
+		req = llm.PriceToolSchemas(req, profile.Resolved())
+	}
+	return budgetModelDispatchRequestWithBudget(profile, req)
 }
 
 func budgetModelDispatchRequestWithBudget(profile *provider.Profile, req llm.Request) (llm.Request, llm.TokenBudget, error) {

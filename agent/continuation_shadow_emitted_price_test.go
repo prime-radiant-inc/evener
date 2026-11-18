@@ -7,6 +7,57 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
+// The budget a session uses to decide its warning has to price the tool list the
+// route dispatches.
+//
+// A built-in builder states a type on a closed typeless value set, and those
+// bytes occupy context. Budgeting the advertised catalog answers with fewer
+// input tokens, so the admitted output comes out larger here than the client
+// later admits: the user is warned about an allocation bigger than the one
+// dispatched, or not warned at all when the larger reading hides the clamp.
+func TestTheSessionBudgetPricesTheEmittedToolSchema(t *testing.T) {
+	t.Parallel()
+	// A Responses row that requires explicit types, which is the route whose
+	// builder adds them.
+	row := registry.Resolved{Instance: "budget-emitted", ModelID: "test", WireID: "test"}
+	row.Protocol = registry.ProtocolOpenAIResponses
+	row.Caps.StrictTools = new(false)
+
+	defs := []llm.ToolDefinition{{
+		Name: "set_mode",
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"payload": map[string]any{"const": "fixed"},
+			},
+			"required": []string{"payload"},
+		},
+	}}
+	req := llm.Request{Messages: []llm.Message{llm.User("hello")}, Tools: defs}
+
+	priced := llm.PriceToolSchemas(req, row)
+	if priced.ToolsJSONBytes <= llm.ToolsJSONBytes(defs) {
+		t.Fatalf("fixture does not distinguish the prices: advertised=%d priced=%d",
+			llm.ToolsJSONBytes(defs), priced.ToolsJSONBytes)
+	}
+	// The budget function under test is the session's, so build a session on
+	// this row and compare its reading against the two prices.
+	profile := testOpenAICompatProfile("budget-emitted", "test", 0).WithResolved(row)
+	sess := newSession(t, withProfile(profile), withDir(t.TempDir()), withConfig(SessionConfig{}))
+	defer sess.Close()
+
+	budgeted, _, err := sess.budgetModelDispatchRequestForSession(profile, req)
+	if err != nil {
+		t.Fatalf("budgetModelDispatchRequestForSession: %v", err)
+	}
+	if budgeted.ToolsJSONBytes != priced.ToolsJSONBytes {
+		t.Fatalf("session budget priced the catalog at %d, want the emitted %d: the warning it drives would "+
+			"describe an allocation the dispatch never had",
+			budgeted.ToolsJSONBytes, priced.ToolsJSONBytes)
+	}
+}
+
 // The shadow is priced through a protocol's deriver only when a protocol serves
 // the request.
 //

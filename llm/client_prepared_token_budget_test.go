@@ -59,6 +59,30 @@ func (a *preparedBudgetAdapter) callCount() int {
 	return a.calls
 }
 
+// countingAdapter is an override whose exact counter records the request it was
+// handed, so a test can compare that request against the one Complete
+// dispatches to the same adapter.
+type countingAdapter struct {
+	preparedBudgetAdapter
+	mu         sync.Mutex
+	counted    []Request
+	dispatches []Request
+}
+
+func (a *countingAdapter) CountInputTokens(_ context.Context, req Request) (InputTokenCount, error) {
+	a.mu.Lock()
+	a.counted = append(a.counted, req)
+	a.mu.Unlock()
+	return InputTokenCount{Tokens: 1, Exact: true, Source: TokenCountSourceProvider}, nil
+}
+
+func (a *countingAdapter) Complete(_ context.Context, req Request) (Response, error) {
+	a.mu.Lock()
+	a.dispatches = append(a.dispatches, req)
+	a.mu.Unlock()
+	return Response{Message: Assistant("ok")}, nil
+}
+
 // preparedBudgetClient builds a client whose instance carries the given
 // max-input cap, registers adapter, and returns the row the client dispatches
 // to.
@@ -896,6 +920,91 @@ func TestPrePricingAPreparedRequestIsIdempotent(t *testing.T) {
 	if once.ToolsJSONBytes == prepared.ToolsJSONBytes {
 		t.Fatalf("prepriced count = %d, unchanged from the advertised count: this route's builder rewrites "+
 			"the catalog, so pricing it must move the count", once.ToolsJSONBytes)
+	}
+}
+
+// An override's exact counter has to receive the request the adapter will
+// dispatch, not the one the caller passed in.
+//
+// Complete and Stream restore the open empty schema for a parameterless tool at
+// the override boundary, so the adapter is handed a schema where the request
+// carried a nil. Counting before that boundary hands the counter a nil, and the
+// count then measures a different request than the one sent — a parameterless
+// tool that occupies context on the wire and nothing in the estimate.
+func TestAnOverrideCounterSeesTheRequestThatDispatches(t *testing.T) {
+	t.Parallel()
+	adapter := &countingAdapter{}
+	c, _ := preparedBudgetClient(t, adapter, 1_000_000)
+	defs := []ToolDefinition{{Name: "parameterless"}}
+	req := preparedRequest(defs)
+
+	if _, err := c.CountInputTokens(context.Background(), req); err != nil {
+		t.Fatalf("CountInputTokens: %v", err)
+	}
+	if _, err := c.Complete(context.Background(), req); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if len(adapter.counted) != 1 || len(adapter.dispatches) != 1 {
+		t.Fatalf("counter ran %d time(s) and dispatch %d time(s), want one of each",
+			len(adapter.counted), len(adapter.dispatches))
+	}
+	counted, dispatched := adapter.counted[0], adapter.dispatches[0]
+	if len(counted.Tools) != 1 || len(dispatched.Tools) != 1 {
+		t.Fatalf("fixture carries %d and %d tools, want one each", len(counted.Tools), len(dispatched.Tools))
+	}
+	if (counted.Tools[0].Parameters == nil) != (dispatched.Tools[0].Parameters == nil) {
+		t.Fatalf("counter saw parameters present=%v, dispatch carried present=%v: the count measures a "+
+			"different request than the one the adapter is given",
+			counted.Tools[0].Parameters != nil, dispatched.Tools[0].Parameters != nil)
+	}
+	if !reflect.DeepEqual(counted.Tools[0].Parameters, dispatched.Tools[0].Parameters) {
+		t.Fatalf("counter saw %v, dispatch carried %v",
+			counted.Tools[0].Parameters, dispatched.Tools[0].Parameters)
+	}
+}
+
+// A count produced for one target is not a count for another.
+//
+// A caller may build a request, price it against a strict Responses row, and
+// then reuse it on a non-strict Chat route. Chat's deriver reports no change
+// against the original list — it omits the parameters key for a parameterless
+// tool — so a rule that keeps the incoming count because "nothing changed"
+// retains a charge for a closed Responses schema this route never emits. The
+// price has to fall back to the list's own measurement before the new decision
+// is applied, and the unchanged-decision branch is exactly where that has to
+// happen.
+func TestARetargetedRequestRecoversTheBaselinePrice(t *testing.T) {
+	t.Parallel()
+	defs := []ToolDefinition{{Name: "parameterless"}}
+	req := Request{
+		Provider: "prepared-budget",
+		Model:    "model",
+		Messages: []Message{User("x")},
+		Tools:    defs,
+	}
+	baseline := ToolsJSONBytes(defs)
+	req.ToolsJSONBytes = baseline
+
+	// A strict Responses row prices this catalog with the closed empty schema.
+	strictRow := registry.Resolved{Instance: "prepared-budget", ModelID: "model", WireID: "model"}
+	strictRow.Protocol = registry.ProtocolOpenAIResponses
+	strictRow.Caps.StrictTools = new(true)
+	forResponses := priceEmittedToolSchemas(req, strictRow)
+	if forResponses.ToolsJSONBytes == baseline {
+		t.Fatalf("fixture does not distinguish the targets: the Responses projection left the count at the "+
+			"baseline %d, so retargeting cannot show a difference", baseline)
+	}
+
+	// The same request reused on a non-strict Chat route: that builder omits the
+	// key, so the correct price is the list as written.
+	chatRow := registry.Resolved{Instance: "prepared-budget", ModelID: "model", WireID: "model"}
+	chatRow.Protocol = registry.ProtocolOpenAIChat
+	chatRow.Caps.StrictTools = new(false)
+	forChat := priceEmittedToolSchemas(forResponses, chatRow)
+	if forChat.ToolsJSONBytes != baseline {
+		t.Fatalf("retargeted count = %d, want the baseline %d: the Chat builder omits the parameters key for "+
+			"this tool, so keeping the Responses charge prices a schema this route never emits",
+			forChat.ToolsJSONBytes, baseline)
 	}
 }
 
