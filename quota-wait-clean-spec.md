@@ -43,6 +43,14 @@ first wait or the second.
   consumed six rounds of the previous implementation. Older-daemon frames
   (no `endedTurnId`) preserve the running turn from the snapshot; they
   never infer ownership.
+  **Production path:** the root server suppresses the event projector's
+  execution-end status and can publish settlement through finishProcessing,
+  which clears the active turn id before building its fallback frame — so
+  Stage 0 must capture the ended turn's id BEFORE the settlement path
+  clears it and carry it through every root and delegate terminal
+  publisher, or a real root Stop arrives looking like an older-daemon
+  frame and Stage 2 ignores it. Stage 2 is gated on observing the correct
+  id in emitted Stop frames.
 - **Older-daemon fallback:** a frame with no stamp (a daemon that predates the
   field) reconciles by turn ownership only, never by clock, and may not clear
   or overwrite a stamped wait's deadline (see Legacy below).
@@ -147,12 +155,13 @@ buffer and the post-cut tail, and the two sides are reconciled differently:
   history and queue-revision checks apply to them exactly as to live frames,
   and a frame the repository already applied once is not applied again.
 - **Pre-cut reconciliation is enrichment, not establishment.** A pre-cut
-  frame may fill what the adopted snapshot lacks (an equal-stamp start's
-  metadata; a terminal status against a snapshot still showing the turn
-  running — the frame names no turn, so it may only *end* the turn the
-  snapshot itself names, never a different one). It may not contradict what
-  the snapshot reflects: a snapshot showing no running turn already reflects
-  any Stop; a snapshot naming turn B already reflects the A→B replacement.
+  frame may fill what the adopted snapshot lacks: an equal-stamp start's
+  metadata, or a terminal status whose `endedTurnId` matches the turn the
+  snapshot still shows running (the frame supplies its own ownership; a
+  missing or different id preserves the snapshot's running turn). It may
+  not contradict what the snapshot reflects: a snapshot showing no running
+  turn already reflects any Stop; a snapshot naming turn B already reflects
+  the A→B replacement.
 - **A refused read scopes only its own quota reconciliation.** When the
    repository refuses the read (versioned history said it was stale), the
    pre-cut buffer's *quota transitions* — which were ordered against that
@@ -202,6 +211,9 @@ the Stop retires nothing.
   ownership; nothing is inferred. An older-daemon Stop with no
   `endedTurnId` preserves the running turn from the snapshot — scenarios
   10 and 19 differ exactly by whether the frame names the snapshot's turn.
+  Post-cut Stops apply in delivery order regardless: a live older-daemon
+  Stop still clears the wait through the ordinary reducer rules — only the
+  PRE-CUT reconciliation refuses to infer ownership.
 - **Legacy unstamped frames** reconcile by turn ownership: an unstamped wake
   owning the held legacy wait's turn clears that wait — deadline and chip
   together, including the chip-only case. An unstamped frame may never clear
@@ -266,7 +278,9 @@ all of them. Tests assert behavior (levels, computed values, class presence)
     no chip, no stall restamp.
 16. A delegate pane reloaded mid-wait during a slot hold past reset shows the
     pending wait (not silence), and clears it when the retry begins; the
-    sidebar row agrees at both moments.
+    sidebar row agrees once its navigation summary refreshes (the row is a
+    read-sampled surface; with no pane open it trails by one refresh, per
+    the surface-authority rule — agreement is eventual, not immediate).
 17. An early wake clears the open pane immediately; the row with no pane
     trails until its next navigation refresh, then agrees.
 18. An idle snapshot followed by a genuine post-cut wait start publishes the
