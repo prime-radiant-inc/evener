@@ -1039,7 +1039,7 @@ func transcriptExpansionJSONL(data transcriptData, pin int) ([]byte, error) {
 	if pin < 0 || pin >= len(data.Entries) {
 		return nil, fmt.Errorf("invalid_request: expand_turn %d does not identify a transcript turn", pin)
 	}
-	if !data.Entries[pin].Turn.Kind.PublicTranscript() {
+	if !data.Entries[pin].Turn.InPublicTranscript() {
 		return nil, fmt.Errorf("invalid_request: expand_turn %d does not identify a public transcript turn", pin)
 	}
 	if len(data.EntryLines) != len(data.Entries) {
@@ -1098,10 +1098,10 @@ func publicTranscriptData(data transcriptData) transcriptData {
 		entry.Seq = len(public.Entries)
 		public.Entries = append(public.Entries, entry)
 		if retainLines {
-			line, include, err := publicTranscriptLine(data.EntryLines[i], entry.Seq)
+			line, include, err := publicTranscriptLine(data.EntryLines[i], entry.Seq, entry.Turn)
 			if err != nil || !include {
 				// The retained line was strictly decoded into entry above, and its
-				// kind already passed the same inclusion check.
+				// turn already passed the same inclusion check.
 				panic("validated transcript entry could not be projected publicly")
 			}
 			public.EntryLines = append(public.EntryLines, line)
@@ -1110,33 +1110,34 @@ func publicTranscriptData(data transcriptData) transcriptData {
 	return public
 }
 
-func publicTranscriptLine(line []byte, seq int) ([]byte, bool, error) {
+// publicTranscriptLine projects one retained entry line for the public view,
+// renumbering seq to the public position seq and redacting the private
+// correlation keys.
+//
+// turn is the same line as the caller's strict decode produced, and it alone
+// decides whether the entry holds a public position. Reading that decision off
+// the raw bytes would be a second definition of it: encoding/json matches field
+// names case-insensitively, so a line carrying both original_ordinal and
+// ORIGINAL_ORDINAL decodes to one answer while a map lookup of the exact key
+// gives another, and the range a caller counts would disagree with the lines
+// this returns. The raw maps are used only for what needs the bytes:
+// redaction, seq rewriting, and keeping every other field as written.
+func publicTranscriptLine(line []byte, seq int, turn schema.Turn) ([]byte, bool, error) {
 	var entry map[string]json.RawMessage
 	if err := json.Unmarshal(line, &entry); err != nil {
 		return nil, false, fmt.Errorf("decode public transcript entry: %w", err)
 	}
-	var turn map[string]json.RawMessage
-	if err := json.Unmarshal(entry["turn"], &turn); err != nil {
+	var rawTurn map[string]json.RawMessage
+	if err := json.Unmarshal(entry["turn"], &rawTurn); err != nil {
 		return nil, false, fmt.Errorf("decode public transcript turn: %w", err)
 	}
-	var kind schema.TurnKind
-	if err := json.Unmarshal(turn["kind"], &kind); err != nil {
-		return nil, false, fmt.Errorf("decode public transcript turn kind: %w", err)
-	}
-	if !kind.PublicTranscript() {
+	if !turn.InPublicTranscript() {
 		return nil, false, nil
 	}
-	if raw, ok := turn["original_ordinal"]; ok && string(raw) != "null" {
-		// A fold copy repeats an entry the file already holds before this one,
-		// so it takes no public position: the caller must not advance its
-		// sequence for it, or the range it selects and the lines it emits
-		// would count different entries.
-		return nil, false, nil
-	}
-	delete(turn, "attention_id")
-	delete(turn, "attention_resolution")
-	delete(turn, "delegate_delivery_commits")
-	encodedTurn, err := json.Marshal(turn)
+	delete(rawTurn, "attention_id")
+	delete(rawTurn, "attention_resolution")
+	delete(rawTurn, "delegate_delivery_commits")
+	encodedTurn, err := json.Marshal(rawTurn)
 	if err != nil {
 		return nil, false, fmt.Errorf("encode public transcript turn: %w", err)
 	}

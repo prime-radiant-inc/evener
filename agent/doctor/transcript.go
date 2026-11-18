@@ -49,8 +49,9 @@ func loadTranscriptContext(ctx context.Context, path string) (transcriptDoc, err
 // loadRecordedTranscriptContext loads a session's recorded turns, omitting
 // copies a compaction fold re-appended after its markers (OriginalOrdinal !=
 // nil) whose originals already appear earlier in the transcript. Callers that
-// need physical or read_transcript entry coordinates (Transcript, ScanTurnIDs)
-// use loadTranscriptContext instead.
+// need physical entry coordinates (ScanTurnIDs) use loadTranscriptContext
+// instead; Transcript asks this loader so its numbers are the public ones
+// read_transcript reports.
 func loadRecordedTranscriptContext(ctx context.Context, path string) (transcriptDoc, error) {
 	return scanTranscriptContext(ctx, path, true)
 }

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -45,7 +46,11 @@ func TestPublicTranscriptOmitsTranscriptOnlyEntries(t *testing.T) {
 		t.Fatal("public transcript data differs")
 	}
 	sampleLine := transcriptDataOf(t, interleaved[:1]).EntryLines[0]
-	if _, include, err := publicTranscriptLine(sampleLine, 0); err != nil || include {
+	decoded, err := transcript.DecodeEntry(sampleLine)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, include, err := publicTranscriptLine(sampleLine, 0, decoded.Turn); err != nil || include {
 		t.Fatalf("publicTranscriptLine of a transcript-only entry: include=%v err=%v", include, err)
 	}
 	if _, err := transcriptExpansionJSONL(transcriptDataOf(t, interleaved), 0); err == nil {
@@ -97,6 +102,85 @@ func TestPublicTranscriptOmitsFoldCopies(t *testing.T) {
 	}
 	if got := strings.Count(page.(readMarkdownEnvelope).Content, text); got != 1 {
 		t.Fatalf("expanded block shows the text %d times, want exactly 1", got)
+	}
+}
+
+// A line can carry the same field twice in different cases, and encoding/json
+// matches field names case-insensitively: the last occurrence wins, so
+// {"original_ordinal":0,"ORIGINAL_ORDINAL":null} decodes to a public turn. A
+// projection that asked the raw bytes for the exact key instead would call the
+// same entry a copy, and then the range it counted and the lines it emitted
+// would disagree — the range omits the newest turn while the copy it should
+// have dropped still renders.
+func TestPublicTranscriptDecidesInclusionFromDecodedTurn(t *testing.T) {
+	t.Parallel()
+	const first = "the earlier message"
+	const last = "the message after the fold"
+	root := newBucket(t)
+	id := "02wMz5Txv1C3Hut0M8GCeB"
+	writeFindTranscript(t, root, id, time.Time{},
+		schema.NewTurn(schema.TurnUserInput, llm.User(first)),
+		schema.NewTurn(schema.TurnCheckpoint, llm.User("[CONTEXT CHECKPOINT]\nfolded\n[END CHECKPOINT]")),
+		schema.NewTurn(schema.TurnUserInput, llm.User(last)),
+	)
+	path := filepath.Clean(transcriptPath(root, id))
+
+	// Rewrite the newest entry's turn to carry both spellings: the exact key
+	// says "copy", the field the decoder actually reads says "public".
+	file, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSuffix(string(file), "\n"), "\n")
+	entryLine := lines[len(lines)-1]
+	var entry map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(entryLine), &entry); err != nil {
+		t.Fatal(err)
+	}
+	var turn map[string]json.RawMessage
+	if err := json.Unmarshal(entry["turn"], &turn); err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(turn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dup := strings.TrimSuffix(string(encoded), "}") + `,"original_ordinal":0,"ORIGINAL_ORDINAL":null}`
+	entry["turn"] = json.RawMessage(dup)
+	rewritten, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines[len(lines)-1] = string(rewritten)
+	if err := os.WriteFile(path, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	// The strict decoder is the authority, and it reads the entry as public.
+	decoded, err := transcript.DecodeEntry([]byte(lines[len(lines)-1]))
+	if err != nil {
+		t.Fatalf("decode rewritten entry: %v", err)
+	}
+	if !decoded.Turn.InPublicTranscript() {
+		t.Fatalf("rewritten entry does not decode as a public turn, so this fixture cannot test the disagreement")
+	}
+
+	value, err := readMarkdownPage(context.Background(), path, root, "", schema.SessionMeta{}, "last:1", nil, 0, 0)
+	if err != nil {
+		t.Fatalf("markdown last:1: %v", err)
+	}
+	markdown := value.(readMarkdownEnvelope).Content
+	raw, err := readRaw(context.Background(), path, root, "", "last:1")
+	if err != nil {
+		t.Fatalf("jsonl last:1: %v", err)
+	}
+	jsonl := raw.(readRawEnvelope).Content
+
+	if !strings.Contains(markdown, last) || !strings.Contains(jsonl, last) {
+		t.Fatalf("last:1 dropped the newest message in a format: markdown=%v jsonl=%v", strings.Contains(markdown, last), strings.Contains(jsonl, last))
+	}
+	if strings.Contains(markdown, first) || strings.Contains(jsonl, first) {
+		t.Fatalf("last:1 rendered the earlier message in a format: markdown=%v jsonl=%v", strings.Contains(markdown, first), strings.Contains(jsonl, first))
 	}
 }
 
