@@ -146,7 +146,7 @@ function fakeControls(calls: string[], over: Partial<ControlsState> = {}) {
 		catalog: CATALOG,
 		loadingModels: false,
 		modelError: null,
-		unreadModel: null,
+		unread: { model: null, vision: null },
 		...over,
 	};
 	return {
@@ -630,7 +630,7 @@ describe("the vision model (ruling 17)", () => {
 	// sheet without writing anything, leaving vision on.
 	it("writes the choice a stale projection already shows as selected", async () => {
 		const { calls } = provide(conversation({ visionModel: "off" }), {
-			unreadModel: { setting: "vision", value: "lunaroute/glm-5.3-vision" },
+			unread: { model: null, vision: "lunaroute/glm-5.3-vision" },
 		});
 		const tree = sheet("vision");
 		act(() => pressable(tree, "Off")?.props.onPress());
@@ -643,7 +643,7 @@ describe("the vision model (ruling 17)", () => {
 	// must not turn every tap on a selected row into a redundant write.
 	it("keeps the shortcut when the projection shows the value the hub holds", async () => {
 		const { calls } = provide(conversation({ visionModel: "off" }), {
-			unreadModel: { setting: "vision", value: "off" },
+			unread: { model: null, vision: "off" },
 		});
 		const tree = sheet("vision");
 		act(() => pressable(tree, "Off")?.props.onPress());
@@ -654,7 +654,7 @@ describe("the vision model (ruling 17)", () => {
 	// says nothing about the other's tick.
 	it("keeps the shortcut for the other setting's row", async () => {
 		const { calls } = provide(conversation({ modelProvider: "anthropic/claude-sonnet-5" }), {
-			unreadModel: { setting: "vision", value: "off" },
+			unread: { model: null, vision: "off" },
 		});
 		const tree = sheet();
 		act(() => pressable(tree, "Claude Sonnet 5")?.props.onPress());

@@ -19,10 +19,20 @@ type Operation =
 	| "setReasoningEffort"
 	| "setVisionModel"
 	| "changeModel";
-/** The setting a value belongs to, and the value the hub acknowledged. */
-export interface UnreadModel {
-	setting: "model" | "vision";
-	value: string;
+type Setting = "model" | "vision";
+
+/** The value each setting was last written for and no publication has
+ * established yet.
+ *
+ * One entry per setting, because the two are independent facts: a model pick
+ * says nothing about whether the vision value the hub holds is the one on
+ * screen, and a single record would have to throw one away to keep the other.
+ * Null means nothing is outstanding for that setting, so the projection's own
+ * value is the answer.
+ */
+export interface Unread {
+	model: string | null;
+	vision: string | null;
 }
 
 /** The facts about one session that outlive any one binding of it.
@@ -38,18 +48,48 @@ export interface ControlsSession {
 	 * discarded without throwing, and a discarded read leaves the projection
 	 * showing the value from before it. */
 	published(): boolean;
-	/** The value the hub acknowledged for a set whose readback never landed. */
-	unread(): UnreadModel | null;
-	/** Records that value, or clears it once a projection has caught up. */
-	record(unread: UnreadModel | null): void;
+	/** The values written for and not yet established by a publication. */
+	unread(): Unread;
+	/** Records one setting's value, or clears it once a publication catches up.
+	 * `null` clears that setting and leaves the other alone. */
+	record(setting: Setting, value: string | null): void;
+	/** Notifies when the record changes. A set can settle after the controls
+	 * that dispatched it were replaced, so the record has to reach a binding
+	 * that already exists and not only one built afterwards. */
+	watch(listener: () => void): () => void;
 }
 
 /** The session facts for a controller whose caller has no store to ask: it has
  * published everything, and keeps its own record. This is what a read that
  * returns normally always meant before the store was asked. */
 function detachedSession(): ControlsSession {
-	let unread: UnreadModel | null = null;
-	return { published: () => true, unread: () => unread, record: (next) => void (unread = next) };
+	const facts = sessionFacts(() => true);
+	return facts;
+}
+
+/** A session's facts, for a screen that owns one session across many bindings.
+ * The record lives here rather than in a controller because a set can settle
+ * after the controls that dispatched it are gone, and the binding that
+ * replaced them - built while the answer was still out - is the one the reader
+ * will be looking at. */
+export function sessionFacts(published: () => boolean): ControlsSession {
+	let unread: Unread = { model: null, vision: null };
+	const listeners = new Set<() => void>();
+	return {
+		published,
+		unread: () => unread,
+		record: (setting, value) => {
+			if (unread[setting] === value) return;
+			unread = { ...unread, [setting]: value };
+			for (const listener of Array.from(listeners)) listener();
+		},
+		watch: (listener) => {
+			listeners.add(listener);
+			return () => {
+				listeners.delete(listener);
+			};
+		},
+	};
 }
 
 export interface ControlsState {
@@ -60,18 +100,17 @@ export interface ControlsState {
 	catalog: ModelListResponse | null;
 	loadingModels: boolean;
 	modelError: string | null;
-	/** The model value a set was acknowledged for, when the read that would have
-	 * put it on screen could not run or failed. The session's projection still
-	 * shows the value from before that set, and a picker may not read a match
-	 * against it as "already set": that matches the stale value, not the one
-	 * the hub took. Cleared by a read that lands, so the comparison is trusted
-	 * again as soon as the projection catches up.
+	/** The value each setting was written for and no publication has
+	 * established yet. The session's projection still shows the value from
+	 * before that write, and a picker may not read a match against it as
+	 * "already set": that matches the stale value, not the one the hub took.
+	 * Cleared per setting by a publication that lands, so the comparison is
+	 * trusted again as soon as the projection catches up.
 	 *
-	 * It is the session's fact, not this binding's: the acknowledgement can
-	 * arrive after the controls that sent it were replaced, so the screen
-	 * carries the record into each new set rather than letting it die with the
-	 * instance that observed it. */
-	unreadModel: UnreadModel | null;
+	 * It is the session's fact, not this binding's: the write can settle after
+	 * the controls that sent it were replaced, so the screen keeps one record
+	 * for the session and every binding reads it. */
+	unread: Unread;
 }
 
 /** Own actions for one conversation binding, independently of its sheet. */
@@ -84,10 +123,13 @@ export class SessionControls {
 		catalog: null,
 		loadingModels: false,
 		modelError: null,
-		unreadModel: null,
+		unread: { model: null, vision: null },
 	};
 	private listeners = new Set<() => void>();
 	private disposed = false;
+	// The record can change after this binding was built, so the session's
+	// record is a subscription rather than a value sampled in the constructor.
+	private unwatch: (() => void) | null = null;
 	// Counts catalog reads (a refresh or a load), so a refresh publishes only
 	// when no newer read has started.
 	private catalogReads = 0;
@@ -115,7 +157,13 @@ export class SessionControls {
 		// set that is being retired.
 		private session: ControlsSession = detachedSession(),
 	) {
-		this.state = { ...this.state, catalog, unreadModel: session.unread() };
+		this.state = { ...this.state, catalog, unread: session.unread() };
+		// A set this binding dispatched can settle after it is superseded, or
+		// before it was built: either way the record changes underneath it and
+		// the picker reading this snapshot has to hear about it.
+		this.unwatch = session.watch(() => {
+			if (!this.disposed) this.publish({ unread: session.unread() });
+		});
 	}
 	getSnapshot = () => this.state;
 	subscribe = (listener: () => void) => {
@@ -162,6 +210,8 @@ export class SessionControls {
 	dispose() {
 		this.disposed = true;
 		this.listeners.clear();
+		this.unwatch?.();
+		this.unwatch = null;
 	}
 	rename(name: string) {
 		const trimmed = name.trim();
@@ -302,11 +352,27 @@ export class SessionControls {
 			// controls before its acknowledgement arrives. The bound screen still
 			// owns this refresh when its identity fence is current.
 			if (kind === "resume") {
-				if (!this.isCurrent("destination")) {
-					if (!this.disposed) this.publish({ pending: null });
-					return false;
+				// The resume's own reply is the acknowledgement, and it is what the
+				// restart settles on. The read that follows is catch-up: it brings
+				// the running session on screen, and the live binding's own recovery
+				// does that whenever a read cannot. Rejecting here on a failed read
+				// reports a resume the hub already took as one that could not start
+				// the session, which is how a restart landed on a daemon that was
+				// running while saying it had stopped.
+				//
+				// A resume the connection never sent is the other case and never
+				// reaches this branch: it throws ResumeNotDispatched above, where the
+				// restart keeps its retry.
+				if (this.isCurrent("destination")) {
+					try {
+						await this.refresh();
+					} catch {
+						// Acknowledged already; the read is catch-up.
+					}
 				}
-				await this.refresh();
+				if (!this.isCurrent("session")) return false;
+				if (!this.disposed) this.publish({ pending: null, error: null });
+				return true;
 			}
 			if (kind === "changeModel" || kind === "setVisionModel") {
 				// An acknowledged pick can outlive the binding that sent it: a
@@ -348,15 +414,13 @@ export class SessionControls {
 				// hub held before, so the value it answers with is recorded against
 				// the session - a replacement binding has to see it too, and the one
 				// that sent this may be the one being retired right now.
-				const unread: UnreadModel | null = readback
-					? null
-					: { setting: kind === "changeModel" ? "model" : "vision", value };
-				this.session.record(unread);
+				const setting: Setting = kind === "changeModel" ? "model" : "vision";
+				this.session.record(setting, readback ? null : value);
 				if (!this.disposed) {
 					this.publish({
 						pending: null,
 						error: null,
-						unreadModel: unread,
+						unread: this.session.unread(),
 						notice: stayed ? (kind === "changeModel" ? "Model updated." : "Vision model updated.") : null,
 					});
 				}
@@ -403,7 +467,7 @@ export class SessionControls {
 			// is still considered current never fetches the new title on return.
 			// The read is best effort, so a binding that cannot read is skipped
 			// rather than reported.
-			if (kind !== "resume" && this.isCurrent("destination")) {
+			if (this.isCurrent("destination")) {
 				try {
 					await this.refresh();
 				} catch {
@@ -429,13 +493,11 @@ export class SessionControls {
 					error: null,
 					notice: !stayed
 						? null
-						: kind === "resume"
-							? "Runtime resumed."
-							: kind === "compact"
-								? "Compaction requested. Progress appears in the conversation."
-								: kind === "setReasoningEffort"
-									? "Reasoning effort updated."
-									: "Session renamed.",
+						: kind === "compact"
+							? "Compaction requested. Progress appears in the conversation."
+							: kind === "setReasoningEffort"
+								? "Reasoning effort updated."
+								: "Session renamed.",
 				});
 			return true;
 		} catch (cause) {
@@ -489,9 +551,12 @@ export class SessionControls {
 				!(cause instanceof WireError) &&
 				this.isCurrent("session")
 			) {
-				const unread: UnreadModel = { setting: kind === "changeModel" ? "model" : "vision", value };
-				this.session.record(unread);
-				if (!this.disposed) this.publish({ unreadModel: unread });
+				// One setting's write says nothing about the other's: a timed-out
+				// model pick must not clear the record of a vision write that is
+				// still outstanding, or the vision row goes back to trusting a
+				// projection that write may have invalidated.
+				this.session.record(kind === "changeModel" ? "model" : "vision", value);
+				if (!this.disposed) this.publish({ unread: this.session.unread() });
 			}
 			if (this.ends(failure)) return false;
 			this.publish({

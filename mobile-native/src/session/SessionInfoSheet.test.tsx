@@ -170,7 +170,7 @@ function fakeControls(over: Partial<ControlsState> = {}) {
 		catalog: null,
 		loadingModels: false,
 		modelError: null,
-		unreadModel: null,
+		unread: { model: null, vision: null },
 		...over,
 	};
 	return {

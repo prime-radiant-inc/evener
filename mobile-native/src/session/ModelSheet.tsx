@@ -107,9 +107,9 @@ function ModelSheetBody({
 	// the projection showing the value from before it, so a match there means
 	// "not written yet". The record of the value the hub did take is what says
 	// which of the two a match is.
-	const unread = state?.unreadModel ?? null;
+	const unread = state?.unread ?? { model: null, vision: null };
 	const verified = (setting: "model" | "vision", value: string) =>
-		unread === null || unread.setting !== setting || unread.value === value;
+		unread[setting] === null || unread[setting] === value;
 	const error =
 		undelivered ?? state?.modelError ?? (state?.lastAction && MODEL_ACTIONS.has(state.lastAction) ? state.error : null);
 	const revealError = () => {
