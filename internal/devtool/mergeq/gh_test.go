@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -191,12 +192,21 @@ func fixtureComponentReplaceable(t *testing.T, component string) string {
 	if perm&0o002 != 0 {
 		return component + " is writable by other users and has no sticky bit, so another user can replace entries in it"
 	}
-	if acl, ok := fixtureReadACL(t, component); ok {
-		switch granted, readable := aclForeignWrite(acl); {
+	acl, present, evaluable := fixtureReadACL(t, component)
+	if !present {
+		// No extended ACL on this component, so the mode bits above are the whole
+		// answer. This is the ordinary case and it stays cheap: one listing.
+	} else if !evaluable {
+		// An ACL exists and this fixture could not read it. Nothing about it can be
+		// shown harmless, so the component is refused and the fixture relocates.
+		// Passing here is the finding: on macOS a 0700 ancestor carrying a native
+		// grant to another local account was accepted as long as the mode looked
+		// private.
+		return component + " has an access ACL this fixture could not evaluate, so no entry in it can be shown to be harmless"
+	} else {
+		switch granted, readable := aclForeignGrant(acl); {
 		case !readable:
-			// The ACL is unreadable, so nothing about it can be shown to grant
-			// nothing. That is a refusal, not a pass.
-			return component + " has an access ACL this fixture could not read, so no entry in it can be shown to be harmless"
+			return component + " has an access ACL whose entries this fixture could not parse, so no entry in it can be shown to be harmless"
 		case granted != "":
 			return component + " has an access ACL entry that may write: " + granted + ", so another local user can replace entries in it"
 		default:
@@ -211,40 +221,113 @@ func fixtureComponentReplaceable(t *testing.T, component string) string {
 	return ""
 }
 
-// fixtureReadACL returns component's access ACL as getfacl prints it, and
-// whether it could be read at all.
+// fixtureACLTools is how the fixture asks the platform about extended ACLs. It
+// is a variable so a test can stand in the platform a finding is about: macOS,
+// where getfacl does not exist and the native ACL is only visible through `ls`.
+var fixtureACLTools = localACLTools()
+
+// aclTools is one platform's way of reading an extended ACL.
+type aclTools struct {
+	// listing runs `ls -ldn` on a component. Its mode field carries `+` when an
+	// extended ACL is present.
+	listing func(component string) (string, error)
+	// listingWithACL runs the listing with ACL entries expanded (`ls -ldne` on
+	// Darwin), or fails when the platform's ls cannot do that.
+	listingWithACL func(component string) (string, error)
+	// getfacl returns getfacl's numeric output, or fails when the platform has no
+	// getfacl.
+	getfacl func(component string) (string, error)
+}
+
+// localACLTools binds the probe to this machine's tools, resolved once.
+func localACLTools() aclTools {
+	have := func(name string) bool {
+		_, err := exec.LookPath(name)
+		return err == nil
+	}
+	ls := have("ls")
+	probe := aclTools{
+		listing: func(string) (string, error) {
+			return "", fmt.Errorf("ls is not installed")
+		},
+		listingWithACL: func(string) (string, error) {
+			return "", fmt.Errorf("ls cannot expand ACLs here")
+		},
+		getfacl: func(string) (string, error) {
+			return "", fmt.Errorf("getfacl is not installed")
+		},
+	}
+	if ls {
+		probe.listing = func(component string) (string, error) {
+			out, err := exec.Command("ls", "-ldn", component).Output()
+			return string(out), err
+		}
+		if runtime.GOOS == "darwin" {
+			// -e is what makes ls print the ACL entries themselves; without it the
+			// listing only says an ACL exists.
+			probe.listingWithACL = func(component string) (string, error) {
+				out, err := exec.Command("ls", "-ldne", component).Output()
+				return string(out), err
+			}
+		}
+	}
+	if have("getfacl") {
+		probe.getfacl = func(component string) (string, error) {
+			out, err := exec.Command("getfacl", "-n", "-p", "-c", component).Output()
+			return string(out), err
+		}
+	}
+	return probe
+}
+
+// fixtureReadACL reads component's access ACL and reports what it learned.
 //
-// A directory with no extended ACL needs no read: getfacl still prints the three
-// base entries, so the caller cannot tell "no ACL" from "an ACL that grants
-// nothing" by the output alone. That is why the mode decides first for an
-// ordinary directory and the ACL only refines the group answer, which is where
-// Linux puts the mask.
+// Three outcomes, and the middle one is the finding this exists for:
 //
-// A missing getfacl is not a reason to fail a fixture: a platform without it
-// (macOS) has no POSIX access ACL in this sense, and the mode answer stands.
-func fixtureReadACL(t *testing.T, component string) (string, bool) {
+//   - present=false, evaluable=true: there is no extended ACL. `ls` marks such a
+//     directory without `+`, and then the mode bits ARE the whole story no matter
+//     which platform this is.
+//   - present=true, evaluable=true: an ACL exists and its text came back.
+//   - evaluable=false: an ACL exists and this fixture could not read it.
+//
+// The third case used to be reported as "no ACL", which made the mode answer
+// stand for a directory whose ACL nobody had looked at. On macOS there is no
+// getfacl at all, so every TMPDIR ancestor took that path: a directory at 0700
+// whose native ACL granted another local account write and search was accepted,
+// and the fixture writes and executes scripts through a path that account can
+// replace. A reader that cannot see the grant that matters must not answer "no
+// grant" -- it has to say it does not know, and the caller relocates.
+func fixtureReadACL(t *testing.T, component string) (text string, present, evaluable bool) {
 	t.Helper()
-	if _, err := exec.LookPath("getfacl"); err != nil {
-		return "", false
-	}
-	// An ACL is only present when ls marks the entry with `+`. Asking getfacl on
-	// every component instead would fork a process per path component on every
-	// fixture, and the answer for the ordinary case is in the mode.
-	if _, err := exec.LookPath("ls"); err != nil {
-		return "", false
-	}
-	listed, err := exec.Command("ls", "-ldn", component).Output()
+	listed, err := fixtureACLTools.listing(component)
 	if err != nil {
-		return "", false
+		// The ACL marker itself could not be read, so whether an ACL exists is
+		// unknown.
+		return "", false, false
 	}
-	if !strings.Contains(string(listed), "+") {
-		return "", false
+	if !fixtureListingHasACL(listed) {
+		return "", false, true
 	}
-	acl, err := exec.Command("getfacl", "-n", "-p", "-c", component).Output()
-	if err != nil {
-		return "", false
+	if acl, err := fixtureACLTools.getfacl(component); err == nil {
+		return acl, true, true
 	}
-	return string(acl), true
+	if expanded, err := fixtureACLTools.listingWithACL(component); err == nil {
+		if _, ok := darwinACLEntries(expanded); ok {
+			return expanded, true, true
+		}
+	}
+	return "", true, false
+}
+
+// fixtureListingHasACL reports whether an `ls -ldn` line marks an extended ACL.
+//
+// The marker is the `+` suffix of the mode field, read from the first field of
+// the first line rather than from anywhere in the output: a `+` in a timestamp
+// or a file name is not an ACL marker.
+func fixtureListingHasACL(listed string) bool {
+	line, _, _ := strings.Cut(listed, "\n")
+	mode, _, _ := strings.Cut(line, " ")
+	return strings.HasSuffix(mode, "+")
 }
 
 // aclForeignWrite reads numeric getfacl output and names the first entry that
@@ -330,6 +413,103 @@ func aclForeignWrite(acl string) (entry string, readable bool) {
 			continue
 		}
 		return e.kind + ":" + e.name + ":" + e.perm, true
+	}
+	return "", true
+}
+
+// darwinACLEntries parses the ACL entries that `ls -le` appends to its listing,
+// and reports whether the text was parseable as a Darwin ACL at all.
+//
+// Darwin prints one entry per line after the listing, indented, in the form
+//
+//	0: user:501 allow read,write,execute
+//	1: group:staff deny write
+//
+// The index prefix is what distinguishes an entry from the listing line above it.
+// A directory with no ACL entries at all is not a parse failure: `ls -e` prints
+// no entry lines, and that is the ordinary case this must keep accepting.
+func darwinACLEntries(listing string) (entries []string, ok bool) {
+	for line := range strings.SplitSeq(listing, "\n") {
+		trimmed := strings.TrimSpace(line)
+		idx, rest, found := strings.Cut(trimmed, ": ")
+		if !found {
+			continue
+		}
+		if _, err := strconv.Atoi(idx); err != nil {
+			// Not an indexed entry line: the listing itself, or a continuation.
+			continue
+		}
+		entries = append(entries, strings.TrimSpace(rest))
+	}
+	// Parseable means the tool ran and its output had the shape of a listing.
+	// No entries is a valid, harmless answer; garbage is not, because the caller
+	// would then accept a path whose ACL it never understood.
+	return entries, strings.Contains(listing, "total ") || len(entries) > 0 || strings.Contains(listing, "\n")
+}
+
+// aclForeignGrant reads either ACL syntax and names the first entry that lets
+// some account other than this user or root replace an entry in the directory,
+// plus whether the text could be read at all.
+//
+// The two syntaxes differ in exactly the way that made the Darwin path unsafe to
+// skip: getfacl caps a named entry with a mask on Linux, and Darwin has no mask
+// because its ACLs are NFSv4-style and apply as written. Both are read here so
+// the caller asks one question of the answer it got.
+func aclForeignGrant(text string) (entry string, readable bool) {
+	if strings.Contains(text, ": ") && !strings.Contains(text, "::") {
+		return darwinACLForeignGrant(text)
+	}
+	return aclForeignWrite(text)
+}
+
+// darwinACLForeignGrant names the first Darwin ACL entry that grants a foreign
+// account write AND search on the directory.
+//
+// Darwin resolves `allow`/`deny` per entry and per permission, so the question
+// is whether some allowed entry names an account that is not this user or root
+// and carries both write (add or remove a name) and execute (traverse to it).
+// A deny entry grants nothing; a `user:` entry with no name is the owner, whose
+// grant cannot be used against this user.
+func darwinACLForeignGrant(listing string) (entry string, readable bool) {
+	entries, ok := darwinACLEntries(listing)
+	if !ok {
+		return "", false
+	}
+	for _, e := range entries {
+		// "user:501 allow read,write,execute" -- the verdict comes BEFORE the
+		// permission list, which is the opposite of getfacl's layout.
+		subject, rest, found := strings.Cut(e, " ")
+		if !found {
+			continue
+		}
+		verdict, perms, found := strings.Cut(strings.TrimSpace(rest), " ")
+		if !found || verdict != "allow" {
+			continue
+		}
+		perms = strings.TrimSpace(perms)
+		if !strings.Contains(perms, "write") || !strings.Contains(perms, "execute") {
+			continue
+		}
+		kind, name, found := strings.Cut(subject, ":")
+		if !found {
+			continue
+		}
+		if kind != "user" && kind != "group" {
+			continue
+		}
+		if name == "" && kind == "user" {
+			// The owner, whose grant is this user's own.
+			continue
+		}
+		if kind == "user" && (name == strconv.Itoa(os.Getuid()) || name == "0") {
+			continue
+		}
+		if kind == "group" && name == strconv.Itoa(os.Getgid()) {
+			// The owning group's grant is already the mode's group question, and
+			// counting it here would refuse every group-writable TMPDIR twice.
+			continue
+		}
+		return kind + ":" + name + " allow " + perms, true
 	}
 	return "", true
 }
@@ -1481,6 +1661,98 @@ func TestMergEQFixtureBaseIsTrustedAndExecutable(t *testing.T) {
 			t.Fatalf("a real 0700 directory under a trusted parent was refused (%s): the rule must refuse the swap, not the path", reason)
 		}
 	})
+	t.Run("a Darwin ACL granting a foreign account is refused", func(t *testing.T) {
+		// Not parallel: it swaps the platform seam the ACL reader uses, and a
+		// parallel case reading a real ACL would see the stand-in.
+		//
+		// macOS has no getfacl -- the reason fixtureReadACL used to answer "no ACL"
+		// there -- so an ancestor at 0700 whose NATIVE ACL grants another local
+		// account read,write,execute was accepted on the mode alone, and the
+		// fixture writes and executes scripts through that path. The seam stands
+		// in that platform: ls says `+`, getfacl does not exist, and ls -e is the
+		// only place the grant is visible.
+		dir := widenedFixtureDir(t, "darwin-acl")
+		// A Darwin ACL as `ls -le` prints it, granting uid 424242 write and execute.
+		const foreignACL = `total 0
+drwx------  2 501  staff  64 Nov 18 12:00 darwin-acl
+ 0: user:424242 allow read,write,execute
+ 1: group:staff deny write
+`
+		defer func(tools aclTools) { fixtureACLTools = tools }(fixtureACLTools)
+		fixtureACLTools = aclTools{
+			listing: func(string) (string, error) {
+				// The mode field carries `+`, which is how both platforms say an
+				// extended ACL is present.
+				return "drwx------+ 2 501 staff 64 Nov 18 12:00 darwin-acl\n", nil
+			},
+			listingWithACL: func(string) (string, error) { return foreignACL, nil },
+			getfacl: func(string) (string, error) {
+				return "", fmt.Errorf("exec: \"getfacl\": executable file not found in $PATH")
+			},
+		}
+		if reason := fixtureComponentReplaceable(t, dir); reason == "" {
+			t.Fatalf("%s was accepted although its native ACL grants uid 424242 write and execute: the fixture would execute a script from a path that account can replace", dir)
+		}
+
+		// And the ordinary developer path must not refuse. A directory with no
+		// extended ACL has no `+` in its mode, so the mode answer stands on every
+		// platform -- getfacl present or not.
+		fixtureACLTools = aclTools{
+			listing: func(string) (string, error) {
+				return "drwx------ 2 501 staff 64 Nov 18 12:00 darwin-acl\n", nil
+			},
+			listingWithACL: func(string) (string, error) {
+				t.Fatal("ls -e was asked about a directory with no ACL marker: the mode answer stands and no ACL read was needed")
+				return "", nil
+			},
+			getfacl: func(string) (string, error) {
+				t.Fatal("getfacl was asked about a directory with no ACL marker")
+				return "", nil
+			},
+		}
+		if reason := fixtureComponentReplaceable(t, dir); reason != "" {
+			t.Fatalf("%s was refused although it has no extended ACL: refusing the ordinary case would break every fixture on a platform without getfacl (%s)", dir, reason)
+		}
+
+		// A harmless Darwin ACL stays usable: read-only entries cannot replace
+		// anything, so the directory is accepted rather than refused into a
+		// relocation on every developer's machine.
+		fixtureACLTools = aclTools{
+			listing: func(string) (string, error) {
+				return "drwx------+ 2 501 staff 64 Nov 18 12:00 darwin-acl\n", nil
+			},
+			listingWithACL: func(string) (string, error) {
+				return `total 0
+drwx------+ 2 501 staff 64 Nov 18 12:00 darwin-acl
+ 0: user:424242 allow read
+ 1: user:424243 deny read,write,execute
+`, nil
+			},
+			getfacl: func(string) (string, error) {
+				return "", fmt.Errorf("getfacl is not installed")
+			},
+		}
+		if reason := fixtureComponentReplaceable(t, dir); reason != "" {
+			t.Fatalf("%s was refused although its ACL grants nobody write and execute: a harmless ACL must stay usable (%s)", dir, reason)
+		}
+
+		// And an ACL that exists but cannot be read at all relocates rather than
+		// passing: what cannot be shown harmless is not harmless.
+		fixtureACLTools = aclTools{
+			listing: func(string) (string, error) {
+				return "drwx------+ 2 501 staff 64 Nov 18 12:00 darwin-acl\n", nil
+			},
+			listingWithACL: func(string) (string, error) {
+				return "", fmt.Errorf("ls does not take -e here")
+			},
+			getfacl: func(string) (string, error) {
+				return "", fmt.Errorf("getfacl is not installed")
+			},
+		}
+		if reason := fixtureComponentReplaceable(t, dir); reason == "" {
+			t.Fatalf("%s was accepted although an extended ACL is present and neither reader could evaluate it", dir)
+		}
+	})
 	t.Run("an exec-capable base is accepted", func(t *testing.T) {
 		t.Parallel()
 		base := fixtureExecDir(t)
@@ -1584,6 +1856,101 @@ func TestMergEQFixtureBaseIsTrustedAndExecutable(t *testing.T) {
 			t.Fatalf("widen %s: %v", dir, err)
 		}
 	})
+}
+
+// TestGraphqlRefusalWantsRejectionTypesNotJustAType pins the low: a typed,
+// pathless error is not by itself a definitive refusal.
+//
+// GitHub has answered a pathless INTERNAL while running a GraphQL request whose
+// mutation had already been applied. Treating any nonempty type as the answer
+// called that write refused and skipped the read-back that would have found it,
+// so only the types that establish a REQUEST-level rejection count.
+func TestGraphqlRefusalWantsRejectionTypesNotJustAType(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name      string
+		body      string
+		want      bool
+		rationale string
+	}{
+		{
+			name:      "an execution-time INTERNAL is not a refusal",
+			body:      `{"data":{"enqueuePullRequest":null},"errors":[{"type":"INTERNAL","message":"something went wrong while running the mutation"}]}`,
+			want:      false,
+			rationale: "INTERNAL names a failure while running the request, so the write may already have landed",
+		},
+		{
+			name:      "an unrecognized type is not a refusal",
+			body:      `{"data":{"enqueuePullRequest":null},"errors":[{"type":"SOMETHING_NEW","message":"..."}]}`,
+			want:      false,
+			rationale: "a classification this reader has not seen establish rejection is not evidence of one",
+		},
+		{
+			name:      "UNPROCESSABLE is still a refusal",
+			body:      `{"data":{"enqueuePullRequest":null},"errors":[{"type":"UNPROCESSABLE","message":"protected branch"}]}`,
+			want:      true,
+			rationale: "a request-level rejection is decided before the mutation runs",
+		},
+		{
+			name:      "UNAUTHENTICATED is a refusal too",
+			body:      `{"data":{"enqueuePullRequest":null},"errors":[{"type":"UNAUTHENTICATED","message":"bad credentials"}]}`,
+			want:      true,
+			rationale: "the request was declined before anything was executed",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			msg, got := graphqlRefusal([]byte(tc.body))
+			if got != tc.want {
+				t.Fatalf("graphqlRefusal(%s) = %q, %v, want a refusal of %v: %s", tc.body, msg, got, tc.want, tc.rationale)
+			}
+		})
+	}
+}
+
+// TestACleanExitWithAWholeReplySurvivesTheDeadlineRace pins the fourth medium.
+//
+// The client sets Cancel, so a context that expires while the child is exiting
+// makes Wait report the context's error rather than the child's status, and
+// ChildErr only clears ErrWaitDelay. A complete MERGED reply was then reported as
+// a timeout by the observation that had just received the merge.
+//
+// The predicate is driven directly: the state it distinguishes is a race whose
+// losing side a test cannot schedule, and what matters is which of the two facts
+// the client trusts -- the child's own status, or the context's timing.
+func TestACleanExitWithAWholeReplySurvivesTheDeadlineRace(t *testing.T) {
+	t.Parallel()
+	// A child that exited zero is described by a ProcessState whose Exited and
+	// ExitCode agree; the fields are not settable, so the states are made by
+	// running the smallest possible processes.
+	clean := exitedProcess(t, 0)
+	failed := exitedProcess(t, 1)
+	complete := []byte(`{"state":"MERGED","mergeCommit":{"oid":"abc"}}`)
+	incomplete := []byte(`{"state":"MERG`)
+
+	if !cleanReplySurvives(context.DeadlineExceeded, clean, complete) {
+		t.Fatal("a cleanly exited child with a whole reply was called a failed read: the deadline raced Wait and the answer was discarded")
+	}
+	if cleanReplySurvives(context.DeadlineExceeded, failed, complete) {
+		t.Fatal("a child that exited non-zero with a whole reply was called a clean read: its error is its own answer")
+	}
+	if cleanReplySurvives(context.DeadlineExceeded, clean, incomplete) {
+		t.Fatal("a cleanly exited child whose reply was cut off was called a whole reply: there is nothing usable in it")
+	}
+	if cleanReplySurvives(nil, clean, complete) {
+		t.Fatal("a read that reported no error was routed through the race rule: there is no race to decide")
+	}
+}
+
+// exitedProcess runs `/bin/true` or `/bin/false` to obtain a ProcessState for the
+// exit code. The struct cannot be built by hand and its fields are unexported.
+func exitedProcess(t *testing.T, code int) *os.ProcessState {
+	t.Helper()
+	cmd := exec.Command("sh", "-c", "exit "+strconv.Itoa(code))
+	if err := cmd.Run(); err != nil && code == 0 {
+		t.Fatalf("run the exit-%d probe: %v", code, err)
+	}
+	return cmd.ProcessState
 }
 
 // TestGHNonzeroExitKeepsTheEntryTheMutationReported pins M3: a reply that both

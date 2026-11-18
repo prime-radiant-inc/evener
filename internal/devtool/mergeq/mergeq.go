@@ -320,11 +320,17 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 	if exitErr == nil && st.State != mergedState {
 		var out Outcome
 		var merged bool
-		out, merged, exitErr = mergedOutcome(startCtx, ctx, opts, c)
-		if exitErr == nil && merged {
+		out, merged, probeErr := mergedOutcome(startCtx, ctx, opts, c)
+		if probeErr == nil && merged {
 			stopStart()
 			return out, nil
 		}
+		// The status above ANSWERED, and the probe is supplemental to it: `gh pr
+		// view` only upgrades a queue read into a merge. Letting a probe that spent
+		// the allowance replace a decoded status discards the position the run was
+		// given -- `--wait 0` then exits 2 instead of naming where the PR is
+		// queued, for a read that succeeded.
+		exitErr = startupProbeEnding(ctx, probeErr)
 	}
 	stopStart()
 	if exitErr := startupEnding(ctx, exitErr); exitErr != nil {
@@ -395,6 +401,13 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 			}
 			var confirmed bool
 			if st, confirmed, exitErr = confirmEnqueue(ctx, opts, c, clock, deadline, post); exitErr != nil {
+				// The mutation's own reply named a queue entry, so GitHub confirmed
+				// the enqueue even though the refresh could not be read. Reporting a
+				// lookup failure here discards that confirmation and invites the
+				// operator to repeat a write that already landed.
+				if enqueueEntry != nil && exitErr.Kind != Interrupted {
+					return confirmedButUnrefreshed(opts.Wait, *enqueueEntry)
+				}
 				return Outcome{}, exitErr
 			}
 			known.observe(st, confirmed)
@@ -415,6 +428,13 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 		} else {
 			var confirmed bool
 			if st, confirmed, exitErr = confirmEnqueue(ctx, opts, c, clock, deadline, post); exitErr != nil {
+				// Same rule on the branch where the mutation reported no error: when
+				// its reply named an entry, the enqueue is confirmed and only the
+				// refresh failed. That is "queued, current state unverified", not
+				// "nothing was read".
+				if enqueueEntry != nil && exitErr.Kind != Interrupted {
+					return confirmedButUnrefreshed(opts.Wait, *enqueueEntry)
+				}
 				return Outcome{}, exitErr
 			}
 			known.observe(st, confirmed)
@@ -684,6 +704,60 @@ func startupEnding(ctx context.Context, exitErr *ExitError) *ExitError {
 	// refusalFor answered the starting allowance, not the operator: the run's own
 	// context is live, so what ended this read was the allowance.
 	return startupNotRead()
+}
+
+// startupProbeEnding is what the supplemental merge probe's ending does to the
+// status it supplements.
+//
+// The probe upgrades a queue read into a merge; it does not replace one. So a
+// probe that spent the starting allowance is dropped, because the run already has
+// an answer and this read only failed to add to it. It arrives here as
+// Interrupted: refusalFor answered the probe's own read context, and an inner
+// read reports its own spent budget that way.
+//
+// The operator's cancellation is NOT dropped, and that is why the invocation is
+// asked rather than only the kind: a stopped run reports 130 whatever it read
+// first. A nil error passes through, and so does an ending that carries a real
+// defect -- a malformed reply is worth reporting even beside a good status,
+// because it is the probe saying it could not do its job.
+func startupProbeEnding(ctx context.Context, probeErr *ExitError) *ExitError {
+	if probeErr == nil {
+		return nil
+	}
+	if probeErr.Kind == Interrupted && ctx.Err() == nil {
+		return nil
+	}
+	return probeErr
+}
+
+// confirmedButUnrefreshed reports the position the mutation's own reply named when
+// the read after it failed.
+//
+// The mutation is the observation that matters: GitHub answered with the queue
+// entry it created, which is a confirmed write. What failed is the refresh, and a
+// refresh that could not be read does not unconfirm the write. Reporting the
+// lookup failure instead discards a position the run holds and tells the operator
+// nothing was decided about an enqueue that landed -- the sharpest case being a
+// retried `--jump`, which the queue then refuses because the PR is already there.
+//
+// The verdict depends on what was asked for, and neither branch invents a state
+// the mutation did not report:
+//
+//   - `--wait 0` asked where the PR went, and the mutation's reply answered:
+//     Queued at that position, exit 0.
+//   - A waiting run asked to be told when the queue finished, and this run cannot
+//     read the queue any further. Reporting Queued there would claim a wait that
+//     never ran, so it reports the timeout verdict at the confirmed position --
+//     exit 1, which the documented workflow repeats. That is the honest report:
+//     the PR is queued at N and nothing newer could be read.
+//
+// A cancellation never reaches here: the caller checks Interrupted first, because
+// an operator who stopped the wait did not ask for a verdict.
+func confirmedButUnrefreshed(wait time.Duration, entry QueueEntry) (Outcome, *ExitError) {
+	if wait <= 0 {
+		return Outcome{Kind: Queued, Position: entry.Position}, nil
+	}
+	return timedOutAt(Status{Entry: &entry}), nil
 }
 
 // startupNotRead is the refusal for a run whose first lookups could not answer

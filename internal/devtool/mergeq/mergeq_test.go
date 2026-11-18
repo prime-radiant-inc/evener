@@ -29,6 +29,9 @@ type fakeClient struct {
 	// statuses is the queue of status reads; the last one repeats once the
 	// queue is down to one entry.
 	statuses []Status
+	// statusCalls counts the reads, so a client can tell the starting lookup
+	// from the reconciliation read that follows the mutation.
+	statusCalls int
 	// statusErr, when set, is returned by every status read.
 	statusErr error
 	// mergedSHA and merged say what the PR's own state reports; mergedErr
@@ -65,6 +68,7 @@ type enqueuedPull struct {
 }
 
 func (f *fakeClient) Status(_ context.Context, _, _ string) (Status, error) {
+	f.statusCalls++
 	if f.statusErr != nil {
 		return Status{}, f.statusErr
 	}
@@ -96,6 +100,9 @@ func (f *fakeClient) Enqueue(_ context.Context, _ string, prID string, jump bool
 	f.enqueued = append(f.enqueued, enqueuedPull{prID: prID, jump: jump})
 	return f.enqueueEntry, nil
 }
+
+// StatusCalls reports how many status reads have been served.
+func (f *fakeClient) StatusCalls() int { return f.statusCalls }
 
 func (f *fakeClient) QueueDrop(context.Context, string, string) (*DropEvent, error) {
 	return f.drop, f.dropErr
@@ -2172,6 +2179,202 @@ func TestAMergeThatOutlivedItsReadAllowanceIsStillAMerge(t *testing.T) {
 	if exitErr := startupEnding(context.Background(), startupNotRead()); exitErr == nil || exitErr.Kind != LookupFailed {
 		t.Fatalf("startupEnding with no answer = %+v, want LookupFailed", exitErr)
 	}
+}
+
+// TestAConfirmedEnqueueWhoseRefreshFailsIsStillQueued pins the confirming-write
+// medium: when the mutation's reply names a queue entry and the read after it
+// fails, the run knows GitHub performed the enqueue.
+//
+// The position is the operator's whole question, and discarding it for the read's
+// failure tells them nothing was decided about a write that landed -- and invites
+// a retried `--jump`, which the queue then refuses because the PR is already
+// there.
+func TestAConfirmedEnqueueWhoseRefreshFailsIsStillQueued(t *testing.T) {
+	t.Parallel()
+	// The mutation reports the entry and an unknown ending, the shape a
+	// field-resolution error leaves; the reconciliation read then fails.
+	c := &confirmedRefreshFailedClient{}
+	c.statuses = []Status{{ID: "PR_6499", State: "OPEN", Base: "main"}}
+	out, exitErr := Execute(context.Background(), opts(0), c, (&fakeClock{now: time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)}).clock())
+	if exitErr != nil {
+		t.Fatalf("Execute: %v, want the position the mutation's reply named: GitHub confirmed the write and only the refresh failed", exitErr)
+	}
+	if out.Kind != Queued || out.Position != 5 {
+		t.Fatalf("outcome = %+v, want Queued at position 5: that is the entry the mutation returned", out)
+	}
+
+	// The other direction, so this is not a licence to report any failure as
+	// queued: a mutation whose reply named no entry leaves nothing confirmed, and
+	// the failure stands.
+	unconfirmed := &refreshFailedClient{}
+	unconfirmed.statuses = []Status{{ID: "PR_6499", State: "OPEN", Base: "main"}}
+	unconfirmed.enqueueErr = fmt.Errorf("gh: %w", ErrIncompleteReply)
+	if _, exitErr := Execute(context.Background(), opts(0), unconfirmed, (&fakeClock{now: time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)}).clock()); exitErr == nil || exitErr.Kind != LookupFailed {
+		t.Fatalf("refusal = %+v, want LookupFailed: no reply named an entry, so nothing established the enqueue", exitErr)
+	}
+
+	// A WAITING run asked when the queue finished, and this run cannot read the
+	// queue any further. Reporting Queued there would claim a wait that never ran,
+	// so the confirmed position carries the timeout verdict -- exit 1, which the
+	// documented workflow repeats -- and not a completed wait.
+	waiting := &confirmedRefreshFailedClient{}
+	waiting.statuses = []Status{{ID: "PR_6499", State: "OPEN", Base: "main"}}
+	waited, exitErr := Execute(context.Background(), opts(30*time.Second), waiting, (&fakeClock{now: time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)}).clock())
+	if exitErr != nil {
+		t.Fatalf("Execute: %v, want the timeout verdict at the confirmed position: the queue could not be read again, and this run did not wait", exitErr)
+	}
+	if waited.Kind != TimedOut || waited.Position != 5 {
+		t.Fatalf("outcome = %+v, want TimedOut at position 5: a waiting run must not report a wait it never ran", waited)
+	}
+
+	// And an operator cancellation outranks the confirmed position: they stopped
+	// the wait and did not ask for a verdict.
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cancelled := &confirmedRefreshCancelledClient{cancel: cancel}
+	cancelled.statuses = []Status{{ID: "PR_6499", State: "OPEN", Base: "main"}}
+	if _, exitErr := Execute(ctx, opts(0), cancelled, (&fakeClock{now: time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)}).clock()); exitErr == nil || exitErr.Kind != Interrupted {
+		t.Fatalf("refusal = %+v, want Interrupted: the operator's stop outranks the confirmed position", exitErr)
+	}
+}
+
+// confirmedRefreshFailedClient answers the mutation with a queue entry and an
+// unknown ending, then fails the reconciliation read.
+type confirmedRefreshFailedClient struct{ fakeClient }
+
+func (c *confirmedRefreshFailedClient) Enqueue(context.Context, string, string, bool) (*QueueEntry, error) {
+	return &QueueEntry{Position: 5, State: "QUEUED"}, fmt.Errorf("gh: %w", ErrIncompleteReply)
+}
+
+func (c *confirmedRefreshFailedClient) Status(ctx context.Context, repo, pr string) (Status, error) {
+	if c.StatusCalls() > 0 {
+		return Status{}, errors.New("read tcp: connection reset by peer")
+	}
+	return c.fakeClient.Status(ctx, repo, pr)
+}
+
+// refreshFailedClient fails the reconciliation read after a mutation that named
+// no entry.
+type refreshFailedClient struct{ fakeClient }
+
+func (c *refreshFailedClient) Enqueue(context.Context, string, string, bool) (*QueueEntry, error) {
+	return nil, c.enqueueErr
+}
+
+func (c *refreshFailedClient) Status(ctx context.Context, repo, pr string) (Status, error) {
+	if c.StatusCalls() > 0 {
+		return Status{}, errors.New("read tcp: connection reset by peer")
+	}
+	return c.fakeClient.Status(ctx, repo, pr)
+}
+
+// confirmedRefreshCancelledClient cancels the invocation while the reconciliation
+// read runs, after the mutation named an entry.
+type confirmedRefreshCancelledClient struct {
+	fakeClient
+	cancel func()
+}
+
+func (c *confirmedRefreshCancelledClient) Enqueue(context.Context, string, string, bool) (*QueueEntry, error) {
+	return &QueueEntry{Position: 5, State: "QUEUED"}, nil
+}
+
+func (c *confirmedRefreshCancelledClient) Status(ctx context.Context, repo, pr string) (Status, error) {
+	if c.StatusCalls() > 0 {
+		c.cancel()
+		<-ctx.Done()
+		return Status{}, ctx.Err()
+	}
+	return c.fakeClient.Status(ctx, repo, pr)
+}
+
+// TestASupplementalProbeThatTimesOutKeepsTheStatusItSupplemented pins the startup
+// medium: the status read answers, and the `gh pr view` probe that only upgrades
+// a queue read into a merge then spends the starting allowance.
+//
+// The probe is supplemental to the status, so its ending cannot discard the
+// position the run was given. `--wait 0` used to exit 2 there instead of naming
+// where the PR is queued, for a read that succeeded.
+//
+// The allowance is already spent when the probe returns, which is the state an
+// overrun leaves behind. Driving startupProbeEnding with that ending asserts the
+// deadline rule rather than waiting a real thirty-second allowance out to prove a
+// timer fires -- the same choice TestAStalledStartingLookupIsBounded and
+// TestReadStatusKeepsAnAnswerItsOwnAllowanceOutlived make.
+func TestASupplementalProbeThatTimesOutKeepsTheStatusItSuppressed(t *testing.T) {
+	t.Parallel()
+	// refusalFor answered the probe's own read context: an inner spent allowance
+	// arrives as Interrupted with the invocation still live.
+	spent := &ExitError{Kind: Interrupted, Detail: context.DeadlineExceeded.Error()}
+	if got := startupProbeEnding(context.Background(), spent); got != nil {
+		t.Fatalf("startupProbeEnding = %+v, want no ending: the probe only supplements a status that already answered", got)
+	}
+
+	// The operator's stop is not the allowance, and it outranks the answer.
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got := startupProbeEnding(cancelled, spent); got == nil || got.Kind != Interrupted {
+		t.Fatalf("startupProbeEnding under a cancelled invocation = %+v, want Interrupted: the operator's stop outranks the status the probe supplements", got)
+	}
+
+	// A real defect still passes through: this drops the allowance's ending, not
+	// every failure the probe can report.
+	defect := &ExitError{Kind: LookupFailed, Detail: "decode pr view"}
+	if got := startupProbeEnding(context.Background(), defect); got != defect {
+		t.Fatalf("startupProbeEnding = %+v, want the defect it was given", got)
+	}
+
+	// And a probe that answered leaves nothing behind.
+	if got := startupProbeEnding(context.Background(), nil); got != nil {
+		t.Fatalf("startupProbeEnding = %+v, want no ending", got)
+	}
+}
+
+// TestASupplementalProbeKeepsThePositionEndToEnd is the same finding driven
+// through Execute: the status answers, the probe returns the allowance's ending,
+// and `--wait 0` reports the position rather than exit 2. A decoded merge still
+// wins over the status it supplements.
+func TestASupplementalProbeKeepsThePositionEndToEnd(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	c := &startupProbeClient{}
+	c.statuses = []Status{{ID: "PR_6499", State: "OPEN", Base: "main", Entry: queueEntry(4)}}
+	out, exitErr := Execute(context.Background(), opts(0), c, (&fakeClock{now: now}).clock())
+	if exitErr != nil {
+		t.Fatalf("Execute: %v, want the position the status read reported: the probe that supplements it could not be read", exitErr)
+	}
+	if out.Kind != Queued || out.Position != 4 {
+		t.Fatalf("outcome = %+v, want Queued at position 4", out)
+	}
+
+	// A decoded merge still wins over the status it supplements.
+	const sha = "abcdef0123456789abcdef0123456789abcdef01"
+	merged := &startupProbeClient{sha: sha, mergeWins: true}
+	merged.statuses = []Status{{ID: "PR_6499", State: "OPEN", Base: "main", Entry: queueEntry(4)}}
+	out, exitErr = Execute(context.Background(), opts(0), merged, (&fakeClock{now: now}).clock())
+	if exitErr != nil {
+		t.Fatalf("Execute: %v, want the merge the probe read", exitErr)
+	}
+	if out.Kind != Merged || out.SHA != sha {
+		t.Fatalf("outcome = %+v, want Merged with sha %s", out, sha)
+	}
+}
+
+// startupProbeClient answers Status, then reports the starting allowance's own
+// ending from the merge probe -- the shape a stalled drain leaves.
+type startupProbeClient struct {
+	fakeClient
+	sha       string
+	mergeWins bool
+}
+
+func (c *startupProbeClient) MergedCommit(context.Context, string, string) (string, bool, error) {
+	if c.mergeWins {
+		return c.sha, true, nil
+	}
+	// No answer, and the allowance spent: mergedOutcome reports the read context's
+	// ending for this, and the invocation is still live.
+	return "", false, context.DeadlineExceeded
 }
 
 // TestRunExitCodes pins the contract the launcher's callers depend on: 0 for

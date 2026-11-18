@@ -230,14 +230,24 @@ func completeReply(out []byte) bool {
 // parser rejects on its own terms -- stays unknown.
 //
 // An errors array is not by itself a refusal either, which is why the entries
-// are read for their shape and not only their message. GitHub answers a rejected
-// mutation at the REQUEST level: the entry carries its own `type` (UNPROCESSABLE,
-// FORBIDDEN, NOT_FOUND) and no `path`, because nothing was executed to reject.
+// are read for their shape, their type and not only their message. GitHub
+// answers a rejected mutation at the REQUEST level: the entry carries no `path`,
+// because nothing was executed to reject, and one of a small set of types that
+// mean the request itself was declined.
+//
 // An entry with a `path` is a FIELD-RESOLUTION error: GitHub ran the mutation and
 // then failed while building the reply, which is precisely the case where the
 // write may already have landed. An entry with neither a type nor a path is an
 // execution failure with no structured evidence about the request at all. Both
-// of those are unknown, and unknown is read back; only the first is an answer.
+// of those are unknown, and unknown is read back; only a rejection is an answer.
+//
+// The TYPE is on the allow-list, not merely present. GitHub has answered a
+// pathless error during GraphQL execution -- INTERNAL, raised while running a
+// query whose write had already been applied -- and treating any typed entry as
+// the answer reported that write as refused and skipped the read-back. A type
+// this function has not seen establish a rejection is not evidence of one, and
+// the cost of reading it back is one status read while the cost of the other
+// direction is an operator retrying a mutation that already succeeded.
 //
 // The previous rule took any nonempty message as the answer, so a payload that
 // failed to resolve AFTER the enqueue took effect was reported as a refusal and
@@ -268,12 +278,47 @@ func graphqlRefusal(out []byte) (string, bool) {
 		if len(e.Path) > 0 {
 			continue
 		}
-		if strings.TrimSpace(e.Type) == "" {
+		if !requestRejected(strings.TrimSpace(e.Type)) {
 			continue
 		}
 		return msg, true
 	}
 	return "", false
+}
+
+// requestRejected reports whether a GraphQL error type is one GitHub uses to
+// decline a mutation at the request level, before executing it.
+//
+// The list is a closed set on purpose. `INTERNAL` is deliberately absent: it
+// names a failure while running the request, which is the ending where the write
+// may already have landed. So is an empty or unknown type, because a future
+// classification is not evidence that this request was declined.
+func requestRejected(errorType string) bool {
+	switch errorType {
+	case "UNPROCESSABLE", "FORBIDDEN", "NOT_FOUND", "BAD_USER_INPUT", "UNAUTHENTICATED":
+		// GitHub's request-level rejections: a malformed or unauthorized request,
+		// or one naming something that is not there. Each is decided before the
+		// mutation runs, so none of them can describe a write that landed.
+		return true
+	}
+	return false
+}
+
+// cleanReplySurvives reports whether a read that came back with an error is a
+// child that answered in full and exited cleanly, with the deadline merely
+// racing Wait.
+//
+// The child's own status decides, not the error: this client sets Cancel, so a
+// context that expires while the child is exiting makes Wait report the
+// context's error instead of the status, and ChildErr only clears ErrWaitDelay.
+// A process that exited zero and wrote a whole JSON document answered the
+// question it was asked, and discarding that reported a timeout after the run
+// had received a complete MERGED reply.
+//
+// An incomplete reply is not covered: there is nothing usable in it, and it
+// takes the same failure paths it always did.
+func cleanReplySurvives(err error, state *os.ProcessState, out []byte) bool {
+	return err != nil && state != nil && state.Success() && completeReply(out)
 }
 
 func (c GHClient) run(ctx context.Context, args ...string) ([]byte, error) {
@@ -310,6 +355,23 @@ func (c GHClient) run(ctx context.Context, args ...string) ([]byte, error) {
 	}
 	rawErr := cmd.Wait()
 	err := orphanpipe.ChildErr(cmd, rawErr)
+	// A clean child whose whole reply arrived is not a failed read, even when the
+	// deadline fired as Wait returned. The race is real and it costs the answer:
+	// this client sets Cancel, so a context that expires while the child is
+	// exiting makes Wait report the context's error rather than the child's
+	// status, and ChildErr only clears ErrWaitDelay. A complete MERGED reply was
+	// then reported as a timeout by the final observation that had just received
+	// the merge.
+	//
+	// The child's OWN status is what decides: a process that exited zero and
+	// wrote a whole JSON document answered the question it was asked, whatever
+	// the context did at that instant. Invocation cancellation is unaffected --
+	// the callers ask the invocation context before using an answer, which is
+	// what keeps a signal from being read as a result -- and an incomplete reply
+	// still takes the paths below, because there is nothing usable in it.
+	if cleanReplySurvives(err, cmd.ProcessState, stdout.Bytes()) {
+		err = nil
+	}
 	// The group dies with the call whether or not the context fired: on a clean
 	// exit nobody ran Cancel, and a wrapper's CLI would otherwise survive it.
 	// After the reap the pid names no process this call owns, and the group
