@@ -933,9 +933,11 @@ injected at construction (cycle-free: `cmd/evener` builds the closure;
 
 ## Tool argument replay
 
-Chat and Responses replay the original tool-argument string, including its
-whitespace and JSON spelling, on the next request and after transcript resume.
-For older transcripts Evener uses the argument bytes available on disk.
+Chat and Responses replay valid JSON object arguments with their original
+whitespace and JSON spelling on the next request and after transcript resume.
+Missing, malformed, or non-object arguments replay as `{}`. The transcript
+keeps malformed input separately for diagnostics. Older transcripts use the
+argument bytes available on disk.
 
 ## Tool choice: Evener never forces it
 

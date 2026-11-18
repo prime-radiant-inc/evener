@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -130,6 +131,48 @@ func TestAnUnreadableEntryIsQuarantined(t *testing.T) {
 	check("extended", x)
 	built := openIndex(t, path, t.TempDir())
 	check("built", built)
+
+	t.Run("upgrade recovers a tool call with argument bytes", func(t *testing.T) {
+		const args = " \t{ \"file_path\": \"notes\" }\n"
+		path, lines := writeHeaderOnly(t, fixture{header: fx.header, lines: []fixtureLine{
+			entryLine(assistant(call("call_read", "read_file", args))),
+		}})
+		dir := DirFor(path)
+		old := openIndex(t, path, dir)
+		line := lines[0]
+		if !bytes.Contains(line, []byte(`"arguments_bytes"`)) {
+			t.Fatal("fixture lacks the field rejected by the old decoder")
+		}
+		appendBytes(t, path, line)
+		// The strict reader in v11 quarantined this entry. Commit its actual
+		// index records over the original transcript, with the same tail hash.
+		if err := old.builder.quarantine(0, old.meta.Length, uint32(len(line)-1)); err != nil {
+			t.Fatal(err)
+		}
+		old.meta.Entries++
+		old.meta.Length += int64(len(line))
+		if err := old.writeMeta(); err != nil {
+			t.Fatal(err)
+		}
+		stale, err := old.Latest(1)
+		if err != nil || len(stale.Candidates) != 1 || stale.Candidates[0].Item.ID != "item_unreadable_0" {
+			t.Fatalf("previously indexed entry = %+v, err %v", stale.Candidates, err)
+		}
+		if err := old.Close(); err != nil {
+			t.Fatal(err)
+		}
+		rewriteMetaField(t, dir, "projection", strconv.Quote("transcript-read-model-v11:"+schemaID+":format8"))
+
+		current := openIndex(t, path, dir)
+		recovered, err := current.Latest(1)
+		if err != nil || len(recovered.Candidates) != 1 {
+			t.Fatalf("reopened window = %+v, err %v", recovered.Candidates, err)
+		}
+		item := recovered.Candidates[0].Item
+		if current.rebuilds != 1 || item.CallID != "call_read" || item.ArgumentsJSON != args {
+			t.Fatalf("after upgrade: rebuilds=%d item=%q call=%q arguments=%q", current.rebuilds, item.ID, item.CallID, item.ArgumentsJSON)
+		}
+	})
 }
 
 func TestRebuildMintsANewIncarnation(t *testing.T) {
