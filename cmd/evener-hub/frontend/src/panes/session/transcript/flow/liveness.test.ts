@@ -345,9 +345,10 @@ test("describeLiveness: a passed deadline reads as overdue even while a live quo
 // after the same turn entered a quota wait, so the read installs the
 // deadline but the merge retains the ordinary retry (its class is not the
 // quota class the clearing rules key on). The snapshot's deadline is the
-// authoritative quota fact: once it passes, the overdue wait line renders,
-// and the ordinary retry's elapsed backoff - which reads as in-progress
-// motion - must not mask it. Only a quota wake (the wait's own zero-delay
+// authoritative quota fact: once it passes, the overdue wait line renders
+// exactly as it would without the ordinary retry (identity of the two
+// renderings, not their wording, is the check), and the retry's own timing
+// stays out of the quota line. Only a quota wake (the wait's own zero-delay
 // announcement, in progress) outranks the deadline.
 test("describeLiveness: an authoritative quota deadline renders overdue over a retained ordinary retry whose backoff reads as motion", () => {
   const ordinary = retryWait({
@@ -362,12 +363,13 @@ test("describeLiveness: an authoritative quota deadline renders overdue over a r
   const counting = describeLiveness(120_000, true, 0, ordinary, 30_000);
   expect(counting.level).toBe("retrying");
   expect(counting.text).toContain(compactDuration(30_000));
-  // Once the deadline passes, the overdue wait line renders - the retained
-  // ordinary retry does not turn the pane back into a rate-limit line, and
-  // its elapsed time (another call's history) does not dress the wait.
+  // Once the deadline passes, the overdue wait line renders identically with
+  // and without the retained ordinary retry, and the ordinary retry's
+  // elapsed time (another call's history) stays out of the quota line.
   const overdue = describeLiveness(120_000, true, 0, ordinary, undefined, true);
-  expect(overdue.level).toBe("retrying");
-  expect(overdue.text).not.toContain("rate limited");
+  const overdueAlone = describeLiveness(120_000, true, 0, undefined, undefined, true);
+  expect(overdue.text).toBe(overdueAlone.text);
+  expect(overdue.level).toBe(overdueAlone.level);
   expect(overdue.text).not.toContain(formatExactGap(5 * 60_000));
   // A quota wake still outranks the deadline: the wait's own zero-delay
   // announcement in progress is motion, whatever a late read re-installed.

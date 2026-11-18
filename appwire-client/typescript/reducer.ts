@@ -388,11 +388,22 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
       // not only one that ended a known wait: the Stop can reach the pane
       // before the wait's own queued announcement does.
       const retiredQuotaTurn = turnEnded ? model.runningTurnId : undefined;
+      // The retirement ends when the turn runs again: a relay that exhausts
+      // its redials reports a synthetic idle and the daemon keeps running
+      // the turn, so a later active frame naming the retired turn proves the
+      // pane's end report was the relay's, not the daemon's - the marker
+      // must not outlive the turn it judged, or the turn's own zero-delay
+      // wake is rejected next.
+      const retiredQuotaTurnRevived =
+        !turnEnded && n.params.activeTurnId !== undefined && n.params.activeTurnId === model.retiredQuotaTurn
+          ? { retiredQuotaTurn: undefined }
+          : {};
       return {
         ...(rest as M),
         ...(turnEnded ? { quotaResumesAt: undefined } : {}),
         ...(quotaRetryEnded ? { modelRetry: undefined } : {}),
         ...(retiredQuotaTurn !== undefined ? { retiredQuotaTurn } : {}),
+        ...retiredQuotaTurnRevived,
         ...(n.params.activeTurnId ? { runningTurnId: n.params.activeTurnId } : {}),
         status,
         // The work-clock anchor (activeTurnStartedAt) has no live push to

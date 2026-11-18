@@ -736,6 +736,63 @@ test("a read names the same wait by its stamp, not its deadline: elapsed time su
   const moved = applyReadModel(next, secondWait);
   expect(moved.quotaResumesAt).toBe(resumesAt);
   expect(moved.modelRetry).toBeUndefined();
+
+  // A snapshot taken BEFORE a wake must not resurrect the wait the wake
+  // ended, even though its stamp matches: the pane is already subscribed, a
+  // steer woke the call ahead of its scheduled reset, and the read in
+  // flight when the wake landed returns the pre-wake cut. The wake is the
+  // newer fact about the same stamped wait; the stale deadline never
+  // reinstalls, or the pane resumes the countdown over a request already
+  // out and the pending deadline keeps later model output from clearing
+  // the wait. A snapshot whose stamp differs names a new wait and still
+  // establishes its own countdown.
+  const woken = applyNotification(
+    next,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: THREAD_ID,
+        ref: REF,
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: 0,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 14 * 60_000,
+        attemptCap: 1,
+        waitStartedAt,
+      },
+    } as AnyNotification,
+    NOW + 3,
+  );
+  expect(woken.quotaResumesAt).toBeUndefined();
+  // The in-flight read lands: its snapshot was cut before the wake, so it
+  // still carries the wait's summary with the SAME stamp.
+  const staleSnapshot = hydrateThread(
+    read([turn("turn_1", 1)], {
+      activeTurnId: "turn_1",
+      quotaWaitResumesAt: resumesAt,
+      quotaWaitStartedAt: waitStartedAt,
+    }),
+    REF,
+    NOW + 4,
+  );
+  const merged = applyReadModel(woken, staleSnapshot);
+  expect(merged.quotaResumesAt).toBeUndefined();
+  expect(merged.modelRetry?.errorClass).toBe("quota_exceeded");
+  // A DIFFERENT stamp is a new wait: its countdown installs even after a
+  // wake ended the earlier one.
+  const newWait = hydrateThread(
+    read([turn("turn_1", 1)], {
+      activeTurnId: "turn_1",
+      quotaWaitResumesAt: resumesAt + 30 * 60_000,
+      quotaWaitStartedAt: waitStartedAt + 60 * 60_000,
+    }),
+    REF,
+    NOW + 5,
+  );
+  const restarted = applyReadModel(merged, newWait);
+  expect(restarted.quotaResumesAt).toBe(resumesAt + 30 * 60_000);
 });
 
 function page(turns: Turn[], options: Snapshot & { authoritative?: boolean } = {}): ThreadTurnsListResponse {

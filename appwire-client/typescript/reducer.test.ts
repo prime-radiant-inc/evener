@@ -3307,6 +3307,40 @@ test("a turn boundary retires a turn whose quota announcement has not arrived ye
         attemptCap: 1,
       },
     }) as AnyNotification;
+  // The daemon's recovery read: the same turn is running again and its wait's
+  // summary rides the thread (the stamp the daemon issued for this wait).
+  const recoveredRead = () =>
+    hydrateThread(
+      {
+        thread: testThread({
+          status: { type: "active" },
+          evener: {
+            ref: "ref_t",
+            activeTurnId: "turn_1",
+            failure: { resumesAt: 1_250_000 + 60 * 60_000, waitStartedAt: 1_100_000 },
+          },
+        }),
+        snapshot: { incarnation: "inc_recovery", length: 0 },
+      },
+      "ref_t",
+      1_250_000,
+    );
+  const wake = (turnId: string) =>
+    ({
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId,
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: 0,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 500,
+        attemptCap: 1,
+        waitStartedAt: 1_100_000,
+      },
+    }) as AnyNotification;
   let model = testHydrate();
   model = applyNotification(
     model,
@@ -3342,6 +3376,21 @@ test("a turn boundary retires a turn whose quota announcement has not arrived ye
   const fresh = applyNotification(next, quotaRetry("turn_2"), 1_200_000);
   expect(fresh.quotaResumesAt).toBe(1_200_000 + 60 * 60_000);
   expect(fresh.modelRetry?.errorClass).toBe("quota_exceeded");
+
+  // The retired turn can come back: a remote relay that exhausts its redials
+  // reports a synthetic idle (the boundary above), and the daemon kept
+  // running the turn - its recovery read names the same turn running and
+  // carries the wait's summary, and when the wait ends its zero-delay wake
+  // must record. The retirement marker names queued deliveries against a
+  // turn the pane watched end; a read or a live frame that shows the turn
+  // running again retires the retirement, or the pane would keep the
+  // countdown after the request resumed.
+  const recovered = applyReadModel(ended, recoveredRead());
+  expect(recovered.quotaResumesAt).toBe(1_250_000 + 60 * 60_000);
+  const woken = applyNotification(recovered, wake("turn_1"), 1_300_000);
+  expect(woken.quotaResumesAt).toBeUndefined();
+  expect(woken.modelRetry?.errorClass).toBe("quota_exceeded");
+  expect(woken.lastFrameAt).toBe(1_300_000);
 });
 
 // A read can beat the bridge: the pane hydrates after a stopped wait's turn

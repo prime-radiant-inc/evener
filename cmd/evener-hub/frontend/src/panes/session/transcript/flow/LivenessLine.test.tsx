@@ -378,7 +378,22 @@ test("a live quota wait whose reset has passed without a wake reads as overdue, 
   );
   const overdueOverOrdinary = ordinary.getByTestId("liveness-line");
   expect(overdueOverOrdinary.getAttribute("data-level")).toBe("retrying");
-  expect(overdueOverOrdinary.textContent).not.toContain("rate limited");
+  // The overdue line renders identically with and without the retained
+  // ordinary retry (identity, not wording, is the check), and the retry's
+  // own elapsed time stays out of the quota line.
+  cleanup();
+  const alone = render(
+    <LivenessLine
+      lastFrameAt={0}
+      now={90 * 60_000 + 30_000}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      quotaResumesAt={90 * 60_000}
+    />,
+  );
+  expect(overdueOverOrdinary.textContent).toBe(alone.getByTestId("liveness-line").textContent);
+  expect(overdueOverOrdinary.textContent).not.toContain(formatExactGap(5 * 60_000));
   cleanup();
 
   const wake = render(

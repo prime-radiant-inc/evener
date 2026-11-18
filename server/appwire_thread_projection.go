@@ -350,7 +350,13 @@ func (s *Server) attachLiveWatches(data []appwire.Thread) {
 // attachDescendantQuotaWaits puts each waiting descendant's usage-limit
 // summary on its row, as the root's envelope puts the root's on its own
 // (appThreadWithDiagnosticsLocked lets a summary with a resume time through on
-// a working thread). The summary is attached to the returned copy only.
+// a working thread). The resolver's answer is the row's whole live truth: an
+// installed resolver that returns no wait for a descendant clears the
+// summary its projected row still carries - the delegate's Stop clears the
+// live wait before the execution-end event projects, and the list must not
+// keep announcing the canceled wait until that event lands. The stored
+// projection is untouched (the summary is attached to the returned copy
+// only), so thread/read keeps serving the wait as recorded.
 func (s *Server) attachDescendantQuotaWaits(descendants []appwire.Thread) {
 	s.mu.RLock()
 	fn := s.appDescendantQuotaWaitsFunc
@@ -366,6 +372,8 @@ func (s *Server) attachDescendantQuotaWaits(descendants []appwire.Thread) {
 	for i := range descendants {
 		if failure := waits[descendants[i].ID]; failure != nil {
 			descendants[i].Evener.Failure = appwire.CloneThreadFailure(failure)
+		} else {
+			descendants[i].Evener.Failure = nil
 		}
 	}
 }

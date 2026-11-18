@@ -963,6 +963,26 @@ function quotaWaitStampsCorrelate(
   return model.modelRetry?.waitStartedAt !== undefined && read.quotaWaitStartedAt !== undefined;
 }
 
+// quotaWaitWakeRecorded reports whether the model carries the zero-delay
+// wake of the wait the read names by stamp: the pane saw the wait end (a
+// steer woke the call ahead of its scheduled reset) and a read whose
+// snapshot was cut BEFORE the wake still carries the wait's summary. The
+// wake is the newer fact about the same stamped wait, so its deadline never
+// reinstalls - the pane would resume a countdown over a request already
+// out, and the pending deadline would keep later model output from
+// clearing the wait.
+function quotaWaitWakeRecorded(
+  read: Pick<ThreadModel, "quotaWaitStartedAt">,
+  model: Pick<ThreadModel, "modelRetry">,
+): boolean {
+  return (
+    model.modelRetry?.errorClass === "quota_exceeded" &&
+    model.modelRetry.delayMs === 0 &&
+    model.modelRetry.waitStartedAt !== undefined &&
+    model.modelRetry.waitStartedAt === read.quotaWaitStartedAt
+  );
+}
+
 // isDaemonSessionRead names the read's route by the thread's own shape. A
 // root's kind is "session" (the hub stamps it on indexed roots) or unset
 // with no parentRef; a fork names itself with kind "fork". Both are
@@ -1083,8 +1103,13 @@ export function applyReadResponse<M extends ThreadModel>(
     base.modelRetry.turnId !== undefined &&
     readRunningTurnId !== undefined &&
     readRunningTurnId !== base.modelRetry.turnId;
+  // A recorded wake suppresses the deadline a pre-wake snapshot carries for
+  // the same stamped wait: the read's summary is a stale cut, the wake the
+  // newer fact.
+  const wakeSuppressesDeadline = quotaWaitWakeRecorded(fields, model);
   const clearedQuotaWait =
-    fields.quotaResumesAt === undefined && (quotaSnapshotAuthoritative || waitTurnReplaced)
+    (fields.quotaResumesAt === undefined && (quotaSnapshotAuthoritative || waitTurnReplaced)) ||
+    (fields.quotaResumesAt !== undefined && wakeSuppressesDeadline)
       ? { quotaResumesAt: undefined }
       : {};
   // The report-capability evidence is sticky: a source that once reported a
@@ -1092,6 +1117,13 @@ export function applyReadResponse<M extends ThreadModel>(
   // unconditionally), so a later no-wait read does not unsay it.
   const keptQuotaReadReportsWaits =
     base.quotaReadReportsWaits || fields.quotaReadReportsWaits ? { quotaReadReportsWaits: true } : {};
+  // Same rule as applyReadModel: a retired turn's retirement ends when the
+  // read names that turn running again (the remote-relay recovery read),
+  // or the turn's own zero-delay wake is rejected next.
+  const clearedRetiredQuotaTurn =
+    readRunningTurnId !== undefined && readRunningTurnId === model.retiredQuotaTurn
+      ? { retiredQuotaTurn: undefined }
+      : {};
   // A read that names a DIFFERENT running turn retires the old turn's retry
   // metadata even while the new turn waits its own wait: the snapshot's new
   // deadline is real, but the retained retry (its elapsed time, its model)
@@ -1130,6 +1162,7 @@ export function applyReadResponse<M extends ThreadModel>(
       ...clearedQuotaWait,
       ...clearedQuotaRetry,
       ...keptQuotaReadReportsWaits,
+      ...clearedRetiredQuotaTurn,
       ...runningTurn(resp.thread),
       olderCursor,
       olderFrontier,
@@ -1321,10 +1354,17 @@ export function applyReadModel<M extends ThreadModel>(
     base.modelRetry.turnId !== undefined &&
     freshRunningTurnId !== undefined &&
     freshRunningTurnId !== base.modelRetry.turnId;
+  // Same rule as applyReadResponse: a recorded wake suppresses the deadline a
+  // pre-wake snapshot carries for the same stamped wait. The suppression
+  // must fire even though the wake already cleared the model's own deadline:
+  // the read's fields spread reinstalls the stale cut's, and only this
+  // override drops it again.
+  const wakeSuppressesDeadline = quotaWaitWakeRecorded(fresh, model);
   const clearedQuotaWait =
-    fresh.quotaResumesAt === undefined &&
-    (quotaSnapshotAuthoritative || waitTurnReplaced) &&
-    model.quotaResumesAt !== undefined
+    (fresh.quotaResumesAt === undefined &&
+      (quotaSnapshotAuthoritative || waitTurnReplaced) &&
+      model.quotaResumesAt !== undefined) ||
+    (fresh.quotaResumesAt !== undefined && wakeSuppressesDeadline)
       ? { quotaResumesAt: undefined }
       : {};
   // Same cross-turn, wait-stamp and moved-deadline rules as applyReadResponse:
@@ -1349,6 +1389,16 @@ export function applyReadModel<M extends ThreadModel>(
   // reporting waits, so a later no-wait read does not unsay it.
   const keptQuotaReadReportsWaits =
     base.quotaReadReportsWaits || fresh.quotaReadReportsWaits ? { quotaReadReportsWaits: true } : {};
+  // A retired turn's retirement ends the moment the turn runs again: a
+  // remote relay's exhausted-redial idle retires the turn, and the daemon's
+  // recovery read names the same turn running (its wait's summary riding the
+  // thread) - the marker exists to reject queued deliveries against a turn
+  // the pane watched end, and a read that shows the turn running ends that
+  // judgment, or the turn's own zero-delay wake is rejected next.
+  const clearedRetiredQuotaTurn =
+    freshRunningTurnId !== undefined && freshRunningTurnId === model.retiredQuotaTurn
+      ? { retiredQuotaTurn: undefined }
+      : {};
   let next = withDisplay(
     {
       ...base,
@@ -1358,6 +1408,7 @@ export function applyReadModel<M extends ThreadModel>(
       ...clearedQuotaWait,
       ...clearedQuotaRetry,
       ...keptQuotaReadReportsWaits,
+      ...clearedRetiredQuotaTurn,
       ...(freshRunningTurnId ? { runningTurnId: freshRunningTurnId } : {}),
       olderCursor,
       olderFrontier,
