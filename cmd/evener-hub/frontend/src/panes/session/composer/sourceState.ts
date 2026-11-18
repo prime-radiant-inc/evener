@@ -65,13 +65,12 @@ export interface ComposerSourceSnapshot {
   skillNames: string[];
   commandNames: string[];
   mentions?: ComposerMention[];
-  /** Image anchors this source read out of a draft it did not write, kept
-   * only while `text` still spells them (updateText prunes). In memory and
-   * per source on purpose: bytes never enter localStorage, so this cannot be
-   * a persisted fact about what some other writer held, and it must not
-   * outlive the pair it describes - an adopting source re-reads the text with
-   * its own store, never a remembered flag (submitProtocol's
-   * unbackedImageMarkersIn). */
+  /** Image anchors a draft's writer STAGED that this source holds no bytes
+   * for. Provenance, not a claim about the current text: it is intersected
+   * with whatever the text spells at the moment of sending (submitProtocol's
+   * unbackedImageMarkersIn), so deleting an anchor clears the refusal and an
+   * editor undo that restores it brings the refusal back. It never contains a
+   * marker the writer typed, which is what keeps literal prose sendable. */
   adoptedImageMarkers: number[];
   activeRecoveryId: string | null;
   recoveryActivating: boolean;
@@ -149,6 +148,21 @@ export function restoredSkillNames(value: SkillEditorValue): string[] {
   return serializeSkillDocument(parseSkillDocument(value)).skillNames;
 }
 
+/** The anchors a persisted record says its writer staged whose bytes cannot
+ * have travelled with it. A marker is staged with a revision only when a
+ * staging gesture wrote it AND appended the tile holding its bytes; typed or
+ * pasted marker text never enters that list, and a record from an older build
+ * carries none at all. So this is the one place a reader can tell an anchor
+ * whose image is missing from literal prose that merely looks like one - at
+ * BOTH entry points, since which writer produced the record does not change
+ * the answer once the bytes are gone. */
+function adoptedAnchorsIn(draft: { text: string; stagedImageMarkers?: number[] }): number[] {
+  const staged = draft.stagedImageMarkers;
+  if (staged === undefined || staged.length === 0) return [];
+  const spelled = new Set(spelledImageMarkers(draft.text));
+  return [...new Set(staged)].filter((marker) => spelled.has(marker)).sort((left, right) => left - right);
+}
+
 function recoveryCompositionRevision(record: MutationRecoveryRecord): number {
   const revision = (record as MutationRecoveryRecord & { compositionRevision?: unknown }).compositionRevision;
   return typeof revision === "number" && Number.isSafeInteger(revision) && revision >= 0 ? revision : 0;
@@ -198,12 +212,12 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     skillNames: restoredSkillNames(initial),
     commandNames: initial.commandNames ?? [],
     mentions: initial.mentions,
-    // The constructor's read is not an adoption: a fresh source cannot tell a
-    // staged anchor from literal prose a person typed before a reload, and
-    // guessing "anchor" refuses a working draft. Only bindEditor's rebind -
-    // where this source still lives and another writer moved the draft under
-    // it - knows the text is not its own.
-    adoptedImageMarkers: [],
+    // A fresh source holds no bytes: attachments are per-mount. So the anchors
+    // this record's writer staged are exactly the anchors whose image is gone
+    // here, whether this ref mounted for the first time or was remounted after
+    // a reload. The record is the provenance; a marker it does not name is
+    // literal prose and stays sendable.
+    adoptedImageMarkers: adoptedAnchorsIn(initial),
     activeRecoveryId: null,
     recoveryActivating: false,
     recoveryOperationBusy: false,
@@ -308,17 +322,13 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     if (disposed) return;
     if (text.trim() !== "") cancelCleanupRetry();
     textRef.current = text;
-    // An adopted anchor stops being adopted the moment the text stops naming
-    // it: the person deleted the reference this composer could not back, and
-    // a marker typed afterwards is their own prose, not the adopted anchor.
-    const previous = state.getState().adoptedImageMarkers;
-    if (previous.length === 0) {
-      state.setState({ text });
-      return;
-    }
-    const spelled = new Set(spelledImageMarkers(text));
-    const retained = previous.filter((marker) => spelled.has(marker));
-    state.setState(retained.length === previous.length ? { text } : { text, adoptedImageMarkers: retained });
+    // The adopted set is provenance, not state about the current text: it is
+    // intersected with whatever the text spells at the moment of sending
+    // (submitProtocol's unbackedImageMarkersIn). Deleting an anchor therefore
+    // clears the refusal on its own, and an editor undo that brings the
+    // occurrence back restores it - there is no separate record an undo could
+    // fail to restore.
+    state.setState({ text });
   }
   function updateSkillNames(skillNames: string[]): void {
     if (disposed) return;
@@ -368,11 +378,25 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   }
   function persistDraft(text: string): void {
     if (disposed) return;
+    // Which of this text's markers were STAGED by a writer that held bytes:
+    // the tiles this composer holds, plus any adoption it carries forward (a
+    // reader that adopted a writer's anchors keeps that provenance when it
+    // edits the prose around them, so an undo or a reload still knows they
+    // were staged). Filtered to what this text spells, so a marker the person
+    // has removed or retyped never travels as provenance. Typed markers are in
+    // neither source, which is why literal prose stays sendable.
+    const spelled = new Set(spelledImageMarkers(text));
+    const staged = [
+      ...new Set([...operations.items.map((item) => item.marker), ...state.getState().adoptedImageMarkers]),
+    ]
+      .filter((marker) => spelled.has(marker))
+      .sort((left, right) => left - right);
     currentDraftRevisionId = writeComposerDraft(ref, {
       text,
       skillNames: skillNamesRef.current,
       ...(selectionMetaRef.current.commandNames.length ? { commandNames: selectionMetaRef.current.commandNames } : {}),
       ...(selectionMetaRef.current.mentions ? { mentions: selectionMetaRef.current.mentions } : {}),
+      ...(staged.length > 0 ? { stagedImageMarkers: staged } : {}),
     });
     ownedDraftRevisionRef.current = readDraftRevision(ref);
   }
@@ -653,6 +677,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
               skipLocalDraft ? [] : skillNamesRef.current,
               skipLocalDraft ? [] : selectionMetaRef.current.commandNames,
               skipLocalDraft ? undefined : selectionMetaRef.current.mentions,
+              skipLocalDraft ? undefined : state.getState().adoptedImageMarkers,
             );
           };
           const merged = merge();
@@ -710,6 +735,11 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
           updateText(latest.text);
           updateSkillNames(restoredSkillNames(latest));
           updateSelectionMeta(latest);
+          // The merge keeps an adopted occurrence spelled at its own number
+          // while moving the tile that number used to own, so the record has to
+          // survive the merge intact for the send-time check to refuse it
+          // (composerRecovery's adoptedImageMarkers).
+          state.setState({ adoptedImageMarkers: latest.adoptedImageMarkers ?? [] });
           operations.replaceWithSettled(latest.attachments);
           markRestore();
           committedRecoveryComposition = recoveryCompositionFingerprint({
@@ -870,6 +900,14 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   }
   const unsubscribeAttachments = attachments.subscribe(() => {
     if (operations.items.length > 0) cancelCleanupRetry();
+    // A staging gesture writes "[image N]" into the text BEFORE the tile that
+    // holds the bytes exists, so that text change persists a record with no
+    // provenance for the marker it just wrote. The tile landing (or being
+    // removed) is what makes the marker staged-with-bytes, so the record is
+    // rewritten here - otherwise a reload between those two moments would leave
+    // a marker nothing claims as staged, and the next reader would send it as
+    // literal text (#4826's under-adoption direction).
+    if (currentRecoveryId() === null && ownsDraft()) persistDraft(textRef.current);
     persistDetachedRecovery();
   });
   const unsubscribeDraft = state.subscribe(persistDetachedRecovery);
@@ -912,12 +950,11 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
         updateSelectionMeta(draft);
         currentDraftRevisionId = draft.revisionId;
         ownedDraftRevisionRef.current = readDraftRevision(ref);
-        // The one point this source learns the draft is not its own: the
-        // revision it last held is gone, so another writer produced this text.
-        // Record which anchors that text names and let the send-time check ask
-        // whether this composer's store backs them - the pair as it stands,
-        // never a remembered number.
-        state.setState({ adoptedImageMarkers: spelledImageMarkers(draft.text) });
+        // The revision this source last held is gone, so another writer
+        // produced this text. Which of its markers that writer STAGED is the
+        // record's own provenance - not every marker the text happens to
+        // spell, which would refuse prose a person typed.
+        state.setState({ adoptedImageMarkers: adoptedAnchorsIn(draft) });
       }
       markRestore();
       boundEditor = nextEditor;

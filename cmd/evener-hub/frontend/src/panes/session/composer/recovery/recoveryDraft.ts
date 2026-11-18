@@ -14,6 +14,11 @@ export interface RecoveredComposerDraft {
   skillNames: string[];
   commandNames?: string[];
   mentions?: ComposerMention[];
+  /** The markers this draft's text names that its own writer did not stage
+   * (see ComposerComposition.adoptedImageMarkers). Carried through a merge so
+   * the adopted occurrence stays distinguishable from an attachment-owned one
+   * at the same number. */
+  adoptedImageMarkers?: number[];
 }
 
 const unavailableImageReferences = new WeakSet<RecoveredComposerDraft>();
@@ -76,6 +81,7 @@ export function mergeRecoveryComposerDraft(
   currentSkillNames: readonly string[] = [],
   currentCommandNames: readonly string[] = [],
   currentMentions?: readonly ComposerMention[],
+  currentAdoptedImageMarkers?: readonly number[],
 ): RecoveredComposerDraft {
   // skillDocument is browser-owned parsing state. The shared merge accepts
   // explicit UTF-16 locations, so this wrapper fills either missing side with
@@ -102,6 +108,7 @@ export function mergeRecoveryComposerDraft(
       skillNames: [...currentSkillNames],
       commandNames: [...currentCommandNames],
       ...(currentLocations !== undefined ? { mentions: [...currentLocations] } : {}),
+      ...(currentAdoptedImageMarkers?.length ? { adoptedImageMarkers: [...currentAdoptedImageMarkers] } : {}),
     },
     {
       text: recovered.text,
@@ -109,6 +116,7 @@ export function mergeRecoveryComposerDraft(
       skillNames: recovered.skillNames,
       commandNames: recovered.commandNames ?? [],
       ...(recoveredLocations !== undefined ? { mentions: [...recoveredLocations] } : {}),
+      ...(recovered.adoptedImageMarkers?.length ? { adoptedImageMarkers: [...recovered.adoptedImageMarkers] } : {}),
       imageReferences: unavailableImageReferences.has(recovered) ? "unavailable" : "recorded",
     },
   );
@@ -119,5 +127,6 @@ export function mergeRecoveryComposerDraft(
     skillNames: merged.skillNames,
     ...(merged.commandNames.length ? { commandNames: merged.commandNames } : {}),
     ...(merged.mentions ? { mentions: merged.mentions } : {}),
+    ...(merged.adoptedImageMarkers?.length ? { adoptedImageMarkers: [...merged.adoptedImageMarkers] } : {}),
   };
 }

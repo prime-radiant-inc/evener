@@ -29,8 +29,10 @@ import {
   installStalledDecodeStub,
   mountComposer,
   mountComposerWithHandle,
+  pendingAskTurns,
   seedRejectedRecovery,
   seedRejectedRecoveryWithAttachment,
+  steerButton,
   submitButton,
   testThread,
   textarea,
@@ -875,4 +877,135 @@ test("a marker the person typed with no attachment still sends as literal text",
   if (call === undefined) throw new Error("expected the typed marker to send");
   const input = (call.params as { input: Array<{ type: string; text?: string }> }).input;
   expect(input).toEqual([{ type: "text", text: "look at [image 1]" }]);
+});
+
+// Review M2: removing two missing references around a selected COMMAND must
+// not turn that command into plain text. A command has no skill of the same
+// name to re-derive from, so its chip exists only while the draft's own
+// mention carries it - which is exactly what one write covering both deletions
+// destroys: patchSelectionText reads the write as a single replacement span and
+// drops every atom inside it.
+test("removing two missing references preserves a selected command between them", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_unbacked_around_command";
+  writeComposerDraft(ref, {
+    text: "[image 1] /inspect [image 2]",
+    skillNames: [],
+    commandNames: ["inspect"],
+    mentions: [{ kind: "command", name: "inspect", offset: 10 }],
+    stagedImageMarkers: [1, 2],
+  });
+  await mountComposer(ref, {
+    evener: {
+      ref,
+      capabilities: { ...FULL_CAPABILITIES, commandInput: true },
+      queue: { revision: 0 },
+    },
+  });
+  expect(within(textarea()).getAllByTestId("composer-command-chip")).toHaveLength(1);
+  expect(screen.getByTestId("composer-unbacked-image")).toBeTruthy();
+
+  await user.click(screen.getByRole("button", { name: "Remove the reference" }));
+
+  // Both anchors are gone and the command is still an atom in its new place.
+  expect(screen.queryByTestId("composer-unbacked-image")).toBeNull();
+  expect(within(textarea()).getAllByTestId("composer-command-chip")).toHaveLength(1);
+  const draft = readComposerDraft(ref);
+  expect(draft.text).toBe(" /inspect ");
+  expect(draft.commandNames).toEqual(["inspect"]);
+  expect(draft.mentions).toEqual([{ kind: "command", name: "inspect", offset: 1 }]);
+});
+
+// Review M3: deleting the missing reference clears the refusal while it is
+// absent, and when the occurrence comes back the refusal must come back with
+// it. ProseMirror restores the TEXT, not the composer's provenance, so the
+// record has to outlive the deletion rather than be pruned with it.
+test("an occurrence restored after the repair refuses again", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_unbacked_undo";
+  writeComposerDraft(ref, { text: "kept [image 1]", skillNames: [], stagedImageMarkers: [1] });
+  const fake = await mountComposer(ref);
+  const delivered: unknown[] = [];
+  fake.on("turn/start", (params) => {
+    delivered.push(params.input);
+    return {
+      receipt: appliedReceipt(params.clientMutationId, "thread_a"),
+      turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+    };
+  });
+  expect(screen.getByTestId("composer-unbacked-image")).toBeTruthy();
+
+  await user.click(screen.getByRole("button", { name: "Remove the reference" }));
+  await waitFor(() => expect(textarea().textContent).toBe("kept "));
+  expect(screen.queryByTestId("composer-unbacked-image")).toBeNull();
+  await waitFor(() => expect(submitButton().disabled).toBe(false));
+
+  // The editor restores the occurrence - what an undo does to the document,
+  // which is the only half of the pair the document owns. (Driving ProseMirror's
+  // own undo keybinding is not reliable under jsdom; this seam is the same text
+  // change it produces.)
+  replaceEditorText(textarea(), "kept [image 1]");
+  await waitFor(() => expect(textarea().textContent).toBe("kept [image 1]"));
+  expect(screen.getByTestId("composer-unbacked-image")).toBeTruthy();
+  await waitFor(() => expect(submitButton().disabled).toBe(true));
+
+  fireEvent.submit(screen.getByTestId("composer-form"));
+  await flushPendingTurnsProjectionForTests();
+  expect(delivered).toEqual([]);
+});
+
+// Review L2: while an agent question is pending the composer's own surface is
+// hidden and inert, so the repair beside it must not be reachable - it edits a
+// draft the person cannot see. It is gated on the same askPending the editor
+// is, so resolving the question brings it back (the ungated tests above cover
+// that half).
+test("the missing-reference repair is unreachable while an agent question is pending", async () => {
+  const ref = "ref_unbacked_ask";
+  writeComposerDraft(ref, { text: "kept [image 1]", skillNames: [], stagedImageMarkers: [1] });
+  const fake = await mountComposer(ref, {
+    status: { type: "active" },
+    evener: {
+      ref,
+      capabilities: FULL_CAPABILITIES,
+      queue: { revision: 0 },
+      activeTurnId: "turn_1",
+      askPending: true,
+    },
+    ...pendingAskTurns(),
+  } as never);
+
+  // The gated editor is not on screen at all, and neither is the repair.
+  expect(screen.queryByRole("textbox", { name: "Message" })).toBeNull();
+  expect(screen.queryByTestId("composer-unbacked-image")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Remove the reference" })).toBeNull();
+  expect(readComposerDraft(ref)).toEqual({ text: "kept [image 1]", skillNames: [] });
+  expect(fake.calls.filter((call) => call.method === "turn/start")).toEqual([]);
+});
+
+// Review L3: an adopted missing image leaves Steer with nothing it can do, so
+// both Steer surfaces must say so instead of accepting a press that silently
+// returns. The press-time guard stays for the keyboard chord.
+test("steer states the missing-reference refusal rather than silently returning", async () => {
+  const user = userEvent.setup();
+  const ref = "ref_unbacked_steer";
+  writeComposerDraft(ref, { text: "kept [image 1]", skillNames: [], stagedImageMarkers: [1] });
+  const fake = await mountComposer(ref, {
+    status: { type: "active" },
+    evener: {
+      ref,
+      capabilities: FULL_CAPABILITIES,
+      queue: { revision: 0 },
+      activeTurnId: "turn_1",
+    },
+  });
+
+  const steer = steerButton();
+  expect(steer.getAttribute("aria-disabled")).toBe("true");
+  await user.click(steer);
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "turn/steer")).toEqual([]);
+  // The chord still reaches the press-time guard, and names its reason.
+  fireEvent.keyDown(textarea(), { key: "Enter", shiftKey: true });
+  await flushPendingTurnsProjectionForTests();
+  expect(fake.calls.filter((call) => call.method === "turn/steer")).toEqual([]);
 });

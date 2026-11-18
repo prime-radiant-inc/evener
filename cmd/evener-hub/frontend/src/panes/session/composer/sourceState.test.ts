@@ -13,6 +13,7 @@ import { createTestComposerSource } from "../testing/composerSource";
 import { installControlledImageEncoding } from "../testing/imageEncoding";
 import { createAttachmentOperations, useAttachments } from "./attachments/useAttachments";
 import {
+  composerDraftStorageKey,
   draftStorageKey,
   markDraftEdited,
   readComposerDraft,
@@ -21,6 +22,7 @@ import {
   writeComposerDraft,
 } from "./draft";
 import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
+import { unbackedImageMarkersIn } from "./submitProtocol";
 
 beforeEach(() => {
   installLocalStorage(new MemoryStorage());
@@ -456,27 +458,18 @@ test("rebound composer adopts and consumes the exact persisted draft revision on
   }
 });
 
-// Issue #4826 at the seam the send-time check reads: a rebind that finds a
-// draft revision it no longer owns records the anchors that text spells, and
-// drops an anchor as soon as an edit stops naming it. A fresh source records
-// nothing, because its constructor read cannot tell a staged anchor from prose
-// typed before a reload.
-test("a rebind records the adopted draft's anchors and prunes them on edit", () => {
+// Issue #4826, direction one: a marker the OTHER writer typed is prose, not a
+// staged anchor, so adopting the draft must not put it in the record. A rebind
+// that recorded every marker the text spelled would offer to delete valid
+// prose and block Send on it.
+test("a rebind does not adopt a marker the other writer typed", () => {
   const source = createTestComposerSource("root");
   const detach = source.bindEditor({ read: () => source.editor.read(), write: () => {} });
   detach();
-  writeComposerDraft("root", { text: "Cascade reader draft[image 1][image 2]", skillNames: [] });
+  writeComposerDraft("root", { text: "Cascade reader draft[image 1]", skillNames: [] });
   const unbind = source.bindEditor({ read: () => source.editor.read(), write: () => {} });
   try {
-    expect(source.getSnapshot().text).toBe("Cascade reader draft[image 1][image 2]");
-    expect(source.getSnapshot().adoptedImageMarkers).toEqual([1, 2]);
-    // An image this source stages afterwards backs nothing: the adopted text is
-    // another writer's, so the send-time check must still see the anchors.
-    source.editText("Cascade reader draft[image 1][image 2] plus more");
-    expect(source.getSnapshot().adoptedImageMarkers).toEqual([1, 2]);
-    source.editText("Cascade reader draft[image 2]");
-    expect(source.getSnapshot().adoptedImageMarkers).toEqual([2]);
-    source.editText("Cascade reader draft");
+    expect(source.getSnapshot().text).toBe("Cascade reader draft[image 1]");
     expect(source.getSnapshot().adoptedImageMarkers).toEqual([]);
   } finally {
     unbind();
@@ -484,12 +477,73 @@ test("a rebind records the adopted draft's anchors and prunes them on edit", () 
   }
 });
 
-test("a fresh source records no adopted anchors for a persisted draft", () => {
-  writeComposerDraft("root", { text: "look at [image 1]", skillNames: [] });
+// Issue #4826, direction two: the writer STAGED that anchor with this very
+// revision, so its bytes are gone with it even though this reader never saw
+// the writer. A fresh source that records nothing leaks the orphaned marker
+// onto the wire as literal text.
+test("a fresh source adopts an anchor the record says its writer staged", () => {
+  writeComposerDraft("root", { text: "look at [image 1]", skillNames: [], stagedImageMarkers: [1] });
   const source = createTestComposerSource("root");
   try {
     expect(source.getSnapshot().text).toBe("look at [image 1]");
+    expect(source.getSnapshot().adoptedImageMarkers).toEqual([1]);
+  } finally {
+    source.dispose();
+  }
+});
+
+// A legacy record carries no provenance: nothing there can say a marker was
+// staged, so its markers stay prose and keep sending.
+test("a draft written before provenance existed adopts nothing", () => {
+  localStorage.setItem(composerDraftStorageKey("root"), JSON.stringify({ text: "[image 3] hi", skillNames: [] }));
+  const source = createTestComposerSource("root");
+  try {
     expect(source.getSnapshot().adoptedImageMarkers).toEqual([]);
+  } finally {
+    source.dispose();
+  }
+});
+
+// The record names a marker the text no longer spells: the writer removed the
+// anchor before this reader got here, so there is nothing to refuse.
+test("staged provenance for a marker the text does not spell adopts nothing", () => {
+  writeComposerDraft("root", { text: "just prose", skillNames: [], stagedImageMarkers: [2] });
+  const source = createTestComposerSource("root");
+  try {
+    expect(source.getSnapshot().adoptedImageMarkers).toEqual([]);
+  } finally {
+    source.dispose();
+  }
+});
+
+// Issue #4826's M3: the record survives an edit that stops spelling the anchor,
+// so an undo (which restores the text, not the record) brings the refusal back.
+// Deleting the anchor must clear the refusal on its own while it is absent.
+test("adoption survives an edit so undo can restore the refusal", () => {
+  writeComposerDraft("root", { text: "kept [image 1]", skillNames: [], stagedImageMarkers: [1] });
+  const source = createTestComposerSource("root");
+  try {
+    expect(unbackedImageMarkersIn(source.getSnapshot().text, source.getSnapshot().adoptedImageMarkers)).toEqual([1]);
+    source.editText("kept ");
+    expect(unbackedImageMarkersIn(source.getSnapshot().text, source.getSnapshot().adoptedImageMarkers)).toEqual([]);
+    expect(source.getSnapshot().adoptedImageMarkers).toEqual([1]);
+    source.editText("kept [image 1]");
+    expect(unbackedImageMarkersIn(source.getSnapshot().text, source.getSnapshot().adoptedImageMarkers)).toEqual([1]);
+  } finally {
+    source.dispose();
+  }
+});
+
+// A live reader that staged the image itself owns the draft revision, so no
+// adoption runs and its anchor sends with the bytes it holds. (The payload
+// direction of this case is Composer.attachments.test.tsx's "a composer
+// holding the image bytes sends the marker with its image item".)
+test("an owning reader never adopts its own staged anchor", () => {
+  const source = createTestComposerSource("root");
+  try {
+    source.persistDraft("mine [image 1]");
+    expect(source.getSnapshot().adoptedImageMarkers).toEqual([]);
+    expect(unbackedImageMarkersIn(source.getSnapshot().text, source.getSnapshot().adoptedImageMarkers)).toEqual([]);
   } finally {
     source.dispose();
   }

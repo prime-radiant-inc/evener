@@ -72,17 +72,19 @@ export function spelledImageMarkers(text: string): number[] {
 /**
  * The adopted image anchors a request would carry with no image behind them.
  *
- * `adopted` is the set of markers this composer read out of a draft it did
- * not write (sourceState's bindEditor adoption), and it is the only thing that
- * may refuse a send. A marker the person typed is prose: it never enters
+ * `adopted` is the set of markers a draft's WRITER staged whose bytes this
+ * composer does not hold - the provenance a persisted draft carries with its
+ * revision, read on mount and on rebind alike. It is the only thing that may
+ * refuse a send. A marker the person typed is prose: it never enters
  * `adopted`, so it keeps sending as the literal text it is.
  *
  * The test is a pair read at the moment of sending - the outgoing text and
- * that same adoption record - never a remembered backed/unbacked flag. A
- * persisted set of numbers cannot tell an anchor from retyped prose after a
- * renumbering merge; here the record is the admission itself, taken from the
- * revision that arrived under this source and pruned by the source as soon as
- * its text stops spelling the marker.
+ * that same adoption record - never a remembered backed/unbacked flag. What
+ * the record says is which occurrences the writing side STAGED; which of them
+ * are still spelled is read from the live text here, so an edit that removes
+ * one stops refusing and an undo that restores it starts refusing again. A
+ * marker number alone could never do that job after a renumbering merge,
+ * where the same number can name a different occurrence entirely.
  *
  * The attachment store deliberately has no say. Staging writes "[image N]"
  * into the text AND appends the tile in the same gesture, so a tile can only

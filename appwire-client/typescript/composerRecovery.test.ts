@@ -258,3 +258,47 @@ test("legacyLiteralNeverCapturesATile", () => {
     }
   }
 });
+
+// The worst shape #4826's review named: a reader holds its OWN old tile 1,
+// adopts another reader's "[image 1]" (whose bytes never travelled), and then
+// edits a queued message whose prose also says "[image 1]". A merge that
+// renumbered by number alone would move the tile to 2 and rewrite BOTH
+// occurrences to "[image 2]" - the adopted anchor then sends the retained
+// tile's bytes, and the repair that removes the "missing" reference deletes
+// the queued prose. Adoption is what tells the two occurrences apart.
+test("adoptedOccurrenceSurvivesAQueuedLiteralBesideARetainedTile", () => {
+  const currentText = "adopted [image 1] prose";
+  const current: ComposerComposition<InputAttachment> = {
+    text: currentText,
+    attachments: [{ marker: 1, name: "retained.png", mediaType: "image/png", data: "RETAINED_BYTES" }],
+    skillNames: [],
+    commandNames: [],
+    // Another writer staged this marker and the bytes stayed with them.
+    adoptedImageMarkers: [1],
+  };
+  const queuedText = "queued prose says [image 1]";
+  const recovered = recoverMutationComposition(mutationRecord([{ type: "text", text: queuedText }]));
+
+  const merged = mergeComposerCompositions(current, recovered);
+  const wire = buildComposerInput(merged.text, merged.attachments, merged.skillNames, merged.commandNames);
+
+  // The queued prose keeps the number it names, untouched.
+  expect(merged.text).toContain(queuedText);
+  // The adopted occurrence moved off that number; the retained tile moved too,
+  // so the anchor is not backed by the old image's bytes.
+  expect(merged.attachments.map((image) => image.marker)).toEqual([2]);
+  const adoptedMarker = merged.adoptedImageMarkers?.[0];
+  if (adoptedMarker === undefined) throw new Error("expected the adopted occurrence to keep its provenance");
+  expect(adoptedMarker).not.toBe(1);
+  // Exactly one occurrence still says "[image 1]" - the queued prose - so the
+  // repair can only ever remove the text the person just edited back in.
+  expect(merged.text.match(/\[image 1\]/g)?.length).toBe(1);
+  // And the adopted anchor is the one occurrence nothing on the wire backs:
+  // the retained tile moved off 1 too, so no text names its number and its
+  // bytes are never translated into a reference the adopted anchor sits on.
+  // (It still travels as its own image part, which is the pre-existing
+  // behavior for a staged tile whose text reference was edited away.)
+  expect(merged.text).not.toContain("[image 2]");
+  expect(wire.find((item) => item.type === "text")?.text).not.toContain("(attached image");
+  expect(wire.filter((item) => item.type === "image").map((item) => item.data)).toEqual(["RETAINED_BYTES"]);
+});

@@ -41,6 +41,15 @@ export interface ComposerDraft extends SkillEditorValue {
   // one is carried to the other (see carryComposerDraft). Absent on records an
   // older build wrote.
   editedAt?: number;
+  // The image markers the writer staged WITH THIS REVISION: a marker enters
+  // this list only when a staging gesture wrote "[image N]" into the text and
+  // appended the tile that holds its bytes. Typed or pasted marker text never
+  // enters it, which is what lets a reader tell an orphaned anchor (this
+  // composer has the text, not the bytes) from literal prose. Bytes never
+  // enter localStorage, so a marker named here is one whose bytes are
+  // guaranteed absent to whoever reads this record next. Absent on records an
+  // older build wrote: no provenance, so its markers stay prose.
+  stagedImageMarkers?: number[];
 }
 
 // A remount inherits the same draft revision. Editing or replacing its
@@ -124,6 +133,9 @@ function isStoredComposerDraft(value: unknown): value is ComposerDraft {
       (Array.isArray(record.commandNames) && record.commandNames.every((name) => typeof name === "string"))) &&
     (record.editedAt === undefined || typeof record.editedAt === "number") &&
     (record.revisionId === undefined || typeof record.revisionId === "string") &&
+    (record.stagedImageMarkers === undefined ||
+      (Array.isArray(record.stagedImageMarkers) &&
+        record.stagedImageMarkers.every((marker) => Number.isSafeInteger(marker) && marker > 0))) &&
     (record.mentions === undefined ||
       (Array.isArray(record.mentions) &&
         record.mentions.every(
@@ -147,7 +159,12 @@ function isStoredComposerDraft(value: unknown): value is ComposerDraft {
 // value is never JSON-decoded to guess selections and no slash mention in it
 // is ever inferred as a selection - an old draft is exactly the text it was.
 export function readComposerDraft(ref: string): ComposerDraft {
-  const { revisionId: _revisionId, ...draft } = readComposerDraftSnapshot(ref);
+  // Both fields describe this snapshot's IDENTITY and ownership, not the
+  // draft's content: revisionId says which write produced it, stagedImageMarkers
+  // says which of its markers a writer with bytes staged. Callers that need
+  // them read readComposerDraftSnapshot; a caller composing or rendering a
+  // draft gets only what the person sees.
+  const { revisionId: _revisionId, stagedImageMarkers: _staged, ...draft } = readComposerDraftSnapshot(ref);
   return draft;
 }
 
@@ -173,6 +190,7 @@ export function readComposerDraftSnapshot(ref: string): ComposerDraft {
           ...(parsed.commandNames ? { commandNames: canonicalSkillNames(parsed.commandNames) } : {}),
           ...(parsed.mentions ? { mentions: parsed.mentions } : {}),
           ...(parsed.revisionId ? { revisionId: parsed.revisionId } : {}),
+          ...(parsed.stagedImageMarkers ? { stagedImageMarkers: parsed.stagedImageMarkers } : {}),
         };
       }
     }
@@ -256,7 +274,9 @@ export function readComposerDraftRevisionId(ref: string): string | undefined {
 // Explicit atoms follow their visible labels across text edits. Names-only
 // drafts retain their selections independently of the prose.
 export function writeDraft(ref: string, value: string): void {
-  const current = readComposerDraft(ref);
+  // The snapshot, not readComposerDraft: a text-only edit must not drop the
+  // provenance its markers carry, or the next reader would send them as prose.
+  const current = readComposerDraftSnapshot(ref);
   writeComposerDraft(ref, current.mentions ? patchSelectionText(current, value) : { ...current, text: value });
 }
 
@@ -285,9 +305,13 @@ export function clearDraft(ref: string): void {
 // sourceState and the new pane starts with none.
 export function carryComposerDraft(fromRef: string, toRef: string): void {
   if (fromRef === toRef) return;
-  const from = readComposerDraft(fromRef);
+  // The snapshots, not readComposerDraft: the destination composer stages no
+  // tiles, so every carried marker's bytes are already gone and its provenance
+  // must travel with the text or the new composer would send the anchor as
+  // prose (#4826).
+  const from = readComposerDraftSnapshot(fromRef);
   if (isBlankDraft(from)) return;
-  const to = readComposerDraft(toRef);
+  const to = readComposerDraftSnapshot(toRef);
   if (!isBlankDraft(to) && readDraftEditedAt(fromRef) <= readDraftEditedAt(toRef)) return;
   writeComposerDraft(toRef, from);
 }

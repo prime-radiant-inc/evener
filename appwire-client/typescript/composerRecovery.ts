@@ -9,6 +9,16 @@ export interface ComposerComposition<A extends { marker: number }> {
   skillNames: string[];
   commandNames: string[];
   mentions?: ComposerMention[];
+  /**
+   * Markers whose occurrences in THIS text came from another writer's draft
+   * rather than from this composition's own staging. They belong to no
+   * attachment here: the bytes never travelled with the text, so a tile at the
+   * same number is a different image (see the web composer's
+   * unbackedImageMarkersIn). A merge must leave them alone when it detaches a
+   * tile from a number an incoming literal also spells, or the renumber would
+   * rewrite the adopted prose into a reference carrying somebody else's bytes.
+   */
+  adoptedImageMarkers?: readonly number[];
 }
 
 export interface RecoveredComposition<A extends { marker: number }> extends ComposerComposition<A> {
@@ -122,6 +132,7 @@ export function mergeComposerCompositions<A extends { marker: number }>(
   let currentText = current.text;
   let currentAttachments = [...current.attachments];
   let currentMentions = current.mentions?.map((mention) => ({ ...mention }));
+  const adopted = new Set(current.adoptedImageMarkers ?? []);
   const recoveredAttachmentMarkers = new Set(recovered.attachments.map((attachment) => attachment.marker));
   const literalMarkers = new Set(
     markerNumbers(recovered.text).filter(
@@ -142,7 +153,14 @@ export function mergeComposerCompositions<A extends { marker: number }>(
       }
     }
     if (currentMapping.size > 0) {
-      const remapped = remapMarkers(currentText, currentMapping);
+      // Only an occurrence this composition's own staging wrote belongs to the
+      // tile being detached. An adopted occurrence at the same number is
+      // another writer's prose: leaving it spelled keeps the send-time check
+      // refusing THAT occurrence, and keeps an incoming literal's repair from
+      // deleting the wrong text. The tile still moves, so an incoming literal
+      // can never be paired with this tile's bytes.
+      const ownedMapping = new Map([...currentMapping].filter(([marker]) => !adopted.has(marker)));
+      const remapped = remapMarkers(currentText, ownedMapping);
       currentText = remapped.text;
       currentMentions = shiftedMentions(currentMentions, remapped.shifts);
       currentAttachments = currentAttachments.map((attachment) => {
@@ -150,6 +168,32 @@ export function mergeComposerCompositions<A extends { marker: number }>(
         return marker === undefined ? attachment : { ...attachment, marker };
       });
     }
+  }
+
+  // An adopted occurrence at a number an incoming literal also spells is the
+  // one case a number cannot settle: the text would hold two occurrences of
+  // "[image N]" with different owners, and the repair that removes the missing
+  // one would find whichever came first. The adopted occurrence has no bytes
+  // anywhere, so its number carries no meaning worth keeping - move it to a
+  // free one. The refusal follows it there, and the incoming prose keeps the
+  // number it actually names.
+  const spelledHere = new Set(markerNumbers(currentText));
+  const adoptedCollisions = new Set(
+    [...adopted].filter((marker) => literalMarkers.has(marker) && spelledHere.has(marker)),
+  );
+  let adoptedAfterMerge = new Set(adopted);
+  if (adoptedCollisions.size > 0) {
+    const used = new Set([
+      ...markerNumbers(currentText),
+      ...currentAttachments.map((attachment) => attachment.marker),
+      ...literalMarkers,
+    ]);
+    const adoptedMapping = new Map<number, number>();
+    for (const marker of adoptedCollisions) adoptedMapping.set(marker, nextUnusedMarker(used));
+    const remapped = remapMarkers(currentText, adoptedMapping);
+    currentText = remapped.text;
+    currentMentions = shiftedMentions(currentMentions, remapped.shifts);
+    adoptedAfterMerge = new Set([...adopted].map((marker) => adoptedMapping.get(marker) ?? marker));
   }
 
   const used = new Set([
@@ -181,12 +225,22 @@ export function mergeComposerCompositions<A extends { marker: number }>(
     ? [...(currentMentions ?? []), ...shiftedMentions(recovered.mentions, remappedRecovered.shifts, appendOffset)]
     : undefined;
 
+  // Adoption survives the merge unchanged: those occurrences are still in the
+  // text, still backed by nothing here, and still the send-time check's to
+  // refuse. The recovered side carries its own provenance as
+  // imageReferences, which the browser wrapper already classifies.
+  // Provenance the merged text no longer spells belongs to no occurrence: keep
+  // the record exact, so a marker typed later is never mistaken for the anchor
+  // this composition adopted (the over-adoption half of the same bug).
+  const mergedSpelled = new Set(markerNumbers(text));
+  const mergedAdopted = [...adoptedAfterMerge].filter((marker) => mergedSpelled.has(marker)).sort((a, b) => a - b);
   return {
     text,
     attachments: [...currentAttachments, ...recoveredAttachments],
     skillNames: canonicalSkillNames([...current.skillNames, ...recovered.skillNames]),
     commandNames: canonicalSkillNames([...current.commandNames, ...recovered.commandNames]),
     ...(mentions !== undefined ? { mentions } : {}),
+    ...(mergedAdopted.length > 0 ? { adoptedImageMarkers: mergedAdopted } : {}),
   };
 }
 
