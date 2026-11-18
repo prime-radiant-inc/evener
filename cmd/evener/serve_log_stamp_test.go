@@ -376,18 +376,23 @@ func TestTurnOutcomeRecordsNeverBlockOnAStalledSink(t *testing.T) {
 // no await, no retry, nothing left to chance.
 func TestServeDiagnosticSpoolDrainsAnAcceptedLineOnClose(t *testing.T) {
 	t.Parallel()
-	var sink bytes.Buffer
-	spool := newServeDiagnosticSpool(&sink)
-	spool.Logf("session-1", "the line the daemon stopped for")
-	spool.Close()
+	synctest.Test(t, func(t *testing.T) {
+		var sink bytes.Buffer
+		spool := newServeDiagnosticSpool(&sink)
+		spool.Logf("session-1", "the line the daemon stopped for")
+		spool.Close()
 
-	line := parseServeLine(t, sink.String())
-	if !strings.Contains(line.message, "the line the daemon stopped for") {
-		t.Fatalf("the record after Close = %q, want the accepted line: it was taken from its producer and then dropped", line.message)
-	}
-	if line.session != "session-1" {
-		t.Fatalf("the record's session after Close = %q, want session-1", line.session)
-	}
+		// Inside the bubble the worker's write is ordered against Close's
+		// wait, so a readable record here means the flush happened rather
+		// than the worker racing the buffer from another goroutine.
+		line := parseServeLine(t, sink.String())
+		if !strings.Contains(line.message, "the line the daemon stopped for") {
+			t.Fatalf("the record after Close = %q, want the accepted line: it was taken from its producer and then dropped", line.message)
+		}
+		if line.session != "session-1" {
+			t.Fatalf("the record's session after Close = %q, want session-1", line.session)
+		}
+	})
 }
 
 // TestRetirementTeardownReportDoesNotBlockOnAStalledSink covers the other loop
@@ -513,5 +518,43 @@ func TestServeDiagnosticSpoolReportsWhetherItAcceptedALine(t *testing.T) {
 	}
 	if !refused {
 		t.Fatal("sixteen offers past a two-line burst were all accepted with the worker stuck: the spool is unbounded, so a stalled sink would grow without limit")
+	}
+}
+
+// TestServeStartupAnnouncementIsAnOfferToTheSpool covers the startup lines the
+// daemon writes while the input loop it just started is already probing
+// restored work: the address it listens on, and why its rendezvous entry could
+// not be published.
+//
+// A restored steering claim that fails reports a stand-down from that loop. If
+// that record fills an undrained pipe, a synchronous announcement would block
+// the goroutine that has not yet started the HTTP server or the shutdown path,
+// so the SIGTERM that follows would cancel a context nothing is waiting on.
+// The announcement must be an offer: it returns while the pipe is stalled.
+func TestServeStartupAnnouncementIsAnOfferToTheSpool(t *testing.T) {
+	t.Parallel()
+	sink := &stalledSink{release: make(chan struct{}), onEnter: make(chan struct{})}
+	t.Cleanup(func() { close(sink.release) })
+	spool := newServeDiagnosticSpool(sink)
+	t.Cleanup(spool.Close)
+
+	// The pipe is full before the announcement is made.
+	spool.Logf("session-1", "the stand-down that filled the pipe")
+	<-sink.onEnter
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		reportServeStartup(spool, "session-1", "listening on %s", "127.0.0.1:0")
+		reportServeStartup(spool, "session-1", "rendezvous write failed: %v", errors.New("injected: write failed"))
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("a startup announcement did not return with the pipe stalled: it holds the daemon before its shutdown path exists")
+	}
+
+	if got := sink.writes.Load(); got != 1 {
+		t.Fatalf("the sink saw %d writes while two startup announcements were made, want 1: an announcement went to the pipe instead of the spool", got)
 	}
 }

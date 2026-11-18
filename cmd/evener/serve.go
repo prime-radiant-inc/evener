@@ -1060,7 +1060,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	}()
 
 	// Start HTTP server.
-	serveLogf(logOut, live.session().ID(), "listening on %s", listener.Addr())
+	reportServeStartup(diagnostics, live.session().ID(), "listening on %s", listener.Addr())
 
 	spawnedBy := "user"
 	if envvars.EVENERHubSpawned.Getenv() == "1" {
@@ -1090,7 +1090,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// loop was started, so the shutdown path has nothing to join.
 	var retirementLoopDone chan struct{}
 	if err := deps.register(rvRegistration, runDir, rvEntry); err != nil {
-		serveLogf(logOut, live.session().ID(), "rendezvous write failed: %v", err)
+		reportServeStartup(diagnostics, live.session().ID(), "rendezvous write failed: %v", err)
 	} else {
 		defer func() {
 			removeRendezvousAtShutdown(rvRegistration.Remove, deps.rendezvousRetryPause, func(err error) {
@@ -1197,6 +1197,21 @@ func closeSupersededSession(sess *agent.Session, shutdownClaimed bool) {
 	// session was already closed by CloseForShutdown, whose own reason
 	// (prompt_input_exit when idle, else other) belongs to that first close.
 	sess.CloseWithReason("clear")
+}
+
+// reportServeStartup announces a startup outcome that an operator needs to see:
+// the address the daemon is listening on, or why publishing its rendezvous
+// entry failed.
+//
+// It goes through the spool rather than the pipe, and the input loop is already
+// running when it is called. Restored work is probed on that loop, so a
+// stand-down record can fill an undrained pipe before this line is written; a
+// synchronous write here would then block the goroutine that has not yet
+// started the HTTP server or the shutdown path, and the SIGTERM that follows
+// would cancel a context nothing is waiting on. The announcement is still made,
+// and the spool stamps it with the moment it was emitted.
+func reportServeStartup(diagnostics *serveDiagnosticSpool, sessionID, format string, args ...any) {
+	diagnostics.Logf(sessionID, format, args...)
 }
 
 // pendingInputStoodDown reports whether a queued-input wake found runnable work
