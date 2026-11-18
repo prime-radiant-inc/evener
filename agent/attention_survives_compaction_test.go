@@ -348,7 +348,7 @@ func TestSettledResponsesDeltaLeavesTheLatchedReopenOwed(t *testing.T) {
 	sess := acceptedTriggerSession(t)
 	sess.stagePresentedAttentionCoverage(leaseCtx, currentHistory(t, sess), nil)
 	sess.promoteStagedAttentionCoverage(llm.Request{HistoryMode: llm.HistoryModeResponsesDelta})
-	if _, err := sess.reopenLatchedDelegateAttention(); err != nil {
+	if _, err := sess.reopenLatchedDelegateAttention(0); err != nil {
 		t.Fatalf("reopenLatchedDelegateAttention: %v", err)
 	}
 	if reopened := pendingReopen(sess); reopened == "" {
@@ -361,6 +361,51 @@ func TestSettledResponsesDeltaLeavesTheLatchedReopenOwed(t *testing.T) {
 // so the latch is the only place that lineage survives; the reopen must carry
 // it across. A recovered turn that loses it drops the watch ancestry it
 // descended from and restarts the runaway count.
+
+// A reopened row a user's stop owns must be quiet in the same act that
+// publishes it. A drive that selects the row between its durable append and a
+// later hold install consumes a marker for a request whose projection holds
+// that very row out: the report reads delivered while the model never sees it.
+func TestReopenedQuietedRowIsHeldBeforeAnyDriveCanSelectIt(t *testing.T) {
+	t.Parallel()
+	sess := acceptedTriggerSession(t)
+	trigger := "delegate:dlg_worker/delivery/1"
+	sess.holdAcceptedTrigger(trigger)
+	const stoppedGeneration = 1
+
+	reopened, err := sess.reopenLatchedDelegateAttention(stoppedGeneration)
+	if err != nil {
+		t.Fatalf("reopen the latched trigger: %v", err)
+	}
+	if reopened == "" || reopened == trigger {
+		t.Fatalf("setup: the latch did not move to a reopened identity (got %q)", reopened)
+	}
+
+	// The row is quiet as it lands: the selection read must not offer it.
+	ids, err := sess.automaticDelegateAttentionIDs()
+	if err != nil {
+		t.Fatalf("read the drive-side rows: %v", err)
+	}
+	if slices.Contains(ids, reopened) {
+		t.Fatalf("the drive can select the reopened row before its quiet: a marker written now is consumed against a request that filters the row out")
+	}
+	sess.attentionMu.Lock()
+	held := sess.delegateAttentionHeldFromAutomaticDriveLocked(reopened)
+	sess.attentionMu.Unlock()
+	if !held {
+		t.Fatal("the reopened row landed with no quiet at its own stopped generation")
+	}
+	// The quiet holds the row; it does not resolve it. A resolved row would be a
+	// discard dressed as a hold, and no later wake could release it.
+	pending, err := sess.pendingDelegateAttentionIDs()
+	if err != nil {
+		t.Fatalf("read pending delegate attention: %v", err)
+	}
+	if !slices.Contains(pending, reopened) {
+		t.Fatal("the quiet resolved the reopened row instead of holding it, so no later wake can present the report")
+	}
+}
+
 func TestReopenedTriggerKeepsTheCauseLatchCarried(t *testing.T) {
 	t.Parallel()
 	sess := acceptedTriggerSession(t)
@@ -375,7 +420,7 @@ func TestReopenedTriggerKeepsTheCauseLatchCarried(t *testing.T) {
 	sess.holdAcceptedTrigger(trigger)
 	controller.attentionCauses.forget(trigger)
 
-	reopened, err := sess.reopenLatchedDelegateAttention()
+	reopened, err := sess.reopenLatchedDelegateAttention(0)
 	if err != nil {
 		t.Fatalf("reopenLatchedDelegateAttention: %v", err)
 	}
@@ -761,6 +806,106 @@ func TestColdRestoreRetainsPendingReportsBeforeTheAttach(t *testing.T) {
 	}
 }
 
+// A frame appended after the restore's last read is armed by ID, and the drive
+// captures it as a rider of the generation an older row triggers. Selecting the
+// trigger consumes only that row, so a request built from the trigger's turn
+// alone omits the captured frame and the frame waits for another generation.
+// Acceptance restores every captured row's turn, not the trigger's alone.
+func TestAcceptanceRetainsARiderCapturedAfterTheRestoreRead(t *testing.T) {
+	t.Parallel()
+	sess, triggerID, _ := deriveHeldFixtureWithJournal(t, delegatestore.OutcomeCancelled, "cancelled")
+	controller := sess.delegateController
+	// The receiver is cold-restored with an empty history — the state a frame
+	// armed between the final read and the attach leaves behind.
+	sess.mu.Lock()
+	sess.history = nil
+	sess.mu.Unlock()
+	// The frame lands after that read: pending in the transcript, in no request.
+	const riderID = "delegate:dlg_hold/delivery/8"
+	appendDelegateAttentionTurn(t, sess.TranscriptPath(), sess.id, riderID)
+
+	// The drive selects the older row; the capture takes both.
+	reservation, err := controller.ReserveAttention(sess, triggerID)
+	if err != nil {
+		t.Fatalf("reserve the trigger: %v", err)
+	}
+	if err := sess.acceptDelegateAttention(reservation); err != nil {
+		t.Fatalf("accept the trigger: %v", err)
+	}
+	if err := controller.prepareAttentionStart(reservation, sess, []string{riderID}); err != nil {
+		t.Fatalf("capture the late frame as the generation's rider: %v", err)
+	}
+
+	// The request this generation builds, through the production capture.
+	projection, holds := sess.delegateAttentionModelProjection()
+	requested, _ := filterHeldDelegateAttentionTurns(projection.turns, holds)
+	if indexOfAttentionTurn(requested, riderID) < 0 {
+		t.Fatal("the request omits a frame the generation captured as its rider: the frame was armed by ID after the restore's read, so acceptance restored only the trigger's turn")
+	}
+}
+
+// A report quieted by an attention stop can still be pending when a later
+// explicit send settles cancelled. The wake that arrives after it is newer
+// evidence than the earlier stop, so its release must reach the journal: asking
+// only the newest run's trigger sees the send and writes nothing, and after a
+// restart the older report keeps its position ahead of the fresh frame.
+func TestFreshWakeJournalsAReleasePastALaterSendSettle(t *testing.T) {
+	t.Parallel()
+	sess, reopenedID, _ := deriveHeldFixtureWithJournal(t, delegatestore.OutcomeCancelled, "cancelled")
+	controller := sess.delegateController
+	// The earlier attention stop's quiet stands: the row is held at its own
+	// generation, and no release has reached it.
+	sess.holdDelegateAttentionFromAutomaticDriveAt(reopenedID, 1)
+	// A later explicit send commits and settles generation 2 cancelled. Its own
+	// trigger is owner input, so nothing about it is an attention stop — but the
+	// earlier report is still pending and still quieted.
+	stopped := delegatestore.TerminalPacket{Kind: delegatestore.PacketTerminalError, Message: json.RawMessage(`"stopped"`)}
+	controller.mu.Lock()
+	_, err := controller.appendLocked(
+		delegatestore.Event{
+			Kind:       delegatestore.EventDelegateRunStarted,
+			DelegateID: "dlg_hold",
+			RunStarted: &delegatestore.RunStarted{Generation: 2, Trigger: delegatestore.TriggerOwnerInput, StartedAt: time.Unix(50, 0).UTC()},
+		},
+		delegatestore.Event{
+			Kind:       delegatestore.EventDelegateRunFinished,
+			DelegateID: "dlg_hold",
+			RunFinished: &delegatestore.RunFinished{
+				Generation:  2,
+				Outcome:     delegatestore.Outcome{Status: delegatestore.OutcomeCancelled, Reason: "cancelled", EndedAt: time.Unix(60, 0).UTC()},
+				Disposition: delegatestore.DispositionTerminalError,
+				DeliveryID:  "dlg_hold/delivery/2",
+				Packet:      &stopped,
+			},
+		},
+		delegatestore.Event{
+			Kind:                 delegatestore.EventDelegateDeliveryAcknowledged,
+			DelegateID:           "dlg_hold",
+			DeliveryAcknowledged: &delegatestore.DeliveryAcknowledged{DeliveryID: "dlg_hold/delivery/2"},
+		},
+	)
+	controller.mu.Unlock()
+	if err != nil {
+		t.Fatalf("settle the later send: %v", err)
+	}
+
+	// A fresh frame arrives and its wake is admitted at the settled generation.
+	const freshID = "delegate:dlg_worker/delivery/4"
+	if _, err := sess.appendDelegateNotificationDurably(freshID, acceptedTriggerText); err != nil {
+		t.Fatalf("append the fresh frame: %v", err)
+	}
+	if _, _, err := openDelegateAttentionForTest(controller, "dlg_hold", freshID); err != nil {
+		t.Fatalf("admit the fresh wake: %v", err)
+	}
+
+	controller.mu.Lock()
+	floor := controller.durable["dlg_hold"].AttentionHoldReleasedGeneration
+	controller.mu.Unlock()
+	if floor != 2 {
+		t.Fatalf("the fresh wake journaled no release (floor %d, want 2): a later send's own trigger does not make the earlier attention stop's quiet current, so a restart rebuilds it over the fresh frame", floor)
+	}
+}
+
 // settledGeneration reads the generation sess's delegate rests at, sampled the
 // way the controller samples it when it admits a wake — the value a hold's
 // stamp and a release's admitted generation are both ordered against.
@@ -938,34 +1083,62 @@ func TestAttentionProjectionCapturesTurnsAndHoldsTogether(t *testing.T) {
 	// sitting where the hold left it — makes a request end on a later message
 	// while counting the report as presented.
 	//
-	// Each side is asserted, not merely tolerated. A check that returned early
-	// whenever the report was still held would pass if the hold never cleared at
-	// all, which is exactly the failure the release exists to prevent.
+	// The release is driven from inside the capture rather than between two
+	// completed ones: a release between captures would let a capture that copies
+	// history and holds under separate locks pass, which is exactly the torn read
+	// this test exists to exclude. The seam runs while the capture holds
+	// attentionMu, so a release that shares that hold cannot land inside it —
+	// whether this request sees the release or not, what it sees must be one
+	// moment.
+	// The capture must hold attentionMu across its own two reads. The probe
+	// below runs at the point where the capture is about to copy the history
+	// the held IDs filter: if attentionMu is free there, the holds and the
+	// turns were taken under different locks, and a release landing between
+	// them leaves this request filtering one moment's rows against another
+	// moment's positions. TryLock is the direct question and needs no
+	// scheduling: it succeeds only when the capture really let go.
+	capturedUnderOneHold := false
+	updateSessionTestConfig(sess, func(cfg *testConfig) {
+		cfg.delegateAttentionDuringProjectionCapture = func() {
+			if sess.attentionMu.TryLock() {
+				sess.attentionMu.Unlock()
+				return
+			}
+			capturedUnderOneHold = true
+		}
+	})
 	projection, holds := sess.delegateAttentionModelProjection()
+	updateSessionTestConfig(sess, func(cfg *testConfig) {
+		cfg.delegateAttentionDuringProjectionCapture = nil
+	})
+	if !capturedUnderOneHold {
+		t.Fatal("the capture copied the held rows under one lock and the history they filter under another: a release landing between them leaves the report held out at a position the release has already abandoned, so the request counts it as presented while ending on a later message")
+	}
+
+	// Before the release, the one moment this capture answers for is the hold:
+	// held, and in place.
 	if _, held := holds[reopenedID]; !held {
 		t.Fatal("premise broken: the capture reports the stop's hold already ended before the release ran")
 	}
-	if got := indexOfAttentionTurn(projection.turns, reopenedID); got < 0 {
+	at := indexOfAttentionTurn(projection.turns, reopenedID)
+	if at < 0 {
 		t.Fatal("premise broken: the held report is not in the captured turns at all")
-	} else if got == len(projection.turns)-1 {
+	}
+	if at == len(projection.turns)-1 {
 		t.Fatal("premise broken: the held report already sits at the tail, so the tail move proves nothing")
 	}
 
-	// One controlled release, and no scheduling: the release is the production
-	// call, so the tail move and the hold deletion happen in the order
-	// production performs them.
+	// One controlled release, then the next capture: unheld, at the tail. Both
+	// halves of that answer come from the same moment, so the request this
+	// capture builds ends on the report instead of on a later message.
 	sess.releaseAutomaticDriveHolds(delegateHoldReleaseArm, stoppedGeneration)
-
 	projection, holds = sess.delegateAttentionModelProjection()
-	if _, held := holds[reopenedID]; held {
+	if _, stillHeld := holds[reopenedID]; stillHeld {
 		t.Fatal("the release left the stop's hold in place: the report still cannot present")
 	}
-	if len(projection.turns) == 0 {
-		t.Fatal("capture returned no turns")
-	}
-	if tail := projection.turns[len(projection.turns)-1]; tail.AttentionID != reopenedID {
-		t.Fatalf("the capture reported the report released while it sat at position %d of %d instead of the tail (last attention %q): the turns and the holds were taken at two different moments, so this request would end on a later message and count the report as presented",
-			indexOfAttentionTurn(projection.turns, reopenedID), len(projection.turns), tail.AttentionID)
+	if at := indexOfAttentionTurn(projection.turns, reopenedID); at != len(projection.turns)-1 {
+		t.Fatalf("after the release the capture holds the report at position %d of %d instead of the tail (last attention %q): the release left it where the hold did",
+			at, len(projection.turns), projection.turns[len(projection.turns)-1].AttentionID)
 	}
 }
 
@@ -1009,6 +1182,70 @@ func TestResidentHandoffRetainsAFrameThatLandedAfterTheAttach(t *testing.T) {
 // arm and the cold arm both reach. Production has no bare convenience wrapper —
 // its callers hold session state ordered against the wake — so this drives the
 // same nonblocking attempt to completion for a fixture.
+
+// A handoff frame is published to history only once its arm passes its gate. A
+// frame put into history before the gate is presented by the successor that
+// blocked the arm, which resolves the row; the retry then finds nothing pending
+// and never journals the release, so the older report that wake freed is
+// filtered out of the very request that carried the fresh frame. The gate here
+// is a live reservation on the delegate, which is what a successor start holds:
+// the arm returns its blocker and publishes nothing.
+func TestBlockedHandoffArmPublishesNoFrame(t *testing.T) {
+	t.Parallel()
+	sess, reopenedID, _ := deriveHeldFixtureWithJournal(t, delegatestore.OutcomeCancelled, "cancelled")
+	controller := sess.delegateController
+	sess.holdDelegateAttentionFromAutomaticDriveAt(reopenedID, 1)
+	const lateID = "delegate:dlg_hold/delivery/9"
+	sess.mu.Lock()
+	sess.history = nil
+	sess.mu.Unlock()
+	appendDelegateAttentionTurn(t, sess.TranscriptPath(), sess.id, lateID)
+	// A successor start holds this delegate's reservation, so the handoff's arm
+	// cannot pass its gate until that start settles.
+	reservation, err := controller.ReserveAttention(sess, reopenedID)
+	if err != nil {
+		t.Fatalf("hold the delegate's reservation: %v", err)
+	}
+	// The production arm reads the request from its own blocked gate, on the
+	// arm's own goroutine: with the reservation live it cannot pass, publishes
+	// nothing, and the seam is the only place its refusal is observable. The
+	// seam then releases the reservation so the arm returns instead of waiting.
+	var requested []schema.Turn
+	var stillHeld bool
+	observe := func() {
+		projection, holds := sess.delegateAttentionModelProjection()
+		requested, _ = filterHeldDelegateAttentionTurns(projection.turns, holds)
+		_, stillHeld = holds[reopenedID]
+		if err := controller.AbortStart(reservation); err != nil {
+			t.Errorf("release the reservation blocking the arm: %v", err)
+		}
+	}
+	updateSessionTestConfig(sess, func(cfg *testConfig) {
+		cfg.delegateAttentionArmBlocked = func() {
+			sess.mu.Lock()
+			sess.cfg.testOnly.delegateAttentionArmBlocked = nil
+			sess.mu.Unlock()
+			observe()
+		}
+	})
+	armed, err := sess.armDelegateAttentionInController(lateID)
+	if err != nil {
+		t.Fatalf("arm the late frame: %v", err)
+	}
+	if !armed {
+		t.Fatal("premise broken: after the reservation released, the arm did not admit the frame")
+	}
+
+	// The frame must not be in the request while the arm that would admit it is
+	// still refused: a request that carries the frame cannot be one whose arm
+	// never happened.
+	if indexOfAttentionTurn(requested, lateID) >= 0 {
+		t.Fatal("a blocked handoff arm published its frame into the request: the successor that blocked the arm presents the fresh frame and resolves the row, so the retry never admits its wake and the report it would have released stays held out")
+	}
+	if !stillHeld {
+		t.Fatal("the older report's quiet ended before any wake was admitted: nothing here released it")
+	}
+}
 func openDelegateAttentionForTest(c *delegateTreeController, delegateID, attentionID string) (bool, uint64, error) {
 	for {
 		added, blocker, plan, emit, generation, err := c.tryOpenDelegateAttention(delegateID, attentionID)
@@ -1506,14 +1743,9 @@ func deriveHeldFixtureWithJournalTrigger(t *testing.T, trigger delegatestore.Run
 // is acknowledged in the same batch, so the aggregate rests with no pending
 // delivery and no teardown waits on one. The stop's own hold is not written
 // here — the derivation is what rebuilds it from this evidence.
-func journalDeriveHeldStop(t *testing.T, controller *delegateTreeController, outcome delegatestore.OutcomeStatus, reason string) {
-	t.Helper()
-	journalDeriveHeldStopWithTrigger(t, controller, delegatestore.TriggerAttention, outcome, reason)
-}
-
-// journalDeriveHeldStopWithTrigger is journalDeriveHeldStop for the shape whose
-// settled generation was not an attention run — a send that committed the
-// recycled generation, which owes no attention quiet.
+// journalDeriveHeldStopWithTrigger journals a settled generation whose run
+// trigger the caller chooses: a send that committed the recycled generation
+// owes no attention quiet, and only the run's own trigger says so.
 func journalDeriveHeldStopWithTrigger(t *testing.T, controller *delegateTreeController, trigger delegatestore.RunTrigger, outcome delegatestore.OutcomeStatus, reason string) {
 	t.Helper()
 	const delegateID = "dlg_hold"

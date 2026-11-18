@@ -815,25 +815,37 @@ func (s *Session) armDelegateAttentionInController(attentionID string) (armed bo
 		}
 		// The handoff arms this frame by ID alone, and the frame can have landed
 		// after the attach folded the pending set: the restore that loaded the
-		// other rows' turns ran before it. Retaining the turn here, under the
-		// same hold that reads the pending set, is what keeps the wake from
-		// publishing a row no request can carry. It is ID-keyed, so a turn the
-		// attach already restored keeps its position.
-		if fold, err := s.delegateAttentionFoldLocked(); err != nil {
+		// other rows' turns ran before it. Its turn is read here and published
+		// below, only once the arm passes its own gate: a frame put into history
+		// before a reservation refuses the arm is presented by the successor that
+		// blocked it, which resolves the row, and the retry then finds nothing to
+		// arm and journals no release — so the older held report misses the very
+		// request that carried the fresh frame. Publishing under the same hold
+		// that fires the release keeps the frame and the release one moment.
+		fold, foldErr := s.delegateAttentionFoldLocked()
+		if foldErr != nil {
 			s.attentionMu.Unlock()
-			return false, err
-		} else if turn, ok := fold.turns[attentionID]; ok {
-			if err := s.retainDelegateAttentionTurn(turn); err != nil {
-				s.attentionMu.Unlock()
-				return false, err
-			}
+			return false, foldErr
 		}
+		turn, hasTurn := fold.turns[attentionID]
 		_, blocker, plan, emit, wakeGeneration, err := s.delegateController.tryOpenDelegateAttention(s.owningDelegateID, attentionID)
+		if err == nil && blocker == nil && hasTurn {
+			err = s.retainDelegateAttentionTurn(turn)
+		}
 		s.attentionMu.Unlock()
 		if err != nil {
 			return false, err
 		}
 		if blocker != nil {
+			// The arm cannot pass its gate until the reservation settles. Read
+			// the seam with attentionMu released: it takes s.mu, and the
+			// capture elsewhere takes attentionMu then s.mu.
+			s.mu.Lock()
+			blocked := s.cfg.testOnly.delegateAttentionArmBlocked
+			s.mu.Unlock()
+			if blocked != nil {
+				blocked()
+			}
 			<-blocker
 			continue
 		}
@@ -893,7 +905,12 @@ func (s *Session) pendingDelegateAttentionIDs() ([]string, error) {
 // teardown now owns is resolved as discarded instead of surviving it.
 // The reopened row's identity is returned, empty when nothing was
 // re-delivered.
-func (s *Session) reopenConsumedDelegateAttention(attentionID string) (string, error) {
+// quietAt names the settled generation whose stop owns the reopened row's
+// quiet, or zero when the row must present at once. The quiet is installed
+// before the append that publishes the row, so there is no instant at which a
+// drive can select the row while the projection still holds it out: a marker
+// written in that window would consume a report the model never sees.
+func (s *Session) reopenConsumedDelegateAttention(attentionID string, quietAt uint64) (string, error) {
 	if s == nil {
 		return "", errors.New("delegate attention session is nil")
 	}
@@ -927,6 +944,9 @@ func (s *Session) reopenConsumedDelegateAttention(attentionID string) (string, e
 	s.mu.Lock()
 	observer := s.cfg.testOnly.delegateAttentionBeforeReopenAppend
 	s.mu.Unlock()
+	if quietAt != 0 {
+		s.holdDelegateAttentionFromAutomaticDriveAt(reopenID, quietAt)
+	}
 	if observer != nil {
 		// A test seam, nil in production: the teardown guards have all run by
 		// here, so a test can admit a stop into exactly the window between
@@ -1019,7 +1039,7 @@ func (s *Session) reopenConsumedDelegateAttention(attentionID string) (string, e
 // plan-time enumeration never knew, the same policy reopenFailedDelegateAttention
 // enforces for the drive arms. The reopened identity is returned, empty when
 // nothing was reopened.
-func (s *Session) reopenLatchedDelegateAttention() (string, error) {
+func (s *Session) reopenLatchedDelegateAttention(quietAt uint64) (string, error) {
 	if s == nil {
 		return "", errors.New("delegate attention session is nil")
 	}
@@ -1038,7 +1058,7 @@ func (s *Session) reopenLatchedDelegateAttention() (string, error) {
 	if latched == "" {
 		return "", nil
 	}
-	return s.reopenConsumedDelegateAttention(latched)
+	return s.reopenConsumedDelegateAttention(latched, quietAt)
 }
 
 // delegateAttentionReopenID is the fresh identity a failed presentation start
@@ -1681,30 +1701,43 @@ func (s *Session) acceptDelegateAttention(reservation *delegateStartReservation)
 	return nil
 }
 
-// retainSelectedDelegateAttentionTurn puts attentionID's turn into history from
-// the fold that validates it, before anything can mark it consumed. A row can
-// reach automatic selection without ever passing the restore that puts pending
-// turns into the resumed history: a watch frame appended after a cold restore
-// folded the pending set is armed by ID alone, and its turn stays out of
-// history. Selecting that row would consume it durably against a request that
-// omits it, which is a report marked delivered and never delivered. The retain
-// is ID-keyed, so a turn already resident keeps its position and a missing one
-// is appended. A row the fold does not know is left alone: nothing holds its
-// turn, and the marker still orders against whatever the transcript has.
+// retainSelectedDelegateAttentionTurn puts attentionID's turn, and every other
+// pending row's, into history from the fold that validates them, before anything
+// can mark the selected one consumed. A row can reach automatic selection
+// without ever passing the restore that puts pending turns into the resumed
+// history: a watch frame appended after a cold restore folded the pending set is
+// armed by ID alone, so its turn stays out of history and the drive captures it
+// as a rider by ID. Selecting the trigger then consumes it durably against a
+// request that never carried it, and the first request omits the frame. The
+// trigger alone is not enough: the request this generation builds carries every
+// row it captures, so every captured row's turn is restored here. The retain is
+// ID-keyed, so a turn already resident keeps its position and a missing one is
+// appended.
 func (s *Session) retainSelectedDelegateAttentionTurn(attentionID string) error {
 	s.attentionMu.Lock()
 	fold, err := s.delegateAttentionFoldLocked()
-	s.attentionMu.Unlock()
 	if err != nil {
+		s.attentionMu.Unlock()
 		return err
 	}
-	turn, ok := fold.turns[attentionID]
-	if !ok {
+	defer s.attentionMu.Unlock()
+	pendingTurns := fold.pendingTurns("")
+	for i, turn := range pendingTurns {
+		if err := s.retainDelegateAttentionTurn(turn, pendingTurns[i+1:]...); err != nil {
+			// The selected row is the one this generation cannot run without;
+			// another row's conflict is not a reason to consume a marker against
+			// a request that omits the trigger.
+			if turn.AttentionID == attentionID {
+				return err
+			}
+		}
+	}
+	if _, ok := fold.turns[attentionID]; ok {
 		return nil
 	}
-	s.attentionMu.Lock()
-	defer s.attentionMu.Unlock()
-	return s.retainDelegateAttentionTurn(turn)
+	// A row the fold does not know holds no turn; the marker still orders
+	// against whatever the transcript has.
+	return nil
 }
 
 // isRootDelegateAttentionReceiver reports whether this Session is the stable

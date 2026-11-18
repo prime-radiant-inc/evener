@@ -458,10 +458,27 @@ func (s *Session) delegateModelHistorySnapshotWithCoverage() delegateModelProjec
 // already abandoned, and the request would count the report as presented while
 // ending on a later message.
 func (s *Session) delegateAttentionModelProjection() (delegateModelProjection, map[string]uint64) {
+	// The seam is runtime-mutable through updateSessionTestConfig, so its read
+	// shares the setter's session mutex — the convention every mid-run-mutable
+	// test seam follows. It is read and released before attentionMu is taken:
+	// the capture below holds attentionMu and then s.mu, so taking them in the
+	// other order here would invert that one.
+	s.mu.Lock()
+	duringCapture := s.cfg.testOnly.delegateAttentionDuringProjectionCapture
+	s.mu.Unlock()
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
 	s.reconcileAutomaticDriveHoldsLocked()
 	holds := maps.Clone(s.attentionAutomaticDriveHolds)
+	// The held IDs and the history they filter are taken under this one hold,
+	// so a release — which takes attentionMu to move its rows and drop its
+	// holds — either landed before this capture and is in both, or waits and
+	// is in neither. Splitting the two reads across locks would let a release
+	// move a row to the tail after the turns were copied, and the filter would
+	// then answer about a moment this request is not showing.
+	if duringCapture != nil {
+		duringCapture()
+	}
 	s.mu.Lock()
 	turns := append([]schema.Turn(nil), s.history...)
 	projection := delegateModelProjection{

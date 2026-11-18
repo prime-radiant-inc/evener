@@ -264,7 +264,7 @@ func (s *Session) reopenFailedDelegateAttention(sub *subagent, attentionID strin
 	if closed {
 		return
 	}
-	if _, err := sub.sess.reopenConsumedDelegateAttention(attentionID); err != nil {
+	if _, err := sub.sess.reopenConsumedDelegateAttention(attentionID, 0); err != nil {
 		s.emit(warningDataFromError("reopen unpresented delegate attention", err))
 	}
 }

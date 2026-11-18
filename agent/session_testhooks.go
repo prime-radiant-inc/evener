@@ -219,6 +219,18 @@ type testConfig struct {
 	// there, which is the window an idle restore opens between the snapshot
 	// and the install. Nil in production.
 	delegateAttentionBeforeDerivedHoldInstall func()
+	// delegateAttentionDuringProjectionCapture observes an attention run's
+	// projection capture while it holds attentionMu, after it took the held
+	// IDs and before it copies the history those IDs filter. Tests start a
+	// release there: a release shares attentionMu, so it cannot land inside
+	// the capture, and the capture's answer is one moment's. Nil in
+	// production.
+	delegateAttentionDuringProjectionCapture func()
+	// delegateAttentionArmBlocked observes a non-root handoff arm that cannot
+	// pass its gate because a reservation holds the delegate: the arm has
+	// released attentionMu and is about to wait for that reservation, and it
+	// has published nothing. Tests read the request there. Nil in production.
+	delegateAttentionArmBlocked func()
 	// delegateAttentionBeforeReopenAppend observes the instant a reopen's
 	// durable append is about to land, after every teardown guard has run.
 	// Tests pause it there so a stop admitted into the guard-to-append window

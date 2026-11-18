@@ -587,10 +587,15 @@ func (c *delegateTreeController) appendAttentionWakeLocked(delegateID string, ev
 // admitted, never one sampled later: a stop that settles after the wake settles
 // a later generation, and its quiet must stand.
 //
-// Only a delegate resting cancelled by an attention stop owes a release, and
-// only the first wake at a generation records one, so a fleet's ordinary arms
-// and deliveries append nothing. A wake admitted during an open run is not
-// newer than that run's own settle, so it records nothing either.
+// A release is owed whenever a settled generation quieted a row and no release
+// has reached it: the wake is newer evidence than that stop whatever the
+// delegate's newest run was. Asking the newest run instead loses the release
+// after a later explicit send settles cancelled — the send's own trigger says
+// nothing about the earlier attention stop — and then a restart has no durable
+// release, so the older report keeps its stale position ahead of the fresh
+// frame. Only the first wake at a generation records one, so a fleet's ordinary
+// arms and deliveries still append nothing. A wake admitted during an open run
+// is not newer than that run's own settle, so it records nothing either.
 func (c *delegateTreeController) attentionHoldReleaseEventLocked(delegateID string) (delegatestore.Event, bool) {
 	// A controller with no journal has no cold restore to order for.
 	if c.store == nil || delegateID == "" {
@@ -599,9 +604,10 @@ func (c *delegateTreeController) attentionHoldReleaseEventLocked(delegateID stri
 	aggregate := c.durable[delegateID]
 	generation := c.attentionWakeGenerationLocked(delegateID)
 	if aggregate == nil || aggregate.CurrentRunOpen || generation == 0 ||
-		aggregate.Trigger != delegatestore.TriggerAttention ||
-		aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeCancelled ||
 		aggregate.AttentionHoldReleasedGeneration >= generation {
+		return delegatestore.Event{}, false
+	}
+	if !c.settledAttentionStopUnreleasedLocked(delegateID, generation) {
 		return delegatestore.Event{}, false
 	}
 	return delegatestore.Event{
@@ -611,6 +617,28 @@ func (c *delegateTreeController) attentionHoldReleaseEventLocked(delegateID stri
 			Generation: generation,
 		},
 	}, true
+}
+
+// settledAttentionStopUnreleasedLocked reports whether any settled generation at
+// or below the wake's sample was an attention run that a user stopped, and no
+// release has reached it yet. This is the condition the release exists for: the
+// wake is newer evidence than that stop, so the quiet it left must not be
+// rebuilt by a cold restore. A later run of any other trigger settles its own
+// generation and says nothing about the earlier stop, so it neither owes a
+// release nor excuses one. Callers hold c.mu.
+func (c *delegateTreeController) settledAttentionStopUnreleasedLocked(delegateID string, through uint64) bool {
+	for generation := through; generation > 0; generation-- {
+		lease := delegateLease{delegateID: delegateID, generation: generation}
+		if c.runStarts[lease] != delegatestore.TriggerAttention {
+			continue
+		}
+		outcome, settled := c.runOutcomes[lease]
+		if !settled || outcome.Status != delegatestore.OutcomeCancelled {
+			continue
+		}
+		return true
+	}
+	return false
 }
 
 func (c *delegateTreeController) forgetDelegateAttentionLocked(delegateID, attentionID string) {
