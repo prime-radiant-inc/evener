@@ -123,12 +123,13 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	if selection.warning != nil {
 		s.emitDiagnosticWarning(*selection.warning)
 	}
-	toolNameCeiling := s.delegateEffectiveToolNameCeiling(selection, args, isolationName)
+	toolNameCeiling, ceilingReachabilityExcluded := s.delegateEffectiveToolNameCeiling(ctx, selection, args, isolationName)
 	requestedSandbox, err := s.requestedDelegateSandbox(args, toolNameCeiling)
 	if err != nil {
 		return delegateStartFailed(err)
 	}
 	descriptor, worktreeProject, err := runtime.describe(ctx, args, task, isolationName, requestedSandbox, selection, toolNameCeiling)
+	descriptor.CeilingReachabilityExcluded = append([]string(nil), ceilingReachabilityExcluded...)
 	if err != nil {
 		return delegateStartFailed(err)
 	}
@@ -301,8 +302,18 @@ func (s *Session) delegateActor(ctx context.Context) (delegateActor, error) {
 	return rootDelegateActor(s.delegateRootSessionID), nil
 }
 
-func (s *Session) delegateEffectiveToolNameCeiling(selection subagentModelSelection, args delegateArgs, isolationName string) []string {
-	return s.subagentToolNameCeiling(selection.agent, args.grantsDelegation(), isolationName)
+// delegateEffectiveToolNameCeiling returns the child's ceiling and, separately,
+// the names REACHABILITY removed from it. Both are recorded: the ceiling keeps
+// authorization and recovery on one bound, and the removed names let a cold
+// resume tell a role denial (permanent) from a reachability denial, which is a
+// fact about the workspace the ceiling was computed in.
+// ctx is the CALLER's, because deriving the ceiling waits on the in-flight
+// freshness check. That wait must end when the caller does: a delegate tool call
+// that joins a check stalled on a dead mount would otherwise wait on it forever,
+// past Stop cancelling the turn. An expired wait leaves reachability unknown,
+// which keeps the names eligible and lets the spawn proceed.
+func (s *Session) delegateEffectiveToolNameCeiling(ctx context.Context, selection subagentModelSelection, args delegateArgs, isolationName string) (ceiling, reachabilityExcluded []string) {
+	return s.subagentToolNameCeilingAndExcluded(ctx, selection.agent, args.grantsDelegation(), isolationName)
 }
 
 func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, brief, isolationName string, requestedSandbox *sandbox.SandboxPolicy, selection subagentModelSelection, toolNameCeiling []string) (delegatestore.Descriptor, identifier.Project, error) {

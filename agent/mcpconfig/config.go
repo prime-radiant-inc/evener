@@ -1,6 +1,8 @@
 package mcpconfig
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,6 +13,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/toolname"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/execsupport/valueexpr"
@@ -64,20 +67,38 @@ func loadFileWithEnv(path string, env valueexpr.Env) ([]ServerConfig, error) {
 	})
 }
 
-// LoadFileUntrusted is LoadFile for a config layer evener does not author —
-// the project's .evener/mcp.json or a plugin's .mcp.json. A $(command)
-// expression here would run on the host the moment the config loads, so it
-// is refused at parse time instead of executed.
-func LoadFileUntrusted(path string) ([]ServerConfig, error) {
-	return loadFileUntrustedWithEnv(path, processExpansionEnv())
-}
-
-// loadFileUntrustedWithEnv is LoadFileUntrusted with the expansion
-// environment supplied by the caller.
-func loadFileUntrustedWithEnv(path string, env valueexpr.Env) ([]ServerConfig, error) {
-	return loadFile(path, func(s string) (string, error) {
-		return expandEnvVarsUntrustedInEnv(s, env)
-	})
+// loadLayerEvidence reads one discovery layer and returns the evidence for the
+// bytes it parsed, so no caller has to read the file again to fingerprint it.
+//
+// It reads through execenv.ReadFileCapped: the project layer is inside a
+// repository the model can write, and a plain os.ReadFile follows whatever the
+// path now names. A named pipe there blocks the read forever, and a huge file
+// allocates until the process dies. Both are repository-controlled, and both
+// would happen on a path a session takes while holding its own lock.
+//
+// Three outcomes, and callers must keep them apart:
+//
+//   - parsed: Path is the layer's path and Digest fingerprints its bytes.
+//   - absent (os.ErrNotExist): Path is still the layer's path and Digest is "".
+//     Absence is a fact worth recording — a file appearing there later is
+//     exactly what invalidates it — and collapsing it into "no evidence" would
+//     disable the exclusion for every workspace that has no layer yet.
+//   - unverifiable: an empty Path. That covers a FIFO, a device, an oversized
+//     file, an unreadable entry, or bytes that do not parse, and every caller
+//     must treat it as unknown reachability: eligible, never excluded.
+func loadLayerEvidence(path string, expand func(string) (string, error)) ([]ServerConfig, LayerEvidence, error) {
+	data, err := execenv.ReadFileCapped(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, LayerEvidence{Path: path}, err
+		}
+		return nil, LayerEvidence{}, err
+	}
+	configs, err := parseConfigBytes(data, path, expand)
+	if err != nil {
+		return nil, LayerEvidence{}, err
+	}
+	return configs, LayerEvidence{Path: path, Digest: ConfigDigest(data), Size: int64(len(data))}, nil
 }
 
 func loadFile(path string, expand func(string) (string, error)) ([]ServerConfig, error) {
@@ -85,13 +106,26 @@ func loadFile(path string, expand func(string) (string, error)) ([]ServerConfig,
 	if err != nil {
 		return nil, fmt.Errorf("reading MCP config %s: %w", path, err)
 	}
+	return parseConfigBytes(data, path, expand)
+}
 
+// parseConfigBytes is loadFile's parse half, split out so the project layer can
+// record evidence for exactly the bytes it parsed.
+func parseConfigBytes(data []byte, path string, expand func(string) (string, error)) ([]ServerConfig, error) {
 	var cf mcpConfigFile
 	if err := json.Unmarshal(data, &cf); err != nil {
 		return nil, fmt.Errorf("parsing MCP config %s: %w", path, err)
 	}
 
 	return parseServerMap(cf.MCPServers, path, expand)
+}
+
+// ConfigDigest fingerprints a config layer's bytes. It is the digest
+// ProjectConfigEvidence carries, so a later check can tell whether the file
+// still says what the classification was derived from.
+func ConfigDigest(data []byte) string {
+	sum := sha256.Sum256(data)
+	return hex.EncodeToString(sum[:])
 }
 
 // ParseServerMap converts a map of server names to raw JSON server entries into
@@ -367,6 +401,218 @@ func Discover(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string
 	// process environment is the full environment for every layer, trusted
 	// or not — the trust decision happened when the user launched there.
 	env0 := processExpansionEnv()
+	configs, _, _, warnings, err := discoverLayers(env, extraFiles, inlineSpecs, env0, env0)
+	return configs, warnings, err
+}
+
+// ProjectConfigPath is the layer-2 filename a session's project MCP config
+// lives at: <git root>/.evener/mcp.json, or "" when the environment has no git
+// root. It is the one derivation of that path; discovery and any caller that
+// needs to tell whether that layer still describes the workspace read it here,
+// so the two cannot disagree about which file they mean.
+func ProjectConfigPath(env execenv.ExecutionEnvironment) string {
+	if env == nil {
+		return ""
+	}
+	// Resolved WITHOUT the per-environment memo, deliberately.
+	//
+	// Discovery answers "which project config would this process read", and a
+	// delegate construction asks it of the environment it was handed — often the
+	// parent's shared one. The memo on that environment was filled when the
+	// parent started, so a session launched before `git init` would read the
+	// remembered "no repository" for the rest of its life: the parent's
+	// freshness check notices the new root and makes the tool eligible, while
+	// the child discovers nothing there and cannot register it. The roster then
+	// advertises a tool the child does not have, which is the same
+	// disagreement this package exists to keep out.
+	//
+	// Freshness already resolves this way, so both sides of the comparison ask
+	// the workspace the same question. The cost is one git fork per discovery,
+	// and discovery runs at session init.
+	path, _ := ProjectConfigPathFreshDefinitive(env)
+	return path
+}
+
+// ProjectConfigPathFreshDefinitive is the one resolution of this layer's path,
+// keeping whether the
+// workspace's Git root was CONFIRMED. An empty path with a false flag means the
+// root could not be determined, which is not the same fact as a confirmed
+// absence of a repository, and a caller comparing evidence must not confuse
+// them: the first leaves the question open, the second answers it.
+func ProjectConfigPathFreshDefinitive(env execenv.ExecutionEnvironment) (string, bool) {
+	if env == nil {
+		return "", false
+	}
+	root, definitive := execenv.GitRootOrEmptyFreshDefinitive(env, env.WorkingDirectory())
+	if root == "" {
+		// No root: the path this layer would occupy is unresolved, and whether
+		// that is a fact about the workspace or a failure to read it is exactly
+		// what the flag carries.
+		return "", definitive
+	}
+	return filepath.Join(root, ".evener", "mcp.json"), true
+}
+
+// LayerEvidence is one configuration layer as discovery read it: the path the
+// layer resolved to and a digest of the exact bytes that were parsed. Digest is
+// empty when the layer was simply absent, and Path is empty when the layer could
+// not be verified at all.
+//
+// It exists because a classification derived from the parsed layer and a
+// fingerprint taken by a second read are two facts that can disagree — a file
+// edited between them pairs a stale classification with a fresh digest, and the
+// freshness check then accepts a classification that no longer describes the
+// file. Discovery returns this alongside the layer precisely so no caller has
+// to take that second read.
+type LayerEvidence struct {
+	Path   string
+	Digest string
+	// Size is the byte length of the file Digest fingerprints. It is recorded so
+	// a freshness check can refuse a file whose size already differs without
+	// reading a byte, and so a layer recorded ABSENT (empty Digest) can be
+	// checked by existence alone. Without it, every check had to read the whole
+	// file to discover that it had nothing to compare against.
+	Size int64
+}
+
+// ConfigEvidence is the evidence for every layer that can make a CLI-only
+// server's tools reachable again, read in the same pass that parsed each one.
+//
+// The set is what it is because the exclusion it guards is only sound while
+// EVERY layer the child would discover still says what the classification was
+// derived from. A matching server added to the global layer, a project layer
+// that appeared or changed, and a git root that moved are each on their own
+// enough to make a previously-unreachable name reachable, so each is recorded.
+type ConfigEvidence struct {
+	Global  LayerEvidence
+	Project LayerEvidence
+}
+
+// EvidenceCurrent reports whether every layer still says what it said when
+// discovery read it, so a classification derived from those layers still
+// describes what a child would discover now.
+//
+// The paths are resolved FRESH on every call, which is the point: a session that
+// starts outside Git and later has a repository initialized around it — or one
+// that switches branches in place — keeps its environment, so no swap runs and
+// nothing else would notice that the layers moved. A memoized root would answer
+// the question it is being asked to re-answer.
+//
+// Anything it cannot establish answers false, which callers must treat as
+// unknown reachability: eligible, never excluded. It reads at most two files and
+// connects nothing, so it cannot become the probe an earlier round ruled out.
+func (e ConfigEvidence) EvidenceCurrent(env execenv.ExecutionEnvironment) bool {
+	if env == nil {
+		return false
+	}
+	if !layerEvidenceCurrent(e.Global, globalMCPConfigPathForFreshness(processExpansionEnv().Lookup)) {
+		return false
+	}
+	path, definitive := ProjectConfigPathFreshDefinitive(env)
+	if path == "" && !definitive {
+		// The workspace's Git root could not be determined, so this check cannot
+		// say whether the project layer moved. It answers "not current", which
+		// every caller reads as unknown reachability and therefore leaves the
+		// names ELIGIBLE.
+		//
+		// That direction is the whole point. The comparison below would see an
+		// empty resolved path, match it against an empty recorded path, and call
+		// the evidence current — so a session that started outside Git and whose
+		// fresh root resolution then times out would keep excluding a tool that a
+		// worktree, appearing around the session with a matching MCP fallback,
+		// makes reachable again. "Could not read the root" is not "there is no
+		// repository": the absence was never established, so it must not be
+		// recorded as one, and the ceiling must let the child try.
+		return false
+	}
+	return layerEvidenceCurrent(e.Project, path)
+}
+
+// layerEvidenceCurrent compares one layer's recorded evidence against what that
+// path says now. An empty recorded Path is a layer discovery never resolved, and
+// it stays current only while the workspace still resolves to none.
+//
+// The file's identity is settled by STAT before anything is read, because this
+// runs on every model round:
+//
+//   - Recorded absent (empty Digest): the layer is current only while the path
+//     still does not exist. A file that appeared there is a change, and it is
+//     answered by the stat that found it — reading it would allocate its whole
+//     contents on every request just to learn the recorded digest is empty.
+//   - Recorded present: a size that differs from the recorded one is already a
+//     change, so it answers without a read. Only a same-size file is read, where
+//     the digest comparison is the thing that can still tell them apart.
+//
+// A path that cannot be statted is UNKNOWN, not absent: the caller reads "not
+// current" as unknown reachability and leaves the names eligible.
+func layerEvidenceCurrent(recorded LayerEvidence, path string) bool {
+	if recorded.Path == "" {
+		return path == ""
+	}
+	if path != recorded.Path {
+		return false
+	}
+	// os.Stat, not Lstat: DISCOVERY follows the path, so a dangling symlink is
+	// recorded absent here exactly as the read that parsed the layer saw it. Lstat
+	// finds the link itself and would call such a layer present, marking unchanged
+	// evidence stale forever and leaving CLI-only tools advertised while the child
+	// discovers no fallback. A link whose target appears is then a change, and the
+	// recorded-absent branch answers it by existence alone.
+	info, err := os.Stat(recorded.Path)
+	if err != nil {
+		// Absent is a successful stat of nothing, which is exactly what a layer
+		// recorded absent continues to be. Any other failure is unknown.
+		return errors.Is(err, os.ErrNotExist) && recorded.Digest == ""
+	}
+	if recorded.Digest == "" {
+		// Recorded absent, yet the path resolves now: the layer changed.
+		return false
+	}
+	if info.Mode().IsRegular() && info.Size() != recorded.Size {
+		return false
+	}
+	data, err := execenv.ReadFileCapped(recorded.Path)
+	if err != nil {
+		return false
+	}
+	return int64(len(data)) == recorded.Size && ConfigDigest(data) == recorded.Digest
+}
+
+// DiscoverWithCLIOnlyAndEvidence is Discover plus two things read in the same
+// pass: the servers the CLI layers (--mcp-config files and --mcp inline specs)
+// contribute to the EFFECTIVE configuration, and every layer's own evidence.
+//
+// A caller that clears the two CLI layers — every delegate spawn does — uses the
+// CLI entries to decide which tool names a child might not reach, and reading
+// that answer from this one parse keeps it from drifting with a second one. The
+// returned configs are Discover's, unchanged.
+//
+// Which CLI entries it returns, and what the caller may conclude from each:
+//
+//   - An entry whose name no other layer declares: Fallback is nil. The child
+//     clears the CLI layers and discovers nothing by that name, so the server,
+//     and only it, supplies those tools.
+//   - An entry whose name another layer declares: Fallback is that layer's
+//     config, the one the child discovers instead. This entry REPLACES the
+//     other layer's entry for this session, so its names are exactly the names
+//     THIS configuration serves; the two configurations may expose different
+//     tool sets under the same server name.
+//
+// Both are returned, and neither is a reachability verdict. A shadowed entry's
+// tools may or may not be reachable from a child, and the answer is not a
+// prediction here: the child's own MCP initialization registers what that
+// configuration exposes when it spawns. Callers must therefore treat an
+// unknown reachability as "let the child try" — excluding a name on that
+// ignorance hides a tool the child can call.
+//
+// Plugin MCP configs are NOT a layer here: plugin discovery is the session's,
+// not this package's, and initMCP merges them under these configs. A caller
+// that knows its plugin server names must treat a CLI entry whose name
+// collides with one as shadowed, for the same reason and with no subtraction
+// of tools: the child still loads the plugin, so it rediscovers that server
+// (see recordCLIMCPServers).
+func DiscoverWithCLIOnlyAndEvidence(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string) ([]ServerConfig, []CLIOnlyServer, ConfigEvidence, []string, error) {
+	env0 := processExpansionEnv()
 	return discoverLayers(env, extraFiles, inlineSpecs, env0, env0)
 }
 
@@ -393,7 +639,8 @@ func Discover(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string
 // keeps the full inherited environment for the project layer. Inline specs
 // are not expanded today, matching Discover.
 func DiscoverWithLaunchEnv(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string, launchEnv map[string]string) ([]ServerConfig, []string, error) {
-	return discoverLayers(env, extraFiles, inlineSpecs, launchExpansionEnv(launchEnv), launchOverlayOnlyEnv(launchEnv))
+	configs, _, _, warnings, err := discoverLayers(env, extraFiles, inlineSpecs, launchExpansionEnv(launchEnv), launchOverlayOnlyEnv(launchEnv))
+	return configs, warnings, err
 }
 
 // discoverLayers is Discover's body with the expansion environment chosen
@@ -403,9 +650,10 @@ func DiscoverWithLaunchEnv(env execenv.ExecutionEnvironment, extraFiles, inlineS
 // agree inside a session (Discover passes the full process environment for
 // both); they differ for the settings probe (DiscoverWithLaunchEnv), which
 // restricts the project layer to the launch overlay.
-func discoverLayers(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string, trustedEnv, untrustedEnv valueexpr.Env) ([]ServerConfig, []string, error) {
+func discoverLayers(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []string, trustedEnv, untrustedEnv valueexpr.Env) ([]ServerConfig, []CLIOnlyServer, ConfigEvidence, []string, error) {
 	var layers [][]ServerConfig
 	var warnings []string
+	var evidence ConfigEvidence
 
 	// Layer 1: Global config. The tool-fluency harness sets EVENER_NO_USER_SKILLS
 	// so an eval round depends only on the revision under test; the operator's
@@ -417,7 +665,11 @@ func discoverLayers(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []
 	if value, _ := trustedEnv.Lookup(envvars.EVENERNoUserSkills.Name); value != "1" {
 		globalPath := globalMCPConfigPathInEnv(trustedEnv.Lookup)
 		if globalPath != "" {
-			if configs, err := loadFileWithEnv(globalPath, trustedEnv); err != nil {
+			configs, layerEvidence, err := loadLayerEvidence(globalPath, func(s string) (string, error) {
+				return expandEnvVarsInEnv(s, trustedEnv)
+			})
+			evidence.Global = layerEvidence
+			if err != nil {
 				if !errors.Is(err, os.ErrNotExist) {
 					warnings = append(warnings, fmt.Sprintf("MCP config %s: %v", globalPath, err))
 				}
@@ -433,11 +685,12 @@ func discoverLayers(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []
 	// the host, so its $(command) expressions are refused at load — the same
 	// skip-with-warning as any other project-layer parse failure.
 	if env != nil {
-		cwd := env.WorkingDirectory()
-		root := execenv.GitRootOrEmpty(env, cwd)
-		if root != "" {
-			projPath := filepath.Join(root, ".evener", "mcp.json")
-			if configs, err := loadFileUntrustedWithEnv(projPath, untrustedEnv); err != nil {
+		if projPath := ProjectConfigPath(env); projPath != "" {
+			configs, layerEvidence, err := loadLayerEvidence(projPath, func(s string) (string, error) {
+				return expandEnvVarsUntrustedInEnv(s, untrustedEnv)
+			})
+			evidence.Project = layerEvidence
+			if err != nil {
 				if !errors.Is(err, os.ErrNotExist) {
 					warnings = append(warnings, fmt.Sprintf("MCP config %s: %v", projPath, err))
 				}
@@ -447,25 +700,75 @@ func discoverLayers(env execenv.ExecutionEnvironment, extraFiles, inlineSpecs []
 		}
 	}
 
-	// Layer 3: CLI config files.
+	// Layers 3-4: CLI config files, then CLI inline specs.
+	var cliLayer []ServerConfig
 	for _, path := range extraFiles {
 		configs, err := loadFileWithEnv(path, trustedEnv)
 		if err != nil {
-			return nil, nil, fmt.Errorf("--mcp-config %s: %w", path, err)
+			return nil, nil, ConfigEvidence{}, nil, fmt.Errorf("--mcp-config %s: %w", path, err)
 		}
-		layers = append(layers, configs)
+		cliLayer = append(cliLayer, configs...)
 	}
-
-	// Layer 4: CLI inline specs.
 	for _, spec := range inlineSpecs {
 		cfg, err := ParseInline(spec)
 		if err != nil {
-			return nil, nil, fmt.Errorf("--mcp %q: %w", spec, err)
+			return nil, nil, ConfigEvidence{}, nil, fmt.Errorf("--mcp %q: %w", spec, err)
 		}
-		layers = append(layers, []ServerConfig{cfg})
+		cliLayer = append(cliLayer, cfg)
+	}
+	// The layers the child still discovers when it clears the two CLI ones.
+	// Captured before the CLI layer is appended so cliOnly compares against
+	// exactly those, rather than slicing the merged list back apart.
+	shared := append([][]ServerConfig(nil), layers...)
+	if len(cliLayer) > 0 {
+		layers = append(layers, cliLayer)
 	}
 
-	return Merge(layers...), warnings, nil
+	return Merge(layers...), cliOnly(cliLayer, shared), evidence, warnings, nil
+}
+
+// CLIOnlyServer is a CLI-layer server plus, when another layer declares a server
+// of the same NAME NAMESPACE, the config that layer would contribute. Fallback
+// is nil when the CLI layers are the only declarers: the child clears them and
+// discovers nothing by that name. When Fallback is set, the CLI entry shadows
+// that config for this session and the child, having cleared the CLI layers,
+// discovers the fallback instead.
+//
+// The match is on the namespace MCP registration derives, not on the raw
+// configured string: registration namespaces every tool as
+// "<server>__<tool>" and replaces hyphens with underscores, so a project server
+// "team-tools" and a CLI server "team_tools" register into one namespace and
+// serve the same tool names. Comparing raw names would report the CLI entry as
+// unshadowed, and a caller that then excluded its names would hide a tool the
+// child registers through the project entry.
+type CLIOnlyServer struct {
+	Config   ServerConfig
+	Fallback *ServerConfig
+}
+
+// cliOnly reports the CLI-layer servers, each with the config another layer
+// declares in the same normalized name namespace (nil when no other layer
+// does). Later layers win the fallback, matching Merge's precedence.
+func cliOnly(cliLayer []ServerConfig, shared [][]ServerConfig) []CLIOnlyServer {
+	if len(cliLayer) == 0 {
+		return nil
+	}
+	elsewhere := make(map[string]ServerConfig, len(shared))
+	for _, layer := range shared {
+		for _, cfg := range layer {
+			// Later layers shadow earlier ones, matching Merge.
+			elsewhere[toolname.SanitizeMCPToolName(cfg.Name)] = cfg
+		}
+	}
+	var out []CLIOnlyServer
+	for _, cfg := range cliLayer {
+		if fallback, ok := elsewhere[toolname.SanitizeMCPToolName(cfg.Name)]; ok {
+			out = append(out, CLIOnlyServer{Config: cfg, Fallback: &fallback})
+			continue
+		}
+		out = append(out, CLIOnlyServer{Config: cfg})
+	}
+	return out
 }
 
 // DiscoverTrusted is Discover restricted to the layers the session's MODEL cannot
@@ -507,4 +810,25 @@ func globalMCPConfigPathInEnv(lookup func(string) (string, bool)) string {
 // falls back to home) and the home lookup whose failure yields no path.
 func globalMCPConfigPathWithHome(xdgConfigHome string, userHomeDir func() (string, error)) string {
 	return userdirs.Subdir(userdirs.ConfigRoot(xdgConfigHome, userHomeDir), "mcp.json")
+}
+
+// globalMCPConfigPathForFreshness resolves the global layer the way DISCOVERY
+// does, suppression included, so the freshness check and the classification it
+// guards cannot disagree about whether that layer exists.
+//
+// The rule: discovery omits the global layer entirely under
+// EVENER_NO_USER_SKILLS=1 (#3487), in which case it records no path at all. A
+// freshness check that resolved the path anyway would compare a recorded ""
+// against a real path, answer "not current" on every single check, and disable
+// the CLI-only exclusion for the whole session. An operator opting out of user
+// skills would silently lose a capability the ceiling still has to bound.
+//
+// Resolving the same path under the same suppression keeps the two in step: the
+// layer is suppressed for both, so the recorded empty path stays current for
+// both.
+func globalMCPConfigPathForFreshness(lookup func(string) (string, bool)) string {
+	if value, _ := lookup(envvars.EVENERNoUserSkills.Name); value == "1" {
+		return ""
+	}
+	return globalMCPConfigPathInEnv(lookup)
 }

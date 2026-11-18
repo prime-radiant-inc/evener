@@ -1,6 +1,7 @@
 package mcpconfig
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -507,9 +508,13 @@ func TestDiscoverRefusesProjectLayerCommandWithSyntaxError(t *testing.T) {
 	}
 }
 
-// The untrusted loaders refuse a $(command) expression where the trusted
+// The untrusted loading path refuses a $(command) expression where the trusted
 // loaders expand it: only config the user authors directly may run commands.
-func TestLoadFileUntrustedRefusesCommandExpressions(t *testing.T) {
+//
+// This drives loadLayerEvidence, which is the function production discovery uses
+// for the project and plugin layers, so the refusal is exercised on the path that
+// actually parses model-writable config rather than on a convenience wrapper.
+func TestProjectLayerLoadRefusesCommandExpressions(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "mcp.json")
 	if err := os.WriteFile(path, []byte(`{
@@ -517,8 +522,8 @@ func TestLoadFileUntrustedRefusesCommandExpressions(t *testing.T) {
 	}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := LoadFileUntrusted(path); err == nil || !strings.Contains(err.Error(), "command expressions") {
-		t.Fatalf("LoadFileUntrusted err = %v; want the command-expression refusal", err)
+	if _, _, err := loadLayerEvidence(path, expandEnvVarsUntrusted); err == nil || !strings.Contains(err.Error(), "command expressions") {
+		t.Fatalf("loadLayerEvidence err = %v; want the command-expression refusal", err)
 	}
 
 	valueexpr.ResetForTest()
@@ -998,5 +1003,90 @@ func TestDiscover_ProjectLayerReadsProcessEnv(t *testing.T) {
 	}
 	if len(configs) != 1 || configs[0].Name != "session-tool" || configs[0].Command != "session-env-bin" {
 		t.Fatalf("configs = %+v, want session-tool expanded from the process environment", configs)
+	}
+}
+
+// A layer recorded ABSENT must be verified by existence alone. Freshness runs on
+// every model round, so reading the file there would allocate its whole contents
+// per request merely to learn that the recorded digest is empty. The assertion is
+// on the allocation, not on the returned bool: pre-fix code returns the same
+// "stale" answer, having read megabytes to reach it.
+func TestAbsentLayerTurnsStaleWithoutReadingTheFileThatAppeared(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mcp.json")
+	// Large enough that reading it is unmistakable against allocator noise, and
+	// small enough to write quickly.
+	const size = 8 << 20
+	if err := os.WriteFile(path, bytes.Repeat([]byte("x"), size), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	recorded := LayerEvidence{Path: path}
+
+	if layerEvidenceCurrent(recorded, path) {
+		t.Fatal("a layer recorded absent still reports current after a file appeared at its path")
+	}
+
+	// TotalAlloc is process-global, so this case must not run in parallel.
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	const rounds = 4
+	for range rounds {
+		if layerEvidenceCurrent(recorded, path) {
+			t.Fatal("a layer recorded absent reports current while a file exists at its path")
+		}
+	}
+	runtime.ReadMemStats(&after)
+	allocated := after.TotalAlloc - before.TotalAlloc
+	if allocated > size/2 {
+		t.Fatalf("%d rounds over an absent-recorded layer allocated %d bytes for a %d-byte file, want the file left unread", rounds, allocated, size)
+	}
+}
+
+// A previously present layer answers by size when the size differs, and falls
+// through to the digest only when it does not.
+func TestPresentLayerAnswersBySizeBeforeComparingDigest(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "mcp.json")
+	data := []byte(`{"mcpServers":{}}`)
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	recorded := LayerEvidence{Path: path, Digest: ConfigDigest(data), Size: int64(len(data))}
+	if !layerEvidenceCurrent(recorded, path) {
+		t.Fatal("unchanged evidence reports stale")
+	}
+
+	// Same path, different length: a change the recorded size already settles, so
+	// the file is not read to reach it. The assertion is on the allocation because
+	// the digest comparison returns the same answer having read the whole file.
+	if err := os.WriteFile(path, bytes.Repeat([]byte("y"), 8<<20), 0o600); err != nil {
+		t.Fatalf("grow config: %v", err)
+	}
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	const rounds = 4
+	for range rounds {
+		if layerEvidenceCurrent(recorded, path) {
+			t.Fatal("a file whose size changed still reports current")
+		}
+	}
+	runtime.ReadMemStats(&after)
+	if allocated := after.TotalAlloc - before.TotalAlloc; allocated > (8<<20)/2 {
+		t.Fatalf("%d rounds over a size-mismatched layer allocated %d bytes, want the recorded size to answer without a read", rounds, allocated)
+	}
+
+	// Same length, different bytes: only the digest can tell these apart, so the
+	// size guard must not have replaced the comparison.
+	edited := append([]byte(nil), data...)
+	edited[len(edited)-2] = ' '
+	if err := os.WriteFile(path, edited, 0o600); err != nil {
+		t.Fatalf("edit config: %v", err)
+	}
+	if layerEvidenceCurrent(recorded, path) {
+		t.Fatal("a same-size edit still reports current")
 	}
 }

@@ -62,6 +62,31 @@ func GitRootOrEmptyContext(ctx context.Context, env ExecutionEnvironment, cwd st
 	return root
 }
 
+// GitRootOrEmptyFreshDefinitive is GitRootOrEmptyContext WITHOUT the
+// per-environment memo, for a caller asking whether a workspace has become a
+// repository since the session started. It keeps the resolver's definitive
+// flag, for a caller whose answer depends on the DIFFERENCE between
+// "this is not a repository" and "I could not find out".
+//
+// The memo exists to spare repeated forks at startup, and it is right for that:
+// a directory's answer does not change under a running session often. It is
+// wrong for a freshness check, which is asking precisely whether it has. A
+// session launched before `git init` would otherwise read the cached "no
+// repository" for the rest of its life and never notice the repository, and the
+// project MCP layer, that appeared around it.
+//
+// The flag is not decoration. A freshness check that reads a bare empty root as
+// "confirmed no repository" caches an absence nothing established: the
+// resolution that timed out or was cancelled says only that it could not ask,
+// and a worktree with a matching MCP fallback may well be sitting there. The
+// caller must keep the question open, which means it needs this flag.
+func GitRootOrEmptyFreshDefinitive(env ExecutionEnvironment, cwd string) (string, bool) {
+	if env == nil {
+		return "", false
+	}
+	return gitRootUncached(context.Background(), env, cwd)
+}
+
 // gitAnswered reports whether err from a git invocation is git's OWN answer — a
 // process that ran and chose its exit status — rather than a failure to obtain
 // an answer at all. It is what decides whether a resolution may be memoized

@@ -107,13 +107,89 @@ func (s *Session) nextJobTreeRevision(kind events.EventKind) (string, uint64, bo
 // history, registered tools, context-management state, subagents, plugins, MCP
 // connections, and persistence settings.
 type Session struct {
-	conversation           conversationState
-	hubClient              SessionHubClient
-	hubGeneration          uint64
-	hubEnabled             bool
-	hubWatchSignal         chan struct{}
-	hubWatchCancels        map[string]context.CancelFunc
-	hubOrdinary            map[string]*tool.RegisteredTool
+	conversation    conversationState
+	hubClient       SessionHubClient
+	hubGeneration   uint64
+	hubEnabled      bool
+	hubWatchSignal  chan struct{}
+	hubWatchCancels map[string]context.CancelFunc
+	hubOrdinary     map[string]*tool.RegisteredTool
+	// managerOnlyTools names the tools Manager composition registered with no
+	// ordinary registration behind them (see composeHubRegistry). Every spawn
+	// path sets Manager=false, so a child never composes one, and the delegate
+	// tool ceiling must not advertise them.
+	managerOnlyTools map[string]bool
+	// cliMCPServers names the MCP servers only the CLI layers declare (see
+	// initMCP), and cliMCPToolNames the tools they registered. Every spawn path
+	// clears MCPConfigFiles and MCPInline, so a child never discovers those
+	// servers, and the delegate tool ceiling must not advertise their tools. The
+	// server names are kept so a retry that heals one re-derives the tools.
+	cliMCPServers map[string]bool
+	// cliMCPShadowed names the CLI-supplied servers whose name another layer
+	// also declares, or a plugin config does. A child may rediscover such a
+	// name, so its tools stay eligible rather than being excluded on a guess —
+	// nothing is connected to find out (see recordCLIMCPServers).
+	cliMCPShadowed  map[string]bool
+	cliMCPToolNames map[string]bool
+	// cliMCPEvidence is the project-configuration evidence the classification
+	// above was derived from: the file the layer-2 project config resolves to,
+	// what it contained, and whether it existed. The classification is only
+	// sound while this still describes the session's current workspace, so a
+	// ceiling build re-verifies it and leaves MCP names eligible when it cannot
+	// (see cliMCPClassificationCurrent).
+	cliMCPEvidence cliMCPClassificationEvidence
+	// cliMCPEvidenceFresh is whether cliMCPEvidence still describes what a child
+	// would discover now, resolved OUTSIDE s.mu and stored for the ceiling build
+	// to read. cliMCPEvidenceFreshKnown distinguishes "never resolved" from
+	// "resolved false", the same way cliMCPExclusionKnown does below.
+	//
+	// The split exists because the two requirements pull against each other: the
+	// answer has to be re-derived often (a config edit must not wait for a
+	// delegate spawn), and it must not be derived while holding s.mu (the ceiling
+	// is built under it, and the derivation reads the filesystem and runs git).
+	// So the request path resolves the verdict before it takes the lock, writes it
+	// here under delegateExclusionsMu, and the ceiling reads the stored answer
+	// without doing any I/O. Not-yet-resolved keeps names eligible: unknown
+	// reachability never excludes.
+	cliMCPEvidenceFresh      bool
+	cliMCPEvidenceFreshKnown bool
+	// cliMCPExclusionApplied records whether the CLI-MCP half of the delegate
+	// exclusion is currently in force, and cliMCPExclusionVersion counts the
+	// times that answer changed. A change invalidates every cached view derived
+	// from it: the rendered <available_agents> roster and the delegate tool
+	// definition. cliMCPExclusionKnown distinguishes "never decided" from
+	// "decided false", so the first decision counts as a change.
+	cliMCPExclusionKnown   bool
+	cliMCPExclusionApplied bool
+	cliMCPExclusionVersion uint64
+	// cliMCPEnvRevision counts the environment installs this session has made. A
+	// freshness check is an answer ABOUT one environment, so its result is
+	// discarded if the environment changed while it ran: the swap already dropped
+	// the old verdict, and a check that started before the swap must not write a
+	// new one from the workspace the session just left.
+	cliMCPEnvRevision uint64
+	// freshnessCheck is non-nil while one freshness check is in flight, so a
+	// stalled filesystem costs the request path one goroutine however many
+	// requests arrive meanwhile. The in-flight check carries its own result:
+	// waiting on a check and then reading session state could see a newer check's
+	// unfinished answer instead.
+	freshnessCheckMu sync.Mutex
+	freshnessCheck   *exclusionFreshnessCheck
+	// cachedExclusionVersion is the decision version the cached TOOL DEFINITIONS
+	// were built from, and cachedPromptExclusionVersion the one the cached SYSTEM
+	// PROMPT was built from. They are two fields because they are two caches with
+	// two rebuild paths: SetVisionModel rebuilds only the definitions, so a single
+	// shared stamp let that rebuild mark the prompt current too, and the next
+	// request then skipped the refresh and kept serving a roster from the old
+	// decision. Each cache stamps its own version where it is rebuilt.
+	cachedExclusionVersion uint64
+	// cachedPromptExclusionVersion is read under s.mu with the prompt it stamps.
+	cachedPromptExclusionVersion uint64
+	// delegateExclusionsMu guards the two sets above. They cannot ride s.mu:
+	// the delegate-create path computes the ceiling without holding s.mu, while
+	// the prompt-render path computes it already holding s.mu, and s.mu is not
+	// reentrant. Nothing takes s.mu while holding this lock.
+	delegateExclusionsMu   sync.RWMutex
 	hubRegistry            *tool.Registry
 	id                     string
 	cfg                    SessionConfig
@@ -1110,6 +1186,11 @@ type Session struct {
 	pendingSessionStartWaitEntered func()
 	pluginAgents                   map[string]plugin.Agent
 	pluginMCPConfigs               []mcpconfig.ServerConfig
+	// cliMCPOtherNamespaces is the registered-name prefixes the NON-CLI config
+	// layers supply, recorded beside the CLI server sets it qualifies. A CLI
+	// tool whose full registered name starts with one of these can also be
+	// registered by a server the child keeps, so it is not CLI-only.
+	cliMCPOtherNamespaces []string
 	// unsupportedPluginHookEvents accumulates all Claude-recognized events
 	// declared by loaded plugins that evener does not currently fire.
 	// Populated by initPlugins; used by DetailedStatus for diagnostics.

@@ -71,9 +71,17 @@ func prependSystemPromptToUserMessage(systemPrompt string, user llm.Message) llm
 // The empty warning means nothing was omitted or failed; failed reports whether
 // renderSystemPrompt returned its diagnostic text instead of a prompt.
 func (s *Session) refreshSystemPromptCache(env execenv.ExecutionEnvironment) (warning string, failed bool) {
+	// Read the decision version BEFORE rendering and stamp it with the prompt. The
+	// stamp then names the decision this prompt was built from, not whatever the
+	// decision happens to be once the render returns: a flip landing mid-render
+	// leaves the stamp old, and the next request rebuilds. Stamping the current
+	// version afterwards would mark a prompt current that was rendered from the
+	// previous answer.
+	builtFrom := s.exclusionVersion()
 	if s.cfg.testOnly.minimalSystemPrompt {
 		s.cachedSystemPrompt = "test system prompt"
 		s.promptSourceLog = nil
+		s.cachedPromptExclusionVersion = builtFrom
 		return "", false
 	}
 	prompt, warning, failed := s.renderSystemPrompt(env)
@@ -83,6 +91,7 @@ func (s *Session) refreshSystemPromptCache(env execenv.ExecutionEnvironment) (wa
 	// text, so the model is still told why it has none.
 	if !failed || s.cachedSystemPrompt == "" {
 		s.cachedSystemPrompt = prompt
+		s.cachedPromptExclusionVersion = builtFrom
 	}
 	return warning, failed
 }

@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/mcpconfig"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provenance"
 	"primeradiant.com/evener/agent/provider"
@@ -505,19 +506,92 @@ func frozenSubagentToolNames(allTools bool, allowed, denied []string) []string {
 	}
 }
 
-func (s *Session) subagentToolNameCeiling(agent *plugin.Agent, canDelegate bool, isolationName string) []string {
+// subagentToolNameCeilingFromRegistered builds the role ceiling from a
+// registered-name snapshot. The prompt path calls it while holding s.mu and
+// reads the freshness verdict the request refresh stored; the spawn path goes
+// through subagentToolNameCeilingAndExcluded instead, which resolves freshness
+// outside the lock and also reports the reachability-excluded half.
+func (s *Session) subagentToolNameCeilingFromRegistered(registered map[string]bool, agent *plugin.Agent, canDelegate bool, isolationName string) []string {
+	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(agent, canDelegate)
+	ceiling := delegateToolNameCeilingFromRegistered(registered, s.reg, s.resultToolName(), allTools, allowedTools, deniedTools, canDelegate, isolationName)
+	return s.removeChildUnreachableTools(ceiling, isolationName)
+}
+
+// subagentToolNameCeilingAndExcluded is the ceiling together with the names
+// reachability removed from it, which is what the spawn path must record.
+//
+// The two need separating because they mean different things. A name the ROLE
+// forbids is authorization: it stays out forever, and a cold resume honor that.
+// A name REACHABILITY removed is a fact about one workspace's configuration at
+// one moment — the child could not register it then. Freezing the second kind
+// into the ceiling is how a delegate that was denied a CLI-only tool loses it
+// permanently after an operator adds that server to the project or global
+// config, which is this issue's own failure inverted: the child now discovers
+// and registers the tool, and the frozen ceiling strips it.
+//
+// So the caller records both, and resume re-admits the reachability half when
+// the configuration it was derived from no longer holds.
+func (s *Session) subagentToolNameCeilingAndExcluded(ctx context.Context, agent *plugin.Agent, canDelegate bool, isolationName string) (ceiling, excluded []string) {
+	s.refreshCLIEvidenceFreshnessContext(ctx)
 	var registered map[string]bool
 	if s.reg != nil {
 		registered = s.reg.RegisteredNames()
 	}
-	return s.subagentToolNameCeilingFromRegistered(registered, agent, canDelegate, isolationName)
-}
-
-func (s *Session) subagentToolNameCeilingFromRegistered(registered map[string]bool, agent *plugin.Agent, canDelegate bool, isolationName string) []string {
 	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(agent, canDelegate)
-	return delegateToolNameCeilingFromRegistered(registered, s.reg, s.resultToolName(), allTools, allowedTools, deniedTools, canDelegate, isolationName)
+	ceiling = delegateToolNameCeilingFromRegistered(registered, s.reg, s.resultToolName(), allTools, allowedTools, deniedTools, canDelegate, isolationName)
+	kept := s.removeChildUnreachableTools(ceiling, isolationName)
+	return kept, diffToolNames(ceiling, kept)
 }
 
+// diffToolNames returns the names in before that are absent from after, in
+// before's order.
+func diffToolNames(before, after []string) []string {
+	if len(before) == 0 {
+		return nil
+	}
+	kept := make(map[string]bool, len(after))
+	for _, name := range after {
+		kept[name] = true
+	}
+	var removed []string
+	for _, name := range before {
+		if !kept[name] {
+			removed = append(removed, name)
+		}
+	}
+	return removed
+}
+
+// reachableCeilingNames reports which of the names a ceiling dropped for
+// reachability this session can register NOW.
+//
+// The test is registration, not configuration: a name present in the registry
+// exists, so a resumed child whose role allows it may call it. Reading the
+// registry rather than re-deriving the exclusion keeps this from becoming a
+// second, weaker copy of the exclusion rule — and it is the same authority the
+// child itself uses.
+//
+// A session with no registry re-admits nothing: with nothing to observe, the
+// ceiling stays as recorded, which is the conservative direction.
+func (s *Session) reachableCeilingNames(excluded []string) []string {
+	if len(excluded) == 0 || s == nil || s.reg == nil {
+		return nil
+	}
+	registered := s.reg.RegisteredNames()
+	reachable := make([]string, 0, len(excluded))
+	for _, name := range excluded {
+		if registered[name] {
+			reachable = append(reachable, name)
+		}
+	}
+	return reachable
+}
+
+// The invariant this file's ceiling work answers to: the ceiling bounds what a
+// delegate may use, and recovery reads it; availability is what the child
+// registered, and only the child itself knows that. The two must not answer each
+// other's question. A frozen ceiling is correct even when the child registered
+// fewer names than it lists.
 func delegateToolNameCeilingFromRegistered(registered map[string]bool, reg *tool.Registry, resultToolName string, allTools bool, allowed, denied []string, canDelegate bool, isolation string) []string {
 	if reg == nil {
 		return nil
@@ -568,6 +642,504 @@ func delegateToolNameCeilingFromRegistered(registered map[string]bool, reg *tool
 	}
 	sort.Strings(names)
 	return names
+}
+
+// removeChildUnreachableTools drops every tool a spawned child can never
+// register. The ceiling BOUNDS what a delegate may use, and recovery reads it;
+// availability is what the child registered, and only the child itself knows
+// that. This function is the ceiling's half only.
+//
+// The two sources are recorded by the mechanisms that supply them, not by a
+// list kept beside them:
+//
+//   - managerOnlyTools: Manager composition registered the tool with no
+//     ordinary registration behind it (composeHubRegistry). Every spawn path
+//     sets Manager=false, so a child never composes one. session_control is
+//     today's member; a tool added to that composition is excluded with no
+//     edit here.
+//   - cliMCPToolNames: a server only the CLI layers declare supplied the tool
+//     (initMCP). Every spawn path clears MCPConfigFiles and MCPInline, so a
+//     child never discovers that server — but ONLY in the workspace that
+//     observation was made in. The exhaustive rule is: exclude a name only when
+//     the startup snapshot positively establishes that a CLI entry shadows the
+//     server that would serve it, in the delegate's OWN target workspace.
+//     Anything the snapshot cannot establish keeps the name eligible, because
+//     unknown reachability means the child gets to try — excluding on
+//     ignorance hides a callable tool.
+//
+// Both surfaces — the <available_agents> roster and descriptor.ToolNameCeiling
+// — reach the registry through the caller, so one exclusion keeps them
+// agreeing.
+//
+// isolationName is the delegate's target workspace selector. A worktree spawn
+// cuts a fresh lane and the child spawns inside it, where a
+// <lane>/.evener/mcp.json the parent never read may declare any server. The
+// snapshot therefore does not describe that workspace, and the MCP half of the
+// exclusion does not apply. The Manager half still does: no spawn path composes
+// the hub, whatever the workspace.
+func (s *Session) removeChildUnreachableTools(names []string, isolationName string) []string {
+	managerOnly, cliMCP, excludeCLIMCP := s.childExclusionDecision(isolationName)
+	if len(managerOnly) == 0 && len(cliMCP) == 0 {
+		return names
+	}
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		if managerOnly[name] || (excludeCLIMCP && cliMCP[name]) {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
+}
+
+// childExclusionDecision is the one answer to "which of this session's tool
+// names can a spawned child not reach", for one target workspace. Both the
+// ceiling build and the model-request refresh call it, so a cached view and the
+// live answer cannot be computed from different rules.
+//
+// The MCP half applies only while its evidence still describes the target
+// workspace, and never for a fresh lane. A branch switch in place, an added or
+// edited project or global config, or a moved git root all leave the startup
+// snapshot describing a workspace the child no longer spawns in, so the
+// exclusion is not applied there: reachability is unknown, and unknown means the
+// child gets to try.
+//
+// The answer can flip while the session runs, and it is recorded as it is
+// computed (noteExclusionDecision) so every cache built from it can tell that it
+// was built from an older answer.
+//
+// The RECORDED decision is the shared-workspace one. A worktree lane is a
+// per-spawn exception on top of it, not a different decision: recording the
+// exception in the shared version made one worktree spawn stamp the roster
+// caches as stale, and the next model request flipped the recorded answer back
+// to the shared one and rebuilt both caches although their shared-workspace
+// roster was unchanged. The exception therefore applies in the returned value
+// only, so a caller deriving a lane's ceiling gets it and the caches do not.
+func (s *Session) childExclusionDecision(isolationName string) (managerOnly, cliMCP map[string]bool, excludeCLIMCP bool) {
+	s.delegateExclusionsMu.RLock()
+	managerOnly = s.managerOnlyTools
+	cliMCP = s.cliMCPToolNames
+	fresh := s.cliMCPEvidenceFreshKnown && s.cliMCPEvidenceFresh
+	s.delegateExclusionsMu.RUnlock()
+	shared := len(cliMCP) > 0 && fresh
+	s.noteExclusionDecision(shared)
+	return managerOnly, cliMCP, shared && isolationName != "worktree"
+}
+
+// exclusionFreshnessRequestBudget bounds how long one model request waits for the
+// CLI-MCP freshness check. The check reads at most two config layers and forks
+// git for the root; the git half already carries gitExecTimeout, and this bound
+// covers the reads on a mount that has stopped answering. Exceeding it is
+// unknown reachability, never a negative: the names stay eligible and the next
+// request re-runs the check.
+const exclusionFreshnessRequestBudget = 12 * time.Second
+
+// cliMCPClassificationEvidence is what the CLI-only MCP classification was
+// derived from, so a later check can tell whether it still describes the
+// session's workspace. Every input that can make an excluded name reachable
+// again is in here, because an input left out is an input that can change
+// without invalidating the answer: the project layer (<git root>/.evener/
+// mcp.json) and the user-global layer, each with its path and the digest of the
+// bytes discovery parsed, or an empty digest when the layer was confirmed
+// absent.
+//
+// A session that switches branches in place, or has a repository initialized
+// around it, keeps its environment: no swap runs, so nothing else would notice
+// that a layer now declares a server the startup snapshot never saw.
+type cliMCPClassificationEvidence struct {
+	layers mcpconfig.ConfigEvidence
+}
+
+// cliMCPClassificationCurrent reports whether the recorded evidence still
+// describes every layer a child would read now. It performs the I/O: it reads at
+// most two capped files and runs git, and it connects nothing, so it cannot
+// become the second probe the earlier rounds ruled out.
+//
+// It must be called WITHOUT s.mu. The ceiling build needs this answer and runs
+// under s.mu, so the two are separated: this resolves the verdict and stores it
+// (refreshCLIEvidenceFreshness), and the ceiling path reads the stored answer
+// through childExclusionDecision. Calling the I/O-bearing version from a ceiling build
+// would put a filesystem read and a git fork inside the session lock, which is
+// how a FIFO-shaped .git entry once wedged request preparation.
+//
+// A layer that changed, moved, or cannot be verified answers false, which leaves
+// MCP names eligible rather than excluding on ignorance. The paths are resolved
+// fresh (see mcpconfig.ConfigEvidence.EvidenceCurrent): a memoized git root would
+// answer the question this check exists to re-ask.
+func (s *Session) cliMCPClassificationCurrent(evidence cliMCPClassificationEvidence, env execenv.ExecutionEnvironment) bool {
+	return evidence.layers.EvidenceCurrent(env)
+}
+
+// refreshCLIEvidenceFreshness resolves the freshness verdict and stores it for
+// the ceiling build to read, under delegateExclusionsMu only. It does the I/O
+// itself, so it must be called without s.mu — which is exactly what the request
+// path does before it renders the prompt or the tool definitions.
+func (s *Session) refreshCLIEvidenceFreshness() {
+	s.refreshCLIEvidenceFreshnessContext(context.Background())
+}
+
+// refreshCLIEvidenceFreshnessContext is refreshCLIEvidenceFreshness bounded by
+// the caller's context.
+//
+// The check touches the filesystem and forks git, and the request path calls it
+// before EVERY model request. A workspace mount that stalls makes those calls
+// block indefinitely, and nothing in them observes cancellation, so without this
+// bound request preparation would hang with no way for Stop to interrupt it.
+//
+// A check that cannot finish inside the context's bound is UNKNOWN reachability,
+// which every reader already treats as "let the child try": names stay eligible
+// and nothing is excluded on an answer that was never obtained. The next request
+// re-runs the check, so the exclusion recovers as soon as the filesystem
+// answers again rather than staying stranded.
+func (s *Session) refreshCLIEvidenceFreshnessContext(ctx context.Context) {
+	s.delegateExclusionsMu.RLock()
+	evidence := s.cliMCPEvidence
+	names := len(s.cliMCPToolNames)
+	applied := s.cliMCPExclusionKnown && s.cliMCPExclusionApplied
+	// The revision is read BEFORE the environment, and the order is load-bearing.
+	// A swap installs the new environment under s.mu and then bumps the revision
+	// under delegateExclusionsMu; reading revision-then-env can only pair an OLD
+	// revision with a NEW environment, which the publisher discards. The reverse
+	// order could pair the old environment with the new revision and publish a
+	// verdict about the workspace the session just left.
+	revision := s.cliMCPEnvRevision
+	s.delegateExclusionsMu.RUnlock()
+	env := s.currentEnv()
+	// With no classified CLI names there is nothing the verdict could exclude, so
+	// the check cannot change any answer this session gives — and the check is
+	// not free: it reads and hashes up to two config layers and forks git for the
+	// root, on every model request. A session that has only project, global or
+	// plugin MCP servers would pay that forever to learn nothing.
+	//
+	// The exclusion state is read under the same hold as the names so the two
+	// cannot disagree. When there is no name to exclude AND no exclusion is
+	// currently applied, the verdict is left as it is: nothing can depend on it.
+	// An applied exclusion is still re-derived, because this call is also the
+	// path that CLEARS one — skipping there would strand a stale denial.
+	if names == 0 && !applied {
+		return
+	}
+	fresh, settled := s.sampleExclusionFreshness(ctx, evidence, env, revision)
+	if !settled {
+		// Unknown, not stale: nothing was established about the layers, so the
+		// verdict is forgotten rather than recorded as a negative. The next
+		// request re-runs the check, so the exclusion recovers when the
+		// filesystem answers again.
+		s.delegateExclusionsMu.Lock()
+		s.forgetCLIEvidenceFreshnessLocked()
+		s.delegateExclusionsMu.Unlock()
+		return
+	}
+	s.publishFreshnessForRevision(fresh, revision)
+}
+
+// publishFreshnessForRevision records a verdict, but only for the environment it
+// was computed against.
+//
+// An answer about an environment the session has left is not an answer. The swap
+// already dropped the verdict; publishing this one would restore a claim about the
+// old workspace, and in the permissive direction it would keep the new workspace's
+// fallback tool out of the roster. Unknown is the honest state, and the next
+// request re-runs the check against the installed environment.
+//
+// The revision is compared and the verdict written under ONE hold, so a swap
+// cannot slip between them.
+func (s *Session) publishFreshnessForRevision(fresh bool, revision uint64) {
+	s.delegateExclusionsMu.Lock()
+	defer s.delegateExclusionsMu.Unlock()
+	if revision != s.cliMCPEnvRevision {
+		s.forgetCLIEvidenceFreshnessLocked()
+		return
+	}
+	s.cliMCPEvidenceFresh = fresh
+	s.cliMCPEvidenceFreshKnown = true
+}
+
+// exclusionFreshnessCheck is one in-flight freshness check. Its result lives
+// here rather than on the session so every waiter reads the answer to the check
+// it waited on; done closes after fresh and settled are written.
+type exclusionFreshnessCheck struct {
+	done chan struct{}
+	// revision is the environment install this check was computed for. A result
+	// whose revision no longer holds describes a workspace the session has left,
+	// so the publisher discards it rather than recording a verdict about the wrong
+	// environment.
+	revision uint64
+	fresh    bool
+	settled  bool
+}
+
+// sampleExclusionFreshness resolves the freshness verdict, bounded by ctx.
+//
+// At most ONE check is in flight at a time. A stalled workspace mount makes the
+// underlying read or git call block without observing cancellation, so a check
+// started per request would accumulate a goroutine per model round for as long
+// as the stall lasts. A request that finds a check already running waits on it
+// rather than starting another.
+//
+// That bounds the cost to one goroutine per stall, not one forever: a check whose
+// waiter gave up keeps blocking until the filesystem answers, and the next
+// request starts a new one rather than waiting on the abandoned check, because
+// the abandoned one may never answer. The requests themselves stay bounded; the
+// outstanding goroutines are at most one per request interval spent stalling.
+//
+// settled is false when ctx ended before the check answered. That is UNKNOWN
+// reachability, never "stale": nothing was established about the layers.
+func (s *Session) sampleExclusionFreshness(ctx context.Context, evidence cliMCPClassificationEvidence, env execenv.ExecutionEnvironment, revision uint64) (fresh, settled bool) {
+	s.freshnessCheckMu.Lock()
+	check := s.freshnessCheck
+	if check == nil {
+		// The result lives on the check, not on the session: a waiter that read
+		// session fields after done closed could race a newer check and report its
+		// unfinished answer as this one's.
+		check = &exclusionFreshnessCheck{done: make(chan struct{}), revision: revision}
+		s.freshnessCheck = check
+		// env is captured by the caller and passed in, never read here: the swap path
+		// replaces s.env under s.mu, so a worker reading it directly would race the
+		// write. Each check verifies the one environment it was started for.
+		go func() {
+			fresh := s.cliMCPClassificationCurrent(evidence, env)
+			s.freshnessCheckMu.Lock()
+			check.fresh = fresh
+			check.settled = true
+			s.freshnessCheck = nil
+			s.freshnessCheckMu.Unlock()
+			close(check.done)
+		}()
+	}
+	s.freshnessCheckMu.Unlock()
+
+	select {
+	case <-check.done:
+	case <-ctx.Done():
+		return false, false
+	}
+	return check.fresh, check.settled
+}
+
+// forgetCLIEvidenceFreshness drops the stored verdict. A verdict is an answer
+// about one set of evidence, so it must not outlive it: callers that install new
+// evidence, or clear the evidence entirely, forget the verdict in the same hold.
+// A forgotten verdict answers "not fresh", which leaves names eligible — unknown
+// reachability never excludes — and the next refresh resolves it again.
+//
+// Callers hold delegateExclusionsMu.
+func (s *Session) forgetCLIEvidenceFreshnessLocked() {
+	s.cliMCPEvidenceFresh = false
+	s.cliMCPEvidenceFreshKnown = false
+}
+
+func (s *Session) setManagerOnlyTools(names map[string]bool) {
+	s.delegateExclusionsMu.Lock()
+	defer s.delegateExclusionsMu.Unlock()
+	s.managerOnlyTools = names
+}
+
+func (s *Session) setCLIMCPToolNames(names map[string]bool) {
+	s.delegateExclusionsMu.Lock()
+	defer s.delegateExclusionsMu.Unlock()
+	s.cliMCPToolNames = names
+}
+
+// setCLIMCPServers installs a classification together with the evidence it was
+// derived from. The evidence is a parameter rather than something captured here,
+// because the only sound evidence is the bytes discovery parsed: fingerprinting
+// the file again would pair a classification from one read with a digest from
+// another, and a file edited in between then verifies forever against a
+// classification it no longer describes (see mcpconfig.ConfigEvidence).
+func (s *Session) setCLIMCPServers(names map[string]bool, shadowed map[string]bool, evidence mcpconfig.ConfigEvidence) {
+	s.delegateExclusionsMu.Lock()
+	defer s.delegateExclusionsMu.Unlock()
+	s.cliMCPServers = names
+	s.cliMCPShadowed = shadowed
+	s.cliMCPEvidence = cliMCPClassificationEvidence{layers: evidence}
+	// New evidence, so the verdict about the old evidence is void.
+	s.forgetCLIEvidenceFreshnessLocked()
+}
+
+// Note on lock discipline: nothing in this file reads the environment while
+// holding delegateExclusionsMu, and nothing here takes s.mu. The ceiling is
+// built from both the prompt-render path (s.mu held) and the delegate-create
+// path (s.mu not held), and the clear runs from the environment-swap path
+// (s.mu held), so either lock taken here would deadlock one of them.
+
+// noteExclusionDecision records whether the CLI-MCP half of the exclusion is
+// currently applied, and bumps the version when that answer CHANGES.
+//
+// The answer is derived from the project layer, which changes under a running
+// session: an in-place branch switch can add a fallback server, and a name that
+// was excluded becomes one the child can reach. Everything cached from the old
+// answer — the rendered roster, the delegate tool definition — is then wrong
+// until something rebuilds it, and nothing in a model request would.
+//
+// So the flip itself is the invalidation signal: the caches record the version
+// they were built from, and the request path rebuilds when the two differ. This
+// is the one fact rule the rest of this change follows — the exclusion and every
+// view of it move together, or none of them does.
+//
+// It returns the version after the write. Callers do not need the value; tests
+// do.
+func (s *Session) noteExclusionDecision(applied bool) uint64 {
+	s.delegateExclusionsMu.Lock()
+	defer s.delegateExclusionsMu.Unlock()
+	if s.cliMCPExclusionKnown && s.cliMCPExclusionApplied == applied {
+		return s.cliMCPExclusionVersion
+	}
+	s.cliMCPExclusionKnown = true
+	s.cliMCPExclusionApplied = applied
+	s.cliMCPExclusionVersion++
+	return s.cliMCPExclusionVersion
+}
+
+// exclusionVersion is the current decision version, for a caller that is about
+// to cache a view derived from it.
+func (s *Session) exclusionVersion() uint64 {
+	s.delegateExclusionsMu.RLock()
+	defer s.delegateExclusionsMu.RUnlock()
+	return s.cliMCPExclusionVersion
+}
+
+// refreshCachesForExclusionChange rebuilds the cached prompt and tool
+// definitions when the exclusion decision differs from the one they were built
+// from, so the next model request sees the current answer. It takes s.mu itself
+// and must be called without it.
+//
+// It RE-EVALUATES the decision rather than only comparing versions, and that
+// order is load-bearing. The version is bumped where a decision is computed, and
+// the only other place that computes one is a ceiling build; comparing versions
+// alone therefore waits for a delegate spawn to notice a config edit, so a
+// session whose project layer gained a fallback server keeps hiding its tools
+// until some unrelated action rebuilds the roster. Recomputing here makes the
+// edit itself the trigger: the evidence no longer verifies, the decision flips,
+// the version moves, and the caches are rebuilt from the new answer.
+//
+// Recomputing costs at most two capped file reads and connects nothing. It runs
+// on the request path, before the prompt is built, which is exactly where a stale
+// capability list would otherwise be served.
+func (s *Session) refreshCachesForExclusionChange() {
+	s.refreshCachesForExclusionChangeContext(context.Background())
+}
+
+// refreshCachesForExclusionChangeContext is refreshCachesForExclusionChange
+// bounded by the caller's context. The request path passes the TURN's context so
+// Stop can interrupt the freshness check instead of leaving preparation blocked
+// on a stalled workspace mount.
+func (s *Session) refreshCachesForExclusionChangeContext(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	// Re-evaluate: this call is the invalidation, not a consumer of it. The
+	// verdict is resolved HERE, without s.mu, and stored; the ceiling build below
+	// reads the stored answer, so no filesystem read or git fork happens inside
+	// the session lock.
+	s.refreshCLIEvidenceFreshnessContext(ctx)
+	s.childExclusionDecision("")
+	version := s.exclusionVersion()
+	s.mu.Lock()
+	// Each cache is compared against the version IT was built from. A single
+	// shared comparison let a caller that rebuilt only one of them mark both
+	// current: SetVisionModel rebuilds the tool definitions, so a shared stamp
+	// advanced the prompt's too, and the next request skipped the refresh and kept
+	// serving a roster built from the old exclusion decision.
+	defsStale := s.cachedExclusionVersion != version
+	promptStale := s.cachedPromptExclusionVersion != version
+	var promptWarning string
+	if defsStale {
+		s.rebuildToolDefsCache()
+	}
+	if promptStale {
+		promptWarning, _ = s.refreshSystemPromptCache(s.env) // already holding s.mu; currentEnv() would deadlock
+	}
+	s.mu.Unlock()
+	if promptStale {
+		s.reportPromptRenderFailure(promptWarning)
+	}
+}
+
+// clearCLIMCPClassification forgets which CLI-supplied servers a child cannot
+// reach. It runs when the session's workspace changes, because the
+// classification was derived from one workspace's project layer
+// (<git root>/.evener/mcp.json) and says nothing about the next one: a lane
+// entered, or a project config added while the session is open, can declare a
+// server the startup snapshot never saw, and the child — which spawns in the
+// new workspace and discovers that layer — registers its tools.
+//
+// Under the rule the rest of this file follows, that is not a case to
+// re-derive by discovery here. Reachability is unknown, and unknown means the
+// child gets to try: an exclusion kept across the change would hide a tool the
+// child can call, which is the defect this classification exists to prevent.
+// The tools a Manager-composition-only registration supplies are unaffected —
+// no spawn path composes one, whatever the workspace.
+//
+// invalidateCLIMCPClassification does NOT clear the classification: server names,
+// shadow flags, tool names and their evidence are all PRESERVED, and only the
+// verdict about them is dropped. Nothing here reads the environment, and that is
+// load-bearing: this runs from swapEnvAndRefresh, which holds s.mu and has
+// already installed the next environment, so reading it back (currentEnv, or an
+// evidence capture) would re-enter s.mu and deadlock every worktree switch.
+//
+// Clearing the classification outright is wrong for an environment swap. The
+// classification describes what the CLI layers supply, which the swap does not
+// change, and the evidence records the layers it was derived from. Dropping both
+// meant that entering a worktree erased the classification and returning to the
+// unchanged original workspace could not get it back: later refreshes had no
+// names and no evidence to re-check, so for the rest of the session the roster
+// and new descriptors could advertise CLI-only tools that same-workspace children
+// cannot register — the original bug, re-created by the swap path.
+//
+// Invalidating the verdict is the right half to drop. A verdict is an answer
+// about one environment, so it must not survive a swap. The next refresh
+// re-resolves it against the INSTALLED environment, which is what makes the
+// exclusion recover on return to the workspace it describes and stay inactive in
+// a different one — the locations are resolved fresh, so the same evidence that
+// matched the original workspace matches it again.
+func (s *Session) invalidateCLIMCPClassification() {
+	s.delegateExclusionsMu.Lock()
+	defer s.delegateExclusionsMu.Unlock()
+	s.forgetCLIEvidenceFreshnessLocked()
+	// Bumped in the SAME hold that drops the verdict, so a check already in flight
+	// cannot publish over the clear. An answer about the workspace just left must
+	// not become the verdict for the one just installed: in the permissive
+	// direction it would keep the new workspace's fallback tool out of the roster,
+	// which is this issue's own defect arriving through the swap path.
+	s.cliMCPEnvRevision++
+}
+
+// cliMCPServersSnapshot returns the CLI-supplied server names and the subset a
+// child may rediscover through another layer or a plugin. Both are read under
+// the one lock so a ceiling build cannot see half of a rebuild.
+func (s *Session) cliMCPServersSnapshot() (map[string]bool, map[string]bool) {
+	s.delegateExclusionsMu.RLock()
+	defer s.delegateExclusionsMu.RUnlock()
+	return s.cliMCPServers, s.cliMCPShadowed
+}
+
+// setShadowedLayerNamespaces records the registered-name prefixes the non-CLI
+// configuration layers supply, so the tool classifier can tell that a name this
+// session registered from a CLI server could ALSO be registered by a server the
+// child keeps. It is guarded by delegateExclusionsMu with the sets it qualifies,
+// because it is one of the inputs the exclusion set is derived from.
+func (s *Session) setShadowedLayerNamespaces(prefixes []string) {
+	s.delegateExclusionsMu.Lock()
+	defer s.delegateExclusionsMu.Unlock()
+	s.cliMCPOtherNamespaces = prefixes
+}
+
+// cliMCPOtherNamespacesSnapshot reads the recorded prefixes under the same lock
+// as the server sets, so the classifier cannot see a half-installed decision.
+func (s *Session) cliMCPOtherNamespacesSnapshot() []string {
+	s.delegateExclusionsMu.RLock()
+	defer s.delegateExclusionsMu.RUnlock()
+	return s.cliMCPOtherNamespaces
+}
+
+// cliMCPToolNamesSnapshot returns the excluded CLI-only tool names under the
+// same lock the ceiling build uses, so a caller can assert that a swap kept the
+// classification rather than reading a half-cleared one.
+func (s *Session) cliMCPToolNamesSnapshot() map[string]bool {
+	s.delegateExclusionsMu.RLock()
+	defer s.delegateExclusionsMu.RUnlock()
+	return s.cliMCPToolNames
 }
 
 func frozenDelegateSandboxMatches(env execenv.ExecutionEnvironment, want *delegatestore.SandboxSnapshot) bool {
@@ -1263,6 +1835,21 @@ func (s *Session) applyChildToolPolicy(subCfg *SessionConfig, agent *plugin.Agen
 		// older set by design (widening it here is what the session-init ceiling
 		// comment forbids). Fresh spawns carry every intrinsic tool.
 		allowedTools = append([]string(nil), frozen.ToolNameCeiling...)
+		// EXCEPT the names the ceiling dropped for reachability. That half is a
+		// fact about the workspace the ceiling was computed in, not about the
+		// role, and it can have stopped being true: an operator adding the
+		// CLI-only server to the project or global config makes the tool
+		// discoverable, the resumed child registers it, and a ceiling frozen to
+		// exclude it would then strip a tool the child can call — this issue's
+		// failure inverted. Re-derive: a name is re-admitted only when the child
+		// can actually register it now.
+		//
+		// Role denials are untouched. They were never in this list, and a name
+		// the role forbids is not in the registry, so it cannot be re-admitted.
+		if rereadmit := s.reachableCeilingNames(frozen.CeilingReachabilityExcluded); len(rereadmit) > 0 {
+			allowedTools = appendUniqueStrings(allowedTools, rereadmit...)
+			sort.Strings(allowedTools)
+		}
 		subCfg.spawn.toolNameCeiling = append([]string(nil), allowedTools...)
 	} else {
 		// The policy follows the CHILD's granted allowance, not this session's:
