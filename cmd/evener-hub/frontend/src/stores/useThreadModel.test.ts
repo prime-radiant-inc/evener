@@ -1,9 +1,9 @@
 // The destination claim lease the recovery Send holds on its destination for
-// the resend's duration (issue #5182's Medium finding, issue #5516). The
-// acquisition runs the same ensureThread/releaseThread pair useThreadClaim
-// holds a pane's subscription with - never a mock of it - and the hold is
-// counted, so a destination another pane already tracks survives that pane's
-// unmount until the resend releases it.
+// the resend's duration. The acquisition runs the same
+// ensureThread/releaseThread pair useThreadClaim holds a pane's subscription
+// with - never a mock of it - and the hold is counted, so a destination
+// another pane already tracks survives that pane's unmount until the resend
+// releases it.
 
 import "fake-indexeddb/auto";
 import type { ThreadReadResponse } from "@evener/appwire-client";
@@ -111,11 +111,9 @@ test("a tracked destination is held by count until the lease releases", async ()
   const lease = await acquireUnreadThreadClaim("ref_dest");
   // The pane that already tracks the destination closes first; the resend's
   // hold keeps the model, so its dispatch still has the model it reads.
-  threadsStore.getState().releaseThread("ref_dest");
-  // Spend real storage round trips until the model would have retired on that
-  // release alone. The fix is what stops it: with no claim of its own the
-  // pane's release is the last count and the model is gone by now.
-  await pumpIndexedDBUntil({ turns: 30, until: () => !threadsStore.getState().threads.has("ref_dest") });
+  // Retirement has finished by the time this resolves, so the model still
+  // standing here is the acquisition's count, not a retirement still running.
+  await threadsStore.getState().releaseThreadAndWait("ref_dest");
   expect(
     threadsStore.getState().threads.has("ref_dest"),
     "the acquisition must hold the destination past the tracking pane's own release",
@@ -167,8 +165,10 @@ test("a resend to a tracked destination still dispatches when that pane unmounts
     resendRecoveryMutation(recovery.clientMutationId, ref, "send", "retry me", []),
   );
   await storage.resendReached;
-  // The other pane unmounts while the resend is still awaiting its write.
-  threadsStore.getState().releaseThread(ref);
+  // The other pane unmounts while the resend is still awaiting its write, and
+  // its retirement finishes before the write can land: a resend that committed
+  // first would pin the model and could dispatch without any claim of its own.
+  await threadsStore.getState().releaseThreadAndWait(ref);
   storage.openResendGate();
   const result = await resend;
   if (result.status !== "sent") throw new Error("expected the resend to commit a durable row");
