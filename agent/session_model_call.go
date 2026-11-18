@@ -2274,6 +2274,19 @@ func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Messa
 	// the assistant-only escape below cannot reach. Its provenance, not its
 	// role, is what says the body is model-authored (#6493 review).
 	t.Message = escapeNoteHandoffBody(t, t.Message)
+	// A retained deterministic checkpoint is replayed as stored, never
+	// extracted, so a checkpoint written before the capture escape existed
+	// sends its raw working notes and agent replies on the first request after
+	// an upgrade. Its model-authored sections are escaped here, in the
+	// dispatch copy; the partner's entries keep their bytes (#6493 review).
+	if t.Kind == schema.TurnCheckpoint {
+		t.Message = escapeRetainedCheckpointBody(t.Message)
+	}
+	// A delegate_send from a running parent arrives as user-role steering whose
+	// body is model-authored. Its provenance is the only thing that says so:
+	// the partner's own steering carries no parent source and keeps its bytes
+	// (#6493 review).
+	t.Message = escapeParentSteeringBody(t, t.Message)
 	if !rs.active() && !rs.DropThinking {
 		return t.Message
 	}

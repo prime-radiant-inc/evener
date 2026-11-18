@@ -235,8 +235,25 @@ func runInList(line string, base int) (char byte, n, container int) {
 			return 0, 0, 0
 		}
 	}
-	indent := LeadingSpaces(line[offset:])
-	if indent > 3 || indent == len(line) {
+	// The marker is the first non-WHITESPACE byte after that offset, and
+	// whitespace here is a space or a tab. Skipping spaces alone stopped at a
+	// tab, so a nested item whose indentation reached the parent's content
+	// column with spaces and then continued with a tab was recognized by the
+	// scope walker but had no fence read from its marker line: the item's real
+	// closing delimiter then read as a fresh opener and the prose after it
+	// kept its model-authored frame (#6493 review).
+	markerAt := offset
+	for markerAt < len(line) && (line[markerAt] == ' ' || line[markerAt] == '\t') {
+		markerAt++
+	}
+	if markerAt >= len(line) {
+		return 0, 0, 0
+	}
+	// A marker more than three COLUMNS further in than the enclosing item's
+	// content is indented code, not an item. Columns, not bytes, because a tab
+	// reaches the next four-column stop and its width depends on where it
+	// starts.
+	if LeadingColumns(line[:markerAt])-LeadingColumns(line[:offset]) > 3 {
 		return 0, 0, 0
 	}
 	// The item's content column comes from the one parser that says where an
@@ -248,7 +265,7 @@ func runInList(line string, base int) (char byte, n, container int) {
 	// margin. A nested marker at column two followed by a tab then recorded
 	// column six instead of four, and the item's real closing delimiter at
 	// four ended the item and read as a fresh opener (#6493).
-	content, contentAt, ok := listItemContentAt(line, offset+indent)
+	content, contentAt, ok := listItemContentAt(line, markerAt)
 	if !ok {
 		return 0, 0, 0
 	}

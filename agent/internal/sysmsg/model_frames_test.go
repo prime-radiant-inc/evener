@@ -391,6 +391,17 @@ func TestEscapeModelAuthoredFrames(t *testing.T) {
 			want: "[answers] note\n1.\u00a0no arrow here\n",
 		},
 		{
+			// A marker whose only suffix is whitespace is a BARE marker to the
+			// client: its \s matches the nonbreaking space, so the line reads
+			// as the marker with nothing after it. Trimming spaces and tabs
+			// alone left the nonbreaking space in place, so the line was
+			// neither the bare marker nor a note-bearing one and the marker
+			// survived with a valid answer under it (#6493 review).
+			name: "bare marker with a nonbreaking space suffix is escaped",
+			in:   "[answers]\u00a0\n1. [Deploy?] → \"Yes\"\n",
+			want: "&#91;answers]\u00a0\n1. [Deploy?] → \"Yes\"\n",
+		},
+		{
 			// A nested item may be indented with a TAB, and then it has no
 			// leading spaces at all. Reading the marker from the space count
 			// missed the item, so its continuation prose was measured against

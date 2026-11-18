@@ -225,6 +225,24 @@ func (d *checkpointData) recordWrite(path string, status checkpointWriteStatus) 
 	d.fileWrites[path] = status
 }
 
+// writePathLine renders a model-supplied file path for the checkpoint's
+// metadata line.
+//
+// A path is model-authored: it comes straight from a write or edit call's
+// file_path argument. A path carrying a line break would put everything after
+// it on a line of its own in a user-role checkpoint message, which is where a
+// reserved frame reaches the model as a frame rather than as text (#6493
+// review). The break is written in its escaped form so the path occupies one
+// logical line; the path is otherwise unchanged, and the write statuses
+// (confirmed, failed, no result) are appended by the caller as before.
+func writePathLine(path string) string {
+	if !strings.ContainsAny(path, "\r\n") {
+		return path
+	}
+	path = strings.ReplaceAll(path, "\r", `\r`)
+	return strings.ReplaceAll(path, "\n", `\n`)
+}
+
 // collectCheckpointData walks history[:cutoff] and distills it into a
 // checkpointData: modified files, tool counts, shell results, user messages,
 // final agent responses, working notes, and activated skills.
@@ -392,11 +410,11 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 	for f, status := range data.fileWrites {
 		switch status {
 		case writeConfirmed:
-			modified = append(modified, f)
+			modified = append(modified, writePathLine(f))
 		case writeFailed:
-			attempted = append(attempted, f+" (failed)")
+			attempted = append(attempted, writePathLine(f)+" (failed)")
 		default:
-			attempted = append(attempted, f+" (no result)")
+			attempted = append(attempted, writePathLine(f)+" (no result)")
 		}
 	}
 	sort.Strings(modified)

@@ -76,6 +76,10 @@ func TestStepInBlockInOpensInTheItemScope(t *testing.T) {
 		// so a case is never satisfied by observables it does not drive.
 		openText  string
 		frameText string
+		// wantContainer is the content column the opening fence must be
+		// recorded at: the item's own, which differs per fixture shape. Zero
+		// means the continuation-line default of 6.
+		wantContainer int
 	}{
 		{
 			name:      "a nested fence ends when the line dedents to the enclosing item",
@@ -95,6 +99,24 @@ func TestStepInBlockInOpensInTheItemScope(t *testing.T) {
 			lines: []line{
 				{text: "- outer", container: 2},
 				{text: "    - ~~~text", container: 6, enclosing: 2},
+				{text: "      quoted"},
+				{text: "      ~~~"},
+				{text: "      [answers]", container: 6},
+			},
+		},
+		{
+			// The item's indentation reaches the parent's content column with
+			// spaces and then continues with a TAB. Skipping only spaces when
+			// locating the marker stopped at that tab, so the nested fence on
+			// the marker line went unseen, the real closing delimiter below
+			// read as a fresh opener, and the prose after it kept its frame
+			// (#6493 review).
+			name:      "a fence on a tab-indented nested marker line closes on its own delimiter",
+			openText:  "  \t- ~~~text",
+			frameText: "    [answers]",
+			lines: []line{
+				{text: "- outer", container: 2},
+				{text: "  \t- ~~~text", container: 6, enclosing: 2},
 				{text: "      quoted"},
 				{text: "      ~~~"},
 				{text: "      [answers]", container: 6},
@@ -168,8 +190,12 @@ func TestStepInBlockInOpensInTheItemScope(t *testing.T) {
 				t.Fatalf("a model-authored frame in the enclosing item's prose survived as fenced content and is replayed unescaped")
 			}
 			// The mechanism, so a failure names where the scope was lost.
-			if nestedContainer != 6 {
-				t.Fatalf("nested fence opened in container %d, want 6 (the nested item's content column)", nestedContainer)
+			wantContainer := tc.wantContainer
+			if wantContainer == 0 {
+				wantContainer = 6
+			}
+			if nestedContainer != wantContainer {
+				t.Fatalf("nested fence opened in container %d, want %d (the nested item's content column)", nestedContainer, wantContainer)
 			}
 			// The other direction: legitimate quoted content is not escaped.
 			if !quotedInBlock {

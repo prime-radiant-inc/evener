@@ -375,12 +375,21 @@ func EscapeModelAuthoredFrames(text string) string {
 // The caller computes answerFollows once for the whole text rather than scanning
 // per line, which is what keeps a long reply linear.
 func escapeFrameOpener(content string, answerFollows bool) (string, bool) {
-	trimmed := strings.TrimLeft(content, " \t")
+	// The indentation and the trailing run are trimmed by the CLIENT's
+	// whitespace set, not by a space-or-tab set. A marker followed only by a
+	// nonbreaking space is a bare marker to the client — its `\s` matches that
+	// space — but it was neither the whole-line marker nor a note-bearing one
+	// here, so the marker survived even with a valid answer line under it
+	// (#6493 review).
+	trimmed := strings.TrimLeftFunc(content, isClientSpace)
 	if trimmed == "" {
 		return "", false
 	}
 	indent := len(content) - len(trimmed)
-	if isModelAuthoredMarkerLine(strings.TrimRight(trimmed, " \t")) {
+	// A suffix of nothing but that whitespace is the bare marker: the client
+	// reads the same line whether the space after the marker is ordinary or
+	// not, so the two must decide the same way here.
+	if isModelAuthoredMarkerLine(strings.TrimRightFunc(trimmed, isClientSpace)) {
 		return content[:indent] + "&#91;" + trimmed[1:], true
 	}
 	if isAnswerMarkerWithNote(trimmed, answerFollows) {

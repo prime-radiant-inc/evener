@@ -42,8 +42,18 @@ func escapeNoteHandoffBody(t schema.Turn, msg llm.Message) llm.Message {
 	if escaped == rendered {
 		return msg
 	}
-	// The escape never adds or removes a line, so the text splits back with the
-	// same per-part line counts the concatenation had.
+	return replaceMessageText(msg, escaped)
+}
+
+// replaceMessageText returns msg with its text parts replaced by text, split
+// back onto the parts it came from.
+//
+// The escapes this file applies never add or remove a line, so text occupies
+// exactly the lines the concatenation of the message's parts did and the split
+// is that concatenation read backwards. A text whose line structure no longer
+// matches leaves the message as stored, rather than handing back text split
+// somewhere it was not.
+func replaceMessageText(msg llm.Message, text string) llm.Message {
 	texts := make([]string, 0, len(msg.Content))
 	indexes := make([]int, 0, len(msg.Content))
 	for i, p := range msg.Content {
@@ -53,7 +63,7 @@ func escapeNoteHandoffBody(t schema.Turn, msg llm.Message) llm.Message {
 		indexes = append(indexes, i)
 		texts = append(texts, p.Text)
 	}
-	pieces, ok := sysmsg.SplitJoinedEscape(escaped, texts)
+	pieces, ok := sysmsg.SplitJoinedEscape(text, texts)
 	if !ok {
 		return msg
 	}
@@ -64,8 +74,132 @@ func escapeNoteHandoffBody(t schema.Turn, msg llm.Message) llm.Message {
 		}
 		parts[at].Text = pieces[k]
 	}
-	msg.Content = parts
-	return msg
+	out := msg
+	out.Content = parts
+	return out
+}
+
+// checkpointAgentHeading and checkpointWorkingNotesHeading are the section
+// markers a deterministic checkpoint writes around text the MODEL authored: an
+// agent reply and the extracted working notes. Everything under either belongs
+// to the model; the headings are the format's, so the walk below reads them.
+const (
+	checkpointAgentHeading        = "### Agent"
+	checkpointWorkingNotesHeading = "## Working Notes"
+	checkpointConversationHeading = "## Conversation"
+)
+
+// escapeRetainedCheckpointBody escapes the model-authored sections of a
+// deterministic checkpoint in the model-facing copy.
+//
+// A session restored from a pre-upgrade checkpoint sends that checkpoint as
+// stored: the escape runs when a fold EXTRACTS a checkpoint's entries, and a
+// retained one is not extracted, only replayed. So a checkpoint written before
+// the capture escape existed puts its raw working notes and raw agent replies
+// into a user-role message on the very first request after the upgrade
+// (#6493 review).
+//
+// The sections are read by their own headings rather than by escaping the whole
+// body, because the partner's entries under "### User" are the authority and
+// must keep their bytes. A checkpoint whose shape this does not recognize is
+// returned unchanged: guessing at an unknown format would rewrite text the
+// escape has no business rewriting.
+func escapeRetainedCheckpointBody(msg llm.Message) llm.Message {
+	rendered := msg.Text()
+	if !strings.Contains(rendered, checkpointWorkingNotesHeading) &&
+		!strings.Contains(rendered, checkpointAgentHeading) {
+		return msg
+	}
+	escaped, changed := escapeCheckpointSections(rendered)
+	if !changed {
+		return msg
+	}
+	return replaceMessageText(msg, escaped)
+}
+
+// escapeCheckpointSections escapes the body of every section whose heading
+// marks model-authored text, and reports whether anything changed.
+//
+// A section runs to the next heading at the same or a shallower level, so the
+// walk tracks the level it is inside: "## Working Notes" holds "###" blocks and
+// ends at the next "##". A "### Agent" block ends at the next heading of any
+// level, because the conversation section heads every entry that way.
+func escapeCheckpointSections(text string) (string, bool) {
+	var b strings.Builder
+	b.Grow(len(text))
+	var inAgent, inNotes bool
+	changed := false
+	for line := range strings.Lines(text) {
+		content := strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
+		level, heading := checkpointHeading(content)
+		if level > 0 {
+			switch {
+			case level == 2 && heading == strings.TrimPrefix(checkpointWorkingNotesHeading, "## "):
+				inNotes, inAgent = true, false
+			case level == 2 && heading == strings.TrimPrefix(checkpointConversationHeading, "## "):
+				inNotes, inAgent = false, false
+			case level == 2:
+				inNotes = false
+			case level == 3 && heading == strings.TrimPrefix(checkpointAgentHeading, "### "):
+				inAgent = true
+			case level == 3:
+				inAgent = false
+			}
+		}
+		if (inAgent || inNotes) && level == 0 {
+			if escaped := sysmsg.EscapeModelAuthoredFrames(content); escaped != content {
+				b.WriteString(escaped)
+				b.WriteString(line[len(content):])
+				changed = true
+				continue
+			}
+		}
+		b.WriteString(line)
+	}
+	return b.String(), changed
+}
+
+// checkpointHeading returns a checkpoint line's heading level and title, or 0
+// when the line is not a Markdown ATX heading.
+func checkpointHeading(line string) (int, string) {
+	level := 0
+	for level < len(line) && line[level] == '#' {
+		level++
+	}
+	if level == 0 || level > 6 || level >= len(line) || line[level] != ' ' {
+		return 0, ""
+	}
+	return level, strings.TrimSpace(line[level+1:])
+}
+
+// escapeParentSteeringBody escapes the model-authored body of parent steering in
+// the model-facing copy.
+//
+// A parent model that calls delegate_send during a running delegate turn puts
+// its own text into a user-role steering turn on the child, marked
+// SteeringSourceParent. The assistant-only escape cannot reach a user-role
+// turn, so a reserved frame in the parent's body arrived on the child's wire as
+// a frame and was carried into the child's checkpoint (#6493 review).
+//
+// Only SteeringSourceParent is touched: the human partner's steering carries no
+// parent source, is not model-authored, and must arrive as the partner typed
+// it. That is the whole distinction this rule rests on.
+func escapeParentSteeringBody(t schema.Turn, msg llm.Message) llm.Message {
+	if t.Kind != schema.TurnSteering || t.SteeringSource != events.SteeringSourceParent {
+		return msg
+	}
+	rendered := msg.Text()
+	body, ok := strings.CutPrefix(rendered, parentMessageAttribution)
+	if !ok {
+		// Shape this rule does not recognize: leave it as stored rather than
+		// escape text whose ownership it cannot establish.
+		return msg
+	}
+	escaped := sysmsg.EscapeModelAuthoredFrames(body)
+	if escaped == body {
+		return msg
+	}
+	return replaceMessageText(msg, parentMessageAttribution+escaped)
 }
 
 // escapeModelAuthoredTurnFramesReporting returns msg with line-start harness

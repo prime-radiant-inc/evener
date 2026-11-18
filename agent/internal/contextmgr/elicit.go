@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/runetrim"
+	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -138,5 +139,16 @@ func renderTurnForElicit(t schema.Turn) string {
 	case schema.TurnSteering, schema.TurnCheckpoint, schema.TurnSummary:
 		label = "Context: "
 	}
-	return label + b.String()
+	body := b.String()
+	// The elicitor's prompt is a user-role message, and its renderer puts the
+	// label only at the START of the turn. A model-authored turn whose later
+	// lines open a reserved frame therefore copied those lines into that
+	// user-role prompt verbatim, so the elicitor could read a fabricated
+	// decision as its own context and restate it in the note (#6493 review).
+	// Only assistant text is escaped: the partner's turns are the authority and
+	// the tool output is data, neither of which this escape may rewrite.
+	if t.Kind == schema.TurnAssistant {
+		body = sysmsg.EscapeModelAuthoredFrames(body)
+	}
+	return label + body
 }
