@@ -129,11 +129,11 @@ func replaceableAncestor(path string) string {
 			return fmt.Sprintf("cannot inspect %s (%v)", component, err)
 		}
 		if !info.IsDir() {
-			return fmt.Sprintf("%s is not a directory", component)
+			return component + " is not a directory"
 		}
 		stat, ok := info.Sys().(*syscall.Stat_t)
 		if !ok {
-			return fmt.Sprintf("%s: cannot read its owner", component)
+			return component + ": cannot read its owner"
 		}
 		if uid := int(stat.Uid); uid != os.Getuid() && uid != 0 {
 			return fmt.Sprintf("%s is owned by uid %d, not by this user or root", component, uid)
@@ -143,7 +143,7 @@ func replaceableAncestor(path string) string {
 		}
 		perm := info.Mode().Perm()
 		if perm&0o002 != 0 {
-			return fmt.Sprintf("%s is writable by other users and has no sticky bit, so another user can replace entries in it", component)
+			return component + " is writable by other users and has no sticky bit, so another user can replace entries in it"
 		}
 		if perm&0o020 != 0 && !groups[int(stat.Gid)] {
 			return fmt.Sprintf("%s is writable by group %d, which this process is not in", component, stat.Gid)
