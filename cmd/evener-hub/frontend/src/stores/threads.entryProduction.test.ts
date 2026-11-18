@@ -57,7 +57,7 @@ import {
 } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { pumpIndexedDBUntil } from "./testing/indexedDBPump";
-import { bodyOwners, isMutationPinned, pinMutation, unpinMutation } from "./threadOwners";
+import { bodyOwners, foregroundHolds, isMutationPinned, pinMutation, unpinMutation } from "./threadOwners";
 import {
   acquireBackgroundThread,
   backgroundTranscriptSnapshotForTests,
@@ -1420,6 +1420,215 @@ it("a resend survives a transient verification failure on a cached shell", async
 // A routing hold is not a pane: after a Clear, a pane opening on a destination
 // a routing hold already keeps alive still begins the fresh foreground
 // lifetime its read needs to resume cached writes.
+// A history diagnostic is the one failure that arms no retry, so the shared
+// wait its owners are parked on must settle with it. Left pending, the
+// composer stays busy forever and the press never writes: the person's message
+// is gone and they cannot send again.
+it("a terminal history failure ends the wait and releases the composer", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const outboxStorage = new MutationOutboxIndexedDB({ indexedDB: factory });
+  setMutationStorageForTests(outboxStorage);
+  const client = connect();
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  await settleEntryTranscriptForTests("local:a");
+  const route = entryTranscriptRoute("local:a");
+  if (!route) throw new Error("expected an entry route");
+  route.cachedUnverified = true;
+  const outbox = await outboxStorage.enqueueIntent({
+    targetRef: "local:a",
+    threadId: "thread-a",
+    method: "turn/start",
+    payload: { ref: "local:a", input: [{ type: "text", text: "retry me" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "retry me" }] },
+  });
+  const row = await outboxStorage.transferToRecovery(outbox.clientMutationId, "rejected");
+  if (!row) throw new Error("expected the recovery row to be durable");
+  // The finding's precondition: a retry is already scheduled, because the
+  // first verification read failed in transport. That retry, when it fires,
+  // is answered with the terminal history diagnostic - which arms no further
+  // retry, so the wait the resend is parked on has nothing left to settle it.
+  let retryArmed = false;
+  let fireRetry: (() => void) | undefined;
+  const restoreScheduler = installHydrationRetrySchedulerForTests((_attempt, retry) => {
+    retryArmed = true;
+    fireRetry = retry;
+    return () => undefined;
+  });
+  client.on("thread/read", () => {
+    if (!retryArmed) throw new Error("transport died");
+    throw new WireError("thread history failed at entry 7", -32603, {
+      evenerErrorInfo: ErrorTranscriptHistoryFailed,
+    });
+  });
+  let outcome: { ok: boolean } | undefined;
+  let displaySurvived = false;
+  try {
+    const resent = withRecoveryDestinationClaim("local:a", () =>
+      resendRecoveryMutation(row.clientMutationId, "local:a", "send", "retry me", []),
+    );
+    await vi.waitFor(() => expect(fireRetry, "the failed read must schedule the retry").toBeDefined());
+    fireRetry?.();
+    outcome = await resent.then(
+      () => ({ ok: true as const }),
+      () => ({ ok: false as const }),
+    );
+    // Read while the background owner still holds the ref: the cached display
+    // outliving the failed press is the property, and the finally below drops
+    // the last other holder.
+    displaySurvived = threadsStore.getState().threads.has("local:a");
+  } finally {
+    restoreScheduler();
+    background.release();
+  }
+  if (!outcome) throw new Error("the press never settled");
+  // The press ends rather than hanging, and the claim it held is released.
+  // A pending claim leaves the destination's foreground count at the routing
+  // hold's own plus whatever the background owner holds, and the composer
+  // busy; the assertion below is that the resend's own hold is gone.
+  expect(outcome.ok, "the wait must settle instead of hanging the composer").toBe(false);
+  expect(foregroundHolds("local:a"), "the routing hold must be released so the composer is usable again").toBe(0);
+  // No row was written: a terminal diagnostic is not a send.
+  expect(await outboxStorage.listOutbox("local:a")).toEqual([]);
+  // The recovery row and the cached display survive, so the draft is still
+  // there for the person to send again.
+  expect(await outboxStorage.getRecovery(row.clientMutationId)).toBeDefined();
+  expect(displaySurvived, "the cached display must survive the failed press").toBe(true);
+}, 20_000);
+
+// A reconnect while a resend waits for its scheduled retry retires that retry
+// and starts a fresh read. The waiter must rejoin that read and proceed when it
+// publishes verified routing state; failing on the retired generation's error
+// costs the person a second Send press even though the read succeeded.
+it("a resend resumes after a reconnect instead of failing the press", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const outboxStorage = new MutationOutboxIndexedDB({ indexedDB: factory });
+  setMutationStorageForTests(outboxStorage);
+  const client = connect();
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  await settleEntryTranscriptForTests("local:a");
+  const route = entryTranscriptRoute("local:a");
+  if (!route) throw new Error("expected an entry route");
+  route.cachedUnverified = true;
+  const outbox = await outboxStorage.enqueueIntent({
+    targetRef: "local:a",
+    threadId: "thread-a",
+    method: "turn/start",
+    payload: { ref: "local:a", input: [{ type: "text", text: "retry me" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "retry me" }] },
+  });
+  const row = await outboxStorage.transferToRecovery(outbox.clientMutationId, "rejected");
+  if (!row) throw new Error("expected the recovery row to be durable");
+  let fail = true;
+  client.on("thread/read", (params) => {
+    if (fail) throw new Error("transport died");
+    return { ...response(), requestGeneration: params.requestGeneration };
+  });
+  let fireRetry: (() => void) | undefined;
+  const restoreScheduler = installHydrationRetrySchedulerForTests((_attempt, retry) => {
+    fireRetry = retry;
+    return () => undefined;
+  });
+  try {
+    const resent = withRecoveryDestinationClaim("local:a", () =>
+      resendRecoveryMutation(row.clientMutationId, "local:a", "send", "retry me", []),
+    );
+    await vi.waitFor(() => expect(fireRetry, "the failed read must schedule a retry").toBeDefined());
+    // The connection recovers before the retry fires: the ready handler
+    // retires the scheduled retry and starts the current generation's read,
+    // which now succeeds and verifies the destination.
+    fail = false;
+    client.emitStateChange("reconnecting");
+    client.emitReady();
+    const outcome = await resent.then(
+      (value) => ({ ok: true as const, value }),
+      () => ({ ok: false as const, value: undefined }),
+    );
+    expect(outcome.ok, "a verified destination must let the press through after a reconnect").toBe(true);
+    expect(entryTranscriptRoute("local:a")?.cachedUnverified).toBe(false);
+    const landed = outcome.ok && outcome.value.status === "sent" ? outcome.value.record.clientMutationId : undefined;
+    expect(
+      (await outboxStorage.listOutbox("local:a")).map((record) => record.clientMutationId),
+      "the press must reach the outbox without a second Send",
+    ).toContain(landed);
+  } finally {
+    restoreScheduler();
+    background.release();
+  }
+}, 20_000);
+
+// The two paths interact: a reconnect hands the wait to a fresh read, and that
+// read fails terminally. The release must still be exactly one hold, and the
+// press must end with no row rather than hang or write twice.
+it("a terminal failure after a reconnect settles the wait once", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const outboxStorage = new MutationOutboxIndexedDB({ indexedDB: factory });
+  setMutationStorageForTests(outboxStorage);
+  const client = connect();
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  await settleEntryTranscriptForTests("local:a");
+  const route = entryTranscriptRoute("local:a");
+  if (!route) throw new Error("expected an entry route");
+  route.cachedUnverified = true;
+  const outbox = await outboxStorage.enqueueIntent({
+    targetRef: "local:a",
+    threadId: "thread-a",
+    method: "turn/start",
+    payload: { ref: "local:a", input: [{ type: "text", text: "retry me" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "retry me" }] },
+  });
+  const row = await outboxStorage.transferToRecovery(outbox.clientMutationId, "rejected");
+  if (!row) throw new Error("expected the recovery row to be durable");
+  let failing = "transport" as "transport" | "terminal";
+  client.on("thread/read", () => {
+    if (failing === "terminal") {
+      throw new WireError("thread history failed at entry 7", -32603, {
+        evenerErrorInfo: ErrorTranscriptHistoryFailed,
+      });
+    }
+    throw new Error("transport died");
+  });
+  let fireRetry: (() => void) | undefined;
+  const restoreScheduler = installHydrationRetrySchedulerForTests((_attempt, retry) => {
+    fireRetry = retry;
+    return () => undefined;
+  });
+  try {
+    const resent = withRecoveryDestinationClaim("local:a", () =>
+      resendRecoveryMutation(row.clientMutationId, "local:a", "send", "retry me", []),
+    );
+    await vi.waitFor(() => expect(fireRetry).toBeDefined());
+    // The connection recovers, and the fresh generation's read is terminal.
+    failing = "terminal";
+    client.emitStateChange("reconnecting");
+    client.emitReady();
+    const outcome = await resent.then(
+      (value) => ({ ok: true as const, value }),
+      () => ({ ok: false as const, value: undefined }),
+    );
+    expect(outcome.ok, "a terminal read must end the press, not hang it").toBe(false);
+    // Exactly one release: the routing hold is gone and zero foreground
+    // holders remain, so the composer is usable and no hold was stranded.
+    expect(foregroundHolds("local:a"), "the terminal path must release exactly its own hold").toBe(0);
+    expect(await outboxStorage.listOutbox("local:a"), "a terminal read writes no row").toEqual([]);
+    expect(await outboxStorage.getRecovery(row.clientMutationId), "the draft must survive").toBeDefined();
+  } finally {
+    restoreScheduler();
+    background.release();
+  }
+}, 20_000);
+
 // A routing lease keeps a destination dispatchable, not resident: when the
 // last pane closes during a resend, its reader and the bodies behind it must
 // go while the model and subscription stay.

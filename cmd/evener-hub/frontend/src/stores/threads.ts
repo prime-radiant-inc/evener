@@ -1686,6 +1686,17 @@ function removeWatchedThreadModel(ref: string): void {
 type HydrationOwnerKind = "thread" | "watched";
 type HydrationIntent = "foreground" | "background" | "final";
 
+// What a lifecycle's shared wait settles with. A published model is the answer
+// a waiting owner wanted; `retired` means the generation that owned the wait is
+// gone and the caller re-arms against the current one; `terminal` is the one
+// failure that must end the wait rather than retry — a history diagnostic,
+// which the spec answers with one visible error and no automatic re-read. A
+// waiter that cannot distinguish these either hangs or loops forever.
+type OwnedHydrationOutcome =
+  | { kind: "published"; model: ThreadModel }
+  | { kind: "retired" }
+  | { kind: "terminal"; error: unknown };
+
 interface OwnedHydration {
   generation: number;
   retryAttempt: number;
@@ -1693,8 +1704,8 @@ interface OwnedHydration {
   // Settles with the model this lifecycle publishes, or null once the
   // lifecycle is retired (release, client swap, new ready generation) so a
   // waiting owner re-arms against the current generation instead of hanging.
-  firstHydration: Promise<ThreadModel | null>;
-  settle: (model: ThreadModel | null) => void;
+  firstHydration: Promise<OwnedHydrationOutcome>;
+  settle: (outcome: OwnedHydrationOutcome) => void;
 }
 
 const ownedThreadHydrations = new Map<string, OwnedHydration>();
@@ -4457,6 +4468,10 @@ async function readThreadHydration(
       } else {
         putThreadModel(ref, failedModel);
       }
+      // The diagnostic is terminal: no retry is armed, so the wait every
+      // concurrent owner shares has to settle with it. Left pending, the
+      // waiters hang with the composer busy and the press never writes.
+      failOwnedHydration(read.kind, ref, err);
     } else {
       scheduleOwnedHydrationRetry(read.kind, ref, pending);
     }
@@ -7247,8 +7262,8 @@ function openOwnedHydration(kind: HydrationOwnerKind, ref: string): OwnedHydrati
   const existing = lifecycles.get(ref);
   if (existing?.generation === generation) return existing;
   if (existing) retireOwnedHydration(kind, ref);
-  let settle: (model: ThreadModel | null) => void = () => {};
-  const firstHydration = new Promise<ThreadModel | null>((resolve) => {
+  let settle: (outcome: OwnedHydrationOutcome) => void = () => {};
+  const firstHydration = new Promise<OwnedHydrationOutcome>((resolve) => {
     settle = resolve;
   });
   const owned: OwnedHydration = { generation, retryAttempt: 0, cancelRetry: null, firstHydration, settle };
@@ -7264,14 +7279,14 @@ function openOwnedHydration(kind: HydrationOwnerKind, ref: string): OwnedHydrati
 // invalidate a pending retry — client swap, ready-epoch bump, released claim,
 // dropped pin, superseded owner generation — runs through here first, which is
 // why none of them needs its own check inside the callback. Do not re-add one.
-function closeOwnedHydration(kind: HydrationOwnerKind, ref: string, model: ThreadModel | null): void {
+function closeOwnedHydration(kind: HydrationOwnerKind, ref: string, outcome: OwnedHydrationOutcome): void {
   const lifecycles = ownedHydrationsFor(kind);
   const owned = lifecycles.get(ref);
   if (!owned) return;
   lifecycles.delete(ref);
   owned.cancelRetry?.();
   owned.cancelRetry = null;
-  owned.settle(model);
+  owned.settle(outcome);
 }
 
 // A published authoritative model retires the lifecycle that was waiting for
@@ -7280,11 +7295,18 @@ function closeOwnedHydration(kind: HydrationOwnerKind, ref: string, model: Threa
 // retry's own promise) is what keeps an owner from waiting on a lifecycle some
 // other attempt already satisfied, and resets the retry attempt with it.
 function settleOwnedHydration(kind: HydrationOwnerKind, ref: string, model: ThreadModel): void {
-  closeOwnedHydration(kind, ref, model);
+  closeOwnedHydration(kind, ref, { kind: "published", model });
 }
 
 function retireOwnedHydration(kind: HydrationOwnerKind, ref: string): void {
-  closeOwnedHydration(kind, ref, null);
+  closeOwnedHydration(kind, ref, { kind: "retired" });
+}
+
+// The one failure that ends a shared wait instead of retrying: a history
+// diagnostic. The spec answers it with one visible error and waits for a later
+// read, so a waiter that kept waiting would hold the composer busy forever.
+function failOwnedHydration(kind: HydrationOwnerKind, ref: string, error: unknown): void {
+  closeOwnedHydration(kind, ref, { kind: "terminal", error });
 }
 
 // A new client or a new ready epoch owns convergence for every ref: cancel the
@@ -8442,7 +8464,26 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           // owner waits on that one lifecycle rather than reading again here.
           const owned = ownedThreadHydrations.get(ref);
           if (owned?.generation !== hydrationOwnerGeneration("thread", ref)) throw err;
-          await owned.firstHydration;
+          const settled = await owned.firstHydration;
+          // The one outcome that must not resume: a history diagnostic, which
+          // arms no retry. Handing it back releases the claim so the composer
+          // is usable again and the draft plus cached display survive.
+          if (settled.kind === "terminal") throw settled.error;
+          // The wait can span a reconnect: the ready handler retires the old
+          // retry and starts a fresh read, so this waiter wakes with the
+          // generation it was waiting on already gone. Rejoining from the top
+          // picks up that read and proceeds when it publishes verified state,
+          // instead of judging the unverified shell the old retry never
+          // replaced.
+          if (getWiredClient() !== inflightClient || getReadyEpoch() !== inflightEpoch) {
+            // Never `continue` on the stale promise: it already rejected, so
+            // re-awaiting it would land back here forever. Re-arm first, the
+            // same way the client-changed branch above does.
+            client = await requireReadyClient();
+            if (ensureGenerations.get(ref) !== generation || foregroundHolds(ref) <= 0) return;
+            inflight = inflightHydrates.get(ref) ?? startHydration(client, getReadyEpoch());
+            continue;
+          }
           // Fall through to the shared re-arm below: it returns when the claim
           // is gone or a model published, and otherwise rejoins the newest
           // attempt on the current client.
