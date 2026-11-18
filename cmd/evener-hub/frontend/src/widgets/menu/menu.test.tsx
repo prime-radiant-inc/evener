@@ -1214,10 +1214,82 @@ test("a popup wider than the visible viewport is capped to it so its labels wrap
     // cap keeps, and narrow enough that min-width no longer governs.
     expect(popup.style.maxBlockSize).toBe("784px");
     expect(popup.style.maxInlineSize).toBe("144px");
+    // Capping alone would clip the label: `.item` is nowrap, so it runs past
+    // the 144px scrollport and reading it needs a horizontal scroll. The row
+    // has to wrap instead, which is what makes the cap worth having. jsdom does
+    // not resolve CSS-module rules, so the two halves are asserted separately:
+    // the popup carries the class, and the module gives that class the rule.
+    expect(popup.className).toContain("popupNarrow");
+    const here = dirname(fileURLToPath(import.meta.url));
+    const css = readFileSync(join(here, "menu.module.css"), "utf8");
+    expect(css).toMatch(/\.popupNarrow \.item \{[^}]*white-space: normal/);
   } finally {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     if (originalInnerWidth) Object.defineProperty(window, "innerWidth", originalInnerWidth);
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// Shrinking the window shrinks the popup's scrollport. If the reader is on a
+// lower row, that row can end up below the scrollport while still holding
+// focus - Enter activates a row whose label and focus ring are out of sight.
+// The placement pass reveals the focused row with the browser's own
+// minimal-scroll primitive, which moves the POPUP and only when it has to.
+test("a shrink that shortens the popup scrolls its focused row back into view", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  let popupHeight = 120;
+  const box = (left: number, top: number, width: number, height: number) =>
+    ({
+      left,
+      top,
+      right: left + width,
+      bottom: top + height,
+      width,
+      height,
+      x: left,
+      y: top,
+      toJSON: () => ({}),
+    }) as DOMRect;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, 300, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, popupHeight);
+    return box(0, 0, 0, 0);
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "UL" ? popupHeight : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "UL" ? 160 : 0;
+  });
+  const reveal = vi.spyOn(Element.prototype, "scrollIntoView").mockImplementation(() => {});
+  const { flush } = captureFrames();
+  try {
+    render(<Menu trigger="Actions" items={items()} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    // The reader moves down to the last row.
+    const last = screen.getByRole("menuitem", { name: "Delete" });
+    last.focus();
+    expect(document.activeElement).toBe(last);
+    reveal.mockClear();
+
+    // The window shrinks and the popup's scrollport with it. The popup is now
+    // short enough that Delete - the row holding focus - is below it.
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 400 });
+    popupHeight = 60;
+    fireEvent(window, new Event("resize"));
+    flush();
+
+    // `nearest` is the primitive that scrolls only as far as needed, and never
+    // the document: the row that holds focus is the one brought back.
+    expect(reveal).toHaveBeenCalled();
+    expect(reveal.mock.contexts.at(-1)).toBe(last);
+    expect(reveal.mock.calls.at(-1)?.[0]).toEqual({ block: "nearest" });
+    expect(document.activeElement).toBe(last);
+  } finally {
+    vi.restoreAllMocks();
     if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
   }
 });

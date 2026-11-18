@@ -107,6 +107,7 @@ const CLASS = {
   triggerIcon: requireClass(styles.triggerIcon, "menu.module.css", "triggerIcon"),
   triggerGlyph: requireClass(styles.triggerGlyph, "menu.module.css", "triggerGlyph"),
   popup: requireClass(styles.popup, "menu.module.css", "popup"),
+  popupNarrow: requireClass(styles.popupNarrow, "menu.module.css", "popupNarrow"),
   item: requireClass(styles.item, "menu.module.css", "item"),
   itemDisabled: requireClass(styles.itemDisabled, "menu.module.css", "itemDisabled"),
   separator: requireClass(styles.separator, "menu.module.css", "separator"),
@@ -138,6 +139,11 @@ function topLevelWrapperOf(element: HTMLElement, ownerDocument: Document): HTMLE
   }
   return wrapper;
 }
+
+// The popup's own min-width in menu.module.css. Below this the stylesheet's
+// floor would override the visible-viewport cap, so the floor yields instead
+// and the labels wrap.
+const NARROW_POPUP_WIDTH = 180;
 
 function firstEnabledIndex(items: MenuEntry[]): number {
   return items.findIndex(isActionable);
@@ -333,14 +339,28 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     const maxInlineSize = `${Math.max(0, visible.width - 2 * EDGE_MARGIN)}px`;
     if (popupEl.style.maxInlineSize !== maxInlineSize) popupEl.style.maxInlineSize = maxInlineSize;
     // Only when the cap is what is narrowing it: a popup that fits keeps the
-    // stylesheet's floor untouched.
-    const minInlineSize = visible.width - 2 * EDGE_MARGIN < 180 ? "0" : "";
+    // stylesheet's floor untouched, and its labels stay on one line. A narrowed
+    // popup has to let them wrap, or each label runs past the scrollport and
+    // reading it needs a horizontal scroll - the one thing a menu cannot ask
+    // for.
+    const narrowed = visible.width - 2 * EDGE_MARGIN < NARROW_POPUP_WIDTH;
+    const minInlineSize = narrowed ? "0" : "";
     if (popupEl.style.minWidth !== minInlineSize) popupEl.style.minWidth = minInlineSize;
+    popupEl.classList.toggle(CLASS.popupNarrow, narrowed);
     const placed = computeMenuPosition(
       localTriggerRect,
       { width: popupEl.offsetWidth, height: popupEl.offsetHeight },
       { width: visible.width, height: visible.height },
     );
+    // A shorter popup can leave the row the reader is on below its scrollport.
+    // Enter would still activate that row while its label and focus ring sat
+    // out of sight, which is the one arrangement a keyboard menu must never
+    // produce. `nearest` is the browser's own "just enough": it does nothing
+    // when the row is already visible, and it scrolls the popup - not the
+    // document - when it is not. Only a row that already holds focus moves, so
+    // this never takes focus from anything else.
+    const focusedRow = itemRefs.current.find((node) => node !== null && node === ownerDocument.activeElement);
+    focusedRow?.scrollIntoView({ block: "nearest" });
     // Only write when it actually moved: the observers below can report a
     // mutation that changes nothing about placement (a text node elsewhere in
     // the same scroller), and a state write per notification would re-render

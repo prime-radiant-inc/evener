@@ -108,6 +108,17 @@
   transition: background-color var(--motion-duration-hover) var(--motion-easing-standard);
 }
 
+/* A label wraps only when the popup has been narrowed to the visible viewport,
+ * the one case where keeping it on one line would push it out of the scrollport
+ * instead of shortening the popup. The widget writes that class itself, so
+ * every other menu keeps the single-line rows that make a menu scannable. A
+ * wrapped label makes the row taller, which the phone tap floor below already
+ * permits: it is a MIN-height, not a height. */
+.popupNarrow .item {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .item:hover {
   background: var(--hover-1);
 }
