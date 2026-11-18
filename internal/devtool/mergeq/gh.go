@@ -82,14 +82,38 @@ func publishGHGroup(path string, pid int) {
 	if path == "" || pid <= 1 {
 		return
 	}
-	// Written beside the handle and renamed into place: the launcher may read
-	// the file at any moment, and a rename is the only write it cannot observe
-	// half-done.
-	temp := path + ".tmp"
-	if err := os.WriteFile(temp, []byte(strconv.Itoa(pid)+"\n"), 0o600); err != nil {
+	// Written to a fresh file in the same directory and renamed over the handle:
+	// the launcher may read the handle at any moment, so the only write it can
+	// observe is a whole one.
+	//
+	// CreateTemp, not a name of this function's choosing. The first version wrote
+	// `path + ".tmp"`, which is predictable: on a shared directory another local
+	// user could pre-create that name as a symlink to a file the operator can
+	// write, and this would truncate it. CreateTemp opens with O_EXCL, so an
+	// existing name -- a planted link included -- makes it pick another, and the
+	// rename then replaces the handle's own name rather than following it.
+	//
+	// scripts/ops/merge-enqueue.sh already puts the handle in `mktemp -d` output.
+	// This is the second lock on the same door, because a caller can hand the
+	// client any path and the publisher is the last step before a write.
+	file, err := os.CreateTemp(filepath.Dir(path), ".gh-group-*")
+	if err != nil {
 		return
 	}
-	_ = os.Rename(temp, path)
+	temp := file.Name()
+	_, writeErr := file.WriteString(strconv.Itoa(pid) + "\n")
+	closeErr := file.Close()
+	if writeErr != nil || closeErr != nil {
+		_ = os.Remove(temp)
+		return
+	}
+	if err := os.Chmod(temp, 0o600); err != nil {
+		_ = os.Remove(temp)
+		return
+	}
+	if err := os.Rename(temp, path); err != nil {
+		_ = os.Remove(temp)
+	}
 }
 
 // clearGHGroup removes the handle once the call it named has ended.

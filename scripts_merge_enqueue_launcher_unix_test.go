@@ -699,6 +699,19 @@ func pidFromLines(lines []string, prefix string) int {
 	return 0
 }
 
+// logValue returns the value the fixture recorded under prefix, or "" when it
+// recorded none. The value is the rest of the line verbatim: a path may hold a
+// space, and a helper that logged one is not a helper that logged nothing.
+func logValue(t *testing.T, f launcherFixture, prefix string) string {
+	t.Helper()
+	for _, line := range f.lines(t) {
+		if rest, ok := strings.CutPrefix(line, prefix); ok {
+			return rest
+		}
+	}
+	return ""
+}
+
 // logPIDAndGroup reads the "pid=N;pgid=G" line a fixture wrote under prefix,
 // waiting for it to appear, and returns both.
 func logPIDAndGroup(t *testing.T, f launcherFixture, prefix string) (pid, group int) {
@@ -869,6 +882,94 @@ while :; do sleep 0.05; done
 //
 // It also pins that the helper still ends: the launcher forwards TERM after
 // taking the SIGINT, so an operator's Ctrl-C stops the wait.
+// TestMergeEnqueueLauncherPublishesItsGroupFileInPrivateScratch pins where the
+// file the helper publishes its live `gh` group in is allowed to live.
+//
+// The handle's name cannot be secret -- the helper has to be told it -- so the
+// only thing that keeps another local user from pre-creating that name as a link
+// to a file the operator can write is the directory: a `mktemp -d` directory
+// only this user can enter, created atomically, not a name directly under a
+// shared TMPDIR. A launcher that opens the predictable path itself truncates the
+// operator's file once per GitHub call, and the operator never learns why.
+//
+// The oracle is the handle's own directory: its permission bits, and that it is
+// not TMPDIR itself. The second subtest is the other half of the same
+// requirement -- if private scratch cannot be created at all, the prebuilt path
+// must still run. Hardening that turned into a new failure mode would be worse
+// than the hole it closed.
+func TestMergeEnqueueLauncherPublishesItsGroupFileInPrivateScratch(t *testing.T) {
+	t.Parallel()
+	const script = `#!/usr/bin/env bash
+set -uo pipefail
+printf 'handle=%s\n' "${EVENER_MERGEQ_GH_GROUP_FILE:-}" >> "$EVENER_FIXTURE_LOG"
+printf 'helper-pid=%s\n' "$$" >> "$EVENER_FIXTURE_LOG"
+printf 'helper-started\n' >> "$EVENER_FIXTURE_LOG"
+while [ ! -e "${EVENER_FIXTURE_LOG}.release" ]; do sleep 0.02; done
+`
+	t.Run("private scratch", func(t *testing.T) {
+		f := newLauncherFixture(t, script)
+		// Declared before the launcher starts and handed to runLauncher, so the
+		// cleanup kills this helper's group as soon as its pid is known. The
+		// helper blocks until released, and an assertion that fails first would
+		// otherwise leave it polling: a test that leaks the thing it is testing
+		// for is worse than the defect, because it hides the next one.
+		var helperPID int
+		cmd := f.launcherCmd(t, "--pr", "6499", "--wait", "570", "--repo", "example.invalid/none")
+		runLauncher(t, cmd, f, &helperPID)
+		helperPID = logPID(t, f, "helper-pid=")
+		waitForLine(t, f, "helper-started")
+		handle := logValue(t, f, "handle=")
+		if handle == "" {
+			t.Fatalf("the launcher named no group file for the prebuilt helper; %s", f.output(t))
+		}
+		dir := filepath.Dir(handle)
+		if dir == f.tmpDir() {
+			t.Fatalf("the group file is %s directly under TMPDIR: its name is predictable, so on a shared TMPDIR that permits symlink traversal another user can plant a link the launcher truncates through", handle)
+		}
+		// Read while the helper is still running: the launcher removes the
+		// directory with the handle, so after exit there is nothing to stat.
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("stat the group file's directory %s: %v", dir, err)
+		}
+		if perm := info.Mode().Perm(); perm != 0o700 {
+			t.Fatalf("the group file's directory %s has mode %04o, want 0700: another user can create names in it", dir, perm)
+		}
+		if err := os.WriteFile(f.log+".release", nil, 0o600); err != nil {
+			t.Fatalf("release the fixture helper: %v", err)
+		}
+		mustExit(t, cmd, f, 0)
+		if _, err := os.Stat(dir); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("the private directory %s survived the launcher: stat returned %v", dir, err)
+		}
+	})
+	t.Run("no private scratch", func(t *testing.T) {
+		f := newLauncherFixture(t, `#!/usr/bin/env bash
+set -uo pipefail
+printf 'handle=%s\n' "${EVENER_MERGEQ_GH_GROUP_FILE:-}" >> "$EVENER_FIXTURE_LOG"
+printf 'helper-ran\n' >> "$EVENER_FIXTURE_LOG"
+`)
+		// TMPDIR exists but cannot be written to, which is what makes `mktemp -d`
+		// fail there. The prebuilt path must still start the helper: it publishes
+		// nothing to a handle it could not mint, and it does not fail the run.
+		tmp := f.tmpDir()
+		if err := os.MkdirAll(tmp, 0o755); err != nil {
+			t.Fatalf("create the fixture TMPDIR: %v", err)
+		}
+		if err := os.Chmod(tmp, 0o500); err != nil {
+			t.Fatalf("make the fixture TMPDIR unwritable: %v", err)
+		}
+		t.Cleanup(func() { _ = os.Chmod(tmp, 0o755) })
+		cmd := f.launcherCmd(t, "--pr", "6499", "--wait", "570", "--repo", "example.invalid/none")
+		runLauncher(t, cmd, f)
+		mustExit(t, cmd, f, 0)
+		waitForLine(t, f, "helper-ran")
+		if handle := logValue(t, f, "handle="); handle != "" {
+			t.Fatalf("the launcher named %s as the group file, but no private scratch could be created there", handle)
+		}
+	})
+}
+
 func TestMergeEnqueueLauncherRunsTheHelperInItsOwnProcessGroup(t *testing.T) {
 	t.Parallel()
 	gh := filepath.Join(t.TempDir(), "gh.sh")
@@ -976,6 +1077,65 @@ while :; do sleep 0.05; done
 	// submitting: a call left in its own group would outlive this line.
 	testwait.Until(t, fmt.Sprintf("the helper's gh pid %d to be stopped before the launcher exits 130", ghPID), func() bool {
 		return pidGone(ghPID)
+	})
+}
+
+// TestMergeEnqueueLauncherStopsAHelperAWrapperLeftBehind pins the case where the
+// launched PID is not the helper: EVENER_DEV_BIN names a wrapper that starts the
+// Go helper as a child and exits on TERM without forwarding it.
+//
+// The launcher's graceful stop is a TERM at the launched PID, which is the
+// wrapper. When the wrapper exits on that TERM the launcher used to treat the
+// cancellation as done, because the only thing it checked was whether the traced
+// child was still running. The Go helper it started is in the group recorded at
+// launch and keeps polling -- or finishes submitting an enqueue -- after the
+// launcher has reported 130.
+//
+// The recorded group is the handle that survives: the child is reaped, so `ps`
+// assertions are needed. The launcher has to exit 130 because the operator asked
+// it to stop, and the helper has to be gone because 130 means the enqueue
+// stopped rather than merely that this process did.
+func TestMergeEnqueueLauncherStopsAHelperAWrapperLeftBehind(t *testing.T) {
+	t.Parallel()
+	// The fixture IS the wrapper: EVENER_DEV_BIN points at it, so it is the
+	// launcher's tracked child. It starts a stand-in for the Go helper in its own
+	// group, records both, and exits on TERM without forwarding it -- the exit
+	// that makes the launcher believe the cancellation is complete.
+	f := newLauncherFixture(t, `#!/usr/bin/env bash
+set -uo pipefail
+"$EVENER_FIXTURE_HELPER" &
+inner=$!
+printf 'wrapper-pid=%s;pgid=%s\n' "$$" "$(ps -o pgid= -p "$$" | tr -d ' ')" >> "$EVENER_FIXTURE_LOG"
+printf 'inner-pid=%s;pgid=%s\n' "$inner" "$(ps -o pgid= -p "$inner" | tr -d ' ')" >> "$EVENER_FIXTURE_LOG"
+trap 'exit 0' TERM
+while :; do sleep 0.05; done
+`)
+	inner := filepath.Join(f.dir, "helper.sh")
+	writeTestFile(t, inner, []byte(`#!/usr/bin/env bash
+trap '' TERM
+while :; do sleep 0.05; done
+`), 0o755)
+	var innerPID int
+	cmd := f.launcherCmd(t, "--pr", "6499", "--wait", "570", "--repo", "example.invalid/none")
+	cmd.Env = append(cmd.Env, "EVENER_FIXTURE_HELPER="+inner)
+	// The grace is long enough for the wrapper to act on TERM and exit, which is
+	// the sequencing this case needs: the launcher's check must happen after the
+	// wrapper is gone, or it would be testing the ordinary path. One second still
+	// leaves the case well inside its ceiling, with the stopper's own grace at
+	// one second as well.
+	cmd.Env = append(cmd.Env, "EVENER_HELPER_TERM_GRACE_SECONDS=1", "EVENER_STOP_TREE_GRACE_SECONDS=1")
+	runLauncher(t, cmd, f, &innerPID)
+	_, helperGroup := logPIDAndGroup(t, f, "wrapper-pid=")
+	innerPID, innerGroup := logPIDAndGroup(t, f, "inner-pid=")
+	if innerGroup != helperGroup {
+		t.Fatalf("the inner stand-in is in group %d, want the wrapper's group %d: the recorded group is the only handle to it", innerGroup, helperGroup)
+	}
+	signalLauncher(t, cmd, syscall.SIGTERM)
+	mustExit(t, cmd, f, 130)
+	// The helper the wrapper started must be gone: 130 has to mean the enqueue
+	// stopped, and a wrapper's exit says nothing about its child.
+	testwait.Until(t, fmt.Sprintf("the helper the wrapper left behind (pid %d) to be stopped before the launcher exits 130", innerPID), func() bool {
+		return pidGone(innerPID)
 	})
 }
 

@@ -183,6 +183,14 @@ cancel_requested=false
 # helper is about to be started, and read only by the forced stop: it is the one
 # handle that outlives a `gh` wrapper which starts the real CLI and exits.
 gh_group_file=""
+# The private directory the handle lives in on the prebuilt path, removed with the
+# handle: it exists only for the duration of one launch.
+gh_private_dir=""
+# The process group the launched helper leads, recorded while it is still the
+# launcher's child. A wrapper that starts the Go helper and exits is the tracked
+# child: waiting on that PID says nothing about the group, and by the time the
+# wrapper is reaped the group has no parent left to walk from.
+helper_group=""
 # How long a TERMed helper gets to act on the signal before its tree is stopped
 # by force. The override exists for the same reason gate-bounded.sh has one for
 # its own grace (EVENER_STOP_TREE_GRACE_SECONDS): a test that has to let the
@@ -201,8 +209,10 @@ child_running() {
   esac
   return 0
 }
-# helper_call_groups <pid> — print each process group the helper's GitHub call
-# may be in, once, other than the helper's own and this script's.
+# helper_call_groups <pid> <helper-group> — print each process group the
+# helper's GitHub call may be in, once, other than the helper's own and this
+# script's. helper-group may be empty when ps cannot name it any more; the
+# recorded one is used then.
 #
 # Two sources, because neither covers the other. The helper publishes the group
 # of the call it is waiting on (internal/devtool/mergeq's ghGroupFileEnv), which
@@ -217,16 +227,16 @@ child_running() {
 # are excluded: stop_command signals the first, and the second must never be
 # signalled.
 helper_call_groups() {
-  local pid="$1" own_group helper_group descendant group published
+  local pid="$1" own_group call_group descendant group published
   own_group=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ')
-  helper_group=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
+  call_group="$2"
   {
     if [ -n "${gh_group_file:-}" ] && [ -r "$gh_group_file" ]; then
       published=$(tr -d ' \n' < "$gh_group_file" 2>/dev/null) || published=""
       case "$published" in
         '' | *[!0-9]*) ;;
         *)
-          if [ "$published" -gt 1 ] && [ "$published" != "$helper_group" ] && [ "$published" != "$own_group" ]; then
+          if [ "$published" -gt 1 ] && [ "$published" != "$call_group" ] && [ "$published" != "$own_group" ]; then
             printf '%s\n' "$published"
           fi
           ;;
@@ -238,7 +248,7 @@ helper_call_groups() {
         '' | *[!0-9]*) continue ;;
       esac
       [ "$group" -gt 1 ] || continue
-      [ "$group" = "$helper_group" ] && continue
+      [ "$group" = "$call_group" ] && continue
       [ "$group" = "$own_group" ] && continue
       printf '%s\n' "$group"
     done
@@ -251,13 +261,26 @@ helper_call_groups() {
 # holds them in its tree, TERMed with the helper, and KILLed after stop_command's
 # grace whether or not the helper died. A group id survives its leader's death,
 # so a call reparented mid-stop is still reachable.
+#
+# `pid` may already be gone. A wrapper started through EVENER_DEV_BIN that runs
+# the Go helper and exits on TERM leaves the helper running in the group the
+# launcher recorded at launch; the child's exit is not evidence about that group,
+# so the sweep below runs on the recorded group whether or not the child was
+# still there when this was called.
 stop_helper_tree() {
-  local pid="$1" groups="" group deadline alive
-  groups=$(helper_call_groups "$pid") || :
+  local pid="$1" call_group="$2" groups="" group deadline alive
+  groups=$(helper_call_groups "$pid" "$call_group") || :
+  if [ -n "$call_group" ] && [ "$call_group" -gt 1 ] 2>/dev/null; then
+    groups=$(printf '%s\n%s\n' "$groups" "$call_group" | sed '/^$/d' | sort -u)
+  fi
   for group in $groups; do
     kill -TERM -"$group" 2>/dev/null || :
   done
-  stop_command "$pid"
+  # The helper's own group is stopped only while the pid still names it: on a
+  # dead pid stop_command would be signalling a group it cannot identify.
+  if [ "$pid" -gt 1 ] 2>/dev/null && child_running "$pid"; then
+    stop_command "$pid"
+  fi
   for group in $groups; do
     kill -KILL -"$group" 2>/dev/null || :
   done
@@ -278,25 +301,32 @@ stop_helper_tree() {
 }
 reap_child() {
   [ -n "$child" ] || return 0
-  if [ "$child_is_helper" = true ] && kill -TERM "$child" 2>/dev/null; then
-    local deadline=$((SECONDS + helper_term_grace_seconds))
-    while [ "$SECONDS" -lt "$deadline" ] && child_running "$child"; do
-      sleep 0.1
-    done
-    # Still there after the grace: it did not act on TERM, so its GitHub call
-    # will not be cancelled by the context either. Stop its whole tree, and
-    # never wait past that stopper's own grace.
-    if child_running "$child"; then
-      stop_helper_tree "$child"
-    fi
-  else
+  if [ "$child_is_helper" != true ]; then
     # The whole tree, not the PID: `go build` forks a compiler and a linker, and
     # signalling only the shell that started it leaves those children holding the
     # caller's output pipes after this script has exited. stop_command sends one
     # TERM then one KILL to the group when the child leads its own, and walks the
     # tree when it does not; it never waits past its grace.
     stop_command "$child"
+    wait "$child" 2>/dev/null || true
+    return 0
   fi
+  # The polite stop first: TERM at the helper's PID alone, so its own handler
+  # cancels the context it started `gh` under and reports the interrupt itself.
+  if kill -TERM "$child" 2>/dev/null; then
+    local deadline=$((SECONDS + helper_term_grace_seconds))
+    while [ "$SECONDS" -lt "$deadline" ] && child_running "$child"; do
+      sleep 0.1
+    done
+  fi
+  # The forced stop runs whether or not the child is still there, and whether or
+  # not the TERM could be delivered. A child that is gone is not evidence that
+  # the helper is gone: a wrapper started through EVENER_DEV_BIN exits on TERM
+  # without forwarding it, leaving the Go helper polling in the group recorded at
+  # launch. Waiting on the wrapper's PID to decide that would report 130 over a
+  # live enqueue. A child still there after the grace did not act on TERM either,
+  # so its GitHub call will not be cancelled by the context.
+  stop_helper_tree "$child" "$helper_group"
   wait "$child" 2>/dev/null || true
 }
 interrupted() {
@@ -325,6 +355,11 @@ finish() {
   if [ -n "$gh_group_file" ]; then
     rm -f "$gh_group_file" 2>/dev/null || true
   fi
+  # The prebuilt path's private directory holds only that file, so it goes with
+  # it. The build path's handle lives in scratch, which scratch_rm reclaims.
+  if [ -n "$gh_private_dir" ]; then
+    rmdir "$gh_private_dir" 2>/dev/null || true
+  fi
   # Under set -e a failing scratch_rm would abort this handler before the
   # remap below, leaving the library's own status as the script's. Its failure
   # is not the caller's problem: scratch that cannot be resolved is already
@@ -341,19 +376,42 @@ finish() {
 # helper calls `gh` exactly as a built one does, and the forced stop is the same
 # code.
 #
-# It lives under the scratch when this launcher minted one, and under TMPDIR when
-# it did not (the prebuilt path takes no scratch). The name carries this script's
-# PID so two launchers never read each other's handle. A file that cannot be
-# created leaves the variable empty: the descendant walk still covers a helper
-# with a call in its tree, and a handle is an addition, not a precondition.
+# It is created inside a private directory, never at a name an attacker can
+# predict. The first form opened "$TMPDIR/merge-enqueue-gh-group-$$" on the
+# prebuilt path: on a shared TMPDIR that permits symlink traversal, another local
+# user can pre-create that name as a link to a file the operator can write, and
+# the launcher would truncate it. $$ is predictable, and the file is opened
+# before anything can check what it is.
+#
+# The build path already has private scratch (scratch_dir's `mktemp -d`), so it
+# uses that. The prebuilt path has none, and minting scratch there would mean the
+# launcher owns a directory it must then reclaim for a run that may only start
+# and wait -- so it gets a private directory of its own, created by `mktemp -d`,
+# and named in gh_private_dir for the EXIT trap to remove.
+#
+# A private directory that cannot be created leaves the handle empty rather than
+# failing the run. The prebuilt path is the one an operator uses to point at a
+# helper they built themselves, and the handle only widens what a forced stop can
+# reach: the descendant walk still covers a helper with a call in its tree. A
+# hardening change must not become the reason that path cannot start.
 mint_gh_group_file() {
   local dir
   if [ -n "${work:-}" ]; then
-    dir="$work"
-  else
-    dir="${TMPDIR:-/tmp}"
+    gh_group_file="$work/gh-group"
+    : > "$gh_group_file" 2>/dev/null || gh_group_file=""
+    return 0
   fi
-  gh_group_file="$dir/merge-enqueue-gh-group-$$"
+  dir=$(mktemp -d "${TMPDIR:-/tmp}/merge-enqueue.XXXXXX" 2>/dev/null) || dir=""
+  case "$dir" in
+    /*) ;;
+    *) dir="" ;;
+  esac
+  if [ -z "$dir" ]; then
+    gh_group_file=""
+    return 0
+  fi
+  gh_private_dir="$dir"
+  gh_group_file="$dir/gh-group"
   : > "$gh_group_file" 2>/dev/null || gh_group_file=""
 }
 
@@ -387,6 +445,14 @@ start_helper() {
   child=$!
   child_is_helper=true
   helper_started=true
+  # The group the launched child leads, read while it is certainly alive. With
+  # set -m it is the child's own pid, and recording it here is what lets the
+  # forced stop find the Go helper after a wrapper child has exited: `ps` on a
+  # reaped pid names nothing, and the group outlives the process that led it.
+  helper_group=$(ps -o pgid= -p "$child" 2>/dev/null | tr -d ' ') || helper_group=""
+  case "$helper_group" in
+    '' | *[!0-9]*) helper_group="" ;;
+  esac
   launching=false
   # A signal that arrived between the fork and the PID record was held by the
   # handler; the launch is now interruptible and complete, so act on it.

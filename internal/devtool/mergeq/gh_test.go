@@ -114,6 +114,61 @@ exit 0
 	})
 }
 
+// TestGHPublishRefusesAPlantedSymlink pins that the publisher cannot be made to
+// truncate a file an attacker chose.
+//
+// The handle's name is known in advance, and the directory it lives in may be a
+// shared TMPDIR on a host that permits symlink traversal. A local user who
+// pre-creates that name as a link to a file the operator can write would have
+// had the publisher truncate that file, once per GitHub call. The publisher
+// writes to a fresh O_EXCL file and renames it over the handle, so a planted link
+// is replaced rather than followed.
+//
+// The link is planted at two names: the handle itself, and the staging name a
+// publisher that builds its temporary as `path + ".tmp"` would write through.
+// The second is the one that discriminates: rename replaces the handle rather
+// than following it, so a link planted only there was never the danger. The
+// staging name was, because a plain write follows it.
+//
+// The oracle is the victim file's bytes, not an error: a publisher that refused
+// by failing would pass an error check and leave the operator's file intact by
+// accident, and the point is that the handle still gets published.
+func TestGHPublishRefusesAPlantedSymlink(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	victim := filepath.Join(dir, "victim")
+	const original = "keep these bytes\n"
+	if err := os.WriteFile(victim, []byte(original), 0o600); err != nil {
+		t.Fatalf("write the victim file: %v", err)
+	}
+	handle := filepath.Join(dir, "gh-group")
+	// The planted links: the handle, and the staging name beside it.
+	for _, name := range []string{handle, handle + ".tmp"} {
+		if err := os.Symlink(victim, name); err != nil {
+			t.Fatalf("plant the symlink at %s: %v", filepath.Base(name), err)
+		}
+	}
+	publishGHGroup(handle, 4242)
+	if body, err := os.ReadFile(victim); err != nil {
+		t.Fatalf("read the victim file: %v", err)
+	} else if string(body) != original {
+		t.Fatalf("the victim file was truncated to %q: the publisher followed a planted symlink", body)
+	}
+	// And the handle is a real file holding the group, not the link any more.
+	info, err := os.Lstat(handle)
+	if err != nil {
+		t.Fatalf("stat the handle: %v", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("the handle is still a symlink: the publisher did not replace it")
+	}
+	if body, err := os.ReadFile(handle); err != nil {
+		t.Fatalf("read the handle: %v", err)
+	} else if got := strings.TrimSpace(string(body)); got != "4242" {
+		t.Fatalf("the handle holds %q, want the published group", got)
+	}
+}
+
 // TestGHPublishesItsLiveProcessGroup pins the handle the launcher needs to stop a
 // call whose wrapper exited. A `gh` that is a wrapper starting the real CLI
 // without `exec` then exits reparents that CLI out of the helper's tree, so the
@@ -121,8 +176,12 @@ exit 0
 // that still names it. The client publishes that id while the call is in flight
 // and removes it when the call ends, so the launcher never reads a stale one.
 //
-// The fake `gh` blocks until its pid file is written, so the group the test reads
-// belongs to a live process rather than to one whose group id may be reused.
+// The fake `gh` blocks until the release file appears, so the group the test
+// reads belongs to a live process rather than to one whose group id may be
+// reused. Its context is cancellable and its cleanup is registered before the
+// first assertion: a regression in publishing would otherwise fail the readiness
+// wait with the fake still polling, leaving a live subprocess behind a test
+// binary that has already exited -- a leak that hides the next regression.
 func TestGHPublishesItsLiveProcessGroup(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -133,11 +192,29 @@ func TestGHPublishesItsLiveProcessGroup(t *testing.T) {
 while [ ! -e `+shellquote.Literal(release)+` ]; do sleep 0.01; done
 printf '{"data":{}}'
 `)
+	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
+	finished := make(chan struct{})
 	go func() {
-		_, err := (GHClient{GH: gh, GroupFile: groupFile}).run(context.Background(), "api", "graphql")
+		_, err := (GHClient{GH: gh, GroupFile: groupFile}).run(ctx, "api", "graphql")
 		done <- err
+		close(finished)
 	}()
+	// Registered before the readiness wait and before any assertion, so every
+	// failure path below ends the fake instead of leaving it polling. The wait is
+	// bounded: a gh that ignored cancellation would otherwise hold this cleanup
+	// until the binary's deadline, which reads as an unrelated hang.
+	//
+	// It waits on finished rather than on done, so it cannot consume the result
+	// the success path still has to read.
+	t.Cleanup(func() {
+		cancel()
+		select {
+		case <-finished:
+		case <-time.After(30 * time.Second):
+			t.Errorf("the fixture gh was still running after cancellation")
+		}
+	})
 	var published int
 	testwait.Until(t, "the client to publish the live gh group", func() bool {
 		body, err := os.ReadFile(groupFile)
