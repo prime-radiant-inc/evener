@@ -4,7 +4,12 @@
 // effort choices and errors scroll with the models so large text cannot
 // consume the list's viewport. The session screen provides the session and
 // its controls through modelHosts.
-import { type ModelDescriptor, modelControlDisplay, sessionEffortLevels } from "@evener/appwire-client";
+import {
+	coldSessionCanResume,
+	type ModelDescriptor,
+	modelControlDisplay,
+	sessionEffortLevels,
+} from "@evener/appwire-client";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useEffect, useRef, useState } from "react";
 import { type SectionList, Text, View } from "react-native";
@@ -103,7 +108,13 @@ function ModelSheetBody({
 		});
 	const choose = (model: ModelDescriptor) => {
 		if (!vision && !modelPickCanSend(session)) return;
-		if (`${model.provider}/${model.model}` === current) {
+		// The selected row is only a no-op on a LIVE session. A cold session can
+		// carry the same row as its display while holding no authority for it -
+		// a pick left pending when the daemon exited, whose snapshot the status
+		// frame keeps - and closing on it would strand the choice the departed
+		// process never applied. There the row runs through the resume and sends
+		// once on the authority the post-resume read establishes.
+		if (`${model.provider}/${model.model}` === current && !coldSessionCanResume(session)) {
 			finish();
 			return;
 		}

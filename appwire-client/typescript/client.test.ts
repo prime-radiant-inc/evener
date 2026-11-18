@@ -15,7 +15,7 @@ import {
   type SubscriberErrorPhase,
 } from "./client";
 import type { AppwireClientLike } from "./clientLike";
-import { ConnectionClosedError, errorText, RequestTimeoutError, WireError } from "./errors";
+import { ConnectionClosedError, errorText, mutationErrorData, RequestTimeoutError, WireError } from "./errors";
 import { FAKE_INITIALIZE_RESULT, FakeSocket } from "./testing/fakeSocket";
 import { wireThread } from "./testing/notifications";
 import { rpcURLFromLocation } from "./transport";
@@ -23,6 +23,8 @@ import type {
   AttentionChangedPayload,
   InitializeResponse,
   ThreadHistoryReadResponse,
+  ThreadModelSetParams,
+  ThreadModelSetResponse,
   ThreadReadParams,
 } from "./types.gen";
 
@@ -593,6 +595,64 @@ describe("AppwireClient", () => {
     fake.receive({ id: frame.id, result: { data: [], nextCursor: "" } });
 
     await expect(reqPromise).resolves.toEqual({ data: [], nextCursor: "" });
+  });
+
+  test("thread/model/set refuses an incomplete reply instead of resolving with it", async () => {
+    // The generated method type promises a complete model-control response, and
+    // the browser and phone callers each validate it themselves. A direct SDK
+    // call resolves whatever the peer sent, so a peer that answers {} or a
+    // partial result would hand the caller a success that names no authority at
+    // all. The request path validates too, keyed by the mutation the caller
+    // sent: a malformed reply rejects as outcome-unknown with retry blocked,
+    // while a complete accepted reply still reaches the caller.
+    const fake = new FakeSocket({ autoInitialize: true });
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
+    await connectReady(fake, client);
+    const params: ThreadModelSetParams = {
+      ref: "local:th_1",
+      modelProvider: "work",
+      model: "gpt-5.5",
+      clientMutationId: "cm_malformed",
+      expectedInstanceId: "instance_1",
+      expectedBootGeneration: "7",
+    };
+
+    const malformed = client.request("thread/model/set", params);
+    const frame = lastSentFrame(fake);
+    expect(frame.method).toBe("thread/model/set");
+    fake.receive({ id: frame.id, result: {} });
+    const error = await malformed.catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(WireError);
+    // The refusal is typed on the wire data, not on its wording.
+    expect(mutationErrorData(error)).toMatchObject({ mutationOutcome: "unknown", retryDisposition: "blocked" });
+    expect(mutationErrorData(error)?.clientMutationId).toBe("cm_malformed");
+
+    const complete: ThreadModelSetResponse = {
+      modelControlVersion: 1,
+      disposition: "accepted",
+      modelControl: {
+        authority: { instanceId: "instance_1", bootGeneration: "7" },
+        revision: 2,
+        active: {
+          modelProvider: "work",
+          model: "gpt-5.5",
+          reasoningEffortLevels: [],
+          supportsReasoning: false,
+        },
+      },
+    };
+    const accepted = client.request("thread/model/set", params);
+    const acceptedFrame = lastSentFrame(fake);
+    fake.receive({ id: acceptedFrame.id, result: complete });
+    await expect(accepted).resolves.toEqual(complete);
+
+    // A superseded reply is a real outcome the caller must see, not a
+    // malformed one: validation admits both dispositions.
+    const superseded: ThreadModelSetResponse = { ...complete, disposition: "superseded" };
+    const stale = client.request("thread/model/set", params);
+    const staleFrame = lastSentFrame(fake);
+    fake.receive({ id: staleFrame.id, result: superseded });
+    await expect(stale).resolves.toEqual(superseded);
   });
 
   test("question fields survive response and notification decoding with their page request", async () => {

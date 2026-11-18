@@ -23,7 +23,7 @@ import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
 import { controlsFor } from "../../stores/liveControls";
 import { prefsStore } from "../../stores/prefs";
-import { threadsStore } from "../../stores/threads";
+import { modelPickCanSend, threadsStore } from "../../stores/threads";
 import { topNotesStore } from "../../stores/topNotes";
 import type { ToastKind } from "../../widgets";
 import { modelListToCatalog } from "../../widgets/modelCatalog/catalogClient";
@@ -181,6 +181,12 @@ const queueAvailable = (model: ThreadModel) => controlsFor(model).reason.queue;
 // The palette's drain is argless (it submits no text of its own), so its rule
 // is drainQueue: the drain rule plus a queue to drain.
 const drainQueueAvailable = (model: ThreadModel) => controlsFor(model).reason.drainQueue;
+// A model pick is offered exactly where it can reach the wire. The raw
+// changeModel flag is not that question: a LIVE session can advertise it and
+// publish no model-control authority, which nothing resumes, so the store
+// would refuse the pick after the user chose. The shared predicate answers for
+// every client, so the command, the picker and the phone sheet agree.
+const modelAvailable = (model: ThreadModel) => (modelPickCanSend(model) ? undefined : UNAVAILABLE_REASON);
 
 // runWhenAvailable is the shared run guard for commands with an `available`
 // rule: it refuses with the command's own reason -- the status floor message,
@@ -459,6 +465,7 @@ export function buildCommands(): Command[] {
       keywords: [],
       scope: "session",
       capability: "changeModel",
+      available: modelAvailable,
       args: {
         kind: "enum",
         placeholder: "choose a model…",
@@ -482,6 +489,12 @@ export function buildCommands(): Command[] {
         run: (ctx, item) => {
           if (!ctx.sessionRef) return undefined;
           const { provider, model: modelId } = splitModelId(item.id);
+          // The menu already refuses this row where a pick cannot reach the
+          // wire, but a direct invocation (a typed slash command, a keybinding)
+          // reaches run without the row's unavailableReason. Name the same
+          // reason instead of letting the store refuse after the choice.
+          const model = focusedModel(ctx.sessionRef);
+          if (!model || !modelPickCanSend(model)) return blocked(UNAVAILABLE_REASON);
           return threadsStore
             .getState()
             .setModel(ctx.sessionRef, provider, modelId)

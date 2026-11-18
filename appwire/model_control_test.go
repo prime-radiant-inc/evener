@@ -60,6 +60,58 @@ func TestSessionControlModelParamsExposeOnlyUserIntent(t *testing.T) {
 	}
 }
 
+// A whitespace-only model or provider names no model. The daemon trims these
+// fields before it validates them, so a wire preflight that tested the raw
+// string would let the pick resume a saved session only to be refused
+// afterwards. Both ingress validators must refuse it before any resume.
+func TestModelControlValidatorsRefuseWhitespaceOnlyTargets(t *testing.T) {
+	cases := []struct {
+		name     string
+		provider string
+		model    string
+	}{
+		{"whitespace model", "work", " \t\n "},
+		{"whitespace provider", " ", "gpt-5.5"},
+		{"whitespace both", "\t", "  "},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			setParams := ThreadModelSetParams{
+				Ref:                    "local:th_1",
+				ModelProvider:          test.provider,
+				Model:                  test.model,
+				ClientMutationID:       "cm_1",
+				ExpectedInstanceID:     "instance_1",
+				ExpectedBootGeneration: "7",
+			}
+			assertInvalidParams(t, setParams.Validate())
+
+			controlParams := SessionControlModelParams{
+				Ref:           "local:th_1",
+				ModelProvider: test.provider,
+				Model:         test.model,
+			}
+			assertInvalidParams(t, controlParams.Validate())
+		})
+	}
+}
+
+// assertInvalidParams proves err is the typed invalid-params refusal rather
+// than any error, and that it names the offending field.
+func assertInvalidParams(t *testing.T, err error) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("whitespace-only model target accepted")
+	}
+	var wire WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("error is not a WireError: %v", err)
+	}
+	if wire.Code != CodeInvalidParams {
+		t.Fatalf("Code = %d, want CodeInvalidParams", wire.Code)
+	}
+}
+
 func TestModelControlSnapshotCarriersReuseWholeShape(t *testing.T) {
 	snapshot := ModelControlSnapshot{
 		Authority: ModelControlAuthority{InstanceID: "instance_1", BootGeneration: "7"},

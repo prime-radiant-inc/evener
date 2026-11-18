@@ -307,6 +307,20 @@ describe("choosing a model (spec 8.5)", () => {
 		]);
 	});
 
+	it("closes on the already-selected row without sending, while the session is live", async () => {
+		// The shortcut is for a LIVE session: its selected row names the model
+		// running now, so re-picking it is a no-op and the sheet just closes. A
+		// cold session's selected row can name a choice nobody applied, and that
+		// case goes through the resume instead.
+		const { calls } = provide(conversation({ status: { type: "idle" } } as Partial<MobileConversation>));
+		const tree = sheet();
+		const current = pressable(tree, "Claude Sonnet 5");
+		expect(current?.props.accessibilityState).toMatchObject({ selected: true });
+		act(() => current?.props.onPress?.());
+		await settle();
+		expect(calls).toEqual(["goBack"]);
+	});
+
 	it("stays open, and says nothing, when the change didn't go through", async () => {
 		const { calls, controls } = provide(conversation());
 		controls.changeModel.mockImplementation(async () => {
@@ -665,6 +679,89 @@ describe("a pick on a cold session (the hub resumes behind it)", () => {
 		expect(setCalls).toHaveLength(1);
 		expect(setCalls[0]?.params).toMatchObject({
 			ref: RESUMED_REF,
+			expectedInstanceId: RESUMED_AUTHORITY.instanceId,
+			expectedBootGeneration: RESUMED_AUTHORITY.bootGeneration,
+		});
+	});
+
+	it("resumes and sends when the selected row is the pending pick the departed daemon never applied", async () => {
+		// The daemon exits holding a pending pick: the client keeps the ready
+		// snapshot, and modelControlDisplay reports the pending target so the
+		// sheet checks that row. A same-model shortcut taken on that row would
+		// close the sheet without a resume, leaving a choice the departed
+		// process never applied looking applied. The row must run through the
+		// resume and send once on the authority the post-resume read establishes.
+		let resumed = false;
+		const client = new FakeClient("ready");
+		client.on("thread/unsubscribe", () => ({}));
+		client.on("thread/resume", () => {
+			resumed = true;
+			return { thread: liveThread(RESUMED_AUTHORITY) };
+		});
+		client.on("thread/read", () =>
+			resumed
+				? { thread: liveThread(RESUMED_AUTHORITY), bootGeneration: RESUMED_AUTHORITY.bootGeneration }
+				: {
+						thread: {
+							...liveThread(THIS_AUTHORITY),
+							evener: {
+								...liveThread(THIS_AUTHORITY).evener,
+								modelControl: snapshotFor(2, THIS_AUTHORITY, "claude-haiku-5"),
+							},
+						},
+						bootGeneration: THIS_AUTHORITY.bootGeneration,
+					},
+		);
+		client.on("thread/model/set", () => ({
+			modelControlVersion: 1,
+			disposition: "accepted" as const,
+			modelControl: snapshotFor(3, RESUMED_AUTHORITY, "claude-haiku-5"),
+		}));
+		const service = createConversationService(client);
+		const live = await service.open(REF);
+		service.subscribeNotifications(() => {});
+		// The daemon exits: a cold status with past-thread capabilities. The
+		// reducer leaves the held ready snapshot alone, pending pick included.
+		client.emitNotification({
+			method: "thread/status/changed",
+			params: {
+				ref: REF,
+				threadId: "thread-1",
+				status: { type: "closed" },
+				capabilities: PAST_CAPABILITIES,
+			},
+		});
+		const stale = { ...live, status: { type: "closed" }, capabilities: PAST_CAPABILITIES } as MobileConversation;
+		expect(stale.modelControlState).toMatchObject({ kind: "ready" });
+		const controls = new SessionControls(
+			service,
+			async () => {},
+			() => {},
+			() => true,
+			() => stale,
+			() => true,
+			CATALOG,
+		);
+		onTestFinished(() => {
+			controls.dispose();
+			service.close();
+		});
+		provide(stale, {}, { controls });
+		const tree = sheet();
+		const choice = pressable(tree, "Claude Haiku 5");
+		// The pending target is the checked row, which is what makes the
+		// shortcut tempting in the first place.
+		expect(choice?.props.accessibilityState).toMatchObject({ selected: true });
+		act(() => choice?.props.onPress?.());
+		await settle();
+
+		expect(client.calls.filter((call) => call.method === "thread/resume")).toHaveLength(1);
+		const setCalls = client.calls.filter((call) => call.method === "thread/model/set");
+		expect(setCalls).toHaveLength(1);
+		expect(setCalls[0]?.params).toMatchObject({
+			ref: REF,
+			modelProvider: "anthropic",
+			model: "claude-haiku-5",
 			expectedInstanceId: RESUMED_AUTHORITY.instanceId,
 			expectedBootGeneration: RESUMED_AUTHORITY.bootGeneration,
 		});

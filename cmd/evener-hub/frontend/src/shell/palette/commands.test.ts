@@ -232,6 +232,69 @@ test("/notes cannot open when unsupported even when invoked directly", () => {
   expect(topNotesStore.getState().isExpanded("ref_a")).toBe(false);
 });
 
+// /model is offered where a pick can actually reach the wire, which is the
+// shared modelPickCanSend question rather than the raw changeModel flag. A LIVE
+// session can advertise changeModel and still publish no model-control
+// snapshot; nothing resumes it, so offering the command would let the user pick
+// a model the store then refuses. A cold session is different: the hub resumes
+// it behind the mutation, so the command stays available there.
+test("/model is unavailable on a live session with no model-control authority", () => {
+  focusSession("ref_a");
+  seedModel("ref_a", {
+    status: { type: "idle" },
+    capabilities: { ...CAPS, changeModel: true },
+    modelControlState: { kind: "unsupported", canonicalDisplay: { modelProvider: "anthropic", model: "claude" } },
+  });
+
+  const model = sessionBuiltinCommands(buildPaletteContext()).find((command) => command.id === "model");
+  expect(model).toBeDefined();
+  expect(model?.unavailableReason).toBe(UNAVAILABLE_REASON);
+});
+
+test("/model stays available on a live session with model-control authority", () => {
+  focusSession("ref_a");
+  seedModel("ref_a", {
+    status: { type: "idle" },
+    capabilities: { ...CAPS, changeModel: true },
+    modelControlState: readyModelControlState(),
+  });
+
+  const model = sessionBuiltinCommands(buildPaletteContext()).find((command) => command.id === "model");
+  expect(model?.unavailableReason).toBeUndefined();
+});
+
+test("/model stays available on a cold session the hub would resume behind the pick", () => {
+  focusSession("ref_a");
+  seedModel("ref_a", {
+    status: { type: "ended" },
+    capabilities: { ...CAPS, changeModel: true },
+    modelControlState: { kind: "unsupported", canonicalDisplay: { modelProvider: "anthropic", model: "claude" } },
+  });
+
+  const model = sessionBuiltinCommands(buildPaletteContext()).find((command) => command.id === "model");
+  expect(model?.unavailableReason).toBeUndefined();
+});
+
+test("/model refuses a direct run on a live session with no model-control authority", async () => {
+  focusSession("ref_a");
+  const fake = connectFake();
+  seedModel("ref_a", {
+    status: { type: "idle" },
+    capabilities: { ...CAPS, changeModel: true },
+    modelControlState: { kind: "unsupported", canonicalDisplay: { modelProvider: "anthropic", model: "claude" } },
+  });
+  fake.on("thread/model/set", () => {
+    throw new Error("thread/model/set must not be dispatched");
+  });
+
+  const args = cmd("model").args;
+  if (args?.kind !== "enum") throw new Error("/model takes an enum argument");
+  const result = await args.run(runContext(), { id: "anthropic/claude-haiku-5", label: "Claude Haiku 5" });
+
+  expect(isBlocked(result)).toBe(true);
+  expect(fake.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(0);
+});
+
 test("only /notes is unavailable before the focused session model hydrates", () => {
   focusSession("ref_a");
   const inScope = commandsInScope(buildPaletteContext());
@@ -333,6 +396,14 @@ test("an ended focused session still lists every command; only the wire's own fa
     status: { type: "ended" },
     // Exactly pastEntryThread's advertisement for a cold exited thread.
     capabilities: { ...CAPS, steer: false, interrupt: false, queue: false },
+    // The state such a read actually reduces to: no model-control version,
+    // so `unsupported`. That is the state a pick resolves by resuming, and
+    // the one the shared predicate offers (modelPickCanSend). The
+    // `uninitialized` this fixture used to inherit belongs to a retired
+    // connection, which the composer's picker already holds, and asserting
+    // /model there would pin the palette/composer disagreement this change
+    // removes.
+    modelControlState: { kind: "unsupported", canonicalDisplay: { modelProvider: "anthropic", model: "claude" } },
   });
   const inScope = commandsInScope(buildPaletteContext());
   expect(inScope).toHaveLength(26);

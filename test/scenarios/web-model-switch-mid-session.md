@@ -172,7 +172,8 @@ a request that carries no model-control authority.
   already exited therefore shows a resumed session and the picked model, not a
   refusal. Whether a pick is offered at all is one shared predicate,
   `modelPickCanSend` in `appwire-client/typescript/modelControl.ts`, which both
-  clients call (`:102-113`): a `ready` session is offered, a cold (`ended`/
+  clients and the browser's command palette call (`:103-115`): a `ready`
+  session is offered, a cold (`ended`/
   `closed`/`notLoaded`) session's `unsupported` state is offered because the
   resume resolves it, and everything else is held. Two cases stay refused: a LIVE
   session whose daemon reports no model-control protocol has no resume that

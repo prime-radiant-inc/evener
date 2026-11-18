@@ -1203,13 +1203,18 @@ type ThreadModelSetParams struct {
 
 // Validate refuses a model mutation that cannot be bound to one exact client
 // intent, thread instance, and daemon boot.
+//
+// The model and provider are trimmed before the emptiness test. The daemon
+// trims them too (agent/session_model_control.go's fence), so testing the raw
+// string would accept a pick here that the daemon refuses only after the hub
+// has resumed the session.
 func (p ThreadModelSetParams) Validate() error {
 	switch {
 	case p.Ref == "":
 		return InvalidParams("ref is required")
-	case p.ModelProvider == "":
+	case strings.TrimSpace(p.ModelProvider) == "":
 		return InvalidParams("modelProvider is required")
-	case p.Model == "":
+	case strings.TrimSpace(p.Model) == "":
 		return InvalidParams("model is required")
 	case p.ClientMutationID == "":
 		return InvalidParams("clientMutationId is required")

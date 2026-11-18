@@ -12,6 +12,7 @@ import {
   WireError,
 } from "./errors";
 import { decodeHistoryServingResponse } from "./historyServing";
+import { validateThreadModelSetResponse } from "./modelControl";
 import { isPlainObject } from "./plainObject";
 import type { WebSocketLike } from "./transport";
 import type { AnyNotification, InitializeResponse, MethodName, MethodTypes } from "./types.gen";
@@ -463,6 +464,18 @@ export class AppwireClient {
         params as MethodTypes["thread/read" | "thread/turns/list"]["params"],
         opts,
       ) as Promise<MethodTypes[M]["result"]>;
+    }
+    if (method === "thread/model/set") {
+      // The generated type promises a complete model-control response, but the
+      // wire carries whatever the peer sent. The browser and phone stores each
+      // validate their own call; a direct SDK call has to get the same answer
+      // here, or it resolves {} (or a partial result) as a successful switch
+      // that names no authority and cannot be recovered from. Keyed by the
+      // mutation this request sent, so the refusal names the caller's intent.
+      const sent = params as MethodTypes["thread/model/set"]["params"];
+      return this.requestWire(method, params, opts).then((result) =>
+        validateThreadModelSetResponse(result, sent.clientMutationId),
+      );
     }
     return this.requestWire(method, params, opts);
   }

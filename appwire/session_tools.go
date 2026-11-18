@@ -290,9 +290,9 @@ func (p SessionControlModelParams) Validate() error {
 	switch {
 	case p.Ref == "":
 		return InvalidParams("ref is required")
-	case p.ModelProvider == "":
+	case strings.TrimSpace(p.ModelProvider) == "":
 		return InvalidParams("modelProvider is required")
-	case p.Model == "":
+	case strings.TrimSpace(p.Model) == "":
 		return InvalidParams("model is required")
 	default:
 		return nil

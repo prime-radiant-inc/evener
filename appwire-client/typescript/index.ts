@@ -551,6 +551,7 @@ export type {
   ModelControlRequestFence,
 } from "./modelControl";
 export {
+  coldSessionCanResume,
   modelControlAuthority,
   modelControlDisplay,
   modelControlRecoveryInput,

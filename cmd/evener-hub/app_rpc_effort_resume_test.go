@@ -571,3 +571,113 @@ func TestHubRPCThreadModelSetRejectsMalformedRequestBeforeResuming(t *testing.T)
 		t.Fatalf("resume calls = %d, want 0; a request the daemon must reject cannot justify starting it", resumeCalls)
 	}
 }
+
+// TestHubRPCThreadModelSetRejectsWhitespaceTargetBeforeResuming pins the same
+// ingress boundary for a target that is present but names no model. The daemon
+// trims model and provider before validating them, so a whitespace-only pick
+// passes a raw emptiness test and is refused only after the hub has started the
+// session's daemon. The preflight has to trim too, so the pick never resumes.
+func TestHubRPCThreadModelSetRejectsWhitespaceTargetBeforeResuming(t *testing.T) {
+	root := t.TempDir()
+	workingDir := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-whitespace-0000000000")
+	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+	past := closeOnCleanup(t, hubcore.NewPastIndex(filepath.Join(root, "projects", "*")))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	runDir := t.TempDir()
+	resumeCalls := 0
+	spawner := &fakeRPCSpawner{
+		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			resumeCalls++
+			return rendezvous.Entry{}, context.DeadlineExceeded
+		},
+	}
+	roster := hubcore.NewRoster(runDir, nil)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	mustInitializeHubClient(t, client)
+
+	for name, params := range map[string]appwire.ThreadModelSetParams{
+		"model": {
+			Ref: "local:" + sessionID, ModelProvider: "openai", Model: " \t\n ",
+			ClientMutationID: "cm-whitespace-model", ExpectedInstanceID: sessionID, ExpectedBootGeneration: "7",
+		},
+		"provider": {
+			Ref: "local:" + sessionID, ModelProvider: "  ", Model: "gpt-5.4",
+			ClientMutationID: "cm-whitespace-provider", ExpectedInstanceID: sessionID, ExpectedBootGeneration: "7",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := client.ThreadModelSet(context.Background(), params)
+			if err == nil {
+				t.Fatalf("thread/model/set accepted a whitespace-only %s", name)
+			}
+			assertWireCode(t, err, appwire.CodeInvalidParams)
+		})
+	}
+	if resumeCalls != 0 {
+		t.Fatalf("resume calls = %d, want 0; a whitespace-only target cannot justify starting a daemon", resumeCalls)
+	}
+}
+
+// TestHubRPCThreadModelSetPreflightStaysBehindRecoveryAdmission pins WHERE the
+// wire preflight runs, not just that it runs. Recovery admission comes first:
+// one shared admission decides whether a request may act on the session at all,
+// and an action captured before a recovery must still be refused as
+// admission-blocked rather than answered with a validation verdict it would
+// otherwise never have reached. A whitespace-only target is the case that tells
+// the two orders apart, because the preflight and the admission disagree about
+// it: invalid params if validation runs first, the recovery refusal if
+// admission does.
+func TestHubRPCThreadModelSetPreflightStaysBehindRecoveryAdmission(t *testing.T) {
+	root := t.TempDir()
+	workingDir := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-order-0000000000")
+	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+	past := closeOnCleanup(t, hubcore.NewPastIndex(filepath.Join(root, "projects", "*")))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	runDir := t.TempDir()
+	resumeCalls := 0
+	spawner := &fakeRPCSpawner{
+		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			resumeCalls++
+			return rendezvous.Entry{}, context.DeadlineExceeded
+		},
+	}
+	roster := hubcore.NewRoster(runDir, nil)
+	// The recovery fence a Session holds after a force stop whose exit is not
+	// confirmed: ResumeRequired with no confirmed exit, so sessionStateRecoveryError
+	// refuses every action that is not an admitted turn/start.
+	locks := hubcore.NewResumeLocks()
+	if err := locks.PersistForceStop([]string{sessionID}, sessionID); err != nil {
+		t.Fatal(err)
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		RunDir: runDir, Roster: roster, Spawner: spawner, Past: past, ResumeLocks: locks,
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	mustInitializeHubClient(t, client)
+
+	_, err := client.ThreadModelSet(context.Background(), appwire.ThreadModelSetParams{
+		Ref: "local:" + sessionID, ModelProvider: "openai", Model: " \t ",
+		ClientMutationID: "cm-order-model", ExpectedInstanceID: sessionID, ExpectedBootGeneration: "7",
+	})
+	if err == nil {
+		t.Fatal("thread/model/set accepted a whitespace-only target under a recovery fence")
+	}
+	// The recovery refusal, not the validation verdict: admission ran first.
+	assertWireCode(t, err, appwire.CodeUnavailable)
+	if resumeCalls != 0 {
+		t.Fatalf("resume calls = %d, want 0", resumeCalls)
+	}
+}
