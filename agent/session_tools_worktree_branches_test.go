@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -870,11 +871,29 @@ func TestRootOnlySubagentToolsIncludesJobControl(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// fmt usage
+// list message capping and paging
 // ---------------------------------------------------------------------------
 
-var _ = fmt.Sprintf
+// assertDigestSelects checks which fixture names the digest keeps and which it
+// elides. The names are the fixtures this test supplied, so their appearance
+// reports the digest's selection, not its wording.
+func assertDigestSelects(t *testing.T, result string, keep, elide []string) {
+	t.Helper()
+	for _, name := range keep {
+		if !strings.Contains(result, name) {
+			t.Errorf("digest omits %q: %q", name, result)
+		}
+	}
+	for _, name := range elide {
+		if strings.Contains(result, name) {
+			t.Errorf("digest should have elided %q past the cap: %q", name, result)
+		}
+	}
+}
 
+// TestWorktreeListSummaryCappedOverTen covers the unpaged digest's cap: ten
+// lanes are named, the rest are elided. It checks which fixture names survive,
+// never the count sentence around them.
 func TestWorktreeListSummaryCappedOverTen(t *testing.T) {
 	t.Parallel()
 	entries := make([]WorktreeListEntry, 12)
@@ -882,17 +901,13 @@ func TestWorktreeListSummaryCappedOverTen(t *testing.T) {
 		entries[i] = WorktreeListEntry{Name: fmt.Sprintf("wt-%02d", i+1), AheadCommits: 0, Dirty: false, Merged: true}
 	}
 	result := worktreeListSummary(entries, nil)
-	if !strings.Contains(result, "12 managed worktree(s)") {
-		t.Fatalf("expected count 12: %q", result)
-	}
-	if !strings.Contains(result, "; and 2 more.") {
-		t.Fatalf("expected '; and 2 more.': %q", result)
-	}
-	if strings.Contains(result, "wt-11") || strings.Contains(result, "wt-12") {
-		t.Fatalf("expected wt-11 and wt-12 to be elided: %q", result)
-	}
+	assertDigestSelects(t, result,
+		[]string{"wt-01", "wt-10"},
+		[]string{"wt-11", "wt-12"})
 }
 
+// TestWorktreeUnmanagedSummaryCappedOverTen covers the same cap in the
+// unmanaged section.
 func TestWorktreeUnmanagedSummaryCappedOverTen(t *testing.T) {
 	t.Parallel()
 	unmanaged := make([]WorktreeListEntry, 13)
@@ -900,40 +915,119 @@ func TestWorktreeUnmanagedSummaryCappedOverTen(t *testing.T) {
 		unmanaged[i] = WorktreeListEntry{Path: fmt.Sprintf("/wt-%02d", i+1), Branch: "main"}
 	}
 	result := worktreeUnmanagedSummary(unmanaged)
-	if !strings.Contains(result, "13 unmanaged worktree(s)") {
-		t.Fatalf("expected count 13: %q", result)
-	}
-	if !strings.Contains(result, "; and 3 more.") {
-		t.Fatalf("expected '; and 3 more.': %q", result)
-	}
+	assertDigestSelects(t, result,
+		[]string{"/wt-01", "/wt-10"},
+		[]string{"/wt-11", "/wt-13"})
 }
 
-func TestWorktreeListSummaryPagingHint(t *testing.T) {
+// TestWorktreeListPagedDigestCapsAtFive covers the paged digest's own cap
+// through the tool, where it is tighter than the unpaged digest's ten: a page
+// names five lanes and elides the rest, so a full page of fifteen stays
+// readable. Seven managed fixtures plus one stray make the first page hold all
+// seven lanes and still truncate, which is what puts the digest on its paged
+// branch; the cap then binds because that page holds more than five.
+func TestWorktreeListPagedDigestCapsAtFive(t *testing.T) {
 	t.Parallel()
-	result := worktreeListSummaryPaged(nil, nil, true, 20)
-	if !strings.Contains(result, "(offset=20 for next page)") {
-		t.Fatalf("expected paging hint: %q", result)
+	r := newWorktreeRepo(t)
+	lanes := make([]string, 7)
+	for i := range lanes {
+		lanes[i] = fmt.Sprintf("cap-lane-%02d", i+1)
+		r.addManagedWorktreeFixture(t, lanes[i])
 	}
+	r.addUnmanagedWorktreeFixture(t, "cap-stray", "cap-stray")
+
+	out, err := r.listOpArgs(t, map[string]any{"limit": len(lanes), "offset": 0})
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if got := out["truncated"]; got != true {
+		t.Fatalf("truncated = %v, want true so the digest takes its paged branch", got)
+	}
+	if got := listEntries(t, out); len(got) != len(lanes) {
+		t.Fatalf("page holds %d managed lanes, want %d", len(got), len(lanes))
+	}
+	msg, ok := out["message"].(string)
+	if !ok {
+		t.Fatalf("message is %T, want string", out["message"])
+	}
+	assertDigestSelects(t, msg, lanes[:5], lanes[5:])
 }
 
-func TestWorktreeListSummaryPagedTotals(t *testing.T) {
+// pageFixtureNames lists the fixtures a list page returned — managed entries by
+// name, unmanaged entries by their directory name — in the tool's own order.
+func pageFixtureNames(t *testing.T, out map[string]any) []string {
+	t.Helper()
+	entries := listEntries(t, out)
+	unmanaged := listUnmanaged(t, out)
+	names := make([]string, 0, len(entries)+len(unmanaged))
+	for _, e := range entries {
+		names = append(names, e["name"].(string))
+	}
+	for _, u := range unmanaged {
+		names = append(names, filepath.Base(u["path"].(string)))
+	}
+	return names
+}
+
+// TestWorktreeListPaginationBalancesTotalsAndPages drives list through the tool
+// surface over managed and unmanaged fixtures, and checks paging as data: the
+// totals across both sections, each page's own contents, and the next_offset
+// continuation. Managed and unmanaged fixtures share one parent directory under
+// the managed root, so git lists them together in path order and a single page
+// can mix the two sections. The exact per-page comparison is also the "nothing
+// from another page leaked in" check: a fixture from a page the request did not
+// ask for fails the comparison by name. The list message's wording is
+// deliberately not asserted — copy is not a test oracle.
+func TestWorktreeListPaginationBalancesTotalsAndPages(t *testing.T) {
 	t.Parallel()
-	entries := make([]WorktreeListEntry, 7)
-	for i := range entries {
-		entries[i] = WorktreeListEntry{Name: fmt.Sprintf("wt-%02d", i+1), AheadCommits: 0, Dirty: false, Merged: true}
+	r := newWorktreeRepo(t)
+
+	const (
+		totalManaged   = 3
+		totalUnmanaged = 2
+		pageSize       = 2
+	)
+	for _, name := range []string{"page-lane-a", "page-lane-b", "page-lane-c"} {
+		r.addManagedWorktreeFixture(t, name)
 	}
-	// Paged: truncated=true, nextOffset=7, totalManaged=18, totalUnmanaged=6
-	result := worktreeListSummaryPagedWithTotals(entries, nil, true, 7, 18, 6)
-	if !strings.Contains(result, "7 of 18 managed worktree(s)") {
-		t.Fatalf("expected '7 of 18 managed worktree(s)': %q", result)
+	for _, name := range []string{"stray-lane-a", "stray-lane-b"} {
+		r.addUnmanagedWorktreeFixture(t, name, name)
 	}
-	if !strings.Contains(result, "; and 2 more.") {
-		t.Fatalf("expected '; and 2 more.' (capped at 5): %q", result)
+
+	pages := []struct {
+		offset   int
+		want     []string
+		wantNext int
+		wantMore bool
+	}{
+		{offset: 0, want: []string{"page-lane-a", "page-lane-b"}, wantNext: 2, wantMore: true},
+		{offset: 2, want: []string{"page-lane-c", "stray-lane-a"}, wantNext: 4, wantMore: true},
+		{offset: 4, want: []string{"stray-lane-b"}, wantMore: false},
 	}
-	if !strings.Contains(result, "0 of 6 unmanaged worktree(s)") {
-		t.Fatalf("expected '0 of 6 unmanaged worktree(s)': %q", result)
-	}
-	if !strings.Contains(result, "(offset=7 for next page)") {
-		t.Fatalf("expected '(offset=7 for next page)': %q", result)
+
+	for _, tc := range pages {
+		out, err := r.listOpArgs(t, map[string]any{"limit": pageSize, "offset": tc.offset})
+		if err != nil {
+			t.Fatalf("list offset %d: %v", tc.offset, err)
+		}
+		if got := out["total_entries"]; got != totalManaged {
+			t.Errorf("offset %d total_entries = %v, want %d", tc.offset, got, totalManaged)
+		}
+		if got := out["total_unmanaged"]; got != totalUnmanaged {
+			t.Errorf("offset %d total_unmanaged = %v, want %d", tc.offset, got, totalUnmanaged)
+		}
+		if got := pageFixtureNames(t, out); !slices.Equal(got, tc.want) {
+			t.Errorf("offset %d page = %v, want %v", tc.offset, got, tc.want)
+		}
+		if got := out["truncated"]; got != tc.wantMore {
+			t.Errorf("offset %d truncated = %v, want %v", tc.offset, got, tc.wantMore)
+		}
+		next, hasNext := out["next_offset"]
+		if hasNext != tc.wantMore {
+			t.Errorf("offset %d next_offset present = %v, want %v (value %v)", tc.offset, hasNext, tc.wantMore, next)
+		}
+		if hasNext && next != tc.wantNext {
+			t.Errorf("offset %d next_offset = %v, want %d", tc.offset, next, tc.wantNext)
+		}
 	}
 }
