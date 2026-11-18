@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"sync"
 	"testing"
 	"time"
@@ -450,6 +451,214 @@ func TestDelegateDrainHoldCarriesItsSourceSequence(t *testing.T) {
 	if cleared.HoldSequence <= held.HoldSequence {
 		t.Fatalf("the clearing frame's holdSequence = %d, want later than the held sample's %d; a client would treat the release as stale",
 			cleared.HoldSequence, held.HoldSequence)
+	}
+}
+
+// twoShellDrainEnvironment releases its shells one at a time, so a delegate can
+// be left parked in its drain on a second owned shell after the first finishes.
+// The single-shell heldJobEnvironment cannot express that: releasing its only
+// shell ends the drain, and the drain's own exit publishes the frame.
+type twoShellDrainEnvironment struct {
+	execenv.ExecutionEnvironment
+	firstStarted  chan struct{}
+	secondStarted chan struct{}
+	releaseFirst  chan struct{}
+	releaseSecond chan struct{}
+	firstOnce     sync.Once
+	secondOnce    sync.Once
+	startMu       sync.Mutex
+	started       int
+}
+
+func newTwoShellDrainEnvironment(dir string) *twoShellDrainEnvironment {
+	return &twoShellDrainEnvironment{
+		ExecutionEnvironment: execenv.NewLocalExecutionEnvironment(dir),
+		firstStarted:         make(chan struct{}),
+		secondStarted:        make(chan struct{}),
+		releaseFirst:         make(chan struct{}),
+		releaseSecond:        make(chan struct{}),
+	}
+}
+
+func (e *twoShellDrainEnvironment) finishFirst() {
+	e.firstOnce.Do(func() { close(e.releaseFirst) })
+}
+
+func (e *twoShellDrainEnvironment) finishSecond() {
+	e.secondOnce.Do(func() { close(e.releaseSecond) })
+}
+
+func (e *twoShellDrainEnvironment) StreamCommand(_ context.Context, _, _ string, _ map[string]string, out io.Writer) (*execenv.StreamHandle, error) {
+	e.startMu.Lock()
+	e.started++
+	which := e.started
+	e.startMu.Unlock()
+	started := e.firstStarted
+	release := e.releaseFirst
+	label := "first"
+	if which > 1 {
+		started = e.secondStarted
+		release = e.releaseSecond
+		label = "second"
+	}
+	close(started)
+	return &execenv.StreamHandle{
+		Wait: func() (int, error) {
+			<-release
+			_, _ = out.Write([]byte(label + " shell complete"))
+			return 0, nil
+		},
+		Signal: func() {
+			e.finishFirst()
+			e.finishSecond()
+		},
+	}, nil
+}
+
+// One of two owned shells finishing changes the hold's phrasing without moving
+// drainHeld or any durable delegate field, so nothing else publishes it. A row
+// already loaded must still learn that the wait dropped from two jobs to one,
+// and must stop claiming a shell wait once only descendant work is left (#6693).
+//
+// The fixture drives a real owned shell to completion and asserts the frame the
+// parent's stream carried afterwards; the read is the independent check that
+// the same fact is what the source now reports.
+func TestOwnedShellLeavingTheRunningMapPublishesTheHold(t *testing.T) {
+	t.Parallel()
+	env := newTwoShellDrainEnvironment(t.TempDir())
+	stepHeld := make(chan struct{})
+	releaseStep := make(chan struct{})
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(llm.ToolCallData{
+					ID:        "first-shell",
+					Name:      "shell",
+					Arguments: json.RawMessage(`{"command":"first shell","mode":"background"}`),
+					Type:      "function",
+				})
+			},
+			func(llm.Request) llm.Response {
+				return agenttest.ToolCallResponse(llm.ToolCallData{
+					ID:        "second-shell",
+					Name:      "shell",
+					Arguments: json.RawMessage(`{"command":"second shell","mode":"background"}`),
+					Type:      "function",
+				})
+			},
+			func(llm.Request) llm.Response {
+				close(stepHeld)
+				<-releaseStep
+				return agenttest.FinalResponse("both shells started")
+			},
+			func(llm.Request) llm.Response { return agenttest.FinalResponse("owned shells handled") },
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	parent, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), env, SessionConfig{
+		StateDir:         t.TempDir(),
+		MaxSubagentDepth: 1,
+		clock:            newOwnedJobDrainClock(),
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	var recorder sessionEventRecorder
+	stop := make(chan struct{})
+	var releaseStepOnce sync.Once
+	releaseProviderStep := func() { releaseStepOnce.Do(func() { close(releaseStep) }) }
+	stream := parent.Events()
+	go func() {
+		for {
+			select {
+			case event, ok := <-stream:
+				if !ok {
+					return
+				}
+				recorder.record(event)
+			case <-stop:
+				return
+			}
+		}
+	}()
+	t.Cleanup(parent.Close)
+	t.Cleanup(env.finishSecond)
+	t.Cleanup(env.finishFirst)
+	t.Cleanup(func() {
+		releaseProviderStep()
+		close(stop)
+	})
+
+	result := parent.createDelegate(context.Background(), delegateArgs{Task: "run two held background shells"})
+	if result.Err != nil {
+		t.Fatalf("createDelegate: %v", result.Err)
+	}
+	select {
+	case <-env.secondStarted:
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
+		t.Fatal("the delegate never started its second shell")
+	}
+	select {
+	case <-stepHeld:
+	case <-time.After(30 * time.Second): // TRIPWIRE: real signal from a background goroutine/job; 30s only fires on a genuine hang.
+		t.Fatal("the delegate did not reach its provider call after starting both shells")
+	}
+
+	// End the turn: both owned shells are still running, so the drain takes the
+	// run and holds it on two jobs.
+	releaseProviderStep()
+	testwait.Until(t, "a pushed frame carrying the two-job hold", func() bool {
+		for _, frame := range recordedHoldFrames(&recorder, result.DelegateID) {
+			if frame.DrainHeldByJobs && frame.RunningJobCount == 2 {
+				return true
+			}
+		}
+		return false
+	})
+	heldCount := len(recordedHoldFrames(&recorder, result.DelegateID))
+
+	// The first shell finishes; the second keeps the drain parked, so the drain
+	// publishes nothing and drainHeld does not move. Only the removal itself can
+	// tell a loaded row that the wait shrank to one job.
+	env.finishFirst()
+	testwait.Until(t, "a frame reporting the reduced hold", func() bool {
+		for _, frame := range recordedHoldFrames(&recorder, result.DelegateID)[heldCount:] {
+			if frame.DrainHeldByJobs && frame.RunningJobCount == 1 {
+				return true
+			}
+		}
+		return false
+	})
+
+	// The read agrees with the frame, so the two carriers cannot drift.
+	row := requireDelegateActivityRow(t, delegateActivityRows(t, parent), result.DelegateID)
+	if !row.DrainHeldByJobs || row.RunningJobCount != 1 {
+		t.Fatalf("read row after the first shell left = hold %v, count %d; want the one-job hold",
+			row.DrainHeldByJobs, row.RunningJobCount)
+	}
+
+	// The second shell ends the drain entirely, so the row stops claiming it.
+	env.finishSecond()
+	testwait.Until(t, "a frame after the last owned shell that no longer holds", func() bool {
+		seen := false
+		for _, frame := range recordedHoldFrames(&recorder, result.DelegateID) {
+			if frame.DrainHeldByJobs {
+				seen = true
+				continue
+			}
+			if seen {
+				return true
+			}
+		}
+		return false
+	})
+	done := requireDelegateActivityRow(t, delegateActivityRows(t, parent), result.DelegateID)
+	if done.DrainHeldByJobs || done.RunningJobCount != 0 {
+		t.Fatalf("read row after the last shell left = hold %v, count %d; want no shell wait",
+			done.DrainHeldByJobs, done.RunningJobCount)
 	}
 }
 

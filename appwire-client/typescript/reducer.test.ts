@@ -3798,6 +3798,42 @@ test("delegate/updated merges an existing delegate with higher projectionRevisio
   });
 });
 
+// The transcript model's own merge: durable fields order by projection
+// revision, the drain hold orders by hold sequence (delegateFacetOrder in
+// internal/appprojector/appwire_projection.go). The hold's edges publish at the
+// revision the row already carries, so without the sequence a same-revision
+// clear leaves the model — and any checkpoint encoded from it — still claiming
+// a wait that has ended.
+test("delegate/updated clears the hold at the same revision by hold sequence", () => {
+  const model = testHydrate();
+  const held = delegateInfo({
+    delegateId: "dlg_1",
+    projectionRevision: 3,
+    drainHeldByJobs: true,
+    holdSequence: 7,
+    runningJobCount: 1,
+    oldestRunningJobStartedAt: "2026-01-03T00:00:00Z",
+  });
+  let result = applyNotification(model, delegateNotification("ref_t", held), 2000);
+  expect(result.delegates?.[0]?.drainHeldByJobs).toBe(true);
+
+  // Same revision, later sequence: the wait ended.
+  const cleared = delegateInfo({
+    delegateId: "dlg_1",
+    projectionRevision: 3,
+    holdSequence: 9,
+  });
+  result = applyNotification(result, delegateNotification("ref_t", cleared), 3000);
+  expect(result.delegates?.[0]?.drainHeldByJobs ?? false).toBe(false);
+  expect(result.delegates?.[0]?.holdSequence).toBe(9);
+  expect(result.delegates?.[0]?.runningJobCount ?? 0).toBe(0);
+
+  // A delayed frame carrying the older hold sample must not reinstate it.
+  result = applyNotification(result, delegateNotification("ref_t", held), 4000);
+  expect(result.delegates?.[0]?.drainHeldByJobs ?? false).toBe(false);
+  expect(result.delegates?.[0]?.holdSequence).toBe(9);
+});
+
 test("delegate/updated with same projectionRevision and later activity updates latestActivityAt", () => {
   const model = testHydrate();
   const dlg1 = delegateInfo({

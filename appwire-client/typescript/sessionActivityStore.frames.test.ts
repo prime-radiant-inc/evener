@@ -579,6 +579,50 @@ test("clearing the hold at an unchanged revision empties the wait", async () => 
   expect(row?.oldestRunningJobStartedAt ?? "").toBe("");
 });
 
+// A higher projection revision does not mean a newer hold sample, and the
+// store must not let the durable winner supply the hold. A frame that samples
+// the wait at a new revision and pauses can arrive after a heartbeat that
+// sampled a reduced count: the durable fields must take the frame's revision
+// while the hold keeps the later sample.
+test("a higher-revision frame does not roll the hold back", async () => {
+  const client = pushClient();
+  const context = pushContext();
+  client.on("evener/thread/delegates/list", ({ scope }) => ({
+    context,
+    scope: scope ?? "session",
+    page: { complete: true, issues: [] },
+    delegates: [
+      delegateRow({
+        projectionRevision: 4,
+        drainHeldByJobs: true,
+        holdSequence: 12,
+        runningJobCount: 2,
+        oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+      }),
+    ],
+  }));
+  const { store } = await pushOwner(client);
+
+  // One shell finished: higher revision, but its hold was sampled before the
+  // row's.
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({
+        projectionRevision: 5,
+        status: "running",
+        drainHeldByJobs: true,
+        holdSequence: 10,
+        runningJobCount: 1,
+        oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+      }),
+    ),
+  );
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row?.projectionRevision).toBe(5);
+  expect(row?.holdSequence).toBe(12);
+  expect(row?.runningJobCount).toBe(2);
+});
+
 // The inverse arrival order: a delegates refresh captures a running row just
 // before the drain starts, and its reply lands after the hold frame. At the
 // same revision the read used to clear the hold, and the row then missed the

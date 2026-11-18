@@ -538,62 +538,78 @@ func appwireDelegateInfo(data events.DelegateUpdatedData) appwire.EvenerDelegate
 }
 
 func mergeAppwireDelegateInfo(current, incoming appwire.EvenerDelegateInfo) (appwire.EvenerDelegateInfo, bool) {
-	if current.DelegateID == "" || incoming.ProjectionRevision > current.ProjectionRevision {
-		merged := appwire.CloneDelegateInfo(incoming)
-		if delegateActivityAfter(current.LatestActivityAt, merged.LatestActivityAt) {
-			merged.LatestActivityAt = current.LatestActivityAt
-		}
-		return merged, true
-	}
-	if delegateActivityAfter(incoming.LatestActivityAt, current.LatestActivityAt) {
-		merged := appwire.CloneDelegateInfo(current)
-		merged.LatestActivityAt = incoming.LatestActivityAt
-		// The hold moves at a revision the row already holds, so it rides
-		// every forward merge rather than being stranded at the revision it
-		// arrived with — but only when it is newer by the source's own order.
-		applyDelegateHold(&merged, incoming)
-		return merged, true
-	}
-	// The drain hold is its own facet, outside the revision ladder. Entering
-	// or leaving the drain appends no durable delegate event and moves no
-	// durable field, and the hold freezes LatestActivityAt for its whole
-	// span, so both edges arrive here at the revision already recorded with
-	// nothing above to carry them. Without this the projector would return
-	// nil and the edge would never reach a loaded row — the one thing the
-	// hold exists to make visible. The order is the source sequence, not the
-	// arrival: a slower publisher can deliver an older sample last.
+	// The two facets are ordered separately. Read delegateFacetOrder for the
+	// rule; this is the place both halves of it run.
+	durableWins := current.DelegateID == "" || incoming.ProjectionRevision > current.ProjectionRevision
 	merged := appwire.CloneDelegateInfo(current)
-	if !applyDelegateHold(&merged, incoming) {
+	if durableWins {
+		merged = appwire.CloneDelegateInfo(incoming)
+	}
+	activityMoved := false
+	if delegateActivityAfter(incoming.LatestActivityAt, merged.LatestActivityAt) {
+		merged.LatestActivityAt = incoming.LatestActivityAt
+		activityMoved = true
+	}
+	if delegateActivityAfter(current.LatestActivityAt, merged.LatestActivityAt) {
+		merged.LatestActivityAt = current.LatestActivityAt
+	}
+	// The hold comes from the two original samples, never from the durable
+	// winner: a newer revision does not mean a newer hold sample.
+	holdMoved := applyDelegateHold(&merged, current, incoming)
+	if current.DelegateID == "" || durableWins || activityMoved {
+		return merged, true
+	}
+	if !holdMoved {
 		return current, false
 	}
 	return merged, true
 }
 
-// applyDelegateHold copies the incoming hold onto dst when it is newer by the
-// source's own sequence, and reports whether anything moved.
+// delegateFacetOrder is the rule both hosts obey, written once:
 //
-// The sequence is the only order the hold obeys. A publisher that sampled the
-// hold and then paused can send after a later sample, so arrival order and the
-// projection revision both mislead; the highest sequence wins and a delayed
-// sample is dropped. A sample with no sequence predates the counter (or comes
-// from a producer that never had one), so it can fill an empty row but never
-// displace a sequenced sample.
-func applyDelegateHold(dst *appwire.EvenerDelegateInfo, incoming appwire.EvenerDelegateInfo) bool {
-	if incoming.HoldSequence < dst.HoldSequence {
-		return false
+//   - Durable fields (revision, status, lifecycle, report, timestamps) are
+//     ordered by ProjectionRevision. A higher revision is a newer row.
+//   - The drain hold (DrainHeldByJobs, RunningJobCount,
+//     OldestRunningJobStartedAt, HoldSequence) is ordered by HoldSequence
+//     alone, from the two samples being merged, within the current source
+//     epoch.
+//
+// The two orders are independent because they answer different questions. A
+// projection revision says "this row snapshot is current"; it says nothing
+// about which hold sample was taken later. The hold's edges move no durable
+// field at all, so they publish at the revision the row already carries, and a
+// publisher that sampled the hold and paused can deliver an older sample after
+// a newer one. Ordering the hold by revision therefore both drops edges (same
+// revision) and rolls the wait back (higher revision, older sample).
+//
+// HoldSequence is assigned where the source samples the hold, under the lock
+// that guards the live state, so it is monotonic within the control of one
+// source. That is the "source epoch": a counter that restarts (a new daemon, a
+// two of them. A zero sequence means "no sample ever differed" — it can fill an
+// empty row but never displaces a numbered sample.
+//
+// The order is applied in one place per host: mergeAppwireDelegateInfo here,
+// and the activity store's read, frame, buffered-frame and transcript merges on
+// the client. Both hosts must compare the two original samples; comparing a
+// winner against itself can never disagree.
+func applyDelegateHold(dst *appwire.EvenerDelegateInfo, current, incoming appwire.EvenerDelegateInfo) bool {
+	newer := incoming
+	if current.HoldSequence > incoming.HoldSequence {
+		newer = current
 	}
-	if dst.DrainHeldByJobs == incoming.DrainHeldByJobs &&
-		dst.RunningJobCount == incoming.RunningJobCount &&
-		dst.OldestRunningJobStartedAt == incoming.OldestRunningJobStartedAt {
-		// Same hold, newer sequence: record the order without a new frame.
-		dst.HoldSequence = incoming.HoldSequence
-		return false
-	}
-	dst.DrainHeldByJobs = incoming.DrainHeldByJobs
-	dst.RunningJobCount = incoming.RunningJobCount
-	dst.OldestRunningJobStartedAt = incoming.OldestRunningJobStartedAt
-	dst.HoldSequence = incoming.HoldSequence
-	return true
+	// A strictly newer sequence is news even when the displayed fields match: a
+	// client that saw an intervening hold (a shorter count, from a read that
+	// beat this sample through) needs this sample's sequence to clear it. An
+	// exact duplicate — same sequence — stays suppressed.
+	changed := dst.HoldSequence != newer.HoldSequence ||
+		dst.DrainHeldByJobs != newer.DrainHeldByJobs ||
+		dst.RunningJobCount != newer.RunningJobCount ||
+		dst.OldestRunningJobStartedAt != newer.OldestRunningJobStartedAt
+	dst.DrainHeldByJobs = newer.DrainHeldByJobs
+	dst.RunningJobCount = newer.RunningJobCount
+	dst.OldestRunningJobStartedAt = newer.OldestRunningJobStartedAt
+	dst.HoldSequence = newer.HoldSequence
+	return changed
 }
 
 func delegateActivityAfter(candidate, current string) bool {

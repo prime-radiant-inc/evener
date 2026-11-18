@@ -187,3 +187,78 @@ func TestMergeAppwireDelegateInfoOrdersTheHoldBySourceSequence(t *testing.T) {
 			changed, done.DrainHeldByJobs, done.HoldSequence)
 	}
 }
+
+// A newer projection revision does not mean a newer hold sample. A shell
+// attention plan can sample the hold at a new revision and pause; an older
+// heartbeat plan then samples a reduced count after another shell finished;
+// the heartbeat lands first and the newer-revision frame arrives second
+// carrying the older sample. Durable fields follow the revision and the hold
+// follows the sequence, so the durable update lands without rolling the wait
+// back.
+func TestMergeAppwireDelegateInfoKeepsTheNewerHoldAcrossAHigherRevision(t *testing.T) {
+	// The heartbeat's sample: two shells running, sampled later.
+	current := appwire.EvenerDelegateInfo{
+		DelegateID:                "dlg_1",
+		ProjectionRevision:        4,
+		Status:                    "running",
+		LatestActivityAt:          "2024-01-01T00:00:00Z",
+		DrainHeldByJobs:           true,
+		RunningJobCount:           2,
+		OldestRunningJobStartedAt: "2024-01-01T00:00:00Z",
+		HoldSequence:              12,
+	}
+	// One shell finished: the frame carries the reduced count at a higher
+	// revision, but its hold was sampled before the heartbeat's.
+	incoming := current
+	incoming.ProjectionRevision = 5
+	incoming.Status = "resumable"
+	incoming.RunningJobCount = 1
+	incoming.HoldSequence = 10
+
+	merged, changed := mergeAppwireDelegateInfo(current, incoming)
+	if !changed {
+		t.Fatal("the durable update at a higher revision was dropped")
+	}
+	if merged.Status != "resumable" || merged.ProjectionRevision != 5 {
+		t.Fatalf("durable fields = status %q, revision %d; want the higher-revision snapshot",
+			merged.Status, merged.ProjectionRevision)
+	}
+	if merged.RunningJobCount != 2 || merged.HoldSequence != 12 {
+		t.Fatalf("hold = count %d, sequence %d; want the later sample's count 2 and sequence 12",
+			merged.RunningJobCount, merged.HoldSequence)
+	}
+}
+
+// A strictly newer hold sequence is news even when the displayed fields match
+// what the projector already holds. A delegates read can sample a short hold
+// before any held frame reaches the projector; when the shell finishes and the
+// clear arrives at the same revision and activity, the fields match the unheld
+// values the projector started with — so discarding the frame would leave a
+// browser that saw the wait showing it forever.
+func TestMergeAppwireDelegateInfoForwardsANewerHoldSequenceWithIdenticalFields(t *testing.T) {
+	unheld := appwire.EvenerDelegateInfo{
+		DelegateID:         "dlg_1",
+		ProjectionRevision: 4,
+		Status:             "running",
+		LatestActivityAt:   "2024-01-01T00:00:00Z",
+	}
+	// The web row learned of the wait from a read, not from this projector.
+	clear := unheld
+	clear.HoldSequence = 20
+
+	merged, changed := mergeAppwireDelegateInfo(unheld, clear)
+	if !changed {
+		t.Fatal("a newer hold sequence with identical displayed fields was dropped; a client that saw the wait could never clear it")
+	}
+	if merged.HoldSequence != 20 {
+		t.Fatalf("forwarded sequence = %d, want 20", merged.HoldSequence)
+	}
+	if merged.DrainHeldByJobs || merged.RunningJobCount != 0 {
+		t.Fatalf("forwarded hold = %v, count = %d; want the cleared sample", merged.DrainHeldByJobs, merged.RunningJobCount)
+	}
+
+	// An exact duplicate is still suppressed: nothing changed, nothing to send.
+	if _, changed := mergeAppwireDelegateInfo(merged, clear); changed {
+		t.Fatal("an exact duplicate hold frame published an update")
+	}
+}
