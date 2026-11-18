@@ -71,3 +71,34 @@ func (s *Script[T]) Len() int {
 	defer s.mu.Unlock()
 	return len(s.steps)
 }
+
+// At returns the step at index without moving the cursor. ok is false when
+// index is out of range. It pairs with SetAt for tests that capture a step and
+// wrap it with extra assertions.
+func (s *Script[T]) At(index int) (step T, ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if index < 0 || index >= len(s.steps) {
+		return step, false
+	}
+	return s.steps[index], true
+}
+
+// SetAt replaces the step at index in place, leaving the cursor alone. ok is
+// false when index is out of range.
+func (s *Script[T]) SetAt(index int, step T) (ok bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if index < 0 || index >= len(s.steps) {
+		return false
+	}
+	s.steps[index] = step
+	return true
+}
+
+// Cursor reports how many steps Next has consumed.
+func (s *Script[T]) Cursor() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.i
+}

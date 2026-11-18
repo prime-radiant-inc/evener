@@ -107,3 +107,91 @@ func TestScriptResistsConcurrentDriveAndReplacement(t *testing.T) {
 	}()
 	wg.Wait()
 }
+
+// At reads a step positionally without consuming it, so a test can capture the
+// scripted answer it is about to wrap and still expect that answer to be served.
+func TestScriptAtReadsWithoutMovingTheCursor(t *testing.T) {
+	var s Script[func(req llm.Request) llm.Response]
+	s.Replace([]func(req llm.Request) llm.Response{stepAt("one"), stepAt("two")})
+	step, ok := s.At(1)
+	if !ok {
+		t.Fatal("At(1) ok = false, want true")
+	}
+	if got := step(llm.Request{}).Message.Text(); got != "two" {
+		t.Errorf("At(1) answered %q, want %q", got, "two")
+	}
+	if s.Cursor() != 0 {
+		t.Errorf("Cursor() after At = %d, want 0", s.Cursor())
+	}
+	first, ok := s.Next()
+	if !ok {
+		t.Fatal("Next() ok = false, want the first step")
+	}
+	if got := first(llm.Request{}).Message.Text(); got != "one" {
+		t.Errorf("Next() after At answered %q, want the first step %q", got, "one")
+	}
+}
+
+func TestScriptAtRejectsOutOfRangeIndexes(t *testing.T) {
+	var s Script[func(req llm.Request) llm.Response]
+	s.Replace([]func(req llm.Request) llm.Response{stepAt("only")})
+	for _, index := range []int{-1, 1, 100} {
+		if _, ok := s.At(index); ok {
+			t.Errorf("At(%d) ok = true, want false", index)
+		}
+	}
+}
+
+// SetAt replaces a step in place and leaves the cursor alone, which is what
+// lets a test wrap the answer at a position it has already read with At.
+func TestScriptSetAtReplacesWithoutMovingTheCursor(t *testing.T) {
+	var s Script[func(req llm.Request) llm.Response]
+	s.Replace([]func(req llm.Request) llm.Response{stepAt("one"), stepAt("two")})
+	if !s.SetAt(0, stepAt("replaced")) {
+		t.Fatal("SetAt(0) ok = false, want true")
+	}
+	if s.Cursor() != 0 {
+		t.Errorf("Cursor() after SetAt = %d, want 0", s.Cursor())
+	}
+	step, ok := s.Next()
+	if !ok {
+		t.Fatal("Next() ok = false, want the replaced step")
+	}
+	if got := step(llm.Request{}).Message.Text(); got != "replaced" {
+		t.Errorf("Next() after SetAt answered %q, want %q", got, "replaced")
+	}
+}
+
+func TestScriptSetAtRejectsOutOfRangeIndexes(t *testing.T) {
+	var s Script[func(req llm.Request) llm.Response]
+	s.Replace([]func(req llm.Request) llm.Response{stepAt("only")})
+	for _, index := range []int{-1, 1, 100} {
+		if s.SetAt(index, stepAt("unused")) {
+			t.Errorf("SetAt(%d) ok = true, want false", index)
+		}
+	}
+}
+
+// Cursor counts the steps Next consumed; Replace keeps it and Reset rewinds it,
+// matching the two consumption contracts.
+func TestScriptCursorTracksNext(t *testing.T) {
+	var s Script[func(req llm.Request) llm.Response]
+	if got := s.Cursor(); got != 0 {
+		t.Errorf("Cursor() on an empty script = %d, want 0", got)
+	}
+	s.Replace([]func(req llm.Request) llm.Response{stepAt("one"), stepAt("two")})
+	if _, ok := s.Next(); !ok {
+		t.Fatal("first Next() not ok")
+	}
+	if got := s.Cursor(); got != 1 {
+		t.Errorf("Cursor() after one Next = %d, want 1", got)
+	}
+	s.Replace([]func(req llm.Request) llm.Response{stepAt("x"), stepAt("y")})
+	if got := s.Cursor(); got != 1 {
+		t.Errorf("Cursor() after Replace = %d, want the surviving 1", got)
+	}
+	s.Reset([]func(req llm.Request) llm.Response{stepAt("fresh")})
+	if got := s.Cursor(); got != 0 {
+		t.Errorf("Cursor() after Reset = %d, want 0", got)
+	}
+}
