@@ -208,9 +208,15 @@ func (s *Session) bumpHistoryRevisionLocked() {
 // and the next resume replays the transcript from before the compaction; the
 // marker-dependent flush effects (compaction-turn events, naming, the
 // reminder steering, PostCompact) stay with the anchor that never landed.
-// The returned published slice is a defensive copy taken under s.mu, never
-// s.history's own backing array — callers may read it without locks.
-func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int, folded []schema.Turn, commit *foldCommit, onPublishLocked func(published []schema.Turn, restoredAt []int)) (published []schema.Turn, ok bool, refusal error) {
+// The published history is reported through onPublishLocked only, which runs
+// under s.mu inside the publish's own critical section. The caller must not
+// keep the slice: it is s.history's backing array, and
+// delegate-attention delivery goroutines overwrite its elements in place under
+// s.mu (retainDelegateAttentionTurn's element write,
+// removeUnverifiedDelegateAttentionTurn's element shift), so a caller reading
+// it unlocked would race those writes with torn multi-word Turn reads. No
+// caller needs it: both publish sites act only on ok and the refusal.
+func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int, folded []schema.Turn, commit *foldCommit, onPublishLocked func(published []schema.Turn, restoredAt []int)) (ok bool, refusal error) {
 	s.attentionMu.Lock()
 	// Fail closed on a transcript that has stopped accepting records, before
 	// anything is published rather than after the markers fail to land. This
@@ -235,7 +241,7 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// than the claims do.
 	if refusal := s.refuseOnUnhealthyTranscript(s.attachedTranscript()); refusal != nil {
 		s.attentionMu.Unlock()
-		return nil, false, refusal
+		return false, refusal
 	}
 	var pendingAskTail, retainedTail []schema.Turn
 	if commit.stagedCompactionCount() > 0 && s.stateDir != "" {
@@ -243,7 +249,7 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 		_, entries, _, err := readTranscript(context.Background(), transcriptPath(s.stateDir, s.id), s.stateDir)
 		if err != nil {
 			s.attentionMu.Unlock()
-			return nil, false, fmt.Errorf("read retained compaction tail: %w", err)
+			return false, fmt.Errorf("read retained compaction tail: %w", err)
 		}
 		retainedTail = retainedFoldReplayTail(entries, folded)
 		if ids := s.pendingAskTurnIDs(); len(ids) > 0 {
@@ -252,7 +258,7 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 		if err != nil {
 			s.attentionMu.Unlock()
 			s.emit(bareWarningDataFromError("preserve pending ask during compaction", err))
-			return nil, false, err
+			return false, err
 		}
 	}
 	// A fold may summarize away the turn behind a pending attention item.
@@ -281,11 +287,11 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	previousEnvironmentIDs := environmentTurnIDs(s.history)
 	voiceBefore := latestVoicePresentationTurn(s.history)
 	conversationBefore := s.conversationInputsLocked(s.history[:min(snapLen, len(s.history))])
-	published, ok = s.publishFoldedHistory(snapLen, snapRevision, folded)
-	if !ok {
+	published, publishedOK := s.publishFoldedHistory(snapLen, snapRevision, folded)
+	if !publishedOK {
 		s.mu.Unlock()
 		s.attentionMu.Unlock()
-		return nil, false, nil
+		return false, nil
 	}
 	if commit.prepareConversationLocked != nil {
 		commit.prepareConversationLocked(conversationBefore, published)
@@ -374,15 +380,6 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// this fold's own flush has run. Publications stamp strictly increasing
 	// revisions, so plain assignment is monotone.
 	s.newestPublishedFoldRevision = commit.publishedRevision
-	// Return a defensive copy, taken under this same s.mu hold: the
-	// published slice IS s.history's new backing array, and
-	// delegate-attention delivery goroutines mutate s.history IN PLACE
-	// under s.mu (retainDelegateAttentionTurn's element overwrite,
-	// removeUnverifiedDelegateAttentionTurn's element shift). A caller
-	// reading the returned slice unlocked — prepareModelRequestWithError
-	// expands it into the model request — would otherwise race those
-	// mutations with torn multi-word Turn reads.
-	published = append([]schema.Turn(nil), published...)
 	// What the transaction's own records will advance in memory: the pair
 	// log's last-write slot, the latest USER_INPUT entry index, and the
 	// conversation frontier the marker's record adopts — the frontier id and
@@ -542,7 +539,7 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// handoff completes: the claimed operation's delivery finishes, its
 	// receipt's phase advances, and the metadata save persists the result.
 	s.commitSkillCompactionPublication(commit)
-	return published, true, nil
+	return true, nil
 }
 
 // retainedFoldReplayTail returns persisted forms in the fold's published order.
@@ -697,11 +694,11 @@ func (s *Session) foldWithForceCompact(ctx context.Context, instructions string,
 		postLen := len(histCopy)
 		injected := foldInjectedCount()
 
-		_, published, refused := s.publishFoldTransaction(snapLen, snapRevision, snapAppends, histCopy, commit, func(_ []schema.Turn, restoredAt []int) {
+		ok, refused := s.publishFoldTransaction(snapLen, snapRevision, snapAppends, histCopy, commit, func(_ []schema.Turn, restoredAt []int) {
 			s.shrinkTurnHistoryBaseline(snapLen, postLen, injected)
 			s.growTurnHistoryBaseline(restoredAt)
 		})
-		if published {
+		if ok {
 			return true, nil
 		}
 		if refused != nil {

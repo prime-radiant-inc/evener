@@ -27,7 +27,7 @@ const requestBuildBenchTurns = 1024
 // benchmark's turns, and returns that history as one request expands it.
 func newRequestBuildBenchSession(tb testing.TB) (*Session, []llm.Message) {
 	tb.Helper()
-	s := newRequestHistoryPreparationSession(tb, requestBuildBenchTurns)
+	s := newRequestHistoryPreparationSession(tb, requestBuildBenchTurns, requestHistoryNoFoldLane)
 	s.mu.Lock()
 	turns := append([]schema.Turn{}, s.history...)
 	s.mu.Unlock()

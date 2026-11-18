@@ -1089,17 +1089,18 @@ func TestFoldPublication_NamerCompletingAfterNewerFoldFlushDoesNotOverride(t *te
 	}
 }
 
-// TestPrepareModelRequest_PublishedHistoryNotAliasedToLiveHistory pins the
-// winning-fold path's defensive copy: publishFoldTransaction must not hand
-// back the SAME slice publishFoldedHistory assigned to s.history, because
-// expandHistory then iterates that backing array with no lock — while
+// TestPrepareModelRequest_PublishedHistoryNotAliasedToLiveHistory pins that a
+// request never expands the winning fold's live history array unlocked:
+// expandHistory iterates a message source with no lock, while
 // delegate-attention delivery goroutines mutate s.history IN PLACE under
 // s.mu (retainDelegateAttentionTurn's s.history[index] = turn;
-// removeUnverifiedDelegateAttentionTurn's element shift). A torn multi-word
-// schema.Turn read corrupts model input. The delegate path copies under
-// s.mu; the winning path must too. The race detector is this test's
-// assertion: it fails under -race on an aliased slice and runs clean once
-// the published slice is defensively copied.
+// removeUnverifiedDelegateAttentionTurn's element shift), and a torn
+// multi-word schema.Turn read corrupts model input. That array used to reach
+// the request through publishFoldTransaction's return, which the transaction
+// defensively copied (#6448 removed the copy once the request stopped
+// consuming that return and took its own locked snapshot instead). The race
+// detector is this test's assertion: it fails under -race if the request
+// expands a slice delegate-attention delivery still writes.
 func TestPrepareModelRequest_PublishedHistoryNotAliasedToLiveHistory(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
