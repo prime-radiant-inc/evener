@@ -115,11 +115,15 @@ const CLASS = {
 // The nearest ancestor that scrolls the trigger itself, if any: a rail list, a
 // pane's scroller. That box is where content can be inserted above the trigger
 // and slide it down without changing any box's size.
+function isScrollContainer(element: Element, ownerWindow: Window): boolean {
+  const overflowY = ownerWindow.getComputedStyle(element).overflowY;
+  return overflowY === "auto" || overflowY === "scroll";
+}
+
 function scrollContainerOf(element: HTMLElement, ownerWindow: Window): HTMLElement | null {
   const view = ownerWindow;
   for (let ancestor = element.parentElement; ancestor !== null; ancestor = ancestor.parentElement) {
-    const overflowY = view.getComputedStyle(ancestor).overflowY;
-    if (overflowY === "auto" || overflowY === "scroll") return ancestor;
+    if (isScrollContainer(ancestor, view)) return ancestor;
   }
   return null;
 }
@@ -316,8 +320,22 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // written before the measurement below so offsetHeight reports the capped
     // box in a browser. Not a dismissal: a shorter popup scrolls, and the menu
     // stays open.
+    //
+    // The width needs the same treatment, and additionally has to let the
+    // popup's own 180px min-width yield: zoomed in far enough, the visible
+    // width is narrower than that floor, and an uncapped popup would be pinned
+    // to the visible left edge with its labels running off the right - at every
+    // pan position, since the pin follows the edge. A narrower popup WRAPS, so
+    // the text stays readable instead of being clipped. max-width cannot beat
+    // min-width in CSS, so both are written.
     const maxBlockSize = `${Math.max(0, visible.height - 2 * EDGE_MARGIN)}px`;
     if (popupEl.style.maxBlockSize !== maxBlockSize) popupEl.style.maxBlockSize = maxBlockSize;
+    const maxInlineSize = `${Math.max(0, visible.width - 2 * EDGE_MARGIN)}px`;
+    if (popupEl.style.maxInlineSize !== maxInlineSize) popupEl.style.maxInlineSize = maxInlineSize;
+    // Only when the cap is what is narrowing it: a popup that fits keeps the
+    // stylesheet's floor untouched.
+    const minInlineSize = visible.width - 2 * EDGE_MARGIN < 180 ? "0" : "";
+    if (popupEl.style.minWidth !== minInlineSize) popupEl.style.minWidth = minInlineSize;
     const placed = computeMenuPosition(
       localTriggerRect,
       { width: popupEl.offsetWidth, height: popupEl.offsetHeight },
@@ -697,14 +715,37 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // The scope is the trigger's scroll container when it has one - the only
     // box whose own content can slide the trigger without resizing anything -
     // and otherwise the trigger's top-level wrapper, which is everything in
-    // normal flow that could push it. Not the whole document: a document-wide
-    // subtree watch on a streaming transcript would re-measure on every token.
+    // normal flow that could push it.
+    //
+    // A subtree watch reaches siblings too: in the shell that wrapper holds the
+    // transcript beside the composer, and streaming replaces transcript DOM
+    // continuously - a record per token, each scheduling a synchronous geometry
+    // read. Those records cannot move this trigger, because a scroller's
+    // content is laid out on its own and does not displace anything outside it.
+    // So a record is ignored when it sits inside a scroller the trigger is NOT
+    // in. That covers a trigger with no scroller of its own (the composer
+    // button) as well as one inside the rail: in both, the transcript is
+    // somebody else's scroller.
+    const ancestorsOfTrigger = new Set<Element>();
+    for (let node: HTMLElement | null = triggerEl; node !== null; node = node.parentElement) {
+      ancestorsOfTrigger.add(node);
+    }
     const Mutations = ownerWindow.MutationObserver;
+    const movedTheTrigger = (records: MutationRecord[]): boolean =>
+      records.some((record) => {
+        // From the target ITSELF: an insertion into a scroller has that
+        // scroller as the record's target, and starting at its parent would
+        // walk right past the scroller that decides the answer.
+        for (let node: Element | null = record.target as Element; node !== null; node = node.parentElement) {
+          if (!ancestorsOfTrigger.has(node) && isScrollContainer(node, ownerWindow)) return false;
+        }
+        return true;
+      });
     const mutations: MutationObserver | null =
       typeof Mutations === "undefined" || triggerEl === null
         ? null
-        : new Mutations(() => {
-            placeAfterLayout();
+        : new Mutations((records) => {
+            if (movedTheTrigger(records)) placeAfterLayout();
           });
     if (mutations !== null && triggerEl !== null) {
       mutations.observe(scrollContainerOf(triggerEl, ownerWindow) ?? topLevelWrapperOf(triggerEl, ownerDocument), {

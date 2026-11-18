@@ -818,7 +818,8 @@ test("a desktop resize that lands before the layout settles still ends on the tr
 
     // The window grows while the trigger is still where the keyboard left it:
     // the resize handler measures that stale rect and places the popup below
-    // it, which is the detachment the reviewer described.
+    // it - detached from the trigger by exactly the distance the trigger then
+    // moves.
     Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
     fireEvent(window, new Event("resize"));
     expect(screen.getByRole("menu").style.top).toBe("332px"); // 300 + 28 + 4
@@ -849,11 +850,11 @@ test("a desktop resize that lands before the layout settles still ends on the tr
   }
 });
 
-// The reviewer's sharpest point about the trigger-only observer: a fixed-size
-// footer trigger that only MOVES reports no box change, so an observer on the
-// trigger alone stays silent. The popup must still land on the trigger's
-// settled rect, which is why the resize path also re-measures after layout
-// rather than relying on an observation.
+// A trigger can move without its box changing, and a fixed-size footer button
+// that only MOVES reports no box change at all, so an observer on the trigger
+// alone stays silent while it travels. The popup must still land on the
+// trigger's settled rect, which is why the resize path re-measures after layout
+// as well as observing boxes.
 test("a trigger that only moves, with its box unchanged, is still followed after layout", async () => {
   const user = userEvent.setup();
   const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
@@ -1161,6 +1162,66 @@ test("a popup taller than the visible viewport is capped to it so its last actio
   }
 });
 
+// The same zoom can make the visible viewport NARROWER than the popup's own
+// 180px minimum width. Height alone is capped, so the oversized popup gets
+// pinned to the visible left edge with its labels running off the right, and
+// its right edge moves with every pan - there is no position at which the text
+// becomes readable. The width has to give instead: cap it to the visible width,
+// which lets the min-width yield and the labels wrap.
+test("a popup wider than the visible viewport is capped to it so its labels wrap", async () => {
+  const user = userEvent.setup();
+  const originalInnerWidth = Object.getOwnPropertyDescriptor(window, "innerWidth");
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 800 });
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  const fakeViewport = new EventTarget() as EventTarget & {
+    width: number;
+    height: number;
+    offsetLeft: number;
+    offsetTop: number;
+  };
+  // Zoomed in far enough that only 160px of the layout viewport is visible -
+  // narrower than the popup's own 180px minimum.
+  fakeViewport.width = 160;
+  fakeViewport.height = 800;
+  fakeViewport.offsetLeft = 0;
+  fakeViewport.offsetTop = 0;
+  vi.stubGlobal("visualViewport", fakeViewport);
+  const box = (left: number, top: number, width: number, height: number) =>
+    ({
+      left,
+      top,
+      right: left + width,
+      bottom: top + height,
+      width,
+      height,
+      x: left,
+      y: top,
+      toJSON: () => ({}),
+    }) as DOMRect;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(20, 300, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 400, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 400, 120);
+  try {
+    render(<Menu trigger="Actions" items={items()} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+
+    const popup = screen.getByRole("menu");
+    // 160 - 2*8: inside the visible area with the same edge margins the height
+    // cap keeps, and narrow enough that min-width no longer governs.
+    expect(popup.style.maxBlockSize).toBe("784px");
+    expect(popup.style.maxInlineSize).toBe("144px");
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerWidth) Object.defineProperty(window, "innerWidth", originalInnerWidth);
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
 // The popup grows out of the corner nearest its trigger, so the motion reads as
 // coming from the control that opened it. That corner is decided by comparing
 // the placed position with the trigger's rect - and with a panned visual
@@ -1215,6 +1276,112 @@ test("a panned visual viewport still grows the popup out of its trigger's edge",
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// Watching for a mutation is how a translated trigger reports itself, but the
+// box that has to be watched also holds the transcript. Streaming replaces
+// transcript DOM continuously, so a record per token would schedule a
+// synchronous geometry read per token - for a popup the stream cannot possibly
+// have moved. A scroller's content is laid out on its own: it cannot displace a
+// trigger outside it, so those records say nothing about placement.
+const TRANSCRIPT_TOKENS = ["token 0", "token 1", "token 2"];
+
+function ComposerBesideTranscript({ tokens }: { tokens: string[] }) {
+  return (
+    <div>
+      <div data-testid="transcript" style={{ overflowY: "auto", height: 400 }}>
+        {tokens.map((token) => (
+          <p key={token}>{token}</p>
+        ))}
+      </div>
+      <Menu trigger="Actions" items={items()} />
+    </div>
+  );
+}
+
+test("a transcript streaming beside the composer does not re-place the open menu", async () => {
+  const user = userEvent.setup();
+  const triggerTop = 300;
+  const box = (left: number, top: number, width: number, height: number) =>
+    ({
+      left,
+      top,
+      right: left + width,
+      bottom: top + height,
+      width,
+      height,
+      x: left,
+      y: top,
+      toJSON: () => ({}),
+    }) as DOMRect;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  // The widget's own mutation callback, captured so the test can hand it the
+  // record a streaming token produces. Counting geometry reads would not work:
+  // React's own rerender reads rects for reasons that have nothing to do with
+  // this widget, so the count moves whether or not the filter is there.
+  const captured: { callback: MutationCallback | null } = { callback: null };
+  class CapturingMutationObserver {
+    constructor(callback: MutationCallback) {
+      captured.callback = callback;
+    }
+    observe() {}
+    disconnect() {}
+    takeRecords(): MutationRecord[] {
+      return [];
+    }
+  }
+  vi.stubGlobal("MutationObserver", CapturingMutationObserver);
+  // What the filter changes is whether a frame is SCHEDULED - re-measuring an
+  // unmoved trigger lands on the same position either way, so the position
+  // cannot tell the two apart.
+  const scheduled: FrameRequestCallback[] = [];
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation((callback) => {
+    scheduled.push(callback);
+    return scheduled.length;
+  });
+  try {
+    const { rerender } = render(<ComposerBesideTranscript tokens={TRANSCRIPT_TOKENS.slice(0, 1)} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu").style.top).toBe("332px");
+    const callback = captured.callback;
+    if (callback === null) throw new Error("the menu registered no mutation observer");
+    scheduled.length = 0;
+
+    // A token arrives inside the transcript's own scroller, beside the
+    // composer. Nothing outside that scroller is laid out by it, so no frame.
+    const transcript = screen.getByTestId("transcript");
+    const record = (target: Element) => {
+      const next = { addedNodes: [], removedNodes: [] } as unknown as MutationRecord;
+      Object.defineProperty(next, "target", { value: target });
+      return next;
+    };
+    act(() => {
+      callback([record(transcript)], {} as MutationObserver);
+    });
+    expect(scheduled.length).toBe(0);
+
+    // The same callback DOES schedule from a record that could move the
+    // trigger: the composer's own wrapper is not inside any other scroller.
+    const wrapper = screen.getByRole("button", { name: "Actions" }).parentElement;
+    expect(wrapper).not.toBeNull();
+    act(() => {
+      callback([record(wrapper as Element)], {} as MutationObserver);
+    });
+    expect(scheduled.length).toBe(1);
+
+    // And streaming never leaves the popup anywhere but its placed position.
+    rerender(<ComposerBesideTranscript tokens={TRANSCRIPT_TOKENS.slice(0, 2)} />);
+    await act(async () => {});
+    expect(screen.getByRole("menu").style.top).toBe("332px");
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
   }
 });
 
