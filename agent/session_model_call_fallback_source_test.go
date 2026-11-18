@@ -2,13 +2,16 @@ package agent
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // TestRequestMessagesLaysOutTheSystemPromptAndHistory pins the layout a request
@@ -69,6 +72,127 @@ func TestRequestMessagesLaysOutTheSystemPromptAndHistory(t *testing.T) {
 			if eq, _, _ := jsonEqual(t, rest, history); !eq {
 				t.Errorf("%s/%s: the history does not follow the leading message unchanged", tc.name, name)
 			}
+		}
+	}
+}
+
+func TestFallbackKeepsOpaqueAndWebSearchScopeAcrossProtocols(t *testing.T) {
+	const signed = `[{"type":"reasoning.text","signature":"sig-c13"}]`
+	const encrypted = `[{"type":"reasoning.encrypted","id":"id-b27","data":"enc-b27"}]`
+	for _, tc := range []struct {
+		name string
+		raw  bool
+	}{{"replay-off", false}, {"raw-replay", true}} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			primary := replayGateway("primary", registry.ProtocolOpenAIResponses)
+			third := replayGateway("third", registry.ProtocolOpenAIChat)
+			row := replayGateway("fallback", registry.ProtocolOpenAIChat).Resolved()
+			row.Caps.ReplayReasoningText = &tc.raw
+			fallback := provider.FromResolved(row, nil)
+			unavailable := func(req llm.Request) error { return llm.ErrorFromHTTPStatus(req.Provider, 404, "", nil, nil) }
+			primaryAdapter := &agenttest.ScriptedAdapter{Provider: primary.ID(), FaultResponder: unavailable}
+			sentTool := false
+			thirdAdapter := &agenttest.ModelTrackingAdapter{
+				Provider: third.ID(),
+				Respond: func(req llm.Request) (llm.Response, error) {
+					if sentTool {
+						return llm.Response{}, unavailable(req)
+					}
+					sentTool = true
+					resp := agenttest.ToolCallResponse(llm.ToolCallData{ID: "call-c13", Name: "missing_tool", Arguments: []byte(`{}`)})
+					resp.Message.Content = append([]llm.ContentPart{
+						{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "c13", EncryptedContent: signed}},
+						{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{Query: "q-c13"}},
+					}, resp.Message.Content...)
+					return resp, nil
+				},
+			}
+			answer := withReasoningMarker(agenttest.FinalResponse("done"), row.Protocol, "b27")
+			// Chat decodes the scalar text and encrypted details into one part.
+			answer.Message.Content[0].Thinking.EncryptedContent = encrypted
+			fallbackAdapter := &fakeAdapter{name: row.Instance, steps: []func(llm.Request) llm.Response{
+				fixedStep(answer), fixedStep(agenttest.FinalResponse("done")),
+			}}
+			profiles := map[string]*provider.Profile{"third/reasoner": third, "fallback/reasoner": fallback}
+			s := newSession(t, withProfile(primary), withAdapter(primaryAdapter), withAdapter(thirdAdapter), withAdapter(fallbackAdapter), withConfig(SessionConfig{
+				ModelFallbacks: []string{"third/reasoner", "fallback/reasoner"},
+				ResolveProfile: func(ref string) (*provider.Profile, error) { return profiles[ref], nil },
+			}))
+			prior := llm.Response{Provider: primary.ID(), Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+				{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{Query: "q-a08", Raw: []byte(`{"type":"web_search_call","id":"ws-a08"}`)}},
+			}}}
+			if err := s.appendAssistantTurn(prior, ModelAttemptMetadata{Protocol: primary.Protocol(), RequestModel: primary.Model()}); err != nil {
+				t.Fatal(err)
+			}
+			ctx := tripwireCtx(t)
+			for _, input := range []string{"turn-one", "turn-two"} {
+				if _, err := s.ProcessInput(ctx, input, nil); err != nil {
+					t.Fatal(err)
+				}
+			}
+			requests := fallbackAdapter.Requests()
+			if len(requests) != 2 {
+				t.Fatalf("fallback requests = %d, want the tool continuation and a follow-up", len(requests))
+			}
+			type part struct{ text, details, query string }
+			want := [][]part{
+				{{query: "q-a08"}, {text: "c13", details: signed}, {query: "q-c13"}},
+				{{query: "q-a08"}},
+			}
+			if tc.raw {
+				want[1] = append(want[1], part{text: "b27"})
+			}
+			for i, req := range requests {
+				var got []part
+				for _, m := range req.Messages {
+					for _, p := range m.Content {
+						switch p.Kind {
+						case llm.ContentThinking:
+							got = append(got, part{text: p.Thinking.Text, details: p.Thinking.EncryptedContent})
+						case llm.ContentWebSearch:
+							got = append(got, part{query: p.WebSearch.Query})
+						}
+					}
+				}
+				if !slices.Equal(got, want[i]) {
+					t.Errorf("fallback request %d reasoning and web search = %+v, want %+v", i, got, want[i])
+				}
+			}
+		})
+	}
+}
+
+func TestFallbacksWithoutRawReplayShareTheRoundsHistory(t *testing.T) {
+	t.Parallel()
+	producerProtocol := registry.ProtocolOpenAIResponses
+	primary := NewOpenAIProfile("primary")
+	adapter := &agenttest.ModelTrackingAdapter{Provider: primary.ID(), Respond: func(req llm.Request) (llm.Response, error) {
+		switch req.Model {
+		case "fallback-b":
+			// The registry now routes the unstamped turn's issuer over chat.
+			producerProtocol = registry.ProtocolOpenAIChat
+		case "fallback-c":
+			return agenttest.FinalResponse("done"), nil
+		}
+		return llm.Response{}, llm.ErrorFromHTTPStatus(req.Provider, 404, "", nil, nil)
+	}}
+	s := newSession(t, withProfile(primary), withAdapter(adapter), withConfig(SessionConfig{ModelFallbacks: []string{"fallback-b", "fallback-c"}}))
+	s.setRoundFallbackSource(roundFallbackSource{
+		turns: []schema.Turn{assistantWebSearchTurn("archive", "reasoner")},
+		scope: replayScope{Protocol: primary.Protocol(), InFlightFrom: 1, protocolOf: func(string) string { return producerProtocol }},
+	})
+	req := llm.Request{Provider: primary.ID(), Model: primary.Model(), Messages: []llm.Message{llm.User("r08")}}
+	if _, _, _, _, err := s.callModelWithFallback(tripwireCtx(t), primary, req, nil, "", 0); err != nil {
+		t.Fatal(err)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 3 {
+		t.Fatalf("got %d model calls, want the primary and both fallbacks", len(requests))
+	}
+	for _, req := range requests[1:] {
+		if !hasContentKind(req.Messages, llm.ContentWebSearch) {
+			t.Errorf("%s lost the web search in this round's common history", req.Model)
 		}
 	}
 }
