@@ -10435,3 +10435,163 @@ it("a closing pane releases only its own hold", async () => {
     await threadsStore.getState().releaseThreadAndWait("local:a");
   }
 }, 20_000);
+
+// Finding 2 (review 52989): the readiness bound is a property of the one-shot
+// resend, not of the lifecycle. A mounted pane shares the same wait, so a bound
+// that failed it would release the pane's hold and leave it on Loading until
+// someone reopened it - a load the reconnect is about to perform.
+//
+// The decision point, not the interleaving: with the bound expired and the
+// client still down, the routing claim is the thing that must fail, and the
+// pane's demand is the thing that must survive with its hold intact.
+it("an expired readiness bound spends the press but not a mounted pane", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const outboxStorage = new MutationOutboxIndexedDB({ indexedDB: factory });
+  setMutationStorageForTests(outboxStorage);
+  const client = connect();
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  await settleEntryTranscriptForTests("local:a");
+  const route = entryTranscriptRoute("local:a");
+  if (!route) throw new Error("expected an entry route");
+  route.cachedUnverified = true;
+  const outbox = await outboxStorage.enqueueIntent({
+    targetRef: "local:a",
+    threadId: "thread-a",
+    method: "turn/start",
+    payload: { ref: "local:a", input: [{ type: "text", text: "retry me" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "retry me" }] },
+  });
+  const row = await outboxStorage.transferToRecovery(outbox.clientMutationId, "rejected");
+  if (!row) throw new Error("expected the recovery row to be durable");
+  client.on("thread/read", () => {
+    throw new Error("transport died");
+  });
+  let fireRetry: (() => void) | undefined;
+  const restoreScheduler = installHydrationRetrySchedulerForTests((_attempt, retry) => {
+    fireRetry = retry;
+    return () => undefined;
+  });
+  const restoreBound = setReadinessBoundForTests(20);
+  try {
+    const resent = withRecoveryDestinationClaim("local:a", () =>
+      resendRecoveryMutation(row.clientMutationId, "local:a", "send", "retry me", []),
+    );
+    await vi.waitFor(() => expect(fireRetry, "the failed read must schedule a retry").toBeDefined());
+    client.emitStateChange("reconnecting");
+    fireRetry?.();
+    const outcome = await resent.then(
+      () => ({ ok: true as const }),
+      () => ({ ok: false as const }),
+    );
+    // The press is one-shot: the bound ends it so the composer is usable and
+    // the draft survives.
+    expect(outcome.ok, "a hub that never returned must not hold the composer open").toBe(false);
+    expect(foregroundHolds("local:a"), "the bounded press must release exactly its own hold").toBe(0);
+    expect(await outboxStorage.listOutbox("local:a"), "an unreachable hub writes no row").toEqual([]);
+    expect(await outboxStorage.getRecovery(row.clientMutationId), "the draft must survive").toBeDefined();
+
+    // The pane's demand is not one-shot. An UNCACHED pane's first read on the
+    // client that is already down is the case: it has no shell to fall back to,
+    // so it parks on the bound rather than returning, and the same expired bound
+    // that spent the press above must leave it waiting with its hold.
+    const paneRead = threadsStore.getState().ensureThread("local:fresh");
+    const settledEarly = await Promise.race([
+      paneRead.then(() => "settled" as const),
+      new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 120)),
+    ]);
+    expect(settledEarly, "a pane whose connection is down must keep waiting, not reject").toBe("pending");
+    expect(foregroundHolds("local:fresh"), "a mounted pane's demand must outlive the bound that spent the press").toBe(
+      1,
+    );
+
+    // The connection returns: the pane's parked demand loads from the read it
+    // starts, which this time verifies the destination.
+    client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+    client.emitStateChange("ready");
+    client.emitReady();
+    await expect(paneRead, "the pane's demand must settle once the reconnect loaded it").resolves.toBeUndefined();
+    expect(threadsStore.getState().threads.has("local:fresh"), "the pane must load when the connection returns").toBe(
+      true,
+    );
+  } finally {
+    restoreBound();
+    restoreScheduler();
+    background.release();
+    await threadsStore
+      .getState()
+      .releaseThreadAndWait("local:fresh")
+      .catch(() => undefined);
+  }
+}, 25_000);
+
+// Finding 5 (review 52989): the post-await fence asked the REF's foreground
+// count, and a routing lease keeps that count positive after the pane that took
+// it has left. A pane that closes inside its own local restore then passes the
+// fence and invalidates the shared baseline underneath the replacement pane,
+// forcing a source read that discards a usable local restore.
+//
+// Decision point: the departing acquisition's own hold is the question, asked
+// at the same await that takes the count's answer. Both panes are inside the
+// open when the departure happens, so only the hold tells them apart.
+it("a pane that departed inside its restore leaves the replacement's baseline intact", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  connect();
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  const baselineEstablished = productionEntryTranscriptForTests("local:a").baseline;
+
+  // A routing lease keeps the model and the ref's counts alive with no pane.
+  const lease = await acquireUnreadThreadClaim("local:a");
+  await threadsStore.getState().releaseThreadAndWait("local:a");
+  expect(threadsStore.getState().threads.has("local:a"), "the routing lease must keep the model").toBe(true);
+  expect(foregroundHolds("local:a"), "only the routing lease must remain").toBe(1);
+
+  // Park the second local open so both claims are suspended at the same await:
+  // the one that departs and the one that stays.
+  const entered = deferred<void>();
+  const released = deferred<void>();
+  // An empty window is the miss that keeps this pane inside the open: the
+  // retained rows cannot establish the captured view, so openEntryTranscript
+  // answers false and the pane reaches the post-open fence.
+  vi.spyOn(storage, "getLatestWindow").mockImplementation(async () => {
+    entered.resolve();
+    await released.promise;
+    return { rows: [], coverage: [], complete: true, stale: false };
+  });
+
+  let departedHold: ForegroundHold | undefined;
+  let replacementHold: ForegroundHold | undefined;
+  const departed = threadsStore.getState().ensureThread("local:a", { onHold: (taken) => (departedHold = taken) });
+  const replacement = threadsStore.getState().ensureThread("local:a", { onHold: (taken) => (replacementHold = taken) });
+  try {
+    await entered.promise;
+    if (!departedHold || !replacementHold) throw new Error("expected both acquisitions to hand out a hold");
+    // The departing pane leaves while still inside the restore. Its own hold is
+    // gone; the ref's count is not - the lease and the replacement hold it, and
+    // the ensure generation is unchanged.
+    threadsStore.getState().releaseThreadHold(departedHold);
+    expect(foregroundHolds("local:a"), "the ref must still look held after the departure").toBe(2);
+    released.resolve();
+    await expect(departed, "a departed pane's restore must still settle").resolves.toBeUndefined();
+    await expect(replacement, "the replacement pane must load").resolves.toBeUndefined();
+    // The finding: the departed acquisition must not have retired the baseline
+    // the replacement's restore is working from.
+    expect(
+      productionEntryTranscriptForTests("local:a").baseline,
+      "a departed pane must not invalidate the replacement's baseline",
+    ).toBe(baselineEstablished);
+    expect(foregroundHolds("local:a"), "the replacement's hold must survive its predecessor's departure").toBe(2);
+  } finally {
+    released.resolve();
+    vi.restoreAllMocks();
+  }
+  // The replacement's release is the only one left that can drop it: the
+  // departed pane's rollback must not have spent it.
+  threadsStore.getState().releaseThreadHold(replacementHold);
+  expect(foregroundHolds("local:a"), "the replacement's release leaves only the routing lease").toBe(1);
+  lease.release();
+}, 20_000);

@@ -770,8 +770,10 @@ test("Send follows the returned identity through transcript and new sends", asyn
   expect(window.location.pathname).toBe("/s/local%3Acurrent-b");
   expect(screen.queryByText("Saved transcript before clear")).toBeNull();
   expect(screen.queryByRole("button", { name: "Resume session" })).toBeNull();
-  expect(hydration).toHaveBeenCalledWith(stableRef);
-  expect(hydration).toHaveBeenCalledWith(currentRef);
+  // Acquired for both refs; the second argument carries the mount's onHold
+  // handoff, so the target ref is the contract rather than the arity.
+  expect(hydration.mock.calls.map(([target]) => target)).toContain(stableRef);
+  expect(hydration.mock.calls.map(([target]) => target)).toContain(currentRef);
   expect(refresh).toHaveBeenCalledWith(currentRef, expect.any(Function));
   await act(async () => {
     await Promise.all(hydration.mock.results.map((result) => result.value));

@@ -171,6 +171,7 @@ import {
   canonicalThreadOwnerActive,
   clearFinalReleaseOwner,
   type ForegroundHold,
+  foregroundHoldStanding,
   foregroundHolds,
   hasFinalReleaseOwner,
   heldCountsAtStore,
@@ -1456,8 +1457,19 @@ const clearReplacementWaits = new KeyedWaiters<string, () => void>();
 // composer stayed busy and the press never wrote. The terminal answer travels
 // with the read so the handoff can reject on it while every other failure stays
 // with the refresh's own paced retry.
-type ClearReplacementRead = Promise<{ model: ThreadModel | null; terminalError?: unknown }>;
+// The outcome is a value, not a one-shot: every acquisition whose read the Clear
+// retired is owed this answer, and a late one arriving after the first consumer
+// took it must not read the absence as "Clear owed nothing" and issue yet
+// another read for a history the hub has already refused. The verdict describes
+// the attempt that produced it, so a later attempt for the same ref replaces it
+// (see terminalHydrationErrors for the same lifetime rule).
+type ClearReplacementOutcome = { model: ThreadModel | null; terminalError?: unknown };
+type ClearReplacementRead = Promise<ClearReplacementOutcome>;
 const clearReplacementReads = new Map<string, ClearReplacementRead>();
+// The settled outcome of the current replacement attempt, kept beside the
+// promise so a claim that joins after it resolved still receives the terminal
+// verdict instead of re-reading. Cleared when a newer attempt registers.
+const clearReplacementOutcomes = new Map<string, ClearReplacementOutcome>();
 // The last terminal history verdict a tracked read ended on, per ref, waiting to
 // be claimed by whoever is owed that answer. A refresh reports failures through
 // the lifecycle rather than by rejecting, so this is the one place the terminal
@@ -1515,6 +1527,15 @@ async function awaitClearReplacement(
 > {
   const issued = clearReplacementReads.get(ref);
   if (issued) return { kind: "read", read: issued };
+  // The replacement already ran. Its terminal verdict is still this ref's
+  // answer, and an acquisition whose read the Clear retired can reach here
+  // after the first consumer took it; handing that one `none` is what made it
+  // issue a fresh read for a history the hub had already refused. Only a
+  // terminal outcome is kept - see clearReplacementOutcomes for why a settled
+  // miss is not: re-joining one would loop, because a miss resolves to the same
+  // absence the caller is trying to escape.
+  const spent = clearReplacementOutcomes.get(ref);
+  if (spent?.terminalError !== undefined) return { kind: "read", read: Promise.resolve(spent) };
   if (clearHydrationDemands.get("thread")?.has(ref) !== true) return { kind: "none" };
   const parked = parkForClearReplacement(ref);
   try {
@@ -4693,7 +4714,13 @@ async function readThreadHydration(
   // replacement throw it at a press the successful read has since answered.
   // Tracked only: a lean watched read asks no history, so its success says
   // nothing about the index a tracked verdict was about.
-  if (read.kind !== "watched") terminalHydrationErrors.delete(ref);
+  if (read.kind !== "watched") {
+    terminalHydrationErrors.delete(ref);
+    // The retained Clear verdict describes the same attempt's read, so a
+    // successful one retires it for the same reason: it must not outlive the
+    // answer the hub has since given.
+    clearReplacementOutcomes.delete(ref);
+  }
   // The read succeeded: any repairing status from this attempt's earlier
   // read is over — a superseded attempt leaves the newer one's say standing.
   // Only a history-requesting read observed the index: a lean watch the hub
@@ -7863,18 +7890,37 @@ async function refreshTrackedThread(
   const intent = options.intent ?? "foreground";
   if (intent !== "background") return refreshTrackedThreadNow(client, epoch, ref, targetedResync, options);
   let attempt: number | undefined;
+  let issued = false;
   const residency = transcriptResidency();
   residency.connection(getReadyEpoch(), getWiredClient()?.state === "ready");
   await residency.scheduleHydration(
     ref,
     intent,
     async (signal) => {
+      issued = true;
       attempt = await refreshTrackedThreadNow(client, epoch, ref, targetedResync, options, signal);
     },
     // Recovery needs a fresh read, even when its pending publication claim was
     // retired before the scheduler's issued predecessor has settled.
     targetedResync ? "replace" : "join",
   );
+  // A queued hydration a disconnect retires never runs its callback, so the
+  // read the wait was parked on stops existing without an outcome - and this is
+  // the one caller that can see that happen, because it is the read. The wait
+  // already passed its readiness check when it armed this retry, so nothing
+  // else will reach it: no read, no retry, and no ready event for a lifecycle
+  // parked here. Arm the same bound the not-ready end arms, rather than
+  // settling: a reconnect that does arrive may still carry the original press,
+  // and the bound is only what ends a wait the connection never answers.
+  //
+  // The fence is the state, not the missing callback: a join hands back the
+  // predecessor's promise without running this one either, and that read does
+  // exist and will report its own end. So arm only when nothing is registered
+  // for the ref and the connection is what took the read away.
+  if (!issued && !inflightHydrates.has(ref) && getWiredClient()?.state !== "ready") {
+    const parked = ownedThreadHydrations.get(ref);
+    if (parked?.generation === hydrationOwnerGeneration("thread", ref)) armReadinessBound("thread", ref, parked);
+  }
   return attempt;
 }
 
@@ -8707,6 +8753,13 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // standing count mine" - by construction it can only be this handle's.
     const hold = mintForegroundHold(ref, routingOnly);
     attachForegroundHold(hold);
+    // The one question every post-await exit below asks. The ref's count cannot
+    // answer it: a routing lease keeps the count positive after the pane that
+    // took it has left, so a retired pane would pass a count check and go on
+    // doing pane work - recovering a baseline, certifying a transcript - over a
+    // replacement pane's restore. The handle names one hold, so standing means
+    // this acquisition is still the live one, whatever else holds the ref.
+    const claimStanding = (): boolean => ensureGenerations.get(ref) === generation && foregroundHoldStanding(hold);
     // Handed out here, not when the hydration settles: a caller that unmounts
     // or gives up before then still owns this handle, and releasing a ref later
     // would name whichever hold is newest by that point instead of this one.
@@ -8756,7 +8809,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       // the first pane to open after an eviction must still spend its open.
       if (paneBodyOwners > 0) return;
       if (await openEntryTranscript(ref)) return;
-      if (ensureGenerations.get(ref) !== generation || foregroundHolds(ref) <= 0) return;
+      if (!claimStanding()) return;
       // Missing or unwritten backing rows cannot establish the captured view.
       // Retire the held source proof so recovery asks for a complete baseline.
       entryTranscriptRoute(ref)?.repository?.beginFreshBaseline();
@@ -8805,7 +8858,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       if (routedByClaim) inflightHydrates.markPaneBacked(ref);
       await openCachedEntryTranscript(ref, generation);
       if (threadsStore.getState().deletedRefs.has(ref)) return endDeletedDestination();
-      if (foregroundHolds(ref) === 0 || ensureGenerations.get(ref) !== generation) return;
+      if (!claimStanding()) return;
     }
     let cachedBase: ThreadModel | undefined = threadsStore.getState().threads.get(ref);
 
@@ -8915,7 +8968,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
               // a press fails only if that verification never arrives.
               if (handoff.kind === "deferred") {
                 client = await requireReadyClient();
-                if (ensureGenerations.get(ref) !== generation || foregroundHolds(ref) <= 0) return;
+                if (!claimStanding()) return;
                 inflight = inflightHydrates.get(ref) ?? startHydration(client, getReadyEpoch());
                 continue;
               }
@@ -8965,7 +9018,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             if (fulfilment.kind === "deleted") return endDeletedDestination();
           }
           const replacement = inflightHydrates.get(ref);
-          const lifecycleActive = ensureGenerations.get(ref) === generation && foregroundHolds(ref) > 0;
+          const lifecycleActive = claimStanding();
           if (lifecycleActive && replacement && replacement !== inflight) {
             inflight = replacement;
             continue;
@@ -9003,7 +9056,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             // hydration that outlived it. Same shape as the re-arm below and
             // as both of watchThread's.
             client = await requireReadyClient();
-            if (ensureGenerations.get(ref) !== generation || foregroundHolds(ref) <= 0) return;
+            if (!claimStanding()) return;
             inflight = inflightHydrates.get(ref) ?? startHydration(client, getReadyEpoch());
             continue;
           }
@@ -9032,7 +9085,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             // proceeds, instead of spending the user's Send.
             if (handoff.kind === "none") throw err;
             client = await requireReadyClient();
-            if (ensureGenerations.get(ref) !== generation || foregroundHolds(ref) <= 0) return;
+            if (!claimStanding()) return;
             inflight = inflightHydrates.get(ref) ?? startHydration(client, getReadyEpoch());
             continue;
           }
@@ -9052,13 +9105,44 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           // carries the retirement cause instead of leaving every retired
           // generation to look the same.
           if (settled.kind === "retired" && settled.cause === "deleted") return endDeletedDestination();
-          // The connection did not come back inside the bound. Re-arming is
-          // what the superseded cause does below, and it is exactly wrong here:
-          // it would park the same claim on the same dead connection for another
-          // bound, which is the unbounded hang this end exists to prevent. Fail
-          // the press so the composer is usable and the recovery draft survives.
+          // The connection did not come back inside the bound. Re-arming here
+          // is what the superseded cause does below, and it is exactly wrong for
+          // a one-shot claim: it would park the same press on the same dead
+          // connection for another bound, which is the unbounded hang this end
+          // exists to prevent. Fail the press so the composer is usable and the
+          // recovery draft survives.
+          //
+          // A pane's demand is not one-shot, so the bound must not spend it. Its
+          // mounted claim never reacquires, and failing it here would release
+          // the hold and leave the pane on Loading until someone reopened it -
+          // a load the reconnect is about to perform. So the bound ends the
+          // press, and only the press: a pane re-arms and waits out the outage.
           if (settled.kind === "retired" && settled.cause === "readinessTimeout") {
-            throw new Error("The connection did not return before the destination could be verified");
+            if (routingOnly) {
+              throw new Error("The connection did not return before the destination could be verified");
+            }
+            // The pane outlives the bound: take another one, and repeat for as
+            // long as this claim stands. Each iteration waits on a lifecycle the
+            // ready handler retires, so a reconnect costs no polling and the
+            // pane loads from the read that follows it. A connection that never
+            // returns leaves the pane on its Loading state, which is the honest
+            // display for a mounted pane with nothing to read from - not a press
+            // spent and not a hold stranded, since this claim still owns it.
+            let resumed = false;
+            while (claimStanding()) {
+              const parked = openOwnedHydration("thread", ref);
+              armReadinessBound("thread", ref, parked);
+              const end = await parked.firstHydration;
+              if (!claimStanding()) return;
+              if (end.kind === "retired" && end.cause === "readinessTimeout") continue;
+              resumed = true;
+              break;
+            }
+            if (!resumed) return;
+            client = await requireReadyClient();
+            if (!claimStanding()) return;
+            inflight = inflightHydrates.get(ref) ?? startHydration(client, getReadyEpoch());
+            continue;
           }
           // The wait can span a reconnect: the ready handler retires the old
           // retry and starts a fresh read, so this waiter wakes with the
@@ -9071,7 +9155,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             // re-awaiting it would land back here forever. Re-arm first, the
             // same way the client-changed branch above does.
             client = await requireReadyClient();
-            if (ensureGenerations.get(ref) !== generation || foregroundHolds(ref) <= 0) return;
+            if (!claimStanding()) return;
             inflight = inflightHydrates.get(ref) ?? startHydration(client, getReadyEpoch());
             continue;
           }
@@ -9098,7 +9182,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           // attempt on the current client.
         }
 
-        if (foregroundHolds(ref) <= 0) return;
+        if (!claimStanding()) return;
         if (threadsStore.getState().threads.has(ref)) {
           // A routing hold resolves only on verified routing state. The model
           // standing here after a failed or superseded read may be the shell
@@ -9128,7 +9212,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             inflight = adoptClearReplacement(handoff.read);
             continue;
           }
-          if (foregroundHolds(ref) <= 0) return;
+          if (!claimStanding()) return;
           const replacement = inflightHydrates.get(ref);
           if (replacement) {
             inflight = replacement;
@@ -9139,7 +9223,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           // hold the composer, so re-arm from the top against the current
           // generation instead of failing the press.
           client = await requireReadyClient();
-          if (ensureGenerations.get(ref) !== generation || foregroundHolds(ref) <= 0) return;
+          if (!claimStanding()) return;
           inflight = inflightHydrates.get(ref) ?? startHydration(client, getReadyEpoch());
           continue;
         }
@@ -9159,14 +9243,14 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           // The connection owes this demand its read. Re-arm from the top
           // against whatever generation is current when it returns.
           client = await requireReadyClient();
-          if (ensureGenerations.get(ref) !== generation || foregroundHolds(ref) <= 0) return;
+          if (!claimStanding()) return;
           inflight = inflightHydrates.get(ref) ?? startHydration(client, getReadyEpoch());
           continue;
         }
         if (threadsStore.getState().deletedRefs.has(ref)) return endDeletedDestination();
 
         client = await requireReadyClient();
-        if (foregroundHolds(ref) <= 0) return;
+        if (!claimStanding()) return;
         // Recheck after the possibly-long ready wait: a deletion fence can
         // land while this loop is waiting out a reconnect, and a ref known
         // deleted must not start another read on becoming ready.
@@ -10410,11 +10494,26 @@ function reconcileClearInput(): void {
         // replacement that ended that way resolved to null and looked like an
         // ordinary miss. `terminalHydrationErrors` is where that end is already
         // recorded for the ref, so the handoff asks it once the read is over.
-        const registered = issued.then(() => ({
-          model: null as ThreadModel | null,
-          terminalError: takeTerminalHydrationError(ref),
-        }));
+        //
+        // It is asked once per attempt, and the attempt is this registration:
+        // the outcome is recorded as well as the promise, because a claim whose
+        // read Clear retired can arrive after the first consumer resolved and
+        // must receive the same verdict rather than starting a fresh read. A
+        // later attempt for the ref overwrites both, so a stale verdict cannot
+        // fail a press the hub has since answered.
+        const registered = issued.then(() => {
+          const outcome: ClearReplacementOutcome = {
+            model: null,
+            terminalError: takeTerminalHydrationError(ref),
+          };
+          if (clearReplacementReads.get(ref) === registered) clearReplacementOutcomes.set(ref, outcome);
+          return outcome;
+        });
         clearReplacementReads.set(ref, registered);
+        clearReplacementOutcomes.delete(ref);
+        // The promise stops being joinable when it settles — a miss must fall
+        // through to the handoff's deferred/none answers exactly as before. What
+        // outlives it is the terminal verdict, in clearReplacementOutcomes.
         void registered.finally(() => {
           if (clearReplacementReads.get(ref) === registered) clearReplacementReads.delete(ref);
         });
@@ -10765,6 +10864,7 @@ export function resetThreadsStoreForTests(): void {
   };
   retireAllOwnedHydrations();
   clearReplacementReads.clear();
+  clearReplacementOutcomes.clear();
   terminalHydrationErrors.clear();
   inflightDurableEnqueues.clear();
   undeliveredMutationIds.clear();

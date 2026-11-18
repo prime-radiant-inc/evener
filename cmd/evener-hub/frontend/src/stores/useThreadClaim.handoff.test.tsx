@@ -103,7 +103,10 @@ async function mountedConversation() {
     await ensure.mock.results[0]?.value;
     await settleEntryTranscriptForTests(ref);
   });
-  expect(ensure).toHaveBeenCalledExactlyOnceWith(ref);
+  // One acquisition, for this ref. The second argument is this mount's own
+  // onHold handoff, so the arity is not the contract: the count and the target
+  // are.
+  expect(ensure.mock.calls.map(([target]) => target)).toEqual([ref]);
   expect(snapshot()).toEqual({
     foreground: 1,
     background: 0,
@@ -224,7 +227,14 @@ test("final visible departure releases completed bodies while background ownersh
   try {
     expect(fixture.lifetime.alive).toBe(false);
     expect(fixture.readView.alive).toBe(false);
-    expect(fixture.release).toHaveBeenCalledExactlyOnceWith(ref);
+    // The departure releases the handle this mount was given, not the ref: a
+    // ref-keyed release names whichever hold is newest, which is the defect
+    // the handle seam exists to remove.
+    expect(fixture.release.mock.calls).toHaveLength(1);
+    expect(
+      (fixture.release.mock.calls[0]?.[0] as ForegroundHold | undefined)?.ref,
+      "the departing pane must release the hold it was handed",
+    ).toBe(ref);
     expect(releaseReader).toHaveBeenCalledWith(ref, true);
     expect(pruned.length).toBeGreaterThan(0);
     expect(pruned.map(({ before }) => [before.foreground, before.background])).toEqual(pruned.map(() => [0, 1]));
