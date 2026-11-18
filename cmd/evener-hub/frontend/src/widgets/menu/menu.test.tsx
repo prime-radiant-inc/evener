@@ -1,3 +1,150 @@
+// A classic scrollbar is laid out inside the rail's border box and is not
+// content anybody can read into. A Live insertion can leave a trigger's only
+// overlap with its rail inside that strip, which reads as "still visible" when
+// the check uses the outer rectangle - and then the popup stays open holding
+// keyboard focus after its trigger has disappeared from the reader's view. The
+// answer comes from the client area.
+test("a trigger whose only overlap with the rail is the scrollbar strip is hidden", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  let triggerTop = 300;
+  // The rail's border box runs 100..400, and 16 of that at the bottom is a
+  // horizontal scrollbar: the client area really ends at 384.
+  const RAIL_BOTTOM = 400;
+  const SCROLLBAR = 16;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.getAttribute("data-testid") === "rail-port") return box(0, 100, 300, RAIL_BOTTOM - 100);
+    if (this.getAttribute("data-testid") === "rail-row") return box(0, 120, 300, 40);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.getAttribute("data-testid") === "rail-port") return RAIL_BOTTOM - 100 - SCROLLBAR;
+    return this.tagName === "UL" ? 120 : 0;
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  const callbacks = new Map<Element, MutationCallback>();
+  class CapturingMutationObserver {
+    constructor(private readonly callback: MutationCallback) {}
+    observe(target: Element): void {
+      callbacks.set(target, this.callback);
+    }
+    disconnect(): void {}
+    takeRecords(): MutationRecord[] {
+      return [];
+    }
+  }
+  vi.stubGlobal("MutationObserver", CapturingMutationObserver);
+  const { flush } = captureFrames();
+  try {
+    render(
+      <div data-testid="rail-port" style={{ overflowY: "auto", overflowX: "auto" }}>
+        <div data-testid="rail-row">Steady live session</div>
+        <Menu trigger="Actions" items={items()} />
+      </div>,
+    );
+    const scroller = screen.getByTestId("rail-port");
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 1200 });
+    Object.defineProperty(scroller, "scrollWidth", { configurable: true, value: 900 });
+    Object.defineProperty(scroller, "clientWidth", { configurable: true, value: 300 });
+    scroller.scrollTop = 200;
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu")).toBeTruthy();
+    const onRailChange = callbacks.get(scroller);
+    if (onRailChange === undefined) throw new Error("the menu observed no mutation for the rail scroller");
+    // The trigger now spans 388..416: entirely past the 384 of client area,
+    // and overlapping the border box only where the scrollbar is drawn.
+    triggerTop = 388;
+    act(() => {
+      const record = { addedNodes: [], removedNodes: [] } as unknown as MutationRecord;
+      Object.defineProperty(record, "target", { value: scroller });
+      onRailChange([record], {} as MutationObserver);
+    });
+    flush();
+    expect(screen.queryByRole("menu")).toBeNull();
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// Focus has to go back to the trigger, but focusing an element the reader
+// cannot see scrolls its containers to reveal it. A live insertion that pushes
+// the trigger behind the rail's header would then drag the rail away from the
+// rows the reader was reading. The focus is moved BEFORE the scope's own
+// restore, with preventScroll, so the restore finds focus already where it
+// wanted it and the browser never scrolls anything.
+test("a layout dismissal focuses the trigger without letting the rail scroll", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  let triggerTop = 300;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.getAttribute("data-testid") === "rail-port") return box(0, 100, 300, 300);
+    if (this.getAttribute("data-testid") === "rail-row") return box(0, 120, 300, 40);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  const callbacks = new Map<Element, MutationCallback>();
+  class CapturingMutationObserver {
+    constructor(private readonly callback: MutationCallback) {}
+    observe(target: Element): void {
+      callbacks.set(target, this.callback);
+    }
+    disconnect(): void {}
+    takeRecords(): MutationRecord[] {
+      return [];
+    }
+  }
+  vi.stubGlobal("MutationObserver", CapturingMutationObserver);
+  const { flush } = captureFrames();
+  try {
+    render(
+      <div data-testid="rail-port" style={{ overflowY: "auto" }}>
+        <div data-testid="rail-row">Steady live session</div>
+        <Menu trigger="Actions" items={items()} />
+      </div>,
+    );
+    const scroller = screen.getByTestId("rail-port");
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 1200 });
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 300 });
+    scroller.scrollTop = 200;
+    const trigger = screen.getByRole("button", { name: "Actions" });
+    const focus = vi.spyOn(trigger, "focus");
+    await user.click(trigger);
+    expect(screen.getByRole("menu")).toBeTruthy();
+    const onRailChange = callbacks.get(scroller);
+    if (onRailChange === undefined) throw new Error("the menu observed no mutation for the rail scroller");
+    focus.mockClear();
+    const offsetBefore = scroller.scrollTop;
+    // The insertion pushes the trigger past the scrollport's 100..400 while
+    // the offset never moves.
+    triggerTop = 500;
+    act(() => {
+      const record = { addedNodes: [], removedNodes: [] } as unknown as MutationRecord;
+      Object.defineProperty(record, "target", { value: scroller });
+      onRailChange([record], {} as MutationObserver);
+    });
+    flush();
+    expect(screen.queryByRole("menu")).toBeNull();
+    // The trigger takes focus back, and the focus that does it is the one that
+    // cannot scroll: the scope's later restore finds it already focused and
+    // moves nothing, which is what keeps the rail where the reader left it.
+    expect(document.activeElement).toBe(trigger);
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+    expect(scroller.scrollTop).toBe(offsetBefore);
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1214,7 +1361,11 @@ test("a horizontal clamp from a vanished wide row leaves the menu open", async (
     );
     const scroller = screen.getByTestId("rail-port");
     Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 600 });
-    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 300 });
+    // The box above is 600 tall with no border, so the client area is that
+    // whole height: a browser cannot report a client area smaller than its
+    // border box, and a 300px one would put the trigger at y=300 outside the
+    // rail before anything horizontal happened.
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 600 });
     // The rail is 300 wide and its widest row makes 500 of content, so 200 is
     // the furthest inline offset - and that is where the reader left it.
     Object.defineProperty(scroller, "scrollWidth", { configurable: true, value: 500 });
@@ -2099,7 +2250,11 @@ test("a visual-viewport resize re-anchors the menu to the trigger it moved", asy
   vi.stubGlobal("visualViewport", fakeViewport);
   const { flush } = captureFrames();
   let triggerTop = 300;
-  Object.defineProperty(window, "innerHeight", { configurable: true, value: 400 });
+  // The layout viewport has to be tall enough to CONTAIN the panned visual
+  // viewport: a 400px visible area whose top sits 100px down ends at 500, so a
+  // 400px layout viewport could never report this pan. 600 leaves the offset
+  // reachable, and the placement still reads the visual viewport's 400px height.
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 600 });
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
     if (this.tagName === "UL") return box(0, 0, 160, 120);

@@ -178,10 +178,19 @@ function visibleRegionAround(element: HTMLElement, ownerWindow: Window, rect: DO
     // ancestor - clips nothing this can measure, and inventing a zero port
     // there would hide every trigger.
     if (port.width <= 0 || port.height <= 0) continue;
-    left = Math.max(left, port.left);
-    top = Math.max(top, port.top);
-    right = Math.min(right, port.right);
-    bottom = Math.min(bottom, port.bottom);
+    // The CLIENT area, not the border box: a classic horizontal scrollbar is
+    // laid out inside the border box and is not content the reader can see
+    // into. Counting it lets a trigger whose only overlap with its rail is the
+    // scrollbar strip read as visible, and a menu stays open for a trigger
+    // nothing is showing.
+    const borderLeft = node.clientLeft;
+    const borderTop = node.clientTop;
+    const clientRight = port.left + borderLeft + node.clientWidth;
+    const clientBottom = port.top + borderTop + node.clientHeight;
+    left = Math.max(left, port.left + borderLeft);
+    top = Math.max(top, port.top + borderTop);
+    right = Math.min(right, node.clientWidth > 0 ? clientRight : port.right);
+    bottom = Math.min(bottom, node.clientHeight > 0 ? clientBottom : port.bottom);
   }
   return { left, top, right, bottom };
 }
@@ -824,6 +833,24 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     }
     setIsOpen(false);
   }, [ownerDocument]);
+
+  // Lay the trigger out of sight and the menu must still give focus back to
+  // it - the reader was on it a moment ago - but the scope's restore is a
+  // plain focus(), and focusing an element the reader cannot see scrolls its
+  // containers to reveal it. A live insertion that pushed the trigger behind
+  // the rail's header would then also drag the rail away from the rows the
+  // reader was reading, for a dismissal they never asked for.
+  //
+  // Focusing the trigger HERE, with preventScroll, fixes it at the source:
+  // focusing an element that already has focus does nothing, so the scope's
+  // own restore becomes a no-op and the rail is never moved. Escape keeps the
+  // plain close, and with it the ordinary restore that may scroll - the
+  // trigger is on screen there, and a reader who pressed Escape expects it
+  // focused and in view.
+  const closeMenuRestoringFocusWithoutScroll = useCallback(() => {
+    triggerRef.current?.focus({ preventScroll: true });
+    closeMenu();
+  }, [closeMenu]);
 
   // Where the focused row sat the last time this widget looked, and in what
   // scrollport. The reveal runs on the answer to one question, so this is the
@@ -1768,7 +1795,10 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         ? null
         : new Mutations((records) => {
             if (!movedTheTrigger(records)) return;
-            if (triggerMeasurablyHidden(triggerEl, ownerWindow)) closeMenu();
+            // Focus goes back to a trigger the reader cannot see, and a plain
+            // restore scrolls the rail to it. Preserve the offsets so the
+            // dismissal costs them nothing.
+            if (triggerMeasurablyHidden(triggerEl, ownerWindow)) closeMenuRestoringFocusWithoutScroll();
             else placeAfterLayout();
           });
     if (mutations !== null && triggerEl !== null) {
@@ -1831,7 +1861,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
       popupMutations?.disconnect();
       popupEl?.removeEventListener("scroll", onPopupScroll);
     };
-  }, [isOpen, ownerDocument, closeMenu, placeAfterLayout, revealFocusedRowIfClipped]);
+  }, [isOpen, ownerDocument, closeMenuRestoringFocusWithoutScroll, placeAfterLayout, revealFocusedRowIfClipped]);
 
   const iconOnly = label !== undefined;
   const triggerClassName = [
