@@ -413,17 +413,31 @@ func TestTwoAnnouncementsInOneEntryStayDistinct(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ItemTurnsFromFile: %v", err)
 	}
-	var args []string
+	var args, statuses []string
 	for _, turn := range turns {
 		for _, item := range turn.Items {
 			if item.CallID == "call_dup" && item.Type == "commandExecution" {
 				args = append(args, item.ArgumentsJSON)
+				statuses = append(statuses, item.Status)
 			}
 		}
 	}
 	want := []string{`{"n":1}`, `{"n":2}`}
 	if !reflect.DeepEqual(args, want) {
 		t.Errorf("full read call arguments = %v, want %v: each recorded part is its own announcement", args, want)
+	}
+	// The result settles the FIRST recorded part, as the index does. Arguments
+	// alone cannot see this: both are right even when the result lands on the
+	// wrong call, which is why the defect survived the first version of this
+	// test (#1166 review).
+	if len(statuses) != 2 {
+		t.Fatalf("call items = %v, want two announcements", statuses)
+	}
+	if statuses[0] == appwire.TurnStatusInProgress {
+		t.Errorf("first announcement status = %q, want the result to settle the FIRST recorded part", statuses[0])
+	}
+	if statuses[1] != appwire.TurnStatusInProgress {
+		t.Errorf("second announcement status = %q, want it left untouched", statuses[1])
 	}
 }
 
@@ -611,6 +625,12 @@ func TestDeliverySplitSettlesTheAnnouncement(t *testing.T) {
 	if calls[0].RoundID != "r_announce" {
 		t.Errorf("settled call round = %q, want %q", calls[0].RoundID, "r_announce")
 	}
+	// The item that was ADMITTED keeps its identity. The client already holds
+	// this ID, so a settled call that renames itself to the result entry's ID
+	// is a different item to every reader that reconciles by identity.
+	if want := "item_tool_1_0"; calls[0].ID != want {
+		t.Errorf("settled call id = %q, want the announcement's %q", calls[0].ID, want)
+	}
 	// An attention resolution is transcript-only bookkeeping: it projects no
 	// item, so it shows no visible turn. That matches the index, which creates
 	// no candidate for it — the point here is only that it must not orphan the
@@ -619,5 +639,64 @@ func TestDeliverySplitSettlesTheAnnouncement(t *testing.T) {
 		if turn.ID == "turn_delivery" {
 			t.Errorf("full read turns = %+v, want no visible turn for an itemless delivery", shapesFromTurns(turns))
 		}
+	}
+}
+
+// TestLegacyGroupSharingAStampedIDKeepsItsOwnItems covers a legacy group whose
+// id a later stamped execution also uses. Membership, not an id match, decides
+// which path a group takes: a legacy group is not a run of the stamped
+// execution, so it must render its own items rather than be dropped and have
+// the stamped run emitted twice (#1166 review).
+func TestLegacyGroupSharingAStampedIDKeepsItsOwnItems(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "legacy_shares_id"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := func(turn schema.Turn) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceVerbatim}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	// A legacy user turn whose id matches the stamped execution's.
+	legacy := schema.NewTurn(schema.TurnUserInput, llm.User("legacy question"))
+	legacy.StableTurnID = "turn_shared"
+	record(legacy)
+	// Another group between them, so the two are not adjacent.
+	record(schema.NewTurn(schema.TurnHookCompleted, llm.System("hook ran")))
+	// The stamped execution reusing that id.
+	stamped := schema.NewTurn(schema.TurnUserInput, llm.User("stamped question"))
+	stamped.Format = schema.TurnFormatIdentity
+	stamped.TurnID = "turn_shared"
+	stamped.TurnKind = schema.TurnSpanExecution
+	record(stamped)
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	var texts []string
+	for _, turn := range turns {
+		for _, item := range turn.Items {
+			if item.Text != "" {
+				texts = append(texts, item.Text)
+			}
+		}
+	}
+	// Every item the transcript holds appears exactly once: the legacy
+	// question, the hook between the groups, and the stamped question. The
+	// defect this covers dropped the legacy item and emitted the stamped one
+	// twice, so the count and the presence of the legacy text are the check.
+	want := []string{"legacy question", "hook ran", "stamped question"}
+	if !reflect.DeepEqual(texts, want) {
+		t.Errorf("full read item texts = %v, want %v: a legacy group is not a run of the stamped execution", texts, want)
 	}
 }

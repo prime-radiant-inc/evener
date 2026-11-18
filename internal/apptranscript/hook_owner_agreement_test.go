@@ -93,15 +93,24 @@ func shapesFromCandidates(candidates []appitempaging.TranscriptItemCandidate) []
 	return shapes
 }
 
-// The two readers of one transcript must agree about where a hook completion
-// lands. The writer stamps every entry with the turn it belongs to (see
-// transcript.Placement): a session-start hook completing before any turn is
-// named joins the fresh transcript's prelude, and a Stop hook completing
-// inside a user turn joins that execution. The whole-file full read
-// (apptranscript) and the bounded index the live history publishes from
-// (transcriptindex) must both place those items in exactly those turns; a
-// boundary present in one and not the other reaches a client that reconciles
-// live items against a cold read as a phantom turn split or merge (#1166).
+// TestHookCompletionsGroupAlikeInBothProjections compares two projection
+// implementations directly over one transcript the real writer stamped: the
+// whole-file read (apptranscript.ItemTurnsFromFile) and the bounded index
+// (transcriptindex), each required to place every item in the same turn. The
+// writer stamps each entry with its owning turn (see transcript.Placement): a
+// session-start hook completing before any turn is named joins the fresh
+// transcript's prelude, and a Stop hook completing inside a user turn joins that
+// execution. A boundary present in one and not the other is a phantom turn split
+// or merge — #1166's defect.
+//
+// Scope of that claim: this pins the two implementations to each other. It does
+// not measure the pair a client actually reconciles, because live publication and
+// the paged saved-session read both go through the transcript index
+// (cmd/evener-hub pastEntryLatestItems). The whole-file projection is the hub's
+// full-turn fallback — pastEntryTurns, reached only when a read asks for turns
+// (ThreadReadParams.IncludeTurns) — so agreement here is a necessary condition,
+// not proof that the index-backed live and cold reads agree. That question is
+// open, tracked in #6782.
 func TestHookCompletionsGroupAlikeInBothProjections(t *testing.T) {
 	path := hookOwnerTranscript(t)
 	reg := apptranscript.NewToolCallRegistry()
