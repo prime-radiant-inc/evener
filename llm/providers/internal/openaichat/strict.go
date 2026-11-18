@@ -150,14 +150,20 @@ func strictlyExpressibleNode(m map[string]any, visited bool) bool {
 		}
 	}
 	if isArray {
-		if raw, has := m["items"]; has && raw != nil {
-			items, ok := raw.(map[string]any)
-			if !ok {
-				return false
-			}
-			if !strictlyExpressibleNode(items, visited && literal == "array") {
-				return false
-			}
+		// An array side of a type list has to name its items. Without them it
+		// admits any element, which strict mode cannot verify, and the rewrite
+		// cannot supply one: it matches only the literal "array" type string,
+		// so a list never reaches the branch that would walk items.
+		raw, has := m["items"]
+		if !has || raw == nil {
+			return false
+		}
+		items, ok := raw.(map[string]any)
+		if !ok {
+			return false
+		}
+		if !strictlyExpressibleNode(items, visited && literal == "array") {
+			return false
 		}
 	}
 	if !isObject && !isArray {
@@ -289,16 +295,13 @@ func constrainsSomething(m map[string]any, isObject, isArray bool) bool {
 		if _, has := m["type"]; has {
 			return true
 		}
-		// A typeless node accepts values of every type, so a keyword qualifies
-		// it only when the walk can read the set it leaves. enum and const name
-		// a closed set, which the walk can read. Every other modeled keyword
-		// either annotates the value — description, title, default, examples,
-		// format — or narrows one type while leaving the rest open, and the
-		// walk cannot read that set. Its bound may also be the identity form
-		// that rejects nothing at all: minLength: 0, minItems: 0,
-		// uniqueItems: false and pattern: "" each admit every value.
-		for _, keyword := range []string{"enum", "const"} {
-			if _, has := m[keyword]; has {
+		// A typeless node accepts values of every type, so only a keyword whose
+		// accepted set this file can read narrows it. That answer is read out of
+		// modeledKeywords rather than listed again here: a keyword the table
+		// does not carry scores notCovered, which does not equal readableByWalk,
+		// so it cannot certify a node.
+		for keyword := range m {
+			if modeledKeywords[keyword] == readableByWalk {
 				return true
 			}
 		}
@@ -349,52 +352,75 @@ func allKeysDeclared(m map[string]any) bool {
 	return ok && !closed
 }
 
-// modeledKeywords lists every JSON Schema keyword StrictifyJSONSchema either
-// rewrites or provably leaves alone.
+// coverage says what the projection does with a keyword. It answers one
+// question: can this keyword appear in a schema that is certified at all?
 //
-// The list is the whole certification. A node the rewrite closes admits
-// exactly the keys it declares, so a keyword whose effect depends on keys
-// outside that set — or on the object staying open — cannot survive the
-// projection. Rather than test those keywords one at a time, a node carrying
-// one is refused strict mode outright and the tool is sent as advertised.
-//
-// Each entry says which of the two it is:
-//
-//   - rewritten: the projection supplies it, so whatever the schema advertised
-//     for it is replaced. type, properties, required and
-//     additionalProperties on an object; type and items on an array.
-//     description, enum, default and the scalar bounds belong.
+// It deliberately does not answer whether a keyword can certify a node on its
+// own. Those are different questions, and a single list answering both is wrong
+// the moment they diverge: minLength is covered — the rewrite neither reads nor
+// rewrites it, and closing an enclosing object cannot narrow it — yet
+// {"minLength": 0} accepts every JSON value, so it certifies nothing. The
+// predicate therefore reads the two answers from separate tables below, and the
+// certifying table is derived from this one rather than maintained beside it.
+type coverage int
+
+const (
+	// notCovered: the rewrite cannot account for the keyword, so any node
+	// carrying it is refused.
+	notCovered coverage = iota
+	// rewritten: the projection supplies the keyword, so whatever the schema
+	// advertised for it is replaced.
+	rewritten
+	// leftAlone: the rewrite neither reads nor rewrites it, and its effect
+	// cannot depend on a key set the projection changes.
+	leftAlone
+	// readableByWalk: leftAlone, and the set of values it admits is one this
+	// file can read from the keyword alone. Only these may certify a node that
+	// names no type, because such a node accepts values of every type.
+	readableByWalk
+)
+
+// modeledKeywords classifies every JSON Schema keyword the projection covers.
 //
 // Adding a keyword to the rewrite without adding it here makes the gate refuse
-// schemas the rewrite does handle — a visible loss of strictness, not a silent
+// schemas the rewrite handles — a visible loss of strictness, not a silent
 // unsoundness. Adding one here without teaching the rewrite about it would be
-// the reverse, and is the mistake this list exists to prevent.
-var modeledKeywords = map[string]bool{
-	// Rewritten on objects and arrays.
-	"type":                 true,
-	"properties":           true,
-	"required":             true,
-	"additionalProperties": true,
-	"items":                true,
+// the reverse, and is the mistake this table exists to prevent.
+//
+// The certifying answer is not listed anywhere: constrainsSomething reads it
+// back out of this table. A keyword that is missing, notCovered, rewritten or
+// merely leftAlone cannot certify, so a new entry cannot silently acquire the
+// power to certify a node.
+var modeledKeywords = map[string]coverage{
+	// Rewritten on objects and arrays: the projection supplies them.
+	"type":                 rewritten,
+	"properties":           rewritten,
+	"required":             rewritten,
+	"additionalProperties": rewritten,
+	"items":                rewritten,
 
-	// Unaffected: annotations and scalar bounds, which closing an object
-	// cannot narrow. These are the keywords a tool builder uses to describe a
-	// value it accepts.
-	"description": true,
-	"enum":        true,
-	"default":     true,
-	"examples":    true,
-	"title":       true,
-	"const":       true,
-	"format":      true,
-	"pattern":     true,
-	"minimum":     true,
-	"maximum":     true,
-	"minLength":   true,
-	"maxLength":   true,
-	"minItems":    true,
-	"maxItems":    true,
-	"uniqueItems": true,
+	// Annotations and bounds: closing an enclosing object cannot narrow them.
+	// None of them names a value set this walk can read, so none certifies a
+	// typeless node — a bound narrows one type and leaves the others open, and
+	// its identity form rejects nothing at all.
+	"description": leftAlone,
+	"default":     leftAlone,
+	"examples":    leftAlone,
+	"title":       leftAlone,
+	"format":      leftAlone,
+	"pattern":     leftAlone,
+	"minimum":     leftAlone,
+	"maximum":     leftAlone,
+	"minLength":   leftAlone,
+	"maxLength":   leftAlone,
+	"minItems":    leftAlone,
+	"maxItems":    leftAlone,
+	"uniqueItems": leftAlone,
+
+	// A closed set of values, readable from the keyword alone, so it narrows a
+	// node of any type.
+	"enum":  readableByWalk,
+	"const": readableByWalk,
 }
 
 // keywordsModeled reports whether every keyword on a node is one the
@@ -408,7 +434,7 @@ var modeledKeywords = map[string]bool{
 // what makes this a property of the schema rather than of one node's type.
 func keywordsModeled(m map[string]any) bool {
 	for keyword := range m {
-		if !modeledKeywords[keyword] {
+		if modeledKeywords[keyword] == notCovered {
 			return false
 		}
 	}

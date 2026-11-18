@@ -219,6 +219,34 @@ func TestStrictToolProjectionStillStrictifiesFullyRequiredSchemas(t *testing.T) 
 	}
 }
 
+// A parameterless tool that opts out of strict mode is advertised with the open
+// empty object, which is what every non-strict route sends and what the local
+// validator allows. Closing the fallback before reading the opt-out would
+// advertise a schema stricter than the one the tool documents, so the opt-out
+// has to be read first.
+func TestStrictToolProjectionKeepsAnOptedOutParameterlessToolOpen(t *testing.T) {
+	t.Parallel()
+	optedOut := false
+	req := userReq("hi")
+	req.Tools = []llm.ToolDefinition{{Name: "current_time", Strict: &optedOut}}
+
+	body := build(t, req, resolved(strictCaps))
+	tool := body["tools"].([]map[string]any)[0]
+	if tool["strict"] != false {
+		t.Fatalf("strict = %#v, want false: the tool opted out", tool["strict"])
+	}
+	params, ok := tool["parameters"].(map[string]any)
+	if !ok {
+		t.Fatalf("parameters = %#v, want an object schema", tool["parameters"])
+	}
+	if _, has := params["additionalProperties"]; has {
+		t.Fatalf("additionalProperties = %#v, want absent: an opted-out tool keeps the open fallback", params["additionalProperties"])
+	}
+	if props, ok := params["properties"].(map[string]any); !ok || len(props) != 0 {
+		t.Fatalf("properties = %#v, want an empty object", params["properties"])
+	}
+}
+
 // A tool declaring no parameters at all is the empty object, which strict mode
 // accepts once it is explicitly closed. Synthesizing the open
 // {"type":"object","properties":{}} instead leaves the root uncertifiable, so a
@@ -288,6 +316,11 @@ func TestRefusedNestingSchemaIsEmittedUnchanged(t *testing.T) {
 	fixtureSizes := make([]int, 0, 6)
 	for _, depth := range []int{1, 2, 4, 8, 16, 32} {
 		schema := nesting(depth)
+		// Snapshot the advertised schema before the build. Serializing it after
+		// would compare the emitted schema with whatever the builder left in
+		// the map it was handed, so a builder that mutated a branch in place
+		// would change both sides of the comparison and the test would pass.
+		advertised := jsonOf(t, schema)
 		req := userReq("hi")
 		req.Tools = []llm.ToolDefinition{{Name: "job_status", Parameters: schema}}
 
@@ -297,11 +330,11 @@ func TestRefusedNestingSchemaIsEmittedUnchanged(t *testing.T) {
 			t.Fatalf("depth %d: strict = %#v, want false: a property-less combinator branch is not certifiable", depth, tool["strict"])
 		}
 		// The schema on the wire must be the advertised one, byte for byte.
-		if got, want := jsonOf(t, tool["parameters"]), jsonOf(t, schema); got != want {
+		if got, want := jsonOf(t, tool["parameters"]), advertised; got != want {
 			t.Fatalf("depth %d: the emitted schema is not the advertised one\n got: %s\nwant: %s", depth, got, want)
 		}
 		sizes = append(sizes, len(jsonOf(t, tool["parameters"])))
-		fixtureSizes = append(fixtureSizes, len(jsonOf(t, schema)))
+		fixtureSizes = append(fixtureSizes, len(advertised))
 	}
 	// The emitted size tracks the advertised size exactly, so doubling the
 	// depth may at most double what goes on the wire.

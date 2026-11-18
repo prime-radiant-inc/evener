@@ -2,6 +2,7 @@ package openaichat
 
 import (
 	"encoding/json"
+	"sort"
 	"strings"
 	"testing"
 
@@ -339,6 +340,20 @@ func TestStrictExpressible(t *testing.T) {
 		},
 		// A closed value set does constrain an untyped node, so these are the
 		// keywords that still qualify one.
+		// A type list naming both object and array constrains the node two
+		// ways, and strict mode needs both to be verifiable. An array side with
+		// no items admits any element, so the node is not certifiable even when
+		// the object side is fully specified.
+		{
+			name: "object and array type list without items",
+			in: map[string]any{
+				"type":                 []any{"object", "array"},
+				"additionalProperties": false,
+				"properties":           map[string]any{"a": map[string]any{"type": "string"}},
+				"required":             []string{"a"},
+			},
+			want: false,
+		},
 		{
 			name: "closed object with a required enumerated argument",
 			in: map[string]any{
@@ -842,6 +857,132 @@ func TestStrictExpressible(t *testing.T) {
 	}
 }
 
+// TestReadableKeywordsRejectSomeValue checks the classification against the
+// validator rather than against itself. The structural test above reads the
+// same table the gate reads, so it would agree with a wrong classification;
+// this one asks the schema validator two questions the classification answers.
+//
+// A keyword classified readableByWalk is claimed to name a value set the walk
+// can read. The evidence is that a normal form of it rejects some JSON value:
+// an enum of two strings rejects a number, and const rejects everything but its
+// own value. Every other keyword can certify nothing, and the identity forms
+// below are the evidence — each admits every value, which is exactly why a
+// bound like minLength: 0 cannot stand in for a constraint.
+func TestReadableKeywordsRejectSomeValue(t *testing.T) {
+	t.Parallel()
+	probes := []any{0.0, "", true, nil, map[string]any{}, []any{}}
+	rejectsSomething := func(argument map[string]any) bool {
+		compiled := compileSchema(t, argument)
+		for _, probe := range probes {
+			if compiled.Validate(probe) != nil {
+				return true
+			}
+		}
+		return false
+	}
+
+	// A normal form of every certifying keyword must reject a value.
+	certifying := map[string]any{
+		"enum":  []any{"a", "b"},
+		"const": "fixed",
+	}
+	for keyword, value := range certifying {
+		if modeledKeywords[keyword] != readableByWalk {
+			t.Fatalf("keyword %q is no longer classified readableByWalk, so nothing should be certified on it alone", keyword)
+		}
+		if !rejectsSomething(map[string]any{keyword: value}) {
+			t.Fatalf("keyword %q is classified readableByWalk but %v accepts every probe: a keyword that rejects nothing cannot certify a node", keyword, value)
+		}
+	}
+
+	// The identity form of every non-certifying keyword must accept every
+	// probe, which is the reason it cannot certify a typeless node.
+	identityForm := map[string]any{
+		"description": "d", "title": "t", "default": nil, "examples": []any{},
+		"format": "unknown-format", "pattern": "", "minimum": 0.0, "maximum": 0.0,
+		"minLength": 0, "maxLength": 0, "minItems": 0, "maxItems": 0,
+		"uniqueItems": false,
+	}
+	for keyword, value := range identityForm {
+		if modeledKeywords[keyword] == readableByWalk {
+			t.Fatalf("keyword %q is classified readableByWalk but only an identity form is listed here", keyword)
+		}
+		if rejectsSomething(map[string]any{keyword: value}) {
+			t.Fatalf("keyword %q with value %v rejects a probe, so the identity form is not what this table assumes", keyword, value)
+		}
+	}
+}
+
+// A keyword may certify a typeless node only when modeledKeywords classifies it
+// readableByWalk. This is the property the predicate is built on, asserted
+// through the predicate for every classified keyword, so a new entry in the
+// table cannot quietly acquire the power to certify: the test reads the same
+// table the gate reads and fails unless the two answers agree.
+//
+// It is also the regression test for minLength: 0. That keyword is covered —
+// the rewrite neither reads nor rewrites it — and it used to certify, which
+// sent a schema admitting every JSON value out with strict: true.
+func TestOnlyReadableKeywordsCertifyATypelessNode(t *testing.T) {
+	t.Parallel()
+	// The envelope is closed and fully required, so the only thing deciding the
+	// verdict is the argument's own keyword.
+	envelope := func(argument map[string]any) map[string]any {
+		return map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties":           map[string]any{"payload": argument},
+			"required":             []string{"payload"},
+		}
+	}
+	// Every keyword needs a value the validator can compile. The value does not
+	// choose the answer: the classification does.
+	probeValue := func(keyword string) any {
+		switch keyword {
+		case "enum":
+			return []any{"a", "b"}
+		case "const":
+			return "fixed"
+		case "properties", "patternProperties", "additionalProperties", "required":
+			return map[string]any{}
+		case "items", "prefixItems", "allOf", "anyOf", "oneOf":
+			return []any{}
+		case "type":
+			return "string"
+		case "uniqueItems":
+			return false
+		default:
+			return 0
+		}
+	}
+	keywords := make([]string, 0, len(modeledKeywords))
+	for keyword := range modeledKeywords {
+		keywords = append(keywords, keyword)
+	}
+	sort.Strings(keywords)
+	for _, keyword := range keywords {
+		// type is the other qualifying path, not a keyword that certifies a
+		// typeless node: naming a type makes the node typed. That path is
+		// asserted separately below.
+		if keyword == "type" {
+			continue
+		}
+		argument := map[string]any{keyword: probeValue(keyword)}
+		if _, has := argument["description"]; !has && keyword != "description" {
+			argument["description"] = "keeps the node compilable"
+		}
+		want := modeledKeywords[keyword] == readableByWalk
+		if got := StrictExpressible(envelope(argument)); got != want {
+			t.Fatalf("keyword %q (coverage %v): StrictExpressible = %v, want %v: only a keyword whose accepted set the walk can read may certify a typeless node",
+				keyword, modeledKeywords[keyword], got, want)
+		}
+	}
+	// The typed path still certifies: a supported type constrains the node, so
+	// the refusal above is about typeless nodes rather than a blanket refusal.
+	if !StrictExpressible(envelope(map[string]any{"type": "string"})) {
+		t.Fatal("a node naming a supported type must remain certifiable")
+	}
+}
+
 // A schema StrictExpressible accepts must survive the projection with its
 // declared required set intact, so the predicate and the rewrite agree.
 func TestStrictExpressibleAgreesWithTheProjection(t *testing.T) {
@@ -1061,6 +1202,12 @@ func TestRefusedBranchSchemaKeepsItsAdvertisedArguments(t *testing.T) {
 // reports whether args satisfies it.
 func schemaAccepts(t *testing.T, schema map[string]any, args map[string]any) bool {
 	t.Helper()
+	return compileSchema(t, schema).Validate(args) == nil
+}
+
+// compileSchema compiles schema with the validator the tool registry uses.
+func compileSchema(t *testing.T, schema map[string]any) *jsonschema.Schema {
+	t.Helper()
 	raw, err := json.Marshal(schema)
 	if err != nil {
 		t.Fatalf("marshal schema: %v", err)
@@ -1073,5 +1220,5 @@ func schemaAccepts(t *testing.T, schema map[string]any, args map[string]any) boo
 	if err != nil {
 		t.Fatalf("compile schema %s: %v", raw, err)
 	}
-	return compiled.Validate(args) == nil
+	return compiled
 }

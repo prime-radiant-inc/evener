@@ -36,6 +36,16 @@ func toResponsesResponseFormat(rf llm.ResponseFormat, structured bool) any {
 func toResponsesTools(tools []llm.ToolDefinition, strict bool) []map[string]any {
 	out := make([]map[string]any, 0, len(tools))
 	for _, t := range tools {
+		// The per-tool opt-out is read before the fallback is synthesized: a
+		// tool that opts out is advertised with the open empty object, which is
+		// what every non-strict route already sends and what the local
+		// validator allows. Only a tool that will actually be sent in strict
+		// mode gets the closed empty object, because strict mode accepts that
+		// and only that.
+		toolStrict := strict
+		if toolStrict && t.Strict != nil {
+			toolStrict = *t.Strict
+		}
 		params := t.Parameters
 		if params == nil {
 			// A tool that declares no parameters takes the empty object. On the
@@ -44,7 +54,7 @@ func toResponsesTools(tools []llm.ToolDefinition, strict bool) []map[string]any 
 			// and sending it non-strict would accept any keys the tool rejects.
 			// With strict mode off the advertised shape is unchanged.
 			params = map[string]any{"type": "object", "properties": map[string]any{}}
-			if strict {
+			if toolStrict {
 				params["additionalProperties"] = false
 			}
 		}
@@ -55,10 +65,6 @@ func toResponsesTools(tools []llm.ToolDefinition, strict bool) []map[string]any 
 			"parameters":  params,
 		}
 		if strict {
-			toolStrict := true
-			if t.Strict != nil {
-				toolStrict = *t.Strict
-			}
 			if toolStrict {
 				// OpenAI strict mode requires a fully-specified JSON Schema:
 				// - object schemas must set additionalProperties=false
