@@ -30,11 +30,12 @@ func (r Request) HasReasoningEndpoints() bool {
 		slices.ContainsFunc(r.Messages, func(m Message) bool { return m.ReasoningEndpoint != "" })
 }
 
-// servingOriginDigest identifies an HTTP origin without retaining URL text.
-func servingOriginDigest(endpoint string) string {
+type servingURL struct{ origin, resource string }
+
+func parseServingURL(endpoint string) servingURL {
 	u, err := url.Parse(endpoint)
 	if err != nil || u.Hostname() == "" {
-		return ""
+		return servingURL{}
 	}
 	port := u.Port()
 	switch u.Scheme {
@@ -47,44 +48,97 @@ func servingOriginDigest(endpoint string) string {
 			port = "80"
 		}
 	default:
-		return ""
+		return servingURL{}
 	}
-	sum := sha256.Sum256([]byte(u.Scheme + "\x00" + strings.ToLower(u.Hostname()) + "\x00" + port))
-	return "sha256:" + hex.EncodeToString(sum[:])
+	return servingURL{"sha256:" + recipientDigest(u.Scheme+"\x00"+strings.ToLower(u.Hostname())+"\x00"+port), u.RequestURI()}
 }
 
-// reasoningOrigin accepts either an opaque transport stamp or a URL.
-func reasoningOrigin(endpoint string) string {
-	if len(endpoint) == len("sha256:")+2*sha256.Size && strings.HasPrefix(endpoint, "sha256:") {
-		return endpoint
-	}
-	return servingOriginDigest(endpoint)
+func recipientDigest(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:])
 }
 
-// HistoryModeForEndpoint describes the history a receiving origin can consume.
-func (r Request) HistoryModeForEndpoint(endpoint string) HistoryMode {
-	if r.Continuation != nil && r.Continuation.AnchorEndpoint != "" {
-		to := reasoningOrigin(endpoint)
-		if to == "" || to != reasoningOrigin(r.Continuation.AnchorEndpoint) {
-			return HistoryModeFullHistoryFallback
+func (u servingURL) exactRecipient() string {
+	if u.origin == "" {
+		return UnknownServingOrigin
+	}
+	return u.origin + "/endpoint:" + recipientDigest(u.resource)
+}
+
+// ConfiguredServingRecipient identifies the deployment shared by the row's
+// Complete, Stream and CountTokens operations.
+func ConfiguredServingRecipient(res registry.Resolved) string {
+	origin := parseServingURL(res.Transport.BaseURL).origin
+	if origin == "" {
+		return UnknownServingOrigin
+	}
+	return origin + "/configured:" + res.ReasoningReplayRoute()
+}
+
+// ServingRecipient identifies the deployment reached by a wire URL, or accepts
+// a previously computed proof. Outside the row's configured operation set,
+// the escaped path and query identify the recipient without storing URL text.
+func ServingRecipient(endpoint string, res registry.Resolved) string {
+	recipient := endpoint
+	if !strings.HasPrefix(endpoint, "sha256:") {
+		recipient = parseServingURL(endpoint).exactRecipient()
+	}
+	if res.Transport.BaseURL == "" || !strings.Contains(recipient, "/endpoint:") {
+		return recipient
+	}
+	for _, path := range [...]string{res.Transport.Endpoint, res.Transport.StreamEndpoint, res.Transport.CountTokensEndpoint} {
+		if path != registry.EndpointUnsupported {
+			configured := parseServingURL(res.RequestURL(path))
+			if configured.exactRecipient() == recipient {
+				return configured.origin + "/configured:" + res.ReasoningReplayRoute()
+			}
 		}
+	}
+	return recipient
+}
+
+// Older history can carry only a serving origin or a display URL. Its
+// best-effort origin proof remains usable by that origin's deployments.
+func ownsServingState(recipient, source string, res registry.Resolved) bool {
+	if recipient == UnknownServingOrigin || source == UnknownServingOrigin {
+		return false
+	}
+	if strings.HasPrefix(source, "sha256:") {
+		if recipient == source || strings.Contains(recipient, "/configured:") && recipient == ServingRecipient(source, res) {
+			return true
+		}
+	} else {
+		source = parseServingURL(source).origin
+	}
+	if source == "" {
+		return false
+	}
+	origin, _, _ := strings.Cut(recipient, "/")
+	return origin == source
+}
+
+// HistoryModeForEndpoint describes the history a receiving deployment can consume.
+func (r Request) HistoryModeForEndpoint(endpoint string, res registry.Resolved) HistoryMode {
+	if r.Continuation != nil && r.Continuation.AnchorEndpoint != "" && !ownsServingState(ServingRecipient(endpoint, res), r.Continuation.AnchorEndpoint, res) {
+		return HistoryModeFullHistoryFallback
 	}
 	return r.HistoryMode
 }
 
 // ForReasoningEndpoint projects the original request for one HTTP recipient.
 func (r Request) ForReasoningEndpoint(endpoint string, res registry.Resolved) (Request, bool) {
-	to := reasoningOrigin(endpoint)
-	// Consecutive turns usually share a serving origin.
-	var last, origin string
+	to := ServingRecipient(endpoint, res)
+	// Consecutive turns usually share a serving deployment.
+	var last string
+	var owned bool
 	owns := func(source string) bool {
 		if last != source {
-			last, origin = source, reasoningOrigin(source)
+			last, owned = source, ownsServingState(to, source, res)
 		}
-		return to != "" && to == origin
+		return owned
 	}
 	changed := false
-	if mode := r.HistoryModeForEndpoint(endpoint); mode != r.HistoryMode {
+	if mode := r.HistoryModeForEndpoint(to, res); mode != r.HistoryMode {
 		r.Messages = r.Continuation.FullHistory
 		r.PreviousResponseID = ""
 		r.ConversationID = ""

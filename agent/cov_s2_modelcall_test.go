@@ -37,19 +37,19 @@ func TestS2Cov_RecordResponseUsage(t *testing.T) {
 		t.Errorf("recorded input tokens = %d, want the full-history estimate of 9000", got)
 	}
 
-	const issuer = "https://issuer.example.invalid/v1/responses"
+	resolved := sess.currentProfile().Resolved()
+	issuer := resolved.RequestURL(resolved.Transport.Endpoint)
 	const other = "https://other.example.invalid/v1/responses"
 	reasoning := llm.Assistant("visible answer")
 	reasoning.Content = append(reasoning.Content, llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{ID: "rs_67", EncryptedContent: "opaque-67"}})
 	for _, tc := range []struct {
-		name                string
-		assistant           llm.Message
-		delta               bool
-		foreignKeepsHistory bool
+		name      string
+		assistant llm.Message
+		delta     bool
 	}{
-		{"native reasoning", reasoning.BindReasoningEndpoint(issuer), false, false},
-		{"stored continuation", llm.Assistant("visible answer"), true, false},
-		{"visible conversation", llm.Assistant("visible answer"), false, true},
+		{"native reasoning", reasoning.BindReasoningEndpoint(issuer), false},
+		{"stored continuation", llm.Assistant("visible answer"), true},
+		{"visible conversation", llm.Assistant("visible answer"), false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s := newSession(t)
@@ -67,9 +67,11 @@ func TestS2Cov_RecordResponseUsage(t *testing.T) {
 			local := s.contextMgr.EstimateUsage(s.history, 0).Used
 			const billed = 12_000
 			for i, endpoint := range []string{
-				"https://issuer.example.invalid/another/path",
+				issuer,
 				other,
 				other,
+				issuer + "?deployment=2",
+				"",
 				issuer,
 			} {
 				answer := llm.Response{Usage: llm.Usage{InputTokens: billed}}
@@ -80,7 +82,7 @@ func TestS2Cov_RecordResponseUsage(t *testing.T) {
 				}
 				s.recordResponseUsage(sessionModelResponse{Response: answer, history: measured}, req, s.currentProfile())
 				wantTokens, wantPressure := billed, billed
-				if endpoint == other && !tc.foreignKeepsHistory {
+				if endpoint != issuer {
 					wantTokens, wantPressure = 0, local
 				}
 				if got := s.Meta().LastInputTokens; got != wantTokens {

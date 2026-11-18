@@ -23,14 +23,16 @@ const unmanagedImageCaveat = "This image was recovered without its color profile
 var errImageRepairUnchanged = errors.New("image repair produced no distinct usable request")
 
 type imageRecovery struct {
-	stage        int
-	originalSize int
-	lastSize     int
-	smallerThan  int
-	managed      bool
-	warnings     []llm.Warning
-	sent         map[[sha256.Size]byte]bool
-	lastDigest   [sha256.Size]byte
+	stage              int
+	originalSize       int
+	lastSize           int
+	smallerThan        int
+	lastRecipient      string
+	sizeLimitRecipient string
+	managed            bool
+	warnings           []llm.Warning
+	sent               map[[sha256.Size]byte]bool
+	lastDigest         [sha256.Size]byte
 }
 
 // runImageRecovery owns only definite HTTP rejections. Once Stream returns a
@@ -51,11 +53,11 @@ func runImageRecovery[T any](ctx context.Context, p *Protocol, req llm.Request, 
 		}
 		call := p.completionCall(operation, protocolhttp.URL(res, endpoint), req, res, stream)
 		finalize := call.FinalizeBody
-		call.FinalizeBody = func(attemptCtx context.Context, body map[string]any, view llm.Request) error {
-			if err := finalize(attemptCtx, body, view); err != nil {
+		call.FinalizeBody = func(recipient *http.Request, body map[string]any, view llm.Request) error {
+			if err := finalize(recipient, body, view); err != nil {
 				return err
 			}
-			return llm.WrapContextError(res.Instance, recovery.prepare(attemptCtx, body))
+			return llm.WrapContextError(res.Instance, recovery.prepare(recipient, body, res))
 		}
 		result, err := send(call, recovery)
 		if err == nil {
@@ -83,6 +85,7 @@ func runImageRecovery[T any](ctx context.Context, p *Protocol, req llm.Request, 
 		recovery.sent[recovery.lastDigest] = true
 		if expanded {
 			recovery.smallerThan = recovery.lastSize
+			recovery.sizeLimitRecipient = recovery.lastRecipient
 		}
 		recovery.stage++
 	}
@@ -95,7 +98,8 @@ func providerStatus(err error) int {
 	return 0
 }
 
-func (r *imageRecovery) prepare(ctx context.Context, body map[string]any) error {
+func (r *imageRecovery) prepare(request *http.Request, body map[string]any, res registry.Resolved) error {
+	ctx := request.Context()
 	r.managed = false
 	r.warnings = nil
 	if r.stage > 0 {
@@ -129,11 +133,14 @@ func (r *imageRecovery) prepare(ctx context.Context, body map[string]any) error 
 		return err
 	}
 	digest := sha256.Sum256(encoded)
+	recipient := llm.ServingRecipient(request.URL.String(), res)
+	exceedsRejectedSize := r.smallerThan > 0 && recipient == r.sizeLimitRecipient && len(encoded) >= r.smallerThan
 	if r.stage == 0 {
 		r.originalSize = len(encoded)
-	} else if r.sent[digest] || (r.smallerThan > 0 && len(encoded) >= r.smallerThan) {
+	} else if r.sent[digest] || exceedsRejectedSize {
 		return errImageRepairUnchanged
 	}
+	r.lastRecipient = recipient
 	r.lastDigest = digest
 	r.lastSize = len(encoded)
 	if r.stage > 0 {

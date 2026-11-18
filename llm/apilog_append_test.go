@@ -816,9 +816,11 @@ func TestStampEndpointURL(t *testing.T) {
 	if _, ok := credentialBearing.Raw["endpoint_url"]; ok {
 		t.Fatalf("credential-bearing endpoint persisted in response metadata: %+v", credentialBearing.Raw)
 	}
+	var sameRoute Response
+	StampEndpointURL(&sameRoute, "https://EXAMPLE.invalid:443/"+credential+"/responses#view", APILogCredentialMaterial{})
 	if credentialBearing.ServingOrigin == "" || credentialBearing.ServingOrigin == UnknownServingOrigin ||
-		credentialBearing.ServingOrigin != resp.ServingOrigin {
-		t.Error("a scrubbed path lost the serving identity of the same HTTP origin")
+		credentialBearing.ServingOrigin != sameRoute.ServingOrigin || credentialBearing.ServingOrigin == resp.ServingOrigin {
+		t.Error("a scrubbed endpoint lost its distinct serving route")
 	}
 	other := &Response{}
 	StampEndpointURL(other, "https://other.invalid/responses", APILogCredentialMaterial{})

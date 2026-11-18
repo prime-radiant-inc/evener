@@ -12,6 +12,7 @@ import (
 
 	"primeradiant.com/evener/identifier"
 	apilog "primeradiant.com/evener/llm/apilog"
+	"primeradiant.com/evener/llm/registry"
 )
 
 type apiLogKey struct{}
@@ -584,16 +585,18 @@ func (l *APILogger) Close() error {
 	return firstErr
 }
 
-// StampEndpointURL binds native response state to its HTTP origin even when
+// StampEndpointURL binds native response state to its serving URL even when
 // the endpoint URL contains credential evidence and cannot be logged.
 func StampEndpointURL(resp *Response, endpoint string, material APILogCredentialMaterial) {
+	stampEndpoint(resp, endpoint, parseServingURL(endpoint).exactRecipient(), material)
+}
+
+func stampEndpoint(resp *Response, endpoint, recipient string, material APILogCredentialMaterial) {
 	if resp == nil {
 		return
 	}
-	resp.ServingOrigin = servingOriginDigest(endpoint)
-	if resp.ServingOrigin == "" {
-		resp.ServingOrigin = UnknownServingOrigin
-	}
+	resp.ServingOrigin = recipient
+	resp.Message = resp.Message.BindReasoningEndpoint(recipient)
 	endpoint = SanitizeEndpointURL(endpoint)
 	if endpoint == "" || containsCredentialEvidence(endpoint, material) {
 		delete(resp.Raw, "endpoint_url")
@@ -607,9 +610,12 @@ func StampEndpointURL(resp *Response, endpoint string, material APILogCredential
 
 // StampHTTPResponseEndpoint requires final request evidence to identify the
 // issuer. The constructed URL remains useful for logging synthetic responses.
-func StampHTTPResponseEndpoint(out *Response, resp *http.Response, fallback string, material APILogCredentialMaterial) {
-	StampEndpointURL(out, FinalResponseEndpointURL(resp, fallback), material)
-	if out != nil && (resp == nil || resp.Request == nil || resp.Request.URL == nil) {
-		out.ServingOrigin = UnknownServingOrigin
+func StampHTTPResponseEndpoint(out *Response, resp *http.Response, fallback string, material APILogCredentialMaterial, res registry.Resolved) {
+	if resp == nil || resp.Request == nil || resp.Request.URL == nil {
+		stampEndpoint(out, fallback, UnknownServingOrigin, material)
+		return
 	}
+	endpoint := resp.Request.URL.String()
+	exact := parseServingURL(endpoint).exactRecipient()
+	stampEndpoint(out, endpoint, ServingRecipient(exact, res), material)
 }

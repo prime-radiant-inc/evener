@@ -62,7 +62,7 @@ type Message struct {
 	Content    []ContentPart `json:"content"`
 	Name       string        `json:"name,omitempty"`
 	ToolCallID string        `json:"tool_call_id,omitempty"`
-	// ReasoningEndpoint binds native history to the recorded serving origin.
+	// ReasoningEndpoint binds native history to the recorded serving deployment.
 	// The transcript owns its provenance. It is never a provider message field.
 	ReasoningEndpoint string `json:"-"`
 }

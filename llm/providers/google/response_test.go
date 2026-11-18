@@ -9,6 +9,7 @@ import (
 
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func TestGeminiStreamSyntheticToolCallIDUsesIdentifierDomain(t *testing.T) {
@@ -19,7 +20,7 @@ func TestGeminiStreamSyntheticToolCallIDUsesIdentifierDomain(t *testing.T) {
 	defer cancel()
 	resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(sse))}
 	s := llm.NewChanStream(cancel)
-	go decodeGenerateContentStream(ctx, cancel, resp, s, llm.Request{Model: "test"}, "gemini-test", "http://test", llm.APILogCredentialMaterial{}, nil)
+	go decodeGenerateContentStream(ctx, cancel, resp, s, llm.Request{Model: "test"}, registry.Resolved{Instance: "gemini-test"}, "http://test", llm.APILogCredentialMaterial{}, nil)
 	var got string
 	for ev := range s.Events() {
 		if ev.ToolCall != nil {

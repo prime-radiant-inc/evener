@@ -150,15 +150,17 @@ func TestGenerate_RejectsPromptAndMessagesTogether(t *testing.T) {
 func TestGenerate_ToolLoop_ExecutesToolsAndContinues(t *testing.T) {
 	// Not parallel: FuzzRootScenarioReplay calls this test directly with a shared t.
 	c := NewClient()
+	call := ToolCallData{ID: "call1", Name: "add", Arguments: json.RawMessage(`{"a":1,"b":2}`), Type: "function", ThoughtSignature: "count-51"}
+	first := Response{
+		Message: Message{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentToolCall, ToolCall: &call}}},
+		Finish:  FinishReason{Reason: FinishReasonToolCalls},
+	}
+	StampEndpointURL(&first, "https://arithmetic.invalid/v1/chat", APILogCredentialMaterial{})
 	a := &scriptedAdapter{
 		name: "openai",
 		steps: []func(req Request) (Response, error){
 			func(req Request) (Response, error) {
-				call := ToolCallData{ID: "call1", Name: "add", Arguments: json.RawMessage(`{"a":1,"b":2}`), Type: "function"}
-				return Response{
-					Message: Message{Role: RoleAssistant, Content: []ContentPart{{Kind: ContentToolCall, ToolCall: &call}}},
-					Finish:  FinishReason{Reason: FinishReasonToolCalls},
-				}, nil
+				return first, nil
 			},
 			func(req Request) (Response, error) {
 				// Expect tool result in the continuation request.
@@ -223,6 +225,23 @@ func TestGenerate_ToolLoop_ExecutesToolsAndContinues(t *testing.T) {
 	if res.Steps[0].ToolResults[0].IsError {
 		t.Fatalf("unexpected tool error: %+v", res.Steps[0].ToolResults[0])
 	}
+	requireIssuedToolCall(t, a.reqs[1], first)
+}
+
+func requireIssuedToolCall(t *testing.T, next Request, first Response) {
+	t.Helper()
+	call := first.ToolCalls()[0]
+	for _, message := range next.Messages {
+		for _, part := range message.Content {
+			if part.ToolCall != nil && part.ToolCall.ID == call.ID {
+				if message.ReasoningEndpoint == "" || message.ReasoningEndpoint != first.ReasoningEndpoint() || part.ToolCall.ThoughtSignature != call.ThoughtSignature {
+					t.Error("the continuation lost the tool call's issuing endpoint or signature")
+				}
+				return
+			}
+		}
+	}
+	t.Fatal("the continuation lost the assistant's tool call")
 }
 
 func TestGenerate_PassiveToolCall_ReturnsToolCallsWithoutLooping(t *testing.T) {

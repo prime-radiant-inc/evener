@@ -103,7 +103,7 @@ func Do(parentCtx context.Context, c *Call, finish func(r *Result) (*llm.Respons
 	}
 	if response != nil {
 		response.Provider = c.Res.Instance
-		llm.StampHTTPResponseEndpoint(response, resp, c.URL, p.material)
+		llm.StampHTTPResponseEndpoint(response, resp, c.URL, p.material, c.Res)
 	}
 	return nil
 }

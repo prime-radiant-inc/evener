@@ -163,6 +163,7 @@ func (a *StreamAccumulator) Process(ev StreamEvent) {
 			if !cp.ContentAuthoritative && !responseHasContent(cp) {
 				cp = *a.buildResponseLocked()
 				copyResponseMetadata(&cp, ev.Response)
+				cp.Message = cp.Message.BindReasoningEndpoint(cp.ReasoningEndpoint())
 			}
 			a.final = &cp
 			a.partial = &cp

@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/invariant"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/internal/transport"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // decodeGenerateContentStream consumes the streamGenerateContent SSE stream in
@@ -19,7 +20,8 @@ import (
 // owns closing the response body and the ChanStream. provider stamps every
 // Response/error the decoder produces; endpointURL and material back
 // llm.StampHTTPResponseEndpoint's fallback and credential-sanitization inputs.
-func decodeGenerateContentStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, provider, endpointURL string, material llm.APILogCredentialMaterial, attempt *transport.APIAttemptCapture) {
+func decodeGenerateContentStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, res registry.Resolved, endpointURL string, material llm.APILogCredentialMaterial, attempt *transport.APIAttemptCapture) {
+	provider := res.Instance
 	defer func() {
 		_ = resp.Body.Close()
 		s.CloseSend()
@@ -200,7 +202,7 @@ func decodeGenerateContentStream(sctx context.Context, cancel context.CancelFunc
 							Usage:    usage,
 							Raw:      raw,
 						}
-						llm.StampHTTPResponseEndpoint(&r, resp, endpointURL, material)
+						llm.StampHTTPResponseEndpoint(&r, resp, endpointURL, material, res)
 						if len(r.ToolCalls()) > 0 {
 							r.Finish = llm.FinishReason{Reason: "tool_calls", Raw: r.Finish.Raw}
 						}

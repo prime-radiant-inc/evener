@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // byteAtATimeReader delivers its payload one byte per Read call, then io.EOF. It
@@ -46,7 +47,7 @@ func accumulateGeminiSSE(sse []byte, chunkOneByte bool) (*llm.Response, bool) {
 	}
 	resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(body)}
 	s := llm.NewChanStream(cancel)
-	go decodeGenerateContentStream(ctx, cancel, resp, s, llm.Request{Model: "fuzz-model"}, "google-fuzz", "http://fuzz.local/endpoint", llm.APILogCredentialMaterial{}, nil)
+	go decodeGenerateContentStream(ctx, cancel, resp, s, llm.Request{Model: "fuzz-model"}, registry.Resolved{Instance: "google-fuzz"}, "http://fuzz.local/endpoint", llm.APILogCredentialMaterial{}, nil)
 
 	acc := llm.NewStreamAccumulator()
 	sawError := false

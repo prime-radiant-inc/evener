@@ -276,7 +276,7 @@ func TestStreamGenerate_SimpleStreaming_YieldsDeltasAndFinish(t *testing.T) {
 
 func TestStreamGenerate_ToolLoop_EmitsStepFinishAndContinues(t *testing.T) {
 	// Not parallel: FuzzRootScenarioReplay and FuzzStreamGenerateCoverage call this test directly with a shared t.
-	call := ToolCallData{ID: "c1", Name: "t1", Arguments: json.RawMessage(`{"x":1}`), Type: "function"}
+	call := ToolCallData{ID: "c1", Name: "t1", Arguments: json.RawMessage(`{"x":1}`), Type: "function", ThoughtSignature: "count-87"}
 	step1Resp := Response{
 		Provider: "openai",
 		Model:    "m",
@@ -285,6 +285,7 @@ func TestStreamGenerate_ToolLoop_EmitsStepFinishAndContinues(t *testing.T) {
 		}},
 		Finish: FinishReason{Reason: "tool_calls"},
 	}
+	StampEndpointURL(&step1Resp, "https://arithmetic.invalid/v1/chat", APILogCredentialMaterial{})
 	step2Resp := Response{Provider: "openai", Model: "m", Message: Assistant("ok"), Finish: FinishReason{Reason: "stop"}}
 
 	// Step 1: tool call. Step 2: final text.
@@ -375,6 +376,7 @@ func TestStreamGenerate_ToolLoop_EmitsStepFinishAndContinues(t *testing.T) {
 	}
 
 	// Step-2 request must include a tool result for call "c1".
+	requireIssuedToolCall(t, reqs[1], step1Resp)
 	foundToolResult := false
 	for _, m := range reqs[1].Messages {
 		if m.Role != RoleTool {

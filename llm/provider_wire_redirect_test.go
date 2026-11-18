@@ -345,8 +345,6 @@ func TestCoreCompleteWireCaptureUsesActualBodyReadAfterBodyPreservingRedirect(t 
 
 func testScrubbedServingOrigin(t *testing.T) {
 	const serving = "https://serving.invalid"
-	var reference llm.Response
-	llm.StampEndpointURL(&reference, serving, llm.APILogCredentialMaterial{})
 	for _, provider := range wireProviders() {
 		for _, streamed := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/stream=%t", provider.name, streamed), func(t *testing.T) {
@@ -394,7 +392,11 @@ func testScrubbedServingOrigin(t *testing.T) {
 					}
 					want := llm.UnknownServingOrigin
 					if verified {
-						want = reference.ServingOrigin
+						row, err := wire.Resolve(req.Provider + "/" + req.Model)
+						if err != nil {
+							t.Fatal(err)
+						}
+						want = llm.ConfiguredServingRecipient(row)
 					}
 					if _, logged := response.Raw["endpoint_url"]; logged || response.ServingOrigin == "" || response.ServingOrigin != want {
 						t.Errorf("verified=%t, mismatched serving or log evidence", verified)

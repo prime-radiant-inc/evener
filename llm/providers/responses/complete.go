@@ -17,7 +17,7 @@ func (p *Protocol) call(operation, url string, req llm.Request, res registry.Res
 func (p *Protocol) completionCall(operation, url string, req llm.Request, res registry.Resolved, stream bool) *protocolhttp.Call {
 	call := p.call(operation, url, req, res)
 	call.BuildBody = func(view llm.Request) (map[string]any, error) { return buildBody(view, res, stream) }
-	call.FinalizeBody = func(_ context.Context, finalBody map[string]any, view llm.Request) error {
+	call.FinalizeBody = func(_ *http.Request, finalBody map[string]any, view llm.Request) error {
 		reconcilePreparedOutput(finalBody, view, res)
 		return nil
 	}

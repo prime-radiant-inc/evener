@@ -22,7 +22,7 @@ func (p *Protocol) call(operation, family, method, u string, req llm.Request, re
 func (p *Protocol) completionCall(operation, family, u string, req llm.Request, res registry.Resolved) *protocolhttp.Call {
 	call := p.call(operation, family, http.MethodPost, u, req, res)
 	call.BuildBody = func(view llm.Request) (map[string]any, error) { return p.BuildBody(view, res) }
-	call.FinalizeBody = func(_ context.Context, finalBody map[string]any, view llm.Request) error {
+	call.FinalizeBody = func(_ *http.Request, finalBody map[string]any, view llm.Request) error {
 		return reconcileOutputField(finalBody, view.MaxTokens, res.Caps.MaxOutputTokens)
 	}
 	return call
@@ -98,7 +98,7 @@ func (p *Protocol) Complete(ctx context.Context, req llm.Request, res registry.R
 func (p *Protocol) Stream(ctx context.Context, req llm.Request, res registry.Resolved) (llm.Stream, error) {
 	call := p.completionCall("streamGenerateContent", "google_stream_generate_content", protocolhttp.URL(res, res.Transport.StreamEndpoint), req, res)
 	return protocolhttp.Stream(ctx, call, func(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, r *protocolhttp.Result, attempt *transport.APIAttemptCapture) {
-		decodeGenerateContentStream(sctx, cancel, resp, s, req, res.Instance, r.EndpointURL, r.Material, attempt)
+		decodeGenerateContentStream(sctx, cancel, resp, s, req, res, r.EndpointURL, r.Material, attempt)
 	})
 }
 

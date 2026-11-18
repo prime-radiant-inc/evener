@@ -565,12 +565,12 @@ func TestExpandHistory_StoredTranscriptUntouched(t *testing.T) {
 		}
 	})
 	t.Run("serving identity with scrubbed URL", func(t *testing.T) {
-		const configured, issuer = "https://configured.invalid", "https://serving.invalid"
+		const configured, issuer = "https://configured.invalid", "https://serving.invalid/fixture-31/messages?row=17"
 		row := registry.Resolved{Instance: "anthropic", ModelID: "claude-opus-4-6", Protocol: registry.ProtocolAnthropic}
 		row.Transport.BaseURL = configured
 		scope := replayScope{Instance: row.Instance, Model: row.ModelID, Protocol: row.Protocol, destination: &row, reasoningRoute: row.ReasoningReplayRoute()}
 		s := newSession(t, withStateDir(t.TempDir()))
-		for _, endpoint := range []string{issuer + "/fixture-31/messages", "invalid", ""} {
+		for _, endpoint := range []string{issuer, "invalid", ""} {
 			resp := llm.Response{Message: turns[0].Message, Model: row.ModelID, Provider: row.Instance}
 			if endpoint != "" {
 				llm.StampEndpointURL(&resp, endpoint, llm.NewAPILogCredentialMaterial(nil, nil, "fixture-31"))
@@ -588,7 +588,7 @@ func TestExpandHistory_StoredTranscriptUntouched(t *testing.T) {
 				t.Fatalf("got %d assistant turns, expected a scrubbed endpoint on the first", len(history))
 			}
 			request := llm.Request{Messages: expandHistory(history, scope)}
-			for _, recipient := range []string{issuer, configured, "https://other.invalid"} {
+			for _, recipient := range []string{issuer, "https://serving.invalid/fixture-31/messages?row=29", configured, "https://other.invalid"} {
 				projected, _ := request.ForReasoningEndpoint(recipient, row)
 				for i, message := range projected.Messages {
 					// The last turn has the legacy shape. Only it can use the

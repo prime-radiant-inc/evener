@@ -51,9 +51,8 @@ type Call struct {
 	// error ClassifyHTTPError produced.
 	Reclassify func(status int, body []byte, err error) error
 	// FinalizeBody, when set, runs after transport constants and the request
-	// preparer, immediately before the final body is marshaled. Its context
-	// carries the active attempt's deadline and cancellation.
-	FinalizeBody func(ctx context.Context, body map[string]any, view llm.Request) error
+	// preparer, immediately before marshaling the body for the wire recipient.
+	FinalizeBody func(recipient *http.Request, body map[string]any, view llm.Request) error
 }
 
 // Prepared is a Call after prune → constants → auth → prepare.
@@ -112,7 +111,7 @@ func Prepare(ctx context.Context, c *Call) (*Prepared, error) {
 		if bound {
 			beforePreparer = httpReq.Clone(ctx)
 		}
-		p.Body, err = c.marshalBody(ctx, httpReq, auth, view, body)
+		p.Body, err = c.marshalBody(httpReq, httpReq, auth, view, body)
 		if err != nil {
 			return nil, err
 		}
@@ -128,19 +127,19 @@ func Prepare(ctx context.Context, c *Call) (*Prepared, error) {
 }
 
 func (p *Prepared) bindReasoningEndpoints(c *Call, authenticated *http.Request, auth llm.Authenticator) error {
-	bodyAt := func(candidate *http.Request) ([]byte, error) {
-		view, _ := c.Req.ForReasoningEndpoint(candidate.URL.String(), c.Res)
+	bodyAt := func(candidate *http.Request, recipient string) ([]byte, error) {
+		view, _ := c.Req.ForReasoningEndpoint(recipient, c.Res)
 		body, _, err := c.bodyFor(view)
 		if err != nil {
 			return nil, err
 		}
-		ctx := candidate.Context()
-		return c.marshalBody(ctx, authenticated.Clone(ctx), auth, view, body)
+		return c.marshalBody(authenticated.Clone(candidate.Context()), candidate, auth, view, body)
 	}
 	initial := *p.Request.URL
+	initialRecipient := llm.ServingRecipient(initial.String(), c.Res)
 	if initial.String() != c.URL {
 		// A preparer or authenticator can change the constructed URL.
-		b, err := bodyAt(p.Request)
+		b, err := bodyAt(p.Request, initialRecipient)
 		if err != nil {
 			return err
 		}
@@ -149,17 +148,18 @@ func (p *Prepared) bindReasoningEndpoints(c *Call, authenticated *http.Request, 
 	atInitial := true
 	p.redirectBody = func(candidate *http.Request) error {
 		// net/http obtains every retained redirect body from the first
-		// request's GetBody. It already has the first origin's bytes.
-		sameOrigin := candidate.URL.Scheme == initial.Scheme && candidate.URL.Host == initial.Host
-		if sameOrigin && atInitial {
+		// request's GetBody. It already has the first deployment's bytes.
+		recipient := llm.ServingRecipient(candidate.URL.String(), c.Res)
+		sameRecipient := recipient == initialRecipient
+		if sameRecipient && atInitial {
 			return nil
 		}
-		atInitial = sameOrigin
-		b, err := bodyAt(candidate)
+		atInitial = sameRecipient
+		b, err := bodyAt(candidate, recipient)
 		if err != nil {
 			return err
 		}
-		if sameOrigin {
+		if sameRecipient {
 			// The finalizers now describe this hop again. Keep the first
 			// request's exact bytes and any caller body policy.
 			return nil
@@ -186,14 +186,14 @@ func (c *Call) bodyFor(view llm.Request) (body map[string]any, pruned []string, 
 	return body, pruned, nil
 }
 
-func (c *Call) marshalBody(ctx context.Context, httpReq *http.Request, auth llm.Authenticator, view llm.Request, body map[string]any) ([]byte, error) {
+func (c *Call) marshalBody(httpReq, recipient *http.Request, auth llm.Authenticator, view llm.Request, body map[string]any) ([]byte, error) {
 	if preparer, ok := auth.(llm.RequestPreparer); ok {
-		if err := preparer.PrepareRequest(ctx, httpReq, body, view, c.Res); err != nil {
+		if err := preparer.PrepareRequest(recipient.Context(), httpReq, body, view, c.Res); err != nil {
 			return nil, err
 		}
 	}
 	if c.FinalizeBody != nil {
-		if err := c.FinalizeBody(ctx, body, view); err != nil {
+		if err := c.FinalizeBody(recipient, body, view); err != nil {
 			return nil, err
 		}
 	}
@@ -296,7 +296,7 @@ func (c *Call) metaBuilder(p *Prepared) transport.APIAttemptMetaBuilder {
 	return func(wireRequest *http.Request, requestBody []byte) llm.APIAttemptMeta {
 		mode := c.Req.HistoryMode
 		if c.Req.Continuation != nil {
-			mode = c.Req.HistoryModeForEndpoint(wireRequest.URL.String())
+			mode = c.Req.HistoryModeForEndpoint(wireRequest.URL.String(), c.Res)
 		}
 		return llm.APIAttemptMeta{
 			ProviderInstance:   c.Res.Instance,

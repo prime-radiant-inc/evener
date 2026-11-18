@@ -1325,15 +1325,21 @@ func (s *Session) recordResponseUsage(modelResp sessionModelResponse, req llm.Re
 		responseHasServerWebSearch(resp.Message.Content),
 	)
 	if record {
-		projectionChanged := false
-		if endpoint := resp.ReasoningEndpoint(); endpoint != "" && req.HasReasoningEndpoints() {
-			_, projectionChanged = req.ForReasoningEndpoint(endpoint, resolvedTargetOf(answeringProfile))
+		matchesTarget := true
+		if endpoint := resp.ReasoningEndpoint(); endpoint != "" {
+			resolved := resolvedTargetOf(answeringProfile)
+			recipient := llm.ServingRecipient(endpoint, resolved)
+			matchesTarget = recipient != llm.UnknownServingOrigin && recipient == llm.ConfiguredServingRecipient(resolved)
+			if matchesTarget && req.HasReasoningEndpoints() {
+				_, changed := req.ForReasoningEndpoint(recipient, resolved)
+				matchesTarget = !changed
+			}
 		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
 		measured := modelResp.history
-		if projectionChanged || !measured.matchesPrefix(s.history, s.historyRevision) {
-			// A count for a different projection cannot price resident history.
+		if !matchesTarget || !measured.matchesPrefix(s.history, s.historyRevision) {
+			// The resident prefix must match what the configured deployment measured.
 			s.contextMgr.RecordInputTokensFor(answeringProfile, 0, 0)
 			return
 		}
@@ -1868,7 +1874,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		return withPreviews(modelResp), req, attempt, usedProfile, err
 	}
 	attempt = completeAttemptMetadata(attempt, modelResp.Response)
-	if endpoint := modelResp.Response.ReasoningEndpoint(); endpoint != "" && req.HistoryModeForEndpoint(endpoint) != req.HistoryMode {
+	if endpoint := modelResp.Response.ReasoningEndpoint(); endpoint != "" && req.HistoryModeForEndpoint(endpoint, resolvedTargetOf(usedProfile)) != req.HistoryMode {
 		attempt.HistoryMode = llm.HistoryModeFullHistoryFallback
 		attempt.PreviousResponseIDHash, attempt.ConversationIDHash = "", ""
 	}

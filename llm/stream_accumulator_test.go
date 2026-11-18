@@ -66,7 +66,7 @@ func TestStreamAccumulator_FinishWithMetadataOnlyResponse_PreservesAccumulatedCo
 	acc.Process(StreamEvent{Type: StreamEventTextDelta, TextID: "t1", Delta: "Hello"})
 	acc.Process(StreamEvent{Type: StreamEventTextEnd, TextID: "t1"})
 	acc.Process(StreamEvent{Type: StreamEventToolCallEnd, ToolCall: &ToolCallData{
-		ID: "call_streamed", Name: "f", Arguments: json.RawMessage(`{}`),
+		ID: "call_streamed", Name: "f", Arguments: json.RawMessage(`{}`), ThoughtSignature: "count-31",
 	}})
 
 	final := Response{
@@ -96,6 +96,9 @@ func TestStreamAccumulator_FinishWithMetadataOnlyResponse_PreservesAccumulatedCo
 	}
 	if got.ReasoningEndpoint() == "" || got.ReasoningEndpoint() != final.ReasoningEndpoint() {
 		t.Fatal("metadata-only terminal lost the streamed call's serving origin")
+	}
+	if got.Message.ReasoningEndpoint != final.ReasoningEndpoint() {
+		t.Error("the reconstructed tool call lost its issuing endpoint")
 	}
 	if calls := got.ToolCalls(); len(calls) != 1 || calls[0].ID != "call_streamed" {
 		t.Fatalf("metadata-only terminal lost the streamed call: %+v", calls)

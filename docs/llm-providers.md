@@ -111,8 +111,11 @@ exchange retains API-attempt accounting; cancellation stops new attempts and ima
 work, including expiration of the active attempt's configured request deadline.
 An attempt timeout remains eligible for configured retries while the caller's
 context is live; an expired caller deadline ends the retry chain.
-If an expanded PNG gets HTTP 413 and there is no distinct smaller fallback,
-the adapter returns the **original image rejection**, not that repair-only 413.
+If an expanded PNG gets HTTP 413, the adapter checks that the profile-free
+request is smaller for the deployment that rejected the PNG. Other hops in
+a redirect chain can carry differently sized histories. If the rejecting
+deployment has no distinct smaller fallback, the adapter returns the
+**original image rejection**.
 Existing configured model fallback can then run without forced history compaction.
 
 The [portable repair helper](../llm/internal/imagerepair/icc.go) supports a bounded
@@ -515,11 +518,13 @@ For older turns Evener uses the issuer information available in the
 transcript. A saved endpoint still identifies the serving host and path
 even when the turn predates route digests. Moving that route keeps its
 reasoning at the original endpoint. The visible conversation carries over.
-When a gateway redirects a request, each serving origin receives the native
-reasoning it issued. Evener saves a digest of that origin independently of
-the display URL. Returning there preserves those bytes through a cold
-resume. A Responses continuation handle also belongs to its
-issuing origin. Another origin receives the full visible conversation.
+When a gateway redirects a request, each serving deployment receives the native
+reasoning and Responses continuation handles it issued. The configured model,
+streaming and token-counting endpoints share one deployment. For other URLs,
+the HTTP origin, escaped path and query identify the deployment. Evener saves
+that identity as a digest independently of the display URL. Returning to the
+same deployment preserves its bytes through a cold resume. Another deployment
+receives the full visible conversation.
 An Anthropic fallback keeps its own signed thinking through tool calls and
 cold resumes. If a tool continuation moves to a different instance, model,
 or endpoint, the visible answer, tool call, and result follow it. The
@@ -533,6 +538,9 @@ context pressure. A saved input-token count covers the history actually sent
 to that target under its replay rules. Evener estimates later additions,
 including delegate reports received while the request was in flight. If that
 prefix changes during the call, Evener estimates the current history locally.
+When an HTTP redirect selects an unconfigured deployment, its token count
+still contributes to billing. Evener estimates context pressure locally until
+the configured deployment measures the conversation again.
 On resume it also checks the saved target and measured prefix against the
 transcript. A committed compaction can replace that prefix before the session
 metadata catches up.
@@ -583,6 +591,8 @@ call keeps its literal path and file contents, including XML.
   order, preserving its original array position. A signed detail on its own
   supplies only that detail. An encrypted detail keeps its own display text.
   When a provider omits the scalar, an unsigned text detail can supply it.
+  An explicitly empty scalar replays as `""` on its scalar field even when an
+  unsigned detail supplies display text.
   A Chat fallback behind another protocol receives its own signed and
   encrypted details during tool calls, on later turns and after cold resume
   when the recorded model and serving route match. A second model on that

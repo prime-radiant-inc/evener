@@ -135,7 +135,7 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 					finalResp.Usage = *usage
 				}
 				estimateReasoningUsage(finalResp)
-				llm.StampHTTPResponseEndpoint(finalResp, resp, r.EndpointURL, r.Material)
+				llm.StampHTTPResponseEndpoint(finalResp, resp, r.EndpointURL, r.Material, res)
 				// The provider may keep the body open after [DONE]; Finish stops
 				// the parser before its next read.
 				runner.Finish(*finalResp)

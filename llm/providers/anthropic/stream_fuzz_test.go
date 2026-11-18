@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // byteAtATimeReader delivers its payload one byte per Read call, then io.EOF. It
@@ -48,7 +49,7 @@ func accumulateAnthropicSSE(sse []byte, chunkOneByte bool) (*llm.Response, bool)
 	}
 	resp := &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(body)}
 	s := llm.NewChanStream(cancel)
-	go decodeMessagesStream(ctx, cancel, resp, s, llm.Request{Model: "fuzz-model"}, "anthropic-fuzz", "http://fuzz.local/v1/messages", llm.APILogCredentialMaterial{}, nil)
+	go decodeMessagesStream(ctx, cancel, resp, s, llm.Request{Model: "fuzz-model"}, registry.Resolved{Instance: "anthropic-fuzz"}, "http://fuzz.local/v1/messages", llm.APILogCredentialMaterial{}, nil)
 
 	acc := llm.NewStreamAccumulator()
 	sawError := false

@@ -40,7 +40,7 @@ func TestImageRecoveryStageZeroSkipsMarshalWithoutImagePart(t *testing.T) {
 		"unsupported": math.Inf(1),
 	}
 	r := &imageRecovery{}
-	if err := r.prepare(context.Background(), body); err != nil {
+	if err := r.prepare(httptest.NewRequest(http.MethodPost, "/images", nil), body, registry.Resolved{}); err != nil {
 		t.Fatalf("prepare with no image part serialized the body: %v", err)
 	}
 	if r.originalSize != 0 || len(r.sent) != 0 {
@@ -56,7 +56,7 @@ func TestImageRecoveryStageZeroSerializesWithImagePart(t *testing.T) {
 		}}},
 	}
 	r := &imageRecovery{sent: map[[32]byte]bool{}}
-	if err := r.prepare(context.Background(), body); err != nil {
+	if err := r.prepare(httptest.NewRequest(http.MethodPost, "/images", nil), body, registry.Resolved{}); err != nil {
 		t.Fatalf("prepare: %v", err)
 	}
 	if r.originalSize == 0 || r.lastDigest == ([32]byte{}) {
@@ -93,7 +93,7 @@ func TestImageRecoveryStageZeroWalksFinalBody(t *testing.T) {
 				body["unsupported"] = math.Inf(1) // proves the skip path does not serialize
 			}
 			r := &imageRecovery{sent: map[[32]byte]bool{}}
-			if err := r.prepare(context.Background(), body); err != nil {
+			if err := r.prepare(httptest.NewRequest(http.MethodPost, "/images", nil), body, registry.Resolved{}); err != nil {
 				t.Fatalf("prepare: %v", err)
 			}
 			if got := r.originalSize > 0; got != tc.wantSeed {
@@ -564,6 +564,42 @@ func TestImageRecoveryManagedThenProfileFree(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Run("redirected size rejection", func(t *testing.T) {
+		const front = "https://front.invalid"
+		res := liveRes(&httptest.Server{URL: front}, func(c *registry.Caps) { c.ReplayReasoningText = new(true) })
+		req := recoveryRequest(recoveryWithProfile(recoveryNoisyJPEG(t), profile))
+		padding := llm.Assistant("visible answer")
+		padding.Content = append(padding.Content, llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: strings.Repeat("x", 64<<10)}})
+		req.Messages = append(req.Messages, padding.BindReasoningEndpoint(front))
+		var frontSizes, modelSizes []int
+		client := &http.Client{Transport: transporttest.RoundTripFunc(func(r *http.Request) (*http.Response, error) {
+			body, err := io.ReadAll(r.Body)
+			_ = r.Body.Close()
+			if err != nil {
+				t.Fatal(err)
+			}
+			out := &http.Response{Request: r, Header: make(http.Header), StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(chatJSON))}
+			if r.URL.Host == "front.invalid" {
+				frontSizes = append(frontSizes, len(body))
+				out.StatusCode, out.Body = http.StatusTemporaryRedirect, http.NoBody
+				out.Header.Set("Location", "https://model.invalid/chat")
+			} else {
+				modelSizes = append(modelSizes, len(body))
+				if len(modelSizes) <= 2 {
+					out.StatusCode = []int{http.StatusBadRequest, http.StatusRequestEntityTooLarge}[len(modelSizes)-1]
+					out.Body = io.NopCloser(strings.NewReader(imageRejection))
+				}
+			}
+			return out, nil
+		})}
+		out, err := recoveryCall(t.Context(), &Protocol{Client: client}, req, res, false)
+		if err != nil || len(modelSizes) != 3 || len(frontSizes) != 3 || len(out.Warnings) != 1 || out.Warnings[0].Code != llm.WarningCodeImageColorUnmanaged {
+			t.Fatalf("profile-free recovery error %v, front sizes %v, receiving model sizes %v", err, frontSizes, modelSizes)
+		}
+		if modelSizes[1] <= modelSizes[0] || modelSizes[2] >= modelSizes[1] || frontSizes[2] <= modelSizes[1] {
+			t.Fatalf("unexpected front sizes %v, receiving model sizes %v", frontSizes, modelSizes)
+		}
+	})
 	for _, statuses := range [][2]int{{400, 200}, {413, 200}, {400, 422}} {
 		for _, stream := range []bool{false, true} {
 			t.Run(http.StatusText(statuses[0])+"/"+http.StatusText(statuses[1])+map[bool]string{false: "/complete", true: "/stream"}[stream], func(t *testing.T) {

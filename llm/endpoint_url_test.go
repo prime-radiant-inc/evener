@@ -33,7 +33,8 @@ func TestRequestProjectsReasoningForEachServingOrigin(t *testing.T) {
 		return m
 	}
 	first := turn("https://One.Example.invalid:443/v1/stream", "one")
-	second := turn("https://two.example.invalid/v1/stream", "two")
+	// A transcript can hold only the original HTTPS origin digest for two.example.invalid.
+	second := turn("sha256:7c4d5aac60e263bd15762dfaf711cea1651d025ae55888c2df3811ba80a2d260", "two")
 	full := []Message{System("context"), first, ToolResult("one", "ok", false), second, User("next")}
 	req := Request{Messages: full}
 	if !req.HasReasoningEndpoints() {

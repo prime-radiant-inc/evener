@@ -14,6 +14,7 @@ import (
 
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/apilog"
+	"primeradiant.com/evener/llm/internal/transporttest"
 	"primeradiant.com/evener/llm/providers/internal/transport"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -123,7 +124,7 @@ func TestPrepareReturnsFinalizeBodyError(t *testing.T) {
 		URL:    "https://example.test",
 		Body:   map[string]any{},
 		Res:    registry.Resolved{Transport: registry.Transport{Auth: registry.AuthNone}},
-		FinalizeBody: func(context.Context, map[string]any, llm.Request) error {
+		FinalizeBody: func(*http.Request, map[string]any, llm.Request) error {
 			return want
 		},
 	})
@@ -184,6 +185,7 @@ func TestURLAndModelInBody(t *testing.T) {
 
 func TestDoDecodesStampsAndLogs(t *testing.T) {
 	t.Parallel()
+	t.Run("serving deployment", testServingDeployment)
 	var gotBody []byte
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotBody, _ = io.ReadAll(r.Body)
@@ -228,6 +230,72 @@ func TestDoDecodesStampsAndLogs(t *testing.T) {
 	raw, _ := json.Marshal(rec)
 	if strings.Contains(string(raw), "key-secret") || strings.Contains(string(raw), "gw-secret") {
 		t.Fatalf("credential leaked into the attempt record: %s", raw)
+	}
+}
+
+func testServingDeployment(t *testing.T) {
+	const base = "https://serving.invalid"
+	res := testRes(base, registry.AuthNone)
+	res.Transport.StreamEndpoint, res.Transport.CountTokensEndpoint = "/events", "/count"
+	routes := []string{"/responses", "/events", "/count", "/selected?row=17", "/selected?row=29", "/other?row=17", "/selected?row=17", "/responses"}
+	for _, source := range []int{0, 1, 3} {
+		reply := func(r *http.Request) *http.Response {
+			_ = r.Body.Close()
+			return &http.Response{Request: r, StatusCode: http.StatusOK, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(`{}`))}
+		}
+		initial := &Call{Res: res, Method: http.MethodPost, URL: base + routes[source], Body: map[string]any{}}
+		initial.Client = &http.Client{Transport: transporttest.RoundTripFunc(func(r *http.Request) (*http.Response, error) { return reply(r), nil })}
+		issuer, err := Complete(t.Context(), initial, func(*Result) (llm.Response, error) { return llm.Response{}, nil })
+		if err != nil {
+			t.Fatal(err)
+		}
+		// Only the result of the selection is encoded in this fixture.
+		if source == 1 {
+			// A direct caller can record the exact URL without the registry row.
+			llm.StampEndpointURL(&issuer, initial.URL, llm.APILogCredentialMaterial{})
+		}
+		marker := llm.Assistant("ordinary answer")
+		marker.ReasoningEndpoint = issuer.ReasoningEndpoint()
+		messages := []llm.Message{marker}
+		req := llm.Request{Messages: messages, PreviousResponseID: "fixture", HistoryMode: llm.HistoryModeResponsesDelta,
+			Continuation: &llm.ContinuationMetadata{AnchorEndpoint: marker.ReasoningEndpoint, FullHistory: messages}}
+		var seen [][]byte
+		call := &Call{Res: res, Req: req, Method: http.MethodPost, URL: base + routes[0], BuildBody: func(view llm.Request) (map[string]any, error) {
+			return map[string]any{"owned": view.Messages[0].ReasoningEndpoint != "", "anchored": view.PreviousResponseID != "", "answer": view.Messages[0].Text()}, nil
+		}}
+		call.Client = &http.Client{Transport: transporttest.RoundTripFunc(func(r *http.Request) (*http.Response, error) {
+			i := len(seen)
+			data, err := io.ReadAll(r.Body)
+			if err != nil || i >= len(routes) || r.URL.RequestURI() != routes[i] {
+				t.Fatalf("unexpected request at hop %d: %v", i, err)
+			}
+			var policy struct {
+				Owned, Anchored bool
+				Answer          string
+			}
+			if err := json.Unmarshal(data, &policy); err != nil {
+				t.Fatal(err)
+			}
+			want := source < 3 && (i < 3 || i == 7) || source == 3 && routes[i] == routes[source]
+			if policy.Owned != want || policy.Anchored != want || policy.Answer != marker.Text() {
+				t.Errorf("source %d hop %d selected owned=%t anchored=%t, want %t", source, i, policy.Owned, policy.Anchored, want)
+			}
+			for j := range i {
+				if routes[j] == routes[i] && string(data) != string(seen[j]) {
+					t.Errorf("source %d changed return bytes at hop %d", source, i)
+				}
+			}
+			seen = append(seen, data)
+			out := reply(r)
+			if i+1 < len(routes) {
+				out.StatusCode = http.StatusTemporaryRedirect
+				out.Header.Set("Location", routes[i+1])
+			}
+			return out, nil
+		})}
+		if err := Do(t.Context(), call, nil); err != nil || len(seen) != len(routes) {
+			t.Fatalf("source %d attempted %d hops: %v", source, len(seen), err)
+		}
 	}
 }
 

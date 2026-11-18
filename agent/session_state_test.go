@@ -246,6 +246,7 @@ func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
 			want                 int
 		}{
 			{"same", "wire-a", original, true, true, 90_000},
+			{"same gateway serves another deployment", "wire-a", original, true, true, 0},
 			{"private result appended after dispatch", "wire-a", original, true, true, 90_000},
 			{"measured after committed fold", "wire-a", original, true, true, 90_000},
 			{"measured after repaired tool result", "wire-a", original, true, true, 90_000},
@@ -272,6 +273,9 @@ func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
 					awaitSignal(t, release, "history change before the provider answer")
 					resp := agenttest.FinalResponse("answer-59")
 					resp.Usage = llm.Usage{InputTokens: 90_000, OutputTokens: 10, TotalTokens: 90_010}
+					if tc.name == "same gateway serves another deployment" {
+						llm.StampEndpointURL(&resp, replacement+"/responses", llm.APILogCredentialMaterial{})
+					}
 					return resp
 				})
 				s := newSession(t, withClient(client), withStateDir(state), withProfile(resolveClientProfile(t, client, "gw/reasoner")))

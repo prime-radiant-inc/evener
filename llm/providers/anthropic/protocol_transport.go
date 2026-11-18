@@ -31,7 +31,7 @@ func (p *Protocol) completionCall(operation, u string, req llm.Request, res regi
 		}
 		return body, err
 	}
-	call.FinalizeBody = func(_ context.Context, finalBody map[string]any, view llm.Request) error {
+	call.FinalizeBody = func(_ *http.Request, finalBody map[string]any, view llm.Request) error {
 		if !requestutil.WireFieldEnabled(res.Caps, "max_tokens", res.Protocol) {
 			delete(finalBody, "max_tokens")
 			return nil
@@ -56,7 +56,7 @@ func (p *Protocol) Complete(ctx context.Context, req llm.Request, res registry.R
 func (p *Protocol) Stream(ctx context.Context, req llm.Request, res registry.Resolved) (llm.Stream, error) {
 	call := p.completionCall("messages.create(stream)", protocolhttp.URL(res, res.Transport.StreamEndpoint), req, res, true)
 	return protocolhttp.Stream(ctx, call, func(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, r *protocolhttp.Result, attempt *transport.APIAttemptCapture) {
-		decodeMessagesStream(sctx, cancel, resp, s, req, res.Instance, r.EndpointURL, r.Material, attempt)
+		decodeMessagesStream(sctx, cancel, resp, s, req, res, r.EndpointURL, r.Material, attempt)
 	})
 }
 

@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/internal/protocolhttp"
 	"primeradiant.com/evener/llm/providers/internal/transport"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // decodeMessagesStream consumes the messages SSE stream in its own
@@ -20,7 +21,8 @@ import (
 // body and the ChanStream. provider stamps every Response/error the decoder
 // produces; endpointURL and material back llm.StampHTTPResponseEndpoint's fallback
 // and credential-sanitization inputs.
-func decodeMessagesStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, provider, endpointURL string, material llm.APILogCredentialMaterial, attempt *transport.APIAttemptCapture) {
+func decodeMessagesStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, res registry.Resolved, endpointURL string, material llm.APILogCredentialMaterial, attempt *transport.APIAttemptCapture) {
+	provider := res.Instance
 	defer func() {
 		_ = resp.Body.Close()
 		s.CloseSend()
@@ -400,7 +402,7 @@ func decodeMessagesStream(sctx context.Context, cancel context.CancelFunc, resp 
 				if refusalWarn != nil {
 					r.Warnings = append(r.Warnings, *refusalWarn)
 				}
-				llm.StampHTTPResponseEndpoint(&r, resp, endpointURL, material)
+				llm.StampHTTPResponseEndpoint(&r, resp, endpointURL, material, res)
 				// See the matching comment in fromAnthropicResponse (response.go):
 				// only fall back to "tool_calls" when message_delta's stop_reason
 				// was missing/empty, never when it already reported something more
