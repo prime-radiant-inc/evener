@@ -48,8 +48,7 @@ func StrictifyJSONSchema(in map[string]any) map[string]any {
 //     nullable object, and OpenAI's documented way of spelling an optional
 //     field under strict mode. The rewrite matches only a literal "object"
 //     string type, so such a node keeps its own required list and its own
-//     additionalProperties. It is certifiable only when it is strict-valid
-//     already: every property required and additionalProperties false.
+//     additionalProperties, and everything below it is left untouched too.
 //   - $ref, and the $defs/definitions table it points into. The rewrite never
 //     resolves a reference and never descends into the definitions, so a
 //     schema using either cannot be certified: certifying the referenced
@@ -57,13 +56,32 @@ func StrictifyJSONSchema(in map[string]any) map[string]any {
 //     referenced object would reach OpenAI with its optional property intact.
 //     Such a schema is refused rather than resolved.
 //
-// Likewise a node that declares properties or items under a type the rewrite
-// does not recognise keeps its advertised optionality, so it is refused.
+// So the walk tracks whether the rewrite will visit a node. A visited node
+// with a literal "object" or "array" string type is transformed, and the
+// projection supplies its required list and additionalProperties. Any other
+// node — one the rewrite never visits, or one whose type list it does not
+// match — keeps exactly what it advertises, so it must already satisfy strict
+// mode itself: every property required and additionalProperties false. The
+// same rule applies to every descendant of such a node, since nothing below it
+// is rewritten either.
+//
+// Finally, a container the walk cannot read is refused rather than trusted.
+// properties, items and the combinator lists reach this package either as
+// decoded JSON (map[string]any and []any) or as a Go caller's typed values
+// (map[string]map[string]any, []map[string]any). The rewrite type-asserts the
+// same way, so an unreadable properties map would be replaced with an empty
+// one — dropping every advertised argument — and an unreadable combinator list
+// would keep its optional properties. Neither is certifiable.
 func StrictExpressible(schema map[string]any) bool {
-	return strictlyExpressibleNode(schema)
+	return strictlyExpressibleNode(schema, true)
 }
 
-func strictlyExpressibleNode(m map[string]any) bool {
+// strictlyExpressibleNode walks one node. visited reports whether
+// StrictifyJSONSchema will call into this node: the root is visited, a
+// property or items subschema is visited only when its parent is visited and
+// carries the literal object or array type the rewrite matches, and combinator
+// branches are visited whenever the node itself is.
+func strictlyExpressibleNode(m map[string]any, visited bool) bool {
 	if m == nil {
 		return true
 	}
@@ -75,27 +93,44 @@ func strictlyExpressibleNode(m map[string]any) bool {
 			return false
 		}
 	}
-	isObject, isArray, listed := schemaTypeFlags(m["type"])
+	literal := schemaLiteralType(m["type"])
+	isObject, isArray := schemaTypeFlags(m["type"])
+	// Only a visited node whose type is the literal string the rewrite matches
+	// is transformed. Everything else keeps what it advertises.
+	transformed := visited && (literal == "object" || literal == "array")
 	switch {
 	case isObject:
-		props, _ := m["properties"].(map[string]any)
+		props, ok := inspectProperties(m)
+		if !ok {
+			return false
+		}
 		if len(props) > 0 && !allPropertiesRequired(props, m["required"]) {
 			return false
 		}
-		// A type list is not rewritten, so the node must already be
-		// strict-valid: strict mode requires additionalProperties: false on
-		// every object, and an absent key is not the same as false.
-		if listed && m["additionalProperties"] != false {
+		// Only the rewrite may supply additionalProperties: false. An object it
+		// does not transform keeps the advertised value, and strict mode
+		// requires false.
+		if !transformed && m["additionalProperties"] != false {
 			return false
 		}
 		for _, child := range props {
-			if childMap, ok := child.(map[string]any); ok && !strictlyExpressibleNode(childMap) {
+			childMap, ok := child.(map[string]any)
+			if !ok {
+				continue
+			}
+			if !strictlyExpressibleNode(childMap, visited && literal == "object") {
 				return false
 			}
 		}
 	case isArray:
-		if items, ok := m["items"].(map[string]any); ok && !strictlyExpressibleNode(items) {
-			return false
+		if raw, has := m["items"]; has && raw != nil {
+			items, ok := raw.(map[string]any)
+			if !ok {
+				return false
+			}
+			if !strictlyExpressibleNode(items, visited && literal == "array") {
+				return false
+			}
 		}
 	default:
 		// An object- or array-shaped node the rewrite does not recognise: it
@@ -108,7 +143,8 @@ func strictlyExpressibleNode(m map[string]any) bool {
 			return false
 		}
 	}
-	// The rewrite strictifies combinators whatever the node's own type, so a
+	// The rewrite strictifies combinators from any node it visits, whatever the
+	// node's own type, so branches stay reachable.
 	for _, comb := range []string{"anyOf", "oneOf", "allOf"} {
 		raw, ok := m[comb]
 		if !ok || raw == nil {
@@ -116,10 +152,16 @@ func strictlyExpressibleNode(m map[string]any) bool {
 		}
 		arr, ok := raw.([]any)
 		if !ok {
-			continue
+			// Present but unreadable: the rewrite skips it, so any optional
+			// property inside would reach the provider unchanged.
+			return false
 		}
 		for _, it := range arr {
-			if child, ok := it.(map[string]any); ok && !strictlyExpressibleNode(child) {
+			child, ok := it.(map[string]any)
+			if !ok {
+				continue
+			}
+			if !strictlyExpressibleNode(child, visited) {
 				return false
 			}
 		}
@@ -127,15 +169,33 @@ func strictlyExpressibleNode(m map[string]any) bool {
 	return true
 }
 
+// schemaLiteralType returns the node's type when it is written as a plain
+// string, which is the only form StrictifyJSONSchema matches.
+func schemaLiteralType(raw any) string {
+	s, _ := raw.(string)
+	return s
+}
+
+// inspectProperties returns a node's properties when they are in the shape the
+// rewrite and this walk can read. ok is false when properties is present but
+// unreadable, because the rewrite would replace such a value with an empty map
+// and drop every advertised argument.
+func inspectProperties(m map[string]any) (map[string]any, bool) {
+	raw, has := m["properties"]
+	if !has || raw == nil {
+		return nil, true
+	}
+	props, ok := raw.(map[string]any)
+	return props, ok
+}
+
 // schemaTypeFlags reads a schema's type as either a string or a list of
 // strings, which are the two shapes the builders and decoded provider schemas
-// emit. listed reports that a list was given, which is how the caller tells a
-// node the rewrite cannot match (it tests only a literal "object" string) from
-// one it can.
-func schemaTypeFlags(raw any) (isObject, isArray, listed bool) {
+// emit.
+func schemaTypeFlags(raw any) (isObject, isArray bool) {
 	switch t := raw.(type) {
 	case string:
-		return t == "object", t == "array", false
+		return t == "object", t == "array"
 	case []string:
 		for _, name := range t {
 			switch name {
@@ -145,7 +205,7 @@ func schemaTypeFlags(raw any) (isObject, isArray, listed bool) {
 				isArray = true
 			}
 		}
-		return isObject, isArray, true
+		return isObject, isArray
 	case []any:
 		for _, v := range t {
 			if name, ok := v.(string); ok {
@@ -157,9 +217,9 @@ func schemaTypeFlags(raw any) (isObject, isArray, listed bool) {
 				}
 			}
 		}
-		return isObject, isArray, true
+		return isObject, isArray
 	default:
-		return false, false, false
+		return false, false
 	}
 }
 

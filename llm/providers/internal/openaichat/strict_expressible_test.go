@@ -214,6 +214,119 @@ func TestStrictExpressible(t *testing.T) {
 			},
 			want: false,
 		},
+		// The rewrite stops at a nullable array's type list, so nothing
+		// below it is rewritten either. An item object that requires every
+		// property but omits additionalProperties: false still reaches the
+		// provider as advertised, and strict mode rejects it.
+		{
+			name: "nullable array items omit additionalProperties false",
+			in: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"rows": map[string]any{
+						"type": []string{"array", "null"},
+						"items": map[string]any{
+							"type":       "object",
+							"properties": map[string]any{"id": map[string]any{"type": "integer"}},
+							"required":   []string{"id"},
+						},
+					},
+				},
+				"required": []string{"rows"},
+			},
+			want: false,
+		},
+		{
+			name: "nullable array items are already strict-valid",
+			in: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"rows": map[string]any{
+						"type": []string{"array", "null"},
+						"items": map[string]any{
+							"type":                 "object",
+							"additionalProperties": false,
+							"properties":           map[string]any{"id": map[string]any{"type": "integer"}},
+							"required":             []string{"id"},
+						},
+					},
+				},
+				"required": []string{"rows"},
+			},
+			want: true,
+		},
+		// A descendant of a nullable object is equally unreachable.
+		{
+			name: "nullable object property descendant omits additionalProperties false",
+			in: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"filter": map[string]any{
+						"type":                 []string{"object", "null"},
+						"additionalProperties": false,
+						"properties": map[string]any{
+							"nested": map[string]any{
+								"type":       "object",
+								"properties": map[string]any{"a": map[string]any{"type": "string"}},
+								"required":   []string{"a"},
+							},
+						},
+						"required": []string{"nested"},
+					},
+				},
+				"required": []string{"filter"},
+			},
+			want: false,
+		},
+		{
+			name: "nullable object property descendant that is already strict-valid",
+			in: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"filter": map[string]any{
+						"type":                 []string{"object", "null"},
+						"additionalProperties": false,
+						"properties": map[string]any{
+							"nested": map[string]any{
+								"type":                 "object",
+								"additionalProperties": false,
+								"properties":           map[string]any{"a": map[string]any{"type": "string"}},
+								"required":             []string{"a"},
+							},
+						},
+						"required": []string{"nested"},
+					},
+				},
+				"required": []string{"filter"},
+			},
+			want: true,
+		},
+		// A Go caller can hand properties over as a typed map. The rewrite
+		// would replace it with an empty map and drop every advertised
+		// argument, so it cannot be certified.
+		{
+			name: "properties as a typed map is unreadable",
+			in: map[string]any{
+				"type":       "object",
+				"properties": map[string]map[string]any{"a": {"type": "string"}},
+				"required":   []string{"a"},
+			},
+			want: false,
+		},
+		{
+			name: "combinator branch as a typed slice is unreadable",
+			in: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"a": map[string]any{"type": "string"},
+				},
+				"required": []string{"a"},
+				"oneOf": []map[string]any{
+					{"type": "object", "properties": map[string]any{"x": map[string]any{"type": "string"}}},
+				},
+			},
+			want: false,
+		},
 	}
 
 	for _, tc := range cases {

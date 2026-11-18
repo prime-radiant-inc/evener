@@ -148,6 +148,11 @@ func TestStrictToolProjectionKeepsOptionalArgumentsOmittable(t *testing.T) {
 
 // A nested object with an optional property is the same illegality one level
 // down: strict mode requires every property of every object, not only the root.
+//
+// The root requires update on purpose. Leaving it optional would let the root
+// alone make the schema inexpressible, so the adapter could pass this test
+// without ever inspecting the array items, and the nested case would stop being
+// load-bearing.
 func TestStrictToolProjectionRejectsNestedOptionalProperties(t *testing.T) {
 	t.Parallel()
 	req := userReq("hi")
@@ -170,6 +175,7 @@ func TestStrictToolProjectionRejectsNestedOptionalProperties(t *testing.T) {
 					},
 				},
 			},
+			"required": []string{"update"},
 		},
 	}}
 
