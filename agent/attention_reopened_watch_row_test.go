@@ -6,7 +6,8 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 )
 
-// TestAReopenedWatchRowIsNotAdmittedAsAFreshFrame pins review 53026's medium 1.
+// TestAReopenedWatchRowIsNotAdmittedAsAFreshFrame pins the rule that a row a
+// stop reopened is the stop's own row, not a fresh frame.
 //
 // A user stops an attention run before it presents its stable watch frame. The
 // stop reopens the frame's row under /reopened/<generation>, so the reopened

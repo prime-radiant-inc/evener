@@ -202,7 +202,6 @@ func (c *delegateTreeController) reconcileDelegateAttentionFromTranscripts() err
 	}
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	ids := make([]string, 0, len(c.durable))
 	for id := range c.durable {
 		ids = append(ids, id)
@@ -228,6 +227,7 @@ func (c *delegateTreeController) reconcileDelegateAttentionFromTranscripts() err
 	}
 	if len(events) != 0 {
 		if _, err := c.appendLocked(events...); err != nil {
+			c.mu.Unlock()
 			return fmt.Errorf("repair delegate attention projection: %w", err)
 		}
 		c.evidenceVersion++
@@ -252,6 +252,27 @@ func (c *delegateTreeController) reconcileDelegateAttentionFromTranscripts() err
 		rebuilt[id] = state
 	}
 	c.attention = rebuilt
+	// The rebuild above is this pass's word on which wakes are still owed, and
+	// it is the newest evidence a derived hold can be measured against. A hold
+	// installed before this pass decided from a wake set that did not yet include
+	// these notes — a daemon restart rebuilds an idle ancestor, which derives its
+	// quiet, and only then reconciles — is superseded by them: the note is the
+	// restart's re-arm, and nothing journals a release for it because the run it
+	// supersedes never settled. Ending those holds here, in the pass that owns the
+	// notes and before any deferred work runs, is what keeps the ancestor from
+	// suppressing the very report the restart re-armed. Collected under the lock,
+	// re-armed after it: the re-arm takes each runtime's attentionMu, and a
+	// runtime that left the tree meanwhile re-arms nothing.
+	var rearm []*Session
+	for id := range rebuilt {
+		if runtime := c.residentDelegateRuntimeLocked(id); runtime != nil {
+			rearm = append(rearm, runtime)
+		}
+	}
+	c.mu.Unlock()
+	for _, runtime := range rearm {
+		runtime.rearmDelegateAttentionHoldsFromWakeSet()
+	}
 	return nil
 }
 

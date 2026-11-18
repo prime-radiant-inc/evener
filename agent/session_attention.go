@@ -1132,6 +1132,11 @@ func (s *Session) delegateAttentionPendingIDsLocked() []string {
 	if err != nil {
 		return nil
 	}
+	if ids == nil {
+		// A fold that ran and found nothing is reported as an empty, non-nil
+		// slice, so the caller's set is non-nil and the gate withholds nothing.
+		return []string{}
+	}
 	return ids
 }
 
@@ -1230,9 +1235,13 @@ func (s *Session) delegateAttentionAwaitingAdmissionLocked(attentionID string, p
 // only window in which the controller's shrinking wake set is evidence about
 // the row itself.
 func delegateAttentionPendingSet(ids []string) map[string]struct{} {
-	if len(ids) == 0 {
-		return nil
-	}
+	// An empty fold is an ANSWER, not a missing one: it says the transcript holds
+	// no pending row, which is exactly what a generation that just consumed its
+	// sole pending row produces. Returning nil here would make that answer
+	// indistinguishable from a fold that could not run, and the admission gate
+	// treats nil as "unknown, fall back to the wake set" — which drops the very
+	// trigger acceptance just consumed. Only a caller that could not read the
+	// transcript passes nil.
 	pending := make(map[string]struct{}, len(ids))
 	for _, id := range ids {
 		pending[id] = struct{}{}
@@ -1374,6 +1383,53 @@ func (s *Session) clearDelegateAttentionHold(attentionID string) {
 	s.moveHeldDelegateAttentionTurnsToTail([]string{attentionID})
 	delete(s.attentionAutomaticDriveHolds, attentionID)
 	s.attentionMu.Unlock()
+}
+
+// rearmDelegateAttentionHoldsFromWakeSet ends every automatic-drive hold whose
+// row the controller has since noted a wake for. The derivation installs a hold
+// for a row its generation says a stop quieted, and it decides from the noted set
+// it can see. A daemon restart breaks that: bootstrap rebuilds an idle ancestor
+// to recover a descendant's owed start — which derives the ancestor's quiet — and
+// only then reconciles the transcripts, which is what notes the pending reports'
+// wakes. The note is the restart's re-arm. Nothing journals a release for it,
+// because the run it supersedes never settled, so presentation's reconcile
+// against release generations can never end the hold: the ancestor keeps
+// suppressing the very report the restart re-armed.
+//
+// This is the pass that can see the note, and it is idempotent by construction —
+// it ends only holds the wake set already supersedes, so a second call with the
+// same evidence does nothing. Bootstrap calls it once, after reconciliation and
+// before any owed work launches. It reads the note rather than predicting it,
+// which is what keeps an ordinary same-process reclaim — where the noted set is
+// the live one and the hold is the stop's current quiet — deciding exactly as
+// the derivation did.
+func (s *Session) rearmDelegateAttentionHoldsFromWakeSet() {
+	if s == nil || s.delegateController == nil || s.owningDelegateID == "" {
+		return
+	}
+	s.attentionMu.Lock()
+	if len(s.attentionAutomaticDriveHolds) == 0 {
+		s.attentionMu.Unlock()
+		return
+	}
+	controller := s.delegateController
+	controller.mu.Lock()
+	var noted map[string]struct{}
+	if state := controller.attention[s.owningDelegateID]; state != nil {
+		noted = maps.Clone(state.wakeIDs)
+	}
+	controller.mu.Unlock()
+	var rearmed []string
+	for attentionID := range s.attentionAutomaticDriveHolds {
+		if _, wakeNoted := noted[attentionID]; wakeNoted {
+			rearmed = append(rearmed, attentionID)
+		}
+	}
+	s.attentionMu.Unlock()
+	sort.Strings(rearmed)
+	for _, attentionID := range rearmed {
+		s.clearDelegateAttentionHold(attentionID)
+	}
 }
 
 // holdDelegateAttentionFromAutomaticDriveAt quiets a reopened row a user's
@@ -2030,7 +2086,15 @@ func (s *Session) acceptDelegateAttention(reservation *delegateStartReservation)
 		// began, and that row still waits for the release that supersedes the
 		// stop: the same floor, asked of the same generation.
 		if _, generation, ok := cutDelegateAttentionReopenSegment(pendingID); ok {
-			if released >= generation || !s.delegateAttentionGenerationStartedLocked(reservation.delegateID, generation) {
+			// A generation an explicit send reused is the successor's, not the
+			// send's: the send wrote RunStarted for it and its own commit cleared
+			// the wake set, so the report has nowhere else to be presented from.
+			// Carrying it here is the same eligibility decision automatic
+			// selection makes — the quiet still stands only while no release has
+			// reached the row's generation, and a send-reused generation is never
+			// a stop's own quiet, so there is nothing to wait for.
+			sendReused := s.delegateAttentionGenerationTriggerLocked(reservation.delegateID, generation) == delegatestore.TriggerOwnerInput
+			if released >= generation || sendReused || !s.delegateAttentionGenerationStartedLocked(reservation.delegateID, generation) {
 				captured = append(captured, pendingID)
 			}
 		}
@@ -2070,6 +2134,23 @@ func (s *Session) delegateAttentionGenerationStartedLocked(delegateID string, ge
 	defer controller.mu.Unlock()
 	_, started := controller.runStarts[delegateLease{delegateID: delegateID, generation: generation}]
 	return started
+}
+
+// delegateAttentionGenerationTriggerLocked returns the trigger that began
+// generation, or the empty trigger when no RunStarted was journaled for it. A
+// generation an explicit send reused reports TriggerOwnerInput, which is what
+// distinguishes it from an attention run's own generation.
+func (s *Session) delegateAttentionGenerationTriggerLocked(delegateID string, generation uint64) delegatestore.RunTrigger {
+	if delegateID == "" || generation == 0 {
+		return ""
+	}
+	controller := s.delegateController
+	if controller == nil {
+		return ""
+	}
+	controller.mu.Lock()
+	defer controller.mu.Unlock()
+	return controller.runStarts[delegateLease{delegateID: delegateID, generation: generation}]
 }
 
 // retainCapturedDelegateAttentionTurns puts every captured row's turn into the

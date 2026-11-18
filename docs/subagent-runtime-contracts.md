@@ -64,20 +64,27 @@ and ends the hold with no durable release at all. The durable floor is what
 orders a restore that had to rebuild the controller from the journal, where no
 in-memory sample survived; that restore keeps the stop's quiet standing until a
 wake at a settled generation journals its release. A
-reopened row therefore stays quiet only while no release at or past its
-generation is journaled: the release makes it eligible again after an idle
-reclaim, and a stop that settles after a wake settles a later generation, whose
-quiet stands. The field is monotonic, so a replayed release cannot lower the
+reopened row therefore stays quiet only while the higher of those two floors is
+below its generation: either source ends the quiet, a journaled release and an
+in-memory admission sample alike, and a row is eligible once one of them has
+reached it. A stop that settles after a wake settles a later generation, whose
+quiet stands. Both fields are monotonic, so a replayed release cannot lower a
 floor and revive a quiet a newer release already ended.
 
 Daemon bootstrap is the exception, and it is deliberate. On restart every
 pending row is put into the controller's wake set by ID, including a row whose
-stop's quiet was never released, and idle reconstruction does not reinstall a
-hold for a row a wake already notes. So a restart can make a pending report
+stop's quiet was never released, so a restart can make a pending report
 eligible with the release floor still at zero. That is a different event from an
 idle reclaim: reclaim rebuilds the quiet from the settled stop, while a restart
 re-arms the row and lets the arm that presents it end the quiet by presenting
-it. The scheduler's S12 entry states the same distinction.
+it. The order matters, and it is the one seam where the quiet is rebuilt before
+the re-arm is visible: bootstrap restores an idle ancestor — which derives its
+quiet — and only then reconciles the transcripts. The reconcile that rebuilds
+the wake set is therefore also the pass that ends the derived holds those wakes
+supersede (`delegateTreeController.reconcileDelegateAttentionFromTranscripts`),
+and it runs before any deferred work launches. A note journals no release,
+because the run it supersedes never settled, so nothing else can end such a
+hold. The scheduler's S12 entry states the same distinction.
 
 ## Delegate report preservation
 

@@ -4,7 +4,8 @@ import (
 	"testing"
 )
 
-// TestAFailedStartReopenStaysInTheSuccessorsOwedSet pins review 53026's medium 3.
+// TestAFailedStartReopenStaysInTheSuccessorsOwedSet pins the rule that a reopen
+// whose generation never began is eligible on its own evidence.
 //
 // A busy commit reopens an unpresented report and another pending row starts
 // next. The reopen claims the generation its failed start never completed, so

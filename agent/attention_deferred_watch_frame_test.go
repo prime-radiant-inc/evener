@@ -6,8 +6,8 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 )
 
-// TestADeferredWatchFrameStaysOutOfSelectionAndTheRequest pins review 53026's
-// medium 2.
+// TestADeferredWatchFrameStaysOutOfSelectionAndTheRequest pins the rule that a
+// frame whose wake never passed its gate is withheld from both answers.
 //
 // A cold watch frame is already in the resumed transcript when the restore runs,
 // and its wake admission can fail there — the delegate's lane may be held, or

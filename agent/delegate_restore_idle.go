@@ -192,6 +192,15 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 	if restoreFoldErr != nil {
 		child.emit(warningDataFromError("restore a pending delegate attention turn", restoreFoldErr))
 	}
+	// The idle release reclaimed the runtime that held a user stop's quiet in
+	// memory, so this freshly built session has no hold for the report that stop
+	// reopened. Rebuilding it here, before the candidate can attach, is the same
+	// step the automatic restore takes for the same reason: selection reads the
+	// automatic list, and a send that attached first could start a generation
+	// that presents the report the user stopped. A successful send still presents
+	// a held report — the hold only keeps it out of AUTOMATIC drives, and the
+	// send's own request is not one.
+	child.deriveHeldDelegateAttentionFromOutcome()
 	for name := range child.reg.RegisteredNames() {
 		if !hasString(descriptor.ToolNameCeiling, name) {
 			child.discardRestoredCandidate()

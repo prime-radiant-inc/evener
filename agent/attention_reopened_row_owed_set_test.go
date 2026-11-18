@@ -8,7 +8,8 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 )
 
-// TestAReleasedReopenedRowSurvivesTheSuccessorStart pins review 52941 medium 1.
+// TestAReleasedReopenedRowSurvivesTheSuccessorStart pins the rule that a row a
+// release made presentable stays in the successor's owed set.
 //
 // The sequence the finding describes: a user stop settles generation 1 and
 // reopens its trigger under /reopened/1, so that row carries no wake ID of its

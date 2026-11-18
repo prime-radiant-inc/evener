@@ -6,8 +6,8 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 )
 
-// TestACommittedWatchTriggerCarriesItsFrameInTheFirstRequest pins review
-// `6b2d02a`'s high 2: a durably consumed report the model never saw.
+// TestACommittedWatchTriggerCarriesItsFrameInTheFirstRequest pins the rule that
+// a committed trigger stays in its generation's first request.
 //
 // The admission gate asks the controller's wake set whether a frame's wake ever
 // reached it. That set reports what the delegate still owes, and it shrinks:

@@ -8,8 +8,8 @@ import (
 	"primeradiant.com/evener/agent/internal/delegatestore"
 )
 
-// TestARestoredRuntimeAdmitsAWatchFrameBeforeItsTurnIsVisible pins review
-// 52973's medium.
+// TestARestoredRuntimeAdmitsAWatchFrameBeforeItsTurnIsVisible pins one rule: a
+// row becomes visible to the model only after the arm that admits its wake.
 //
 // The sequence: a user's stop settles generation 1 and reopens its trigger
 // under /reopened/1, and the stop's quiet now covers that reopened report. A
