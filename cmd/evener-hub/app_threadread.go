@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/skill"
 	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/agent/wirenames"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -1945,12 +1946,14 @@ func enrichThreadFileBackedOutputImages(thread appwire.Thread) appwire.Thread {
 		return thread
 	}
 	// argsByCallID carries the arguments a legacy row does not record itself.
-	// A call id can be reused inside one stamped batch (two read_file calls for
-	// different images share it), and the index reserves the FIRST recorded part
-	// under an id, so the first row's arguments are the ones a later result row
-	// inherits. Keeping the last row's would hand that result a descriptor for an
-	// image a different call read (#1166 review).
+	// A call id can be reused inside one stamped batch, so the id alone does not
+	// name a call: the row's own tool identity has to agree with the
+	// announcement, and two announcements of that tool under one id name no
+	// single call at all. Substituting either one's path there would show a
+	// reader an image beside a result it was never part of, which is worse than
+	// leaving a thumbnail out, so an ambiguous id keeps no fallback.
 	argsByCallID := map[string]string{}
+	ambiguousCallIDs := map[string]string{}
 	for ti := range thread.Turns {
 		for ii := range thread.Turns[ti].Items {
 			item := thread.Turns[ti].Items[ii]
@@ -1958,16 +1961,20 @@ func enrichThreadFileBackedOutputImages(thread appwire.Thread) appwire.Thread {
 				continue
 			}
 			if item.CallID != "" && item.ArgumentsJSON != "" {
-				if _, seen := argsByCallID[item.CallID]; !seen {
-					argsByCallID[item.CallID] = item.ArgumentsJSON
+				key := announcedCallKey(item.CallID, item.ToolName)
+				if _, seen := argsByCallID[key]; seen {
+					ambiguousCallIDs[key] = item.ArgumentsJSON
 				}
+				argsByCallID[key] = item.ArgumentsJSON
 			}
 			if item.Status != appwire.TurnStatusCompleted {
 				continue
 			}
 			argsJSON := item.ArgumentsJSON
 			if argsJSON == "" && item.CallID != "" {
-				argsJSON = argsByCallID[item.CallID]
+				if argsJSON = fallbackArguments(argsByCallID, ambiguousCallIDs, item.CallID, item.ToolName); argsJSON == "" {
+					continue
+				}
 			}
 			fileBacked := outputImagesForToolCall(sessionID, cwd, item.ToolName, argsJSON, item.Output)
 			if len(fileBacked) == 0 {
@@ -1978,6 +1985,30 @@ func enrichThreadFileBackedOutputImages(thread appwire.Thread) appwire.Thread {
 		}
 	}
 	return thread
+}
+
+// announcedCallKey names one announced call the way enrichment can match it: by
+// the call id the record gives and the tool identity it announced under. Two
+// tools may share an id, so the id alone does not name a call.
+func announcedCallKey(callID, toolName string) string {
+	return callID + "\x00" + wirenames.Canonical(toolName)
+}
+
+// fallbackArguments returns the arguments an announcing row recorded for the
+// call this result row answers, or "" when no single announcement names it.
+//
+// A result row projected by the index records the call id but not the
+// arguments, so it borrows them from the announcement. That borrow is only
+// sound when exactly one announcement shares the row's call id AND its tool
+// identity: a different tool's call under the same id is a different call, and
+// two announcements of the same tool under one id name no single call. Both
+// cases return "", which leaves the row with the images it recorded.
+func fallbackArguments(argsByCallID, ambiguousCallIDs map[string]string, callID, toolName string) string {
+	key := announcedCallKey(callID, toolName)
+	if _, ambiguous := ambiguousCallIDs[key]; ambiguous {
+		return ""
+	}
+	return argsByCallID[key]
 }
 
 func appendOutputImagesUnique(existing, extra []appwire.OutputImage) []appwire.OutputImage {

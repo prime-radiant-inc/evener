@@ -527,15 +527,14 @@ func TestOutputImagesForToolCallRepairableMalformedReadFile(t *testing.T) {
 
 // TestEnrichThreadFileBackedOutputImagesKeepsEachRowsOwnArguments covers what
 // the index now projects: a stamped batch whose announced rows each record
-// their own arguments under a reused call id, plus the standalone result row
-// that carries none of its own.
+// their own arguments, plus the standalone result row that carries none of its
+// own.
 //
 // Enrichment seeded a call-id argument cache and fell back to it whenever a row
-// carried no arguments, and the cache holds the LAST row's path for the id. The
-// result row then gained a descriptor for the other call's image — a thumbnail
-// of a file it never read. A row that records its own arguments answers for
-// them; a row that records none answers for the reservation the index makes,
-// which is the FIRST recorded part under that id, not the last (#1166 review).
+// carried no arguments. A row that records its own arguments answers for them,
+// and a row that records none borrows the ONE announcement that names its call.
+// The two announcements here carry different call ids, so each keeps its own
+// path and the result borrows the one that shares its id.
 func TestEnrichThreadFileBackedOutputImagesKeepsEachRowsOwnArguments(t *testing.T) {
 	cwd := t.TempDir()
 	first := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 1, 1, 1}
@@ -563,7 +562,7 @@ func TestEnrichThreadFileBackedOutputImagesKeepsEachRowsOwnArguments(t *testing.
 				Type:          "commandExecution",
 				ToolName:      "read_file",
 				ID:            "item_tool_0_1",
-				CallID:        "call_img",
+				CallID:        "call_other",
 				ArgumentsJSON: `{"file_path":"second.png"}`,
 				Output:        "[image: png, 12 bytes, base64 data follows]",
 				Status:        appwire.TurnStatusCompleted,
@@ -592,5 +591,135 @@ func TestEnrichThreadFileBackedOutputImagesKeepsEachRowsOwnArguments(t *testing.
 			t.Fatalf("row %d (%s) gained a descriptor for %q, want %s: a row answers for its own recorded arguments, and a row with none answers for the first part reserved under the call id",
 				at, row.ID, imgs[0].URL, want)
 		}
+	}
+}
+
+// TestEnrichThreadFileBackedOutputImagesMatchesFallbackByToolIdentity covers a
+// batch where two different tools announced the same call id and the index kept
+// one tool's result as a standalone row.
+//
+// The result row names the call id but records no arguments of its own, so
+// enrichment substitutes the call-id cache's entry. The cache is keyed by call
+// id alone, so it held the other tool's path: a read_file result could show the
+// image an edit_file call had touched, beside the image actually read. A
+// fallback is only this row's call when the announcement is the SAME tool.
+func TestEnrichThreadFileBackedOutputImagesMatchesFallbackByToolIdentity(t *testing.T) {
+	cwd := t.TempDir()
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
+	for _, name := range []string{"edited.png", "read.png"} {
+		if err := os.WriteFile(filepath.Join(cwd, name), png, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	thread := appwire.Thread{
+		ID:        "01DOC",
+		SessionID: "01DOC",
+		CWD:       cwd,
+		Turns: []appwire.Turn{{Items: []appwire.ThreadItem{
+			{
+				Type:          "commandExecution",
+				ToolName:      "edit_file",
+				ID:            "item_tool_0_0",
+				CallID:        "call_shared",
+				ArgumentsJSON: `{"file_path":"edited.png"}`,
+				Output:        "[image: png, 12 bytes, base64 data follows]",
+				Status:        appwire.TurnStatusCompleted,
+			},
+			{
+				Type:          "commandExecution",
+				ToolName:      "read_file",
+				ID:            "item_tool_0_1",
+				CallID:        "call_shared",
+				ArgumentsJSON: `{"file_path":"read.png"}`,
+				Output:        "[image: png, 12 bytes, base64 data follows]",
+				Status:        appwire.TurnStatusCompleted,
+			},
+			{
+				Type:     "commandExecution",
+				ToolName: "read_file",
+				ID:       "item_tool_result_0_0",
+				CallID:   "call_shared",
+				Output:   "[image: png, 12 bytes, base64 data follows]",
+				Status:   appwire.TurnStatusCompleted,
+			},
+		}}},
+	}
+
+	got := enrichThreadFileBackedOutputImages(thread)
+	result := got.Turns[0].Items[2]
+	if len(result.OutputImages) != 1 {
+		t.Fatalf("standalone result OutputImages=%+v, want one descriptor for its own tool's call", result.OutputImages)
+	}
+	if !strings.Contains(result.OutputImages[0].URL, "read.png") {
+		t.Fatalf("standalone result gained a descriptor for %q: the fallback took a different tool's arguments under the shared call id",
+			result.OutputImages[0].URL)
+	}
+}
+
+// TestEnrichThreadFileBackedOutputImagesOmitsAnAmbiguousFallback covers two
+// announcements of the SAME tool under one call id.
+//
+// Neither announcement is more the result's call than the other, so a
+// substitute path would be a guess. The row keeps the images it recorded and
+// gains no file-backed descriptor.
+func TestEnrichThreadFileBackedOutputImagesOmitsAnAmbiguousFallback(t *testing.T) {
+	cwd := t.TempDir()
+	// Distinct bytes per file: identical content carries one SHA, the enrichment
+	// de-duplicates by SHA, and a wrong descriptor would then read as the
+	// recorded one — the fixture would pass without testing the rule.
+	files := map[string][]byte{
+		"first.png":    {0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 1, 1, 1},
+		"second.png":   {0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 2, 2, 2, 2},
+		"recorded.png": {0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 3, 3, 3, 3},
+	}
+	for name, data := range files {
+		if err := os.WriteFile(filepath.Join(cwd, name), data, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recorded := []appwire.OutputImage{{Source: "tool-result", MediaType: "image/png", Size: int64(len(files["recorded.png"])), SHA: imageSha(files["recorded.png"]), URL: "/s/01DOC/images/" + imageSha(files["recorded.png"])}}
+	thread := appwire.Thread{
+		ID:        "01DOC",
+		SessionID: "01DOC",
+		CWD:       cwd,
+		Turns: []appwire.Turn{{Items: []appwire.ThreadItem{
+			{
+				Type:          "commandExecution",
+				ToolName:      "read_file",
+				ID:            "item_tool_0_0",
+				CallID:        "call_shared",
+				ArgumentsJSON: `{"file_path":"first.png"}`,
+				Output:        "[image: png, 12 bytes, base64 data follows]",
+				Status:        appwire.TurnStatusCompleted,
+			},
+			{
+				Type:          "commandExecution",
+				ToolName:      "read_file",
+				ID:            "item_tool_0_1",
+				CallID:        "call_shared",
+				ArgumentsJSON: `{"file_path":"second.png"}`,
+				Output:        "[image: png, 12 bytes, base64 data follows]",
+				Status:        appwire.TurnStatusCompleted,
+			},
+			{
+				Type:         "commandExecution",
+				ToolName:     "read_file",
+				ID:           "item_tool_result_0_0",
+				CallID:       "call_shared",
+				Output:       "[image: png, 12 bytes, base64 data follows]",
+				Status:       appwire.TurnStatusCompleted,
+				OutputImages: recorded,
+			},
+		}}},
+	}
+
+	got := enrichThreadFileBackedOutputImages(thread)
+	result := got.Turns[0].Items[2]
+	if len(result.OutputImages) != len(recorded) {
+		t.Fatalf("standalone result OutputImages=%+v, want only its own recorded descriptor: two announcements of one tool under one call id name no single call for it",
+			result.OutputImages)
+	}
+	if result.OutputImages[0].URL != recorded[0].URL {
+		t.Fatalf("standalone result descriptor=%q, want its own recorded %q", result.OutputImages[0].URL, recorded[0].URL)
 	}
 }
