@@ -620,6 +620,14 @@ func testFallbackReasoningIssuer(t *testing.T, protocol string) {
 			ModelFallbacks: []string{"gw/reasoner"},
 			ResolveProfile: resolve,
 		}))
+	const oldChatDetail = `[{"type":"reasoning.encrypted","data":"old-chat-190"}]`
+	if protocol == registry.ProtocolOpenAIChat {
+		reply := llm.Response{Provider: fallback.ID(), Message: llm.Assistant("old gateway answer")}
+		reply.Message.Content = append(reply.Message.Content, llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{EncryptedContent: oldChatDetail}})
+		if err := s.appendAssistantTurn(reply, ModelAttemptMetadata{Protocol: protocol, RequestModel: fallback.Model(), EndpointURL: "https://gw.example.test/v1/stream"}); err != nil {
+			t.Fatal(err)
+		}
+	}
 	ctx := tripwireCtx(t)
 	for _, input := range []string{"first", "follow-up"} {
 		if _, err := s.ProcessInput(ctx, input, nil); err != nil {
@@ -643,6 +651,13 @@ func testFallbackReasoningIssuer(t *testing.T, protocol string) {
 	toolInput := checkIssuedItems(fallbackRequests[1], true, true)
 	if protocol == registry.ProtocolOpenAIChat {
 		assertReasoningMarkers(t, fallbackRequests[2], fallbackMarker, "fallback-81")
+		if !slices.ContainsFunc(fallbackRequests[2].Messages, func(m llm.Message) bool {
+			return slices.ContainsFunc(m.Content, func(p llm.ContentPart) bool {
+				return p.Thinking != nil && p.Thinking.EncryptedContent == oldChatDetail
+			})
+		}) {
+			t.Error("the Chat fallback lost its own encrypted detail from its recorded endpoint")
+		}
 	}
 	followupInput := checkIssuedItems(fallbackRequests[2], true, true)
 	assertPrefix(toolInput, followupInput)
@@ -728,11 +743,15 @@ func TestSessionScopesReasoningTextToTheIssuingModel(t *testing.T) {
 			// protocol stamp for a model that overrides it to Responses.
 			instance := testRegistryInstances()["gw"]
 			instance.Models = map[string]registry.Model{
-				"reasoner":  {Protocol: profile.Protocol(), WireID: "served-reasoner", Caps: profile.Resolved().Caps},
+				"reasoner": {Protocol: profile.Protocol(), WireID: "served-reasoner", Caps: profile.Resolved().Caps, Transport: &registry.Transport{
+					Endpoint: "/answer/{model}?deployment=blue", StreamEndpoint: "/stream/{model}?deployment=blue",
+				}},
 				"different": {Protocol: profile.Protocol(), Caps: profile.Resolved().Caps},
 			}
 			client := registryClient(t, map[string]registry.Provider{"gw": instance}, adapter)
-			s := newSession(t, withProfile(resolveClientProfile(t, client, "gw/reasoner")), withClient(client))
+			destination := resolveClientProfile(t, client, "gw/reasoner")
+			dir := t.TempDir()
+			s := newSession(t, withProfile(destination), withClient(client), withStateDir(dir))
 			for _, turn := range []struct {
 				provider, requested, reported, protocol, marker string
 			}{
@@ -760,6 +779,41 @@ func TestSessionScopesReasoningTextToTheIssuingModel(t *testing.T) {
 			if err := s.appendAssistantTurn(foreign, ModelAttemptMetadata{RequestModel: "reasoner"}); err != nil {
 				t.Fatal(err)
 			}
+			// Transcripts can name the sanitized endpoint that answered without
+			// a route digest. Keep the visible answer across every route change.
+			var wantCipher []string
+			for _, old := range []struct {
+				marker, endpoint string
+				same             bool
+			}{
+				{"completion", "https://gw.example.com/v1/answer/served-reasoner", true},
+				{"stream", "https://gw.example.com/v1/stream/served-reasoner", true},
+				{"moved-host", "https://previous.example.com/v1/stream/served-reasoner", false},
+				{"moved-path", "https://gw.example.com/v1/previous/served-reasoner", false},
+			} {
+				resp := withReasoningMarker(llm.Response{Provider: "gw", Message: llm.Assistant("visible-" + old.marker)}, profile.Protocol(), old.marker)
+				opaque := &llm.ThinkingData{ID: "rs_sealed_" + old.marker, EncryptedContent: "sealed-" + old.marker}
+				if profile.Protocol() == registry.ProtocolOpenAIChat {
+					opaque = &llm.ThinkingData{EncryptedContent: `[{"type":"reasoning.encrypted","data":"sealed-` + old.marker + `"}]`}
+				}
+				resp.Message.Content = append(resp.Message.Content, llm.ContentPart{Kind: llm.ContentThinking, Thinking: opaque})
+				if err := s.appendAssistantTurn(resp, ModelAttemptMetadata{Protocol: profile.Protocol(), RequestModel: "reasoner", EndpointURL: old.endpoint}); err != nil {
+					t.Fatal(err)
+				}
+				if old.same {
+					wantCipher = append(wantCipher, opaque.EncryptedContent)
+				}
+			}
+			env := s.currentEnv()
+			s.Close()
+			resumed, err := RestoreSessionFromMetaWithConfig(client, destination, env, loadMetaForTest(t, s), RestoreSessionConfig{
+				StateDir: dir, testOnly: sharingHostProbe(testConfig{skipGitSnapshot: true}),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			s = resumed
+			t.Cleanup(s.Close)
 			if _, err := s.ProcessInput(tripwireCtx(t), "continue", nil); err != nil {
 				t.Fatal(err)
 			}
@@ -767,7 +821,23 @@ func TestSessionScopesReasoningTextToTheIssuingModel(t *testing.T) {
 			if len(requests) != 1 {
 				t.Fatalf("got %d requests, want one follow-up", len(requests))
 			}
-			assertReasoningMarkers(t, requests[0], "same-3a", "same-4b", "same-5c")
+			assertReasoningMarkers(t, requests[0], "same-3a", "same-4b", "same-5c", "completion", "stream")
+			var gotCipher []string
+			for _, m := range requests[0].Messages {
+				for _, p := range m.Content {
+					if p.Thinking != nil && p.Thinking.EncryptedContent != "" {
+						gotCipher = append(gotCipher, p.Thinking.EncryptedContent)
+					}
+				}
+			}
+			if !slices.Equal(gotCipher, wantCipher) {
+				t.Errorf("opaque reasoning on resume = %q, want %q", gotCipher, wantCipher)
+			}
+			for _, marker := range []string{"completion", "stream", "moved-host", "moved-path"} {
+				if !requestCarriesText(requests[0], "visible-"+marker) {
+					t.Errorf("lost assistant answer from %s", marker)
+				}
+			}
 			if err := s.SetModel("different"); err != nil {
 				t.Fatal(err)
 			}

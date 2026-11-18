@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -224,12 +225,11 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// replace a retracted frontier before this request stages its inputs.
 	historyCoverage := s.snapshotConversationCoverageLocked(historyTurns)
 	inFlightFrom := s.turnHistoryBaseline
-	suppressedDocuments := make(map[string]struct{}, len(s.rejectedToolResultDocuments)+len(s.pendingToolResultDocuments))
-	for id := range s.rejectedToolResultDocuments {
-		suppressedDocuments[id] = struct{}{}
-	}
-	for id := range s.pendingToolResultDocuments {
-		suppressedDocuments[id] = struct{}{}
+	var documents *rejectedDocumentProjection
+	if n := len(s.rejectedToolResultDocuments) + len(s.pendingToolResultDocuments); n > 0 {
+		documents = &rejectedDocumentProjection{callIDs: make(map[string]struct{}, n)}
+		maps.Copy(documents.callIDs, s.rejectedToolResultDocuments)
+		maps.Copy(documents.callIDs, s.pendingToolResultDocuments)
 	}
 	afterSnapshot := s.cfg.testOnly.afterModelHistorySnapshot
 	s.mu.Unlock()
@@ -244,19 +244,13 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// work — it is what keeps the boundary paired with the history this round
 	// actually expands (see the G4 note there).
 	scope := replayScope{
-		Instance:       profile.ID(),
-		Model:          profile.Model(),
-		Protocol:       profile.Protocol(),
-		protocolOf:     s.instanceProtocol,
-		canonicalModel: func(model string) string { return s.canonicalModelID(profile.ID(), model) },
-		InFlightFrom:   inFlightFrom,
-		dropsToolResult: func(tr *llm.ToolResultData) bool {
-			_, rejected := suppressedDocuments[tr.ToolCallID]
-			return rejected
-		},
-		// A dropped document was rejected for delivery, not read successfully;
-		// the request copy says so and the transcript keeps the payload (#4465).
-		annotateDroppedToolResult: true,
+		Instance:          profile.ID(),
+		Model:             profile.Model(),
+		Protocol:          profile.Protocol(),
+		protocolOf:        s.instanceProtocol,
+		canonicalModel:    func(model string) string { return s.canonicalModelID(profile.ID(), model) },
+		InFlightFrom:      inFlightFrom,
+		rejectedDocuments: documents,
 	}
 	scope.setReasoningTextTarget(profile)
 	// presentedTurns is the history this request projects: a leased delegate
@@ -1870,6 +1864,11 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	}
 	attempt = completeAttemptMetadata(attempt, modelResp.Response)
 	modelResp.history = fallbackSource.modelHistorySnapshot
+	if documents := fallbackSource.scope.rejectedDocuments; documents != nil && documents.omitted {
+		// Restore sends the original result. Only the live session can use
+		// a measurement that covered its delivery-failure note instead.
+		modelResp.history.transcriptEntries = 0
+	}
 	attempt.conversation = modelResp.conversation
 	attempt.Protocol = group.Protocol()
 	answered := recorder.Groups[len(recorder.Groups)-1]
@@ -2102,14 +2101,8 @@ type replayScope struct {
 	// for the policy and its exception; provenance rules only apply when this
 	// is false.
 	DropThinking bool
-	// dropsToolResult reports whether the outgoing request must omit this tool
-	// result's media payload — a document the provider already rejected this
-	// session (#4465). Nil keeps every payload.
-	dropsToolResult func(*llm.ToolResultData) bool
-	// annotateDroppedToolResult marks a request copy of a dropped tool result
-	// as a delivery failure the model can see; the transcript keeps the
-	// original payload and its success state (#4465).
-	annotateDroppedToolResult bool
+	// Primary and fallback project the same session-local document rejections.
+	rejectedDocuments *rejectedDocumentProjection
 	// dropsToolResultMedia reports whether the outgoing target cannot accept a
 	// tool-result media payload of this type. Nil keeps every payload. Set from
 	// the profile's advertised capabilities (profile.SeesToolResultMedia), so
@@ -2255,7 +2248,7 @@ func (rs replayScope) thinkingReplayEligible(t schema.Turn) bool {
 		case registry.ProtocolOpenAIChat:
 			// The issuing Chat fallback received these details with its
 			// tool result. Finishing the turn cannot change that message.
-			if rs.Protocol != target.Protocol && t.ResponseReasoningRoute != "" && t.MatchesReasoningTextTarget(target, rs.reasoningRoute) {
+			if rs.Protocol != target.Protocol && (t.ResponseReasoningRoute != "" || t.ResponseEndpoint != "") && t.MatchesReasoningTextTarget(target, rs.reasoningRoute) {
 				return true
 			}
 		}
@@ -2412,28 +2405,26 @@ func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Messa
 // when the scope says the request must omit them (#4465); the result's text
 // stays. It returns msg unchanged when nothing drops.
 func (rs replayScope) stripToolResultMedia(msg llm.Message) llm.Message {
-	if rs.dropsToolResult == nil {
+	if rs.rejectedDocuments == nil {
 		return msg
 	}
-	changed := false
-	parts := make([]llm.ContentPart, len(msg.Content))
+	var parts []llm.ContentPart
 	for i, p := range msg.Content {
-		parts[i] = p
-		if p.Kind != llm.ContentToolResult || p.ToolResult == nil || len(p.ToolResult.ImageData) == 0 || !rs.dropsToolResult(p.ToolResult) {
+		if p.Kind != llm.ContentToolResult || p.ToolResult == nil {
 			continue
 		}
 		tr := *p.ToolResult
-		tr.ImageData, tr.ImageMediaType = nil, ""
-		if rs.annotateDroppedToolResult {
-			annotateSuppressedToolResult(&tr)
+		if !rs.rejectedDocuments.omit(&tr) {
+			continue
+		}
+		if parts == nil {
+			parts = slices.Clone(msg.Content)
 		}
 		parts[i].ToolResult = &tr
-		changed = true
 	}
-	if !changed {
-		return msg
+	if parts != nil {
+		msg.Content = parts
 	}
-	msg.Content = parts
 	return msg
 }
 
@@ -2442,16 +2433,29 @@ func (rs replayScope) stripToolResultMedia(msg llm.Message) llm.Message {
 // rejection (#4465).
 const toolResultDocumentDeliveryFailure = "[document omitted: the provider rejected this document payload, so its content was not delivered]"
 
-// annotateSuppressedToolResult marks a request copy of a rejected tool-result
-// document as a delivery failure the model can see. The transcript keeps the
-// original, successful payload (#4465).
-func annotateSuppressedToolResult(tr *llm.ToolResultData) {
+// A round can retain rejected call IDs after compaction removes their results.
+// Only a document actually replaced in the projected history affects its measurement.
+type rejectedDocumentProjection struct {
+	callIDs map[string]struct{}
+	omitted bool
+}
+
+func (d *rejectedDocumentProjection) omit(tr *llm.ToolResultData) bool {
+	if d == nil || len(tr.ImageData) == 0 {
+		return false
+	}
+	if _, rejected := d.callIDs[tr.ToolCallID]; !rejected {
+		return false
+	}
+	d.omitted = true
+	tr.ImageData, tr.ImageMediaType = nil, ""
 	tr.IsError = true
 	if content, ok := tr.Content.(string); ok && strings.TrimSpace(content) != "" {
 		tr.Content = strings.TrimRight(content, "\n") + "\n\n" + toolResultDocumentDeliveryFailure
-		return
+	} else {
+		tr.Content = toolResultDocumentDeliveryFailure
 	}
-	tr.Content = toolResultDocumentDeliveryFailure
+	return true
 }
 
 // expandHistory flattens conversation turns into the per-message slice sent to
@@ -2522,17 +2526,9 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
 					tr := *p.ToolResult
-					droppedDocument := len(tr.ImageData) > 0 && scope.dropsToolResult != nil && scope.dropsToolResult(p.ToolResult)
-					if len(tr.ImageData) > 0 && (droppedDocument || scope.dropsMedia(tr.ImageMediaType)) {
-						// The target cannot see this payload (or the provider
-						// rejected its document bytes), so the bytes are dropped
-						// rather than sent and rejected (#4217, #4465). The text
-						// form of the result stays; a switch that orphans earlier
-						// images says so in its persisted marker.
+					if !scope.rejectedDocuments.omit(&tr) && len(tr.ImageData) > 0 && scope.dropsMedia(tr.ImageMediaType) {
+						// A target that cannot receive this media still gets the result text.
 						tr.ImageData, tr.ImageMediaType = nil, ""
-					}
-					if droppedDocument && scope.annotateDroppedToolResult {
-						annotateSuppressedToolResult(&tr)
 					}
 					history = append(history, llm.Message{
 						Role:       llm.RoleTool,

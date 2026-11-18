@@ -5,6 +5,7 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/llm"
 )
 
 // snapshotDelegateContext takes an independent, durable conversation snapshot.
@@ -55,6 +56,7 @@ func delegateContextEntries(parent []transcript.Entry) []transcript.Entry {
 			ResponseRequestModel:   t.ResponseRequestModel,
 			ResponseWireModel:      t.ResponseWireModel,
 			ResponseReasoningRoute: t.ResponseReasoningRoute,
+			ResponseEndpoint:       llm.SanitizeEndpointURL(t.ResponseEndpoint),
 			ResponseProtocol:       t.ResponseProtocol,
 		}
 		position[uint64(i)] = len(out)

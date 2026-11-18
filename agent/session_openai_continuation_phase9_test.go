@@ -156,6 +156,7 @@ func TestSession_OpenAIResponsesContinuationPhase9FallbackReplaySanitizesMalform
 	drainSessionEvents(sess)
 
 	anchor := phase9MatchingAnchor("resp_phase9_sanitizer")
+	anchor.ResponseEndpoint = srv.URL + "/responses"
 	anchor.Message = llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
 		Kind: llm.ContentToolCall,
 		ToolCall: &llm.ToolCallData{

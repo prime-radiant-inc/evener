@@ -622,21 +622,37 @@ func (t *Turn) DropsReasoningForTarget(res *registry.Resolved, route string) boo
 	if t.Message.Role != llm.RoleAssistant {
 		return false
 	}
-	differentRoute := t.ResponseReasoningRoute != "" && t.ResponseReasoningRoute != route
 	switch res.Protocol {
 	case registry.ProtocolOpenAIChat:
-		return differentRoute
+		return !t.matchesReasoningRoute(res, route)
 	case registry.ProtocolOpenAIResponses:
-		return differentRoute || (t.ResponseProvider != "" && t.ResponseProvider != res.Instance) || !t.matchesReasoningProtocol(res.Protocol)
+		return !t.matchesReasoningRoute(res, route) || (t.ResponseProvider != "" && t.ResponseProvider != res.Instance) || !t.matchesReasoningProtocol(res.Protocol)
 	default:
 		return false
 	}
 }
 
+func (t *Turn) matchesReasoningRoute(res *registry.Resolved, route string) bool {
+	if t.ResponseReasoningRoute != "" {
+		return t.ResponseReasoningRoute == route
+	}
+	if t.ResponseEndpoint == "" {
+		return true
+	}
+	// The sanitized URL of the response identifies its serving host and path.
+	// A turn can originate from either a streaming or a completion request.
+	for _, endpoint := range [...]string{res.Transport.StreamEndpoint, res.Transport.Endpoint} {
+		if endpoint != registry.EndpointUnsupported && llm.SanitizeEndpointURL(res.RequestURL(endpoint)) == t.ResponseEndpoint {
+			return true
+		}
+	}
+	return false
+}
+
 // MatchesRecordedModelRoute checks the serving route and outbound model when
 // the issuing request recorded them, independently of its configured alias.
 func (t *Turn) MatchesRecordedModelRoute(res *registry.Resolved, route string) bool {
-	return (t.ResponseReasoningRoute == "" || t.ResponseReasoningRoute == route) &&
+	return t.matchesReasoningRoute(res, route) &&
 		(t.ResponseWireModel == "" || t.ResponseWireModel == res.OutboundModelSelector())
 }
 

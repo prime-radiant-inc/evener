@@ -77,6 +77,7 @@ func docRejectionToolText(req llm.Request) string {
 
 func TestProviderDocumentRejectionDropsThePayloadAndContinues(t *testing.T) {
 	t.Parallel()
+	const strippedTokens, fullTokens = 430, 5_600
 	var calls atomic.Int32
 	adapter := &agenttest.ScriptedAdapter{
 		Provider: "anthropic",
@@ -86,22 +87,23 @@ func TestProviderDocumentRejectionDropsThePayloadAndContinues(t *testing.T) {
 			}
 			return nil
 		},
-		Responder: func(llm.Request) llm.Response {
-			return agenttest.ToolCallResponse(communicateCall("c1", "ok"))
+		Responder: func(req llm.Request) llm.Response {
+			answer := agenttest.FinalResponse("answer-23")
+			answer.Usage.InputTokens = strippedTokens
+			if docRejectionHasDocument(req) {
+				answer.Usage.InputTokens = fullTokens
+			}
+			return answer
 		},
 	}
 	profile := newAnthropicProfile("claude-opus-4-6")
 	if !profile.SeesToolResultMedia("application/pdf") {
 		t.Fatal("test premise: the fixture Anthropic row must see tool-result documents")
 	}
-	sess := newSession(t, withProfile(profile), withAdapter(adapter))
-	sess.appendTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{
-		Kind: llm.ContentToolResult,
-		ToolResult: &llm.ToolResultData{
-			ToolCallID: "call_pdf", Name: "read_file", Content: "[document: a.pdf]",
-			ImageData: []byte("%PDF-1.4"), ImageMediaType: "application/pdf",
-		},
-	}}})
+	sess := newSession(t, withProfile(profile), withAdapter(adapter), withStateDir(t.TempDir()))
+	read := llm.ToolCallData{ID: "call_pdf", Name: "read_file", Arguments: []byte(`{"file_path":"a.pdf"}`)}
+	sess.appendTurn(schema.TurnAssistant, agenttest.ToolCallResponse(read).Message)
+	sess.appendTurn(schema.TurnToolResults, documentToolResultMessage(read.ID))
 
 	// TRIPWIRE: scripted in-process adapter; 30s only catches a genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -121,6 +123,9 @@ func TestProviderDocumentRejectionDropsThePayloadAndContinues(t *testing.T) {
 	if !strings.Contains(docRejectionToolText(reqs[1]), "[document: a.pdf]") {
 		t.Fatal("the retry lost the tool result's text")
 	}
+	if tr := docRejectionToolResult(reqs[1]); tr == nil || !tr.IsError || sess.contextMgr.LastInputTokens() != strippedTokens {
+		t.Fatal("the live input measurement must cover the provider's successful retry with a delivery failure")
+	}
 
 	// A later turn must keep omitting the rejected bytes.
 	if _, err := sess.ProcessInput(ctx, "again", nil); err != nil {
@@ -129,6 +134,34 @@ func TestProviderDocumentRejectionDropsThePayloadAndContinues(t *testing.T) {
 	reqs = adapter.Requests()
 	if docRejectionHasDocument(reqs[len(reqs)-1]) {
 		t.Fatal("a later request resent the provider-rejected document")
+	}
+	resume := func(s *Session) *Session {
+		t.Helper()
+		s.Close()
+		meta, err := schema.LoadSessionMeta(s.StateDir(), s.ID())
+		if err != nil {
+			t.Fatal(err)
+		}
+		restored, err := RestoreSessionFromMetaWithConfig(s.Client(), s.Profile(), s.currentEnv(), meta,
+			RestoreSessionConfig{StateDir: s.StateDir(), testOnly: sharingHostProbe(testConfig{skipGitSnapshot: true})})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(restored.Close)
+		return restored
+	}
+	sess = resume(sess)
+	if got := sess.contextMgr.LastInputTokens(); got != 0 {
+		t.Errorf("restored %d input tokens for a request that omitted the stored document", got)
+	}
+	if _, err := sess.ProcessInput(ctx, "retry the read", nil); err != nil {
+		t.Fatal(err)
+	}
+	if tr := docRejectionToolResult(adapter.Requests()[len(reqs)]); tr == nil || tr.IsError || string(tr.ImageData) != "%PDF-1.4" {
+		t.Fatal("the first resumed request must contain the original successful document read")
+	}
+	if got := resume(sess).contextMgr.LastInputTokens(); got != fullTokens {
+		t.Fatalf("restored input measurement after the full document was sent = %d, want %d", got, fullTokens)
 	}
 }
 
@@ -338,6 +371,7 @@ func TestProviderDocumentSuppressionIgnoresHintProse(t *testing.T) {
 // annotate the documents (#4465).
 func TestProviderDocumentContextLengthRecoveryStripsAfterCompaction(t *testing.T) {
 	t.Parallel()
+	const measuredTokens = 9_000
 	contextErr := llm.ErrorFromHTTPStatus("anthropic", 400, "prompt is too long", nil, nil)
 	if llm.Kind(contextErr) != llm.KindContextLength {
 		t.Fatalf("test premise: prompt-too-long classified as %v, want context length", llm.Kind(contextErr))
@@ -353,11 +387,13 @@ func TestProviderDocumentContextLengthRecoveryStripsAfterCompaction(t *testing.T
 			return nil
 		},
 		Responder: func(llm.Request) llm.Response {
-			return agenttest.ToolCallResponse(communicateCall("c1", "ok"))
+			answer := agenttest.FinalResponse("answer-37")
+			answer.Usage.InputTokens = measuredTokens
+			return answer
 		},
 	}
 	profile := newAnthropicProfile("claude-opus-4-6")
-	sess := newSession(t, withProfile(profile), withAdapter(adapter))
+	sess := newSession(t, withProfile(profile), withAdapter(adapter), withStateDir(t.TempDir()))
 	sess.appendTurn(schema.TurnToolResults, documentToolResultMessage("call_pdf"))
 
 	// TRIPWIRE: scripted in-process adapter; 30s only catches a genuine hang.
@@ -378,6 +414,29 @@ func TestProviderDocumentContextLengthRecoveryStripsAfterCompaction(t *testing.T
 	}
 	if tr := docRejectionToolResult(reqs[2]); tr == nil || !tr.IsError {
 		t.Fatal("the document-stripped retry did not mark the tool result as a delivery failure")
+	}
+	// A later fold retires the result whose bytes this session still suppresses.
+	for range 12 {
+		sess.appendTurn(schema.TurnUserInput, llm.User("later-42"))
+		sess.appendTurn(schema.TurnAssistant, llm.Assistant("reply-67"))
+	}
+	if err := sess.Compact(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := sess.ProcessInput(ctx, "after the fold", nil); err != nil {
+		t.Fatal(err)
+	}
+	reqs = adapter.Requests()
+	if docRejectionToolResult(reqs[len(reqs)-1]) != nil {
+		t.Fatal("the measured request must follow the fold that removed the document read")
+	}
+	sess.Close()
+	meta, err := schema.LoadSessionMeta(sess.StateDir(), sess.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.LastInputTokens != measuredTokens || meta.LastInputEntryCount == 0 {
+		t.Errorf("saved input measurement after folding away the document = %d tokens at entry %d", meta.LastInputTokens, meta.LastInputEntryCount)
 	}
 }
 

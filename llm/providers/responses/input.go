@@ -115,11 +115,12 @@ func toResponsesInput(msgs []llm.Message, imageCap string, replayReasoningText b
 		case llm.RoleUser, llm.RoleAssistant:
 			if m.Role == llm.RoleAssistant {
 				var err error
-				items, err = appendAssistantInput(items, m.Content, replayReasoningText)
+				ordered := replayReasoningText || hasAssistantItemOrder(m.Content)
+				items, err = appendAssistantInput(items, m.Content, ordered, replayReasoningText)
 				if err != nil {
 					return "", nil, err
 				}
-				if replayReasoningText {
+				if ordered {
 					continue
 				}
 			} else {
@@ -285,14 +286,30 @@ func toResponsesInput(msgs []llm.Message, imageCap string, replayReasoningText b
 	return instructions, items, nil
 }
 
-func appendAssistantInput(items []any, parts []llm.ContentPart, replayReasoningText bool) ([]any, error) {
+// Native message boundaries locate text among the other top-level items.
+// A textless turn already consists of top-level items. Only unmarked text
+// needs the older projection that groups by phase before appending calls.
+func hasAssistantItemOrder(parts []llm.ContentPart) bool {
+	var hasText bool
+	for _, part := range parts {
+		if part.Kind == llm.ContentText {
+			if part.ResponsesMessageStart {
+				return true
+			}
+			hasText = true
+		}
+	}
+	return !hasText
+}
+
+func appendAssistantInput(items []any, parts []llm.ContentPart, ordered, replayReasoningText bool) ([]any, error) {
 	var group map[string]any
 	var phase string
 	var nativeGroup bool
 	for _, p := range parts {
 		switch p.Kind {
 		case llm.ContentText:
-			if replayReasoningText && p.ResponsesMessageStart {
+			if p.ResponsesMessageStart {
 				group = nil
 				nativeGroup = true
 			} else if group == nil || phase != p.Phase {
@@ -318,8 +335,8 @@ func appendAssistantInput(items []any, parts []llm.ContentPart, replayReasoningT
 		case llm.ContentAudio, llm.ContentDocument:
 			return nil, &llm.ConfigurationError{Message: fmt.Sprintf("unsupported content kind for openai: %s", p.Kind)}
 		default:
-			if replayReasoningText {
-				if item := standaloneInputItem(p, true); item != nil {
+			if ordered {
+				if item := standaloneInputItem(p, replayReasoningText); item != nil {
 					items = append(items, item)
 					group = nil // A top-level item separates adjacent text groups.
 				}

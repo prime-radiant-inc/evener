@@ -316,7 +316,7 @@ func ChatNativeReasoningDetails(parts []ContentPart) iter.Seq[json.RawMessage] {
 				_ = json.Unmarshal([]byte(t.EncryptedContent), &opaque)
 			}
 			for _, item := range t.ChatDetails {
-				if len(item) == 0 || string(item) == "null" {
+				if chatContinuationSlot(item) {
 					if len(opaque) == 0 {
 						continue
 					}
@@ -330,6 +330,10 @@ func ChatNativeReasoningDetails(parts []ContentPart) iter.Seq[json.RawMessage] {
 	}
 }
 
+func chatContinuationSlot(item json.RawMessage) bool {
+	return len(item) == 0 || string(item) == "null"
+}
+
 // ChatReasoningScalar records the scalar source when Chat's preferred display
 // came from reasoning_details. An empty Text reuses the identical display
 // bytes. An empty Field marks a detail displayed separately from the scalar.
@@ -338,9 +342,18 @@ type ChatReasoningScalar struct {
 	Text  string `json:"text,omitempty"`
 }
 
-// ChatReplayScalar returns the exact scalar and its original wire spelling.
+// ChatReplayScalar returns the observed scalar and its wire spelling, or the
+// eligible unsigned detail text when the provider supplied no scalar.
 func (t *ThinkingData) ChatReplayScalar() (text, field string) {
 	if t.ChatScalar == nil {
+		// An observed scalar either named its field or has a ChatScalar. An
+		// opaque detail may carry display text alongside the unsigned items.
+		if t.Text != "" && t.Signature == "" && slices.ContainsFunc(t.ChatDetails, chatContinuationSlot) {
+			details := OpenAICompatReasoningDetails(t.EncryptedContent)
+			if len(details) == 0 || slices.ContainsFunc(details, chatDetailHasDisplay) {
+				return t.unsignedChatDetailsText(), ""
+			}
+		}
 		return t.Text, t.Signature
 	}
 	if t.ChatScalar.Field == "" {
@@ -350,6 +363,28 @@ func (t *ThinkingData) ChatReplayScalar() (text, field string) {
 		return t.ChatScalar.Text, t.ChatScalar.Field
 	}
 	return t.Text, t.ChatScalar.Field
+}
+
+func chatDetailHasDisplay(item map[string]any) bool {
+	text, _ := item["text"].(string)
+	thinking, _ := item["thinking"].(string)
+	return text != "" || thinking != ""
+}
+
+func (t *ThinkingData) unsignedChatDetailsText() string {
+	var pieces []string
+	for _, raw := range t.ChatDetails {
+		var item struct{ Text, Thinking string }
+		if len(raw) == 0 || raw[0] != '{' || json.Unmarshal(raw, &item) != nil {
+			continue
+		}
+		if item.Text != "" {
+			pieces = append(pieces, item.Text)
+		} else if item.Thinking != "" {
+			pieces = append(pieces, item.Thinking)
+		}
+	}
+	return strings.Join(pieces, "\n")
 }
 
 // UnsignedChatDisplayText is the ordinary assistant text a thinking_as_text
@@ -374,28 +409,11 @@ func (p ContentPart) UnsignedChatDisplayText() string {
 	} else {
 		// An encrypted item's optional text can occur in the combined display.
 		// Recover display from its unsigned siblings, or from an observed scalar.
-		hasOpaqueText := slices.ContainsFunc(details, func(item map[string]any) bool {
-			text, _ := item["text"].(string)
-			thinking, _ := item["thinking"].(string)
-			return text != "" || thinking != ""
-		})
-		if !hasOpaqueText {
+		if !slices.ContainsFunc(details, chatDetailHasDisplay) {
 			return t.Text
 		}
-		var pieces []string
-		for _, raw := range t.ChatDetails {
-			var item struct{ Text, Thinking string }
-			if len(raw) == 0 || raw[0] != '{' || json.Unmarshal(raw, &item) != nil {
-				continue
-			}
-			if item.Text != "" {
-				pieces = append(pieces, item.Text)
-			} else if item.Thinking != "" {
-				pieces = append(pieces, item.Thinking)
-			}
-		}
-		if len(pieces) > 0 {
-			return strings.Join(pieces, "\n")
+		if text := t.unsignedChatDetailsText(); text != "" {
+			return text
 		}
 	}
 	if scalar, field := t.ChatReplayScalar(); IsOpenAICompatReasoningField(field) {

@@ -215,6 +215,10 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 		{"issued call claims its first index before an index-only final", []string{
 			`{"type":"response.function_call_arguments.delta","call_id":"call_1","delta":"{"}`, at(2, toolAdded), at(2, indexedFinalArguments),
 		}, nil, []replayItem{finalTool}},
+		{"unindexed issued call keeps its arguments when the item and index name another call", []string{
+			toolDelta, at(1, done(secondLinked)), secondItemFinal,
+			at(1, `{"type":"response.function_call_arguments.done","call_id":"call_1","item_id":"fc_2","arguments":" \t{ \"k\": 1 }\n"}`),
+		}, nil, []replayItem{finalTool, secondTool}},
 		{"indexed final arguments precede their terminal call ID", []string{at(0, indexedFinalArguments)}, []string{emptyToolByCall}, []replayItem{finalTool}},
 		{"issued call repeats finalized arguments at another index", []string{indexedCalls[0], at(1, callFinalArguments)}, nil, []replayItem{finalTool}},
 		{"issued call gains its item ID at another index", []string{indexedCalls[0], at(1, done(linkedCall)), finalArguments}, nil, []replayItem{finalTool}},
@@ -608,14 +612,8 @@ func TestResponseContentFromOutputItems_KeepsReasoningTextContent(t *testing.T) 
 		t.Fatalf("replayed items = %#v, want %#v", items, want)
 	}
 	strict := replayInput(t, msg, false)
-	group := replayItem{Type: "message", Content: []replayText{{"output_text", "m1"}, {"output_text", "m2"}}}
-	if len(strict) == 0 || !reflect.DeepEqual(strict[0], group) {
-		t.Fatalf("strict target grouping = %#v, want first group %#v", strict, group)
-	}
-	for _, it := range strict {
-		if it.Type == "reasoning" {
-			t.Fatalf("strict target received raw reasoning: %+v", it)
-		}
+	if wantStrict := []replayItem{want[1], want[2], want[3], want[5]}; !reflect.DeepEqual(strict, wantStrict) {
+		t.Fatalf("strict target input = %#v, want %#v", strict, wantStrict)
 	}
 }
 

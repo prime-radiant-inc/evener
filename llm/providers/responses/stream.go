@@ -749,6 +749,11 @@ func (acc *responsesOutputAccumulator) toolOutput(payload map[string]any, callID
 	if alias != "" {
 		fallback = cmp.Or(acc.byID[alias], acc.byCallID[alias])
 	}
+	// A conflicting item ID cannot make another call's index a match.
+	issued := acc.byCallID[callID]
+	if issued != nil {
+		itemID = acc.bindCallItem(issued, itemID)
+	}
 	index := responsesEventIndex(payload, "output_index")
 	if owner := acc.byIndex[index]; owner != nil && owner.tool != nil {
 		if !owner.acceptsFunctionIdentity(itemID, callID, cmp.Or(acc.byID[itemID], fallback)) {
@@ -758,11 +763,8 @@ func (acc *responsesOutputAccumulator) toolOutput(payload map[string]any, callID
 			index = -1 // Only the explicit identities can select a call at this position.
 		}
 	}
-	if issued := acc.byCallID[callID]; issued != nil {
-		itemID = acc.bindCallItem(issued, itemID)
-		if issued.index >= 0 && index != issued.index {
-			index = -1
-		}
+	if issued != nil && issued.index >= 0 && index != issued.index {
+		index = -1
 	}
 	if callID == "" && itemID == "" && alias == "" && index < 0 {
 		return nil

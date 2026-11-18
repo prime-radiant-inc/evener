@@ -284,6 +284,94 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 			}
 		})
 	}
+	t.Run("encrypted detail display and scalar provenance", func(t *testing.T) {
+		const extension, unsignedText = " extension-21\t", " unsigned-51 "
+		opaque := map[string]any{"type": "reasoning.encrypted", "id": "e-42", "data": "cipher-39", "text": extension}
+		unsigned := map[string]any{"type": "reasoning.text", "text": unsignedText}
+		for _, tc := range []struct {
+			name, scalar, wantField, wantScalar string
+			unsigned                            bool
+		}{
+			{name: "encrypted detail alone"},
+			{name: "unsigned detail fallback", unsigned: true, wantField: "reasoning_content", wantScalar: unsignedText},
+			{name: "independent scalar", unsigned: true, scalar: " scalar-17\n", wantField: "reasoning_text", wantScalar: " scalar-17\n"},
+			{name: "independent scalar mirrors the extension", scalar: extension, wantField: "reasoning_text", wantScalar: extension},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				details := []map[string]any{opaque}
+				display := extension
+				if tc.unsigned {
+					details = append(details, unsigned)
+					display += "\n" + unsignedText
+				}
+				fields := map[string]any{"reasoning_details": details}
+				if tc.scalar != "" {
+					fields["reasoning_text"] = tc.scalar
+				}
+				sse := `data: {"choices":[{"delta":` + jsonOf(t, fields) + `,"finish_reason":"stop"}]}` + "\n\ndata: [DONE]\n\n"
+				responses, streamed := decode(t, jsonOf(t, chatResponseRaw(fields, "stop")), sse)
+				if streamed != display {
+					t.Fatalf("streamed display = %q, want %q", streamed, display)
+				}
+				for name, resp := range responses {
+					if got := resp.ReasoningText(); got != display {
+						t.Errorf("%s display = %q, want %q", name, got, display)
+					}
+					var cold llm.Message
+					if err := json.Unmarshal([]byte(jsonOf(t, resp.Message)), &cold); err != nil {
+						t.Fatal(err)
+					}
+					for _, input := range []llm.Message{resp.Message, cold} {
+						row := resolved(nil)
+						row.Caps.ReplayReasoningText = new(true)
+						req := llm.Request{Model: "m", Messages: []llm.Message{input}}
+						msg := build(t, req, row)["messages"].([]map[string]any)[0]
+						checkScalar(t, msg, tc.wantField, tc.wantScalar)
+						wantOpaque := jsonOf(t, []map[string]any{opaque})
+						if got := jsonOf(t, msg["reasoning_details"]); got != wantOpaque {
+							t.Errorf("%s scalar route details = %s, want %s", name, got, wantOpaque)
+						}
+						if chars := llm.TokenPartEstimatorFor(row).Parts(input).Chars; chars != len(wantOpaque)+len(tc.wantScalar) {
+							t.Errorf("%s scalar route priced %d chars, want %d", name, chars, len(wantOpaque)+len(tc.wantScalar))
+						}
+						row.Caps.ReasoningField = new("reasoning_details")
+						msg = build(t, req, row)["messages"].([]map[string]any)[0]
+						checkScalar(t, msg, "", "")
+						if got, want := jsonOf(t, msg["reasoning_details"]), jsonOf(t, details); got != want {
+							t.Errorf("%s native route details = %s, want %s", name, got, want)
+						}
+					}
+				}
+			})
+		}
+		t.Run("opaque item without display keeps the streamed unsigned fallback", func(t *testing.T) {
+			const sse = `data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","index":0,"text":"a"}]}}]}
+
+data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.encrypted","id":"e-42","data":"cipher-39"}]}}]}
+
+data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","index":2,"text":"b"}]},"finish_reason":"stop"}]}
+
+data: [DONE]
+
+`
+			resp, err := ExtractRecordedResponse([]byte(sse), "m")
+			if err != nil {
+				t.Fatal(err)
+			}
+			row := resolved(func(c *registry.Caps) { c.ReplayReasoningText = new(true) })
+			out := build(t, llm.Request{Messages: []llm.Message{resp.Message}}, row)["messages"].([]map[string]any)
+			checkScalar(t, out[0], "reasoning_content", "ab")
+		})
+		t.Run("saved scalar without native detail provenance", func(t *testing.T) {
+			var saved llm.Message
+			if err := json.Unmarshal([]byte(`{"role":"assistant","content":[{"kind":"thinking","thinking":{"text":"legacy scalar","encrypted_content":"[{\"type\":\"reasoning.encrypted\",\"id\":\"e\",\"data\":\"d\",\"text\":\"extension\"}]"}}]}`), &saved); err != nil {
+				t.Fatal(err)
+			}
+			row := resolved(func(c *registry.Caps) { c.ReplayReasoningText = new(true) })
+			out := build(t, llm.Request{Messages: []llm.Message{saved}}, row)["messages"].([]map[string]any)
+			checkScalar(t, out[0], "reasoning_content", "legacy scalar")
+		})
+	})
 	t.Run("array conversion when no native detail array was recorded", func(t *testing.T) {
 		res := resolved(nil)
 		res.Caps.ReplayReasoningText, res.Caps.ReasoningField = new(true), new("reasoning_details")

@@ -436,6 +436,12 @@ estimation uses the stale window size.
 5. Next response establishes new baseline
 ```
 
+When a provider rejects a tool-result document, the session keeps the bytes in
+the transcript and sends a delivery-failure note on retry. The retry's input
+count supplies live pressure. Cold resume estimates the history containing the
+document until a provider measures it again. If compaction removes the affected
+result, the next measurement can also be reused on resume.
+
 ## Configuration
 
 | Field | Default | Description |

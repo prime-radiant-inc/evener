@@ -511,8 +511,11 @@ configured model name, the model selected by the outgoing request, and a
 digest of the resolved request route. A row that sets `body.model` can
 select a different model from its `wire_id`. Changing the selected model
 or endpoint under the same name starts a separate reasoning history.
-For older turns Evener uses the issuer
-information available in the transcript. Replayed reasoning counts toward
+For older turns Evener uses the issuer information available in the
+transcript. A saved endpoint still identifies the serving host and path
+even when the turn predates route digests. Moving that route keeps its
+reasoning at the original endpoint. The visible conversation carries over.
+Replayed reasoning counts toward
 context pressure. A saved input-token count covers the history actually sent
 to that target under its replay rules. Evener estimates later additions,
 including delegate reports received while the request was in flight. If that
@@ -556,7 +559,9 @@ recover an encoded object, array or XML parameter. A string field such as
   its identified or uniquely matching text block. When a later fragment names
   both the ID and index, it joins that item's earlier fragments in arrival
   order, preserving its original array position. A signed detail on its own
-  supplies only that detail. A Chat fallback receives its own signed and
+  supplies only that detail. An encrypted detail keeps its own display text.
+  When a provider omits the scalar, an unsigned text detail can supply it.
+  A Chat fallback receives its own signed and
   encrypted details on subsequent turns and cold resumes when the recorded
   model and serving route still match. Moving a Chat row to a new endpoint
   keeps signed and encrypted details at the original endpoint, including on
@@ -574,7 +579,9 @@ recover an encoded object, array or XML parameter. A string field such as
   saves the type and byte boundaries of each text part, including display-only
   parts. It preserves whitespace in raw parts, item IDs and summaries, and
   keeps separate assistant messages and their `output_text` and `refusal`
-  parts in order. A final response selecting only a completed answer, a
+  parts in order. Original message boundaries and empty text slots survive
+  on every Responses row, including rows that omit raw reasoning. A final
+  response selecting only a completed answer, a
   refusal or a provider-run file search withdraws earlier streamed tool calls.
   A message reference with omitted or null `content` inherits its completed
   answer or refusal. An explicitly selected content array keeps only its own
@@ -613,7 +620,9 @@ recover an encoded object, array or XML parameter. A string field such as
   dispatch the tool and return its result under that ID. A response can
   repeat the same call at another index or in its final output. Evener
   executes it once. If a later frame changes the item ID of that call,
-  Evener keeps the first confirmed item ID. Explicit terminal arguments take
+  Evener keeps the first confirmed item ID. An event naming an issued call
+  delivers its arguments to that call even if its item ID or output index
+  points to another tool. Explicit terminal arguments take
   precedence, and a terminal that omits them inherits the call's exact streamed
   arguments. Reasoning shown only as deltas remains
   visible in the transcript, including when the response ends with an
