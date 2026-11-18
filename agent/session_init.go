@@ -1417,11 +1417,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		// The replacement prompt was rendered against the installed environment.
 		s.rehydrateEnvironmentContext(s.history)
 	} else {
-		// A job can wake the restored session before a user input samples
-		// the checkout. Publish the observed change before that request.
+		// An autonomous request may be first to use this checkout. Recheck
+		// an inconclusive startup probe as well as an observed change.
 		branch := s.envInfo.GitBranch
-		outside := !s.cfg.testOnly.skipGitSnapshot && !s.envInfo.IsGitRepo && !s.envInfo.GitSnapshotFailed
-		if (branch != "" || outside) && branch != s.envTracker.State().Last.GitBranch {
+		state := s.envTracker.State()
+		inconclusive := branch == "" && (s.envInfo.IsGitRepo || s.envInfo.GitSnapshotFailed)
+		if state.GitBranchUnknown || (!s.cfg.testOnly.skipGitSnapshot && (inconclusive || branch != state.Last.GitBranch)) {
 			s.worktreeContextPending = true
 		}
 	}
@@ -1893,6 +1894,7 @@ func (s *Session) initSessionState(runSessionStartHooks bool, savedHeader *trans
 		warning, failed := s.initializeSystemPrompt(env)
 		s.promptLaunch = schema.PromptLaunchFacts{
 			KnowledgeCutoff: new(s.profile.KnowledgeCutoff()),
+			GitBranch:       new(s.envInfo.GitBranch),
 			ScratchDir:      new(installedScratchDir(env)),
 			WritableRoots:   new(s.workspaceWritableRoots),
 			TurnEndsProcess: new(s.cfg.TurnEndsProcess),

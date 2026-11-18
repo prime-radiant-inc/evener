@@ -143,6 +143,7 @@ func sessionMetaWriteLock(sessionID string) *sync.Mutex {
 // system prompt. A nil field is unknown; a recorded empty value is meaningful.
 type PromptLaunchFacts struct {
 	KnowledgeCutoff *string `json:"knowledge_cutoff,omitempty"`
+	GitBranch       *string `json:"git_branch,omitempty"`
 	ScratchDir      *string `json:"scratch_dir,omitempty"`
 	WritableRoots   *string `json:"writable_roots,omitempty"`
 	TurnEndsProcess *bool   `json:"turn_ends_process,omitempty"`
@@ -154,6 +155,7 @@ type PromptLaunchFacts struct {
 func (p PromptLaunchFacts) Clone() PromptLaunchFacts {
 	return PromptLaunchFacts{
 		KnowledgeCutoff: appwire.ClonePointer(p.KnowledgeCutoff),
+		GitBranch:       appwire.ClonePointer(p.GitBranch),
 		ScratchDir:      appwire.ClonePointer(p.ScratchDir),
 		WritableRoots:   appwire.ClonePointer(p.WritableRoots),
 		TurnEndsProcess: appwire.ClonePointer(p.TurnEndsProcess),
@@ -713,6 +715,7 @@ func writeSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta, newPrompt
 			// The saved prompt owns its first recorded facts across checkpoints.
 			launch := &meta.PromptLaunch
 			launch.KnowledgeCutoff = cmp.Or(previous.PromptLaunch.KnowledgeCutoff, launch.KnowledgeCutoff)
+			launch.GitBranch = cmp.Or(previous.PromptLaunch.GitBranch, launch.GitBranch)
 			launch.ScratchDir = cmp.Or(previous.PromptLaunch.ScratchDir, launch.ScratchDir)
 			launch.WritableRoots = cmp.Or(previous.PromptLaunch.WritableRoots, launch.WritableRoots)
 			launch.TurnEndsProcess = cmp.Or(previous.PromptLaunch.TurnEndsProcess, launch.TurnEndsProcess)

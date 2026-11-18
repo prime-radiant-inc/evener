@@ -183,7 +183,7 @@ environment context. A delegate that inherits this update receives its own
 reporting audience there. It sends reports to its parent agent and receives
 follow-up instructions from that agent.
 
-Session metadata records the model’s knowledge cutoff, scratch directory,
+Session metadata records the model’s knowledge cutoff, Git branch, scratch directory,
 sandbox writable roots, execution mode, availability of `ask_user` and
 whether the result tool accepts `end_reason` when Evener renders the prompt.
 A fork or aside copies those facts with the prompt.
@@ -194,9 +194,12 @@ environment updates in the conversation supersede the launch facts.
 If a session switches models or working directories, its next request carries
 the new facts in conversation context. If the Git branch changed while the
 session was stopped, the first resumed request reports the newly observed
-branch, including when a job notification wakes the session. An unborn HEAD
-or a failed Git probe keeps the last observed branch. When the directory
-is confirmed outside a worktree, the next request clears that branch. A catalog
+branch, including when a job notification wakes the session. If a refresh
+encounters an unborn HEAD or a failed Git probe, the current request keeps
+the last observed branch. Later requests retry, including autonomous tool
+rounds and job notifications. When the directory
+is confirmed outside a worktree, the next request clears that branch even if
+compaction removed every prior environment update. A catalog
 correction to the current model’s knowledge cutoff also appears there on
 resume. A fork receives its own session ID and commit attribution there.
 Each request supplies the tools currently available. If `ask_user` availability

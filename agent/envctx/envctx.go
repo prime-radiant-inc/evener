@@ -45,13 +45,17 @@ type Snapshot struct {
 	OmitCommitTrailer bool     `json:"omit_commit_trailer,omitempty"` // explicit cancellation of a prior directive
 }
 
+// GitBranchKnown reports whether the probe confirmed a branch or its absence.
+func (s Snapshot) GitBranchKnown() bool { return !s.gitBranchUnknown }
+
 // State is the Tracker's persistable form, stored in session meta so resume
 // stays silent when nothing changed across a restart.
 type State struct {
 	Last    Snapshot `json:"last"`
 	HasSent bool     `json:"has_sent"`
-	// Unrecorded launch paths may still be named in the saved prompt.
+	// Unrecorded launch facts may still be named in the saved prompt.
 	// The next observation, including an empty one, must supersede them.
+	GitBranchUnknown     bool `json:"git_branch_unknown,omitempty"`
 	ScratchDirUnknown    bool `json:"scratch_dir_unknown,omitempty"`
 	WritableRootsUnknown bool `json:"writable_roots_unknown,omitempty"`
 }
@@ -136,6 +140,7 @@ func (t *Tracker) ReplayBlock(block string) bool {
 				value = ""
 			}
 			t.st.Last.GitBranch = value
+			t.st.GitBranchUnknown = false
 		case strings.HasPrefix(line, "session id: "):
 			t.st.Last.SessionID = strings.TrimPrefix(line, "session id: ")
 		case strings.HasPrefix(line, parentSessionPrefix):
@@ -192,12 +197,13 @@ func pressureValue(line, name string) string {
 // is nothing to say. A non-empty return updates the tracker state, so the
 // caller must deliver the rendered block to the model.
 func (t *Tracker) RenderDiff(cur Snapshot) string {
+	resolveBranch := t.st.GitBranchUnknown && !cur.gitBranchUnknown
 	if cur.gitBranchUnknown {
 		cur.GitBranch = t.st.Last.GitBranch
 		cur.gitBranchUnknown = false
 	}
 	first := !t.st.HasSent
-	if !first && cur == t.st.Last && !t.st.ScratchDirUnknown && !t.st.WritableRootsUnknown {
+	if !first && cur == t.st.Last && !resolveBranch && !t.st.ScratchDirUnknown && !t.st.WritableRootsUnknown {
 		return ""
 	}
 	prev := t.st.Last
@@ -221,7 +227,7 @@ func (t *Tracker) RenderDiff(cur Snapshot) string {
 			lines = append(lines, writableRootsPrefix+strconv.Quote(cur.WritableRoots))
 		}
 	}
-	if cur.GitBranch != prev.GitBranch {
+	if cur.GitBranch != prev.GitBranch || resolveBranch {
 		branch := cur.GitBranch
 		if branch == "" {
 			branch = "(not in a git repository)"
@@ -309,7 +315,7 @@ func (t *Tracker) RenderDiff(cur Snapshot) string {
 	if len(lines) == 0 {
 		return ""
 	}
-	t.st = State{Last: cur, HasSent: true}
+	t.st = State{Last: cur, HasSent: true, GitBranchUnknown: t.st.GitBranchUnknown && !resolveBranch}
 	return "<environment_context>\n" + strings.Join(lines, "\n") + "\n</environment_context>"
 }
 

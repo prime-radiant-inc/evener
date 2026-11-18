@@ -230,6 +230,12 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			return nil, "", nil, llm.Request{}, nil, "", err
 		}
 	}
+	// A Git probe taken for this request can be inconclusive during user
+	// admission or preparation. Schedule its retry after the snapshot settles.
+	if s.gitBranchRetryAfterRequest {
+		s.worktreeContextPending = true
+		s.gitBranchRetryAfterRequest = false
+	}
 	historyTurns := append([]schema.Turn{}, s.history...)
 	// A request's coverage belongs to its history snapshot. A later fold may
 	// replace a retracted frontier before this request stages its inputs.

@@ -58,11 +58,15 @@ func (s *Session) setPromptEnvironmentOrigin(header transcript.Header) {
 // rehydrateEnvironmentContext reconstructs only the observations visible to
 // the next request. Both restore and a winning fold supply their retained history.
 func (s *Session) rehydrateEnvironmentContext(history []schema.Turn) {
-	// The startup prompt survives every fold. Retained sandbox updates
-	// supersede its paths, including an update that cleared a path.
+	// The startup prompt survives every fold. Retained environment updates
+	// supersede its facts, including an explicitly cleared path or branch.
 	baseline := envctx.State{
+		GitBranchUnknown:     s.cachedSystemPrompt != "" && s.promptLaunch.GitBranch == nil,
 		ScratchDirUnknown:    s.cachedSystemPrompt != "" && s.promptLaunch.ScratchDir == nil,
 		WritableRootsUnknown: s.cachedSystemPrompt != "" && s.promptLaunch.WritableRoots == nil,
+	}
+	if branch := s.promptLaunch.GitBranch; branch != nil {
+		baseline.Last.GitBranch = *branch
 	}
 	if scratch := s.promptLaunch.ScratchDir; scratch != nil {
 		baseline.Last.ScratchDir = *scratch

@@ -165,14 +165,32 @@ func testRestoredNotificationWorkspace(t *testing.T) {
 	copyWorktreeBaseRepo(t, dir)
 	const launchBranch, observed, unborn, changed = "launch-18", "observed-29", "unborn-57", "changed-64"
 	gittest.Run(t, dir, "checkout", "-b", launchBranch)
+	var calls int
+	var probesPerRequest []int
+	var timeoutNext bool
 	probes := func(env execenv.ExecutionEnvironment) *envctx.Probes {
 		return &envctx.Probes{
-			Now:       func() time.Time { return envctxFixedTime },
-			GitBranch: func(cwd string) (string, bool) { return snapshotGitBranch(env, cwd) },
+			Now: func() time.Time { return envctxFixedTime },
+			GitBranch: func(cwd string) (string, bool) {
+				calls++
+				if calls > 1 {
+					t.Fatal("a single model request attempted multiple Git observations")
+				}
+				if timeoutNext {
+					timeoutNext = false
+					return snapshotGitBranch(truncationGitEnv{
+						results: map[string]execenv.ExecResult{"rev-parse --is-inside-work-tree": {Stdout: "true"}},
+						errs:    map[string]error{"rev-parse --abbrev-ref HEAD": context.DeadlineExceeded},
+					}, cwd)
+				}
+				return snapshotGitBranch(env, cwd)
+			},
 		}
 	}
 	var probeCall string
 	adapter := &agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response {
+		probesPerRequest = append(probesPerRequest, calls)
+		calls = 0
 		if probeCall != "" {
 			id := probeCall
 			probeCall = ""
@@ -197,24 +215,34 @@ func testRestoredNotificationWorkspace(t *testing.T) {
 		t.Fatalf("launch request has %d workspace updates at %q on %q", blocks, last.Cwd, last.GitBranch)
 	}
 	for i, tc := range []struct {
-		git                         []string
-		actual, reported            string
-		blocks                      int
-		legacy, removeRepo, timeout bool
+		git, afterRestore               []string
+		actual, reported                string
+		userInput                       string
+		blocks                          int
+		legacy, removeRepo, sameSession bool
+		timeout                         bool
+		wantProbes                      []int
 	}{
 		{git: []string{"checkout", launchBranch}, actual: launchBranch, reported: launchBranch, blocks: 2},
 		{actual: launchBranch, reported: launchBranch, blocks: 2},
-		{git: []string{"checkout", "--orphan", unborn}, actual: unborn, reported: launchBranch, blocks: 3, legacy: true},
-		{actual: unborn, reported: launchBranch, blocks: 3},
-		{git: []string{"commit", "--allow-empty", "-m", "first"}, actual: unborn, reported: unborn, blocks: 4},
-		{git: []string{"checkout", "-b", changed}, actual: changed, reported: unborn, blocks: 4, timeout: true},
-		{actual: changed, reported: changed, blocks: 5},
-		{actual: "outside", blocks: 6, removeRepo: true},
-		{actual: "outside", blocks: 6},
+		{git: []string{"checkout", observed}, afterRestore: []string{"checkout", "--orphan", unborn}, actual: unborn, reported: launchBranch, blocks: 3, legacy: true, wantProbes: []int{1, 1}},
+		{actual: unborn, reported: launchBranch, blocks: 3, sameSession: true, wantProbes: []int{1, 1}},
+		{git: []string{"commit", "--allow-empty", "-m", "first"}, actual: unborn, reported: unborn, blocks: 4, sameSession: true, wantProbes: []int{1, 0}},
+		{git: []string{"checkout", "-b", changed}, actual: changed, reported: changed, blocks: 5, timeout: true, wantProbes: []int{1, 1}},
+		{actual: changed, reported: changed, blocks: 5, sameSession: true, wantProbes: []int{0, 0}},
+		{git: []string{"checkout", observed}, actual: observed, reported: observed, blocks: 6, timeout: true, userInput: "continue", wantProbes: []int{1, 1}},
+		{actual: "outside", blocks: 7, removeRepo: true},
+		{actual: "outside", blocks: 7},
 	} {
+		kind := EntryUserInput
 		jobID := fmt.Sprintf("job_checkout_%d", i)
-		enqueueCompletedJobNotification(t, s, jobID)
-		s.Close()
+		if tc.userInput == "" {
+			kind = EntryNotification
+			enqueueCompletedJobNotification(t, s, jobID)
+		}
+		if !tc.sameSession {
+			s.Close()
+		}
 		if tc.legacy {
 			meta := loadMetaForTest(t, s)
 			meta.PromptLaunch = schema.PromptLaunchFacts{}
@@ -230,49 +258,55 @@ func testRestoredNotificationWorkspace(t *testing.T) {
 		if tc.git != nil {
 			gittest.Run(t, dir, tc.git...)
 		}
-		env := execenv.NewLocalExecutionEnvironment(dir)
-		branchProbes := probes(env)
-		if tc.timeout {
-			branchProbes = probes(truncationGitEnv{
-				results: map[string]execenv.ExecResult{"rev-parse --is-inside-work-tree": {Stdout: "true"}},
-				errs:    map[string]error{"rev-parse --abbrev-ref HEAD": context.DeadlineExceeded},
+		if !tc.sameSession {
+			env := execenv.NewLocalExecutionEnvironment(dir)
+			resumed, err := RestoreSessionFromMetaWithConfig(s.client, s.profile, env, loadMetaForTest(t, s), RestoreSessionConfig{
+				StateDir: stateDir, testOnly: sharingHostProbe(testConfig{envProbes: probes(env)}),
 			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(resumed.Close)
+			s = resumed
 		}
-		resumed, err := RestoreSessionFromMetaWithConfig(s.client, s.profile, env, loadMetaForTest(t, s), RestoreSessionConfig{
-			StateDir: stateDir, testOnly: sharingHostProbe(testConfig{envProbes: branchProbes}),
-		})
-		if err != nil {
-			t.Fatal(err)
+		if tc.afterRestore != nil {
+			gittest.Run(t, dir, tc.afterRestore...)
 		}
-		t.Cleanup(resumed.Close)
-		s = resumed
+		timeoutNext = tc.timeout
 		before := len(adapter.Requests())
 		id := fmt.Sprintf("branch-%d", i)
 		probeCall = id
-		if _, err := s.ProcessInputKind(t.Context(), "", nil, EntryNotification); err != nil {
+		if _, err := s.ProcessInputKind(t.Context(), tc.userInput, nil, kind); err != nil {
 			t.Fatal(err)
 		}
 		reqs := adapter.Requests()[before:]
-		if len(reqs) != 2 || !requestsContain(reqs[:1], fmt.Sprintf(`job_id=%q`, jobID)) {
-			t.Fatalf("restored job %s produced %d requests, want its notification and shell result", jobID, len(reqs))
+		if len(reqs) != 2 || (kind == EntryNotification && !requestsContain(reqs[:1], fmt.Sprintf(`job_id=%q`, jobID))) {
+			t.Fatalf("step %d produced %d requests, want the triggering input and its shell result", i, len(reqs))
+		}
+		if got := probesPerRequest[before:]; tc.wantProbes != nil && !slices.Equal(got, tc.wantProbes) {
+			t.Errorf("step %d Git probes per request = %v, want %v", i, got, tc.wantProbes)
 		}
 		if result := toolResultTextForCall(reqs[1], id); !strings.Contains(result, dir+"\n"+tc.actual) {
 			t.Fatalf("shell did not report cwd %q and branch %q in %s", dir, tc.actual, result)
 		}
-		oldBody := responsesPromptBody(t, prior, s.profile.Resolved())
-		oldInput := oldBody["input"].([]any)
-		prefix := mustJSON(t, oldInput)
-		for _, req := range reqs {
+		for round, req := range reqs {
+			oldBody := responsesPromptBody(t, prior, s.profile.Resolved())
+			oldInput := oldBody["input"].([]any)
 			newBody := responsesPromptBody(t, req, s.profile.Resolved())
 			newInput := newBody["input"].([]any)
-			if newBody["instructions"] != saved.Header.SystemPrompt || len(newInput) < len(oldInput) || mustJSON(t, newInput[:len(oldInput)]) != prefix {
+			if newBody["instructions"] != saved.Header.SystemPrompt || len(newInput) < len(oldInput) || mustJSON(t, newInput[:len(oldInput)]) != mustJSON(t, oldInput) {
 				t.Fatalf("step %d changed the earlier native request prefix", i)
 			}
-			if last, blocks := requestEnvironment(req); last.Cwd != dir || last.GitBranch != tc.reported || blocks != tc.blocks {
-				t.Errorf("step %d request has %d workspace updates at %q on %q, want %d at %q on %q", i, blocks, last.Cwd, last.GitBranch, tc.blocks, dir, tc.reported)
+			wantBranch, wantBlocks := tc.reported, tc.blocks
+			if tc.timeout && round == 0 {
+				last, blocks := requestEnvironment(prior)
+				wantBranch, wantBlocks = last.GitBranch, blocks
 			}
+			if last, blocks := requestEnvironment(req); last.Cwd != dir || last.GitBranch != wantBranch || blocks != wantBlocks {
+				t.Errorf("step %d request %d has %d workspace updates at %q on %q, want %d at %q on %q", i, round, blocks, last.Cwd, last.GitBranch, wantBlocks, dir, wantBranch)
+			}
+			prior = req
 		}
-		prior = reqs[1]
 	}
 }
 

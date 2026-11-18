@@ -187,4 +187,24 @@ func TestReplayBlockFollowsRenderedChanges(t *testing.T) {
 			t.Fatalf("model projection after refill = %+v, want %+v", projection.State(), nominal)
 		}
 	})
+
+	t.Run("unrecorded launch branch survives an inconclusive probe", func(t *testing.T) {
+		writer := NewTracker(State{GitBranchUnknown: true})
+		reader := NewTracker(writer.State())
+		model := NewTracker(State{Last: Snapshot{GitBranch: "launch"}})
+		observed := fullSnap()
+		observed.GitBranch, observed.gitBranchUnknown = "", true
+		block := writer.RenderDiff(observed)
+		if !reader.ReplayBlock(block) || !reader.State().GitBranchUnknown || !model.ReplayBlock(block) || model.State().Last.GitBranch != "launch" {
+			t.Fatal("an unrelated observation cleared the saved prompt's unknown branch")
+		}
+		observed.gitBranchUnknown = false
+		clear := reader.RenderDiff(observed)
+		if !model.ReplayBlock(clear) || model.State().Last.GitBranch != "" || !writer.ReplayBlock(clear) || writer.State().GitBranchUnknown {
+			t.Fatal("the confirmed absence did not clear the branch for both the model and the restored tracker")
+		}
+		if repeat := writer.RenderDiff(observed); repeat != "" {
+			t.Fatal("an unchanged checkout repeated its correction")
+		}
+	})
 }

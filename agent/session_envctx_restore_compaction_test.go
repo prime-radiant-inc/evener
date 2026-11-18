@@ -2,6 +2,9 @@ package agent
 
 import (
 	"context"
+	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -10,10 +13,12 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/gittest"
 	"primeradiant.com/evener/llm"
 )
 
 func TestRestoreEnvironmentReconcilesCompactionWithStaleMetadata(t *testing.T) {
+	t.Run("checkout in the launch prompt", testCompactedLaunchBranch)
 	for _, retained := range []string{"none", "full", "diff"} {
 		t.Run(retained, func(t *testing.T) {
 			now := envctxFixedTime
@@ -135,6 +140,80 @@ func TestRestoreEnvironmentReconcilesCompactionWithStaleMetadata(t *testing.T) {
 			want := envctx.NewCollector(*probes).Collect(envctx.Inputs{Cwd: cwd, Sandbox: restored.cfg.Sandbox})
 			if got := restored.envTracker.State(); !got.HasSent || got.Last != want {
 				t.Fatalf("restored environment state = %+v, want complete %+v", got, want)
+			}
+		})
+	}
+}
+
+func testCompactedLaunchBranch(t *testing.T) {
+	for _, mode := range []string{"warm", "cold", "cold unrecorded", "cold unborn"} {
+		t.Run(mode, func(t *testing.T) {
+			const branch = "launch-branch-19"
+			cwd, stateDir := evalSyms(t, t.TempDir()), t.TempDir()
+			copyWorktreeBaseRepo(t, cwd)
+			gittest.Run(t, cwd, "checkout", "-b", branch)
+			s := newScriptedSummaryCompactSession(t, "env-fold-git", func(llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nSaved work summary\n[END SUMMARY]")}
+			}, withDir(cwd), withStateDir(stateDir), withEnvironmentSnapshot())
+			prompt := s.cachedSystemPrompt
+			if !strings.Contains(prompt, branch) {
+				t.Fatal("launch branch missing from provider prompt")
+			}
+			if err := s.maybeAppendEnvironmentContext(); err != nil {
+				t.Fatal(err)
+			}
+			seedNumberedSessionHistory(t, s, 8)
+			s.contextMgr.PreserveRecentTurns = 1
+			if err := s.Compact(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if turns := countEnvironmentTurns(s); turns != 0 {
+				t.Fatalf("fold retained %d environment turns", turns)
+			}
+			leaveRepo := func() {
+				t.Helper()
+				if err := os.Rename(filepath.Join(cwd, ".git"), filepath.Join(t.TempDir(), "repo")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if mode == "cold unborn" {
+				gittest.Run(t, cwd, "checkout", "--orphan", "unborn")
+			} else {
+				leaveRepo()
+			}
+			for round := range 2 {
+				if mode != "warm" || round > 0 {
+					s.Close()
+					meta := loadMetaForTest(t, s)
+					if mode == "cold unrecorded" && round == 0 {
+						meta.PromptLaunch.GitBranch = nil
+						if err := schema.SaveSessionMetaForNewPrompt(nil, stateDir, meta); err != nil {
+							t.Fatal(err)
+						}
+					}
+					restored, err := RestoreSessionFromMetaWithConfig(s.client, s.profile, execenv.NewLocalExecutionEnvironment(cwd), meta, RestoreSessionConfig{StateDir: stateDir})
+					if err != nil {
+						t.Fatal(err)
+					}
+					s = restored
+					t.Cleanup(s.Close)
+				}
+				if mode == "cold unborn" && round == 0 {
+					leaveRepo()
+				}
+				_, _, _, req, _, _, err := s.prepareModelRequestWithError(t.Context(), 1, &events.RoundTimings{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				model := envctx.NewTracker(envctx.State{Last: envctx.Snapshot{GitBranch: branch}})
+				for _, msg := range req.Messages {
+					if msg.Role == llm.RoleUser {
+						model.ReplayBlock(msg.Text())
+					}
+				}
+				if req.Messages[0].Text() != prompt || model.State().Last.GitBranch != "" || countEnvironmentTurns(s) != 1 {
+					t.Errorf("round %d retained branch %q after leaving the worktree, environment turns %d, prompt identical %t", round, model.State().Last.GitBranch, countEnvironmentTurns(s), req.Messages[0].Text() == prompt)
+				}
 			}
 		})
 	}

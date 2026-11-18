@@ -261,6 +261,9 @@ type Session struct {
 	// A workspace installation or a fold that removes an observation needs
 	// a fresh sample before the next request, even without a new user turn.
 	worktreeContextPending bool
+	// An inconclusive Git sample keeps the last branch usable for this
+	// request and leaves another observation due on the next dispatch.
+	gitBranchRetryAfterRequest bool
 	// The installed workspace owns both its sandbox grants and any sample
 	// collected outside mu. A swap invalidates samples still in flight.
 	workspaceRevision      uint64
@@ -2764,8 +2767,9 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 		return nil
 	}
 	before := tracker.State()
-	pendingWorkspace := s.worktreeContextPending
+	pendingWorkspace := s.worktreeContextPending || s.gitBranchRetryAfterRequest
 	s.worktreeContextPending = false
+	s.gitBranchRetryAfterRequest = pendingWorkspace && !snap.GitBranchKnown()
 	s.setEnvironmentIdentity(&snap, before.Last)
 	block := tracker.RenderDiff(snap)
 	var st envctx.State
