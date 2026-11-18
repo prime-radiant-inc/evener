@@ -138,27 +138,21 @@ func trender_isOmittedKind(line string) bool {
 	if err := json.Unmarshal([]byte(line), &entry); err != nil {
 		return false
 	}
-	var turn map[string]json.RawMessage
+	// Classify through a type with the transcript's own field names, never a map
+	// lookup: encoding/json matches names case-insensitively and takes the last
+	// occurrence, so a turn spelling kind or original_ordinal twice in different
+	// cases is classified one way here and another way by the strict decode.
+	var turn struct {
+		Kind            *schema.TurnKind `json:"kind"`
+		OriginalOrdinal *uint64          `json:"original_ordinal"`
+	}
 	if err := json.Unmarshal(entry["turn"], &turn); err != nil {
 		return false
 	}
-	var kind schema.TurnKind
-	if err := json.Unmarshal(turn["kind"], &kind); err != nil {
+	if turn.Kind == nil {
 		return false
 	}
-	if !kind.PublicTranscript() {
-		return true
-	}
-	// Ask the type, not the bytes: this is the same field the projection's
-	// strict decode reads, so a line spelling the key in another case cannot
-	// be classified one way here and rendered the other way there.
-	var decoded struct {
-		OriginalOrdinal *uint64 `json:"original_ordinal"`
-	}
-	if err := json.Unmarshal(entry["turn"], &decoded); err != nil {
-		return false
-	}
-	return decoded.OriginalOrdinal != nil
+	return !turn.Kind.PublicTranscript() || turn.OriginalOrdinal != nil
 }
 
 // trender_canonicalEntry re-encodes one JSONL line into the form the projection

@@ -1122,6 +1122,13 @@ func publicTranscriptData(data transcriptData) transcriptData {
 // gives another, and the range a caller counts would disagree with the lines
 // this returns. The raw maps are used only for what needs the bytes:
 // redaction, seq rewriting, and keeping every other field as written.
+//
+// original_ordinal is the exception: the caller has already established the
+// turn is public, so no spelling of that key may survive into the emitted line.
+// Marshaling the map sorts keys, and decoding takes the last occurrence, so a
+// source line carrying both spellings would emit the uppercase one first and
+// re-decode as a fold copy — a consumer of this JSONL would drop the turn the
+// range just selected, while the markdown path shows it.
 func publicTranscriptLine(line []byte, seq int, turn schema.Turn) ([]byte, bool, error) {
 	var entry map[string]json.RawMessage
 	if err := json.Unmarshal(line, &entry); err != nil {
@@ -1137,6 +1144,7 @@ func publicTranscriptLine(line []byte, seq int, turn schema.Turn) ([]byte, bool,
 	delete(rawTurn, "attention_id")
 	delete(rawTurn, "attention_resolution")
 	delete(rawTurn, "delegate_delivery_commits")
+	dropOriginalOrdinalSpellings(rawTurn)
 	encodedTurn, err := json.Marshal(rawTurn)
 	if err != nil {
 		return nil, false, fmt.Errorf("encode public transcript turn: %w", err)
@@ -1151,6 +1159,20 @@ func publicTranscriptLine(line []byte, seq int, turn schema.Turn) ([]byte, bool,
 		return nil, false, fmt.Errorf("encode public transcript entry: %w", err)
 	}
 	return encoded, true, nil
+}
+
+// dropOriginalOrdinalSpellings deletes every key naming original_ordinal,
+// however it is cased: encoding/json matches field names case-insensitively, so
+// any spelling left in the map would decode into the field. An absent key and a
+// null both decode to nil, and omitting it keeps an ordinary turn's line
+// unchanged. Only this field is touched: it is the one the projection decided,
+// and no other key contradicts that decision.
+func dropOriginalOrdinalSpellings(m map[string]json.RawMessage) {
+	for key := range m {
+		if strings.EqualFold(key, "original_ordinal") {
+			delete(m, key)
+		}
+	}
 }
 
 // readMarkdownPage builds the markdown envelope for the resolved transcript.

@@ -182,6 +182,49 @@ func TestPublicTranscriptDecidesInclusionFromDecodedTurn(t *testing.T) {
 	if strings.Contains(markdown, first) || strings.Contains(jsonl, first) {
 		t.Fatalf("last:1 rendered the earlier message in a format: markdown=%v jsonl=%v", strings.Contains(markdown, first), strings.Contains(jsonl, first))
 	}
+
+	// Both emitted forms must decode to the same answer the source did. Redaction
+	// re-marshals the raw map and marshaling sorts keys: a source line carrying
+	// original_ordinal in two cases would emit the uppercase spelling first and
+	// re-decode as a fold copy, so a consumer of this JSONL would drop the turn
+	// the range selected while the markdown path shows it.
+	assertPublicEmitted(t, "jsonl range", jsonl, last)
+	// The newest message's own address: original at 0, marker at 1, later at 2.
+	pin := 2
+	expanded, err := readMarkdownPage(context.Background(), path, root, "", schema.SessionMeta{}, "", &pin, 0, 0)
+	if err != nil {
+		t.Fatalf("expand_turn: %v", err)
+	}
+	expansion := expanded.(readMarkdownEnvelope).Expansion
+	if expansion == nil {
+		t.Fatal("expand_turn returned no expansion payload")
+	}
+	assertPublicEmitted(t, "expand_turn", expansion.Data, last)
+}
+
+// assertPublicEmitted decodes each emitted entry line carrying the marker text
+// and reports whether the public-transcript predicate keeps it. The predicate is
+// the reader's own: this is the assertion that catches an emitted key
+// contradicting the decision the projection made.
+func assertPublicEmitted(t *testing.T, surface, content, marker string) {
+	t.Helper()
+	found := false
+	for _, line := range strings.Split(strings.TrimSuffix(content, "\n"), "\n") {
+		if !strings.Contains(line, marker) {
+			continue
+		}
+		entry, err := transcript.DecodeEntry([]byte(line))
+		if err != nil {
+			t.Fatalf("%s: decode emitted line: %v", surface, err)
+		}
+		if !entry.Turn.InPublicTranscript() {
+			t.Fatalf("%s: emitted line decodes as a non-public turn, so its reader drops it:\n%s", surface, line)
+		}
+		found = true
+	}
+	if !found {
+		t.Fatalf("%s: emitted no line carrying the selected message", surface)
+	}
 }
 
 // foldCopyFixture writes an original, a compaction marker, its fold copy, and a
