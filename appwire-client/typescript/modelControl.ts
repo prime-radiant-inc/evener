@@ -3,7 +3,12 @@ import { isModelControlAuthorityStale, mutationErrorData, WireError } from "./er
 import type { ThreadModel } from "./model";
 import { sameJsonValue } from "./plainObject";
 import { SHUT_DOWN_STATUSES } from "./submitRouting";
-import type { ModelControlAuthority, ModelControlSnapshot, ThreadModelSetResponse } from "./types.gen";
+import type {
+  ModelControlAuthority,
+  ModelControlSnapshot,
+  ThreadCapabilities,
+  ThreadModelSetResponse,
+} from "./types.gen";
 
 export interface ModelControlDisplay {
   modelProvider: string;
@@ -88,6 +93,15 @@ export function modelControlDisplay(model: ThreadModel): ModelControlDisplay {
   return state.kind === "recovering" ? state.lastSafeDisplay : state.canonicalDisplay;
 }
 
+// The slice of a session every model-pick decision reads. Capabilities may be
+// partial: only changeModel is consulted, and a caller that describes a session
+// by the capability it cares about must still be able to ask.
+export interface ModelPickTarget {
+  capabilities?: Partial<ThreadCapabilities> | undefined;
+  modelControlState: ModelControlClientState;
+  status: { type: string };
+}
+
 // Whether a model pick can reach the wire on `model`. One predicate for every
 // client, so the browser picker and the phone sheet cannot disagree about
 // which sessions may offer a model change.
@@ -101,7 +115,7 @@ export function modelControlDisplay(model: ThreadModel): ModelControlDisplay {
 // readablePastCapabilities - no changeModel - and whose thread/resume the hub
 // refuses outright, so a pick on it has no resume path and must not be offered
 // as one.
-export function modelPickCanSend(model: Pick<ThreadModel, "capabilities" | "modelControlState" | "status">): boolean {
+export function modelPickCanSend(model: ModelPickTarget): boolean {
   if (model.capabilities?.changeModel !== true) return false;
   const kind = model.modelControlState.kind;
   if (kind === "ready") return true;
@@ -118,7 +132,7 @@ export function modelPickCanSend(model: Pick<ThreadModel, "capabilities" | "mode
 // Whether `model` names a session a model change would have to RESUME first: a
 // shut-down thread the hub still advertises changeModel for. This is exactly
 // the set the hub resumes behind a mutation (see modelPickCanSend above).
-export function coldSessionCanResume(model: Pick<ThreadModel, "capabilities" | "status">): boolean {
+export function coldSessionCanResume(model: Pick<ModelPickTarget, "capabilities" | "status">): boolean {
   return model.capabilities?.changeModel === true && SHUT_DOWN_STATUSES.has(model.status.type);
 }
 
@@ -165,11 +179,17 @@ export function savedReadKeepsHeldModelControl(
 // site, so the stored `ready` snapshot and every later revision comparison
 // see the same `[]` a carrier sends explicitly — otherwise an empty-array
 // carrier for the same revision would read as a conflict against a held null.
-// Only the read path tolerates null; validateThreadModelSetResponse below
-// still requires an array from a model-set reply.
+//
+// Only the four lanes below normalizes. An OMITTED or non-array ladder is not
+// the tolerated null: it is an incomplete snapshot, and rewriting it to `[]`
+// here would turn one into a `ready` authority. So this runs strictly AFTER
+// isCompleteSnapshot has validated the shape, and it touches nothing when the
+// ladder is any value but null. validateThreadModelSetResponse below still
+// requires an array from a model-set reply.
 function normalizedSnapshot(snapshot: ModelControlSnapshot): ModelControlSnapshot {
+  if (!isRecord(snapshot.active)) return snapshot;
   const levels = snapshot.active.reasoningEffortLevels as unknown;
-  if (Array.isArray(levels)) return snapshot;
+  if (levels !== null) return snapshot;
   return { ...snapshot, active: { ...snapshot.active, reasoningEffortLevels: [] } };
 }
 
@@ -232,9 +252,6 @@ function reduceRevision(
 }
 
 export function reduceModelControl(model: ThreadModel, input: ModelControlInput): ModelControlReduction {
-  if (input.kind === "readAccepted" && input.snapshot)
-    input = { ...input, snapshot: normalizedSnapshot(input.snapshot) };
-  if (input.kind === "snapshot") input = { ...input, snapshot: normalizedSnapshot(input.snapshot) };
   if (input.kind === "connectionRetired") {
     const display = canonicalDisplay(model);
     return {
@@ -265,20 +282,24 @@ export function reduceModelControl(model: ThreadModel, input: ModelControlInput)
         replacementReadRequired: false,
       };
     }
+    // Shape first, normalization second: a snapshot this authority cannot
+    // speak for (or one whose own fields are missing) leaves model changes
+    // unavailable, and must not be repaired into a `ready` authority here.
     if (!isCompleteSnapshot(input.snapshot) || !sameModelControlAuthority(input.snapshot.authority, input.authority)) {
       if (model.modelControlState.kind === "recovering") {
         return { model, decision: "recovering", replacementReadRequired: false };
       }
       return recover(model, false);
     }
+    const incoming = normalizedSnapshot(input.snapshot);
     if (model.modelControlState.kind === "ready") {
       const held = model.modelControlState.snapshot;
-      if (sameModelControlAuthority(held.authority, input.snapshot.authority)) {
-        return reduceRevision(model, held, input.snapshot, false);
+      if (sameModelControlAuthority(held.authority, incoming.authority)) {
+        return reduceRevision(model, held, incoming, false);
       }
     }
     return {
-      model: projectModelControlSnapshot(model, input.snapshot),
+      model: projectModelControlSnapshot(model, incoming),
       decision: "applied",
       replacementReadRequired: false,
     };
@@ -296,7 +317,7 @@ export function reduceModelControl(model: ThreadModel, input: ModelControlInput)
   if (!isCompleteSnapshot(input.snapshot) || !sameModelControlAuthority(held.authority, input.snapshot.authority)) {
     return recover(model, true);
   }
-  return reduceRevision(model, held, input.snapshot, true);
+  return reduceRevision(model, held, normalizedSnapshot(input.snapshot), true);
 }
 
 export function modelControlAuthority(model: ThreadModel): ModelControlAuthority | undefined {
@@ -351,6 +372,48 @@ function malformedModelSetResponse(clientMutationId: string): WireError {
     mutationOutcome: "unknown",
     retryDisposition: "blocked",
   });
+}
+
+/**
+ * The reply that never arrived for a dispatched model switch. The daemon may
+ * have applied the pick before the timeout or the socket close, so this is
+ * `mutationOutcome=unknown` with `retryDisposition=blocked`, carrying the
+ * mutation the caller actually sent. It is the same envelope a malformed
+ * success produces, because it is the same fact: this call cannot say what
+ * happened, and must not be replayed. Known pre-send failures and the peer's
+ * own refusals are never converted into it.
+ */
+export function modelSetReplyLostError(clientMutationId: string, cause: "timeout" | "socketClosed"): WireError {
+  return new WireError(
+    cause === "timeout"
+      ? "thread/model/set was dispatched but its reply timed out"
+      : "thread/model/set was dispatched but the socket closed before its reply",
+    -32603,
+    {
+      evenerErrorInfo: "mutationOutcomeUnknown",
+      clientMutationId,
+      mutationOutcome: "unknown",
+      retryDisposition: "blocked",
+      cause,
+    },
+  );
+}
+
+/**
+ * Whether a reply's own desired record is this mutation, already settled as
+ * rejected. A reply can arrive with an accepted disposition and a rejected
+ * lifecycle for the very mutation it answers: the pick passed admission, then
+ * failed deferred validation (a boundary check, a quota retry) before the
+ * daemon refreshed the reply's snapshot. Adopting that snapshot and treating
+ * the call as a success confirms a switch the daemon has already given up on.
+ * A pick still `pending` is not this: it is queued and may yet apply.
+ */
+export function modelSetReplyRejected(
+  response: Pick<ThreadModelSetResponse, "modelControl">,
+  clientMutationId: string,
+): boolean {
+  const desired = response.modelControl?.desired;
+  return desired?.clientMutationId === clientMutationId && desired.lifecycle === "rejected";
 }
 
 export function validateThreadModelSetResponse(value: unknown, clientMutationId: string): ThreadModelSetResponse {

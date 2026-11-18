@@ -39,6 +39,7 @@ import {
 	isStaleCursorError,
 	mergeOlderItemPage,
 	mergeSavedViewPage,
+	modelControlReadInputFromHydrated,
 	notificationTargetsThread,
 	notificationTouchesTranscript,
 	reduceModelControl,
@@ -2050,9 +2051,23 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					// over a read that merely lost an identity race.
 					if (currentConvForMerge !== null && appliedModel === currentConvForMerge) {
 						acceptedRehydrate = { generation: gen };
-						// The wire answered but this model declined the read by its own
-						// identity rules: a discarded read never restores canonical
-						// authority.
+						// The transcript window lost its identity race — an in-progress
+						// update advanced the phone's transcript past it — but the read
+						// still answered from the live binding, and its model-control
+						// envelope is that binding's own answer. Dropping it left a
+						// `recovering` picker with no replacement read scheduled, so the
+						// user had no path back to a model change. The envelope is
+						// evaluated on its own authority; the newer transcript is
+						// untouched, and a read from a RETIRED binding still reduces to
+						// `ignored` because its authority does not match the held one.
+						const readControl = reduceModelControl(
+							currentConvForMerge,
+							modelControlReadInputFromHydrated(conversation),
+						);
+						if (readControl.model !== currentConvForMerge) {
+							set({ conversation: { ...readControl.model, items: currentConvForMerge.items } });
+							if (readControl.replacementReadRequired) requestRehydrate(ref);
+						}
 						markLatest("unknown");
 						return;
 					}

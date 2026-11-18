@@ -5,8 +5,9 @@ import {
 	findBuiltinArgument,
 	matchBuiltinInvocation,
 	mergeSlashCommands,
+	modelPickCanSend,
 } from "@evener/appwire-client";
-import type { InputItem, ThreadClearResponse } from "@evener/appwire-client";
+import type { InputItem, ModelPickTarget, ThreadClearResponse } from "@evener/appwire-client";
 import type { MobileConversation } from "./projectedRows";
 import { type ControlsSource, conversationControls } from "./conversationControls";
 import type {
@@ -16,6 +17,7 @@ import type {
 	ConversationModelCatalog,
 	ConversationService,
 } from "./conversation/services/conversation";
+import { ModelPickNotSentError } from "./conversation/services/conversation";
 import type { DraftDocument } from "./draftDocument";
 import type { ConversationMutationContext } from "./conversation/state/conversationMutation";
 
@@ -55,14 +57,22 @@ const commands = [
 	{ id: "clear", capability: "clear", label: "Clear" },
 ] as const;
 
-/** What the completion registry and submission both read off the session. */
-export type ComposerCommandSession = ControlsSource;
+/** What the completion registry and submission both read off the session.
+ * `/model` is not a capability test: whether a pick can reach the wire is the
+ * shared predicate's answer (modelPickCanSend), so the registry needs the
+ * model-control state the sheet and the browser picker read as well. */
+export type ComposerCommandSession = ControlsSource & Pick<ModelPickTarget, "modelControlState">;
 
 export type ComposerCommandSpec = (typeof commands)[number];
 
 /** Whether a registry command may run against the session right now. */
 export function composerCommandAvailable(command: ComposerCommandSpec, session: ComposerCommandSession): boolean {
 	if ("control" in command) return conversationControls(session)[command.control];
+	// A live session that advertises changeModel but holds no model-control
+	// authority would take the user's pick and then refuse it locally. The
+	// sheet and the palette already agree with the shared predicate; the
+	// registry must answer the same question the same way.
+	if (command.capability === "changeModel") return modelPickCanSend(session);
 	return command.capability === null || !!session.capabilities[command.capability];
 }
 
@@ -84,6 +94,10 @@ export class CommandArgumentError extends Error {}
  * handler that treats it differently tests for it first, as the restore in
  * submitComposerCommand does. */
 export class CommandNotSentError extends CommandArgumentError {}
+
+/** Why /model refused: the session no longer offers a model change, so the
+ * pick never left the phone. */
+const UNAVAILABLE_MODEL_PICK = "this session cannot change model right now";
 
 /** Starts an aside and names the session it opens, for /aside and the
  * Session menu's Ask aside alike. */
@@ -239,7 +253,25 @@ export async function submitComposerCommand(
 			match.argsText,
 		);
 		if (!model) throw invalid();
-		operation = () => service.changeModel(model.provider, model.model);
+		// Availability was answered when the command was offered; the session
+		// can lose its authority between that answer and this dispatch (a
+		// reconnect retires it, a recovery read owns it). Refuse here, as
+		// unsent, rather than taking the draft and confirming a pick that
+		// never left the phone.
+		operation = async () => {
+			const session = context.turn();
+			if (session && !modelPickCanSend(session)) {
+				throw new CommandNotSentError(`/model: ${UNAVAILABLE_MODEL_PICK}`);
+			}
+			try {
+				await service.changeModel(model.provider, model.model);
+			} catch (error) {
+				if (error instanceof ModelPickNotSentError) {
+					throw new CommandNotSentError(error.message, { cause: error });
+				}
+				throw error;
+			}
+		};
 	} else if (id === "reasoning-effort") {
 		const current = context.reasoning();
 		const levels = current?.supportsReasoning ? (current.reasoningEffortLevels ?? []) : [];

@@ -12,7 +12,7 @@ import {
   WireError,
 } from "./errors";
 import { decodeHistoryServingResponse } from "./historyServing";
-import { validateThreadModelSetResponse } from "./modelControl";
+import { modelSetReplyLostError, validateThreadModelSetResponse } from "./modelControl";
 import { isPlainObject } from "./plainObject";
 import type { WebSocketLike } from "./transport";
 import type { AnyNotification, InitializeResponse, MethodName, MethodTypes } from "./types.gen";
@@ -147,6 +147,15 @@ interface PendingRequest {
   resolve: (result: unknown) => void;
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
+  /**
+   * The mutation this request dispatched, when its reply loss has to be
+   * reported as an unknown outcome. A model switch is applied by the daemon
+   * once the frame leaves this socket, so a timeout or a closed socket cannot
+   * say whether it happened; the caller needs the mutation it sent and the
+   * retry it must not take. Absent for every other method, whose transport
+   * failure is the whole answer.
+   */
+  lostReply?: (cause: "timeout" | "socketClosed") => Error;
 }
 
 const INITIALIZE_RESPONSE_KEYS = ["serverInfo", "protocolVersion", "sourceId", "features"] as const;
@@ -478,8 +487,8 @@ export class AppwireClient {
       // have the first reply's refusal attributed to the second switch, so a
       // caller believes a switch it never made is outcome-unknown.
       const clientMutationId = sent.clientMutationId;
-      return this.requestWire(method, params, opts).then((result) =>
-        validateThreadModelSetResponse(result, clientMutationId),
+      return this.requestWire(method, params, opts, (cause) => modelSetReplyLostError(clientMutationId, cause)).then(
+        (result) => validateThreadModelSetResponse(result, clientMutationId),
       );
     }
     return this.requestWire(method, params, opts);
@@ -509,6 +518,15 @@ export class AppwireClient {
     method: M,
     params: MethodTypes[M]["params"],
     opts?: { timeoutMs?: number },
+    /**
+     * Builds the error a LOST REPLY rejects with, for a method whose frame may
+     * already have been applied when the reply went missing. A timeout or a
+     * closed socket cannot tell the caller whether the daemon acted, so the
+     * conversion happens where the slot is rejected — the only place that
+     * knows the frame was written. Absent for methods whose transport failure
+     * is the whole answer.
+     */
+    lostReply?: (cause: "timeout" | "socketClosed") => Error,
   ): Promise<MethodTypes[M]["result"]> {
     if (this.connectionState !== "ready" && !READY_EXEMPT_METHODS.has(method)) {
       return Promise.reject(
@@ -545,9 +563,18 @@ export class AppwireClient {
             /* The retired transport is already closing. */
           }
         }
-        reject(new RequestTimeoutError(`AppwireClient: "${method}" timed out after ${timeoutMs}ms`));
+        reject(
+          lostReply
+            ? lostReply("timeout")
+            : new RequestTimeoutError(`AppwireClient: "${method}" timed out after ${timeoutMs}ms`),
+        );
       }, timeoutMs);
-      this.pending.set(id, { resolve: resolve as (result: unknown) => void, reject, timer });
+      this.pending.set(id, {
+        resolve: resolve as (result: unknown) => void,
+        reject,
+        timer,
+        ...(lostReply === undefined ? {} : { lostReply }),
+      });
       try {
         socket.send(JSON.stringify({ id, method, params }));
       } catch (err) {
@@ -981,7 +1008,9 @@ export class AppwireClient {
   private failAllPending(err: Error): void {
     for (const slot of this.pending.values()) {
       clearTimeout(slot.timer);
-      slot.reject(err);
+      // A dispatched model switch whose socket closed is an unknown outcome,
+      // not a plain transport error: the daemon may have applied it.
+      slot.reject(slot.lostReply ? slot.lostReply("socketClosed") : err);
     }
     this.pending.clear();
   }

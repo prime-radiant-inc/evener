@@ -3185,6 +3185,53 @@ it("advances held model control without admitting a stale history read", async (
   owner.dispose();
 });
 
+// A recovery read can capture a valid snapshot before an in-progress history
+// update advances the repository's transcript past it. The shorter window
+// makes applyReadResponse return the held model unchanged, and dropping the
+// whole read with it left the pane `recovering` with no replacement read
+// scheduled — the picker stayed disabled after the authority had answered.
+// The envelope still speaks for the binding that served it.
+it("establishes model control from a recovery read whose transcript window is behind", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const control = (revision: number, model: string): ModelControlSnapshot => ({
+    authority: { instanceId: threadId, bootGeneration: "1" },
+    revision,
+    active: {
+      modelProvider: "anthropic",
+      model,
+      reasoningEffortLevels: ["low", "high"],
+      supportsReasoning: true,
+    },
+  });
+  const baseline = read("baseline", 5);
+  baseline.thread.evener.instanceId = threadId;
+  baseline.thread.evener.capabilities = { ...ALL_CAPABILITIES, modelControlVersion: 1 };
+  baseline.thread.evener.modelControl = control(1, "claude-sonnet-4-5");
+  expect(owner.acceptRead(baseline, { lifetime: 1, readId: "baseline", boundary: "baseline" })).toBe(true);
+  // The pane is waiting for an authoritative answer.
+  owner.acceptModelControlTransition({ kind: "authorityStale" }, { lifetime: 1 });
+  expect(owner.getSnapshot()?.modelControlState.kind).toBe("recovering");
+
+  // The recovery read answers with a newer revision from the SAME binding and
+  // a window shorter than the one held.
+  const recovery = read("recovery", 1);
+  recovery.thread.evener.instanceId = threadId;
+  recovery.thread.evener.capabilities = { ...ALL_CAPABILITIES, modelControlVersion: 1 };
+  recovery.thread.evener.modelControl = control(2, "claude-opus-4-6");
+  expect(owner.acceptRead(recovery, { lifetime: 1, readId: "recovery", boundary: "recovery" })).toBe(false);
+
+  // The newer transcript survived the rejected window...
+  expect(owner.getSnapshot()?.history?.length).toBe(5);
+  // ...and the envelope that answered for the binding became authority.
+  expect(owner.getSnapshot()?.modelControlState).toEqual({
+    kind: "ready",
+    snapshot: recovery.thread.evener.modelControl,
+  });
+  owner.dispose();
+});
+
 it("does not replay quarantined model control from the read's retired authority", () => {
   const fixture = createEntryCacheFixture();
   fixtures.push(fixture);
@@ -3267,6 +3314,106 @@ it("keeps a read whose pre-cut model-control frame carries no snapshot", () => {
     kind: "ready",
     snapshot: current.thread.evener.modelControl,
   });
+  owner.dispose();
+});
+
+// A pre-cut model frame was captured before the read answered, so its context
+// sample is older than the one the read just established. Only the default
+// reasoning tier — the one profile fact the control snapshot does not carry —
+// may come from it.
+it("replays only the default reasoning tier from a pre-cut model frame", () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const current = read("current", 3);
+  current.thread.evener.instanceId = threadId;
+  current.thread.evener.capabilities = { ...ALL_CAPABILITIES, modelControlVersion: 1 };
+  current.thread.evener.modelControl = {
+    authority: { instanceId: threadId, bootGeneration: "1" },
+    revision: 1,
+    active: {
+      modelProvider: "openai",
+      model: "gpt-5.5",
+      reasoningEffortLevels: ["low", "high"],
+      supportsReasoning: true,
+    },
+  };
+  current.thread.evener.contextUsed = 900;
+  current.thread.evener.contextWindow = 200_000;
+  current.thread.evener.compactionThreshold = 150_000;
+  expect(owner.acceptRead(current, { lifetime: 1, readId: "current", boundary: "current" })).toBe(true);
+
+  owner.acceptBeforeReadCut(
+    [
+      {
+        method: "thread/model/changed",
+        params: {
+          ref,
+          threadId,
+          modelProvider: "openai",
+          model: "gpt-5.5",
+          reasoningEffortLevels: ["low", "high"],
+          supportsReasoning: true,
+          defaultReasoningEffort: "high",
+          // Everything below predates this switch's own context sample.
+          contextUsed: 12,
+          contextWindow: 32_000,
+          compactionThreshold: 24_000,
+        },
+      } as AnyNotification,
+    ],
+    { lifetime: 1 },
+  );
+
+  expect(owner.getSnapshot()?.defaultReasoningEffort).toBe("high");
+  expect(owner.getSnapshot()?.contextUsed).toBe(900);
+  expect(owner.getSnapshot()?.contextWindow).toBe(200_000);
+  expect(owner.getSnapshot()?.compactionThreshold).toBe(150_000);
+  owner.dispose();
+});
+
+// A frame for a sibling model on the same provider is a different model's
+// announcement: its tier must not label the model the read settled on.
+it("ignores a pre-cut model frame for another model on the same provider", () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const current = read("current", 3);
+  current.thread.evener.instanceId = threadId;
+  current.thread.evener.capabilities = { ...ALL_CAPABILITIES, modelControlVersion: 1 };
+  current.thread.evener.modelControl = {
+    authority: { instanceId: threadId, bootGeneration: "1" },
+    revision: 1,
+    active: {
+      modelProvider: "openai",
+      model: "gpt-5.5",
+      reasoningEffortLevels: ["low", "high"],
+      supportsReasoning: true,
+    },
+  };
+  expect(owner.acceptRead(current, { lifetime: 1, readId: "current", boundary: "current" })).toBe(true);
+  expect(owner.getSnapshot()?.defaultReasoningEffort).toBeUndefined();
+
+  owner.acceptBeforeReadCut(
+    [
+      {
+        method: "thread/model/changed",
+        params: {
+          ref,
+          threadId,
+          modelProvider: "openai",
+          model: "gpt-5.5-mini",
+          reasoningEffortLevels: ["low"],
+          supportsReasoning: true,
+          defaultReasoningEffort: "low",
+        },
+      } as AnyNotification,
+    ],
+    { lifetime: 1 },
+  );
+
+  expect(owner.getSnapshot()?.defaultReasoningEffort).toBeUndefined();
+  expect(owner.getSnapshot()?.model).toBe("gpt-5.5");
   owner.dispose();
 });
 

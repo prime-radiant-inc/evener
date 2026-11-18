@@ -29,6 +29,17 @@ const commandContext = {
 	cleared: (_response: ThreadClearResponse) => {},
 };
 
+// A live session holding a complete model-control snapshot: the state a
+// command that reads the session (not just its capability flags) needs.
+const READY_MODEL_CONTROL = {
+	kind: "ready" as const,
+	snapshot: {
+		authority: { instanceId: "instance", bootGeneration: "boot" },
+		revision: 1,
+		active: { modelProvider: "scripted", model: "current", reasoningEffortLevels: [], supportsReasoning: false },
+	},
+};
+
 function boundary() {
 	const thread: Thread = {
 		id: "thread",
@@ -611,6 +622,7 @@ it.each([
 				status: { type: "active" },
 				capabilities: { steer: true, queue: true, interrupt: true },
 				queue: { revision: 7, depth: 0 },
+				modelControlState: READY_MODEL_CONTROL,
 			}),
 		});
 		expect(submitted).toEqual([
@@ -642,7 +654,12 @@ it("routes /interrupt to Stop", async () => {
 			stop: async () => {
 				stopped++;
 			},
-			turn: () => ({ status: { type: "active" }, capabilities: { interrupt: true }, queue: null }),
+			turn: () => ({
+				status: { type: "active" },
+				capabilities: { interrupt: true },
+				queue: null,
+				modelControlState: READY_MODEL_CONTROL,
+			}),
 		});
 		expect(stopped).toBe(1);
 		expect(document.getSnapshot().record).toMatchObject({ draft: "", unconfirmed: null });
@@ -667,7 +684,12 @@ it("refuses /drain-as-steer before submitting while the drain is refused", async
 				drainQueue: async () => {
 					drained++;
 				},
-				turn: () => ({ status: { type: "active" }, capabilities: { steer: true }, queue: { revision: 7, depth: 2 } }),
+				turn: () => ({
+					status: { type: "active" },
+					capabilities: { steer: true },
+					queue: { revision: 7, depth: 2 },
+					modelControlState: READY_MODEL_CONTROL,
+				}),
 			}),
 		).rejects.toThrow("already steering");
 		expect(drained).toBe(0);
@@ -692,7 +714,12 @@ it("returns a command the phone couldn't keep to the composer", async () => {
 				drainQueue: async () => {
 					throw new CommandNotSentError("Couldn't steer with these messages now.");
 				},
-				turn: () => ({ status: { type: "active" }, capabilities: { steer: true }, queue: { revision: 7, depth: 2 } }),
+				turn: () => ({
+					status: { type: "active" },
+					capabilities: { steer: true },
+					queue: { revision: 7, depth: 2 },
+					modelControlState: READY_MODEL_CONTROL,
+				}),
 			}),
 		).rejects.toThrow("Couldn't steer with these messages now.");
 		expect(document.getSnapshot().record).toMatchObject({ draft: "/drain-as-steer", unconfirmed: null });
@@ -734,6 +761,7 @@ it("routes /drain-as-steer to the outbox drain, keeping it unconfirmed until adm
 				status: { type: "active" },
 				capabilities: { steer: true },
 				queue: { revision: 7, depth: 1 },
+				modelControlState: READY_MODEL_CONTROL,
 			}),
 		});
 		expect(drained).toBe(1);

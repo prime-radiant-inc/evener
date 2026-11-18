@@ -82,6 +82,19 @@ function session(capabilities: Partial<ComposerCommandSession["capabilities"]>):
 		capabilities,
 		status: { type: "idle" },
 		queue: { revision: 0, depth: 0 },
+		modelControlState: {
+			kind: "ready",
+			snapshot: {
+				authority: { instanceId: "instance", bootGeneration: "boot" },
+				revision: 1,
+				active: {
+					modelProvider: "scripted",
+					model: "current",
+					reasoningEffortLevels: [],
+					supportsReasoning: false,
+				},
+			},
+		},
 	} as unknown as ComposerCommandSession;
 }
 

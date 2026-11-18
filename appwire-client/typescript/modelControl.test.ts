@@ -186,6 +186,43 @@ describe("explicit model-control state", () => {
     expect(carried).toMatchObject({ decision: "duplicate", replacementReadRequired: false });
   });
 
+  // Normalizing before validating read `active` off a snapshot that has none,
+  // which threw out of the reducer and destroyed a transcript the read had
+  // already delivered. A version-1 snapshot this authority cannot publish
+  // leaves model changes unavailable and the transcript intact.
+  test("a version-1 snapshot with no active object reduces to recovering instead of throwing", () => {
+    const incomplete = snapshot(2) as unknown as Record<string, unknown>;
+    delete incomplete.active;
+
+    const result = reduceModelControl(ready(snapshot(1)), {
+      kind: "readAccepted",
+      version: 1,
+      snapshot: incomplete as unknown as ModelControlSnapshot,
+      authority: AUTHORITY,
+    });
+
+    expect(result).toMatchObject({ decision: "recovering", replacementReadRequired: false });
+    expect(result.model.modelControlState.kind).toBe("recovering");
+  });
+
+  // The tolerated null and an omitted ladder are different values: only null
+  // means "this model has no ladder". Rewriting an omitted one to [] during
+  // normalization published a `ready` authority the read never established.
+  test("a version-1 snapshot with an omitted effort ladder does not become ready", () => {
+    const incomplete = snapshot(2) as unknown as { active: Record<string, unknown> };
+    delete incomplete.active.reasoningEffortLevels;
+
+    const result = reduceModelControl(model(), {
+      kind: "readAccepted",
+      version: 1,
+      snapshot: incomplete as unknown as ModelControlSnapshot,
+      authority: AUTHORITY,
+    });
+
+    expect(result.model.modelControlState.kind).not.toBe("ready");
+    expect(modelPickCanSend(result.model)).toBe(false);
+  });
+
   test.each([
     ["absent", undefined],
     ["legacy", 0],

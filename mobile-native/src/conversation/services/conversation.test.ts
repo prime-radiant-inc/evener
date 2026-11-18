@@ -27,6 +27,7 @@ import type {
 	ThreadCapabilities,
 	ThreadItem,
 	ThreadReadResponse,
+	ThreadModelSetParams,
 	ThreadTurnsListResponse,
 	Turn,
 	TurnCancelQueuedResponse,
@@ -1250,6 +1251,92 @@ describe("ConversationService", () => {
 			releaseReply();
 
 			await expect(pick).rejects.toMatchObject({ code: -32013, data: { disposition: "superseded" } });
+		});
+
+		it("rejects a pick whose own reply already settled its intent as rejected", async () => {
+			// The pick passed admission, so the disposition says accepted. It then
+			// failed deferred validation at the boundary before the daemon
+			// refreshed the reply's snapshot, so the desired record the reply
+			// carries names this exact mutation as rejected. Confirming the switch
+			// here would tell the sheet a model was applied that the daemon gave up
+			// on.
+			const { client, service } = setup({ thread: controlledThread(modelControl(1)) });
+			const store = createConversationStore();
+			await store.getState().openProjected(service, "ref-1");
+			client.on("thread/model/set", (params) => {
+				const sent = params as ThreadModelSetParams;
+				return {
+					modelControlVersion: 1,
+					disposition: "accepted",
+					modelControl: {
+						...modelControl(2, { active: "claude-sonnet-5" }),
+						desired: {
+							requestSequence: 2,
+							clientMutationId: sent.clientMutationId,
+							modelProvider: sent.modelProvider,
+							model: sent.model,
+							lifecycle: "rejected",
+						},
+					},
+				};
+			});
+			const controls = new SessionControls(
+				service,
+				async () => {},
+				() => {},
+				() => true,
+				() => null,
+				() => true,
+				{ data: [{ provider: "openai", model: "gpt-5.5" }] },
+			);
+			onTestFinished(() => {
+				controls.dispose();
+				service.close();
+			});
+
+			expect(await controls.changeModel("openai", "gpt-5.5")).toBe(false);
+			expect(controls.getSnapshot().notice).toBeNull();
+		});
+
+		it("confirms a pick whose own reply still shows it pending", async () => {
+			// The same reply shape, still pending: the pick is queued for a safe
+			// application point and may yet apply, so it is not a failure. This is
+			// the distinction the rejection rests on.
+			const { client, service } = setup({ thread: controlledThread(modelControl(1)) });
+			const store = createConversationStore();
+			await store.getState().openProjected(service, "ref-1");
+			client.on("thread/model/set", (params) => {
+				const sent = params as ThreadModelSetParams;
+				return {
+					modelControlVersion: 1,
+					disposition: "accepted",
+					modelControl: {
+						...modelControl(2, { active: "claude-sonnet-5" }),
+						desired: {
+							requestSequence: 2,
+							clientMutationId: sent.clientMutationId,
+							modelProvider: sent.modelProvider,
+							model: sent.model,
+							lifecycle: "pending",
+						},
+					},
+				};
+			});
+			const controls = new SessionControls(
+				service,
+				async () => {},
+				() => {},
+				() => true,
+				() => null,
+				() => true,
+				{ data: [{ provider: "openai", model: "gpt-5.5" }] },
+			);
+			onTestFinished(() => {
+				controls.dispose();
+				service.close();
+			});
+
+			expect(await controls.changeModel("openai", "gpt-5.5")).toBe(true);
 		});
 
 		it("does not confirm a superseded pick to the sheet, and shows the model the daemon kept", async () => {

@@ -53,6 +53,7 @@ import {
 	reduceModelControl,
 	sameModelControlAuthority,
 	SHUT_DOWN_STATUSES,
+	modelSetReplyRejected,
 	validateThreadModelSetResponse,
 	WireError,
 } from "@evener/appwire-client";
@@ -64,6 +65,18 @@ import { projectConversation } from "../../projectedRows";
 // (the row module's RETAINED_ITEM_CAP, mobile-native/src/projectedRows.ts); nothing here needs its own
 // copy.
 export const READ_ITEM_LIMIT = 40;
+
+/** A model pick this service refused before writing a thread/model/set frame:
+ * the resume or the authority check did not establish something to dispatch
+ * under, so nothing reached the wire and the caller may keep the user's text.
+ * Anything the transport or the daemon answered is an ordinary rejection and
+ * is not this: only the pre-dispatch refusals are. */
+export class ModelPickNotSentError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "ModelPickNotSentError";
+	}
+}
 
 /** Whether a model pick on `session` can reach the wire. The rule is the
  * shared client's (modelPickCanSend in @evener/appwire-client), so the sheet
@@ -787,6 +800,36 @@ export function createConversationService<ReadLease = unknown>(
 		};
 	}
 
+	// Everything a pick needs before its frame exists: the resume a cold
+	// session requires, the authority the resumed daemon will accept, and the
+	// fence that still has to hold at dispatch. Every failure here happened
+	// before anything was written, so it is a ModelPickNotSentError: the
+	// caller's command keeps its text instead of standing as a send to confirm.
+	async function establishModelPick(): Promise<{
+		threadRef: string;
+		expectedThreadId: string;
+		fence: ModelControlRequestFence;
+	}> {
+		// Only the steps that run before the frame exists are inside this try:
+		// converting a dispatched failure would invite a retry of a pick the
+		// daemon may already have applied.
+		try {
+			if (coldSession()) await resumeThenAuthorize();
+			const { threadRef, expectedThreadId, authority, epoch } = await waitForModelControl();
+			const fence: ModelControlRequestFence = {
+				authority,
+				clientGeneration: epoch,
+				readGeneration: epoch,
+			};
+			if (!modelControlFenceCurrent(threadRef, expectedThreadId, fence)) {
+				throw new Error("ConversationService: model-control authority was superseded before dispatch");
+			}
+			return { threadRef, expectedThreadId, fence };
+		} catch (error) {
+			throw new ModelPickNotSentError(error instanceof Error ? error.message : String(error));
+		}
+	}
+
 	function modelControlFenceCurrent(
 		threadRef: string,
 		expectedThreadId: string,
@@ -815,6 +858,22 @@ export function createConversationService<ReadLease = unknown>(
 		return new WireError("The model was already changed in another client.", -32013, {
 			clientMutationId,
 			disposition: response.disposition,
+		});
+	}
+
+	// The reply carried this exact mutation's desired record already settled as
+	// rejected. The disposition still says accepted (admission passed), so the
+	// only evidence that the switch did not happen is the lifecycle. appwire's
+	// CodeConflict (-32013) is the same code the superseded path uses: another
+	// state won, this caller did not get the model it asked for.
+	function modelSetRejectedError(
+		clientMutationId: string,
+		response: MethodTypes["thread/model/set"]["result"],
+	): WireError {
+		return new WireError("The model switch was rejected before it could be applied.", -32013, {
+			clientMutationId,
+			disposition: response.disposition,
+			lifecycle: response.modelControl?.desired?.lifecycle,
 		});
 	}
 
@@ -1300,20 +1359,7 @@ export function createConversationService<ReadLease = unknown>(
 		},
 
 		async changeModel(modelProvider, model) {
-			// A pick on a cold session resumes behind the change, exactly as the
-			// hub's pastThreadCapabilities advertise. The one read after the
-			// resume establishes the authority the resumed daemon will accept;
-			// without it the pick would carry a retired boot generation.
-			if (coldSession()) await resumeThenAuthorize();
-			const { threadRef, expectedThreadId, authority, epoch } = await waitForModelControl();
-			const fence: ModelControlRequestFence = {
-				authority,
-				clientGeneration: epoch,
-				readGeneration: epoch,
-			};
-			if (!modelControlFenceCurrent(threadRef, expectedThreadId, fence)) {
-				throw new Error("ConversationService: model-control authority was superseded before dispatch");
-			}
+			const { threadRef, expectedThreadId, fence } = await establishModelPick();
 			const clientMutationId = idFactory();
 			let rawResponse: unknown;
 			try {
@@ -1322,8 +1368,8 @@ export function createConversationService<ReadLease = unknown>(
 					modelProvider,
 					model,
 					clientMutationId,
-					expectedInstanceId: authority.instanceId,
-					expectedBootGeneration: authority.bootGeneration,
+					expectedInstanceId: fence.authority.instanceId,
+					expectedBootGeneration: fence.authority.bootGeneration,
 				});
 			} catch (error) {
 				const recovery = modelControlRecoveryInput(error);
@@ -1380,6 +1426,17 @@ export function createConversationService<ReadLease = unknown>(
 			// a guess from the snapshot.
 			if (response.disposition === "superseded") {
 				throw modelSetSupersededError(clientMutationId, response);
+			}
+			// The reply's own desired record can already name this mutation as
+			// rejected: the pick passed admission and then failed deferred
+			// validation before the daemon refreshed the reply's snapshot, so the
+			// disposition still reads accepted while the lifecycle says the switch
+			// did not happen. The snapshot above is already adopted — it is the
+			// daemon's current truth — but the caller must not confirm a switch the
+			// daemon has given up on. A still-`pending` record is queued and may yet
+			// apply, so it stays a success.
+			if (modelSetReplyRejected(response, clientMutationId)) {
+				throw modelSetRejectedError(clientMutationId, response);
 			}
 		},
 

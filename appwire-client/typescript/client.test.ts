@@ -656,6 +656,77 @@ describe("AppwireClient", () => {
     await expect(stale).resolves.toEqual(superseded);
   });
 
+  test("thread/model/set reports a dispatched switch with a lost reply as outcome-unknown", async () => {
+    // The frame carries a mutation the daemon may already have applied, so a
+    // reply lost to a timeout or a closed socket cannot resolve as anything.
+    // A direct SDK caller gets the same structured answer a malformed success
+    // produces: the mutation it sent, and the retry it must not take.
+    const fake = new FakeSocket({ autoInitialize: true });
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
+    await connectReady(fake, client);
+    const params: ThreadModelSetParams = {
+      ref: "local:th_1",
+      modelProvider: "work",
+      model: "gpt-5.5",
+      clientMutationId: "cm_lost_reply",
+      expectedInstanceId: "instance_1",
+      expectedBootGeneration: "7",
+    };
+
+    const timedOut = client.request("thread/model/set", params);
+    const timedOutRejection = timedOut.catch((caught: unknown) => caught);
+    await vi.advanceTimersByTimeAsync(30_000);
+    const timeoutError = await timedOutRejection;
+    expect(timeoutError).toBeInstanceOf(WireError);
+    expect(mutationErrorData(timeoutError)).toMatchObject({
+      clientMutationId: "cm_lost_reply",
+      mutationOutcome: "unknown",
+      retryDisposition: "blocked",
+    });
+
+    const closed = client.request("thread/model/set", params);
+    const closedRejection = closed.catch((caught: unknown) => caught);
+    fake.closeFromServer(1006);
+    const closedError = await closedRejection;
+    expect(closedError).toBeInstanceOf(WireError);
+    expect(mutationErrorData(closedError)).toMatchObject({
+      clientMutationId: "cm_lost_reply",
+      mutationOutcome: "unknown",
+      retryDisposition: "blocked",
+    });
+  });
+
+  test("a model-set refusal the peer sent stays the peer's own error", async () => {
+    // Only a LOST reply is unknown. An explicit refusal proves the daemon did
+    // not apply the switch, so it must reach the caller unchanged, and so must
+    // a failure raised before the frame is written.
+    const fake = new FakeSocket({ autoInitialize: true });
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
+    await connectReady(fake, client);
+    const params: ThreadModelSetParams = {
+      ref: "local:th_1",
+      modelProvider: "work",
+      model: "gpt-5.5",
+      clientMutationId: "cm_refused",
+      expectedInstanceId: "instance_1",
+      expectedBootGeneration: "7",
+    };
+
+    const refused = client.request("thread/model/set", params);
+    const frame = lastSentFrame(fake);
+    fake.receive({ id: frame.id, error: { code: -32014, message: "session is not available" } });
+    const refusal = await refused.catch((caught: unknown) => caught);
+    expect(refusal).toBeInstanceOf(WireError);
+    expect(mutationErrorData(refusal)).toBeUndefined();
+
+    // Never connected: nothing was dispatched, so the failure names no outcome.
+    const offline = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => new FakeSocket() });
+    const preSend = await offline.request("thread/model/set", params).catch((caught: unknown) => caught);
+    expect(preSend).toBeInstanceOf(Error);
+    expect(preSend).not.toBeInstanceOf(WireError);
+    expect(mutationErrorData(preSend)).toBeUndefined();
+  });
+
   test("thread/model/set refuses a reply whose effort ladder is null", async () => {
     // The generated snapshot type says reasoningEffortLevels is string[], and a
     // direct SDK caller indexes it. A read may report null for a model with no

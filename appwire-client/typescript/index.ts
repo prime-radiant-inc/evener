@@ -549,6 +549,7 @@ export type {
   ModelControlInput,
   ModelControlRecoveryInput,
   ModelControlRequestFence,
+  ModelPickTarget,
 } from "./modelControl";
 export {
   coldSessionCanResume,
@@ -556,6 +557,7 @@ export {
   modelControlDisplay,
   modelControlRecoveryInput,
   modelPickCanSend,
+  modelSetReplyRejected,
   reduceModelControl,
   restoreHeldModelControl,
   sameModelControlAuthority,
@@ -926,6 +928,8 @@ export {
   mergeTranscriptItemVersioned,
   mergeTranscriptReaderWindow,
   mergeTranscriptTurnVersioned,
+  modelControlReadInputFromHydrated,
+  modelControlReadInputFromResponse,
   olderFrontierOf,
   olderHistoryExhausted,
   prependOlderTurns,

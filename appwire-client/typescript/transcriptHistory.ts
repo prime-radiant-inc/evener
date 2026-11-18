@@ -1088,7 +1088,7 @@ export function applyReadResponse<M extends ThreadModel>(
   // `uninitialized` with its picker disabled.
   if (historyFallback(resp) && !readNamesLiveDaemon(resp.bootGeneration) && savedReadKeepsHeldModelControl(model, next))
     return publicModel<M>(restoreHeldModelControl(next, model));
-  const input = modelControlReadInput(resp);
+  const input = modelControlReadInputFromResponse(resp);
   const controlBase = input.version === 1 ? restoreHeldModelControl(next, model) : next;
   return publicModel<M>(reduceModelControl(controlBase, input).model);
 }
@@ -1270,12 +1270,12 @@ export function applyReadModel<M extends ThreadModel>(
   // envelope whenever that envelope names a live daemon.
   if (fallback && !readNamesLiveDaemon(freshHistory?.bootGeneration) && savedReadKeepsHeldModelControl(model, next))
     return publicModel<M>(restoreHeldModelControl(next, model));
-  const input = hydratedModelControlReadInput(fresh);
+  const input = modelControlReadInputFromHydrated(fresh);
   const controlBase = input.version === 1 ? restoreHeldModelControl(next, model) : next;
   return publicModel<M>(reduceModelControl(controlBase, input).model);
 }
 
-function modelControlReadInput(
+export function modelControlReadInputFromResponse(
   resp: ThreadReadResponse,
 ): Extract<Parameters<typeof reduceModelControl>[1], { kind: "readAccepted" }> {
   return {
@@ -1289,7 +1289,7 @@ function modelControlReadInput(
   };
 }
 
-function hydratedModelControlReadInput(
+export function modelControlReadInputFromHydrated(
   fresh: ThreadModel,
 ): Extract<Parameters<typeof reduceModelControl>[1], { kind: "readAccepted" }> {
   const state = fresh.modelControlState;
@@ -1443,7 +1443,7 @@ export function hydrateThread(
           (resp.thread.turns ?? []).map((turn) => wireToTurnModel(turn, imageSessionRoute)),
         ),
       },
-      modelControlReadInput(resp),
+      modelControlReadInputFromResponse(resp),
     ).model;
   }
   const fresh = splitWireTurns(resp.thread.turns ?? [], imageSessionRoute);
@@ -1460,7 +1460,7 @@ export function hydrateThread(
     history,
     overlayRecord(resp.overlay),
   );
-  return reduceModelControl(model, modelControlReadInput(resp)).model;
+  return reduceModelControl(model, modelControlReadInputFromResponse(resp)).model;
 }
 
 /** The first and last item positions of a read response's fresh window: the

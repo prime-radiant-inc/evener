@@ -22,6 +22,7 @@ import {
   mergeTranscriptItemVersioned,
   mergeTranscriptReaderWindow,
   mergeTranscriptTurnVersioned,
+  modelControlReadInputFromResponse,
   olderHistoryExhausted,
   pruneBackgroundHistoryBodies,
   readDisposition,
@@ -903,18 +904,21 @@ export class TranscriptRepository {
       }).model;
     }
     if (hydratedCandidate === before) {
-      const incomingControl = response.thread.evener.modelControl;
+      // The transcript window lost its identity race, so the read publishes no
+      // rows — but the read answered from THIS binding (acceptRead refused it
+      // otherwise), and a version-1 envelope whose authority names that same
+      // binding is the binding's own answer about model control. Evaluating
+      // only a held `ready` snapshot dropped a recovery read's envelope while
+      // the pane was `recovering`, leaving the picker disabled with nothing
+      // scheduled to re-enable it. The newer transcript is untouched, and an
+      // envelope for another boot is still refused by the authority guard.
+      const input = modelControlReadInputFromResponse(response);
       if (
-        heldControl &&
-        response.thread.evener.capabilities?.modelControlVersion === 1 &&
-        incomingControl &&
-        sameModelControlAuthority(heldControl.authority, incomingControl.authority)
+        input.version === 1 &&
+        input.snapshot !== undefined &&
+        sameModelControlAuthority(input.snapshot.authority, input.authority)
       ) {
-        const advanced = reduceModelControl(before, {
-          kind: "snapshot",
-          source: "notification",
-          snapshot: incomingControl,
-        }).model;
+        const advanced = reduceModelControl(before, input).model;
         if (advanced !== before) {
           this.#model = advanced;
           this.#publish();
@@ -1171,14 +1175,16 @@ export class TranscriptRepository {
         // The snapshot frame below advances the active model, and this legacy
         // frame is the only place a switch announces the new model's default
         // reasoning tier. A pre-cut frame the read already represents must
-        // still reach the reducer for that field, exactly as the store-level
-        // replay does, or the effort control shows the outgoing model's
-        // default under the incoming one.
-        const held =
-          this.#model?.modelControlState.kind === "ready" ? this.#model.modelControlState.snapshot : undefined;
-        if (held && notification.params.modelProvider === held.active.modelProvider) {
-          this.accept(notification, context);
-        }
+        // still contribute that field, exactly as the store-level replay does,
+        // or the effort control shows the outgoing model's default under the
+        // incoming one.
+        //
+        // Only that field. The reducer would also write this frame's context
+        // sample (used, window, pressure, compaction threshold) over the read's,
+        // and a frame captured before the cut is by definition older than the
+        // read that answered after it. A frame for another model on the same
+        // provider is not this model's announcement at all.
+        this.#acceptBeforeCutDefaultTier(notification);
       } else if (notification.method === "thread/model/controlChanged") {
         const held =
           this.#model?.modelControlState.kind === "ready" ? this.#model.modelControlState.snapshot : undefined;
@@ -1203,6 +1209,28 @@ export class TranscriptRepository {
         this.accept(notification, context);
       }
     }
+  }
+
+  /**
+   * Replay one pre-cut thread/model/changed frame for the field only this frame
+   * carries: the active model's default reasoning tier.
+   *
+   * The frame must name the model the read settled on, provider and model both.
+   * A frame for a sibling model on the same provider is a different model's
+   * announcement, and applying its tier would label the running model with it.
+   */
+  #acceptBeforeCutDefaultTier(notification: Extract<AnyNotification, { method: "thread/model/changed" }>): void {
+    const model = this.#model;
+    if (!model) return;
+    if (model.modelControlState.kind !== "ready" && model.modelControlState.kind !== "recovering") return;
+    const { modelProvider, model: target, defaultReasoningEffort } = notification.params;
+    if (modelProvider !== model.modelProvider || target !== model.model) return;
+    if (defaultReasoningEffort === model.defaultReasoningEffort) return;
+    // contextUsed, contextWindow, contextPressure and compactionThreshold
+    // deliberately keep the read's values: this frame was captured before the
+    // read, so its context sample is older than the one now held.
+    this.#model = { ...model, defaultReasoningEffort };
+    this.#publish();
   }
 
   #withoutResolvedEscalations(model: ThreadModel): ThreadModel {

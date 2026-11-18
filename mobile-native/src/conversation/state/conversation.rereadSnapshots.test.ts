@@ -184,6 +184,61 @@ describe("ConversationStore", () => {
 			expect(modelPickCanSend(resumed)).toBe(true);
 		});
 
+		// A recovery read can capture a valid snapshot before an in-progress
+		// history update advances the phone's transcript past it. The shorter
+		// window makes applyReadModel return the held conversation, and dropping
+		// the whole read with it left the picker in `recovering` with no
+		// replacement read scheduled. The envelope still answers for the binding
+		// that served it, so it must establish model control while the newer
+		// transcript stays exactly as it is.
+		it("a recovery read behind a longer held window still establishes model control", async () => {
+			const service = new FakeConversationService();
+			const store = createConversationStore();
+			const recovering = { ...modelConversation(modelControl(1, MODEL_AUTHORITY_A, "claude-sonnet-5")) };
+			service.readProjectionResult = {
+				conversation: makeConversation({ ...recovering, turns: recovering.turns }, true),
+				olderCursor: null,
+			};
+			await store.getState().openProjected(service, "ref-1");
+			// The pane is waiting for an authoritative answer, holding a longer
+			// window than the recovery read will carry.
+			const held = store.getState().conversation;
+			if (held === null) throw new Error("expected an opened conversation");
+			store.setState({
+				conversation: {
+					...held,
+					history: held.history && { ...held.history, length: 40 },
+					modelControlState: {
+						kind: "recovering",
+						lastSafeDisplay: { modelProvider: "anthropic", model: "claude-sonnet-5" },
+					},
+				},
+			});
+			const heldTurns = store.getState().conversation?.turns;
+			// The recovery read's own envelope: same instance and boot as the pane
+			// holds, a newer revision, and a window shorter than the held one.
+			const recovered = modelControl(3, MODEL_AUTHORITY_A, "claude-opus-4-6");
+			const recoveredConversation = makeConversation({ ...modelConversation(recovered) }, true);
+			service.readProjectionResult = {
+				conversation: {
+					...recoveredConversation,
+					history: { ...recoveredConversation.history!, length: 1 },
+				},
+				olderCursor: null,
+			};
+
+			await store.getState().rehydrate(service);
+
+			const conversation = store.getState().conversation;
+			if (conversation === null) throw new Error("expected a conversation");
+			// The read's own envelope became authority, so the picker is offered.
+			expect(conversation.modelControlState).toEqual({ kind: "ready", snapshot: recovered });
+			expect(modelControlDisplay(conversation).model).toBe("claude-opus-4-6");
+			expect(modelPickCanSend(conversation)).toBe(true);
+			// The newer transcript survived: the discarded window replaced nothing.
+			expect(conversation.turns).toEqual(heldTurns);
+		});
+
 		it("adopts a live whole-snapshot update through the shared notification reducer", async () => {
 			const service = new FakeConversationService();
 			const store = createConversationStore();

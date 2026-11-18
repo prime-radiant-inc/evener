@@ -4,7 +4,7 @@ import type { InputItem } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type { ConversationMutationContext } from "./conversation/state/conversationMutation";
 import type { MobileConversation } from "./projectedRows";
-import { builtinComposerItems, composerCommand, submitComposerCommand } from "./composerCommand";
+import { builtinComposerItems, CommandNotSentError, composerCommand, submitComposerCommand } from "./composerCommand";
 import { DraftDocument } from "./draftDocument";
 import { DraftRepository } from "./draftRepository";
 import { NativeMutationRuntime, nativeMutationTargetKey, type NativeMutationRequest } from "./nativeMutationRuntime";
@@ -313,8 +313,24 @@ it.each([
 // The completion registry reads the conversation the way the web's palette
 // does (@evener/appwire-client's sessionControls): the
 // harness's capabilities, and for steering the status and queue depth too.
+const READY_MODEL_CONTROL = {
+	kind: "ready" as const,
+	snapshot: {
+		authority: { instanceId: "instance", bootGeneration: "boot" },
+		revision: 1,
+		active: { modelProvider: "scripted", model: "current", reasoningEffortLevels: [], supportsReasoning: false },
+	},
+};
+
 function conversation(capabilities: Partial<MobileConversation["capabilities"]>, status = "idle", depth = 0) {
-	return { capabilities, status: { type: status }, queue: { revision: 0, depth } };
+	return {
+		capabilities,
+		status: { type: status },
+		queue: { revision: 0, depth },
+		// A session that can be described by its controls is a live one holding
+		// a complete snapshot, which is what every non-model test here needs.
+		modelControlState: READY_MODEL_CONTROL,
+	};
 }
 
 function ids(items: ReturnType<typeof builtinComposerItems>) {
@@ -361,6 +377,78 @@ it("offers capability-backed builtins without inventing unsupported actions", ()
 it("recomputes completion availability when session capabilities change", () => {
 	expect(builtinComposerItems(conversation({ clear: true })).some((item) => item.invocation === "/clear")).toBe(true);
 	expect(builtinComposerItems(conversation({ clear: false })).some((item) => item.invocation === "/clear")).toBe(false);
+});
+
+// /model is the sheet's and the palette's question, not a capability test: a
+// live session that advertises changeModel but holds no model-control
+// authority would take the pick and refuse it after the draft moved. A cold
+// session still offers it, because a pick there resumes first.
+it("offers /model only where a pick can reach the wire", () => {
+	const offers = (state: unknown, status: string) =>
+		builtinComposerItems({
+			capabilities: { changeModel: true },
+			status: { type: status },
+			queue: { revision: 0, depth: 0 },
+			modelControlState: state,
+		} as Parameters<typeof builtinComposerItems>[0]).some((item) => item.invocation === "/model");
+	const canonical = { modelProvider: "scripted", model: "current" };
+	expect(offers(READY_MODEL_CONTROL, "idle")).toBe(true);
+	// A live daemon whose envelope carries no complete snapshot: nothing resumes
+	// it, so the pick has no path to authority.
+	expect(offers({ kind: "unsupported", canonicalDisplay: canonical }, "idle")).toBe(false);
+	// A retired authority awaiting a read must not be raced.
+	expect(offers({ kind: "uninitialized", canonicalDisplay: canonical }, "idle")).toBe(false);
+	// A shut-down session a resume can wake keeps the offer.
+	expect(offers({ kind: "unsupported", canonicalDisplay: canonical }, "closed")).toBe(true);
+});
+
+// The offer is answered against one session and the dispatch happens against
+// whatever the session has become. When authority went away in between, the
+// pick never left the phone: the text must come back to the composer instead
+// of standing as an unconfirmed send the user has to recover.
+it("returns /model to the composer when authority disappears before dispatch", async () => {
+	const { database, port } = openSqliteSyncDouble();
+	try {
+		const destination = { hubId: "hub-1", sessionRef: "ref-1" };
+		const repository = new DraftRepository(port);
+		const document = new DraftDocument(() => repository, destination);
+		const sent: string[] = [];
+		const service = {
+			models: async () => ({ data: [{ provider: "scripted", model: "alternate" }] }),
+			changeModel: async () => {
+				sent.push("changeModel");
+			},
+		} as unknown as Parameters<typeof submitComposerCommand>[1];
+		document.edit("/model alternate");
+		await expect(
+			submitComposerCommand(document, service, {
+				isCurrent: () => true,
+				local: async () => {},
+				openAside: () => {},
+				cleared: () => {},
+				// Offered while the session held authority; by dispatch time a
+				// reconnect has retired it and no read has replaced it.
+				turn: () => ({
+					capabilities: { changeModel: true },
+					status: { type: "idle" },
+					queue: { revision: 0, depth: 0 },
+					modelControlState: {
+						kind: "uninitialized",
+						canonicalDisplay: { modelProvider: "scripted", model: "current" },
+					},
+				}),
+				drainQueue: async () => {},
+				drainRefusal: () => null,
+				submit: async () => {},
+				stop: async () => {},
+				reasoning: () => null,
+			}),
+		).rejects.toBeInstanceOf(CommandNotSentError);
+		expect(sent).toEqual([]);
+		expect(document.getSnapshot().record).toMatchObject({ draft: "/model alternate", unconfirmed: null });
+	} finally {
+		database.close();
+	}
 });
 
 it("inserts a builtin through the web splice contract without losing surrounding draft text", () => {
