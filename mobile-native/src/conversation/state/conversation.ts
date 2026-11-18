@@ -38,7 +38,7 @@ import {
 	historyServingFacts,
 	handOffReplacedSource,
 	isStaleCursorError,
-	mergeOlderItemPage,
+	mergeOlderPage,
 	mergeSavedViewPage,
 	notificationTargetsThread,
 	notificationTouchesTranscript,
@@ -2292,20 +2292,43 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						const pageFallback = savedView === null && historyFallback(pageFacts);
 						const effectiveSavedView: SavedViewPaging | null =
 							savedView ?? (pageFallback ? { identity: savedViewIdentity(currentConv), exhausted: false } : null);
-						const versionedMerge =
+						// The paging DECISION is `applied`, not model identity. A page the
+						// versioned merge discards can still publish an authoritative hold
+						// hand-off, so it returns a NEW model (see OlderPageMerge's own
+						// comment) while its rows and cursor must stay exactly where they
+						// were. Judging by `!== currentConv` let such a page take the
+						// merge path below, report "loaded", and advance to the
+						// DISCARDED page's successor cursor - skipping the rows it did not
+						// carry. A saved-view page is the engine's unversioned merge and
+						// always applies, so its own path is unchanged.
+						const pageMerge =
 							effectiveSavedView !== null
-								? mergeSavedViewPage(currentConv, result.turnsPage)
-								: mergeOlderItemPage(currentConv, result.turnsPage);
-						if (versionedMerge === currentConv) {
-							// A real discard (pageDisposition's "discard" branch, or a
-							// stale-model race) returns the model UNCHANGED — the exact
-							// object passed in. This is strictly narrower than comparing
-							// `.turns` by reference: mergeHistory and withDisplay's
-							// displayTurns also return the held turns array by reference
-							// on a genuine "merge" disposition whose page turns out to
-							// carry nothing newer than what is already held, so `.turns`
-							// equality alone cannot tell a no-op merge apart from a
-							// discard — see the no-op-merge test below.
+								? { model: mergeSavedViewPage(currentConv, result.turnsPage), applied: true }
+								: mergeOlderPage(currentConv, result.turnsPage);
+						const versionedMerge = pageMerge.model;
+						// A page whose merge left history invalid is NOT a plain discard:
+						// "defer" and "invalidate" both owe the recovering reread below,
+						// and they publish their own hand-off there. Only the remaining
+						// `applied: false` outcomes — a shorter same-incarnation page, a
+						// failed history, a stale-model race — are discards in the paging
+						// sense: the rows were never carried, so they must not certify.
+						if (!pageMerge.applied && versionedMerge.history?.invalidatedAtGeneration === undefined) {
+							// A discard did not apply this page's
+							// CONTENT. What it may still carry — an authoritative hold
+							// hand-off — must still be published, or the retired
+							// daemon's sequence outranks the replacement's own updates
+							// while the reread is pending and forever if it fails. Same
+							// publication as the invalidate branch below, and the same
+							// restriction to hold-bearing fields: the cursor and the
+							// visible turns stay exactly where they were, because the
+							// rows were not carried and certifying the page would skip
+							// them.
+							const heldHistory = currentConv.history;
+							const retired =
+								heldHistory === undefined
+									? undefined
+									: handOffPageHold(currentConv, heldHistory, versionedMerge, versionedMerge.history);
+							if (retired) set({ conversation: { ...currentConv, ...retired } });
 							set({ loadingOlder: false });
 							return { status: "ignored" };
 						}

@@ -1399,6 +1399,78 @@ describe("ConversationStore", () => {
 			expect(published.turns.some((turn) => turn.id === "t-old")).toBe(false);
 		});
 
+		// RoboRev 53429 (Medium 6): the DISCARD branch, which is the half that
+		// loses data. A delayed page from the parent daemon can be shorter than
+		// the held history while still naming a boot that confirms a
+		// replacement, so the shared merge drops its rows but RETURNS A NEW
+		// MODEL for the ownership change. Judging "did this page apply?" by
+		// model identity therefore called it a merge, reported "loaded", and
+		// advanced to the DISCARDED page's successor cursor - skipping every
+		// row between. `.applied` is the page's own answer.
+		it("a discarded page that only changes hold ownership does not advance the cursor", async () => {
+			const { store, service } = await openVersioned([makeTurn({ id: "t0", items: [] })]);
+			const held = store.getState().conversation!;
+			store.setState({
+				conversation: {
+					...held,
+					delegates: [
+						{
+							delegateId: "d1",
+							runGeneration: 1,
+							ownerSessionId: "session-1",
+							rootSessionId: "session-1",
+							childSessionId: "child-1",
+							transcriptRef: "ref-1",
+							type: "delegate",
+							lifecycle: "running",
+							phase: "running",
+							status: "running",
+							resumable: true,
+							needsAttention: false,
+							projectionRevision: 3,
+							drainHeldByJobs: true,
+							runningJobCount: 1,
+							holdSequence: 900,
+						},
+					],
+					// A real held length to page a genuinely SHORTER one against:
+					// pageDisposition discards it, so its rows never merge. The held
+					// boot matches the page's, so this reaches the LENGTH check rather
+					// than the identity invalidation that fires first.
+					history: held.history && { ...held.history, bootGeneration: "1", length: 10, holdOwner: "5@root" },
+				},
+				olderCursor: "cursor-1",
+			});
+			service.olderItems = {
+				turnsPage: {
+					data: [wireTurn("t-old", 5, 1)],
+					nextCursor: "cursor-2",
+					// The SAME boot as the held history, so the page is discarded for
+					// being shorter - but it names a boot the recorded OWNER is not,
+					// so the merge's hand-off still retires 900 and records this
+					// owner on the model it returns.
+					bootGeneration: "1",
+					epoch: 1,
+					snapshot: { incarnation: "inc-1", length: 5 },
+				},
+				nextCursor: "cursor-2",
+			};
+
+			const result = await store.getState().loadOlder(service);
+
+			// The page did not apply, so paging must not certify it.
+			expect(result.status).toBe("ignored");
+			expect(store.getState().olderCursor).toBe("cursor-1");
+			expect(store.getState().conversation?.turns.some((turn) => turn.id === "t-old")).toBe(false);
+			expect(store.getState().loadingOlder).toBe(false);
+			// What it DID establish is published: the retired wait is gone and the
+			// replacement is the recorded owner.
+			const published = store.getState().conversation!;
+			expect(published.delegates?.[0]?.holdSequence).toBeUndefined();
+			expect(published.delegates?.[0]?.delegateId).toBe("d1");
+			expect(published.history?.holdOwner).toBe("1");
+		});
+
 		// RoboRev round 4 (Medium): mergeHistory (and withDisplay/displayTurns,
 		// which returns held.turns by reference when there is no live overlay)
 		// return the held `turns` array BY REFERENCE not just on a real discard,
