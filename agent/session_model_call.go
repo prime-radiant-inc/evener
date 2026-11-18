@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -266,12 +267,16 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// — a nonstandard view of the resident history that must not seed or
 	// continue from a stored anchor.
 	heldDropped := false
+	// attentionRun is read out here because the skill rebuild below needs it: an
+	// automatic attention drive must apply the same admission and hold gates to
+	// the turns it appends as the projection above applied to the snapshot.
+	attentionRun := false
 	if lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); ok && s.delegateController != nil {
 		claim, claimErr := s.delegateController.BeginModelRequest(lease)
 		if claimErr != nil {
 			return nil, "", nil, llm.Request{}, nil, "", claimErr
 		}
-		attentionRun := ctx.Value(delegateAttentionRunContextKey{}) != nil
+		attentionRun = ctx.Value(delegateAttentionRunContextKey{}) != nil
 		// The delegate projects its own snapshot, which can hold turns appended
 		// after historyTurns was taken, so its coverage and its in-flight
 		// boundary must come from that same snapshot rather than the earlier
@@ -323,6 +328,9 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		}
 	} else {
 		history = expandHistory(historyTurns, scope)
+	}
+	if afterProjection := s.cfg.testOnly.afterDelegateAttentionProjection; afterProjection != nil {
+		afterProjection()
 	}
 
 	t.HistoryExpand = time.Since(tPhaseStart)
@@ -391,6 +399,43 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		s.mu.Unlock()
 		if len(appended) == 0 {
 			return false, nil
+		}
+		// A skill reload re-snapshots resident history, and a stable watch frame
+		// is durable there before any arm of its own runs. Appending that slice
+		// as-is would be a second entry into this request that skips the gate the
+		// projection above applies: the frame would reach the model, the run would
+		// resolve it, and its delayed arm would find the row resolved and skip the
+		// release it owed an earlier stopped report. The reload therefore filters
+		// what it appends by the same two questions the projection asks — a stop's
+		// hold, and whether an original frame's wake has been admitted — taken
+		// together with the turns under one attentionMu hold, so a release either
+		// lands before this capture and is in both, or waits and is in neither.
+		// Only an attention run filters: a send presents a held report by design,
+		// and its own request is not an automatic drive.
+		if attentionRun {
+			s.attentionMu.Lock()
+			s.reconcileAutomaticDriveHoldsLocked()
+			heldIDs := maps.Clone(s.attentionAutomaticDriveHolds)
+			pendingIDs := delegateAttentionPendingSet(s.delegateAttentionPendingIDsLocked())
+			s.attentionMu.Unlock()
+			kept := make([]schema.Turn, 0, len(appended))
+			for _, turn := range appended {
+				if turn.AttentionID != "" {
+					if _, held := heldIDs[turn.AttentionID]; held {
+						continue
+					}
+					if s.delegateAttentionAwaitingAdmissionLocked(turn.AttentionID, pendingIDs) {
+						continue
+					}
+				}
+				kept = append(kept, turn)
+			}
+			appended = kept
+			if len(appended) == 0 {
+				// Nothing the reload added may be presented: the request keeps what
+				// it already carried rather than rebuilding around an empty append.
+				return false, nil
+			}
 		}
 		// The appended turns land after the in-flight boundary and project
 		// as-is; append them rather than re-running the delegate claim.

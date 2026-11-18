@@ -13,7 +13,9 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/llm"
 )
 
 var errDelegateDeliveryReceiverUnavailable = errors.New("delegate delivery receiver is unavailable")
@@ -125,6 +127,42 @@ type delegateDeliveryPlan struct {
 
 type delegateDeliveryReceiver interface {
 	appendDelegateNotificationDurably(attentionID, content string) (bool, error)
+}
+
+// delegateAttentionReportPublisher is the receiver half of a delivery that
+// publishes its report only after its own acknowledgment lands. A receiver that
+// implements it records the row without publishing it and republishes the
+// returned turn once the acknowledgment has raised the release floor.
+type delegateAttentionReportPublisher interface {
+	appendDelegateAttentionMessageDurablyDeferred(attentionID string, message llm.Message) (schema.Turn, bool, error)
+	publishDelegateAttentionReport(turn schema.Turn) error
+}
+
+// depositDelegateAttentionReport records a delivery's report without publishing
+// it into resident history, and reports the turn the caller must publish once
+// the acknowledgment has committed. A receiver that cannot split the two records
+// and publishes in one step, so it returns no turn and nothing left to publish.
+func depositDelegateAttentionReport(receiver delegateDeliveryReceiver, attentionID, content string) (schema.Turn, bool, error) {
+	if publisher, ok := receiver.(delegateAttentionReportPublisher); ok {
+		turn, _, err := publisher.appendDelegateAttentionMessageDurablyDeferred(attentionID, llm.User(content))
+		return turn, err == nil && turn.AttentionID != "", err
+	}
+	_, err := receiver.appendDelegateNotificationDurably(attentionID, content)
+	return schema.Turn{}, false, err
+}
+
+// delegateAttentionAfterReportDepositObserver reads the deposit seam from a
+// resident receiver. A cold receiver has no session and no history to read, so
+// it has no observer. The seam is runtime-mutable through
+// updateSessionTestConfig, so its read shares the setter's session mutex.
+func delegateAttentionAfterReportDepositObserver(receiver delegateDeliveryReceiver) func() {
+	session, ok := receiver.(*Session)
+	if !ok {
+		return nil
+	}
+	session.mu.Lock()
+	defer session.mu.Unlock()
+	return session.cfg.testOnly.delegateAttentionAfterReportDeposit
 }
 
 type coldDelegateDeliveryReceiver struct {
@@ -730,13 +768,35 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 		return delegateMutationPlans{}, errors.Join(err, completionErr)
 	}
 	attentionID := delegateAttentionID(plan.deliveryID)
-	if _, err := receiver.appendDelegateNotificationDurably(attentionID, content); err != nil {
+	// Record the report first, but do not publish it into resident history yet.
+	// The acknowledgment below is what raises the release floor, and the report
+	// is the row that floor frees an earlier report from: publishing before the
+	// acknowledgment lets a request built in between carry the new report while
+	// still withholding the report this same acknowledgment released. Recording
+	// first keeps the row durable if the process dies before the acknowledgment
+	// lands, and publishing after makes the pair one fact — a request sees
+	// neither or both, which is the order a resident release already produces.
+	deposited, depositedRow, depositErr := depositDelegateAttentionReport(receiver, attentionID, content)
+	if depositErr != nil {
 		_, completionErr := plan.controller.CompleteDelivery(token, false)
-		return delegateMutationPlans{}, errors.Join(err, completionErr)
+		return delegateMutationPlans{}, errors.Join(depositErr, completionErr)
+	}
+	if observer := delegateAttentionAfterReportDepositObserver(receiver); observer != nil {
+		observer()
 	}
 	plans, err := plan.controller.CompleteDelivery(token, true)
 	if err != nil {
 		return plans, err
+	}
+	// The acknowledgment is committed: the floor it rose is what the request
+	// this report is owed to reads. A cold receiver has no resident history to
+	// order, so its deposit already did everything and published no turn.
+	if depositedRow {
+		if publisher, ok := receiver.(delegateAttentionReportPublisher); ok {
+			if err := publisher.publishDelegateAttentionReport(deposited); err != nil {
+				return plans, err
+			}
+		}
 	}
 	return plans, plan.controller.wakeDeliveryReceiver(receiver, []string{attentionID}, plans.wakeGeneration)
 }

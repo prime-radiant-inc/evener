@@ -246,6 +246,21 @@ type testConfig struct {
 	// controller's own snapshot, so a test can land a turn between the two.
 	// Nil in production.
 	afterModelHistorySnapshot func()
+	// afterDelegateAttentionProjection runs on every request build, after the
+	// round has captured the turns it presents and the held IDs it filters
+	// them by — for an attention run, after the projection that pairs them —
+	// and before the skill reload re-snapshots resident history. A test lands
+	// a turn there to pin that the reload applies the same gate to what it
+	// appends. Nil in production.
+	afterDelegateAttentionProjection func()
+	// delegateAttentionAfterReportDeposit runs in a delivery, after the child's
+	// report is durably recorded and before its acknowledgment is committed.
+	// Tests read resident history there to pin that the report is not yet
+	// published: the acknowledgment is what raises the release floor the report
+	// is presented against, so publishing earlier would let a request carry the
+	// report while withholding the row that same acknowledgment released. Nil in
+	// production.
+	delegateAttentionAfterReportDeposit func()
 	// subagentAfterFinalStatePublish observes the interval after a retained child
 	// publishes terminal state and before it restores its parent notify callback.
 	subagentAfterFinalStatePublish func(*subagent)

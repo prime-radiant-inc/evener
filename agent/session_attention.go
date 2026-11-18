@@ -560,6 +560,17 @@ func validateDiscardUnlessResolvedShape(disposition delegateAttentionResolution,
 	return nil
 }
 
+// publishDelegateAttentionReport puts a report a delivery recorded before its
+// acknowledgment into resident history. The acknowledgment has already raised
+// the floor, so this report and the release it frees are published together:
+// every request that can carry this row can also present the row it released.
+func (s *Session) publishDelegateAttentionReport(turn schema.Turn) error {
+	if turn.AttentionID == "" {
+		return nil
+	}
+	return s.retainDelegateAttentionTurn(turn)
+}
+
 // appendDelegateNotificationDurably appends one private, model-bound attention
 // item. Replaying the same identity and content is a no-op; reusing an identity
 // for different content is corruption.
@@ -584,17 +595,43 @@ func delegateAttentionTurn(attentionID string, message llm.Message, now time.Tim
 // attention transfers the exact original message under its original identity,
 // so both the resident and the cold writers stay byte-identical on replay.
 func (s *Session) appendDelegateAttentionMessageDurably(attentionID string, message llm.Message) (appended bool, err error) {
+	_, appended, err = s.appendDelegateAttentionMessageDurablyAt(attentionID, message, true)
+	return appended, err
+}
+
+// appendDelegateAttentionMessageDurablyDeferred records the row durably and
+// returns the turn it recorded WITHOUT publishing it into resident history. The
+// caller publishes it once the controller's acknowledgment has landed.
+//
+// A delivery's report is one of the two facts its own acknowledgment publishes:
+// the acknowledgment raises the release floor a stop's quiet is read against,
+// and the report it delivers is the row that floor releases an earlier report
+// from. Publishing the report before the acknowledgment lets a request built in
+// between carry the new report while the release that same acknowledgment owed
+// is still unadvanced — the request presents one report and withholds the one
+// it freed, an order no resident release ever produces. Recording first and
+// publishing after the acknowledgment makes the pair one fact: a request either
+// sees neither or sees both.
+func (s *Session) appendDelegateAttentionMessageDurablyDeferred(attentionID string, message llm.Message) (schema.Turn, bool, error) {
+	return s.appendDelegateAttentionMessageDurablyAt(attentionID, message, false)
+}
+
+// appendDelegateAttentionMessageDurablyAt is the message-preserving core of
+// appendDelegateAttentionMessageDurably. It records the row in the transcript
+// and reports the turn the fold verified, publishing it into resident history
+// when publish is set. A caller that publishes later takes the returned turn.
+func (s *Session) appendDelegateAttentionMessageDurablyAt(attentionID string, message llm.Message, publish bool) (schema.Turn, bool, error) {
 	if s == nil {
-		return false, errors.New("delegate attention session is nil")
+		return schema.Turn{}, false, errors.New("delegate attention session is nil")
 	}
 	if attentionID == "" {
-		return false, errors.New("delegate attention ID is empty")
+		return schema.Turn{}, false, errors.New("delegate attention ID is empty")
 	}
 	// An attention report about a delegate is news: the agent's next status
 	// check on a delegate is not a repeat.
 	s.jobStatusPolls.forgetDelegates()
 	if message.Role != llm.RoleUser || len(message.Content) == 0 {
-		return false, errors.New("delegate attention message is invalid")
+		return schema.Turn{}, false, errors.New("delegate attention message is invalid")
 	}
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
@@ -606,39 +643,45 @@ func (s *Session) appendDelegateAttentionMessageDurably(attentionID string, mess
 	stateDir := s.stateDir
 	s.mu.Unlock()
 	if !ready || writer == nil || sessionID == "" || stateDir == "" {
-		return false, errors.New("delegate attention requires an attached transcript writer")
+		return schema.Turn{}, false, errors.New("delegate attention requires an attached transcript writer")
 	}
 	path := transcriptPath(stateDir, sessionID)
 	fold, err := s.readDelegateAttentionFold(path, sessionID)
 	if err != nil {
-		return false, err
+		return schema.Turn{}, false, err
 	}
 	deliveryID := strings.TrimPrefix(attentionID, "delegate:")
 	if deliveryID != attentionID && fold.deliveryCommits[deliveryID] != "" {
 		_, durableFold, err := s.reopenAttentionTranscriptDurably(writer, path, sessionID)
 		if err != nil {
-			return false, err
+			return schema.Turn{}, false, err
 		}
 		if durableFold.deliveryCommits[deliveryID] == "" {
-			return false, fmt.Errorf("delegate delivery %q changed during durability recovery", deliveryID)
+			return schema.Turn{}, false, fmt.Errorf("delegate delivery %q changed during durability recovery", deliveryID)
 		}
-		return false, nil
+		return schema.Turn{}, false, nil
 	}
 	if previous, exists := fold.content[attentionID]; exists {
 		if !reflect.DeepEqual(previous, message) {
-			return false, fmt.Errorf("attention %q has conflicting content", attentionID)
+			return schema.Turn{}, false, fmt.Errorf("attention %q has conflicting content", attentionID)
 		}
 		_, durableFold, err := s.reopenAttentionTranscriptDurably(writer, path, sessionID)
 		if err != nil {
-			return false, err
+			return schema.Turn{}, false, err
 		}
 		if previous := durableFold.content[attentionID]; !reflect.DeepEqual(previous, message) {
-			return false, fmt.Errorf("attention %q changed during durability recovery", attentionID)
+			return schema.Turn{}, false, fmt.Errorf("attention %q changed during durability recovery", attentionID)
 		}
-		if err := s.retainDelegateAttentionTurn(durableFold.turns[attentionID]); err != nil {
-			return false, err
+		durable := durableFold.turns[attentionID]
+		// A deferred caller republishes on its own schedule: the row is already
+		// in history from the attempt that recorded it, and publishing here
+		// would put it back before the acknowledgment this retry still owes.
+		if publish {
+			if err := s.retainDelegateAttentionTurn(durable); err != nil {
+				return schema.Turn{}, false, err
+			}
 		}
-		return false, nil
+		return durable, false, nil
 	}
 	turn := delegateAttentionTurn(attentionID, message, s.sclock().Now())
 	// The synced door records AND syncs, or errors; a retained (recorded but
@@ -647,26 +690,31 @@ func (s *Session) appendDelegateAttentionMessageDurably(attentionID string, mess
 	// execution or takes a delivery turn of its own.
 	rec, err := writer.Record(s.withEntryModel(turn), transcript.RecordOptions{Door: transcript.DoorSynced, Place: transcript.PlaceAsync})
 	if err != nil {
-		return false, fmt.Errorf("attention %q was not durably appended: %w", attentionID, err)
+		return schema.Turn{}, false, fmt.Errorf("attention %q was not durably appended: %w", attentionID, err)
 	}
 	// The resident turn is the one the file holds, identity included.
 	turn = rec.Turn
-	if err := s.retainDelegateAttentionTurn(turn); err != nil {
-		return false, err
+	if publish {
+		if err := s.retainDelegateAttentionTurn(turn); err != nil {
+			return schema.Turn{}, false, err
+		}
 	}
 	verified, err := s.readDelegateAttentionFold(path, sessionID)
 	if err != nil {
-		return false, err
+		return schema.Turn{}, false, err
 	}
 	persisted, exists := verified.content[attentionID]
 	if !exists || !reflect.DeepEqual(persisted, message) {
 		s.removeUnverifiedDelegateAttentionTurn(turn)
-		return false, fmt.Errorf("attention %q was not durably appended", attentionID)
+		return schema.Turn{}, false, fmt.Errorf("attention %q was not durably appended", attentionID)
 	}
-	if err := s.retainDelegateAttentionTurn(verified.turns[attentionID]); err != nil {
-		return false, err
+	durable := verified.turns[attentionID]
+	if publish {
+		if err := s.retainDelegateAttentionTurn(durable); err != nil {
+			return schema.Turn{}, false, err
+		}
 	}
-	return true, nil
+	return durable, true, nil
 }
 
 // armDelegateAttention arms one attention ID. It is the single-ID form of
@@ -1210,6 +1258,18 @@ func (s *Session) delegateAttentionRowIsPresentableLocked(attentionID string, pe
 // about rows they know are pending.
 func (s *Session) delegateAttentionAwaitingAdmissionLocked(attentionID string, pendingIDs map[string]struct{}) bool {
 	if !isOriginalStableWatchFrame(attentionID) {
+		return false
+	}
+	// The accepted trigger of this generation is admitted by construction: the
+	// reservation that selected it IS its admission, and acceptance resolved it
+	// before the request that runs it is built. A generation can be built with no
+	// pending set at all — the transcript read that would answer it failed — and
+	// falling back to the wake set would then drop it, because the accept already
+	// marked it consumed and CommitStart removed its wake ID. The run would
+	// settle having consumed a report no request carried. The latch is the
+	// durable-in-memory record of that admission, so it answers the question the
+	// unavailable fold could not.
+	if attentionID == s.attentionAcceptedID {
 		return false
 	}
 	if pendingIDs != nil {
@@ -2074,6 +2134,19 @@ func (s *Session) acceptDelegateAttention(reservation *delegateStartReservation)
 	// release, while a fresh watch frame it has not reached is still waiting
 	// for its own arm.
 	released := s.delegateController.attentionReleaseFloor(reservation.delegateID)
+	// The quiet is the evidence a generation cannot supply. A reopen minted by a
+	// stop installs its hold before the append that publishes it, so the row is
+	// held while that quiet stands; a reopen minted by a launch that committed
+	// and then failed names a generation that DID begin (RunStarted,
+	// TriggerAttention) but nothing quieted, so it has no hold to wait for. Read
+	// from the same reconciled map presentation filters by, so the capture and
+	// the projection cannot disagree about which reopen is quiet: reconciling
+	// first means a release that already superseded a stop has ended its hold
+	// and cannot hide an eligible row.
+	s.attentionMu.Lock()
+	s.reconcileAutomaticDriveHoldsLocked()
+	quietReopens := maps.Clone(s.attentionAutomaticDriveHolds)
+	s.attentionMu.Unlock()
 	captured := make([]string, 0, len(pendingIDs))
 	for _, pendingID := range pendingIDs {
 		if pendingID == attentionID {
@@ -2104,6 +2177,15 @@ func (s *Session) acceptDelegateAttention(reservation *delegateStartReservation)
 			// a stop's own quiet, so there is nothing to wait for.
 			sendReused := s.delegateAttentionGenerationTriggerLocked(reservation.delegateID, generation) == delegatestore.TriggerOwnerInput
 			if released >= generation || sendReused || !s.delegateAttentionGenerationStartedLocked(reservation.delegateID, generation) {
+				captured = append(captured, pendingID)
+				continue
+			}
+			// A generation that began and was never released is either a stop's
+			// own quiet or a launch that failed after its commit. The generation
+			// is the same in both cases; the hold is not. Only the stop installs
+			// one, and it installs it before the row is published, so a reopen
+			// with no hold to wait for is one nothing quieted.
+			if _, quiet := quietReopens[pendingID]; !quiet {
 				captured = append(captured, pendingID)
 			}
 		}
