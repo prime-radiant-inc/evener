@@ -76,6 +76,33 @@ export function upsertStableDelegate(
   return delegates.map((delegate, delegateIndex) => (delegateIndex === index ? merged : delegate));
 }
 
+/** Retires every held hold sample when the source owning the sequence is replaced.
+ *
+ * The hold orders by `holdSequence` within one source epoch, and a replacement
+ * daemon numbers its samples from its own start. A model that kept a retired
+ * row would let the old daemon's larger sequence beat the replacement's first
+ * unheld frame, and the transcript would carry a wait that has ended into any
+ * checkpoint taken before a full read replaces the model. Dropping the samples
+ * and keeping every durable field leaves the row exactly as a durable-first
+ * merge would: the replacement's first frame supplies the hold, having nothing
+ * to lose to. */
+export function retireStableDelegateHolds(
+  delegates: EvenerDelegateInfo[] | undefined,
+): EvenerDelegateInfo[] | undefined {
+  if (delegates === undefined || delegates.length === 0) return delegates;
+  if (!delegates.some((delegate) => delegate.holdSequence !== undefined)) return delegates;
+  return delegates.map((delegate) => {
+    if (delegate.holdSequence === undefined) return delegate;
+    const {
+      drainHeldByJobs: _held,
+      runningJobCount: _count,
+      oldestRunningJobStartedAt: _oldest,
+      ...durable
+    } = delegate;
+    return { ...durable, holdSequence: undefined };
+  });
+}
+
 export function epochMsToISO(ms: number | undefined): string | undefined {
   // Go's zero value leaks through the wire as 0: a non-positive (or NaN)
   // anchor means "absent", never the 1970 epoch - downstream duration math

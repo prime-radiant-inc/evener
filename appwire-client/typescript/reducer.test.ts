@@ -3945,6 +3945,349 @@ test("delegate/updated clears the hold at the same revision by hold sequence", (
   expect(result.delegates?.[0]?.holdSequence).toBe(9);
 });
 
+// The sequence orders within one source epoch, and a replacement daemon
+// numbers its samples from its own start. The transcript model keeps its
+// delegate rows across a resync, so without retiring them the retired daemon's
+// larger sequence beats the replacement's first unheld frame and a checkpoint
+// taken before a full read still carries the finished wait.
+//
+// The boot generation is what names the source: it is the daemon's own boot
+// counter, while an epoch and an incarnation both move for reasons that leave
+// the owning delegate controller running.
+function testHydrateV6AtBoot(bootGeneration: string): ThreadModel {
+  const thread = testThread();
+  return hydrateThread(
+    { thread, bootGeneration, epoch: 1, snapshot: { incarnation: "inc-1", length: 1 } },
+    thread.evener.ref,
+    1000,
+  );
+}
+
+test("a replaced source's hold sample cannot outrank the replacement's frame", () => {
+  const model = testHydrateV6AtBoot("5");
+  const held = delegateInfo({
+    delegateId: "dlg_1",
+    projectionRevision: 3,
+    drainHeldByJobs: true,
+    holdSequence: 900,
+    runningJobCount: 2,
+    oldestRunningJobStartedAt: "2026-01-03T00:00:00Z",
+  });
+  let result = applyNotification(model, delegateNotification("ref_t", held), 2000);
+  expect(result.delegates?.[0]?.holdSequence).toBe(900);
+  expect(result.delegates?.[0]?.drainHeldByJobs).toBe(true);
+
+  // A different boot generation names a different source. The row survives
+  // with its durable fields.
+  result = applyNotification(
+    result,
+    {
+      method: "evener/thread/resync",
+      params: { ref: model.ref, threadId: model.threadId, bootGeneration: "6", epoch: 2 },
+    },
+    3000,
+  );
+  expect(result.history?.invalidatedAtGeneration).toBeDefined();
+  // The retire drops the hold sample alone: every durable field survives it.
+  expect(result.delegates?.[0]).toMatchObject({
+    delegateId: "dlg_1",
+    transcriptRef: "local:01dlg_1",
+    projectionRevision: 3,
+    lifecycle: "stable",
+    status: "idle",
+    outcome: "completed",
+    terminal: true,
+    resumable: true,
+  });
+  // All four hold fields are gone, not just the sequence: a replacement frame
+  // that omits one re-supplies nothing, so a leftover would outlive the epoch.
+  expect(result.delegates?.[0]?.holdSequence).toBeUndefined();
+  expect(result.delegates?.[0]?.drainHeldByJobs).toBeUndefined();
+  expect(result.delegates?.[0]?.runningJobCount).toBeUndefined();
+  expect(result.delegates?.[0]?.oldestRunningJobStartedAt).toBeUndefined();
+
+  // The replacement's first frame carries a hold the new epoch numbered from
+  // its own start. It must land even though the retired sequence is far larger.
+  const replacementCleared = delegateInfo({
+    delegateId: "dlg_1",
+    projectionRevision: 9,
+    holdSequence: 1,
+    runningJobCount: 1,
+    // A distinct anchor from the retired row's: the assertion below then
+    // proves the frame supplied it, not that the retired value survived.
+    oldestRunningJobStartedAt: "2026-02-04T00:00:00Z",
+  });
+  result = applyNotification(result, delegateNotification("ref_t", replacementCleared), 4000);
+  expect(result.delegates?.[0]?.holdSequence).toBe(1);
+  expect(result.delegates?.[0]?.drainHeldByJobs).toBeUndefined();
+  expect(result.delegates?.[0]?.runningJobCount).toBe(1);
+  expect(result.delegates?.[0]?.oldestRunningJobStartedAt).toBe("2026-02-04T00:00:00Z");
+
+  // And within the new epoch the ordering still holds: a delayed sample from
+  // the same source cannot roll it back.
+  const delayed = delegateInfo({
+    delegateId: "dlg_1",
+    projectionRevision: 9,
+    holdSequence: 0,
+    runningJobCount: 3,
+  });
+  result = applyNotification(result, delegateNotification("ref_t", delayed), 5000);
+  expect(result.delegates?.[0]?.runningJobCount).toBe(1);
+});
+
+// The other direction, and the one that keeps a live wait on screen: a daemon
+// that bumps its own history epoch to rebuild its transcript index has not
+// changed the source that owns the hold. Its delegate controller and hold
+// sequence are untouched, and an unchanged hold emits no update of its own —
+// so a sample retired here is never restored, and the row loses the wait for
+// the rest of the job.
+test("a same-source resync keeps the hold a delegate is still waiting on", () => {
+  const model = testHydrateV6AtBoot("5");
+  let result = applyNotification(
+    model,
+    delegateNotification(
+      "ref_t",
+      delegateInfo({
+        delegateId: "dlg_1",
+        projectionRevision: 3,
+        drainHeldByJobs: true,
+        holdSequence: 900,
+        runningJobCount: 2,
+        oldestRunningJobStartedAt: "2026-01-03T00:00:00Z",
+      }),
+    ),
+    2000,
+  );
+  expect(result.delegates?.[0]?.holdSequence).toBe(900);
+
+  // Same boot generation, newer epoch: the transcript index was rebuilt, the
+  // source was not replaced.
+  result = applyNotification(
+    result,
+    {
+      method: "evener/thread/resync",
+      params: { ref: model.ref, threadId: model.threadId, bootGeneration: "5", epoch: 2 },
+    },
+    3000,
+  );
+  expect(result.history?.invalidatedAtGeneration).toBeDefined();
+  expect(result.delegates?.[0]?.holdSequence).toBe(900);
+  expect(result.delegates?.[0]?.drainHeldByJobs).toBe(true);
+  expect(result.delegates?.[0]?.runningJobCount).toBe(2);
+  expect(result.delegates?.[0]?.oldestRunningJobStartedAt).toBe("2026-01-03T00:00:00Z");
+
+  // The sequence still orders within the source: a lower sample cannot clear
+  // the wait the row preserved.
+  result = applyNotification(
+    result,
+    delegateNotification(
+      "ref_t",
+      delegateInfo({ delegateId: "dlg_1", projectionRevision: 9, holdSequence: 1, runningJobCount: 1 }),
+    ),
+    4000,
+  );
+  expect(result.delegates?.[0]?.holdSequence).toBe(900);
+  expect(result.delegates?.[0]?.drainHeldByJobs).toBe(true);
+  expect(result.delegates?.[0]?.runningJobCount).toBe(2);
+
+  // A hub-pushed resync carries no boot generation at all (ThreadResyncParams'
+  // own doc: "Empty on a resync the hub pushes itself"), so it cannot name a
+  // replacement and must preserve the sample it cannot attribute.
+  result = applyNotification(
+    result,
+    {
+      method: "evener/thread/resync",
+      params: { ref: model.ref, threadId: model.threadId, bootGeneration: "", epoch: 3 },
+    },
+    5000,
+  );
+  expect(result.delegates?.[0]?.holdSequence).toBe(900);
+  expect(result.delegates?.[0]?.drainHeldByJobs).toBe(true);
+});
+
+// The same retire has to run at the other place a source identity changes: a
+// history/updated naming a different boot generation replaces the history
+// exactly as a resync does, and the model keeps its delegate rows across it.
+test("a history/updated from a replacement source retires the hold sample too", () => {
+  const model = testHydrateV6AtBoot("5");
+  let result = applyNotification(
+    model,
+    delegateNotification(
+      "ref_t",
+      delegateInfo({
+        delegateId: "dlg_1",
+        projectionRevision: 3,
+        drainHeldByJobs: true,
+        holdSequence: 900,
+        runningJobCount: 2,
+        oldestRunningJobStartedAt: "2026-01-03T00:00:00Z",
+      }),
+    ),
+    2000,
+  );
+  expect(result.delegates?.[0]?.holdSequence).toBe(900);
+
+  result = applyNotification(
+    result,
+    {
+      method: "history/updated",
+      params: {
+        threadId: model.threadId,
+        ref: model.ref,
+        bootGeneration: "6",
+        epoch: 2,
+        snapshot: { incarnation: "inc-2", length: 1 },
+        turns: [],
+        items: [],
+      },
+    },
+    3000,
+  );
+  expect(result.history?.invalidatedAtGeneration).toBeDefined();
+  expect(result.delegates?.[0]?.holdSequence).toBeUndefined();
+  expect(result.delegates?.[0]?.drainHeldByJobs).toBeUndefined();
+  expect(result.delegates?.[0]?.runningJobCount).toBeUndefined();
+  expect(result.delegates?.[0]?.oldestRunningJobStartedAt).toBeUndefined();
+
+  // The replacement's first sample lands instead of losing to the retired 900.
+  result = applyNotification(
+    result,
+    delegateNotification("ref_t", delegateInfo({ delegateId: "dlg_1", projectionRevision: 9, holdSequence: 1 })),
+    4000,
+  );
+  expect(result.delegates?.[0]?.holdSequence).toBe(1);
+  expect(result.delegates?.[0]?.drainHeldByJobs).toBeUndefined();
+});
+
+// Once a replacement has retired the retired boot's samples, the boot that
+// retired them owns whatever sample arrives next — even while no read has
+// completed to apply it. History still names the retired boot until then, so
+// a second invalidation from the replacement must be judged against the boot
+// that took over, not the one it replaced. If it is judged against the
+// retired boot, the replacement's own valid hold is cleared, and nothing
+// restores it: an unchanged hold emits no update of its own.
+test("a replacement's hold survives a second invalidation before any read", () => {
+  const model = testHydrateV6AtBoot("5");
+  let result = applyNotification(
+    model,
+    delegateNotification(
+      "ref_t",
+      delegateInfo({
+        delegateId: "dlg_1",
+        projectionRevision: 3,
+        drainHeldByJobs: true,
+        holdSequence: 900,
+        runningJobCount: 2,
+        oldestRunningJobStartedAt: "2026-01-03T00:00:00Z",
+      }),
+    ),
+    2000,
+  );
+  expect(result.delegates?.[0]?.holdSequence).toBe(900);
+
+  // Boot 6 replaces boot 5 and retires the retired sample.
+  result = applyNotification(
+    result,
+    {
+      method: "evener/thread/resync",
+      params: { ref: model.ref, threadId: model.threadId, bootGeneration: "6", epoch: 2 },
+    },
+    3000,
+  );
+  expect(result.delegates?.[0]?.holdSequence).toBeUndefined();
+
+  // The replacement's first sample: a delegate waiting on a shell in boot 6.
+  result = applyNotification(
+    result,
+    delegateNotification(
+      "ref_t",
+      delegateInfo({
+        delegateId: "dlg_1",
+        projectionRevision: 9,
+        drainHeldByJobs: true,
+        holdSequence: 1,
+        runningJobCount: 1,
+        oldestRunningJobStartedAt: "2026-02-04T00:00:00Z",
+      }),
+    ),
+    4000,
+  );
+  expect(result.delegates?.[0]?.holdSequence).toBe(1);
+  expect(result.delegates?.[0]?.drainHeldByJobs).toBe(true);
+
+  // A second invalidation from that same boot, with no read completing in
+  // between. Boot 6 owns this sample, so it stays.
+  result = applyNotification(
+    result,
+    {
+      method: "evener/thread/resync",
+      params: { ref: model.ref, threadId: model.threadId, bootGeneration: "6", epoch: 3 },
+    },
+    5000,
+  );
+  expect(result.history?.invalidatedAtGeneration).toBeDefined();
+  expect(result.delegates?.[0]?.holdSequence).toBe(1);
+  expect(result.delegates?.[0]?.drainHeldByJobs).toBe(true);
+  expect(result.delegates?.[0]?.runningJobCount).toBe(1);
+  expect(result.delegates?.[0]?.oldestRunningJobStartedAt).toBe("2026-02-04T00:00:00Z");
+
+  // A third boot taking over still clears them: the rule is about ownership,
+  // not about how many invalidations have happened.
+  result = applyNotification(
+    result,
+    {
+      method: "evener/thread/resync",
+      params: { ref: model.ref, threadId: model.threadId, bootGeneration: "7", epoch: 4 },
+    },
+    6000,
+  );
+  expect(result.delegates?.[0]?.holdSequence).toBeUndefined();
+  expect(result.delegates?.[0]?.drainHeldByJobs).toBeUndefined();
+});
+
+// The incarnation case of the same rule: a same-boot frame whose snapshot
+// incarnation moved invalidates history without naming a new source.
+test("a same-boot history/updated keeps the hold across an incarnation change", () => {
+  const model = testHydrateV6AtBoot("5");
+  let result = applyNotification(
+    model,
+    delegateNotification(
+      "ref_t",
+      delegateInfo({
+        delegateId: "dlg_1",
+        projectionRevision: 3,
+        drainHeldByJobs: true,
+        holdSequence: 900,
+        runningJobCount: 2,
+        oldestRunningJobStartedAt: "2026-01-03T00:00:00Z",
+      }),
+    ),
+    2000,
+  );
+  expect(result.delegates?.[0]?.holdSequence).toBe(900);
+
+  result = applyNotification(
+    result,
+    {
+      method: "history/updated",
+      params: {
+        threadId: model.threadId,
+        ref: model.ref,
+        bootGeneration: "5",
+        epoch: 1,
+        snapshot: { incarnation: "inc-2", length: 1 },
+        turns: [],
+        items: [],
+      },
+    },
+    3000,
+  );
+  expect(result.history?.invalidatedAtGeneration).toBeDefined();
+  expect(result.delegates?.[0]?.holdSequence).toBe(900);
+  expect(result.delegates?.[0]?.drainHeldByJobs).toBe(true);
+  expect(result.delegates?.[0]?.runningJobCount).toBe(2);
+});
+
 test("delegate/updated with same projectionRevision and later activity updates latestActivityAt", () => {
   const model = testHydrate();
   const dlg1 = delegateInfo({

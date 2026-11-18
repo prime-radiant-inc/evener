@@ -4,7 +4,8 @@
 // on (re)subscribe). Every function here is pure: given the same inputs,
 // produces the same (possibly reference-equal, for no-op cases) output.
 
-import type { ItemModel, ThreadModel, TurnModel } from "./model";
+import { compareBootGeneration } from "./bootGeneration";
+import type { HistoryState, ItemModel, ThreadModel, TurnModel } from "./model";
 import {
   buildDisplayTurn,
   classifySignal,
@@ -23,7 +24,7 @@ import {
   withDisplay,
   withoutNewerPageOmissions,
 } from "./transcriptHistory";
-import { upsertStableDelegate } from "./transcriptItems";
+import { retireStableDelegateHolds, upsertStableDelegate } from "./transcriptItems";
 import type {
   AnyNotification,
   HistoryUpdatedParams,
@@ -33,6 +34,31 @@ import type {
   ThreadResyncParams,
 } from "./types.gen";
 import { foldWarningParams } from "./warningFold";
+
+// holdOwnerBoot is the source that owns the model's current hold samples.
+//
+// While history is live that is the boot it was read under. Once a replacement
+// invalidated the thread, the boot that retired the old samples — recorded in
+// awaited at that moment — is the one that owns whatever samples arrive next;
+// history.bootGeneration keeps naming the retired boot until a read applies,
+// so reading it here would let a replacement's own second invalidation clear
+// the hold it had just supplied. A live read drops awaited and restores the
+// boot under which its rows were read.
+function holdOwnerBoot(held: HistoryState): string {
+  return held.awaited?.bootGeneration ?? held.bootGeneration;
+}
+
+// sourceReplaced reports whether a notification's boot generation names a
+// source other than the one owning the hold samples — the only question that
+// retires them. A token that reads as the same counter for the same owner is
+// the same source; a higher counter, another owner's token, a switch to or
+// from daemonless, and a token the client cannot parse all name a replacement.
+// An empty token names nothing: a hub-pushed resync carries it, and it must
+// not retire a hold the daemon it relays still owns.
+function sourceReplaced(held: HistoryState, bootGeneration: string | undefined): boolean {
+  if (!bootGeneration) return false;
+  return compareBootGeneration(holdOwnerBoot(held), bootGeneration) === "replace";
+}
 
 // history/updated: the full current form of every recorded item and turn an
 // entry changed, merged by version under the one generation state machine.
@@ -46,7 +72,19 @@ function applyHistoryUpdated<M extends ThreadModel>(model: M, params: HistoryUpd
     incarnation: params.snapshot.incarnation,
   };
   const action = classifySignal(held, signal);
-  if (action === "invalidate") return { ...live, history: invalidated(held, signal) };
+  // History validity and hold ownership are different questions. Invalidating
+  // the history says nothing about who owns the hold sequence, so only the
+  // second question retires a hold: a notification from a different source
+  // (a different boot generation) numbers its samples from its own start, and
+  // the retired sequences must not outrank them. A same-source epoch or
+  // incarnation change invalidates the transcript index and leaves the hold
+  // alone — that daemon's delegate controller is still sampling, and an
+  // unchanged hold emits no update of its own to restore what we dropped.
+  if (action === "invalidate") {
+    const history = invalidated(held, signal);
+    const retired = sourceReplaced(held, params.bootGeneration) ? retireStableDelegateHolds(live.delegates) : undefined;
+    return retired === undefined ? { ...live, history } : { ...live, history, delegates: retired };
+  }
   if (action === "ignore" || held.invalidatedAtGeneration !== undefined) return live;
   // A notification projected after the page that omitted one of its identities
   // must not put it back: the page's observation still wins.
@@ -69,7 +107,13 @@ function applyResync<M extends ThreadModel>(model: M, params: ThreadResyncParams
   const live = { ...model, lastFrameAt: now };
   if (!params.bootGeneration && params.epoch === undefined) return live;
   const signal: HistorySignal = { bootGeneration: params.bootGeneration || undefined, epoch: params.epoch };
-  return classifySignal(held, signal) === "invalidate" ? { ...live, history: invalidated(held, signal) } : live;
+  if (classifySignal(held, signal) !== "invalidate") return live;
+  // Same rule as applyHistoryUpdated: the resync that bumps an epoch to rebuild
+  // a daemon's own transcript index names that same daemon, so its live hold
+  // survives; only a different boot generation retires the sample.
+  const history = invalidated(held, signal);
+  const retired = sourceReplaced(held, params.bootGeneration) ? retireStableDelegateHolds(live.delegates) : undefined;
+  return retired === undefined ? { ...live, history } : { ...live, history, delegates: retired };
 }
 
 // overlay/delta appends to one stream, preview or tool item. Only the display
