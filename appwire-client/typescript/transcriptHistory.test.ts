@@ -481,6 +481,65 @@ for (const entryPoint of ["response", "model"] as const) {
   });
 }
 
+// A daemon can also disappear DURING a model change: the pane is left
+// `recovering`, its replacement read never lands, and the hub answers the next
+// read from the saved index. That recovery is finished in the only sense that
+// matters — no read is coming — so leaving it `recovering` would disable the
+// picker with nothing left to resolve it. A `ready` pane still holds real
+// authority and keeps it.
+for (const entryPoint of ["response", "model"] as const) {
+  test(`${entryPoint} saved fallback settles a finished recovery to the resume-first pick`, () => {
+    const ready = hydrateThread(
+      {
+        ...historyRead(),
+        bootGeneration: "1",
+        thread: testThread({
+          turns: [positionedFragmentTurn("turn_live", [["item_live", 1]])],
+          evener: {
+            ref: "ref_t",
+            instanceId: "thr_ref_t",
+            capabilities: { ...CAPABILITIES, modelControlVersion: 1 },
+            modelControl: {
+              authority: { instanceId: "thr_ref_t", bootGeneration: "1" },
+              revision: 2,
+              active: {
+                modelProvider: "anthropic",
+                model: "claude-sonnet-4-5",
+                reasoningEffortLevels: ["low", "high"],
+                supportsReasoning: true,
+              },
+            },
+            queue: { revision: 0 },
+          },
+        }),
+      },
+      "ref_t",
+      1000,
+    );
+    expect(ready.modelControlState.kind).toBe("ready");
+    const recovering = reduceModelControl(ready, { kind: "authorityStale" });
+    expect(recovering.model.modelControlState.kind).toBe("recovering");
+    const coldRead = {
+      ...historyRead(),
+      thread: testThread({
+        status: { type: "notLoaded" },
+        turns: [positionedFragmentTurn("turn_live", [["item_live", 1]])],
+      }),
+      snapshot: { incarnation: "saved-inc", length: 1 },
+      servedFrom: "saved-index",
+      fallbackReason: "live-read-failed",
+      asOf: "2026-11-08T00:00:01Z",
+    };
+    const next =
+      entryPoint === "response"
+        ? applyReadResponse(recovering.model, coldRead, 1001)
+        : applyReadModel(recovering.model, hydrateThread(coldRead, "ref_t", 1001));
+    expect(next.modelControlState.kind).toBe("unsupported");
+    expect(modelPickCanSend(next)).toBe(true);
+    expect(next.turns.flatMap((turn) => turn.items).map((item) => item.id)).toContain("item_live");
+  });
+}
+
 for (const recovery of ["invalidated", "failed"] as const) {
   test(`accepted saved fallback recovers ${recovery} history and resumes live notifications`, () => {
     const latest = positionedFragmentTurn("turn_latest", [["held-newer", 9]], { version: 9 });

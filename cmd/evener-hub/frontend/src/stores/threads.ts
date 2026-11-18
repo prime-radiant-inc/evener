@@ -200,7 +200,14 @@ import {
   setFinalReleaseOwner,
   unpinMutation,
 } from "./threadOwners";
-import { appendFrameTime, isStorageFailure, isStorageTimeout, mapConflict, StopCanceledError } from "./threadsErrors";
+import {
+  appendFrameTime,
+  ConflictError,
+  isStorageFailure,
+  isStorageTimeout,
+  mapConflict,
+  StopCanceledError,
+} from "./threadsErrors";
 import { encodedPayloadBytes } from "./transcriptPayloadBudget";
 import {
   nextTranscriptReadIdentity,
@@ -9592,6 +9599,16 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     );
     if (reduced.replacementReadRequired) {
       startModelControlReplacementRead(targetRef, client, fence);
+    }
+    // The daemon answered with the pick that won, not this one. The canonical
+    // snapshot above converged the client on the winner, but this mutation did
+    // not change the model, so the caller must not confirm it as if it had —
+    // the palette would otherwise toast success naming the losing pick. The
+    // disposition is the wire's own answer, never a guess from the snapshot.
+    if (response.disposition === "superseded") {
+      throw new ConflictError(
+        `Model was already changed in another client; this session is on ${snapshot.active.modelProvider}/${snapshot.active.model}.`,
+      );
     }
   },
 

@@ -314,6 +314,59 @@ func TestModelControlIdentityFreeDirectRequestIsRefused(t *testing.T) {
 	}
 }
 
+// TestModelControlSameModelReselectRepublishesContextWindow covers the case a
+// fallback leaves behind: the fallback answered, so the context manager
+// budgets against the fallback's window, and reselecting the configured model
+// restores the configured window. The switch event is the only thing that
+// refreshes the daemon's context facet, so suppressing it because the two
+// configured profiles match leaves every read reporting the fallback's window.
+func TestModelControlSameModelReselectRepublishesContextWindow(t *testing.T) {
+	t.Parallel()
+	sess := newSession(t,
+		withProfile(NewOpenAIProfile("gpt-5.4")),
+		withAdapter(&fakeAdapter{name: "openai"}),
+		withConfig(SessionConfig{testOnly: testConfig{skipGitSnapshot: true}}),
+	)
+	sess.SetBootGeneration("7")
+	configuredWindow, _ := budgetingWindow(sess.currentProfile())
+	// The fallback that answered: another model, so the context manager now
+	// budgets against that model's window instead of the configured one.
+	const fallbackWindow = 128_000
+	if configuredWindow == fallbackWindow {
+		t.Fatalf("fixture: configured window %d equals the fallback window", configuredWindow)
+	}
+	sess.contextMgr.SetProfile(withContextWindow(NewOpenAIProfile("gpt-4.1-mini"), fallbackWindow))
+	if got, _ := sess.ContextStatus(); got.Window != fallbackWindow {
+		t.Fatalf("fixture window = %d, want the fallback's %d", got.Window, fallbackWindow)
+	}
+
+	if _, err := sess.SetModelControl(modelControlRequest(sess, "gpt-5.4", "cm_reselect")); err != nil {
+		t.Fatalf("reselect configured model: %v", err)
+	}
+	requireModelControlEvent(t, sess)
+	var found *events.ModelChangedData
+	for {
+		select {
+		case event := <-sess.Events():
+			if data, ok := event.Data.(events.ModelChangedData); ok {
+				found = &data
+			}
+			continue
+		default:
+		}
+		break
+	}
+	if found == nil {
+		t.Fatal("reselecting the configured model emitted no EventModelChanged, so the context facet keeps the fallback's window")
+	}
+	if found.ContextWindow != configuredWindow {
+		t.Fatalf("published context window = %d, want the configured model's %d", found.ContextWindow, configuredWindow)
+	}
+	if got, _ := sess.ContextStatus(); got.Window != configuredWindow {
+		t.Fatalf("context window after reselect = %d, want %d", got.Window, configuredWindow)
+	}
+}
+
 func TestModelControlShutdownAfterSequenceAssignmentIsNotAccepted(t *testing.T) {
 	t.Parallel()
 	adapter := &gatedListingAdapter{name: "openai"}

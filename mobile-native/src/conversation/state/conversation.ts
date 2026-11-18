@@ -2170,7 +2170,27 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						// null — preserve it (do not spuriously increment errorOwnerRev).
 						set(commitBase);
 					}
-					if (modelControlRecoveryRequired) requestRehydrate(ref);
+					// A model-control frame that landed during this read while the store
+					// held `recovering` was folded by the shared reducer, which ignores a
+					// snapshot input off `ready` — it left no trace on the held model —
+					// and the publication above takes the READ's own model-control
+					// fields. Probe each held frame against the state this read just
+					// established, classified exactly as the live path would classify
+					// it: a newer revision, an equal-revision conflict or a foreign
+					// authority still asks for an authoritative answer, so carry that
+					// one recovery read out of publication here — independently of
+					// transcript replacement. A frame this read already satisfies
+					// asks for nothing.
+					const modelControlFramePending = framesDuringRead.some((frame) => {
+						if (frame.method !== "thread/model/controlChanged") return false;
+						const probe = reduceModelControl(committedConversation, {
+							kind: "snapshot",
+							source: "notification",
+							snapshot: frame.params.modelControl,
+						});
+						return probe.decision !== "ignored" && probe.decision !== "duplicate";
+					});
+					if (modelControlRecoveryRequired || modelControlFramePending) requestRehydrate(ref);
 				} catch (err) {
 					// R1: failure may set error only if error/page/mutation owners all
 					// remain unchanged. Check binding epoch, generation, token, page

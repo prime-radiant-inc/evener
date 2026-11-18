@@ -127,15 +127,22 @@ export function coldSessionCanResume(model: Pick<ThreadModel, "capabilities" | "
 // whose authority a reconnect retired stays retired until a LIVE read speaks
 // again — the saved view must not upgrade a stale display into evidence.
 //
-// The exception is a read that identifies a session a pick can resume. There
-// the held `uninitialized` is strictly worse than the cold `unsupported` the
-// same read reduces to: neither carries live authority, but only `unsupported`
-// offers the pick, and a pick is the only way the user resumes that session.
+// The exception is a read that identifies a session a pick can resume. A `ready`
+// pane still holds real authority, so it keeps it. Every other held state
+// carries none, and none of them offers the pick: `uninitialized` and
+// `recovering` both leave the picker disabled. For those the cold `unsupported`
+// the same read reduces to is strictly better — it is the one state a pick
+// resolves by resuming first, and a pick is the only way the user gets that
+// session running again. `recovering` is included on purpose: this branch only
+// runs for a saved read (see the callers' historyFallback guard), so there is no
+// live daemon left to answer the held recovery. Leaving the pane waiting would
+// keep the picker disabled with nothing in flight to re-enable it.
 export function savedReadKeepsHeldModelControl(
   held: Pick<ThreadModel, "modelControlState">,
   read: Pick<ThreadModel, "capabilities" | "status">,
 ): boolean {
-  return held.modelControlState.kind !== "uninitialized" || !coldSessionCanResume(read);
+  if (held.modelControlState.kind === "ready") return true;
+  return !coldSessionCanResume(read);
 }
 
 export function projectModelControlSnapshot(model: ThreadModel, snapshot: ModelControlSnapshot): ThreadModel {

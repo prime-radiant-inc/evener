@@ -2370,9 +2370,21 @@ func (s *Session) applyModelSwitchControl(model, primedInstance string, primedLi
 	// replaced, so it does not survive the swap (see
 	// forgetSessionNamerQuotaExhaustionLocked).
 	s.forgetSessionNamerQuotaExhaustionLocked()
+	// The window the context manager budgets against is the one the last
+	// answering model installed: a fallback replaces it with its own. Reselecting
+	// the configured model restores the configured window even when the two
+	// configured profiles are identical, and the switch event below is the only
+	// thing that refreshes the daemon's context facet. Capture the outgoing
+	// window so that case still announces the change; when the context is
+	// unchanged the switch stays as quiet as it was.
+	prevEffectiveWindow, prevEffectiveWindowSource, havePrevWindow := 0, "", false
 	if s.contextMgr != nil {
+		prevEffectiveWindow, prevEffectiveWindowSource, havePrevWindow = s.contextMgr.EffectiveWindow()
 		s.contextMgr.SetProfile(s.profile)
 	}
+	settledWindow, settledWindowSource := budgetingWindow(s.profile)
+	contextWindowMoved := havePrevWindow &&
+		(prevEffectiveWindow != settledWindow || prevEffectiveWindowSource != settledWindowSource)
 	if s.reg != nil {
 		s.reapplyProviderSpecificTools(commitPrev, nextProfile)
 	}
@@ -2455,7 +2467,7 @@ func (s *Session) applyModelSwitchControl(model, primedInstance string, primedLi
 	}
 	marker.ModelSwitch.ContextWindow, marker.ModelSwitch.ContextWindowSource = budgetingWindow(nextProfile)
 	s.recordTurn(marker, marker)
-	if !sameModel {
+	if !sameModel || contextWindowMoved {
 		s.emit(events.ModelChangedData{
 			OldProvider:            commitPrev.ID(),
 			OldModel:               commitPrev.Model(),

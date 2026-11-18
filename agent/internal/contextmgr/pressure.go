@@ -91,6 +91,19 @@ func (cm *Manager) currentProfile() *provider.Profile {
 	return cm.profile
 }
 
+// EffectiveWindow reports the window this manager currently budgets against and
+// where it came from. A fallback replaces the manager's profile, so this can
+// differ from the session's configured profile: it is the window the estimate is
+// actually measured against. ok is false when no profile is installed.
+func (cm *Manager) EffectiveWindow() (window int, source string, ok bool) {
+	prof := cm.currentProfile()
+	if prof == nil {
+		return 0, "", false
+	}
+	window, _ = EffectiveWindow(prof)
+	return window, prof.ContextWindowSource(), true
+}
+
 // LastInputTokens returns the most recently recorded input token count.
 func (cm *Manager) LastInputTokens() int {
 	cm.mu.Lock()

@@ -352,6 +352,84 @@ describe("ConversationStore", () => {
 			if (!conversation) throw new Error("expected the recovered conversation");
 			expect(modelControlDisplay(conversation).model).toBe("claude-opus-4-6");
 		});
+
+		// Review finding: during a recovery reread, another client's newer
+		// model-control frame can land after the store holds `recovering` and
+		// while the read is in flight. The package reducer ignores a snapshot
+		// input off `ready`, so the frame changes nothing, and the merge path
+		// then publishes the read's own (older) snapshot with the frame's newer
+		// one never replayed — the phone shows the stale model until some later
+		// frame or refresh.
+		it("a model-control frame arriving during a recovery reread reaches the published state", async () => {
+			const client = new FakeClient("ready");
+			const initial = modelControl(1, MODEL_AUTHORITY_A, "claude-sonnet-5");
+			const recoveringRead = modelControl(3, MODEL_AUTHORITY_A, "claude-opus-4-6");
+			const newerFrame = modelControl(4, MODEL_AUTHORITY_A, "claude-haiku-4-5");
+			let reads = 0;
+			let reconciliationStarted!: () => void;
+			const reconciling = new Promise<void>((resolve) => {
+				reconciliationStarted = resolve;
+			});
+			let releaseReconciliation!: () => void;
+			const heldReconciliation = new Promise<void>((resolve) => {
+				releaseReconciliation = resolve;
+			});
+			let reconciliations = 0;
+			client.on("thread/unsubscribe", () => ({}));
+			client.on("thread/read", () => {
+				reads += 1;
+				if (reads === 1) return modelControlReadResponse(initial);
+				if (reads === 2) return modelControlReadResponse(recoveringRead);
+				return modelControlReadResponse(newerFrame);
+			});
+			const service = createConversationService(client, {
+				idFactory: () => "mutation-1",
+				// Hold the recovery read's host reconciliation: the service has
+				// installed its projection and dropped its own opening quarantine,
+				// but the store has not adopted the read yet.
+				onReadComplete: () => {
+					reconciliations += 1;
+					if (reconciliations !== 2) return undefined;
+					reconciliationStarted();
+					return heldReconciliation;
+				},
+			});
+			const store = createConversationStore();
+			await store.getState().openProjected(service, "ref-1");
+
+			// The recovery read a lost mutation outcome starts is held in flight.
+			client.on("thread/model/set", () => {
+				throw new WireError("lost", -32603, {
+					evenerErrorInfo: "mutationOutcomeUnknown",
+					mutationOutcome: "unknown",
+					retryDisposition: "blocked",
+				});
+			});
+			await expect(service.changeModel("openai", "gpt-5.5")).rejects.toThrow();
+			expect(store.getState().conversation?.modelControlState.kind).toBe("recovering");
+			await reconciling;
+
+			// Another client's newer frame lands while the store holds
+			// `recovering`, so the reducer ignores it.
+			client.emitNotification({
+				method: "thread/model/controlChanged",
+				params: { ref: "ref-1", threadId: "thread-1", modelControl: newerFrame },
+			});
+			expect(store.getState().conversation?.modelControlState.kind).toBe("recovering");
+			releaseReconciliation();
+
+			// The reread publishes the read's own answer, which is older than the
+			// frame that raced it. The store must reconcile the two with exactly
+			// one further authoritative read, whose publication carries the
+			// frame's model.
+			await vi.waitFor(() => {
+				const published = store.getState().conversation;
+				if (!published) throw new Error("expected the recovered conversation");
+				expect(modelControlDisplay(published).model).toBe("claude-haiku-4-5");
+			});
+			expect(store.getState().conversation?.modelControlState).toEqual({ kind: "ready", snapshot: newerFrame });
+			expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(3);
+		});
 	});
 
 	// --- Fix round 1: I1/I2/M1 rejection items ----------------------------------

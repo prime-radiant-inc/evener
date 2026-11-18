@@ -1349,6 +1349,27 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     expect(recoveryReads, "the settled recovery scheduled no further read").toBe(2);
   });
 
+  test("a superseded pick rejects and keeps the winning snapshot", async () => {
+    const fake = connectFakeClient();
+    const initial = modelControlSnapshot(2);
+    fake.on("thread/read", () => capableModelRead("ref_a", initial));
+    await threadsStore.getState().ensureThread("ref_a");
+    // Another client's pick landed first, so the daemon answers with the
+    // winner's snapshot and the `superseded` disposition.
+    const winner = modelControlSnapshot(3, { activeProvider: "google", activeModel: "gemini-3-pro" });
+    fake.on("thread/model/set", () => ({
+      modelControlVersion: 1,
+      disposition: "superseded",
+      modelControl: winner,
+    }));
+
+    await expect(threadsStore.getState().setModel("ref_a", "openai", "gpt-5.5")).rejects.toThrow();
+    expect(threadsStore.getState().threads.get("ref_a")?.modelControlState).toEqual({
+      kind: "ready",
+      snapshot: winner,
+    });
+  });
+
   test("a tracked thread owns model-control recovery shared with a rich watcher", async () => {
     const fake = connectFakeClient();
     const initial = modelControlSnapshot(2);
