@@ -1,6 +1,8 @@
 package apptranscript
 
 import (
+	"sort"
+
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -65,8 +67,16 @@ type groupedTurn struct {
 	// entries are the group's decoded entries in arrival order, including
 	// entries whose projector emitted no items (they still carry stamps).
 	entries []schema.Turn
+	// entryIndexes is each entry's global 1-based index, parallel to entries,
+	// so the walk can consult an entry by its position in the file.
+	entryIndexes []int
 	// items are the group's projected items in arrival order, before merge.
 	items []appwire.ThreadItem
+	// itemEntries is each item's originating entry's global index, parallel to
+	// items. A result settles the call of the LATEST assistant entry that
+	// announced it, which needs both the entry a call was announced in and the
+	// entry a result was recorded in.
+	itemEntries []int
 }
 
 // logicalTurnAccumulator buffers entries across a scan and emits grouped
@@ -154,8 +164,12 @@ func (a *logicalTurnAccumulator) appendEntry(entry schema.Turn, entryIndex int, 
 	}
 	last := &a.turns[len(a.turns)-1]
 	last.entries = append(last.entries, entry)
+	last.entryIndexes = append(last.entryIndexes, entryIndex)
 	if len(items) > 0 {
 		last.items = append(last.items, items...)
+		for range items {
+			last.itemEntries = append(last.itemEntries, entryIndex)
+		}
 	}
 }
 
@@ -384,42 +398,91 @@ func stampOfRuns(runs []int, groups []groupedTurn) executionStamp {
 	return stamp
 }
 
-// executionItems merges one stamped turn's items ACROSS its runs and returns,
-// per run, the items that run emits: a later item of a call id already
-// introduced anywhere in the turn settles into the earlier item, which keeps
-// its own position and its run.
+// executionItems settles one stamped turn's items ACROSS its runs and returns,
+// per run, the items that run emits.
 //
-// The unit is the turn, not the run. A standalone delivery landing between a
-// call and its result splits the turn into two runs, and merging each run on
-// its own emitted the call in progress in the first and a second row for its
-// result in the second — two rows for one call id where the index keeps one
-// settled row (#1166 review).
+// The unit is the turn, not the run, and the unit of a CALL is the assistant
+// entry that announced it, not the call id: a provider may reuse a call id in a
+// later round, and the index keeps those as two calls. A result settles the
+// announcement of its call in the LATEST assistant entry at or before the
+// result's own entry — build.go's applyResults matches against the turn's
+// awaiting entry — so a delivery between an announcement and its result leaves
+// the match intact, and a reused id across a delivery keeps both rows.
 func executionItems(runs []int, groups []groupedTurn) map[int][]appwire.ThreadItem {
+	// announcement is one item that OPENED a call: where it sits, and the entry
+	// that announced it.
+	type announcement struct {
+		run, at, entry int
+	}
+	// entryKind is, per entry index, its kind: the index decides what a result
+	// is from the entry's KIND (build.go's applyResults runs for TOOL_RESULTS
+	// and TOOL entries, never for an announcement), not from the item's status,
+	// so this asks the same question.
+	entryKind := map[int]schema.TurnKind{}
+	for _, run := range runs {
+		for k, entryIndex := range groups[run].entryIndexes {
+			if k < len(groups[run].entries) {
+				entryKind[entryIndex] = groups[run].entries[k].Kind
+			}
+		}
+	}
+	isResult := func(entryIndex int) bool {
+		kind := entryKind[entryIndex]
+		return kind == schema.TurnToolResults || kind == schema.TurnTool
+	}
+
 	out := make(map[int][]appwire.ThreadItem, len(runs))
-	// callAt is, per call id, the run holding the item it settled into, so the
-	// settled item stays in the fragment the call was announced in.
-	callAt := map[string]int{}
-	at := map[int]map[string]int{}
+	announcements := map[string][]announcement{}
+	// settled marks the result items that merged into an announcement, by their
+	// position in the run's own item list, so they are dropped at the end
+	// without shifting any index that was already recorded.
+	settled := map[[2]int]bool{}
 	for _, run := range runs {
 		out[run] = make([]appwire.ThreadItem, 0, len(groups[run].items))
-		at[run] = make(map[string]int, len(groups[run].items))
+		for j, item := range groups[run].items {
+			entry := groups[run].itemEntries[j]
+			if MergesByCallID(item) && !isResult(entry) {
+				announcements[item.CallID] = append(announcements[item.CallID], announcement{run: run, at: len(out[run]), entry: entry})
+			}
+			out[run] = append(out[run], item)
+		}
+	}
+	// A result settles the announcement it answers: the last one recorded at or
+	// before the result's own entry. That announcement may sit in an EARLIER
+	// run, which is exactly how a delivery between a call and its result leaves
+	// one settled row rather than two. A reused call id keeps both rows, each
+	// settled by the result that answers it.
+	for _, run := range runs {
+		for j, item := range groups[run].items {
+			entry := groups[run].itemEntries[j]
+			if !MergesByCallID(item) || !isResult(entry) {
+				continue
+			}
+			calls := announcements[item.CallID]
+			at := sort.Search(len(calls), func(k int) bool { return calls[k].entry > entry })
+			if at == 0 {
+				continue // no announcement to settle: keep the row as recorded
+			}
+			target := calls[at-1]
+			merged := out[target.run][target.at]
+			merged = MergeThreadItems(merged, item)
+			merged.TurnID = out[target.run][target.at].TurnID
+			out[target.run][target.at] = merged
+			settled[[2]int{run, j}] = true
+		}
 	}
 	for _, run := range runs {
-		for _, item := range groups[run].items {
-			if !MergesByCallID(item) {
-				out[run] = append(out[run], item)
-				continue
-			}
-			earlier, ok := callAt[item.CallID]
-			if !ok {
-				callAt[item.CallID] = run
-				at[run][item.CallID] = len(out[run])
-				out[run] = append(out[run], item)
-				continue
-			}
-			index := at[earlier][item.CallID]
-			out[earlier][index] = MergeThreadItems(out[earlier][index], item)
+		if len(settled) == 0 {
+			break
 		}
+		kept := make([]appwire.ThreadItem, 0, len(out[run]))
+		for j := range out[run] {
+			if settled[[2]int{run, j}] {
+				continue
+			}
+			kept = append(kept, out[run][j])
+		}
+		out[run] = kept
 	}
 	return out
 }

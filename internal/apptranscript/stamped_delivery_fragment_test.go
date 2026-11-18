@@ -150,9 +150,33 @@ func TestDeliveryInsideExecutionKeepsItsOwnTurn(t *testing.T) {
 	path := deliveryInsideExecutionTranscript(t, false)
 	turns := fullTurns(t, path)
 
+	// Three turns, in file order: the execution's first fragment, the delivery
+	// standing on its own between them, and the execution's second fragment. A
+	// projection that DROPS the delivery would emit the two fragments with the
+	// same flags and the same ids, so the count and the middle turn are what
+	// prove the delivery survived.
+	if len(turns) != 3 {
+		t.Fatalf("projection returned %d turns, want 3: two fragments of the execution around one delivery", len(turns))
+	}
+	if turns[1].ID == "t_run" || turns[1].ID == "" {
+		t.Fatalf("middle turn = %q, want the delivery in a turn of its own between the fragments", turns[1].ID)
+	}
+	var delivered int
+	for _, item := range turns[1].Items {
+		if item.Type == "steering" {
+			delivered++
+		}
+	}
+	if delivered != 1 || len(turns[1].Items) != 1 {
+		t.Fatalf("middle turn %q = %d items with %d steering, want the delivery's single steering item", turns[1].ID, len(turns[1].Items), delivered)
+	}
+
 	var ids []string
 	for _, turn := range turns {
 		ids = append(ids, turn.ID)
+	}
+	if want := []string{"t_run", turns[1].ID, "t_run"}; !reflect.DeepEqual(ids, want) {
+		t.Fatalf("turn order = %v, want %v", ids, want)
 	}
 	var seen int
 	for i, id := range ids {
@@ -193,5 +217,83 @@ func TestDeliveryInsideExecutionKeepsItsOwnTurn(t *testing.T) {
 				t.Errorf("delivery turn %q = view %q earlier=%v later=%v, want a whole turn of its own", turn.ID, turn.ItemsView, turn.HasEarlierItems, turn.HasLaterItems)
 			}
 		}
+	}
+}
+
+// reusedCallIDTranscript writes two assistant rounds on either side of a
+// standalone delivery that reuse one tool-call id — a provider that numbers
+// calls per round rather than per turn. The index keeps two calls there, each
+// settled by the result that answers it.
+func reusedCallIDTranscript(t *testing.T) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "reused_call"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := func(turn schema.Turn, place transcript.Placement) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: place}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	call := func(cmd, output string) []llm.ContentPart {
+		return []llm.ContentPart{
+			{Kind: llm.ContentText, Text: cmd},
+			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "d1", Name: "shell", Arguments: []byte(`{"cmd":"` + cmd + `"}`)}},
+		}
+	}
+	w.BeginExecution("t_reuse", false)
+	record(schema.NewTurn(schema.TurnUserInput, llm.User("run twice")), transcript.PlaceSession)
+	record(schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: call("first command", "")}), transcript.PlaceSession)
+	record(schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "d1", Name: "shell", Content: "first output"}},
+	}}}, transcript.PlaceSession)
+	// A standalone delivery between the two rounds.
+	record(schema.NewTurn(schema.TurnSteering, llm.User("a delivered note")), transcript.PlaceDelivery)
+	record(schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: call("second command", "")}), transcript.PlaceSession)
+	record(schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "d1", Name: "shell", Content: "second output"}},
+	}}}, transcript.PlaceSession)
+	record(schema.Turn{Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}}, transcript.PlaceCompletion)
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// Two rounds that REUSE a call id are two calls, not one: the whole-file read
+// keeps a row for each announcement, and each result settles its own call. It
+// must also not move the second round's output ahead of the delivery, which is
+// what folding the second call into the first row did (#1166 review).
+func TestReusedCallIDAcrossADeliveryKeepsBothCalls(t *testing.T) {
+	path := reusedCallIDTranscript(t)
+	turns := fullTurns(t, path)
+
+	var outputs []string
+	for _, turn := range turns {
+		for _, item := range turn.Items {
+			if item.Type == "commandExecution" && item.CallID == "d1" {
+				outputs = append(outputs, item.Output)
+			}
+		}
+	}
+	if len(outputs) != 2 {
+		t.Fatalf("call d1 kept %d rows (%v), want 2: two announcements that reuse one call id are two calls", len(outputs), outputs)
+	}
+	if outputs[0] != "first output" || outputs[1] != "second output" {
+		t.Fatalf("call d1 outputs = %v, want [first output second output]: each result must settle the announcement it answers, in file order", outputs)
+	}
+
+	// The same transcript through the index: it is the oracle for how many
+	// calls a reused id makes and what each one says.
+	var indexed []string
+	for _, candidate := range indexCandidates(t, path) {
+		if candidate.Item.Type == "commandExecution" && candidate.Item.CallID == "d1" {
+			indexed = append(indexed, candidate.Item.Output)
+		}
+	}
+	if !reflect.DeepEqual(indexed, outputs) {
+		t.Fatalf("index kept call d1 as %v and the full read kept it as %v: the two readers disagree", indexed, outputs)
 	}
 }
