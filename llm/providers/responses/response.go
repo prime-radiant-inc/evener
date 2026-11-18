@@ -17,10 +17,10 @@ import (
 // decodeStream's accumulated response.output_item.done events, so both
 // callers share this one walk.
 func responseContentFromOutputItems(out []any, body []byte) []llm.ContentPart {
-	return responseContentFromOutputItemsRaw(out, body, nil)
+	return responseContentFromOutputItemsRaw(out, body, nil, true)
 }
 
-func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.RawMessage) []llm.ContentPart {
+func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.RawMessage, coalesceCalls bool) []llm.ContentPart {
 	var rawBodyItems []json.RawMessage
 	var rawBodyCaptured bool
 	var content []llm.ContentPart
@@ -52,14 +52,32 @@ func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.R
 			}
 		case "function_call":
 			name, _ := item["name"].(string)
-			args, _ := item["arguments"].(string)
 			callID, _ := item["call_id"].(string)
 			itemID, _ := item["id"].(string)
 			if itemID == "" {
 				itemID, _ = item["item_id"].(string)
 			}
+			call := callsByID[callID]
+			if call != nil {
+				// Later references complete missing fields at the first position.
+				call.ItemID = cmp.Or(call.ItemID, itemID)
+				call.Name = cmp.Or(call.Name, name)
+				if len(call.Arguments) != 0 {
+					continue
+				}
+			} else {
+				call = &llm.ToolCallData{ID: callID, ItemID: itemID, Name: name, Type: "function"}
+				if coalesceCalls && callID != "" {
+					if callsByID == nil {
+						callsByID = make(map[string]*llm.ToolCallData)
+					}
+					callsByID[callID] = call
+				}
+				content = append(content, llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: call})
+			}
 			// Decode the raw body once; index this item's token (rawItems
 			// entries win when present).
+			args, _ := item["arguments"].(string)
 			var token json.RawMessage
 			if itemIdx < len(rawItems) {
 				token = rawItems[itemIdx]
@@ -82,30 +100,7 @@ func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.R
 					args = string(content)
 				}
 			}
-			if prior := callsByID[callID]; prior != nil {
-				// One issued call occupies its first position. Later references
-				// can complete missing fields while preserving bytes it supplied.
-				prior.ItemID = cmp.Or(prior.ItemID, itemID)
-				prior.Name = cmp.Or(prior.Name, name)
-				if len(prior.Arguments) == 0 {
-					prior.Arguments = json.RawMessage(args)
-				}
-				continue
-			}
-			call := &llm.ToolCallData{
-				ID:        callID,
-				ItemID:    itemID,
-				Name:      name,
-				Arguments: json.RawMessage(args),
-				Type:      "function",
-			}
-			if callID != "" {
-				if callsByID == nil {
-					callsByID = make(map[string]*llm.ToolCallData)
-				}
-				callsByID[callID] = call
-			}
-			content = append(content, llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: call})
+			call.Arguments = json.RawMessage(args)
 		case "web_search_call":
 			query := ""
 			if action, _ := item["action"].(map[string]any); action != nil {
@@ -165,7 +160,9 @@ func settleResponsesTerminalOutput(r *llm.Response, rawResp map[string]any, accu
 		// output_item.done events carried real content (observed on
 		// affected sessions). Synthesize the settled message from what the
 		// stream actually sent, reusing fromResponses' item-walk.
-		r.Message.Content = responseContentFromOutputItemsRaw(accumulatedOutput, nil, accumulatedRawOutput)
+		// Accumulated call IDs can be derived from item IDs, so repeated
+		// values do not establish that the provider issued one call.
+		r.Message.Content = responseContentFromOutputItemsRaw(accumulatedOutput, nil, accumulatedRawOutput, false)
 		if status, _ := rawResp["status"].(string); status != "incomplete" {
 			if len(r.ToolCalls()) > 0 {
 				r.Finish = llm.FinishReason{Reason: "tool_calls"}

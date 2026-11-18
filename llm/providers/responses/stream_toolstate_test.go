@@ -66,17 +66,11 @@ func TestResponsesStreamToolStateMapping(t *testing.T) {
 	t.Parallel()
 	completed := `{"type":"response.completed","response":{"id":"resp_ts","status":"completed","output":[]}}`
 
-	t.Run("repeated terminal call ID settles at its first position", func(t *testing.T) {
-		const terminal = `{"type":"response.completed","response":{"status":"completed","output":[
-			{"type":"function_call","id":"fc_first","call_id":"call_a"},
-			{"type":"function_call","id":"fc_first","call_id":"call_b","name":"other","arguments":"{}"},
-			{"type":"function_call","id":"fc_repeat","call_id":"call_a","name":"chosen","arguments":"{ \"a\" : 1 }"},
-			{"type":"function_call","id":"fc_later","call_id":"call_a","name":"ignored","arguments":"{}"}
-		]}}`
-		// An SSE data field is one line on the wire.
-		event := strings.ReplaceAll(terminal, "\n", "")
-		_, live := responsesEvents(t, event)
-		recorded, err := ExtractRecordedResponse([]byte("data: "+event+"\n\n"), "gpt-5.5")
+	type settledCall struct{ id, itemID, name, arguments string }
+	checkSettledCalls := func(t *testing.T, frames []string, want []settledCall) {
+		t.Helper()
+		_, live := responsesEvents(t, frames...)
+		recorded, err := ExtractRecordedResponse([]byte("data: "+strings.Join(frames, "\n\ndata: ")+"\n\n"), "gpt-5.5")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -85,16 +79,49 @@ func TestResponsesStreamToolStateMapping(t *testing.T) {
 			result *llm.Response
 		}{{"live", live}, {"recorded", &recorded}} {
 			calls := response.result.ToolCalls()
-			if len(calls) != 2 {
-				t.Errorf("%s calls = %d, want one for each of the two issued IDs", response.source, len(calls))
+			if len(calls) != len(want) {
+				t.Errorf("%s calls = %d, want %d", response.source, len(calls), len(want))
 				continue
 			}
-			if calls[0].ID != "call_a" || calls[0].ItemID != "fc_first" ||
-				calls[0].Name != "chosen" || string(calls[0].Arguments) != `{ "a" : 1 }` ||
-				calls[1].ID != "call_b" || calls[1].Name != "other" || string(calls[1].Arguments) != "{}" {
-				t.Fatalf("%s calls = %+v", response.source, calls)
+			for i, call := range calls {
+				got := settledCall{call.ID, call.ItemID, call.Name, string(call.Arguments)}
+				if got != want[i] {
+					t.Errorf("%s call[%d] = %+v, want %+v", response.source, i, got, want[i])
+				}
 			}
 		}
+	}
+
+	t.Run("repeated terminal call ID settles at its first position", func(t *testing.T) {
+		const terminal = `{"type":"response.completed","response":{"status":"completed","output":[
+			{"type":"function_call","id":"fc_first","call_id":"call_a"},
+			{"type":"function_call","id":"fc_first","name":"omitted","arguments":"{ \"n\": 1 }"},
+			{"type":"function_call","id":"fc_first","call_id":"call_b","name":"other","arguments":"{}"},
+			{"type":"function_call","id":"fc_first","call_id":"","name":"empty","arguments":"{ \"n\": 2 }"},
+			{"type":"function_call","id":"fc_repeat","call_id":"call_a","name":"chosen","arguments":"{ \"a\" : 1 }"},
+			{"type":"function_call","id":"fc_later","call_id":"call_a","name":"ignored","arguments":"{}"}
+		]}}`
+		// An SSE data field is one line on the wire.
+		event := strings.ReplaceAll(terminal, "\n", "")
+		checkSettledCalls(t, []string{event}, []settledCall{
+			{"call_a", "fc_first", "chosen", `{ "a" : 1 }`},
+			{"", "fc_first", "omitted", `{ "n": 1 }`},
+			{"call_b", "fc_first", "other", "{}"},
+			{"", "fc_first", "empty", `{ "n": 2 }`},
+		})
+	})
+
+	t.Run("empty terminal keeps item-only completions with a synthesized call ID", func(t *testing.T) {
+		frames := []string{
+			`{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_a","name":"f"}}`,
+			`{"type":"response.output_item.done","item":{"type":"function_call","id":"fc_a","arguments":"{ \"a\": 1 }"}}`,
+			`{"type":"response.output_item.done","item":{"type":"function_call","id":"fc_a","arguments":"{ \"a\": 2 }"}}`,
+			completed,
+		}
+		checkSettledCalls(t, frames, []settledCall{
+			{"fc_a", "fc_a", "f", `{ "a": 1 }`},
+			{"fc_a", "fc_a", "f", `{ "a": 2 }`},
+		})
 	})
 
 	t.Run("delta keyed by a foreign call id falls back to item state", func(t *testing.T) {
