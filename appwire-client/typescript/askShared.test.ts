@@ -896,6 +896,91 @@ test("a stamp naming only an unloaded call does not let a loaded sibling claim t
   expect(answeredAskUserReply(model, loaded)).toBeUndefined();
 });
 
+test("a stamped prose reply beside an acked sibling is still refused, the stamp cannot create a candidate", () => {
+  // The sibling-aware matcher refuses free prose when an acked sibling exists,
+  // because prose names no header and could belong to either call. Admission's
+  // stamp says this reply answered the first call - but a veto can only remove
+  // a recap, never manufacture one the matcher declined. Accepting it here
+  // would also hide the reply's own row on native, where the recap carries the
+  // whole reply.
+  const first = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_1",
+    callId: "call_1",
+    toolName: "ask_user",
+    status: "completed",
+    raw: { version: 1, questions: ONE_QUESTION },
+  });
+  const sibling = item({
+    argumentsJSON: askUserArgs([
+      { header: "Rollback?", question: "Roll back if it fails?", options: [{ label: "Yes", detail: "ok" }] },
+    ]),
+    turnId: "turn_1",
+    id: "ask_2",
+    callId: "call_2",
+    toolName: "ask_user",
+    status: "completed",
+  });
+  const prose = userMessage({
+    text: "do the first thing",
+    turnId: "turn_2",
+    answerToTurnIds: ["turn_1"],
+    resolvedAskCalls: [{ turnId: "turn_1", callId: "call_1" }],
+  });
+  const model = turnsModel([first, sibling], [prose]);
+  expect(answeredAskUserSuffix(model, first)).toBeUndefined();
+  expect(answeredAskUserReply(model, first)).toBeUndefined();
+});
+
+test("a hook that flips a question to multi-select is not consumed as agreement", () => {
+  // The prompt, the header and every option survive; only the selection mode
+  // changed. A two-label answer is legal for the executed multi-select
+  // question and impossible for the single-select one the row displays, so
+  // approving the stamp would print it under a question that admits one label.
+  const sent = [
+    {
+      header: "Deploy?",
+      question: "Where should this deploy?",
+      multi_select: true,
+      options: [
+        { label: "Web", detail: "ok" },
+        { label: "Worker", detail: "ok" },
+      ],
+    },
+  ];
+  const ask = item({
+    argumentsJSON: askUserArgs(sent),
+    turnId: "turn_1",
+    id: "ask_1",
+    callId: "call_1",
+    toolName: "ask_user",
+    status: "completed",
+    raw: {
+      version: 1,
+      questions: [
+        {
+          header: "Deploy?",
+          question: "Where should this deploy?",
+          options: [
+            { label: "Web", detail: "ok" },
+            { label: "Worker", detail: "ok" },
+          ],
+        },
+      ],
+    },
+  });
+  const reply = userMessage({
+    text: '[answers]\n1. [Deploy?] → "Web, Worker"',
+    turnId: "turn_2",
+    answerToTurnIds: ["turn_1"],
+    resolvedAskCalls: [{ turnId: "turn_1", callId: "call_1" }],
+  });
+  const model = turnsModel([ask], [reply]);
+  expect(answeredAskUserSuffix(model, ask)).toBeUndefined();
+  expect(answeredAskUserReply(model, ask)).toBeUndefined();
+});
+
 test("a stamped call holding two questions that share a header recaps neither line", () => {
   // A single call can post two questions with the same header. The recap is
   // keyed by header, so both lines collapse to the last one and one of the two

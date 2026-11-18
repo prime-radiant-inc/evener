@@ -402,11 +402,12 @@ function isAnswerCarrier(item: ItemModel): boolean {
 //     to make this call safe - only the stamp can, and it cannot name which
 //     call a shared header belonged to.
 //
-// False means "use the behavior this client had before the field existed",
-// which is the heuristic in findAnswerReply and its shape fallback. That is
-// why an unloaded recorded state is not a refusal: nothing can disagree yet,
-// and the heuristic's own header comparison still stands in the way of a
-// wrong pairing.
+// This runs only AFTER the sibling-aware matcher has accepted the candidate,
+// so false never means "fall back": it means the stamp VETOES a recap the
+// matcher would otherwise have shown. Because a stamp that names this call is
+// authoritative, a false for such a stamp ends the search with no recap -
+// including when the recorded state is missing, since a clause that cannot be
+// shown cannot hold.
 //
 // Each clause can only make a recap DISAPPEAR, never invent one: the direction
 // is safe by construction. A recap that does not appear is a small loss; a
@@ -520,6 +521,11 @@ function sameAskQuestions(recorded: readonly AskUserQuestion[], sent: readonly A
     if (normalizeHeader(a.header, index) !== normalizeHeader(b.header, index)) return false;
     if (a.question !== b.question) return false;
     if ((a.ifUnanswered ?? "") !== (b.ifUnanswered ?? "")) return false;
+    // Selection mode decides what an answer may look like: a multi-select
+    // question is answered by several labels, a single-select one by exactly
+    // one. A hook that flips the mode while keeping the prompt and options
+    // would let a two-label answer print under a question that admits one.
+    if ((a.multiSelect === true) !== (b.multiSelect === true)) return false;
     if (a.options.length !== b.options.length) return false;
     for (let option = 0; option < a.options.length; option += 1) {
       const left = a.options[option];
@@ -547,24 +553,20 @@ function findAnswerReply(
     if (candidate.answerToTurnIds !== undefined) {
       if (!isAnswerCarrier(candidate)) continue;
       if (!candidate.answerToTurnIds.includes(item.turnId)) return shapeMatch;
-      // A stamped reply is decided ENTIRELY by the stamp (#6323), and the
-      // stamp's production use here is REFUSAL: the read that decides a recap
-      // must not appear.
-      //
-      // A stamp that omits this call says admission answered others, so this
-      // reply is not this call's answer - keep looking, and never let the
-      // header heuristic adopt it, which would re-pair the reply with a call
-      // admission never named (reachable whenever the named call is not on the
-      // loaded page). A stamp that NAMES this call but fails any clause of the
-      // conjunction is declined outright: no recap, and no later message may
-      // claim this call's answer instead.
-      // No stamp at all: this client's pre-existing matching decides, exactly
-      // as it did before the field existed.
-      if (candidate.resolvedAskCalls === undefined) {
-        if (linkedReplyAnswersThisCall(items, item, candidate)) return candidate;
-        continue;
-      }
+      // Order matters (#6323): the sibling-aware matcher decides whether this
+      // reply can answer this call AT ALL - prose included, and prose beside
+      // an acked sibling is refused there because it names no header. The
+      // stamp is a VETO on that decision, never a substitute for it: if
+      // admission's evidence contradicts the matcher's answer, the recap goes
+      // away. It can never create a candidate the matcher declined.
+      if (!linkedReplyAnswersThisCall(items, item, candidate)) continue;
+      if (candidate.resolvedAskCalls === undefined) return candidate;
+      // A stamp naming ANOTHER call is evidence against this one: skip it and
+      // keep looking, so a reply stamped only for a call outside the loaded
+      // page cannot be adopted here by header coincidence.
       if (!stampedReplyNamesCall(item, candidate)) continue;
+      // A stamp naming THIS call is authoritative, so failing any clause ends
+      // the search - no later message may claim this call's answer instead.
       return resolvesThisCallExactly(items, item, candidate) ? candidate : undefined;
     }
     if (shapeMatch === undefined && candidate.type === "userMessage" && candidate.text.startsWith("[answers]")) {
