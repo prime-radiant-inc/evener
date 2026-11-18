@@ -2953,6 +2953,156 @@ describe("useThreadsStore.ensureThread", () => {
     threadsStore.getState().releaseWatchedThread(ref);
   });
 
+  test("a failure under a later boot of the same root still drops the outgoing boot's overlay", async () => {
+    // RoboRev 53685 (Medium 1): the replacement is a SUCCESSIVE BOOT OF THE
+    // SAME ROOT. `5@root` and `6@root` share an owner id, so reducing the
+    // tokens to their root made the replacement comparison answer false - the
+    // hand-off accepted boot 6 while this filter still believed nothing had
+    // been replaced, and replayed boot 5's unfinished output onto it.
+    const fake = connectReadyFakeClient();
+    const ref = "local:watched";
+    const threadId = `thr_${ref}`;
+    const initial = versionedReadResponse(
+      ref,
+      {
+        status: { type: "active" },
+        evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+      },
+      0,
+    );
+    initial.bootGeneration = "5@root";
+    const refused: Array<(error: Error) => void> = [];
+    let readCount = 0;
+    fake.on("thread/read", (params) => {
+      readCount += 1;
+      if (readCount === 1) return echoRead(initial, params.requestGeneration);
+      return new Promise<ThreadReadResponse>((_resolve, reject) => {
+        refused.push(reject);
+      });
+    });
+
+    await threadsStore.getState().watchThread(ref, { includeTurns: true });
+
+    fake.emitNotification({
+      method: "evener/thread/resync",
+      params: { threadId, ref, epoch: 2 },
+    });
+    await flushUntil(() => refused.length === 1);
+
+    fake.emitNotification({
+      method: "overlay/upserted",
+      params: {
+        ref,
+        threadId,
+        item: {
+          key: "stream:outgoing",
+          kind: "stream",
+          streamId: "outgoing-stream",
+          roundId: "round-outgoing",
+          turnId: "turn_outgoing",
+          item: { id: "outgoing-item", turnId: "turn_outgoing", type: "agentMessage", text: "never published" },
+        },
+      },
+    });
+    await Promise.resolve();
+    expect(threadsStore.getState().watchedThreads.get(ref)?.overlay?.["stream:outgoing"]).toBeUndefined();
+
+    refused[0]?.(
+      new WireError("thread history failed at entry 7", -32603, {
+        evenerErrorInfo: ErrorTranscriptHistoryFailed,
+        bootGeneration: "6@root",
+      }),
+    );
+    await flushUntil(() => threadsStore.getState().watchedThreads.get(ref)?.history?.failed !== undefined);
+    const published = threadsStore.getState().watchedThreads.get(ref);
+    expect(published?.history?.failed).toBeDefined();
+    expect(published?.overlay?.["stream:outgoing"]).toBeUndefined();
+    expect(published?.turns.flatMap((turn) => turn.items).some((item) => item.id === "outgoing-item")).toBe(false);
+
+    threadsStore.getState().releaseWatchedThread(ref);
+  });
+
+  test("a supersession's confirmed hand-off keeps a carried frame from reclaiming ownership", async () => {
+    // RoboRev 53688 (Medium 5). A watched read buffers `5@root`'s history
+    // update; a NAMED resync from `1@other` supersedes the read and confirms a
+    // replacement. The carry kept the outgoing frame's token whole, so when the
+    // successor read then failed under `1@other` the replay saw a same-boot
+    // failure (the resync already installed that owner) and the carried frame
+    // restored `5@root` as owner. The replacement's own next frame then read as
+    // another replacement and cleared the live hold it had published.
+    const fake = connectReadyFakeClient();
+    const ref = "local:watched";
+    const threadId = `thr_${ref}`;
+    const initial = versionedReadResponse(
+      ref,
+      {
+        status: { type: "active" },
+        evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+      },
+      0,
+    );
+    initial.bootGeneration = "5@root";
+    const refused: Array<(error: Error) => void> = [];
+    let readCount = 0;
+    fake.on("thread/read", (params) => {
+      readCount += 1;
+      if (readCount === 1) return echoRead(initial, params.requestGeneration);
+      return new Promise<ThreadReadResponse>((_resolve, reject) => {
+        refused.push(reject);
+      });
+    });
+
+    await threadsStore.getState().watchThread(ref, { includeTurns: true });
+
+    // Bootless: starts the read that will buffer the outgoing frame.
+    fake.emitNotification({
+      method: "evener/thread/resync",
+      params: { threadId, ref, epoch: 2 },
+    });
+    await flushUntil(() => refused.length === 1);
+
+    emitHistoryUpdatedFor(fake, ref, threadId, {
+      bootGeneration: "5@root",
+      epoch: 3,
+      snapshot: { incarnation: "inc-1", length: 1 },
+      turns: [],
+      items: [],
+    });
+    await Promise.resolve();
+
+    // A NAMED resync from a different root CONFIRMS the replacement and
+    // supersedes the read. This is where the carry's hand-off happens.
+    fake.emitNotification({
+      method: "evener/thread/resync",
+      params: { threadId, ref, bootGeneration: "1@other", epoch: 1 },
+    });
+    await flushUntil(() => refused.length === 2);
+
+    // The replacement publishes its live hold while the successor read pends.
+    fake.emitNotification({
+      method: "evener/delegate/updated",
+      params: { threadId, ref, delegate: { ...heldDelegateRow(), holdSequence: 1, projectionRevision: 4 } },
+    });
+    await Promise.resolve();
+
+    // The successor fails under the SAME boot the resync installed.
+    refused[1]?.(
+      new WireError("thread history failed at entry 7", -32603, {
+        evenerErrorInfo: ErrorTranscriptHistoryFailed,
+        bootGeneration: "1@other",
+      }),
+    );
+    await flushUntil(() => threadsStore.getState().watchedThreads.get(ref)?.history?.failed !== undefined);
+    const published = threadsStore.getState().watchedThreads.get(ref);
+    // The successor owns the sequence. A carried `5@root` frame that reclaimed
+    // it would make the next `1@other` frame read as another replacement.
+    expect(published?.history?.holdOwner).toBe("1@other");
+    // Non-vacuous: the replacement's own live sample survived.
+    expect(published?.delegates?.[0]?.holdSequence).toBe(1);
+
+    threadsStore.getState().releaseWatchedThread(ref);
+  });
+
   test("an overlay buffered under the outgoing boot is not replayed onto a live replacement", async () => {
     // RoboRev 53656 (Medium 3): the LIVE-REPLACEMENT sibling. A bootless
     // resync carries the buffer across, so boot 1's overlay upsert is still

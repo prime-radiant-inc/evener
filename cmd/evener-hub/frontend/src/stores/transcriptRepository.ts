@@ -1141,9 +1141,29 @@ export class TranscriptRepository {
    */
   acceptBeforeReadCut(notifications: readonly AnyNotification[], context: { lifetime: number }): void {
     const responseOverlayKeys = new Set(Object.keys(this.#model?.overlay ?? {}));
+    // The source the ACCEPTED read established is the authority here. A
+    // history frame buffered before that read's response carries the source it
+    // was produced under, and if that source is not the one the read installed
+    // it may not reassert itself: folding `5@root` onto a model boot 1 now
+    // serves lets the reducer accept it as a takeover, which clears the live
+    // hold boot 1 supplied and invalidates the snapshot the read just
+    // installed. Its content is still recorded evidence, so it folds bootless -
+    // invalidating and recording nothing - which is the same treatment the
+    // failure path gives a retired source's frame.
+    const readSource = this.#model?.history?.bootGeneration ?? "";
     for (const notification of notifications) {
       if (notification.method === "history/updated") {
-        this.accept(notification, context);
+        const boot = notification.params.bootGeneration;
+        const stale = readSource !== "" && boot !== undefined && boot !== "" && boot !== readSource;
+        this.accept(
+          stale
+            ? ({
+                ...notification,
+                params: { ...notification.params, bootGeneration: "" },
+              } as AnyNotification)
+            : notification,
+          context,
+        );
       } else if (
         notification.method === "thread/queueChanged" &&
         notification.params.queue.revision > (this.#model?.queue?.revision ?? -1)

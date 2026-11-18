@@ -378,6 +378,52 @@ async function repositoryWithPage() {
   return { fixture, owner, reader, rows };
 }
 
+// RoboRev 53685/53688 (Medium 4). `acceptRead` installs the source the
+// accepted read established, and `acceptBeforeReadCut` then folds the frames
+// buffered before that response. A pre-response frame still carrying the
+// RETIRED source's token used to fold verbatim: the reducer accepted it as a
+// takeover, cleared the live hold the accepted read's source supplied, and
+// invalidated the snapshot the read had just installed. Its content is still
+// recorded evidence, so it folds bootless instead.
+it("folds a pre-response frame from the retired source without letting it reclaim ownership", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const baseline = readMany(3);
+  baseline.bootGeneration = "1@other";
+  baseline.snapshot = { incarnation: identity.incarnation, length: 3 };
+  expect(owner.acceptRead(baseline, { lifetime: 1, readId: "cut-seed", boundary: "cut-seed" })).toBe(true);
+  await owner.settled();
+  const installed = owner.getSnapshot();
+  expect(installed?.history?.bootGeneration).toBe("1@other");
+
+  // The frame that was in flight while that read was outstanding: produced by
+  // the source it replaced.
+  owner.acceptBeforeReadCut(
+    [
+      {
+        method: "history/updated",
+        params: {
+          ref,
+          threadId,
+          bootGeneration: "5@root",
+          epoch: 3,
+          snapshot: { incarnation: identity.incarnation, length: 4 },
+        },
+      } as AnyNotification,
+    ],
+    { lifetime: 1 },
+  );
+
+  const after = owner.getSnapshot();
+  // The accepted read's source still owns the transcript. The harm the finding
+  // names is the reducer accepting the retired token as a TAKEOVER, so these
+  // are the two fields that answers: the installed boot survives, and the
+  // retired source never becomes the recorded owner.
+  expect(after?.history?.bootGeneration).toBe("1@other");
+  expect(after?.history?.holdOwner).not.toBe("5@root");
+});
+
 it("persists the page observation snapshot rather than the latest completeness watermark", async () => {
   const { fixture, owner, reader, rows } = await repositoryWithPage();
   try {

@@ -41,25 +41,6 @@ export const UNKNOWN_OWNER_BOOT_GENERATION = "unknown-owner";
  * a protocol refusal, a deadline after a live read failed), so a client must
  * not read it there as proof the daemon is gone.
  */
-/**
- * The SOURCE a boot token names, as an identity two tokens can be compared by
- * equality, or "" when it names none: `"5@root"` names `"root"`, a bare counter
- * names itself (its own root, per the authoritative-frame rule), and
- * `daemonless`, `unknown-owner` and malformed tokens name nothing.
- *
- * A caller deciding which buffered frames a failure may discard wants this, not
- * `confirmedBootReplacement`. That function answers "did ownership change",
- * which is true in BOTH directions when two qualified tokens name different
- * owners - so it cannot tell the frame the failure retired from a later
- * hand-off the failure knows nothing about.
- */
-export function bootTokenOwner(bootGeneration: string | undefined): string {
-  if (bootGeneration === undefined || bootGeneration === "") return "";
-  const parsed = parseBootGeneration(bootGeneration);
-  if (!parsed) return "";
-  return parsed.owner !== "" ? parsed.owner : bootGeneration;
-}
-
 export function isConfirmedAbsence(bootGeneration: string | undefined): boolean {
   return bootGeneration === DAEMONLESS_BOOT_GENERATION;
 }

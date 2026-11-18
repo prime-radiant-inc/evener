@@ -296,6 +296,20 @@ func (s *RemoteHubSource) mapCallError(err error) error {
 	if err == nil {
 		return nil
 	}
+	// A legacy remote hub stamps `daemonless` on a failed saved-history read
+	// whether or not a daemon still runs the thread: the
+	// `unknown-owner`/live-identity split (#6828) is newer than the peer. This
+	// layer is the only one that knows the error was FORWARDED, so it is where
+	// that ambiguity is made explicit - no protocol change, and every
+	// downstream consumer gets an honest token instead of guessing.
+	//
+	// A legacy peer also cannot name an owner it never established, so a
+	// `daemonless` stamp from a remote is `unknown-owner`: it says the read
+	// failed, not that nobody serves the thread. A guaranteed-absence read from
+	// a legacy peer cannot be distinguished, and clearing a live hold on a
+	// token that may lie is the inversion the client-side rule exists to
+	// prevent; preserving the hold is the recoverable error.
+	err = appwire.NormalizeForwardedHistoryError(err)
 	var wire appwire.WireError
 	if !errors.As(err, &wire) {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {

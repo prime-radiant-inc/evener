@@ -160,10 +160,20 @@ function retainedHistoryIdentity(
   // A saved-index fallback names no source, and dropping the owner for it is
   // the same loss this function exists to prevent.
   if (readBoot === undefined) {
-    return recordedOwner === held.bootGeneration ? retained : { ...retained, holdOwner: recordedOwner };
+    // An EMPTY owner is not an owner. A model with no recorded history (an
+    // unversioned held model adopting its first versioned read) owns nothing
+    // yet, and writing `holdOwner: ""` records that explicitly - which then
+    // MASKS the adopted boot in `holdOwnerOf`, because an explicit empty string
+    // is not a fallback. `confirmedBootReplacement` answers false for an empty
+    // held token in every direction, so no later replacement could retire
+    // samples through the shared hand-off. Absent is the honest spelling, and
+    // it leaves the adopted boot as the implicit owner.
+    return recordedOwner === "" || recordedOwner === retained.bootGeneration
+      ? retained
+      : { ...retained, holdOwner: recordedOwner };
   }
   if (confirmedBootReplacement(recordedOwner, readBoot, "authoritative")) return { ...retained, holdOwner: readBoot };
-  return { ...retained, holdOwner: recordedOwner };
+  return recordedOwner === "" ? retained : { ...retained, holdOwner: recordedOwner };
 }
 
 export function readIdentity(resp: {

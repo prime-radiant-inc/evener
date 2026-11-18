@@ -39,7 +39,6 @@ import {
   applyHistoryReadFailure,
   applyNotification,
   applyReadResponse,
-  bootTokenOwner,
   buildComposerInput,
   buildInput,
   ClientNotReadyError,
@@ -6238,8 +6237,10 @@ function carriedHydrationUpdates(
     if (method === "history/updated") {
       const boot = update.notification.params.bootGeneration;
       if (boot && confirmedBootReplacement(owner, boot, "authoritative")) {
+        // The source being retired here is the one that OWNED the frames
+        // buffered so far - `owner` before this frame advanced it.
+        carried = carriedAcrossReplacement(carried, owner);
         owner = boot;
-        carried = carriedAcrossReplacement(carried);
       }
     }
     carried.push(update);
@@ -6252,6 +6253,7 @@ function carriedHydrationUpdates(
   // controller "5@root", so an ambiguous hint confirms nothing and the
   // buffered hold comes along. Only a confirmed replacement discards it.
   if (!confirmedBootReplacement(owner, resyncBootGeneration, "resync")) return carried;
+  const retiredBoot = owner;
   // A CONFIRMED replacement takes the buffered samples' HOLD - their sequence
   // belongs to the replaced source's numbering - but not the updates
   // themselves. Each update is the only copy of what it changed, and a
@@ -6260,7 +6262,7 @@ function carriedHydrationUpdates(
   // row showing "running" for the rest of the wait when the successor read
   // then failed; the same field list the history-frame branch uses is what
   // makes the strip and the discard agree.
-  return carriedAcrossReplacement(carried);
+  return carriedAcrossReplacement(carried, retiredBoot);
 }
 
 // carriedAcrossReplacement is ONE answer to "what of the outgoing source's
@@ -6287,12 +6289,39 @@ function carriedHydrationUpdates(
 // boots the fold on the new source's terms.
 function carriedAcrossReplacement(
   carried: PendingThreadHydration["notifications"],
+  retiredBoot?: string,
 ): PendingThreadHydration["notifications"] {
   const kept: PendingThreadHydration["notifications"] = [];
   for (const buffered of carried) {
     const { method } = buffered.notification;
     if (method.startsWith("overlay/")) continue;
-    kept.push(method === "evener/delegate/updated" ? stripDelegateHold(buffered) : buffered);
+    if (method === "evener/delegate/updated") {
+      kept.push(stripDelegateHold(buffered));
+      continue;
+    }
+    // A recorded frame from the RETIRED boot may not carry its identity across
+    // the hand-off. Keeping it whole let a buffered `5@root` history update
+    // survive a supersession by `1@other` and reclaim ownership on replay; the
+    // successor's next frame then read as another replacement and cleared the
+    // live hold the replacement had published. Its CONTENT is still the newest
+    // recorded form of what it changed, so it folds bootless instead - the same
+    // treatment `withoutRetiredSourceToken` gives it on the failure path.
+    if (
+      retiredBoot !== undefined &&
+      retiredBoot !== "" &&
+      method === "history/updated" &&
+      buffered.notification.params.bootGeneration === retiredBoot
+    ) {
+      kept.push({
+        ...buffered,
+        notification: {
+          ...buffered.notification,
+          params: { ...buffered.notification.params, bootGeneration: "" },
+        } as AnyNotification,
+      });
+      continue;
+    }
+    kept.push(buffered);
   }
   return kept;
 }
@@ -6369,14 +6398,17 @@ function withoutRetiredSourceToken(
   if (notification.method !== "history/updated") return notification;
   const boot = notification.params.bootGeneration;
   if (!boot) return notification;
-  const retiredOwner = bootTokenOwner(preFailureOwner);
   // Nothing was retired: a same-boot failure retires nothing, so it may blank
   // nothing. Without this gate a read that fails under its own boot would drop
   // its own source's buffered frame and lose the hold it was carrying.
-  if (retiredOwner === "" || !confirmedBootReplacement(retiredBy, preFailureOwner, "authoritative")) {
+  if (preFailureOwner === "" || !confirmedBootReplacement(preFailureOwner, retiredBy, "authoritative")) {
     return notification;
   }
-  if (bootTokenOwner(boot) !== retiredOwner) return notification;
+  // FULL token equality, not reduced-owner equality. Reducing `5@root` and
+  // `6@root` to their shared `root` would blank a frame from a LATER boot of
+  // the same root - a genuine successive takeover - and leave the retired
+  // boot's sequence in place to win. Two boots of one root are two sources.
+  if (boot !== preFailureOwner) return notification;
   return {
     ...notification,
     params: { ...notification.params, bootGeneration: "" },
@@ -6431,8 +6463,7 @@ function replayHydrationNotifications(
     !absent &&
     preFailureOwner !== undefined &&
     preFailureOwner !== "" &&
-    confirmedBootReplacement(retiredBy, preFailureOwner, "authoritative");
-  const incomingOwner = liveReplacement ? bootTokenOwner(retiredBy) : "";
+    confirmedBootReplacement(preFailureOwner, retiredBy, "authoritative");
   let incomingNamed = false;
   for (const update of notifications) {
     const notification =
@@ -6442,7 +6473,10 @@ function replayHydrationNotifications(
     if (liveReplacement) {
       if (notification.method === "history/updated") {
         const boot = notification.params.bootGeneration;
-        if (boot !== undefined && boot !== "" && bootTokenOwner(boot) === incomingOwner) incomingNamed = true;
+        // FULL identity again: `6@root` after `5@root` is a different source,
+        // and reducing both to `root` would treat the outgoing boot's own frame
+        // as naming the incoming one.
+        if (boot !== undefined && boot !== "" && boot === retiredBy) incomingNamed = true;
       } else if (!incomingNamed && notification.method.startsWith("overlay/")) {
         continue;
       }

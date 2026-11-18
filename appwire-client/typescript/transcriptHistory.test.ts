@@ -399,6 +399,36 @@ test("an enriched live-read-empty replaces an IMPLICIT hold owner with the answe
   expect(model.delegates?.[0]?.holdSequence).toBe(1);
 });
 
+// RoboRev 53685 (Low): `applyReadModel` merges the first versioned read into
+// an UNVERSIONED held model - no recorded history, so no recorded owner.
+// Writing `holdOwner: ""` there records that explicitly, and an explicit empty
+// string is not a fallback in `holdOwnerOf`: it MASKS the boot the merge just
+// adopted, and `confirmedBootReplacement` answers false for an empty held token
+// in every direction, so no later replacement can retire samples through the
+// shared hand-off. Absent is the honest spelling.
+test("the first versioned read leaves ownership implicit rather than recording an empty owner", () => {
+  // A model with NO recorded history: the unversioned shape applyReadModel
+  // adopts its first versioned read into. Built from a real hydration so the
+  // model carries every field, then stripped of the history it recorded.
+  const hydrated = hydrateThread({ thread: testThread() }, "ref_t", 1000);
+  const unversioned: ThreadModel = { ...hydrated, history: undefined };
+  const fresh = hydrateThread(
+    {
+      thread: testThread({ turns: [versionedFragmentTurn([1])] }),
+      bootGeneration: "2",
+      epoch: 1,
+      snapshot: { incarnation: "inc-1", length: 100 },
+    },
+    "ref_t",
+    1000,
+  );
+  const model = applyReadModel(unversioned, fresh);
+  // The adopted boot IS the owner. Nothing was written to mask it.
+  expect(model.history?.bootGeneration).toBe("2");
+  expect(model.history?.holdOwner).toBeUndefined();
+  expect(holdOwnerOf(model.history!)).toBe("2");
+});
+
 for (const facts of ["legacy", "unavailable"] as const) {
   for (const authoritative of [false, true]) {
     test(`${facts} read preserves its existing authoritative policy: ${authoritative}`, () => {

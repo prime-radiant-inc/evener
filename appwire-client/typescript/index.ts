@@ -107,7 +107,6 @@ export { translateAttachmentMarkers } from "./attachmentMarkers";
 export type { BootGenerationAction } from "./bootGeneration";
 export {
   type BootTokenEvidence,
-  bootTokenOwner,
   compareBootGeneration,
   confirmedBootReplacement,
   DAEMONLESS_BOOT_GENERATION,
