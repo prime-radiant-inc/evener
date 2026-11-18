@@ -1034,8 +1034,13 @@ func (s *Session) DrainJobTree(ctx context.Context) (string, error) {
 // drainJobTreeKeepingReport is DrainJobTree for a delegate that has already
 // reported: a drain turn that ends with a terminal communicate replaces the
 // report, and a drain turn that ends without one leaves the report standing.
+//
+// Each turn runs with the delegate row's hold suspended: the drain also runs
+// turns for a job completion or its own announcement, and during one the
+// delegate is working, so the row must report that work rather than a wait it
+// is not in. The parking hold itself is untouched.
 func (s *Session) drainJobTreeKeepingReport(ctx context.Context) (string, error) {
-	return s.drainJobTreeUsing(ctx, s.keepingReport(s.ProcessInputKind))
+	return s.drainJobTreeUsing(ctx, s.drainTurnHidesHold(s.keepingReport(s.ProcessInputKind)))
 }
 
 func (s *Session) drainJobTreeUsing(ctx context.Context, process func(context.Context, string, []ImageAttachment, EntryKind) (string, error)) (string, error) {

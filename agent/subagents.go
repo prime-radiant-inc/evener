@@ -2458,12 +2458,7 @@ func (a *subagent) drainForFinalization(ctx context.Context, result string) (str
 	// background shell has the same count and is not held.
 	a.sess.setDrainHeld(true)
 	defer a.sess.setDrainHeld(false)
-	// The drain also runs turns — a job completion, an announcement — and
-	// during one the delegate is working, not parked. Hide the row's hold for
-	// the turn so a read in that window reports the work it is doing, and
-	// restore it as the drain parks again. The wait itself is unchanged.
-	reporting := a.sess.keepingReport(a.sess.ProcessInputKind)
-	drained, err := a.sess.drainJobTreeUsing(ctx, a.sess.drainTurnHidesHold(reporting))
+	drained, err := a.sess.drainJobTreeKeepingReport(ctx)
 	if err != nil {
 		return result, parentDriveNotify, err
 	}
