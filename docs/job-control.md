@@ -74,9 +74,11 @@ described above.
 
 Watch and watch-send frames settle when the notification turn writes them,
 before its model call. They have no replay detection, so a restart during the
-call would otherwise render the same frame twice. A turn that ends before its
-request leaves the written frame in the transcript, and the next request
-carries it.
+call would otherwise render the same frame twice. If request preparation
+fails after a caller-send frame is written, the session schedules a paced
+retry using the frame already in its transcript. It gets one more admitted
+notification turn. After that, any undispatched frame stays in the transcript
+for the next request.
 
 ```mermaid
 flowchart LR

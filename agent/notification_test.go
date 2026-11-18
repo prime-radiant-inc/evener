@@ -1730,6 +1730,100 @@ func TestNotificationTurnSettlesCallerWatchSendBeforeItsModelCall(t *testing.T) 
 	}
 }
 
+func TestCallerWatchSendWakesAgainAfterRequestEnvironmentWriteFails(t *testing.T) {
+	t.Parallel()
+	const message = "watch-frame-after-environment-recovery"
+	const output = "watch-ready\n"
+	adapter := newFakeAdapter("openai", repeatFinalResponse(2, "ok")...)
+	clk := agenttest.NewFakeClock()
+	sess := newTestSessionForEnvctx(t, withAdapter(adapter), withClock(clk))
+	sendOneUserInput(t, sess, "start")
+	drainPendingEvents(sess)
+
+	nextDir := t.TempDir()
+	if err := sess.swapEnvAndRefresh(execenv.NewLocalExecutionEnvironment(nextDir), nil); err != nil {
+		t.Fatal(err)
+	}
+	jm := sess.jobManager
+	rec, err := jm.createShell(createShellOpts{Command: "x"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := jm.finalize(rec.JobID, jobstore.StatusCompleted, "exit_zero", new(int)); err != nil {
+			t.Error(err)
+		}
+	})
+	if _, err := jm.configureWatch(watchArgs{
+		Operation: "create", Target: rec.JobID, OutputMatch: "watch-ready",
+		Send: &watchSendArgs{To: runtimeMessageAliasCaller, Message: message},
+	}); err != nil {
+		t.Fatalf("configure caller-send watch: %v", err)
+	}
+	var wakes atomic.Int32
+	sess.SetNotifyFunc(func() { wakes.Add(1) })
+	jm.feedJobOutput(rec.JobID, []byte(output), int64(len(output)))
+	pending := jm.pendingWatchSendDeliveries(nil)
+	if len(pending) != 1 || wakes.Load() == 0 {
+		t.Fatalf("matching job output produced %d pending sends and %d wakes, want one send and a wake", len(pending), wakes.Load())
+	}
+	deliveryID := pending[0].state.DeliveryID
+
+	// The reminder sync succeeds. The next transcript sync, for the
+	// changed environment required by the request, fails and rolls back.
+	fs := attachEnvironmentFailureFS(t, sess)
+	failure := errors.New("request environment sync failure")
+	fs.mu.Lock()
+	fs.syncsBeforeFailure = 1
+	fs.failure = failure
+	fs.mu.Unlock()
+	if _, err := sess.ProcessInputKind(t.Context(), "", nil, EntryNotification); !errors.Is(err, failure) {
+		t.Fatalf("notification turn error = %v, want the request environment failure", err)
+	}
+	if n := len(adapter.Requests()); n != 1 {
+		t.Fatalf("requests after the failure = %d, want only the initial user turn", n)
+	}
+	if !jm.watchSendDelivered(deliveryID) || countHistoryNeedle(sess, message) != 1 {
+		t.Fatal("the watch frame did not settle with one transcript record before the request failed")
+	}
+	before := wakes.Load()
+	clk.Advance(jobNotificationRetryMaxDelay)
+	clk.Drain()
+	if wakes.Load() <= before {
+		t.Fatal("no retry woke the session after the request environment write failed")
+	}
+
+	if _, err := sess.ProcessInputKind(t.Context(), "", nil, EntryNotification); err != nil {
+		t.Fatalf("notification after recovery: %v", err)
+	}
+	requests := adapter.Requests()
+	if len(requests) != 2 || !requestsContain(requests[1:], message) {
+		t.Fatalf("requests after recovery = %d, want a second request carrying the watch frame", len(requests))
+	}
+	if env, _ := requestEnvironment(requests[1]); env.Cwd != nextDir {
+		t.Fatalf("recovered request environment cwd = %q, want %q", env.Cwd, nextDir)
+	}
+	data, err := readTranscriptFull(t.Context(), sess.TranscriptPath(), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	frames := 0
+	for _, entry := range data.Entries {
+		if entry.Turn.Kind == schema.TurnSteering && strings.Contains(entry.Turn.Message.Text(), message) {
+			frames++
+		}
+	}
+	if got := sess.jobNotificationsDelivered(); frames != 1 || got != 1 {
+		t.Fatalf("after retry: %d durable frames and %d deliveries, want one of each", frames, got)
+	}
+	before = wakes.Load()
+	clk.Advance(jobNotificationRetryMaxDelay)
+	clk.Drain()
+	if wakes.Load() != before {
+		t.Fatal("the carried frame kept waking the session")
+	}
+}
+
 // TestNotificationOwedThroughRepeatedAdmissionRefusalStopsWaking pins the bound
 // on an owed notification: when local context admission keeps refusing every
 // request, the notification gets one more turn and is then settled with that
