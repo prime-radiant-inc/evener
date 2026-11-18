@@ -227,7 +227,7 @@ export function validItem(value: unknown): value is CachedSessionItem {
       ))
   )
     return false;
-  if (value.resolvedAskLegacyCount !== undefined && typeof value.resolvedAskLegacyCount !== "number") return false;
+  if (value.resolvedAskLegacyCount !== undefined && !isNonNegativeInteger(value.resolvedAskLegacyCount)) return false;
   if (value.prevalOnly !== undefined && typeof value.prevalOnly !== "boolean") return false;
   if (
     value.warning !== undefined &&

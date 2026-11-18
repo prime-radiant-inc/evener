@@ -129,6 +129,20 @@ test("the wire item's resolved ask calls survive projection and cache decoding",
       resolvedAskLegacyCount: "many" as unknown as number,
     }),
   ).toBeUndefined();
+  // A count is a non-negative integer. The decoder used to accept any number,
+  // so a corrupt cache could carry -1 or a fraction into the recap comparison.
+  expect(
+    decodeTranscriptItem({
+      ...encodeTranscriptItem(projected),
+      resolvedAskLegacyCount: -1,
+    }),
+  ).toBeUndefined();
+  expect(
+    decodeTranscriptItem({
+      ...encodeTranscriptItem(projected),
+      resolvedAskLegacyCount: 1.5,
+    }),
+  ).toBeUndefined();
 });
 
 // szw1: reducer.ts's turn/started and turn/completed have no defense against
