@@ -27,7 +27,7 @@ func escapeWorkingNote(msg llm.Message) string {
 	var texts []string
 	var phases []string
 	for _, p := range msg.Content {
-		if p.Kind != llm.ContentText || p.Text == "" {
+		if !sysmsg.CarriesWireText(p) {
 			continue
 		}
 		texts = append(texts, p.Text)
@@ -246,7 +246,11 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 			if text := t.Message.Text(); len(text) > 50 {
 				note := escapeWorkingNote(t.Message)
 				if len(note) > 500 {
-					note = note[:500] + "..."
+					// Escaping replaces one character with several, so a byte
+					// cap that landed inside a rune before can land outside it
+					// now, or the reverse. Cut on a rune boundary so the note
+					// is always valid UTF-8.
+					note = runetrim.Cut(note, 500) + "..."
 				}
 				data.workingNotes = append(data.workingNotes, note)
 			}

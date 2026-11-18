@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"primeradiant.com/evener/agent/internal/mdfence"
+	"primeradiant.com/evener/llm"
 )
 
 // PhaseSeparatesMessages reports whether the target protocol emits a separate
@@ -19,6 +20,19 @@ import (
 // send the text, so this answers for the dispatch target, not for the history.
 func PhaseSeparatesMessages(protocol string) bool {
 	return protocol == "openai-responses"
+}
+
+// CarriesWireText reports whether a text part reaches the provider as message
+// text. It is the adapters' inclusion rule, and the frame scan must use it
+// too: a boundary the scan cannot see is a message the scan cannot escape, and
+// the two would then disagree about where a fence ends (#6493 review).
+//
+// An empty part still counts when it carries a Phase, because the Responses
+// adapter emits one message per phase and an empty phase-bearing part is a
+// message of its own. A whitespace-only part with no phase opens no message,
+// so it cannot hide one either.
+func CarriesWireText(p llm.ContentPart) bool {
+	return p.Kind == llm.ContentText && (p.Text != "" || p.Phase != "")
 }
 
 // TextSegments splits text parts at the message boundaries the given protocol

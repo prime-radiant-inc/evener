@@ -30,6 +30,17 @@ import (
 // The turn is never modified: the caller gets a message whose changed text
 // parts are copies, so the transcript keeps exactly what the model wrote.
 func escapeModelAuthoredTurnFrames(msg llm.Message, protocol string) llm.Message {
+	return escapeModelAuthoredTurnFramesFor(msg, protocol, false)
+}
+
+// escapeModelAuthoredTurnFramesFor is escapeModelAuthoredTurnFrames with the
+// target's reasoning policy. When the target renders replayed reasoning as
+// ordinary assistant text, its adapter prepends that reasoning to the message
+// body, so the reasoning is part of what the model reads: escaping only the
+// text parts would leave a frame the model wrote in its reasoning unescaped in
+// the body it receives (#6493 review). The stored reasoning is untouched; only
+// the projected copy is rewritten, exactly as for text parts.
+func escapeModelAuthoredTurnFramesFor(msg llm.Message, protocol string, promotesReasoning bool) llm.Message {
 	if msg.Role != llm.RoleAssistant {
 		return msg
 	}
@@ -50,11 +61,63 @@ func escapeModelAuthoredTurnFrames(msg llm.Message, protocol string) llm.Message
 		// it imitates one. Skipping that part would replay the model's
 		// imitation verbatim, so the flag is not consulted here (#6493
 		// review).
-		if p.Kind != llm.ContentText || p.Text == "" {
+		if !sysmsg.CarriesWireText(p) {
 			continue
 		}
 		indexes = append(indexes, i)
 		texts = append(texts, p.Text)
+	}
+	var reasoningIndexes []int
+	var reasoningTexts []string
+	if promotesReasoning {
+		for i, p := range msg.Content {
+			if p.Kind == llm.ContentThinking && p.Thinking != nil && p.Thinking.Text != "" {
+				reasoningIndexes = append(reasoningIndexes, i)
+				reasoningTexts = append(reasoningTexts, p.Thinking.Text)
+			}
+		}
+	}
+	// A promoting target puts its reasoning in front of the message body, so
+	// fence state runs from one into the other and the two are one body to the
+	// reader. Escaping them separately is what let a fence opened in reasoning
+	// hide a frame in the text (#6493 review).
+	if len(reasoningIndexes) > 0 {
+		reasoningBody := strings.Join(reasoningTexts, "\n")
+		body := reasoningBody + "\n\n" + strings.Join(texts, "\n")
+		escaped := sysmsg.EscapeModelAuthoredFrames(body)
+		if escaped == body {
+			return msg
+		}
+		lines := strings.Split(escaped, "\n")
+		at := strings.Count(reasoningBody, "\n") + 1
+		// The escape never adds or removes a line break, so the seam is where
+		// it was: the reasoning's lines, then the blank line the adapter
+		// inserts, then the text.
+		if at+1 > len(lines) || lines[at] != "" {
+			return msg
+		}
+		parts := slices.Clone(msg.Content)
+		reasoningPiece := strings.Join(lines[:at], "\n")
+		if reasoningPiece != reasoningTexts[0] {
+			thinking := *msg.Content[reasoningIndexes[0]].Thinking
+			thinking.Text = reasoningPiece
+			parts[reasoningIndexes[0]].Thinking = &thinking
+		}
+		textLines := lines[at+1:]
+		cursor := 0
+		for k, text := range texts {
+			n := strings.Count(text, "\n") + 1
+			if cursor+n > len(textLines) {
+				return msg
+			}
+			piece := strings.Join(textLines[cursor:cursor+n], "\n")
+			cursor += n
+			if piece != text {
+				parts[indexes[k]].Text = piece
+			}
+		}
+		msg.Content = parts
+		return msg
 	}
 	if len(indexes) == 0 {
 		return msg
