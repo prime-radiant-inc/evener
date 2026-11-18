@@ -13,7 +13,7 @@ import {
 import { useToasts } from "../../../widgets";
 import { createAttachmentOperations, useAttachments } from "./attachments/useAttachments";
 import { STEER_RECOVERY_FENCED_REASON } from "./controlTooltips";
-import { clearDraft, clearPersistedDraft, readDraftRevision } from "./draft";
+import { clearDraft, clearPersistedDraft, moveCompositionImageRecord, readDraftRevision } from "./draft";
 import { pendingTurnEntries, submitWithPendingTracking, usePendingTurnEntries } from "./queue";
 import {
   resendRecoveryPendingTurn,
@@ -591,6 +591,17 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
                   { [submittedRecoveryId]: committedRevision },
                   source.compositionOwnerId,
                   pressedRecoveryIntent?.displayedBarrier,
+                  // The markers of the tiles the row OWNS, not the subset the
+                  // request carries. The resend deletes the recovery row, so a
+                  // refused delivery can only restore what the replacing row
+                  // kept - and that must include the image the person left
+                  // staged, which the request deliberately leaves out.
+                  //
+                  // Ownership-filtered, not the raw store above: a tile retained
+                  // across a rebind bears a number the adopted draft uses for a
+                  // different image, so handing its marker to storage would keep
+                  // a tile this composition does not own.
+                  source.ownedAttachments().map((attachment) => attachment.marker),
                 );
                 if (outcome.status !== "sent") {
                   // A not-sent outcome answers the press as a refusal: the
@@ -601,6 +612,11 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
                   recoveryAlreadySent = outcome.status === "consumed";
                   throw recoveryResendRefused ? recoveryWriteRefusal : recoveryAlreadySentRefusal;
                 }
+                // The composition record travelled with the row: point it at the
+                // row that replaced the consumed one, or a refusal of THIS
+                // delivery restores the images without knowing which of them
+                // were released or which references had no bytes.
+                moveCompositionImageRecord(submittedRecoveryId, outcome.record.clientMutationId);
                 // The resend transaction consumed the recovery row, so a remount
                 // can no longer restore it. Keep the guard until here rather than
                 // until the network settles.

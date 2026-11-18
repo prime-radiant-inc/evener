@@ -403,6 +403,7 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         stopEpochAtEnqueue: stopEpoch,
       };
       await requestResult(transaction.objectStore(OUTBOX_STORE).add(record));
+
       return record;
     });
   }
@@ -2127,6 +2128,20 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
     expectedRecoveryRevisions?: Readonly<Record<string, number>>,
     compositionOwnerId?: string,
     displayedBarrier?: DisplayedRecoveryStopCapture,
+    // The composition the consumed row OWNS: text, anchors and every attachment
+    // the person can still see, released bytes included. It is deliberately not
+    // `intent.attachments`, which is the sendable subset the request carries.
+    //
+    // A resend deletes the recovery row. If the delivery it starts is then
+    // refused, the refusal bounces a replacement row built from the outbox row
+    // - and that row's attachment list is the filtered request. Without this,
+    // the tile the person kept but did not reference is gone for good, so
+    // "owned composition" and "what ships" have to be two lists or the
+    // distinction cannot survive the handoff.
+    // The markers of the tiles the consumed composition OWNS. The bytes come
+    // from the row being consumed - it already holds them in durable form, so
+    // there is no second copy to build and no shape to convert.
+    ownedMarkers?: readonly number[],
   ): Promise<MutationRecoveryResendResult> {
     if (!intent.targetRef.trim()) throw new Error("targetRef is required");
     return this.#write(ENQUEUE_STORES, "resendRecovery", async (transaction) => {
@@ -2138,12 +2153,16 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
       const consumedWireIds = new Set<string>();
       const consumedUncertainWireIds = new Set<string>();
       const consumedOriginals: Array<{ method: string; frozen: Record<string, unknown> | undefined }> = [];
+      // Every durable attachment the consumed rows held, by marker, so the
+      // replacing row can keep the tiles the request did not carry.
+      const consumedAttachmentPool: MutationAttachment[] = [];
       for (const id of ids) {
         const recovery = await requestResult<MutationRecoveryRecord | undefined>(recoveryStore.get(id));
         if (!recovery) {
           consumed = true;
           continue;
         }
+        consumedAttachmentPool.push(...recovery.attachments);
         consumedWireIds.add(effectiveWireId(recovery));
         const frozen = (recovery as VersionedMutationRecoveryRecord).originalWirePayload;
         consumedOriginals.push({ method: recovery.method, frozen: frozen ? { ...frozen } : undefined });
@@ -2186,6 +2205,25 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         ...attachment,
         presentationId: this.#createPresentationId(),
       }));
+      // What the row keeps: the request's attachments PLUS every attachment the
+      // consumed composition owned that the request left out. A released tile is
+      // exactly that case - its reference is gone, so it is not sendable, and it
+      // is still the person's image.
+      const ownedKept =
+        ownedMarkers === undefined
+          ? attachments
+          : [
+              ...attachments,
+              // A marker the request already carries is the request's own copy;
+              // only the ones it left out are added back.
+              ...ownedMarkers
+                .filter((marker) => !attachments.some((attachment) => attachment.marker === marker))
+                .flatMap((marker) => {
+                  const kept = consumedAttachmentPool.filter((attachment) => attachment.marker === marker);
+                  const [first] = kept;
+                  return first === undefined ? [] : [{ ...first, presentationId: this.#createPresentationId() }];
+                }),
+            ];
       // The wire-inheritance rule, one home with the mint's (#mintFreshRow):
       // a consumed recovery whose refusal never reached the daemon leaves
       // the wire delivery-uncertain - an outstanding attempt of the same wire
@@ -2244,10 +2282,21 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
       const replayMethod = uncertainReplay && firstOriginal !== undefined ? firstOriginal.method : undefined;
       const resendIntent = replayMethod === undefined ? intent : { ...intent, method: replayMethod };
       const inheritedWireId = uncertainReplay ? soleConsumedWireId : undefined;
+      // THE ROW OWNS A COMPOSITION; THE REQUEST CARRIES A SUBSET.
+      //
+      // `payload.input` is what ships, and it names only the markers the
+      // submitted text asks for. `attachments` is what the row keeps: every
+      // tile the composition owned, released bytes included, so a refusal that
+      // bounces this row restores the images the person still had instead of
+      // the subset that happened to be sendable at the press.
+      //
+      // Anchors and per-tile eligibility travel with them, because they answer
+      // a question about the composition ("is this reference backed?", "may
+      // this tile ship?") that the request never asks.
       const record: MutationOutboxRecord = {
         ...resendIntent,
         payload: { ...resendIntent.payload, clientMutationId: inheritedWireId ?? nextMutationId },
-        attachments,
+        attachments: ownedKept,
         version: 1,
         clientMutationId: nextMutationId,
         // The resend is a fresh submission by whichever client performed it -

@@ -1085,6 +1085,77 @@ test("a released image's bytes survive into recovery without becoming sendable",
   }
 });
 
+// A stale lease is preserved as a COMPOSITION: its text, its tiles and the
+// anchors it adopted, taken together. Reading the anchors back off the row it
+// is being preserved FROM was the defect - the peer that advanced that row
+// replaced them, so the fork walked away carrying its own text and the PEER's
+// answer to "which reference in this text had no bytes". A reopen then either
+// blocked prose the fork never tagged, or dropped a tag the fork did carry.
+test("a stale editor's preserved fork keeps its own anchors, not the peer's", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    threadId: "thread-a",
+    method: "turn/queue",
+    payload: { ref: "root", input: [{ type: "text", text: "anchor [image 1]" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: "anchor [image 1]" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "editing");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  // This pane's composition carries a missing reference on 1.
+  writeCompositionImageRecord(original.clientMutationId, { anchors: [1], tiles: [] });
+
+  const source = createTestComposerSource("root");
+  const peer = new MutationOutboxIndexedDB();
+  try {
+    await source.activateRecovery(recovery);
+    source.updateText("anchor [image 1] still mine");
+    // The peer advances the same row and retires its tag: from here on the
+    // row's record answers for the PEER's composition.
+    const peerText = "peer text, no reference";
+    // Activation committed its own revision, so the peer must name the row's
+    // CURRENT one or the write is refused as stale.
+    const activated = await peer.getRecovery(original.clientMutationId);
+    if (!activated) throw new Error("peer cannot see the row");
+    const newer = await peer.updateRecoveryInput(
+      original.clientMutationId,
+      [{ type: "text", text: peerText }],
+      undefined,
+      peerText,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        [original.clientMutationId]:
+          (activated as MutationRecoveryRecord & { compositionRevision?: number }).compositionRevision ?? 0,
+      },
+    );
+    expect(newer).toBeDefined();
+    writeCompositionImageRecord(original.clientMutationId, { anchors: [], tiles: [] });
+
+    // This pane's save now loses the lease and preserves its own work.
+    await source.queueRecoveryPersistence(original.clientMutationId, "anchor [image 1] still mine", [], []);
+    await source.flushRecoveryWrites();
+
+    const preserved = (await storage.listRecovery("root")).find(
+      (record) => record.clientMutationId !== original.clientMutationId,
+    );
+    if (!preserved) throw new Error("the stale composition was not preserved");
+    // The fork carries its OWN anchor, so a reopen blocks the send it should.
+    expect(readCompositionImageRecord(preserved.clientMutationId)?.anchors).toEqual([1]);
+    // And the peer's row is untouched.
+    expect(await storage.getRecovery(original.clientMutationId)).toMatchObject({ composerText: peerText });
+  } finally {
+    source.dispose();
+    peer.close();
+    storage.close();
+  }
+});
+
 // A tile whose reference the person deleted is still theirs: it stays staged.
 // It must NOT be handed a number the merged text spells, because those words
 // are then a reference to it - Send would carry bytes the prose never asked

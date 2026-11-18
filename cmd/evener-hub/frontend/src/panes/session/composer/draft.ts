@@ -419,6 +419,21 @@ export function readCompositionImageRecord(clientMutationId: string): Compositio
   }
 }
 
+/** Move a composition's image facts to the row that replaced it.
+ *
+ * A resend consumes its recovery row and mints a new one. The record describes
+ * the COMPOSITION, not the row's storage key, so it has to follow: left under
+ * the consumed id, the replacement row would restore the images with no idea
+ * which of them were released or which references had no bytes behind them, and
+ * the next Send would carry an image the person had deleted.
+ */
+export function moveCompositionImageRecord(fromClientMutationId: string, toClientMutationId: string): void {
+  if (fromClientMutationId === toClientMutationId) return;
+  const record = readCompositionImageRecord(fromClientMutationId);
+  if (record === undefined) return;
+  writeCompositionImageRecord(toClientMutationId, record);
+}
+
 export function writeCompositionImageRecord(clientMutationId: string, record: CompositionImageRecord): void {
   try {
     const next: CompositionImageRecord = {

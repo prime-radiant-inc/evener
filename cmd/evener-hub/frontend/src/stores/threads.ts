@@ -4127,6 +4127,9 @@ export async function resendRecoveryMutation(
   expectedRecoveryRevisions?: Readonly<Record<string, number>>,
   compositionOwnerId?: string,
   displayedBarrierRead?: DisplayedRecoveryStopCapture | Promise<DisplayedRecoveryStopCapture>,
+  // The markers of the tiles the consumed row owns. See resendRecoveryResult:
+  // the request carries a subset, the row keeps everything the person can see.
+  ownedMarkers?: readonly number[],
 ): Promise<MutationRecoveryResendResult> {
   const runtime = requireMutationRuntime();
   await runtime.start;
@@ -4156,6 +4159,7 @@ export async function resendRecoveryMutation(
         expectedRecoveryRevisions,
         compositionOwnerId,
         displayedBarrier,
+        ownedMarkers,
       ),
     (outcome) =>
       outcome.status !== "sent"

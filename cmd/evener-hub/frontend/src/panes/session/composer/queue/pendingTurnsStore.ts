@@ -817,6 +817,7 @@ export function resendRecoveryPendingTurn(
   expectedRecoveryRevisions?: Readonly<Record<string, number>>,
   compositionOwnerId?: string,
   displayedBarrierRead?: DisplayedRecoveryStopCapture | Promise<DisplayedRecoveryStopCapture>,
+  ownedMarkers?: readonly number[],
 ): Promise<MutationRecoveryResendResult> {
   // Resend publishes its committed handoff directly. Reading the recovery
   // tray again cannot hold up a submission that already has a durable owner.
@@ -835,6 +836,7 @@ export function resendRecoveryPendingTurn(
         expectedRecoveryRevisions,
         compositionOwnerId,
         displayedBarrierRead,
+        ownedMarkers,
       );
       void refreshPendingTurnsProjection(ref);
       return result;

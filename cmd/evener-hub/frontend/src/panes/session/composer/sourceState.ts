@@ -160,6 +160,10 @@ export interface ComposerSourceState {
    * False for a tile retained across a rebind: the adopted text's `[image N]`
    * belongs to the adopted draft's image, whatever number this tile bears. */
   readonly ownsImageReference: (item: { id: string; marker: number }) => boolean;
+  /** The tiles this source's composition owns, in marker order. Ownership
+   * filtered: a tile retained across a rebind is not in here, because the
+   * adopted draft's `[image N]` is not that tile's reference. */
+  readonly ownedAttachments: () => InputAttachment[];
   runRecoveryOperation<T>(operation: () => Promise<T>): Promise<T>;
   flushRecoveryWrites(): Promise<void>;
   tryAcquireRecoveryOperation(): (() => void) | null;
@@ -1074,13 +1078,24 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     // Ownership is by ID. A marker number is not an owner: the store's tiles
     // and the composition's numbering can differ after a merge, and a foreign
     // tile may be the one holding a given number.
+    //
+    // ONE snapshot, taken here before the first await, and used for both the
+    // durable write and the record: text, owned tiles and anchors describe the
+    // SAME composition or they describe nothing. Reading the anchors back off
+    // `clientMutationId`'s record was the defect - the peer that advanced this
+    // row replaced that record, so the fork inherited the peer's anchors while
+    // carrying its own text, and a reopen then answered "is this reference a
+    // missing image" with the other draft's answer. This composer's own tags
+    // are what it actually adopted; the row's stored copy is a second opinion
+    // that can now belong to someone else.
+    const preservedText = textRef.current;
     const preservedAttachments = ownedCompositionAttachments(operations.toInputAttachments());
-    const priorAnchors = readCompositionImageRecord(clientMutationId)?.anchors ?? [];
+    const priorAnchors = [...adoptedUnbackedMarkers].sort((left, right) => left - right);
     try {
       const preserved = await preserveRecoveryPendingTurn(
         base,
         ref,
-        textRef.current,
+        preservedText,
         preservedAttachments,
         skillNamesRef.current,
         selectionMetaRef.current.commandNames,
@@ -1096,7 +1111,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
       if (preserved !== undefined) {
         writeCompositionImageRecord(
           preserved.clientMutationId,
-          compositionImageRecord(textRef.current, operations.items, priorAnchors),
+          compositionImageRecord(preservedText, operations.items, priorAnchors),
         );
       }
       return preserved;
@@ -1353,30 +1368,19 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
           operations.replaceWithSettled([...latest.attachments, ...retained]);
           adoptUnbackedImageMarkers(adopted.anchors);
           state.setState({ restoredImageIds: adopted.restored, foreignImageIds: adopted.foreign });
-          // The record was written by the transaction above, which is the step
-          // that makes this composition durable - so a pane closed between
-          // here and any later write cannot leave a row with text and no facts.
+          // The record was written once, by the transaction above, from exactly
+          // the text and tiles that transaction committed (`merged.text`,
+          // `committedTiles`). There is deliberately no second write here.
           //
-          // This second write exists only because `latest` may have re-merged
-          // against typing that landed while the transaction was in flight: a
-          // number the person is now looking at as prose must not be a
-          // reference to a restored tile. It uses the SAME computed exemptions
-          // and the same builder, so it can only ever move the record forward
-          // to the newer text - it cannot introduce a second opinion about who
-          // is shippable.
-          writeCompositionImageRecord(
-            ownerId,
-            compositionImageRecord(
-              latest.text,
-              operations.items,
-              [
-                ...(readCompositionImageRecord(ownerId)?.anchors ?? []),
-                ...(readCompositionImageRecord(record.clientMutationId)?.anchors ?? []),
-                ...adopted.anchors,
-              ],
-              adopted,
-            ),
-          );
+          // `latest` may have re-merged against typing or a paste that landed
+          // while the transaction was in flight, and that composition is NOT
+          // durable: IndexedDB holds `merged`. Writing a record for `latest`
+          // would file per-tile markers and eligibility for a revision no row
+          // carries - a reopen would then apply them to the committed tiles,
+          // which is how an excluded tile gets a number the durable text never
+          // gave it. The rebased facts are published by the write that commits
+          // the rebased composition (`queueRecoveryPersistence`), which builds
+          // its record from the same snapshot as its text.
           markRestore();
           committedRecoveryComposition = recoveryCompositionFingerprint({
             text: merged.text,
@@ -1585,6 +1589,11 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     tryAcquireRecoveryOperation,
     tryAcquireBuiltinOperation,
     queueRecoveryPersistence,
+    // Which attachments this composition owns, in the wire shape a durable
+    // write takes. The send path needs the same answer the durable writers use:
+    // a resend replaces the row, so it must carry the tiles this composition
+    // owns and the request did not ship.
+    ownedAttachments: () => ownedCompositionAttachments(operations.toInputAttachments()),
     activateRecovery,
     bindEditor(nextEditor) {
       if (disposed) return () => {};

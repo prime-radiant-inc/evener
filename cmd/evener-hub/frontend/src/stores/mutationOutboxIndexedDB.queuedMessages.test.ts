@@ -1799,3 +1799,56 @@ test("editQueuedMessage opens a delivery-uncertain row for a fresh send", async 
   expect(recovery).toMatchObject({ recoveryKind: "editing" });
   expect(await f.storage.getOutbox(uncertain.clientMutationId)).toBeUndefined();
 });
+
+// The composition a recovery row owns is not the subset the request carries.
+// Delete an image's reference, leave its tile staged, press Send: the request
+// correctly omits the tile, and the resend DELETES the row that held its
+// bytes. If the replacement row is written from the request alone, a refused
+// delivery restores a composition with the image missing - and the person
+// never removed it.
+test("a resend keeps the staged tile its request deliberately excludes", async () => {
+  const f = fixture();
+  const outbox = await f.storage.enqueueIntent({
+    ...queuedIntent(),
+    attachments: [
+      {
+        presentationId: "image-a",
+        marker: 1,
+        name: "kept.png",
+        mediaType: "image/png",
+        blob: new Blob([new Uint8Array([9, 8, 7])], { type: "image/png" }),
+      },
+    ],
+  });
+  const recovery = await f.storage.transferToRecovery(outbox.clientMutationId, "rejected");
+  if (recovery === undefined) throw new Error("failed to seed recovery");
+
+  const sent = await f.storage.resendRecoveryResult(
+    recovery.clientMutationId,
+    // The request asks for prose only: the reference was deleted, so marker 1
+    // is not sendable and must not reach the wire.
+    {
+      ...queuedIntent(),
+      attachments: [],
+      payload: { ...queuedIntent().payload, input: [{ type: "text", text: "no reference" }] },
+    },
+    undefined,
+    { [recovery.clientMutationId]: recovery.compositionRevision ?? 0 },
+    undefined,
+    undefined,
+    // ...but the composition still OWNS marker 1, so it travels with the row.
+    [1],
+  );
+  if (sent.status !== "sent") throw new Error(`resend did not send: ${sent.status}`);
+  expect(sent.record.payload.input).toEqual([{ type: "text", text: "no reference" }]);
+
+  const replacement = await f.reopen();
+  const kept = await replacement.getOutbox(sent.record.clientMutationId);
+  // The request is unchanged: the exclusion is a fact about the payload, and
+  // it must not be undone by carrying the tile.
+  expect(kept?.payload.input).toEqual([{ type: "text", text: "no reference" }]);
+  expect(kept?.attachments).toEqual([expect.objectContaining({ marker: 1, name: "kept.png" })]);
+  const blob = kept?.attachments[0]?.blob;
+  if (!blob) throw new Error("the excluded tile's bytes are gone");
+  expect(new Uint8Array(await blob.arrayBuffer())).toEqual(new Uint8Array([9, 8, 7]));
+});
