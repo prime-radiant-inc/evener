@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -521,9 +522,20 @@ func TestLoadSessionJobGetPreservesLaunchFieldsFromScopedStart(t *testing.T) {
 
 	// The owner's journal holds ONLY the finish: no start, so no command and no
 	// type survive there.
+	//
+	// Its end time and exit code are DELIBERATELY DIFFERENT from the ancestor's
+	// copy. Without that difference the assertions below would also pass if the
+	// reader returned the ancestor's record unchanged, which is what made an
+	// earlier version of this test unable to fail. The owner finished later and
+	// exited differently; only a read that selected the owner's record can report
+	// those, and only a read that also filled the launch fields can report the
+	// command.
+	ownerEnded := ended.Add(7 * time.Second)
+	ownerExit := 42
 	writeJobJournalLines(t, jobsDir(stateDir, ownerSession),
-		`{"kind":"job_finished","seq":1,"ts":"`+ended.Format(time.RFC3339)+
-			`","job_id":"`+jobID+`","status":"completed","exit_code":0,"terminal_generation":"gen_owner"}`+"\n",
+		`{"kind":"job_finished","seq":1,"ts":"`+ownerEnded.Format(time.RFC3339)+
+			`","job_id":"`+jobID+`","status":"command_exited_nonzero","exit_code":`+strconv.Itoa(ownerExit)+
+			`,"ended_at":"`+ownerEnded.Format(time.RFC3339)+`","terminal_generation":"gen_owner"}`+"\n",
 	)
 
 	job, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID)
@@ -540,8 +552,16 @@ func TestLoadSessionJobGetPreservesLaunchFieldsFromScopedStart(t *testing.T) {
 	if job.Description != "say hello" {
 		t.Fatalf("description = %q, want %q recovered from the scoped start", job.Description, "say hello")
 	}
-	if job.Status != string(jobstore.StatusCompleted) {
-		t.Fatalf("status = %q, want the owner's %q", job.Status, jobstore.StatusCompleted)
+	// The owner's terminal facts, which the ancestor's copy does not carry. These
+	// are what prove the selected record is the OWNER's, not the ancestor's.
+	if job.Status != string(jobstore.StatusCommandExitedNonzero) {
+		t.Fatalf("status = %q, want the owner's %q, not the ancestor's copy", job.Status, jobstore.StatusCommandExitedNonzero)
+	}
+	if job.ExitCode == nil || *job.ExitCode != ownerExit {
+		t.Fatalf("exitCode = %v, want the owner's %d, not the ancestor's %d", job.ExitCode, ownerExit, exit)
+	}
+	if wantEnded := ownerEnded.UTC().Format(time.RFC3339); job.EndedAt != wantEnded {
+		t.Fatalf("endedAt = %q, want the owner's %q, not the ancestor's copy", job.EndedAt, wantEnded)
 	}
 }
 
@@ -584,6 +604,91 @@ func TestLoadSessionJobGetIgnoresLaunchFieldsFromContradictoryStart(t *testing.T
 	}
 	if job.Command != "" {
 		t.Fatalf("command = %q, want empty: the start named an owner the job ID contradicts, so its command belongs to another job", job.Command)
+	}
+}
+
+// TestLoadSessionJobGetWithholdsLaunchFieldsWhenTheContradictedRowIsSelected
+// covers the case where the contradictory start is not merely a launch source
+// but the SELECTED record: the owner's journal is unreadable, so the forwarded
+// copy is the fallback answer. Its running status is the best surviving evidence
+// of what the job is doing, but the command and description it carries describe
+// the launch of some other session's job, and a pane that showed them would
+// label this job's recovered output with the wrong command.
+//
+// The started-at time is the counter-evidence that the projection withholds a
+// CONTRADICTION rather than blanking the record: it is a fact about this job's
+// run and stays.
+func TestLoadSessionJobGetWithholdsLaunchFieldsWhenTheContradictedRowIsSelected(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	ancestorSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 19, 12, 0, 0, 0, time.UTC)
+
+	ancestorStore := openJobJournal(t, jobsDir(stateDir, ancestorSession))
+	appendJobEvent(t, ancestorStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ancestorSession, VisibleToSession: ancestorSession,
+		Command: "rm -rf /tmp/other", Description: "another session's job",
+		StartedAt: &started,
+	})
+	closeJobJournal(t, ancestorStore)
+	// The encoded owner's journal does not exist, so the forwarded copy is the
+	// fallback answer and nothing replaces it.
+
+	job, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the forwarded copy as fallback evidence")
+	}
+	if job.Command != "" {
+		t.Fatalf("command = %q, want empty: the selected record's owner claim contradicts the job ID, so its command belongs to another job", job.Command)
+	}
+	if job.Description != "" {
+		t.Fatalf("description = %q, want empty for the same reason as the command", job.Description)
+	}
+	if job.StartedAt != started.UTC().Format(time.RFC3339) {
+		t.Fatalf("startedAt = %q, want %q: the start time is a fact about this job's run and is not withheld",
+			job.StartedAt, started.UTC().Format(time.RFC3339))
+	}
+}
+
+// TestLoadSessionJobGetKeepsStoredLegacyOwnerWhenForwardedCopyWins pins the
+// owner a pre-owner job ID cannot state for itself. Such an ID encodes nothing,
+// so the record's stored OwnerSessionID is the only statement of which session
+// ran the job. When the ancestor's forwarded copy is the record that wins, that
+// field must survive: overwriting it with the ancestor's own id attributes the
+// job to the session that merely forwarded it.
+func TestLoadSessionJobGetKeepsStoredLegacyOwnerWhenForwardedCopyWins(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	ancestorSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	// A pre-owner id: not shaped as job_<owner>_<suffix>, so it encodes no owner.
+	jobID := "job_legacy"
+	started := time.Date(2026, 11, 19, 13, 0, 0, 0, time.UTC)
+
+	ancestorStore := openJobJournal(t, jobsDir(stateDir, ancestorSession))
+	appendJobEvent(t, ancestorStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: ancestorSession,
+		StartedAt: &started,
+	})
+	closeJobJournal(t, ancestorStore)
+
+	job, found, err := LoadSessionJobGet(stateDir, ancestorSession, jobID)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the forwarded copy")
+	}
+	if job.OwnerSessionID != ownerSession {
+		t.Fatalf("ownerSessionID = %q, want the stored %q: the ancestor merely forwarded the job, it did not run it",
+			job.OwnerSessionID, ownerSession)
 	}
 }
 
@@ -787,5 +892,78 @@ func TestLoadSessionJobRecordOrphanFinishIsReported(t *testing.T) {
 	}
 	if !read.diagnostics.IncompleteLifecycle {
 		t.Fatal("incompleteLifecycle = false, want the orphan finish reported")
+	}
+}
+
+// TestLoadSessionJobGetReportsCorruptStatusAsUnavailable pins what a corrupt
+// finish line means for a caller. The decoded prefix proves the job exists and
+// what it ran, but the finish may be the very line that failed to decode, so the
+// surviving `running` row is not a statement that the job is still running.
+// Serving it with a nil error would report a finished job as running forever.
+//
+// The second half is the line that keeps this narrow: the same state directory
+// with a readable finish is an ordinary settled read, because a terminal
+// observation is complete on its own.
+func TestLoadSessionJobGetReportsCorruptStatusAsUnavailable(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	sessionID := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(sessionID)
+	started := time.Date(2026, 11, 19, 10, 0, 0, 0, time.UTC)
+	ended := started.Add(12 * time.Second)
+	exit := 6
+
+	// The start survives; the finish line cannot decode. No other journal holds
+	// this job, so nothing else can state how it ended.
+	corrupt := jobStartedLine(jobID, sessionID, started) + "\n" +
+		`{"kind":"job_finished","seq":2,"job_id":"` + jobID + `","status":"completed"` + "\n"
+	writeJobJournalLines(t, jobsDir(stateDir, sessionID), corrupt)
+
+	_, found, err := LoadSessionJobGet(stateDir, sessionID, jobID)
+	if found {
+		t.Fatal("found = true, want unavailable: the prefix cannot say whether the job finished")
+	}
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) {
+		t.Fatalf("error = %v, want a wire error: a damaged history is unreadable, not absent", err)
+	}
+	if wireErr.Code != appwire.CodeUnavailable {
+		t.Fatalf("error code = %d, want %d (unavailable): the job exists, its outcome does not decode",
+			wireErr.Code, appwire.CodeUnavailable)
+	}
+
+	// The output reader is independent of that verdict, and the bytes that did
+	// land stay readable — recovering what happened is how a person settles it.
+	ownerLogDir := filepath.Join(jobsDir(stateDir, sessionID), "jobs")
+	if err := os.MkdirAll(ownerLogDir, 0o755); err != nil {
+		t.Fatalf("create log dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(ownerLogDir, jobID+".log"), []byte("prefix bytes"), 0o644); err != nil {
+		t.Fatalf("write log: %v", err)
+	}
+	page, pageFound, pageErr := LoadSessionJobOutputPage(stateDir, sessionID, jobID, nil, 0)
+	if pageErr != nil || !pageFound {
+		t.Fatalf("LoadSessionJobOutputPage: found=%v err=%v, want the readable output beside a corrupt finish", pageFound, pageErr)
+	}
+	if !strings.Contains(page.Data, "prefix bytes") {
+		t.Fatalf("page data = %q, want the bytes that did land", page.Data)
+	}
+
+	// Same state directory, readable finish: an ordinary settled read.
+	writeJobJournalLines(t, jobsDir(stateDir, sessionID),
+		jobStartedLine(jobID, sessionID, started)+"\n",
+		`{"kind":"job_finished","seq":2,"ts":"`+ended.Format(time.RFC3339)+
+			`","job_id":"`+jobID+`","status":"command_exited_nonzero","exit_code":6,`+
+			`"ended_at":"`+ended.Format(time.RFC3339)+`","terminal_generation":"gen_ok"}`+"\n",
+	)
+	job, found, err := LoadSessionJobGet(stateDir, sessionID, jobID)
+	if err != nil || !found {
+		t.Fatalf("readable finish: found=%v err=%v, want the settled terminal record", found, err)
+	}
+	if job.Status != string(jobstore.StatusCommandExitedNonzero) {
+		t.Fatalf("status = %q, want the recorded %q once the finish decodes", job.Status, jobstore.StatusCommandExitedNonzero)
+	}
+	if job.ExitCode == nil || *job.ExitCode != exit {
+		t.Fatalf("exitCode = %v, want %d", job.ExitCode, exit)
 	}
 }

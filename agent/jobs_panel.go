@@ -83,6 +83,17 @@ func jobOutputPageResult(page jobstore.OutputWindowSnapshot, found bool, err err
 // which asserts the job does not exist.
 var ErrJobScopeUnresolved = errors.New("agent: job history ends in an unterminated append and does not establish whether this job exists")
 
+// ErrJobStatusUnresolved reports a saved-job read whose selected record states a
+// NONTERMINAL status that this journal cannot vouch for, because its scan stopped
+// at durable corruption. The decoded prefix proves the job exists and where it
+// ran; it does not prove the job is still running, since the finish may be the
+// very line that failed to decode.
+//
+// Returning the prefix's running row with a nil error would assert an end state
+// the scan never saw. Reporting unavailable says what is true: the history
+// exists and its outcome is unreadable. It is not not-found — the job was found.
+var ErrJobStatusUnresolved = errors.New("agent: job history stops at durable corruption before establishing the job's state")
+
 // sessionJobRecordDiagnostics is what a retained job read could not establish
 // about the journals it consulted. It rides the read so the precedence decision
 // can tell a settled record from a fragment; see stateEstablished.
@@ -252,6 +263,28 @@ func stateEstablished(read sessionJobRecordRead) bool {
 		return false
 	}
 	return !recordStatusUnconfirmed(read.record, read.scanErr, read.diagnostics)
+}
+
+// statusUnreadable reports whether this read's selected record states a
+// NONTERMINAL status that durable corruption left unvouched for, so no journal
+// consulted could say how the job ended.
+//
+// The distinction from recordStatusUnconfirmed matters. That predicate also
+// fires for a torn append, a statusless fragment and a contradictory claim —
+// states where the job may well still be running, and where the honest answer is
+// a row a client keeps watching. Durable corruption is different: the scan
+// proved a line is undecodable, the finish is the likeliest candidate, and no
+// later read of this journal gets past it. Reporting such a row as confirmed
+// running is how a finished job reads as permanently running.
+//
+// scanErr is the branch-local error on purpose: an intact owner record that
+// inherited an ancestor's damage has an established status, and only the record's
+// own scan can make its status unreadable.
+func statusUnreadable(read sessionJobRecordRead) bool {
+	if read.record == nil || read.scanErr == nil {
+		return false
+	}
+	return !stateEstablished(read)
 }
 
 // retainedJobReadOutranks reports whether the incoming read replaces the
@@ -591,20 +624,19 @@ func loadSessionJobRecord(stateDir, sessionID, jobID string) (sessionJobRecordRe
 		// evidence available, so it keeps any integrity signal the owner branch
 		// carried rather than losing the damage report with the race.
 		local.diagnostics.mergeIntegrity(owned.diagnostics)
-		if !existingIsOwner {
-		}
 		return local, nil
 	}
 	// The owner branch is unreadable or holds nothing. Its absence must not erase
-	// the only surviving evidence, so the forwarded copy stands — and says it is
-	// a fallback rather than passing itself off as the owner's record.
+	// the only surviving evidence, so the scoped record stands as the answer: a
+	// dead descendant's job survives only as the copy its ancestor forwarded, and
+	// dropping it would lose the job. Callers can tell the two apart by comparing
+	// the record's owner against the owner the job ID encodes — the same rule that
+	// produced this read — so no separate flag is carried.
 	//
 	// The owner's OWN damage report still travels: a torn tail or a failed scan
 	// there is a fact about this job's history, and dropping it because no row
 	// survived would present unreadability and corruption as the same thing.
 	local.diagnostics.mergeIntegrity(owned.diagnostics)
-	if !retainedJobAuthority(jobID, local.sourceSessionID, local.record) {
-	}
 	return local, nil
 }
 
@@ -618,7 +650,52 @@ func retainedJobOwnerSession(jobID string, read sessionJobRecordRead) string {
 	if owner := encodedJobOwner(jobID); owner != "" {
 		return owner
 	}
+	// A pre-owner ID encodes nothing, so the RECORD's own stored owner is the only
+	// statement of who ran the job. A forwarded copy read from an ancestor names
+	// the descendant that ran it, and overwriting that with the ancestor would
+	// attribute the job to the session that merely forwarded it.
+	if read.record != nil && read.record.OwnerSessionID != "" {
+		return read.record.OwnerSessionID
+	}
 	return read.sourceSessionID
+}
+
+// jobRecordForProjection returns the record to project onto the wire, with the
+// launch facts withheld from one whose owner claim contradicts the validated
+// identifier.
+//
+// Such a record was folded from a start that described some other session's
+// launch. Its STATUS is still this job's best surviving evidence — the prefix it
+// came from is what proved the scope the row is served under — but the facts
+// that start declared about WHAT WAS LAUNCHED are another job's, and a pane that
+// showed them would label this job's recovered output with the wrong command.
+//
+// The fields withheld are exactly the ones preserveLaunchFields refuses to COPY
+// from a contradictory start, so there is one rule about what a contradiction may
+// say: that guard keeps it out of another record, this keeps it off the wire. Both
+// consult ownerClaimContradicts rather than a second predicate.
+//
+// StartedAt and OutputPath are deliberately KEPT. They are facts about this job's
+// run and its bytes, not about which command produced them: output routing
+// ignores a contradictory path anyway, and blanking StartedAt would tell the pane
+// the job has no start time when its own event carries one.
+//
+// OutputBytes is NOT kept. A terminal count describes one specific log, and this
+// record's path is the one the page reader discards as contradictory: its path
+// reaches another job's bytes, and the read serves the default log under the
+// validated owner instead. Projecting the discarded count would describe a file
+// this read never opens.
+func jobRecordForProjection(rec *jobstore.JobRecord) *jobstore.JobRecord {
+	if rec == nil || !ownerClaimContradicts(rec) {
+		return rec
+	}
+	withheld := rec.Clone()
+	withheld.Type = ""
+	withheld.Command = ""
+	withheld.Task = ""
+	withheld.Description = ""
+	withheld.OutputBytes = 0
+	return withheld
 }
 
 // jobRecordOutputPath resolves the log a record's bytes were written to. An
@@ -643,7 +720,7 @@ func jobRecordOutputPath(stateDir, jobID string, read sessionJobRecordRead) stri
 // UNAVAILABLE, not not-found: the scan could not establish absence, and the
 // next read may answer normally once the append completes.
 func jobReadError(jobID string, err error) error {
-	if errors.Is(err, ErrJobScopeUnresolved) {
+	if errors.Is(err, ErrJobScopeUnresolved) || errors.Is(err, ErrJobStatusUnresolved) {
 		return appwire.Unavailable(fmt.Sprintf("job %q: %v", jobID, err))
 	}
 	return err
@@ -710,8 +787,16 @@ func LoadSessionJobGet(stateDir, sessionID, jobID string) (JobActivityJob, bool,
 	if !read.found {
 		return JobActivityJob{}, false, nil
 	}
+	// A decode reached this job but durable corruption left its status
+	// unestablished: the row proves the job exists, not that it is still running.
+	// Report that as unavailable rather than as a running job. Output paging is
+	// deliberately NOT gated on this — the bytes that landed are still readable,
+	// and reading them is how a person establishes what happened.
+	if statusUnreadable(read) {
+		return JobActivityJob{}, false, jobReadError(jobID, ErrJobStatusUnresolved)
+	}
 	ownerRef := appwire.Ref{SourceID: "local", ThreadID: sessionID}.String()
-	job := projectActivityJob(read.record, ownerRef)
+	job := projectActivityJob(jobRecordForProjection(read.record), ownerRef)
 	// The fold states no owner for a finish-only journal and a contradictory one
 	// for a fallback start; the validated identifier states the truth.
 	job.OwnerSessionID = retainedJobOwnerSession(jobID, read)
