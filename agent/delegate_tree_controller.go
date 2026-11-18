@@ -118,6 +118,11 @@ type delegateTreeController struct {
 	evidenceVersion uint64
 	retirementClaim *RetirementClaim
 	closing         bool
+	// closeOwnsPassWarnings marks that the terminal close has taken ownership of
+	// the pass sink. Once set, a stop driver leaves the warnings it finds queued
+	// for the close's single publisher instead of emitting them on a goroutine
+	// the close joins under a deadline. Guarded by mu.
+	closeOwnsPassWarnings bool
 	reconcileOrder  []delegateLease
 	runStarts       map[delegateLease]delegatestore.RunTrigger
 	owedAdmission   bool

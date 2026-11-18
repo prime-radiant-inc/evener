@@ -659,6 +659,12 @@ func (c *delegateTreeController) closeRuntimeTree(ctx context.Context) error {
 	var idleTimers []idleReleaseTimerHandle
 	if !c.closing {
 		c.closing = true
+		// The close is now the tree's only publisher of lost-result warnings.
+		// A driver it joins must leave its passes' warnings in the sink: an
+		// emission parked on the authoritative buffer would otherwise hold the
+		// goroutine the stop join waits for, and the close would return before
+		// admitting stops for the remaining subtrees.
+		c.closeOwnsPassWarnings = true
 		c.evidenceVersion++
 		idleTimers = c.takeIdleReleaseTimersLocked()
 	}
@@ -865,6 +871,16 @@ func (c *delegateTreeController) drainStopForClose(ctx context.Context, stop *de
 	return c.drainStopAbandonable(ctx, stop, c.rootRuntime, nil, true)
 }
 
+// closeOwnsPassWarningsFor reports whether the terminal close has taken the pass
+// sink. A driver that sees it leaves the warnings it finds for the close's
+// single publisher: during a close there is exactly one publisher of lost-result
+// warnings, and it is never a goroutine the close joins under a deadline.
+func (c *delegateTreeController) closeOwnsPassWarningsFor() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.closeOwnsPassWarnings
+}
+
 // drainStopAbandonable is the stop drain plus an optional abandon signal. The stop
 // driver passes its own cancellable context's Done channel, so a close join
 // timeout -- which cancels that context -- can break the drain out of a busy
@@ -928,13 +944,17 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 		// can skip the notice. Draining (rather than reading) is what keeps a
 		// warning from being published twice.
 		//
-		// A close drain does not publish here. root.emit waits on the shared
-		// close deadline when the authoritative buffer is full, and the
-		// Notification hook it runs is synchronous, so an early subtree's
-		// warning would spend the budget a later subtree needs to reach its own
-		// durable stop. closeRuntimeTree publishes the same sink once, on every
-		// return path, after the loop.
-		if !closeDrain {
+		// Neither a close drain nor a driver the terminal close has taken over
+		// publishes here. root.emit waits on the shared close deadline when the
+		// authoritative buffer is full, and the Notification hook it runs is
+		// synchronous, so an early subtree's warning would spend the budget a
+		// later subtree needs to reach its own durable stop. Worse, a driver the
+		// close joins would have that parked emission on the goroutine the join
+		// waits for, so publication could outlast the stop-join deadline and end
+		// the close before the remaining subtrees were stopped at all. Such a
+		// pass leaves its warning in the sink, which the close publishes once,
+		// after every subtree's durable stop is admitted.
+		if !closeDrain && !c.closeOwnsPassWarningsFor() {
 			c.publishPassWarnings(root)
 		}
 		if err != nil {

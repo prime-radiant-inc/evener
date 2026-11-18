@@ -351,19 +351,36 @@ func delegateRestoreOperationalIOError(err error) bool {
 	return errors.As(err, &errno)
 }
 
+// closeOwnedDelegateStore is the store-only close: it joins any in-flight stop
+// reconciliation driver, shuts the store, and publishes nothing. Retirement and
+// constructor cleanup use it, because neither is a terminal close: publishing
+// there would republish every unchanged delegate snapshot, and the daemon bridge
+// resamples the whole roster for each, making retirement quadratic in the
+// number of retained delegates.
 func (s *Session) closeOwnedDelegateStore() error {
-	return s.closeOwnedDelegateStoreWithContext(context.Background())
+	return s.closeOwnedDelegateStoreOnlyWithContext(context.Background())
 }
 
+// closeOwnedDelegateStoreOnlyWithContext shuts the delegate store without
+// publishing close evidence. See closeOwnedDelegateStore.
+func (s *Session) closeOwnedDelegateStoreOnlyWithContext(ctx context.Context) error {
+	if s == nil || !s.ownsDelegateController || s.delegateController == nil || s.delegateController.store == nil {
+		return nil
+	}
+	return s.delegateController.closeStoreAfterStopReconcileDriver(ctx)
+}
+
+// closeOwnedDelegateStoreWithContext is the terminal close's store close, and the
+// terminal close is the one publisher of the warnings its drains deferred. It
+// runs after every subtree's stop is durable, after root job shutdown and after
+// lane disposal, while the event stream is still open because the store outlives
+// all of it. Publishing earlier would let a stalled authoritative consumer spend
+// the shared close deadline before those ran; publishing nowhere would lose the
+// lost-result notice a closing session most needs.
 func (s *Session) closeOwnedDelegateStoreWithContext(ctx context.Context) error {
 	if s == nil || !s.ownsDelegateController || s.delegateController == nil || s.delegateController.store == nil {
 		return nil
 	}
-	// This is the last point at which the close's delegate evidence can be
-	// published: every subtree's stop is durable, root jobs are stopped and the
-	// isolation lanes are disposed, and the event stream is still open because
-	// the store outlives all of it. Publishing earlier would let a stalled
-	// authoritative consumer spend the shared close deadline before those ran.
 	err := s.delegateController.closeStoreAfterStopReconcileDriver(ctx)
 	if observe := s.cfg.testOnly.delegateCloseEvidencePublishing; observe != nil {
 		observe()

@@ -400,7 +400,11 @@ func (s *Session) releaseForRetirement(ctx context.Context, options closeOptions
 	}
 	collect("artifact store", s.closeOwnedArtifactStore())
 	collect("job manager", jobManagerCloseErr)
-	collect("delegate store", s.closeOwnedDelegateStoreWithContext(budgetCtx))
+	// Retirement is not a terminal close: it publishes no close evidence. The
+	// store close alone keeps the durable tree resumable, and republishing
+	// every unchanged snapshot would make the daemon bridge resample the whole
+	// retained roster.
+	collect("delegate store", s.closeOwnedDelegateStoreOnlyWithContext(budgetCtx))
 
 	// Retirement ends the parked and abandoned environments' scratch without
 	// signalling any process; the current environment's goes below, after MCP

@@ -259,8 +259,12 @@ func TestDelegateInlineAckAppendFailureSettlesThroughRealToolRound(t *testing.T)
 		}
 	}
 
-	// The result was persisted by the caller's round and its acknowledgment
-	// landed, so the close must not report it lost.
+	// The close's drains leave their warnings in the pass sink and the close's
+	// single publisher emits them later, so a check before that publication
+	// cannot see a warning the drain queued: it would pass whether or not
+	// reconciliation acknowledged the receipt durably and then also recorded it
+	// lost. Publish first, then look.
+	controller.publishCloseEvidence()
 	for _, warning := range drainSessionWarnings(root) {
 		if warning.Code == events.WarningCodeDelegateDeliveryResultLost {
 			t.Fatalf("a retried inline acknowledgment produced a lost-result warning: %#v", warning)
