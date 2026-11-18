@@ -232,9 +232,9 @@ ordinary delivery-order handling, whatever their vintage.
   tick boundaries.
 - The wake's zero-delay announcement and the resumed call's ordinary retries
   are not waits; they drive ordinary retry-progress text.
-- The sidebar row reads the navigation failure summary; with a pane open the
-  row's summary refresh follows the pane's live state (see Surface
-  authorities).
+- The sidebar row always reads the navigation failure summary and catches
+  up on its next normal refresh; an open pane never wires its live updates
+  into sidebar refetches (see Surface authorities and scenario 16).
 
 ## Acceptance scenarios
 
@@ -313,9 +313,10 @@ Dependency order — each stage's acceptance gates the next:
    older-daemon fallback. Gated on the complete Stage 0 producer contract:
    the stamp is strictly increasing per turn and present on start, wake,
    and read summary; the live start announcement's `resumesAt` matches the
-   read summary's for the same wait; and emitted root and delegate Stop
-   frames carry the correct `endedTurnId` (captured before settlement
-   clears it).
+   ROOT read summary's for the same wait (delegate read parity is Stage
+   1's gate, which Stage 1's materialization makes possible); and emitted
+   root and delegate Stop frames carry the correct `endedTurnId`
+   (captured before settlement clears it).
 2. **Stage 1, projection:** the delegate's wait materialized on its projected
    thread; the elapsed sample produced real at wait start. Gated on read
    behavior: a delegate read restores the wait and clears it at retry.
