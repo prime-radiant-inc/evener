@@ -15,6 +15,13 @@ import (
 type conversationRequest struct {
 	provenance schema.ConversationOutputProvenance
 	inputs     []string
+	// historyRevision is s.historyRevision at the moment this attempt froze its
+	// request. A fold or any other non-append history mutation bumps that
+	// counter; an ordinary append at the end does not. A response whose
+	// revision no longer matches when it is appended was produced from a
+	// history a fold has since replaced — its provider context is pre-fold —
+	// and must not become a continuation anchor (#6734 path 4).
+	historyRevision int
 }
 
 type conversationState struct {
@@ -365,10 +372,30 @@ func (s *Session) resolveConversationFrontierLocked(id string) []string {
 func (s *Session) freezeConversationRequest() *conversationRequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return &conversationRequest{inputs: slices.Clone(s.conversation.preparedInputs), provenance: schema.ConversationOutputProvenance{
-		Version: 1, InstanceID: s.id, RunGeneration: s.conversation.generation,
-		RequestID: identifier.MustNewTurnID(),
-	}}
+	return &conversationRequest{
+		inputs:          slices.Clone(s.conversation.preparedInputs),
+		historyRevision: s.historyRevision,
+		provenance: schema.ConversationOutputProvenance{
+			Version: 1, InstanceID: s.id, RunGeneration: s.conversation.generation,
+			RequestID: identifier.MustNewTurnID(),
+		},
+	}
+}
+
+// conversationRequestSurvivedHistory reports whether the history a request was
+// dispatched against is still the history this session holds. A false answer
+// means a fold (or another non-append mutation) replaced history under the
+// in-flight attempt: the provider's context still holds what was folded away,
+// so a response from that attempt cannot anchor a continuation (#6734 path 4).
+// A request that froze nothing — an attempt with no conversation request, or a
+// restored session's own bookkeeping — reports true.
+func (s *Session) conversationRequestSurvivedHistory(request *conversationRequest) bool {
+	if request == nil {
+		return true
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return request.historyRevision == s.historyRevision
 }
 
 func (s *Session) conversationDeltaLocked(id string, ids []string) *schema.ConversationFrontier {

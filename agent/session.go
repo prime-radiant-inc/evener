@@ -3321,6 +3321,22 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 		RoundID:                         s.roundIDForModelCall(),
 	}
 	t.Authorship = s.roundTranscriptAuthorship()
+	// A fold that publishes while this attempt is in flight replaces the history
+	// the request was built from, but the provider's response comes from the
+	// context it actually saw — the pre-fold one. Stamping continuation-anchor
+	// metadata on that turn would let the next request continue from a retained
+	// prefix that still holds the folded turns, including a frame the fold
+	// removed. Clearing the anchor fields makes the turn fail
+	// turnHasResponsesContinuationMetadata on its own merits, so the next
+	// request sends full history and the escape applies, rather than relying on
+	// a timestamp comparison that an append after the fold would satisfy. The
+	// response id and its hash stay for the transcript reader (#6734 path 4).
+	if !s.conversationRequestSurvivedHistory(finalAttempt.conversation) {
+		t.ResponseEndpoint = ""
+		t.ResponseRequestFingerprint = ""
+		t.ResponseStorageScopeFingerprint = ""
+		t.ResponseContextMarker = ""
+	}
 	err := func() error {
 		s.attentionMu.Lock()
 		defer s.attentionMu.Unlock()

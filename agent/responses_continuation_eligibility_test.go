@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -8,6 +9,87 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
+
+// TestResponsesContinuationAnchorRefusesResponseWhoseRequestPredatesAFold pins
+// #6734 path 4 (#6493 review). A /compact fold can publish while a Responses
+// request is in flight. The response is appended after the new boundary, so
+// the timestamp comparison accepts it, yet the provider generated it from the
+// pre-fold context: keeping it as an anchor replays the folded turns from the
+// provider's retained prefix, including a frame the fold removed. The turn is
+// stamped without anchor metadata when the history its own request froze has
+// since moved, so selection falls back to full history. A response whose
+// request saw no fold still anchors, so this cannot become a blanket refusal.
+func TestResponsesContinuationAnchorRefusesResponseWhoseRequestPredatesAFold(t *testing.T) {
+	t.Parallel()
+	const provider = "predate-cheap"
+	newFoldSession := func(tb *testing.T) *Session {
+		tb.Helper()
+		return newScriptedSummaryCompactSession(tb, provider, func(llm.Request) llm.Response {
+			return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
+		})
+	}
+	// appendRound records the response of the in-flight request and reports the
+	// turn it produced plus the anchor decision the next request would make.
+	// The delta turn gives selection a non-empty delta, without which every
+	// refusal would read the same and the metadata predicate could not show.
+	appendRound := func(tb *testing.T, s *Session, request *conversationRequest) (schema.Turn, llm.ResponsesContinuationDecision) {
+		tb.Helper()
+		attempt := ModelAttemptMetadata{
+			conversation:            request,
+			EndpointFamily:          "openai-responses",
+			EndpointURL:             "https://api.openai.com/v1/responses",
+			RequestModel:            "gpt-5.4",
+			RequestFingerprint:      "cont-req-v1:in-flight",
+			StorageScopeFingerprint: "cont-scope-v1:in-flight",
+			ContextMarker:           responseContextMarkerV1,
+			ResponseIDHash:          "cont-handle-v1:response_id:resp_in_flight",
+		}
+		resp := llm.Response{ID: "resp_in_flight", Provider: "openai", Model: "gpt-5.4",
+			Message: llm.Assistant("the work is done")}
+		if err := s.appendAssistantTurn(resp, attempt); err != nil {
+			tb.Fatalf("appendAssistantTurn: %v", err)
+		}
+		history := currentHistory(tb, s)
+		anchor := history[len(history)-1]
+		history = append(history, schema.NewTurn(schema.TurnUserInput, llm.User("and then?")))
+		_, decision := selectResponsesContinuationAnchorCandidate(s.cfg, history)
+		return anchor, decision
+	}
+
+	// No fold landed: the response was generated from the history the session
+	// still holds, so it is a legitimate anchor.
+	steady := newFoldSession(t)
+	seedNumberedSessionHistory(t, steady, 4)
+	steadyAnchor, steadyDecision := appendRound(t, steady, steady.freezeConversationRequest())
+	if !turnHasResponsesContinuationMetadata(steadyAnchor) {
+		t.Fatalf("a response whose request saw no fold kept no anchor metadata: marker %q endpoint %q fingerprint %q",
+			steadyAnchor.ResponseContextMarker, steadyAnchor.ResponseEndpoint, steadyAnchor.ResponseRequestFingerprint)
+	}
+	if steadyDecision.HistoryMode != llm.HistoryModeResponsesDelta ||
+		steadyDecision.Reason != "continuation_anchor_candidate" {
+		t.Fatalf("a response whose request saw no fold stopped anchoring: %+v", steadyDecision)
+	}
+
+	// The fold publishes while the request is in flight.
+	folded := newFoldSession(t)
+	seedNumberedSessionHistory(t, folded, 12) // > PreserveRecentTurns(6): forces a real fold
+	request := folded.freezeConversationRequest()
+	if err := folded.Compact(context.Background()); err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	if latestContextBoundaryIndex(currentHistory(t, folded)) < 0 {
+		t.Fatal("test premise: the fold published no context boundary, so no fold raced the request")
+	}
+	foldedAnchor, foldedDecision := appendRound(t, folded, request)
+	if turnHasResponsesContinuationMetadata(foldedAnchor) {
+		t.Fatalf("a response produced from pre-fold history kept anchor metadata: marker %q endpoint %q fingerprint %q",
+			foldedAnchor.ResponseContextMarker, foldedAnchor.ResponseEndpoint, foldedAnchor.ResponseRequestFingerprint)
+	}
+	if foldedDecision.HistoryMode != llm.HistoryModeFullHistory ||
+		foldedDecision.Reason != "continuation_anchor_metadata_missing" {
+		t.Fatalf("a response produced from pre-fold history anchored the next request: %+v", foldedDecision)
+	}
+}
 
 // TestResponsesContinuationAnchorCandidateRejectsEscapableAnchorText pins the
 // stored-response path (#6493): the provider replays the anchor's own bytes
