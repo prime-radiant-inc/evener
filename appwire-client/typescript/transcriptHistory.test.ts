@@ -1779,6 +1779,60 @@ test("a legacy bare resync preserves the hold, and the root's next reboot retire
   expect(model.history?.holdOwner).toBe("6@root");
 });
 
+test("an authoritative update at the epoch a bare resync recorded still retires", () => {
+  // A descendant moves from its root's daemon at "5@root" to its own daemon at
+  // "1". The bare resync records that source in `awaited` but names no owner,
+  // so no hold hand-off happens there. The new daemon's first authoritative
+  // `history/updated` then arrives at the SAME epoch the resync already
+  // recorded: the history action is "apply", and the invalidated-model guard
+  // returns. If the hold hand-off lives behind that guard, the retired 900 is
+  // never cleared and outranks this daemon's first sample at 1 forever.
+  const base = hydrateThread(
+    { thread: testThread(), bootGeneration: "5@root", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 } },
+    "ref_t",
+    1000,
+  );
+  let model = applyNotification(
+    base,
+    { method: "evener/delegate/updated", params: { ref: "ref_t", delegate: heldDelegate(900, 3) } } as AnyNotification,
+    2000,
+  );
+  expect(model.delegates?.[0]?.holdSequence).toBe(900);
+
+  // The bare resync: it sets awaited to the bare "1" and records no owner.
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/resync",
+      params: { threadId: base.threadId, ref: "ref_t", bootGeneration: "1", epoch: 2 },
+    } as AnyNotification,
+    3000,
+  );
+  expect(model.delegates?.[0]?.holdSequence).toBe(900);
+  expect(model.history?.holdOwner).toBeUndefined();
+
+  // The same daemon's authoritative frame at that same epoch and incarnation.
+  // History content may merge or not; ownership is a separate question.
+  model = applyNotification(
+    model,
+    {
+      method: "history/updated",
+      params: {
+        ref: "ref_t",
+        threadId: base.threadId,
+        bootGeneration: "1",
+        epoch: 2,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [],
+        items: [],
+      },
+    } as AnyNotification,
+    4000,
+  );
+  expect(model.delegates?.[0]?.holdSequence).toBeUndefined();
+  expect(model.delegates?.[0]?.delegateId).toBe("dlg_held");
+});
+
 test("a standalone daemon's bare history update retires the root-served hold", () => {
   // A descendant served by its root at "5@root" switches to its own daemon.
   // That daemon's authoritative `history/updated` carries a BARE counter,

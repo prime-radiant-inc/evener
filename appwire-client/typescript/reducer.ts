@@ -67,15 +67,25 @@ function applyHistoryUpdated<M extends ThreadModel>(model: M, params: HistoryUpd
   // incarnation change invalidates the transcript index and leaves the hold
   // alone — that daemon's delegate controller is still sampling, and an
   // unchanged hold emits no update of its own to restore what we dropped.
+  //
+  // The hand-off runs HERE, before any branch below returns, and that
+  // placement is the rule rather than a convenience. It is decided by the
+  // frame's OWN boot generation against the recorded owner, which is a
+  // question about who serves the ref - not about whether this frame's
+  // content can merge into the history it lands on. An earlier bare resync
+  // can leave `awaited` naming a source whose owner was never recorded, so
+  // the frame that finally identifies that source arrives as a plain "apply"
+  // and the invalidated-model guard would return before ownership was ever
+  // decided. A hold retired behind a guard is a hold that outlives its owner.
+  const handed = handOffReplacedSource(live, params.bootGeneration, "authoritative");
   if (action === "invalidate") {
     const history = invalidated(held, signal);
     // `invalidated` recorded the incoming owner at the one place awaited is
-    // written. What remains is the retire, decided against the pre-invalidation
-    // model so it still sees the owner that is being replaced.
-    const retired = handOffReplacedSource(live, params.bootGeneration, "authoritative");
-    return { ...(retired ?? live), history };
+    // written; the hand-off above already retired against the owner it
+    // replaced.
+    return { ...(handed ?? live), history };
   }
-  if (action === "ignore" || held.invalidatedAtGeneration !== undefined) return live;
+  if (action === "ignore" || held.invalidatedAtGeneration !== undefined) return handed ?? live;
   // A notification projected after the page that omitted one of its identities
   // must not put it back: the page's observation still wins.
   const fragment = withoutNewerPageOmissions(
@@ -84,8 +94,8 @@ function applyHistoryUpdated<M extends ThreadModel>(model: M, params: HistoryUpd
     params.snapshot.length,
   );
   const turns = mergeHistory(held.turns, fragment);
-  if (turns === held.turns) return live;
-  return withDisplay(live, { ...held, turns }, model.overlay ?? {});
+  if (turns === held.turns) return handed ?? live;
+  return withDisplay(handed ?? live, { ...held, turns }, model.overlay ?? {});
 }
 
 // Versioned resync invalidates history. A hub's epochless hint only requests

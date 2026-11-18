@@ -4453,7 +4453,6 @@ async function readThreadHydration(
       // this hydration's own base model, and the ownership checks above still
       // decide whether anything is published at all.
       const failedBase = applyHistoryReadFailure(pending.baseModel, errorText(err), pending.requestGeneration ?? 0);
-      const failedModel = replayHydrationNotifications(failedBase, pending.notifications).model;
       // A failed read is still EVIDENCE about who serves the thread: the hub
       // stamps it with the identity it read (appwire.HistoryReadErrorData), a
       // daemon's own token or "daemonless" for the hub's transcript-only
@@ -4463,9 +4462,21 @@ async function readThreadHydration(
       // rule every other fold runs - retire a CONFIRMED replacement's samples
       // and record the incoming owner - and it leaves the diagnostic, the
       // recorded history, and any still-unconfirmed hold exactly as they are.
+      //
+      // ORDER: the hand-off runs BEFORE the buffered updates replay, and that
+      // order is load-bearing. After a bootless recovery resync a replacement
+      // can publish its delegate hold before any history frame identifies its
+      // boot, so the buffer holds a live sample of the INCOMING source.
+      // Replaying first folds that sample onto the old owner, and the hand-off
+      // then retires it along with the outgoing source's samples - clearing a
+      // wait that had only just started, with no update of its own to restore
+      // it. Retiring first leaves the replay's own frame as the first sample
+      // of the source that now owns the sequence.
       const failureOwner = transcriptHistoryFailedBootGeneration(err);
-      const handed = failureOwner ? handOffReplacedSource(failedModel, failureOwner, "authoritative") : undefined;
-      const published = handed ?? failedModel;
+      const handedBase = failureOwner
+        ? (handOffReplacedSource(failedBase, failureOwner, "authoritative") ?? failedBase)
+        : failedBase;
+      const published = replayHydrationNotifications(handedBase, pending.notifications).model;
       const entry = tracked ? existingEntryRoute(ref) : undefined;
       if (!tracked) {
         putWatchedThreadModel(ref, published);
@@ -4479,6 +4490,23 @@ async function readThreadHydration(
             lifetime: entry.lifetime,
             bootGeneration: failureOwner,
           });
+          // Same ordering as the watched model, on the repository's own copy:
+          // the repository accepted the replacement's frames LIVE while the
+          // read was pending, so a hand-off that ran only inside
+          // acceptReadFailure would clear that live sample as if it belonged to
+          // the source being retired. Replaying the buffer through the same
+          // hand-off puts the retire first and the replacement's frames after
+          // it. The second hand-off is a no-op once the owner is recorded.
+          const repositoryModel = entry.repository.getSnapshot();
+          if (repositoryModel)
+            replayEntryHydrationNotifications(
+              entry.repository,
+              entry.lifetime,
+              repositoryModel,
+              pending.notifications,
+              false,
+              failureOwner,
+            );
         }
       } else {
         putThreadModel(ref, published);
@@ -6074,7 +6102,13 @@ function carriedHydrationUpdates(
     carried.push(update);
   }
   if (!resyncBootGeneration) return carried;
-  return confirmedBootReplacement(owner, resyncBootGeneration, "authoritative") ? [] : carried;
+  // RESYNC evidence, never authoritative: the superseding signal is a
+  // `evener/thread/resync` hint, which is a request to re-read rather than the
+  // serving daemon's account of itself. An older daemon stamps a descendant's
+  // worktree-change resync with a bare "5" while its reads name that same
+  // controller "5@root", so an ambiguous hint confirms nothing and the
+  // buffered hold comes along. Only a confirmed replacement discards it.
+  return confirmedBootReplacement(owner, resyncBootGeneration, "resync") ? [] : carried;
 }
 
 function bufferPendingNotification(
@@ -6135,9 +6169,16 @@ function replayEntryHydrationNotifications(
   model: ThreadModel,
   notifications: PendingTranscriptUpdate[],
   adoptedRead: boolean,
+  handOffBootGeneration?: string,
 ): { model: ThreadModel; appliedAt: number[] } {
   let hydrated = model;
   const appliedAt: number[] = [];
+  // The same ordering rule the watched model follows: retire the outgoing
+  // source's samples BEFORE the buffer's frames fold in. A replacement can
+  // publish its delegate hold before any history frame names its boot, so
+  // replaying first folds that live sample onto the old owner and the hand-off
+  // then clears it as one of the retired source's.
+  if (handOffBootGeneration !== undefined) repository.retireHoldForReplacedSource(handOffBootGeneration);
   for (const update of notifications) {
     const acceptedLive = update.acceptedEntry?.repository === repository && update.acceptedEntry.lifetime === lifetime;
     // A discarded read left this owner's live model intact. Only a read that

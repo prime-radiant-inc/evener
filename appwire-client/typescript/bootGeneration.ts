@@ -96,12 +96,18 @@ export function confirmedBootReplacement(
     // Both sides name their root, so the owners really differ. A bare counter
     // on either side leaves the owner unstated.
     if (heldCounter.owner !== "" && incomingCounter.owner !== "") return true;
-    // An AUTHORITATIVE frame is the serving daemon's own account of itself,
-    // and the hub qualifies a descendant with its root on every one of them
-    // (server/appwire_histories.go's bootGenerationFor). A bare counter here
-    // therefore names the daemon serving the thread as its own root: a
-    // descendant previously served by "5@root" resumed under its own daemon
+    // An AUTHORITATIVE frame is the serving daemon's own account of itself, so
+    // a bare counter here names the daemon serving the thread as its own root:
+    // a descendant previously served by "5@root" resumed under its own daemon
     // at "1", and its first hold is numbered from that daemon's start.
+    //
+    // ASSUMPTION: the hub qualifies a descendant with its root on EVERY
+    // authoritative path (server/appwire_histories.go's bootGenerationFor),
+    // which is what makes a bare counter mean "its own root" rather than
+    // "an unstated owner". A daemon old enough to send a bare counter on a
+    // descendant's READ would retire that descendant's hold instead of
+    // preserving it. Only the resync side has evidence behind it, so only that
+    // side is treated as ambiguous.
     //
     // A resync hint is different: an older daemon stamps a descendant's
     // worktree-change resync with a bare counter while its reads name the same
