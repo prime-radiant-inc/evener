@@ -235,6 +235,98 @@ func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, t
 // Items get their Position/TranscriptKey here — the full item read, the
 // bounded readers, and the item-window path must all agree on these keys (PR
 // #822 F3).
+// turnExecution is one stamped turn across every run of its id: what the
+// bounded index keeps as one summary. Replay renders one turn per visible run,
+// but every field it computes — item order, call settlement, usage and the
+// continuation flags — is a property of the EXECUTION, not of a run. A cold
+// writer can put a delivery between two runs of one execution, and treating
+// the runs independently is what produced six rounds of findings in different
+// fields (#1166 review).
+type turnExecution struct {
+	turnID string
+	// entries are every run's entries in file order.
+	entries []schema.Turn
+	// items are every run's projected items in file order, before settlement.
+	items        []appwire.ThreadItem
+	itemEntries  []int
+	itemAnnounce []bool
+	// runOfItem is the run each item came from, parallel to items.
+	runOfItem []int
+	// runs are the group indexes of this execution's visible runs, in order.
+	runs []int
+
+	settled   bool
+	merged    []appwire.ThreadItem
+	mergedRun []int
+}
+
+// settle folds the whole execution's items once. A result that arrives in a
+// later run settles into the announcement's own item, which stays in the run
+// that announced it — the index's rule: one settled item at the announcement.
+func (ex *turnExecution) settle() {
+	if ex.settled {
+		return
+	}
+	ex.settled = true
+	ex.merged, ex.mergedRun = mergeExecutionItems(ex.items, ex.itemEntries, ex.itemAnnounce, ex.runOfItem)
+}
+
+// runIndex reports the position of group index i among the execution's runs.
+func (ex *turnExecution) runIndex(i int) int {
+	for run, group := range ex.runs {
+		if group == i {
+			return run
+		}
+	}
+	return 0
+}
+
+// itemsOfRun returns the execution's settled items that belong to one run.
+func (ex *turnExecution) itemsOfRun(run int) []appwire.ThreadItem {
+	var items []appwire.ThreadItem
+	for at := range ex.merged {
+		if ex.mergedRun[at] == run {
+			items = append(items, ex.merged[at])
+		}
+	}
+	return items
+}
+
+// groupExecutions collects every run of each stamped turn id into one
+// execution.
+func groupExecutions(groups []groupedTurn) map[string]*turnExecution {
+	execs := make(map[string]*turnExecution, len(groups))
+	for i := range groups {
+		if !groups[i].stamped {
+			continue
+		}
+		ex := execs[groups[i].turnID]
+		if ex == nil {
+			ex = &turnExecution{turnID: groups[i].turnID}
+			execs[groups[i].turnID] = ex
+		}
+		run := len(ex.runs)
+		ex.runs = append(ex.runs, i)
+		ex.entries = append(ex.entries, groups[i].entries...)
+		for j := range groups[i].items {
+			ex.items = append(ex.items, groups[i].items[j])
+			ex.itemEntries = append(ex.itemEntries, groups[i].itemEntries[j])
+			ex.itemAnnounce = append(ex.itemAnnounce, groups[i].itemAnnounce[j])
+			ex.runOfItem = append(ex.runOfItem, run)
+		}
+	}
+	return execs
+}
+
+// groupedAppTurnProjection flushes the accumulator into AppWire turns under
+// the logical-turn ordinals: with no prelude the first group is entry ordinal
+// 0; a prelude turn occupies ordinal 0 and shifts every group by one. Every
+// group consumes an ordinal even when it emits no visible turn, matching the
+// live snapshot's turn-start allocation.
+//
+// Items get their Position/TranscriptKey here — the full item read, the
+// bounded readers, and the item-window path must all agree on these keys (PR
+// #822 F3).
 func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Header) (ItemTurnProjection, error) {
 	turns := []appwire.Turn{}
 	entryOrdinal := uint64(0)
@@ -248,38 +340,12 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 		prelude = p
 		entryOrdinal = 1
 	}
-	// A stamped turn's metadata belongs to the TURN, not to each run of it. A
-	// cold delivery can split one turn id into several runs here while the index
-	// keeps one summary for them, so stamping each run from its own entries
-	// would show a pre-delivery run as completed with a share of the usage while
-	// the turn really failed with the total — two readers describing different
-	// turns. The entries of every run of an id are folded ONCE, and that one
-	// result stamps each visible run (#1166 review).
-	type executionStamp struct {
-		entries []schema.Turn
-		first   int
-		last    int
-	}
-	executions := map[string]*executionStamp{}
-	order := make([]string, 0, len(acc.turns))
-	for i := range acc.turns {
-		id := acc.turns[i].turnID
-		if !acc.turns[i].stamped {
-			continue
-		}
-		stamp, seen := executions[id]
-		if !seen {
-			stamp = &executionStamp{first: i, last: i}
-			executions[id] = stamp
-			order = append(order, id)
-		}
-		stamp.entries = append(stamp.entries, acc.turns[i].entries...)
-		stamp.last = i
-	}
-	// The header turn is emitted in file order, so a delivery recorded before
-	// the prelude's first stamped entry keeps its own position ahead of it.
-	// Merging the prompt into a later prelude run would emit the prompt after
-	// the delivery and flatten the positions (#1166 review).
+	execs := groupExecutions(acc.turns)
+	// The header turn keeps entry position 0, so it is emitted in file order:
+	// a delivery recorded before the prelude's first stamped entry keeps its
+	// own position ahead of it. Merging the prompt into a LATER prelude run
+	// would emit position 0 after that delivery and flatten the chronology,
+	// which item paging rejects (#1166 review).
 	preludeEmitted := false
 	emittedAny := false
 	emitPrelude := func() {
@@ -293,7 +359,16 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 		group := &acc.turns[i]
 		groupOrdinal := entryOrdinal
 		entryOrdinal++
-		items := mergeGroupedItems(group.items, group.itemEntries, group.itemAnnounce, group.stamped)
+		var items []appwire.ThreadItem
+		var run, runs int
+		if ex := execs[group.turnID]; ex != nil {
+			ex.settle()
+			run = ex.runIndex(i)
+			runs = len(ex.runs)
+			items = ex.itemsOfRun(run)
+		} else {
+			items = mergeGroupedItems(group.items, group.itemEntries, group.itemAnnounce, false)
+		}
 		if len(items) == 0 {
 			continue
 		}
@@ -308,21 +383,20 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 			return ItemTurnProjection{}, err
 		}
 		turn := appwire.Turn{ID: group.turnID, Items: positioned, ItemsView: appwire.TurnItemsViewFull, Status: appwire.TurnStatusCompleted}
-		if stamp, ok := executions[group.turnID]; ok {
-			StampGroupedTurn(&turn, stamp.entries)
+		if ex := execs[group.turnID]; ex != nil {
+			// Usage and terminal stamps are the execution's, folded once from
+			// every run's entries, so neither fragment understates the turn.
+			StampGroupedTurn(&turn, ex.entries)
 		} else {
 			StampGroupedTurn(&turn, group.entries)
 		}
-		if !preludeEmitted && prelude != nil {
+		if prelude != nil && !preludeEmitted {
 			// The header's items and a LEADING prelude run are ONE turn: the
 			// writer stamps a fresh transcript's pre-execution entries with the
-			// same id the header content is projected under, so emitting both
-			// would show a client two turns with one id. They merge only when
-			// the prelude run is the first thing the read emits. If a visible
-			// delivery comes first, the prompt is emitted at entry position
-			// zero on its own and the later prelude run stays a fragment —
-			// merging across the delivery would put position 0 inside a later
-			// turn and flatten the chronology (#1166 review).
+			// same id the header content is projected under. They merge only
+			// when the prelude run is the first thing the read emits; otherwise
+			// the prompt stands alone at position 0 and the prelude run stays
+			// its own fragment.
 			if group.turnID == appwire.SystemPreludeTurnID && !emittedAny {
 				merged := make([]appwire.ThreadItem, 0, len(prelude.Items)+len(turn.Items))
 				merged = append(merged, prelude.Items...)
@@ -332,16 +406,15 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 				emitPrelude()
 			}
 		}
-		// Every run of a split stamped turn is a FRAGMENT: AppWire defines the
-		// continuation flags for fragments, and the bounded reader labels these
-		// runs "fragment". A client told two full turns share one id cannot
-		// reconcile them at all. This survives on replay of transcripts written
-		// before the writer ended the prelude's span at a delivery (#1166
-		// review).
-		if stamp, ok := executions[group.turnID]; ok && stamp.first != stamp.last {
+		// Every visible run of a split stamped turn is a FRAGMENT, with the
+		// continuation flags derived from whether a run precedes or follows it
+		// in the SAME execution. A client reads these to decide whether to page
+		// further, so a run that omits them advertises completeness it does not
+		// have (#1166 review). An independent legacy group keeps "full".
+		if runs > 1 {
 			turn.ItemsView = appwire.TurnItemsViewFragment
-			turn.HasEarlierItems = stamp.first != i
-			turn.HasLaterItems = stamp.last != i
+			turn.HasEarlierItems = run > 0
+			turn.HasLaterItems = run < runs-1
 		}
 		turns = append(turns, turn)
 		emittedAny = true
@@ -447,6 +520,56 @@ func mergeGroupedItems(items []appwire.ThreadItem, itemEntries []int, itemAnnoun
 		merged = append(merged, item)
 	}
 	return merged
+}
+
+// mergeExecutionItems folds one execution's items, across every run of its
+// turn id, and reports which run each surviving item belongs to.
+//
+// The rules are the index's, applied to the execution rather than to a run:
+//
+//   - a call id identifies exactly one announcement, and an announcement never
+//     merges into an earlier one (every recorded part is kept);
+//   - a result settles into the announcement its AWAITING assistant entry
+//     recorded, wherever in the execution that announcement sits, so a
+//     delivery that splits the turn cannot orphan the result;
+//   - a result whose call the execution never announced projects on its own.
+func mergeExecutionItems(items []appwire.ThreadItem, itemEntries []int, itemAnnounce []bool, runOfItem []int) ([]appwire.ThreadItem, []int) {
+	merged := make([]appwire.ThreadItem, 0, len(items))
+	mergedRun := make([]int, 0, len(items))
+	// callIndex keys an announcement by its awaiting entry and call id, which
+	// is how the index decides what a result settles.
+	type callKey struct {
+		entry int
+		call  string
+	}
+	callIndex := map[callKey]int{}
+	for at, item := range items {
+		run := 0
+		if at < len(runOfItem) {
+			run = runOfItem[at]
+		}
+		entry := 0
+		if at < len(itemEntries) {
+			entry = itemEntries[at]
+		}
+		if MergesByCallID(item) {
+			key := callKey{entry: entry, call: item.CallID}
+			if at < len(itemAnnounce) && itemAnnounce[at] {
+				callIndex[key] = len(merged)
+				merged = append(merged, item)
+				mergedRun = append(mergedRun, run)
+				continue
+			}
+			if prev, ok := callIndex[key]; ok {
+				merged[prev] = MergeThreadItems(merged[prev], item)
+				continue
+			}
+			callIndex[key] = len(merged)
+		}
+		merged = append(merged, item)
+		mergedRun = append(mergedRun, run)
+	}
+	return merged, mergedRun
 }
 
 // MergeThreadItems merges a later projected item into an earlier one of

@@ -544,3 +544,80 @@ func TestLegacySplitPreludeMarksBothBoundaries(t *testing.T) {
 		t.Errorf("second prelude run = %+v, want a fragment with earlier and no later", runs[1])
 	}
 }
+
+// TestDeliverySplitSettlesTheAnnouncement covers a standalone delivery landing
+// between a stamped tool announcement and its result. The index keeps one
+// settled item at the announcement, because its summary spans the runs. A
+// replay that settles each run independently leaves the announcement in
+// progress and emits the result as a SECOND item with no arguments and no
+// round. Settlement is a property of the execution, not of a run (#1166
+// review).
+func TestDeliverySplitSettlesTheAnnouncement(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "delivery_split_settle"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := func(turn schema.Turn) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceVerbatim}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	stamp := func(turn schema.Turn, id string, span schema.TurnSpanKind) schema.Turn {
+		turn.Format = schema.TurnFormatIdentity
+		turn.TurnID = id
+		turn.TurnKind = span
+		return turn
+	}
+	call := llm.ToolCallData{ID: "call_d", Name: "read_file", Arguments: json.RawMessage(`{"path":"a"}`)}
+	announce := schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}})
+	announce.RoundID = "r_announce"
+	record(stamp(announce, "t_exec", schema.TurnSpanExecution))
+	record(stamp(schema.NewTurn(schema.TurnAttentionResolution, llm.System("resolved")), "turn_delivery", schema.TurnSpanDelivery))
+	record(stamp(schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call_d", "read_file", "out", false)), "t_exec", schema.TurnSpanExecution))
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	var calls []appwire.ThreadItem
+	for _, turn := range turns {
+		if turn.ID != "t_exec" {
+			continue
+		}
+		for _, item := range turn.Items {
+			if item.CallID == "call_d" {
+				calls = append(calls, item)
+			}
+		}
+	}
+	if len(calls) != 1 {
+		t.Fatalf("execution call items = %d (%+v), want one settled item at the announcement", len(calls), calls)
+	}
+	if calls[0].Status == appwire.TurnStatusInProgress {
+		t.Errorf("settled call status = %q, want the result to settle it", calls[0].Status)
+	}
+	if calls[0].ArgumentsJSON != `{"path":"a"}` {
+		t.Errorf("settled call arguments = %q, want the announcement's", calls[0].ArgumentsJSON)
+	}
+	if calls[0].RoundID != "r_announce" {
+		t.Errorf("settled call round = %q, want %q", calls[0].RoundID, "r_announce")
+	}
+	// An attention resolution is transcript-only bookkeeping: it projects no
+	// item, so it shows no visible turn. That matches the index, which creates
+	// no candidate for it — the point here is only that it must not orphan the
+	// result of the execution it split.
+	for _, turn := range turns {
+		if turn.ID == "turn_delivery" {
+			t.Errorf("full read turns = %+v, want no visible turn for an itemless delivery", shapesFromTurns(turns))
+		}
+	}
+}
