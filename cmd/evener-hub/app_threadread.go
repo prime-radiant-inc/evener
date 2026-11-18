@@ -311,7 +311,7 @@ func rosterEstablishesAbsence(ctx context.Context, cfg hubcore.WebConfig, params
 	if !ok || threadID == "" {
 		return false
 	}
-	snapshot := rosterSnapshot(cfg.Roster)
+	snapshot := rosterOwnershipSnapshot(cfg.Roster)
 	if snapshot.OwnershipError != nil || len(snapshot.Unconfirmed) != 0 {
 		return false
 	}
@@ -340,7 +340,7 @@ func rosterEstablishesAbsence(ctx context.Context, cfg hubcore.WebConfig, params
 	// ancestry and its second result only says whether that owner is
 	// incompatible, so both cases leave ownership established, not absent. An
 	// unverifiable chain or incomplete scan comes back as an error.
-	if owner, _, err := lookupDaemonOwnerIn(ctx, cfg, rosterViewOf(snapshot), localAppRef(threadID), threadID, false); err != nil || owner.SessionID != "" {
+	if owner, _, err := lookupDaemonOwnerIn(ctx, cfg, rosterViewOf(snapshot.RosterSnapshot), localAppRef(threadID), threadID, false); err != nil || owner.SessionID != "" {
 		return false
 	}
 	return true

@@ -1007,11 +1007,22 @@ type RosterSnapshot struct {
 	// from. Live may hold several entries naming one session; this holds the
 	// one Find would return, so both answers come from the same publication.
 	BySession map[string]LiveEntry
-	// Confirmed holds every confirmed process, one per PID, before the
-	// per-session deduplication Live applies. A caller asking "does anyone own
-	// this ref?" must read this: two daemons can overlap on one session, and
-	// the entry Live drops may be the one whose workspace ref or reported
-	// children name the thread. Navigation keeps reading Live.
+}
+
+// OwnershipSnapshot is a RosterSnapshot plus every confirmed process, one per
+// PID, before the per-session deduplication Live applies.
+//
+// It is a separate type because the projection is not free: it deep-copies
+// every entry, and navigation snapshots never read it. A caller deciding
+// whether a thread has an owner must use this, because two daemons can overlap
+// on one session and the entry Live drops may be the one whose workspace ref or
+// reported children name the thread.
+//
+// The embedded snapshot and the projection are both captured under one lock:
+// they describe the same publication, so an owner cannot be present in one and
+// absent from the other.
+type OwnershipSnapshot struct {
+	RosterSnapshot
 	Confirmed []LiveEntry
 }
 
@@ -1020,20 +1031,45 @@ type RosterSnapshot struct {
 // needs several of those facts must take them here together: separate accessors
 // read separate publications, and two publications that disagree do not
 // establish either answer.
+//
+// It deliberately carries no per-PID projection: the navigation reads that call
+// this do not need one, and building it would clone every entry twice under the
+// read lock. Ownership decisions use OwnershipSnapshot.
 func (r *Roster) Snapshot() RosterSnapshot {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	confirmed := make([]LiveEntry, 0, len(r.byPID))
-	for _, entry := range r.byPID {
-		confirmed = append(confirmed, CloneLiveEntry(entry))
-	}
+	return r.snapshotLocked()
+}
+
+// OwnershipSnapshot is Snapshot plus the per-PID projection, from the same
+// publication. Use it rather than Snapshot when the question is whether a
+// daemon owns a ref: Live dedupes by session, so it can omit the process that
+// actually holds the ref.
+func (r *Roster) OwnershipSnapshot() OwnershipSnapshot {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return OwnershipSnapshot{RosterSnapshot: r.snapshotLocked(), Confirmed: r.confirmedLocked()}
+}
+
+// snapshotLocked answers the navigation questions. Every published entry is
+// cloned, so a caller editing the result cannot edit the roster behind it.
+func (r *Roster) snapshotLocked() RosterSnapshot {
 	return RosterSnapshot{
 		OwnershipError: r.ownershipErr,
 		Live:           r.listLocked(),
 		Unconfirmed:    slices.Clone(r.unconfirmed),
 		BySession:      maps.Clone(r.bySess),
-		Confirmed:      confirmed,
 	}
+}
+
+// confirmedLocked projects every published entry by PID, before the per-session
+// deduplication listLocked applies, and clones each one for the same reason.
+func (r *Roster) confirmedLocked() []LiveEntry {
+	confirmed := make([]LiveEntry, 0, len(r.byPID))
+	for _, entry := range r.byPID {
+		confirmed = append(confirmed, CloneLiveEntry(entry))
+	}
+	return confirmed
 }
 
 func (r *Roster) listLocked() []LiveEntry {

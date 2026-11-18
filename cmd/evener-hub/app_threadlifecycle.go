@@ -46,10 +46,15 @@ var (
 	// three accessors, because a refresh landing between them can show no
 	// claims in the older publication and no live owner in the newer one.
 	// Tests replace it to drive that interleaving deterministically.
-	rosterSnapshot   = func(r *hubcore.Roster) hubcore.RosterSnapshot { return r.Snapshot() }
-	hubForkSession   = agent.ForkSession
-	hubForkSessionAt = agent.ForkSessionAtUserTurn
-	hubAsideSession  = agent.AsideSession
+	rosterSnapshot = func(r *hubcore.Roster) hubcore.RosterSnapshot { return r.Snapshot() }
+	// rosterOwnershipSnapshot adds the per-PID projection to that publication.
+	// It is a separate seam because the projection deep-copies every entry, and
+	// only the ownership question needs it: navigation snapshots stay on
+	// rosterSnapshot above.
+	rosterOwnershipSnapshot = func(r *hubcore.Roster) hubcore.OwnershipSnapshot { return r.OwnershipSnapshot() }
+	hubForkSession          = agent.ForkSession
+	hubForkSessionAt        = agent.ForkSessionAtUserTurn
+	hubAsideSession         = agent.AsideSession
 	// hubResolvePlugins resolves a launch's plugin inventory. mgr is the
 	// caller's cfg.PluginManager (hubcore.WebConfig): when set, resolution
 	// reaches the hub's own already-wired *plugins.Manager — the same one
