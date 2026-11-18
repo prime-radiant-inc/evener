@@ -575,7 +575,7 @@ func assertShellDeliveryRejectionOrder(t *testing.T, reader string, items []appw
 	if shellAt < 0 || deliveryAt < 0 || rejectedAt < 0 {
 		t.Fatalf("%s: visible rows at %d include shell=%v delivery=%v rejection=%v, want all three", reader, len(items), shellAt >= 0, deliveryAt >= 0, rejectedAt >= 0)
 	}
-	if !(shellAt < deliveryAt && deliveryAt < rejectedAt) {
+	if shellAt >= deliveryAt || deliveryAt >= rejectedAt {
 		t.Fatalf("%s: visible order puts shell at %d, the delivery at %d and the rejection at %d, want shell before delivery before rejection", reader, shellAt, deliveryAt, rejectedAt)
 	}
 }
