@@ -426,6 +426,13 @@ type delegateModelProjection struct {
 	turns        []schema.Turn
 	coverage     map[string][]string
 	inFlightFrom int
+	// revision is s.historyRevision for these exact turns. It travels with
+	// them for the same reason coverage and the in-flight boundary do: a fold
+	// publishing between the round's first capture and this snapshot replaces
+	// the history the request sends, so staging the earlier capture's revision
+	// would record this request as having presented a history it never sent
+	// (#6493).
+	revision int
 }
 
 // delegateModelHistorySnapshotWithCoverage copies the transcript a leased
@@ -444,6 +451,7 @@ func (s *Session) delegateModelHistorySnapshotWithCoverage() delegateModelProjec
 		turns:        turns,
 		coverage:     s.snapshotConversationCoverageLocked(turns),
 		inFlightFrom: s.turnHistoryBaseline,
+		revision:     s.historyRevision,
 	}
 }
 

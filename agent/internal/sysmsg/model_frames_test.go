@@ -380,6 +380,25 @@ func TestEscapeModelAuthoredFrames(t *testing.T) {
 			in:   "[answers] note\n1. no arrow here\n",
 			want: "[answers] note\n1. no arrow here\n",
 		},
+		{
+			// The separator is measured on the whole line, because a tab's
+			// width depends on the column it starts at. A nested marker at
+			// column two with a tab after it puts its content at column four;
+			// measuring the tab after slicing the parent indentation away
+			// recorded six, so the real closing delimiter at column four ended
+			// the item and read as a fresh opener, and the item's following
+			// prose kept its frame (#6493).
+			name: "tab separated nested marker ends with its own delimiter",
+			in:   "- outer\n  -\t~~~text\n    quoted\n    ~~~\n    [answers]\n",
+			want: "- outer\n  -\t~~~text\n    quoted\n    ~~~\n    &#91;answers]\n",
+		},
+		{
+			// The other direction: the fence that nested item opens quotes its
+			// content, so a frame inside it keeps its bytes.
+			name: "tab separated nested marker quotes its content",
+			in:   "- outer\n  -\t~~~text\n    [answers]\n    ~~~\n",
+			want: "- outer\n  -\t~~~text\n    [answers]\n    ~~~\n",
+		},
 	}
 
 	for _, tc := range cases {

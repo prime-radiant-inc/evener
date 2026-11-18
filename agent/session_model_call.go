@@ -285,6 +285,11 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		projection := s.delegateModelHistorySnapshotWithCoverage()
 		snapshot := projection.turns
 		historyCoverage = projection.coverage
+		// The snapshot's own revision, not the round's first capture: a fold
+		// publishing between the two replaces the history this request sends,
+		// and staging the earlier revision would record it as having presented
+		// a history it never sent (#6493).
+		historySnapshotRevision = projection.revision
 		scope.InFlightFrom = projection.inFlightFrom
 		inFlightFrom = projection.inFlightFrom
 		presentedBoundary = len(snapshot)
