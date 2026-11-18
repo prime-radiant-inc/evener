@@ -253,18 +253,18 @@ func allPropertiesRequired(props map[string]any, required any) bool {
 	return true
 }
 
-// A node the rewrite transforms may not permit keys it does not declare.
-// Strict mode requires additionalProperties: false there, so the projection
-// closes the object, and a schema that explicitly allows other keys — true, or
-// a schema for their values — would end up accepting none of them. Only an
-// absent key, or false, is lossless under the rewrite.
+// A node the rewrite transforms may not permit keys it does not declare, so
+// only an explicit additionalProperties: false is certifiable there.
+//
+// An absent keyword means the object is open and accepts any key, which the
+// walk cannot tell apart from an explicitly permissive object: closing it to
+// the declared properties removes every call that carried a key the schema
+// never named. JSON Schema reads an omission as an open object, and this walk
+// has to read it the same way rather than taking the rewrite's silence for a
+// closed shape.
 func allKeysDeclared(m map[string]any) bool {
-	raw, has := m["additionalProperties"]
-	if !has || raw == nil {
-		return true
-	}
-	allowed, ok := raw.(bool)
-	return ok && !allowed
+	closed, ok := m["additionalProperties"].(bool)
+	return ok && !closed
 }
 
 // requiredNamesOf reads a node's required list in either of the shapes the

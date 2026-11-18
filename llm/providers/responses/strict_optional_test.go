@@ -195,7 +195,8 @@ func TestStrictToolProjectionStillStrictifiesFullyRequiredSchemas(t *testing.T) 
 	req.Tools = []llm.ToolDefinition{{
 		Name: "write_file",
 		Parameters: map[string]any{
-			"type": "object",
+			"type":                 "object",
+			"additionalProperties": false,
 			"properties": map[string]any{
 				"file_path": map[string]any{"type": "string"},
 				"content":   map[string]any{"type": "string"},

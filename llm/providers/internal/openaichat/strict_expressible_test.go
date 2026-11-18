@@ -19,17 +19,40 @@ func TestStrictExpressible(t *testing.T) {
 		in   map[string]any
 		want bool
 	}{
+		// An object that omits additionalProperties is open: it accepts any
+		// keys. Closing it to the declared ones therefore removes calls the
+		// advertised schema accepted, so the omission is not certifiable even
+		// though the rewrite handles it as written.
 		{
-			name: "no properties",
-			in:   map[string]any{"type": "object"},
+			name: "object omits additionalProperties",
+			in: map[string]any{
+				"type": "object",
+				"properties": map[string]any{
+					"metadata": map[string]any{"type": "object"},
+				},
+				"required": []string{"metadata"},
+			},
+			want: false,
+		},
+		{
+			name: "no properties and explicitly closed",
+			in:   map[string]any{"type": "object", "additionalProperties": false},
 			want: true,
+		},
+		// Without that keyword the object is open, so a caller may pass any
+		// key and closing it would remove those calls.
+		{
+			name: "no properties and open",
+			in:   map[string]any{"type": "object"},
+			want: false,
 		},
 		{
 			name: "every property required",
 			in: map[string]any{
-				"type":       "object",
-				"properties": map[string]any{"a": map[string]any{"type": "string"}},
-				"required":   []string{"a"},
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties":           map[string]any{"a": map[string]any{"type": "string"}},
+				"required":             []string{"a"},
 			},
 			want: true,
 		},
@@ -53,9 +76,10 @@ func TestStrictExpressible(t *testing.T) {
 		{
 			name: "required as a decoded []any",
 			in: map[string]any{
-				"type":       "object",
-				"properties": map[string]any{"a": map[string]any{"type": "string"}},
-				"required":   []any{"a"},
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties":           map[string]any{"a": map[string]any{"type": "string"}},
+				"required":             []any{"a"},
 			},
 			want: true,
 		},
@@ -135,7 +159,8 @@ func TestStrictExpressible(t *testing.T) {
 		{
 			name: "nullable object type list that is already strict-valid",
 			in: map[string]any{
-				"type": "object",
+				"type":                 "object",
+				"additionalProperties": false,
 				"properties": map[string]any{
 					"filter": map[string]any{
 						"type":                 []any{"object", "null"},
@@ -245,7 +270,8 @@ func TestStrictExpressible(t *testing.T) {
 		{
 			name: "nullable array items are already strict-valid",
 			in: map[string]any{
-				"type": "object",
+				"type":                 "object",
+				"additionalProperties": false,
 				"properties": map[string]any{
 					"rows": map[string]any{
 						"type": []string{"array", "null"},
@@ -287,7 +313,8 @@ func TestStrictExpressible(t *testing.T) {
 		{
 			name: "nullable object property descendant that is already strict-valid",
 			in: map[string]any{
-				"type": "object",
+				"type":                 "object",
+				"additionalProperties": false,
 				"properties": map[string]any{
 					"filter": map[string]any{
 						"type":                 []string{"object", "null"},
@@ -647,17 +674,60 @@ func TestStrictExpressible(t *testing.T) {
 func TestStrictExpressibleAgreesWithTheProjection(t *testing.T) {
 	t.Parallel()
 	schema := map[string]any{
-		"type":       "object",
-		"properties": map[string]any{"a": map[string]any{"type": "string"}},
-		"required":   []string{"a"},
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           map[string]any{"a": map[string]any{"type": "string"}},
+		"required":             []string{"a"},
 	}
 	if !StrictExpressible(schema) {
-		t.Fatal("a fully-required schema must be expressible")
+		t.Fatal("a fully-required closed schema must be expressible")
 	}
 	projected := StrictifyJSONSchema(schema)
 	required, _ := projected["required"].([]string)
 	if len(required) != 1 || required[0] != "a" {
 		t.Fatalf("projected required = %#v, want exactly the declared [a]", projected["required"])
+	}
+}
+
+// An object that omits additionalProperties accepts any key, so closing it to
+// the declared ones removes calls the tool documents. The gate must refuse it
+// and the caller must send the schema it advertised. This is the regression
+// test for treating an absent keyword as a closed shape: restoring that
+// reading makes the first assertion fail.
+func TestOmittedAdditionalPropertiesIsNotCertified(t *testing.T) {
+	t.Parallel()
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"metadata": map[string]any{"type": "object"},
+		},
+		"required": []string{"metadata"},
+	}
+	args := map[string]any{"metadata": map[string]any{"team": "x"}}
+
+	if !schemaAccepts(t, schema, args) {
+		t.Fatal("an open object must accept a key it does not declare")
+	}
+	if StrictExpressible(schema) {
+		t.Fatal("a schema whose object omits additionalProperties must not be certified strict")
+	}
+	// The caller sends the advertised schema, so the documented call survives.
+	if !schemaAccepts(t, schema, args) {
+		t.Fatal("the schema sent non-strict rejects the call it documents")
+	}
+	// And the projection, which is never built for it, would reject that call.
+	// Asserting this keeps the refusal load-bearing rather than conservative.
+	projected := StrictifyJSONSchema(schema)
+	if schemaAccepts(t, projected, args) {
+		t.Fatal("closing this object was expected to reject the key, so the refusal proves nothing")
+	}
+	// An explicitly closed object is still certifiable: with additionalProperties
+	// false at both levels every key any object admits is declared.
+	closed := deepCopyAny(schema).(map[string]any)
+	closed["additionalProperties"] = false
+	closed["properties"].(map[string]any)["metadata"].(map[string]any)["additionalProperties"] = false
+	if !StrictExpressible(closed) {
+		t.Fatal("an explicitly closed object must remain certifiable")
 	}
 }
 

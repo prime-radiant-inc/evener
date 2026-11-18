@@ -164,9 +164,10 @@ var weatherTool = llm.ToolDefinition{Name: "weather", Description: "Current weat
 // The rewrites agree, so these rows record the same wire schema as
 // before.
 var strictWeatherTool = llm.ToolDefinition{Name: "weather", Description: "Current weather", Parameters: map[string]any{
-	"type":       "object",
-	"properties": map[string]any{"city": map[string]any{"type": "string"}},
-	"required":   []string{"city"},
+	"type":                 "object",
+	"additionalProperties": false,
+	"properties":           map[string]any{"city": map[string]any{"type": "string"}},
+	"required":             []string{"city"},
 }}
 
 // strictToolsRequest is toolsRequest for a row that turns strict mode on.
