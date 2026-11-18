@@ -842,7 +842,10 @@ export async function openEntryTranscript(
           fixture.repository === repository &&
           fixture.reader === reader &&
           entryTranscriptLatestOpening.get(ref) === openingToken &&
-          foregroundHolds(ref) > 0 &&
+          // Body ownership, not the foreground count: a routing hold keeps the
+          // count positive after the last pane closed, and a late local result
+          // published on its strength would display bodies nobody is showing.
+          threadBodyOwned(ref) &&
           !store().getState().localOpenings.has(ref);
         void restore
           .then(async (settled) => {
@@ -901,7 +904,10 @@ export async function openEntryTranscript(
       entryTranscriptRoute(ref) === fixture &&
       fixture.repository === repository &&
       !fixture.clearInert &&
-      foregroundHolds(ref) > 0 &&
+      // Same rule as the late-result fence above: this publishes a DISPLAY, so
+      // it needs a body owner. The foreground count a routing hold inflates is
+      // not that question.
+      threadBodyOwned(ref) &&
       !store().getState().deletedRefs.has(ref)
     ) {
       fixture.localBefore = result.before;
@@ -953,7 +959,11 @@ export async function openCachedEntryTranscript(ref: string, generation: number)
     return (
       active &&
       productionEntryRoutes.get(ref) === route &&
-      foregroundHolds(ref) > 0 &&
+      // A pane, not a count: a routing hold keeps the foreground count
+      // positive after the last pane closed, so the count alone lets this
+      // lookup attach a reader and restore cached bodies for a pane that is
+      // gone. This open publishes a display, and only a body owner displays.
+      threadBodyOwned(ref) &&
       routeHost().ensureGeneration(ref) === generation &&
       (entryRouteRetirements.get(ref) ?? 0) === retirement &&
       !state.deletedRefs.has(ref) &&

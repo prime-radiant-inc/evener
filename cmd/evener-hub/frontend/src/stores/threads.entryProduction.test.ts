@@ -66,6 +66,7 @@ import {
   clearCachedSessions,
   countCachedSessions,
   installHydrationRetrySchedulerForTests,
+  lastClearInvocationForTests,
   markCacheSessionsDeleted,
   pendingThreadHydrationUpdatesForTests,
   recordClearDemandForTests,
@@ -1683,12 +1684,20 @@ it("a deletion during the claim's own read rejects the claim", async () => {
   // The claim's verification read is held, then answers successfully - after
   // the destination has been deleted underneath it.
   const claimRead = deferred<ThreadReadResponse>();
-  client.on("thread/read", () => claimRead.promise);
+  // The fake handler signals that the claim's verification read has actually
+  // STARTED. Waiting on `claimRead` itself proves nothing - it is defined the
+  // moment it is constructed - so the deletion below could land before the read
+  // existed and the assertion would pass for the wrong reason.
+  const readStarted = deferred<void>();
+  client.on("thread/read", () => {
+    readStarted.resolve();
+    return claimRead.promise;
+  });
   try {
     const resent = withRecoveryDestinationClaim("local:a", () =>
       resendRecoveryMutation(row.clientMutationId, "local:a", "send", "retry me", []),
     );
-    await vi.waitFor(() => expect(claimRead, "the claim must spend its verification read").toBeDefined());
+    await readStarted.promise;
     markCacheSessionsDeleted(["local:a"]);
     claimRead.resolve({ ...response(), requestGeneration: 0 });
     const outcome = await resent.then(
@@ -10271,12 +10280,18 @@ it("a claim whose read fails after a deletion rejects instead of returning", asy
   const row = await outboxStorage.transferToRecovery(outbox.clientMutationId, "rejected");
   if (!row) throw new Error("expected the recovery row to be durable");
   const claimRead = deferred<ThreadReadResponse>();
-  client.on("thread/read", () => claimRead.promise);
+  // Same false pass as the success-answer case above: the deferred exists
+  // before the read does, so the deletion has to wait on the handler.
+  const readStarted = deferred<void>();
+  client.on("thread/read", () => {
+    readStarted.resolve();
+    return claimRead.promise;
+  });
   try {
     const resent = withRecoveryDestinationClaim("local:a", () =>
       resendRecoveryMutation(row.clientMutationId, "local:a", "send", "retry me", []),
     );
-    await vi.waitFor(() => expect(claimRead, "the claim must spend its verification read").toBeDefined());
+    await readStarted.promise;
     markCacheSessionsDeleted(["local:a"]);
     // The model became verified before the claim finished: presence alone would
     // read as fulfilment.
@@ -10476,10 +10491,18 @@ it("a successful pre-Clear read does not erase the replacement's terminal verdic
     // buy another read for a history the hub had already refused.
     expect(reads, "a refused history must not be read again for the same press").toBe(2);
     expect(settled, "the press is owed the replacement's verdict, not another read").toBe("rejected");
+    // A resend stamps a FRESH clientMutationId, so checking that the orphaned
+    // recovery id is absent would pass even when the press wrote a row and
+    // consumed the draft. Assert the two things that cannot be true of a press
+    // that failed to verify: no outbox row at all, and the draft still there.
     expect(
-      (await outboxStorage.listOutbox("local:a")).map((record) => record.clientMutationId),
+      await outboxStorage.listOutbox("local:a"),
       "the press never verified its destination, so it must not reach the outbox",
-    ).not.toContain(row.clientMutationId);
+    ).toEqual([]);
+    expect(
+      await outboxStorage.getRecovery(row.clientMutationId),
+      "the recovery draft must survive a press that could not verify its destination",
+    ).toBeDefined();
   } finally {
     clearSpy.mockRestore();
     background.release();
@@ -10559,9 +10582,13 @@ it("a Clear replacement's history diagnostic settles the press instead of spinni
     ]);
     expect(settled, "a Clear replacement's history diagnostic must end the press, not park it").toBe("rejected");
     expect(
-      (await outboxStorage.listOutbox("local:a")).map((record) => record.clientMutationId),
+      await outboxStorage.listOutbox("local:a"),
       "a press that could not verify its destination must not reach the outbox",
-    ).not.toContain(row.clientMutationId);
+    ).toEqual([]);
+    expect(
+      await outboxStorage.getRecovery(row.clientMutationId),
+      "the recovery draft must survive a press that could not verify its destination",
+    ).toBeDefined();
   } finally {
     clearSpy.mockRestore();
     background.release();
@@ -10807,6 +10834,31 @@ it("a Clear that does not own the demand does not answer for it", async () => {
     "the claimant must join the second Clear's attempt",
   ).toBe(2);
 }, 10_000);
+// A Clear's identity must not come from the cache epoch. An ABORTED Clear leaves
+// the observed epoch untouched and clears the in-flight marker, so computing the
+// id from the epoch hands the next Clear the same identity - and with it the
+// aborted replacement's terminal verdict, which a press must never receive as the
+// answer to a read a different Clear retired.
+//
+// Decision point: the identity each invocation takes. Two invocations with the
+// epoch unmoved must differ, which is the property the verdict matching rests on.
+it("an aborted Clear's identity is not reused by the next Clear", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  connect();
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  await threadsStore.getState().releaseThreadAndWait("local:a");
+
+  await clearCachedSessions();
+  const first = lastClearInvocationForTests();
+  // The epoch the second Clear will compute from is unchanged: the first clear
+  // committed nothing durable here, which is the aborted shape.
+  await clearCachedSessions();
+  const second = lastClearInvocationForTests();
+  expect(second, "a later Clear invocation must take its own identity").toBeGreaterThan(first);
+}, 20_000);
+
 // The certification open belongs to the pane that requested it. A routing lease
 // standing on the ref keeps its count positive after the pane that started the
 // read has left, so the count cannot say the requester is gone. Only the pane's

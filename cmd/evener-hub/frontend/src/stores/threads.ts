@@ -1503,6 +1503,13 @@ const clearReplacementAttempts = new Map<string, ClearReplacementAttempt>();
 // identity being threaded through the lifecycle. A later Clear replaces the
 // entry, which is what makes the earlier Clear's verdict stop applying.
 const clearDemandOwners = new Map<string, number>();
+// One identity per Clear INVOCATION, never derived from the cache epoch. An
+// aborted Clear leaves the observed epoch unchanged and clears clearInFlight,
+// so a following Clear computes the same epoch and would reuse the aborted
+// one's id - handing the older replacement's terminal verdict to a press whose
+// read the newer Clear retired. The epoch stays the write-suppression clock it
+// is; this counter is what names a Clear.
+let clearInvocations = 0;
 // The last terminal history verdict a tracked read ended on, per ref, waiting to
 // be claimed by whoever is owed that answer. A refresh reports failures through
 // the lifecycle rather than by rejecting, so this is the one place the terminal
@@ -7998,15 +8005,20 @@ async function refreshTrackedThread(
   const intent = options.intent ?? "foreground";
   if (intent !== "background") return refreshTrackedThreadNow(client, epoch, ref, targetedResync, options);
   let attempt: number | undefined;
-  let issued = false;
+  // Whether this call's own read reached an outcome on its own. A retirement
+  // aborts the task's signal and resolves the schedule promise out from under
+  // an issued request - its network slot outlives the owner-facing wait - so
+  // neither the await returning nor the callback completing is evidence the
+  // read ended. Only a completion the task did not abort is.
+  let reachedOutcome = false;
   const residency = transcriptResidency();
   residency.connection(getReadyEpoch(), getWiredClient()?.state === "ready");
   await residency.scheduleHydration(
     ref,
     intent,
     async (signal) => {
-      issued = true;
       attempt = await refreshTrackedThreadNow(client, epoch, ref, targetedResync, options, signal);
+      reachedOutcome = !signal.aborted;
     },
     // Recovery needs a fresh read, even when its pending publication claim was
     // retired before the scheduler's issued predecessor has settled.
@@ -8021,11 +8033,16 @@ async function refreshTrackedThread(
   // settling: a reconnect that does arrive may still carry the original press,
   // and the bound is only what ends a wait the connection never answers.
   //
-  // The fence is the state, not the missing callback: a join hands back the
-  // predecessor's promise without running this one either, and that read does
-  // exist and will report its own end. So arm only when nothing is registered
-  // for the ref and the connection is what took the read away.
-  if (!issued && !inflightHydrates.has(ref) && getWiredClient()?.state !== "ready") {
+  // An ISSUED read is not exempt. The scheduler retires an issued task by
+  // resolving this promise while the request keeps its network slot, so a
+  // disconnection during cache authorities leaves `settled` false and this
+  // await returned without the read reporting anything - the same missing
+  // outcome as a queued task that never ran. The fence is therefore whether
+  // this call's read reached an end, not whether it started: a join hands back
+  // the predecessor's promise without running this one either, and that read
+  // does exist and will report its own end, which `settled` also covers only
+  // when it is this call's own run.
+  if (!reachedOutcome && !inflightHydrates.has(ref) && getWiredClient()?.state !== "ready") {
     const parked = ownedThreadHydrations.get(ref);
     if (parked?.generation === hydrationOwnerGeneration("thread", ref)) armReadinessBound("thread", ref, parked);
   }
@@ -8982,8 +8999,18 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       // read never performed. From here the registration has a pane behind it,
       // so a second pane opening joins it instead of opening the cache again.
       if (routedByClaim) inflightHydrates.markPaneBacked(ref);
+      // The pane can close while this lookup is pending - it is the one await
+      // before the model exists. The routing hold keeps the foreground count
+      // positive, so neither the count nor the deletion fence can see that the
+      // only pane left; asking THIS pane's hold before the lookup keeps a
+      // closed pane from attaching a reader and restoring cached bodies over a
+      // transcript nobody displays.
+      if (!claimStanding()) return;
       await openCachedEntryTranscript(ref, generation);
       if (threadsStore.getState().deletedRefs.has(ref)) return endDeletedDestination();
+      // Again after the await: the attachment and the publication above run
+      // inside the lookup, so a departure during it must not arm the recovery
+      // or the hydration that follows.
       if (!claimStanding()) return;
     }
     let cachedBase: ThreadModel | undefined = threadsStore.getState().threads.get(ref);
@@ -9627,7 +9654,14 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         // its own lifecycle reads again. Same contract as ensureThread above.
         const owned = ownedWatchedHydrations.get(ref);
         if (owned?.generation !== generation) throw err;
-        await owned.firstHydration;
+        // The lifecycle's first read is what this failure belongs to. If it
+        // ended on the hub's history diagnostic, rearming here would ask the
+        // hub to read a history it has just refused - the same third read the
+        // tracked path avoids. The diagnostic is terminal for this attempt and
+        // not for the watch: the mount keeps its ref, so a later resync can
+        // serve it.
+        const firstRead = await owned.firstHydration;
+        if (firstRead.kind === "terminal") return;
         // Fall through to the shared re-arm below, which re-checks the
         // rich/lean requirement a published model has to satisfy.
       }
@@ -10726,9 +10760,15 @@ function reconcileClearInput(): void {
 export async function clearCachedSessions(): Promise<{ committed: boolean }> {
   const armed = Math.max(observedCacheEpoch() ?? 0, threadsStore.getState().clearInFlight ?? 0) + 1;
   threadsStore.setState({ clearInFlight: armed });
-  // This Clear's own identity, for the demands it records below. `armed` is
-  // already monotonic across clears, so it names one Clear unambiguously.
-  const clearId = armed;
+  // This Clear's own identity, for the demands it records below. Not `armed`:
+  // an ABORTED clear leaves the observed epoch untouched and clears the
+  // in-flight marker, so the next Clear computes the same epoch and would
+  // inherit this one's identity - and with it the aborted replacement's
+  // terminal verdict, which a press must never receive as the answer to a read
+  // a different Clear retired. The epoch remains the write-suppression clock;
+  // this counter is what names a Clear.
+  clearInvocations += 1;
+  const clearId = clearInvocations;
   // The separately installed entry route retires its publication/persistence
   // claims NOW, synchronously, before either clear transaction resolves: an
   // already-installed reader, subscription or repository must not publish or
@@ -10913,6 +10953,11 @@ export function recordClearDemandForTests(ref: string, clearId: number): void {
   clearHydrationDemands.set("thread", demands);
 }
 
+/** @internal The Clear identity the last invocation took. */
+export function lastClearInvocationForTests(): number {
+  return clearInvocations;
+}
+
 /** @internal Registers a replacement attempt the way a Clear's own issue step
  * does, with its Clear's identity and its settled outcome. */
 export function registerClearReplacementForTests(ref: string, clearId: number, outcome: ClearReplacementOutcome): void {
@@ -11093,6 +11138,7 @@ export function resetThreadsStoreForTests(): void {
   retireAllOwnedHydrations();
   clearReplacementAttempts.clear();
   clearDemandOwners.clear();
+  clearInvocations = 0;
   terminalHydrationErrors.clear();
   inflightDurableEnqueues.clear();
   undeliveredMutationIds.clear();

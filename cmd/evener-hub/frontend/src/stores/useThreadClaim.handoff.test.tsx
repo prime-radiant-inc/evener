@@ -1,7 +1,8 @@
 import * as appwire from "@evener/appwire-client";
+import { WireError } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
-import { act, cleanup, render } from "@testing-library/react";
+import { act, cleanup, render, waitFor } from "@testing-library/react";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { ConversationBody, type ConversationSeat } from "../panes/session/ConversationBody";
@@ -16,12 +17,14 @@ import {
   cancelConversationHandoff,
   completeConversationHandoffPane,
   conversationHandoffGeneration,
+  hasConversationHandoff,
+  prepareConversationHandoff,
 } from "./conversationClaimHandoff";
 import { ref, response, snapshot, sourceIds, sourceItems } from "./conversationHandoffTestUtils";
 import * as entryRoutes from "./entryTranscriptRoutes";
 import { resetNavigationStoreForTests } from "./navigation/store";
 import { SessionEntryCache } from "./sessionEntryCache";
-import type { ForegroundHold } from "./threadOwners";
+import { type ForegroundHold, foregroundHolds } from "./threadOwners";
 import {
   acquireBackgroundThread,
   resetThreadsStoreForTests,
@@ -423,4 +426,49 @@ test("late transport failure after unmount and overlap cancellation preserves re
   healthy.survivor.unmount();
   expect(snapshot()).toMatchObject({ foreground: 0, items: [] });
   await healthy.background.release();
+});
+
+// A pane that retains its hold after the hub's history diagnostic is still a
+// live reader. A resync can restore its transcript without remounting it, so the
+// viewport handoff has to keep carrying this mount across a host replacement. If
+// the retained path withdrew the registration, the outgoing mount's release
+// would be the only claim left and the swap would drop the transcript the
+// handoff exists to preserve.
+test("a pane retaining its hold after a history diagnostic keeps its handoff registration", async () => {
+  const pane: OpenPaneRecord = { id: "retained-reader", type: "session", params: { ref }, slot: "main" };
+  workspaceStore.setState({ panes: [pane], focusedPaneId: pane.id });
+  const readView = retainedTranscriptReadView(conversationPaneLifetime(pane), ref, "session");
+  const client = new FakeClient("ready");
+  client.on("thread/read", () => {
+    throw new WireError("thread history failed at entry 7", -32603, { evenerErrorInfo: "transcriptHistoryFailed" });
+  });
+  client.on("thread/unsubscribe", () => ({}));
+  act(() => connectionStore.getState().connect(client));
+  const view = render(<RejectionProbe readView={readView} />);
+  await act(async () => {
+    // The probe's own claim is the one under test; join it rather than taking a
+    // second hold this test would then have to release.
+    await waitFor(() => expect(threadsStore.getState().historyFailedRefs.has(ref)).toBe(true));
+  });
+  // The diagnostic is terminal for the read and the store keeps this mount's
+  // hold for it, which is the retained case rather than a rejection.
+  expect(threadsStore.getState().historyFailedRefs.has(ref)).toBe(true);
+  expect(foregroundHolds(ref), "a retained pane must still hold its ref").toBe(1);
+  // The transition is where the registration becomes observable: the handoff
+  // carries every live registered reader whose pane is presented.
+  act(() => {
+    transcriptDisplayStore.getState().setViewport("mobile");
+    prepareConversationHandoff("mobile");
+  });
+  expect(
+    hasConversationHandoff(ref, readView),
+    "a pane that retained its hold is still a live reader the handoff must carry",
+  ).toBe(true);
+  // The prepared overlap takes its own claim; dropping it here is teardown, not
+  // the finding, so the test ends without asserting the overlap's bookkeeping.
+  act(() => {
+    const generation = conversationHandoffGeneration("mobile");
+    if (generation !== undefined) cancelConversationHandoff(generation);
+    view.unmount();
+  });
 });

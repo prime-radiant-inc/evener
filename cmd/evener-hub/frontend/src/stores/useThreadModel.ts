@@ -50,7 +50,12 @@ export function useThreadClaim(ref: string, readView?: TranscriptReadView): void
           // recovers it.
           if (hold && foregroundHoldStanding(hold)) {
             rejected = false;
-            unregister?.();
+            // The registration stays. A resync can restore this pane's
+            // transcript without remounting it, so this mount is still the live
+            // reader the handoff has to carry across a host replacement -
+            // dropping it here leaves the outgoing mount's release as the only
+            // claim, and the swap loses the transcript the handoff preserves.
+            // Unmount releases both, below.
             return;
           }
           // `started` marks the call, not the claim: a rejected ensureThread
