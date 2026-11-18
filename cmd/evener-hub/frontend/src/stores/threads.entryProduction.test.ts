@@ -1316,6 +1316,84 @@ it("a routing release leaves the standing pane's body count intact", async () =>
   await threadsStore.getState().releaseThreadAndWait("local:a");
 }, 20_000);
 
+// A pane can install a cache-only shell while a resend's source read awaits the
+// durable authorities. That shell has no thread identity, so it makes the
+// response want a rebuild, and a guard that treats any repository installed
+// meanwhile as a concurrent replacement discards a source response that already
+// answered the press: the route stays unverified and the claim must spend
+// another read. A shell is not an authoritative repository, so the response
+// supersedes it and publishes on the read it already spent.
+it("a source response supersedes a cache-only shell installed while it waited", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  await seedCursorlessCacheRecord(storage);
+  const client = connect();
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  await settleEntryTranscriptForTests("local:a");
+  const route = entryTranscriptRoute("local:a");
+  if (!route) throw new Error("expected an entry route");
+  route.cachedUnverified = true;
+  const sourceRead = deferred<ThreadReadResponse>();
+  let reads = 0;
+  client.on("thread/read", (params) => {
+    reads += 1;
+    if (reads === 1) return sourceRead.promise;
+    return { ...response(), requestGeneration: params.requestGeneration };
+  });
+  // The finding's window is the durable-authorities read: the response has
+  // already captured the repository it claims, and the pane installs its own
+  // cache-only shell before that read returns. Installing the shell here is
+  // what puts the two on opposite sides of the guard.
+  const authorities = deferred<void>();
+  const shellInstalled = deferred<void>();
+  const originalGetClearEpoch = storage.getClearEpoch.bind(storage);
+  vi.spyOn(storage, "getClearEpoch").mockImplementation(async () => {
+    route.repository = new TranscriptRepository(storage, {
+      ref: "local:a",
+      threadId: "",
+      historyKey: entryHistoryKey({ ...identity, clientId: location.origin }),
+      identity: { ...identity, clientId: location.origin },
+      clearEpoch: 0,
+      lifetime: route.lifetime,
+    });
+    shellInstalled.resolve();
+    await authorities.promise;
+    return originalGetClearEpoch();
+  });
+  const claim = acquireUnreadThreadClaim("local:a");
+  try {
+    await vi.waitFor(() => expect(reads, "the claim must spend its verification read").toBe(1));
+    sourceRead.resolve({ ...response(), requestGeneration: 0 });
+    await shellInstalled.promise;
+    authorities.resolve();
+    const outcome = await claim.then(
+      (lease) => ({ ok: true as const, lease }),
+      (error: unknown) => ({ ok: false as const, error }),
+    );
+    expect(
+      outcome.ok,
+      `a successful source read must not reject the press: ${outcome.ok ? "" : String(outcome.error)}`,
+    ).toBe(true);
+    if (!outcome.ok) throw outcome.error;
+    const lease = outcome.lease;
+    // The decision point: the response that was already in flight is the one
+    // that answers this press. A guard that fences the shell off as a
+    // concurrent replacement discards it, and what stands is the shell's
+    // snapshot rather than the bodies the source read returned.
+    expect(reads, "the successful source response must publish without a second read").toBe(1);
+    expect(
+      JSON.stringify(threadsStore.getState().threads.get("local:a")),
+      "the source response's bodies must survive the shell a pane installed",
+    ).toContain("recorded");
+    lease.release();
+  } finally {
+    background.release();
+    vi.restoreAllMocks();
+    void claim.catch(() => undefined);
+  }
+}, 20_000);
+
 // A cached shell is a model nobody has verified: its capabilities are empty
 // until the read that publishes over it lands. A routing claim that returned it
 // would let a Send or Queue be refused against capabilities no one has read, so
@@ -1822,6 +1900,87 @@ it("a resend resumes after a reconnect instead of failing the press", async () =
   } finally {
     restoreScheduler();
     background.release();
+  }
+}, 20_000);
+
+// A Clear retires the read a resend is waiting on and owes the destination a
+// replacement. When the connection drops before that transaction commits, the
+// replacement cannot be issued yet: the demand is deferred to the reconnect,
+// not discarded. A claim that reads that handoff as "this ref never had a
+// demand" rethrows the retired read's transport error and spends the person's
+// Send on a verification the reconnect completes moments later.
+it("a resend survives a Clear handoff deferred to reconnect", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const outboxStorage = new MutationOutboxIndexedDB({ indexedDB: factory });
+  setMutationStorageForTests(outboxStorage);
+  const client = connect();
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  await settleEntryTranscriptForTests("local:a");
+  const route = entryTranscriptRoute("local:a");
+  if (!route) throw new Error("expected an entry route");
+  route.cachedUnverified = true;
+  const outbox = await outboxStorage.enqueueIntent({
+    targetRef: "local:a",
+    threadId: "thread-a",
+    method: "turn/start",
+    payload: { ref: "local:a", input: [{ type: "text", text: "retry me" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "retry me" }] },
+  });
+  const row = await outboxStorage.transferToRecovery(outbox.clientMutationId, "rejected");
+  if (!row) throw new Error("expected the recovery row to be durable");
+  // The claim's own verification read is the one Clear will retire.
+  const claimRead = deferred<ThreadReadResponse>();
+  const claimReadEntered = deferred<void>();
+  let reads = 0;
+  client.on("thread/read", (params) => {
+    reads += 1;
+    if (reads === 1) {
+      claimReadEntered.resolve();
+      return claimRead.promise;
+    }
+    return { ...response(), requestGeneration: params.requestGeneration };
+  });
+  // Hold Clear's transaction open so the connection can drop inside the
+  // handoff window: the demand is recorded, the replacement cannot be issued.
+  const clearReply = deferred<void>();
+  const original = storage.clear.bind(storage);
+  vi.spyOn(storage, "clear").mockImplementation(async () => {
+    await clearReply.promise;
+    return original();
+  });
+  try {
+    const resent = withRecoveryDestinationClaim("local:a", () =>
+      resendRecoveryMutation(row.clientMutationId, "local:a", "send", "retry me", []),
+    );
+    await claimReadEntered.promise;
+    const clearing = clearCachedSessions();
+    // Clear retires the claim's read; the transport error that ends it belongs
+    // to the read Clear already replaced, not to the destination.
+    claimRead.reject(new Error("transport died"));
+    client.emitStateChange("reconnecting");
+    clearReply.resolve();
+    await clearing;
+    expect(connectionStore.getState().client?.state, "the handoff must settle while the client is not ready").not.toBe(
+      "ready",
+    );
+    // The reconnect verifies the destination, and the press lands on it.
+    client.emitReady();
+    const outcome = await resent.then(
+      (value) => ({ ok: true as const, value }),
+      () => ({ ok: false as const, value: undefined }),
+    );
+    expect(outcome.ok, "a Clear handoff deferred to reconnect must not spend the press").toBe(true);
+    const landed = outcome.ok && outcome.value.status === "sent" ? outcome.value.record.clientMutationId : undefined;
+    expect(
+      (await outboxStorage.listOutbox("local:a")).map((record) => record.clientMutationId),
+      "the press must reach the outbox without a second Send",
+    ).toContain(landed);
+  } finally {
+    background.release();
+    vi.restoreAllMocks();
   }
 }, 20_000);
 
