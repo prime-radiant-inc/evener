@@ -743,7 +743,7 @@ func TestMemoryContextLifecycle(t *testing.T) {
 		}
 		return agenttest.FinalResponse("root observed indexes")
 	}
-	s.client.Register(newFakeAdapter("openai", assertIndexes, assertIndexes))
+	s.client.Register(newFakeAdapter("openai", agenttest.RepeatSteps(assertIndexes, 2)...))
 	if _, err := s.ProcessInput(context.Background(), "startup", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -896,7 +896,7 @@ func TestMemoryContextLifecycleDelegate(t *testing.T) {
 	s := newScriptedSummaryCompactSession(t, "memory-child-summary", func(llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant("## Progress\nopaque-child-summary-403")}
 	}, withDir(workspace), withConfig(SessionConfig{StateDir: history, MemoryStateRoot: root, MemoryProjectID: project.ID, Project: project, MaxSubagentDepth: 2, AcquireSessionOwnership: func(string) error { return nil }, testOnly: testConfig{disableDelegateIdleRelease: true}}))
-	s.client.Register(newFakeAdapter("openai", step, step))
+	s.client.Register(newFakeAdapter("openai", agenttest.RepeatSteps(step, 2)...))
 	res := s.createDelegate(context.Background(), delegateArgs{Task: "fixture enabled child", AgentType: "explorer", DelegationAllowance: new(0)})
 	if res.Err != nil {
 		t.Fatal(res.Err)
@@ -1522,7 +1522,7 @@ func TestMemoryDelegateRestore(t *testing.T) {
 			}
 			// project-adopted also spawns a fresh child, which takes the second step.
 			finished := func(llm.Request) llm.Response { return agenttest.FinalResponse("restored child finished") }
-			r.client.Register(newFakeAdapter("openai", finished, finished))
+			r.client.Register(newFakeAdapter("openai", agenttest.RepeatSteps(finished, 2)...))
 			accesses.Store(0)
 			projectAccesses.Store(0)
 			send := (delegateRuntime{owner: r}).send(context.Background(), result.DelegateID, "restore older child", 0).result

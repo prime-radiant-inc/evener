@@ -1222,7 +1222,8 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 
 	// Adapter: first call returns a read_file tool call, second call returns "done".
 	// This pattern repeats for each ProcessInput.
-	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
+	secondReadDone := func(req llm.Request) llm.Response { return agenttest.FinalResponse("done with second read") }
+	c.Register(newFakeAdapter("openai", append([]func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
 		return llm.Response{
 			Usage: llm.Usage{InputTokens: window * 91 / 100},
 			Message: llm.Message{
@@ -1251,11 +1252,7 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 				},
 			},
 		}
-	}, func(req llm.Request) llm.Response {
-		return agenttest.FinalResponse("done with second read")
-	}, func(req llm.Request) llm.Response {
-		return agenttest.FinalResponse("done with second read")
-	}))
+	}}, agenttest.RepeatSteps(secondReadDone, 2)...)...))
 
 	// Write a big file that will fill a small context window.
 	bigContent := strings.Repeat("line of content\n", 200)

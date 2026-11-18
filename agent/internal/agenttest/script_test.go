@@ -195,3 +195,52 @@ func TestScriptCursorTracksNext(t *testing.T) {
 		t.Errorf("Cursor() after Reset = %d, want 0", got)
 	}
 }
+
+// RepeatSteps repeats one step in order, which is how a script that answers the
+// same way several times stays readable at the call site.
+func TestRepeatStepsRepeatsTheSameStepInOrder(t *testing.T) {
+	step := stepAt("same")
+	steps := RepeatSteps(step, 3)
+	if len(steps) != 3 {
+		t.Fatalf("RepeatSteps(_, 3) len = %d, want 3", len(steps))
+	}
+	for i, got := range steps {
+		if got == nil {
+			t.Fatalf("RepeatSteps step %d is nil", i)
+		}
+		if text := got(llm.Request{}).Message.Text(); text != "same" {
+			t.Errorf("RepeatSteps step %d answered %q, want %q", i, text, "same")
+		}
+	}
+}
+
+// A non-positive count yields no steps: a caller scripting zero repeats gets an
+// empty script rather than a panic.
+func TestRepeatStepsRejectsNonPositiveCounts(t *testing.T) {
+	for _, n := range []int{0, -1} {
+		if steps := RepeatSteps(stepAt("unused"), n); len(steps) != 0 {
+			t.Errorf("RepeatSteps(_, %d) len = %d, want 0", n, len(steps))
+		}
+	}
+}
+
+// A repeated step feeds the engine exactly like a literal list of copies.
+func TestScriptAcceptsRepeatedSteps(t *testing.T) {
+	var s Script[func(req llm.Request) llm.Response]
+	s.Replace(RepeatSteps(stepAt("again"), 2))
+	if s.Len() != 2 {
+		t.Fatalf("Len() = %d, want 2", s.Len())
+	}
+	for range 2 {
+		step, ok := s.Next()
+		if !ok {
+			t.Fatal("Next() ok = false, want a repeated step")
+		}
+		if got := step(llm.Request{}).Message.Text(); got != "again" {
+			t.Errorf("Next() answered %q, want %q", got, "again")
+		}
+	}
+	if _, ok := s.Next(); ok {
+		t.Error("Next() after the repeats ok = true, want false")
+	}
+}

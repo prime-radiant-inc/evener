@@ -1605,13 +1605,11 @@ func TestSession_SetModel_TakesEffectOnNextCall(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	var capturedModel string
-	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+	recordingStep := func(req llm.Request) llm.Response {
 		capturedModel = req.Model
 		return agenttest.FinalResponse("ok")
-	}, func(req llm.Request) llm.Response {
-		capturedModel = req.Model
-		return agenttest.FinalResponse("ok")
-	})
+	}
+	f := newFakeAdapter("openai", agenttest.RepeatSteps(recordingStep, 2)...)
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test-model")), withDir(dir), withConfig(SessionConfig{}))

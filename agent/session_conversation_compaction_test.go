@@ -8,6 +8,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/apptranscript"
@@ -65,7 +66,7 @@ func TestConversationProvenance_FoldThenRestorePreservesEligibility(t *testing.T
 		call := communicateCall("fold-result", "result")
 		return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}
 	}
-	s.client.Register(newFakeAdapter("openai", response, response, response, response))
+	s.client.Register(newFakeAdapter("openai", agenttest.RepeatSteps(response, 4)...))
 	for i := range 4 {
 		if _, err := s.ProcessInput(context.Background(), fmt.Sprintf("actual-fold-input-%d", i), nil); err != nil {
 			t.Fatal(err)

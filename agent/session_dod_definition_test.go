@@ -1473,32 +1473,18 @@ func TestSession_Subagent_AutoNudgeExplicitBuiltinSubagent(t *testing.T) {
 
 	var mu sync.Mutex
 	callCount := 0
-	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+	countingStep := func(req llm.Request) llm.Response {
 		mu.Lock()
 		callCount++
 		mu.Unlock()
 		return agenttest.EmptyResponse()
-	}, func(req llm.Request) llm.Response {
-		mu.Lock()
-		callCount++
-		mu.Unlock()
-		return agenttest.EmptyResponse()
-	}, func(req llm.Request) llm.Response {
-		mu.Lock()
-		callCount++
-		mu.Unlock()
-		return agenttest.EmptyResponse()
-	}, func(req llm.Request) llm.Response {
-		mu.Lock()
-		callCount++
-		mu.Unlock()
-		return agenttest.EmptyResponse()
-	}, func(req llm.Request) llm.Response {
+	}
+	f := newFakeAdapter("openai", append(agenttest.RepeatSteps(countingStep, 4), func(req llm.Request) llm.Response {
 		mu.Lock()
 		callCount++
 		mu.Unlock()
 		return agenttest.FinalResponse("Explicit subagent recovered after nudge")
-	})
+	})...)
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.3-codex")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -3158,32 +3144,18 @@ func TestSession_Subagent_AutoNudgeOnEmptyResponseExhaustion(t *testing.T) {
 
 	var mu sync.Mutex
 	callCount := 0
-	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+	recoveringStep := func(req llm.Request) llm.Response {
 		mu.Lock()
 		callCount++
 		mu.Unlock()
 		return agenttest.EmptyResponse()
-	}, func(req llm.Request) llm.Response {
-		mu.Lock()
-		callCount++
-		mu.Unlock()
-		return agenttest.EmptyResponse()
-	}, func(req llm.Request) llm.Response {
-		mu.Lock()
-		callCount++
-		mu.Unlock()
-		return agenttest.EmptyResponse()
-	}, func(req llm.Request) llm.Response {
-		mu.Lock()
-		callCount++
-		mu.Unlock()
-		return agenttest.EmptyResponse()
-	}, func(req llm.Request) llm.Response {
+	}
+	f := newFakeAdapter("openai", append(agenttest.RepeatSteps(recoveringStep, 4), func(req llm.Request) llm.Response {
 		mu.Lock()
 		callCount++
 		mu.Unlock()
 		return agenttest.FinalResponse("Recovered after nudge")
-	})
+	})...)
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.3-codex")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{

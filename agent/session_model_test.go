@@ -516,7 +516,7 @@ func TestSession_EmptyResponseExhaustedFlushesMeta(t *testing.T) {
 			Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{}},
 		}
 	}
-	f := newFakeAdapter("openai", emptyStep, emptyStep, emptyStep, emptyStep, emptyStep, emptyStep)
+	f := newFakeAdapter("openai", agenttest.RepeatSteps(emptyStep, 6)...)
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
@@ -553,7 +553,7 @@ func TestSession_BareTextWithoutResultToolFlushesMeta(t *testing.T) {
 	bareStep := func(req llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant("bare text without tool")}
 	}
-	f := newFakeAdapter("openai", bareStep, bareStep, bareStep, bareStep, bareStep)
+	f := newFakeAdapter("openai", agenttest.RepeatSteps(bareStep, 5)...)
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
@@ -603,7 +603,7 @@ func TestSession_MaxToolRoundsExitFlushesMeta(t *testing.T) {
 			},
 		}
 	}
-	f := newFakeAdapter("openai", toolStep, toolStep, toolStep)
+	f := newFakeAdapter("openai", agenttest.RepeatSteps(toolStep, 3)...)
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{

@@ -1,6 +1,10 @@
 package agenttest
 
-import "sync"
+import (
+	"sync"
+
+	"primeradiant.com/evener/llm"
+)
 
 // Script is a mutex-owned sequence of scripted steps. Every read and write of
 // the sequence goes through its methods, so no adapter holding a Script can
@@ -101,4 +105,19 @@ func (s *Script[T]) Cursor() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.i
+}
+
+// RepeatSteps returns n copies of step, for a script that answers the same way
+// several times in a row. Passing the result with ... keeps the call site from
+// repeating one closure textually n times, which is what gocritic's dupOption
+// flags in a variadic constructor.
+func RepeatSteps(step func(req llm.Request) llm.Response, n int) []func(req llm.Request) llm.Response {
+	if n <= 0 {
+		return nil
+	}
+	steps := make([]func(req llm.Request) llm.Response, n)
+	for i := range steps {
+		steps[i] = step
+	}
+	return steps
 }

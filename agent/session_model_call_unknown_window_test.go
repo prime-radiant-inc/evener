@@ -26,7 +26,8 @@ func TestUnknownWindowSessionCompactsAndDiscloses(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	c.Register(newFakeAdapter("gw", func(req llm.Request) llm.Response {
+	doneStep := func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") }
+	c.Register(newFakeAdapter("gw", append([]func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
 		return llm.Response{
 			Usage: llm.Usage{InputTokens: 150_000},
 			Message: llm.Message{
@@ -40,7 +41,7 @@ func TestUnknownWindowSessionCompactsAndDiscloses(t *testing.T) {
 				},
 			},
 		}
-	}, func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") }, func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") }, func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") }, func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") }, func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") }))
+	}}, agenttest.RepeatSteps(doneStep, 5)...)...))
 	env := execenv.NewLocalExecutionEnvironment(dir)
 	if _, err := env.WriteFile("big.txt", strings.Repeat("line of content\n", 200)); err != nil {
 		t.Fatalf("WriteFile: %v", err)

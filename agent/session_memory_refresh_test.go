@@ -124,7 +124,7 @@ func TestMemoryRefreshFullIndexAfterCompactionAndResume(t *testing.T) {
 			return agenttest.FinalResponse("observed")
 		}
 	}
-	s.client.Register(newFakeAdapter("openai", wantFull("opaque-full-1"), wantFull("opaque-full-2"), wantFull("opaque-full-2")))
+	s.client.Register(newFakeAdapter("openai", append([]func(llm.Request) llm.Response{wantFull("opaque-full-1")}, agenttest.RepeatSteps(wantFull("opaque-full-2"), 2)...)...))
 	turn := func(sess *Session, wantContexts int) {
 		t.Helper()
 		if _, err := sess.ProcessInput(context.Background(), "go", nil); err != nil {
@@ -158,7 +158,7 @@ func TestMemoryRefreshFullIndexAfterCompactionAndResume(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer r.Close()
-	r.client.Register(newFakeAdapter("openai", wantFull("opaque-full-2"), wantFull("opaque-full-2")))
+	r.client.Register(newFakeAdapter("openai", agenttest.RepeatSteps(wantFull("opaque-full-2"), 2)...))
 	restored := memoryContextCount(r)
 	turn(r, restored+1)
 	turn(r, restored+1)

@@ -67,7 +67,8 @@ func (r *frontierBindingRecorder) state(id string) (int, int, int) {
 func newFrontierBindingRoot(t *testing.T, recorder *frontierBindingRecorder, cfg testConfig) *Session {
 	t.Helper()
 	client := llm.NewClient()
-	client.Register(newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("binding-output") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("binding-output") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("binding-output") }))
+	bindingStep := func(llm.Request) llm.Response { return agenttest.FinalResponse("binding-output") }
+	client.Register(newFakeAdapter("openai", agenttest.RepeatSteps(bindingStep, 3)...))
 	cfg.skipGitSnapshot, cfg.minimalSystemPrompt, cfg.noSyncJobStore = true, true, true
 	root := newSession(t, withClient(client), withConfig(SessionConfig{StateDir: t.TempDir(), testOnly: cfg}))
 	root.SetDescendantTranscriptPublicationFunc(recorder.hooks)
@@ -320,7 +321,8 @@ func TestTranscriptFrontierBindingWorktreeDispose(t *testing.T) {
 		t.Fatal(err)
 	}
 	repo.s.attachTranscript(writer, nil)
-	repo.s.client.Register(newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("dispose-result") }, func(llm.Request) llm.Response { return agenttest.FinalResponse("dispose-result") }))
+	disposeStep := func(llm.Request) llm.Response { return agenttest.FinalResponse("dispose-result") }
+	repo.s.client.Register(newFakeAdapter("openai", agenttest.RepeatSteps(disposeStep, 2)...))
 	r := &frontierBindingRecorder{}
 	repo.s.SetDescendantTranscriptPublicationFunc(r.hooks)
 	sampled, resume, returned := make(chan struct{}), make(chan struct{}), make(chan struct{})

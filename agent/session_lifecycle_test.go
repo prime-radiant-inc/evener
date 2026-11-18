@@ -61,7 +61,8 @@ func TestSession_LoopDetection_EmitsEventAndInjectsSteering(t *testing.T) {
 			},
 		}
 	}
-	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return toolMsg() }, func(req llm.Request) llm.Response { return toolMsg() }, func(req llm.Request) llm.Response { return toolMsg() }, func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") })
+	toolReply := func(req llm.Request) llm.Response { return toolMsg() }
+	f := newFakeAdapter("openai", append(agenttest.RepeatSteps(toolReply, 3), func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") })...)
 	c.Register(f)
 
 	cfg := SessionConfig{LoopDetectionWindow: 3}
@@ -1040,7 +1041,8 @@ func TestSession_LoopDetection_WarningWording(t *testing.T) {
 			},
 		}
 	}
-	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return toolMsg() }, func(req llm.Request) llm.Response { return toolMsg() }, func(req llm.Request) llm.Response { return toolMsg() }, func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") })
+	loopToolReply := func(req llm.Request) llm.Response { return toolMsg() }
+	f := newFakeAdapter("openai", append(agenttest.RepeatSteps(loopToolReply, 3), func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") })...)
 	c.Register(f)
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/apptranscript"
@@ -28,7 +29,7 @@ func newConversationLifecycleSession(t *testing.T) *Session {
 	s := newScriptedSummaryCompactSession(t, "lifecycle-summary", func(llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nRetain the input history.\n[END SUMMARY]")}
 	}, withConfig(cfg), withStateDir(t.TempDir()))
-	s.client.Register(newFakeAdapter("openai", conversationLifecycleResponse, conversationLifecycleResponse, conversationLifecycleResponse, conversationLifecycleResponse))
+	s.client.Register(newFakeAdapter("openai", agenttest.RepeatSteps(conversationLifecycleResponse, 4)...))
 	for i := range 4 {
 		if _, err := s.ProcessInput(context.Background(), fmt.Sprintf("opaque-seed-%d", i), nil); err != nil {
 			t.Fatal(err)

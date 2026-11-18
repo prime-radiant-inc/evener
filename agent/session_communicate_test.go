@@ -645,7 +645,8 @@ func TestCommunicate_BareTextFallback(t *testing.T) {
 
 	// Model keeps returning bare text (no tool calls) — simulating a provider
 	// that doesn't honor tool_choice=required.
-	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("bare text response")} }, func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("bare text response")} }, func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("bare text response")} }, func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("bare text response")} })
+	bareStep := func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("bare text response")} }
+	f := newFakeAdapter("openai", agenttest.RepeatSteps(bareStep, 4)...)
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
