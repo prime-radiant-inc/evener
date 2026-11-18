@@ -1704,6 +1704,13 @@ interface OwnedHydration {
   generation: number;
   retryAttempt: number;
   cancelRetry: (() => void) | null;
+  // The read that is currently answering THIS lifecycle's question. A waiter
+  // parked on this lifecycle may adopt exactly this read and no other: the
+  // question it must answer is "did the demand I gave up on retire into a read
+  // that is now in flight", not "is any read in flight for this ref". A cached
+  // shell that counts as published answers the second question and not the
+  // first, and neither does an unrelated read issued for another demand.
+  successor: Promise<ThreadModel | null> | null;
   // Detaches the client-closed watch armed with this record. A closed client is
   // the one end no read can report: nothing will answer the read, no retry can
   // fire, and no ready event will come, so the transition itself has to settle
@@ -4487,6 +4494,15 @@ async function readThreadHydration(
       // No retry is armed for this end, so the wait every concurrent owner
       // shares has to settle with it. Left pending, the waiters hang with the
       // composer busy and the press never writes.
+      //
+      // Only the attempt that is still the ref's current one, on the current
+      // connection generation, may settle that shared wait: a newer attempt
+      // owns its own outcome, and settling from a superseded one would end a
+      // wait on a verdict about routing state the replacement is about to
+      // publish. This is the same currency check the success path applies
+      // before it records a failure on the route.
+      if (tracked && pendingThreadHydrations.get(ref) !== pending) throw err;
+      if (pending.client !== getWiredClient() || pending.epoch !== getReadyEpoch()) throw err;
       settleHydrationReadEnd(read.kind, ref, { kind: "historyFailed", error: err });
     } else {
       scheduleOwnedHydrationRetry(read.kind, ref, pending);
@@ -7286,6 +7302,7 @@ function openOwnedHydration(kind: HydrationOwnerKind, ref: string): OwnedHydrati
     generation,
     retryAttempt: 0,
     cancelRetry: null,
+    successor: null,
     cancelClosedWatch: null,
     firstHydration,
     settle,
@@ -7426,6 +7443,47 @@ function settleHydrationReadEnd(kind: HydrationOwnerKind, ref: string, end: Hydr
 function retireAllOwnedHydrations(): void {
   for (const ref of [...ownedThreadHydrations.keys()]) retireOwnedHydration("thread", ref);
   for (const ref of [...ownedWatchedHydrations.keys()]) retireOwnedHydration("watched", ref);
+}
+
+// Routing state is verified when this ref's route has accepted a source read,
+// or when no production route exists to verify against. The cache lifetime's
+// `shell` marker is not used here: nothing in the tree sets it, and the route's
+// own flag is the one real code maintains. One predicate, because "may this
+// model's identity, status and capabilities be routed on" is asked by the claim
+// that resolves on it and by the read registration that decides whether a
+// waiting claim can join.
+function routingStateVerified(ref: string): boolean {
+  return (
+    threadsStore.getState().cacheLifetimes.get(ref)?.shell !== true &&
+    entryTranscriptRoute(ref)?.cachedUnverified !== true
+  );
+}
+
+// The decision a parked waiter makes when the lifecycle it waited on retired
+// instead of publishing: which read, if any, to adopt and continue on. Its
+// inputs are the whole state of that decision — the read this lifecycle
+// retired into, and whatever the in-flight registry happens to hold — and it
+// exists as a function so the rule is decidable on its own rather than only
+// through the interleaving that reaches it.
+//
+// The successor is the whole answer. The registry read is an input only so the
+// rule is stated against the presence question it must NOT answer: a cached
+// shell counts as published, so the registry can hold a read issued for a
+// different demand, and adopting that would spend work this ref never owed and
+// judge another demand's answer. No successor means no adoption — the caller
+// re-arms through its ordinary path instead.
+function ownHydrationRejoinTarget(input: {
+  successor: Promise<ThreadModel | null> | null;
+  registryRead: Promise<ThreadModel | null> | undefined;
+}): Promise<ThreadModel | null> | undefined {
+  return input.successor ?? undefined;
+}
+
+export function ownHydrationRejoinTargetForTests(input: {
+  successor: Promise<ThreadModel | null> | null;
+  registryRead: Promise<ThreadModel | null> | undefined;
+}): Promise<ThreadModel | null> | undefined {
+  return ownHydrationRejoinTarget(input);
 }
 
 // scheduleOwnedHydrationRetry is the self-heal itself: the attempt that just
@@ -7656,11 +7714,26 @@ async function refreshTrackedThreadNow(
     );
   });
   if (registerCompletion) registerHydrationSettlement(ref, hydration);
+  // A targeted refresh is the read a waiting lifecycle's retry produces, so it
+  // is that lifecycle's successor: a waiter parked there adopts this read by
+  // the pairing, even though a published shell means the read is not what a
+  // general "is one in flight" test would hand it.
+  const waiting = ownedThreadHydrations.get(ref);
+  if (waiting?.generation === hydrationOwnerGeneration("thread", ref)) waiting.successor = hydration;
   const hasPublishedModel = threadsStore.getState().threads.has(ref);
   // A failed targeted predecessor may already have removed `previous`.
   // Keep the newest targeted read adoptable by the still-active initial
   // caller until a sufficient model has actually published.
-  const trackForActiveLifecycle = !hasPublishedModel && (previous !== undefined || targetedResync);
+  //
+  // A resident model is only adoptable if its routing state was verified. A
+  // cached shell is published and unverified: a routing claim standing on it
+  // is waiting for exactly this read, so the read has to be joinable or the
+  // claim keeps its own read and fails when that one settles first. Registering
+  // it only widens adoption to the read that is already answering the ref,
+  // which is the read a pane would coalesce onto anyway.
+  const trackForActiveLifecycle =
+    (!hasPublishedModel && (previous !== undefined || targetedResync)) ||
+    (hasPublishedModel && !routingStateVerified(ref));
   if (trackForActiveLifecycle) {
     inflightHydrates.start(ref, hydration, client, epoch);
   }
@@ -8398,13 +8471,16 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // keep the ref alive after a Clear without being a pane.
     if (paneBodyOwners === 0 && !routingOnly) acquireCacheLifetimeForeground(ref);
     syncThreadSubscription(ref, client);
-    // Routing state is verified when this ref's route has accepted a source
-    // read, or when no production route exists to verify against. The cache
-    // lifetime's `shell` marker is not used here: nothing in the tree sets it,
-    // and the route's own flag is the one real code maintains.
-    const routingVerified = () =>
-      threadsStore.getState().cacheLifetimes.get(ref)?.shell !== true &&
-      entryTranscriptRoute(ref)?.cachedUnverified !== true;
+    const routingVerified = () => routingStateVerified(ref);
+    // A deleted destination is not a verified one: the read that settled the
+    // ref answered it as absent, not as routable. A routing claim therefore
+    // rejects, its caller keeps the recovery draft, and nothing is enqueued
+    // for a session that is gone. The rejection runs ensureThread's own
+    // rollback, which drops exactly the count this acquisition took. A pane
+    // lets its display stand, so for it this stays an ordinary release.
+    const endDeletedDestination = (): void => {
+      if (routingOnly) throw new Error("The destination was deleted before its routing state was verified");
+    };
     // A routing hold needs verified routing state and nothing else: identity,
     // status and capabilities from a model whose read has landed. A resident
     // verified model answers it here - no transcript open, and no post-Clear
@@ -8449,14 +8525,14 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // bounded by its own 250 ms deadline. The creator alone publishes and
     // arms; a joiner sees the shell (threads.has) or the hydration
     // (inflightHydrates) and joins that instead.
-    if (!threadsStore.getState().threads.has(ref) && !inflightHydrates.has(ref)) {
+    // A routing claim skips the cached-transcript open: it routes on identity,
+    // status and capabilities, and that open attaches a reader and can spend a
+    // body-restoring read in front of its outbox write. The shell the open
+    // would publish is for a pane, so a claim reads directly instead.
+    if (!routingOnly && !threadsStore.getState().threads.has(ref) && !inflightHydrates.has(ref)) {
       await openCachedEntryTranscript(ref, generation);
-      if (
-        foregroundHolds(ref) === 0 ||
-        ensureGenerations.get(ref) !== generation ||
-        threadsStore.getState().deletedRefs.has(ref)
-      )
-        return;
+      if (threadsStore.getState().deletedRefs.has(ref)) return endDeletedDestination();
+      if (foregroundHolds(ref) === 0 || ensureGenerations.get(ref) !== generation) return;
     }
     let cachedBase: ThreadModel | undefined = threadsStore.getState().threads.get(ref);
 
@@ -8507,6 +8583,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       // the certification still promotes rather than self-certifying.
       registerHydrationSettlement(ref, hydration);
       inflightHydrates.start(ref, hydration, hydrationClient, hydrationEpoch);
+      // A read started while a lifecycle is waiting on this ref is the one
+      // answering that lifecycle's question: a waiter parked there adopts it
+      // rather than judging the shell it replaced. Recorded here because this
+      // is where the read comes into existence.
+      const waiting = ownedThreadHydrations.get(ref);
+      if (waiting?.generation === hydrationOwnerGeneration("thread", ref)) waiting.successor = hydration;
       return hydration;
     };
 
@@ -8555,6 +8637,14 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           }
         } catch (err) {
           lastReadError = err;
+          // A routing claim's question is whether verified routing state
+          // exists, not which read produced the failure in front of it. A
+          // read that was superseded while it was in flight answers about the
+          // destination the replacement has already re-read, so its failure
+          // must not end a press the replacement verified. This is checked
+          // before every fence below, including the owner-generation fence:
+          // the replacement's publication is the answer, whoever read it.
+          if (routingOnly && threadsStore.getState().threads.has(ref) && routingVerified()) return;
           const replacement = inflightHydrates.get(ref);
           const lifecycleActive = ensureGenerations.get(ref) === generation && foregroundHolds(ref) > 0;
           if (lifecycleActive && replacement && replacement !== inflight) {
@@ -8582,7 +8672,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           // Durable deletion is the other terminal: return the result of the
           // lifecycle scheduleOwnedHydrationRetry already retired (see the
           // `deletedRefs` field doc) instead of re-arming another read.
-          if (threadsStore.getState().deletedRefs.has(ref)) return;
+          if (threadsStore.getState().deletedRefs.has(ref)) return endDeletedDestination();
           if (getWiredClient() !== inflightClient || getReadyEpoch() !== inflightEpoch) {
             // Presence alone is not verification for a routing hold: the model
             // standing here may be the shell whose read just failed. A routing
@@ -8604,7 +8694,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           // owner waits on that one lifecycle rather than reading again here.
           const owned = ownedThreadHydrations.get(ref);
           if (owned?.generation !== hydrationOwnerGeneration("thread", ref)) throw err;
+          // Read BEFORE the await: the settlement below removes this record,
+          // and the successor it hands over is the read this waiter must adopt
+          // when it retires instead of publishing.
+          let retriedInto = owned.successor;
           const settled = await owned.firstHydration;
+          if (!retriedInto) retriedInto = owned.successor;
           // The one outcome that must not resume: a history diagnostic, which
           // arms no retry. Handing it back releases the claim so the composer
           // is usable again and the draft plus cached display survive.
@@ -8614,7 +8709,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           // rather than reading again. This check is why the enumeration
           // carries the retirement cause instead of leaving every retired
           // generation to look the same.
-          if (settled.kind === "retired" && settled.cause === "deleted") return;
+          if (settled.kind === "retired" && settled.cause === "deleted") return endDeletedDestination();
           // The wait can span a reconnect: the ready handler retires the old
           // retry and starts a fresh read, so this waiter wakes with the
           // generation it was waiting on already gone. Rejoining from the top
@@ -8631,14 +8726,24 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             continue;
           }
           // Same client and epoch, and the lifecycle retired rather than
-          // publishing: the generation that owned the wait is gone (its owner
-          // released, or a newer lifecycle replaced it) while this call still
-          // holds the ref. Rejoining is the whole point of retiring instead of
-          // hanging, so take the current read — or start one — and continue.
-          // Without this the waiter falls through to the re-arm, which finds
-          // no published model and judges the unverified shell.
+          // publishing: the generation that owned the wait is gone while this
+          // call still holds the ref. Rejoining is the whole point of retiring
+          // instead of hanging, so take the read this lifecycle retired into —
+          // the one issued while it was waiting — or the current one, and
+          // continue. Without this the waiter falls through to the re-arm,
+          // which finds no published model and judges the unverified shell.
+          //
+          // The successor is consulted first and is not the same question as
+          // "is a read in flight": a cached shell counts as published, so the
+          // registry can hold an unrelated read or none, while the successor
+          // is exactly the read that answers the demand this waiter gave up
+          // on. Adopting any read in flight instead would spend work the ref
+          // never owed and could judge a different demand's answer.
           {
-            const replacement = inflightHydrates.get(ref);
+            const replacement = ownHydrationRejoinTarget({
+              successor: retriedInto,
+              registryRead: inflightHydrates.get(ref),
+            });
             if (replacement) {
               inflight = replacement;
               continue;
@@ -8658,14 +8763,14 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           if (!routingOnly || routingVerified()) return;
           throw lastReadError ?? new Error("routing state is unverified after the read settled");
         }
-        if (threadsStore.getState().deletedRefs.has(ref)) return;
+        if (threadsStore.getState().deletedRefs.has(ref)) return endDeletedDestination();
 
         client = await requireReadyClient();
         if (foregroundHolds(ref) <= 0) return;
         // Recheck after the possibly-long ready wait: a deletion fence can
         // land while this loop is waiting out a reconnect, and a ref known
         // deleted must not start another read on becoming ready.
-        if (threadsStore.getState().deletedRefs.has(ref)) return;
+        if (threadsStore.getState().deletedRefs.has(ref)) return endDeletedDestination();
         inflight = inflightHydrates.get(ref);
         if (!inflight) inflight = startHydration(client, getReadyEpoch());
       }
