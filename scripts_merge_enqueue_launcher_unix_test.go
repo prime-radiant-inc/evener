@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/internal/testwait"
 )
 
@@ -465,6 +466,14 @@ func (f launcherFixture) launcherCmdAt(t *testing.T, script string, args ...stri
 // this repo builds Darwin -- rejects with a usage error. The helper that used
 // it turned that error into an empty answer, so on a macOS host the case waited
 // for a build it could never see and timed out.
+//
+// Only the three numeric columns are split on whitespace; everything after them
+// is the command line verbatim. Splitting the whole row and rejoining it with
+// single spaces rewrote the command, so a path with two spaces in a row -- a
+// TMPDIR a case deliberately chose -- became a string that could never appear in
+// a process's argv. Readiness and cleanup then agreed with each other and with
+// nothing on the machine: the case timed out and the process it was looking for
+// survived it.
 func scanProcs(t *testing.T) []procLine {
 	t.Helper()
 	out, err := exec.Command("ps", "-ww", "-axo", "pid=,ppid=,pgid=,command=").Output()
@@ -473,24 +482,51 @@ func scanProcs(t *testing.T) []procLine {
 	}
 	var procs []procLine
 	for line := range strings.SplitSeq(string(out), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 4 {
+		pid, rest, ok := leadingField(line)
+		if !ok {
 			continue
 		}
-		pid, pidErr := strconv.Atoi(fields[0])
-		ppid, ppidErr := strconv.Atoi(fields[1])
-		pgid, pgidErr := strconv.Atoi(fields[2])
+		ppid, rest, ok := leadingField(rest)
+		if !ok {
+			continue
+		}
+		pgid, cmd, ok := leadingField(rest)
+		if !ok {
+			continue
+		}
+		pidNum, pidErr := strconv.Atoi(pid)
+		ppidNum, ppidErr := strconv.Atoi(ppid)
+		pgidNum, pgidErr := strconv.Atoi(pgid)
 		if pidErr != nil || ppidErr != nil || pgidErr != nil {
 			continue
 		}
 		procs = append(procs, procLine{
-			pid:  pid,
-			ppid: ppid,
-			pgid: pgid,
-			cmd:  strings.Join(fields[3:], " "),
+			pid:  pidNum,
+			ppid: ppidNum,
+			pgid: pgidNum,
+			cmd:  cmd,
 		})
 	}
 	return procs
+}
+
+// leadingField splits the first whitespace-delimited field off line and returns
+// it with the remainder of the line unchanged, so a later field keeps every byte
+// it had. It reports false when the line is blank.
+//
+// strings.Fields plus a strings.Join would be shorter and would rewrite the
+// remainder: two spaces in a row would come back as one, which is the defect
+// scanProcs documents.
+func leadingField(line string) (field, rest string, ok bool) {
+	trimmed := strings.TrimLeft(line, " \t")
+	if trimmed == "" {
+		return "", "", false
+	}
+	end := strings.IndexAny(trimmed, " \t")
+	if end < 0 {
+		return trimmed, "", true
+	}
+	return trimmed[:end], strings.TrimLeft(trimmed[end:], " \t"), true
 }
 
 // procLine is one row of scanProcs.
@@ -737,9 +773,12 @@ func TestMergeEnqueueLauncherInterruptsAColdBuildInItsOwnGroup(t *testing.T) {
 	f := newLauncherFixture(t, "#!/usr/bin/env bash\nexit 0\n")
 	cmd := f.launcherCmdAt(t, c.script, "--pr", "6499", "--repo", "example.invalid/none")
 	// No EVENER_DEV_BIN: this case has to reach the build path. TMPDIR points at
-	// the fixture and GOWORK=off keeps the build inside the fixture module even
-	// when the fixture sits under a checkout that has a go.work.
-	cmd.Env = envOverride(cmd.Env, "TMPDIR="+c.tmp, "GOWORK=off")
+	// the fixture, GOWORK=off keeps the build inside the fixture module even when
+	// the fixture sits under a checkout that has a go.work, and GOENV=off drops
+	// the developer's saved go env. A saved GOFLAGS such as -modfile=... would
+	// otherwise make the build exit before it reaches the FIFO, and the case
+	// would wait on a process that had already failed.
+	cmd.Env = envOverride(cmd.Env, "TMPDIR="+c.tmp, "GOWORK=off", "GOENV=off")
 	cmd.Env = slices.DeleteFunc(cmd.Env, func(kv string) bool {
 		return strings.HasPrefix(kv, "EVENER_DEV_BIN=")
 	})
@@ -940,6 +979,178 @@ while :; do sleep 0.05; done
 	})
 }
 
+// TestMergeEnqueueLauncherReportsAMissingLibraryAsALauncherFailure pins the exit
+// code for a checkout whose scripts/lib is a directory but whose contents cannot
+// be sourced.
+//
+// The sources run before the EXIT trap, so a `.` that failed used to end the
+// script under `set -e` with the shell's own status. Exit 1 means "the queue
+// dropped your PR", which a caller retries, and nothing had asked GitHub
+// anything. The contract says a launcher that could not run the helper is 2, so
+// each source is checked and routed through launcher_failed, which names the
+// library it could not read.
+func TestMergeEnqueueLauncherReportsAMissingLibraryAsALauncherFailure(t *testing.T) {
+	t.Parallel()
+	c := newFixtureCheckout(t, filepath.Join(t.TempDir(), "tmp"))
+	// One library is missing, which is what a partial checkout or a bad copy
+	// looks like. scripts/lib itself stays a directory, so the root-resolution
+	// guard passes and the source is what fails.
+	if err := os.Remove(filepath.Join(c.root, "scripts", "lib", "gate-bounded.sh")); err != nil {
+		t.Fatalf("remove the fixture library: %v", err)
+	}
+	f := newLauncherFixture(t, "#!/usr/bin/env bash\nexit 0\n")
+	cmd := f.launcherCmdAt(t, c.script, "--pr", "6499", "--repo", "example.invalid/none")
+	cmd.Env = envOverride(cmd.Env, "TMPDIR="+c.tmp, "GOWORK=off", "GOENV=off")
+	runLauncher(t, cmd, f)
+	// Exit 2, not 1: the launcher never got as far as a decision, so the caller
+	// must not read this as a queue outcome.
+	mustExit(t, cmd, f, 2)
+	// And it says which library, so the operator does not have to guess.
+	if out := f.output(t); !strings.Contains(out, "gate-bounded.sh") {
+		t.Fatalf("the launcher did not name the missing library: %s", out)
+	}
+}
+
+// TestMergeEnqueueLauncherStopsACallWhoseWrapperExited pins the forced stop
+// against the shape that defeats a descendant walk: the helper's `gh` is a
+// wrapper that starts the real CLI in the wrapper's own process group, publishes
+// that group, and then exits.
+//
+// Once the wrapper exits, the CLI is reparented out of the helper's tree, so
+// nothing walking descendants from the helper can find it, while it is still
+// submitting the enqueue. The launcher has to hold the group id itself, which is
+// what the helper publishes through EVENER_MERGEQ_GH_GROUP_FILE. The helper here
+// ignores TERM, so the grace expires and only the forced stop can end the call.
+//
+// The CLI ignores TERM as well, so a signal at the wrong group -- or one that
+// never arrives -- is visible as survival rather than as a lucky exit. The
+// assertion is that the CLI is gone after the launcher exits 130, which is the
+// property the operator relies on: "interrupted" means nothing is submitting.
+func TestMergeEnqueueLauncherStopsACallWhoseWrapperExited(t *testing.T) {
+	t.Parallel()
+	f := newLauncherFixture(t, `#!/usr/bin/env bash
+set -uo pipefail
+trap '' TERM
+# The wrapper runs in the background and exits immediately: the real CLI is
+# reparented out of this tree, exactly as a gh wrapper without exec leaves it.
+#
+# The wrapper gets a group of its own, and the handle names it, which is what
+# internal/devtool/mergeq does with SysProcAttr: gh leads its own group, and the
+# group id is the wrapper's pid.
+set -m
+"$EVENER_FIXTURE_WRAPPER" &
+wrapper=$!
+set +m
+printf '%s\n' "$wrapper" > "$EVENER_MERGEQ_GH_GROUP_FILE"
+printf 'helper-pid=%s;pgid=%s\n' "$$" "$(ps -o pgid= -p "$$" | tr -d ' ')" >> "$EVENER_FIXTURE_LOG"
+while :; do sleep 0.05; done
+`)
+	cli := filepath.Join(f.dir, "gh-cli.sh")
+	writeTestFile(t, cli, []byte(`#!/usr/bin/env bash
+trap '' TERM
+printf 'cli-pid=%s;pgid=%s\n' "$$" "$(ps -o pgid= -p "$$" | tr -d ' ')" >> "$EVENER_FIXTURE_LOG"
+while :; do sleep 0.05; done
+`), 0o755)
+	// The wrapper inherits the group the helper put it in, starts the CLI in that
+	// same group -- no `exec`, no new group, exactly as a gh wrapper leaves the
+	// real CLI -- and exits. The CLI keeps the group id after the reparent, which
+	// is the only handle that still names it.
+	wrapper := filepath.Join(f.dir, "gh")
+	writeTestFile(t, wrapper, []byte(`#!/usr/bin/env bash
+set -uo pipefail
+`+shellquote.Literal(cli)+` &
+# Give the CLI a moment to be scheduled, then leave it behind: this is the exit
+# that makes a descendant walk from the helper useless.
+sleep 0.1
+exit 0
+`), 0o755)
+	var helperPID int
+	cmd := f.launcherCmd(t, "--pr", "6499", "--wait", "570", "--repo", "example.invalid/none")
+	cmd.Env = append(cmd.Env,
+		"EVENER_FIXTURE_WRAPPER="+wrapper,
+		"EVENER_HELPER_TERM_GRACE_SECONDS=0",
+		"EVENER_STOP_TREE_GRACE_SECONDS=1",
+	)
+	runLauncher(t, cmd, f, &helperPID)
+	helperPID, helperGroup := logPIDAndGroup(t, f, "helper-pid=")
+	cliPID, cliGroup := logPIDAndGroup(t, f, "cli-pid=")
+	if cliGroup == helperGroup {
+		t.Fatalf("the fixture CLI is in the helper's group %d: this case needs it outside the helper's tree", helperGroup)
+	}
+	// The wrapper has to be gone before the signal, or this case would be testing
+	// the walk it exists to show is insufficient.
+	testwait.Until(t, "the wrapper to exit, leaving its CLI behind", func() bool {
+		for _, proc := range processesNaming(t, wrapper) {
+			if strings.Contains(proc.cmd, wrapper) && proc.pid != cliPID {
+				return false
+			}
+		}
+		return true
+	})
+	if pidGone(cliPID) {
+		t.Fatalf("the fixture CLI %d exited before the launcher was signalled", cliPID)
+	}
+	signalLauncher(t, cmd, syscall.SIGTERM)
+	mustExit(t, cmd, f, 130)
+	testwait.Until(t, fmt.Sprintf("the reparented CLI pid %d to be stopped before the launcher exits 130", cliPID), func() bool {
+		return pidGone(cliPID)
+	})
+}
+
+// TestMergeEnqueueLauncherFindsABuildUnderAScratchPathWithTwoSpaces pins that
+// the process scan keeps a command line verbatim. It is the cold-build case run
+// with a TMPDIR holding two consecutive spaces.
+//
+// Two spaces is what separates "the path is present" from "the path survives a
+// re-render": a scan that split the whole row on whitespace and rejoined it with
+// single spaces produced a string that no process's argv can contain, so
+// readiness waited for a build it could not see and the sweep looked for
+// survivors under a path nothing was running under. Both then agreed with each
+// other and with nothing on the machine -- the case timed out, and the
+// FIFO-blocked build it failed to find kept running in its own process group
+// after the test exited.
+//
+// Two oracles, both about the real processes: the build the case signalled is
+// gone after the launcher exits 130, and cleanup's scan over the same marker
+// reports no survivor. Cleanup is what would have hidden the leak, so it has to
+// see what the machine sees.
+func TestMergeEnqueueLauncherFindsABuildUnderAScratchPathWithTwoSpaces(t *testing.T) {
+	t.Parallel()
+	c := newFixtureCheckoutNamed(t, filepath.Join(t.TempDir(), "tmp  dir"), "checkout")
+	// The marker is the scratch path the build's argv carries. Two spaces in it
+	// make a re-rendered command line unmatchable.
+	marker := c.tmp
+	c.requireIsolated(t)
+	for _, m := range []string{c.root, c.tmp} {
+		t.Cleanup(func() { assertNoSurvivors(t, m) })
+	}
+	f := newLauncherFixture(t, "#!/usr/bin/env bash\nexit 0\n")
+	cmd := f.launcherCmdAt(t, c.script, "--pr", "6499", "--repo", "example.invalid/none")
+	cmd.Env = envOverride(cmd.Env, "TMPDIR="+c.tmp, "GOWORK=off", "GOENV=off")
+	cmd.Env = slices.DeleteFunc(cmd.Env, func(kv string) bool {
+		return strings.HasPrefix(kv, "EVENER_DEV_BIN=")
+	})
+	runLauncher(t, cmd, f)
+	var buildPID int
+	testwait.UntilSeen(t, "the launcher's build to appear under a scratch path with two spaces", func() (bool, string) {
+		buildPID, _ = buildIn(t, marker)
+		if buildPID == 0 {
+			return false, "no process names the fixture scratch yet"
+		}
+		return true, ""
+	})
+	signalLauncher(t, cmd, syscall.SIGTERM)
+	mustExit(t, cmd, f, 130)
+	testwait.Until(t, fmt.Sprintf("build pid %d to terminate", buildPID), func() bool {
+		return pidGone(buildPID)
+	})
+	// Explicit, because this is the half of the finding that does not show up as
+	// a failure: the build has to be dead, not merely unreported.
+	if survivors := processesNaming(t, marker); len(survivors) > 0 {
+		t.Fatalf("a build survived the launcher: %v", survivors)
+	}
+}
+
 // TestMergeEnqueueLauncherRunsFromACheckoutPathWithSpaces pins that a checkout
 // directory with a space in it changes nothing.
 //
@@ -966,7 +1177,7 @@ exit 0
 	// root before launching, and the value it records is the one the log must
 	// carry whole.
 	cmd := f.launcherCmdAt(t, c.script, "--pr", "6499", "--repo", "example.invalid/none")
-	cmd.Env = envOverride(cmd.Env, "TMPDIR="+c.tmp, "GOWORK=off")
+	cmd.Env = envOverride(cmd.Env, "TMPDIR="+c.tmp, "GOWORK=off", "GOENV=off")
 	runLauncher(t, cmd, f)
 	mustExit(t, cmd, f, 0)
 	var ran string

@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,6 +26,19 @@ type GHClient struct {
 	// GH is the gh executable. Empty runs the `gh` on PATH: the merge queue
 	// is GitHub's, so there is no second client to substitute for it.
 	GH string
+	// GroupFile is where the live gh process group is published for the
+	// launcher's forced stop. Empty reads ghGroupFileEnv, which is how
+	// scripts/ops/merge-enqueue.sh hands it down; a test sets it directly so the
+	// handle needs no process-global environment.
+	GroupFile string
+}
+
+// groupFile is the handle path this client publishes in.
+func (c GHClient) groupFile() string {
+	if c.GroupFile != "" {
+		return c.GroupFile
+	}
+	return os.Getenv(ghGroupFileEnv)
 }
 
 // ghName is the executable to run.
@@ -42,6 +58,47 @@ func (c GHClient) ghName() string {
 // lingers after writing. One second stays well under the helper's measured 0.7s
 // interrupt path even with process creation on a loaded runner.
 const ghDrainGrace = time.Second
+
+// ghGroupFileEnv names the file this client publishes its live gh process group
+// in. scripts/ops/merge-enqueue.sh hands the path down and reads it when it has
+// to stop a helper that did not act on SIGTERM.
+//
+// The handle is needed because a process tree is not enough. A `gh` that is a
+// wrapper starting the real CLI without `exec` and then exiting reparents that
+// CLI out of this process's tree, so a launcher walking descendants from the
+// helper cannot see it, while the CLI is still submitting the enqueue. The group
+// id does not move when the wrapper dies, so publishing it is what lets the
+// launcher reach the call after the tree that started it is gone.
+const ghGroupFileEnv = "EVENER_MERGEQ_GH_GROUP_FILE"
+
+// publishGHGroup records pid as the live gh group, and clearGHGroup forgets it.
+// A group is published only while a call is in flight, so a launcher that reads
+// the file is reading the group of the call this helper is waiting on.
+//
+// Both are best effort: a handle that cannot be written costs the launcher the
+// fallback for a wrapper's orphan, and that is not a reason to fail a GitHub
+// call the queue can still answer.
+func publishGHGroup(path string, pid int) {
+	if path == "" || pid <= 1 {
+		return
+	}
+	// Written beside the handle and renamed into place: the launcher may read
+	// the file at any moment, and a rename is the only write it cannot observe
+	// half-done.
+	temp := path + ".tmp"
+	if err := os.WriteFile(temp, []byte(strconv.Itoa(pid)+"\n"), 0o600); err != nil {
+		return
+	}
+	_ = os.Rename(temp, path)
+}
+
+// clearGHGroup removes the handle once the call it named has ended.
+func clearGHGroup(path string) {
+	if path == "" {
+		return
+	}
+	_ = os.Remove(filepath.Clean(path))
+}
 
 // run executes gh and returns its stdout. The error carries gh's own stderr
 // when it wrote one, because that text is what the operator needs to read;
@@ -69,7 +126,17 @@ func (c GHClient) run(ctx context.Context, args ...string) ([]byte, error) {
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
 	cmd.WaitDelay = ghDrainGrace
-	err := orphanpipe.ChildErr(cmd, cmd.Run())
+	// Started rather than Run so the group can be published before the call can
+	// outlive its own wrapper: a cancellation arriving in the window between the
+	// fork and the publish would leave the launcher with no handle for a CLI the
+	// wrapper had already reparented.
+	if err := cmd.Start(); err != nil {
+		return nil, err
+	}
+	groupFile := c.groupFile()
+	publishGHGroup(groupFile, cmd.Process.Pid)
+	defer clearGHGroup(groupFile)
+	err := orphanpipe.ChildErr(cmd, cmd.Wait())
 	// The group dies with the call whether or not the context fired: on a clean
 	// exit nobody ran Cancel, and a wrapper's CLI would otherwise survive it.
 	// After the reap the pid names no process this call owns, and the group

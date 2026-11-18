@@ -59,9 +59,12 @@
 # harness around the fake.
 set -euo pipefail
 
-# The contract block above is lines 2-50; the rationale after it is for a
-# reader of this file, not for --help.
-usage() { sed -n '2,50p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+# The contract block above is lines 2-51; the rationale after it is for a
+# reader of this file, not for --help. The range ends at the blank comment line
+# after the exit-code paragraph, so --help cannot stop mid-sentence: it used to
+# end at 50, one line before the sentence saying a started helper keeps its own
+# status, which is the half of the contract a caller relies on when it sees 1.
+usage() { sed -n '2,51p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 # A value-taking option at the end of the line has no value: reading $2 there is
 # an "unbound variable" abort under set -u, which exits 1 -- the code that means
@@ -176,6 +179,10 @@ child_is_helper=false
 helper_started=false
 launching=false
 cancel_requested=false
+# The file the helper publishes its live `gh` process group in. Empty until a
+# helper is about to be started, and read only by the forced stop: it is the one
+# handle that outlives a `gh` wrapper which starts the real CLI and exits.
+gh_group_file=""
 # How long a TERMed helper gets to act on the signal before its tree is stopped
 # by force. The override exists for the same reason gate-bounded.sh has one for
 # its own grace (EVENER_STOP_TREE_GRACE_SECONDS): a test that has to let the
@@ -194,32 +201,48 @@ child_running() {
   esac
   return 0
 }
-# helper_call_groups <pid> — print each process group a descendant of pid is in,
-# once, other than the helper's own and this script's. That is where the
-# helper's `gh` lives: internal/devtool/mergeq's client starts `gh` in a group of
-# its own, so one signal reaches the CLI and anything a wrapper forked. The same
-# choice is why a group signal at the helper does not reach the call, and a
-# forced stop has to name these groups itself.
+# helper_call_groups <pid> — print each process group the helper's GitHub call
+# may be in, once, other than the helper's own and this script's.
 #
-# It is every such group, not just groups a descendant leads: a `gh` wrapper that
-# starts the CLI without `exec` then exits leaves the CLI in the wrapper's group
-# with no leader left in it, and that process is exactly the one still
-# submitting. The helper's own group and this script's are excluded because
-# stop_command already signals the first and must never signal the second.
+# Two sources, because neither covers the other. The helper publishes the group
+# of the call it is waiting on (internal/devtool/mergeq's ghGroupFileEnv), which
+# is the only handle that survives a `gh` wrapper starting the real CLI without
+# `exec` and then exiting: that CLI is reparented out of the helper's tree, so a
+# descendant walk cannot see it, and it is exactly the process still submitting.
+# The walk adds whatever a helper too old to publish left behind, and any call
+# forked since the last publish.
+#
+# The walk is every group a descendant is in, not just groups a descendant
+# leads, for the same wrapper reason. The helper's own group and this script's
+# are excluded: stop_command signals the first, and the second must never be
+# signalled.
 helper_call_groups() {
-  local pid="$1" own_group helper_group descendant group
+  local pid="$1" own_group helper_group descendant group published
   own_group=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ')
   helper_group=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
-  for descendant in $(process_descendants "$pid"); do
-    group=$(ps -o pgid= -p "$descendant" 2>/dev/null | tr -d ' ')
-    case "$group" in
-      '' | *[!0-9]*) continue ;;
-    esac
-    [ "$group" -gt 1 ] || continue
-    [ "$group" = "$helper_group" ] && continue
-    [ "$group" = "$own_group" ] && continue
-    printf '%s\n' "$group"
-  done | sort -u
+  {
+    if [ -n "${gh_group_file:-}" ] && [ -r "$gh_group_file" ]; then
+      published=$(tr -d ' \n' < "$gh_group_file" 2>/dev/null) || published=""
+      case "$published" in
+        '' | *[!0-9]*) ;;
+        *)
+          if [ "$published" -gt 1 ] && [ "$published" != "$helper_group" ] && [ "$published" != "$own_group" ]; then
+            printf '%s\n' "$published"
+          fi
+          ;;
+      esac
+    fi
+    for descendant in $(process_descendants "$pid"); do
+      group=$(ps -o pgid= -p "$descendant" 2>/dev/null | tr -d ' ')
+      case "$group" in
+        '' | *[!0-9]*) continue ;;
+      esac
+      [ "$group" -gt 1 ] || continue
+      [ "$group" = "$helper_group" ] && continue
+      [ "$group" = "$own_group" ] && continue
+      printf '%s\n' "$group"
+    done
+  } | sort -u
 }
 # stop_helper_tree <pid> — the forced stop for a helper that did not act on
 # TERM. stop_command alone stops the helper's own group, and the helper's `gh`
@@ -296,6 +319,12 @@ interrupted() {
 # which is exit 2.
 finish() {
   local status=$?
+  # The handle names a process group, and a group id is reused: leaving one
+  # behind for a later launcher to read would point at some unrelated job. It is
+  # removed before the scratch, which is the directory it may live in.
+  if [ -n "$gh_group_file" ]; then
+    rm -f "$gh_group_file" 2>/dev/null || true
+  fi
   # Under set -e a failing scratch_rm would abort this handler before the
   # remap below, leaving the library's own status as the script's. Its failure
   # is not the caller's problem: scratch that cannot be resolved is already
@@ -305,6 +334,27 @@ finish() {
     status=2
   fi
   exit "$status"
+}
+
+# mint_gh_group_file — create the file the helper publishes its live `gh` process
+# group in, and name it in gh_group_file. Both launch paths need it: a prebuilt
+# helper calls `gh` exactly as a built one does, and the forced stop is the same
+# code.
+#
+# It lives under the scratch when this launcher minted one, and under TMPDIR when
+# it did not (the prebuilt path takes no scratch). The name carries this script's
+# PID so two launchers never read each other's handle. A file that cannot be
+# created leaves the variable empty: the descendant walk still covers a helper
+# with a call in its tree, and a handle is an addition, not a precondition.
+mint_gh_group_file() {
+  local dir
+  if [ -n "${work:-}" ]; then
+    dir="$work"
+  else
+    dir="${TMPDIR:-/tmp}"
+  fi
+  gh_group_file="$dir/merge-enqueue-gh-group-$$"
+  : > "$gh_group_file" 2>/dev/null || gh_group_file=""
 }
 
 # start_helper BIN — run the helper as a child, record its PID for the signal
@@ -327,9 +377,11 @@ start_helper() {
   # The launch is bracketed: `cmd &` and `child=$!` are two commands, and a
   # trap can run between them. A signal there is recorded instead of acted on,
   # because acting would exit 130 with the helper unsignalled.
+  #
+  mint_gh_group_file
   launching=true
   set -m
-  env GOFLAGS= "$1" dev merge-enqueue \
+  env GOFLAGS= EVENER_MERGEQ_GH_GROUP_FILE="${gh_group_file:-}" "$1" dev merge-enqueue \
     --repo "$repo" --pr "$pr" --wait "$wait" ${jump[@]+"${jump[@]}"} &
   set +m
   child=$!
@@ -412,9 +464,18 @@ launcher_failed() {
 # before the traps so nothing in the handler is undefined. Sourcing has no side
 # effects (scratch-lib.sh's own comment pins that), so the prebuilt path does no
 # scratch setup and reclaims nothing.
-. "$root/scripts/lib/scratch-lib.sh"
-. "$root/scripts/lib/gate-scratch-root.sh"
-. "$root/scripts/lib/gate-bounded.sh"
+# A source that fails would otherwise end the script under `set -e` with the
+# library's own status -- 1, "the queue dropped your PR" -- for a launcher that
+# never asked GitHub anything. Each one is checked first and named, so an
+# unreadable library is the launcher failure it is.
+source_library() {
+  [ -r "$1" ] || launcher_failed "cannot read the library $1"
+  # shellcheck source=/dev/null
+  . "$1" || launcher_failed "sourcing $1 failed"
+}
+source_library "$root/scripts/lib/scratch-lib.sh"
+source_library "$root/scripts/lib/gate-scratch-root.sh"
+source_library "$root/scripts/lib/gate-bounded.sh"
 trap 'interrupted TERM' TERM
 trap 'interrupted INT' INT
 trap 'interrupted HUP' HUP

@@ -2,6 +2,7 @@ package mergeq
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -111,6 +112,73 @@ exit 0
 	testwait.Until(t, fmt.Sprintf("the wrapper's client child %d to be killed", childPID), func() bool {
 		return pidGone(childPID)
 	})
+}
+
+// TestGHPublishesItsLiveProcessGroup pins the handle the launcher needs to stop a
+// call whose wrapper exited. A `gh` that is a wrapper starting the real CLI
+// without `exec` then exits reparents that CLI out of the helper's tree, so the
+// launcher cannot find it by walking descendants: the group id is the only thing
+// that still names it. The client publishes that id while the call is in flight
+// and removes it when the call ends, so the launcher never reads a stale one.
+//
+// The fake `gh` blocks until its pid file is written, so the group the test reads
+// belongs to a live process rather than to one whose group id may be reused.
+func TestGHPublishesItsLiveProcessGroup(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	groupFile := filepath.Join(dir, "gh-group")
+	release := filepath.Join(dir, "release")
+	gh := filepath.Join(dir, "gh")
+	writeExecutable(t, gh, `#!/usr/bin/env bash
+while [ ! -e `+shellquote.Literal(release)+` ]; do sleep 0.01; done
+printf '{"data":{}}'
+`)
+	done := make(chan error, 1)
+	go func() {
+		_, err := (GHClient{GH: gh, GroupFile: groupFile}).run(context.Background(), "api", "graphql")
+		done <- err
+	}()
+	var published int
+	testwait.Until(t, "the client to publish the live gh group", func() bool {
+		body, err := os.ReadFile(groupFile)
+		if err != nil {
+			return false
+		}
+		parsed, err := strconv.Atoi(strings.TrimSpace(string(body)))
+		if err != nil {
+			return false
+		}
+		published = parsed
+		return true
+	})
+	if published <= 1 {
+		t.Fatalf("published group %d, want the gh call's own group", published)
+	}
+	// The published id has to be a group the call is actually in, or a launcher
+	// acting on it would signal something else.
+	out, err := exec.Command("ps", "-o", "pgid=", "-p", strconv.Itoa(published)).Output()
+	if err != nil {
+		t.Fatalf("ps for the published group %d: %v", published, err)
+	}
+	if got := strings.TrimSpace(string(out)); got != strconv.Itoa(published) {
+		t.Fatalf("published %d, which is in group %s: the handle must name the call's own group", published, got)
+	}
+	if err := os.WriteFile(release, nil, 0o600); err != nil {
+		t.Fatalf("release the fake gh: %v", err)
+	}
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run = %v, want the fake gh's answer", err)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("run did not return after the fake gh answered")
+	}
+	// And the handle is gone once the call is: a group id is reused, so a file
+	// left behind would point a later forced stop at an unrelated process.
+	if _, err := os.Stat(groupFile); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the handle survived the call: stat = %v", err)
+	}
 }
 
 // TestGHDrainIsBoundedAfterAnAnswer pins that a gh which has answered cannot hold
