@@ -296,7 +296,6 @@ type indexedTurn struct {
 // deriving those fields from the runs independently is what produced a
 // finding in a different field in every review of this change.
 type turnExecution struct {
-	turnID string
 	// entries are every run's entries in file order.
 	entries []schema.Turn
 	// controls are this execution's completion and reopen records in file
@@ -501,7 +500,7 @@ func groupExecutions(groups []groupedTurn, controls map[string][]indexedTurn) ma
 		}
 		ex := execs[groups[i].turnID]
 		if ex == nil {
-			ex = &turnExecution{turnID: groups[i].turnID, controls: controls[groups[i].turnID]}
+			ex = &turnExecution{controls: controls[groups[i].turnID]}
 			execs[groups[i].turnID] = ex
 		}
 		ex.runs = append(ex.runs, i)
