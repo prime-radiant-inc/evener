@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"path/filepath"
+
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/hostresources"
 	"primeradiant.com/evener/agent/internal/clock"
@@ -17,6 +19,16 @@ func envInfoFromEnv(env execenv.ExecutionEnvironment, clk clock.Clock) schema.En
 		wd = env.WorkingDirectory()
 		plat = env.Platform()
 		osv = env.OSVersion()
+	}
+	// The record is the only thing later identities can be derived from, so it is
+	// stored absolute: a project ID is a hash of an absolute canonical path, and
+	// --dir . leaves the directory the process launched in as a relative string.
+	// Hashing that string as given yields an ID no checkout has, which makes a
+	// lane created from this checkout read as a different repository's.
+	if wd != "" {
+		if absolute, err := filepath.Abs(wd); err == nil {
+			wd = absolute
+		}
 	}
 	return schema.EnvironmentInfo{
 		WorkingDir: wd,

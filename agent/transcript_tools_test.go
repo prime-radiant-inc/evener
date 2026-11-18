@@ -3276,3 +3276,161 @@ func TestFind_ProjectName_MissingSiblingCheckoutProvesNothing(t *testing.T) {
 		t.Fatalf("projectName(deleted managed lane recording its project) = %q, want %q", got, want)
 	}
 }
+
+// TestFind_ProjectName_OwnerRestoreSymlinkAliasIsStillALane covers an owner whose
+// restore root is a symlink to a surviving state lane. The structural lookup
+// resolves the alias, recognizes the lane, and answers "no project" — its leaf is
+// a lane name. Classifying the alias instead of the resolved path sends the alias
+// down the ordinary-directory branch, where its basename is offered as a project
+// name ahead of the parent that can still name the repository.
+func TestFind_ProjectName_OwnerRestoreSymlinkAliasIsStillALane(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+
+	// A surviving lane directory with no usable Git metadata: nothing in it, or
+	// above it below the lane root, identifies a checkout.
+	liveLane := filepath.Join(stateDir, "sessions", identifier.MustNewSessionID(), "worktrees", "dlg_restore")
+	if err := os.MkdirAll(liveLane, 0o755); err != nil {
+		t.Fatalf("mkdir live lane: %v", err)
+	}
+	// The alias the owner recorded: a symlink to the lane, not a directory of its
+	// own, and its own name says nothing about a repository.
+	alias := filepath.Join(t.TempDir(), "not-a-repo-name")
+	if err := os.Symlink(liveLane, alias); err != nil {
+		t.Fatalf("symlink alias: %v", err)
+	}
+
+	ownerID := identifier.MustNewSessionID()
+	owner := schema.SessionMeta{ID: ownerID}
+	owner.WorktreePath = alias
+	owner.WorktreeRestoreRoot = alias
+	if err := schema.SaveSessionMeta(stateDir, owner); err != nil {
+		t.Fatal(err)
+	}
+
+	// The parent is the checkout the lane was created from, and its saved origin
+	// is the only record that names the project.
+	repo := newNamedCheckout(t, "repo-b")
+	parent := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	parent.EnvInfo.GitOriginURL = "git@github.com:owner/repo-b.git"
+	parent.EnvInfo.WorkingDir = repo
+	if err := schema.SaveSessionMeta(stateDir, parent); err != nil {
+		t.Fatal(err)
+	}
+
+	row := schema.SessionMeta{ParentSessionID: parent.ID}
+	row.EnvInfo.WorkingDir = filepath.Join(stateDir, "sessions", ownerID, "worktrees", "dlg_row")
+	if got, want := projectName(row, stateDir), "repo-b"; got != want {
+		t.Fatalf("projectName(lane whose owner recorded a symlink to a state lane) = %q, want the parent's %q", got, want)
+	}
+}
+
+// TestFind_ProjectName_OwnerHomeSymlinkAliasIsStillALane covers the owner's
+// HOME fallback, which is the same question as the restore-root branch asked
+// about a different field. An owner that never entered a worktree records no
+// restore root, so HomeDir answers with its working directory — here an alias to
+// a state lane. Classified by the alias it is an ordinary directory and its leaf
+// outranks the parent; classified from the structural lookup it is a lane and
+// contributes nothing.
+func TestFind_ProjectName_OwnerHomeSymlinkAliasIsStillALane(t *testing.T) {
+	stateDir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+
+	liveLane := filepath.Join(stateDir, "sessions", identifier.MustNewSessionID(), "worktrees", "dlg_home")
+	if err := os.MkdirAll(liveLane, 0o755); err != nil {
+		t.Fatalf("mkdir live lane: %v", err)
+	}
+	alias := filepath.Join(t.TempDir(), "not-a-repo-name")
+	if err := os.Symlink(liveLane, alias); err != nil {
+		t.Fatalf("symlink alias: %v", err)
+	}
+
+	// The owner records no restore root: HomeDir answers with WorkingDir.
+	ownerID := identifier.MustNewSessionID()
+	owner := schema.SessionMeta{ID: ownerID}
+	owner.EnvInfo.WorkingDir = alias
+	if err := schema.SaveSessionMeta(stateDir, owner); err != nil {
+		t.Fatal(err)
+	}
+
+	repo := newNamedCheckout(t, "repo-b")
+	parent := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	parent.EnvInfo.GitOriginURL = "git@github.com:owner/repo-b.git"
+	parent.EnvInfo.WorkingDir = repo
+	if err := schema.SaveSessionMeta(stateDir, parent); err != nil {
+		t.Fatal(err)
+	}
+
+	row := schema.SessionMeta{ParentSessionID: parent.ID}
+	row.EnvInfo.WorkingDir = filepath.Join(stateDir, "sessions", ownerID, "worktrees", "dlg_home_row")
+	if got, want := projectName(row, stateDir), "repo-b"; got != want {
+		t.Fatalf("projectName(lane whose owner's home directory is a symlink to a state lane) = %q, want the parent's %q", got, want)
+	}
+
+	// An ordinary home directory keeps its basename: only a lane is excluded.
+	// Without this, "no evidence" and "no fallback" would be the same code and the
+	// exclusion above would be indistinguishable from having deleted the branch.
+	plain := filepath.Join(t.TempDir(), "plain-workspace")
+	if err := os.MkdirAll(plain, 0o755); err != nil {
+		t.Fatalf("mkdir plain home: %v", err)
+	}
+	plainOwner := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	plainOwner.EnvInfo.WorkingDir = plain
+	if err := schema.SaveSessionMeta(stateDir, plainOwner); err != nil {
+		t.Fatal(err)
+	}
+	plainRow := schema.SessionMeta{}
+	plainRow.EnvInfo.WorkingDir = filepath.Join(stateDir, "sessions", plainOwner.ID, "worktrees", "dlg_plain_row")
+	if got, want := projectName(plainRow, stateDir), "plain-workspace"; got != want {
+		t.Fatalf("projectName(lane whose owner's home is an ordinary directory) = %q, want the recorded basename %q", got, want)
+	}
+}
+
+// TestFind_ProjectName_SiblingRestoreSymlinkAliasIsStillALane covers the same
+// alias classification on the sibling scan. A sibling's restore root is a symlink
+// to a surviving state lane, so the resolved path is a lane that names no
+// project; the alias, read as an ordinary directory, would offer its own leaf as
+// a candidate instead. The ordinary-directory half of this fallback is pinned by
+// TestFind_ProjectName_SiblingRestoreRootBasenameFallback.
+func TestFind_ProjectName_SiblingRestoreSymlinkAliasIsStillALane(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	repoA := newNamedCheckout(t, "repo-a")
+	projectA := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repoA))
+	bucket, err := RuntimeDirForProjectWithStateHome(projectA, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	liveLane := filepath.Join(bucket, "sessions", identifier.MustNewSessionID(), "worktrees", "dlg_restore")
+	if err := os.MkdirAll(liveLane, 0o755); err != nil {
+		t.Fatalf("mkdir live lane: %v", err)
+	}
+	alias := filepath.Join(t.TempDir(), "not-a-repo-name")
+	if err := os.Symlink(liveLane, alias); err != nil {
+		t.Fatalf("symlink alias: %v", err)
+	}
+
+	// The sibling's only surviving record is that alias. It names no project, so
+	// it must not answer for the lane.
+	sibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	sibling.WorktreeRestoreRoot = alias
+	sibling.EnvInfo.WorkingDir = alias
+	if err := schema.SaveSessionMeta(bucket, sibling); err != nil {
+		t.Fatal(err)
+	}
+
+	lane := schema.SessionMeta{}
+	lane.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", projectA.ID, "dlg_alias_only")
+	if got := projectName(lane, bucket); got != "" {
+		t.Fatalf("projectName(lane whose only sibling recorded a symlink to a state lane) = %q, want empty (a lane leaf is not a project)", got)
+	}
+}
