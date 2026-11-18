@@ -1053,8 +1053,10 @@ func TestPoisonedWriterDoesNotPopAQueuedMessage(t *testing.T) {
 // commits in between is already reflected there. The door does not order that
 // refresh.
 //
-// The door is the statement: while it is held, no fold can publish, so live
-// order is transcript order. A publication that can take the door is a
+// The door is the statement: while it is held, no fold can publish, so a
+// fold's markers cannot land between this entry and the event that announces
+// it. A fold's own deferred events flush after the door releases and can
+// follow a later environment event. A publication that can take the door is a
 // publication that happens outside it.
 func TestEnvironmentEventPublishesInsideTheTranscriptOrderingBoundary(t *testing.T) {
 	t.Parallel()
