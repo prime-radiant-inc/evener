@@ -2532,7 +2532,7 @@ func TestDelegateAttentionHeldRowPresentsFromTheHistoryTail(t *testing.T) {
 		return !running
 	})
 	// The hold ends — the same production release every wake fires.
-	lane.delegateSess.releaseAutomaticDriveHolds(delegateHoldReleaseArm)
+	lane.delegateSess.releaseAutomaticDriveHoldsBounded(noBound, delegateHoldReleaseArm)
 	// The held row presents through the wired arm: the arm's wake drives
 	// synchronously, and the request it builds must end on the report.
 	if err := lane.delegateSess.armDelegateAttention(heldRowID); err != nil {
@@ -3292,7 +3292,7 @@ func TestHeldRowsMoveToTheTailInArrivalOrder(t *testing.T) {
 		}
 		sess.holdDelegateAttentionFromAutomaticDrive(ids[i])
 	}
-	sess.releaseAutomaticDriveHolds(delegateHoldReleaseArm)
+	sess.releaseAutomaticDriveHoldsBounded(noBound, delegateHoldReleaseArm)
 	var got []string
 	sess.mu.Lock()
 	for _, turn := range sess.history {

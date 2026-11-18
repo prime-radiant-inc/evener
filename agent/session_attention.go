@@ -1200,21 +1200,14 @@ const (
 	delegateHoldReleaseArm delegateHoldReleaseSite = "arm"
 )
 
-// releaseAutomaticDriveHolds ends every user-stop hold a new event's wake
-// supersedes: a committed child delivery or a successful arm may present a
-// row the stop held out of the automatic drives, so the holds end with the
-// event that arrived — the site names which wake. The rows the stop never
-// touched keep their presentation either way, and a failed arm or an
+// releaseAutomaticDriveHoldsBounded ends every user-stop hold a new event's
+// wake supersedes: a committed child delivery or a successful arm may
+// present a row the stop held out of the automatic drives, so the holds end
+// with the event that arrived — the site names which wake. The rows the stop
+// never touched keep their presentation either way, and a failed arm or an
 // uncommitted delivery woke nothing, so the holds stand.
-func (s *Session) releaseAutomaticDriveHolds(site delegateHoldReleaseSite) {
-	// The ordinary path supplies no bound, so this takes the lock outright
-	// exactly as it always has. The bounded form exists for the close drain,
-	// which cannot park here: see releaseAutomaticDriveHoldsBounded.
-	s.releaseAutomaticDriveHoldsBounded(noBound, site)
-}
-
-// releaseAutomaticDriveHoldsBounded is releaseAutomaticDriveHolds on a caller's
-// bound, and reports whether the release ran.
+//
+// It reports whether the release ran.
 //
 // A close drain retries a committed acknowledgment for a resident NON-ROOT
 // receiver, and this release sits in front of the arm that retry performs. It

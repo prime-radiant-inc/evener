@@ -836,7 +836,25 @@ func (c *delegateTreeController) wakeDeliveryReceiver(bound context.Context, rec
 		// only the re-arm.
 		if err := receiver.armDelegateAttentionsBounded(bound, attentionIDs); err != nil {
 			c.reportDelegateWakeError(bound, err)
-			receiver.notify()
+			// The notify func drives the receiver SYNCHRONOUSLY, and its
+			// production callback reads pending attention and takes
+			// attentionMu without a bound of its own. So an arm that gave up
+			// on the caller's bound must not spill into it: the wake would
+			// take the unbounded wait the arm just refused, and the
+			// reconciliation the drain is waiting for would park past the
+			// publication cutoff anyway -- the bound undone one call later.
+			//
+			// Nothing is lost by skipping it. The acknowledgment already
+			// committed, the row is durable, and the receiver still owes
+			// attention, so a later drive presents them together.
+			//
+			// The immediate fallback stays for every other arm error,
+			// including the ordinary unbounded delivery: a refusal there is
+			// news about a wake that ran out of no time at all, and the
+			// receiver must still be woken.
+			if !errors.Is(err, errDelegateAttentionArmSpent) {
+				receiver.notify()
+			}
 		}
 		// The lane's own wake cannot start its consumption generation —
 		// that drive is gated to the root — so the root's attention

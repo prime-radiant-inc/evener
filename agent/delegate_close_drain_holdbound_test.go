@@ -5,8 +5,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-
-	"primeradiant.com/evener/internal/testwait"
 )
 
 // The hold release that precedes a bounded arm takes the receiver's attention
@@ -41,25 +39,24 @@ func TestBoundedHoldReleaseGivesUpOnAHeldAttentionLock(t *testing.T) {
 	spent, cancelSpent := context.WithCancel(t.Context())
 	cancelSpent()
 
-	var returned, ran atomic.Bool
+	var ran atomic.Bool
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		ran.Store(s.releaseAutomaticDriveHoldsBounded(spent, delegateHoldReleaseDelivery))
-		returned.Store(true)
 	}()
 
 	// The observation is the call RETURNING, not a duration: an unbounded release
 	// never returns while the lock is held, so waiting for this is the assertion.
-	testwait.Until(t, "the bounded hold release to return instead of waiting for the attention lock", returned.Load)
+	//
+	// `done` is the SOLE completion signal, and it is closed by the goroutine's
+	// own defer. Polling a flag the goroutine sets before returning would let a
+	// preemption between the store and the deferred close fail a correct run,
+	// which is the one thing this fixture must not do.
+	awaitCloseFenceSignal(t, done, "the bounded hold release returning instead of waiting for the attention lock")
 
 	if ran.Load() {
 		t.Fatal("a release on a spent bound reported that it ran while another holder still had the lock")
-	}
-	select {
-	case <-done:
-	default:
-		t.Fatal("the release reported its result before returning")
 	}
 
 	// The holds stand: nothing was presented, so a later drive still finds the
@@ -120,17 +117,15 @@ func TestBoundedWakeDoesNotParkOnAHeldAttentionLock(t *testing.T) {
 	cancelSpent()
 	t.Cleanup(cancelSpent)
 
-	var returned atomic.Bool
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		_ = root.delegateController.wakeDeliveryReceiver(
 			withPublicationBound(spent), receiver, []string{"delegate:held"})
-		returned.Store(true)
 	}()
 
-	testwait.Until(t, "the bounded wake to return instead of waiting for the attention lock", returned.Load)
-	<-done
+	// `done` first and alone, for the reason given in the release test above.
+	awaitCloseFenceSignal(t, done, "the bounded wake returning instead of waiting for the attention lock")
 
 	// The receiver is NOT woken. Hold-before-notify is the ordering the ordinary
 	// path depends on: the notify func drives the receiver synchronously, so a
@@ -143,5 +138,78 @@ func TestBoundedWakeDoesNotParkOnAHeldAttentionLock(t *testing.T) {
 		t.Fatal("a wake whose hold release gave up still notified the receiver: the drive would " +
 			"present the delivered row with the stopped report still held back, which is the " +
 			"immediate restart the hold exists to prevent")
+	}
+}
+
+// The arm's own error fallback must not undo the bound the arm just honoured.
+//
+// The fallback wakes the receiver SYNCHRONOUSLY, and the production notify func
+// reads pending attention and takes attentionMu with no bound of its own. So an
+// arm that gave up at the caller's deadline used to spill straight into the
+// unbounded wait it had just refused: the reconciliation the drain waits for
+// parked past the publication cutoff anyway, and the budget it spent is the one
+// the remaining collectible lanes need.
+//
+// The fixture makes both facts deterministic rather than timed. The release's
+// own hook takes attentionMu as the release finishes, so the release SUCCEEDS
+// and the arm that follows finds the lock taken; the arm then returns
+// errDelegateAttentionArmSpent, and the wake must return without notifying.
+//
+// This cannot pass for the wrong reason: the fallback as written notifies on
+// every error, so a green here means the spent condition specifically skipped
+// it. The ordinary path's notify stays pinned by
+// TestDelegateAttentionDeliveryArmsTheRootRetryForANonRootReceiver.
+func TestBoundedArmSpentDoesNotFallBackToAnUnboundedNotify(t *testing.T) {
+	r := newWorktreeRepo(t)
+	root := r.s
+	if root.delegateController == nil {
+		t.Fatal("fixture session has no delegate controller")
+	}
+
+	// A resident NON-ROOT receiver: the root receiver arms a different path.
+	receiver := &Session{id: "child-receiver", delegateController: root.delegateController}
+	// A user-stop hold gives the release work to do, so it fires its hook and
+	// cannot no-op its way past the arm below.
+	receiver.attentionAutomaticDriveHolds = map[string]struct{}{"delegate:held": {}}
+
+	var notified atomic.Bool
+	receiver.notifyFunc = func() { notified.Store(true) }
+
+	// The hook runs after the release drops the lock, so the release runs and
+	// the arm that follows finds attentionMu taken. Holding it here rather than
+	// racing a second goroutine is what makes the split deterministic.
+	var hookOnce sync.Once
+	locked := false
+	updateSessionTestConfig(receiver, func(cfg *testConfig) {
+		cfg.delegateAttentionHoldReleased = func(site delegateHoldReleaseSite, released []string) {
+			hookOnce.Do(func() {
+				receiver.attentionMu.Lock()
+				locked = true
+			})
+		}
+	})
+	t.Cleanup(func() {
+		if locked {
+			receiver.attentionMu.Unlock()
+		}
+	})
+
+	spent, cancelSpent := context.WithCancel(t.Context())
+	cancelSpent()
+	t.Cleanup(cancelSpent)
+
+	// Synchronous, so the hook's lock and the arm's refusal are ordered by the
+	// call itself; an unbounded fallback here would hang rather than race.
+	_ = root.delegateController.wakeDeliveryReceiver(
+		withPublicationBound(spent), receiver, []string{"delegate:held"})
+
+	if !locked {
+		t.Fatal("the hold release never ran: the fixture never reached the arm whose fallback it pins")
+	}
+	if notified.Load() {
+		t.Fatal("an arm that ran out of the caller's bound still woke the receiver: the synchronous " +
+			"notify takes attentionMu without a bound, so the wake parks past the cutoff the drain " +
+			"supplied -- the committed acknowledgment and the durable row are what carry the row to a " +
+			"later drive")
 	}
 }
