@@ -3856,6 +3856,148 @@ func TestFind_ProjectName_PrunedLaneKeepsNoLeafWhenProjectIsUnrecorded(t *testin
 	}
 }
 
+// TestFind_ProjectName_SurvivingWorktreeDirectoryKeepsTheRepoName covers an
+// in-repository worktree whose Git metadata is gone twice over: the worktree's
+// own .git pointer is removed, and so is the enclosing repository's .git.
+//
+// The directory itself survives. Nothing above it is a checkout any more, so a
+// Git walk finds no root and the surviving directory becomes an ordinary project
+// — and its basename is then a LANE name, not the repository the lane was cut
+// from. The path still spells the repository's own worktree layout, which is the
+// only evidence left, and it names the repository.
+//
+// The whole shape is constructed here — real directories, real .git entries,
+// removed at known points — rather than borrowed from the host, so it proves the
+// same thing wherever it runs.
+func TestFind_ProjectName_SurvivingWorktreeDirectoryKeepsTheRepoName(t *testing.T) {
+	stateDir := canonicalStateDir(t.TempDir())
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+
+	// A repository with a real worktree under its own .worktrees layout, so both
+	// the linked-worktree pointer and the enclosing .git directory are real Git
+	// metadata and removing them is a real loss rather than a fixture assumption.
+	base := t.TempDir()
+	repo := filepath.Join(base, "surviving-repo")
+	gittest.Run(t, base, "init", "-q", "surviving-repo")
+	gittest.Run(t, repo, "commit", "-q", "--allow-empty", "-m", "init")
+	lane := filepath.Join(repo, ".worktrees", "lane")
+	gittest.Run(t, repo, "worktree", "add", "-q", lane, "-b", "lane-branch")
+
+	if err := os.Remove(filepath.Join(lane, ".git")); err != nil {
+		t.Fatalf("remove the worktree's Git pointer: %v", err)
+	}
+	if err := os.RemoveAll(filepath.Join(repo, ".git")); err != nil {
+		t.Fatalf("remove the enclosing repository's Git metadata: %v", err)
+	}
+
+	row := schema.SessionMeta{}
+	row.EnvInfo.WorkingDir = lane
+	if got, want := projectName(row, stateDir), "surviving-repo"; got != want {
+		t.Fatalf("projectName(worktree directory that outlived both its own and its repository's Git metadata) = %q, want the repository name %q, not the lane's own basename %q", got, want, filepath.Base(lane))
+	}
+}
+
+// TestFind_ProjectName_SiblingRestoreRootLabelsTheProjectItsLaneRecords covers a
+// sibling that keeps BOTH records: the pruned managed-lane path it ran in and the
+// absolute root that lane was cut from. Both have moved.
+//
+// The lane path is where the project ID comes from — a managed lane's path
+// records it — and the restore root is a separate field that can still display a
+// name. When the root's canonical path hashes to that same ID, the two records
+// agree about which project the sibling belonged to, and their agreement is
+// exactly the claim this candidate makes.
+//
+// Discarding the root because the lane path was read first drops that claim, and
+// an originless lane in the same bucket whose only evidence is this sibling then
+// loses its label. The lane's own leaf stays suppressed: it is a lane name.
+func TestFind_ProjectName_SiblingRestoreRootLabelsTheProjectItsLaneRecords(t *testing.T) {
+	stateHome := pinStateHome(t)
+
+	// The sibling's restore root is gone, and its canonical path is the project the
+	// sibling's lane path records.
+	root := filepath.Join(t.TempDir(), "sibling-restore-repo")
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(root))
+	bucket, err := RuntimeDirForProjectWithStateHome(project, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	// The sibling records no origin. Its pruned lane path carries the project ID,
+	// and its separate restore root is the repository root it was cut from.
+	sibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	sibling.WorktreePath = filepath.Join(bucket, "worktrees", project.ID, "dlg_sibling_lane")
+	sibling.WorktreeRestoreRoot = root
+	if err := schema.SaveSessionMeta(bucket, sibling); err != nil {
+		t.Fatal(err)
+	}
+
+	// Another originless lane: its own path records no project, it is gone, and it
+	// has no owner or parent. The sibling is the only evidence in the bucket.
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	row.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", "dlg_no_project")
+	if got, want := projectName(row, bucket), "sibling-restore-repo"; got != want {
+		t.Fatalf("projectName(originless lane whose only evidence is a sibling's matching restore root) = %q, want %q", got, want)
+	}
+}
+
+// TestFind_ProjectName_MatchingRestoreRootBeatsAnUnverifiedSibling covers a
+// pruned managed lane whose OWN record identifies its project while a bucket
+// sibling offers only an unverified origin.
+//
+// The lane's restore root is gone but recorded, and that path hashes to the
+// project ID the lane's own path carries: the row has positively identified its
+// project. The sibling saved a different repository's origin and its record
+// establishes no project at all, so the sibling's label is bucket-wide inference
+// with no project ID — admissible in a project bucket, because there the bucket's
+// verified scope is what ties its sessions to one repository, but never a claim
+// about THIS lane.
+//
+// A claim about the lane outranks an inference about its bucket. Answering the
+// origin replaces a label the row can prove with one it merely inherits, and the
+// result then depends on whether some other session ever used that bucket. The
+// origin stays the answer when the lane's own record names nothing, which is what
+// keeps an origin-only bucket labelling its pruned lanes.
+func TestFind_ProjectName_MatchingRestoreRootBeatsAnUnverifiedSibling(t *testing.T) {
+	stateHome := pinStateHome(t)
+
+	// The lane's own restore root, gone but recorded. The bucket is the project
+	// bucket for that same ID, so the lane's path and its restore root agree, and
+	// the bucket's verified scope makes its sessions one repository.
+	moved := filepath.Join(t.TempDir(), "own-moved-repo")
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(moved))
+	bucket, err := RuntimeDirForProjectWithStateHome(project, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	// An unrelated session that saved another repository's origin and nothing that
+	// identifies a project: its recorded directory is gone, so reading its record
+	// yields no ID and the candidate is bucket-wide inference only.
+	sibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	sibling.EnvInfo.GitOriginURL = "git@github.com:other/other-repo.git"
+	sibling.EnvInfo.WorkingDir = filepath.Join(t.TempDir(), "sibling-gone-checkout")
+	if err := schema.SaveSessionMeta(bucket, sibling); err != nil {
+		t.Fatal(err)
+	}
+
+	// A managed lane: its path records its project, and it is gone from disk.
+	row := schema.SessionMeta{}
+	row.WorktreePath = filepath.Join(bucket, "worktrees", project.ID, "dlg_own_record")
+	row.WorktreeRestoreRoot = moved
+	row.EnvInfo.WorkingDir = row.WorktreePath
+	if got, want := projectName(row, bucket), "own-moved-repo"; got != want {
+		t.Fatalf("projectName(pruned lane whose restore root matches its recorded project, beside a sibling's unverified origin) = %q, want its own record's %q", got, want)
+	}
+}
+
 // TestFind_ProjectName_DeletedNestedCheckoutIsNotItsEnclosingRepo covers an
 // originless ordinary checkout nested inside another repository, deleted, so
 // only its recorded path survives. A Git walk from the missing directory climbs
@@ -4115,6 +4257,59 @@ func TestFind_ProjectName_MovedParentCheckoutStillNamesItsLane(t *testing.T) {
 	row.EnvInfo.WorkingDir = filepath.Join(flat, "worktrees", project.ID, "dlg_moved_parent")
 	if got, want := projectName(row, flat), "moved-repo"; got != want {
 		t.Fatalf("projectName(pruned lane whose originless parent checkout moved) = %q, want the parent's recorded project %q", got, want)
+	}
+}
+
+// TestFind_ProjectName_MovedParentCheckoutThroughSymlinkStillNamesItsLane is the
+// same case with the symlink made explicitly, so it covers the same behavior on
+// Linux and Darwin.
+//
+// On macOS /var is a symlink to /private/var, so a temp directory is already
+// reached through one and this bug shows up there on its own. A test that only
+// fails because the host happens to hide a link is not a proof: it passes on
+// Linux whether the code is right or wrong. Building the link here makes the
+// case identical on both.
+//
+// The parent's checkout is removed, so its project ID can only come from
+// hashing the recorded path. That recorded path names the checkout through the
+// link; the lane was created under the canonical form. Hashing the lexical path
+// does not reproduce it, and the label is lost.
+func TestFind_ProjectName_MovedParentCheckoutThroughSymlinkStillNamesItsLane(t *testing.T) {
+	// A physical directory reached through a link, which is the shape /var has.
+	physicalParent := t.TempDir()
+	linkedParent := filepath.Join(t.TempDir(), "linked-root")
+	if err := os.Symlink(physicalParent, linkedParent); err != nil {
+		t.Fatalf("symlink root: %v", err)
+	}
+
+	// The checkout is created at its PHYSICAL path, so the ID recorded when the
+	// lane was made is the canonical one.
+	movedPhysical := filepath.Join(physicalParent, "linked-moved-repo")
+	if err := os.MkdirAll(movedPhysical, 0o755); err != nil {
+		t.Fatalf("mkdir checkout: %v", err)
+	}
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(movedPhysical))
+
+	flat := canonicalStateDir(t.TempDir())
+	if err := os.MkdirAll(filepath.Join(flat, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir flat state dir: %v", err)
+	}
+	if err := os.RemoveAll(movedPhysical); err != nil {
+		t.Fatalf("move the parent checkout away: %v", err)
+	}
+
+	// The record keeps the spelling the session used: through the link.
+	parentID := identifier.MustNewSessionID()
+	parent := schema.SessionMeta{ID: parentID}
+	parent.EnvInfo.WorkingDir = filepath.Join(linkedParent, "linked-moved-repo")
+	if err := schema.SaveSessionMeta(flat, parent); err != nil {
+		t.Fatal(err)
+	}
+
+	row := schema.SessionMeta{ParentSessionID: parentID}
+	row.EnvInfo.WorkingDir = filepath.Join(flat, "worktrees", project.ID, "dlg_linked_parent")
+	if got, want := projectName(row, flat), "linked-moved-repo"; got != want {
+		t.Fatalf("projectName(pruned lane whose parent checkout moved and was recorded through a symlink) = %q, want %q from the canonical hash", got, want)
 	}
 }
 

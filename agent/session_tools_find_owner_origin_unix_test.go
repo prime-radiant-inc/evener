@@ -223,3 +223,59 @@ func TestFind_ProjectName_NameOnlyRowStopsAtTheFirstOrigin(t *testing.T) {
 		}
 	}
 }
+
+// TestFind_ProjectName_VerifiedParentOriginDoesNotResolveTheParentPaths is the
+// PARENT half of the same rule, and it is a cost assertion for the same reason:
+// the label is identical either way, so only the work can tell the orders apart.
+//
+// A pruned session-owned lane has no project ID to verify, so a verified
+// parent's saved origin settles its label from metadata alone. The parent's own
+// record is read BEFORE that origin in the unfixed code, and reading it resolves
+// every recorded path — a filesystem call on a checkout that may sit on an
+// unavailable mount. An older parent on such a mount would hold the whole
+// read-only search even though the answer was already in local metadata.
+//
+// The parent's recorded checkout is LIVE, so a resolution positively succeeds
+// and is visible in pathResolutions. The count is the evidence: a lookup that
+// read the parent's record cannot have zero.
+func TestFind_ProjectName_VerifiedParentOriginDoesNotResolveTheParentPaths(t *testing.T) {
+	stateHome := pinStateHome(t)
+
+	repo := newNamedCheckout(t, "bucket-repo")
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repo))
+	bucket, err := RuntimeDirForProjectWithStateHome(project, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	// The parent is LIVE on disk and carries an origin, so reading its record is
+	// work that succeeds and leaves a trace, while its origin answers on its own.
+	parentID := identifier.MustNewSessionID()
+	parent := schema.SessionMeta{ID: parentID}
+	parent.EnvInfo.GitOriginURL = "git@github.com:bucket/bucket-repo.git"
+	parent.EnvInfo.WorkingDir = newNamedCheckout(t, "parent-live-checkout")
+	if err := schema.SaveSessionMeta(bucket, parent); err != nil {
+		t.Fatal(err)
+	}
+
+	metas, err := schema.ListSessionMetas(bucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := newProjectNameResolver(map[string][]schema.SessionMeta{bucket: metas})
+
+	// A session-owned lane whose own directory is gone: no project ID anywhere in
+	// its path, so the parent's origin is admissible as it stands.
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID(), ParentSessionID: parentID}
+	row.EnvInfo.WorkingDir = filepath.Join(bucket, "sessions", identifier.MustNewSessionID(), "worktrees", "dlg_pruned")
+
+	if got, want := resolver.projectName(row, bucket), "bucket-repo"; got != want {
+		t.Fatalf("projectName(pruned session lane beside a parent that saved an origin) = %q, want %q", got, want)
+	}
+	if resolver.pathResolutions != 0 {
+		t.Fatalf("the lookup resolved %d recorded path(s) before answering from the verified parent's saved origin; reading the parent's record walks a checkout an unavailable mount stalls, and the origin needed no walk at all", resolver.pathResolutions)
+	}
+}
