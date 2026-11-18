@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -1303,7 +1304,7 @@ func jobOutputLogID(outPath string) string {
 		return ""
 	}
 	sum := sha256.Sum256([]byte(filepath.Clean(outPath)))
-	return fmt.Sprintf("%x", sum[:8])
+	return hex.EncodeToString(sum[:8])
 }
 
 // JobGet resolves one job's record — the running record when the job is live,
