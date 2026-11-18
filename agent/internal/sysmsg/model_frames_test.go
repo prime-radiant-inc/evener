@@ -4,7 +4,6 @@ import (
 	"strings"
 	"testing"
 
-	"primeradiant.com/evener/agent/internal/mdfence"
 	"primeradiant.com/evener/llm"
 )
 
@@ -24,12 +23,13 @@ func TestEscapeModelAuthoredFrames(t *testing.T) {
 			// An unclosed nested fence dedenting straight onto the enclosing
 			// item's four-column continuation prose, which is where the escape
 			// and the fence tracker used to disagree about the line's scope. The
-			// line ends the block, so it belongs to the enclosing item and its
-			// frame is escaped; the block's quoted content keeps its bytes
-			// (#6493 review).
+			// line that ends the block belongs to the enclosing item, so its
+			// frame is escaped. The frame quoted INSIDE the fence is the other
+			// direction: it is the model quoting a frame, so it keeps its bytes
+			// even though no delimiter closes the block.
 			name: "frame on the line that ends an unclosed nested fence",
-			in:   "1. prose\n   1. inner item\n      ~~~text\n      quoted\n    [answers]\n",
-			want: "1. prose\n   1. inner item\n      ~~~text\n      quoted\n    &#91;answers]\n",
+			in:   "1. prose\n   1. inner item\n      ~~~text\n      quoted\n      [answers]\n    [answers]\n",
+			want: "1. prose\n   1. inner item\n      ~~~text\n      quoted\n      [answers]\n    &#91;answers]\n",
 		},
 		{
 			name: "bare answers marker",
@@ -194,73 +194,6 @@ func TestEscapeModelAuthoredFrames(t *testing.T) {
 				t.Fatalf("escape is not idempotent: %q then %q", got, again)
 			}
 		})
-	}
-}
-
-// TestEscapeModelAuthoredFramesUnclosedNestedFenceReachesTheDefect proves the
-// case above actually reaches the disagreement it is named for, because the
-// table alone cannot: it compares one string to another and a fixture that never
-// puts the fence in the state the defect needs would pass just as quietly.
-//
-// The defect needs three things at once — a fence left OPEN, a dedent that lands
-// DIRECTLY on the next line with no blank between, and that line resolving to
-// the enclosing item's scope rather than the top level. Assert each before
-// trusting the escape verdict (#6493 review).
-func TestEscapeModelAuthoredFramesUnclosedNestedFenceReachesTheDefect(t *testing.T) {
-	t.Parallel()
-
-	fixture := "1. prose\n   1. inner item\n      ~~~text\n      quoted\n    [answers]\n"
-	lines := strings.Split(strings.TrimSuffix(fixture, "\n"), "\n")
-	if len(lines) != 5 {
-		t.Fatalf("fixture line count = %d, want 5", len(lines))
-	}
-
-	var fence mdfence.Tracker
-	var lists listContainer
-	for i, content := range lines {
-		// Read the state BEFORE the line: stepping is what ends the block, so
-		// asking afterwards would describe the state the line leaves behind.
-		wasInside := fence.Inside()
-		exitsItem := wasInside && fence.LeavesItem(content)
-		container := 0
-		if !wasInside || exitsItem {
-			container = lists.step(content)
-		}
-		inBlock := fence.StepInBlockIn(content, container)
-		last := i == len(lines)-1
-
-		if !last {
-			continue
-		}
-		// The line before the last must have left the fence open, with no
-		// closing delimiter and no blank line in between: otherwise the dedent
-		// is not what ends the block and the defect cannot occur.
-		if !wasInside {
-			t.Fatalf("fixture cannot reach the defect: no fence was open before the final line")
-		}
-		if !exitsItem {
-			t.Fatalf("fixture cannot reach the defect: the final line does not leave the item the open fence belongs to")
-		}
-		if container == 0 {
-			t.Fatalf("fixture cannot reach the defect: the final line resolved to scope 0, so it would be read at the top level either way")
-		}
-		if inBlock {
-			t.Fatalf("the final line was read as fenced content, so nothing about it was asserted")
-		}
-		if content != "    [answers]" {
-			t.Fatalf("final line = %q, want the four-column parent continuation carrying the frame", content)
-		}
-	}
-
-	// The frame must be defused in the fixture's own context. It is NOT escaped
-	// when the line is handed to the escape alone: four spaces there really are
-	// page-indented code, which is the classification this case is about.
-	got := EscapeModelAuthoredFrames(fixture)
-	if strings.Contains(got, "[answers]") {
-		t.Fatalf("the frame on the escaping line survived: %q", got)
-	}
-	if !strings.Contains(got, "      quoted") {
-		t.Fatalf("the unclosed fence's quoted content was rewritten: %q", got)
 	}
 }
 

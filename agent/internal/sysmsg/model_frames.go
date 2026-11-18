@@ -310,7 +310,7 @@ func EscapeModelAuthoredFrames(text string) string {
 		// Without that, an unclosed nested fence dedenting onto the parent's
 		// four-column prose would hand this line scope zero, the prose would read
 		// as page-indented code, and a model-authored frame in it would survive
-		// in both replay and checkpoint capture (#6493 review).
+		// in both replay and checkpoint capture.
 		container := 0
 		if !fence.Inside() || fence.LeavesItem(content) {
 			container = lists.step(content)

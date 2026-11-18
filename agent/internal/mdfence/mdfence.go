@@ -73,7 +73,7 @@ func (t *Tracker) StepInBlock(line string) bool {
 // fence opened on a nested item's continuation line belongs to that item, and
 // keeping the enclosing item's indentation instead would leave the line that
 // dedents back to the enclosing item at or past the recorded indent, so the
-// block would survive the dedent and swallow that item's prose (#6493 review).
+// block would survive the dedent and swallow that item's prose.
 func (t *Tracker) StepInBlockIn(line string, container int) bool {
 	if t.length == 0 {
 		// The caller resolved this line's scope, so it applies as given: a fence
@@ -85,7 +85,7 @@ func (t *Tracker) StepInBlockIn(line string, container int) bool {
 		// A block ends with the item that holds it, and the line that ends it
 		// belongs to the enclosing scope the caller reports rather than to the
 		// top level. Process it in that scope, so a fence it opens is read as
-		// the enclosing item's (#6493 review).
+		// the enclosing item's.
 		t.length, t.container = 0, container
 		return t.stepResolved(line) || t.Inside()
 	}
@@ -106,7 +106,7 @@ func leavesItem(line string, container int) bool {
 // classify the same line and cannot wait for the step to be taken: the line
 // that ends a block belongs to the enclosing item, so a caller deciding
 // whether that line is indented code has to resolve its list scope before it
-// steps, not go on using the empty scope an open block imposes (#6493 review).
+// steps, not go on using the empty scope an open block imposes.
 func (t *Tracker) LeavesItem(line string) bool {
 	return leavesItem(line, t.container)
 }
