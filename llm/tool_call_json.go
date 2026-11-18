@@ -49,17 +49,57 @@ func (b *spellingBytes) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+type spellingOffset int
+
+func (offset *spellingOffset) UnmarshalJSON(data []byte) error {
+	value, err := strconv.Atoi(string(data))
+	if err != nil {
+		value = -1 // Recovery rejects offsets outside the structured arguments.
+	}
+	*offset = spellingOffset(value)
+	return nil
+}
+
 // argumentEdit restores a run of original whitespace or string escaping at a
 // byte offset in the structured JSON. Unchanged argument values are stored once.
 type argumentEdit struct {
-	At    int           `json:"at"`
-	Drop  int           `json:"drop,omitempty"`
-	Bytes spellingBytes `json:"bytes"`
+	At    spellingOffset `json:"at"`
+	Drop  spellingOffset `json:"drop,omitempty"`
+	Bytes spellingBytes  `json:"bytes"`
 }
 
+type argumentEdits []argumentEdit
+
 type argumentSpelling struct {
-	Digest spellingBytes  `json:"sha256"`
-	Edits  []argumentEdit `json:"edits"`
+	Digest spellingBytes `json:"sha256"`
+	Edits  argumentEdits `json:"edits"`
+}
+
+// Decode expected containers with the transcript reader's unknown-member
+// policy. A malformed known value invalidates the spelling without preventing
+// the reader from validating the remaining fields of the transcript.
+func decodeSpellingPart[T any](dec *jsontext.Decoder, kind jsontext.Kind, part *T) error {
+	if dec.PeekKind() == kind {
+		return jsonv2.UnmarshalDecode(dec, part)
+	}
+	var invalid T
+	*part = invalid
+	return dec.SkipValue()
+}
+
+func (edit *argumentEdit) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
+	type fields argumentEdit
+	edit.At = -1 // Every stored edit names its starting offset.
+	return decodeSpellingPart(dec, '{', (*fields)(edit))
+}
+
+func (edits *argumentEdits) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
+	return decodeSpellingPart(dec, '[', (*[]argumentEdit)(edits))
+}
+
+func (spelling *argumentSpelling) UnmarshalJSONFrom(dec *jsontext.Decoder) error {
+	type fields argumentSpelling
+	return decodeSpellingPart(dec, '{', (*fields)(spelling))
 }
 
 func compactArgumentSpelling(stored, original []byte) json.RawMessage {
@@ -101,7 +141,7 @@ func compactArgumentSpelling(stored, original []byte) json.RawMessage {
 		if minSize >= fullSize {
 			return nil
 		}
-		edits = append(edits, argumentEdit{At: start, Drop: i - start, Bytes: original[from:j]})
+		edits = append(edits, argumentEdit{At: spellingOffset(start), Drop: spellingOffset(i - start), Bytes: original[from:j]})
 	}
 	if i != len(stored) {
 		return nil
@@ -122,12 +162,13 @@ func (format *argumentSpelling) restore(stored []byte) []byte {
 	original := make([]byte, 0, len(stored))
 	pos := 0
 	for _, edit := range format.Edits {
-		if edit.Bytes == nil || edit.At < pos || edit.At > len(stored) || edit.Drop < 0 || edit.Drop > len(stored)-edit.At {
+		at, drop := int(edit.At), int(edit.Drop)
+		if edit.Bytes == nil || at < pos || at > len(stored) || drop < 0 || drop > len(stored)-at {
 			return nil
 		}
-		original = append(original, stored[pos:edit.At]...)
+		original = append(original, stored[pos:at]...)
 		original = append(original, edit.Bytes...)
-		pos = edit.At + edit.Drop
+		pos = at + drop
 	}
 	return append(original, stored[pos:]...)
 }

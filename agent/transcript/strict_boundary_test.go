@@ -46,6 +46,9 @@ func TestDecodeEntryRejectsUnknownFieldsAndTrailingValues(t *testing.T) {
 		{name: "unknown tool call field", line: `{"kind":"entry","seq":0,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"tool_call","tool_call":{"id":"c1","name":"read_file","argumnts":{"path":"a"}}}]}}}`},
 		{name: "unknown spelling field after damaged digest", line: entryWithSpelling(`{"sha256":"!","unknown":true}`), permissive: true},
 		{name: "unknown edit field after damaged bytes", line: entryWithSpelling(`{"edits":[{"at":0,"bytes":"!","unknown":true}]}`), permissive: true},
+		{name: "unknown edit field after fractional offset", line: entryWithSpelling(`{"edits":[{"at":0.5,"unknown":true}]}`), permissive: true},
+		{name: "unknown edit field after damaged edit", line: entryWithSpelling(`{"edits":[0,{"unknown":true}]}`), permissive: true},
+		{name: "unknown spelling field after damaged edit list", line: entryWithSpelling(`{"edits":{},"unknown":true}`), permissive: true},
 		{name: "trailing value", line: `{"kind":"entry","seq":0,"turn":{"kind":"USER_INPUT"}} {}`},
 	}
 	for _, tc := range tests {
@@ -63,13 +66,23 @@ func TestDecodeEntryRejectsUnknownFieldsAndTrailingValues(t *testing.T) {
 	}
 	digest := sha256.Sum256([]byte(arguments))
 	goodDigest := base64.StdEncoding.EncodeToString(digest[:])
-	for _, tc := range []struct{ name, digest, edit, want string }{
-		{"valid edits", goodDigest, "CQ==", " \t" + arguments},
-		{"damaged digest", "!", "CQ==", arguments},
-		{"damaged second edit", goodDigest, "!", arguments},
+	spelling := func(digest, secondEdit string) string {
+		return `{"sha256":"` + digest + `","edits":[{"at":0,"bytes":"IA=="},` + secondEdit + `]}`
+	}
+	const validEdit = `{"at":0,"bytes":"CQ=="}`
+	for _, tc := range []struct{ name, spelling, want string }{
+		{"valid edits", spelling(goodDigest, validEdit), " \t" + arguments},
+		{"damaged digest", spelling("!", validEdit), arguments},
+		{"damaged second edit", spelling(goodDigest, `{"at":0,"bytes":"!"}`), arguments},
+		{"fractional offset", spelling(goodDigest, `{"at":0.5,"bytes":"CQ=="}`), arguments},
+		{"missing offset", spelling(goodDigest, `{"bytes":"CQ=="}`), arguments},
+		{"invalid drop count", spelling(goodDigest, `{"at":0,"drop":[],"bytes":"CQ=="}`), arguments},
+		{"invalid edit", spelling(goodDigest, `0`), arguments},
+		{"invalid edit list", `{"sha256":"` + goodDigest + `","edits":{}}`, arguments},
+		{"invalid spelling", `[]`, arguments},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			entry := entryWithSpelling(`{"sha256":"` + tc.digest + `","edits":[{"at":0,"bytes":"IA=="},{"at":0,"bytes":"` + tc.edit + `"}]}`)
+			entry := entryWithSpelling(tc.spelling)
 			path := filepath.Join(t.TempDir(), "session.jsonl")
 			if err := os.WriteFile(path, []byte(scanHeaderLine+"\n"+entry+"\n"), 0o600); err != nil {
 				t.Fatal(err)
