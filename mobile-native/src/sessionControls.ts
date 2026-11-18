@@ -3,6 +3,7 @@ import { WireError } from "@evener/appwire-client";
 import type { ModelListResponse } from "@evener/appwire-client";
 import { effortOptionLevels, sessionEffortLevels } from "@evener/appwire-client";
 import type { MobileConversation } from "./projectedRows";
+import { ResumeNotDispatched } from "./connection";
 import type {
 	ConversationModelCatalog,
 	ConversationRecoveryActions,
@@ -364,6 +365,19 @@ export class SessionControls {
 				});
 			return true;
 		} catch (cause) {
+			// A resume the connection never sent is still owed. It is a refusal
+			// before dispatch, not the hub's answer, so the step that asked keeps
+			// its retry: reporting it as a failure is how a restart ended with the
+			// daemon stopped and nothing left to send. A resume whose delivery is
+			// uncertain is the opposite case and is reported, because sending it
+			// again could resume a session the hub already took.
+			if (kind === "resume" && cause instanceof ResumeNotDispatched) {
+				if (!this.disposed) this.publish({ pending: null });
+				// Thrown rather than returned: a false here is also what a resume
+				// that went out and then lost its binding returns, and the caller
+				// must be able to tell a step that never left from one that did.
+				throw cause;
+			}
 			const failure =
 				cause instanceof WireError
 					? `Could not confirm the action: ${cause.message}`

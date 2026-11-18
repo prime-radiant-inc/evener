@@ -117,6 +117,39 @@ describe("one step of a restart", () => {
 		expect(hook.result.current.error).not.toBeNull();
 	});
 
+	// The other side of the same line: a resume that went out and whose answer
+	// never came may already have been taken, so it is reported rather than
+	// retried. Resending it could resume a session twice.
+	it("does not retry a resume whose delivery is uncertain", async () => {
+		let sent = 0;
+		let attempts = 0;
+		const made = new SessionControls(
+			{
+				forceStop: async () => {},
+				resume: async () => {
+					attempts += 1;
+					sent += 1;
+					throw new Error("the answer never came");
+				},
+			} as unknown as ConstructorParameters<typeof SessionControls>[0],
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		const hook = renderHook(() => useSessionRestart(made, "open"));
+		await act(async () => {
+			await hook.result.current.restart();
+		});
+		await settle();
+		expect(attempts).toBe(1);
+		expect(sent).toBe(1);
+		// Reported, and the restart is not left waiting to send it again.
+		expect(hook.result.current.error).not.toBeNull();
+		expect(hook.result.current.busy).toBe(false);
+	});
+
 	// The stop was acknowledged, so the resume is owed. Another screen can cover
 	// the pane between the two steps; refusing the resume there leaves the
 	// daemon stopped with the restart unfinished, and nothing else sends it.

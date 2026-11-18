@@ -191,8 +191,72 @@ export class HubProfiles {
 }
 
 export type NativeSocketFactory = (url: string, options: { headers: Record<string, string> }) => WebSocketLike;
+
+/** A resume that provably did not reach the hub. Nothing was sent, so the
+ * caller still owes it and may try again on a usable binding; a rejection
+ * from the request itself is not this, because the hub may have taken it and
+ * replaying it could resume the same session twice. */
+export class ResumeNotDispatched extends Error {
+	constructor(cause: string) {
+		super(cause);
+		this.name = "ResumeNotDispatched";
+	}
+}
+
+/** One explicit resume at a time per connection. Every caller — a restart and
+ * the outbox's recovery alike — goes through the client's own `resumeThread`,
+ * so the slot is enforced there rather than beside any one of them. A queued
+ * resume waits for the transport to be usable: the slot freeing because a
+ * socket dropped is not evidence that the next one can be sent, and dispatching
+ * into the reconnect is how a restart ends with the daemon stopped. */
+const resumeSlots = new WeakMap<object, Promise<void>>();
+function admitResume<T>(client: AppwireClient, run: () => Promise<T>): Promise<T> {
+	const previous = resumeSlots.get(client) ?? Promise.resolve();
+	let release!: () => void;
+	const held = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	resumeSlots.set(
+		client,
+		previous.then(() => held),
+	);
+	return previous
+		.then(() => waitForReady(client))
+		.then(() => run())
+		.finally(() => release());
+}
+
+/** Resolves once the client can send, or rejects with a resume that was never
+ * dispatched. A closed client will never send, so that is not a wait. */
+function waitForReady(client: AppwireClient): Promise<void> {
+	if (client.state === "ready") return Promise.resolve();
+	if (client.state === "closed") return Promise.reject(new ResumeNotDispatched("The connection is closed"));
+	return new Promise<void>((resolve, reject) => {
+		const timer = setTimeout(() => {
+			stop();
+			reject(new ResumeNotDispatched("The connection did not come back"));
+		}, DEFAULT_RESUME_WAIT_MS);
+		const stopReady = client.onReady(() => {
+			stop();
+			resolve();
+		});
+		const stopState = client.onStateChange((state) => {
+			if (state !== "closed") return;
+			stop();
+			reject(new ResumeNotDispatched("The connection closed"));
+		});
+		function stop() {
+			clearTimeout(timer);
+			stopReady();
+			stopState();
+		}
+	});
+}
+
+const DEFAULT_RESUME_WAIT_MS = 30_000;
+
 export function createHubClient(origin: string, token: string, socketFactory: NativeSocketFactory): AppwireClient {
-	return new AppwireClient({
+	const client = new AppwireClient({
 		url: connectionTarget(origin),
 		clientInfo: { name: "evener-native", version: "0.3.0" },
 		socketFactory: (url) =>
@@ -200,4 +264,8 @@ export function createHubClient(origin: string, token: string, socketFactory: Na
 				headers: token ? { Authorization: `Bearer ${token}` } : {},
 			}),
 	});
+	const resumeThread = client.resumeThread.bind(client);
+	client.resumeThread = (ref: string, options?: Parameters<typeof resumeThread>[1]) =>
+		admitResume(client, () => resumeThread(ref, options));
+	return client;
 }

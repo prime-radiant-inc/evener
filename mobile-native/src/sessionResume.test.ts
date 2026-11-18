@@ -243,6 +243,30 @@ describe("native resume recovery integration", () => {
 // that never reached the hub is not the hub's answer: the later one waits for
 // the slot instead of ending as a failed attempt the restart would drop.
 describe("two resumes owed on one connection", () => {
+	// Outbox recovery reaches the client directly rather than through a
+	// service, so a queue kept in the service would not see it: the restart behind
+	// it would be refused before dispatch and end with the daemon stopped. The
+	// admission has to be the connection's own, which is why this drives the
+	// client for one of the two.
+	it("waits for a slot the outbox holds rather than refusing before dispatch", async () => {
+		const ack = deferred<void>();
+		const { client, service, sockets, state } = await connectedFixture(undefined, ack.promise);
+		try {
+			const outbox = client.resumeThread("local:thread-1");
+			const restart = service.resume();
+			await Promise.resolve();
+			expect(state.resumed).toBe(false);
+			ack.resolve();
+			await expect(Promise.all([outbox, restart])).resolves.toBeDefined();
+			const resumes = sockets.flatMap((socket) => socket.methods).filter((method) => method === "thread/resume");
+			expect(resumes).toHaveLength(2);
+		} finally {
+			state.resumed = true;
+			service.close();
+			client.close();
+		}
+	});
+
 	it("waits for the slot rather than refusing the second before it is sent", async () => {
 		const ack = deferred<void>();
 		const { client, service, sockets, state } = await connectedFixture(undefined, ack.promise);

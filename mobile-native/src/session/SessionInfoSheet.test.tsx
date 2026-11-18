@@ -197,7 +197,11 @@ function provide(session: MobileConversation, over: Partial<SessionInfoHost> = {
 		clearGoal: vi.fn(() => void calls.push("clearGoal")),
 		act: vi.fn(async (action: SessionInfoAction) => {
 			calls.push(`act:${action}`);
-			return action === "compact" ? { text: "Compacting context" } : { text: `${action} done` };
+			// The production message's own kind (screens.tsx), so a test can ask
+			// whether the announcement went out without pinning its wording.
+			return action === "compact"
+				? { text: "Compacting context", kind: "compact:started" }
+				: { text: `${action} done` };
 		}),
 		toast: vi.fn((message: ToastMessage) => void calls.push(`toast:${message.text}`)),
 		...over,
@@ -850,9 +854,9 @@ describe("actions", () => {
 		await settle();
 		navigation.sheetOver.value = false;
 		expect(calls).toEqual(["act:compact"]);
-		// The message is the toast's own text, so its absence is what says the
-		// announcement did not go out over the covering picker.
-		expect(renderedText(tree)).not.toContain("Compacting context");
+		// The compaction result is the toast's own kind, so asking for that kind
+		// says whether the announcement went out without pinning its wording.
+		expect(markers(tree, "toast")).not.toContain("compact:started");
 	});
 
 	it.each([

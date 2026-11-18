@@ -213,30 +213,6 @@ function defaultIdFactory(): string {
 	return `cmid-${Date.now()}-${defaultIdCounter}`;
 }
 
-/** The resumes in flight per connection, in arrival order. A connection takes
- * one explicit resume at a time: the client refuses a second before sending
- * it, and a refusal that never reached the hub must not be read as the hub's
- * answer. Two panes can owe a resume at once, so the later one waits here for
- * the earlier to release the slot rather than being reported as failed. */
-const resumeQueues = new WeakMap<object, Promise<void>>();
-async function afterResumeSlot<T>(client: object, run: () => Promise<T>): Promise<T> {
-	const previous = resumeQueues.get(client) ?? Promise.resolve();
-	let release!: () => void;
-	const held = new Promise<void>((resolve) => {
-		release = resolve;
-	});
-	resumeQueues.set(
-		client,
-		previous.then(() => held),
-	);
-	await previous;
-	try {
-		return await run();
-	} finally {
-		release();
-	}
-}
-
 // The 12 legacy capability fields that must be present and boolean in every
 // ThreadCapabilities. Extra keys from future protocol versions are allowed but
 // never retained in the extracted copy; sharedNotes is one of those extras (see
@@ -987,12 +963,10 @@ export function createConversationService<ReadLease = unknown>(
 			if (typeof client.resumeThread !== "function") {
 				throw new Error("ConversationService: resume is unavailable");
 			}
-			// One resume runs at a time on a connection: a second one is refused
-			// before it is sent, and the restart that owed it would read that
-			// refusal as the hub's answer and drop the retry. Two panes can owe a
-			// resume at once, so the later one waits for the slot rather than
-			// becoming terminal.
-			await afterResumeSlot(client, () => client.resumeThread!(threadRef));
+			// Admission is the connection's: a client admits one explicit resume
+			// at a time, across every caller, and reports one it could not send as
+			// not dispatched rather than as the hub's answer.
+			await client.resumeThread(threadRef);
 		},
 
 		async models() {
