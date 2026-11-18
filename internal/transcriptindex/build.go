@@ -642,6 +642,13 @@ func (b *builder) applyResults(slot uint64, summary turnRecord, entry *schema.Tu
 		if !ok || !apptranscript.MergesByCallID(item) {
 			return false, nil
 		}
+		// A result for a DIFFERENT tool that reuses the id does not settle the
+		// reservation: a prevalidation-rejected communicate is a row of its
+		// own, and absorbing it here omits that row. Replay guards the same
+		// case with the same predicate (#1166 review).
+		if !apptranscript.ResultSettlesReservedCall(call.name, item.ToolName) {
+			return false, nil
+		}
 		// A communicate call projects no item, so its result has none to
 		// complete.
 		target, found, err := b.x.findItem(appwire.ThreadItemPosition{Entry: summary.AwaitingOrdinal + 1, Item: uint32(call.part)})

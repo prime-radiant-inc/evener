@@ -41,15 +41,21 @@ type ToolCallRegistry struct {
 	// later unnamed result. An earlier name kept across entries made replay
 	// settle a call the index left unanswered (#1166 review).
 	knownThisEntry map[string]struct{}
-	// awaitingNames is the reservation of the turn's CURRENT awaiting entry:
-	// the call id to name mapping of the most recent assistant entry that
-	// recorded a call, which is the entry the index makes awaiting
+	// awaitingNames is, per stamped turn, the reservation of that turn's CURRENT
+	// awaiting entry: the call id to name mapping of the most recent assistant
+	// entry that recorded a call, which is the entry the index makes awaiting
 	// (stampFold's AwaitingOffset). A later entry that records different calls
-	// replaces it wholesale, so an id that entry does not mention is no longer
-	// awaiting — the same rule the index applies when it resolves an unnamed
-	// result, and the reason resolveUnnamedResult consults this before the
-	// pending-communicate state.
-	awaitingNames map[string]string
+	// replaces that turn's batch wholesale, so an id it does not mention is no
+	// longer awaiting — the same rule the index applies when it resolves an
+	// unnamed result, and the reason resolveUnnamedResult consults this before
+	// the pending-communicate state.
+	//
+	// The batch is keyed by turn because a whole-file replay threads ONE
+	// registry through the file (hub app_threadread.go's computePastEntryTurns).
+	// A single batch let turn B's announcement replace turn A's, so an unnamed
+	// result for A arriving after B resolved against B and rendered A's pending
+	// communicate where the index settled A's command (#1166 review).
+	awaitingNames map[string]map[string]string
 	// ResolvedNames is a name the CALLER already resolved for a call id, before
 	// the projection began — the transcript index's builder seeds an unnamed
 	// result from the reserved part of the turn's awaiting entry
@@ -72,16 +78,27 @@ type ToolCallRegistry struct {
 	LastAssistantTurnID string
 }
 
-// ForgetAwaitingBatch drops the awaiting-entry reservation. A caller that
-// replays only PART of a turn's entries cannot reconstruct that reservation:
-// stampFold advances it on every assistant entry that records a call, so a
-// partial replay installs whichever batch its fragment happened to end on.
-// The transcript index's read-back replays a communicate result's context that
-// way — the announcing entry and the last assistant text, not every entry
-// between them — so it drops the batch and names the result from the name the
-// index recorded when it built the item. A full file-order replay never calls
-// this: its batch is the real one.
+// ForgetAwaitingBatch drops every awaiting-entry reservation. A caller that
+// replays only PART of a turn's entries cannot reconstruct one: stampFold
+// advances it on every assistant entry that records a call, so a partial replay
+// installs whichever batch its fragment happened to end on. The transcript
+// index's read-back replays a communicate result's context that way — the
+// announcing entry and the last assistant text, not every entry between them —
+// so it drops the batch and names the result from the name the index recorded
+// when it built the item. A full file-order replay never calls this: its
+// batches are the real ones.
 func (reg *ToolCallRegistry) ForgetAwaitingBatch() { reg.awaitingNames = nil }
+
+// setAwaitingBatch installs an announcing entry's reservation for its own turn.
+// One entry's batch replaces that turn's previous one wholesale, and no other
+// turn's is touched: a whole-file replay threads one registry through the file,
+// so the batch a turn announces must not answer another turn's result.
+func (reg *ToolCallRegistry) setAwaitingBatch(turnID string, batch map[string]string) {
+	if reg.awaitingNames == nil {
+		reg.awaitingNames = map[string]map[string]string{}
+	}
+	reg.awaitingNames[turnID] = batch
+}
 
 // NewToolCallRegistry returns a ready-to-use ToolCallRegistry with both maps
 // initialized.
@@ -471,8 +488,8 @@ func appendAwaiting(batch map[string]string, callID, name string) map[string]str
 // entry's silence about an id is decisive — the id is no longer awaiting, and a
 // result for it resolves through the pending communicate instead. awaitingNames
 // holds exactly the ids the latest such entry announced.
-func resolveUnnamedResult(reg *ToolCallRegistry, callID string) string {
-	if name, ok := reg.awaitingNames[callID]; ok {
+func resolveUnnamedResult(reg *ToolCallRegistry, turnID, callID string) string {
+	if name, ok := reg.awaitingNames[turnID][callID]; ok {
 		return name
 	}
 	if name, ok := reg.ResolvedNames[callID]; ok {
@@ -916,7 +933,7 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 			reg.LastAssistantTurnID = turnID
 		}
 		if len(awaiting) > 0 {
-			reg.awaitingNames = awaiting
+			reg.setAwaitingBatch(turnID, awaiting)
 		}
 		return items
 	case schema.TurnTool, schema.TurnToolResults:
@@ -927,7 +944,18 @@ func projectTurn(turnID string, turnIndex int, turn schema.Turn, reg *ToolCallRe
 			}
 			name := part.ToolResult.Name
 			if name == "" {
-				name = resolveUnnamedResult(reg, part.ToolResult.ToolCallID)
+				if turn.Format == schema.TurnFormatIdentity {
+					name = resolveUnnamedResult(reg, turnID, part.ToolResult.ToolCallID)
+				} else {
+					// A format-0 entry has no identity to be awaiting, so the
+					// legacy index and this projector both resolve a nameless
+					// result by last-name-wins (build.go's lookup, which the
+					// builder seeds from). Consulting the awaiting batch or the
+					// pending communicate here would give an older transcript
+					// today's answer for its own id and lose the command the
+					// legacy rule names (#1166 review).
+					name = reg.Names[part.ToolResult.ToolCallID]
+				}
 			}
 			if name == "communicate" {
 				first := len(items)
@@ -1160,7 +1188,7 @@ func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, re
 	}
 	flushRun()
 	if len(awaiting) > 0 {
-		reg.awaitingNames = awaiting
+		reg.setAwaitingBatch(turnID, awaiting)
 	}
 	if lastAssistantText != "" {
 		reg.LastAssistantText, reg.LastAssistantTurnID = lastAssistantText, turnID

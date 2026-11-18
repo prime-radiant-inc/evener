@@ -982,6 +982,20 @@ func partProjectsItem(entries map[int]schema.Turn, entry, part int) bool {
 	return content.ToolCall.Name != "communicate"
 }
 
+// reservedToolName is the tool name the entry recorded for the part it reserved
+// for a call id, or "" when the entry does not record that id.
+func reservedToolName(entries map[int]schema.Turn, entry, part int) string {
+	turn, ok := entries[entry]
+	if !ok || part < 0 || part >= len(turn.Message.Content) {
+		return ""
+	}
+	content := turn.Message.Content[part]
+	if content.Kind != llm.ContentToolCall || content.ToolCall == nil {
+		return ""
+	}
+	return content.ToolCall.Name
+}
+
 func ReservedCalls(entry *schema.Turn) map[string]int {
 	if entry == nil {
 		return nil
@@ -996,6 +1010,29 @@ func ReservedCalls(entry *schema.Turn) map[string]int {
 		}
 	}
 	return reserved
+}
+
+// ResultSettlesReservedCall reports whether a projected RESULT belongs to the
+// call its awaiting entry reserved, rather than to a different tool's call that
+// merely reuses the id.
+//
+// One settlement guard, both readers: the index calls this before absorbing a
+// result into the reserved item (transcriptindex applyResults) and whole-file
+// replay calls it before folding a result into an announcement
+// (mergeExecutionItems). A prevalidation-rejected communicate is a real row of
+// its own — live never delivered it, so its failure is the only record that it
+// happened — and absorbing it into a reservation another tool made omits that
+// row in the index and overwrites the command's name and status in replay
+// (#1166 review).
+//
+// A result with no name of its own carries no claim, so it settles the
+// reservation: that is the case the reservation exists for. When it does name a
+// tool, the claim must match the reserved call's name.
+func ResultSettlesReservedCall(reservedTool, resultTool string) bool {
+	if resultTool == "" {
+		return true
+	}
+	return reservedTool == resultTool
 }
 
 // ExecutionStatusFromCompletion maps a recorded completion's status to the turn
@@ -1133,6 +1170,17 @@ func mergeExecutionItems(items []appwire.ThreadItem, itemEntries []int, itemAnno
 			}
 			key := awaitKey{entry: entry, call: item.CallID}
 			if prev, ok := callIndex[key]; ok {
+				// A result that names a DIFFERENT tool than the reservation did
+				// is not that call's result: a prevalidation-rejected communicate
+				// reusing a read_file id is its own row. Folding it here would
+				// overwrite the command's name and status, which the index does
+				// not do. One guard, both readers (#1166 review).
+				if reserved, announced := reservations.reserved(entry, item.CallID); announced &&
+					!ResultSettlesReservedCall(reservedToolName(entries, entry, reserved), item.ToolName) {
+					merged = append(merged, item)
+					mergedGrp = append(mergedGrp, group)
+					continue
+				}
 				// The item that was admitted keeps its identity: a settled call
 				// does not change name because its result arrived in another
 				// run or another entry. The incoming result adopts the
