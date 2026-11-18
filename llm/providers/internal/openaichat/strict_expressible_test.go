@@ -2100,6 +2100,12 @@ func TestTypedNilPointerEncoderDoesNotPanicInInference(t *testing.T) {
 	// const reaches scalarJSONType without passing through the enum reader,
 	// which is the shape the panic was reported on: a typeless const whose
 	// value is a typed nil pointer to a value-receiver encoder.
+	//
+	// Do not rewrite this as an enum test. enumMembers decodes the whole enum
+	// through the request encoder before scalarJSONType sees any member, so a
+	// nil pointer arrives there already normalised to null and the test would
+	// pass against a scalarJSONType that panics. This subtest is the only one
+	// that reaches the bug, and it is separate for that reason.
 	for name, member := range map[string]any{
 		"*json.RawMessage": nilRaw,
 		"*time.Time":       nilTime,
