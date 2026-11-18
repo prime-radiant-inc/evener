@@ -109,18 +109,23 @@
    * pressure, but it no longer GROWS - growing pushed the row's open
    * affordance a column of whitespace away from the name it opens. The meta
    * segments own the right edge via their own margin-left:auto. */
-  flex: 0 1 auto;
-  /* No minimum of its own, and that is the fix rather than an omission. A
-   * min-width cannot express "one glyph plus the ellipsis": the unit that
-   * measures a glyph is the glyph's own advance, which no stylesheet unit
-   * provides. `ch` measures the digit "0" (2ch was 16.03px where a full-width
-   * ideograph needs 1.75em), and an `em` constant generous enough for the
-   * widest grapheme exceeds a short label's own text width - a box wider than
-   * its text is padding, and the guard rejects it as such. The reservation
-   * belongs on the meta's cap instead, where it can only ever take space from
-   * the intent and never pad this box: with flex-grow: 0 the name takes
-   * exactly the width its text needs, in whatever font the platform ships. */
-  min-width: 0;
+  /* flex: 0 0 auto, NOT flex: 1: the name neither grows - growing pushed the
+   * row's open affordance a column of whitespace away from the name it opens -
+   * nor shrinks below its own text. Its text IS the floor. A min-width cannot
+   * express "one glyph plus the ellipsis" (the unit that measures a glyph is
+   * the glyph's own advance, which no stylesheet unit provides: `ch` measures
+   * the digit "0", and an `em` constant wide enough for the widest grapheme is
+   * wider than a short label, which pads the box and the guard rejects as
+   * such). Not shrinking needs no number at all: the name takes exactly the
+   * width its text needs, in whatever font the platform ships, and the intent
+   * yields around it. */
+  flex: 0 0 auto;
+  /* The cap is the row's own space, not a glyph budget. The row spends four
+   * 8px gaps, a 12px disclosure toggle, a 14px kind glyph and the Open
+   * control before the name gets anything, so a name may claim all of that
+   * remainder and no more - otherwise a long name would push the Open target
+   * past the pane edge. A short name never reaches this cap. */
+  max-width: calc(100% - 4 * var(--space-2) - 12px - 14px - var(--tap-min, 28px));
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -160,28 +165,14 @@
    * width: cap the meta's share so the name keeps enough of the row to stay
    * recognizable beside its ellipsis. */
   max-width: 60%;
-  /* Reserve the name its glyph-plus-ellipsis prefix by capping what the meta
-   * may take, not by flooring the name. A min-width on the name would have to
-   * exceed the label's own text width to reserve a wide glyph's advance, and
-   * a box wider than its text is padding, not a readable name. The name grows
-   * nothing (flex-grow: 0), so under this cap it takes exactly what its text
-   * needs and never more. The 60% above stays as the first declaration: it is
-   * the cap whenever this one cannot resolve.
-   *
-   * The reservation is 2.1 x --font-size-ui, NOT 2.1em. This rule's own
-   * font-size is the caption size (12px), while the name renders at the UI
-   * size (13px), so a bare em here reserved 24px for a prefix needing 26.02 -
-   * a 2px shortfall that measured as a failed row. Naming the size the floor
-   * is FOR keeps the two in step through --font-scale. The widest first
-   * grapheme plus its ellipsis measured across the bundled fonts is 2.002 of
-   * this size (an emoji); "inspect"'s first letter is 1.19 and a full-width
-   * ideograph 1.97. 2.1 clears the widest rather than equalling it, and the
-   * guard measures every row's own prefix instead of trusting this number. */
-  /* biome-ignore lint/suspicious/noDuplicateProperties: the 60% above is the fallback where the min() cannot resolve, and this is the refinement that reserves the name its glyph */
-  max-width: min(
-    60%,
-    max(0px, calc(100% - 4 * var(--space-2) - 12px - 14px - var(--tap-min, 28px) - 2.1 * var(--font-size-ui)))
-  );
+  /* The 60% above is the only cap, and it is also a floor: because the name
+   * never shrinks below its own text, this rule can take space from the intent
+   * on a narrow row and can never take it on a row where the name already had
+   * room. A row that showed its whole name before this change therefore keeps
+   * its exact meta width - the intent's cap is unchanged, and nothing new
+   * reserves space on its behalf. A row squeezed to a partial name gains the
+   * width the name was missing. */
+  flex-shrink: 100;
   overflow: hidden;
   text-overflow: ellipsis;
   margin-left: auto;
@@ -266,7 +257,16 @@
 }
 .indentGuide {
   border-left: 1px solid var(--edge);
-  margin-left: calc(var(--space-3) + 6px);
+  /* One indent step per level, but never more than a twentieth of the space
+   * the level has left. A fixed step compounds: at 320px, eight levels of
+   * 19px consumed 176px of a 288px pane before the row's own name began, and
+   * the deepest row could not show a single glyph. A share of the remaining
+   * width decays with depth instead - each level costs less as space gets
+   * scarcer - so the tree stays legible to any depth by construction. Above
+   * a 360px containing block the fixed step is the smaller of the two and
+   * this changes nothing, so the 430px and 900px rows keep their exact
+   * geometry. */
+  margin-left: min(calc(var(--space-3) + 6px), 5%);
 }
 
 /* ---- watches -------------------------------------------------------- */

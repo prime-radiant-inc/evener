@@ -66,22 +66,23 @@ function deviation(actual, expected) {
  *
  * `room` is the row's content box less the fixed controls that sit beside the
  * name: the row's four inter-child gaps, the disclosure toggle, the kind glyph
- * and the Open control - all measured on this row, in this run. When room
- * cannot hold a glyph and its ellipsis the row has nothing to give, so the
- * name is allowed to fall back rather than buying a clipped tap target. */
+ * and the Open control - all measured on this row, in this run. It is reported
+ * in the failure text, never used to excuse one: a guard that goes quiet
+ * exactly where the layout is worst certifies the case that matters most. */
 function assertRow(row, where, expected, pane, failures, room) {
   // A label shorter than its own glyph-plus-ellipsis prefix cannot show that
   // prefix inside its own text width; the most it can hold is the whole label.
-  // That is why the reservation is capped at the label's width - a box wider
+  // That is why the need is capped at the label's width - a box wider
   // than the text it holds is padding, not a readable name.
   const need = Math.min(row.prefixEllipsisWidth, row.nameFullWidth);
-  const affordable = room >= need;
   // The whole point: whatever the intent holds, the name keeps a box wide
   // enough for one glyph plus its ellipsis, or for the whole label when the
   // label is shorter than that. The comparison is against the measured first
   // glyph of THIS row's label, which is why a reservation derived from the
-  // digit "0" fails on a full-width ideograph.
-  if (affordable && row.name.width < need - EXACT) {
+  // digit "0" fails on a full-width ideograph. No size is exempt: the indent
+  // step and the shrink weight are what keep this satisfiable at any depth, so
+  // a failure here is the layout's, not the fixture's.
+  if (row.name.width < need - EXACT) {
     failures.push(
       `${where}: name ${row.name.width.toFixed(2)}px < its ${need.toFixed(2)}px glyph-plus-ellipsis prefix, with ${room.toFixed(2)}px available`,
     );
@@ -212,14 +213,12 @@ export default function assert(fixtures) {
         // ellipsis where the intent had reduced it to a bare sliver.
         rescued++;
       } else {
-        // Too narrow for any prefix even after the meta yielded to zero: the
-        // name gives the space back so the Open target keeps its full width.
+        // The name did not reach its prefix. `assertRow` has already failed
+        // this row, so there is nothing to excuse here: this branch only
+        // counts it. The indent step and the shrink weight are what keep the
+        // prefix affordable at every depth, which is why the count of these
+        // rows is expected to be zero rather than tolerated.
         yielded++;
-        if (room >= Math.min(row.prefixEllipsisWidth, row.nameFullWidth)) {
-          failures.push(
-            `${where}: name ${row.name.width.toFixed(2)}px fell short of its ${row.prefixEllipsisWidth.toFixed(2)}px prefix with ${room.toFixed(2)}px available`,
-          );
-        }
       }
       // A comfortable row keeps its whole label: the cap must never truncate a
       // name the row had room to show in full. This is what stops a too-small
@@ -230,11 +229,10 @@ export default function assert(fixtures) {
           `${where}: name ${row.name.width.toFixed(2)}px truncates a ${row.nameFullWidth.toFixed(2)}px label the row had room for in full`,
         );
       }
-      // A clipped Open target is a smaller target: wherever the fixed
-      // controls fit in the row at all, the name must not push the target
-      // outside the pane. Where they do not fit, the overflow is the row's own
-      // minimum, unchanged by this change.
-      if (room >= 0 && row.button.right > fixture.pane.right + EPS) {
+      // A clipped Open target is a smaller target: the name must never push
+      // the target outside the pane. No depth is exempt - the indent step is
+      // capped as a share of the width for exactly this reason.
+      if (row.button.right > fixture.pane.right + EPS) {
         failures.push(
           `${where}: Open ${row.button.right.toFixed(2)}px overhangs the pane edge ${fixture.pane.right.toFixed(2)}px`,
         );
@@ -256,6 +254,6 @@ export default function assert(fixtures) {
     ? { pass: false, reason: failures.join("; ") }
     : {
         pass: true,
-        reason: `${rowsChecked} near-limit intent rows at 320/360/390/430px depths 0-9 plus a 900px row, Latin, CJK, emoji and xl labels: name >= its measured glyph-plus-ellipsis prefix wherever the row can fit one, Open >= ${Math.min(...controls).toFixed(2)}px, ${rescued} starved rows rescued, ${yielded} rows too narrow for a prefix left the space to Open, ${held} readable rows held exactly, ${hitProbes} hit probes and ${rowsChecked} DOM activations reach their own control, no pane horizontal scroll`,
+        reason: `${rowsChecked} near-limit intent rows at 320/360/390/430px depths 0-9 plus a 900px row, Latin, CJK, emoji and xl labels: every name >= its own measured glyph-plus-ellipsis prefix with no size exempt, Open >= ${Math.min(...controls).toFixed(2)}px and never past the pane edge, ${rescued} starved rows rescued, ${yielded} rows fell short, ${held} readable rows held exactly, ${hitProbes} hit probes and ${rowsChecked} DOM activations reach their own control, no pane horizontal scroll`,
       };
 }

@@ -168,7 +168,13 @@ function measureFrame({ spec, frame }) {
   // measurements cannot, so the "already readable rows do not move" contract
   // stays exact and any movement the FIX causes is still caught.
   const floorOff = doc.createElement("style");
-  floorOff.textContent = ".denseMeta { max-width: 60% !important; }";
+  // Undo THIS change, and nothing else, in the same document: the name goes
+  // back to shrinkable with no cap, the meta back to the default shrink
+  // share, and the indent back to its fixed step. Those are exactly what the
+  // fix moved, so this is the pre-fix row, measured with the same fonts and
+  // the same rounding as the fixed one.
+  floorOff.textContent =
+    ".denseName { flex: 0 1 auto !important; max-width: none !important; } .denseMeta { flex-shrink: 1 !important; } .indentGuide { margin-left: 18px !important; }";
   doc.head.appendChild(floorOff);
   const reference = rows.map((row) => {
     const name = row.querySelector(".denseName");

@@ -119,10 +119,17 @@
     }
   ],
   "mutation": {
-    "declaration": "activitypanel.module.css: replace .denseName's min() floor with min-width: 0",
+    "declaration": "activitypanel.module.css: remove .denseMeta's flex-shrink: 100 (the width reclamation's companion, .indentGuide's min() step cap, is recorded separately below)",
     "verified": "2026-11-18",
     "expect": "fail",
-    "note": "Chrome exited 1 on the restored pre-floor baseline of this same case: at 320px/depth 0 the name dropped to 5.70px against its own 12.56px glyph-plus-ellipsis prefix with 162px free, and the CJK rows fell to 3.61px against a 22.79px prefix. The same run also covers the two unit choices the review separated: `min-width: 2ch` exits 1 (16.03px where the font-derived floor is 23.40px) and `min-width: 3ch` exits 1 (24.05px), because `ch` measures the digit 0. Stylesheet restored byte-for-byte before the passing run.",
+    "note": "Chrome exited 1 with flex-shrink: 100 removed and .denseMeta back to flex: 0 1 auto: 320px/depth 0 fell to 5.70px against its 12.58px glyph-plus-ellipsis prefix with 162px free, 320px/depth 1 to 5.17px against 12.58px, and 320px/depth 0 CJK to 3.61px against 22.80px. Proportional shrinking is what starves the name; the shrink weight is what makes the intent yield first. Stylesheet restored byte-for-byte before the passing run.",
+    "companion": {
+      "declaration": "activitypanel.module.css: revert .indentGuide's margin-left to the fixed calc(var(--space-3) + 6px)",
+      "verified": "2026-11-18",
+      "expect": "fail",
+      "note": "Chrome exited 1 with the indent step fixed at 18px again and flex-shrink: 100 kept: 320px/depth 8 CJK fell to 10.00px against its 22.80px prefix with 10px of room, 320px/depth 8 to 10.00px against 12.58px, and 320px/depth 9 to 0.00px against 12.58px with -9px, i.e. no room at all. A fixed step compounds 18px per level, so nine levels exceeded the 288px pane. Stylesheet restored byte-for-byte before the passing run.",
+      "previous": null
+    },
     "previous": {
       "declaration": "activitypanel.module.css: remove only .denseName's min-width: 2ch",
       "verified": "2026-11-18",
