@@ -1064,7 +1064,15 @@ async function acceptEntryTranscriptHydration(
   ) {
     // Only rebuild the route this acquisition owns; a concurrent replacement is
     // not this response's to replace.
-    if (fixture.repository !== claimedRepository) return;
+    //
+    // A cache-only shell is not that concurrent replacement. It holds no
+    // authoritative state and its empty thread identity is exactly what made
+    // this response want a rebuild, so a pane that installed one while this
+    // read awaited its durable authorities must not fence the response off.
+    // Fencing it discarded a successful source read and rejected a press the
+    // source had already answered, on the display of a shell nobody verified.
+    const replacedByShell = fixture.cachedUnverified === true && fixture.repository !== undefined;
+    if (fixture.repository !== claimedRepository && !replacedByShell) return;
     // The pending recorded-range work is the route's fact, not the repository
     // instance's: identities the display restored but no current-baseline
     // statement validated yet survive the replacement the stale-cursor
@@ -1451,7 +1459,9 @@ function parkForClearReplacement(ref: string): { parked: Promise<void>; cancel: 
 // read yet parks, because Clear issues it only once its transaction settles.
 async function awaitClearReplacement(
   ref: string,
-): Promise<{ kind: "read"; read: Promise<ThreadModel | null> } | { kind: "deleted" } | { kind: "none" }> {
+): Promise<
+  { kind: "read"; read: Promise<ThreadModel | null> } | { kind: "deleted" } | { kind: "deferred" } | { kind: "none" }
+> {
   const issued = clearReplacementReads.get(ref);
   if (issued) return { kind: "read", read: issued };
   if (clearHydrationDemands.get("thread")?.has(ref) !== true) return { kind: "none" };
@@ -1463,7 +1473,13 @@ async function awaitClearReplacement(
   }
   if (threadsStore.getState().deletedRefs.has(ref)) return { kind: "deleted" };
   const replacement = clearReplacementReads.get(ref);
-  return replacement ? { kind: "read", read: replacement } : { kind: "none" };
+  if (replacement) return { kind: "read", read: replacement };
+  // A reconnecting client owns this ref's convergence: the demand was not
+  // dropped, only deferred until something is ready to issue it. That is not
+  // the same answer as "this ref never had a demand", and a caller that
+  // confuses them rethrows a transport error about a read Clear had already
+  // retired - failing a press the reconnect is about to verify.
+  return getWiredClient()?.state === "ready" ? { kind: "none" } : { kind: "deferred" };
 }
 
 // --- Notification routing index ---------------------------------------------
@@ -8756,6 +8772,17 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
                 inflight = handoff.read;
                 continue;
               }
+              // A Clear that deferred its replacement owns this ref's next
+              // read, so the failure in hand describes a read Clear already
+              // retired rather than the destination. Re-arm from the top: the
+              // reconnect that deferred the replacement verifies the ref, and
+              // a press fails only if that verification never arrives.
+              if (handoff.kind === "deferred") {
+                client = await requireReadyClient();
+                if (ensureGenerations.get(ref) !== generation || foregroundHolds(ref) <= 0) return;
+                inflight = inflightHydrates.get(ref) ?? startHydration(client, getReadyEpoch());
+                continue;
+              }
               throw lastReadError ?? new Error("routing state is unverified after the read settled");
             }
             // A display the claim's publication already completed has no
@@ -8861,7 +8888,17 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
               inflight = handoff.read;
               continue;
             }
-            throw err;
+            // Deferred means Clear still owes this ref a read and the
+            // connection has to return before it can be issued: the error in
+            // hand is the transport drop that deferred it, not the
+            // destination's routing answer. Re-arm against the current
+            // generation so the reconnect verifies the ref and the press
+            // proceeds, instead of spending the user's Send.
+            if (handoff.kind === "none") throw err;
+            client = await requireReadyClient();
+            if (ensureGenerations.get(ref) !== generation || foregroundHolds(ref) <= 0) return;
+            inflight = inflightHydrates.get(ref) ?? startHydration(client, getReadyEpoch());
+            continue;
           }
           // Read BEFORE the await: the settlement below removes this record,
           // and the successor it hands over is the read this waiter must adopt
