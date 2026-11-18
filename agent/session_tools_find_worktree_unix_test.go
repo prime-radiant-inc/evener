@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/gittest"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -148,5 +149,32 @@ func TestProjectName_LabelNeverExecutesGit(t *testing.T) {
 	}
 	if got != "sub" {
 		t.Fatalf("projectName(restore root in a Git submodule) = %q, want %q from the submodule checkout", got, "sub")
+	}
+}
+
+// TestProjectName_GitSymlinkToDirectoryResolves pins the review finding that a
+// checkout whose ".git" is a symlink to a Git DIRECTORY was sent to the pointer
+// reader, which refuses directories, so /repo/pkg displayed "pkg" instead of
+// "repo". Following the link once and classifying its target keeps that layout
+// working without opening anything it should not.
+func TestProjectName_GitSymlinkToDirectoryResolves(t *testing.T) {
+	main, _ := gittest.NewLinkedWorktree(t)
+	realGit := filepath.Join(main, ".git")
+	if info, err := os.Stat(realGit); err != nil || !info.IsDir() {
+		t.Fatalf("fixture %q is not a directory: %v", realGit, err)
+	}
+
+	repo := filepath.Join(t.TempDir(), "repo")
+	if err := os.MkdirAll(filepath.Join(repo, "pkg"), 0o755); err != nil {
+		t.Fatalf("mkdir repo/pkg: %v", err)
+	}
+	if err := os.Symlink(realGit, filepath.Join(repo, ".git")); err != nil {
+		t.Fatalf("symlink .git to the real Git directory: %v", err)
+	}
+
+	m := schema.SessionMeta{}
+	m.EnvInfo.WorkingDir = filepath.Join(repo, "pkg")
+	if got, want := projectName(m), "repo"; got != want {
+		t.Fatalf("projectName(checkout whose .git is a symlink to a Git directory) = %q, want %q, not the subdirectory leaf", got, want)
 	}
 }

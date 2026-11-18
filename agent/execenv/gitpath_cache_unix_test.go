@@ -4,6 +4,7 @@ package execenv
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -99,23 +100,25 @@ func TestResolveMainRepoRoot_UnreadableAncestorIsNotMemoized(t *testing.T) {
 }
 
 // A ".git" entry that exists but is not a directory and cannot be opened as a
-// regular file — here a FIFO with no writer — is not a pointer this walk can
-// read. Reading it would block forever, so the entry must be reported as
-// unsupported (handled=false, no error) and the caller's own fallback answers.
-// The guard is the property "open only regular files, nonblocking", which
-// covers a socket or a device without naming them.
-func TestLocalStructuralMainRoot_GitFIFOIsUnsupportedNotBlocking(t *testing.T) {
+// regular file — here a FIFO with no writer — is a pointer this walk read and
+// refused. Refusing it is a terminal structural answer: handled must stay true
+// and the refusal must be the typed ErrNotRegularFile, because handled=false
+// hands the question to the Git binary, which resolves a program from a PATH
+// that workspace directories can reach. The guard is the property "open only
+// regular files, nonblocking", which covers a socket or a device without naming
+// them.
+func TestLocalStructuralMainRoot_GitFIFOIsANotRegularRefusal(t *testing.T) {
 	dir := t.TempDir()
 	if err := syscall.Mkfifo(filepath.Join(dir, ".git"), 0o600); err != nil {
 		t.Fatalf("mkfifo .git: %v", err)
 	}
 
 	root, isGit, handled, err := localStructuralMainRoot(dir)
-	if err != nil {
-		t.Fatalf("localStructuralMainRoot(.git FIFO): %v, want the entry reported as unsupported", err)
+	if !errors.Is(err, ErrNotRegularFile) {
+		t.Fatalf("localStructuralMainRoot(.git FIFO) error = %v, want ErrNotRegularFile so no caller falls through to running Git", err)
 	}
-	if handled {
-		t.Error("handled = true for a .git this walk cannot read, want false so the caller falls back")
+	if !handled {
+		t.Error("handled = false after the entry was read and refused, which would run the Git binary instead")
 	}
 	if !isGit {
 		t.Error("isGit = false for a .git entry that exists, want true")
@@ -161,8 +164,9 @@ func TestLocalStructuralMainRoot_GitSymlinkToPointerResolves(t *testing.T) {
 }
 
 // The same symlink to a FIFO is still a FIFO: following the link must not turn
-// the nonblocking guard into a blocking read, so the entry stays unsupported.
-func TestLocalStructuralMainRoot_GitSymlinkToFIFOIsUnsupported(t *testing.T) {
+// the nonblocking guard into a blocking read, and the refusal is terminal for
+// the same reason as the plain FIFO case.
+func TestLocalStructuralMainRoot_GitSymlinkToFIFOIsANotRegularRefusal(t *testing.T) {
 	dir := t.TempDir()
 	fifo := filepath.Join(t.TempDir(), "pointer-fifo")
 	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
@@ -173,19 +177,22 @@ func TestLocalStructuralMainRoot_GitSymlinkToFIFOIsUnsupported(t *testing.T) {
 	}
 
 	root, _, handled, err := localStructuralMainRoot(dir)
-	if err != nil {
-		t.Fatalf("localStructuralMainRoot(.git symlink to a FIFO): %v, want the entry reported as unsupported", err)
+	if !errors.Is(err, ErrNotRegularFile) {
+		t.Fatalf("localStructuralMainRoot(.git symlink to a FIFO) error = %v, want ErrNotRegularFile", err)
 	}
-	if handled || root != "" {
-		t.Errorf("handled = %v, root = %q, want the entry unsupported so the caller falls back", handled, root)
+	if !handled {
+		t.Error("handled = false after the entry was read and refused, which would run the Git binary instead")
+	}
+	if root != "" {
+		t.Errorf("root = %q, want empty", root)
 	}
 }
 
 // A .git pointer is one path line. A regular file far larger than any pointer is
-// refused unread rather than loaded whole into the daemon's memory, and the
-// refusal is the same "unreadable pointer" answer the FIFO case gives: no error,
-// handled=false, so the caller's own fallback answers.
-func TestLocalStructuralMainRoot_GitPointerTooLargeIsUnsupported(t *testing.T) {
+// refused unread rather than loaded whole into the daemon's memory, and that
+// refusal is terminal and typed: ErrGitPointerTooLarge, handled=true, no
+// fall-through to a Git binary that would search a workspace-reachable PATH.
+func TestLocalStructuralMainRoot_GitPointerTooLargeIsATerminalRefusal(t *testing.T) {
 	dir := t.TempDir()
 	huge := make([]byte, 1<<20)
 	for i := range huge {
@@ -196,10 +203,56 @@ func TestLocalStructuralMainRoot_GitPointerTooLargeIsUnsupported(t *testing.T) {
 	}
 
 	root, _, handled, err := localStructuralMainRoot(dir)
-	if err != nil {
-		t.Fatalf("localStructuralMainRoot(oversized .git): %v, want the entry reported as unsupported", err)
+	if !errors.Is(err, ErrGitPointerTooLarge) {
+		t.Fatalf("localStructuralMainRoot(oversized .git) error = %v, want ErrGitPointerTooLarge so no caller falls through to running Git", err)
 	}
-	if handled || root != "" {
-		t.Errorf("handled = %v, root = %q, want the entry unsupported so the caller falls back", handled, root)
+	if !handled {
+		t.Error("handled = false after the entry was read and refused, which would run the Git binary instead")
+	}
+	if root != "" {
+		t.Errorf("root = %q, want empty", root)
+	}
+}
+
+// A ".git" pointer this walk reads and refuses must never become a Git
+// invocation. Resume reaches the same resolver (`ResolveProjectWith` with a
+// project resolver over the target), and the Git binary it would fall back to is
+// resolved from PATH — a PATH workspace directories can reach. So the refusal is
+// observable as a process: a workspace directory holds an executable "git" that
+// records its own execution, that directory is first on PATH, and a refused
+// pointer must leave no record.
+//
+// The fixture is an oversized regular pointer rather than a FIFO on purpose.
+// Both shapes are refused by the same guard, but a real git run against a FIFO
+// blocks, and a test that hangs proves nothing. The regular file exercises the
+// same fall-through — the case that actually escalated — and cannot block.
+func TestResolveMainRepoRoot_RefusedPointerNeverExecutesGit(t *testing.T) {
+	workspace := t.TempDir()
+	canary := filepath.Join(workspace, "git-ran")
+	fakeGit := filepath.Join(workspace, "git")
+	script := "#!/bin/sh\n: > " + canary + "\nexit 1\n"
+	if err := os.WriteFile(fakeGit, []byte(script), 0o755); err != nil {
+		t.Fatalf("write workspace git: %v", err)
+	}
+	t.Setenv("PATH", workspace+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	dir := t.TempDir()
+	huge := make([]byte, 1<<20)
+	for i := range huge {
+		huge[i] = 'a'
+	}
+	if err := os.WriteFile(filepath.Join(dir, ".git"), huge, 0o644); err != nil {
+		t.Fatalf("write oversized .git: %v", err)
+	}
+
+	_, isGit, err := resolveMainRepoRoot(NewLocalExecutionEnvironment(dir), dir)
+	if _, statErr := os.Stat(canary); statErr == nil {
+		t.Fatalf("resolveMainRepoRoot(oversized .git) executed the workspace-supplied git at %q; a pointer this walk read and refused is a terminal structural answer and must not fall through to a PATH-resolved program", fakeGit)
+	}
+	if !isGit {
+		t.Errorf("isGit = false for a .git entry that exists, want true")
+	}
+	if err == nil {
+		t.Error("resolveMainRepoRoot of a refused .git pointer returned no error, want a terminal structural error")
 	}
 }

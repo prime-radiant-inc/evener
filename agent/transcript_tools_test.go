@@ -895,6 +895,40 @@ func TestFind_ProjectName_StateWorktreeWithoutBucketMetadata(t *testing.T) {
 	}
 }
 
+// TestFind_ProjectName_SymlinkedStateHomeKeepsSiblingInference covers the state
+// home itself being a symlink. Startup records buckets under the physical path
+// while this process's configuration keeps the link's spelling, so a bucket
+// reached through the link must still be recognized as a project bucket and a
+// deleted originless worktree must still take its sibling's origin.
+func TestFind_ProjectName_SymlinkedStateHomeKeepsSiblingInference(t *testing.T) {
+	physical := t.TempDir()
+	linkParent := t.TempDir()
+	linkedHome := filepath.Join(linkParent, "state-home-link")
+	if err := os.Symlink(physical, linkedHome); err != nil {
+		t.Fatalf("symlink state home: %v", err)
+	}
+	t.Setenv("XDG_STATE_HOME", linkedHome)
+
+	// The bucket is created through the phys path, as startup would record it.
+	bucket := filepath.Join(physical, "evener", "projects", "linked-home-bucket")
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+	sibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	sibling.EnvInfo.GitOriginURL = "git@github.com:owner/linked-home-repo.git"
+	if err := schema.SaveSessionMeta(bucket, sibling); err != nil {
+		t.Fatal(err)
+	}
+
+	// The stored bucket path is physical while the configured spelling is the
+	// link, so the two differ as strings and must still name the same home.
+	m := schema.SessionMeta{}
+	m.EnvInfo.WorkingDir = filepath.Join(bucket, "sessions", identifier.MustNewSessionID(), "worktrees", "dlg_linked_home")
+	if got := projectName(m, bucket); got != "linked-home-repo" {
+		t.Fatalf("projectName(originless worktree in a bucket under a symlinked state home) = %q, want the sibling's %q", got, "linked-home-repo")
+	}
+}
+
 func TestFind_CatalogTrimmedAndOrdered(t *testing.T) {
 	t.Parallel()
 	dir := newBucket(t)

@@ -116,6 +116,31 @@ func envHasGitEntryAncestor(env ExecutionEnvironment, cwd string) bool {
 	}
 }
 
+// localStructuralMainRoot resolves a checkout's main root from the ".git"
+// layout. handled says the walk answered the question; when it is false the
+// caller falls through to the Git binary, which resolves a program from PATH —
+// a PATH workspace directories can reach. So handled=false is allowed only
+// where the walk has NOT established what the entry is. Every ".git" shape is
+// enumerated here, and each one says which it is:
+//
+//   - .git directory: terminal, the checkout is its own main root.
+//   - regular .git pointer file: terminal, linked-worktree pointer (main root,
+//     validated) or submodule pointer. A validated submodule pointer is the one
+//     pointer that falls through (handled=false), because the submodule's own
+//     root is the answer and only Git reports it here.
+//   - symlink to a directory: terminal, it is a .git directory. os.Stat follows
+//     the link, so this arrives as the directory case.
+//   - symlink to a regular pointer file: terminal, the pointer cases above.
+//   - symlink that does not resolve, FIFO, socket, device: terminal refusal.
+//     The entry exists and has been read and refused; answering handled=false
+//     would escalate to running a workspace-reachable program instead.
+//   - pointer file larger than any pointer: terminal refusal, same reason. It
+//     is also never read whole.
+//   - unreadable .git (permission, I/O error): terminal error, again never a
+//     fall-through.
+//   - no .git entry in this directory or any ancestor: terminal non-Git.
+//   - a stat that failed for a reason other than absence: terminal error,
+//     because nothing established what is there.
 func localStructuralMainRoot(cwd string) (root string, isGit bool, handled bool, err error) {
 	dir := filepath.Clean(cwd)
 	for {
@@ -138,14 +163,13 @@ func localStructuralMainRoot(cwd string) (root string, isGit bool, handled bool,
 			}
 			content, readErr := ReadGitPointerFile(gitPath)
 			if readErr != nil {
-				// A .git entry that is not a directory and cannot be opened as a
-				// regular file (a FIFO with no writer, a socket, a device, an
-				// unreadable file) is not a pointer this walk can read. Report it
-				// as unsupported rather than as an error, so the caller's
-				// restore-path fallback answers instead of the search failing.
-				if errors.Is(readErr, ErrNotRegularFile) || errors.Is(readErr, ErrGitPointerTooLarge) {
-					return "", true, false, nil
-				}
+				// The entry exists and was refused as a pointer: a FIFO with no
+				// writer, a socket, a device, an unresolvable symlink, a file
+				// larger than any pointer, or an unreadable file. That is a
+				// structural answer about this checkout, not an unknown, so it
+				// ends resolution here. Returning handled=false would hand the
+				// question to the Git binary, which searches a PATH that
+				// workspace directories can reach.
 				return "", true, true, fmt.Errorf("read Git pointer %q: %w", gitPath, readErr)
 			}
 			contentString := string(content)

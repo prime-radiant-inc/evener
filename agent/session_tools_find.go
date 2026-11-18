@@ -1056,9 +1056,19 @@ func (r *projectNameResolver) isStateBucket(candidate, bucket string) bool {
 // computes from its own configuration. It is the one independent
 // identification of the state tree, so a path that merely spells the layout
 // under some other archive root is not part of it.
+//
+// Both spellings of that home are accepted: the configured one and its
+// canonical form. When $XDG_STATE_HOME is itself a symlink, startup records
+// buckets under the physical path while the configuration keeps the link's
+// spelling, and comparing only one form would reject a genuine project bucket.
+// Both sides still come from this process's own configuration, so accepting
+// either spelling does not widen what counts as the state tree.
 func (r *projectNameResolver) isConfiguredStateHome(home string) bool {
+	configuredHome := filepath.Clean(home)
+	canonicalHome := identifier.ResolveClean(configuredHome)
 	for _, root := range r.stateRoots() {
-		if filepath.Dir(root) == home {
+		rootHome := filepath.Dir(root)
+		if configuredHome == rootHome || canonicalHome == identifier.ResolveClean(rootHome) {
 			return true
 		}
 	}
@@ -1116,10 +1126,22 @@ func (r *projectNameResolver) resolveMainRoot(dir string) string {
 // recorded restore root can sit inside a repository the user checked out, and
 // the command runner prepends workspace directories to PATH, so any `git`
 // invocation here would run a repository-supplied executable with the daemon's
-// permissions. None of that is acceptable for a label. The structural walk
-// answers the same question for the layouts that matter — a .git directory, a
-// linked-worktree pointer, a submodule pointer — and returns "" otherwise, and
-// every caller already falls back to the recorded directory's own name.
+// permissions. None of that is acceptable for a label, so this walk has no
+// fall-through at all: it answers, or it returns "" and the caller uses the
+// recorded directory's own name. Each ".git" shape is enumerated here.
+//
+//   - .git directory, or a symlink whose target is a directory: the checkout's
+//     own Git directory, so the directory is its own main root. os.Stat follows
+//     the link, so a symlink to a directory arrives as the directory case.
+//   - regular pointer file, or a symlink to one: a linked-worktree pointer
+//     names the main checkout, a submodule pointer names this checkout. Both
+//     are validated against the layout before either answer is used.
+//   - symlink that does not resolve, FIFO, socket, device: "" — a refusal, not
+//     an invitation to try something else.
+//   - pointer larger than any pointer, or unreadable: "" for the same reason.
+//   - no .git in this directory or any ancestor: "".
+//
+// Every branch returns; nothing here can leave the walk to a second resolver.
 func resolveMainRootStructural(dir string) string {
 	clean := filepath.Clean(dir)
 	for {
@@ -1128,28 +1150,28 @@ func resolveMainRootStructural(dir string) string {
 		switch {
 		case err == nil && info.IsDir():
 			return identifier.ResolveClean(clean)
-		case err == nil:
-			// A .git file (or a symlink to one): a linked worktree pointer names
-			// the main checkout; a submodule pointer names this repository. Both
-			// are layout, so neither needs Git or a process.
-			content, readErr := execenv.ReadGitPointerFile(gitPath)
-			if readErr != nil {
+		case err == nil && info.Mode()&os.ModeSymlink != 0:
+			// A symlink is followed once, here, so the two shapes a legitimate
+			// link can hold are decided explicitly: a directory (a relocated .git
+			// directory) and a regular pointer file. Anything else it resolves to
+			// — or a link that resolves to nothing — is refused.
+			target, evalErr := filepath.EvalSymlinks(gitPath)
+			if evalErr != nil {
 				return ""
 			}
-			pointer := string(content)
-			if root, ok := identifier.MainRootFromGitdirPointer(pointer, clean); ok {
-				if identifier.ValidateLinkedWorktreePointer(pointer, clean, root) == nil {
-					return identifier.ResolveClean(root)
-				}
+			targetInfo, statErr := os.Stat(target)
+			if statErr != nil {
 				return ""
 			}
-			if _, ok := identifier.ParseGitdirPointer(pointer); ok {
-				if identifier.ValidateSubmodulePointer(pointer, clean) != nil {
-					return ""
-				}
+			if targetInfo.IsDir() {
 				return identifier.ResolveClean(clean)
 			}
-			return ""
+			if !targetInfo.Mode().IsRegular() {
+				return ""
+			}
+			return mainRootFromPointerFile(clean, gitPath)
+		case err == nil:
+			return mainRootFromPointerFile(clean, gitPath)
 		}
 		parent := filepath.Dir(clean)
 		if parent == clean {
@@ -1157,6 +1179,32 @@ func resolveMainRootStructural(dir string) string {
 		}
 		clean = parent
 	}
+}
+
+// mainRootFromPointerFile answers for a regular ".git" pointer file: a
+// linked-worktree pointer names the main checkout, a submodule pointer names
+// this checkout, and anything else is "". The read is bounded and nonblocking
+// and never runs a process; a refusal is final here and is never passed to a
+// second resolver.
+func mainRootFromPointerFile(dir, gitPath string) string {
+	content, readErr := execenv.ReadGitPointerFile(gitPath)
+	if readErr != nil {
+		return ""
+	}
+	pointer := string(content)
+	if root, ok := identifier.MainRootFromGitdirPointer(pointer, dir); ok {
+		if identifier.ValidateLinkedWorktreePointer(pointer, dir, root) == nil {
+			return identifier.ResolveClean(root)
+		}
+		return ""
+	}
+	if _, ok := identifier.ParseGitdirPointer(pointer); ok {
+		if identifier.ValidateSubmodulePointer(pointer, dir) != nil {
+			return ""
+		}
+		return identifier.ResolveClean(dir)
+	}
+	return ""
 }
 
 // canonicalProjectPath returns the canonical main-checkout path a session's
