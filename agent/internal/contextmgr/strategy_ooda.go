@@ -6,6 +6,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/runetrim"
+	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/agent/schema"
 )
 
@@ -58,7 +59,11 @@ func (s *OODAStrategy) ManageContext(ctx context.Context, history *[]schema.Turn
 		logText = runetrim.Cut(logText, maxLogChars) + truncation
 	}
 
-	orient := fmt.Sprintf("[SESSION ORIENTATION]\nHere is a log of your session actions so far.%s\n\n%s\n[END ORIENTATION]", recovery, logText)
+	// The framing is the harness's; the log body quotes the model's own
+	// actions, and a model that logged a frame must not read it back as input
+	// in the orientation turn, which is user-role (#6493).
+	orient := fmt.Sprintf("[SESSION ORIENTATION]\nHere is a log of your session actions so far.%s\n\n%s\n[END ORIENTATION]",
+		recovery, sysmsg.EscapeModelAuthoredFrames(logText))
 
 	// Replace any previous orient turn(s) with the fresh one at the end —
 	// the model sees it just before generating its next response — and

@@ -55,6 +55,10 @@ var modelAuthoredTagOpeners = []HarnessTagPrefix{
 	{Prefix: "<shared-notes"},
 	{Prefix: "<skill-context"},
 	{Prefix: "<skill-inventory"},
+	// The task store's completion block, sent at line start in user-role
+	// steering (agent/task_reminders.go's taskCompletionMachineBlockStart).
+	// A model repeating it would present state the store never reported.
+	{Prefix: "<evener-task-completion"},
 }
 
 // modelAuthoredMarkerLines are the bracketed line-start markers the harness
@@ -114,19 +118,33 @@ func EscapeModelAuthoredFrames(text string) string {
 		return text
 	}
 	var b strings.Builder
+	created := false
 	var fence mdfence.Tracker
-	changed := false
-	for _, line := range splitKeepingNewlines(text) {
+	pos := 0
+	for line := range strings.Lines(text) {
 		content := strings.TrimSuffix(strings.TrimSuffix(line, "\n"), "\r")
+		out := line
 		if !fence.StepInBlock(content) && !indentedCode(content) && !isQuotedLine(content) {
 			if escaped, ok := escapeFrameOpener(content); ok {
-				line = escaped + line[len(content):]
-				changed = true
+				out = escaped + line[len(content):]
 			}
 		}
-		b.WriteString(line)
+		// Nothing is allocated and nothing is copied until a line actually
+		// changes: most replayed text carries no frame, and this runs on
+		// every request.
+		if out != line {
+			if !created {
+				b.Grow(len(text))
+				b.WriteString(text[:pos])
+				created = true
+			}
+			b.WriteString(out)
+		} else if created {
+			b.WriteString(line)
+		}
+		pos += len(line)
 	}
-	if !changed {
+	if !created {
 		return text
 	}
 	return b.String()
@@ -190,20 +208,4 @@ func isQuotedLine(content string) bool {
 // literal content rather than prose.
 func indentedCode(content string) bool {
 	return strings.TrimSpace(content) != "" && mdfence.LeadingColumns(content) >= 4
-}
-
-// splitKeepingNewlines splits text after each newline, so joining the result
-// reproduces text exactly.
-func splitKeepingNewlines(text string) []string {
-	lines := make([]string, 0, strings.Count(text, "\n")+1)
-	for text != "" {
-		nl := strings.IndexByte(text, '\n')
-		if nl < 0 {
-			lines = append(lines, text)
-			break
-		}
-		lines = append(lines, text[:nl+1])
-		text = text[nl+1:]
-	}
-	return lines
 }

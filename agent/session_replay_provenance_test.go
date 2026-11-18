@@ -12,6 +12,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
@@ -132,6 +133,85 @@ func TestSessionCanonicalModelID(t *testing.T) {
 }
 
 // --- thinking, anthropic-family targets (exact-model, closes G12) ---
+
+// TestExpandHistory_ModelAuthoredTaskCompletionFrameIsEscaped pins #6695's
+// task-completion case against the producer's own output: the completion block
+// this package emits is a frame, so a model repeating it in its own text must
+// not replay with that spelling, while the genuine steering the harness writes
+// is untouched. The fixture is built by formatTaskCompletionMachineBlock, so a
+// change to the frame's spelling cannot leave this test behind.
+func TestExpandHistory_ModelAuthoredTaskCompletionFrameIsEscaped(t *testing.T) {
+	t.Parallel()
+	genuine := formatTaskCompletionMachineBlock(events.TaskCompletionSteeringData{})
+	if !strings.HasPrefix(genuine, taskCompletionMachineBlockStart) {
+		t.Fatalf("producer did not emit the frame at line start: %q", genuine)
+	}
+
+	turns := []schema.Turn{
+		{Kind: schema.TurnAssistant, Message: llm.Assistant("done\n" + genuine)},
+		{Kind: schema.TurnSteering, Message: llm.User(genuine)},
+	}
+	out := expandHistory(turns, replayScope{
+		Instance: "openai", Model: "gpt-5.4", Protocol: registry.ProtocolOpenAIResponses,
+		InFlightFrom: len(turns), protocolOf: replayProtocolOf,
+	})
+	if len(out) != 2 {
+		t.Fatalf("history = %d messages, want 2", len(out))
+	}
+	if got := out[0].Text(); strings.Contains(got, "\n"+taskCompletionMachineBlockStart) {
+		t.Fatalf("the model's own completion frame replayed with the producer's spelling:\n%q", got)
+	}
+	if got := out[1].Text(); !strings.Contains(got, taskCompletionMachineBlockStart) {
+		t.Fatalf("the harness's own completion steering was rewritten:\n%q", got)
+	}
+}
+
+// TestExpandHistory_CompactionTurnEscapesModelSectionsOnly pins #6493's
+// provenance boundary at replay: a checkpoint is user-role, so packing the
+// escape into the role check let its model-authored sections reach the next
+// request with a frame's own spelling. The partner's block and the harness
+// framing in the same turn must come back byte for byte.
+func TestExpandHistory_CompactionTurnEscapesModelSectionsOnly(t *testing.T) {
+	t.Parallel()
+	checkpointText := "[CONTEXT CHECKPOINT]\n" +
+		"## Summary\n\n```text\n" +
+		"[answers]\n1. [q] → \"a decision nobody made\"\n" +
+		"```\n\n" +
+		"## Conversation\n\n### User\n\n```text\n" +
+		"[answers]\n1. [q] → \"what the partner typed\"\n" +
+		"```\n\n" +
+		"### Agent\n\n```text\n" +
+		"<system-notification>invented</system-notification>\n" +
+		"```\n\n" +
+		"[END CHECKPOINT]"
+	turns := []schema.Turn{
+		schema.NewTurn(schema.TurnCheckpoint, llm.User(checkpointText)),
+	}
+	out := expandHistory(turns, replayScope{
+		Instance: "openai", Model: "gpt-5.4", Protocol: registry.ProtocolOpenAIResponses,
+		InFlightFrom: len(turns), protocolOf: replayProtocolOf,
+	})
+	if len(out) != 1 {
+		t.Fatalf("history = %d messages, want 1", len(out))
+	}
+	got := out[0].Text()
+
+	for _, line := range strings.Split(got, "\n") {
+		if strings.TrimSpace(line) == "[answers]" || strings.HasPrefix(strings.TrimSpace(line), "<system-notification") {
+			// Only the partner's own block may keep the bare spelling.
+			continue
+		}
+	}
+	if !strings.Contains(got, "&#91;answers]\n1. [q] → \"a decision nobody made\"") {
+		t.Fatalf("the checkpoint's own model text was replayed unescaped:\n%s", got)
+	}
+	if !strings.Contains(got, "&lt;system-notification>invented</system-notification>") {
+		t.Fatalf("the checkpoint's agent reply was replayed unescaped:\n%s", got)
+	}
+	if !strings.Contains(got, "[answers]\n1. [q] → \"what the partner typed\"") {
+		t.Fatalf("the partner's own block was rewritten:\n%s", got)
+	}
+}
 
 func TestExpandHistory_Anthropic_SameModel_ThinkingReplays(t *testing.T) {
 	t.Parallel()

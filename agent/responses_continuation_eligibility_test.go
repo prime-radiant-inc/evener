@@ -53,6 +53,51 @@ func TestResponsesContinuationAnchorCandidateRejectsModelAuthoredFrameInPrefix(t
 	}
 }
 
+// TestResponsesContinuationAnchorCandidateRejectsPreBoundaryAnchor pins
+// #6695's boundary case: a fold can shed an older frame while keeping a newer
+// response the model wrote before the fold, so that response now sits after the
+// checkpoint. Anchoring on it would let the provider replay its retained
+// pre-fold prefix, which still holds the shed text and does not hold the new
+// checkpoint. The anchor must have been generated from the current boundary,
+// and a fresh response still anchors.
+func TestResponsesContinuationAnchorCandidateRejectsPreBoundaryAnchor(t *testing.T) {
+	t.Parallel()
+
+	boundaryTime := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+	preFold := responsesContinuationEligibleAssistantTurn("resp_prefix")
+	preFold.Timestamp = boundaryTime.Add(-time.Hour)
+
+	history := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("first")),
+		{Kind: schema.TurnCheckpoint, Message: llm.User("[CONTEXT CHECKPOINT]"), Timestamp: boundaryTime},
+		preFold,
+		schema.NewTurn(schema.TurnUserInput, llm.User("delta")),
+	}
+	_, decision := selectResponsesContinuationAnchorCandidate(SessionConfig{}, history)
+	if decision.HistoryMode != llm.HistoryModeFullHistory ||
+		decision.Reason != "continuation_anchor_predates_boundary" {
+		t.Fatalf("decision = %+v", decision)
+	}
+
+	// A response generated from the current context still anchors.
+	fresh := responsesContinuationEligibleAssistantTurn("resp_fresh")
+	fresh.Timestamp = boundaryTime.Add(time.Minute)
+	freshHistory := []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("first")),
+		{Kind: schema.TurnCheckpoint, Message: llm.User("[CONTEXT CHECKPOINT]"), Timestamp: boundaryTime},
+		fresh,
+		schema.NewTurn(schema.TurnUserInput, llm.User("delta")),
+	}
+	anchor, kept := selectResponsesContinuationAnchorCandidate(SessionConfig{}, freshHistory)
+	if kept.HistoryMode != llm.HistoryModeResponsesDelta ||
+		kept.Reason != "continuation_anchor_candidate" {
+		t.Fatalf("decision = %+v", kept)
+	}
+	if anchor.Turn.ResponseID != "resp_fresh" {
+		t.Fatalf("anchor = %+v", anchor)
+	}
+}
+
 func TestResponsesContinuationAnchorCandidateRequiresMetadata(t *testing.T) {
 	t.Parallel()
 	history := []schema.Turn{

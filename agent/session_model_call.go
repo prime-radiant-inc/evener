@@ -2210,6 +2210,16 @@ func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Messa
 	// the assistant role is escaped: a user-role turn is the partner speaking,
 	// and their bytes are delivered as typed. The stored turn keeps every
 	// byte; this rewrites the projected copy alone.
+	//
+	// A compaction turn is user-role but not wholly the partner's: its body
+	// mixes harness framing, the partner's own blocks, and model-authored
+	// sections. Those sections are escaped by section (see
+	// sysmsg.EscapeCompactionModelSections), which is the one place the
+	// provenance boundary is enforced for every replay path.
+	switch t.Kind {
+	case schema.TurnCheckpoint, schema.TurnSummary:
+		t.Message = escapeCompactionTurnFrames(t.Message)
+	}
 	t.Message = escapeModelAuthoredTurnFrames(t.Message)
 	if !rs.active() && !rs.DropThinking {
 		return t.Message

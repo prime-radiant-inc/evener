@@ -74,6 +74,12 @@ func selectResponsesContinuationAnchorCandidate(cfg SessionConfig, history []sch
 			Reason:      "continuation_prefix_model_authored_frame",
 		}
 	}
+	if responsesContinuationAnchorPredatesBoundary(history, anchorIndex, activeStart-1) {
+		return responsesContinuationAnchorCandidate{}, llm.ResponsesContinuationDecision{
+			HistoryMode: llm.HistoryModeFullHistory,
+			Reason:      "continuation_anchor_predates_boundary",
+		}
+	}
 
 	return responsesContinuationAnchorCandidate{
 		TurnIndex: anchorIndex,
@@ -83,6 +89,25 @@ func selectResponsesContinuationAnchorCandidate(cfg SessionConfig, history []sch
 		HistoryMode: llm.HistoryModeResponsesDelta,
 		Reason:      "continuation_anchor_candidate",
 	}
+}
+
+// responsesContinuationAnchorPredatesBoundary reports whether the anchor was
+// generated before the current compaction boundary, even though it now sits
+// after it in the local slice.
+//
+// A fold can shed an older frame while keeping a newer response the model
+// wrote before the fold. That response then appears after the checkpoint, and
+// an otherwise eligible delta would anchor on it — but the provider's retained
+// prefix reaches back before the fold, so it still holds the shed text and does
+// not hold the new checkpoint. The turn's own timestamp is the evidence: a turn
+// stamped before the boundary was not generated from it. No boundary means
+// nothing to compare against, so the anchor stands.
+func responsesContinuationAnchorPredatesBoundary(history []schema.Turn, anchorIndex, boundaryIndex int) bool {
+	if boundaryIndex < 0 || boundaryIndex >= len(history) {
+		return false
+	}
+	boundary, anchor := history[boundaryIndex].Timestamp, history[anchorIndex].Timestamp
+	return !boundary.IsZero() && !anchor.IsZero() && anchor.Before(boundary)
 }
 
 // responsesContinuationPrefixCarriesModelAuthoredFrame reports whether the
