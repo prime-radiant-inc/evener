@@ -2804,16 +2804,16 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 		// ahead of the transcript that explains it. Held across both steps, the
 		// door also keeps a fold from committing its markers between them.
 		//
-		// The event is a trigger for the bridge to resample current context,
-		// not a snapshot of the context at emit time: publishing it under the
-		// door places that resample (server/thread_envelope.go's
-		// facetsByEvent) after the entry it announces, never ahead of it.
-		//
-		// The door does not order this event against a fold's own events: a
-		// fold commits its markers under the door and flushes its buffered
-		// events only after releasing it (publishFoldTransaction), so a reader
-		// can observe a fold's events after a transcript entry that another
-		// publication wrote in the meantime.
+		// The event is a trigger, not a snapshot: the bridge samples current
+		// context when it handles the event (server/thread_envelope.go's
+		// facetsByEvent), so the sample can reflect state a later publication
+		// moved. Nor does the door order this event against a fold's own
+		// events: a fold commits its markers under the door and flushes its
+		// buffered events only after releasing it (publishFoldTransaction), so
+		// a reader can observe a fold's events after a transcript entry that
+		// another publication wrote in the meantime. The sequence fixes the
+		// entry before the send with no fold's markers between those two
+		// steps, and that is all it fixes.
 		//
 		// This is the one event published under the door, and the trade is
 		// real: emit is not a bounded send. It parks indefinitely against the
