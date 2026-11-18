@@ -300,7 +300,7 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 		{"signed detail alone", "", "signed-37", "", 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			signed := map[string]any{"type": "reasoning.text", "signature": "sig-37", "format": "wire-1", "index": 0}
+			signed := map[string]any{"type": "reasoning.text", "signature": "sig-37", "format": "wire-1", "index": 7}
 			if tc.detail != "" {
 				signed["text"] = tc.detail
 			}
@@ -312,7 +312,9 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 			}
 			body := jsonOf(t, chatResponseRaw(fields, "stop"))
 			if tc.streamPrefix != 0 {
-				chunks = append(chunks, map[string]any{"reasoning_details": []any{map[string]any{"type": "reasoning.text", "text": tc.detail[:tc.streamPrefix], "index": 0}}})
+				chunks = append(chunks, map[string]any{"reasoning_details": []any{map[string]any{"type": "reasoning.text", "text": tc.detail[:tc.streamPrefix], "index": 7, "format": "wire-1"}}})
+				delete(signed, "index")
+				delete(signed, "format")
 				signed["text"] = tc.detail[tc.streamPrefix:]
 			}
 			chunks = append(chunks, map[string]any{"reasoning_details": []any{signed}})
@@ -380,7 +382,7 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 							}
 							details = details[1:]
 						}
-						if len(details) != 1 || details[0]["signature"] != "sig-37" || details[0]["format"] != "wire-1" {
+						if len(details) != 1 || details[0]["signature"] != "sig-37" || details[0]["format"] != "wire-1" || details[0]["index"] != float64(7) {
 							t.Fatalf("signed detail = %#v", details)
 						}
 						if got, _ := details[0]["text"].(string); got != tc.detail {
@@ -438,6 +440,38 @@ data: [DONE]
 		}
 		if scalar[0]["reasoning_text"] != "first-2second-7" || jsonOf(t, scalar[0]["reasoning_details"]) != jsonOf(t, details) {
 			t.Errorf("aggregate scalar replay = %#v", scalar[0])
+		}
+	})
+	t.Run("unindexed signatures with two open blocks", func(t *testing.T) {
+		const signatures = `data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","signature":"unassigned"}]}}]}
+
+data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","id":"b","signature":"b7"}]}}]}
+
+data: {"choices":[{"delta":{"reasoning_details":[{"type":"reasoning.text","index":0,"signature":"a0"}]}}]}
+
+data: [DONE]
+
+`
+		const a = `{"type":"reasoning.text","id":"a","index":0,"text":"alpha"}`
+		const b = `{"type":"reasoning.text","id":"b","text":"beta"}`
+		chunk := func(details string) string {
+			return `data: {"choices":[{"delta":{"reasoning_details":[` + details + `]}}]}` + "\n\n"
+		}
+		for _, prefix := range []string{chunk(a + "," + b), chunk(a) + chunk(b)} {
+			resp, err := ExtractRecordedResponse([]byte(prefix+signatures), "m")
+			if err != nil {
+				t.Fatal(err)
+			}
+			out, err := toChatMessages([]llm.Message{resp.Message}, registry.Caps{}, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			details, _ := out[0]["reasoning_details"].([]map[string]any)
+			if len(details) != 3 || details[0]["signature"] != "unassigned" || details[0]["text"] != nil ||
+				details[1]["signature"] != "b7" || details[1]["text"] != "beta" || details[1]["index"] != nil ||
+				details[2]["signature"] != "a0" || details[2]["text"] != "alpha" || details[2]["id"] != "a" {
+				t.Fatalf("signatures and authenticated text = %#v", details)
+			}
 		}
 	})
 }

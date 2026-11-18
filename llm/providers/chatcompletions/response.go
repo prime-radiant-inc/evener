@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 
 	"primeradiant.com/evener/llm"
@@ -259,8 +260,9 @@ func (f chatReasoningFields) scalar() (string, string) {
 }
 
 type reasoningDetailBlock struct {
-	text strings.Builder
-	wire map[string]any
+	text   strings.Builder
+	wire   map[string]any
+	signed bool
 }
 
 // chatReasoning assembles one completion. A trailing signature authenticates
@@ -293,7 +295,7 @@ func (r *chatReasoning) add(f chatReasoningFields) string {
 			}
 			detailDelta.WriteString(piece)
 		}
-		r.addDetail(pos, item, piece)
+		r.addDetail(pos, item, piece, len(f.ReasoningDetails) == 1)
 	}
 	delta := scalar
 	if detailDelta.Len() != 0 {
@@ -316,7 +318,45 @@ func (r *chatReasoning) add(f chatReasoningFields) string {
 	return delta
 }
 
-func (r *chatReasoning) addDetail(index int, item reasoningDetailItem, piece string) {
+// An explicit index or array position identifies a detail in a batch. A
+// singleton fragment can omit its index while finishing an earlier block.
+// Only a unique compatible block can supply the text a signature authenticates.
+func (r *chatReasoning) openDetail(pos int, item reasoningDetailItem, single bool) (int, *reasoningDetailBlock) {
+	if item.Index != nil {
+		return *item.Index, r.open[*item.Index]
+	}
+	if !single {
+		return pos, r.open[pos]
+	}
+	matchedIndex := pos
+	var match *reasoningDetailBlock
+	ambiguous := false
+	for i, block := range r.open {
+		id, _ := block.wire["id"].(string)
+		if id != "" && item.ID != "" && id != item.ID {
+			continue
+		}
+		if format, _ := block.wire["format"].(string); format != "" && item.Format != "" && format != item.Format {
+			continue
+		}
+		if kind, _ := block.wire["type"].(string); kind != "" && item.Type != "" && kind != item.Type {
+			continue
+		}
+		if id != "" && id == item.ID {
+			return i, block
+		}
+		if match != nil {
+			ambiguous = true
+		}
+		matchedIndex, match = i, block
+	}
+	if ambiguous {
+		return pos, nil
+	}
+	return matchedIndex, match
+}
+
+func (r *chatReasoning) addDetail(pos int, item reasoningDetailItem, piece string, single bool) {
 	if item.isEncrypted() {
 		r.continuation = append(r.continuation, &reasoningDetailBlock{wire: item.wireItem()})
 		return
@@ -324,27 +364,38 @@ func (r *chatReasoning) addDetail(index int, item reasoningDetailItem, piece str
 	if piece == "" && !item.carriesContinuation() {
 		return
 	}
-	if item.Index != nil {
-		index = *item.Index
-	}
-	block := r.open[index]
+	index, block := r.openDetail(pos, item, single)
 	if block == nil {
-		block = &reasoningDetailBlock{}
-		if r.open == nil {
-			r.open = make(map[int]*reasoningDetailBlock)
-		}
-		r.open[index] = block
+		block = &reasoningDetailBlock{wire: item.wireItem()}
 		r.blocks = append(r.blocks, block)
+		if !item.carriesContinuation() {
+			if r.open == nil {
+				r.open = make(map[int]*reasoningDetailBlock)
+			}
+			// An unindexed fragment can start a different native ID while
+			// its array position is already owned by another open block.
+			if r.open[index] != nil {
+				index = -1
+				for r.open[index] != nil {
+					index--
+				}
+			}
+			r.open[index] = block
+		}
+	} else {
+		maps.Copy(block.wire, item.wireItem())
 	}
 	block.text.WriteString(piece)
 	if item.carriesContinuation() {
-		block.wire = item.wireItem()
+		block.signed = true
 		if block.text.Len() > 0 {
 			block.wire["text"] = block.text.String()
 		}
 		r.continuation = append(r.continuation, block)
 		r.hasSignature = true
-		delete(r.open, index)
+		if r.open[index] == block {
+			delete(r.open, index)
+		}
 	}
 }
 
@@ -377,7 +428,7 @@ func (r *chatReasoning) parts() []llm.ContentPart {
 		appendPart(llm.ThinkingData{Text: scalar, Signature: r.scalarField})
 	}
 	for _, block := range r.blocks {
-		if block.wire == nil {
+		if !block.signed {
 			thinking := llm.ThinkingData{Text: block.text.String()}
 			if block == mirror {
 				setChatReplayScalar(&thinking, r.scalarField, scalar)
@@ -422,12 +473,12 @@ func (r *chatReasoning) scalarMirror(scalar string) *reasoningDetailBlock {
 			continue
 		}
 		if text == scalar {
-			if block.wire != nil {
+			if block.signed {
 				return block
 			}
 			exact = block
 		}
-		if aggregate == nil || (aggregate.wire != nil && block.wire == nil) {
+		if aggregate == nil || (aggregate.signed && !block.signed) {
 			aggregate = block
 		}
 		pieces = append(pieces, text)
