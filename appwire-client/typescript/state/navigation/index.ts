@@ -100,6 +100,7 @@ export {
 export type { NavigationPinSectionSummary } from "./selectors";
 export {
   findSessionNode,
+  quotaResumeRemainingMs,
   quotaWaitRemainingMs,
   relativeAge,
   selectAttentionSummary,

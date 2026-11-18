@@ -460,6 +460,25 @@ jobs:
         with:
           kind: lint-repository
 
+      # lint-prompt-eval runs the harness's pytest suite. The runner's system
+      # Python has no pytest, and an uninstalled pytest fails the gate the same
+      # way a broken test does. The version comes from .tool-versions, beside
+      # golangci-lint and gitleaks, so a new pytest release cannot change this
+      # lane's result with no repo change.
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+
+      - name: Install pytest
+        run: |
+          set -euo pipefail
+          version="$(awk '$1=="pytest" {print $2}' .tool-versions)"
+          if [ -z "$version" ]; then
+            echo "ci: .tool-versions has no pytest pin" >&2
+            exit 1
+          fi
+          python3 -m pip install --disable-pip-version-check "pytest==$version"
+
       - name: Install gitleaks
         run: |
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
@@ -468,7 +487,7 @@ jobs:
       - name: Lint repository structure, source audits, generated output, formatting, and secrets
         env:
           EVENER_GITLEAKS_REQUIRED: "1"
-        run: make lint-generated lint-naming lint-gofmt lint-internal lint-package-imports lint-js-toolchain-pins lint-tracked-file-size lint-repo-audit secret-scan
+        run: make lint-generated lint-naming lint-gofmt lint-internal lint-prompt-eval lint-package-imports lint-js-toolchain-pins lint-tracked-file-size lint-repo-audit secret-scan
 
       - name: Prove each module's go.mod is complete for an out-of-workspace consumer
         run: make lint-go-module-consumer
@@ -805,6 +824,31 @@ jobs:
       - name: Prepare enforcing sandbox for root tests
         if: matrix.scope == 'root'
         uses: ./.github/actions/enforcing-sandbox
+
+      # The probe-adoption regression needs a real bwrap and unprivileged user
+      # namespaces, which only this lane provisions; the nonroot lane runs the
+      # agent module but has no bwrap, so the test skips there. This lane's
+      # `make test TEST_SCOPE=root` covers the root module alone, so the agent
+      # package is named directly.
+      - name: Sandbox probe leaves no adopted child
+        if: matrix.scope == 'root'
+        working-directory: agent
+        env:
+          EVENER_TEST_BWRAP_PROBE_REQUIRED: "1"
+        run: |
+          status=0
+          go test ./sandbox -run '^TestBwrapProbeLeavesNoAdoptedChild$' -count=1 -json \
+            > /tmp/probe-adoption.json || status=$?
+          cat /tmp/probe-adoption.json
+          test "$status" -eq 0
+          # -run exits 0 when its selector matches nothing, and the required env
+          # is read inside the test, so a renamed or removed test would leave
+          # this step green without a measurement. Demand its own pass event.
+          # stderr stays out of the file: a cold module cache writes download
+          # notices to it, and they are not JSON.
+          jq -e 'select(.Action == "pass" and .Test == "TestBwrapProbeLeavesNoAdoptedChild")' \
+            /tmp/probe-adoption.json > /dev/null
+
       - name: Retirement timing environment
         if: ${{ matrix.scope == 'root' }}
         run: |

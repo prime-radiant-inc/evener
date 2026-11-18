@@ -34,7 +34,10 @@ import {
   cachedBandNode,
   effectiveSessionState,
   liveSessionNode,
+  type OverflowRailNode,
+  type RailNode,
   type RailSession,
+  sectionOverflowNode,
 } from "./railNodes";
 
 export interface RailLiveRow<Row extends NavigationSessionSummary = RailSession> {
@@ -152,35 +155,76 @@ function assumedHost(sessions: readonly NavigationSessionSummary[]): string | un
 
 /** One tree branch per band that has rows. A row names its host only where
  * the reader could not guess it: Live spans hosts and the row is away from
- * the assumed one, or its host is offline. */
+ * the assumed one, or its host is offline.
+ *
+ * The Needs-you band is the one place Live claims to show a whole collection:
+ * its rows join from the hub's tier, not from Live's pages (see the file
+ * comment), so the sessions the tier's loaded pages leave behind ride inside
+ * that band as its own "+N older" row. The fold that hides the rows it speaks
+ * for puts it away with them. When no row of that tier's loaded pages draws
+ * the band at all - every one of them is presenting as working - the row has
+ * no fold to sit in, so it renders after the bands rather than disappearing
+ * with a band that never existed. */
 export function liveBandNodes(
   bands: RailLiveBands,
   sources: readonly Source[],
   isExpanded: (id: string, defaultExpanded: boolean) => boolean,
-): BandRailNode[] {
+  needsYouOverflow?: { remaining: number; offset: number; limit: number },
+): RailNode[] {
+  // A settled last page leaves nothing behind it: no row to offer.
+  const overflow = needsYouOverflow && needsYouOverflow.remaining > 0 ? needsYouOverflow : undefined;
   const all = LIVE_BAND_ORDER.flatMap((band) => bands[band]);
   const assumed = assumedHost(all.map((row) => row.session));
   const label = hostLabeler(sources);
   const offline = new Set(sources.filter((source) => !source.online).map((source) => source.id));
-  return LIVE_BAND_ORDER.flatMap((band) => {
+  const nodes: RailNode[] = LIVE_BAND_ORDER.flatMap((band) => {
     const rows = bands[band];
     if (rows.length === 0) return [];
     const id = liveBandId(band);
-    return [
-      cachedBandNode(
-        id,
-        band,
-        isExpanded(id, true),
-        rows.map(({ session, state }) => {
-          const hostOffline = offline.has(session.host_id);
-          const namesHost = hostOffline || (assumed !== undefined && session.host_id !== assumed);
-          return liveSessionNode(
-            session,
-            state,
-            namesHost ? { label: label(session.host_id), online: !hostOffline } : undefined,
-          );
-        }),
-      ),
-    ];
+    const children: BandRailNode["children"] = rows.map(({ session, state }) => {
+      const hostOffline = offline.has(session.host_id);
+      const namesHost = hostOffline || (assumed !== undefined && session.host_id !== assumed);
+      return liveSessionNode(
+        session,
+        state,
+        namesHost ? { label: label(session.host_id), online: !hostOffline } : undefined,
+      );
+    });
+    if (band === "needsYou" && overflow)
+      children.push(...bandOverflowNodes(id, overflow.remaining, overflow.offset, overflow.limit));
+    return [cachedBandNode(id, band, isExpanded(id, true), children)];
   });
+  // The tier outgrew its loaded pages while none of them drew the band. This
+  // row is the one that can end up beside Live's own page row with nothing
+  // above it saying which list it pages, so it names the band it stands for.
+  if (overflow && nodes.every((node) => node.kind !== "band" || node.band !== "needsYou"))
+    nodes.push(
+      ...bandOverflowNodes(liveBandId("needsYou"), overflow.remaining, overflow.offset, overflow.limit, "needsYou"),
+    );
+  return nodes;
+}
+
+// The one overflow row a band can hold, kept while the page state behind it
+// holds, so an unchanged band keeps its node - and the row's memoized render.
+// The slot is per band AND per scope: the same band renders this row twice,
+// inside its fold and (when nothing draws the fold) after the bands, and the
+// two rows must not trade a label. Not one slot per tuple: the numbers move as
+// pages load, and a map keyed by them would keep every intermediate state.
+const bandOverflowCache = new Map<string, OverflowRailNode[]>();
+const bandOverflowKey = new Map<string, string>();
+function bandOverflowNodes(
+  bandID: string,
+  remaining: number,
+  offset: number,
+  limit: number,
+  scope?: Band,
+): OverflowRailNode[] {
+  const slot = `${bandID}|${scope ?? ""}`;
+  const key = `${remaining}|${offset}|${limit}`;
+  const cached = bandOverflowCache.get(slot);
+  if (cached && bandOverflowKey.get(slot) === key) return cached;
+  const nodes = sectionOverflowNode(bandID, "needs_you", remaining, offset, limit, scope);
+  bandOverflowCache.set(slot, nodes);
+  bandOverflowKey.set(slot, key);
+  return nodes;
 }

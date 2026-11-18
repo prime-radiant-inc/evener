@@ -949,6 +949,20 @@ type EvenerDelegateInfo struct {
 	RunStartedAt           string `json:"runStartedAt,omitempty"`
 	RunEndedAt             string `json:"runEndedAt,omitempty"`
 	LatestActivityAt       string `json:"latestActivityAt,omitempty"`
+	// DrainHeldByJobs says this delegate's finalization drain is holding its run
+	// open on the jobs counted below; RunningJobCount and
+	// OldestRunningJobStartedAt phrase that wait. The same facts SessionDelegate
+	// carries, so a pushed frame and a read row cannot disagree about why a
+	// delegate is still running. Absent without the hold.
+	DrainHeldByJobs           bool   `json:"drainHeldByJobs,omitempty"`
+	RunningJobCount           int    `json:"runningJobCount,omitempty"`
+	OldestRunningJobStartedAt string `json:"oldestRunningJobStartedAt,omitempty"`
+	// HoldSequence orders DrainHeldByJobs against every other sample of the same
+	// delegate's hold. The source bumps it under the controller lock when the
+	// sampled hold changes, so a consumer applies the highest sequence and
+	// rejects a sample a slower publisher delivered late. Absent when no sample
+	// ever differed.
+	HoldSequence uint64 `json:"holdSequence,omitempty"`
 	// LatestIntent is the open generation's newest stated tool-call intent
 	// ("Reading the board's row tests."), one line of at most MaxIntentRunes:
 	// the row's display line, the same Excerpt-bounded value the read

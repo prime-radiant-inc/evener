@@ -1,15 +1,14 @@
 // @vitest-environment node
-import { compactDuration, STUCK_AFTER_MS } from "@evener/appwire-client";
+import { STUCK_AFTER_MS } from "@evener/appwire-client";
+import { waitingForQuotaText } from "@evener/appwire-client/state/navigation";
 import { expect, test } from "vitest";
 import {
   describeLiveness,
   formatExactGap,
   formatQuietBucket,
   formatRetryCause,
-  formatRetryWait,
   formatSubagentCount,
   QUIET_THRESHOLD_MS,
-  quotaWaitFrom,
   type RetryWait,
 } from "./liveness";
 
@@ -223,35 +222,6 @@ test("describeLiveness: a non-rate-limit retryable error names itself genericall
   });
 });
 
-// A quota wait is the one other cause a reader can act on (wait out the
-// reset, or switch models), and it is not a provider malfunction: naming it
-// "provider error" misnames a scheduled wait as a failure. The wait is
-// wall-clock long (hours), so the chip renders the wait itself, not the
-// per-second countdown an ordinary retry's delayMs uses. The quota retry the
-// daemon sends always reads attempt 1 and never exhausts a budget, so the
-// attempt count carries no information and renders nowhere.
-// The copy is not the oracle (testing.md): what these pin is the cause
-// NAMES' distinctness and discrimination, the job the words exist to do - a
-// quota wait, a rate limit and an unnamed provider failure must never
-// render as one another.
-test("formatRetryCause: quota, rate limit and generic causes never read as one another", () => {
-  const quota = formatRetryCause("quota_exceeded");
-  const rateLimit = formatRetryCause("rate_limit");
-  const generic = formatRetryCause("server");
-  expect(new Set([quota, rateLimit, generic]).size).toBe(3);
-  expect(formatRetryCause("quota_exceeded")).toBe(quota);
-  expect(formatRetryCause("timeout")).toBe(generic);
-});
-
-test("formatRetryWait: a quota wait renders the wait itself, never an attempt count", () => {
-  const retry = retryWait({ attempt: 1, attemptCap: 1, delayMs: 2 * 60 * 60_000, errorClass: "quota_exceeded" });
-  const line = formatRetryWait(retry);
-  // The wait is the line's whole content beside the cause and the elapsed
-  // time, and its duration renders as the compact wall-clock form (an
-  // attempt-counted line would render the seconds countdown instead).
-  expect(line).toContain(compactDuration(2 * 60 * 60_000));
-});
-
 test("describeLiveness: past the stuck threshold a retry reports both facts, never suppressing the stall", () => {
   const retry = retryWait({ attempt: 9, attemptCap: 11, delayMs: 60_000, errorClass: "rate_limit" });
   expect(describeLiveness(630_000, true, 0, retry)).toEqual({
@@ -267,213 +237,6 @@ test("describeLiveness: past the stuck threshold a retry reports both facts, nev
 test("describeLiveness: a first retry (attempt 1) under the quiet threshold stays invisible", () => {
   const retry = retryWait({ attempt: 1, attemptCap: 11, delayMs: 1_000, errorClass: "rate_limit" });
   expect(describeLiveness(5_000, true, 0, retry)).toEqual({ level: "none", text: null });
-});
-
-// The quota wait's announcement always reads attempt 1 (the wait announces
-// itself as a retry whose delay runs to the reset), so the attempt-2 gate
-// above would hide a multi-hour wait behind the ordinary 20s quiet clock —
-// and past the stuck threshold the same wait would read "no updates for 3h",
-// a stall report for a scheduled, provider-named pause. A quota wait is
-// KNOWN information the daemon reported, like a retry past its first attempt:
-// it shows as soon as the client knows it, and it never escalates to
-// stalled while its resume time is ahead.
-test("describeLiveness: a quota wait shows immediately, without the quiet gate, and never reads as stalled", () => {
-  const retry = retryWait({ attempt: 1, attemptCap: 1, delayMs: 3 * 60 * 60_000, errorClass: "quota_exceeded" });
-  expect(describeLiveness(2_000, true, 0, retry).level).toBe("retrying");
-  const hoursIn = describeLiveness(3 * 60 * 60_000, true, 0, retry);
-  expect(hoursIn.level).toBe("retrying");
-});
-
-// The same wait, arriving as the thread's failure summary rather than a
-// live notification (a reload, a reconnect, a cold visit to a session that
-// was already waiting): the resume instant is all the line needs, and the
-// same no-gate, never-stalled rules apply. This is the shape a pane that
-// re-hydrated from a snapshot has to render.
-test("describeLiveness: a quota wait known only as a resume instant shows at once and never reads as stalled", () => {
-  const resumesIn = 90 * 60_000;
-  expect(describeLiveness(2_000, true, 0, undefined, resumesIn).level).toBe("retrying");
-  const hoursIn = describeLiveness(3 * 60 * 60_000, true, 0, undefined, resumesIn);
-  expect(hoursIn.level).toBe("retrying");
-});
-
-// A live quota wait carries both sources at once: the daemon's announcement
-// (with the call's elapsed time) and the resume instant the reducer stamped
-// from it. The instant drives the countdown — it is measured from the
-// render's now, while the announcement's delay was measured when it
-// (the snapshot path) knows no elapsed time, and must not invent one.
-test("describeLiveness: a live quota wait keeps its elapsed time beside the instant's countdown, and the instant alone invents none", () => {
-  const resumesIn = 90 * 60_000;
-  const live = retryWait({
-    attempt: 1,
-    attemptCap: 1,
-    delayMs: resumesIn + 10_000,
-    errorClass: "quota_exceeded",
-    groupElapsedMs: 14 * 60_000,
-  });
-  const both = describeLiveness(2_000, true, 0, live, resumesIn);
-  expect(both.level).toBe("retrying");
-  expect(both.text).toContain(formatExactGap(14 * 60_000));
-  const snapshot = describeLiveness(2_000, true, 0, undefined, resumesIn);
-  expect(snapshot.level).toBe("retrying");
-  expect(snapshot.text).not.toContain(formatExactGap(0));
-});
-
-// A stamped announcement can arrive late: the deadline the reducer computed
-// from the daemon-issued start instant has already passed when the
-// announcement lands, while the announcement's own delay is still counting
-// from its receipt. The known deadline wins - the pane reads the overdue
-// line with the announcement's elapsed time, never jumping back to the full
-// original delay a receipt-time clock would show.
-test("describeLiveness: a passed deadline reads as overdue even while a live quota wait's receipt-time clock still counts", () => {
-  const live = retryWait({
-    attempt: 1,
-    attemptCap: 1,
-    delayMs: 90 * 60_000,
-    errorClass: "quota_exceeded",
-    groupElapsedMs: 14 * 60_000,
-  });
-  const overdue = describeLiveness(2_000, true, 0, live, undefined, true);
-  expect(overdue.level).toBe("retrying");
-  // Overdue, not the receipt-time countdown: the full delay renders nowhere,
-  // and the announcement's elapsed time survives into the line.
-  expect(overdue.text).not.toContain(compactDuration(90 * 60_000));
-  expect(overdue.text).toContain(formatExactGap(14 * 60_000));
-});
-
-// A pane can hold an ordinary retry across the reconnect that installs a
-// quota deadline: it disconnected during a rate-limit backoff and came back
-// after the same turn entered a quota wait, so the read installs the
-// deadline but the merge retains the ordinary retry (its class is not the
-// quota class the clearing rules key on). The snapshot's deadline is the
-// authoritative quota fact: once it passes, the overdue wait line renders
-// exactly as it would without the ordinary retry (identity of the two
-// renderings, not their wording, is the check), and the retry's own timing
-// stays out of the quota line. Only a quota wake (the wait's own zero-delay
-// announcement, in progress) outranks the deadline.
-test("describeLiveness: an authoritative quota deadline renders overdue over a retained ordinary retry whose backoff reads as motion", () => {
-  const ordinary = retryWait({
-    attempt: 3,
-    attemptCap: 11,
-    delayMs: 60_000,
-    errorClass: "rate_limit",
-    groupElapsedMs: 5 * 60_000,
-    inProgress: true,
-  });
-  // The deadline ahead renders the countdown, as before.
-  const counting = describeLiveness(120_000, true, 0, ordinary, 30_000);
-  expect(counting.level).toBe("retrying");
-  expect(counting.text).toContain(compactDuration(30_000));
-  // Once the deadline passes, the overdue wait line renders identically with
-  // and without the retained ordinary retry, and the ordinary retry's
-  // elapsed time (another call's history) stays out of the quota line.
-  const overdue = describeLiveness(120_000, true, 0, ordinary, undefined, true);
-  const overdueAlone = describeLiveness(120_000, true, 0, undefined, undefined, true);
-  expect(overdue.text).toBe(overdueAlone.text);
-  expect(overdue.level).toBe(overdueAlone.level);
-  expect(overdue.text).not.toContain(formatExactGap(5 * 60_000));
-  // A quota wake still outranks the deadline: the wait's own zero-delay
-  // announcement in progress is motion, whatever a late read re-installed.
-  const wake = retryWait({
-    attempt: 1,
-    attemptCap: 1,
-    delayMs: 0,
-    errorClass: "quota_exceeded",
-    groupElapsedMs: 5 * 60_000,
-    inProgress: true,
-  });
-  const motion = describeLiveness(120_000, true, 0, wake, undefined, true);
-  expect(motion.text).not.toContain(compactDuration(0));
-  expect(motion.text).toContain(formatExactGap(5 * 60_000));
-});
-
-// A quota wait renders one of three states, and they never read as one
-// another: the pending countdown while the reset is ahead, the overdue line
-// once the reset has passed with no wake yet (the daemon may queue the retry
-// behind other work), and the resumed request once the zero-delay wake went
-// out. The countdown and the elapsed time render as their computed values;
-// the three states are pinned by pairwise distinctness, not by wording the
-// testing guide forbids asserting (copy is not a test oracle).
-test("formatRetryWait: a quota wait's three states never read as one another", () => {
-  const delay = 2 * 60 * 60_000;
-  const waited = 60 * 60_000;
-  const pending = formatRetryWait(
-    retryWait({ attempt: 1, attemptCap: 1, delayMs: delay, errorClass: "quota_exceeded", groupElapsedMs: waited }),
-  );
-  const overdue = formatRetryWait(
-    retryWait({
-      attempt: 1,
-      attemptCap: 1,
-      delayMs: delay,
-      errorClass: "quota_exceeded",
-      groupElapsedMs: waited,
-      resetPassed: true,
-    }),
-  );
-  const running = formatRetryWait(
-    retryWait({
-      attempt: 1,
-      attemptCap: 1,
-      delayMs: 0,
-      errorClass: "quota_exceeded",
-      groupElapsedMs: waited,
-      inProgress: true,
-    }),
-  );
-  // Three distinct states for three distinct facts.
-  expect(new Set([pending, overdue, running]).size).toBe(3);
-  // The pending state is the countdown: the computed wait, the computed
-  // elapsed time.
-  expect(pending).toContain(compactDuration(delay));
-  expect(pending).toContain(formatExactGap(waited));
-  // The overdue state stops the countdown: it renders the elapsed time but
-  // not the (already passed) wait, which the pending state alone renders.
-  expect(overdue).toContain(formatExactGap(waited));
-  expect(overdue).not.toContain(compactDuration(delay));
-  // The running state is motion: it renders the elapsed time and never the
-  // countdown.
-  expect(running).toContain(formatExactGap(waited));
-  expect(running).not.toContain(compactDuration(delay));
-});
-
-// The snapshot's instant alone (a reload) renders the pending countdown the
-// same way, never inventing an elapsed time it cannot know.
-test("formatRetryWait: the instant's snapshot form keeps the pending countdown", () => {
-  const resumesIn = 90 * 60_000;
-  const snapshot = formatRetryWait(quotaWaitFrom(resumesIn));
-  expect(snapshot).toContain(compactDuration(resumesIn));
-  expect(snapshot).toBe(formatRetryWait({ ...quotaWaitFrom(resumesIn), groupElapsedMs: 0 }));
-});
-
-// The wake event carries the model of the request that FAILED, not the one
-// the retry runs on (the daemon applies a queued model switch before
-// emitting the wake), so the progress line renders no model tag at all: a
-// tag here would label the resumed request with the old model and make the
-// switch look ineffective. Ordinary fallback retries keep their tag.
-test("formatRetryWait: the quota wake's progress line names no model, while an ordinary retry keeps its tag", () => {
-  const running = formatRetryWait(
-    retryWait({
-      attempt: 1,
-      attemptCap: 1,
-      delayMs: 0,
-      errorClass: "quota_exceeded",
-      model: "provider/old-model",
-      groupElapsedMs: 60 * 60_000,
-      inProgress: true,
-    }),
-  );
-  expect(running).not.toContain("old-model");
-  const ordinary = formatRetryWait(
-    retryWait({
-      attempt: 3,
-      attemptCap: 11,
-      delayMs: 30_000,
-      errorClass: "server",
-      model: "provider/new-model",
-      groupElapsedMs: 60_000,
-      inProgress: true,
-    }),
-  );
-  expect(ordinary).toContain("new-model");
 });
 
 test("describeLiveness: a retry is never stuck while a subagent runs", () => {
@@ -619,4 +382,70 @@ test("describeLiveness: attemptCap 0 renders the attempt number without a denomi
   expect(describeLiveness(30_000, true, 0, retry).text).toBe(
     "provider error — attempt 3 — retrying in 5s — 5s on this call",
   );
+});
+
+// --- a usage-limit wait (issue #6657) ---------------------------------------
+//
+// A call waiting out a usage limit that named its reset is a wait the daemon
+// stated outright, and the pane holds its instant from the thread read. It is
+// NOT the retry line: that one counts a delay in seconds ("retrying in
+// 21600s"), which for a multi-hour reset reads as a wedged session. The quota
+// level says the shared "resumes in" words instead, in the units a person
+// would say them.
+
+test("describeLiveness: a known usage-limit wait explains the silence with the shared wait words", () => {
+  const { level, text } = describeLiveness(30_000, true, 0, undefined, { remainingMs: 21_600_000 });
+  expect(level).toBe("quota");
+  expect(text).toBe(waitingForQuotaText(21_600_000));
+});
+
+// The quiet gate exists for silence nobody explained. A wait that named its
+// reset is explained, so it must not wait 20 seconds to be visible - and it
+// must be visible in the first place, where a first-attempt retry is not.
+test("describeLiveness: a known usage-limit wait shows below the quiet threshold", () => {
+  expect(describeLiveness(0, true, 0, undefined, { remainingMs: 60_000 }).level).toBe("quota");
+  expect(describeLiveness(19_999, true, 0, undefined, { remainingMs: 60_000 }).level).toBe("quota");
+});
+
+// A wait of hours is not a concern to escalate: past the stuck threshold the
+// quota words stand alone, with no "no updates for 3h" bolted on - that is the
+// reading this issue is about.
+test("describeLiveness: a known usage-limit wait never appends the silence that would read as a stall", () => {
+  const { level, text } = describeLiveness(STUCK_AFTER_MS * 2, true, 0, undefined, { remainingMs: 21_600_000 });
+  expect(level).toBe("quota");
+  expect(text).not.toContain(formatExactGap(STUCK_AFTER_MS * 2));
+});
+
+// The wait outranks a subagent count for the same reason a retry does: it is
+// the more specific explanation of why this session's own call is not moving.
+test("describeLiveness: a known usage-limit wait pre-empts the subagent wait", () => {
+  expect(describeLiveness(30_000, true, 3, undefined, { remainingMs: 60_000 }).level).toBe("quota");
+});
+
+// An inactive thread shows nothing whatever it holds, the same gate every
+// other level honours.
+test("describeLiveness: a known usage-limit wait on an inactive thread still shows nothing", () => {
+  expect(describeLiveness(30_000, false, 0, undefined, { remainingMs: 60_000 })).toEqual({
+    level: "none",
+    text: null,
+  });
+});
+
+// The caller only passes a quota wait while its instant is still ahead
+// (quotaResumeRemainingMs returns null past it), so an absent one is the
+// ordinary decision, unchanged.
+test("describeLiveness: no quota wait leaves the ordinary quiet decision untouched", () => {
+  expect(describeLiveness(30_000, true, 0).level).toBe("quiet");
+});
+
+// A quota_exceeded retry reaching the retry line (a daemon whose generic retry
+// loop announces one) must not read as a provider fault: the call is waiting
+// on an allowance, not on a broken provider. Asserted as the distinction the
+// cause draws, never as the words it draws it with - the wording is copy, and
+// a test that pinned it would fail on a rephrase that kept the behaviour.
+test("formatRetryCause: a quota_exceeded class reads apart from a provider fault", () => {
+  const quota = formatRetryCause("quota_exceeded");
+  expect(quota).not.toBe(formatRetryCause(undefined));
+  expect(quota).not.toBe(formatRetryCause("server_error"));
+  expect(quota).not.toBe(formatRetryCause("rate_limit"));
 });

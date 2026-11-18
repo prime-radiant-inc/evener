@@ -495,8 +495,12 @@ func appwireDelegateInfo(data events.DelegateUpdatedData) appwire.EvenerDelegate
 		Model: activitybound.Truncate(data.Model, activitybound.MaxLabelRunes), ReasoningEffort: data.ReasoningEffort, OriginTurnID: data.OriginTurnID,
 		OriginToolCallID: data.OriginToolCallID, OriginItemID: data.OriginItemID, RunStartedAt: data.RunStartedAt,
 		RunEndedAt: data.RunEndedAt, LatestActivityAt: data.LatestActivityAt, RunningForMS: appwire.ClonePointer(data.RunningForMS),
-		LatestIntent: appwire.Excerpt(data.LatestIntent, appwire.MaxIntentRunes),
-		QuietForMS:   appwire.ClonePointer(data.QuietForMS), DurationMS: appwire.ClonePointer(data.DurationMS), PacketKind: data.PacketKind,
+		LatestIntent:              appwire.Excerpt(data.LatestIntent, appwire.MaxIntentRunes),
+		DrainHeldByJobs:           data.DrainHeldByJobs,
+		HoldSequence:              data.HoldSequence,
+		RunningJobCount:           data.RunningJobCount,
+		OldestRunningJobStartedAt: data.OldestRunningJobStartedAt,
+		QuietForMS:                appwire.ClonePointer(data.QuietForMS), DurationMS: appwire.ClonePointer(data.DurationMS), PacketKind: data.PacketKind,
 		Message: append(json.RawMessage(nil), data.Message...), StructuredResult: append(json.RawMessage(nil), data.StructuredResult...),
 		StructuredValid: appwire.ClonePointer(data.StructuredValid), StructuredReason: data.StructuredReason,
 		Warnings: append([]string(nil), data.Warnings...), Diagnostics: append([]string(nil), data.Diagnostics...),
@@ -535,19 +539,78 @@ func appwireDelegateInfo(data events.DelegateUpdatedData) appwire.EvenerDelegate
 }
 
 func mergeAppwireDelegateInfo(current, incoming appwire.EvenerDelegateInfo) (appwire.EvenerDelegateInfo, bool) {
-	if current.DelegateID == "" || incoming.ProjectionRevision > current.ProjectionRevision {
-		merged := appwire.CloneDelegateInfo(incoming)
-		if delegateActivityAfter(current.LatestActivityAt, merged.LatestActivityAt) {
-			merged.LatestActivityAt = current.LatestActivityAt
-		}
-		return merged, true
+	// The two facets are ordered separately. Read delegateFacetOrder for the
+	// rule; this is the place both halves of it run.
+	durableWins := current.DelegateID == "" || incoming.ProjectionRevision > current.ProjectionRevision
+	merged := appwire.CloneDelegateInfo(current)
+	if durableWins {
+		merged = appwire.CloneDelegateInfo(incoming)
 	}
-	if delegateActivityAfter(incoming.LatestActivityAt, current.LatestActivityAt) {
-		merged := appwire.CloneDelegateInfo(current)
+	activityMoved := false
+	if delegateActivityAfter(incoming.LatestActivityAt, merged.LatestActivityAt) {
 		merged.LatestActivityAt = incoming.LatestActivityAt
+		activityMoved = true
+	}
+	if delegateActivityAfter(current.LatestActivityAt, merged.LatestActivityAt) {
+		merged.LatestActivityAt = current.LatestActivityAt
+	}
+	// The hold comes from the two original samples, never from the durable
+	// winner: a newer revision does not mean a newer hold sample.
+	holdMoved := applyDelegateHold(&merged, current, incoming)
+	if current.DelegateID == "" || durableWins || activityMoved {
 		return merged, true
 	}
-	return current, false
+	if !holdMoved {
+		return current, false
+	}
+	return merged, true
+}
+
+// delegateFacetOrder is the rule both hosts obey, written once:
+//
+//   - Durable fields (revision, status, lifecycle, report, timestamps) are
+//     ordered by ProjectionRevision. A higher revision is a newer row.
+//   - The drain hold (DrainHeldByJobs, RunningJobCount,
+//     OldestRunningJobStartedAt, HoldSequence) is ordered by HoldSequence
+//     alone, from the two samples being merged, within the current source
+//     epoch.
+//
+// The two orders are independent because they answer different questions. A
+// projection revision says "this row snapshot is current"; it says nothing
+// about which hold sample was taken later. The hold's edges move no durable
+// field at all, so they publish at the revision the row already carries, and a
+// publisher that sampled the hold and paused can deliver an older sample after
+// a newer one. Ordering the hold by revision therefore both drops edges (same
+// revision) and rolls the wait back (higher revision, older sample).
+//
+// HoldSequence is assigned where the source samples the hold, under the lock
+// that guards the live state, so it is monotonic within the control of one
+// source. That is the "source epoch": a counter that restarts (a new daemon, a
+// two of them. A zero sequence means "no sample ever differed" — it can fill an
+// empty row but never displaces a numbered sample.
+//
+// The order is applied in one place per host: mergeAppwireDelegateInfo here,
+// and the activity store's read, frame, buffered-frame and transcript merges on
+// the client. Both hosts must compare the two original samples; comparing a
+// winner against itself can never disagree.
+func applyDelegateHold(dst *appwire.EvenerDelegateInfo, current, incoming appwire.EvenerDelegateInfo) bool {
+	newer := incoming
+	if current.HoldSequence > incoming.HoldSequence {
+		newer = current
+	}
+	// A strictly newer sequence is news even when the displayed fields match: a
+	// client that saw an intervening hold (a shorter count, from a read that
+	// beat this sample through) needs this sample's sequence to clear it. An
+	// exact duplicate — same sequence — stays suppressed.
+	changed := dst.HoldSequence != newer.HoldSequence ||
+		dst.DrainHeldByJobs != newer.DrainHeldByJobs ||
+		dst.RunningJobCount != newer.RunningJobCount ||
+		dst.OldestRunningJobStartedAt != newer.OldestRunningJobStartedAt
+	dst.DrainHeldByJobs = newer.DrainHeldByJobs
+	dst.RunningJobCount = newer.RunningJobCount
+	dst.OldestRunningJobStartedAt = newer.OldestRunningJobStartedAt
+	dst.HoldSequence = newer.HoldSequence
+	return changed
 }
 
 func delegateActivityAfter(candidate, current string) bool {

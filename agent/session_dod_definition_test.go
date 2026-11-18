@@ -76,13 +76,7 @@ func TestSession_MaxToolRoundsPerInput_StopsLoop(t *testing.T) {
 	t.Parallel()
 	toolMsg := func(id string) llm.Response { return roundLimitToolMsg(id, "partial "+id) }
 
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolMsg("1") },
-			func(req llm.Request) llm.Response { return toolMsg("2") },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return toolMsg("1") }, func(req llm.Request) llm.Response { return toolMsg("2") })
 	sess := newRoundLimitSession(t, 2, f)
 	ctx := tripwireCtx(t)
 	out, err := sess.ProcessInput(ctx, "loop", nil)
@@ -101,13 +95,7 @@ func TestSession_MaxToolRoundsPerInput_EmitsTurnLimitEvent(t *testing.T) {
 	t.Parallel()
 	toolMsg := roundLimitToolCallMsg
 
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolMsg("1") },
-			func(req llm.Request) llm.Response { return toolMsg("2") },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return toolMsg("1") }, func(req llm.Request) llm.Response { return toolMsg("2") })
 	sess := newRoundLimitSession(t, 2, f)
 	ctx := tripwireCtx(t)
 	_, err := sess.ProcessInput(ctx, "loop", nil)
@@ -133,15 +121,7 @@ func TestSession_MaxToolRoundsPerInput_NegativeMeansUnlimited(t *testing.T) {
 	toolMsg := roundLimitToolCallMsg
 
 	// 3 rounds of tool calls, then fall through to fakeAdapter's default "done" response.
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolMsg("1") },
-			func(req llm.Request) llm.Response { return toolMsg("2") },
-			func(req llm.Request) llm.Response { return toolMsg("3") },
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return toolMsg("1") }, func(req llm.Request) llm.Response { return toolMsg("2") }, func(req llm.Request) llm.Response { return toolMsg("3") }, func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") })
 	sess := newRoundLimitSession(t, -1, f)
 	ctx := tripwireCtx(t)
 	result, err := sess.ProcessInput(ctx, "do stuff", nil)
@@ -209,12 +189,7 @@ func TestSession_EventSystem_NaturalCompletion_EmitsUserAndAssistantTextEventsIn
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("hello") },
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("hello") }))
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
@@ -255,13 +230,7 @@ func TestSession_EventSystem_UserInputCarriesTurnIndex(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok-1") },
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok-2") },
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok-1") }, func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok-2") }))
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
@@ -322,15 +291,9 @@ func TestSession_EventSystem_ToolCall_EmitsStartDeltaEnd(t *testing.T) {
 		Arguments: json.RawMessage(`{"file_path":"a.txt","content":"hello"}`),
 		Type:      "function",
 	}
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}
-			},
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}
+	}, func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") }))
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
@@ -378,14 +341,9 @@ func TestSession_MaxTurns_StopsAcrossInputsAndEmitsEvent(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return wrapCommunicateResponse(llm.Response{Message: llm.Assistant("ok"), Finish: llm.FinishReason{Reason: "stop"}})
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return wrapCommunicateResponse(llm.Response{Message: llm.Assistant("ok"), Finish: llm.FinishReason{Reason: "stop"}})
+	})
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -423,13 +381,7 @@ func TestSession_MultipleSequentialInputs_Work(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("first") },
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("second") },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("first") }, func(req llm.Request) llm.Response { return agenttest.FinalResponse("second") })
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
@@ -456,33 +408,27 @@ func TestSession_Steer_IsInjectedAfterCurrentToolRound(t *testing.T) {
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})
 
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return llm.Response{
-					Message: llm.Message{
-						Role: llm.RoleAssistant,
-						Content: []llm.ContentPart{
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "1", Name: "slow", Arguments: json.RawMessage(`{}`)}},
-						},
-					},
-				}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return llm.Response{
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "1", Name: "slow", Arguments: json.RawMessage(`{}`)}},
+				},
 			},
-			func(req llm.Request) llm.Response {
-				found := false
-				for _, m := range req.Messages {
-					if m.Role == llm.RoleUser && strings.Contains(m.Text(), "steer: do X") {
-						found = true
-					}
-				}
-				if !found {
-					return agenttest.FinalResponse("missing steering")
-				}
-				return agenttest.FinalResponse("ok")
-			},
-		},
-	}
+		}
+	}, func(req llm.Request) llm.Response {
+		found := false
+		for _, m := range req.Messages {
+			if m.Role == llm.RoleUser && strings.Contains(m.Text(), "steer: do X") {
+				found = true
+			}
+		}
+		if !found {
+			return agenttest.FinalResponse("missing steering")
+		}
+		return agenttest.FinalResponse("ok")
+	})
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
@@ -581,24 +527,18 @@ func TestSession_ReasoningEffort_PassedThroughAndCanChange(t *testing.T) {
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})
 
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return llm.Response{
-					Message: llm.Message{
-						Role: llm.RoleAssistant,
-						Content: []llm.ContentPart{
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "1", Name: "slow", Arguments: json.RawMessage(`{}`)}},
-						},
-					},
-				}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return llm.Response{
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "1", Name: "slow", Arguments: json.RawMessage(`{}`)}},
+				},
 			},
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("ok")
-			},
-		},
-	}
+		}
+	}, func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("ok")
+	})
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -661,9 +601,7 @@ func TestSession_PopulatesModelRequestMetadata(t *testing.T) {
 	dir := t.TempDir()
 	stateDir := t.TempDir()
 	c := llm.NewClient()
-	f := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
-	}}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") })
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -709,32 +647,29 @@ func TestSession_RetainsEncryptedReasoningAcrossToolRound(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	f := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response {
-			return llm.Response{
-				Message: llm.Message{
-					Role: llm.RoleAssistant,
-					Content: []llm.ContentPart{
-						{
-							Kind: llm.ContentThinking,
-							Thinking: &llm.ThinkingData{
-								EncryptedContent: "enc_reasoning_123",
-							},
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return llm.Response{
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{
+						Kind: llm.ContentThinking,
+						Thinking: &llm.ThinkingData{
+							EncryptedContent: "enc_reasoning_123",
 						},
-						{
-							Kind: llm.ContentToolCall,
-							ToolCall: &llm.ToolCallData{
-								ID:        "call_1",
-								Name:      "noop",
-								Arguments: json.RawMessage(`{}`),
-							},
+					},
+					{
+						Kind: llm.ContentToolCall,
+						ToolCall: &llm.ToolCallData{
+							ID:        "call_1",
+							Name:      "noop",
+							Arguments: json.RawMessage(`{}`),
 						},
 					},
 				},
-			}
-		},
-		func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
-	}}
+			},
+		}
+	}, func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") })
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
@@ -775,12 +710,7 @@ func TestSession_ContextWindowAwareness_DoesNotWarnUnderThreshold(t *testing.T) 
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	f := &fakeAdapter{
-		name: "tiny",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
-		},
-	}
+	f := newFakeAdapter("tiny", func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") })
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withProfile(withContextWindow(namedInstanceProfile("tiny", "openai", "m"), 1_000_000)), withDir(dir), withConfig(SessionConfig{}))
@@ -807,12 +737,7 @@ func TestSession_ContextWindowAwareness_DoesNotWarnForLargeImageBytes(t *testing
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	f := &fakeAdapter{
-		name: "tiny",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
-		},
-	}
+	f := newFakeAdapter("tiny", func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") })
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withProfile(withContextWindow(namedInstanceProfile("tiny", "openai", "m"), 262_144)), withDir(dir), withConfig(SessionConfig{}))
@@ -847,21 +772,16 @@ func TestSession_AbortSignal_KeepsSessionAliveAndEmitsInterruptedSessionEnd(t *t
 
 	started := make(chan struct{}, 1)
 
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return llm.Response{
-					Message: llm.Message{
-						Role: llm.RoleAssistant,
-						Content: []llm.ContentPart{
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "1", Name: "slow", Arguments: json.RawMessage(`{}`)}},
-						},
-					},
-				}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return llm.Response{
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "1", Name: "slow", Arguments: json.RawMessage(`{}`)}},
+				},
 			},
-		},
-	}
+		}
+	})
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
@@ -991,24 +911,18 @@ func TestSession_AbortThenFollowup(t *testing.T) {
 
 	// Turn 1: model issues one tool call to "slow" (blocks on ctx).
 	// Turn 2: model finishes with plain text.
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return llm.Response{
-					Message: llm.Message{
-						Role: llm.RoleAssistant,
-						Content: []llm.ContentPart{
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "1", Name: "slow", Arguments: json.RawMessage(`{}`)}},
-						},
-					},
-				}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return llm.Response{
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "1", Name: "slow", Arguments: json.RawMessage(`{}`)}},
+				},
 			},
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("hello after interrupt")
-			},
-		},
-	}
+		}
+	}, func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("hello after interrupt")
+	})
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
@@ -1080,24 +994,18 @@ func TestSession_AbortDrainsQueuedInputWithFreshContext(t *testing.T) {
 	c := llm.NewClient()
 	started := make(chan struct{}, 1)
 
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return llm.Response{
-					Message: llm.Message{
-						Role: llm.RoleAssistant,
-						Content: []llm.ContentPart{
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "1", Name: "slow", Arguments: json.RawMessage(`{}`)}},
-						},
-					},
-				}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return llm.Response{
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "1", Name: "slow", Arguments: json.RawMessage(`{}`)}},
+				},
 			},
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("queued turn completed")
-			},
-		},
-	}
+		}
+	}, func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("queued turn completed")
+	})
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
@@ -1565,41 +1473,18 @@ func TestSession_Subagent_AutoNudgeExplicitBuiltinSubagent(t *testing.T) {
 
 	var mu sync.Mutex
 	callCount := 0
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				mu.Lock()
-				callCount++
-				mu.Unlock()
-				return agenttest.EmptyResponse()
-			},
-			func(req llm.Request) llm.Response {
-				mu.Lock()
-				callCount++
-				mu.Unlock()
-				return agenttest.EmptyResponse()
-			},
-			func(req llm.Request) llm.Response {
-				mu.Lock()
-				callCount++
-				mu.Unlock()
-				return agenttest.EmptyResponse()
-			},
-			func(req llm.Request) llm.Response {
-				mu.Lock()
-				callCount++
-				mu.Unlock()
-				return agenttest.EmptyResponse()
-			},
-			func(req llm.Request) llm.Response {
-				mu.Lock()
-				callCount++
-				mu.Unlock()
-				return agenttest.FinalResponse("Explicit subagent recovered after nudge")
-			},
-		},
+	countingStep := func(req llm.Request) llm.Response {
+		mu.Lock()
+		callCount++
+		mu.Unlock()
+		return agenttest.EmptyResponse()
 	}
+	f := newFakeAdapter("openai", append(agenttest.RepeatSteps(countingStep, 4), func(req llm.Request) llm.Response {
+		mu.Lock()
+		callCount++
+		mu.Unlock()
+		return agenttest.FinalResponse("Explicit subagent recovered after nudge")
+	})...)
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.3-codex")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -1652,22 +1537,16 @@ func TestSubAgentStatus_Values(t *testing.T) {
 func TestSession_ShellTool_UsesDefaultTimeout(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return llm.Response{
-					Message: llm.Message{
-						Role: llm.RoleAssistant,
-						Content: []llm.ContentPart{
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "1", Name: "shell", Arguments: json.RawMessage(`{"command":"echo hi"}`)}},
-						},
-					},
-				}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return llm.Response{
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "1", Name: "shell", Arguments: json.RawMessage(`{"command":"echo hi"}`)}},
+				},
 			},
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
-		},
-	}
+		}
+	}, func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") })
 	c.Register(f)
 
 	env := &captureEnv{wd: "/tmp"}
@@ -1692,22 +1571,16 @@ func TestSession_ShellTool_UsesDefaultTimeout(t *testing.T) {
 func TestSession_ShellTool_CapsTimeoutToMaxCommandTimeoutMS(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return llm.Response{
-					Message: llm.Message{
-						Role: llm.RoleAssistant,
-						Content: []llm.ContentPart{
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "1", Name: "shell", Arguments: json.RawMessage(`{"command":"echo hi"}`)}},
-						},
-					},
-				}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return llm.Response{
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "1", Name: "shell", Arguments: json.RawMessage(`{"command":"echo hi"}`)}},
+				},
 			},
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
-		},
-	}
+		}
+	}, func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") })
 	c.Register(f)
 
 	env := &captureEnv{wd: "/tmp"}
@@ -1737,22 +1610,16 @@ func TestSession_ShellTool_TimeoutAppendsMessageToToolResult(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return llm.Response{
-					Message: llm.Message{
-						Role: llm.RoleAssistant,
-						Content: []llm.ContentPart{
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "1", Name: "shell", Arguments: idleShellJSON(``)}},
-						},
-					},
-				}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return llm.Response{
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "1", Name: "shell", Arguments: idleShellJSON(``)}},
+				},
 			},
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
-		},
-	}
+		}
+	}, func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") })
 	c.Register(f)
 
 	env := &timeoutEnv{wd: dir}
@@ -1812,22 +1679,17 @@ func TestSession_ShellTool_TimeoutAppendsMessageToToolResult(t *testing.T) {
 func TestProcessInput_ToolChoiceIsNeverForced(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				if req.ToolChoice == nil {
-					t.Fatalf("expected an explicit tool_choice, got nil")
-				}
-				if req.ToolChoice.Mode != "auto" {
-					t.Fatalf("tool_choice.Mode = %q, want %q (forcing is unsafe: see doc comment)", req.ToolChoice.Mode, "auto")
-				}
-				resp := agenttest.FinalResponse("done")
-				resp.Finish = llm.FinishReason{Reason: "stop"}
-				return resp
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		if req.ToolChoice == nil {
+			t.Fatalf("expected an explicit tool_choice, got nil")
+		}
+		if req.ToolChoice.Mode != "auto" {
+			t.Fatalf("tool_choice.Mode = %q, want %q (forcing is unsafe: see doc comment)", req.ToolChoice.Mode, "auto")
+		}
+		resp := agenttest.FinalResponse("done")
+		resp.Finish = llm.FinishReason{Reason: "stop"}
+		return resp
+	})
 	c.Register(f)
 
 	dir := t.TempDir()
@@ -1840,18 +1702,13 @@ func TestProcessInput_DrainsSteeringBeforeFirstLLMCall(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
 	var firstReqMessages []llm.Message
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				firstReqMessages = req.Messages
-				return wrapCommunicateResponse(llm.Response{
-					Message: llm.Assistant("done"),
-					Finish:  llm.FinishReason{Reason: "stop"},
-				})
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		firstReqMessages = req.Messages
+		return wrapCommunicateResponse(llm.Response{
+			Message: llm.Assistant("done"),
+			Finish:  llm.FinishReason{Reason: "stop"},
+		})
+	})
 	c.Register(f)
 
 	dir := t.TempDir()
@@ -1908,18 +1765,7 @@ func TestLoopDetection_PatternLength2(t *testing.T) {
 	}
 
 	// 6 alternating tool calls (A-B-A-B-A-B) then auto-"done" on step exhaustion.
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolA("c1") },
-			func(req llm.Request) llm.Response { return toolB("c2") },
-			func(req llm.Request) llm.Response { return toolA("c3") },
-			func(req llm.Request) llm.Response { return toolB("c4") },
-			func(req llm.Request) llm.Response { return toolA("c5") },
-			func(req llm.Request) llm.Response { return toolB("c6") },
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return toolA("c1") }, func(req llm.Request) llm.Response { return toolB("c2") }, func(req llm.Request) llm.Response { return toolA("c3") }, func(req llm.Request) llm.Response { return toolB("c4") }, func(req llm.Request) llm.Response { return toolA("c5") }, func(req llm.Request) llm.Response { return toolB("c6") }, func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") })
 	c.Register(f)
 
 	enableLoop := true
@@ -1961,17 +1807,12 @@ func TestLoopDetection_PatternLength2(t *testing.T) {
 func TestProviderOptions_PassedToLLMRequest(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
-	f := &fakeAdapter{
-		name: "google",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return wrapCommunicateResponse(llm.Response{
-					Message: llm.Assistant("done"),
-					Finish:  llm.FinishReason{Reason: "stop"},
-				})
-			},
-		},
-	}
+	f := newFakeAdapter("google", func(req llm.Request) llm.Response {
+		return wrapCommunicateResponse(llm.Response{
+			Message: llm.Assistant("done"),
+			Finish:  llm.FinishReason{Reason: "stop"},
+		})
+	})
 	c.Register(f)
 
 	// The Gemini profile carries the safety settings the agent adds for the
@@ -2009,49 +1850,41 @@ func TestMaxTurns_CountsConversationTurns(t *testing.T) {
 	c := llm.NewClient()
 	callNum := 0
 	var mu sync.Mutex
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				mu.Lock()
-				callNum++
-				mu.Unlock()
-				// First input: return a tool call (round 1 of input 1)
-				call := llm.ToolCallData{
-					ID:        "c1",
-					Name:      "read_file",
-					Arguments: json.RawMessage(`{"file_path":"a.txt"}`),
-					Type:      "function",
-				}
-				return llm.Response{
-					Message: llm.Message{
-						Role:    llm.RoleAssistant,
-						Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
-					},
-				}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		mu.Lock()
+		callNum++
+		mu.Unlock()
+		// First input: return a tool call (round 1 of input 1)
+		call := llm.ToolCallData{
+			ID:        "c1",
+			Name:      "read_file",
+			Arguments: json.RawMessage(`{"file_path":"a.txt"}`),
+			Type:      "function",
+		}
+		return llm.Response{
+			Message: llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
 			},
-			func(req llm.Request) llm.Response {
-				mu.Lock()
-				callNum++
-				mu.Unlock()
-				// First input: return text (round 2 of input 1)
-				return wrapCommunicateResponse(llm.Response{Message: llm.Assistant("done1"), Finish: llm.FinishReason{Reason: "stop"}})
-			},
-			func(req llm.Request) llm.Response {
-				mu.Lock()
-				callNum++
-				mu.Unlock()
-				// Second input: text only
-				return wrapCommunicateResponse(llm.Response{Message: llm.Assistant("done2"), Finish: llm.FinishReason{Reason: "stop"}})
-			},
-			func(req llm.Request) llm.Response {
-				mu.Lock()
-				callNum++
-				mu.Unlock()
-				return wrapCommunicateResponse(llm.Response{Message: llm.Assistant("done3"), Finish: llm.FinishReason{Reason: "stop"}})
-			},
-		},
-	}
+		}
+	}, func(req llm.Request) llm.Response {
+		mu.Lock()
+		callNum++
+		mu.Unlock()
+		// First input: return text (round 2 of input 1)
+		return wrapCommunicateResponse(llm.Response{Message: llm.Assistant("done1"), Finish: llm.FinishReason{Reason: "stop"}})
+	}, func(req llm.Request) llm.Response {
+		mu.Lock()
+		callNum++
+		mu.Unlock()
+		// Second input: text only
+		return wrapCommunicateResponse(llm.Response{Message: llm.Assistant("done2"), Finish: llm.FinishReason{Reason: "stop"}})
+	}, func(req llm.Request) llm.Response {
+		mu.Lock()
+		callNum++
+		mu.Unlock()
+		return wrapCommunicateResponse(llm.Response{Message: llm.Assistant("done3"), Finish: llm.FinishReason{Reason: "stop"}})
+	})
 	c.Register(f)
 
 	dir := t.TempDir()
@@ -2081,19 +1914,14 @@ func TestMaxTurns_CountsConversationTurns(t *testing.T) {
 func TestAssistantTurn_CapturesUsageAndResponseID(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return wrapCommunicateResponse(llm.Response{
-					ID:      "resp-123",
-					Message: llm.Assistant("hello"),
-					Finish:  llm.FinishReason{Reason: "stop"},
-					Usage:   llm.Usage{InputTokens: 10, OutputTokens: 5},
-				})
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return wrapCommunicateResponse(llm.Response{
+			ID:      "resp-123",
+			Message: llm.Assistant("hello"),
+			Finish:  llm.FinishReason{Reason: "stop"},
+			Usage:   llm.Usage{InputTokens: 10, OutputTokens: 5},
+		})
+	})
 	c.Register(f)
 
 	dir := t.TempDir()
@@ -2126,14 +1954,9 @@ func TestAssistantTurn_CapturesUsageAndResponseID(t *testing.T) {
 func TestSession_GracefulShutdown_ClosesSubagents(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return wrapCommunicateResponse(llm.Response{Message: llm.Assistant("done"), Finish: llm.FinishReason{Reason: "stop"}})
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return wrapCommunicateResponse(llm.Response{Message: llm.Assistant("done"), Finish: llm.FinishReason{Reason: "stop"}})
+	})
 	c.Register(f)
 
 	dir := t.TempDir()
@@ -2167,14 +1990,9 @@ func TestSession_GracefulShutdown_ClosesSubagents(t *testing.T) {
 func TestSession_GracefulShutdown_SessionEndIncludesStateAndTurns(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return wrapCommunicateResponse(llm.Response{Message: llm.Assistant("hello"), Finish: llm.FinishReason{Reason: "stop"}})
-			},
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return wrapCommunicateResponse(llm.Response{Message: llm.Assistant("hello"), Finish: llm.FinishReason{Reason: "stop"}})
+	}))
 
 	dir := t.TempDir()
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
@@ -2213,23 +2031,17 @@ func TestSession_ToolResults_AggregatedIntoSingleTurn(t *testing.T) {
 	c := llm.NewClient()
 
 	// Model returns two parallel tool calls, then text.
-	f := &fakeAdapter{
-		name: "anthropic",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return llm.Response{
-					Message: llm.Message{
-						Role: llm.RoleAssistant,
-						Content: []llm.ContentPart{
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c1", Name: "write_file", Arguments: json.RawMessage(`{"file_path":"a.txt","content":"A"}`)}},
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c2", Name: "write_file", Arguments: json.RawMessage(`{"file_path":"b.txt","content":"B"}`)}},
-						},
-					},
-				}
+	f := newFakeAdapter("anthropic", func(req llm.Request) llm.Response {
+		return llm.Response{
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c1", Name: "write_file", Arguments: json.RawMessage(`{"file_path":"a.txt","content":"A"}`)}},
+					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c2", Name: "write_file", Arguments: json.RawMessage(`{"file_path":"b.txt","content":"B"}`)}},
+				},
 			},
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
-		},
-	}
+		}
+	}, func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") })
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withProfile(newAnthropicProfile("claude-test")), withDir(dir), withConfig(SessionConfig{}))
@@ -2278,23 +2090,17 @@ func TestSession_ToolResults_ContainsAllCallIDs(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	f := &fakeAdapter{
-		name: "anthropic",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return llm.Response{
-					Message: llm.Message{
-						Role: llm.RoleAssistant,
-						Content: []llm.ContentPart{
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c1", Name: "write_file", Arguments: json.RawMessage(`{"file_path":"a.txt","content":"A"}`)}},
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c2", Name: "write_file", Arguments: json.RawMessage(`{"file_path":"b.txt","content":"B"}`)}},
-						},
-					},
-				}
+	f := newFakeAdapter("anthropic", func(req llm.Request) llm.Response {
+		return llm.Response{
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c1", Name: "write_file", Arguments: json.RawMessage(`{"file_path":"a.txt","content":"A"}`)}},
+					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c2", Name: "write_file", Arguments: json.RawMessage(`{"file_path":"b.txt","content":"B"}`)}},
+				},
 			},
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
-		},
-	}
+		}
+	}, func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") })
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withProfile(newAnthropicProfile("claude-test")), withDir(dir), withConfig(SessionConfig{}))
@@ -2346,22 +2152,16 @@ func TestSession_ToolResults_SingleCallAlsoAggregated(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return llm.Response{
-					Message: llm.Message{
-						Role: llm.RoleAssistant,
-						Content: []llm.ContentPart{
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c1", Name: "write_file", Arguments: json.RawMessage(`{"file_path":"a.txt","content":"A"}`)}},
-						},
-					},
-				}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return llm.Response{
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c1", Name: "write_file", Arguments: json.RawMessage(`{"file_path":"a.txt","content":"A"}`)}},
+				},
 			},
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
-		},
-	}
+		}
+	}, func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") })
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
@@ -2398,28 +2198,22 @@ func TestSession_ToolNameMapping_ReverseDispatch(t *testing.T) {
 	c := llm.NewClient()
 
 	// Fake adapter returns a tool call using the OpenAI provider-specific name "exec_command".
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				call := llm.ToolCallData{
-					ID:        "call-1",
-					Name:      "exec_command",
-					Arguments: json.RawMessage(`{"command":"echo hello"}`),
-					Type:      "function",
-				}
-				return llm.Response{
-					Message: llm.Message{
-						Role:    llm.RoleAssistant,
-						Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
-					},
-				}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		call := llm.ToolCallData{
+			ID:        "call-1",
+			Name:      "exec_command",
+			Arguments: json.RawMessage(`{"command":"echo hello"}`),
+			Type:      "function",
+		}
+		return llm.Response{
+			Message: llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
 			},
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("done")
-			},
-		},
-	}
+		}
+	}, func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("done")
+	})
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
@@ -2491,28 +2285,22 @@ func TestSession_ToolNameMapping_EventsUseCanonicalName(t *testing.T) {
 	c := llm.NewClient()
 
 	// Fake adapter returns grep_files (OpenAI provider name for grep).
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				call := llm.ToolCallData{
-					ID:        "call-g",
-					Name:      "grep_files",
-					Arguments: json.RawMessage(`{"pattern":"foo"}`),
-					Type:      "function",
-				}
-				return llm.Response{
-					Message: llm.Message{
-						Role:    llm.RoleAssistant,
-						Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
-					},
-				}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		call := llm.ToolCallData{
+			ID:        "call-g",
+			Name:      "grep_files",
+			Arguments: json.RawMessage(`{"pattern":"foo"}`),
+			Type:      "function",
+		}
+		return llm.Response{
+			Message: llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
 			},
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("done")
-			},
-		},
-	}
+		}
+	}, func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("done")
+	})
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
@@ -2569,28 +2357,22 @@ func TestSession_ToolIntent_IncludedInToolCallStartEvent(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				call := llm.ToolCallData{
-					ID:        "call-sh",
-					Name:      "exec_command",
-					Arguments: json.RawMessage(`{"command":"ls","intent":"List project files"}`),
-					Type:      "function",
-				}
-				return llm.Response{
-					Message: llm.Message{
-						Role:    llm.RoleAssistant,
-						Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
-					},
-				}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		call := llm.ToolCallData{
+			ID:        "call-sh",
+			Name:      "exec_command",
+			Arguments: json.RawMessage(`{"command":"ls","intent":"List project files"}`),
+			Type:      "function",
+		}
+		return llm.Response{
+			Message: llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
 			},
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("done")
-			},
-		},
-	}
+		}
+	}, func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("done")
+	})
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
@@ -2638,28 +2420,22 @@ func TestSession_ReadBeforeWrite_WarnsOnUnreadFile(t *testing.T) {
 	}
 
 	// LLM writes to existing.txt without reading it first.
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				call := llm.ToolCallData{
-					ID:        "c1",
-					Name:      "write_file",
-					Arguments: json.RawMessage(`{"file_path":"existing.txt","content":"new content"}`),
-					Type:      "function",
-				}
-				return llm.Response{
-					Message: llm.Message{
-						Role:    llm.RoleAssistant,
-						Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
-					},
-				}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		call := llm.ToolCallData{
+			ID:        "c1",
+			Name:      "write_file",
+			Arguments: json.RawMessage(`{"file_path":"existing.txt","content":"new content"}`),
+			Type:      "function",
+		}
+		return llm.Response{
+			Message: llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
 			},
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("done")
-			},
-		},
-	}
+		}
+	}, func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("done")
+	})
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
@@ -2707,42 +2483,35 @@ func TestSession_ReadBeforeWrite_NoWarningAfterRead(t *testing.T) {
 	}
 
 	// LLM reads the file first, then writes to it.
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				call := llm.ToolCallData{
-					ID:        "c1",
-					Name:      "read_file",
-					Arguments: json.RawMessage(`{"file_path":"existing.txt"}`),
-					Type:      "function",
-				}
-				return llm.Response{
-					Message: llm.Message{
-						Role:    llm.RoleAssistant,
-						Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
-					},
-				}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		call := llm.ToolCallData{
+			ID:        "c1",
+			Name:      "read_file",
+			Arguments: json.RawMessage(`{"file_path":"existing.txt"}`),
+			Type:      "function",
+		}
+		return llm.Response{
+			Message: llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
 			},
-			func(req llm.Request) llm.Response {
-				call := llm.ToolCallData{
-					ID:        "c2",
-					Name:      "write_file",
-					Arguments: json.RawMessage(`{"file_path":"existing.txt","content":"new content"}`),
-					Type:      "function",
-				}
-				return llm.Response{
-					Message: llm.Message{
-						Role:    llm.RoleAssistant,
-						Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
-					},
-				}
+		}
+	}, func(req llm.Request) llm.Response {
+		call := llm.ToolCallData{
+			ID:        "c2",
+			Name:      "write_file",
+			Arguments: json.RawMessage(`{"file_path":"existing.txt","content":"new content"}`),
+			Type:      "function",
+		}
+		return llm.Response{
+			Message: llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
 			},
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("done")
-			},
-		},
-	}
+		}
+	}, func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("done")
+	})
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
@@ -2785,28 +2554,22 @@ func TestSession_ReadBeforeWrite_NewFileNoWarning(t *testing.T) {
 	c := llm.NewClient()
 	// Do NOT pre-create the file — it's a new file.
 
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				call := llm.ToolCallData{
-					ID:        "c1",
-					Name:      "write_file",
-					Arguments: json.RawMessage(`{"file_path":"brand_new.txt","content":"new content"}`),
-					Type:      "function",
-				}
-				return llm.Response{
-					Message: llm.Message{
-						Role:    llm.RoleAssistant,
-						Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
-					},
-				}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		call := llm.ToolCallData{
+			ID:        "c1",
+			Name:      "write_file",
+			Arguments: json.RawMessage(`{"file_path":"brand_new.txt","content":"new content"}`),
+			Type:      "function",
+		}
+		return llm.Response{
+			Message: llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
 			},
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("done")
-			},
-		},
-	}
+		}
+	}, func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("done")
+	})
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
@@ -2848,14 +2611,9 @@ func TestSession_ReasoningEffort_MediumPassedThrough(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("done")
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("done")
+	})
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -2897,27 +2655,15 @@ func TestSession_TaskListUpdateEscalatesReasoningEffort(t *testing.T) {
 		}}
 	}
 
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			// Step 1: create a task.
-			func(req llm.Request) llm.Response {
-				return taskListCall("c1", `{"add":[{"type":"implement","description":"work","prompt":"do stuff"}]}`)
-			},
-			// Step 2: start it (in_progress, no effort override yet).
-			func(req llm.Request) llm.Response {
-				return taskListCall("c2", `{"update":[{"id":1,"status":"in_progress"}]}`)
-			},
-			// Step 3: escalate reasoning_effort to high.
-			func(req llm.Request) llm.Response {
-				return taskListCall("c3", `{"update":[{"id":1,"status":"in_progress","reasoning_effort":"high"}]}`)
-			},
-			// Step 4: done — this request should carry effort=high.
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("done")
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return taskListCall("c1", `{"add":[{"type":"implement","description":"work","prompt":"do stuff"}]}`)
+	}, func(req llm.Request) llm.Response {
+		return taskListCall("c2", `{"update":[{"id":1,"status":"in_progress"}]}`)
+	}, func(req llm.Request) llm.Response {
+		return taskListCall("c3", `{"update":[{"id":1,"status":"in_progress","reasoning_effort":"high"}]}`)
+	}, func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("done")
+	})
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -2967,18 +2713,11 @@ func TestSession_TaskList_AppendAndUpdate_EmitToolStateSnapshots(t *testing.T) {
 			}},
 		}}
 	}
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return taskListCall("c1", `{"add":[{"type":"research","description":"Map criteria","prompt":"look at specs"},{"type":"implement","description":"Write tests","prompt":"add cases"}]}`)
-			},
-			func(req llm.Request) llm.Response {
-				return taskListCall("c2", `{"update":[{"id":1,"status":"done","notes":"reviewed specs"}]}`)
-			},
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return taskListCall("c1", `{"add":[{"type":"research","description":"Map criteria","prompt":"look at specs"},{"type":"implement","description":"Write tests","prompt":"add cases"}]}`)
+	}, func(req llm.Request) llm.Response {
+		return taskListCall("c2", `{"update":[{"id":1,"status":"done","notes":"reviewed specs"}]}`)
+	}, func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") })
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
@@ -3050,14 +2789,9 @@ func TestSession_ReasoningEffort_EmptyGetsDefaultEffort(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("done")
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("done")
+	})
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -3094,14 +2828,9 @@ func TestSession_ReasoningEffort_DisableAliasIsExplicitOff(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("done")
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("done")
+	})
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -3131,11 +2860,9 @@ func TestSession_ReasoningEffort_DisableAliasIsExplicitOff(t *testing.T) {
 func TestSubagent_MaxTurns_DefaultsTo500_NotInheritedFromParent(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
-	f := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response {
-			return agenttest.FinalResponse("done")
-		},
-	}}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("done")
+	})
 	c.Register(f)
 	dir := t.TempDir()
 	// Parent has MaxTurns=100.
@@ -3163,29 +2890,23 @@ func TestSession_Subagent_IndependentHistory(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return llm.Response{
-					Message: llm.Message{
-						Role: llm.RoleAssistant,
-						Content: []llm.ContentPart{
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-								ID:        "s1",
-								Name:      "shell",
-								Arguments: json.RawMessage(`{"command":"echo sub"}`),
-								Type:      "function",
-							}},
-						},
-					},
-				}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return llm.Response{
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+						ID:        "s1",
+						Name:      "shell",
+						Arguments: json.RawMessage(`{"command":"echo sub"}`),
+						Type:      "function",
+					}},
+				},
 			},
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("subagent done")
-			},
-		},
-	}
+		}
+	}, func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("subagent done")
+	})
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -3225,29 +2946,23 @@ func TestSession_Subagent_SharedFilesystem(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return llm.Response{
-					Message: llm.Message{
-						Role: llm.RoleAssistant,
-						Content: []llm.ContentPart{
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-								ID:        "s1",
-								Name:      "read_file",
-								Arguments: json.RawMessage(`{"file_path":"shared.txt"}`),
-								Type:      "function",
-							}},
-						},
-					},
-				}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return llm.Response{
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+						ID:        "s1",
+						Name:      "read_file",
+						Arguments: json.RawMessage(`{"file_path":"shared.txt"}`),
+						Type:      "function",
+					}},
+				},
 			},
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("read it")
-			},
-		},
-	}
+		}
+	}, func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("read it")
+	})
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -3304,13 +3019,7 @@ func TestSession_RoundLimit_ReturnsTypedErrorAndPartialOutput(t *testing.T) {
 	t.Parallel()
 	toolMsg := roundLimitToolMsg
 
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolMsg("1", "round one") },
-			func(req llm.Request) llm.Response { return toolMsg("2", "round two") },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return toolMsg("1", "round one") }, func(req llm.Request) llm.Response { return toolMsg("2", "round two") })
 	sess := newRoundLimitSession(t, 2, f)
 	drainSessionEvents(sess)
 
@@ -3328,17 +3037,11 @@ func TestSession_TurnLimit_UsesGreaterEqual(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return wrapCommunicateResponse(llm.Response{Message: llm.Assistant("ok1"), Finish: llm.FinishReason{Reason: "stop"}})
-			},
-			func(req llm.Request) llm.Response {
-				return wrapCommunicateResponse(llm.Response{Message: llm.Assistant("ok2"), Finish: llm.FinishReason{Reason: "stop"}})
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return wrapCommunicateResponse(llm.Response{Message: llm.Assistant("ok1"), Finish: llm.FinishReason{Reason: "stop"}})
+	}, func(req llm.Request) llm.Response {
+		return wrapCommunicateResponse(llm.Response{Message: llm.Assistant("ok2"), Finish: llm.FinishReason{Reason: "stop"}})
+	})
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -3376,14 +3079,9 @@ func TestSession_TurnLimit_ReturnsTypedError(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return wrapCommunicateResponse(llm.Response{Message: llm.Assistant("ok"), Finish: llm.FinishReason{Reason: "stop"}})
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return wrapCommunicateResponse(llm.Response{Message: llm.Assistant("ok"), Finish: llm.FinishReason{Reason: "stop"}})
+	})
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -3413,14 +3111,9 @@ func TestSession_SetsIdleTimeoutWithoutTotalDeadline(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("done")
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("done")
+	})
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
@@ -3451,41 +3144,18 @@ func TestSession_Subagent_AutoNudgeOnEmptyResponseExhaustion(t *testing.T) {
 
 	var mu sync.Mutex
 	callCount := 0
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				mu.Lock()
-				callCount++
-				mu.Unlock()
-				return agenttest.EmptyResponse()
-			},
-			func(req llm.Request) llm.Response {
-				mu.Lock()
-				callCount++
-				mu.Unlock()
-				return agenttest.EmptyResponse()
-			},
-			func(req llm.Request) llm.Response {
-				mu.Lock()
-				callCount++
-				mu.Unlock()
-				return agenttest.EmptyResponse()
-			},
-			func(req llm.Request) llm.Response {
-				mu.Lock()
-				callCount++
-				mu.Unlock()
-				return agenttest.EmptyResponse()
-			},
-			func(req llm.Request) llm.Response {
-				mu.Lock()
-				callCount++
-				mu.Unlock()
-				return agenttest.FinalResponse("Recovered after nudge")
-			},
-		},
+	recoveringStep := func(req llm.Request) llm.Response {
+		mu.Lock()
+		callCount++
+		mu.Unlock()
+		return agenttest.EmptyResponse()
 	}
+	f := newFakeAdapter("openai", append(agenttest.RepeatSteps(recoveringStep, 4), func(req llm.Request) llm.Response {
+		mu.Lock()
+		callCount++
+		mu.Unlock()
+		return agenttest.FinalResponse("Recovered after nudge")
+	})...)
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.3-codex")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{

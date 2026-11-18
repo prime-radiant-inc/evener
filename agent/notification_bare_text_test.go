@@ -28,15 +28,10 @@ func TestSession_NotificationBareTextRequiresNoPriorToolActivity(t *testing.T) {
 
 	// Case 1a: Notification wake with zero prior tool activity finishes idle on bare text without steering.
 	var case1Step atomic.Int32
-	adapter1 := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				case1Step.Add(1)
-				return bareTextResponse("Already handled this job earlier.")
-			},
-		},
-	}
+	adapter1 := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		case1Step.Add(1)
+		return bareTextResponse("Already handled this job earlier.")
+	})
 	sess1 := newSession(t, withProfile(NewOpenAIProfile("gpt-5.4")), withAdapter(adapter1), withDir(dir), withStateDir(t.TempDir()))
 	enqueueCompletedJobNotification(t, sess1, "job_notif_1")
 	if _, err := sess1.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
@@ -78,28 +73,21 @@ func TestSession_NotificationBareTextRequiresNoPriorToolActivity(t *testing.T) {
 	// must NOT finishIdle; must steer via handleNoToolCalls and complete on communicate in round 2.
 	var case2Step atomic.Int32
 	markerPath := filepath.Join(dir, "step1.txt")
-	adapter2 := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				case2Step.Add(1)
-				args, _ := json.Marshal(map[string]any{
-					"file_path": markerPath,
-					"content":   "step1",
-					"intent":    "Writing step1",
-				})
-				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "w1", Name: "write_file", Arguments: args})
-			},
-			func(req llm.Request) llm.Response {
-				case2Step.Add(1)
-				return bareTextResponse("Mid-work bare text after running a tool.")
-			},
-			func(req llm.Request) llm.Response {
-				case2Step.Add(1)
-				return agenttest.FinalResponse("Completed wake work.")
-			},
-		},
-	}
+	adapter2 := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		case2Step.Add(1)
+		args, _ := json.Marshal(map[string]any{
+			"file_path": markerPath,
+			"content":   "step1",
+			"intent":    "Writing step1",
+		})
+		return agenttest.ToolCallResponse(llm.ToolCallData{ID: "w1", Name: "write_file", Arguments: args})
+	}, func(req llm.Request) llm.Response {
+		case2Step.Add(1)
+		return bareTextResponse("Mid-work bare text after running a tool.")
+	}, func(req llm.Request) llm.Response {
+		case2Step.Add(1)
+		return agenttest.FinalResponse("Completed wake work.")
+	})
 	sess2 := newSession(t, withProfile(NewOpenAIProfile("gpt-5.4")), withAdapter(adapter2), withDir(dir), withStateDir(t.TempDir()))
 	enqueueCompletedJobNotification(t, sess2, "job_notif_2")
 	if _, err := sess2.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {

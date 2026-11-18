@@ -929,7 +929,7 @@ Clear an existing watch:
 Trigger fields:
 
 - `output_match` is level-triggered: it fires once at attach if the shell job's already-retained output contains a match, then again as appended output matches the regex. It requires a concrete `job_...` source; `output_match` on a session/delegate source fails `invalid_request`.
-- `progress_interval_ms` fires periodically with bounded progress/excerpt metadata even if no match occurred. It is a separate progress trigger, not an event-frame modifier. On a session source `progress_interval_ms` is refused; a timer uses `repeat_seconds`.
+- `progress_interval_ms` fires periodically with bounded progress/excerpt metadata even if no match occurred. A tick that carries no new output and no state change since the previous delivered tick is coalesced: the watch keeps its cadence and stays armed, but that tick delivers nothing, because waking the model with nothing new costs a turn and reports nothing it did not already know. The first tick always delivers, and so does any tick after the target produced new output, when the target stops or finalizes, and always on a timer's `repeat_seconds` cadence, which is time rather than output. It is a separate progress trigger, not an event-frame modifier. On a session source `progress_interval_ms` is refused; a timer uses `repeat_seconds`.
 - `events` selects session/job event kinds to include in the watch frame. `events: ["*"]` means all visible event kinds allowed by caller permissions and filtering. The shipped vocabulary is `assistant.tool`, `communicate`, and `job.notification`. Plain assistant prose is an internal transcript/UI event and is not watchable through `job_watch`.
 - `event_filter` narrows event watches before any delivery is recorded. In v1 it applies only to `events: ["assistant.tool"]` and supports exact `tool_name` plus `status` (`"ok"` or `"error"`). Non-matching events do not create a delivery, pending row, notification, or observer wake. Assistant-tool frames include the resulting `status` plus the original tool `arguments_json`, so an observer can usually decide from the delivered frame before using audit tools.
 - `every` gates event delivery: `every: N` fires on each Nth occurrence of the watched event kind, for example `events: ["communicate"], every: 3` for every third result-tool message. `every: 1` is the semantic default and reads as unset, whatever `events` contains. `every > 1` is valid only when `events` names exactly one concrete kind; supplying it with zero, multiple, or wildcard (`"*"`) kinds fails `invalid_request`.
@@ -1080,7 +1080,16 @@ identical arguments. To replace a timer, clear its `watch_id` and create another
   send frame is replaced by a newer frame for the same watched identity (latest
   frame wins), and an undelivered repeat-timer tick absorbs later ticks of the
   same timer. A no-send watch's condition notifications and job progress ticks
-  are not folded; each queues one. As a backstop, the condition delivery that
+  are not folded; each queues one. A progress tick that carries no new output
+  and no state change since the previous delivered tick is coalesced instead:
+  it keeps the cadence and the armed watch but delivers no notification, so it
+  counts no delivery. Because a coalesced tick is not a wake, a progress watch
+  that has already delivered and whose target has written nothing since does not
+  hold an active goal as waiting on a future wake; the goal's continuation and
+  its no-progress breaker run, and the next tick that does carry output still
+  wakes the session. A watch that has not delivered its first tick, one whose
+  target has output it has not reported, and a target that is stopping or
+  finalizing all still hold. As a backstop, the condition delivery that
   takes a watch past 60 within the last hour (for a send watch, delivered frames,
   so matches folded into one frame count once, and the notice rides whichever
   frame survives to delivery) carries a

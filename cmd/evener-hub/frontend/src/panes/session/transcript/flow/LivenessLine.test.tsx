@@ -1,4 +1,6 @@
-import { compactDuration, STUCK_AFTER_MS } from "@evener/appwire-client";
+import { applyNotification, applyReadResponse, hydrateThread, STUCK_AFTER_MS } from "@evener/appwire-client";
+import { waitingForQuotaText } from "@evener/appwire-client/state/navigation";
+import { testThread } from "@evener/appwire-client/testing/reducerTestKit";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { connectionStore, resetConnectionStoreForTests } from "../../../../stores/connection";
@@ -158,264 +160,6 @@ function rawRetry(overrides: Partial<Parameters<typeof LivenessLine>[0]["retry"]
   } as NonNullable<Parameters<typeof LivenessLine>[0]["retry"]>;
 }
 
-// Re-renders the mounted element with a new `now`, the way Session's
-// ticking clock would between renders.
-function rerenderWith(mounted: ReturnType<typeof render>, quotaResumesAt: number, now: number) {
-  mounted.rerender(
-    <LivenessLine
-      lastFrameAt={0}
-      now={now}
-      active={true}
-      sessionRef="s1"
-      turnId="turn_0"
-      quotaResumesAt={quotaResumesAt}
-    />,
-  );
-}
-
-// A quota wait the thread snapshot carries (ThreadFailure.ResumesAt): the
-// pane re-hydrating from a read has no modelRetry notification at all, so
-// the resume instant alone must produce the line. It shows at once (a
-// provider-named wait is not a stall guess) and keeps reading as a wait
-// however long the silence runs, where an ordinary first retry would read
-// "no updates for 3h" past the stuck threshold.
-test("a quota wait known from the thread snapshot renders immediately and never reads as stalled", () => {
-  const resumesAt = 30_000 + 90 * 60_000;
-  const mounted = render(
-    <LivenessLine
-      lastFrameAt={0}
-      now={30_000}
-      active={true}
-      sessionRef="s1"
-      turnId="turn_0"
-      quotaResumesAt={resumesAt}
-    />,
-  );
-  const el = screen.getByTestId("liveness-line");
-  expect(el.getAttribute("data-level")).toBe("retrying");
-
-  rerenderWith(mounted, resumesAt, STUCK_AFTER_MS * 6);
-  const hoursIn = screen.getByTestId("liveness-line");
-  expect(hoursIn.getAttribute("data-level")).toBe("retrying");
-});
-
-// A snapshot whose deadline has passed is still evidence of a pending wait:
-// the daemon keeps the wait while the retry queues behind other work, so a
-// pane opened during that interval (a reload, a cold visit) reads the
-// expired instant as overdue rather than falling back to ordinary liveness
-// - which would report a stall for a wait the snapshot itself names. The
-// snapshot knows no elapsed time, so none renders. (Until round 7 the
-// expired instant was discarded outright and the pane fell to quiet/stall.)
-test("an expired snapshot deadline renders the overdue wait, never a stall", () => {
-  render(
-    <LivenessLine
-      lastFrameAt={0}
-      now={STUCK_AFTER_MS * 3}
-      active={true}
-      sessionRef="s1"
-      turnId="turn_0"
-      quotaResumesAt={10_000}
-    />,
-  );
-  const el = screen.getByTestId("liveness-line");
-  expect(el.getAttribute("data-level")).toBe("retrying");
-  // Overdue, not the silence-derived states: the line explains the wait the
-  // snapshot names, distinct from every state derived from the gap.
-  const overdueText = el.textContent ?? "";
-  expect(overdueText).not.toBe(describeLiveness(STUCK_AFTER_MS * 3, true, 0).text);
-  // No elapsed time renders: the snapshot alone cannot know one, so the
-  // line omits the elapsed duration value (checked by its absence from the
-  // rendered text, not by any phrase the suffix might be reworded into).
-  expect(overdueText).not.toContain(formatExactGap(STUCK_AFTER_MS * 3));
-  expect(overdueText).not.toContain(formatExactGap(0));
-});
-
-// A live quota wait keeps counting down while unrelated activity lands: a
-// background job finishing advances lastFrameAt, but that frame is not the
-// waiting call resuming, so the wait stays a wait and its elapsed time keeps
-// advancing with the pane's clock (the announcement's own elapsed value plus
-// the time since it landed).
-test("a live quota wait stays a wait when unrelated activity advances lastFrameAt, and its elapsed time keeps advancing", () => {
-  const retry = rawRetry({
-    attempt: 1,
-    attemptCap: 1,
-    delayMs: 90 * 60_000,
-    errorClass: "quota_exceeded",
-    groupElapsedMs: 5 * 60_000,
-    receivedAt: 10_000,
-  });
-  // An unrelated frame landed well after the wait was announced.
-  render(
-    <LivenessLine
-      lastFrameAt={120_000}
-      now={130_000}
-      active={true}
-      sessionRef="s1"
-      turnId="turn_0"
-      retry={retry}
-      quotaResumesAt={10_000 + 90 * 60_000}
-    />,
-  );
-  const el = screen.getByTestId("liveness-line");
-  expect(el.getAttribute("data-level")).toBe("retrying");
-  // Still the pending countdown, with the wait's own elapsed value (5m) plus
-  // the 120s since the announcement landed.
-  expect(el.textContent).toContain(formatExactGap(5 * 60_000 + 120_000));
-});
-
-// The wake's zero-delay announcement is the request going out: the line
-// describes the resumed request as motion, distinct from the pending
-// countdown and carrying the computed elapsed time of the call.
-test("a zero-delay quota announcement (the wake) renders the resumed request as motion", () => {
-  render(
-    <LivenessLine
-      lastFrameAt={0}
-      now={30_000}
-      active={true}
-      sessionRef="s1"
-      turnId="turn_0"
-      retry={rawRetry({
-        attempt: 1,
-        attemptCap: 1,
-        delayMs: 0,
-        errorClass: "quota_exceeded",
-        groupElapsedMs: 60 * 60_000,
-        receivedAt: 30_000,
-      })}
-    />,
-  );
-  const el = screen.getByTestId("liveness-line");
-  // Motion, not a countdown: the wake carries no delay to count down.
-  expect(el.textContent).not.toContain(compactDuration(60 * 60_000));
-  expect(el.textContent).toContain(formatExactGap(60 * 60_000));
-});
-
-// The reset passing is not the request starting: the daemon may queue the
-// retry behind other work for minutes past the reset, so the expired
-// deadline reads as overdue - distinct from the countdown and from motion -
-// while the wake is still pending.
-test("a live quota wait whose reset has passed without a wake reads as overdue, not as motion", () => {
-  render(
-    <LivenessLine
-      lastFrameAt={0}
-      now={90 * 60_000 + 30_000}
-      active={true}
-      sessionRef="s1"
-      turnId="turn_0"
-      retry={rawRetry({
-        attempt: 1,
-        attemptCap: 1,
-        delayMs: 90 * 60_000,
-        errorClass: "quota_exceeded",
-        groupElapsedMs: 5 * 60_000,
-        receivedAt: 0,
-      })}
-      quotaResumesAt={90 * 60_000}
-    />,
-  );
-  const overdue = screen.getByTestId("liveness-line");
-  // The countdown has stopped: the passed reset renders nowhere, and the
-  // line stays distinct from the resumed-request line the wake renders.
-  expect(overdue.textContent).not.toContain(compactDuration(90 * 60_000));
-  expect(overdue.textContent).toContain(formatExactGap(5 * 60_000 + 90 * 60_000 + 30_000));
-  cleanup();
-
-  // The same passed deadline with the announcement arriving LATE: the daemon
-  // stamped the wait's start (waitStartedAt), so the deadline the reducer
-  // computed is already in the past when the announcement lands, but the
-  // announcement's own delay is still counting from its receipt. The known
-  // deadline wins: the pane reads the overdue line, never jumping back to
-  // the full original delay a receipt-time clock would show.
-  const late = render(
-    <LivenessLine
-      lastFrameAt={0}
-      now={90 * 60_000 + 30_000}
-      active={true}
-      sessionRef="s1"
-      turnId="turn_0"
-      retry={rawRetry({
-        attempt: 1,
-        attemptCap: 1,
-        delayMs: 90 * 60_000,
-        errorClass: "quota_exceeded",
-        groupElapsedMs: 5 * 60_000,
-        receivedAt: 90 * 60_000 + 30_000,
-      })}
-      quotaResumesAt={90 * 60_000}
-    />,
-  );
-  const lateLine = late.getByTestId("liveness-line");
-  // The receipt-time countdown never renders (that would jump the pane back
-  // to the full original delay), and the announcement's own elapsed time
-  // (5m, it just landed) survives into the overdue line.
-  expect(lateLine.textContent).not.toContain(compactDuration(90 * 60_000));
-  expect(lateLine.textContent).toContain(formatExactGap(5 * 60_000));
-  cleanup();
-
-  // The pane can hold an ordinary retry across the reconnect that installed
-  // the deadline (it disconnected during a rate-limit backoff and returned
-  // after the same turn entered a quota wait). The ordinary retry's elapsed
-  // backoff reads as in-progress motion, but the snapshot's deadline is the
-  // authoritative quota fact: once it passes, the overdue wait line renders,
-  // never the stale rate-limit line.
-  const ordinary = render(
-    <LivenessLine
-      lastFrameAt={0}
-      now={90 * 60_000 + 30_000}
-      active={true}
-      sessionRef="s1"
-      turnId="turn_0"
-      retry={rawRetry({
-        attempt: 3,
-        attemptCap: 11,
-        delayMs: 60_000,
-        errorClass: "rate_limit",
-        groupElapsedMs: 5 * 60_000,
-        receivedAt: 0,
-      })}
-      quotaResumesAt={90 * 60_000}
-    />,
-  );
-  const overdueOverOrdinary = ordinary.getByTestId("liveness-line");
-  expect(overdueOverOrdinary.getAttribute("data-level")).toBe("retrying");
-  // The overdue line renders identically with and without the retained
-  // ordinary retry (identity, not wording, is the check), and the retry's
-  // own elapsed time stays out of the quota line.
-  cleanup();
-  const alone = render(
-    <LivenessLine
-      lastFrameAt={0}
-      now={90 * 60_000 + 30_000}
-      active={true}
-      sessionRef="s1"
-      turnId="turn_0"
-      quotaResumesAt={90 * 60_000}
-    />,
-  );
-  expect(overdueOverOrdinary.textContent).toBe(alone.getByTestId("liveness-line").textContent);
-  expect(overdueOverOrdinary.textContent).not.toContain(formatExactGap(5 * 60_000));
-  cleanup();
-
-  const wake = render(
-    <LivenessLine
-      lastFrameAt={0}
-      now={90 * 60_000 + 30_000}
-      active={true}
-      sessionRef="s1"
-      turnId="turn_0"
-      retry={rawRetry({
-        attempt: 1,
-        attemptCap: 1,
-        delayMs: 0,
-        errorClass: "quota_exceeded",
-        groupElapsedMs: 5 * 60_000,
-        receivedAt: 90 * 60_000 + 30_000,
-      })}
-    />,
-  );
-  expect(wake.getByTestId("liveness-line").textContent).not.toBe(overdue.textContent);
-});
-
 test("renders the retry cause and wait instead of the quiet phrase", () => {
   render(
     <LivenessLine lastFrameAt={0} now={30_000} active={true} sessionRef="s1" turnId="turn_0" retry={rawRetry()} />,
@@ -562,6 +306,285 @@ test("renders 'in progress' once the reported delay has elapsed, even with no ne
   expect(screen.getByTestId("liveness-line").textContent).toBe(
     "rate limited — attempt 9/11 — in progress — 5s on this call",
   );
+});
+
+// --- a usage-limit wait (issue #6657) ---------------------------------------
+//
+// A model call that meets a usage limit naming its reset waits inside itself.
+// The daemon samples that wait into the thread read's failure summary, so a
+// client that RELOADS can still say when the call resumes; the live
+// evener/thread/modelRetry that also described it is ephemeral and gone. These
+// cases seed the store with a model built by hydrateThread from a read - the
+// same way a reload rebuilds one - rather than by setting the field.
+
+// A usage-limit wait as a reload rebuilds it: a thread read whose failure names
+// the reset instant, hydrated into a ThreadModel. `resumesInMs` is measured from
+// the test's own clock, so the model carries the same instant a real read of
+// that daemon would have carried at that moment.
+function reloadWithQuotaWait(resumesInMs: number, nowMs: number): void {
+  const thread = testThread({
+    status: { type: "active" },
+    evener: {
+      failure: { title: "Usage limit reached", resumesAt: nowMs + resumesInMs },
+    },
+  });
+  // Hydrated under the ref the pane looks the session up by.
+  const model = hydrateThread({ thread }, "s1", nowMs);
+  threadsStore.setState({ threads: new Map([["s1", model]]) });
+}
+
+test("a reloaded session says when its usage-limit wait resumes, without any live retry frame", () => {
+  const now = 1_000_000;
+  reloadWithQuotaWait(6 * 60 * 60_000, now);
+  render(<LivenessLine lastFrameAt={0} now={now} active={true} sessionRef="s1" turnId="turn_0" />);
+
+  const el = screen.getByTestId("liveness-line");
+  expect(el.getAttribute("data-level")).toBe("quota");
+  // The shared wait words, from the one source both this pane and the rail
+  // read - asserted through the same function, never against a literal.
+  expect(el.textContent).toBe(waitingForQuotaText(6 * 60 * 60_000));
+});
+
+// The common trigger, and the one this issue was filed from: a reader has the
+// pane open when the limit hits. Nothing forces a read then - the retry
+// notification never invalidates history - so ThreadModel.quotaResumesAt is
+// never set, and before this the line stayed on the retry's own seconds
+// countdown and then fell to unexplained silence for hours. The live retry's
+// delay, measured from the client-side receipt stamp, is the remaining wait.
+test("a usage-limit retry with no read at all still says when the wait resumes", () => {
+  const now = 1_000_000;
+  const receivedAt = now - 5_000;
+  // Hydrated clean: no failure, so the read has told the model nothing about a
+  // wait and only the live notification below can.
+  const clean = hydrateThread({ thread: testThread({ status: { type: "active" } }) }, "s1", now);
+  expect(clean.quotaResumesAt).toBeUndefined();
+  const sixHours = 6 * 60 * 60_000;
+  const live = applyNotification(
+    clean,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_1",
+        ref: "s1",
+        turnId: "turn_0",
+        attempt: 1,
+        maxAttempts: 0,
+        delayMs: sixHours,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 0,
+      },
+    },
+    receivedAt,
+  );
+  expect(live.quotaResumesAt).toBeUndefined();
+  threadsStore.setState({ threads: new Map([["s1", live]]) });
+
+  render(
+    <LivenessLine
+      lastFrameAt={receivedAt}
+      now={now}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      retry={live.modelRetry}
+    />,
+  );
+
+  const el = screen.getByTestId("liveness-line");
+  expect(el.getAttribute("data-level")).toBe("quota");
+  expect(el.textContent).toBe(waitingForQuotaText(sixHours - 5_000));
+});
+
+// The regression this guards: over a six-hour wait plenty of frames land that
+// have nothing to do with the waiting call, and every thread-scalar one
+// restamps lastFrameAt - here a background job finishing. RetryWait's usual
+// rule ("any later frame means the call moved") is right for a short backoff
+// and wrong for a wait this long: keying on it dropped the chip and fell back
+// to "in progress" and then to unexplained silence, which is exactly the
+// reading issue #6657 forbids.
+test("a background job finishing during a usage-limit wait does not end the wait", () => {
+  const now = 1_000_000;
+  const receivedAt = now - 5_000;
+  const sixHours = 6 * 60 * 60_000;
+  let model = hydrateThread({ thread: testThread({ status: { type: "active" } }) }, "s1", receivedAt);
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_1",
+        ref: "s1",
+        turnId: "turn_0",
+        attempt: 1,
+        maxAttempts: 0,
+        delayMs: sixHours,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 0,
+      },
+    },
+    receivedAt,
+  );
+  // A job ending mid-wait: scalar-only, so it restamps lastFrameAt and never
+  // touches modelRetry.
+  model = applyNotification(
+    model,
+    {
+      method: "evener/job/finished",
+      params: {
+        threadId: "thr_1",
+        ref: "s1",
+        job: { jobId: "job_1", jobType: "shell", status: "finished", outputBytes: 0 },
+      },
+    },
+    now - 1_000,
+  );
+  expect(model.lastFrameAt).toBeGreaterThan(model.modelRetry?.receivedAt ?? 0);
+  expect(model.modelRetry?.errorClass).toBe("quota_exceeded");
+  threadsStore.setState({ threads: new Map([["s1", model]]) });
+
+  render(
+    <LivenessLine
+      lastFrameAt={model.lastFrameAt}
+      now={now}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      retry={model.modelRetry}
+    />,
+  );
+
+  expect(screen.getByTestId("liveness-line").getAttribute("data-level")).toBe("quota");
+});
+
+// modelRetry is not cleared on Stop, so a new turn can still carry the dead
+// wait's six-hour retry. The guard is the retry's own turn identity: it
+// speaks only for the turn it named, so nothing needs a frame clock to tell.
+test("a usage-limit retry left over from an earlier turn does not explain a new turn", () => {
+  const now = 1_000_000;
+  const sixHours = 6 * 60 * 60_000;
+  let model = hydrateThread({ thread: testThread({ status: { type: "active" } }) }, "s1", now - 5_000);
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_1",
+        ref: "s1",
+        turnId: "turn_stopped",
+        attempt: 1,
+        maxAttempts: 0,
+        delayMs: sixHours,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 0,
+      },
+    },
+    now - 5_000,
+  );
+  threadsStore.setState({ threads: new Map([["s1", model]]) });
+
+  // The pane is now running a different turn.
+  render(
+    <LivenessLine
+      lastFrameAt={model.lastFrameAt}
+      now={now}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_new"
+      retry={model.modelRetry}
+    />,
+  );
+
+  const el = screen.queryByTestId("liveness-line");
+  expect(el?.getAttribute("data-level") ?? "none").not.toBe("quota");
+});
+
+// The reconnect shape: this pane dropped while the limit held, another client
+// switched models, and the same turn resumed and went on to a long tool. The
+// read now correctly names no resume time, but a read omits what has ended and
+// the merge keeps every field it omits - so the retained retry survived with
+// its turnId still matching and its countdown still running, and revived a
+// quota chip over work that had resumed. The read is the authority on whether a
+// wait remains; retry it here, in the reconcile.
+test("a read showing the turn resumed retires a quota retry retained from before the reconnect", () => {
+  const now = 1_000_000;
+  const sixHours = 6 * 60 * 60_000;
+  let model = hydrateThread({ thread: testThread({ status: { type: "active" } }) }, "s1", now - 5_000);
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_1",
+        ref: "s1",
+        turnId: "turn_0",
+        attempt: 1,
+        maxAttempts: 0,
+        delayMs: sixHours,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 0,
+      },
+    },
+    now - 5_000,
+  );
+  expect(model.modelRetry?.errorClass).toBe("quota_exceeded");
+
+  // The reconnect read: the same turn, still running, and NO wait - the
+  // failure summary names no resume time because there is none.
+  const resumed = applyReadResponse(
+    model,
+    {
+      thread: testThread({ status: { type: "active" }, evener: {} }),
+      requestGeneration: (model.history?.issuedGeneration ?? 0) + 1,
+    },
+    now,
+  );
+  expect(resumed.quotaResumesAt).toBeUndefined();
+
+  threadsStore.setState({ threads: new Map([["s1", resumed]]) });
+  render(
+    <LivenessLine
+      lastFrameAt={resumed.lastFrameAt}
+      now={now}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      retry={resumed.modelRetry}
+    />,
+  );
+
+  const el = screen.queryByTestId("liveness-line");
+  expect(el?.getAttribute("data-level") ?? "none").not.toBe("quota");
+});
+
+// A six-hour reset is not 21,600 seconds of a wedged session, and the chip's
+// own silence gate is for unexplained silence: a wait whose reset is known
+// shows at once, and keeps saying hours rather than counting seconds down.
+test("a usage-limit wait shows immediately, in hours rather than a seconds countdown", () => {
+  const now = 1_000_000;
+  reloadWithQuotaWait(21_600_000, now);
+  // 3s of quiet: far under the 20s gate that guards inferred silence.
+  render(<LivenessLine lastFrameAt={now - 3_000} now={now} active={true} sessionRef="s1" turnId="turn_0" />);
+
+  const el = screen.getByTestId("liveness-line");
+  expect(el.getAttribute("data-level")).toBe("quota");
+  expect(el.textContent).not.toContain("21600s");
+  expect(el.textContent).toBe(waitingForQuotaText(21_600_000));
+});
+
+// The wait ends at its instant whether or not a read has landed since: past
+// it the call resumes by itself, so the line stops promising a future that
+// has arrived and the ordinary silence decision holds again.
+test("a usage-limit wait stops explaining the silence once its instant passes", () => {
+  const now = 1_000_000;
+  reloadWithQuotaWait(60_000, now);
+  render(<LivenessLine lastFrameAt={now} now={now + 60_000} active={true} sessionRef="s1" turnId="turn_0" />);
+
+  const el = screen.getByTestId("liveness-line");
+  expect(el.getAttribute("data-level")).not.toBe("quota");
 });
 
 // --- the hub's count (#3797) ------------------------------------------------

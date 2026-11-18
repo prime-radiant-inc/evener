@@ -2609,6 +2609,41 @@ test("thread/status/changed to a non-active status clears the live work-clock an
   expect(model.activeTurnStartedAt).toBeUndefined();
 });
 
+// A usage-limit wait belongs to ONE running turn. The daemon's end-of-wait
+// signal (a no-delay quota_exceeded retry) does not cover every way a wait
+// ends: a Stop ends it through ctx.Done() and returns before that emit
+// (agent/session_quota_wait.go), so a model hydrated during a six-hour wait
+// would otherwise hold a future instant into the NEXT turn — where the quota
+// level wins over every other level and skips the quiet gate, reporting
+// "Waiting for quota · resumes in 6h" for a turn that is streaming output.
+// The status fold drops it on the same non-active transition as the anchor.
+test("thread/status/changed to a non-active status clears the usage-limit resume instant", () => {
+  const resumesAt = Date.parse("2026-11-07T14:30:00Z");
+  let model = hydrateThread(
+    {
+      thread: testThread({
+        status: { type: "active" },
+        evener: { failure: { title: "Usage limit reached", resumesAt } },
+      }),
+    },
+    "ref_t",
+    1000,
+  );
+  expect(model.quotaResumesAt).toBeDefined();
+
+  model = applyNotification(
+    model,
+    {
+      method: "thread/status/changed",
+      params: { threadId: "thr_t", ref: "ref_t", status: { type: "awaiting" } },
+    },
+    2000,
+  );
+
+  expect(model.status.type).toBe("awaiting");
+  expect(model.quotaResumesAt).toBeUndefined();
+});
+
 test("thread/status/changed staying active preserves the live work-clock anchor", () => {
   // The clear fires only on the rest transition; an active→active status frame
   // (e.g. an activeFlags change) must not drop a legitimately running anchor.
@@ -3049,7 +3084,7 @@ test("evener/thread/modelRetry with the quota class records the resume instant",
     },
     1_000_000,
   );
-  expect(model.quotaResumesAt).toBe(1_000_000 + 2 * 60 * 60_000);
+  expect(model.quotaResumesAt).toBe(isoInstant(1_000_000 + 2 * 60 * 60_000));
   expect(model.modelRetry?.errorClass).toBe("quota_exceeded");
 });
 
@@ -3076,7 +3111,7 @@ test("evener/thread/modelRetry with the quota class and no delay clears the resu
   expect(model.quotaResumesAt).toBeUndefined();
 
   model = applyNotification(
-    { ...model, quotaResumesAt: 5_000_000 },
+    { ...model, quotaResumesAt: isoInstant(5_000_000) },
     {
       method: "evener/thread/modelRetry",
       params: {
@@ -3374,7 +3409,7 @@ test("a turn boundary retires a turn whose quota announcement has not arrived ye
     1_150_000,
   );
   const fresh = applyNotification(next, quotaRetry("turn_2"), 1_200_000);
-  expect(fresh.quotaResumesAt).toBe(1_200_000 + 60 * 60_000);
+  expect(fresh.quotaResumesAt).toBe(isoInstant(1_200_000 + 60 * 60_000));
   expect(fresh.modelRetry?.errorClass).toBe("quota_exceeded");
 
   // The retired turn can come back: a remote relay that exhausts its redials
@@ -3386,7 +3421,7 @@ test("a turn boundary retires a turn whose quota announcement has not arrived ye
   // running again retires the retirement, or the pane would keep the
   // countdown after the request resumed.
   const recovered = applyReadModel(ended, recoveredRead());
-  expect(recovered.quotaResumesAt).toBe(1_250_000 + 60 * 60_000);
+  expect(recovered.quotaResumesAt).toBe(isoInstant(1_250_000 + 60 * 60_000));
   const woken = applyNotification(recovered, wake("turn_1"), 1_300_000);
   expect(woken.quotaResumesAt).toBeUndefined();
   expect(woken.modelRetry?.errorClass).toBe("quota_exceeded");
@@ -3586,6 +3621,14 @@ test("the quota wake's progress state retires on the resumed call's completed ou
 // group" and must survive ordinary mid-grind progress (deltas, a
 // systemMessage announcement completing), clearing only on an actual turn
 // boundary or the completion of a real model-output item.
+// The model carries a wait's resume instant as an ISO string, the shape the
+// shared countdown rule parses, while the wire speaks epoch ms. Stating an
+// expectation in the model's own shape keeps a test from pinning the wire's
+// arithmetic onto the client's representation.
+function isoInstant(epochMs: number): string {
+  return new Date(epochMs).toISOString();
+}
+
 function retryNotification(turnId: string): AnyNotification {
   return {
     method: "evener/thread/modelRetry",
@@ -3667,6 +3710,82 @@ test("modelRetry clears once the model's own output item (agentMessage) complete
     1004,
   );
   expect(model.modelRetry).toBeUndefined();
+});
+
+// A usage limit the session waits out can end hours before its reset: a steer
+// or a model switch retries at once, and the daemon announces that retry with
+// no delay. The resume instant a read gave the model must go with it, or the
+// pane keeps counting down a wait that is already over.
+test("a quota wait's no-delay retry drops the resume instant a read set", () => {
+  const resumesAt = Date.parse("2026-11-07T14:30:00Z");
+  const waiting = hydrateThread(
+    {
+      thread: testThread({
+        status: { type: "active" },
+        evener: { failure: { title: "Usage limit reached", resumesAt } },
+      }),
+    },
+    "ref_t",
+    1000,
+  );
+  expect(waiting.quotaResumesAt).toBeDefined();
+
+  const ended = applyNotification(
+    waiting,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        attempt: 1,
+        maxAttempts: 0,
+        delayMs: 0,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 0,
+      },
+    },
+    2000,
+  );
+
+  expect(ended.quotaResumesAt).toBeUndefined();
+});
+
+// The wait's own announcement carries a DELAY, not the reset instant, and the
+// instant came from the read. Deriving one here ("receivedAt + delay") would
+// be wrong by whatever the delivery took and by hours after a reconnect, so
+// the announcement leaves a held instant exactly as the read set it.
+test("a quota wait's announcement leaves the read's resume instant as it was", () => {
+  const resumesAt = Date.parse("2026-11-07T14:30:00Z");
+  const waiting = hydrateThread(
+    {
+      thread: testThread({
+        status: { type: "active" },
+        evener: { failure: { title: "Usage limit reached", resumesAt } },
+      }),
+    },
+    "ref_t",
+    1000,
+  );
+  const announced = applyNotification(
+    waiting,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        attempt: 1,
+        maxAttempts: 0,
+        delayMs: 21_600_000,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 0,
+      },
+    },
+    2000,
+  );
+
+  expect(announced.quotaResumesAt).toBe(new Date(resumesAt).toISOString());
 });
 
 // Deleted: "modelRetry clears when its turn completes" and "modelRetry
@@ -4354,6 +4473,42 @@ test("delegate/updated merges an existing delegate with higher projectionRevisio
     outcome: "completed",
     latestActivityAt: "2026-01-03T00:00:00Z",
   });
+});
+
+// The transcript model's own merge: durable fields order by projection
+// revision, the drain hold orders by hold sequence (delegateFacetOrder in
+// internal/appprojector/appwire_projection.go). The hold's edges publish at the
+// revision the row already carries, so without the sequence a same-revision
+// clear leaves the model — and any checkpoint encoded from it — still claiming
+// a wait that has ended.
+test("delegate/updated clears the hold at the same revision by hold sequence", () => {
+  const model = testHydrate();
+  const held = delegateInfo({
+    delegateId: "dlg_1",
+    projectionRevision: 3,
+    drainHeldByJobs: true,
+    holdSequence: 7,
+    runningJobCount: 1,
+    oldestRunningJobStartedAt: "2026-01-03T00:00:00Z",
+  });
+  let result = applyNotification(model, delegateNotification("ref_t", held), 2000);
+  expect(result.delegates?.[0]?.drainHeldByJobs).toBe(true);
+
+  // Same revision, later sequence: the wait ended.
+  const cleared = delegateInfo({
+    delegateId: "dlg_1",
+    projectionRevision: 3,
+    holdSequence: 9,
+  });
+  result = applyNotification(result, delegateNotification("ref_t", cleared), 3000);
+  expect(result.delegates?.[0]?.drainHeldByJobs ?? false).toBe(false);
+  expect(result.delegates?.[0]?.holdSequence).toBe(9);
+  expect(result.delegates?.[0]?.runningJobCount ?? 0).toBe(0);
+
+  // A delayed frame carrying the older hold sample must not reinstate it.
+  result = applyNotification(result, delegateNotification("ref_t", held), 4000);
+  expect(result.delegates?.[0]?.drainHeldByJobs ?? false).toBe(false);
+  expect(result.delegates?.[0]?.holdSequence).toBe(9);
 });
 
 test("delegate/updated with same projectionRevision and later activity updates latestActivityAt", () => {

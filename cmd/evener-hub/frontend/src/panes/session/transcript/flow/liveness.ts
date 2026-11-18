@@ -16,9 +16,10 @@
 // (Cadence already carries live activity via its trace - see
 // widgets/cadence). These are session-level thresholds only.
 
-import { compactDuration, isStuck, RUNNING_QUIET_AFTER_MS } from "@evener/appwire-client";
+import { isStuck, RUNNING_QUIET_AFTER_MS } from "@evener/appwire-client";
+import { waitingForQuotaText } from "@evener/appwire-client/state/navigation";
 
-export type LivenessLevel = "none" | "quiet" | "stalled" | "waiting" | "retrying";
+export type LivenessLevel = "none" | "quiet" | "stalled" | "waiting" | "retrying" | "quota";
 
 export interface LivenessInfo {
   level: LivenessLevel;
@@ -82,40 +83,38 @@ export interface RetryWait {
   model?: string;
   /** Elapsed wall-clock ms for the current retry group (one model call), not the whole turn. */
   groupElapsedMs: number;
-  /**
-   * Whether the wait is over. For an ordinary retry: a frame has landed
-   * since this retry was reported, or its own delay has elapsed. For a
-   * quota retry: the zero-delay wake announcement only - the request has
-   * gone out - never a frame landing or the deadline passing (see
-   * resetPassed for that case).
-   */
+  /** Whether the wait is over: a frame has landed since this retry was reported, or its own delay has elapsed. */
   inProgress: boolean;
-  /**
-   * A quota wait whose reset time has passed while the wake (the zero-delay
-   * retry announcement) has not come: the daemon may queue the retry behind
-   * other work for minutes past the reset. Derived by the caller (the only
-   * place with a clock); the countdown must stop at the deadline rather than
-   * count down a reset that already passed, and the line must not claim the
-   * request is in progress when it has not started.
-   */
-  resetPassed?: boolean;
 }
 
 /**
- * Names the retry's cause for the reader. Rate limiting and a usage-limit
- * wait get their own phrasing: they are the ones the reader can act on (wait,
- * or switch model). Rate limits are overwhelmingly the common case - one
- * session logged 91 of them in four hours. A usage-limit wait is not a
- * malfunction at all: the provider named a reset time and the call is holding
- * until then, so reading it as an error misnames a scheduled wait.
- * Everything else retryable reads as a generic provider error rather than
- * leaking an error-class token like "server" into the UI. Lowercase, matching
- * the design doc's own literal chip string (Component 1, Jesse 2026-08-08
- * rendering note) character for character.
+ * A model call waiting out a provider usage limit that named its reset, as the
+ * line renders it. Like RetryWait, the caller (LivenessLine.tsx) does the
+ * narrowing: ThreadModel.quotaResumesAt is an ISO instant and this type's one
+ * field is the distance to it, already decided against the shared countdown
+ * rule so that a wait whose instant has passed is absent rather than negative.
+ */
+export interface QuotaWait {
+  remainingMs: number;
+}
+
+/**
+ * Names the retry's cause for the reader. Only rate limiting gets its own
+ * phrasing: it is the one the reader can act on (wait, or switch model), and it
+ * is overwhelmingly the common case - one session logged 91 of them in four
+ * hours. Everything else retryable reads as a generic provider error rather
+ * than leaking an error-class token like "server" into the UI. Lowercase,
+ * matching the design doc's own literal chip string (Component 1,
+ * Jesse 2026-08-08 rendering note) character for character.
  */
 export function formatRetryCause(errorClass?: string): string {
   if (errorClass === "rate_limit") return "rate limited";
-  return errorClass === "quota_exceeded" ? "waiting for quota" : "provider error";
+  // A usage limit is not a provider fault the reader should read as one: the
+  // call is waiting for an allowance to return, which the line says with its
+  // own level (describeLiveness's quota branch) rather than through this
+  // cause alone.
+  if (errorClass === "quota_exceeded") return "usage limit";
+  return "provider error";
 }
 
 /**
@@ -132,66 +131,12 @@ export function formatRetryCause(errorClass?: string): string {
  * would be exactly the dishonest denominator AttemptCap exists to eliminate,
  * so the denominator is omitted entirely rather than substituted.
  */
-export function formatRetryWait(retry: RetryWait | QuotaWait): string {
-  // A quota wait's attempt count carries no information (the daemon's wait
-  // announcement always reads attempt 1 and never spends a budget), and its
-  // delay runs hours, not seconds: the wait is the line's whole content, the
-  // same wall-clock phrasing every other surface gives it (the rail row and
-  // the phone Board's compactDuration), with the call's elapsed time beside
-  // it so the reader can tell a fresh wait from one hours in.
-  // A quota retry is binary by its own announcement: still waiting reads as
-  // the wait (or, past its reset with no wake yet, as overdue - the daemon
-  // may queue the retry behind other work for minutes), and the zero-delay
-  // wake reads as motion. The clock never decides: a frame landing or the
-  // deadline passing is not the request starting.
-  if (retry.errorClass === "quota_exceeded") {
-    // The snapshot's instant knows no elapsed time; inventing "0s on this
-    // call" would claim a fresh wait a reload cannot prove. Only a wait
-    // that actually reported one renders the elapsed suffix.
-    const elapsed = retry.groupElapsedMs > 0 ? ` — ${formatExactGap(retry.groupElapsedMs)} on this call` : "";
-    if (!retry.inProgress && retry.resetPassed) {
-      return `${formatRetryCause(retry.errorClass)} — reset passed, retry not started yet${elapsed}`;
-    }
-    if (!retry.inProgress) {
-      return `${formatRetryCause(retry.errorClass)} — resumes in ${compactDuration(retry.delayMs)}${elapsed}`;
-    }
-    // The wait is over and the request is out (the zero-delay wake): the
-    // line describes the resumed request as motion, and the wait label
-    // above stays reserved for the pending countdown - a cause that says
-    // "waiting" over a running call is the mislabel this branch exists to
-    // avoid. No model tag: the wake event carries the model of the request
-    // that FAILED, not the one the retry runs on - the daemon applies a
-    // queued model switch before emitting the wake - so a tag here would
-    // label the resumed request with the old model and make the switch
-    // look ineffective.
-    return `quota wait ended — in progress — ${formatExactGap(retry.groupElapsedMs)} on this call`;
-  }
-  const modelTag = "model" in retry && retry.model ? ` (${retry.model})` : "";
-  const attempt =
-    "attempt" in retry
-      ? retry.attemptCap > 0
-        ? `attempt ${retry.attempt}/${retry.attemptCap}`
-        : `attempt ${retry.attempt}`
-      : "";
+export function formatRetryWait(retry: RetryWait): string {
+  const modelTag = retry.model ? ` (${retry.model})` : "";
+  const attempt = retry.attemptCap > 0 ? `attempt ${retry.attempt}/${retry.attemptCap}` : `attempt ${retry.attempt}`;
   const wait = retry.inProgress ? "in progress" : `retrying in ${Math.max(0, Math.round(retry.delayMs / SECOND_MS))}s`;
   const elapsed = `${formatExactGap(retry.groupElapsedMs)} on this call`;
   return `${formatRetryCause(retry.errorClass)}${modelTag} — ${attempt} — ${wait} — ${elapsed}`;
-}
-
-// The quota wait a resume instant names, narrowed to the fields the quota
-// branch of formatRetryWait reads: the instant alone carries no attempt count
-// (the wait announcement always reads attempt 1 and spends no budget) and no
-// call elapsed time, so neither is invented.
-export type QuotaWait = Pick<RetryWait, "errorClass" | "inProgress" | "delayMs" | "groupElapsedMs" | "resetPassed">;
-
-export function quotaWaitFrom(resumesInMs: number): QuotaWait {
-  return {
-    delayMs: resumesInMs,
-    errorClass: "quota_exceeded",
-    groupElapsedMs: 0,
-    inProgress: false,
-    resetPassed: false,
-  };
 }
 
 /**
@@ -232,61 +177,19 @@ export function describeLiveness(
   active: boolean,
   runningSubagents: number,
   retry?: RetryWait,
-  quotaRemainingMs?: number,
-  quotaOverdueFromSnapshot?: boolean,
+  quotaWait?: QuotaWait,
 ): LivenessInfo {
   if (!active) return { level: "none", text: null };
-  // A quota wait is known information the same way a retry past its first
-  // attempt is (the rule below): the provider named the reset, so the wait
-  // shows the moment the client knows it and never escalates to stalled
-  // while the reset is still ahead. The wait announcement always reads
-  // attempt 1, so the attempt-count gate below cannot cover it, and its
-  // silence runs hours: behind the quiet gate the line would read "no
-  // updates for 3h", a stall report for a scheduled pause. The instant form
-  // is the read snapshot's (a pane that re-hydrated, with no notification);
-  // the retry form is the live announcement, whose delay runs to the reset.
-  const liveQuotaWait = retry !== undefined && retry.errorClass === "quota_exceeded" && !retry.inProgress;
-  // A snapshot whose deadline has passed is still evidence of a pending
-  // wait: the daemon keeps the wait while the retry queues behind other
-  // work. The overdue line never invents the elapsed time the snapshot
-  // cannot know, and never reads as a stall for a wait the snapshot names.
-  // The deadline wins over a live announcement whose receipt-time clock
-  // still counts: a stamped announcement can land late (the deadline it
-  // names already passed at receipt), and rendering the announcement's
-  // delay would jump the pane back to the full original wait. The
-  // announcement's elapsed time survives. Only a QUOTA wake outranks the
-  // deadline: the wait's own zero-delay announcement cleared the instant,
-  // so the two coexist only when a late read re-installed an ended wait's
-  // summary after the wake, and motion is the truth there. An ordinary
-  // retry's in-progress is just its elapsed backoff - a pane can hold one
-  // across the reconnect that installed the deadline (it disconnected during
-  // a rate-limit backoff and returned after the same turn entered a quota
-  // wait), and that stale backoff must not mask the authoritative wait.
-  const quotaWakeInProgress = retry?.errorClass === "quota_exceeded" && retry.inProgress;
-  if (quotaOverdueFromSnapshot && !quotaWakeInProgress) {
-    const elapsed = liveQuotaWait ? retry.groupElapsedMs : 0;
-    return {
-      level: "retrying",
-      text: formatRetryWait({ ...quotaWaitFrom(0), groupElapsedMs: elapsed, resetPassed: true }),
-    };
-  }
-  // A live quota retry and the instant its reducer stamped name the same
-  // wait. The instant's remaining time is the honest countdown (measured
-  // from this render's now, while the retry's delayMs was measured when the
-  // announcement landed); the retry's own elapsed time is the one the
-  // instant cannot know. Either source alone renders alone: the instant
-  // without the retry (a reload) invents no elapsed time, the retry without
-  // the instant (a caller handing only the notification) keeps its own delay.
-  if (quotaRemainingMs !== undefined) {
-    const elapsed = liveQuotaWait ? retry.groupElapsedMs : 0;
-    return {
-      level: "retrying",
-      text: formatRetryWait({ ...quotaWaitFrom(quotaRemainingMs), groupElapsedMs: elapsed }),
-    };
-  }
-  if (liveQuotaWait) {
-    return { level: "retrying", text: formatRetryWait(retry) };
-  }
+  // A call waiting out a usage limit that named its reset is the one wait this
+  // line can state outright: the session is working, the daemon said when it
+  // resumes, and that instant came from the read, so it survives a reload the
+  // retry notification beside it cannot. It goes FIRST, ahead of every
+  // silence-derived level, and takes no part in the quiet gate: a wait of six
+  // hours is not 20 seconds of unexplained silence, and counting it in seconds
+  // (as the retry line's delay does) would read as a wedged session. Past the
+  // instant the wait is over, so it stops explaining anything and the ordinary
+  // decision below applies until the next read settles the status.
+  if (quotaWait) return { level: "quota", text: waitingForQuotaText(quotaWait.remainingMs) };
   // See this function's own doc comment above (kata gw2c): a retry past its
   // first attempt is known information, not an inference from silence, so
   // it bypasses the ordinary quiet gate below rather than waiting on it.

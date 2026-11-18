@@ -1239,10 +1239,23 @@ func bwrapUsernsCheck(system probeSystem, path string) CheckOutcome {
 // those flags fails the probe here rather than passing it and then aborting every
 // real spawn with "unknown option". --argv0 takes an argument, placed (like Wrap)
 // immediately before the "--" that precedes the real command.
+//
+// --as-pid-1 is the one flag the probe adds that Wrap does not emit. It is the
+// probe's alone because the probe's command (`true`) creates no children, so the
+// PID-1 reaper bwrap installs for --unshare-pid has nothing to reap. bwrap forks
+// that reaper as its own child and reports its status through a pipe without ever
+// calling wait for it, so the reaper is abandoned and only init (or a subreaper)
+// reaps it. A real spawn keeps the reaper, because a confined session does create
+// descendant processes and something in the namespace must reap them.
+//
+// It cannot raise the minimum bwrap: the probe already requires --argv0, which
+// arrived in bwrap 0.9.0, and every bwrap that has --argv0 accepts --as-pid-1
+// (both are in 0.9.0's help). A host whose bwrap fails on --as-pid-1 has already
+// failed on --argv0.
 func bwrapProbeArgs(path string) []string {
 	return []string{
 		path,
-		"--unshare-user", "--unshare-pid", "--die-with-parent", "--new-session",
+		"--unshare-user", "--unshare-pid", "--die-with-parent", "--new-session", "--as-pid-1",
 		"--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev",
 		"--argv0", "true",
 		"--", "true",

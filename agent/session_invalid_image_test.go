@@ -48,33 +48,27 @@ func testInvalidRasterToolResultRemainsRecoverable(t *testing.T, name string, da
 	}
 
 	var requestErr error
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(llm.ToolCallData{
-					ID:        "read_invalid_image",
-					Name:      "read_file",
-					Type:      "function",
-					Arguments: json.RawMessage(fmt.Sprintf(`{"file_path":%q,"intent":"inspect it"}`, name)),
-				})
-			},
-			func(req llm.Request) llm.Response {
-				result := findRequestToolResult(req.Messages, "read_invalid_image")
-				switch {
-				case result == nil:
-					requestErr = fmt.Errorf("next request has no tool result: %+v", req.Messages)
-				case !result.IsError:
-					requestErr = fmt.Errorf("invalid image tool result is not an error: %+v", result)
-				case len(result.ImageData) != 0 || result.ImageMediaType != "":
-					requestErr = fmt.Errorf("invalid image bytes reached the next request: %+v", result)
-				case !strings.Contains(fmt.Sprint(result.Content), "invalid image data"):
-					requestErr = fmt.Errorf("tool error does not explain the invalid image: %+v", result)
-				}
-				return agenttest.FinalResponse("recovered")
-			},
-		},
-	}
+	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(llm.ToolCallData{
+			ID:        "read_invalid_image",
+			Name:      "read_file",
+			Type:      "function",
+			Arguments: json.RawMessage(fmt.Sprintf(`{"file_path":%q,"intent":"inspect it"}`, name)),
+		})
+	}, func(req llm.Request) llm.Response {
+		result := findRequestToolResult(req.Messages, "read_invalid_image")
+		switch {
+		case result == nil:
+			requestErr = fmt.Errorf("next request has no tool result: %+v", req.Messages)
+		case !result.IsError:
+			requestErr = fmt.Errorf("invalid image tool result is not an error: %+v", result)
+		case len(result.ImageData) != 0 || result.ImageMediaType != "":
+			requestErr = fmt.Errorf("invalid image bytes reached the next request: %+v", result)
+		case !strings.Contains(fmt.Sprint(result.Content), "invalid image data"):
+			requestErr = fmt.Errorf("tool error does not explain the invalid image: %+v", result)
+		}
+		return agenttest.FinalResponse("recovered")
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 	sess, err := NewSession(

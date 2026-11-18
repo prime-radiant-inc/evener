@@ -2449,6 +2449,15 @@ func (a *subagent) drainForFinalization(ctx context.Context, result string) (str
 	// a foreign prune can release the lane mid-finalization.
 	stopEvidenceTicker := a.sess.startLaneEvidenceTicker(ctx)
 	defer stopEvidenceTicker()
+	// The hold the delegate's row reports. It is set for exactly the span the
+	// drain keeps the run open, and each edge publishes a delegate update: a
+	// row a client loaded BEFORE its shell started has no other way to learn
+	// the wait, because entering the drain moves no durable delegate field and
+	// the shell's own completion only invalidates the jobs collection. The
+	// count alone could not answer this — a delegate mid-turn with the same
+	// background shell has the same count and is not held.
+	a.sess.setDrainHeld(true)
+	defer a.sess.setDrainHeld(false)
 	drained, err := a.sess.drainJobTreeKeepingReport(ctx)
 	if err != nil {
 		return result, parentDriveNotify, err

@@ -94,6 +94,14 @@ function itemKey(turnId: string, ordinal: number, part = 0): string {
   return `apptranscript-item-v2:${turnId}:${ordinal}:${part}`;
 }
 
+// The model carries a wait's resume instant as an ISO string, the shape the
+// shared countdown rule parses, while the wire and these fixtures speak epoch
+// ms. Stating the expectation in the model's own shape is what keeps a test
+// from pinning the wire's arithmetic onto the client's representation.
+function isoInstant(epochMs: number): string {
+  return new Date(epochMs).toISOString();
+}
+
 // A projected history item: identity, position and version all follow from
 // the entry ordinal it was projected from.
 function item(turnId: string, ordinal: number, overrides: Partial<ThreadItem> = {}): ThreadItem {
@@ -192,7 +200,7 @@ test("a read whose thread carries a quota failure sets the model's resume instan
     REF,
     NOW,
   );
-  expect(model.quotaResumesAt).toBe(resumesAt);
+  expect(model.quotaResumesAt).toBe(isoInstant(resumesAt));
 });
 
 test("a read whose thread carries no quota failure clears a stale resume instant", () => {
@@ -269,7 +277,7 @@ test("a read that names a different running turn retires the old turn's quota re
   );
   const next = applyReadModel(model, fresh);
   // The new turn's deadline installs; the old turn's retry metadata clears.
-  expect(next.quotaResumesAt).toBe(freshResumesAt);
+  expect(next.quotaResumesAt).toBe(isoInstant(freshResumesAt));
   expect(next.modelRetry).toBeUndefined();
 });
 
@@ -312,7 +320,7 @@ test("a read that moves the deadline within the same turn retires the earlier ca
   // The new wait's deadline installs; the earlier call's retry metadata
   // clears, so the new wait's line does not render the first call's
   // elapsed time.
-  expect(next.quotaResumesAt).toBe(secondWaitResumesAt);
+  expect(next.quotaResumesAt).toBe(isoInstant(secondWaitResumesAt));
   expect(next.modelRetry).toBeUndefined();
 });
 
@@ -337,7 +345,7 @@ test("a read from a source that cannot report the wait keeps a known live wait",
   model.kind = "subagent";
   model = {
     ...model,
-    quotaResumesAt: resumesAt,
+    quotaResumesAt: isoInstant(resumesAt),
     modelRetry: {
       attempt: 1,
       maxAttempts: 1,
@@ -356,7 +364,7 @@ test("a read from a source that cannot report the wait keeps a known live wait",
   fresh.capabilities = { ...fresh.capabilities, quotaWaitSnapshot: false };
   fresh.kind = "subagent";
   const next = applyReadModel(model, fresh);
-  expect(next.quotaResumesAt).toBe(resumesAt);
+  expect(next.quotaResumesAt).toBe(isoInstant(resumesAt));
   expect(next.modelRetry?.errorClass).toBe("quota_exceeded");
 });
 
@@ -449,14 +457,14 @@ test("a read cut before the wait keeps the live-recorded wait; a fresh authorita
     // reached the pane after the lagging read's cut sampled the envelope.
     waitStartedAt + 50_000,
   );
-  expect(reannounced.quotaResumesAt).toBe(waitStartedAt + 30_000 + 60 * 60_000);
+  expect(reannounced.quotaResumesAt).toBe(isoInstant(waitStartedAt + 30_000 + 60 * 60_000));
   const stillLagging = hydrateThread(
     read([turn("turn_1", 1)], { activeTurnId: "turn_1", asOf: new Date(waitStartedAt + 40_000).toISOString() }),
     REF,
     NOW + 5,
   );
   const preserved = applyReadModel(reannounced, stillLagging);
-  expect(preserved.quotaResumesAt).toBe(waitStartedAt + 30_000 + 60 * 60_000);
+  expect(preserved.quotaResumesAt).toBe(isoInstant(waitStartedAt + 30_000 + 60 * 60_000));
   expect(preserved.modelRetry?.errorClass).toBe("quota_exceeded");
 });
 
@@ -507,7 +515,7 @@ test("a legacy root read is authoritative for a live-announced wait; a legacy de
   delegateReconnect.capabilities = { ...delegateReconnect.capabilities, quotaWaitSnapshot: false };
   delegateReconnect.kind = "subagent";
   const delegateNext = applyReadModel(delegate, delegateReconnect);
-  expect(delegateNext.quotaResumesAt).toBe(resumesAt);
+  expect(delegateNext.quotaResumesAt).toBe(isoInstant(resumesAt));
   expect(delegateNext.modelRetry?.errorClass).toBe("quota_exceeded");
 
   // The fork route: a fork is a session served by its own daemon, whose
@@ -609,7 +617,7 @@ test("a wire-path fork read is authoritative for a live-announced wait; a wire-p
   let delegate = hydrateThread(delegateRead(), REF, NOW);
   delegate = applyNotification(delegate, liveAnnounced, NOW);
   const delegateNext = applyReadResponse(delegate, delegateRead(), NOW + 1);
-  expect(delegateNext.quotaResumesAt).toBe(resumesAt);
+  expect(delegateNext.quotaResumesAt).toBe(isoInstant(resumesAt));
   expect(delegateNext.modelRetry?.errorClass).toBe("quota_exceeded");
 });
 
@@ -646,7 +654,7 @@ test("an ordinary retry on the resumed call retires a legacy-preserved deadline"
   fresh.capabilities = { ...fresh.capabilities, quotaWaitSnapshot: false };
   fresh.kind = "subagent";
   model = applyReadModel(model, fresh);
-  expect(model.quotaResumesAt).toBe(resumesAt);
+  expect(model.quotaResumesAt).toBe(isoInstant(resumesAt));
   model = applyNotification(
     model,
     {
@@ -805,8 +813,8 @@ test("a read names the same wait by its stamp, not its deadline: elapsed time su
     // The announcement landed 2s late: the pane's deadline must not move.
     NOW + 2_000,
   );
-  expect(model.quotaResumesAt).toBe(waitStartedAt + (resumesAt - NOW));
-  expect(model.quotaResumesAt).not.toBe(NOW + 2_000 + (resumesAt - NOW));
+  expect(model.quotaResumesAt).toBe(isoInstant(waitStartedAt + (resumesAt - NOW)));
+  expect(model.quotaResumesAt).not.toBe(isoInstant(NOW + 2_000 + (resumesAt - NOW)));
 
   // The refresh's snapshot carries the SAME wait's stamp and the provider's
   // own reset instant: the same wait, so the retry metadata (and its elapsed
@@ -836,7 +844,7 @@ test("a read names the same wait by its stamp, not its deadline: elapsed time su
     NOW + 2,
   );
   const moved = applyReadModel(next, secondWait);
-  expect(moved.quotaResumesAt).toBe(resumesAt);
+  expect(moved.quotaResumesAt).toBe(isoInstant(resumesAt));
   expect(moved.modelRetry).toBeUndefined();
 
   // A snapshot taken BEFORE a wake must not resurrect the wait the wake
@@ -894,7 +902,7 @@ test("a read names the same wait by its stamp, not its deadline: elapsed time su
     NOW + 5,
   );
   const restarted = applyReadModel(merged, newWait);
-  expect(restarted.quotaResumesAt).toBe(resumesAt + 30 * 60_000);
+  expect(restarted.quotaResumesAt).toBe(isoInstant(resumesAt + 30 * 60_000));
 
   // A pane can live through two waits of one turn: it hydrated during the
   // first, a queued message woke it, and the same turn hit the limit again.
@@ -925,7 +933,7 @@ test("a read names the same wait by its stamp, not its deadline: elapsed time su
     } as AnyNotification,
     NOW + 6,
   );
-  expect(secondAnnounced.quotaResumesAt).toBe(secondWaitAt + 90 * 60_000);
+  expect(secondAnnounced.quotaResumesAt).toBe(isoInstant(secondWaitAt + 90 * 60_000));
   // A read cut between the two waits (its cut names an instant after the
   // first wait, before the second began) carries no summary: it must not
   // erase the SECOND countdown.
@@ -938,7 +946,7 @@ test("a read names the same wait by its stamp, not its deadline: elapsed time su
     NOW + 7,
   );
   const kept = applyReadModel(secondAnnounced, betweenWaits);
-  expect(kept.quotaResumesAt).toBe(secondWaitAt + 90 * 60_000);
+  expect(kept.quotaResumesAt).toBe(isoInstant(secondWaitAt + 90 * 60_000));
   expect(kept.modelRetry?.errorClass).toBe("quota_exceeded");
   // The second wait's own wake clears the pair together.
   const secondWake = applyNotification(
@@ -987,7 +995,7 @@ test("a second wait's announcement installs its own stamp, so a between-waits re
     REF,
     NOW,
   );
-  expect(model.quotaResumesAt).toBe(firstWaitAt + 60 * 60_000);
+  expect(model.quotaResumesAt).toBe(isoInstant(firstWaitAt + 60 * 60_000));
   // The first wait's wake (a queued message), then the second wait's
   // announcement.
   model = applyNotification(
@@ -1028,7 +1036,7 @@ test("a second wait's announcement installs its own stamp, so a between-waits re
     } as AnyNotification,
     NOW + 2,
   );
-  expect(model.quotaResumesAt).toBe(secondWaitAt + 90 * 60_000);
+  expect(model.quotaResumesAt).toBe(isoInstant(secondWaitAt + 90 * 60_000));
   // The between-waits read: its cut falls after the first wait began and
   // before the second did, and it carries no summary. It must not erase
   // the second countdown.
@@ -1041,7 +1049,7 @@ test("a second wait's announcement installs its own stamp, so a between-waits re
     NOW + 3,
   );
   const kept = applyReadModel(model, betweenWaits);
-  expect(kept.quotaResumesAt).toBe(secondWaitAt + 90 * 60_000);
+  expect(kept.quotaResumesAt).toBe(isoInstant(secondWaitAt + 90 * 60_000));
   expect(kept.modelRetry?.errorClass).toBe("quota_exceeded");
   // A FRESH cut - after the second wait's wake ended it - still clears.
   const woken = applyNotification(
@@ -1166,7 +1174,7 @@ test("a read cannot restore a wait the wake ended, even after an ordinary retry 
     NOW + 4,
   );
   const installed = applyReadModel(kept, laterWait);
-  expect(installed.quotaResumesAt).toBe(laterWaitAt + 60 * 60_000);
+  expect(installed.quotaResumesAt).toBe(isoInstant(laterWaitAt + 60 * 60_000));
 });
 
 function page(turns: Turn[], options: Snapshot & { authoritative?: boolean } = {}): ThreadTurnsListResponse {

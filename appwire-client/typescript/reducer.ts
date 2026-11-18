@@ -648,7 +648,7 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
       // No lastFrameAt restamp on purpose — see ThreadModel.modelRetry. The
       // quiet/stall clock is measuring a real silence; this explains it rather
       // than resetting it.
-      return {
+      const next = {
         ...model,
         // A quota-class announcement is a wait, not pacing: the delay runs to
         // the provider's named reset, so the model carries the resume instant
@@ -666,7 +666,7 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
         // older daemon) keeps the receipt-time arithmetic.
         quotaResumesAt:
           params.errorClass === "quota_exceeded" && params.delayMs > 0
-            ? (params.waitStartedAt ?? now) + params.delayMs
+            ? new Date((params.waitStartedAt ?? now) + params.delayMs).toISOString()
             : undefined,
         // The wait's stamp travels with its deadline, whichever route
         // learned the wait: a live announcement installs its OWN stamp, so
@@ -712,6 +712,7 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
           receivedAt: now,
         },
       };
+      return next;
     }
 
     default:

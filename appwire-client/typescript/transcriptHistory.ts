@@ -181,9 +181,46 @@ export function mergeTranscriptItemVersioned(
     !supersedes(heldVersion, incomingVersion) &&
     !(heldVersion === incomingVersion && itemIsIdentityOnly(held) && !itemIsIdentityOnly(incoming))
   ) {
+    if (heldVersion === incomingVersion && fillsAskEvidence(held, incoming)) {
+      return withAskEvidence(held, incoming);
+    }
     return held;
   }
   return mergeReplacedItem(held, incoming);
+}
+
+// fillsAskEvidence reports whether incoming supplies an ask-resolution field
+// the held row lacks. The two fields arrive independently — a bounded read can
+// carry the legacy count while omitting the call list — so each is tested on
+// its own. Gating on both being absent let a held count block the call list
+// that a later refresh of the SAME item version supplies (#6323).
+function fillsAskEvidence(held: ItemModel, incoming: ItemModel): boolean {
+  const missingCalls = held.resolvedAskCalls === undefined && incoming.resolvedAskCalls !== undefined;
+  const missingCount = held.resolvedAskLegacyCount === undefined && incoming.resolvedAskLegacyCount !== undefined;
+  return missingCalls || missingCount;
+}
+
+// withAskEvidence returns the held row plus only the evidence it lacks. Text,
+// identity and every other field stay the held row's: this exists to fill an
+// absence, not to replace a row the version rule chose to keep. The text
+// presence marker is non-enumerable, so a spread drops it; without
+// copyItemTextPresence the held row would come back reading as an
+// authoritative empty settle and block the local text reconciliation that is
+// still owed for it.
+function withAskEvidence(held: ItemModel, incoming: ItemModel): ItemModel {
+  const filled: ItemModel = copyItemTextPresence(held, { ...held });
+  if (held.resolvedAskCalls === undefined && incoming.resolvedAskCalls !== undefined) {
+    filled.resolvedAskCalls = incoming.resolvedAskCalls.map((call) => ({ ...call }));
+  }
+  if (held.resolvedAskLegacyCount === undefined && incoming.resolvedAskLegacyCount !== undefined) {
+    filled.resolvedAskLegacyCount = incoming.resolvedAskLegacyCount;
+  }
+  // The identity-only marker is non-enumerable too, so the spread drops it.
+  // A placeholder that gains evidence must stay a placeholder: without the
+  // marker a later same-version refresh can no longer take the upgrade path
+  // that would restore its body, so the fill would destroy the evidence that
+  // fixes the row.
+  return itemIsIdentityOnly(held) ? markItemIdentityOnly(filled) : filled;
 }
 
 /** Applies the recorded turn-version precedence while keeping hydrated items owned by history. */
@@ -292,27 +329,26 @@ export function mergeHistory(turns: TurnModel[], fragment: HistoryFragment, held
     const identity = itemIdentity(incoming);
     const index = turn.items.findIndex((item) => itemIdentity(item) === identity);
     const heldItem = turn.items[index];
-    const identityUpgrade =
-      heldItem !== undefined &&
-      heldItem.version === incoming.version &&
-      itemIsIdentityOnly(heldItem) &&
-      !itemIsIdentityOnly(incoming);
-    if (index === -1 ? heldOnly : !supersedes(heldItem?.version, incoming.version) && !identityUpgrade) continue;
+    // One decision, not two. The same function the entry-cache merge uses
+    // resolves version precedence, an identity upgrade and the same-version
+    // ask-evidence fill (#6323) together; re-deriving any of them here is how
+    // the upgrade and the fill came to disagree, with a pruned placeholder
+    // gaining evidence but keeping an empty body the refresh supplied.
+    // A held row with no recorded version must still pass through the merge:
+    // `supersedes` already gives the incoming row precedence there, and the
+    // omission-tolerant merge is what stops a sparse tool update from erasing
+    // output or images the reader already has, or a text-omitting update from
+    // blanking the row.
+    const merged =
+      index === -1 || heldItem === undefined
+        ? incoming
+        : mergeTranscriptItemVersioned(heldItem, heldItem.version, incoming, incoming.version ?? 0);
+    if (index === -1 ? heldOnly : merged === heldItem) continue;
     // Copy a turn's items once per merge, then edit the copy in place.
     const writable = ownedItems.has(turn.id) ? turn : { ...turn, items: [...turn.items] };
     ownedItems.add(turn.id);
     if (index === -1) writable.items.splice(itemsBefore(writable.items, incoming.position), 0, incoming);
-    else {
-      // A higher-version replacement is otherwise authoritative for every
-      // field it carries, but an OMITTED text field is not a replacement —
-      // main's landed text-presence rule (itemTextPresence/wireItemToModel):
-      // an explicit empty string IS authoritative (a real settle with
-      // nothing to say), while an absent one just means this entry said
-      // nothing about text, and the prior provided value stands (e.g. a
-      // reasoning item's seeded summary surviving a completion that omits
-      // text of its own).
-      writable.items[index] = mergeReplacedItem(turn.items[index], incoming);
-    }
+    else writable.items[index] = merged;
     byId.set(turn.id, writable);
     changed = true;
   }

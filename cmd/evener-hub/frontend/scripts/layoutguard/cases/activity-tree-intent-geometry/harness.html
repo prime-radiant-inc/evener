@@ -9,7 +9,7 @@
 <style>
   *, *::before, *::after { transition: none !important; animation: none !important; }
   .fixtures { display: flex; flex-direction: column; align-items: flex-start; gap: 16px; padding: 16px; }
-  iframe { border: 0; height: 320px; }
+  iframe { border: 0; height: 560px; }
 </style>
 </head>
 <body data-font-size="m">
@@ -23,25 +23,35 @@ const chevron = '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="tr
 // DenseRowView / RowShell / RowSegments and the real OpenButton hierarchy.
 // Only callbacks are fixture-local: geometry, glyphs, classes and order are
 // production's. Do not add a fixture min-width or remove the Sheet inset.
-function row(width, depth) {
-  return `<div class="denseRow" role="treeitem" aria-label="inspect" aria-description="running" aria-level="${depth + 1}" aria-expanded="false" tabindex="${depth === 0 ? 0 : -1}" data-row="${width}-${depth}">
+// The name is a matrix parameter: the floor is a text-relative budget, so a
+// single Latin label would only ever exercise one glyph advance.
+function row(width, depth, label, opts = {}) {
+  const meta = opts.noIntent
+    ? `<span class="denseMeta"><span data-status-word>running</span> · <span>↑41.2K ↓6.1K</span> · <span class="denseQuiet">12s</span></span>`
+    : `<span class="denseMeta" data-intent="true"><span data-intent-text>${intent}</span> · <span>↑41.2K ↓6.1K</span> · <span class="denseQuiet">12s</span></span>`;
+  return `<div class="denseRow" role="treeitem" aria-label="${label}" aria-description="running" aria-level="${depth + 1}" aria-expanded="false" tabindex="${depth === 0 ? 0 : -1}" data-row="${width}-${depth}">
     <button type="button" class="rowToggle" tabindex="-1" aria-label="Show details for inspect" aria-expanded="false">${chevron}</button>
     <span class="denseKind"><span role="img" aria-label="Working" aria-hidden="true" data-state="fresh" data-shape="dot" data-status-dot></span></span>
-    <span class="denseName denseNameLive">inspect</span>
+    <span class="denseName denseNameLive">${label}</span>
     <span class="inline" data-open-shell><button type="button" class="button quiet squareSm" tabindex="-1" aria-label="Open conversation" title="Open"><span class="icon">${openIcon}</span></button></span>
-    <span class="denseMeta"><span data-intent>${intent}</span> · <span>↑41.2K ↓6.1K</span> · <span class="denseQuiet">12s</span></span>
+    ${meta}
   </div>`;
 }
 
 function frameDocument(spec) {
-  let rows = row(spec.width, 0);
-  for (let depth = 1; depth <= spec.depth; depth++) rows += `<div role="group" class="indentGuide">${row(spec.width, depth)}`;
+  // A long label is a matrix parameter too, so the fixture can put a name that
+  // wants the whole row beside a meta that is not an intent.
+  const label = spec.labelChars ? "n".repeat(spec.labelChars) : (spec.label ?? "inspect");
+  const opts = { noIntent: spec.noIntent === true };
+  let rows = row(spec.width, 0, label, opts);
+  for (let depth = 1; depth <= spec.depth; depth++)
+    rows += `<div role="group" class="indentGuide">${row(spec.width, depth, label, opts)}`;
   rows += "</div>".repeat(spec.depth);
   return `<!doctype html><html lang="en" data-theme="dark"><head>
     <meta charset="utf-8"><meta name="viewport" content="width=${spec.width}, initial-scale=1"><base href="${location.href}">
     <link rel="stylesheet" href="tokens.css"><link rel="stylesheet" href="resolved.css">
     <style>*, *::before, *::after { transition:none !important; animation:none !important; }</style>
-    </head><body data-font-size="m"><div class="scrim"><div class="panel right wide">
+    </head><body data-font-size="${spec.fontScale ?? "m"}"><div class="scrim"><div class="panel right wide">
       <header class="header"><h2 class="title">Activity</h2></header>
       <div class="body"><div class="activityPanel"><div class="panelColumn"><div class="tree" role="tree">${rows}</div></div></div></div>
       <button type="button" class="closeButton" aria-label="Close">×</button>
@@ -85,11 +95,7 @@ function measureFrame({ spec, frame }) {
       opened.push(row.dataset.row);
     });
   }
-  return {
-    width: spec.width,
-    viewport: { width: win.innerWidth, height: win.innerHeight },
-    pane: box(doc.querySelector(".panelColumn")),
-    rows: rows.map((row) => {
+  const measured = rows.map((row) => {
       const name = row.querySelector(".denseName");
       const button = row.querySelector("[data-open-shell] button");
       const meta = row.querySelector(".denseMeta");
@@ -98,7 +104,50 @@ function measureFrame({ spec, frame }) {
       const metaStyle = win.getComputedStyle(meta);
       const canvas = doc.createElement("canvas").getContext("2d");
       canvas.font = `${nameStyle.fontWeight} ${nameStyle.fontSize} ${nameStyle.fontFamily}`;
-      const prefixEllipsisWidth = canvas.measureText(name.textContent.slice(0, 1) + "…").width;
+      // The first complete GRAPHEME, not the first UTF-16 code unit: slice(0,1)
+      // takes half of an emoji's surrogate pair, and the canvas then measures a
+      // replacement glyph - so the guard would not be checking the emoji it
+      // names. Segmenter splits the same way rendering does.
+      const firstGrapheme = new Intl.Segmenter(undefined, { granularity: "grapheme" });
+      const [first] = firstGrapheme.segment(name.textContent);
+      // Widths of unclipped text, measured by LAYOUT in the name's own font.
+      // Canvas measureText resolves its own font stack and picked a different
+      // emoji face than layout did, and the `font` shorthand reads back empty
+      // in Chrome often enough to be a trap. The probe is parented to the NAME,
+      // not the row: denseNameLive sets the medium weight, so a probe under
+      // the row measured the normal-weight advance (44.45px against the
+      // 45.23px the name renders). Absolute positioning keeps it out of the
+      // name's flow and out of its clipping.
+      const probeWidth = (text) => {
+        const probe = doc.createElement("span");
+        probe.textContent = text;
+        probe.style.cssText =
+          "position:absolute;left:-99999px;top:0;width:auto;min-width:0;max-width:none;white-space:pre;overflow:visible;text-overflow:clip";
+        name.appendChild(probe);
+        const width = probe.getBoundingClientRect().width;
+        probe.remove();
+        return width;
+      };
+      const prefixEllipsisWidth = probeWidth(`${first.segment}…`);
+      const nameFullWidth = probeWidth(name.textContent);
+      // The meta's own identifying prefix, measured in the META's font (the
+      // caption size), so a rule that leaves the meta a few glyphs is checked
+      // against what those glyphs actually cost rather than against the name's
+      // size. Parented to the meta for the same reason the name's probe is
+      // parented to the name: an inherited size/weight must be the real one.
+      const metaPrefixEllipsisWidth = (() => {
+        const metaText = meta.textContent ?? "";
+        const [firstMeta] = new Intl.Segmenter(undefined, { granularity: "grapheme" }).segment(metaText);
+        if (!firstMeta) return 0;
+        const probe = doc.createElement("span");
+        probe.textContent = `${firstMeta.segment}…`;
+        probe.style.cssText =
+          "position:absolute;left:-99999px;top:0;width:auto;min-width:0;max-width:none;white-space:pre;overflow:visible;text-overflow:clip";
+        meta.appendChild(probe);
+        const width = probe.getBoundingClientRect().width;
+        probe.remove();
+        return width;
+      })();
       const nameRange = doc.createRange();
       nameRange.selectNodeContents(name);
       const target = box(button);
@@ -118,16 +167,68 @@ function measureFrame({ spec, frame }) {
       }
       return {
         depth, level: Number(row.getAttribute("aria-level")), box: box(row),
+        nameFullWidth,
         contentWidth: row.getBoundingClientRect().width - parseFloat(rowStyle.paddingLeft) - parseFloat(rowStyle.paddingRight),
-        intentLength: row.querySelector("[data-intent]").textContent.length,
+        // The fixed controls the name competes with, measured rather than
+        // restated: the gap between the row's children, the disclosure
+        // toggle, and the kind glyph.
+        gap: parseFloat(rowStyle.columnGap || rowStyle.gap),
+        toggleWidth: row.querySelector(".rowToggle").getBoundingClientRect().width,
+        kindWidth: row.querySelector(".denseKind").getBoundingClientRect().width,
+        intentLength: row.querySelector("[data-intent-text]")?.textContent.length ?? 0,
+        // A row with no stated intent shows status and timing instead. It is
+        // governed by different rules on purpose (see the stylesheet), so the
+        // guard has to tell the two apart rather than assume every row here
+        // states work.
+        noIntent: !row.querySelector(".denseMeta[data-intent='true']"),
         statusDot: box(row.querySelector("[data-status-dot]")),
         name: box(name), nameTextWidth: nameRange.getBoundingClientRect().width, prefixEllipsisWidth,
+        metaPrefixEllipsisWidth,
+        fontSize: parseFloat(nameStyle.fontSize),
         button: target, disabled: button.disabled || button.getAttribute("aria-disabled") === "true",
         iconVisible: button.querySelector("svg").checkVisibility({ checkOpacity: true, checkVisibilityCSS: true }),
-        meta: { ...box(meta), clientWidth: meta.clientWidth, scrollWidth: meta.scrollWidth, overflowX: metaStyle.overflowX, textOverflow: metaStyle.textOverflow, whiteSpace: metaStyle.whiteSpace, lineHeight: parseFloat(metaStyle.lineHeight) },
+        meta: { ...box(meta), maxWidth: metaStyle.maxWidth, clientWidth: meta.clientWidth, scrollWidth: meta.scrollWidth, overflowX: metaStyle.overflowX, textOverflow: metaStyle.textOverflow, whiteSpace: metaStyle.whiteSpace, lineHeight: parseFloat(metaStyle.lineHeight) },
         hits, opened: opened.slice(beforeOpen), disclosures: disclosures.length - beforeDisclosure,
       };
-    }),
+  });
+  // Reference geometry, measured WITHOUT the fix in THIS same document: the
+  // same fonts, the same rounding, the same run. The fix is the meta's cap, so
+  // the reference restores the pre-fix cap alone - the 60% share and nothing
+  // else. Comparing against numbers recorded on one machine would fail on a
+  // font-metric update even when the fix moved nothing; comparing two live
+  // measurements cannot, so the "already readable rows do not move" contract
+  // stays exact and any movement the FIX causes is still caught.
+  const floorOff = doc.createElement("style");
+  // Undo only the name/meta rules, holding INDENTATION constant in both
+  // passes. The indent step is a separate change with separate proof (deep-row
+  // readability and Open containment); letting it differ here would compare
+  // two different layouts and call the width difference a regression. With it
+  // pinned, any movement this comparison reports is caused by the name/meta
+  // rules alone.
+  floorOff.textContent =
+    ".denseName { flex: 0 1 auto !important; max-width: none !important; min-width: 0 !important; }";
+  doc.head.appendChild(floorOff);
+  const reference = rows.map((row) => {
+    const name = row.querySelector(".denseName");
+    return {
+      name: name.getBoundingClientRect().width,
+      meta: row.querySelector(".denseMeta").getBoundingClientRect().width,
+    };
+  });
+  floorOff.remove();
+  measured.forEach((row, index) => {
+    row.reference = reference[index];
+  });
+  return {
+    id: spec.id,
+    width: spec.width,
+    viewport: { width: win.innerWidth, height: win.innerHeight },
+    pane: { ...box(doc.querySelector(".panelColumn")),
+      clientWidth: doc.querySelector(".panelColumn").clientWidth,
+      scrollWidth: doc.querySelector(".panelColumn").scrollWidth,
+      overflowX: win.getComputedStyle(doc.querySelector(".panelColumn")).overflowX,
+    },
+    rows: measured,
   };
 }
 

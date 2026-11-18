@@ -31,14 +31,11 @@ func TestSkillDescriptionSessionJourney(t *testing.T) {
 		writeSkillMD(t, pluginDir, name, source)
 	}
 	writeSkillMD(t, root, "shadowed", "---\nname: recovery-plugin:healthy\ndescription: shadowed fixture\n---\nSHADOWED_752\n")
-	adapter := &fakeAdapter{name: "anthropic", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response {
-			return agenttest.ToolCallResponse(useSkillCall("skill-752", "recovery-plugin:recovered"))
-		},
-		func(llm.Request) llm.Response {
-			return agenttest.ToolCallResponse(communicateCall("done-752", "DONE_752"))
-		},
-	}}
+	adapter := newFakeAdapter("anthropic", func(llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(useSkillCall("skill-752", "recovery-plugin:recovered"))
+	}, func(llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(communicateCall("done-752", "DONE_752"))
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 	sess, err := NewSession(client, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{PluginDirs: []string{pluginDir}, testOnly: testConfig{skipGitSnapshot: true}})

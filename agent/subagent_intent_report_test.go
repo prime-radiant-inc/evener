@@ -96,7 +96,7 @@ func newIntentReportFixture(t *testing.T, steps ...func(llm.Request) llm.Respons
 	if err := os.WriteFile(filepath.Join(workspace, "note.txt"), []byte("hello world"), 0o644); err != nil {
 		t.Fatalf("write note.txt: %v", err)
 	}
-	return newIntentReportFixtureWithAdapter(t, workspace, &fakeAdapter{name: "openai", steps: steps})
+	return newIntentReportFixtureWithAdapter(t, workspace, newFakeAdapter("openai", steps...))
 }
 
 // newIntentReportDispatchFixture serves the provider from a responder that

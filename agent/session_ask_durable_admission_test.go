@@ -20,14 +20,9 @@ func newDurableAdmissionAskSessionWithAdapter(t *testing.T, cfg SessionConfig) (
 	t.Helper()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(askUserCall("ask1", askUserArgsValid()))
-			},
-		},
-	}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(askUserCall("ask1", askUserArgsValid()))
+	})
 	c.Register(adapter)
 	cfg.StateDir = dir
 	cfg.testOnly = sharingHostProbe(cfg.testOnly)

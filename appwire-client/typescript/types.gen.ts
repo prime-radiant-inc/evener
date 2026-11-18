@@ -733,6 +733,24 @@ export interface EvenerDelegateInfo {
   runEndedAt?: string;
   latestActivityAt?: string;
   /**
+   * DrainHeldByJobs says this delegate's finalization drain is holding its run
+   * open on the jobs counted below; RunningJobCount and
+   * OldestRunningJobStartedAt phrase that wait. The same facts SessionDelegate
+   * carries, so a pushed frame and a read row cannot disagree about why a
+   * delegate is still running. Absent without the hold.
+   */
+  drainHeldByJobs?: boolean;
+  runningJobCount?: number;
+  oldestRunningJobStartedAt?: string;
+  /**
+   * HoldSequence orders DrainHeldByJobs against every other sample of the same
+   * delegate's hold. The source bumps it under the controller lock when the
+   * sampled hold changes, so a consumer applies the highest sequence and
+   * rejects a sample a slower publisher delivered late. Absent when no sample
+   * ever differed.
+   */
+  holdSequence?: number;
+  /**
    * LatestIntent is the open generation's newest stated tool-call intent
    * ("Reading the board's row tests."), one line of at most MaxIntentRunes:
    * the row's display line, the same Excerpt-bounded value the read
@@ -3995,6 +4013,39 @@ export interface SessionDelegate {
    * frame agree for every row state. Absent from older daemons.
    */
   latestIntent?: string;
+  /**
+   * DrainHeldByJobs is the fact the row could not state before: this
+   * delegate's run is held open by its own finalization drain, waiting on
+   * the managed shell counted below. It is what a reader needs to tell a
+   * held delegate from one still working — a delegate mid-turn with the same
+   * background shell is NOT held. Only the live read produces it, and it is
+   * absent from a retained read or an older daemon, so a client never reads
+   * an omission as "known free".
+   */
+  drainHeldByJobs?: boolean;
+  /**
+   * RunningJobCount is how many managed shell jobs the delegate's own child
+   * session is running while that hold is set. Absent whenever the hold is,
+   * so it phrases the wait and never reports a count on its own.
+   */
+  runningJobCount?: number;
+  /**
+   * OldestRunningJobStartedAt is the RFC3339Nano start of the oldest of those
+   * jobs, so a row can say how long the wait has lasted. Empty whenever
+   * RunningJobCount is absent.
+   */
+  oldestRunningJobStartedAt?: string;
+  /**
+   * HoldSequence orders DrainHeldByJobs against the other samples of the same
+   * delegate's hold. The hold is a per-row fact whose samples can reach a
+   * client out of order — a publisher that sampled before another can send
+   * after it — and the projection revision cannot order them, because both
+   * edges of the hold arrive at the revision the row already carries. This
+   * counter is bumped at the source, under the controller lock, whenever the
+   * sampled hold changes, so a receiver applies the highest sequence it has
+   * seen and rejects a delayed sample. Absent when no sample ever differed.
+   */
+  holdSequence?: number;
   usage?: EvenerUsage;
   worktree?: JobActivityWorktree;
 }
@@ -4087,6 +4138,38 @@ export interface SessionObservationMetadata {
   generationId?: string;
   turnId?: string;
   answerToTurnIds?: string[];
+  /**
+   * ResolvedAskCalls carries admission's own per-call resolution evidence:
+   * the exact ask_user calls (execution turn AND call id) this accepted
+   * input's admission CAPTURED, from schema.Turn.AskResolution. It is the
+   * captured set, not a record of which calls this reply cleared: two fenced
+   * replies admitted against the same pending revision can carry the same
+   * capture, and the first to settle is the one that clears those calls.
+   * Do NOT read AnswerToTurnIDs as a turn-granular collapse of this list. It
+   * is usually coarser - several calls in one execution share one link - but
+   * it is not a superset: a fenced steer that captures an older ask plus an
+   * ask in its own still-active execution records links only for the settled
+   * executions, because admission will not link a turn to an execution that
+   * is still running. A client that treated the links as authoritative would
+   * discard a valid captured call. Match against these calls instead.
+   * Absent on turns admitted before the evidence existed and on unfenced
+   * whole-set answers, which carry no call list at all. A BOUNDED read may
+   * omit this list as a unit while keeping AnswerToTurnIDs and
+   * ResolvedAskLegacyCount, so a large capture cannot displace the reply.
+   */
+  resolvedAskCalls?: PendingAskCall[];
+  /**
+   * ResolvedAskLegacyCount says admission's capture ALSO held this many
+   * questions it could not name - the call-less population restored from
+   * records that predate call ids (schema.AskResolution.LegacyCount).
+   * ResolvedAskCalls cannot see them, so a client pairing a composed answer
+   * line to a named call by header must treat a nonzero count as
+   * unattributable: those questions' headers never reach the wire, and one of
+   * them may share the header the line names. Absent when every captured
+   * question is named. A bounded read KEEPS this count even when it omits
+   * ResolvedAskCalls, because it is what makes the omission safe to see.
+   */
+  resolvedAskLegacyCount?: number;
   entryId?: string;
   endTurn?: boolean;
   endReason?: string;
@@ -4390,6 +4473,20 @@ export interface SettingsHubOverview {
    */
   pastIndex?: SettingsPastIndexOverview;
   /**
+   * OperationStoreQuarantine is present exactly when the hub's operation
+   * store carries a quarantine signal: a corrupt store file took the
+   * custody-first quarantine and a custody file holds what it carried.
+   * Absent on a hub with no quarantine, and on an older hub that has no
+   * field at all.
+   *
+   * The signal is not an error and needs no operator action: the hub serves
+   * the replacement store. It is a health fact a client shows so an operator
+   * can find the set-aside file and its custody beside the store.
+   * Source: hostops.Store.Quarantine, the signal cmd/evener-hub/main.go also
+   * logs at startup.
+   */
+  operationStoreQuarantine?: SettingsOperationStoreQuarantine;
+  /**
    * DaemonIdleTimeoutMillis is the Hub's configured idle-retirement deadline
    * for spawned daemons, in integer milliseconds; zero means automatic
    * retirement is disabled. No omitempty: zero is a real configured state,
@@ -4409,6 +4506,29 @@ export interface SettingsMCPServerEntry {
   transport?: string;
   status?: string;
   error?: string;
+}
+
+export interface SettingsOperationStoreQuarantine {
+  /**
+   * QuarantinedFile is the store path the quarantine replaced: the corrupt
+   * file lived there, was renamed aside, and the replacement now occupies it.
+   */
+  quarantinedFile?: string;
+  /**
+   * AsideFile is where the corrupt bytes were renamed to beside the store, so
+   * it is the file that holds what was quarantined. Empty when the aside file
+   * is gone while its custody file remains.
+   */
+  asideFile?: string;
+  /**
+   * CustodyFile is the path of the custody file the quarantine wrote beside
+   * the store.
+   */
+  custodyFile?: string;
+  /**
+   * QuarantineEpoch is the durable counter the quarantine advanced to.
+   */
+  quarantineEpoch?: number;
 }
 
 export interface SettingsOverviewResponse {
@@ -6567,7 +6687,7 @@ export const WIRE_FIELD_KEYS = {
   OutputImage: ["source", "name", "mediaType", "size", "url", "sha", "path"],
   QueueState: ["depth", "revision", "preview", "ids", "clientMutationIds", "texts", "skillNames", "commandNames", "mentions", "imageCounts"],
   EvenerUsage: ["inputTokens", "outputTokens", "cacheReadTokens", "totalTokens"],
-  EvenerDelegateInfo: ["runGeneration", "delegateId", "ownerSessionId", "logicalOwnerSessionId", "rootSessionId", "childSessionId", "childRef", "transcriptRef", "parentDelegateId", "type", "lifecycle", "phase", "status", "outcome", "reason", "error", "terminal", "resumable", "needsAttention", "notResumableReason", "projectionRevision", "reportPreview", "reportPreviewTruncated", "task", "description", "agentType", "requestedModel", "resolvedProfileId", "resolvedModel", "model", "reasoningEffort", "originTurnId", "originToolCallId", "originItemId", "runStartedAt", "runEndedAt", "latestActivityAt", "latestIntent", "runningForMs", "quietForMs", "durationMs", "packetKind", "message", "structuredResult", "structuredResultValid", "structuredResultReason", "warnings", "diagnostics", "exhaustionBudget", "exhaustionLimit", "exhaustionResumable", "delegationAllowance", "parentWatchGranted", "usage", "worktree"],
+  EvenerDelegateInfo: ["runGeneration", "delegateId", "ownerSessionId", "logicalOwnerSessionId", "rootSessionId", "childSessionId", "childRef", "transcriptRef", "parentDelegateId", "type", "lifecycle", "phase", "status", "outcome", "reason", "error", "terminal", "resumable", "needsAttention", "notResumableReason", "projectionRevision", "reportPreview", "reportPreviewTruncated", "task", "description", "agentType", "requestedModel", "resolvedProfileId", "resolvedModel", "model", "reasoningEffort", "originTurnId", "originToolCallId", "originItemId", "runStartedAt", "runEndedAt", "latestActivityAt", "drainHeldByJobs", "runningJobCount", "oldestRunningJobStartedAt", "holdSequence", "latestIntent", "runningForMs", "quietForMs", "durationMs", "packetKind", "message", "structuredResult", "structuredResultValid", "structuredResultReason", "warnings", "diagnostics", "exhaustionBudget", "exhaustionLimit", "exhaustionResumable", "delegationAllowance", "parentWatchGranted", "usage", "worktree"],
   JobActivityWorktree: ["path", "branch", "headSha", "ahead", "dirty"],
   CommandDescriptor: ["name", "pluginName", "description", "argumentHint", "source"],
   EvenerSkillInfo: ["name", "description", "disableModelInvocation", "userInvocable", "available", "allowedTools"],

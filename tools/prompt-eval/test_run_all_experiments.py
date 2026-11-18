@@ -429,6 +429,76 @@ def test_baseline_summary_counts_every_rep(rae):
     assert base["unmeasured"] == 1
 
 
+def test_baseline_header_shows_every_measured_rep_share(rae):
+    """Three passing reps at 15% / 0% / 85% must all reach the header (#6601).
+
+    This is the issue's own proof shape: three real baseline rows, all passing,
+    tail shares 15% / 0% / 85%, where the report printed `85%` and `1/1`. A dict
+    keyed by arm keeps one entry per arm name and every baseline rep shares that
+    name, so two of the three vanished before the header was built.
+
+    The measured zero is asserted on its own because it is the value a later
+    truthiness check drops: `tail_share` returns a real `0.0` for a perfect
+    stop, and only `None` means unknown (#6598).
+    """
+    rows = [
+        rae.RunResult(arm="baseline", task="overfull-hbox", rep=0,
+                      final_compiles_clean=True, acceptance_call_index=4,
+                      runaway_share=0.15, total_calls=20),
+        rae.RunResult(arm="baseline", task="overfull-hbox", rep=1,
+                      final_compiles_clean=True, acceptance_call_index=6,
+                      runaway_share=0.0, total_calls=30),
+        rae.RunResult(arm="baseline", task="overfull-hbox", rep=2,
+                      final_compiles_clean=True, acceptance_call_index=5,
+                      runaway_share=0.85, total_calls=40),
+    ]
+
+    base = rae.baseline_summary(rows)
+    assert base["runs"] == 3
+    assert base["pass"] == 3
+    assert base["shares"] == [0.0, 0.15, 0.85]
+    assert base["unmeasured"] == 0
+
+
+def test_baseline_header_accounts_for_every_rep(rae):
+    """Every baseline rep must land in a bucket the header shows (#6601).
+
+    A reader judges every arm against this header, so a rep missing from it
+    narrows the reference distribution without saying so. A rep killed at the
+    cap has no graded share; counting it nowhere printed `pass: 2/3` beside a
+    two-value share list, so the denominator said three and the list showed two
+    with nothing to reconcile them -- still able to be read as a two-rep
+    baseline.
+
+    The assertion is the reconciliation, not the wording: the measured shares,
+    the unmeasured reps and the timed-out reps together cover every rep, so no
+    reading of the header can mistake one rep for the whole baseline.
+    """
+    rows = [
+        rae.RunResult(arm="baseline", task="overfull-hbox", rep=0,
+                      final_compiles_clean=True, acceptance_call_index=4,
+                      runaway_share=0.15, total_calls=20),
+        # Passed its check but was killed at the cap: not a pass (#6605).
+        rae.RunResult(arm="baseline", task="overfull-hbox", rep=1,
+                      final_compiles_clean=True, acceptance_call_index=6,
+                      runaway_share=0.85, total_calls=40, timed_out=True),
+        rae.RunResult(arm="baseline", task="overfull-hbox", rep=2,
+                      final_compiles_clean=False, acceptance_call_index=5,
+                      runaway_share=0.0, total_calls=30),
+    ]
+
+    base = rae.baseline_summary(rows)
+    assert base["runs"] == 3
+    assert base["pass"] == 1
+    assert base["shares"] == [0.0, 0.15]
+    # The partition is the claim, so it is asserted first and through `.get`:
+    # without a bucket for the timed-out rep this fails as an accounting gap
+    # (two of three reps visible), not as a missing key.
+    assert (len(base["shares"]) + base["unmeasured"] + base.get("timeouts", 0)
+            == base["runs"])
+    assert base.get("timeouts") == 1
+
+
 def test_measured_zero_is_data_and_absent_value_is_not(rae):
     """A measured zero must stay distinguishable from an absent value.
 

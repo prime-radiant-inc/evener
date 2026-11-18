@@ -15,6 +15,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { accessibleName } from "../../accessibleNameTestUtils";
 import { installMobileViewport } from "../../panes/session/testing/mobileViewport";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { selectRailModel } from "../../stores/navigation/selectors";
@@ -1059,6 +1060,31 @@ describe("overflow row", () => {
   test("offers nothing to click", () => {
     render(<RailRow node={overflowRailNode(3)} info={info({ hasChildren: false })} actions={actions()} />);
     expect(screen.queryByRole("button")).toBeNull();
+  });
+
+  // A row that renders away from its list has no fold above it to say which
+  // rows it speaks for, so it names them itself. The copy inside a band keeps
+  // the compact label: the band's fold already supplies that context. The
+  // treeitem's accessible name is its content, so this is the name a screen
+  // reader hears.
+  test("names the list it pages only when it renders away from it", () => {
+    const rowName = (node: OverflowRailNode) => {
+      render(
+        <Tree
+          nodes={[node]}
+          onToggle={() => {}}
+          onActivate={() => {}}
+          renderRow={(candidate, rowInfo) => <RailRow node={candidate} info={rowInfo} actions={actions()} />}
+        />,
+      );
+      const name = accessibleName(screen.getByRole("treeitem"));
+      cleanup();
+      return name;
+    };
+    const scoped = rowName({ ...overflowRailNode(4), scope: "needsYou" });
+    const compact = rowName(overflowRailNode(4));
+    expect(scoped).not.toBe(compact);
+    expect(scoped).toContain(compact);
   });
 });
 

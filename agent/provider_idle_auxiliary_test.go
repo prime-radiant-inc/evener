@@ -45,10 +45,10 @@ func TestProviderIdleAuxiliarySessionRequests(t *testing.T) {
 					want = 45 * time.Second
 				}
 				var captured []llm.Request
-				adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+				adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response {
 					captured = append(captured, req)
 					return llm.Response{Message: llm.Assistant(`{"name":"Test Session"}`)}
-				}}}
+				})
 				sess := newSession(t, withAdapter(adapter), withProfile(WithCheapModel(NewOpenAIProfile("gpt-5.2"), "gpt-4.1-nano")), withConfig(SessionConfig{ProviderIdleTimeout: value, PluginDirs: []string{t.TempDir()}}))
 				drainSessionEvents(sess)
 				sess.client.SetDefaultProvider("openai")

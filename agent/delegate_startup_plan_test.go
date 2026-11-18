@@ -418,12 +418,7 @@ func assertCurrentTaskElement(t *testing.T, text string, id int, prompt string) 
 func newDelegateStartupFixture(t *testing.T) (*Session, *fakeAdapter) {
 	t.Helper()
 	workspace := t.TempDir()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response { return agenttest.FinalResponse("child done") },
-		},
-	}
+	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("child done") })
 	client := llm.NewClient()
 	client.Register(adapter)
 	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
