@@ -317,15 +317,34 @@ function questionsThisCallAsked(items: readonly ItemModel[], call: ItemModel): A
   // to both callers, so neither can see a set the other does not.
   if (call.callId === undefined) return everyAskQuestionFromArguments(call);
   // The fold that merges a result onto its call does not always run (a live
-  // item may arrive as two rows), so look for the recorded state by call id
-  // before concluding the page carries none.
+  // item may arrive as two rows), so look for the recorded state on the pair
+  // before concluding the page carries none. The PAIR, not the call id: the
+  // session questions guide allows a call id to repeat across executions, and
+  // a later execution's result is not this call's record of what ran.
   for (const candidate of items) {
-    if (candidate === call || candidate.callId !== call.callId) continue;
+    if (candidate === call) continue;
+    if (candidate.turnId !== call.turnId || candidate.callId !== call.callId) continue;
     const sibling = canonicalAskUserQuestions(candidate);
     if (sibling === null) return undefined;
     if (sibling !== undefined) return sibling;
   }
   return everyAskQuestionFromArguments(call);
+}
+
+// sameQuestions answers whether two lists are the same questions in the same
+// order: the header each answer is keyed by AND the text a row displays. A
+// hook may keep the header and rewrite the question, so headers alone cannot
+// stand for "the row shows what the reply answers" (#6323).
+function sameQuestions(asked: readonly AskUserQuestion[], displayed: readonly AskUserQuestion[]): boolean {
+  if (asked.length !== displayed.length) return false;
+  for (let index = 0; index < asked.length; index += 1) {
+    const askedQuestion = asked[index];
+    const displayedQuestion = displayed[index];
+    if (askedQuestion === undefined || displayedQuestion === undefined) return false;
+    if (askedQuestion.header !== displayedQuestion.header) return false;
+    if (askedQuestion.question !== displayedQuestion.question) return false;
+  }
+  return true;
 }
 
 // everyAskQuestionFromArguments is parseAskUserQuestions with the lossy step
@@ -402,14 +421,34 @@ function answerFor(
   const reply = findAnswerReply(items, items.slice(at + 1), item);
   if (!reply) return undefined;
   if (reply.text.startsWith("[answers]")) {
-    // The same set the attribution check counted (#6323): the questions the
-    // call ACTUALLY asked. Reading the arguments here instead would pair an
-    // answer line with a header a pre-tool hook replaced, which is exactly the
-    // misattribution that check exists to refuse. When this returns
-    // undefined the check refuses the stamp too, so the two can never
-    // disagree - and an unstamped reply keeps its raw row rather than guess.
-    const questions = questionsThisCallAsked(items, item);
+    // Which set answers the line depends on how the reply was SELECTED (#6323):
+    //
+    //   - admission's stamp named this call, so the reply answers what RAN.
+    //     Both the check and this render must read questionsThisCallAsked, or
+    //     a header a hook rewrote passes the count and then renders under the
+    //     question the model sent;
+    //   - no stamp matched, and the reply was chosen by linkedReplyAnswersThisCall
+    //     comparing the ARGUMENT headers it answers - through the same lossy
+    //     parse that selection used. The same set must render that choice, or
+    //     the recap looks up a header this call never showed, and the executed
+    //     set cannot speak for a selection made on the sent one.
+    //
+    // The stamp is what makes the executed set authoritative; without it the
+    // arguments are the whole basis of the match.
+    const revealedByStamp = resolvesThisCall(item, reply) === true;
+    const questions = revealedByStamp ? questionsThisCallAsked(items, item) : argumentsQuestions;
     if (!questions) return undefined;
+    // Every row renders its questions from argumentsJSON (the web body's
+    // parseAskUserQuestions, native's askRowQuestions). A stamped recap
+    // speaks for what RAN, so when a hook changed the question the row would
+    // show this answer under a question it does not answer - the exact harm
+    // #6323 exists to prevent. The body cannot reach the model to render the
+    // executed questions, so the honest outcome is no recap: the raw reply
+    // row stays and says what was answered. Only a row that displays no
+    // question at all (unparseable arguments) has nothing to mispair.
+    if (revealedByStamp && argumentsQuestions !== undefined && !sameQuestions(questions, argumentsQuestions)) {
+      return undefined;
+    }
     // The composed form always resolves here, even when it parses to nothing
     // or nothing matches this call's headers (the user edited the draft,
     // spec §6.1): an attempted composed reply is not free prose to echo.

@@ -793,15 +793,15 @@ test("a call-stamped composed answer to two same-header calls recaps neither", (
   expect(answeredAskUserReply(model, second)).toBeUndefined();
 });
 
-test("a hook-rewritten header recaps under the question that ran, not the arguments", () => {
+test("a hook-rewritten question recaps nothing while the row shows the original", () => {
   // Both calls SENT the same "Deploy?" question, so the arguments name one
   // header twice and cannot say which call the deployment line answered. A
   // pre-tool hook rewrote the FIRST call to "Run tests?", and the reply answers
-  // both with different values. Counting headers from the recorded state makes
-  // the two calls distinct, so each recap must pair the call's OWN answer: the
-  // first with the test answer, the second with the deployment one. Reading the
-  // arguments for the render instead would look up "Deploy?" on both calls and
-  // show the deployment answer twice, replacing the first call's answer.
+  // both with different values. The recap speaks for what RAN, but every row
+  // DRAWS its question from argumentsJSON - the web body and native's history
+  // row both parse that - so a recap would print the test answer beneath a row
+  // still labelled "Deploy?". The honest outcome is no recap: the raw reply
+  // stays visible and says what was answered.
   const testAnswer = '"Yes"';
   const deployAnswer = '"No"';
   const first = item({
@@ -842,19 +842,108 @@ test("a hook-rewritten header recaps under the question that ran, not the argume
   });
   const model = turnsModel([first, second], [reply]);
 
-  const firstSuffix = answeredAskUserSuffix(model, first);
-  const secondSuffix = answeredAskUserSuffix(model, second);
-  // Each call renders its own answer line, taken from the reply fixture.
-  expect(firstSuffix).toContain(testAnswer);
-  expect(firstSuffix).not.toContain(deployAnswer);
-  expect(secondSuffix).toContain(deployAnswer);
-  expect(secondSuffix).not.toContain(testAnswer);
-  // One reply answers both calls, so neither recap restates all of it: the raw
-  // reply row must stay visible rather than be dropped as a recap it does not
-  // carry (composedReplyCoversCall requires the reply to BE this call's answer
-  // set, and it carries the sibling's line too).
+  // The first row displays "Deploy?" but the executed question was
+  // "Run tests?", so it recaps nothing and its raw reply stays.
+  expect(answeredAskUserSuffix(model, first)).toBeUndefined();
   expect(answeredAskUserReply(model, first)).toBeUndefined();
+  // The second row displays exactly the question it ran, so its own answer line
+  // pairs with what the reader sees. The reply still answers the first call
+  // too, so it carries more than this row's answer and its raw row stays.
+  expect(answeredAskUserSuffix(model, second)).toContain(deployAnswer);
+  expect(answeredAskUserSuffix(model, second)).not.toContain(testAnswer);
   expect(answeredAskUserReply(model, second)).toBeUndefined();
+});
+
+test("a split result row is matched by the pair, not a call id a later turn reused", () => {
+  // A live item can arrive as two rows - the call and its result - so the
+  // lookup falls back to finding the recorded state on a sibling row. Call ids
+  // may repeat across executions (the session questions guide says so), and a
+  // LATER execution that reused this id asked something else. Borrowing its
+  // state would rewrite this call's question and hide a genuine answer, or
+  // pair it with the wrong one. The pair is the identity.
+  const call = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_1",
+    callId: "call_1",
+    toolName: "ask_user",
+    status: "completed",
+  });
+  const reused = item({
+    argumentsJSON: askUserArgs([
+      { header: "Run tests?", question: "Run them first?", options: [{ label: "Yes" }, { label: "No" }] },
+    ]),
+    turnId: "turn_3",
+    id: "ask_9",
+    callId: "call_1",
+    toolName: "ask_user",
+    status: "completed",
+    raw: {
+      version: 1,
+      questions: [{ header: "Run tests?", question: "Run them first?", options: [{ label: "Yes" }, { label: "No" }] }],
+    },
+  });
+  const reply = userMessage({
+    text: '[answers]\n1. [Deploy?] → "Yes"',
+    turnId: "turn_2",
+    answerToTurnIds: ["turn_1", "turn_3"],
+    resolvedAskCalls: [{ turnId: "turn_1", callId: "call_1" }],
+  });
+  const model = turnsModel([call], [reply], [reused]);
+  // This call asked and displays "Deploy?", and the line answers it: recapped.
+  expect(answeredAskUserSuffix(model, call)).toContain('"Yes"');
+});
+
+test("an unstamped reply is recapped from the headers that selected it", () => {
+  // No stamp, so the turn-link heuristic picks the reply by comparing the
+  // ARGUMENT headers it answers against the siblings' arguments. The siblings
+  // sent "Deploy?" and "Database?"; a hook then gave the SECOND call a
+  // "Deploy?" header the composer never saw, and the reply answers both
+  // headers the human was actually shown. The selection therefore answers the
+  // second call through "Database?" - so the recap must read that same header.
+  // Reading the executed set instead would look up "Deploy?" on the second
+  // call and print the FIRST call's answer under it.
+  const deployAnswer = '"Yes"';
+  const databaseAnswer = '"Postgres"';
+  const first = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_1",
+    callId: "call_1",
+    toolName: "ask_user",
+    status: "completed",
+  });
+  const second = item({
+    argumentsJSON: askUserArgs([
+      {
+        header: "Database",
+        question: "Which database?",
+        options: [
+          { label: "Postgres", detail: "ok" },
+          { label: "MySQL", detail: "ok" },
+        ],
+      },
+    ]),
+    turnId: "turn_1",
+    id: "ask_2",
+    callId: "call_2",
+    toolName: "ask_user",
+    status: "completed",
+    raw: {
+      version: 1,
+      questions: [{ ...ONE_QUESTION[0], header: "Deploy?" }],
+    },
+  });
+  const reply = userMessage({
+    text: `[answers]\n1. [Deploy?] → ${deployAnswer}\n2. [Database] → ${databaseAnswer}`,
+    turnId: "turn_2",
+    answerToTurnIds: ["turn_1"],
+  });
+  const model = turnsModel([first, second], [reply]);
+  // The second call is recapped from the header its selection used.
+  const secondSuffix = answeredAskUserSuffix(model, second);
+  expect(secondSuffix).toContain(databaseAnswer);
+  expect(secondSuffix).not.toContain(deployAnswer);
 });
 
 test("a refused stamp does not hand the calls to a later unlinked answer", () => {
