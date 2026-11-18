@@ -9,9 +9,17 @@ import (
 
 const closeTag = "</parameter>"
 
-// The token tests exercise the repair of rejected fields independently of a tool schema.
+var nonStringField = jsonschema.MustCompileString("field.json", `{"not":{"type":"string"}}`)
+
+// The token tests use a tool that rejects a literal string at every input key.
 func rescueClaudeXMLArgs(raw string) string {
-	return (chatArgumentRepair{}).RepairToolArguments(raw, func(string, string) bool { return true })
+	var fields map[string]json.RawMessage
+	_ = json.Unmarshal([]byte(raw), &fields)
+	schema := &jsonschema.Schema{Properties: map[string]*jsonschema.Schema{}}
+	for k := range fields {
+		schema.Properties[k] = nonStringField
+	}
+	return (chatArgumentRepair{}).RepairToolArguments(raw, schema)
 }
 
 func fieldsOf(t *testing.T, out string) map[string]json.RawMessage {
@@ -262,6 +270,24 @@ func TestFromChatCompletionResponseRescuePreservesNonCanonicalJSON(t *testing.T)
 	wantToken(t, fields, "n", `1.50`)
 	wantToken(t, fields, "action", `"update"`)
 	wantToken(t, fields, "x", `1`)
+
+	file := jsonschema.MustCompileString("file.json", `{"type":"object","required":["path","content"],"additionalProperties":false,"properties":{"path":{"type":"string"},"content":{"type":"string"},"note":{"type":"string"}}}`)
+	for _, tc := range []struct{ name, arguments string }{
+		{"literal XML document", `{"content":"<doc value=\"a\">\n<parameter name='path'>other.txt</parameter></doc>"}`},
+		{"unseparated tag", `{"path":"notes.txt <parameter name='content'>example"}`},
+		{"bytes after the parameter tail", `{"path":"notes.txt\"><parameter name='content'>example</parameter> more text"}`},
+		{"competing carriers", `{"path":"a\"><parameter name='content'>one","note":"b\"><parameter name='content'>two"}`},
+		{"repeated parameter", `{"path":"a\"><parameter name='content'>one<parameter name='content'>two"}`},
+		{"explicit sibling", `{"path":"a\"><parameter name='content'>one<parameter name='note'>replacement","note":"original"}`},
+		{"invalid whole object", `{"path":"a\"><parameter name='content'>one","extra":true}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			call.Arguments = json.RawMessage(tc.arguments)
+			if proposal := call.RepairedArguments(file); proposal != nil || call.SentArguments() != tc.arguments {
+				t.Fatalf("execution proposed %s, replayed %q for %q", proposal, call.SentArguments(), tc.arguments)
+			}
+		})
+	}
 }
 
 // TestRescueClaudeXMLArgsEmptyReturnsEmpty pins the empty-arguments short

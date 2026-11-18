@@ -32,6 +32,9 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 	const note = `<parameter name='extra'>literal</parameter>`
 	const encoded = `{ "payload": "{\"n\":1.50}", "note": "` + note + `" }`
 	const missingPath = `{"content":"<parameter name='file_path'>injected.txt</parameter>"}`
+	const hybrid = ` { "file_path" : "recovered.txt\">\n<parameter name='content'>native text</parameter>" } `
+	const literalPath = `literal"><parameter name='content'>.txt`
+	literal := `{ "file_path": ` + mustJSON(t, literalPath) + `, "content": ` + mustJSON(t, note) + ` }`
 	const options = `[ { "label": "A", "detail": "first" }, { "label": "B", "detail": "second" } ]`
 	ask := `{ "question": "Choose a route", "options": ` + mustJSON(t, options) + ` }`
 	record := llm.ToolDefinition{Name: "f", Description: "Record a payload and its note", Parameters: map[string]any{
@@ -58,7 +61,9 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 			{"id":"c2","type":"function","function":{"name":"f","arguments":` + bad + `}},
 			{"id":"c3","type":"function","function":{"name":"f","arguments":` + mustJSON(t, encoded) + `}},
 			{"id":"c4","type":"function","function":{"name":"write_file","arguments":` + mustJSON(t, missingPath) + `}},
-			{"id":"c5","type":"function","function":{"name":"ask_user","arguments":` + mustJSON(t, ask) + `}}
+			{"id":"c5","type":"function","function":{"name":"ask_user","arguments":` + mustJSON(t, ask) + `}},
+			{"id":"c6","type":"function","function":{"name":"write_file","arguments":` + mustJSON(t, hybrid) + `}},
+			{"id":"c7","type":"function","function":{"name":"write_file","arguments":` + mustJSON(t, literal) + `}}
 		]},"finish_reason":"tool_calls"}]}`
 	}
 	for _, tc := range []struct {
@@ -206,6 +211,15 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 					t.Errorf("validated shorthand options = %v, want %v", state.Questions[0].Options, want)
 				}
 				result.Content = append(result.Content, llm.ToolResult("c5", answer.FullOutput, answer.IsError).Content...)
+				for i, file := range []struct{ path, content string }{{"recovered.txt", "native text"}, {literalPath, note}} {
+					call := resp.ToolCalls()[5+i]
+					write := session.execTool(t.Context(), call, resp.Finish.Reason)
+					got, err := os.ReadFile(filepath.Join(cwd, file.path))
+					if write.IsError || err != nil || string(got) != file.content {
+						t.Errorf("%s wrote %q to %q, want %q (tool error %t, read error %v)", call.ID, got, file.path, file.content, write.IsError, err)
+					}
+					result.Content = append(result.Content, llm.ToolResult(call.ID, write.FullOutput, write.IsError).Content...)
+				}
 			}
 			turns := []schema.Turn{
 				{Kind: schema.TurnUserInput, Message: user},
@@ -278,6 +292,9 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 				}
 				if tc.field == "messages" && got["c5"] != ask {
 					t.Errorf("replayed shorthand arguments = %q, want %q", got["c5"], ask)
+				}
+				if tc.field == "messages" && (got["c6"] != hybrid || got["c7"] != literal) {
+					t.Errorf("replayed XML arguments = %q, %q, want original bytes %q, %q", got["c6"], got["c7"], hybrid, literal)
 				}
 				if !slices.Equal(thoughts, tc.thoughts) {
 					t.Errorf("outbound reasoning parts = %q, want %q", thoughts, tc.thoughts)

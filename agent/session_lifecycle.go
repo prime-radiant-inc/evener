@@ -310,11 +310,11 @@ func replayableEmptyChatPart(p llm.ContentPart, caps registry.Caps) bool {
 	return scalar != ""
 }
 
-// The Responses input encoder always accepts its own ciphertext and refusals.
-// Enrolled issuers also receive native plaintext and empty output_text items.
+// The Responses input encoder always accepts native messages and ciphertext.
+// Only enrolled issuers receive native plaintext reasoning.
 func replayableEmptyResponsesPart(p llm.ContentPart, replayPlain bool) bool {
 	if p.Kind == llm.ContentText {
-		return p.ResponsesRefusal || (replayPlain && p.ResponsesMessageStart)
+		return p.ResponsesRefusal || p.ResponsesMessageStart
 	}
 	if p.Kind != llm.ContentThinking || p.Thinking == nil {
 		return false

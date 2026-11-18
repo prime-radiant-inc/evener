@@ -79,6 +79,19 @@ func TestSession_OpenAIResponsesContinuationPhase9RetryThroughRealAnchorSelectio
 		!requestMessagesContainText(requests[1].Messages, "phase9 current user marker") {
 		t.Fatalf("full-history retry request = %+v", requests[1])
 	}
+	t.Run("anchor from another endpoint replays the conversation", func(t *testing.T) {
+		anchor := phase9MatchingAnchor("resp_other_endpoint")
+		anchor.ResponseEndpoint = "https://previous.example.test/v1/responses"
+		anchor.Message = llm.Assistant("answer from the previous endpoint")
+		req := runPhase9GateSession(t, []schema.Turn{
+			schema.NewTurn(schema.TurnUserInput, llm.User("prior question")),
+			anchor,
+		})
+		assertPhase9GateUsedFullHistory(t, req)
+		if !requestMessagesContainText(req.Messages, "prior question") || !requestMessagesContainText(req.Messages, anchor.Message.Text()) {
+			t.Fatal("full history lost the previous endpoint's conversation")
+		}
+	})
 }
 
 // TestSession_OpenAIResponsesContinuationPhase9FallbackReplaySanitizesMalformedToolCall

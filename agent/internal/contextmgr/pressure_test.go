@@ -143,6 +143,26 @@ func TestEstimateTokens_WithThinking(t *testing.T) {
 		Transport: registry.Transport{BaseURL: "https://gateway.example.test", Endpoint: "/complete", StreamEndpoint: "/stream/a"},
 	}
 	const issuerStream = "/stream/a"
+	t.Run("Anthropic fallback only prices its own native thinking", func(t *testing.T) {
+		target := registry.Resolved{Instance: "claude", ModelID: "fallback", Protocol: registry.ProtocolAnthropic}
+		cm := NewManager(provider.FromResolved(target, nil), nil, cheapmodel.New(nil))
+		for _, thought := range []struct {
+			protocol string
+			data     llm.ThinkingData
+		}{
+			{registry.ProtocolOpenAIChat, llm.ThinkingData{Text: "chat-marker-17", Signature: "reasoning"}},
+			{registry.ProtocolOpenAIResponses, llm.ThinkingData{Text: "responses-marker-23", ID: "rs_23"}},
+			{"", llm.ThinkingData{Text: "older-chat-marker-33", Signature: "reasoning_content"}},
+			{"", llm.ThinkingData{Text: "older-responses-marker-41", ID: "rs_41"}},
+		} {
+			turn := schema.Turn{Kind: schema.TurnAssistant, ResponseProtocol: thought.protocol, Message: llm.Assistant("answer")}
+			want := llm.TokenPartEstimatorFor(target).Parts(turn.Message).Total()
+			turn.Message.Content = append(turn.Message.Content, llm.ContentPart{Kind: llm.ContentThinking, Thinking: &thought.data})
+			if got := cm.estimateTokens([]schema.Turn{turn}); got != want {
+				t.Errorf("Anthropic priced %q at %d tokens, want only the answer's %d", thought.data.Text, got, want)
+			}
+		}
+	})
 	t.Run("assistant text on another Chat endpoint", func(t *testing.T) {
 		source := row
 		source.Protocol = registry.ProtocolOpenAIChat

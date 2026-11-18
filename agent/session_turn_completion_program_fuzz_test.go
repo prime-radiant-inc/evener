@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 // This program drives two adjacent session boundaries that ordinary tool and
@@ -34,6 +35,9 @@ import (
 // Turn completion, continuation recovery, and model fallbacks.
 
 type tfpScenario uint8
+
+const tfpBaseURL = "https://offline.invalid/v1"
+const tfpResponsesEndpoint = tfpBaseURL + "/responses"
 
 const (
 	tfpDirect tfpScenario = iota
@@ -141,7 +145,7 @@ func (a *tfpAdapter) Complete(ctx context.Context, req llm.Request) (llm.Respons
 	}
 	resp.ID = fmt.Sprintf("resp_tfp_%d", call)
 	resp.Raw = map[string]any{
-		"endpoint_url": "https://offline.invalid/v1/responses",
+		"endpoint_url": tfpResponsesEndpoint,
 		"id_hash":      fmt.Sprintf("tfp-id-hash-%d", call),
 	}
 	return resp, nil
@@ -219,8 +223,7 @@ func tfpNewSession(t *testing.T, program tfpProgram, adapter *tfpAdapter) *Sessi
 	t.Helper()
 	stateDir := t.TempDir()
 	workspace := t.TempDir()
-	client := llm.NewClient()
-	client.Register(adapter)
+	client := registryClient(t, map[string]registry.Provider{"openai": openaiInstance(tfpBaseURL)}, adapter)
 	policy := llm.RetryPolicy{MaxRetries: 0}
 	cfg := SessionConfig{
 		StateDir:           stateDir,
@@ -248,7 +251,8 @@ func tfpNewSession(t *testing.T, program tfpProgram, adapter *tfpAdapter) *Sessi
 			},
 		}
 	}
-	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("primary")), &agenttest.DenyEnv{WorkDir: workspace, Seed: program.seed}, cfg)
+	profile := resolveClientProfile(t, client, "openai/primary")
+	sess, err := NewSession(client, withTestSessionNamer(client, profile), &agenttest.DenyEnv{WorkDir: workspace, Seed: program.seed}, cfg)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
 	}
@@ -275,7 +279,7 @@ func tfpSeedContinuationHistory(sess *Session) {
 		Timestamp:                       stamp,
 		ResponseID:                      "resp_tfp_anchor",
 		ResponseIDHash:                  "tfp-anchor-hash",
-		ResponseEndpoint:                "https://offline.invalid/v1/responses",
+		ResponseEndpoint:                tfpResponsesEndpoint,
 		ResponseStorageScopeFingerprint: "tfp-storage-scope",
 		ResponseRequestFingerprint:      "tfp-request-fingerprint",
 		ResponseContextMarker:           responseContextMarkerV1,

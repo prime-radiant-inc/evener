@@ -623,6 +623,8 @@ func (t *Turn) DropsReasoningForTarget(res *registry.Resolved, route string) boo
 		return false
 	}
 	switch res.Protocol {
+	case registry.ProtocolAnthropic, registry.ProtocolGoogle:
+		return !t.matchesReasoningProtocol(res.Protocol)
 	case registry.ProtocolOpenAIChat:
 		return !t.matchesReasoningRoute(res, route)
 	case registry.ProtocolOpenAIResponses:
@@ -685,12 +687,14 @@ func (t *Turn) matchesReasoningProtocol(protocol string) bool {
 			continue
 		}
 		switch {
-		case len(d.ChatDetails) != 0, llm.IsOpenAICompatReasoningField(d.Signature), llm.IsOpenAICompatEncryptedReasoning(d.EncryptedContent):
+		case d.ChatScalar != nil, len(d.ChatDetails) != 0, llm.IsOpenAICompatReasoningField(d.Signature), llm.IsOpenAICompatEncryptedReasoning(d.EncryptedContent):
 			if protocol != registry.ProtocolOpenAIChat {
 				return false
 			}
 		case d.Signature != "":
-			return false
+			if protocol == registry.ProtocolOpenAIChat || protocol == registry.ProtocolOpenAIResponses {
+				return false
+			}
 		case d.ID != "" || len(d.ResponsesTextParts) != 0 || d.EncryptedContent != "":
 			if protocol != registry.ProtocolOpenAIResponses {
 				return false

@@ -77,6 +77,7 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 	}
 	t.Run("terminal selections withdraw earlier calls", func(t *testing.T) {
 		const call = `{"type":"function_call","id":"fc1","call_id":"call1","name":"write_fixture","arguments":"{}"}`
+		const callDone = `{"type":"response.output_item.done","output_index":0,"item":` + call + `}`
 		const draft = `{"type":"response.output_text.delta","item_id":"msg1","output_index":1,"content_index":0,"delta":"draft"}`
 		const refusal = " \trefusal-17\n"
 		type part = map[string]string
@@ -88,8 +89,10 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 		const answer = " \tanswer-31\n"
 		const selectedDraft = `{"type":"message","id":"msg1","content":[{"type":"output_text","text":""}]}`
 		answered := part{"type": "output_text", "text": answer}
+		emptyAnswer := part{"type": "output_text", "text": ""}
 		completedAnswer := jsonOf(t, map[string]any{"type": "message", "id": "msg1", "role": "assistant", "content": []part{answered}})
-		answerDone := `{"type":"response.output_text.done","item_id":"msg1","output_index":1,"content_index":0,"text":` + jsonOf(t, answer) + `}`
+		const textFinal = `{"type":"response.output_text.done","item_id":"msg1","output_index":1,"content_index":0`
+		answerDone := textFinal + `,"text":` + jsonOf(t, answer) + `}`
 		refusalDone := func(index int, value string) string {
 			return fmt.Sprintf(`{"type":"response.refusal.done","item_id":"msg1","output_index":1,"content_index":%d,"refusal":%s}`, index, jsonOf(t, value))
 		}
@@ -109,6 +112,11 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 			{name: "selected completed answer withdraws omitted call", text: answer, terminal: selected, parts: []part{answered}, completed: []string{completedAnswer}},
 			{name: "null reference after a repeated completion selects its answer", text: answer, terminal: `{"output":[` + nullReference + `]}`, parts: []part{answered}, completed: []string{completedAnswer, reference}},
 			{name: "selected indexed answer final withdraws omitted call", text: answer, terminal: selected, parts: []part{answered}, frames: []string{answerDone}},
+			{name: "selected empty answer final withdraws completed call", terminal: selected, parts: []part{emptyAnswer}, frames: []string{callDone, textFinal + `,"text":""}`}},
+			{name: "null reference selects a finalized empty content part", terminal: `{"output":[` + nullReference + `]}`, parts: []part{emptyAnswer}, frames: []string{callDone, `{"type":"response.content_part.done","item_id":"msg1","output_index":1,"content_index":0,"part":{"type":"output_text","text":""}}`}},
+			{name: "selected placeholder with an empty answer final withdraws completed call", terminal: `{"output":[` + selectedDraft + `]}`, parts: []part{emptyAnswer}, frames: []string{callDone, textFinal + `,"text":""}`}},
+			{name: "null answer final leaves the selected message provisional", text: "draft", terminal: selected, wantCalls: 1, frames: []string{callDone, textFinal + `,"text":null}`}},
+			{name: "empty terminal recovers completed call beside empty answer final", terminal: `{"output":[]}`, wantCalls: 1, frames: []string{callDone, textFinal + `,"text":""}`}},
 			{name: "selected completed slot confirms its earlier answer bytes", text: "draft", terminal: selected, parts: []part{{"type": "output_text", "text": "draft"}}, completed: []string{selectedDraft}},
 			{name: "repeated selected slot confirms its earlier answer bytes", text: "draft", terminal: `{"output":[` + selectedDraft + `]}`, parts: []part{{"type": "output_text", "text": "draft"}}, completed: []string{selectedDraft}},
 			{name: "a message reference to provisional text keeps the issued call", text: "draft", terminal: selected, wantCalls: 1},

@@ -190,18 +190,18 @@ type ToolCallData struct {
 	// form. It is a diagnostic record — the durable transcript keeps what the
 	// model actually sent — and never feeds provider requests.
 	RawArguments string `json:"raw_arguments,omitempty"`
-	// ArgumentRepair is a provider's execution-only recovery for a rejected
-	// string field. History and provider requests always use Arguments.
+	// ArgumentRepair is a provider's execution-only recovery for rejected
+	// tool arguments. History and provider requests always use Arguments.
 	ArgumentRepair ToolArgumentRepairer `json:"-"`
 	// ThoughtSignature carries provider-specific thought-signature state (e.g., Gemini)
 	// required to continue tool-calling turns safely.
 	ThoughtSignature string `json:"thought_signature,omitempty"`
 }
 
-// ToolArgumentRepairer recovers a provider's alternate encoding only in
-// fields whose literal string the executing tool's schema rejects.
+// ToolArgumentRepairer recovers a provider's alternate encoding against the
+// schema of the executing tool.
 type ToolArgumentRepairer interface {
-	RepairToolArguments(raw string, rejected func(field, value string) bool) string
+	RepairToolArguments(raw string, schema *jsonschema.Schema) string
 }
 
 // RepairedArguments returns a proposal for tool validation. Nil means the
@@ -211,10 +211,7 @@ func (tc ToolCallData) RepairedArguments(schema *jsonschema.Schema) json.RawMess
 		return nil
 	}
 	raw := string(tc.Arguments)
-	repaired := tc.ArgumentRepair.RepairToolArguments(raw, func(field, value string) bool {
-		property := schema.Properties[field]
-		return property != nil && property.Validate(value) != nil
-	})
+	repaired := tc.ArgumentRepair.RepairToolArguments(raw, schema)
 	if repaired == raw {
 		return nil
 	}

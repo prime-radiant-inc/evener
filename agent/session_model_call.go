@@ -1748,20 +1748,17 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			scope := commonScope
 			scope.setReasoningTextTarget(fb)
 			target := scope.reasoningTextTarget
-			key := fallbackHistoryKey{route: scope.reasoningRoute}
-			if target != nil {
-				key.protocol = target.Protocol
-				switch key.protocol {
-				case registry.ProtocolOpenAIResponses:
-					key.issuer = target.Instance
-				case registry.ProtocolOpenAIChat:
-					key.thinkingAsText = registry.BoolValue(target.Caps.ThinkingAsText)
-				}
+			key := fallbackHistoryKey{protocol: target.Protocol, route: scope.reasoningRoute}
+			switch target.Protocol {
+			case registry.ProtocolOpenAIResponses:
+				key.issuer = target.Instance
+			case registry.ProtocolOpenAIChat:
+				key.thinkingAsText = registry.BoolValue(target.Caps.ThinkingAsText)
 			}
 			// Strict Chat fallbacks on a Chat primary share opaque history by
 			// endpoint and text presentation. A cross-protocol Chat fallback
 			// also checks the model.
-			shareable := target == nil || (!target.ReplaysRawReasoning() && (key.protocol == registry.ProtocolOpenAIResponses || key.protocol == commonScope.Protocol))
+			shareable := !target.ReplaysRawReasoning() && (key.protocol == registry.ProtocolOpenAIResponses || key.protocol == commonScope.Protocol)
 			if shareable && sharedHistory != nil && key == sharedKey {
 				return sharedHistory
 			}
@@ -2112,16 +2109,11 @@ type replayScope struct {
 }
 
 func (rs *replayScope) setReasoningTextTarget(profile *provider.Profile) {
-	rs.reasoningTextTarget = nil
-	rs.reasoningRoute = ""
+	// Every wire protocol needs the actual destination. A fallback can share
+	// the primary's tool surface while speaking a different protocol.
 	res := profile.Resolved()
-	route := profile.ReasoningReplayRoute()
-	// Both protocols can return opaque history to its serving endpoint even
-	// when the row omits raw text.
-	if res.Protocol == registry.ProtocolOpenAIResponses || res.Protocol == registry.ProtocolOpenAIChat {
-		rs.reasoningTextTarget = &res
-		rs.reasoningRoute = route
-	}
+	rs.reasoningTextTarget = &res
+	rs.reasoningRoute = profile.ReasoningReplayRoute()
 }
 
 // active reports whether the scope enforces the N4 replay-provenance rules. An
@@ -2243,6 +2235,15 @@ func (rs replayScope) thinkingReplayEligible(t schema.Turn) bool {
 	}
 	if target := rs.reasoningTextTarget; target != nil {
 		switch target.Protocol {
+		case registry.ProtocolAnthropic, registry.ProtocolGoogle:
+			if rs.Protocol != target.Protocol {
+				// Native continuations on a cross-protocol fallback belong to
+				// its own issuer even after the in-flight tool round ends.
+				if target.Protocol == registry.ProtocolAnthropic {
+					return t.MatchesReasoningTextTarget(target, rs.reasoningRoute)
+				}
+				return t.ResponseProvider == target.Instance && !t.DropsReasoningForTarget(target, rs.reasoningRoute)
+			}
 		case registry.ProtocolOpenAIResponses:
 			return !t.DropsReasoningForTarget(target, rs.reasoningRoute)
 		case registry.ProtocolOpenAIChat:

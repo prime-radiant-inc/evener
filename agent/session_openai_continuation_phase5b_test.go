@@ -86,9 +86,11 @@ func TestSession_TranscriptAPILogSeparationAndAttemptGroupJoin(t *testing.T) {
 		t.Fatalf("NewSession: %v", err)
 	}
 	drainSessionEvents(sess)
+	anchor := phase9MatchingAnchor("resp_phase5b_anchor")
+	anchor.ResponseEndpoint = srv.URL + "/responses"
 	sess.history = append(sess.history,
 		schema.NewTurn(schema.TurnUserInput, llm.User("phase5b prior user marker")),
-		phase9MatchingAnchor("resp_phase5b_anchor"),
+		anchor,
 	)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: in-process httptest server with a scripted response, no real network I/O; only fires on a genuine hang.

@@ -385,10 +385,9 @@ func (item *responsesOutputItem) appendMessage(content []llm.ContentPart, messag
 	var substantive, terminalValue, recovered bool
 	observedText := func(part *responsesOutputText) string {
 		text := part.value()
-		if text != "" {
-			recovered = true
-			substantive = substantive || part.finalType == "output_text"
-		}
+		finalized := part.finalType == "output_text"
+		substantive = substantive || finalized
+		recovered = recovered || finalized || text != ""
 		return text
 	}
 	for index, entry := range parts {

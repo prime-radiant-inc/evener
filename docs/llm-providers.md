@@ -515,6 +515,9 @@ For older turns Evener uses the issuer information available in the
 transcript. A saved endpoint still identifies the serving host and path
 even when the turn predates route digests. Moving that route keeps its
 reasoning at the original endpoint. The visible conversation carries over.
+An Anthropic fallback keeps its own signed thinking through tool calls and
+cold resumes. Reasoning recorded on Chat or Responses stays on its issuing
+protocol even when the fallback shares the same tools.
 Replayed reasoning counts toward
 context pressure. A saved input-token count covers the history actually sent
 to that target under its replay rules. Evener estimates later additions,
@@ -530,8 +533,10 @@ escapes. The first replay and a replay from a saved transcript therefore
 use the same bytes for the tool call. A transcript written before Evener
 saved the original spelling can replay only the bytes still on disk. During
 Chat tool execution, a field whose schema rejects a supplied string may
-recover an encoded object, array or XML parameter. A string field such as
-`write_file.content` keeps its literal file bytes.
+recover an encoded object, array or XML parameter. When a required argument
+is missing, a string ending in an explicit XML parameter tail can supply it
+if exactly one split satisfies the complete tool schema. A valid `write_file`
+call keeps its literal path and file contents, including XML.
 
 - On `openai-chat`, `reasoning_field` selects the assistant message field
   the gateway reads. A row can set it even when the gateway emits a different

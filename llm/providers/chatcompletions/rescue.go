@@ -8,6 +8,8 @@ import (
 	"slices"
 	"unicode/utf16"
 	"unicode/utf8"
+
+	"github.com/santhosh-tekuri/jsonschema/v5"
 )
 
 // claudeXMLParamOpenRE matches the OPEN of an Anthropic-style parameter tag.
@@ -36,7 +38,67 @@ const claudeXMLParamCloseTag = "</parameter>"
 
 type chatArgumentRepair struct{}
 
-// RepairToolArguments attempts to recover tool call arguments when a model
+// RepairToolArguments first recovers fields whose own schema rejects their
+// supplied strings. A literal string may carry a missing sibling only when a
+// single explicit parameter tail produces a complete, schema-valid call.
+func (chatArgumentRepair) RepairToolArguments(raw string, schema *jsonschema.Schema) string {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal([]byte(raw), &fields) != nil || fields == nil {
+		return raw
+	}
+	changed := repairRejectedChatFields(fields, schema)
+	if proposal := recoverMissingXMLArgument(fields, schema); proposal != "" {
+		return proposal
+	}
+	if changed {
+		return string(appendJSONObject(nil, fields))
+	}
+	return raw
+}
+
+func recoverMissingXMLArgument(fields map[string]json.RawMessage, schema *jsonschema.Schema) string {
+	if !slices.ContainsFunc(schema.Required, func(name string) bool { return fields[name] == nil }) {
+		return ""
+	}
+	var candidate string
+	for field, token := range fields {
+		content, ok := decodeJSONStringContent(token)
+		if !ok || schema.Properties[field] == nil || !claudeXMLParamHintRE.Match(content) {
+			continue
+		}
+		head, params, explicit := splitXMLParameterTail(content)
+		if !explicit {
+			continue
+		}
+		var addsRequired, conflict bool
+		for name := range params {
+			if fields[name] != nil {
+				conflict = true
+				break
+			}
+			addsRequired = addsRequired || slices.Contains(schema.Required, name)
+		}
+		if conflict || !addsRequired {
+			continue
+		}
+		// The split may use only absent siblings. Keep all other literal
+		// arguments exactly as the model supplied them.
+		maps.Copy(params, fields)
+		params[field] = appendJSONString(nil, head)
+		proposal := appendJSONObject(nil, params)
+		var args map[string]any
+		if json.Unmarshal(proposal, &args) != nil || schema.Validate(args) != nil {
+			continue
+		}
+		if candidate != "" {
+			return ""
+		}
+		candidate = string(proposal)
+	}
+	return candidate
+}
+
+// repairRejectedChatFields attempts to recover tool call arguments when a model
 // mixes Claude-style XML tool call syntax into the JSON arguments field.
 //
 // Examples:
@@ -53,19 +115,12 @@ type chatArgumentRepair struct{}
 // fields the rescue does not rewrite. Only a rewritten carrier prefix and
 // non-JSON extracted values are re-escaped, as JSON requires.
 //
-// If the input contains neither rescue shape, it is returned unchanged. If
-// rescue is not possible, the original input is returned so the usual
-// schema-validation error path can surface the problem.
 // Encoded arrays and objects also qualify when the field rejects the string.
-func (chatArgumentRepair) RepairToolArguments(raw string, rejected func(field, value string) bool) string {
-	if raw == "" {
-		return raw
+func repairRejectedChatFields(fields map[string]json.RawMessage, schema *jsonschema.Schema) bool {
+	rejected := func(field string, value []byte) bool {
+		property := schema.Properties[field]
+		return property != nil && property.Validate(string(value)) != nil
 	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(raw), &fields); err != nil || fields == nil {
-		return raw
-	}
-
 	// Second-order rescue: for any top-level field whose value is a string
 	// that looks like a JSON array or object (starts with `[` or `{`), try
 	// parsing it. Models sometimes emit JSON-encoded strings for array/object
@@ -81,7 +136,7 @@ func (chatArgumentRepair) RepairToolArguments(raw string, rejected func(field, v
 		if len(trimmed) == 0 || (trimmed[0] != '[' && trimmed[0] != '{') {
 			continue
 		}
-		if !rejected(k, string(content)) {
+		if !rejected(k, content) {
 			continue
 		}
 		var asJSON any
@@ -95,20 +150,16 @@ func (chatArgumentRepair) RepairToolArguments(raw string, rejected func(field, v
 		}
 	}
 
-	// XML in a literal text field cannot supply sibling parameters or
-	// interfere with the recovery of another field.
+	// Recover rejected fields independently of XML in accepted text fields.
 	hasXML := false
 	for k, v := range fields {
-		if content, ok := decodeJSONStringContent(v); ok && claudeXMLParamHintRE.Match(content) && rejected(k, string(content)) {
+		if content, ok := decodeJSONStringContent(v); ok && claudeXMLParamHintRE.Match(content) && rejected(k, content) {
 			hasXML = true
 			break
 		}
 	}
 	if !hasXML {
-		if parsedAnyJSONString {
-			return string(appendJSONObject(nil, fields))
-		}
-		return raw
+		return parsedAnyJSONString
 	}
 
 	// For each string value, check whether it carries a `"><parameter...` tail.
@@ -120,67 +171,16 @@ func (chatArgumentRepair) RepairToolArguments(raw string, rejected func(field, v
 	extracted := make(map[string]json.RawMessage)
 	for _, k := range sortedFieldKeys(fields) {
 		content, ok := decodeJSONStringContent(fields[k])
-		if !ok {
+		if !ok || !rejected(k, content) {
 			continue
 		}
-		openMatch := claudeXMLParamOpenRE.FindIndex(content)
-		if openMatch == nil || !rejected(k, string(content)) {
+		head, params, _ := splitXMLParameterTail(content)
+		if len(params) == 0 {
 			continue
 		}
-		// Split at the first `">` before the parameter block. If there's no
-		// `">` (value not terminated with a quote-close-bracket), fall back to
-		// splitting at the `<` of the parameter tag.
-		idx := bytes.Index(content[:openMatch[0]], []byte(`">`))
-		if idx < 0 {
-			idx = openMatch[0]
-		}
-		fields[k] = json.RawMessage(appendJSONString(nil, content[:idx]))
+		fields[k] = appendJSONString(nil, head)
+		maps.Copy(extracted, params)
 		changed = true
-
-		tail := content[idx:]
-		// Find all parameter opens. Between consecutive opens (or from an open
-		// to end-of-string), the value is the parameter content. Submatch
-		// indices are:
-		//   m[0..1] = whole match
-		//   m[2..3] = double-quoted name (or -1 if single-quoted)
-		//   m[4..5] = single-quoted name (or -1 if double-quoted)
-		opens := claudeXMLParamOpenRE.FindAllSubmatchIndex(tail, -1)
-		for i, m := range opens {
-			var paramName string
-			if m[2] >= 0 {
-				paramName = string(tail[m[2]:m[3]])
-			} else if m[4] >= 0 {
-				paramName = string(tail[m[4]:m[5]])
-			}
-			valStart := m[1] // index just after the `>` of this open tag
-			valEnd := len(tail)
-			if i+1 < len(opens) {
-				valEnd = opens[i+1][0]
-			}
-			paramValue := tail[valStart:valEnd]
-			// Strip the last closing tag (case-insensitive) if present, then
-			// trim Unicode whitespace exactly as strings.TrimSpace did.
-			if cut := lastIndexFoldASCII(paramValue, claudeXMLParamCloseTag); cut >= 0 {
-				paramValue = paramValue[:cut]
-			}
-			paramValue = bytes.TrimSpace(paramValue)
-			// A parameter value that is itself JSON is inserted with its exact
-			// bytes. Otherwise it is inserted as a byte-preserving JSON string.
-			// Use json.Unmarshal rather than json.Valid for the branch decision:
-			// a syntactically valid number outside float64 range (for example
-			// 1e999) must keep today's string treatment, so the emitted
-			// arguments stay decodable by the tool-call path.
-			var asJSON any
-			if err := json.Unmarshal(paramValue, &asJSON); err == nil {
-				extracted[paramName] = append(json.RawMessage(nil), paramValue...)
-			} else {
-				extracted[paramName] = json.RawMessage(appendJSONString(nil, paramValue))
-			}
-		}
-	}
-
-	if !changed {
-		return raw
 	}
 
 	// Merge extracted params into the top-level object. Parent fields take
@@ -191,7 +191,51 @@ func (chatArgumentRepair) RepairToolArguments(raw string, rejected func(field, v
 		}
 	}
 
-	return string(appendJSONObject(nil, fields))
+	return changed
+}
+
+// A rejected field can split at its first parameter tag. Splitting an accepted
+// string requires an explicit quote terminator after a plain value, immediately
+// followed by parameter tags with distinct names.
+func splitXMLParameterTail(content []byte) (head []byte, params map[string]json.RawMessage, explicit bool) {
+	tags := claudeXMLParamOpenRE.FindAllSubmatchIndex(content, -1)
+	if len(tags) == 0 {
+		return nil, nil, false
+	}
+	head, gap, found := bytes.Cut(content[:tags[0][0]], []byte(`">`))
+	explicit = found && len(bytes.TrimSpace(head)) != 0 && bytes.IndexByte(head, '<') < 0 && len(bytes.TrimSpace(gap)) == 0
+	params = make(map[string]json.RawMessage, len(tags))
+	for i, tag := range tags {
+		start, end := tag[2], tag[3] // double-quoted name
+		if start < 0 {
+			start, end = tag[4], tag[5] // single-quoted name
+		}
+		name := string(content[start:end])
+		if params[name] != nil {
+			explicit = false
+		}
+		end = len(content)
+		if i+1 < len(tags) {
+			end = tags[i+1][0]
+		}
+		value := content[tag[1]:end]
+		if cut := lastIndexFoldASCII(value, claudeXMLParamCloseTag); cut >= 0 {
+			if len(bytes.TrimSpace(value[cut+len(claudeXMLParamCloseTag):])) != 0 {
+				explicit = false
+			}
+			value = value[:cut]
+		}
+		value = bytes.TrimSpace(value)
+		// Keep JSON parameter tokens, including their original numeric spelling.
+		// Out-of-range numbers must remain strings for the tool-call decoder.
+		var parsed any
+		if json.Unmarshal(value, &parsed) == nil {
+			params[name] = value
+		} else {
+			params[name] = appendJSONString(nil, value)
+		}
+	}
+	return head, params, explicit
 }
 
 // decodeJSONStringContent returns the content bytes of a JSON string token
