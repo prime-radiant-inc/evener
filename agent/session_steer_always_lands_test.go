@@ -226,40 +226,17 @@ func TestSteerRetryStillProvokesDelivery(t *testing.T) {
 	}
 }
 
-// TestReattachedSteerAppendsOneEntryPerAcceptedMutation drives the sequence
-// issue #6467 names -- accept a steer, drop the daemon before it runs, attach a
-// replacement, let its carrier deliver the steer, then run a following
-// turn/start -- and pins the invariant both append paths owe: one accepted
-// client mutation appends exactly one transcript entry, and a steer's entry is
-// STEERING, never USER_INPUT.
+// TestReattachedSteerAppendsOneEntryPerAcceptedMutation accepts a steer, drops
+// the daemon before it runs, attaches a replacement, lets its carrier deliver
+// the steer, then runs a following turn/start. It pins the invariant both
+// append paths owe: one accepted client mutation appends exactly one transcript
+// entry, and a steer's entry is STEERING, never USER_INPUT.
 //
-// The oracle is the client mutation id, not the message text, and that
-// distinction is the finding. Session 034shLavwEzQOOKf3RtUCG, the session the
-// issue reports, carries the same 1892-byte text in two entries three seqs
-// apart under turn_m2443:
-//
-//	seq 11425  USER_INPUT  client mutation cf342924-... (turn/start, turn_m2443)
-//	seq 11427  STEERING    client mutation 2f94c580-... (turn/steer,  turn_m2442)
-//
-// Two separately accepted mutations, one entry each, both recorded against the
-// turn the start ran. The journal holds both as applied: the start terminal on
-// turn_m2443, the steer incorporated on turn_m2442 with owning_turn_id
-// turn_m2443. So the daemon appended one mutation once per mutation; it did not
-// append one mutation twice. Who issued the second mutation is a client
-// question this test does not answer.
-//
-// That is why a text-keyed count would be the wrong assertion here: "exactly
-// one entry carries this text" reddens on correct behavior whenever two
-// accepted mutations carry the same words, which is precisely what the reported
-// session did. TestTwoAcceptedMutationsWithIdenticalTextEachAppendOneEntry
-// holds that boundary so the difference stays checkable.
-//
-// This test passes on unmodified main. It is a pinning test, not a
-// reproduction: the duplicate in #6467 was not reproduced, and this holds the
-// shape rather than the defect. It fails if one accepted mutation ever appends
-// twice -- verified by making appendClientMutationTranscriptLocked write its
-// turn a second time, which yields `transcript entries for client mutation
-// "cm-reattach-steer" = 2 ([STEERING STEERING]), want exactly 1`.
+// The oracle is the client mutation id, not the message text: a steer and a
+// start legitimately carry identical words when a client submits one
+// composition twice, and each still owes its own single entry.
+// TestSteerDrainedIntoARunningStartAppendsOneEntryPerMutation holds the case
+// where both land under one turn.
 func TestReattachedSteerAppendsOneEntryPerAcceptedMutation(t *testing.T) {
 	t.Parallel()
 	const (
@@ -275,8 +252,7 @@ func TestReattachedSteerAppendsOneEntryPerAcceptedMutation(t *testing.T) {
 	if err := crashed.ensureClientMutationStore(); err != nil {
 		t.Fatalf("ensureClientMutationStore: %v", err)
 	}
-	// The steer is accepted and reserves its carrier turn: mutation
-	// 2f94c580-... of the report.
+	// The steer is accepted and reserves its carrier turn.
 	if _, err := crashed.AcceptClientMutationSteer(appwire.TurnSteerParams{
 		ClientMutationID: steerID,
 		Input:            []appwire.InputItem{{Type: "text", Text: steerText}},
@@ -318,9 +294,8 @@ func TestReattachedSteerAppendsOneEntryPerAcceptedMutation(t *testing.T) {
 	assertOneEntryPerMutation(t, restored, steerID, schema.TurnSteering, steerText)
 	assertOneEntryPerMutation(t, restored, startID, schema.TurnUserInput, startText)
 
-	// The issue's step 3 -- the store written again and the steer incorporated
-	// -- is only a duplicate if an already-recorded steer is appended again.
-	// Drive both ways: another wake in this process, and another replacement.
+	// An incorporated steer is only a duplicate if it is appended again. Drive
+	// both ways: another wake in this process, and another replacement.
 	if _, _, err := restored.ProcessPendingUserInput(t.Context(), nil); err != nil {
 		t.Fatalf("second wake over an incorporated steer: %v", err)
 	}
@@ -332,20 +307,20 @@ func TestReattachedSteerAppendsOneEntryPerAcceptedMutation(t *testing.T) {
 	assertOneEntryPerMutation(t, again, steerID, schema.TurnSteering, steerText)
 }
 
-// TestTwoAcceptedMutationsWithIdenticalTextEachAppendOneEntry holds the
-// boundary that rules out the mechanism issue #6467 proposes.
+// TestSteerDrainedIntoARunningStartAppendsOneEntryPerMutation covers a steer
+// and a turn/start carrying the same words landing under ONE running turn.
 //
-// A steer and a following turn/start carrying the same words are two accepted
-// mutations, and the daemon is right to append one entry for each: a steer and
-// a start are different work, and identical text does not make them one. That
-// is the shape of the reported session, so no count keyed on text can tell it
-// apart from a real duplicate.
+// The steer is accepted and left pending, then the start claims and runs a
+// turn whose tool round drains the pending steering into itself. Both entries
+// then carry the start's turn id, and the steering entry's OwningTurnID names
+// that same turn. A dedup scoped to one owning turn has to drop the second
+// entry here, and that is a bug: the steer and the start are two accepted
+// mutations, and identical text does not make them one.
 //
-// This is also why scanning the transcript for repeated text is not the fix for
-// #6467: a daemon that deduped on text would refuse the second, genuine
-// mutation. The count that matters is per mutation id, which is what
-// TestReattachedSteerAppendsOneEntryPerAcceptedMutation asserts.
-func TestTwoAcceptedMutationsWithIdenticalTextEachAppendOneEntry(t *testing.T) {
+// This is why scanning the transcript for repeated text is not the fix: it
+// discards a genuine second mutation. The count that matters is per mutation
+// id, which is what this test asserts.
+func TestSteerDrainedIntoARunningStartAppendsOneEntryPerMutation(t *testing.T) {
 	t.Parallel()
 	const (
 		shared  = "the same words submitted twice"
@@ -354,14 +329,13 @@ func TestTwoAcceptedMutationsWithIdenticalTextEachAppendOneEntry(t *testing.T) {
 	)
 	s := newTestSessionForEnvctx(t)
 	serveSessionWithMutationStore(t, s)
+	// The steer is accepted and stays pending: nothing drains it until the
+	// start's own tool round does.
 	if _, err := s.AcceptClientMutationSteer(appwire.TurnSteerParams{
 		ClientMutationID: steerID,
 		Input:            []appwire.InputItem{{Type: "text", Text: shared}},
 	}); err != nil {
 		t.Fatalf("AcceptClientMutationSteer: %v", err)
-	}
-	if _, ran, err := s.ProcessPendingUserInput(t.Context(), nil); err != nil || !ran {
-		t.Fatalf("deliver the steer: ran=%v err=%v", ran, err)
 	}
 	if _, err := s.AcceptClientMutationStart(appwire.TurnStartParams{
 		ClientMutationID: startID,
@@ -372,16 +346,25 @@ func TestTwoAcceptedMutationsWithIdenticalTextEachAppendOneEntry(t *testing.T) {
 	if _, _, err := s.ProcessClientMutationStart(t.Context(), nil); err != nil {
 		t.Fatalf("client mutation start: %v", err)
 	}
-
-	assertOneEntryPerMutation(t, s, steerID, schema.TurnSteering, shared)
-	assertOneEntryPerMutation(t, s, startID, schema.TurnUserInput, shared)
+	steering := assertOneEntryPerMutation(t, s, steerID, schema.TurnSteering, shared)
+	start := assertOneEntryPerMutation(t, s, startID, schema.TurnUserInput, shared)
+	// The fixture only covers a same-turn dedup if the steer really landed in the
+	// start's turn: the steering entry's owner is the turn the start recorded its
+	// own USER_INPUT under. Without this, the two entries could sit in different
+	// turns and a dedup scoped to one owning turn would go unnoticed.
+	if start.TurnID == "" {
+		t.Fatal("the start's entry carries no turn id, so the fixture cannot show where the steer landed")
+	}
+	if steering.OwningTurnID != start.TurnID {
+		t.Fatalf("the steering entry is owned by turn %q, want the start's turn %q: the steer has to be drained into the start's own turn, not delivered on a carrier of its own", steering.OwningTurnID, start.TurnID)
+	}
 }
 
 // assertOneEntryPerMutation fails unless the transcript holds exactly one entry
 // for clientMutationID, that entry's kind is want, and it carries wantText.
 // wantText proves the id-to-text mapping; it is the caller's own sentinel, never
 // production copy.
-func assertOneEntryPerMutation(t *testing.T, s *Session, clientMutationID string, want schema.TurnKind, wantText string) {
+func assertOneEntryPerMutation(t *testing.T, s *Session, clientMutationID string, want schema.TurnKind, wantText string) schema.Turn {
 	t.Helper()
 	var matched []schema.Turn
 	for _, entry := range transcriptEntries(t, s) {
@@ -402,4 +385,5 @@ func assertOneEntryPerMutation(t *testing.T, s *Session, clientMutationID string
 	if !strings.Contains(matched[0].Message.Text(), wantText) {
 		t.Fatalf("the entry for client mutation %q does not carry the text it was accepted with", clientMutationID)
 	}
+	return matched[0]
 }
