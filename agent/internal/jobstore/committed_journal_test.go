@@ -1445,6 +1445,94 @@ func TestStoreAppendFailsWhenTheTailRecheckCannotResolve(t *testing.T) {
 	}
 }
 
+// vanishOnNthStatFs makes the journal's name answer ENOENT for exactly one
+// Stat, at an ordinal chosen by the fixture, and answers normally either side.
+//
+// That is the rename half of a rename-and-replace with the replacement already
+// installed: the name is briefly absent while one check looks at it, and by the
+// time the write happens it reaches the same file as before. An append cannot
+// tell from its own successful write that the check in between saw nothing.
+type vanishOnNthStatFs struct {
+	afero.Fs
+	remaining atomic.Int64
+}
+
+func (f *vanishOnNthStatFs) vanishOnNthStat(n int64) { f.remaining.Store(n) }
+
+func (f *vanishOnNthStatFs) Stat(name string) (os.FileInfo, error) {
+	if n := f.remaining.Load(); n > 0 {
+		if f.remaining.CompareAndSwap(n, n-1) && n == 1 {
+			return nil, &os.PathError{Op: "stat", Path: name, Err: os.ErrNotExist}
+		}
+	}
+	return f.Fs.Stat(name)
+}
+
+// TestStoreAppendRefusesWhenTheNameVanishesDuringTheTailCheck pins High 2.
+//
+// A torn fragment is at the end of a live journal. This append notices the
+// change and examines the tail — and in that exact moment the name answers
+// ENOENT, because a rename-and-replace is between its two steps. By the time the
+// append writes, the name is back and reaches the same file as before, so every
+// post-sync check agrees the write landed.
+//
+// The fragment was never examined. Joining a new record onto it fsyncs one
+// malformed line, the append reports success, and every later read and reopen
+// fails on that line. An ENOENT during the tail check is not a finding that the
+// tail is clean, and a writer cannot treat it as one.
+//
+// This is the same defect class as the generic stat failure above, arriving
+// through absence rather than an error: the repair returns without an error and
+// without having established anything.
+func TestStoreAppendRefusesWhenTheNameVanishesDuringTheTailCheck(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "jobs.jsonl")
+
+	fs := &vanishOnNthStatFs{Fs: afero.NewOsFs()}
+	s, err := openFs(fs, path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	if err := s.Append(Event{Kind: EventJobStarted, JobID: "job_before", Type: JobShell}); err != nil {
+		t.Fatalf("first append: %v", err)
+	}
+
+	partial := []byte(`{"kind":"job_started","seq":`)
+	if err := os.WriteFile(path, append(mustReadFile(t, path), partial...), 0o644); err != nil {
+		t.Fatalf("tear the tail: %v", err)
+	}
+	// The repair's identity recheck is the SECOND stat this append makes of the
+	// name; the first is the pre-write sample, and faulting that one refuses the
+	// append before the tail is examined at all — a different question.
+	fs.vanishOnNthStat(2)
+
+	appendErr := s.Append(Event{Kind: EventJobStarted, JobID: "job_after_torn", Type: JobShell})
+	if appendErr != nil && !errors.Is(appendErr, ErrJournalNameUnavailable) {
+		t.Fatalf("append across a vanished tail recheck = %v, want a retryable ErrJournalNameUnavailable", appendErr)
+	}
+
+	// The corruption is the assertion. If the append reported success it wrote
+	// onto the fragment, and the journal it left behind cannot be folded — so
+	// this fails on the unreadable journal rather than on the success alone,
+	// which is the user-visible damage: every later read and every reopen.
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen the journal after this append: %v (append reported success = %v; it joined the unexamined fragment and fsynced one malformed line)", err, appendErr == nil)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	records, err := reopened.Load()
+	if err != nil {
+		t.Fatalf("fold the reopened journal: %v (append reported success = %v; it joined the unexamined fragment and fsynced one malformed line)", err, appendErr == nil)
+	}
+	if records["job_before"] == nil {
+		t.Fatal("the record appended before the tear is missing from the reopened journal")
+	}
+	if err := s.Append(Event{Kind: EventJobStarted, JobID: "job_retry", Type: JobShell}); err != nil {
+		t.Fatalf("retry once the name is readable again: %v", err)
+	}
+}
+
 // TestStoreAppendRetriesWhenTheNameIsAbsentAfterSync pins H1.
 //
 // A rename-and-replace is two steps, and between them the name reaches nothing.

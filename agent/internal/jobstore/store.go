@@ -854,7 +854,12 @@ func (s *Store) CommittedJournal() (CommittedJournalState, error) {
 		// appends are recorded by noteAppendedLocked, so the stat above matches
 		// what the store wrote and this branch is not taken: the incremental
 		// read stays a stat.
-		if err := s.recoverTrailingPartialLineLocked(); err != nil {
+		// A reader may proceed on an unsettled tail: it reports a boundary and
+		// withholds what it cannot decode, and an absent name has no boundary to
+		// report yet. Refusing here would fail an ordinary activity read of a
+		// journal that is being replaced, which is exactly what the incremental
+		// path must tolerate.
+		if _, err := s.recoverTrailingPartialLineLocked(); err != nil {
 			return CommittedJournalState{}, err
 		}
 		if repaired, statErr := s.fs.Stat(s.path); statErr == nil {
@@ -1059,7 +1064,7 @@ func (s *Store) HasEvent(match func(*Event) bool) (bool, error) {
 // cursor.events plus the returned unterminated trailing events hold every
 // durable event, exactly what a full reread would produce.
 func (s *Store) refreshCursorLocked() ([]Event, error) {
-	if err := s.recoverTrailingPartialLineLocked(); err != nil {
+	if _, err := s.recoverTrailingPartialLineLocked(); err != nil {
 		return nil, err
 	}
 	info, err := s.fs.Stat(s.path)
@@ -1252,9 +1257,24 @@ func (s *Store) noteContentBeforeStoreWriteLocked(info os.FileInfo, err error) e
 		// Repair before writing, and leave the baseline unrecorded if the repair
 		// fails: a caller that retries must see the change again rather than a
 		// baseline that claims bytes the store never verified.
-		if err := s.recoverTrailingPartialLineLocked(); err != nil {
+		//
+		// An unsettled repair is not a clean tail. The journal was renamed away
+		// or replaced while its trailing byte was being examined, so where this
+		// store's bytes end is unknown — and a writer that does not know where
+		// its records end joins this one onto whatever fragment is there. That
+		// produces a single malformed line, reported as a successful append, and
+		// every later read and reopen fails on it. So the append is refused with
+		// the retryable name-unavailable error instead, and the event stays with
+		// the caller until the name reaches a file the store can examine. Reads
+		// take the same repair and are free to proceed on the same answer.
+		settled, err := s.recoverTrailingPartialLineLocked()
+		if err != nil {
 			s.sampled = false
 			return err
+		}
+		if !settled {
+			s.sampled = false
+			return fmt.Errorf("%w: %s: the tail could not be examined before this append", ErrJournalNameUnavailable, s.path)
 		}
 		if repaired, statErr := s.fs.Stat(s.path); statErr == nil {
 			size, mod = repaired.Size(), repaired.ModTime()
@@ -1464,7 +1484,15 @@ func trimLineTerminator(raw []byte) []byte {
 	return line
 }
 
-func (s *Store) recoverTrailingPartialLineLocked() (err error) {
+// settled reports whether this call ESTABLISHED what the tail holds.
+//
+// It is false when the question could not be put to the file at all: the name
+// is gone, or it reaches a different file than the handle this store appends
+// through. Neither is a finding that the tail is clean, and a reader that only
+// wants a boundary can treat them the same. A WRITER cannot: joining a new
+// record onto a fragment nobody examined is how one malformed line reaches the
+// journal, and the next reopen fails on it.
+func (s *Store) recoverTrailingPartialLineLocked() (settled bool, err error) {
 	// Identity FIRST, size second, and both from the file this function is about
 	// to probe and possibly cut.
 	//
@@ -1478,23 +1506,23 @@ func (s *Store) recoverTrailingPartialLineLocked() (err error) {
 	named, statErr := s.fs.Stat(s.path)
 	if statErr != nil {
 		if os.IsNotExist(statErr) {
-			return nil
+			return false, nil
 		}
-		return fmt.Errorf("%w: %s: %w", ErrJournalNameUnavailable, s.path, statErr)
+		return false, fmt.Errorf("%w: %s: %w", ErrJournalNameUnavailable, s.path, statErr)
 	}
 	f := s.f
 	info, handleErr := f.Stat()
 	if handleErr != nil {
-		return fmt.Errorf("jobstore: stat %s: %w", s.path, handleErr)
+		return false, fmt.Errorf("jobstore: stat %s: %w", s.path, handleErr)
 	}
 	if !sameJournalFile(info, named) {
 		// The name reaches a different file. This store's tail is not the one a
 		// reader will see, so repairing it would edit a file nobody reads, and
 		// the replacement is someone else's to examine.
-		return nil
+		return false, nil
 	}
 	if info.Size() == 0 {
-		return nil
+		return true, nil
 	}
 	// Both halves of a repair are performed on the handle the store appends
 	// through, never on the path.
@@ -1510,11 +1538,11 @@ func (s *Store) recoverTrailingPartialLineLocked() (err error) {
 	// longer reaches are bytes no reader will ever see, and the replacement
 	// needs examining on its own terms instead.
 	if _, err := f.Seek(-1, io.SeekEnd); err != nil {
-		return fmt.Errorf("jobstore: inspect trailing byte: %w", err)
+		return false, fmt.Errorf("jobstore: inspect trailing byte: %w", err)
 	}
 	last := make([]byte, 1)
 	if _, err := io.ReadFull(f, last); err != nil {
-		return fmt.Errorf("jobstore: read trailing byte: %w", err)
+		return false, fmt.Errorf("jobstore: read trailing byte: %w", err)
 	}
 	// The read left the handle off its end; every exit from here restores it,
 	// because Append seeks to the end before writing and a half-positioned
@@ -1525,14 +1553,14 @@ func (s *Store) recoverTrailingPartialLineLocked() (err error) {
 		}
 	}()
 	if last[0] == '\n' {
-		return nil
+		return true, nil
 	}
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
-		return fmt.Errorf("jobstore: inspect %s: %w", s.path, err)
+		return false, fmt.Errorf("jobstore: inspect %s: %w", s.path, err)
 	}
 	raw, err := io.ReadAll(f)
 	if err != nil {
-		return fmt.Errorf("jobstore: read %s: %w", s.path, err)
+		return false, fmt.Errorf("jobstore: read %s: %w", s.path, err)
 	}
 	// The whole tail is now in memory and the cut below is about to happen. The
 	// name was resolved against this handle at the top of this function, and the
@@ -1542,9 +1570,9 @@ func (s *Store) recoverTrailingPartialLineLocked() (err error) {
 	// second replacement from supplying the evidence for a cut on the first one.
 	cut := bytes.LastIndexByte(raw, '\n')
 	if cut < 0 {
-		return s.recoverTrailingJSONLineLocked(raw, 0)
+		return true, s.recoverTrailingJSONLineLocked(raw, 0)
 	}
-	return s.recoverTrailingJSONLineLocked(raw[cut+1:], int64(cut+1))
+	return true, s.recoverTrailingJSONLineLocked(raw[cut+1:], int64(cut+1))
 }
 
 func (s *Store) recoverTrailingJSONLineLocked(line []byte, offset int64) error {
