@@ -64,25 +64,55 @@ func (t *Tracker) StepInBlock(line string) bool {
 // top-level line is swallowed as its content (#6493 review).
 //
 // container is the scope for this line, 0 outside any item, so a caller must
-// reset it on the line that leaves the item. It is read only when no block is
+// reset it on the line that leaves the item. It is adopted whenever no block is
 // open: a block's own content may look like a list, and what it holds is quoted
-// text rather than structure.
+// text rather than structure, so the scope is not changed while one is open.
+//
+// The supplied scope is the CURRENT item's, which may be nested inside the one
+// already recorded, so adopting it is not the same as filling an empty slot. A
+// fence opened on a nested item's continuation line belongs to that item, and
+// keeping the enclosing item's indentation instead would leave the line that
+// dedents back to the enclosing item at or past the recorded indent, so the
+// block would survive the dedent and swallow that item's prose (#6493 review).
 func (t *Tracker) StepInBlockIn(line string, container int) bool {
-	if t.length == 0 && t.container == 0 && container > 0 {
+	if t.length == 0 {
+		// The caller resolved this line's scope, so it applies as given: a fence
+		// opened here belongs to the current item, which may be nested inside
+		// the one recorded, and the line has not left anything.
 		t.container = container
+		return t.stepResolved(line) || t.Inside()
+	} else if leavesItem(line, t.container) {
+		// A block ends with the item that holds it, and the line that ends it
+		// belongs to the enclosing scope the caller reports rather than to the
+		// top level. Process it in that scope, so a fence it opens is read as
+		// the enclosing item's (#6493 review).
+		t.length, t.container = 0, container
+		return t.stepResolved(line) || t.Inside()
 	}
-	return t.Step(line) || t.Inside()
+	return t.stepOpen(line) || t.Inside()
+}
+
+// leavesItem reports whether line is non-blank and indented less than the
+// content indentation of the item the tracker is inside. A blank line stays
+// inside the item: it neither ends one nor opens code.
+func leavesItem(line string, container int) bool {
+	return container > 0 && strings.TrimSpace(line) != "" && LeadingColumns(line) < container
 }
 
 // Step advances over line and reports whether it opened or closed a block.
 func (t *Tracker) Step(line string) bool {
-	// A non-blank line indented less than the list item's content leaves the
-	// item, and any fence the item holds ends with it: the line is read on its
-	// own from here, as a new opener or as ordinary content. A blank line stays
-	// inside the item.
-	if t.container > 0 && strings.TrimSpace(line) != "" && LeadingColumns(line) < t.container {
+	// A line that leaves the item ends any fence the item holds: it is read on
+	// its own from here, as a new opener or as ordinary content.
+	if leavesItem(line, t.container) {
 		t.length, t.container = 0, 0
 	}
+	return t.stepResolved(line)
+}
+
+// stepResolved advances over line in the recorded scope, without deriving a
+// dedent from it: the caller of StepInBlockIn has already resolved the line's
+// scope and recorded it.
+func (t *Tracker) stepResolved(line string) bool {
 	if t.length == 0 {
 		// A fence at the item's content indentation while the item holds (a
 		// top-level fence is the container-0 case), else a fence on a new list
@@ -98,6 +128,12 @@ func (t *Tracker) Step(line string) bool {
 		}
 		return false
 	}
+	return t.stepOpen(line)
+}
+
+// stepOpen advances over line while a block is open, reporting whether the line
+// closed it.
+func (t *Tracker) stepOpen(line string) bool {
 	char, n, after := runAt(line, t.container)
 	if n == 0 {
 		return false
