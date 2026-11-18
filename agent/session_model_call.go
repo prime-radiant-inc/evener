@@ -2351,11 +2351,16 @@ func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Messa
 		provenanceKeepsThinking = rs.thinkingReplayEligible(t)
 		keepWebSearch = rs.webSearchReplayEligible(t)
 	}
+	target := rs.reasoningTextTarget
 	keepRaw := false
-	if provenanceKeepsThinking {
-		t.Message = t.ProjectReasoningText(rs.reasoningTextTarget, rs.reasoningRoute)
-	} else if rs.reasoningTextTarget != nil && rs.reasoningTextTarget.ReplaysRawReasoning() && t.Message.Role == llm.RoleAssistant {
-		keepRaw = t.MatchesReasoningTextTarget(rs.reasoningTextTarget, rs.reasoningRoute)
+	// A Chat fallback presents a known Chat producer's unsigned display as
+	// ordinary assistant text even when the primary excludes its native state.
+	keepThinking := provenanceKeepsThinking || (target != nil && t.Message.Role == llm.RoleAssistant &&
+		t.ReplaysChatDisplayText(target) && rs.producerProtocol(t) == registry.ProtocolOpenAIChat)
+	if keepThinking {
+		t.Message = t.ProjectReasoningText(target, rs.reasoningRoute, provenanceKeepsThinking)
+	} else if target != nil && target.ReplaysRawReasoning() && t.Message.Role == llm.RoleAssistant {
+		keepRaw = t.MatchesReasoningTextTarget(target, rs.reasoningRoute)
 	}
 	t.Message = projectVoicePresentation(t)
 	if !rs.active() && !rs.DropThinking {
@@ -2367,7 +2372,7 @@ func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Messa
 	for _, p := range t.Message.Content {
 		switch p.Kind {
 		case llm.ContentThinking, llm.ContentRedThinking:
-			if np, drop := rs.projectThinkingPart(p, provenanceKeepsThinking, keepRaw); drop || np.Thinking != p.Thinking {
+			if np, drop := rs.projectThinkingPart(p, keepThinking, keepRaw); drop || np.Thinking != p.Thinking {
 				needsFilter = true
 			}
 		case llm.ContentWebSearch:
@@ -2386,7 +2391,7 @@ func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Messa
 	for _, p := range t.Message.Content {
 		switch p.Kind {
 		case llm.ContentThinking, llm.ContentRedThinking:
-			np, drop := rs.projectThinkingPart(p, provenanceKeepsThinking, keepRaw)
+			np, drop := rs.projectThinkingPart(p, keepThinking, keepRaw)
 			if drop {
 				continue
 			}

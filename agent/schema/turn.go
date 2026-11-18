@@ -561,33 +561,34 @@ type Turn struct {
 }
 
 // ProjectReasoningText keeps raw reasoning for the chat or Responses model
-// that issued it. Native continuations belong to the serving deployment.
+// that issued it. Native continuations require both the serving deployment
+// and the request's provenance scope. Chat can present unsigned display on its own.
 // A request projection never edits the stored message.
-func (t *Turn) ProjectReasoningText(res *registry.Resolved, route string) llm.Message {
+func (t *Turn) ProjectReasoningText(res *registry.Resolved, route string, allowNative bool) llm.Message {
 	msg := t.Message
 	if res == nil || msg.Role != llm.RoleAssistant {
 		return msg
 	}
-	foreignDeployment := t.DropsReasoningForTarget(res, route)
-	if !foreignDeployment && (!res.ReplaysRawReasoning() || t.MatchesReasoningTextTarget(res, route)) {
+	dropNative := !allowNative || t.DropsReasoningForTarget(res, route)
+	if !dropNative && (!res.ReplaysRawReasoning() || t.MatchesReasoningTextTarget(res, route)) {
 		return msg
 	}
-	if res.Protocol == registry.ProtocolOpenAIChat && !foreignDeployment {
+	if res.Protocol == registry.ProtocolOpenAIChat && !dropNative {
 		return llm.TrimThinkingForReplayMessage(msg, true)
 	}
 	// Within one Responses deployment, a different model can receive opaque
 	// items even when the issuing model's plain reasoning is omitted.
 	removeNative := func(p llm.ContentPart) bool {
 		if p.Kind == llm.ContentRedThinking {
-			return foreignDeployment
+			return dropNative
 		}
-		return p.Kind == llm.ContentThinking && p.Thinking != nil && (foreignDeployment || p.Thinking.EncryptedContent == "")
+		return p.Kind == llm.ContentThinking && p.Thinking != nil && (dropNative || p.Thinking.EncryptedContent == "")
 	}
 	first := slices.IndexFunc(msg.Content, removeNative)
 	if first < 0 {
 		return msg
 	}
-	keepDisplay := foreignDeployment && t.ReplaysChatDisplayText(res)
+	keepDisplay := dropNative && t.ReplaysChatDisplayText(res)
 	out := make([]llm.ContentPart, first, len(msg.Content))
 	copy(out, msg.Content[:first])
 	for _, p := range msg.Content[first:] {

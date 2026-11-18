@@ -199,6 +199,9 @@ func TestFallbackKeepsOpaqueAndWebSearchScopeAcrossProtocols(t *testing.T) {
 			}
 			t.Run("own tool continuation", func(t *testing.T) { testChatToolContinuation(t, chatContinuationCase{raw: tc.raw, viaFallback: true}) })
 			t.Run("direct Chat tool continuation", func(t *testing.T) { testChatToolContinuation(t, chatContinuationCase{raw: tc.raw}) })
+			t.Run("Chat display behind a Responses primary", func(t *testing.T) {
+				testChatToolContinuation(t, chatContinuationCase{raw: tc.raw, asText: true, viaFallback: true})
+			})
 		})
 	}
 }
@@ -272,12 +275,29 @@ func testChatToolContinuation(t *testing.T, tc chatContinuationCase) {
 		redirected.Transport = &registry.Transport{StreamEndpoint: "/redirected/chat/completions"}
 		inst := registry.Provider{Base: "openai-compatible", Surface: registry.SurfaceOpenAI, APIKey: "test", Transport: registry.Transport{BaseURL: base},
 			Models: map[string]registry.Model{"reasoner": model, "other": model, "redirected": redirected}}
-		return registryClientAt(t, dir, map[string]registry.Provider{"work": openaiInstance(srv.URL), "gw": inst}, []string{"work", "gw"})
+		c := registryClientAt(t, dir, map[string]registry.Provider{"work": openaiInstance(srv.URL), "gw": inst}, []string{"work", "gw"})
+		if tc.asText && tc.viaFallback {
+			c.Use(llm.MiddlewareFunc{Stream: func(ctx context.Context, req llm.Request, next llm.StreamFunc) (llm.Stream, error) {
+				if req.Provider == "gw" {
+					row := resolveClientProfile(t, c, "gw/"+req.Model).Resolved()
+					want := llm.EstimateInputTokensForResolved(row, req).Tokens
+					if req.InputTokensEstimate != want || req.FullHistoryInputTokensEstimate != want {
+						t.Errorf("Chat fallback estimates = %d input, %d full; projected request costs %d", req.InputTokensEstimate, req.FullHistoryInputTokensEstimate, want)
+					}
+				}
+				return next(ctx, req)
+			}})
+		}
+		return c
 	}
 	client := clientAt(srv.URL)
 	target := func(model string) (*provider.Profile, []string) {
 		if tc.viaFallback {
-			return resolveClientProfile(t, client, "work/gpt-5.2"), []string{"gw/" + model}
+			fallbacks := []string{"gw/" + model}
+			if tc.asText && model == "reasoner" {
+				fallbacks = append(fallbacks, "gw/redirected")
+			}
+			return resolveClientProfile(t, client, "work/gpt-5.2"), fallbacks
 		}
 		if model == "reasoner" {
 			return resolveClientProfile(t, client, "gw/reasoner"), []string{"other"}
@@ -310,7 +330,11 @@ func testChatToolContinuation(t *testing.T, tc chatContinuationCase) {
 	// Tool continuation, next turn, cold resume, another model, redirected
 	// endpoint, and a return to the original endpoint.
 	targets := []destination{{true, true}, {true, true}, {true, true}, {true, false}, {false, true}, {false, false}, {true, true}}
-	if tc.asText {
+	if tc.asText && tc.viaFallback {
+		rejectIssuer.Store(true)
+		sendOneUserInput(t, s, "continue on the other endpoint")
+		targets = append(targets, destination{false, false})
+	} else if tc.asText {
 		if err := s.SetModel("gw/redirected"); err != nil {
 			t.Fatal(err)
 		}
@@ -349,12 +373,13 @@ func testChatToolContinuation(t *testing.T, tc chatContinuationCase) {
 			}
 		}
 		want := map[string]any{"role": "assistant", "content": answer, "tool_calls": []any{call}}
-		if dest.sameRoute && (dest.sameModel || !tc.viaFallback) {
+		keepNative := dest.sameRoute && (dest.sameModel || !tc.viaFallback)
+		if keepNative {
 			want["reasoning_details"] = details
 		}
 		if tc.asText {
 			pieces := []string{scalar}
-			if dest.sameRoute && !tc.mirrorSigned {
+			if keepNative && !tc.mirrorSigned {
 				pieces = append(pieces, signed)
 			}
 			want["content"] = strings.Join(append(pieces, unsigned), "\n") + "\n\n" + answer

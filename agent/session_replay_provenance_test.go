@@ -353,6 +353,20 @@ func TestExpandHistory_UnconfiguredInstance_ThinkingAbsent(t *testing.T) {
 	if !hasContentKind(out, llm.ContentText) {
 		t.Fatal("answer text must survive thinking stripping")
 	}
+	// An old display-only turn carries no native field that identifies Chat.
+	// Only a known Chat producer supplies display to a Chat fallback.
+	target := registry.Resolved{Protocol: registry.ProtocolOpenAIChat, Caps: registry.Caps{ThinkingAsText: new(true)}}
+	for _, producer := range []string{"retired-instance", "anthropic", "work"} {
+		turn := assistantThinkingTurn(producer, "old-model", "old-model")
+		turn.Message.Content[0].Thinking.Signature = ""
+		out := expandHistory([]schema.Turn{turn}, replayScope{
+			Instance: "openai", Protocol: registry.ProtocolOpenAIResponses, InFlightFrom: 1,
+			protocolOf: replayProtocolOf, reasoningTextTarget: &target,
+		})
+		if got := hasContentKind(out, llm.ContentThinking); got != (producer == "work") {
+			t.Errorf("Chat fallback received unsigned display from %s = %t", producer, got)
+		}
+	}
 }
 
 // --- web_search family scoping (G13) ---
