@@ -2,14 +2,14 @@ package agent
 
 // Resource regression and benchmark for the per-round request-history snapshot.
 //
-// prepareModelRequestWithError used to copy s.history at the top of its
-// ContextMgmt phase and then overwrite that copy before anything read it: the
-// strategy fold re-snapshots at the top of every attempt, and the final
-// HistoryExpand snapshot replaces it on the no-strategy path. This file pins
-// the request's contents and ordering across large text-only histories and
-// holds the per-preparation allocation below a literal ceiling placed between
-// the copy-free and copy-bearing implementations, so reintroducing the dead
-// copy fails here.
+// A preparation allocates one snapshot of s.history and expands that snapshot
+// unlocked. It must not also clone the published history into a copy nothing
+// reads: the strategy fold already re-snapshots at the top of every attempt, and
+// the final HistoryExpand snapshot covers the no-strategy path. This file pins
+// the request's contents and ordering across large text-only histories and holds
+// the per-preparation allocation below a literal ceiling placed between a
+// copy-free preparation and one that also makes that dead copy, so a publish
+// pass that hands its caller the copy fails here.
 //
 // The fixture runs the real Session and the real preparation path against the
 // scripted adapter already used by BenchmarkNewSession. No provider call is
@@ -59,12 +59,9 @@ var requestHistoryFixtureTurns = []int{256, requestHistoryBudgetTurns}
 // 419,856 below the two copy-bearing ones, so attribution noise and honest
 // drift cannot mask the copy on either side of the bound.
 //
-// Both lanes' figures moved together and stayed 32 bytes apart when #6448
-// stopped copying a message list the target projections do not change: their
-// numbers fall by 73,728 bytes (1,024 messages * 72 bytes) each, which is why
-// the ceilings drop from 1,580,000 rather than staying where a no-longer-true
-// margin had placed them. The literals stay separate so the per-lane
-// mechanism survives the next change that moves one lane by itself.
+// The two lanes track each other to within tens of bytes, so the two literals
+// hold the same value today. They stay separate so a change that moves one lane
+// alone cannot silently move the other.
 //
 // The race margins are smaller than the copy's own size on purpose: the gap
 // between a copy-free preparation and its copy-bearing partner is 843,776
@@ -256,9 +253,10 @@ func assertPreparedRequestHistory(t *testing.T, s *Session, history []llm.Messag
 // round's share of a hostile background.
 //
 // The minimum is also the safe direction for the budget: it cannot understate a
-// preparation, so a reintroduced dead copy cannot slip under the ceiling. The
+// preparation, so a reintroduced dead copy cannot slip under the ceiling. Each
 // ceiling's teeth are pinned separately, by
-// TestPrepareModelRequestHistoryCeilingCatchesDeadCopy.
+// TestPrepareModelRequestHistoryCeilingCatchesDeadCopy and
+// TestPrepareModelRequestHistoryFoldCeilingCatchesPublishedCopy.
 
 // requestHistoryMeasurementRounds is the round count the helper's minimum is
 // designed around.
@@ -289,6 +287,54 @@ func measureRequestHistoryBytesAttributableToPreparation(t *testing.T, round fun
 		}
 	}
 	return quietest
+}
+
+// requestHistoryDeadCopyBytes is one shallow copy of the budget fixture's
+// history: the bytes a preparation adds when the publish pass hands its caller a
+// clone of the published slice instead of the slice itself.
+func requestHistoryDeadCopyBytes() int64 {
+	return int64(requestHistoryBudgetTurns) * int64(unsafe.Sizeof(schema.Turn{}))
+}
+
+// measureRequestHistoryBytesWithDeadCopy measures one preparation of the
+// session's lane. With copyBearing the round also makes the copy a publish pass
+// must not make: s.history cloned under s.mu and discarded unread, the pass's own
+// allocation shape rather than an arbitrary allocation of the same size.
+func measureRequestHistoryBytesWithDeadCopy(t *testing.T, s *Session, copyBearing bool) int64 {
+	t.Helper()
+	return measureRequestHistoryBytesAttributableToPreparation(t, func(int) {
+		prepareRequestHistoryRound(t, s)
+		if copyBearing {
+			s.mu.Lock()
+			dead := append([]schema.Turn(nil), s.history...)
+			s.mu.Unlock()
+			_ = dead
+		}
+	})
+}
+
+// assertRequestHistoryCeilingHasTeeth requires a lane's ceiling to sit between a
+// copy-free and a copy-bearing measurement of one preparation, with a quarter of
+// the dead copy as margin on each side: the ceiling clears a healthy preparation
+// and catches one that also makes the copy, and each gap is a real share of the
+// copy rather than a few bytes of noise. One lane's two readings sit exactly one
+// copy apart, so a quarter copy is the most clearance a ceiling can hold on both
+// sides while still catching the copy.
+func assertRequestHistoryCeilingHasTeeth(t *testing.T, free, bearing, ceiling, deadCopyBytes int64) {
+	t.Helper()
+	if free >= ceiling {
+		t.Fatalf("copy-free preparation measured %d at or over the ceiling %d: the ceiling does not clear a healthy preparation in this lane", free, ceiling)
+	}
+	if bearing <= ceiling {
+		t.Fatalf("copy-bearing preparation measured %d at or under the ceiling %d: reintroducing the dead copy would pass", bearing, ceiling)
+	}
+	minMargin := deadCopyBytes / 4
+	if margin := bearing - ceiling; margin < minMargin {
+		t.Fatalf("only %d bytes between the ceiling %d and the copy-bearing measurement %d, want at least %d (a quarter of the dead copy)", margin, ceiling, bearing, minMargin)
+	}
+	if margin := ceiling - free; margin < minMargin {
+		t.Fatalf("only %d bytes between the copy-free measurement %d and the ceiling %d, want at least %d (a quarter of the dead copy)", margin, free, ceiling, minMargin)
+	}
 }
 
 // TestPrepareModelRequestHistoryAllocationBudget pins that a preparation
@@ -331,54 +377,18 @@ func TestPrepareModelRequestHistoryAllocationBudget(t *testing.T) {
 // lane's ceiling, with real margin, while a copy-free preparation stays
 // under it. The budget test itself can only fail when the copy is
 // reintroduced into production code; this test fails if the ceiling is ever
-// moved to where the copy would slip under it, which is the exact drift that
-// made the single shared ceiling flaky on the race lane. It measures both
-// shapes back to back on one fixture, so the margin is a ratio of two
-// readings from the same process rather than a comparison against a number
-// in a comment.
+// moved to where the copy would slip under it. It measures both shapes back
+// to back on one fixture, so the margin is a ratio of two readings from the
+// same process rather than a comparison against a number in a comment.
 // Serial: it measures process-global TotalAlloc, like its siblings.
 func TestPrepareModelRequestHistoryCeilingCatchesDeadCopy(t *testing.T) {
 	s := newRequestHistoryPreparationSession(t, requestHistoryBudgetTurns, requestHistoryNoFoldLane)
-	deadCopyBytes := int64(requestHistoryBudgetTurns) * int64(unsafe.Sizeof(schema.Turn{}))
-
-	measure := func(copyBearing bool) int64 {
-		t.Helper()
-		return measureRequestHistoryBytesAttributableToPreparation(t, func(int) {
-			prepareRequestHistoryRound(t, s)
-			if copyBearing {
-				// The dead copy exactly as the removed code made it: a shallow
-				// copy of the live slice, discarded without being read.
-				s.mu.Lock()
-				dead := append([]schema.Turn(nil), s.history...)
-				s.mu.Unlock()
-				_ = dead
-			}
-		})
-	}
-
-	free := measure(false)
-	bearing := measure(true)
+	deadCopyBytes := requestHistoryDeadCopyBytes()
+	free := measureRequestHistoryBytesWithDeadCopy(t, s, false)
+	bearing := measureRequestHistoryBytesWithDeadCopy(t, s, true)
 	ceiling := maxRequestHistoryBytesPerPreparation()
 	t.Logf("copy-free %d, copy-bearing %d, dead copy %d, ceiling %d, race %v", free, bearing, deadCopyBytes, ceiling, raceDetectorEnabled)
-
-	if free >= ceiling {
-		t.Fatalf("copy-free preparation measured %d at or over the ceiling %d: the ceiling does not clear a healthy preparation in this lane", free, ceiling)
-	}
-	if bearing <= ceiling {
-		t.Fatalf("copy-bearing preparation measured %d at or under the ceiling %d: reintroducing the dead copy would pass", bearing, ceiling)
-	}
-	// The margin must be a real share of the copy, not a few bytes of noise.
-	// A quarter copy on each side is the most the race lane's narrower gap
-	// allows (see the constant's comment); the plain lane clears half a copy
-	// either way, so this bound is the binding one and stays meaningful in
-	// both lanes.
-	minMargin := deadCopyBytes / 4
-	if margin := bearing - ceiling; margin < minMargin {
-		t.Fatalf("only %d bytes between the ceiling %d and the copy-bearing measurement %d, want at least %d (a quarter of the dead copy)", margin, ceiling, bearing, minMargin)
-	}
-	if margin := ceiling - free; margin < minMargin {
-		t.Fatalf("only %d bytes between the copy-free measurement %d and the ceiling %d, want at least %d (a quarter of the dead copy)", margin, free, ceiling, minMargin)
-	}
+	assertRequestHistoryCeilingHasTeeth(t, free, bearing, ceiling, deadCopyBytes)
 }
 
 // TestPrepareModelRequestHistoryBudgetIgnoresConcurrentBackground pins the
@@ -629,22 +639,12 @@ func maxRequestFoldHistoryBytesPerPreparation() int64 {
 	return maxRequestFoldHistoryBytesPerPreparationPlain
 }
 
-// measureRequestHistoryFoldBytesPerPreparation measures one fold-lane
-// preparation: the lane whose publish pass copies the history it just published.
-func measureRequestHistoryFoldBytesPerPreparation(t *testing.T, s *Session) int64 {
-	t.Helper()
-	return measureRequestHistoryBytesAttributableToPreparation(t, func(int) {
-		prepareRequestHistoryRound(t, s)
-	})
-}
-
 // TestPrepareModelRequestHistoryFoldAllocationBudget pins that a preparation on
 // the fold lane carries every fixture payload into the request in order, leaves
-// the complete source history unchanged, and stays under a ceiling placed
-// between the copy-free and copy-bearing implementations of the fold
-// publication's return. The fixture's warm-up asserts the lane actually
-// published a fold, so a refused publication cannot leave this test measuring a
-// pass that never ran.
+// the complete source history unchanged, and stays under a ceiling placed between
+// a copy-free preparation and one that also clones the published history. The
+// fixture's warm-up asserts the lane actually published a fold, so a refused
+// publication cannot leave this test measuring a pass that never ran.
 // Serial: it measures process-global TotalAlloc, and allocations from
 // concurrently running tests would land inside every window it measures.
 func TestPrepareModelRequestHistoryFoldAllocationBudget(t *testing.T) {
@@ -658,9 +658,9 @@ func TestPrepareModelRequestHistoryFoldAllocationBudget(t *testing.T) {
 	history, req := prepareRequestHistoryRound(t, s)
 	assertPreparedRequestHistory(t, s, history, req, settledTexts, settledSnapshot, requestHistoryBudgetTurns)
 
-	bytesPerPreparation := measureRequestHistoryFoldBytesPerPreparation(t, s)
-	removable := int64(requestHistoryBudgetTurns) * int64(unsafe.Sizeof(schema.Turn{}))
-	t.Logf("fold-lane bytes per preparation %d, removed published copy %d, budget %d, race %v",
+	bytesPerPreparation := measureRequestHistoryBytesPerPreparation(t, s)
+	removable := requestHistoryDeadCopyBytes()
+	t.Logf("fold-lane bytes per preparation %d, dead published copy %d, budget %d, race %v",
 		bytesPerPreparation, removable, maxRequestFoldHistoryBytesPerPreparation(), raceDetectorEnabled)
 	if bytesPerPreparation >= maxRequestFoldHistoryBytesPerPreparation() {
 		t.Fatalf("fold-lane bytes per preparation %d, budget %d", bytesPerPreparation, maxRequestFoldHistoryBytesPerPreparation())
@@ -671,52 +671,20 @@ func TestPrepareModelRequestHistoryFoldAllocationBudget(t *testing.T) {
 // teeth independently of the assertion that consumes it: a preparation that also
 // makes the dead shallow copy of the published history must measure over this
 // lane's ceiling, with real margin, while a copy-free preparation stays under
-// it. The copy reproduced here is the removed code's own shape — the live
-// history cloned and discarded — so the margin is a ratio of two readings from
-// one process rather than a number in a comment. The budget test itself can only
-// fail when the copy is reintroduced into production code; this test fails if
-// the ceiling is ever moved to where that copy would slip under it.
+// it. The copy reproduced here is the publish pass's own shape — the published
+// history, which is s.history's backing array, cloned under s.mu and discarded
+// unread — so the margin is a ratio of two readings from one process rather than
+// a number in a comment. The budget test itself can only fail when the copy is
+// reintroduced into production code; this test fails if the ceiling is ever
+// moved to where that copy would slip under it.
 // Serial: it measures process-global TotalAlloc, like its siblings.
 func TestPrepareModelRequestHistoryFoldCeilingCatchesPublishedCopy(t *testing.T) {
 	s := newRequestHistoryPreparationSession(t, requestHistoryBudgetTurns, requestHistoryFoldLane)
-	deadCopyBytes := int64(requestHistoryBudgetTurns) * int64(unsafe.Sizeof(schema.Turn{}))
-
-	measure := func(copyBearing bool) int64 {
-		t.Helper()
-		return measureRequestHistoryBytesAttributableToPreparation(t, func(int) {
-			prepareRequestHistoryRound(t, s)
-			if copyBearing {
-				// The dead copy exactly as the removed code made it: a shallow copy
-				// of the published history, which is s.history's own backing array,
-				// discarded without being read.
-				s.mu.Lock()
-				dead := append([]schema.Turn(nil), s.history...)
-				s.mu.Unlock()
-				_ = dead
-			}
-		})
-	}
-
-	free := measure(false)
-	bearing := measure(true)
+	deadCopyBytes := requestHistoryDeadCopyBytes()
+	free := measureRequestHistoryBytesWithDeadCopy(t, s, false)
+	bearing := measureRequestHistoryBytesWithDeadCopy(t, s, true)
 	ceiling := maxRequestFoldHistoryBytesPerPreparation()
 	t.Logf("fold-lane copy-free %d, copy-bearing %d, dead copy %d, ceiling %d, race %v",
 		free, bearing, deadCopyBytes, ceiling, raceDetectorEnabled)
-
-	if free >= ceiling {
-		t.Fatalf("fold-lane copy-free preparation measured %d at or over the ceiling %d: the ceiling does not clear a healthy preparation in this lane", free, ceiling)
-	}
-	if bearing <= ceiling {
-		t.Fatalf("fold-lane copy-bearing preparation measured %d at or under the ceiling %d: reintroducing the dead copy would pass", bearing, ceiling)
-	}
-	// The margin must be a real share of the copy, not a few bytes of noise. A
-	// quarter copy on each side is the most a lane whose two readings sit one copy
-	// apart can offer while still catching the copy.
-	minMargin := deadCopyBytes / 4
-	if margin := bearing - ceiling; margin < minMargin {
-		t.Fatalf("only %d bytes between the ceiling %d and the copy-bearing measurement %d, want at least %d (a quarter of the dead copy)", margin, ceiling, bearing, minMargin)
-	}
-	if margin := ceiling - free; margin < minMargin {
-		t.Fatalf("only %d bytes between the copy-free measurement %d and the ceiling %d, want at least %d (a quarter of the dead copy)", margin, free, ceiling, minMargin)
-	}
+	assertRequestHistoryCeilingHasTeeth(t, free, bearing, ceiling, deadCopyBytes)
 }

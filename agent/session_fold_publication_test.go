@@ -1095,12 +1095,11 @@ func TestFoldPublication_NamerCompletingAfterNewerFoldFlushDoesNotOverride(t *te
 // delegate-attention delivery goroutines mutate s.history IN PLACE under
 // s.mu (retainDelegateAttentionTurn's s.history[index] = turn;
 // removeUnverifiedDelegateAttentionTurn's element shift), and a torn
-// multi-word schema.Turn read corrupts model input. That array used to reach
-// the request through publishFoldTransaction's return, which the transaction
-// defensively copied (#6448 removed the copy once the request stopped
-// consuming that return and took its own locked snapshot instead). The race
-// detector is this test's assertion: it fails under -race if the request
-// expands a slice delegate-attention delivery still writes.
+// multi-word schema.Turn read corrupts model input. The request must therefore
+// expand a snapshot of the published history taken under s.mu, never the live
+// array delegate-attention delivery writes. The race detector is this test's
+// assertion: it fails under -race if the request expands a slice
+// delegate-attention delivery still writes.
 func TestPrepareModelRequest_PublishedHistoryNotAliasedToLiveHistory(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
