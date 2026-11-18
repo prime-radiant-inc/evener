@@ -355,8 +355,11 @@ function SessionInfoBody({
 								// The same rule as the rename: the action settles
 								// wherever it was asked from, and its toast belongs to
 								// whoever is still looking at this sheet, which an outer
-								// stack can cover while this one keeps its own top.
-								if (message && screenInFront(navigation, routeKey)) toast.show(message);
+								// stack can cover while this one keeps its own top, and
+								// which a sheet opened over this one takes away without
+								// leaving this stack.
+								if (message && screenInFront(navigation, routeKey) && onTop(navigation.getState(), routeKey))
+									toast.show(message);
 							})
 						}
 					/>

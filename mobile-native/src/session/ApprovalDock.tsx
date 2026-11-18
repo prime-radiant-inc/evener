@@ -103,10 +103,13 @@ export function ApprovalDock({ request, controls, onDecided, waiting = 0 }: Appr
 		const settled = controls.getSnapshot();
 		if (!sent) return;
 		if (settled.error !== null) setDecisionSent(false);
-		// It held when these controls settled with no error. Controls still
-		// pending were disposed mid-decision: nothing confirmed it, so the
-		// dock holds and says nothing.
-		else if (settledAtHub && settled.pending === null) onDecided(allowed);
+		// The receipt is what settles this decision, so it is what the dock
+		// confirms on. These controls can be replaced by a reconnect while the
+		// catch-up read is out: the retired ones never clear their own pending,
+		// and reading that as "nothing confirmed it" hides a decision the hub
+		// took. Whether the reader is told is the screen's question, not this
+		// snapshot's.
+		else if (settledAtHub) onDecided(allowed);
 	}
 	const body = { allowFontScaling, style: { fontSize: 15 * scale, lineHeight: 20 * scale, color: palette.inkMid } };
 	return (

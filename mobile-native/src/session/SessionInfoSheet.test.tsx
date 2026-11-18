@@ -838,6 +838,22 @@ describe("actions", () => {
 		expect(calls).toEqual(["act:compact"]);
 		expect(renderedText(tree)).toContain("Compacting context");
 	});
+	// The picker a row here opens is a sheet on this stack, so this sheet is
+	// still in front for the screen under it while the reader is looking at the
+	// picker's rows. Compaction still settles; its announcement does not speak
+	// over them.
+	it("settles a compaction a sheet opened over it covers, and says nothing there", async () => {
+		const { calls } = provide(conversation({ capabilities: { ...NONE, compact: true } }));
+		const tree = sheet();
+		navigation.sheetOver.value = true;
+		press(tree, "Compact context");
+		await settle();
+		navigation.sheetOver.value = false;
+		expect(calls).toEqual(["act:compact"]);
+		// The message is the toast's own text, so its absence is what says the
+		// announcement did not go out over the covering picker.
+		expect(renderedText(tree)).not.toContain("Compacting context");
+	});
 
 	it.each([
 		["Aside", "aside", { forkFromTurn: true }],

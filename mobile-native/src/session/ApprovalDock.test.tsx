@@ -194,8 +194,12 @@ describe("the approval dock (spec 8.4)", () => {
 		}
 		expect(second.controls.resolve).not.toHaveBeenCalled();
 		expect(first.controls.resolve).toHaveBeenCalledTimes(1);
-		// Nobody confirmed it, so it says nothing was decided.
-		expect(onDecided).not.toHaveBeenCalled();
+		// The hub took it, so the dock confirms on the receipt. These controls
+		// were replaced while it was out and never clear their own pending, and
+		// reading that as "nothing confirmed it" hides a decision the hub took.
+		// Whether the reader is told is the screen's question, guarded there by
+		// whether this pane is still in front.
+		expect(onDecided).toHaveBeenCalledWith(true);
 	});
 
 	it("lets you decide again when the fresh read after a reconnect still lists the approval", async () => {

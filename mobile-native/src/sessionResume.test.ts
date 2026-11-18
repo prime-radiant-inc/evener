@@ -237,3 +237,29 @@ describe("native resume recovery integration", () => {
 		},
 	);
 });
+
+// A connection takes one explicit resume at a time, and the client refuses a
+// second before sending it. Two panes can owe a resume at once, and a refusal
+// that never reached the hub is not the hub's answer: the later one waits for
+// the slot instead of ending as a failed attempt the restart would drop.
+describe("two resumes owed on one connection", () => {
+	it("waits for the slot rather than refusing the second before it is sent", async () => {
+		const ack = deferred<void>();
+		const { client, service, sockets, state } = await connectedFixture(undefined, ack.promise);
+		try {
+			const first = service.resume();
+			const second = service.resume();
+			await Promise.resolve();
+			// The first resume is out and has not been answered yet.
+			expect(state.resumed).toBe(false);
+			ack.resolve();
+			await expect(Promise.all([first, second])).resolves.toBeDefined();
+			const resumes = sockets.flatMap((socket) => socket.methods).filter((method) => method === "thread/resume");
+			expect(resumes).toHaveLength(2);
+		} finally {
+			state.resumed = true;
+			service.close();
+			client.close();
+		}
+	});
+});
