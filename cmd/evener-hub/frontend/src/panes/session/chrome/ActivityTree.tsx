@@ -247,7 +247,12 @@ function RowSegments({ segments }: { segments: MetaSegment[] }): ReactNode {
       {segments.map((segment, index) => (
         <Fragment key={segment.key}>
           {index > 0 ? " · " : null}
-          <span className={segment.tone === "quiet" ? CLASS.denseQuiet : undefined}>{segment.text}</span>
+          {/* data-segment names the grammar slot this text came from, so a
+              test can pin which rule chose the lead instead of comparing the
+              rendered words. Same marker as subagentModule's stat line. */}
+          <span data-segment={segment.key} className={segment.tone === "quiet" ? CLASS.denseQuiet : undefined}>
+            {segment.text}
+          </span>
         </Fragment>
       ))}
     </span>

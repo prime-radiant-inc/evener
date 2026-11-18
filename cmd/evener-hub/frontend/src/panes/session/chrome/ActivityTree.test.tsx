@@ -231,6 +231,26 @@ function metaText(row: HTMLElement): string {
   return meta.textContent ?? "";
 }
 
+// segmentKeys reads the row's meta grammar the way the component built it: the
+// ordered keys of the segments it rendered. The keys are structural (wait,
+// intent, tokens, quiet, status, duration) rather than copy, so a test can pin
+// WHICH RULE chose the lead without comparing the words that rule rendered.
+function segmentKeys(row: HTMLElement): string[] {
+  const meta = row.querySelector<HTMLElement>("[class*='denseMeta']");
+  if (!meta) throw new Error("row has no meta cluster");
+  return [...meta.querySelectorAll<HTMLElement>("[data-segment]")].map((segment) => segment.dataset.segment ?? "");
+}
+
+// segmentText returns just one segment's rendered text, for the checks that
+// compare two surfaces of the same row (visible meta against the accessible
+// description) instead of comparing either against fixture copy.
+function segmentText(row: HTMLElement, key: string): string {
+  const meta = row.querySelector<HTMLElement>("[class*='denseMeta']");
+  const segment = meta?.querySelector<HTMLElement>(`[data-segment="${key}"]`);
+  if (!segment) throw new Error(`row has no ${key} segment`);
+  return segment.textContent ?? "";
+}
+
 function setupUser() {
   return userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
 }
@@ -697,44 +717,136 @@ describe("ActivityTree", () => {
     expect(row.querySelector("[data-state]")).toBeNull();
   });
 
-  // The name-priority rule is scoped to rows that DISPLAY a stated intent
-  // (activitypanel.module.css's `:has(.denseMeta[data-intent="true"])`). A
-  // delegate held open by its own running job shows a WAIT there instead -
-  // work it is waiting on, not work it stated - so the wait must not hand the
-  // name priority, or the wait and the timing are starved on exactly the
-  // narrow rows the rule exists to protect. Both directions are pinned here:
-  // a wait alone must not set the attribute, and a stated intent still must.
-  test("a wait on a running job does not grant the name priority a stated intent does", () => {
-    // Held open by its own shell job, with no intent of its own.
-    const waiting = intentDelegateTree(
+  // The live meta grammar's lead rule (delegateMetaSegments ->
+  // liveMetaSegments in ActivityTree.tsx): the wait on the row's own running
+  // job outranks a stated intent, which outranks the status word, and token
+  // usage never displaces either. The wait keeps its own segment key because
+  // the name-priority rule is scoped to rows that DISPLAY a stated intent
+  // (activitypanel.module.css's `:has(.denseMeta[data-intent="true"])`) - a
+  // wait is work the row is waiting on, not work it stated, so it must not
+  // hand the name that priority.
+  //
+  // The rows below are the competition the rule exists to arbitrate, pinned by
+  // segment key rather than by rendered copy: the fixture supplies a stated
+  // intent in every case, so a change that let intent outrank a wait fails the
+  // held cases, and a change that let the wait outrank an intent it should not
+  // touch fails the released cases.
+  test("a wait on a running job leads over the stated intent and does not grant the name priority", () => {
+    // Held open by its own shell job WITH a stated intent: the case the rule
+    // exists for, and the one the old fixture never created.
+    const held = intentDelegateTree(
       {
-        delegateId: "dlg_waiting",
-        latestIntent: undefined,
+        delegateId: "dlg_held",
+        latestIntent: "Reading the board.",
         drainHeldByJobs: true,
         runningJobCount: 1,
       },
       { active: 1, failed: 0, completed: 0, complete: false },
     );
-    const first = render(<ActivityTree tree={waiting} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
-    const waitingRow = screen.getByRole("treeitem", { name: "inspect" });
-    // The wait is displayed rather than starved, and it does not claim to be
-    // an intent the row stated. Compared by presence, not by production copy.
-    expect(metaText(waitingRow).trim()).not.toBe("");
-    expect(waitingRow.querySelector("[class*='denseMeta']")?.getAttribute("data-intent")).toBeNull();
-    first.unmount();
+    const heldRender = render(<ActivityTree tree={held} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
+    const heldRow = screen.getByRole("treeitem", { name: "inspect" });
+    // The WAIT leads, and the intent it displaced is not rendered beside it.
+    expect(segmentKeys(heldRow)).toEqual(["wait"]);
+    // The wait is not an intent the row stated, so the name keeps its room.
+    expect(heldRow.querySelector("[class*='denseMeta']")?.getAttribute("data-intent")).toBeNull();
+    // The row's accessible description carries the same wait the eye sees,
+    // compared against the row's own visible segment rather than fixture copy.
+    const waitText = segmentText(heldRow, "wait");
+    expect(waitText).not.toBe("");
+    expect(heldRow.getAttribute("aria-description")).toContain(waitText);
 
-    // The same row with nothing holding it: its stated intent is displayed,
-    // and that is what earns the name its priority.
+    // The SAME delegate once the drain lets go - same id, same mount, a new
+    // snapshot - because a release is a state change on a row that already
+    // exists. Remounting another delegate would only prove what a fresh row
+    // looks like, and would miss a row that kept its stale wait metadata
+    // through the transition. The hold fields are OMITTED, not set false:
+    // docs/product/session-activity.md says a delegate with no hold omits all
+    // three, and a client must read that omission as "no such fact". A
+    // fixture that says `drainHeldByJobs: false` would pass even if the row
+    // stopped treating omission as no-wait.
+    const released = intentDelegateTree(
+      {
+        delegateId: "dlg_held",
+        latestIntent: "Reading the board.",
+      },
+      { active: 1, failed: 0, completed: 0, complete: false },
+    );
+    heldRender.rerender(<ActivityTree tree={released} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
+    const releasedRow = screen.getByRole("treeitem", { name: "inspect" });
+    expect(segmentKeys(releasedRow)).toEqual(["intent"]);
+    expect(releasedRow.querySelector("[class*='denseMeta']")?.getAttribute("data-intent")).toBe("true");
+    // With the hold gone the row states no wait, on screen or to a reader.
+    expect(releasedRow.getAttribute("aria-description")).not.toContain(waitText);
+    heldRender.unmount();
+
+    // An intent-only row with no hold and no running job: the plain direction,
+    // so the test cannot pass by always preferring one side.
     const stated = intentDelegateTree(
       { delegateId: "dlg_stated", latestIntent: "Reading the board." },
       { active: 1, failed: 0, completed: 0, complete: false },
     );
     render(<ActivityTree tree={stated} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
     const statedRow = screen.getByRole("treeitem", { name: "inspect" });
-    // Asserted structurally, by the attribute the stylesheet keys on, not by
-    // the fixture's phrase: copy is not an oracle.
-    expect(metaText(statedRow).trim()).not.toBe("");
+    expect(segmentKeys(statedRow)).toEqual(["intent"]);
     expect(statedRow.querySelector("[class*='denseMeta']")?.getAttribute("data-intent")).toBe("true");
+  });
+
+  test("a held row leads with its wait over token usage too", () => {
+    // Token usage present AND a stated intent present AND the hold: the wait
+    // still leads, and the usage rides behind it. A change that let usage
+    // outrank the wait reorders these keys.
+    const held = intentDelegateTree(
+      {
+        delegateId: "dlg_held_usage",
+        latestIntent: "Reading the board.",
+        drainHeldByJobs: true,
+        runningJobCount: 2,
+        usage: { inputTokens: 41200, outputTokens: 6100 },
+      },
+      { active: 1, failed: 0, completed: 0, complete: false },
+    );
+    const heldRender = render(<ActivityTree tree={held} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
+    const heldRow = screen.getByRole("treeitem", { name: "inspect" });
+    expect(segmentKeys(heldRow)).toEqual(["wait", "tokens"]);
+    expect(heldRow.querySelector("[class*='denseMeta']")?.getAttribute("data-intent")).toBeNull();
+    heldRender.unmount();
+
+    // The same usage on a row with no hold: the intent leads and the usage
+    // rides behind it, the shape the grammar already had.
+    const working = intentDelegateTree(
+      {
+        delegateId: "dlg_working_usage",
+        latestIntent: "Reading the board.",
+        usage: { inputTokens: 41200, outputTokens: 6100 },
+      },
+      { active: 1, failed: 0, completed: 0, complete: false },
+    );
+    render(<ActivityTree tree={working} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
+    const workingRow = screen.getByRole("treeitem", { name: "inspect" });
+    expect(segmentKeys(workingRow)).toEqual(["intent", "tokens"]);
+  });
+
+  test("a held row that never stated an intent still shows its wait and no priority", () => {
+    // The other half of the competition: a delegate held by its own running
+    // job that has stated nothing. The cases above all supply an intent, so
+    // without this row a change that starved the wait on an intent-less
+    // delegate - or that handed it data-intent anyway - would pass them all.
+    const held = intentDelegateTree(
+      {
+        delegateId: "dlg_no_statement",
+        latestIntent: undefined,
+        drainHeldByJobs: true,
+        runningJobCount: 1,
+      },
+      { active: 1, failed: 0, completed: 0, complete: false },
+    );
+    render(<ActivityTree tree={held} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
+    const row = screen.getByRole("treeitem", { name: "inspect" });
+    // The wait is the visible lead, not a fallback status word or a bare age.
+    expect(segmentKeys(row)).toEqual(["wait"]);
+    expect(segmentText(row, "wait")).not.toBe("");
+    // Nothing was stated, so nothing may claim the layout's intent priority.
+    expect(row.querySelector("[class*='denseMeta']")?.getAttribute("data-intent")).toBeNull();
   });
 
   test("a terminal delegate row keeps its status word over a stale intent", () => {
