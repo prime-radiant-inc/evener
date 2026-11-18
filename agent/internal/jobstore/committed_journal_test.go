@@ -1308,6 +1308,82 @@ func (f *statFailsOnceBeforeAppendFs) Stat(name string) (os.FileInfo, error) {
 	return f.Fs.Stat(name)
 }
 
+// TestStoreAppendDoesNotReuseTheSequenceOfARestoredWrite pins High 1.
+//
+// The journal is renamed aside during this append's fsync with no replacement
+// installed, so the post-sync checks answer ENOENT and the append is correctly
+// refused. Then the SAME file is put back under the name — which is what a
+// rename-and-replace looks like when the replacement turns out to be the
+// original — and the caller retries.
+//
+// The refused attempt's bytes are in that file with a sequence already
+// assigned to them. A store that simply hands the next number to the retry puts
+// two records with one sequence in one journal, and the fold, which orders by
+// Seq, keeps whichever it met first. The retry therefore has to reach the
+// journal's own answer about whether the first write arrived.
+//
+// The earlier fixture could not see this: it retried with a DIFFERENT job ID and
+// asserted only that the new ID was readable, so a reused sequence looked
+// exactly like a correct append.
+func TestStoreAppendDoesNotReuseTheSequenceOfARestoredWrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "jobs.jsonl")
+	saved := filepath.Join(dir, "jobs.jsonl.saved")
+
+	fs := &renameOnSyncFs{Fs: afero.NewOsFs(), from: path, to: saved, leaveAbsent: true}
+	s, err := openFs(fs, path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	if err := s.Append(Event{Kind: EventJobStarted, JobID: "job_first", Type: JobShell}); err != nil {
+		t.Fatalf("first append: %v", err)
+	}
+
+	event := Event{Kind: EventJobStarted, JobID: "job_completion", Type: JobShell}
+	fs.arm()
+	if err := s.Append(event); err == nil {
+		t.Fatal("append acknowledged success although the name it should have reached was absent")
+	}
+
+	// The same file comes back under the name, carrying the refused write.
+	if err := os.Rename(saved, path); err != nil {
+		t.Fatalf("restore the name: %v", err)
+	}
+	if err := s.Append(event); err != nil {
+		t.Fatalf("retry once the name is back: %v", err)
+	}
+
+	// Every sequence in the journal must be distinct. One number on two records
+	// is the damage: the fold keeps one and silently drops the other.
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	events, err := reopened.LoadEvents()
+	if err != nil {
+		t.Fatalf("read the journal's events: %v", err)
+	}
+	seen := make(map[int64]int, len(events))
+	for _, got := range events {
+		seen[got.Seq]++
+	}
+	for seq, count := range seen {
+		if count > 1 {
+			t.Fatalf("sequence %d appears on %d records, want one apiece: the retry reused the number the refused write had already spent", seq, count)
+		}
+	}
+	// And the completion must be foldable: exactly one terminal read of it.
+	records, err := reopened.Load()
+	if err != nil {
+		t.Fatalf("fold: %v", err)
+	}
+	if records["job_completion"] == nil {
+		t.Fatal("the retried completion is missing from the reopened journal's fold")
+	}
+}
+
 // TestStoreAppendFailsWhenTheTailRecheckCannotResolve pins H2.
 //
 // A foreign writer leaves a partial record at the end of a live journal. The

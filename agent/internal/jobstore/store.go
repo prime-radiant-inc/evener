@@ -107,6 +107,13 @@ type Store struct {
 	// bytes already read, and it is trusted only while the file is byte-for-byte
 	// the one the store itself last left behind. See cursorTrustedLocked.
 	cursor fileCursor
+
+	// pending, when set, is an append whose bytes were made durable but whose
+	// arrival at the named journal could not be confirmed. The sequence number
+	// it consumed is not handed out again until the journal itself answers
+	// whether the record is there. See pendingWrite.
+	pending    pendingWrite
+	pendingSet bool
 }
 
 // fileCursor caches the events decoded from the log's leading bytes.
@@ -166,6 +173,121 @@ type fileCursor struct {
 	// the store's own writes from no write at all, after which the store always
 	// re-reads the whole file.
 	disabled bool
+}
+
+// pendingWrite is an append whose bytes this store made durable but could not
+// confirm reached the named journal: the name was absent, or it reached a
+// different file, when the post-sync check asked.
+//
+// It exists because the sequence number is a fact about the BYTES, not about the
+// verification. The record is on disk with that Seq, so handing the same number
+// to the next append puts two records with one sequence in the same journal
+// whenever the file comes back — and the fold, which orders by Seq, then keeps
+// whichever it met first. Remembering the write lets a later append ask the
+// journal itself whether the record arrived.
+type pendingWrite struct {
+	// file is the journal the bytes were written to, as it was identified
+	// before the write. A name that no longer reaches it cannot be asked.
+	file os.FileInfo
+	// offset is where the record starts, and line is every byte written there.
+	offset int64
+	// firstSeq and lastSeq bound the sequences this write assigned. They are
+	// equal for a single append and differ for a batch, and the difference is
+	// what a retry needs: a batch must restart at its own first number, not at
+	// its last.
+	firstSeq int64
+	lastSeq  int64
+	line     []byte
+}
+
+// reconcilePendingLocked resolves an append whose verification failed, before
+// this store writes another byte.
+//
+// The record is durable somewhere with its sequence already assigned. Two
+// questions follow, and only the journal can answer them:
+//
+//   - Does the named journal ALREADY hold this record? Then the append did
+//     reach it after all — the name came back, carrying the same file — and the
+//     sequence belongs to that record. Advance past it and let the caller
+//     proceed with the next number.
+//   - Is the record absent, in the file the name now reaches? Then the bytes
+//     went somewhere a reader does not look. The caller's retry must write the
+//     event, but it must write it with the sequence the first attempt already
+//     used, or the journal ends up with two records sharing one number and the
+//     fold keeps whichever it met first.
+//
+// A name that reaches a different file than the failed write went to is the
+// second case: the bytes are not in the journal readers see, so the retry owns
+// the sequence the failed attempt used. A name that is absent again can answer
+// nothing, and the pending write is kept for the next attempt.
+func (s *Store) reconcilePendingLocked() error {
+	if !s.pendingSet {
+		return nil
+	}
+	named, err := s.fs.Stat(s.path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			// Still absent: nothing can be learned yet, and the sequence stays
+			// reserved for whichever attempt learns the answer.
+			return nil
+		}
+		return fmt.Errorf("%w: %s: %w", ErrJournalNameUnavailable, s.path, err)
+	}
+	// The bytes went to s.pending.file. Only that file can be asked whether the
+	// record is there, and only when the name still reaches it.
+	reached := s.pending.file != nil && sameJournalFile(s.pending.file, named)
+	pending := s.pending
+	s.pendingSet = false
+	s.pending = pendingWrite{}
+	if reached {
+		if present, err := s.pendingRecordIsDurableLocked(named, pending); err != nil {
+			return err
+		} else if present {
+			// The record arrived. Its sequence is spent on it, and the next
+			// append continues past it rather than reusing the number.
+			if pending.lastSeq > s.seq {
+				s.seq = pending.lastSeq
+			}
+			return nil
+		}
+	}
+	// The record is not in the journal readers see, so the retry must carry the
+	// same sequence: it is the number this journal has not yet used.
+	if s.seq >= pending.firstSeq {
+		s.seq = pending.firstSeq - 1
+	}
+	return nil
+}
+
+// pendingRecordIsDurableLocked reports whether the journal the name reaches
+// holds the record a failed append wrote, comparing the bytes at the offset
+// that append recorded.
+//
+// The comparison is on bytes rather than on a decoded event: the question is
+// whether THIS write landed, and two events can be equal as values while being
+// different writes. A journal that has since been rewritten is asked about the
+// bytes at that offset, which is why a mismatch means "not this record" rather
+// than "corrupt".
+func (s *Store) pendingRecordIsDurableLocked(named os.FileInfo, pending pendingWrite) (bool, error) {
+	if pending.offset < 0 || int64(len(pending.line)) == 0 {
+		return false, nil
+	}
+	if named.Size() < pending.offset+int64(len(pending.line)) {
+		return false, nil
+	}
+	f, err := s.fs.Open(s.path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, fmt.Errorf("jobstore: read %s: %w", s.path, err)
+	}
+	defer func() { _ = f.Close() }()
+	buf := make([]byte, len(pending.line))
+	if _, err := f.ReadAt(buf, pending.offset); err != nil {
+		return false, nil
+	}
+	return bytes.Equal(buf, pending.line), nil
 }
 
 // foldCache caches the last fold of each kind, keyed on the cursor's identity
@@ -295,6 +417,12 @@ func (s *Store) Append(e Event) error {
 			return err
 		}
 	}
+	// An append that could not confirm its own arrival left a durable record
+	// with a sequence already assigned. That sequence must not be handed to this
+	// event until the journal answers whether the record is there.
+	if err := s.reconcilePendingLocked(); err != nil {
+		return err
+	}
 	nextSeq := s.seq + 1
 	e.Seq = nextSeq
 	// The identity of the journal this append will actually write to, sampled
@@ -329,6 +457,11 @@ func (s *Store) Append(e Event) error {
 	}
 	verified, err := s.verifyAppendReachedTheNameLocked(appendedName)
 	if err != nil {
+		// The bytes are durable, so the sequence they carry is spent whether or
+		// not a reader of the name can see them. Remember the write so the next
+		// attempt asks the journal instead of reusing the number.
+		s.pending = pendingWrite{file: appendedName, offset: startOffset, firstSeq: nextSeq, lastSeq: nextSeq, line: append([]byte(nil), b...)}
+		s.pendingSet = true
 		return err
 	}
 	s.seq = nextSeq
@@ -482,6 +615,10 @@ func (s *Store) AppendBatch(events []Event) error {
 			return err
 		}
 	}
+	// See Append: an unconfirmed write already spent the sequences it carries.
+	if err := s.reconcilePendingLocked(); err != nil {
+		return err
+	}
 	startOffset, err := s.f.Seek(0, io.SeekEnd)
 	if err != nil {
 		return fmt.Errorf("jobstore: seek append start: %w", err)
@@ -492,7 +629,9 @@ func (s *Store) AppendBatch(events []Event) error {
 		appendedName = s.named
 	}
 	nextSeq := s.seq
+	firstBatchSeq := s.seq + 1
 	written := int64(0)
+	var batchLine []byte
 	for _, e := range events {
 		nextSeq++
 		e.Seq = nextSeq
@@ -504,6 +643,7 @@ func (s *Store) AppendBatch(events []Event) error {
 		if err := s.writeLineLocked(b); err != nil {
 			return s.appendFailureLocked("write event", err, startOffset)
 		}
+		batchLine = append(batchLine, b...)
 		written += int64(len(b))
 	}
 	if err := s.syncLocked(); err != nil {
@@ -511,6 +651,10 @@ func (s *Store) AppendBatch(events []Event) error {
 	}
 	verified, err := s.verifyAppendReachedTheNameLocked(appendedName)
 	if err != nil {
+		// The whole batch is durable under the sequences it was given; the next
+		// attempt asks the journal whether it arrived rather than reusing them.
+		s.pending = pendingWrite{file: appendedName, offset: startOffset, firstSeq: firstBatchSeq, lastSeq: nextSeq, line: batchLine}
+		s.pendingSet = true
 		return err
 	}
 	s.seq = nextSeq
