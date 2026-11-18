@@ -805,8 +805,80 @@ test("a usage-limit wait whose instant has passed keeps explaining the silence a
 
   const el = screen.getByTestId("liveness-line");
   expect(el.getAttribute("data-level")).toBe("quota");
-  expect(el.textContent).not.toContain("resumes in");
-  expect(el.textContent).toContain("reset passed");
+  // Asserted as behavior, never as copy: the wait is still the level, the
+  // countdown's duration is gone (the reset is behind it), and the line
+  // states a wait rather than inferring from silence - the quota level
+  // differs from the retry-free, wait-free reading of the same gap.
+  expect(el.textContent ?? "").not.toContain(compactDuration(60_000));
+  expect(el.getAttribute("data-level")).not.toBe(describeLiveness(60_000, true, 0).level);
+  expect(el.className).not.toContain("stalled");
+});
+
+// The announcement's elapsed sample is a snapshot from when the daemon sent
+// it, not a fact frozen at receipt: an hour into the wait the call is an hour
+// older than the sample says, so the line advances it by the time since
+// receipt. And crossing the reset keeps the wait's own metadata - the model
+// tag and the elapsed time - because the call is still waiting: only the
+// promise changes (countdown to pending), never the facts beside it.
+test("a quota wait's elapsed time advances past its announcement, and survives the reset crossing", () => {
+  const now = 1_000_000;
+  reloadWithQuotaWait(2 * 60 * 60_000, now);
+  render(
+    <LivenessLine
+      lastFrameAt={0}
+      now={now + 60 * 60_000}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      primaryModel="claude-opus-4"
+      retry={rawRetry({
+        attempt: 1,
+        attemptCap: 4,
+        delayMs: 2 * 60 * 60_000,
+        errorClass: "quota_exceeded",
+        model: "gpt-5",
+        groupElapsedMs: 5_000,
+        turnId: "turn_0",
+        waitStartedAt: now - 60_000,
+        receivedAt: now,
+      })}
+    />,
+  );
+  const line = screen.getByTestId("liveness-line");
+  // The elapsed advanced by the hour since receipt, past the sample's 5s.
+  // (Only the positive assertion: the advanced string "60m 5s" contains the
+  // sample's own substring, so a negative contains-on-"5s" cannot hold.)
+  expect(line.textContent).toContain(formatExactGap(60 * 60_000 + 5_000));
+
+  // Past the reset, the wait's facts survive the crossing: the model tag and
+  // the advanced elapsed ride the pending line as they rode the countdown.
+  cleanup();
+  reloadWithQuotaWait(60_000, now);
+  render(
+    <LivenessLine
+      lastFrameAt={0}
+      now={now + 60_000}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      primaryModel="claude-opus-4"
+      retry={rawRetry({
+        attempt: 1,
+        attemptCap: 4,
+        delayMs: 60_000,
+        errorClass: "quota_exceeded",
+        model: "gpt-5",
+        groupElapsedMs: 5_000,
+        turnId: "turn_0",
+        waitStartedAt: now - 60_000,
+        receivedAt: now,
+      })}
+    />,
+  );
+  const pending = screen.getByTestId("liveness-line");
+  expect(pending.getAttribute("data-level")).toBe("quota");
+  expect(pending.textContent).toContain("gpt-5");
+  expect(pending.textContent).toContain(formatExactGap(60_000 + 5_000));
 });
 
 // --- the hub's count (#3797) ------------------------------------------------

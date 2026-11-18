@@ -5619,3 +5619,171 @@ it("does not replay an active status and quota announcement past a buffered Stop
   expect(model?.quotaResumesAt).toBeUndefined();
   expect(model?.modelRetry?.errorClass ?? "cleared").not.toBe("quota_exceeded");
 });
+
+// A legacy read can carry a wait's deadline while the buffered frames carry
+// both its ends: the announcement that installed the countdown, and the
+// unstamped wake that ended it. The wake owns the held legacy wait's turn, so
+// the countdown must go - and the POSITIVE-DELAY retry chip the announcement
+// installed goes with it: it belongs to a wait the daemon just said ended,
+// and model output for the resumed request preserves it no matter how long
+// the pane lives. The clear helper's deadline-only guard used to leave both
+// standing while the resumed request worked.
+it("an unstamped wake clears the positive-delay retry the same legacy wait installed", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const response = read("row-1");
+  response.thread.status = { type: "active" };
+  response.thread.evener.activeTurnId = "turn_1";
+  expect(owner.acceptRead(response, { lifetime: 1, readId: "cut", boundary: "cut" })).toBe(true);
+  owner.acceptBeforeReadCut(
+    [
+      {
+        method: "evener/thread/modelRetry",
+        params: {
+          threadId,
+          ref,
+          turnId: "turn_1",
+          attempt: 1,
+          maxAttempts: 1,
+          delayMs: 7_200_000,
+          errorClass: "quota_exceeded",
+          groupElapsedMs: 5_000,
+          attemptCap: 1,
+        },
+      } as AnyNotification,
+      {
+        method: "evener/thread/modelRetry",
+        params: {
+          threadId,
+          ref,
+          turnId: "turn_1",
+          attempt: 1,
+          maxAttempts: 1,
+          delayMs: 0,
+          errorClass: "quota_exceeded",
+          groupElapsedMs: 5_000,
+          attemptCap: 1,
+        },
+      } as AnyNotification,
+    ],
+    { lifetime: 1 },
+  );
+  const model = owner.getSnapshot();
+  expect(model?.quotaResumesAt).toBeUndefined();
+  expect(model?.modelRetry?.errorClass ?? "cleared").not.toBe("quota_exceeded");
+});
+
+// A refresh can buffer both ends of a stamped wait while adopting a snapshot
+// that already reflects the resumed request's tool call. Replay folds the
+// start (the snapshot holds no wait stamp to refuse it) and the wake then
+// matches the stamp the start just installed - so the frame pair must be
+// reconciled against the ADOPTED SNAPSHOT before either applies: the buffered
+// tool output whose effects the read already shows may not leave a chip
+// claiming in-progress motion, and the ended stamp still survives to order a
+// later read against.
+it("reconciles a buffered start and wake whose resumed output the snapshot already reflects", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const waitStartedAt = 4_000_000_000;
+  // The snapshot already carries the resumed request's tool call, so the
+  // buffered start's wait is a thing of the past the read superseded.
+  const response = read("row-1");
+  response.thread.status = { type: "active" };
+  response.thread.evener.activeTurnId = "turn_1";
+  expect(owner.acceptRead(response, { lifetime: 1, readId: "cut", boundary: "cut" })).toBe(true);
+  owner.acceptBeforeReadCut(
+    [
+      {
+        method: "evener/thread/modelRetry",
+        params: {
+          threadId,
+          ref,
+          turnId: "turn_1",
+          attempt: 1,
+          maxAttempts: 1,
+          delayMs: 7_200_000,
+          errorClass: "quota_exceeded",
+          groupElapsedMs: 5_000,
+          attemptCap: 1,
+          waitStartedAt,
+        },
+      } as AnyNotification,
+      {
+        method: "evener/thread/modelRetry",
+        params: {
+          threadId,
+          ref,
+          turnId: "turn_1",
+          attempt: 1,
+          maxAttempts: 1,
+          delayMs: 0,
+          errorClass: "quota_exceeded",
+          groupElapsedMs: 5_000,
+          attemptCap: 1,
+          waitStartedAt,
+        },
+      } as AnyNotification,
+    ],
+    { lifetime: 1 },
+  );
+  const model = owner.getSnapshot();
+  // The buffered start and wake cancel: no countdown, no chip.
+  expect(model?.quotaResumesAt).toBeUndefined();
+  expect(model?.modelRetry?.errorClass ?? "cleared").not.toBe("quota_exceeded");
+  // The ended stamp survives the cancellation - a later read that captured
+  // the wait while it stood is still refused by it.
+  expect(model?.quotaWaitEndedAt).toBe(waitStartedAt);
+});
+
+// A root turn can wait for quota, resume, and drain queued input into a
+// SECOND turn without an intervening idle status reaching this pane. The
+// buffer then carries A's active status, A's quota frames, and B's active
+// status, and the read adopts a snapshot naming B. A later ACTIVE status for
+// a different turn is a replacement boundary the same way a terminal one is:
+// replaying A's pair over a read the daemon has already moved past leaves
+// the pane running turn A while turn B works.
+it("does not replay a turn's status and wait past a later active status naming a different turn", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  // The snapshot names turn B as running.
+  const response = read("row-1");
+  response.thread.status = { type: "active" };
+  response.thread.evener.activeTurnId = "turn_B";
+  expect(owner.acceptRead(response, { lifetime: 1, readId: "cut", boundary: "cut" })).toBe(true);
+  const waitStartedAt = 4_000_000_000;
+  owner.acceptBeforeReadCut(
+    [
+      {
+        method: "thread/status/changed",
+        params: { threadId, ref, status: { type: "active" }, activeTurnId: "turn_A" },
+      } as AnyNotification,
+      {
+        method: "evener/thread/modelRetry",
+        params: {
+          threadId,
+          ref,
+          turnId: "turn_A",
+          attempt: 1,
+          maxAttempts: 1,
+          delayMs: 7_200_000,
+          errorClass: "quota_exceeded",
+          groupElapsedMs: 5_000,
+          attemptCap: 1,
+          waitStartedAt,
+        },
+      } as AnyNotification,
+      {
+        method: "thread/status/changed",
+        params: { threadId, ref, status: { type: "active" }, activeTurnId: "turn_B" },
+      } as AnyNotification,
+    ],
+    { lifetime: 1 },
+  );
+  const model = owner.getSnapshot();
+  // Turn B is running, and turn A's pair did not resurrect A.
+  expect(model?.runningTurnId).toBe("turn_B");
+  expect(model?.quotaResumesAt).toBeUndefined();
+});

@@ -190,17 +190,33 @@ export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId, ret
   // waiting call.
   const matchingAnnouncement =
     stampedQuotaWait && retry?.turnId !== undefined && retry.turnId === turnId ? retry : undefined;
+  // The announcement's elapsed sample is a snapshot from when the daemon
+  // sent it, not a fact frozen at receipt: an hour into the wait the call is
+  // an hour older than the sample, so the line advances it by the time since
+  // this pane received the announcement.
+  const announcementElapsedMs =
+    matchingAnnouncement !== undefined && matchingAnnouncement.receivedAt !== undefined
+      ? matchingAnnouncement.groupElapsedMs + (now - matchingAnnouncement.receivedAt)
+      : undefined;
+  const announcementModelTag =
+    matchingAnnouncement?.model !== undefined && matchingAnnouncement.model !== primaryModel
+      ? matchingAnnouncement.model
+      : undefined;
+  // Crossing the reset keeps the wait's own metadata: the call is still
+  // waiting, so only the promise changes (countdown to pending), never the
+  // facts the announcement established beside it.
+  const announcementFacts = {
+    ...(announcementModelTag !== undefined ? { modelTag: announcementModelTag } : {}),
+    ...(announcementElapsedMs !== undefined ? { elapsedMs: announcementElapsedMs } : {}),
+  };
   const quotaWait: QuotaWait | undefined =
     remaining !== null
       ? {
           remainingMs: remaining,
-          ...(matchingAnnouncement?.model && matchingAnnouncement.model !== primaryModel
-            ? { modelTag: matchingAnnouncement.model }
-            : {}),
-          ...(matchingAnnouncement ? { elapsedMs: matchingAnnouncement.groupElapsedMs } : {}),
+          ...announcementFacts,
         }
       : waitStillRecorded
-        ? { remainingMs: 0, passedReset: true }
+        ? { remainingMs: 0, passedReset: true, ...announcementFacts }
         : undefined;
   const { level, text } = describeLiveness(
     now - lastFrameAt,

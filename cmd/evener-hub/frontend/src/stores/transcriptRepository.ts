@@ -1200,6 +1200,10 @@ export class TranscriptRepository {
     // carrying the tool call it produced, so the buffered history update is a
     // duplicate the reducer folds to no change - and replaying the retry then
     // reinstalls an indicator for a call that is over.
+    // The stamps of the starts THIS replay itself folded, in buffer order:
+    // a wake matching one of them reconciles against the ADOPTED SNAPSHOT,
+    // not against the intermediate state the start left behind.
+    const replayedStartStamps = new Set<number>();
     for (const [index, notification] of notifications.entries()) {
       if (notification.method === "history/updated") {
         this.accept(notification, context);
@@ -1215,34 +1219,42 @@ export class TranscriptRepository {
         // exercised.
         if (this.#replaysTurnStatus(notification, notifications, index)) this.accept(notification, context);
       } else if (isQuotaRetry(notification)) {
-        // A start whose turn a later buffered status ends (a Stop, which
-        // emits no zero-delay wake of its own) is a fact the adopted
-        // snapshot already superseded: the announcement may not re-arm a
-        // countdown for a turn the cut shows stopped.
+        // A start whose turn a later buffered frame REPLACES - a terminal
+        // status (a Stop, which emits no zero-delay wake of its own), or an
+        // active status naming a different turn (a root turn resuming into
+        // queued input without an idle status between) - is a fact the
+        // adopted snapshot already superseded: the announcement may not
+        // re-arm a countdown or revive a turn the cut shows stopped or
+        // replaced.
         if (
           notification.params.delayMs > 0 &&
-          notification.params.turnId !== undefined &&
-          notifications
-            .slice(index + 1)
-            .some(
-              (frame) =>
-                frame.method === "thread/status/changed" &&
-                frame.params.status.type !== "active" &&
-                (frame.params.activeTurnId === undefined || frame.params.activeTurnId === notification.params.turnId),
-            )
+          this.#bufferedTurnReplacedBy(notification.params.turnId, notifications, index)
         ) {
           continue;
         }
-        const verdict = this.#quotaReplayVerdict(notification);
+        const verdict = this.#quotaReplayVerdict(notification, replayedStartStamps);
         if (verdict === "clear-legacy") {
           // An unstamped wake owned the held legacy wait's turn: the
           // countdown goes, and no chip and no stall restamp come with it -
           // the frame is not folded, so the snapshot's own showing of the
           // resumed request is all the pane carries.
-          this.#clearLegacyQuotaWait();
+          this.#clearHeldQuotaWait();
           continue;
         }
         if (verdict === "skip") continue;
+        if (verdict === "cancel-pair") {
+          // A start and its wake both buffered, with the read already
+          // carrying the resumed request's output: the pair cancels. The
+          // ended stamp survives to order a later read against, and the
+          // countdown and chip the start installed go together - the
+          // snapshot's own showing of the resumed request is all the pane
+          // carries, the same shape as an unstamped wake's clear.
+          if (notification.params.waitStartedAt !== undefined) {
+            this.#recordEndedWait(notification.params.waitStartedAt);
+          }
+          this.#clearHeldQuotaWait();
+          continue;
+        }
         if (verdict === "record-ended") {
           // The model held no countdown for the wait this wake names, so the
           // frame's only surviving content is the ended stamp a delayed read
@@ -1254,6 +1266,9 @@ export class TranscriptRepository {
             this.#recordEndedWait(notification.params.waitStartedAt);
           }
           continue;
+        }
+        if (notification.params.delayMs > 0 && notification.params.waitStartedAt !== undefined) {
+          replayedStartStamps.add(notification.params.waitStartedAt);
         }
         this.accept(notification, context);
       } else if (
@@ -1290,28 +1305,40 @@ export class TranscriptRepository {
     if (notification.params.status.type !== "active" || turnId === undefined) return false;
     if (turnId === this.#model?.runningTurnId) return false;
     // The buffered frames BEHIND the status speak for the later cut too: a
-    // terminal status for the same turn (a Stop, which emits no zero-delay
-    // wake of its own) is the cut already exercising the turn's end, and the
-    // adopted snapshot reflects it. Replaying the active status past its own
-    // turn's termination revives a stopped turn - and the quota announcement
-    // the pairing admits would then re-arm a countdown nothing later in the
-    // buffer corrects.
-    // The buffered frames BEHIND the status speak for the later cut too: a
-    // terminal status (a Stop, which emits no zero-delay wake of its own)
-    // is the cut already exercising the turn's end, and the adopted
-    // snapshot reflects it. Replaying the active status past its own
-    // turn's termination revives a stopped turn - and the quota
-    // announcement the pairing admits would then re-arm a countdown
-    // nothing later in the buffer corrects.
+    // later status that REPLACES the turn - terminal, or active naming a
+    // different turn - is the cut already exercising the turn's end or
+    // replacement, and the adopted snapshot reflects it. Replaying the
+    // active status past its own turn's replacement revives a stopped or
+    // superseded turn - and the quota announcement the pairing admits would
+    // then re-arm a countdown nothing later in the buffer corrects.
+    if (this.#bufferedTurnReplacedBy(turnId, notifications, index)) return false;
     const later = notifications.slice(index + 1);
-    const turnEndedLater = later.some(
-      (frame) =>
-        frame.method === "thread/status/changed" &&
-        frame.params.status.type !== "active" &&
-        (frame.params.activeTurnId === undefined || frame.params.activeTurnId === turnId),
-    );
-    if (turnEndedLater) return false;
     return later.some((frame) => isQuotaStart(frame) && frame.params.turnId === turnId);
+  }
+
+  /**
+   * Whether a later buffered status frame replaces the turn this frame
+   * names: a terminal status (which emits no zero-delay wake of its own), or
+   * an active status for a DIFFERENT turn (a root turn resuming into queued
+   * input without an idle status between). Either is the later cut already
+   * exercising the turn's end or replacement, and the adopted snapshot
+   * reflects it - so no buffered frame for the replaced turn may replay past
+   * it. An active status for the SAME turn is continuation, not replacement.
+   */
+  #bufferedTurnReplacedBy(
+    turnId: string | undefined,
+    notifications: readonly AnyNotification[],
+    index: number,
+  ): boolean {
+    if (turnId === undefined) return false;
+    return notifications
+      .slice(index + 1)
+      .some(
+        (frame) =>
+          frame.method === "thread/status/changed" &&
+          (frame.params.status.type !== "active" ||
+            (frame.params.activeTurnId !== undefined && frame.params.activeTurnId !== turnId)),
+      );
   }
 
   /**
@@ -1321,7 +1348,10 @@ export class TranscriptRepository {
    * it records because the countdown it would end is already gone, or clear the
    * unstamped legacy wait whose turn an unstamped wake now owns.
    */
-  #quotaReplayVerdict(notification: QuotaRetryNotification): "apply" | "record-ended" | "skip" | "clear-legacy" {
+  #quotaReplayVerdict(
+    notification: QuotaRetryNotification,
+    replayedStartStamps: ReadonlySet<number>,
+  ): "apply" | "record-ended" | "skip" | "clear-legacy" | "cancel-pair" {
     const params = notification.params;
     const stamp = params.waitStartedAt;
     const held = this.#model?.quotaWaitStartedAt ?? this.#model?.modelRetry?.waitStartedAt;
@@ -1351,6 +1381,13 @@ export class TranscriptRepository {
         return "skip";
       }
       if (held === undefined) return "record-ended";
+      // A wake matching a stamp THIS buffer's start installed reconciles
+      // against the adopted snapshot, not against the intermediate state
+      // the start left behind: the read superseded both ends of the wait,
+      // so the pair cancels - ended stamp kept, countdown and chip cleared -
+      // rather than folding a wake whose chip would claim in-progress
+      // motion over a call the snapshot already shows resumed.
+      if (stamp === held && replayedStartStamps.has(stamp)) return "cancel-pair";
       return stamp === held ? "apply" : "skip";
     }
     // A start announces a wait. Without a stamp on either side neither can be
@@ -1376,18 +1413,21 @@ export class TranscriptRepository {
   }
 
   /**
-   * Clear the held legacy wait an unstamped wake owned by turn: the deadline
-   * the read carried goes, and the chip goes with it if the wait's own
-   * announcement installed one (a wake folds no chip itself, and the
-   * announcement's chip belongs to a wait the daemon just said ended).
+   * Clear the held quota wait's deadline and the chip its own announcement
+   * installed. An unstamped legacy announcement installs the CHIP without a
+   * deadline (it names no instant the daemon issued), so the clear is owed
+   * whenever either half stands, not only when a read carried the deadline.
+   * A chip belonging to a DIFFERENT turn is not this wait's and stays.
    */
-  #clearLegacyQuotaWait(): void {
-    if (this.#model === undefined || this.#model.quotaResumesAt === undefined) return;
+  #clearHeldQuotaWait(): void {
+    if (this.#model === undefined) return;
     const chipBelongsToWait =
       this.#model.modelRetry?.errorClass === "quota_exceeded" && this.#model.modelRetry.delayMs > 0;
+    if (this.#model.quotaResumesAt === undefined && !chipBelongsToWait) return;
     this.#model = {
       ...this.#model,
       quotaResumesAt: undefined,
+      quotaWaitStartedAt: undefined,
       ...(chipBelongsToWait ? { modelRetry: undefined } : {}),
     };
     this.#publish();
