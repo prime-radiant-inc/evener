@@ -1008,9 +1008,11 @@ type RosterSnapshot struct {
 	// one Find would return, so both answers come from the same publication.
 	//
 	// The map is a copy, the values are not: an entry here shares its slices,
-	// maps and pointers with the roster's published state. Read them, do not
-	// mutate them. Live and OwnershipSnapshot.Confirmed are the copies that may
-	// be edited freely, because each of their entries is cloned.
+	// maps and pointers with the roster's published state. The values are
+	// read-only in both snapshot types, OwnershipSnapshot included: it embeds
+	// this struct, so its BySession shares the same nested data. Live and
+	// Confirmed are the entries that may be edited, because CloneLiveEntry
+	// copies each one.
 	BySession map[string]LiveEntry
 }
 
@@ -1058,8 +1060,7 @@ func (r *Roster) OwnershipSnapshot() OwnershipSnapshot {
 
 // snapshotLocked answers the navigation questions. Entries in Live are cloned,
 // so a caller editing them cannot edit the roster behind it; the BySession
-// values are not, and its doc says so. A caller that needs to edit every
-// projection should use OwnershipSnapshot, which clones Confirmed too.
+// values are not, in this type or in OwnershipSnapshot, which embeds it.
 func (r *Roster) snapshotLocked() RosterSnapshot {
 	return RosterSnapshot{
 		OwnershipError: r.ownershipErr,
