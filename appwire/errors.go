@@ -965,8 +965,8 @@ func (e WireError) WithModelControlObserved(observed ModelControlSnapshot) WireE
 		return e
 	}
 	e.Data = ModelControlObservedErrorData{
-		ErrorData: ErrorData{EvenerErrorInfo: ErrorMutationOutcomeUnknown},
-		Observed:  observed,
+		EvenerErrorInfo: ErrorMutationOutcomeUnknown,
+		Observed:        observed,
 	}
 	return e
 }

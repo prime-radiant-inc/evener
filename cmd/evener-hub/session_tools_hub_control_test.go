@@ -160,7 +160,20 @@ func TestManagerHumanControlsParity(t *testing.T) {
 				case "clear":
 					return tc.request.Clear
 				case "model":
-					return tc.request.Model
+					// The two surfaces carry different types: the human wire
+					// request also names the authority it was issued against,
+					// while the Manager derives that from a read. A refusal both
+					// surfaces can reach needs the human request well-formed, so
+					// this case compares them on a missing session rather than on
+					// a field only one of the two types can express.
+					return appwire.ThreadModelSetParams{
+						Ref:                    tc.request.Model.Ref,
+						ModelProvider:          tc.request.Model.ModelProvider,
+						Model:                  tc.request.Model.Model,
+						ClientMutationID:       "model-1",
+						ExpectedInstanceID:     "missing",
+						ExpectedBootGeneration: "missing",
+					}
 				case "vision_model":
 					return tc.request.VisionModel
 				case "reasoning_effort":

@@ -183,8 +183,7 @@ func setManagerThreadModel(ctx context.Context, cfg hubcore.WebConfig, sources *
 				// back inside the failure saves a second round trip, and it
 				// never changes the outcome or re-enables replay.
 				if observed := read.Thread.Evener.ModelControl; observed != nil {
-					var wire appwire.WireError
-					if errors.As(err, &wire) {
+					if wire, ok := errors.AsType[appwire.WireError](err); ok {
 						err = wire.WithModelControlObserved(*observed)
 					}
 				}

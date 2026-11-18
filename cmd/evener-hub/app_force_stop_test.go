@@ -622,7 +622,14 @@ func TestHubForceStopInterruptsStalledRPCOnSameConnection(t *testing.T) {
 			}
 			shutdown := make(chan error, 1)
 			go func() {
-				shutdown <- client.Request(t.Context(), method, appwire.ThreadModelSetParams{Ref: ref, ModelProvider: "test", Model: "test"}, nil)
+				shutdown <- client.Request(t.Context(), method, appwire.ThreadModelSetParams{
+					Ref:                    ref,
+					ModelProvider:          "test",
+					Model:                  "test",
+					ClientMutationID:       "stalled-model-set",
+					ExpectedInstanceID:     sessionID,
+					ExpectedBootGeneration: "boot-1",
+				}, nil)
 			}()
 			select {
 			case <-entered:
@@ -942,7 +949,14 @@ func TestHubForceStopRejectsWaitingMutationUntilExplicitResume(t *testing.T) {
 			go func() {
 				close(started)
 				if method == appwire.MethodThreadModelSet {
-					_, err := setThreadModelWithResume(t.Context(), cfg, sources, nil, appwire.ThreadModelSetParams{Ref: ref, Model: "test", ModelProvider: "test"})
+					_, err := setThreadModelWithResume(t.Context(), cfg, sources, nil, appwire.ThreadModelSetParams{
+						Ref:                    ref,
+						Model:                  "test",
+						ModelProvider:          "test",
+						ClientMutationID:       "waiting-model-set",
+						ExpectedInstanceID:     sessionID,
+						ExpectedBootGeneration: "boot-1",
+					})
 					mutation <- err
 				} else {
 					mutation <- compactThreadWithResume(t.Context(), cfg, sources, appwire.ThreadCompactStartParams{Ref: ref})
@@ -1170,7 +1184,14 @@ func TestHubForceStopRejectsRequestsQueuedBeforeRecovery(t *testing.T) {
 	}
 	ref := "local:" + sessionID
 	send(3, appwire.MethodThreadResume, map[string]any{"sessionId": sessionID, "threadId": "ignored-extra-field"})
-	send(4, appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{Ref: ref, Model: "test", ModelProvider: "test"})
+	send(4, appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{
+		Ref:                    ref,
+		Model:                  "test",
+		ModelProvider:          "test",
+		ClientMutationID:       "queued-model-set",
+		ExpectedInstanceID:     sessionID,
+		ExpectedBootGeneration: "boot-1",
+	})
 	send(5, appwire.MethodEvenerThreadForceStop, appwire.ThreadForceStopParams{Ref: ref})
 	if message := receive(5); message.Error != nil {
 		t.Fatalf("force stop: %+v", message.Error)

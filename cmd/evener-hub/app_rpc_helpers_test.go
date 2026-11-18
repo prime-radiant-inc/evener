@@ -310,6 +310,9 @@ func testHubSubscribedReadReplacedOwner(t *testing.T, sameEndpoint bool, method 
 			params["input"] = []appwire.InputItem{{Type: "text", Text: "keep this message"}}
 		case appwire.MethodThreadModelSet:
 			params["modelProvider"], params["model"] = "test", "test-model"
+			params["clientMutationId"] = "replacement-model"
+			params["expectedInstanceId"] = sessionID
+			params["expectedBootGeneration"] = "replacement-boot"
 		case appwire.MethodThreadVisionModelSet:
 			params["visionModel"] = "test/vision"
 		case appwire.MethodGoalSet:

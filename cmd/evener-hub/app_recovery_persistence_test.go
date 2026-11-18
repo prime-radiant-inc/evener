@@ -120,7 +120,14 @@ func TestHubRecoveryRequirementSurvivesRecreation(t *testing.T) {
 			if !read.Thread.Evener.ResumeRequired || read.Thread.Status.Type != "notLoaded" || read.Thread.Evener.Capabilities.Send || len(read.Thread.Turns) == 0 {
 				t.Fatalf("recreated recovery snapshot=%+v", read.Thread)
 			}
-			if err := client.Request(t.Context(), appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{Ref: ref, Model: "test"}, nil); err == nil {
+			if err := client.Request(t.Context(), appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{
+				Ref:                    ref,
+				ModelProvider:          "test",
+				Model:                  "test",
+				ClientMutationID:       "recovery-model-set",
+				ExpectedInstanceID:     "recovery-instance",
+				ExpectedBootGeneration: "recovery-boot",
+			}, nil); err == nil {
 				t.Fatal("automatic action escaped durable recovery requirement")
 			}
 			if *resumes != 0 {
@@ -188,7 +195,14 @@ func TestHubRecoveryRequirementSurvivesRecreation(t *testing.T) {
 				if !read.Thread.Evener.ResumeRequired || read.Thread.Evener.Capabilities.Send {
 					t.Fatalf("failed clear lost durable authority: %+v", read.Thread)
 				}
-				if err := client.Request(t.Context(), appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{Ref: ref, Model: "test"}, nil); err == nil {
+				if err := client.Request(t.Context(), appwire.MethodThreadModelSet, appwire.ThreadModelSetParams{
+					Ref:                    ref,
+					ModelProvider:          "test",
+					Model:                  "test",
+					ClientMutationID:       "recovery-model-set",
+					ExpectedInstanceID:     "recovery-instance",
+					ExpectedBootGeneration: "recovery-boot",
+				}, nil); err == nil {
 					t.Fatal("automatic action escaped failed durable clear")
 				}
 				if *resumes != 1 {

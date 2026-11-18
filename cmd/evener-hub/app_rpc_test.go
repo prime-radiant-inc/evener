@@ -290,9 +290,12 @@ func TestHubRPCThreadActionsRouteToDaemon(t *testing.T) {
 		t.Fatal("compact was not routed")
 	}
 	modelControl, err := client.ThreadModelSet(context.Background(), appwire.ThreadModelSetParams{
-		Ref:           "local:th_1",
-		ModelProvider: "openai",
-		Model:         "gpt-5",
+		Ref:                    "local:th_1",
+		ModelProvider:          "openai",
+		Model:                  "gpt-5",
+		ClientMutationID:       "route-model-1",
+		ExpectedInstanceID:     "th_1",
+		ExpectedBootGeneration: "boot-1",
 	})
 	if err != nil {
 		t.Fatalf("ThreadModelSet: %v", err)

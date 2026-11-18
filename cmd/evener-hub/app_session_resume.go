@@ -272,7 +272,7 @@ func removeURLWithResume(ctx context.Context, cfg hubcore.WebConfig, sources *ap
 // thread action, and runs call — the shared shape behind the notes/urls
 // resume relays above.
 func relayWithResume[R any](ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, ref, clientMutationID, action string, call func(appsource.Source) (R, error)) (R, error) {
-	return relayWithResumeAfter(ctx, cfg, sources, nil, ref, clientMutationID, action, call)
+	return relayWithResumeAfter(ctx, cfg, sources, nil, ref, clientMutationID, action, nil, call)
 }
 
 // relayWithResumeAfter is relayWithResume with an optional relay re-attach
@@ -280,7 +280,13 @@ func relayWithResume[R any](ctx context.Context, cfg hubcore.WebConfig, sources 
 // as a live notification needs it: the model setter's thread/model/changed is
 // what carries the new model's reasoning profile, and without a relay on the
 // resumed daemon a subscribed pane keeps the old profile.
-func relayWithResumeAfter[R any](ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, relays *hubRelay, ref, clientMutationID, action string, call func(appsource.Source) (R, error)) (R, error) {
+//
+// preDispatch, when set, refuses a request the owning daemon is certain to
+// reject. It runs inside the dispatch attempt, so deletion ownership and
+// recovery admission have already decided, and before the source lookup, so
+// such a request never resumes a session only to be rejected. Its failure is
+// not a session-unavailable error, which is what keeps the resume from running.
+func relayWithResumeAfter[R any](ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, relays *hubRelay, ref, clientMutationID, action string, preDispatch func() error, call func(appsource.Source) (R, error)) (R, error) {
 	afterResume := func(resumed appwire.ThreadResumeResponse) error {
 		if relays == nil {
 			return nil
@@ -288,6 +294,12 @@ func relayWithResumeAfter[R any](ctx context.Context, cfg hubcore.WebConfig, sou
 		return relays.startRelayForThread(ctx, resumed.Thread)
 	}
 	return withSessionResume(ctx, cfg, sources, ref, clientMutationID, afterResume, func() (R, error) {
+		if preDispatch != nil {
+			if err := preDispatch(); err != nil {
+				var zero R
+				return zero, err
+			}
+		}
 		source, err := sourceForThread(sources, ref, "")
 		if err != nil {
 			var zero R
