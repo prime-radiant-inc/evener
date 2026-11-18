@@ -456,6 +456,42 @@ func TestResponsesSparseTerminalKeepsDistinctCallsAtOneIndex(t *testing.T) {
 	}
 }
 
+// The mirror of the case above: one issued call ID that the gateway repeats
+// with a different item ID is still one operation. The call ID owns the
+// record, so the disagreeing item ID cannot mint the second copy an empty
+// terminal would hand the agent as the same mutating call. The frame that
+// repeats it still settles the call it names.
+func TestResponsesIssuedCallKeepsOneRecordAcrossItemIDs(t *testing.T) {
+	t.Parallel()
+	frames := []string{
+		`{"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_one","call_id":"call_dup","name":"write_file"}}`,
+		`{"type":"response.function_call_arguments.delta","output_index":1,"call_id":"call_dup","delta":"{\"a\":"}`,
+		`{"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_two","call_id":"call_dup","name":"write_file"}}`,
+		`{"type":"response.function_call_arguments.done","output_index":1,"item_id":"fc_two","call_id":"call_dup","arguments":"{\"a\":1}"}`,
+	}
+	const completed = `{"type":"response.completed","response":{"status":"completed","output":[]}}`
+	all := append(slices.Clone(frames), completed)
+	for _, source := range []string{"live", "recorded"} {
+		var resp *llm.Response
+		if source == "live" {
+			_, resp = responsesEvents(t, all...)
+		} else {
+			recorded, err := ExtractRecordedResponse([]byte("data: "+strings.Join(all, "\n\ndata: ")+"\n\n"), "m")
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp = &recorded
+		}
+		calls := resp.ToolCalls()
+		if len(calls) != 1 {
+			t.Fatalf("%s dispatchable calls = %d, want one per issued call ID: %+v", source, len(calls), calls)
+		}
+		if calls[0].ID != "call_dup" || string(calls[0].Arguments) != `{"a":1}` {
+			t.Fatalf("%s dispatch = %q %q, want the one issued call with its finalized arguments", source, calls[0].ID, string(calls[0].Arguments))
+		}
+	}
+}
+
 // A reasoning item that carries plain reasoning_text content (no
 // encrypted_content) must still land in the settled message as a thinking
 // part, or the transcript loses everything the model thought. Parts are

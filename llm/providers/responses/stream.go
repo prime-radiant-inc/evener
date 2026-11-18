@@ -755,8 +755,14 @@ func (acc *responsesOutputAccumulator) toolOutput(payload map[string]any, callID
 			index = -1 // Only the explicit identities can select a call at this position.
 		}
 	}
-	// An issued call ID identifies one operation across changes in position.
+	// An issued call ID owns the dispatchable record, so it decides identity
+	// before any positional metadata. A disagreeing item ID cannot reject the
+	// frame: it is dropped, and the bytes this frame carries still settle the
+	// call it names.
 	if issued := acc.byCallID[callID]; issued != nil {
+		if !issued.accepts("function_call", itemID, -1) {
+			itemID = "" // Conflicting positional metadata: drop it, keep the bytes.
+		}
 		if !acc.bindCallItem(issued, itemID) {
 			return nil
 		}
