@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -171,7 +172,7 @@ func TestSnapshotGitReportsAnExecFailureDistinctFromAnEmptyRepository(t *testing
 		}
 
 		answered := truncationGitEnv{results: map[string]execenv.ExecResult{
-			"rev-parse --is-inside-work-tree": {ExitCode: 1},
+			"rev-parse --is-inside-work-tree": {Stdout: "false\n"},
 		}}
 		inRepo, _, _, _, _, _, probeFailed = snapshotGit(context.Background(), answered, root)
 		if inRepo {
@@ -214,14 +215,14 @@ func TestSnapshotGitReportsASignalKilledProbeAsAFailure(t *testing.T) {
 		}
 	})
 
-	t.Run("answered nonzero exit stays an answer", func(t *testing.T) {
+	t.Run("a refused checkout is unconfirmed", func(t *testing.T) {
 		t.Parallel()
 		env := truncationGitEnv{results: map[string]execenv.ExecResult{
 			"rev-parse --is-inside-work-tree": {ExitCode: 1},
 		}}
 		inRepo, _, _, _, _, _, probeFailed := snapshotGit(context.Background(), env, root)
-		if inRepo || probeFailed {
-			t.Fatalf("an answered non-repository = inRepo %v probeFailed %v, want false/false", inRepo, probeFailed)
+		if inRepo || !probeFailed {
+			t.Fatalf("a refused inside probe = inRepo %v probeFailed %v, want false/true", inRepo, probeFailed)
 		}
 	})
 }
@@ -398,11 +399,16 @@ func TestSnapshotGitBranch_ReportsTheCheckedOutBranchAndNothingWithoutACommit(t 
 		t.Fatalf("branch = %q (known %t), want probe-branch", got, known)
 	}
 	for _, fail := range []string{"rev-parse --abbrev-ref HEAD", "rev-parse --is-inside-work-tree"} {
-		for _, failure := range []execenv.ExecResult{{TimedOut: true}, {StdoutTruncated: true}, {ExitCode: 128}} {
-			answers := map[string]execenv.ExecResult{"rev-parse --is-inside-work-tree": {Stdout: "true"}, "rev-parse --abbrev-ref HEAD": {Stdout: "partial"}}
+		for _, failure := range []execenv.ExecResult{{Stdout: "partial", TimedOut: true}, {Stdout: "partial", StdoutTruncated: true}, {ExitCode: 128}} {
+			answers := map[string]execenv.ExecResult{"rev-parse --is-inside-work-tree": {Stdout: "true"}, "rev-parse --abbrev-ref HEAD": {Stdout: "probe-branch"}}
 			answers[fail] = failure
-			if got, known := snapshotGitBranch(truncationGitEnv{results: answers}, dir); known || got != "" {
+			scripted := truncationGitEnv{results: answers}
+			if got, known := snapshotGitBranch(scripted, dir); known || got != "" {
 				t.Errorf("failed %s (%+v) returned %q, known %t", fail, failure, got, known)
+			}
+			inRepo, branch, _, _, _, _, probeFailed := snapshotGit(t.Context(), scripted, dir)
+			if got := observedGitBranch(schema.EnvironmentInfo{IsGitRepo: inRepo, GitBranch: branch, GitSnapshotFailed: probeFailed}); got != nil {
+				t.Errorf("launch recorded branch %q for failed %s (%+v)", *got, fail, failure)
 			}
 		}
 	}

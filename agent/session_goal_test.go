@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -281,52 +283,67 @@ func TestSetGoalRejectsEmpty(t *testing.T) {
 // started=true.
 func TestSetGoalIdleKicks(t *testing.T) {
 	t.Parallel()
-	t.Run("first request on an unborn checkout", func(t *testing.T) {
-		const branch = "goal-checkout"
-		dir := t.TempDir()
-		gittest.Run(t, dir, "init", "-b", branch)
-		env := execenv.NewLocalExecutionEnvironment(dir)
-		var probes int
-		observations := &envctx.Probes{
-			Now: func() time.Time { return envctxFixedTime },
-			GitBranch: func(cwd string) (string, bool) {
-				probes++
-				return snapshotGitBranch(env, cwd)
-			},
-		}
-		s := newSession(t, withEnv(env), withEnvironmentSnapshot(), withConfig(SessionConfig{StateDir: t.TempDir(), testOnly: testConfig{envProbes: observations}}))
-		prompt := s.transcript.Header().SystemPrompt
-		var round int
-		s.client.Register(&agenttest.ScriptedAdapter{Provider: "openai", Responder: func(req llm.Request) llm.Response {
-			round++
-			state, _ := requestEnvironmentState(req)
-			if probes != round || state.Last.Cwd != dir || req.Messages[0].Text() != prompt {
-				t.Errorf("request %d saw %d Git probes, cwd %q, original prompt %t", round, probes, state.Last.Cwd, req.Messages[0].Text() == prompt)
-			}
-			if round == 1 {
-				if !state.GitBranchUnknown || state.Last.GitBranch != "" {
-					t.Errorf("first request reported %q, unknown %t", state.Last.GitBranch, state.GitBranchUnknown)
+	for _, checkout := range []string{"unborn", "unreadable"} {
+		t.Run("first request on "+checkout+" checkout", func(t *testing.T) {
+			const branch = "goal-checkout"
+			dir := t.TempDir()
+			gitFile := filepath.Join(dir, ".git")
+			if checkout == "unreadable" {
+				if err := os.WriteFile(gitFile, []byte("gitdir: missing-git-dir\n"), 0o600); err != nil {
+					t.Fatal(err)
 				}
-				gittest.Run(t, dir, "commit", "--allow-empty", "-m", "first")
-				return agenttest.ToolCallResponse(llm.ToolCallData{ID: "tasks", Name: "task_list", Arguments: []byte(`{}`)})
+			} else {
+				gittest.Run(t, dir, "init", "-b", branch)
 			}
-			if state.GitBranchUnknown || state.Last.GitBranch != branch {
-				t.Errorf("after the first commit the model received %q, unknown %t", state.Last.GitBranch, state.GitBranchUnknown)
+			env := execenv.NewLocalExecutionEnvironment(dir)
+			var probes int
+			observations := &envctx.Probes{
+				Now: func() time.Time { return envctxFixedTime },
+				GitBranch: func(cwd string) (string, bool) {
+					probes++
+					return snapshotGitBranch(env, cwd)
+				},
 			}
-			if err := s.ClearGoal(); err != nil {
-				t.Fatal(err)
+			s := newSession(t, withEnv(env), withEnvironmentSnapshot(), withConfig(SessionConfig{StateDir: t.TempDir(), testOnly: testConfig{envProbes: observations}}))
+			prompt := s.transcript.Header().SystemPrompt
+			var round int
+			s.client.Register(&agenttest.ScriptedAdapter{Provider: "openai", Responder: func(req llm.Request) llm.Response {
+				round++
+				state, _ := requestEnvironmentState(req)
+				if probes != round || state.Last.Cwd != dir || req.Messages[0].Text() != prompt {
+					t.Errorf("request %d saw %d Git probes, cwd %q, original prompt %t", round, probes, state.Last.Cwd, req.Messages[0].Text() == prompt)
+				}
+				if round == 1 {
+					if !state.GitBranchUnknown || state.Last.GitBranch != "" {
+						t.Errorf("first request reported %q, unknown %t", state.Last.GitBranch, state.GitBranchUnknown)
+					}
+					if checkout == "unreadable" {
+						if err := os.Remove(gitFile); err != nil {
+							t.Fatal(err)
+						}
+						gittest.Run(t, dir, "init", "-b", branch)
+					}
+					gittest.Run(t, dir, "commit", "--allow-empty", "-m", "first")
+					return agenttest.ToolCallResponse(llm.ToolCallData{ID: "tasks", Name: "task_list", Arguments: []byte(`{}`)})
+				}
+				if state.GitBranchUnknown || state.Last.GitBranch != branch {
+					t.Errorf("after the first commit the model received %q, unknown %t", state.Last.GitBranch, state.GitBranchUnknown)
+				}
+				if err := s.ClearGoal(); err != nil {
+					t.Fatal(err)
+				}
+				return agenttest.FinalResponse("done")
+			}})
+			var kick string
+			s.SetKickFunc(func(prompt string) { kick = prompt })
+			if started, err := s.SetGoal(t.Context(), "inspect the checkout"); err != nil || !started || kick == "" {
+				t.Fatalf("SetGoal started %t, kick delivered %t, err %v", started, kick != "", err)
 			}
-			return agenttest.FinalResponse("done")
-		}})
-		var kick string
-		s.SetKickFunc(func(prompt string) { kick = prompt })
-		if started, err := s.SetGoal(t.Context(), "inspect the checkout"); err != nil || !started || kick == "" {
-			t.Fatalf("SetGoal started %t, kick delivered %t, err %v", started, kick != "", err)
-		}
-		if _, err := s.ProcessInputKind(t.Context(), kick, nil, EntryContinuation); err != nil || round != 2 {
-			t.Fatalf("idle goal continuation made %d requests, err %v", round, err)
-		}
-	})
+			if _, err := s.ProcessInputKind(t.Context(), kick, nil, EntryContinuation); err != nil || round != 2 {
+				t.Fatalf("idle goal continuation made %d requests, err %v", round, err)
+			}
+		})
+	}
 	sess := newGoalMethodSession(t)
 	defer sess.Close()
 

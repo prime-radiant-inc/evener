@@ -56,6 +56,12 @@ func defaultGitExecTimeout() time.Duration {
 // gitExecTimeoutMS is gitExecTimeout in the milliseconds ExecCommand takes.
 func gitExecTimeoutMS() int { return int(gitExecTimeout / time.Millisecond) }
 
+func runSnapshotGit(ctx context.Context, env execenv.ExecutionEnvironment, cwd string, args ...string) (execenv.ExecResult, error) {
+	execCtx, cancel := context.WithTimeout(ctx, gitExecTimeout)
+	defer cancel()
+	return execenv.RunGit(execCtx, env, cwd, gitExecTimeoutMS(), args...)
+}
+
 // gitOriginURL returns the git remote origin URL for the repo at cwd,
 // or "" if not a git repo or no origin remote is configured. ctx is the
 // caller's work context: each exec is additionally bounded by gitExecTimeout,
@@ -68,9 +74,7 @@ func gitOriginURL(ctx context.Context, env execenv.ExecutionEnvironment, cwd str
 	if cwd == "" {
 		cwd = env.WorkingDirectory()
 	}
-	execCtx, cancel := context.WithTimeout(ctx, gitExecTimeout)
-	defer cancel()
-	res, err := execenv.RunGit(execCtx, env, cwd, gitExecTimeoutMS(), "remote", "get-url", "origin")
+	res, err := runSnapshotGit(ctx, env, cwd, "remote", "get-url", "origin")
 	if err != nil || res.ExitCode != 0 {
 		return ""
 	}
@@ -91,27 +95,32 @@ func snapshotGitBranch(env execenv.ExecutionEnvironment, cwd string) (branch str
 	if cwd == "" {
 		cwd = env.WorkingDirectory()
 	}
+	inRepo, branch, failed := snapshotGitCheckout(context.Background(), env, cwd)
+	return branch, !failed && (!inRepo || branch != "")
+}
+
+// Launch and request-time probes use the same evidence for checkout membership.
+// Git refusing to inspect an existing checkout leaves its branch unknown.
+func snapshotGitCheckout(ctx context.Context, env execenv.ExecutionEnvironment, cwd string) (inRepo bool, branch string, probeFailed bool) {
 	if !hasGitMetadataAncestor(cwd) {
-		return "", true
+		return false, "", false
 	}
-	read := func(args ...string) (string, bool) {
-		ctx, cancel := context.WithTimeout(context.Background(), gitExecTimeout)
-		defer cancel()
-		res, err := execenv.RunGit(ctx, env, cwd, gitExecTimeoutMS(), args...)
-		if err != nil || res.ExitCode != 0 || res.TimedOut || res.StdoutTruncated {
-			return "", false
-		}
-		return strings.TrimSpace(res.Stdout), true
+	inside, err := runSnapshotGit(ctx, env, cwd, "rev-parse", "--is-inside-work-tree")
+	if err != nil || inside.ExitCode != 0 || inside.TimedOut || inside.StdoutTruncated {
+		return false, "", true
 	}
-	inside, ok := read("rev-parse", "--is-inside-work-tree")
-	if !ok {
-		return "", false
+	if membership := strings.TrimSpace(inside.Stdout); membership != "true" {
+		return false, "", membership != "false"
 	}
-	if inside != "true" {
-		return "", inside == "false"
+	head, err := runSnapshotGit(ctx, env, cwd, "rev-parse", "--abbrev-ref", "HEAD")
+	if head.TimedOut || head.StdoutTruncated || (err != nil && !gitExited(err)) {
+		return true, "", true
 	}
-	branch, ok = read("rev-parse", "--abbrev-ref", "HEAD")
-	return branch, ok && branch != ""
+	if err != nil || head.ExitCode != 0 {
+		// A worktree can have an unborn HEAD.
+		return true, "", false
+	}
+	return true, strings.TrimSpace(head.Stdout), false
 }
 
 // snapshotGit reads the launch/refresh git summary for cwd. ctx is the
@@ -120,11 +129,9 @@ func snapshotGitBranch(env execenv.ExecutionEnvironment, cwd string) (branch str
 //
 // probeFailed reports that a probe could not run (exec error, timeout,
 // cancellation) or was cut short, and so its empty value is not the answer
-// "nothing there". It is the #4517 distinction `execenv.RunGit` already makes
-// at its source ("an error means git did not run"): a failed `git log` is not
-// an empty repository, and a failed `rev-parse` is not a non-repository. A
-// non-zero EXIT is different again — git ran and answered, so an empty
-// repository's log stays an empty commit list, not a probe failure.
+// "nothing there". A failed membership probe leaves the checkout unknown.
+// Within a confirmed checkout, an unborn HEAD can legitimately produce a
+// nonzero branch or log exit.
 func snapshotGit(ctx context.Context, env execenv.ExecutionEnvironment, cwd string) (inRepo bool, branch string, modifiedFiles int, untrackedFiles int, recentCommitTitles []string, statusKnown bool, probeFailed bool) {
 	if env == nil {
 		return false, "", 0, 0, nil, false, false
@@ -133,29 +140,9 @@ func snapshotGit(ctx context.Context, env execenv.ExecutionEnvironment, cwd stri
 	if cwd == "" {
 		cwd = env.WorkingDirectory()
 	}
-	if !hasGitMetadataAncestor(cwd) {
-		return false, "", 0, 0, nil, false, false
-	}
-
-	run := func(args ...string) (execenv.ExecResult, error) {
-		execCtx, cancel := context.WithTimeout(ctx, gitExecTimeout)
-		defer cancel()
-		return execenv.RunGit(execCtx, env, cwd, gitExecTimeoutMS(), args...)
-	}
-
-	inside, err := run("rev-parse", "--is-inside-work-tree")
-	if err != nil && !gitExited(err) {
-		return false, "", 0, 0, nil, false, true
-	}
-	if err != nil || inside.ExitCode != 0 || strings.TrimSpace(inside.Stdout) != "true" {
-		return false, "", 0, 0, nil, false, false
-	}
-	inRepo = true
-
-	if br, err := run("rev-parse", "--abbrev-ref", "HEAD"); err != nil && !gitExited(err) {
-		probeFailed = true
-	} else if err == nil && br.ExitCode == 0 {
-		branch = strings.TrimSpace(br.Stdout)
+	inRepo, branch, probeFailed = snapshotGitCheckout(ctx, env, cwd)
+	if !inRepo {
+		return false, "", 0, 0, nil, false, probeFailed
 	}
 
 	// A truncated STDOUT capture is refused, not decoded: counting a partial
@@ -164,7 +151,7 @@ func snapshotGit(ctx context.Context, env execenv.ExecutionEnvironment, cwd stri
 	// wrong one (#4568 round 2). A capped STDERR is not the status parser's
 	// business — it reads stdout — so a noisy stderr no longer discards counts
 	// that were read whole (#4621 round 15).
-	if st, err := run("status", "--porcelain"); err != nil && !gitExited(err) {
+	if st, err := runSnapshotGit(ctx, env, cwd, "status", "--porcelain"); err != nil && !gitExited(err) {
 		probeFailed = true
 	} else if err == nil && st.ExitCode == 0 && !st.StdoutTruncated {
 		statusKnown = true
@@ -188,7 +175,7 @@ func snapshotGit(ctx context.Context, env execenv.ExecutionEnvironment, cwd stri
 	// (workspace_prompt_program_fuzz_test.go) and git_snapshot_test.go key
 	// their scripted responses on — switching it would be pure fixture churn
 	// for no behavior change.
-	lg, err := run("log", "-n", "5", "--pretty=format:%h%x20%s")
+	lg, err := runSnapshotGit(ctx, env, cwd, "log", "-n", "5", "--pretty=format:%h%x20%s")
 	switch {
 	case err != nil && !gitExited(err):
 		// git did not run: an empty commit list here would claim "no commits".
