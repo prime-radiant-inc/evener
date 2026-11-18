@@ -515,6 +515,12 @@ context pressure. On resume, a saved input-token measurement applies only to
 the target and replay rules that produced it. Otherwise Evener estimates the
 current history locally.
 
+On Chat and Responses, Evener preserves the original string of a valid
+function-call argument object, including its whitespace, key order and
+escapes. The first replay and a replay from a saved transcript therefore
+use the same bytes for the tool call. A transcript written before Evener
+saved the original spelling can replay only the bytes still on disk.
+
 - On `openai-chat`, `reasoning_field` selects the assistant message field
   the gateway reads. A row can set it even when the gateway emits a different
   field. Without a declared field, the adapter uses the recognized incoming

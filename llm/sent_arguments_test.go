@@ -47,3 +47,72 @@ func TestSentArgumentsBytes(t *testing.T) {
 		})
 	}
 }
+
+func TestToolCallDataArgumentBytesRoundTrip(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, arguments, diagnostic string
+		needsBytes                  bool
+	}{
+		{"compact", `{"z":1e2,"a":"\u0061"}`, "", false},
+		{"formatted", " \t" + `{ "z" : 1e2, "a" : "\u0061" }` + "\n", "", true},
+		{"HTML-sensitive string", `{"value":"<>&"}`, "", true},
+		{"malformed diagnostic", "{}", `{"x":nope}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			call := ToolCallData{Arguments: json.RawMessage(tc.arguments), RawArguments: tc.diagnostic}
+			record, err := json.Marshal(call)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var saved struct {
+				Arguments     json.RawMessage `json:"arguments"`
+				ArgumentBytes []byte          `json:"arguments_bytes"`
+			}
+			if err := json.Unmarshal(record, &saved); err != nil {
+				t.Fatal(err)
+			}
+			if len(saved.Arguments) == 0 || (saved.ArgumentBytes != nil) != tc.needsBytes {
+				t.Errorf("stored arguments = %q, original byte count = %d", saved.Arguments, len(saved.ArgumentBytes))
+			}
+			var restored ToolCallData
+			if err := json.Unmarshal(record, &restored); err != nil {
+				t.Fatal(err)
+			}
+			if string(restored.Arguments) != tc.arguments || restored.RawArguments != tc.diagnostic {
+				t.Errorf("restored arguments = %q, diagnostic = %q", restored.Arguments, restored.RawArguments)
+			}
+		})
+	}
+}
+
+func TestToolCallDataKeepsStructuredArgumentsWithoutMatchingBytes(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, original, diagnostic string
+	}{
+		{"legacy record", "", ""},
+		{"conflicting value", `{"x":8}`, ""},
+		{"invalid original", `{"x":`, ""},
+		{"diagnostic record", "{ \"x\":7 }", `{"x":broken}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			const arguments = `{"x":7}`
+			data, err := json.Marshal(struct {
+				Arguments    json.RawMessage `json:"arguments"`
+				Original     []byte          `json:"arguments_bytes,omitempty"`
+				RawArguments string          `json:"raw_arguments,omitempty"`
+			}{json.RawMessage(arguments), []byte(tc.original), tc.diagnostic})
+			if err != nil {
+				t.Fatal(err)
+			}
+			var call ToolCallData
+			if err := json.Unmarshal(data, &call); err != nil {
+				t.Fatal(err)
+			}
+			if string(call.Arguments) != arguments || call.RawArguments != tc.diagnostic {
+				t.Errorf("restored arguments = %q, diagnostic = %q", call.Arguments, call.RawArguments)
+			}
+		})
+	}
+}

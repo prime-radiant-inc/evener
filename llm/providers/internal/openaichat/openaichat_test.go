@@ -84,8 +84,8 @@ func TestToolArgumentsString(t *testing.T) {
 		{name: "malformed", raw: json.RawMessage(`{"status": in_progress"}`), want: `{}`},
 		{name: "non_object", raw: json.RawMessage(`["status"]`), want: `{}`},
 		{name: "null", raw: json.RawMessage(`null`), want: `{}`},
-		// whitespace_object exercises the bytes.TrimSpace path: trimmed != raw
-		{name: "whitespace_object", raw: json.RawMessage("  {\"k\":\"v\"}  "), want: `{"k":"v"}`},
+		{name: "whitespace_object", raw: json.RawMessage(" \t{\"k\": \"v\"}\n"), want: " \t{\"k\": \"v\"}\n"},
+		{name: "large exponent", raw: json.RawMessage(`{"k":1e400}`), want: `{"k":1e400}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := ToolArgumentsString(tc.raw); got != tc.want {

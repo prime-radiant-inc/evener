@@ -63,15 +63,11 @@ func ToChatTools(tools []llm.ToolDefinition) []map[string]any {
 // OpenAI-family APIs carry arguments as a string, but strict compatibles still
 // validate that string as a JSON object when replaying tool-call history.
 func ToolArgumentsString(raw json.RawMessage) string {
-	trimmed := bytes.TrimSpace(raw)
-	if len(trimmed) == 0 {
+	value := bytes.TrimLeft(raw, " \t\r\n")
+	if len(value) == 0 || value[0] != '{' || !json.Valid(raw) {
 		return "{}"
 	}
-	var obj map[string]any
-	if err := json.Unmarshal(trimmed, &obj); err != nil || obj == nil {
-		return "{}"
-	}
-	return string(trimmed)
+	return string(raw)
 }
 
 // ParseChatUsage maps a Chat Completions "usage" object onto llm.Usage. OpenAI
