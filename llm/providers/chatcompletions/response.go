@@ -56,8 +56,8 @@ type chatGoogleExtraContent struct {
 // reasoningDetailItem represents an element in the reasoning_details array
 // used by OpenRouter for models like MiniMax M2.7. MiniMax's actual format
 // is {type: "reasoning.text", text: "...", format: "...", index: N}.
-// Raw keeps the item's verbatim JSON so encrypted items replay unchanged —
-// providers may require metadata beyond the fields decoded here.
+// Raw keeps the item's verbatim JSON, including provider metadata beyond the
+// fields decoded here.
 type reasoningDetailItem struct {
 	Type   string `json:"type"`
 	Text   string `json:"text,omitempty"`
@@ -81,7 +81,7 @@ type reasoningDetailItem struct {
 }
 
 // UnmarshalJSON decodes the known fields and keeps the item's verbatim JSON
-// in Raw for lossless replay of encrypted items.
+// in Raw for lossless replay of native items.
 func (d *reasoningDetailItem) UnmarshalJSON(b []byte) error {
 	type plain reasoningDetailItem
 	var p plain
@@ -271,6 +271,7 @@ type reasoningDetailBlock struct {
 	text         strings.Builder
 	textField    string
 	wire         map[string]any
+	nonText      json.RawMessage
 	continuation bool
 	position     int
 	index        *int
@@ -457,6 +458,16 @@ func (r *chatReasoning) addDetail(pos int, item reasoningDetailItem, piece strin
 		r.blocks = append(r.blocks, &reasoningDetailBlock{wire: item.wireItem(), continuation: true})
 		return
 	}
+	if settled && piece == "" {
+		switch item.Type {
+		case "", "reasoning.text", "thinking", "reasoning.encrypted":
+		default:
+			// A complete non-text detail has its own slot in native replay
+			// and supplies no display text or scalar fallback.
+			r.blocks = append(r.blocks, &reasoningDetailBlock{nonText: item.Raw})
+			return
+		}
+	}
 	index, block := r.openDetail(pos, item, single)
 	if block != nil && item.Type == "" {
 		item.Type, _ = block.wire["type"].(string)
@@ -516,6 +527,8 @@ func captureChatDetails(t *llm.ThinkingData, blocks []*reasoningDetailBlock) {
 		switch {
 		case block.continuation:
 			opaque = append(opaque, block.wire)
+		case len(block.nonText) != 0:
+			item = block.nonText
 		case block.textField != "":
 			block.wire[block.textField] = block.text.String()
 			item, _ = json.Marshal(block.wire)

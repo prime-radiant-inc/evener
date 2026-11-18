@@ -58,7 +58,10 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 	good, bad := mustJSON(t, valid), mustJSON(t, malformed)
 	const serial = "9007199254740993"
 	const scale = "6.250e+3"
+	nativeSummary := `{"format":"fmt-summary","id":"part-summary","index":5,"scale":` + scale +
+		`,"serial":` + serial + `,"summary":` + mustJSON(t, summary) + `,"type":"reasoning.summary"}`
 	unsigned := `{"type":"reasoning.text","id":"part-a","format":"fmt-a","index":7,"text":` + mustJSON(t, first) + `,"serial":` + serial + `},
+		` + nativeSummary + `,
 		{"type":"reasoning.text","id":"part-empty","format":"fmt-empty","index":4,"text":"","scale":` + scale + `},
 		{"type":"reasoning.text","format":"fmt-b","index":2,"text":` + mustJSON(t, second) + `}`
 	encrypted := `{"type":"reasoning.encrypted","id":"sealed","data":"opaque","serial":` + serial + `,"scale":` + scale + `}`
@@ -363,8 +366,12 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 				case "reasoning_details":
 					want = []capturedChatDetail{
 						{Type: "reasoning.text", ID: "part-a", Format: "fmt-a", Index: 7, Text: new(first), Serial: json.Number(serial)},
+						{Type: "reasoning.summary", ID: "part-summary", Format: "fmt-summary", Index: 5, Summary: new(summary), Serial: json.Number(serial), Scale: json.Number(scale)},
 						{Type: "reasoning.text", ID: "part-empty", Format: "fmt-empty", Index: 4, Text: new(""), Scale: json.Number(scale)},
 						{Type: "reasoning.text", Format: "fmt-b", Index: 2, Text: new(second)},
+					}
+					if !bytes.Contains(history, []byte(nativeSummary)) {
+						t.Errorf("outbound transcript is missing the exact native summary bytes %s", nativeSummary)
 					}
 				case "reasoning_content":
 					want = []capturedChatDetail{{Type: "reasoning.encrypted", ID: "sealed", Data: "opaque", Serial: json.Number(serial), Scale: json.Number(scale)}}
@@ -400,7 +407,7 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 
 type capturedChatDetail struct {
 	Type, ID, Format, Data string
-	Text                   *string
+	Text, Summary          *string
 	Index                  int
 	Serial, Scale          json.Number
 }

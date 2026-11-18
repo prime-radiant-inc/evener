@@ -435,12 +435,13 @@ data: [DONE]
 			blank := map[string]any{"type": "reasoning.text", "id": "blank", "format": "fmt-empty", "index": 4, "text": "", "metadata": json.Number("9007199254740993")}
 			middle := map[string]any{"type": "reasoning.encrypted", "id": "opaque", "data": "sealed"}
 			tail := map[string]any{"type": "reasoning.text", "index": 3, "text": "tail", "format": "fmt-end"}
+			summary := map[string]any{"type": "reasoning.summary", "index": 5, "summary": " \tΣ\r\n", "ordinal": json.Number("9007199254740993")}
 			if signed {
 				tail["signature"] = "sig-tail"
 			}
 			want := []map[string]any{
 				{"type": "reasoning.text", "id": "a", "format": "fmt-a", "index": 9, "text": "a-complete"},
-				blank, middle, tail, {"type": "reasoning.text", "format": "unindexed", "text": ""},
+				blank, middle, tail, {"type": "reasoning.text", "format": "unindexed", "text": ""}, summary,
 			}
 			complete := append(slices.Clone(want), map[string]any{"type": "reasoning.text", "index": 6, "text": nil})
 			body := chatResponseRaw(map[string]any{"reasoning": "independent", "reasoning_details": complete}, "stop")
@@ -448,6 +449,7 @@ data: [DONE]
 				{"reasoning": "independent", "reasoning_details": []any{
 					map[string]any{"type": "reasoning.text", "id": "a", "format": "fmt-a", "index": 9, "text": "a-"},
 					blank, map[string]any{"type": "reasoning.text", "id": "unfinished", "index": 8, "text": ""},
+					map[string]any{"type": "reasoning.summary", "id": "unfinished-summary", "index": 1},
 				}},
 				{"reasoning_details": []any{middle, tail}},
 				{"reasoning_details": []any{map[string]any{"index": 9, "text": "complete"}}},
@@ -456,7 +458,7 @@ data: [DONE]
 			for _, chunk := range chunks {
 				stream.WriteString("data: " + jsonOf(t, map[string]any{"choices": []any{map[string]any{"delta": chunk}}}) + "\n\n")
 			}
-			stream.WriteString(`data: {"choices":[{"delta":{"reasoning_details":[{"index":4,"text":""},{"type":"reasoning.text","format":"unindexed","text":""}]},"finish_reason":"stop"}]}` + "\n\n")
+			stream.WriteString(`data: {"choices":[{"delta":{"reasoning_details":[{"index":4,"text":""},{"type":"reasoning.text","format":"unindexed","text":""},` + jsonOf(t, summary) + `]},"finish_reason":"stop"}]}` + "\n\n")
 			stream.WriteString("data: [DONE]\n\n")
 			responses, _ := decode(t, jsonOf(t, body), stream.String())
 			for source, resp := range responses {

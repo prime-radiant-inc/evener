@@ -591,9 +591,10 @@ call keeps its literal path and file contents, including XML.
   identical bytes in a scalar and a signed detail, a scalar route replays
   both fields. On an enrolled `reasoning_details` route, a captured native
   array supplies the replay items in their original order, with their own
-  field names, indexes, formats, and provider metadata. An explicit empty
-  text detail in a complete message or final stream delta keeps its slot.
-  A stream opening needs later text or a signature to settle it. An independently
+  field names, indexes, formats, and provider metadata. A complete message
+  or final stream delta preserves the slots of non-text details (such as
+  reasoning summaries) and explicitly empty text details. An unfinished text
+  opening needs later text or a signature to settle it. An independently
   returned scalar stays on scalar routes. If the response supplied only a
   scalar or an older transcript saved only display text, an array route
   constructs a text item from the available reasoning. A trailing
