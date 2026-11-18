@@ -4440,6 +4440,34 @@ function stubPopupLayoutBox(win: Window & typeof globalThis, width: number, heig
 // measures it, and a rect reports the box after transforms. Placement must
 // come from the untransformed layout box: the two are given different widths
 // here so only one placement can result.
+// The popup is portalled, but React still runs its events up the COMPONENT
+// tree, so an enclosing widget that answers the same key sees it. A rail row's
+// menu lives inside a Tree row, whose ArrowDown moves focus to the next row: the
+// menu would stay open with focus outside it, and Escape would no longer reach
+// the popup. The key has to be consumed where it is handled.
+test("a navigation key in an open menu does not reach the enclosing row", async () => {
+  const user = userEvent.setup();
+  const outerKeyDown = vi.fn();
+  render(
+    // The owning row's handler, exactly as a Tree row would have one.
+    // biome-ignore lint/a11y/noStaticElementInteractions: a stand-in for the rail's focusable tree row, which this test only needs to observe receiving the key or not
+    <div onKeyDown={outerKeyDown}>
+      <Menu trigger="Actions" items={items()} />
+    </div>,
+  );
+  await user.click(screen.getByRole("button", { name: "Actions" }));
+  const first = screen.getByRole("menuitem", { name: "Rename" });
+  first.focus();
+  expect(document.activeElement).toBe(first);
+
+  await user.keyboard("{ArrowDown}");
+
+  // Focus roved inside the popup, and the enclosing row never saw the key.
+  expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Duplicate" }));
+  expect(outerKeyDown).not.toHaveBeenCalled();
+  expect(screen.getByRole("menu")).toBeTruthy();
+});
+
 test("places the popup from its untransformed layout box, not its mid-animation rect", () => {
   const SETTLED_WIDTH = 200;
   const ANIMATING_WIDTH = 192; // scale(0.96)

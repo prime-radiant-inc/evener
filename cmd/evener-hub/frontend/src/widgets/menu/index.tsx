@@ -287,24 +287,40 @@ function witnessesIn(scroller: Element, triggerEl: HTMLElement, ownerWindow: Win
   const portTop = port.top;
   const portBottom = port.top + (scroller.clientHeight || port.height);
   const found: Element[] = [];
-  for (const node of Array.from(scroller.querySelectorAll("*"))) {
+  // Walked one ROW GROUP at a time, and a group whose box is outside the
+  // scrollport is skipped before any of its descendants is looked at. A rail
+  // scrolled to the bottom holds hundreds of rows the reader cannot see, and
+  // enumerating all of them to reject them one by one reads geometry for every
+  // row in the list on every placement. The group's own box answers the same
+  // question at the cost of one read per group.
+  const groups = Array.from(scroller.children);
+  for (const group of groups) {
     if (found.length >= WITNESS_LIMIT) break;
-    if (node.contains(triggerEl) || triggerEl.contains(node)) continue;
-    const rect = node.getBoundingClientRect();
-    if (rect.height <= 0) continue;
-    // Above the scrollport's top edge, or below its bottom: the reader cannot
-    // see it, so it is not what the browser anchored the view on.
-    if (rect.bottom <= portTop || rect.top >= portBottom) continue;
-    // A box with a boxed descendant is a container, and the movement this looks
-    // for happens BELOW it. Descending as far as the boxes go lands inside a
-    // row, where the movement is visible.
-    const inner = Array.from(node.querySelectorAll("*")).some(
-      (child) => !child.contains(triggerEl) && child.getBoundingClientRect().height > 0,
-    );
-    if (inner) continue;
-    const position = ownerWindow.getComputedStyle(node).position;
-    if (position === "fixed" || position === "sticky") continue;
-    found.push(node);
+    if (group.contains(triggerEl) || triggerEl.contains(group)) continue;
+    const groupRect = group.getBoundingClientRect();
+    if (groupRect.height > 0 && (groupRect.bottom <= portTop || groupRect.top >= portBottom)) continue;
+    // The group ITSELF counts: in a flat list each row is a direct child of the
+    // scroller, and skipping down to its descendants would put no row in the
+    // set at all.
+    for (const node of [group, ...Array.from(group.querySelectorAll("*"))]) {
+      if (found.length >= WITNESS_LIMIT) break;
+      if (node.contains(triggerEl) || triggerEl.contains(node)) continue;
+      const rect = node.getBoundingClientRect();
+      if (rect.height <= 0) continue;
+      // Above the scrollport's top edge, or below its bottom: the reader cannot
+      // see it, so it is not what the browser anchored the view on.
+      if (rect.bottom <= portTop || rect.top >= portBottom) continue;
+      // A box with a boxed descendant is a container, and the movement this
+      // looks for happens BELOW it. Descending as far as the boxes go lands
+      // inside a row, where the movement is visible.
+      const inner = Array.from(node.querySelectorAll("*")).some(
+        (child) => !child.contains(triggerEl) && child.getBoundingClientRect().height > 0,
+      );
+      if (inner) continue;
+      const position = ownerWindow.getComputedStyle(node).position;
+      if (position === "fixed" || position === "sticky") continue;
+      found.push(node);
+    }
   }
   return found;
 }
@@ -1141,6 +1157,15 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // changed `items` names a different entry after the change.
     const focused = focusedIndex();
     const current = focused === -1 ? indexOfActive() : focused;
+    // A key this popup handles stays here. The popup is PORTALLED, but React
+    // still runs the event up the component tree, so an enclosing widget that
+    // also answers the same key sees it - a rail row's menu sits inside a Tree
+    // row, whose own ArrowDown moves focus to the next row. The menu would
+    // then be open with focus outside it and Escape would no longer reach the
+    // popup. preventDefault alone does not stop that: the enclosing handler is
+    // looking at the key, not at the default action.
+    const handled = ["ArrowDown", "ArrowUp", "Home", "End", "Enter", " ", "Escape"];
+    if (handled.includes(event.key)) event.stopPropagation();
     switch (event.key) {
       case "ArrowDown":
         event.preventDefault();
@@ -1487,7 +1512,21 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
       const popup = popupRef.current;
       const row = itemRefs.current.find((node) => node !== null && node === ownerDocument.activeElement) ?? null;
       if (popup === null || row === null) return;
-      rowObservationRef.current = observeRow(popup, row);
+      // A scroll tells this widget where the reader is; it does not tell it
+      // whether LAYOUT also moved the row. When a reflow and a scroll land in
+      // the same frame the scroll event can arrive first, and overwriting the
+      // baseline here would hand the queued placement frame a "before" that
+      // already contains the reflow - the clip it was queued to find would
+      // compare equal, and the reveal would be skipped while Enter still
+      // invoked a clipped action.
+      //
+      // Asking the reveal instead of writing the baseline by hand is the same
+      // decision the placement pass makes: it compares the earlier look with
+      // the row as it is now, records the new look, and reveals only when that
+      // difference is layout's rather than the reader's. A plain swipe moves
+      // the offset and leaves the row's box alone, so nothing is revealed and
+      // the offset simply becomes the new baseline.
+      revealFocusedRowIfClipped(popup, "layout");
     };
     popupEl?.addEventListener("scroll", onPopupScroll, { passive: true });
     return () => {
@@ -1498,7 +1537,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
       popupMutations?.disconnect();
       popupEl?.removeEventListener("scroll", onPopupScroll);
     };
-  }, [isOpen, ownerDocument, placeAfterLayout]);
+  }, [isOpen, ownerDocument, placeAfterLayout, revealFocusedRowIfClipped]);
 
   const iconOnly = label !== undefined;
   const triggerClassName = [
