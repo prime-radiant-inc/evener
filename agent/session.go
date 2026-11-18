@@ -1632,40 +1632,6 @@ func (s *Session) refuseUnleasedWatchNotice(ctx context.Context, jobNotifs []del
 	return false
 }
 
-// hasPendingWatchAttention reports whether a watch notice is pending on the
-// DURABLE ATTENTION ledger -- the route a stable child's notices take -- as
-// opposed to the ordinary queue hasPendingWatchNotification reads.
-//
-// This is the ONE rule that cannot be one function, and it is the only
-// exception: the question "is a watch notice outstanding for this session" has
-// two answers because the ingress has two stores, and the queue rule above
-// cannot see the attention ledger any more than this can see the queue. What
-// they DO share is the classification -- both ask jobNotification.isWatch() --
-// so a notice cannot be a watch on one route and not the other. Any further
-// rule about what a notice means belongs in the shared helpers the delivery
-// path calls (watchTickDeliverable, deliverableStableWatchAttention,
-// filterDeliverableJobNotifications), not in either predicate.
-//
-// The finalization drain asks this so a notice that arrived as attention is
-// still visible to the pass that decides whether a turn is owed (LIFE-01, #2340
-// review). It reads the same unresolved set the attention drive does, so the
-// drain and the drive cannot disagree about whether a notice is outstanding.
-func (s *Session) hasPendingWatchAttention() bool {
-	if s == nil {
-		return false
-	}
-	ids, err := s.pendingDelegateAttentionIDs()
-	if err != nil {
-		return false
-	}
-	for _, id := range ids {
-		if strings.HasPrefix(id, stableWatchAttentionIDPrefix) {
-			return true
-		}
-	}
-	return false
-}
-
 // hasPendingOrdinaryNotification reports whether the session's ordinary
 // notification rail holds anything that is NOT a watch notice: a terminal shell
 // completion, a forwarded nested report, steering owed to the model.

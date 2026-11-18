@@ -1273,8 +1273,11 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		//
 		// Presenting it here needs the attention entry under this run's lease, not
 		// a notification turn; that is the open finalization-drain defect, and it
-		// stays open rather than spinning. hasPendingWatchAttention remains the
-		// drain's visibility predicate for that work.
+		// stays open rather than spinning. The pass that presents it must also
+		// settle it: settlement retires coverage, coverage is promoted from the
+		// ids a settled request staged, and staging is gated by
+		// coversPresentedAttention, so a drain turn that merely opens
+		// EntryNotification neither presents nor retires the row.
 		notificationTurnOwed := s.peekNotifications() > 0 ||
 			s.pendingRootDelegateAttention() ||
 			s.hasUndrivenDelegateUpdate(drivenUpdates)

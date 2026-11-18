@@ -433,8 +433,8 @@ func persistStableWatchAttention(owner *Session, controller *delegateTreeControl
 // stableWatchAttentionIDPrefix names the durable-attention rows this ingress
 // creates for a stable delegate's watch notices. It is a constant because two
 // places must agree on it by construction: the ID builder below, and
-// hasPendingWatchAttention, which decides whether such a row is outstanding
-// (LIFE-01, #2340 review).
+// dropUnresolvedWatchAttentionTurns, which keeps an unresolved row's turn out
+// of an unleased projection (LIFE-01, #2340 review).
 const stableWatchAttentionIDPrefix = "watchdiag:"
 
 // stableWatchDiagnosticAttentionID derives a replay-stable identity for a watch

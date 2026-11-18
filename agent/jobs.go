@@ -2040,11 +2040,7 @@ func (s *Session) scheduleStableWatchAttentionRetry(notifs []jobNotification) {
 			if len(failed) == 0 {
 				return
 			}
-			next := delay * 2
-			if next > jobNotificationRetryMaxDelay {
-				next = jobNotificationRetryMaxDelay
-			}
-			attempt(failed, next)
+			attempt(failed, min(delay*2, jobNotificationRetryMaxDelay))
 		})
 	}
 	attempt(notifs, jobNotificationRetryInitialDelay)
