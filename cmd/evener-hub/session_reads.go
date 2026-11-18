@@ -597,13 +597,19 @@ func managerReadWithinCap(response appwire.SessionOperationResponse) error {
 // count, its paging cursor and every envelope field are what the reader asked
 // for, so those stay. The daemon's own read has a wider soft limit and is not
 // trimmed here.
-func fitManagerReadUnderCap(response appwire.SessionOperationResponse) appwire.SessionOperationResponse {
+// managerReadFitUnderCap fits the response and reports the cap refusal. An
+// ordinary under-cap read is serialized once; only a response that actually
+// overran is serialized again to check the stripped copy.
+func managerReadFitUnderCap(response appwire.SessionOperationResponse) (appwire.SessionOperationResponse, error) {
 	raw, err := json.Marshal(response)
-	if err != nil || len(raw) <= managerReadMaxJSONBytes {
-		return response
+	if err != nil {
+		return response, err
+	}
+	if len(raw) <= managerReadMaxJSONBytes {
+		return response, nil
 	}
 	if !responseCarriesResolvedAskCalls(response) {
-		return response
+		return response, appwire.InvalidRequest("Manager read exceeds bounded result; no data returned")
 	}
 	// Mutate copies rather than rebuilding the structs field by field: a
 	// hand-copied envelope silently drops every field a later reader adds.
@@ -618,7 +624,10 @@ func fitManagerReadUnderCap(response appwire.SessionOperationResponse) appwire.S
 		turns.Data = stripResolvedAskCallsFromThread(appwire.Thread{Turns: turns.Data}).Turns
 		trimmed.Turns = &turns
 	}
-	return trimmed
+	if err := managerReadWithinCap(trimmed); err != nil {
+		return trimmed, err
+	}
+	return trimmed, nil
 }
 
 // stripResolvedAskCallsFromThread returns the thread with every call list

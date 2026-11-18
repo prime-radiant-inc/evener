@@ -1256,6 +1256,26 @@ func packItemCandidates[T any](
 			if contentFits || end-start == 1 {
 				return response, nil
 			}
+			// The combined page overruns while each turn fits alone: optional
+			// call lists are the difference between serving every message and
+			// sending the reader to a continuation for a turn whose bodies
+			// already fit. Try the cheaper omission before withholding a turn.
+			if stripped, changed := transcriptWindowTurnsOmitStamps(turns); changed {
+				stripped := setWindow(build(stripped, ""), windowResult)
+				if enrich != nil {
+					stripped, err = enrich(stripped)
+					if err != nil {
+						return zero, err
+					}
+				}
+				strippedBytes, marshalErr := json.Marshal(contentTurns(stripped))
+				if marshalErr != nil {
+					return zero, fmt.Errorf("marshal transcript window turns: %w", marshalErr)
+				}
+				if len(strippedBytes) <= effectiveBudget {
+					return stripped, nil
+				}
+			}
 			if direction == transcriptWindowContinuationForward {
 				end--
 				for end > start+1 && len(candidateTurns[end].candidates) == 0 {
@@ -1464,6 +1484,25 @@ func transcriptWindowTurnOmitStamps(turn appwire.Turn) (appwire.Turn, bool) {
 	}
 	turn.Items = items
 	return turn, true
+}
+
+// transcriptWindowTurnsOmitStamps applies transcriptWindowTurnOmitStamps across
+// a page, reporting whether any turn carried a call list (#6323).
+func transcriptWindowTurnsOmitStamps(turns []appwire.Turn) ([]appwire.Turn, bool) {
+	pageTurns := make([]appwire.Turn, len(turns))
+	copy(pageTurns, turns)
+	changed := false
+	for i := range pageTurns {
+		omitted, turnChanged := transcriptWindowTurnOmitStamps(pageTurns[i])
+		if turnChanged {
+			changed = true
+			pageTurns[i] = omitted
+		}
+	}
+	if !changed {
+		return turns, false
+	}
+	return pageTurns, true
 }
 
 func transcriptWindowBodylessItem(item appwire.ThreadItem, bodyBytes int) appwire.ThreadItem {

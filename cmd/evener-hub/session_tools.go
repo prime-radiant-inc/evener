@@ -658,10 +658,11 @@ func (o *sessionOperations) Invoke(ctx context.Context, caller appwire.ManagerVi
 		// the Manager read paths (initial read, continuation, saved session).
 		// Rebuild it once with the call lists off so the Manager gets a page
 		// rather than a refusal; the wider node read keeps the full stamp.
-		response = fitManagerReadUnderCap(response)
-		if err := managerReadWithinCap(response); err != nil {
-			return appwire.SessionOperationResponse{}, err
+		fitted, fitErr := managerReadFitUnderCap(response)
+		if fitErr != nil {
+			return appwire.SessionOperationResponse{}, fitErr
 		}
+		response = fitted
 	}
 	return response, nil
 }

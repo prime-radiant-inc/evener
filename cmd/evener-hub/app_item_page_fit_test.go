@@ -545,7 +545,10 @@ func TestFitManagerReadUnderCapDropsStampAtThePageCap(t *testing.T) {
 	if len(before) <= managerReadMaxJSONBytes {
 		t.Fatalf("fixture response = %d bytes, want over the Manager cap %d before the fallback", len(before), managerReadMaxJSONBytes)
 	}
-	fit := fitManagerReadUnderCap(response)
+	fit, fitErr := managerReadFitUnderCap(response)
+	if fitErr != nil {
+		t.Fatalf("fitted response refused: %v", fitErr)
+	}
 	after, err := json.Marshal(fit)
 	if err != nil {
 		t.Fatalf("marshal fitted response: %v", err)
@@ -632,9 +635,9 @@ func TestFitManagerReadUnderCapCoversTheTurnsRoute(t *testing.T) {
 	if len(before) <= managerReadMaxJSONBytes {
 		t.Fatalf("fixture response = %d bytes, want over the cap %d", len(before), managerReadMaxJSONBytes)
 	}
-	fit := fitManagerReadUnderCap(response)
-	if err := managerReadWithinCap(fit); err != nil {
-		t.Fatalf("fitted turns response refused by the cap check: %v", err)
+	fit, fitErr := managerReadFitUnderCap(response)
+	if fitErr != nil {
+		t.Fatalf("fitted turns response refused: %v", fitErr)
 	}
 	if fit.Turns == nil || fit.Turns.NextCursor != next {
 		t.Fatalf("fallback dropped the turns cursor: %+v", fit.Turns)
@@ -781,6 +784,71 @@ func TestPackTranscriptWindowFitsBodiesAgainstTheStampFreeTurn(t *testing.T) {
 	}
 	if got, want := items[0].Observation.AnswerToTurnIDs, []string{questionID}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("turn links = %v, want %v", got, want)
+	}
+}
+
+// TestPackTranscriptWindowOmitStampsBeforeWithholdingATurn covers the page
+// budget rather than the turn budget: each turn fits on its own, the combined
+// window does not, and the only thing over the line is one turn's optional
+// call list. Withholding the older turn would send the reader to a
+// continuation for a message that fits once the list is gone.
+func TestPackTranscriptWindowOmitStampsBeforeWithholdingATurn(t *testing.T) {
+	const (
+		olderTurn  = "0f1c2b3a-4d5e-4f60-8a91-b2c3d4e5f607"
+		answerTurn = "1a2b3c4d-5e6f-4071-92a3-b4c5d6e7f809"
+	)
+	calls := make([]appwire.PendingAskCall, 80)
+	for i := range calls {
+		calls[i] = appwire.PendingAskCall{TurnID: answerTurn, CallID: fmt.Sprintf("2b3c4d5e-6f70-4182-a3b4-%012x", i)}
+	}
+	olderText := strings.Repeat("older ", 5<<10/6+1)[:5<<10]
+	replyText := strings.Repeat("pasted ", 7<<10/7+1)[:7<<10]
+	older := appwire.ThreadItem{Type: "userMessage", ID: "older", Text: olderText, Version: 1}
+	reply := appwire.ThreadItem{
+		Type: "userMessage",
+		ID:   "answer",
+		Text: replyText,
+		Observation: &appwire.SessionObservationMetadata{
+			Ref:              "local:thread",
+			TurnID:           answerTurn,
+			AnswerToTurnIDs:  []string{answerTurn},
+			ResolvedAskCalls: calls,
+		},
+		Version: 2,
+	}
+	options := testWindowPackOptions(appwire.ThreadWindowParams{
+		TurnWindow:        &appwire.ThreadTurnWindow{Latest: 2},
+		WindowBudgetBytes: 16 << 10,
+		MessageBytes:      16 << 10,
+	})
+	olderCandidates := testWindowTurnCandidates(olderTurn, []appwire.ThreadItem{older})
+	replyCandidates := testWindowTurnCandidates(answerTurn, []appwire.ThreadItem{reply})
+	for i := range replyCandidates {
+		position := appwire.ThreadItemPosition{Entry: 1, Item: uint32(i)}
+		replyCandidates[i].Position = position
+		replyCandidates[i].Item.Position = &position
+	}
+	candidates := testWindowCandidateResult(append(olderCandidates, replyCandidates...))
+	got, err := packThreadTurnsWindowItemCandidates(candidates, nil, options)
+	if err != nil {
+		t.Fatalf("pack two-turn window: %v", err)
+	}
+	// Both turns are served: neither message was withheld for a call list.
+	if len(got.Data) != 2 {
+		t.Fatalf("served turns = %d, want 2", len(got.Data))
+	}
+	if ids := testItemIDs(flattenTestItems(got.Data)); !reflect.DeepEqual(ids, []string{"older", "answer"}) {
+		t.Fatalf("served items = %v, want both messages", ids)
+	}
+	items := flattenTestItems(got.Data)
+	if items[0].Text != olderText {
+		t.Fatalf("older message cut to %d of %d bytes", len(items[0].Text), len(olderText))
+	}
+	if items[1].Text != replyText {
+		t.Fatalf("reply cut to %d of %d bytes", len(items[1].Text), len(replyText))
+	}
+	if got := len(items[1].Observation.ResolvedAskCalls); got != 0 {
+		t.Fatalf("served %d stamp calls, want the list omitted to keep both turns", got)
 	}
 }
 
