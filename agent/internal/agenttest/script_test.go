@@ -253,6 +253,53 @@ func TestRepeatStepsRepeatsTheSameStepInOrder(t *testing.T) {
 	}
 }
 
+// Two scripts built from one step slice must own their slots. Retaining the
+// caller's backing array would let SetAt through one script change the step the
+// other serves, and a concurrent Next on the other would race that write under
+// a different mutex. RepeatSteps hands one slice to both, so this is the shape
+// every converted fixture that spreads repeats can hit.
+func TestScriptsFromOneStepSliceDoNotShareSlots(t *testing.T) {
+	shared := RepeatSteps(stepAt("original"), 2)
+	var first, second Script[func(req llm.Request) llm.Response]
+	first.Replace(shared)
+	second.Replace(shared)
+	if !first.SetAt(0, stepAt("replaced")) {
+		t.Fatal("SetAt(0) ok = false, want true")
+	}
+	// The second script still serves the step its caller gave it.
+	step, ok := second.Next()
+	if !ok {
+		t.Fatal("second Next() ok = false, want the original step")
+	}
+	if got := step(llm.Request{}).Message.Text(); got != "original" {
+		t.Errorf("second script answered %q, want the original step %q; the two scripts share one backing array", got, "original")
+	}
+	// And the caller's own slice is untouched too, so a third script built
+	// from it later cannot inherit the write.
+	if got := shared[0](llm.Request{}).Message.Text(); got != "original" {
+		t.Errorf("the caller's slice element 0 is %q, want %q; Replace wrote through to it", got, "original")
+	}
+	// Reset owns its slots the same way.
+	var third, fourth Script[func(req llm.Request) llm.Response]
+	third.Reset(shared)
+	fourth.Reset(shared)
+	// Write the slot the other script serves next, or the check below would
+	// read a different element and pass whatever Reset did.
+	if !third.SetAt(0, stepAt("reset-replaced")) {
+		t.Fatal("SetAt(0) ok = false, want true")
+	}
+	step, ok = fourth.Next()
+	if !ok {
+		t.Fatal("fourth Next() ok = false, want the original step")
+	}
+	if got := step(llm.Request{}).Message.Text(); got != "original" {
+		t.Errorf("script built with Reset answered %q, want the original step %q; Reset shares one backing array", got, "original")
+	}
+	if got := shared[0](llm.Request{}).Message.Text(); got != "original" {
+		t.Errorf("the caller's slice element 0 is %q after Reset, want %q", got, "original")
+	}
+}
+
 // A non-positive count yields no steps: a caller scripting zero repeats gets an
 // empty script rather than a panic.
 func TestRepeatStepsRejectsNonPositiveCounts(t *testing.T) {

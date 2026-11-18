@@ -1,6 +1,7 @@
 package agenttest
 
 import (
+	"slices"
 	"sync"
 
 	"primeradiant.com/evener/llm"
@@ -45,20 +46,26 @@ func (s *Script[T]) Shift() (step T, ok bool) {
 
 // Replace swaps the whole script. The cursor survives: a drive that already
 // consumed k steps answers the new script's step k+1.
+//
+// Replace takes its own copy of the steps. A caller that spreads one slice
+// into two scripts — newFakeAdapter("a", steps...), newFakeAdapter("b",
+// steps...) — would otherwise leave both sharing one backing array, so a
+// SetAt through one script would change the step the other serves, and a
+// concurrent Next on the other would race that write under a different mutex.
 func (s *Script[T]) Replace(steps []T) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.steps = steps
+	s.steps = slices.Clone(steps)
 }
 
 // Reset swaps the whole script and rewinds the cursor to the first step.
 // Unlike Replace, which keeps a mid-run drive's position, Reset starts the
 // sequence over: a caller rerunning the same script per iteration gets the
-// first step again.
+// first step again. Like Replace, it takes its own copy of the steps.
 func (s *Script[T]) Reset(steps []T) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.steps = steps
+	s.steps = slices.Clone(steps)
 	s.i = 0
 }
 
