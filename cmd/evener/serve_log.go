@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"primeradiant.com/evener/agent"
@@ -44,15 +45,21 @@ func serveLogAt(w io.Writer, at time.Time, sessionID, format string, args ...any
 // A daemon's output is a pipe to whatever started it. When that reader stops
 // draining, the pipe fills and every write blocks; a diagnostic written on the
 // input loop would then stop the only goroutine that runs turns, and shutdown,
-// which joins that loop, would wait behind it. The spool holds one line at a
-// time and drops a line that arrives while that slot is taken, so a diagnostic
-// line can never cost the daemon progress. Losing a repeat of a stand-down is
-// cheaper than stalling on the report of one.
+// which joins that loop, would wait behind it. The spool holds a bounded number
+// of lines and refuses an offer that arrives when the buffer is full, so a
+// diagnostic line can never cost the daemon progress. Losing a repeat of a
+// stand-down is cheaper than stalling on the report of one.
 type serveDiagnosticSpool struct {
 	out   io.Writer
 	lines chan serveDiagnosticLine
 	stop  chan struct{}
 	done  chan struct{}
+	// queued is the number of lines currently buffered. A producer claims a
+	// slot only below the unreserved capacity; a startup line may claim up to
+	// the full capacity. Claiming through a compare-and-swap keeps two
+	// concurrent producers from both taking the last unreserved slot and
+	// leaving the reserved one occupied by neither.
+	queued atomic.Int32
 }
 
 // serveDiagnosticSpoolCapacity is how many lines the spool holds before it
@@ -65,6 +72,16 @@ type serveDiagnosticSpool struct {
 // It is a bound, not a queue: offers stay nonblocking and a sink that never
 // drains still costs the daemon nothing.
 const serveDiagnosticSpoolCapacity = 4
+
+// serveDiagnosticSpoolReservedStartup is how many of those slots only a startup
+// line may take. The rendezvous registration failure is the startup line that
+// needs it: that failure is the one case where no entry is written, so the log
+// line is the only record that discovery failed, and it must not be the offer a
+// producer burst refuses. Producers fill at most
+// serveDiagnosticSpoolCapacity-serveDiagnosticSpoolReservedStartup lines, so an
+// idle reservation costs them one slot and cannot wedge them: with no startup
+// line buffered, their bound is one lower and stable.
+const serveDiagnosticSpoolReservedStartup = 1
 
 // serveDiagnosticLine is one queued diagnostic, with the session it belongs to.
 type serveDiagnosticLine struct {
@@ -95,6 +112,7 @@ func (p *serveDiagnosticSpool) run() {
 	for {
 		select {
 		case line := <-p.lines:
+			p.queued.Add(-1)
 			serveLogAt(p.out, line.at, line.sessionID, "%s", line.text)
 		case <-p.stop:
 			// A stop can arrive while a line this spool accepted is still
@@ -104,6 +122,7 @@ func (p *serveDiagnosticSpool) run() {
 			for {
 				select {
 				case line := <-p.lines:
+					p.queued.Add(-1)
 					serveLogAt(p.out, line.at, line.sessionID, "%s", line.text)
 				default:
 					return
@@ -114,8 +133,10 @@ func (p *serveDiagnosticSpool) run() {
 }
 
 // Logf queues one diagnostic line and reports whether the spool accepted it. It
-// never blocks the caller: a line that arrives while the worker is still writing
-// an earlier line is refused.
+// never blocks the caller: an offer that arrives while the buffer is full is
+// refused. A producer's offer is refused one slot earlier than a startup line's,
+// which is the reservation described on
+// serveDiagnosticSpoolReservedStartup.
 //
 // The result is not decoration. A caller that has state to update on the
 // strength of a report -- the park a wake owes exactly one line -- must update
@@ -125,14 +146,51 @@ func (p *serveDiagnosticSpool) Logf(sessionID, format string, args ...any) bool 
 	return p.logAt(time.Now(), sessionID, format, args...)
 }
 
+// LogStartupf queues one startup line, which may claim the slot producers are
+// kept out of. It is otherwise Logf: nonblocking, and it reports whether the
+// line was accepted.
+//
+// The reservation exists for the rendezvous registration failure, the one
+// startup line whose information exists nowhere else: when registration fails
+// no entry is written, so a refused line leaves the operator without the reason
+// discovery did not work. A producer burst must not be able to take that slot
+// first.
+func (p *serveDiagnosticSpool) LogStartupf(sessionID, format string, args ...any) bool {
+	return p.offer(time.Now(), true, sessionID, format, args...)
+}
+
 // logAt is Logf against a caller-supplied instant: the moment the line was
 // emitted, which is what the worker stamps rather than the moment the sink
 // became free.
 func (p *serveDiagnosticSpool) logAt(at time.Time, sessionID, format string, args ...any) bool {
+	return p.offer(at, false, sessionID, format, args...)
+}
+
+// offer claims a slot, sends the line, and reports whether it was accepted. The
+// claim and the send are separate steps because the channel cannot express the
+// reservation: a producer must stop one slot short of the full buffer while a
+// startup line may use all of it.
+func (p *serveDiagnosticSpool) offer(at time.Time, startup bool, sessionID, format string, args ...any) bool {
+	limit := int32(serveDiagnosticSpoolCapacity - serveDiagnosticSpoolReservedStartup)
+	if startup {
+		limit = serveDiagnosticSpoolCapacity
+	}
+	for {
+		queued := p.queued.Load()
+		if queued >= limit {
+			return false
+		}
+		if p.queued.CompareAndSwap(queued, queued+1) {
+			break
+		}
+	}
 	select {
 	case p.lines <- serveDiagnosticLine{sessionID: sessionID, text: fmt.Sprintf(format, args...), at: at}:
 		return true
 	default:
+		// Unreachable while the counter and the channel agree, but releasing the
+		// claim keeps a mismatch from permanently shrinking the buffer.
+		p.queued.Add(-1)
 		return false
 	}
 }

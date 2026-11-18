@@ -1216,7 +1216,7 @@ func closeSupersededSession(sess *agent.Session, shutdownClaimed bool) {
 // would cancel a context nothing is waiting on. The announcement is still made,
 // and the spool stamps it with the moment it was emitted.
 func reportServeStartup(diagnostics *serveDiagnosticSpool, sessionID, format string, args ...any) {
-	diagnostics.Logf(sessionID, format, args...)
+	diagnostics.LogStartupf(sessionID, format, args...)
 }
 
 // pendingInputStoodDown reports whether a queued-input wake found runnable work
@@ -1244,7 +1244,7 @@ func pendingInputStoodDown(processErr error, outcome agent.PendingInputOutcome) 
 // pipe, and the next turn's error then blocks the loop -- the same stall this
 // path exists to remove, arriving one turn later.
 //
-// The spool drops a line that arrives while its one slot is taken, which is the
+// The spool refuses a line that arrives while its buffer is full, which is the
 // price of never waiting: a lost line is cheaper than a daemon that cannot
 // finish a turn or stop.
 func reportTurnOutcome(diagnostics *serveDiagnosticSpool, sessionID string, processErr error, queuedInput bool, outcome agent.PendingInputOutcome, markParkReported func()) {

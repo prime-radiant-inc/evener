@@ -558,3 +558,71 @@ func TestServeStartupAnnouncementIsAnOfferToTheSpool(t *testing.T) {
 		t.Fatalf("the sink saw %d writes while two startup announcements were made, want 1: an announcement went to the pipe instead of the spool", got)
 	}
 }
+
+// TestServeDiagnosticSpoolReservesASlotForStartupLines pins the reservation the
+// rendezvous registration failure depends on.
+//
+// That failure is the one startup line whose information exists nowhere else:
+// when registration fails no entry is written, so a refused line leaves an
+// operator without the reason discovery did not work. Producers therefore stop
+// one slot short of the buffer and a startup line may take the last one.
+//
+// The counts are the assertion, not the text: producers get exactly the
+// unreserved capacity, the startup line is accepted with every producer slot
+// taken, and the reservation does not cost the producers a slot while it is
+// unused.
+func TestServeDiagnosticSpoolReservesASlotForStartupLines(t *testing.T) {
+	t.Parallel()
+	sink := &stalledSink{release: make(chan struct{}), onEnter: make(chan struct{})}
+	t.Cleanup(func() { close(sink.release) })
+	spool := newServeDiagnosticSpool(sink)
+	t.Cleanup(spool.Close)
+
+	// The worker takes this line and blocks, so the buffer fills from here on.
+	spool.Logf("session-1", "the line the worker is stuck writing")
+	<-sink.onEnter
+
+	unreserved := serveDiagnosticSpoolCapacity - serveDiagnosticSpoolReservedStartup
+	accepted := 0
+	for i := range serveDiagnosticSpoolCapacity * 2 {
+		if spool.Logf("session-1", "producer record %d", i) {
+			accepted++
+		}
+	}
+	if accepted != unreserved {
+		t.Fatalf("producer offers accepted = %d while the worker was stuck, want %d: the reservation did not hold a slot back for a startup line", accepted, unreserved)
+	}
+
+	// With every producer slot taken, the startup line still fits.
+	if !spool.LogStartupf("session-1", "rendezvous write failed: %v", errors.New("injected: write failed")) {
+		t.Fatal("the startup line was refused with the buffer full of producer records: a failed rendezvous registration would leave no record of why discovery did not work")
+	}
+
+	// And the reservation is one slot, not a second channel: the next producer
+	// offer is refused because the buffer is now genuinely full.
+	if spool.Logf("session-1", "a producer record after the startup line") {
+		t.Fatal("a producer offer was accepted past the full buffer: the reservation is not a bound")
+	}
+}
+
+// TestServeDiagnosticSpoolLeavesProducersTheirSlotsWithoutAStartupLine pins the
+// other half: an unused reservation must not shrink what producers get, or the
+// burst fix would be quietly undone by the reservation meant to protect it.
+func TestServeDiagnosticSpoolLeavesProducersTheirSlotsWithoutAStartupLine(t *testing.T) {
+	t.Parallel()
+	sink := &stalledSink{release: make(chan struct{}), onEnter: make(chan struct{})}
+	t.Cleanup(func() { close(sink.release) })
+	spool := newServeDiagnosticSpool(sink)
+	t.Cleanup(spool.Close)
+
+	spool.Logf("session-1", "the line the worker is stuck writing")
+	<-sink.onEnter
+
+	// The two-line burst a failed turn emits, with no startup line anywhere.
+	burst := []string{"error: the turn failed", "queued input stood down: the steer is parked"}
+	for _, line := range burst {
+		if !spool.Logf("session-1", "%s", line) {
+			t.Fatalf("a burst record was refused with an unused reservation: %q would reach no reader until a later wake", line)
+		}
+	}
+}
