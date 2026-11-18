@@ -62,7 +62,13 @@ func (s *Session) setPromptEnvironmentOrigin(header transcript.Header) {
 // rehydrateEnvironmentContext reconstructs only the observations visible to
 // the next request. Both restore and a winning fold supply their retained history.
 func (s *Session) rehydrateEnvironmentContext(history []schema.Turn) {
-	s.envTracker = envctx.NewTracker(envctx.State{})
+	// The startup prompt survives every fold. A retained scratch update
+	// supersedes its path, including an update that cleared the path.
+	baseline := envctx.State{ScratchDirUnknown: s.promptScratchDir == nil}
+	if s.promptScratchDir != nil {
+		baseline.Last.ScratchDir = *s.promptScratchDir
+	}
+	s.envTracker = envctx.NewTracker(baseline)
 	s.envContextState = nil
 	var retained bool
 	for _, turn := range history {
@@ -74,6 +80,13 @@ func (s *Session) rehydrateEnvironmentContext(history []schema.Turn) {
 		state := s.envTracker.State()
 		s.envContextState = &state
 	}
+}
+
+func installedScratchDir(env execenv.ExecutionEnvironment) string {
+	if local, ok := env.(*execenv.LocalExecutionEnvironment); ok && local != nil {
+		return local.SessionScratchDir()
+	}
+	return ""
 }
 
 // setEnvironmentIdentity supplies only facts that need to supersede the launch
@@ -89,14 +102,7 @@ func (s *Session) setEnvironmentIdentity(snap *envctx.Snapshot, last envctx.Snap
 		snap.ParentSessionID = s.fork.parentID
 		snap.OrdinarySession = !s.cfg.Manager
 	}
-	// Native forks inherit the parent's scratch instructions. A context-fork
-	// delegate has its own prompt, but can inherit a later scratch update.
-	if fork && !s.isSubagentSession() || last.ScratchDir != "" {
-		snap.ScratchDir = ""
-		if local, ok := s.env.(*execenv.LocalExecutionEnvironment); ok {
-			snap.ScratchDir = local.SessionScratchDir()
-		}
-	}
+	snap.ScratchDir = installedScratchDir(s.env)
 	cutoff := s.profile.KnowledgeCutoff()
 	// When a saved prompt has no recorded cutoff, publish the current catalog
 	// fact once. Retained model updates then own the cutoff across restores.
@@ -122,7 +128,11 @@ func (s *Session) needsEnvironmentIdentityLocked() bool {
 	if s.worktreeContextPending {
 		return true
 	}
-	last := s.envTracker.State().Last
+	state := s.envTracker.State()
+	if state.ScratchDirUnknown {
+		return true
+	}
+	last := state.Last
 	next := last
 	s.setEnvironmentIdentity(&next, last)
 	return next != last

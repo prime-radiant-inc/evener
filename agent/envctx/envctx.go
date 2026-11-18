@@ -44,6 +44,9 @@ type Snapshot struct {
 type State struct {
 	Last    Snapshot `json:"last"`
 	HasSent bool     `json:"has_sent"`
+	// An unrecorded launch path may still be named in the saved prompt.
+	// The next observed path, including an empty one, must supersede it.
+	ScratchDirUnknown bool `json:"scratch_dir_unknown,omitempty"`
 }
 
 // Tracker diffs successive Snapshots into rendered context blocks.
@@ -96,6 +99,7 @@ func (t *Tracker) ReplayBlock(block string) bool {
 		case strings.HasPrefix(line, scratchDirPrefix):
 			if value, err := strconv.Unquote(strings.TrimPrefix(line, scratchDirPrefix)); err == nil {
 				t.st.Last.ScratchDir = value
+				t.st.ScratchDirUnknown = false
 			}
 		case strings.HasPrefix(line, "git branch: "):
 			value := strings.TrimPrefix(line, "git branch: ")
@@ -152,7 +156,7 @@ func pressureValue(line, name string) string {
 // caller must deliver the rendered block to the model.
 func (t *Tracker) RenderDiff(cur Snapshot) string {
 	first := !t.st.HasSent
-	if !first && cur == t.st.Last {
+	if !first && cur == t.st.Last && !t.st.ScratchDirUnknown {
 		return ""
 	}
 	prev := t.st.Last
@@ -166,7 +170,7 @@ func (t *Tracker) RenderDiff(cur Snapshot) string {
 	add(cur.Cwd != prev.Cwd, fmt.Sprintf("cwd: %q", cur.Cwd))
 	add(cur.LocalDateHour != prev.LocalDateHour, "date: "+cur.LocalDateHour)
 	add(cur.Sandbox != prev.Sandbox, "sandbox: "+cur.Sandbox)
-	if cur.ScratchDir != prev.ScratchDir {
+	if cur.ScratchDir != prev.ScratchDir || t.st.ScratchDirUnknown {
 		lines = append(lines, scratchDirPrefix+strconv.Quote(cur.ScratchDir))
 	}
 	switch {

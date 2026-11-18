@@ -7,11 +7,15 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -493,17 +497,21 @@ func TestDelegateResumedAsRootKeepsItsTreeAcrossResumes(t *testing.T) {
 // TestResumeReopensTheSameScratch: a session's scratch outlives close, and the
 // restored session reopens the same directory, files and all.
 func TestResumeReopensTheSameScratch(t *testing.T) {
-	dir := t.TempDir()
-	root1 := newQueuePersistTestSession(t, dir)
+	dir, workspace := t.TempDir(), t.TempDir()
+	t.Setenv("TMPDIR", t.TempDir())
+	adapter := &agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response { return agenttest.FinalResponse("done") }}
+	root1 := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: dir}), withEnvironmentSnapshot(), withAdapter(adapter))
 	scratch := mintRootScratch(t, root1)
-	t.Cleanup(func() { _ = os.RemoveAll(filepath.Dir(scratch)) })
+	sendOneUserInput(t, root1, "start")
+	prompt := adapter.Requests()[0].Messages[0].Text()
+	if !strings.Contains(prompt, scratch) {
+		t.Fatal("launch request did not name the installed scratch")
+	}
 	meta := root1.Meta()
 	root1.Close()
 
-	client := llm.NewClient()
-	client.Register(&fakeAdapter{name: "openai"})
-	root2, err := RestoreSessionFromMetaWithConfig(client, NewOpenAIProfile("gpt-5.2"),
-		execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{StateDir: dir})
+	root2, err := RestoreSessionFromMetaWithConfig(root1.client, root1.profile,
+		execenv.NewLocalExecutionEnvironment(workspace), meta, RestoreSessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("restore: %v", err)
 	}
@@ -512,7 +520,7 @@ func TestResumeReopensTheSameScratch(t *testing.T) {
 	if !ok {
 		t.Fatalf("restored env = %T, want a local environment", root2.currentEnv())
 	}
-	if _, err := env2.ExecCommand(context.Background(), "true", 5000, dir, nil); err != nil {
+	if _, err := env2.ExecCommand(context.Background(), "true", 5000, workspace, nil); err != nil {
 		t.Fatalf("restored session cannot run a command: %v", err)
 	}
 	if got := env2.SessionScratchDir(); filepath.Clean(got) != filepath.Clean(scratch) {
@@ -521,4 +529,83 @@ func TestResumeReopensTheSameScratch(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(scratch, "notes.md")); err != nil {
 		t.Fatalf("the restored session's scratch lost its file: %v", err)
 	}
+	sendOneUserInput(t, root2, "continue")
+	reqs := adapter.Requests()
+	if updates := requestScratchUpdates(reqs[len(reqs)-1]); len(updates) != 0 {
+		t.Fatalf("unchanged scratch was repeated: %v", updates)
+	}
+	root2.Close()
+
+	header, entries, _, err := readTranscript(t.Context(), schema.SessionTranscriptPath(dir, meta.ID), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Neither scratch allocation base may live inside the workspace.
+	t.Setenv("TMPDIR", workspace)
+	t.Setenv("HOME", workspace)
+	t.Setenv("XDG_CACHE_HOME", workspace)
+	for _, version := range []string{"recorded", "unrecorded"} {
+		t.Run("unavailable_"+version, func(t *testing.T) {
+			state := t.TempDir()
+			saved := header
+			if version == "unrecorded" {
+				saved.ScratchDir = nil
+			}
+			writer, err := transcript.NewWriter(schema.SessionTranscriptPath(state, meta.ID), saved)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, entry := range entries {
+				if err := writer.Append(entry.Turn); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := schema.SaveSessionMeta(state, root2.Meta()); err != nil {
+				t.Fatal(err)
+			}
+			for round := range 2 {
+				env := execenv.NewLocalExecutionEnvironment(workspace)
+				restored, err := RestoreSessionFromMetaWithConfig(root1.client, root1.profile, env, meta, RestoreSessionConfig{StateDir: state})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(restored.Close)
+				if _, err := env.ExecCommand(t.Context(), "true", 5000, workspace, nil); err != nil || env.SessionScratchDir() != "" {
+					t.Fatalf("unavailable scratch = %q, command error = %v", env.SessionScratchDir(), err)
+				}
+				sendOneUserInput(t, restored, "resume without scratch")
+				requests := adapter.Requests()
+				req := requests[len(requests)-1]
+				if req.Messages[0].Text() != prompt {
+					t.Fatal("resume changed the startup prompt")
+				}
+				if updates := requestScratchUpdates(req); !slices.Equal(updates, []string{""}) {
+					t.Errorf("request %d scratch updates = %#v, want one explicit clear", round+1, updates)
+				}
+				restored.Close()
+			}
+		})
+	}
+	t.Run("unavailable_at_launch", func(t *testing.T) {
+		state := t.TempDir()
+		live := newSession(t, withDir(workspace), withConfig(SessionConfig{StateDir: state}), withEnvironmentSnapshot(), withAdapter(adapter))
+		for round := range 2 {
+			if round > 0 {
+				live, err = RestoreSessionFromMetaWithConfig(live.client, live.profile, execenv.NewLocalExecutionEnvironment(workspace), live.Meta(), RestoreSessionConfig{StateDir: state})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(live.Close)
+			}
+			sendOneUserInput(t, live, "without scratch")
+			requests := adapter.Requests()
+			if updates := requestScratchUpdates(requests[len(requests)-1]); len(updates) != 0 {
+				t.Errorf("request %d repeated a known empty scratch path: %#v", round+1, updates)
+			}
+			live.Close()
+		}
+	})
 }

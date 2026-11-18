@@ -353,6 +353,9 @@ func TestSandboxPromptLineIncludesScratchDir(t *testing.T) {
 	if !strings.Contains(startup, scratch) {
 		t.Fatal("parent request did not name its installed scratch directory in the startup prompt")
 	}
+	if updates := requestScratchUpdates(adapter.Requests()[0]); len(updates) != 0 {
+		t.Fatalf("parent repeated its launch scratch in environment updates: %v", updates)
+	}
 	entries, err := readTranscriptFull(t.Context(), transcriptPath(cfg.StateDir, parent.ID()), cfg.StateDir)
 	if err != nil {
 		t.Fatal(err)
@@ -360,13 +363,20 @@ func TestSandboxPromptLineIncludesScratchDir(t *testing.T) {
 	position := slices.IndexFunc(entries.Entries, func(e transcript.Entry) bool { return e.Turn.Kind == schema.TurnUserInput }) + 1
 	for _, tc := range []struct {
 		name   string
-		create func(string, string) (string, error)
+		create func(*testing.T) (string, error)
 	}{
-		{"fork", func(state, id string) (string, error) { return ForkSession(state, id, position, "edited input", "") }},
-		{"aside", AsideSession},
+		{"fork", func(*testing.T) (string, error) {
+			return ForkSession(cfg.StateDir, parent.ID(), position, "edited input", "")
+		}},
+		{"aside", func(*testing.T) (string, error) { return AsideSession(cfg.StateDir, parent.ID()) }},
+		{"relocated_root", func(t *testing.T) (string, error) {
+			parent.Close()
+			t.Setenv("TMPDIR", t.TempDir())
+			return parent.ID(), nil
+		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			id, err := tc.create(cfg.StateDir, parent.ID())
+			id, err := tc.create(t)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -391,21 +401,7 @@ func TestSandboxPromptLineIncludesScratchDir(t *testing.T) {
 				}
 				if round == 0 {
 					initialScratch = childScratch
-					write := func(dir string) toolExecResult {
-						return fileToolCall(t, child, "write_file", map[string]string{"file_path": filepath.Join(dir, "child-file"), "content": id})
-					}
-					if !write(scratch).isError {
-						t.Fatal("child file tool allowed a write to the parent's scratch")
-					}
-					if _, err := os.Stat(filepath.Join(scratch, "child-file")); !os.IsNotExist(err) {
-						t.Fatalf("denied write changed parent's scratch: %v", err)
-					}
-					if res := write(childScratch); res.isError {
-						t.Fatalf("write to child scratch: %s", res.output)
-					}
-					if data, err := os.ReadFile(filepath.Join(childScratch, "child-file")); err != nil || string(data) != id {
-						t.Fatalf("child scratch file = %q, err = %v", data, err)
-					}
+					checkScratchWrites(t, child, childScratch, scratch)
 				}
 				sendOneUserInput(t, child, "child input")
 				requests := adapter.Requests()
@@ -413,20 +409,91 @@ func TestSandboxPromptLineIncludesScratchDir(t *testing.T) {
 				if messages[0].Text() != startup {
 					t.Fatal("child request changed the inherited system prompt")
 				}
-				var observations int
-				for _, msg := range messages[1:] {
-					var tracker envctx.Tracker
-					if tracker.ReplayBlock(msg.Text()) && tracker.State().Last.ScratchDir == childScratch {
-						observations++
-					}
+				if updates := requestScratchUpdates(requests[len(requests)-1]); !slices.Equal(updates, []string{childScratch}) {
+					t.Errorf("request %d scratch updates = %v, want [%s]", round+1, updates, childScratch)
 				}
-				if observations != 1 {
-					t.Errorf("request %d contains %d environment updates with the child's writable scratch, want 1", round+1, observations)
+				if tc.name == "fork" && round == 0 {
+					t.Run("context_delegate", func(t *testing.T) {
+						checkForkDelegateScratch(t, child, adapter, childScratch)
+					})
 				}
 				child.Close()
 				env.Cleanup()
 			}
 		})
+	}
+}
+
+func requestScratchUpdates(req llm.Request) []string {
+	var dirs []string
+	for _, msg := range req.Messages {
+		update := envctx.NewTracker(envctx.State{ScratchDirUnknown: true})
+		if msg.Role == llm.RoleUser && update.ReplayBlock(msg.Text()) && !update.State().ScratchDirUnknown {
+			dirs = append(dirs, update.State().Last.ScratchDir)
+		}
+	}
+	return dirs
+}
+
+func checkScratchWrites(t *testing.T, s *Session, own, denied string) {
+	t.Helper()
+	filename := "report-" + s.ID()
+	write := func(dir string) toolExecResult {
+		return fileToolCall(t, s, "write_file", map[string]string{"file_path": filepath.Join(dir, filename), "content": s.ID()})
+	}
+	if !write(denied).isError {
+		t.Fatalf("file tool allowed a write to %q", denied)
+	}
+	if _, err := os.Stat(filepath.Join(denied, filename)); !os.IsNotExist(err) {
+		t.Fatalf("denied write changed %q: %v", denied, err)
+	}
+	if res := write(own); res.isError {
+		t.Fatalf("write to installed scratch: %s", res.output)
+	}
+	if data, err := os.ReadFile(filepath.Join(own, filename)); err != nil || string(data) != s.ID() {
+		t.Fatalf("scratch file = %q, err = %v", data, err)
+	}
+}
+
+func checkForkDelegateScratch(t *testing.T, fork *Session, adapter *agenttest.ScriptedAdapter, forkScratch string) {
+	t.Helper()
+	created := spawnRuntimeDelegate(t, fork, delegateArgs{Task: "write report", ForkContext: true, Sandbox: "read-only", DelegationAllowance: new(0)})
+	var startup, own string
+	for round := range 2 {
+		if round > 0 {
+			fork.delegateController.mu.Lock()
+			fork.delegateController.maxRetainedTerminal = 1
+			fork.delegateController.mu.Unlock()
+			if err := fork.reclaimDelegateRuntimeCapacity(1); err != nil {
+				t.Fatal(err)
+			}
+			if fork.getSub(created.ChildSessionID) != nil {
+				t.Fatal("delegate runtime is still resident")
+			}
+			if res := (delegateRuntime{owner: fork}).send(t.Context(), created.DelegateID, "continue", 0).result; res.Err != nil {
+				t.Fatal(res.Err)
+			}
+		}
+		waitForRuntimeSubagent(t, fork, created.ChildSessionID)
+		delegate := fork.getSub(created.ChildSessionID).sess
+		installed := childScratchDir(t, delegate)
+		requests := adapter.Requests()
+		req := requests[len(requests)-1]
+		if req.SessionID != delegate.ID() {
+			t.Fatalf("captured request session %q, want %q", req.SessionID, delegate.ID())
+		}
+		if round == 0 {
+			own, startup = installed, req.Messages[0].Text()
+			if own == forkScratch || !strings.Contains(startup, own) {
+				t.Fatalf("delegate startup did not name its separately installed scratch %q", own)
+			}
+			checkScratchWrites(t, delegate, own, forkScratch)
+		} else if installed != own || req.Messages[0].Text() != startup {
+			t.Fatalf("resume changed the delegate's startup prompt or installed scratch %q", installed)
+		}
+		if updates := requestScratchUpdates(req); !slices.Equal(updates, []string{forkScratch, own}) {
+			t.Errorf("delegate request %d scratch updates = %v, want inherited %q followed once by %q", round+1, updates, forkScratch, own)
+		}
 	}
 }
 

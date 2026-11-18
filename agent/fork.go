@@ -239,6 +239,7 @@ func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHead
 		Model:            parentHeader.Model,
 		KnowledgeCutoff:  parentHeader.KnowledgeCutoff,
 		WorkingDir:       parentHeader.WorkingDir,
+		ScratchDir:       parentHeader.ScratchDir,
 		Depth:            parentHeader.Depth,
 		BuildVersion:     parentHeader.BuildVersion,
 		SystemPrompt:     parentHeader.SystemPrompt,

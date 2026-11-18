@@ -134,6 +134,7 @@ type Header struct {
 	Model            string    `json:"model"`                      // model name at creation
 	KnowledgeCutoff  *string   `json:"knowledge_cutoff,omitempty"` // catalog value at launch, including a known empty value
 	WorkingDir       string    `json:"working_dir,omitempty"`      // the agent's working directory
+	ScratchDir       *string   `json:"scratch_dir,omitempty"`      // writable scratch at launch, including a known empty value
 	Depth            int       `json:"depth,omitempty"`            // subagent nesting depth (0 for root)
 	BuildVersion     string    `json:"build_version,omitempty"`    // evener build version that wrote the file
 	SystemPrompt     string    `json:"system_prompt,omitempty"`    // initial system prompt

@@ -265,6 +265,7 @@ type Session struct {
 	// changed value belongs in the next environment context.
 	promptProvider, promptModel, promptBuild string
 	promptKnowledgeCutoff                    *string
+	promptScratchDir                         *string
 	promptProvenanceOverridden               bool
 	inheritedEnvironmentIdentity             bool
 	// envContextState mirrors envTracker.State() for Meta()/SessionMeta.EnvContext:
@@ -2852,8 +2853,8 @@ func (s *Session) resetEnvContextTrackerLocked() bool {
 	if s.envTracker == nil {
 		return false
 	}
-	s.envTracker = envctx.NewTracker(envctx.State{})
-	state := envctx.State{}
+	s.rehydrateEnvironmentContext(nil)
+	state := s.envTracker.State()
 	s.envContextState = &state
 	return true
 }

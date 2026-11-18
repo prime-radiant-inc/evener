@@ -223,8 +223,8 @@ func escapeInheritedHistory(inherited []transcript.Entry) []schema.Turn {
 }
 
 // initEnvContext installs the collector and restores the tracker from the
-// environment turns the model will see. A new session starts with no observations.
-func (s *Session) initEnvContext(history []schema.Turn) {
+// launch prompt and environment turns the model will see.
+func (s *Session) initEnvContext(history []schema.Turn, promptScratchDir *string) {
 	probes := envctx.DefaultProbes()
 	if s.cfg.testOnly.envProbes != nil {
 		probes = *s.cfg.testOnly.envProbes
@@ -242,6 +242,7 @@ func (s *Session) initEnvContext(history []schema.Turn) {
 		}
 	}
 	s.envCollector = envctx.NewCollector(probes)
+	s.promptScratchDir = promptScratchDir
 	s.rehydrateEnvironmentContext(history)
 }
 
@@ -348,6 +349,7 @@ func (s *Session) transcriptHeader(createdAt time.Time) transcript.Header {
 		Model:            s.profile.Model(),
 		KnowledgeCutoff:  new(s.profile.KnowledgeCutoff()),
 		WorkingDir:       s.envInfo.WorkingDir,
+		ScratchDir:       new(installedScratchDir(s.env)),
 		Depth:            s.cfg.spawn.depth,
 		BuildVersion:     BuildVersion,
 		SystemPrompt:     s.cachedSystemPrompt,
@@ -561,7 +563,6 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	}
 	s.captureModelAvailability(selectedModels)
 	s.createdAt = s.sclock().Now().UTC()
-	s.initEnvContext(nil)
 	if err := s.bootstrapDelegateResources(); err != nil {
 		return nil, err
 	}
@@ -657,6 +658,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	// just ran had nowhere to write (kata d4es). attachTranscript below is what
 	// releases what they recorded, and it runs on every path, writer or not.
 	hdr := s.transcriptHeader(s.sclock().Now().UTC())
+	s.initEnvContext(s.history, hdr.ScratchDir)
 	s.setPromptEnvironmentOrigin(hdr)
 	var tw *transcript.Writer
 	if s.stateDir != "" {
@@ -1248,7 +1250,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	s.bufferArtifactStoreWarning(artifactStoreErr)
 	s.retirementController.Store(cfg.spawn.retirementController)
 	// The environment turn is durable before meta.EnvContext is checkpointed.
-	s.initEnvContext(resumeHistory)
+	promptScratchDir := restoredTranscriptHeader.ScratchDir
+	if restoredTranscriptHeader.SystemPrompt == "" {
+		promptScratchDir = new("")
+	}
+	s.initEnvContext(resumeHistory, promptScratchDir)
 	if err := s.bootstrapDelegateResources(); err != nil {
 		return nil, err
 	}
@@ -1411,6 +1417,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	promptSources, err := s.initSessionState(!restoreCfg.deferRestoreSideEffects, savedHeader)
 	if err != nil {
 		return nil, err
+	}
+	if savedHeader == nil {
+		// With no saved prompt, initialization just rendered the installed path.
+		s.promptScratchDir = new(installedScratchDir(s.env))
+		s.rehydrateEnvironmentContext(s.history)
 	}
 	// The restore twin of NewSession's post-init livelock release: the mint
 	// happened inside initSessionState, and any restore-replay failure below

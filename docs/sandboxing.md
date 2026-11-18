@@ -169,8 +169,11 @@ and two probes (the exit status of `git config --list`, and which of `go`,
 sandbox-derived lines. It exists so a session reads its box instead of
 discovering it by failing at it.
 
-Sandboxed forks and asides keep the parent's startup prompt and report their own
-writable scratch directory in the environment context sent with the first child request.
+The startup prompt records the session's writable scratch directory. If a
+resume installs scratch elsewhere, the next request carries the installed path
+in environment context. Forks and asides inherit their parent's startup prompt.
+A delegate that copies the conversation keeps its own startup prompt and
+supersedes any inherited scratch update with its own directory.
 
 The same rule governs it: every line is read from the resolved policy, quoted
 from a ruling recorded here, or measured at session start — through the
