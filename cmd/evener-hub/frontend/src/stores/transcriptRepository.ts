@@ -68,9 +68,20 @@ function offeredContentFingerprint(batch: Parameters<SessionEntryCache["commitBa
 // other route to it. Ordinary retries are left out deliberately - see
 // acceptBeforeReadCut's comment on why replaying one can reinstate a finished
 // call's indicator.
-function isQuotaRetry(notification: AnyNotification): boolean {
+type QuotaRetryNotification = Extract<AnyNotification, { method: "evener/thread/modelRetry" }>;
+
+function isQuotaRetry(notification: AnyNotification): notification is QuotaRetryNotification {
   if (notification.method !== "evener/thread/modelRetry") return false;
   return (notification.params as { errorClass?: unknown }).errorClass === "quota_exceeded";
+}
+
+// isQuotaStart names the half of a quota frame that OPENS a wait. The pair is
+// read together: a start is admissible because it announces a wait, and a
+// status frame is admissible because a start for the same turn follows it.
+function isQuotaStart(notification: AnyNotification): notification is QuotaRetryNotification {
+  if (notification.method !== "evener/thread/modelRetry") return false;
+  const params = notification.params as { errorClass?: unknown; delayMs?: number; turnId?: string };
+  return params.errorClass === "quota_exceeded" && typeof params.delayMs === "number" && params.delayMs > 0;
 }
 
 // Local bodies can fill omissions at the same version, but cannot overwrite
@@ -1161,23 +1172,63 @@ export class TranscriptRepository {
    */
   acceptBeforeReadCut(notifications: readonly AnyNotification[], context: { lifetime: number }): void {
     const responseOverlayKeys = new Set(Object.keys(this.#model?.overlay ?? {}));
-    for (const notification of notifications) {
-      // A QUOTA frame is the one retry whose loss erases state outright: the
-      // wait has no other route into a model adopted from a snapshot taken
-      // before it, so a pane that buffered it while the read was in flight
-      // must still fold it here. The snapshot's own summary is not a
-      // substitute - that is exactly the projection the announcement outran -
-      // and the wait's wake is a zero-delay frame of the same method, so both
-      // ends of the transition travel this route.
-      //
-      // ORDINARY retries stay out, and that narrowing is the whole rule. They
-      // are pacing, not state: a retry that SUCCEEDS while the read is in
-      // flight leaves the snapshot already carrying the tool call it produced,
-      // so the buffered history update is a duplicate the reducer folds to no
-      // change - and replaying the retry then reinstalls an indicator for a
-      // call that is over. Re-applying a frame the snapshot has absorbed is
-      // only safe when the frame carries state the snapshot cannot express.
-      if (notification.method === "history/updated" || isQuotaRetry(notification)) {
+    // Replay is ONE reconciliation, not a filter per method. The buffer's
+    // entries were ordered against the read when they arrived; the model they
+    // are folded onto is the snapshot that replaced it. So each entry is
+    // judged by the one question that covers every way it can be stale: does
+    // it tell the ADOPTED model something the model does not already know
+    // about the turn and the wait it names?
+    //
+    // A quota wait's identity is its STAMP, not its turn: one turn can wait
+    // twice, and a turn id then says only that a frame belongs to the same
+    // call site, never that it belongs to the wait now on screen. Comparing
+    // the stamp is what keeps a buffered frame for the FIRST wait from
+    // clearing the SECOND wait's countdown - the same distinction as an
+    // anchor's offset not being its identity.
+    //
+    // A wake (a zero-delay frame of the same method) adds a second question:
+    // it says the wait it names ENDED, which is news only while the model
+    // still holds that wait. Once the adopted snapshot already reflects the
+    // end - it holds no countdown for that stamp - the wake's only surviving
+    // contribution is the ended stamp a later read must be ordered against;
+    // the retry chip it would install reads "in progress" over a call that
+    // already ran and produced output, which is the round-6 over-reach again
+    // in the case the narrowing to quota frames did not distinguish.
+    //
+    // An ordinary retry never replays at all. It is pacing, not state: a retry
+    // that SUCCEEDS while the read is in flight leaves the snapshot already
+    // carrying the tool call it produced, so the buffered history update is a
+    // duplicate the reducer folds to no change - and replaying the retry then
+    // reinstalls an indicator for a call that is over.
+    for (const [index, notification] of notifications.entries()) {
+      if (notification.method === "history/updated") {
+        this.accept(notification, context);
+      } else if (notification.method === "thread/status/changed") {
+        // A turn's status and the quota announcement for that turn are one
+        // fact: dropping the status and keeping the announcement destroys the
+        // pairing that made the announcement admissible, because the reducer
+        // refuses a wait for a turn it does not see running. So a buffered
+        // status replays exactly when it ESTABLISHES a turn the snapshot does
+        // not name and a later buffered announcement needs that turn to
+        // exist. Everything else stays the snapshot's: an ending, or a turn
+        // the snapshot already names, is authority the later cut already
+        // exercised.
+        if (this.#replaysTurnStatus(notification, notifications, index)) this.accept(notification, context);
+      } else if (isQuotaRetry(notification)) {
+        const verdict = this.#quotaReplayVerdict(notification);
+        if (verdict === "skip") continue;
+        if (verdict === "record-ended") {
+          // The model held no countdown for the wait this wake names, so the
+          // frame's only surviving content is the ended stamp a delayed read
+          // must still be refused by. Folding the frame would install its chip
+          // as "in progress" over a call the snapshot already shows running or
+          // finished, and would restamp the stall clock for a wake that landed
+          // in the past.
+          if (notification.params.waitStartedAt !== undefined) {
+            this.#recordEndedWait(notification.params.waitStartedAt);
+          }
+          continue;
+        }
         this.accept(notification, context);
       } else if (
         notification.method === "thread/queueChanged" &&
@@ -1194,6 +1245,68 @@ export class TranscriptRepository {
         this.accept(notification, context);
       }
     }
+  }
+
+  /**
+   * Whether a buffered turn status may replay onto the adopted model. It is
+   * applied when it names an active turn the model does not already run AND a
+   * later buffered quota announcement names that same turn: the status is the
+   * evidence the announcement needs, and the pair is admissible only together.
+   * A status that ends a turn, or names the one already running, is a state
+   * the later cut exercised more recently than the frame did.
+   */
+  #replaysTurnStatus(
+    notification: Extract<AnyNotification, { method: "thread/status/changed" }>,
+    notifications: readonly AnyNotification[],
+    index: number,
+  ): boolean {
+    const turnId = notification.params.activeTurnId;
+    if (notification.params.status.type !== "active" || turnId === undefined) return false;
+    if (turnId === this.#model?.runningTurnId) return false;
+    return notifications.slice(index + 1).some((later) => isQuotaStart(later) && later.params.turnId === turnId);
+  }
+
+  /**
+   * Which wait a buffered quota frame is about, and whether the adopted model
+   * still needs it. The three answers are the whole rule: fold it, ignore it
+   * as an earlier wait the model has left, or fold it only for the ended stamp
+   * it records because the countdown it would end is already gone.
+   */
+  #quotaReplayVerdict(notification: QuotaRetryNotification): "apply" | "record-ended" | "skip" {
+    const params = notification.params;
+    const stamp = params.waitStartedAt;
+    const held = this.#model?.quotaWaitStartedAt ?? this.#model?.modelRetry?.waitStartedAt;
+    const ended = this.#model?.quotaWaitEndedAt;
+    const isWake = params.delayMs === 0;
+    if (isWake) {
+      // A wake ends the wait it names. The model holds that wait, so the
+      // countdown must go; it holds a DIFFERENT wait, so the wake speaks for
+      // one already left and may not clear the wait on screen; it holds none,
+      // so there is no countdown to end and only the stamp survives.
+      if (stamp === undefined) return "skip";
+      if (held === undefined) return "record-ended";
+      return stamp === held ? "apply" : "skip";
+    }
+    // A start announces a wait. Without a stamp on either side neither can be
+    // ordered, and the announcement is that wait's only evidence.
+    if (stamp === undefined || held === undefined) {
+      // Nor may a start resurrect a wait the model already watched end.
+      return ended !== undefined && stamp !== undefined && stamp <= ended ? "skip" : "apply";
+    }
+    if (stamp <= held) return "skip";
+    return "apply";
+  }
+
+  /**
+   * Record that the wait with this stamp ended, for a wake the adopted model
+   * had no countdown for. The stamp is what a delayed read carrying that
+   * wait's summary is refused by, and it outlives the chip on purpose.
+   */
+  #recordEndedWait(stamp: number): void {
+    if (this.#model === undefined) return;
+    if ((this.#model.quotaWaitEndedAt ?? -Infinity) >= stamp) return;
+    this.#model = { ...this.#model, quotaWaitEndedAt: stamp };
+    this.#publish();
   }
 
   #withoutResolvedEscalations(model: ThreadModel): ThreadModel {

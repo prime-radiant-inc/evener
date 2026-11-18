@@ -178,7 +178,12 @@ export function applyCacheGapRule(
   live: ThreadModel | undefined,
 ): ThreadModel {
   const ordinary = () => {
-    return applyReadResponse(base, response, now);
+    // Same clock, same purpose as every other read merge: `now` is this
+    // client's receipt instant for the response, which is the ordering
+    // evidence the quota rules need. Passing none left an admissible read
+    // unable to be ordered against a wait or a retirement at all, and an
+    // unorderable read used to read as permission to revive.
+    return applyReadResponse(base, response, now, undefined, { issuedAt: now });
   };
   const anchor = lifetime?.anchor;
   if (anchor === undefined || !lifetime?.shell || response.changes !== undefined) return ordinary();

@@ -784,6 +784,61 @@ test("a read captured before Stop cannot revive the retired turn, but a recovery
   expect(recovered.runningTurnId).toBe("turn_1");
 });
 
+// M3: the same rule, and the caller that was exempt from it. Mobile
+// rehydration used to call applyReadModel with no issue time, and the absence
+// was read as permission: an admissible response naming the retired turn
+// running revived it and restored its deadline, however old the snapshot was,
+// because a caller that could not order its read was treated as newer than
+// every boundary. Unknown is a third value and must not read as allowed. The
+// recovery read above still works because it supplies an instant; a read that
+// supplies none cannot overrule a boundary it might predate.
+test("a read that supplies no issue time cannot revive a retired turn", () => {
+  const resumesAt = 4_102_400_000;
+  const waitStartedAt = 4_000_000_000;
+  const stopAt = 600_000;
+  let model = hydrateThread(read([turn("turn_1", 1)], { activeTurnId: "turn_1" }), REF, NOW);
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: THREAD_ID,
+        ref: REF,
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: resumesAt - waitStartedAt,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 1,
+        waitStartedAt,
+      },
+    } as AnyNotification,
+    stopAt - 1_000,
+  );
+  const stopped = applyNotification(
+    model,
+    { method: "thread/status/changed", params: { threadId: THREAD_ID, ref: REF, status: { type: "idle" } } },
+    stopAt,
+  );
+  expect(stopped.retiredQuotaTurn).toBe("turn_1");
+  const waitingSnapshot = hydrateThread(
+    read([turn("turn_1", 1)], {
+      activeTurnId: "turn_1",
+      quotaWaitResumesAt: resumesAt,
+      quotaWaitStartedAt: waitStartedAt,
+      asOf: new Date(waitStartedAt + 1_000).toISOString(),
+    }),
+    REF,
+    stopAt + 1,
+  );
+  // No evidence argument at all: the mobile rehydration shape.
+  const merged = applyReadModel(stopped, waitingSnapshot);
+  expect(merged.retiredQuotaTurn).toBe("turn_1");
+  expect(merged.quotaResumesAt).toBeUndefined();
+  expect(merged.runningTurnId).toBeUndefined();
+});
+
 // M3: the pane reconnects after another client stopped a waiting turn and
 // started a replacement. The response declares its serving cut unavailable, so
 // the cut comparison returns "predates the wait" and used to veto the quota
@@ -825,6 +880,85 @@ test("a read declaring its cut unavailable still retires the wait when it establ
   expect(next.quotaResumesAt).toBeUndefined();
   expect(next.modelRetry).toBeUndefined();
   expect(next.runningTurnId).toBe("turn_2");
+});
+
+// M2: the mirror of the retirement rule. If the guard says a read is about a
+// turn the pane RETIRED, nothing in that read may clear state belonging to the
+// LIVE turn - including the retry the guard itself just decided to preserve.
+// The replacement-turn case is where the two collide: turn A was stopped while
+// waiting, turn B started and announced its own wait, and a read of A arrives
+// late. The guard preserves B's status, turn ID and deadline - and the
+// retry-clearing branch still reads A as B's replacement and deletes B's
+// retry. On a legacy daemon B's unstamped announcement is the countdown's only
+// source, so that deletion hides a wait that is still running.
+test("a read of a retired turn cannot clear the retry the live replacement turn announced", () => {
+  const stopAt = 600_000;
+  let model = hydrateThread(read([turn("turn_1", 1)], { activeTurnId: "turn_1" }), REF, NOW);
+  // Turn A waits.
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: THREAD_ID,
+        ref: REF,
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: 60 * 60_000,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 1,
+        waitStartedAt: 500_000,
+      },
+    } as AnyNotification,
+    stopAt - 1_000,
+  );
+  // Stop ends A; the pane watched it.
+  const stopped = applyNotification(
+    model,
+    { method: "thread/status/changed", params: { threadId: THREAD_ID, ref: REF, status: { type: "idle" } } },
+    stopAt,
+  );
+  expect(stopped.retiredQuotaTurn).toBe("turn_1");
+  // Turn B starts and announces its own wait - with NO daemon stamp, the
+  // legacy-delegate shape, so the retry is the countdown's only evidence.
+  const started = applyNotification(
+    stopped,
+    {
+      method: "thread/status/changed",
+      params: { threadId: THREAD_ID, ref: REF, status: { type: "active" }, activeTurnId: "turn_2" },
+    },
+    stopAt + 1,
+  );
+  const announcing = applyNotification(
+    started,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: THREAD_ID,
+        ref: REF,
+        turnId: "turn_2",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: 60 * 60_000,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 1,
+      },
+    } as AnyNotification,
+    stopAt + 2,
+  );
+  expect(announcing.modelRetry?.errorClass).toBe("quota_exceeded");
+  expect(announcing.retiredQuotaTurn).toBe("turn_1");
+  // A's read arrives late, captured while A still ran. The guard rejects its
+  // turn state; its retry-clearing must be rejected with it.
+  const staleRead = hydrateThread(read([turn("turn_1", 1)], { activeTurnId: "turn_1" }), REF, stopAt + 3);
+  const merged = applyReadModel(announcing, staleRead, undefined, { issuedAt: stopAt - 2_000 });
+  expect(merged.retiredQuotaTurn).toBe("turn_1");
+  expect(merged.runningTurnId).toBe("turn_2");
+  expect(merged.modelRetry?.errorClass).toBe("quota_exceeded");
+  expect(merged.modelRetry?.turnId).toBe("turn_2");
 });
 
 // A legacy ROOT daemon predates the capability bit but its reads always

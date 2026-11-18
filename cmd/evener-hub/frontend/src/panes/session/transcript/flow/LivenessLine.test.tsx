@@ -453,7 +453,17 @@ test("a usage-limit retry with no read at all still says when the wait resumes",
 // runs an hour fast, so the receipt says the two-hour wait began only an hour
 // ago while the daemon's instant has already passed. Mixing the bases made
 // the countdown reach zero and then leap back to the receipt's hour.
-test("a stamped usage-limit wait past its daemon deadline claims no retry duration and no retry stall", () => {
+//
+// Past the deadline the wait is still the pane's to show: the countdown's time
+// basis is the daemon's deadline, and its lifetime is the daemon's WAIT - not
+// this client's clock crossing a reset. Reading the crossing as the wait's end
+// is how an hours-long scheduled wait (a delegate that reached its reset with
+// every execution slot taken keeps the wait published until it reacquires one
+// and emits the wake) renders as a stall warning while the daemon still says
+// it is waiting. So the line keeps the quota level and says which half of the
+// wait it is in, and the two things it must never claim are the ones the old
+// reading fell through to: the receipt-basis duration, and a stall marker.
+test("a stamped usage-limit wait past its daemon deadline holds the wait and claims no retry duration or stall", () => {
   const waitStartedAt = 1_000_000;
   const twoHours = 2 * 60 * 60_000;
   const skew = 60 * 60_000;
@@ -524,7 +534,14 @@ test("a stamped usage-limit wait past its daemon deadline claims no retry durati
     inProgress: false,
   });
   expect(el?.textContent ?? "").not.toContain(retryLine);
-  expect(el?.getAttribute("data-level") ?? "none").toBe(describeLiveness(gap, true, 0).level);
+  // Not the silence-derived level: the wait is still recorded, so the line
+  // states the wait rather than inferring anything from the silence.
+  expect(el?.getAttribute("data-level")).toBe("quota");
+  expect(el?.getAttribute("data-level")).not.toBe(describeLiveness(gap, true, 0).level);
+  expect(el?.className ?? "").not.toContain("stalled");
+  // And it says the one thing known: the reset has passed, the retry pending.
+  expect(el?.textContent).toContain("reset passed");
+  expect(el?.textContent).toContain("retry still pending");
 });
 
 // The regression this guards: over a six-hour wait plenty of frames land that
@@ -706,16 +723,22 @@ test("a usage-limit wait shows immediately, in hours rather than a seconds count
   expect(el.textContent).toBe(waitingForQuotaText(21_600_000));
 });
 
-// The wait ends at its instant whether or not a read has landed since: past
-// it the call resumes by itself, so the line stops promising a future that
-// has arrived and the ordinary silence decision holds again.
-test("a usage-limit wait stops explaining the silence once its instant passes", () => {
+// The instant passing is not the wait ending. The daemon publishes the wait
+// until it can resume the call - a delegate at its provider reset with every
+// execution slot taken stays waiting, possibly for hours - and the pane has no
+// evidence the wait is over until a wake, a turn boundary, or an authoritative
+// read says so. So past the instant the line keeps the wait and changes what it
+// promises: no longer a future countdown, but the reset that has passed and
+// the retry that has not yet gone out.
+test("a usage-limit wait whose instant has passed keeps explaining the silence as pending", () => {
   const now = 1_000_000;
   reloadWithQuotaWait(60_000, now);
   render(<LivenessLine lastFrameAt={now} now={now + 60_000} active={true} sessionRef="s1" turnId="turn_0" />);
 
   const el = screen.getByTestId("liveness-line");
-  expect(el.getAttribute("data-level")).not.toBe("quota");
+  expect(el.getAttribute("data-level")).toBe("quota");
+  expect(el.textContent).not.toContain("resumes in");
+  expect(el.textContent).toContain("reset passed");
 });
 
 // --- the hub's count (#3797) ------------------------------------------------

@@ -3430,7 +3430,12 @@ test("a turn boundary retires a turn whose quota announcement has not arrived ye
   // turn the pane watched end; a read or a live frame that shows the turn
   // running again retires the retirement, or the pane would keep the
   // countdown after the request resumed.
-  const recovered = applyReadModel(ended, recoveredRead());
+  // The read is issued AFTER the synthetic idle above, which is what makes it
+  // evidence about the turn rather than a snapshot of the state the boundary
+  // superseded. A read that cannot name when it was issued cannot be ordered
+  // against the boundary, and an unorderable read is refused rather than
+  // treated as newer.
+  const recovered = applyReadModel(ended, recoveredRead(), undefined, { issuedAt: 1_250_000 });
   expect(recovered.quotaResumesAt).toBe(isoInstant(1_250_000 + 60 * 60_000));
   const woken = applyNotification(recovered, wake("turn_1"), 1_300_000);
   expect(woken.quotaResumesAt).toBeUndefined();

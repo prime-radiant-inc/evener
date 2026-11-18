@@ -1810,6 +1810,17 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				// model, frames included.
 				const framesDuringRead: AnyNotification[] = [];
 				rehydrateFrameLog = framesDuringRead;
+				// The read's OWN issue instant, on the same clock the frames above
+				// are receipted on (foldNotification's Date.now()). The quota rules
+				// order an authoritative snapshot against the wait it reports and
+				// against any retirement that ended one, and a read with no issue
+				// time cannot be ordered at all. Missing input must not default to
+				// permission: a read captured while a turn waited, landing after
+				// another client stopped it, used to revive the stopped turn and
+				// restore its deadline because the absent instant read as "newer".
+				// Captured BEFORE the await, so it names when the snapshot was
+				// requested rather than when its answer happened to arrive.
+				const readIssuedAt = Date.now();
 				try {
 					const heldHistory = get().conversation?.history;
 					const heldSnapshot = heldHistory?.incarnation
@@ -1905,7 +1916,9 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					const replaceHeldHistory = replacedHeldHistory === true && !fallback;
 					let appliedModel: MobileConversation;
 					if (mergesHeldHistory && currentConvForMerge !== null && !replaceHeldHistory) {
-						appliedModel = applyReadModel(currentConvForMerge, conversation, changes);
+						appliedModel = applyReadModel(currentConvForMerge, conversation, changes, {
+							issuedAt: readIssuedAt,
+						});
 					} else {
 						appliedModel = conversation;
 						// A frame that arrived while the recovery read was

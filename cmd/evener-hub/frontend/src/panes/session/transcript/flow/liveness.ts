@@ -96,6 +96,29 @@ export interface RetryWait {
  */
 export interface QuotaWait {
   remainingMs: number;
+  /**
+   * The daemon's deadline has passed on this client's clock while the daemon
+   * still reports the wait. Absent for a wait still ahead of its reset.
+   */
+  passedReset?: true;
+}
+
+/**
+ * The wait's own line once its deadline is behind us.
+ *
+ * The countdown's time basis is the daemon's deadline, and its lifetime is
+ * the daemon's wait - not the local clock crossing a reset. The reset is a
+ * fact about the schedule, not about whether the wait still exists: a
+ * delegate that reaches its provider reset while every execution slot is
+ * occupied stays published as waiting until it reacquires one and emits the
+ * wake, which can be hours. Reading that state as silence turns a scheduled
+ * wait into a stall warning while the daemon says otherwise, so say what is
+ * actually known - the reset has passed, the retry is still pending - and
+ * leave the ordinary liveness reading for the wake, a turn boundary, or an
+ * authoritative read that ends the wait.
+ */
+export function quotaWaitPassedResetText(): string {
+  return "Waiting for quota · reset passed, retry still pending";
 }
 
 /**
@@ -189,7 +212,12 @@ export function describeLiveness(
   // (as the retry line's delay does) would read as a wedged session. Past the
   // instant the wait is over, so it stops explaining anything and the ordinary
   // decision below applies until the next read settles the status.
-  if (quotaWait) return { level: "quota", text: waitingForQuotaText(quotaWait.remainingMs) };
+  if (quotaWait) {
+    return {
+      level: "quota",
+      text: quotaWait.passedReset ? quotaWaitPassedResetText() : waitingForQuotaText(quotaWait.remainingMs),
+    };
+  }
   // See this function's own doc comment above (kata gw2c): a retry past its
   // first attempt is known information, not an inference from silence, so
   // it bypasses the ordinary quiet gate below rather than waiting on it.

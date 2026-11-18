@@ -1173,11 +1173,16 @@ function quotaReadIssuedAfterRetirement(
   evidence: QuotaReadEvidence,
 ): boolean {
   if (model.quotaWaitRetiredAt === undefined) return true;
-  // Same convention as quotaReadMayEndWait: a caller that supplies no issue
-  // instant has no client-clock evidence to order with, so it keeps the
-  // shipped revival. Every production read supplies one, so the ordering binds
-  // where it can be checked and nothing is silently refused where it cannot.
-  if (evidence.issuedAt === undefined) return true;
+  // A missing issue instant is UNKNOWN, not permission. This used to return
+  // true here on the argument that a caller with no clock evidence should keep
+  // the shipped revival - and the cost was a mobile rehydration that passed no
+  // issue time at all, so a read captured while a turn waited revived the
+  // stopped turn and restored its deadline merely by arriving late. A caller
+  // that cannot order its read is not entitled to overrule a boundary it might
+  // predate; every production read now supplies an instant on the same clock
+  // as notification receipts, so the refusal only reaches callers that have
+  // nothing to say.
+  if (evidence.issuedAt === undefined) return false;
   return evidence.issuedAt > model.quotaWaitRetiredAt;
 }
 
@@ -1403,6 +1408,15 @@ export function applyReadResponse<M extends ThreadModel>(
   const heldRetiredTurnFields: Partial<ThreadModel> = retiredTurnStillEnded
     ? { status: model.status, runningTurnId: model.runningTurnId }
     : {};
+  // And the retry goes with them. If the guard says this read is about a turn
+  // the pane retired, then nothing in the read may end state belonging to the
+  // LIVE turn - including the retry the guard just decided to preserve. The
+  // clearing rule below reads the read's turn as the replacement for that
+  // retry's turn, which is true only once the retirement has ended. On a
+  // legacy daemon an unstamped announcement is the replacement wait's ONLY
+  // evidence, so clearing its retry hides a wait that is still running.
+  const heldRetiredRetryFields: Partial<ThreadModel> =
+    retiredTurnStillEnded && model.modelRetry !== undefined ? { modelRetry: model.modelRetry } : {};
   // A read that names a DIFFERENT running turn retires the old turn's retry
   // metadata even while the new turn waits its own wait: the snapshot's new
   // deadline is real, but the retained retry (its elapsed time, its model)
@@ -1455,6 +1469,7 @@ export function applyReadResponse<M extends ThreadModel>(
       ...clearedScratch,
       ...clearedQuotaWait,
       ...clearedQuotaRetry,
+      ...heldRetiredRetryFields,
       ...heldOlderWaitFields,
       ...heldRetiredWaitFields,
       ...keptQuotaReadReportsWaits,
@@ -1727,6 +1742,11 @@ export function applyReadModel<M extends ThreadModel>(
   const heldRetiredTurnFields: Partial<ThreadModel> = retiredTurnStillEnded
     ? { status: model.status, runningTurnId: model.runningTurnId }
     : {};
+  // Same rule as applyReadResponse: a read the retirement guard has rejected
+  // may not clear the live turn's retry either, and the held retry is the
+  // legacy-path wait's only evidence.
+  const heldRetiredRetryFields: Partial<ThreadModel> =
+    retiredTurnStillEnded && model.modelRetry !== undefined ? { modelRetry: model.modelRetry } : {};
   let next = withDisplay(
     {
       ...base,
@@ -1735,6 +1755,7 @@ export function applyReadModel<M extends ThreadModel>(
       ...clearedScratch,
       ...clearedQuotaWait,
       ...clearedQuotaRetry,
+      ...heldRetiredRetryFields,
       ...heldOlderWaitFields,
       ...heldRetiredWaitFields,
       ...keptQuotaReadReportsWaits,

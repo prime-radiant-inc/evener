@@ -5390,3 +5390,130 @@ it("does not replay an ordinary retry that the adopted snapshot has already abso
   owner.acceptBeforeReadCut([ordinaryRetry], { lifetime: 1 });
   expect(owner.getSnapshot()?.modelRetry).toBeUndefined();
 });
+
+// M1: a wait's identity is its STAMP, not its turn. One turn can wait twice,
+// and a read that captured the SECOND wait while the FIRST wait's wake was
+// buffered adopts the second deadline. Replaying the earlier wake then cleared
+// the second countdown, because the reducer looked only at the turn id - which
+// says the frames belong to the same call site, never that they belong to the
+// same wait. A buffered frame for a wait the snapshot has moved past must not
+// touch the wait the snapshot names.
+it("does not let a buffered wake for an earlier wait clear the wait the snapshot adopted", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const firstStart = 4_000_000_000;
+  const secondStart = firstStart + 60 * 60_000;
+  const response = read("row-1");
+  response.thread.evener.failure = { resumesAt: secondStart + 7_200_000, waitStartedAt: secondStart };
+  expect(owner.acceptRead(response, { lifetime: 1, readId: "pre-cut", boundary: "pre-cut" })).toBe(true);
+  // The wake for the FIRST wait was buffered while the read was in flight. It
+  // names the same turn, so a turn-id check admits it; its stamp predates the
+  // wait the snapshot adopted, so it speaks for a wait already left.
+  owner.acceptBeforeReadCut(
+    [
+      {
+        method: "evener/thread/modelRetry",
+        params: {
+          threadId,
+          ref,
+          turnId: "turn_1",
+          attempt: 1,
+          maxAttempts: 1,
+          delayMs: 0,
+          errorClass: "quota_exceeded",
+          groupElapsedMs: 5_000,
+          attemptCap: 1,
+          waitStartedAt: firstStart,
+        },
+      } as AnyNotification,
+    ],
+    { lifetime: 1 },
+  );
+  const model = owner.getSnapshot();
+  expect(model?.quotaResumesAt).toBe(new Date(secondStart + 7_200_000).toISOString());
+  expect(model?.quotaWaitStartedAt).toBe(secondStart);
+});
+
+// M1, second half: the same unconditional replay reinstalls a retry indicator
+// after the snapshot already holds the resumed call's output. A wake whose
+// wait the model no longer counts down is news only as the ended stamp a later
+// read is ordered against; folding it puts a live "in progress" chip over a
+// call the snapshot shows working or finished.
+it("replays a buffered wake for an ended stamp without reinstalling its retry chip", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const waitStartedAt = 4_000_000_000;
+  expect(owner.acceptRead(read("row-1"), { lifetime: 1, readId: "pre-cut", boundary: "pre-cut" })).toBe(true);
+  owner.acceptBeforeReadCut(
+    [
+      {
+        method: "evener/thread/modelRetry",
+        params: {
+          threadId,
+          ref,
+          turnId: "turn_1",
+          attempt: 1,
+          maxAttempts: 1,
+          delayMs: 0,
+          errorClass: "quota_exceeded",
+          groupElapsedMs: 5_000,
+          attemptCap: 1,
+          waitStartedAt,
+        },
+      } as AnyNotification,
+    ],
+    { lifetime: 1 },
+  );
+  const model = owner.getSnapshot();
+  expect(model?.modelRetry).toBeUndefined();
+  // The stamp still lands: a delayed read carrying that wait's summary is
+  // refused by it.
+  expect(model?.quotaWaitEndedAt).toBe(waitStartedAt);
+});
+
+// M3: a remote delegate's initial read captures turn A, and the relay delivers
+// turn B's active status and quota announcement before the read reaches the
+// browser. Hydration used to drop the STATUS frame and replay only the quota
+// frame, so the reducer still saw A running and rejected B's announcement -
+// losing the countdown until another read or status update. The two frames are
+// one fact and travel together, or neither is admissible.
+it("replays a buffered active status that establishes the turn its quota announcement names", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const response = read("row-1");
+  response.thread.status = { type: "active" };
+  response.thread.evener.activeTurnId = "turn_1";
+  expect(owner.acceptRead(response, { lifetime: 1, readId: "pre-cut", boundary: "pre-cut" })).toBe(true);
+  const waitStartedAt = 4_000_000_000;
+  owner.acceptBeforeReadCut(
+    [
+      {
+        method: "thread/status/changed",
+        params: { threadId, ref, status: { type: "active" }, activeTurnId: "turn_2" },
+      } as AnyNotification,
+      {
+        method: "evener/thread/modelRetry",
+        params: {
+          threadId,
+          ref,
+          turnId: "turn_2",
+          attempt: 1,
+          maxAttempts: 1,
+          delayMs: 7_200_000,
+          errorClass: "quota_exceeded",
+          groupElapsedMs: 5_000,
+          attemptCap: 1,
+          waitStartedAt,
+        },
+      } as AnyNotification,
+    ],
+    { lifetime: 1 },
+  );
+  const model = owner.getSnapshot();
+  expect(model?.runningTurnId).toBe("turn_2");
+  expect(model?.quotaResumesAt).toBe(new Date(waitStartedAt + 7_200_000).toISOString());
+  expect(model?.modelRetry?.errorClass).toBe("quota_exceeded");
+});

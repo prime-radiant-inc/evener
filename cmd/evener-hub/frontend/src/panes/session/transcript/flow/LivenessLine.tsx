@@ -172,7 +172,24 @@ export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId, ret
       ? retry.delayMs - (now - retry.receivedAt)
       : undefined;
   const remaining = fromRead ?? (liveRemaining !== undefined && liveRemaining > 0 ? liveRemaining : null);
-  const quotaWait: QuotaWait | undefined = remaining === null ? undefined : { remainingMs: remaining };
+  // Past the reset the wait does not stop existing. The countdown's time basis
+  // is the daemon's deadline, and its lifetime is the daemon's WAIT - not this
+  // client's clock crossing a reset. The reset is a fact about the schedule:
+  // a delegate that reaches it while every execution slot is occupied stays
+  // published as waiting until it reacquires one and emits the wake, which can
+  // be hours. Dropping the line there renders those hours as a stall warning
+  // (or as silence) while the daemon still reports a wait, so the wait is held
+  // for as long as the model records one, and the line says which half of it
+  // we are in. The model's own route clears `quotaResumesAt` on the wake, a
+  // turn boundary, or an authoritative read; only then does ordinary liveness
+  // take over.
+  const waitStillRecorded = quotaResumesAt !== undefined || stampedQuotaWait;
+  const quotaWait: QuotaWait | undefined =
+    remaining !== null
+      ? { remainingMs: remaining }
+      : waitStillRecorded
+        ? { remainingMs: 0, passedReset: true }
+        : undefined;
   const { level, text } = describeLiveness(
     now - lastFrameAt,
     active,
