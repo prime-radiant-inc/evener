@@ -1053,7 +1053,7 @@ func ReservedCalls(entry *schema.Turn) map[string]int {
 // so an OpenAI exec_command announcement and its shell result name one tool.
 // Comparing raw strings would leave every renamed tool's result unmatched, which
 // renders a second row and lets a later completion mark the successful call
-// interrupted. wirenames.Same is that one alias table (#1166 review).
+// interrupted. wirenames.SameFor is that one alias table (#1166 review).
 //
 // A result with no name of its own carries no claim, so it settles the
 // reservation: that is the case the reservation exists for. When it does name a
