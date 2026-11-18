@@ -72,6 +72,58 @@ func jobOutputPageResult(page jobstore.OutputWindowSnapshot, found bool, err err
 	}, true, nil
 }
 
+// jobRecordDiagnosticCodes renders a retained read's diagnostics as the wire
+// codes clients read. It keeps the jobstore-shaped internals out of the wire
+// type: appwire carries strings, this package owns the mapping.
+func jobRecordDiagnosticCodes(d sessionJobRecordDiagnostics) []string {
+	var codes []string
+	if d.ForwardedFallback {
+		codes = append(codes, "forwarded_fallback")
+	}
+	if d.OwnerUnavailable {
+		codes = append(codes, "owner_unavailable")
+	}
+	if d.TornTail {
+		codes = append(codes, "journal_torn_tail")
+	}
+	if d.IncompleteLifecycle {
+		codes = append(codes, "incomplete_lifecycle")
+	}
+	return codes
+}
+
+// retainedJobOwnerFenced lets the hub supply its DURABLE deletion fence for a
+// retained job's owner. The on-disk tombstone this package can see is written
+// only after the hub has already recorded the deletion, so between those two
+// steps a session is durably fenced while its marker does not exist yet — and a
+// read that trusts only the marker serves data the hub has already committed to
+// deleting. Production leaves this nil outside the hub; the hub sets it so the
+// owner it is about to read is fenced by the same record every other hub read
+// consults. A nil hook means the caller has no durable fence to apply, which is
+// the truth for a bare agent process reading its own state directory.
+var retainedJobOwnerFenced func(sessionID string) (fenced bool, err error)
+
+// retainedOwnerFenced reports whether sessionID is fenced for deletion, by the
+// hub's durable record when one is available and by the on-disk tombstone
+// always. Either standing fence is enough: the two answer the same question at
+// different points in a deletion's progress, and a read that honors only one of
+// them serves data across the gap between them.
+func retainedOwnerFenced(stateDir, sessionID string) (bool, error) {
+	if retainedJobOwnerFenced != nil {
+		fenced, err := retainedJobOwnerFenced(sessionID)
+		if err != nil {
+			// An unreadable durable fence is not permission: the read fails
+			// closed, because serving a possibly-deleted session's job is the
+			// harm the fence exists to prevent.
+			return false, err
+		}
+		if fenced {
+			return true, nil
+		}
+	}
+	return ownerSessionTombstoned(stateDir, sessionID), nil
+}
+
 // sessionJobRecordDiagnostics reports what a cold per-session job read could
 // not establish about the history behind the record it returned. It is the
 // structural counterpart of jobstore.ReadDiagnostics and
@@ -193,12 +245,45 @@ func loadSessionJobRecord(stateDir, sessionID, jobID string) (sessionJobRecordRe
 		return local, nil
 	}
 	owner := encodedJobOwner(jobID)
-	if owner == "" || owner == sessionID {
-		// An ID that encodes no owner has no second branch to consult; an ID
-		// naming this session is already the authoritative branch.
+	if owner == "" {
+		// A pre-owner job ID (a bare UUID) encodes nothing to rank against. Rows
+		// that old can still carry an owner field, and when they do it is the only
+		// pointer to the journal that may hold the finish: consult it as a HINT,
+		// and let the owner's journal corroborate before it is believed. Without
+		// that, a forwarded start written before owner-encoded IDs keeps showing
+		// running while the owner's journal holds the completed job.
+		hint := ""
+		if local.record != nil {
+			hint = local.record.OwnerSessionID
+		}
+		if hint == "" || hint == sessionID {
+			return local, nil
+		}
+		if fenced, fenceErr := retainedOwnerFenced(stateDir, hint); fenceErr != nil {
+			return sessionJobRecordRead{}, fenceErr
+		} else if fenced {
+			return sessionJobRecordRead{}, nil
+		}
+		corroborated, hintErr := readSessionJobJournal(stateDir, hint, jobID)
+		if hintErr != nil || !corroborated.found {
+			// The hint did not hold up. It is not an encoded owner, so it cannot
+			// outrank the scoped copy: that copy stands, flagged as a fallback.
+			local.diagnostics.OwnerUnavailable = true
+			local.diagnostics.ForwardedFallback = true
+			return local, nil
+		}
+		corroborated.diagnostics.mergeIntegrity(local.diagnostics)
+		corroborated.diagnostics.ForwardedFallback = false
+		corroborated.diagnostics.OwnerUnavailable = false
+		return corroborated, nil
+	}
+	if owner == sessionID {
+		// An ID naming this session is already the authoritative branch.
 		return local, nil
 	}
-	if ownerSessionTombstoned(stateDir, owner) {
+	if fenced, fenceErr := retainedOwnerFenced(stateDir, owner); fenceErr != nil {
+		return sessionJobRecordRead{}, fenceErr
+	} else if fenced {
 		// The owner's deletion fence stands. Its journal and log are not
 		// servable, and a forwarded copy of a deleted session's job is not a
 		// substitute for the owner's record either: the job was deleted with
@@ -259,9 +344,12 @@ func readSessionJobJournal(stateDir, sessionID, jobID string) (sessionJobRecordR
 		return sessionJobRecordRead{}, nil
 	}
 	events, readDiagnostics, err := jobstore.ScanEventsWithDiagnostics(context.Background(), path, jobstore.ScanLimits{})
-	if err != nil {
-		return sessionJobRecordRead{}, err
-	}
+	// A scan that hits durable corruption returns the records it decoded before
+	// the damage alongside the error. The caller's question here is narrow — does
+	// this session hold a record of ONE job — and a valid forwarded start decoded
+	// before the damage settles it, so that evidence is used and the error is
+	// re-raised only when it settles nothing. A torn tail is not an error at all:
+	// it rides the diagnostic.
 	diagnostics := sessionJobRecordDiagnostics{TornTail: readDiagnostics.TornTail}
 	recs, foldErr := jobstore.FoldChecked(events)
 	if foldErr != nil && errors.Is(foldErr, jobstore.ErrIncompleteLifecycle) {
@@ -269,6 +357,9 @@ func readSessionJobJournal(stateDir, sessionID, jobID string) (sessionJobRecordR
 	}
 	rec := recs[jobID]
 	if rec == nil {
+		if err != nil {
+			return sessionJobRecordRead{}, err
+		}
 		return sessionJobRecordRead{diagnostics: diagnostics}, nil
 	}
 	return sessionJobRecordRead{record: rec, sourceSessionID: sessionID, found: true, diagnostics: diagnostics}, nil
@@ -334,6 +425,14 @@ func (s *Session) JobGet(jobID string) (JobActivityJob, bool, error) {
 // The record is resolved owner-authoritatively (see loadSessionJobRecord): when
 // the job ID names an owner other than sessionID, the owner's record wins, and
 // sessionID's copy is used only when the owner's journal holds none.
+//
+// OwnerRef echoes the ref the caller ASKED about, and OwnerSessionID names the
+// owner the record actually came from. The two are deliberately different
+// questions: a client opens a job under the pane's ref and rejects a response
+// whose ref does not match what it requested (jobLogReader's check), so
+// answering with the owner's ref there would discard the command and terminal
+// status this read exists to recover. The owner's identity is not lost — it
+// rides OwnerSessionID, the field that means it.
 func LoadSessionJobGet(stateDir, sessionID, jobID string) (JobActivityJob, bool, error) {
 	read, err := loadSessionJobRecord(stateDir, sessionID, jobID)
 	if err != nil {
@@ -342,11 +441,8 @@ func LoadSessionJobGet(stateDir, sessionID, jobID string) (JobActivityJob, bool,
 	if !read.found {
 		return JobActivityJob{}, false, nil
 	}
-	// The ref names the record's owner, not the session that was asked: after
-	// owner-authoritative resolution the two differ exactly when the answer came
-	// from the owner's own journal, and naming the asked session there would
-	// point a client at a session that does not hold the job. A record naming no
-	// owner is routed to the journal that supplied it.
-	ownerRef := appwire.Ref{SourceID: "local", ThreadID: routingJobSession(read)}.String()
-	return projectActivityJob(read.record, ownerRef), true, nil
+	ownerRef := appwire.Ref{SourceID: "local", ThreadID: sessionID}.String()
+	job := projectActivityJob(read.record, ownerRef)
+	job.Diagnostics = jobRecordDiagnosticCodes(read.diagnostics)
+	return job, true, nil
 }

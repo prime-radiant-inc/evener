@@ -247,6 +247,40 @@ journal or change lifecycle state. Shell managers, delegate controllers and watc
 managers remain the mutation authorities described by [job control](../job-control.md).
 Derived activity indexes are disposable; losing one does not lose the work.
 
+### Which journal supplies a saved job's metadata and output
+
+A saved-job read is scoped to the session it was asked about, and the answer
+comes from the journal that owns it. Both rules are load-bearing, in that order.
+
+Scope is proven first: the requested session must hold a record of the job — its
+own start, or the forwarded copy a descendant's events left behind — before the
+read follows anything else. A session with no record of the job has no claim on
+it, and a well-formed job ID is not evidence of one.
+
+Authority then comes from the validated identifier, not from what a row claims
+about itself. A job ID encodes its owner, and the record in that owner's journal
+is authoritative. A forwarded copy carries the owner's own owner field, so its
+fields cannot distinguish it from the original; where the bytes live is what
+does. A row that names an owner contradicting the encoded one is never
+authoritative, and a pre-owner (bare UUID) job ID falls back to the scoped row's
+owner field only as a hint the owner's journal must corroborate.
+
+Forwarded evidence stays usable when the owner cannot answer: the forwarded copy
+is returned and flagged, because dropping it would erase the only surviving
+record of a descendant whose journal is gone. The response says so. Its
+`diagnostics` carries one code per fact the read could not establish:
+`forwarded_fallback` (a forwarded copy, not the owner's record),
+`owner_unavailable` (the owner's journal was absent or unreadable),
+`journal_torn_tail` (the journal ended in an unterminated append) and
+`incomplete_lifecycle` (its events do not describe a whole job). A client can
+then tell a stale forwarded running row from a live one.
+
+The deletion fence is applied to the owner before its journal or log is served.
+A deletion records its fence before the on-disk tombstone lands, so a read honors
+both: either standing fence means the job's history is no longer servable, from
+the owner's journal or from any forwarded copy. An abandoned deletion clears the
+fence and reads resume.
+
 ## Context, counts and incomplete evidence
 
 Each response identifies the resolved session, controller root, parent and

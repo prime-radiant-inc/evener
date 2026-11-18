@@ -2277,6 +2277,17 @@ export interface JobActivityJob {
    * clients fall back to startedAt (or hide quiet time for terminal rows).
    */
   lastOutputAt?: string;
+  /**
+   * Diagnostics names what a retained read could not establish about the
+   * history behind this row, one code per fact: forwarded_fallback means the
+   * record is a forwarded copy returned because its owner's journal held no
+   * record, owner_unavailable that the owner's journal could not be read,
+   * journal_torn_tail that the journal ended in an unterminated append, and
+   * incomplete_lifecycle that its events do not describe a whole job. Live
+   * reads leave it empty. Clients render or ignore it, but a stale forwarded
+   * row is no longer indistinguishable from a live running one.
+   */
+  diagnostics?: string[];
 }
 
 export interface JobActivitySession {

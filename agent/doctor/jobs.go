@@ -131,7 +131,7 @@ func Jobs(ctx context.Context, stateBase, selector string, opts JobOpts) (JobRep
 		diagnostics = append(diagnostics, "job_journal_incomplete_lifecycle: "+foldErr.Error())
 	}
 	report.Diagnostics = diagnostics
-	report.Failures = legacyDelegateFailures(events)
+	report.Failures = legacyDelegateFailuresFrom(records, events)
 	return report, nil
 }
 
@@ -298,9 +298,20 @@ func projectDoctorDelegates(stateBase, ownerSessionID string, state delegatestor
 	return rows
 }
 
+// legacyDelegateFailures folds the journal once and reports its legacy rows.
+// Callers that already hold the folded records use legacyDelegateFailuresFrom
+// instead, so a report never folds the same history twice.
 func legacyDelegateFailures(events []jobstore.Event) []StateFailure {
+	return legacyDelegateFailuresFrom(jobstore.FoldOrdered(events), events)
+}
+
+// legacyDelegateFailuresFrom reports the retired delegate activation jobs from
+// records the caller has ALREADY folded, plus the watches the journal describes.
+// The watch fold stays separate because watches are a different record set the
+// report does not otherwise carry.
+func legacyDelegateFailuresFrom(records []*jobstore.JobRecord, events []jobstore.Event) []StateFailure {
 	legacyIDs := make(map[string]bool)
-	for _, record := range jobstore.Fold(events) {
+	for _, record := range records {
 		if record != nil && string(record.Type) == "delegate" {
 			legacyIDs[record.JobID] = true
 		}

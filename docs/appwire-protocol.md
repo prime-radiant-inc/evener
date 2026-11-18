@@ -2449,6 +2449,7 @@ Underlying Go kind: `struct` (no struct fields).
 | `exitCode` | \*int | yes |  |
 | `outputBytes` | int64 |  |  |
 | `lastOutputAt` | string | yes |  |
+| `diagnostics` | []string | yes |  |
 
 
 ### `JobActivitySession`

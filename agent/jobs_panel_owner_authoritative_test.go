@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -537,6 +538,232 @@ func TestLoadSessionJobGetHonorsOwnerTombstone(t *testing.T) {
 	if found {
 		t.Fatalf("found = true (status %q): the owner is fenced for deletion, so its job must not be served",
 			job.Status)
+	}
+}
+
+// TestLoadSessionJobGetEchoesRequestedRef is the round-3 medium-1 regression.
+// The activity page opens a forwarded job under the ANCESTOR's ref, and the web
+// job log rejects metadata whose ownerRef differs from the ref it requested —
+// so returning the descendant's ref there threw away the command and terminal
+// status the read had just recovered. The response must be verifiable against
+// the requested scope, with the owner's identity riding OwnerSessionID.
+func TestLoadSessionJobGetEchoesRequestedRef(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 18, 19, 0, 0, 0, time.UTC)
+	ended := started.Add(time.Minute)
+	exit := 0
+
+	rootStore := openJobJournal(t, jobsDir(stateDir, rootSession))
+	appendJobEvent(t, rootStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: rootSession,
+		Command: "make test", StartedAt: &started,
+	})
+	closeJobJournal(t, rootStore)
+
+	ownerStore := openJobJournal(t, jobsDir(stateDir, ownerSession))
+	appendJobEvent(t, ownerStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: ownerSession,
+		Command: "make test", StartedAt: &started,
+	})
+	appendJobEvent(t, ownerStore, jobstore.Event{
+		Kind: jobstore.EventJobFinished, TS: ended, JobID: jobID,
+		Status: jobstore.StatusCompleted, ExitCode: &exit, EndedAt: &ended, TerminalGen: "gen_owner",
+	})
+	closeJobJournal(t, ownerStore)
+
+	job, found, err := LoadSessionJobGet(stateDir, rootSession, jobID)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the owner's completed record")
+	}
+	wantRef := appwire.Ref{SourceID: "local", ThreadID: rootSession}.String()
+	if job.OwnerRef != wantRef {
+		t.Fatalf("OwnerRef = %q, want the requested ref %q: the client rejects a mismatch", job.OwnerRef, wantRef)
+	}
+	// The owner's identity is not lost: it rides the field that means it.
+	if job.OwnerSessionID != ownerSession {
+		t.Fatalf("OwnerSessionID = %q, want the owner %q", job.OwnerSessionID, ownerSession)
+	}
+	// And the payload the mismatch used to discard is present.
+	if !job.Terminal || job.Command != "make test" {
+		t.Fatalf("terminal = %v, command = %q: want the owner's terminal state and command", job.Terminal, job.Command)
+	}
+}
+
+// TestLoadSessionJobGetUsesDamagedPrefixAsScope is the round-3 medium-2
+// regression. An ancestor journal holding a valid forwarded start followed by a
+// malformed durable line used to discard the decoded prefix and fail the whole
+// read, making the descendant's intact record and output unreachable through the
+// ancestor even though the start proved scope. The prefix is scope evidence; the
+// error is preserved only when it settles nothing.
+func TestLoadSessionJobGetUsesDamagedPrefixAsScope(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 18, 19, 30, 0, 0, time.UTC)
+	ended := started.Add(time.Minute)
+
+	// The ancestor's journal: a valid forwarded start, then a newline-terminated
+	// record that is durably corrupt.
+	writeJobJournalLines(t, jobsDir(stateDir, rootSession),
+		jobStartedLine(jobID, ownerSession, started)+"\n",
+		"{this is not json}\n",
+	)
+
+	ownerStore := openJobJournal(t, jobsDir(stateDir, ownerSession))
+	appendJobEvent(t, ownerStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: ownerSession,
+		StartedAt: &started,
+	})
+	appendJobEvent(t, ownerStore, jobstore.Event{
+		Kind: jobstore.EventJobFinished, TS: ended, JobID: jobID,
+		Status: jobstore.StatusCompleted, EndedAt: &ended, TerminalGen: "gen_owner",
+	})
+	closeJobJournal(t, ownerStore)
+
+	job, found, err := LoadSessionJobGet(stateDir, rootSession, jobID)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet must use the decoded prefix as scope, got error: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the owner's completed record")
+	}
+	if job.Status != string(jobstore.StatusCompleted) {
+		t.Fatalf("status = %q, want %q from the owner journal", job.Status, jobstore.StatusCompleted)
+	}
+}
+
+// TestLoadSessionJobGetResolvesLegacyIDByOwnerHint is the round-3 low-4
+// regression. A job saved before owner-encoded IDs has a bare UUID job ID and a
+// populated owner field. The encoded owner is empty, so that field is the only
+// pointer to the journal that may hold the finish — and it must be corroborated
+// there before being believed, or a forwarded start keeps showing running.
+func TestLoadSessionJobGetResolvesLegacyIDByOwnerHint(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	// A legacy shape: no encoded owner, so validateJobID rejects it and
+	// encodedJobOwner returns "".
+	jobID := "job_legacy_e2f3c4d5"
+	started := time.Date(2026, 11, 18, 20, 0, 0, 0, time.UTC)
+	ended := started.Add(time.Minute)
+	exit := 0
+
+	rootStore := openJobJournal(t, jobsDir(stateDir, rootSession))
+	appendJobEvent(t, rootStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: rootSession,
+		StartedAt: &started,
+	})
+	closeJobJournal(t, rootStore)
+
+	// The hint is corroborated here: the owner's journal holds the whole job.
+	ownerStore := openJobJournal(t, jobsDir(stateDir, ownerSession))
+	appendJobEvent(t, ownerStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: ownerSession,
+		StartedAt: &started,
+	})
+	appendJobEvent(t, ownerStore, jobstore.Event{
+		Kind: jobstore.EventJobFinished, TS: ended, JobID: jobID,
+		Status: jobstore.StatusCompleted, ExitCode: &exit, EndedAt: &ended, TerminalGen: "gen_owner",
+	})
+	closeJobJournal(t, ownerStore)
+
+	job, found, err := LoadSessionJobGet(stateDir, rootSession, jobID)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the owner journal's completed record")
+	}
+	if job.Status != string(jobstore.StatusCompleted) {
+		t.Fatalf("status = %q, want %q: the corroborated owner hint must beat the forwarded start",
+			job.Status, jobstore.StatusCompleted)
+	}
+}
+
+// TestLoadSessionJobGetRejectsUncorroboratedLegacyHint is the other half of low
+// 4: an owner field that names a session with no record of the job is not
+// evidence. The scoped copy then stands — flagged as a fallback, never silently
+// presented as the owner's.
+func TestLoadSessionJobGetRejectsUncorroboratedLegacyHint(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := "job_legacy_a1b2c3d4"
+	started := time.Date(2026, 11, 18, 20, 30, 0, 0, time.UTC)
+
+	rootStore := openJobJournal(t, jobsDir(stateDir, rootSession))
+	appendJobEvent(t, rootStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: rootSession,
+		StartedAt: &started,
+	})
+	closeJobJournal(t, rootStore)
+	// The named owner never materialized a journal.
+
+	read, err := loadSessionJobRecord(stateDir, rootSession, jobID)
+	if err != nil {
+		t.Fatalf("loadSessionJobRecord: %v", err)
+	}
+	if !read.found || read.record == nil {
+		t.Fatal("found = false, want the scoped copy as the surviving evidence")
+	}
+	if !read.diagnostics.ForwardedFallback {
+		t.Fatal("ForwardedFallback = false, want true: the hint was not corroborated")
+	}
+	if !read.diagnostics.OwnerUnavailable {
+		t.Fatal("OwnerUnavailable = false, want true: the hinted journal was absent")
+	}
+}
+
+// TestLoadSessionJobGetSurfacesDiagnostics is the round-3 low-1 regression: a
+// retained read's fallback and integrity facts must reach a production caller,
+// not die in an internal struct both callers discard.
+func TestLoadSessionJobGetSurfacesDiagnostics(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 18, 21, 0, 0, 0, time.UTC)
+
+	rootStore := openJobJournal(t, jobsDir(stateDir, rootSession))
+	appendJobEvent(t, rootStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: rootSession,
+		StartedAt: &started,
+	})
+	closeJobJournal(t, rootStore)
+	// The owner's journal is gone, so this row is a forward-only fallback.
+
+	job, found, err := LoadSessionJobGet(stateDir, rootSession, jobID)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the forwarded copy")
+	}
+	if !slices.Contains(job.Diagnostics, "forwarded_fallback") {
+		t.Fatalf("Diagnostics = %v, want forwarded_fallback: a stale forwarded running row must be distinguishable from a live one",
+			job.Diagnostics)
+	}
+	if !slices.Contains(job.Diagnostics, "owner_unavailable") {
+		t.Fatalf("Diagnostics = %v, want owner_unavailable", job.Diagnostics)
 	}
 }
 

@@ -240,7 +240,15 @@ func ScanEventsFromWithDiagnostics(ctx context.Context, path string, fromOffset 
 				diagnostics.TornTail = true
 				break
 			}
-			return nil, 0, ReadDiagnostics{}, fmt.Errorf("jobstore: parse event line %d in %s: %w", lineNum, path, err)
+			// Durable corruption: the scan cannot get past this line, and it says
+			// so with an error. The records decoded BEFORE it are still true
+			// statements about the journal, so they are returned alongside that
+			// error exactly as a limit returns its partial result — a caller that
+			// must answer a question one of those records settles (does this
+			// journal hold a start for job X?) can use them, and a caller that
+			// treats any error as fatal ignores them as before. offset stays 0
+			// because the scan did NOT reach a resumable record boundary.
+			return events, 0, diagnostics, fmt.Errorf("jobstore: parse event line %d in %s: %w", lineNum, path, err)
 		}
 		// A successful decode makes this record complete and final
 		// regardless of whether its trailing newline has landed yet (see
