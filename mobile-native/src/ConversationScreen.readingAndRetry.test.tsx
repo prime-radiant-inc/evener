@@ -36,8 +36,9 @@ import { FindBar } from "./session/FindBar";
 import { GlassHeaderPanel } from "./design/GlassHeaderPanel";
 import { SessionHeader } from "./session/SessionHeader";
 import { sheetKey } from "./sheet/sheetHosts";
-import { modelHosts } from "./session/ModelSheet";
+import { ModelSheet, modelHosts } from "./session/ModelSheet";
 import { SessionInfoSheet } from "./session/SessionInfoSheet";
+import { Toast } from "./Toast";
 import type {
 	NativeStackHeaderItemMenu,
 	NativeStackHeaderItemMenuAction,
@@ -247,8 +248,9 @@ const READ_HISTORY_IDENTITY = {
 	snapshot: { incarnation: "inc-1", length: 0 },
 } as const;
 
-// Whether model/list refuses, as a hub mid-restart does.
-const catalogHub = { fails: false };
+// Whether model/list refuses (a hub mid-restart does), and whether it offers a
+// second model for a test that picks one.
+const catalogHub = { fails: false, alsoLeaves: false };
 
 // Keep diagnostics visible and check the entire case, including afterEach teardown.
 beforeEach(({ onTestFinished }) => {
@@ -274,6 +276,7 @@ afterEach(async () => {
 	displayPrefs.hubId = null;
 	displayPrefs.config = null;
 	catalogHub.fails = false;
+	catalogHub.alsoLeaves = false;
 	readHistory.live = false;
 	keyboard.reset();
 	systemGlass.reset();
@@ -342,7 +345,12 @@ function hubClient(
 			if (method === "model/list" && catalogHub.fails) throw new Error("hub restarting");
 			if (method === "model/list")
 				return {
-					data: [{ provider: "anthropic", model: "claude-sonnet-5", displayName: "Claude Sonnet 5" }],
+					data: [
+						{ provider: "anthropic", model: "claude-sonnet-5", displayName: "Claude Sonnet 5" },
+						...(catalogHub.alsoLeaves
+							? [{ provider: "anthropic", model: "claude-haiku-5", displayName: "Claude Haiku 5" }]
+							: []),
+					],
 				};
 			if (method === "notes/human/set")
 				return {
@@ -2293,6 +2301,69 @@ it("names the model on the composer's chip, which opens the model sheet with the
 	const host = modelHosts.get(sheetKey("hub-1", "ref-model"));
 	expect(host?.session.modelProvider).toBe("anthropic/claude-sonnet-5");
 	expect(host?.controls?.getSnapshot().catalog?.data).toHaveLength(1);
+});
+
+// The hub's acknowledgement, not the read after it, is the record that the
+// change applied. Going inactive takes the connection's client away and settles
+// the read the pick is awaiting, which is not the reader leaving: the same
+// session and its picker are still up, so the pick closes the sheet and
+// confirms the change. The read is held open when the client goes, so the
+// window where that matters is the one this test stands in.
+it("confirms an acknowledged model pick when the phone goes inactive before its read settles", async () => {
+	catalogHub.alsoLeaves = true;
+	const served = thread("ref-model", "idle");
+	(served as unknown as { modelProvider: string }).modelProvider = "anthropic/claude-sonnet-5";
+	(served as unknown as { evener: Record<string, unknown> }).evener.capabilities = {
+		...CAPABILITIES,
+		changeModel: true,
+	};
+	const { tree, hub, route } = await mount(served);
+	const host = modelHosts.get(sheetKey("hub-1", "ref-model"));
+	if (!host?.controls) throw new Error("the screen provides no model controls");
+	// The pick's own read is held, so the phone can go inactive while it is out.
+	const held = Promise.withResolvers<void>();
+	let reads = 0;
+	const request = hub.client.request.bind(hub.client);
+	(hub.client as unknown as { request: typeof request }).request = async (
+		method: string,
+		params: Record<string, unknown>,
+	) => {
+		if (method === "thread/read") {
+			reads += 1;
+			await held.promise;
+		}
+		return request(method, params);
+	};
+	// The picker, mounted beside the session as its own route.
+	const sheet = render(
+		<ModelSheet
+			route={
+				{
+					key: "model-sheet",
+					name: "ModelSheet",
+					params: { hubId: "hub-1", ref: "ref-model", setting: "model" },
+				} as unknown as ComponentProps<typeof ModelSheet>["route"]
+			}
+			navigation={navigation as unknown as ComponentProps<typeof ModelSheet>["navigation"]}
+		/>,
+	);
+	vi.mocked(navigation.goBack).mockClear();
+	act(() => pressable(sheet, "Claude Haiku 5")?.props.onPress());
+	await settle();
+	expect(hub.requests.some((entry) => entry.method === "thread/model/set")).toBe(true);
+	// Acknowledged, read out, and nothing confirmed yet: the pick is pending.
+	expect(reads).toBeGreaterThan(0);
+	expect(host.controls.getSnapshot().pending).toBe("changeModel");
+	expect(navigation.goBack).not.toHaveBeenCalled();
+	// The phone goes inactive while that read is pending: no client, and the
+	// same session stays in front with its picker open.
+	harness.connection = { ...screenConnection(null, "idle"), error: null, disconnect: () => {} };
+	act(() => tree.update(<SessionScreen route={route} navigation={navigation} />));
+	held.resolve();
+	await settle();
+	expect(navigation.goBack).toHaveBeenCalled();
+	// The confirmation is the screen's own toast, shown as the sheet goes.
+	expect(tree.root.findAllByType(Toast)).toHaveLength(1);
 });
 
 it("names the model as the session's Board row does while the catalog can't be read (S17)", async () => {

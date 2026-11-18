@@ -873,14 +873,15 @@ function ConversationScreenView({
 			(scope) => {
 				const current = store.getState();
 				// Whether the reader is still on this session is a question of route
-				// and identity alone. A transport that is away is not a reader who
-				// left: it reconnects and reads the same session again, and an
+				// and session identity alone. A transport that is away is not a reader
+				// who left: it reconnects and reads the same session again, and an
 				// action that outlived its binding is still owed to the screen that
-				// is looking at it.
+				// is looking at it. The client is that transport, and going inactive
+				// replaces it with none, so it cannot answer this question — the
+				// session's own store can, because it outlives every client.
 				if (scope === "route") {
 					return (
 						currentDestination.current.store === store &&
-						currentDestination.current.client === client &&
 						screenInFront(navigation, route.key) &&
 						current.ref === route.params.ref
 					);
