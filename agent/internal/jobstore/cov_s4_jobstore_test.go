@@ -308,6 +308,11 @@ func TestStoreAppendSurfacesFilesystemFaults(t *testing.T) {
 		name string
 		op   int
 		want string
+		// identity marks the cases that assert the injected failure itself
+		// rather than the message it is wrapped in. Message text is production
+		// copy, and a case that matches it passes on any wording that happens to
+		// contain the phrase.
+		identity bool
 	}{
 		{name: "seek", op: 2, want: "seek append start"},
 		{name: "write", op: 3, want: "write event"},
@@ -554,15 +559,24 @@ func TestStoreAppendBatchSurfacesFilesystemFaults(t *testing.T) {
 // and returns the openFs error (the store is discarded on success).
 func openFsUnderFault(t *testing.T, content string, s *fault.Schedule) error {
 	t.Helper()
+	err, _ := openFsUnderFaultOn(t, content, s)
+	return err
+}
+
+// openFsUnderFaultOn is openFsUnderFault plus the filesystem it opened on, so a
+// case can read back the bytes a failed open left behind.
+func openFsUnderFaultOn(t *testing.T, content string, s *fault.Schedule) (error, afero.Fs) {
+	t.Helper()
 	base := afero.NewMemMapFs()
 	if err := afero.WriteFile(base, "/jobs.jsonl", []byte(content), 0o644); err != nil {
 		t.Fatalf("seed store: %v", err)
 	}
-	st, err := openFs(fault.FS(base, s), "/jobs.jsonl")
+	wrapped := fault.FS(base, s)
+	st, err := openFs(wrapped, "/jobs.jsonl")
 	if err == nil {
 		_ = st.Close()
 	}
-	return err
+	return err, wrapped
 }
 
 // TestStoreOpenTrailingRecoveryFaults pins the error arms of the trailing-line
@@ -587,11 +601,16 @@ func TestStoreOpenTrailingRecoveryFaults(t *testing.T) {
 		name string
 		op   int
 		want string
+		// identity marks the cases that assert the injected failure itself
+		// rather than the message it is wrapped in. Message text is production
+		// copy, and a case that matches it passes on any wording containing the
+		// phrase.
+		identity bool
 	}{
 		{name: "inspect_stat", op: 1, want: "stat /jobs.jsonl"},
 		{name: "inspect_seek", op: 2, want: "inspect trailing byte"},
 		{name: "inspect_read", op: 3, want: "read trailing byte"},
-		{name: "read_whole", op: 4, want: "inspect /jobs.jsonl"},
+		{name: "read_whole", op: 5, want: "read /jobs.jsonl", identity: true},
 		{name: "finish_seek", op: 7, want: "seek after trailing recovery"},
 		{name: "finish_terminate", op: 8, want: "terminate trailing event"},
 		{name: "finish_sync", op: 9, want: "sync trailing recovery"},
@@ -600,6 +619,22 @@ func TestStoreOpenTrailingRecoveryFaults(t *testing.T) {
 		{name: "readall_scan", op: 13, want: "scan /jobs.jsonl"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			if tc.identity {
+				err, opened := openFsUnderFaultOn(t, content, planFaultAt(tc.op))
+				if !errors.Is(err, fault.ErrInjected) {
+					t.Fatalf("open fault error = %v, want the injected failure", err)
+				}
+				// The failed read is evidence, not a licence to rewrite: the
+				// journal's bytes are exactly what they were before the open.
+				got, readErr := afero.ReadFile(opened, "/jobs.jsonl")
+				if readErr != nil {
+					t.Fatalf("read back the journal: %v", readErr)
+				}
+				if string(got) != content {
+					t.Fatalf("the failed whole-tail read changed the journal to %q", got)
+				}
+				return
+			}
 			err := openFsUnderFault(t, content, planFaultAt(tc.op))
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("open fault error = %v, want %q", err, tc.want)
