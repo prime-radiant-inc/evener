@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"reflect"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/events"
@@ -112,6 +114,34 @@ func TestTranscriptAuthorshipForkCopies(t *testing.T) {
 func TestTranscriptAuthorshipNestedParent(t *testing.T) {
 	t.Parallel()
 	root, client, _ := newDelegateResourceBootstrapSession(t)
+
+	// The middle child's prompt namer is parked inside its provider call for the
+	// length of this test, so the close below meets a namer that cannot finish.
+	// The namer's own wait group is the only thing that can prove it ended: the
+	// close joins sendersWG (which also counts delegate runs) and only within the
+	// close budget, which gives up on a straggler.
+	namerGate := make(chan struct{})
+	releaseNamer := sync.OnceFunc(func() { close(namerGate) })
+	// Registered before the fixture's own Close: a failure anywhere below must
+	// not leave the parked namer for that Close to wait out.
+	t.Cleanup(releaseNamer)
+	namerEntered := make(chan struct{})
+	// Park exactly the FIRST naming call. The root never names (it accepts no
+	// prompt), so the first is the middle's, and the leaf's namer the test
+	// starts later answers at once.
+	var parkFirst sync.Once
+	// Replaces the fixture's own namer adapter on the root's client, which is
+	// also the middle's: the child config is otherwise untouched.
+	client.Register(&agenttest.ScriptedAdapter{Provider: testSessionNamerProvider, Responder: func(request llm.Request) llm.Response {
+		first := false
+		parkFirst.Do(func() { first = true })
+		if first {
+			close(namerEntered)
+			<-namerGate
+		}
+		return llm.Response{Provider: testSessionNamerProvider, Model: request.Model, Message: llm.Assistant(`{"name":"Parked Middle Name"}`)}
+	}})
+
 	middleAdapter := newTask6FrozenDescriptorAdapter()
 	client.Register(middleAdapter)
 	t.Cleanup(middleAdapter.releaseRun)
@@ -120,6 +150,12 @@ func TestTranscriptAuthorshipNestedParent(t *testing.T) {
 		t.Fatal(middleResult.Err)
 	}
 	<-middleAdapter.entered
+	// TRIPWIRE: the middle's namer is launched from its in-process input accept
+	// and reaches a scripted adapter with no real I/O, so this normally returns
+	// in well under a second. 10s only fires when no namer was started at all.
+	awaitWithin(t, 10*time.Second, "the middle child's prompt namer reaching its provider call", func() {
+		<-namerEntered
+	})
 	middle := root.getSub(middleResult.ChildSessionID).sess
 	human := schema.NewTurn(schema.TurnUserInput, llm.User("nested-original-human"))
 	human.Authorship = humanTranscriptAuthorship()
@@ -151,6 +187,7 @@ func TestTranscriptAuthorshipNestedParent(t *testing.T) {
 		t.Fatal(result.Err)
 	}
 	sub := middle.getSub(result.ChildSessionID)
+	leaf := sub.sess
 	sub.mu.Lock()
 	done := sub.done
 	sub.mu.Unlock()
@@ -208,6 +245,39 @@ func TestTranscriptAuthorshipNestedParent(t *testing.T) {
 	c.mu.Unlock()
 	if physicalOwner != root.id || physicalOwner == middle.id {
 		t.Fatalf("physical owner = %q", physicalOwner)
+	}
+
+	// The fixture's close must not outlive the namers this test started. The
+	// close budget is spent before the close begins, so closeEventStream's
+	// joinWithinCloseBudget gives up on the parked namer and returns with it
+	// still running: the window #6628 names. sendersWG cannot answer whether it
+	// ended (it also counts delegate runs, and the close abandons it), so the
+	// proof is the namer's own unbudgeted join.
+	expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	root.close(expired, closeOptions{cleanupEnv: true})
+	middle.eventsMu.RLock()
+	middleStreamClosed := middle.eventsClosed
+	middle.eventsMu.RUnlock()
+	middle.mu.Lock()
+	pendingAfterClose := middle.naming.pending
+	middle.mu.Unlock()
+	if !middleStreamClosed {
+		t.Fatal("the expired-budget close returned without closing the middle child's event stream, so it never reached the join this test exists to outlive")
+	}
+	if pendingAfterClose == 0 {
+		t.Fatal("the close reached the middle child's event stream with its namer already done, so this test never crossed the window it exists to prove")
+	}
+	releaseNamer()
+	// The join itself is unbudgeted; this ceiling only turns a broken completion
+	// signal into a named failure instead of the test binary's timeout.
+	awaitWithin(t, 30*time.Second, "the middle child's namer to finish", func() { middle.namerWG.Wait() })
+	awaitWithin(t, 30*time.Second, "the leaf child's namer to finish", func() { leaf.namerWG.Wait() })
+	middle.mu.Lock()
+	stillNaming := middle.naming.pending
+	middle.mu.Unlock()
+	if stillNaming != 0 {
+		t.Fatalf("the namer join returned with %d naming attempt(s) still pending", stillNaming)
 	}
 }
 
