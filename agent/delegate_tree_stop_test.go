@@ -1003,7 +1003,7 @@ func requireDrainStopsUnderCancellation(t *testing.T, c *delegateTreeController,
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	done := make(chan error, 1)
-	go func() { done <- c.drainStopAbandonable(ctx, stop, nil, ctx.Done()) }()
+	go func() { done <- c.drainStopAbandonable(ctx, stop, nil, ctx.Done(), false) }()
 	select {
 	case err := <-done:
 		if !errors.Is(err, context.Canceled) {

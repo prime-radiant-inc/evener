@@ -472,7 +472,7 @@ func (s *Session) sendEventContext(ctx context.Context, data events.EventData, p
 		// has its whole window to deliver.
 		var lifetimeDone <-chan struct{}
 		if closeCtx != nil {
-			ctx = closeCtx
+			ctx = earlierDeadlineContext(ctx, closeCtx)
 		} else {
 			lifetimeDone = s.sessionContext().Done()
 		}
@@ -556,6 +556,24 @@ func (s *Session) sendEventContext(ctx context.Context, data events.EventData, p
 	return data, ev, open && delivered
 }
 
+// earlierDeadlineContext returns whichever of ctx and other expires first, so a
+// caller that brought its own bound keeps it: the close budget can shorten a
+// send's window, never lengthen one. A context with no deadline loses to one
+// with a deadline.
+func earlierDeadlineContext(ctx, other context.Context) context.Context {
+	if other == nil {
+		return ctx
+	}
+	otherDeadline, ok := other.Deadline()
+	if !ok {
+		return ctx
+	}
+	if deadline, ok := ctx.Deadline(); ok && deadline.Before(otherDeadline) {
+		return ctx
+	}
+	return other
+}
+
 // SetDescendantEventFunc installs the callback inherited by subsequently
 // spawned descendants. Root events continue through the authoritative event
 // consumer; only child sessions invoke this callback.
@@ -565,6 +583,32 @@ func (s *Session) SetDescendantEventFunc(f func(events.SessionEvent)) {
 	s.mu.Unlock()
 	if f != nil && s.delegateController != nil && s.ownsDelegateController {
 		s.delegateController.emitDelegateUpdate(s.delegateController.Snapshot())
+	}
+}
+
+// emitCloseDrainWarnings publishes the warnings a delegate close drain settled,
+// on the stop context that drain runs under. It is the closing session's whole
+// publication surface: a warning is news the owner would otherwise never see --
+// a delegate's result was lost -- and it costs one channel send. Nothing else
+// the drain settled is published here, because a closing session has no turn to
+// run a delivery in.
+//
+// The bound matters as much as the publication. When the root's authoritative
+// consumer is wedged, a send parks until something releases it; without this
+// context it would park until the close cascade's own deadline, spending the
+// half that teardown needs and leaving collectible isolation lanes on disk. The
+// stop bound releases the send early, dropping this one warning and leaving the
+// rest of the cascade intact.
+func (s *Session) emitCloseDrainWarnings(ctx context.Context, warnings []events.WarningData) {
+	if s == nil || s.events == nil {
+		return
+	}
+	for _, warning := range warnings {
+		data, ev, _ := s.sendEventContext(ctx, warning, s.activeCausalProvenance())
+		if s.jobManager != nil {
+			s.jobManager.onSessionEvent(ev)
+		}
+		s.fireNotificationHookBounded(ctx, warningHookMessage(data), warningHookTitle(data))
 	}
 }
 
@@ -600,6 +644,42 @@ func (s *Session) SetDescendantEventFunc(f func(events.SessionEvent)) {
 // exhausted deadline of either kind declines the hook rather than launching one
 // nothing is left to wait for.
 func (s *Session) fireNotificationHook(message, title string) {
+	ctx := s.notificationHookBaseContext()
+	if ctx.Err() != nil {
+		return
+	}
+	s.runNotificationHook(ctx, message, title)
+}
+
+// fireNotificationHookBounded is fireNotificationHook for a caller that carries
+// its own bound, which stays in force on top of the session's: the delegate
+// close drain publishes on the stop context, and a Notification hook launched
+// there must not outlive it.
+func (s *Session) fireNotificationHookBounded(ctx context.Context, message, title string) {
+	base := s.notificationHookBaseContext()
+	if base.Err() != nil {
+		return
+	}
+	if ctx == nil {
+		ctx = base
+	}
+	bounded, cancel := context.WithCancel(ctx)
+	defer cancel()
+	// The hook ends at whichever bound expires first: the caller's, the
+	// session's lifetime, or a published close budget.
+	stop := context.AfterFunc(base, cancel)
+	defer stop()
+	if bounded.Err() != nil {
+		return
+	}
+	s.runNotificationHook(bounded, message, title)
+}
+
+// notificationHookBaseContext is the Notification hook's own bound: the
+// session's lifetime, superseded by a close budget once one is published. A
+// hook already running when shutdown starts is interrupted by the same
+// cancellation instead of holding the shutdown budget for its full timeout.
+func (s *Session) notificationHookBaseContext() context.Context {
 	ctx := s.sessionContext()
 	s.closeCtxMu.RLock()
 	closeCtx := s.closeCtx
@@ -607,10 +687,7 @@ func (s *Session) fireNotificationHook(message, title string) {
 	if closeCtx != nil {
 		ctx = closeCtx
 	}
-	if ctx.Err() != nil {
-		return
-	}
-	s.runNotificationHook(ctx, message, title)
+	return ctx
 }
 
 // warningData is the warning payload an event carries, and whether it carries

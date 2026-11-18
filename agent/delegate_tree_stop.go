@@ -792,22 +792,33 @@ func (c *delegateTreeController) stopForResult(result delegateStopResult) *deleg
 }
 
 func (c *delegateTreeController) drainStopForClose(ctx context.Context, stop *delegateStopState) error {
-	// The close drain runs the same reconciliation as the stop driver, so it
-	// hands the pass to the same root runtime. A nil root dropped every plan
-	// the pass settled here, including the lost-result warning for an inline
-	// receipt whose owning commit is gone -- the notice a closing session most
-	// needs, since the result is gone and the session is about to stop being
-	// the place its owner would look (#6308). The root outlives this drain:
-	// bootstrap attaches it once, and Session.closeTerminal closes the root's
-	// event stream only after the delegate tree has closed.
+	// The close drain runs the same reconciliation as the stop driver and
+	// publishes through the same root runtime, which outlives the drain, but it
+	// publishes WARNINGS AND NOTHING ELSE. A closing session still has a reader
+	// for a lost result -- the notice it most needs, since the result is gone and
+	// the session is about to stop being where its owner would look -- and no
+	// turn to deliver into. Two consequences the mode exists to pin:
+	//
+	//   - It never executes a delivery plan. Acknowledging one receipt here
+	//     replans every other pending delivery its owner holds; running that
+	//     replay against a session that refuses turns fails, and the failure
+	//     would end a close the journal was otherwise able to finish. Each
+	//     subtree's own reconciliation settles the receipts it tracks.
+	//   - It is bounded by ctx, the stop's own half of the cascade, including the
+	//     notification hook. Waiting out the whole cascade to tell a delegate
+	//     something spends the budget teardown needs and leaves collectible
+	//     worktrees on disk.
+	//
+	// Neither one lets another subsystem's failure become a failure to stop a
+	// subtree.
 	c.mu.Lock()
 	root := c.rootRuntime
 	c.mu.Unlock()
-	return c.drainStop(ctx, stop, root)
+	return c.drainStopAbandonable(ctx, stop, root, nil, true)
 }
 
 func (c *delegateTreeController) drainStop(ctx context.Context, stop *delegateStopState, root *Session) error {
-	return c.drainStopAbandonable(ctx, stop, root, nil)
+	return c.drainStopAbandonable(ctx, stop, root, nil, false)
 }
 
 // drainStopAbandonable is drainStop plus an optional abandon signal. The stop
@@ -817,7 +828,13 @@ func (c *delegateTreeController) drainStop(ctx context.Context, stop *delegateSt
 // keep reconciling even after their budget is cancelled, which the stop's final
 // reconciliation relies on, and only the wait at the loop's foot observes their
 // context.
-func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop *delegateStopState, root *Session, abandon <-chan struct{}) error {
+//
+// warningsOnly publishes the pass's warnings to root and withholds every other
+// plan it settled. The close drain sets it: a closing root can still record a
+// warning, but executing a delivery there would run a replay against a session
+// that is refusing turns, and an error from that replay would abort a close the
+// journal was otherwise able to complete.
+func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop *delegateStopState, root *Session, abandon <-chan struct{}, warningsOnly bool) error {
 	if stop == nil {
 		return nil
 	}
@@ -864,6 +881,12 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 				}
 				continue
 			}
+			// A warning the pass settled is published even when the pass
+			// failed: the receipt that produced it is gone from the store,
+			// so no later pass can settle it again.
+			if root != nil {
+				root.emitCloseDrainWarnings(ctx, plans.warnings)
+			}
 			return err
 		}
 		for _, plan := range plans.shellRepairs {
@@ -879,7 +902,18 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 				return err
 			}
 		}
-		if root != nil {
+		if warningsOnly {
+			// The plans withheld here own delivery claims, and a claimed
+			// delivery is never re-planned. Give the claims back so each
+			// subtree's reconciliation, or a later store re-plan, can pick
+			// the deliveries up.
+			c.mu.Lock()
+			c.dropDeliveryPlanClaimsLocked(plans)
+			c.mu.Unlock()
+			if root != nil {
+				root.emitCloseDrainWarnings(ctx, plans.warnings)
+			}
+		} else if root != nil {
 			rootPlans := plans
 			rootPlans.attention = nil
 			if err := root.executeDelegateMutationPlans(rootPlans); err != nil {
@@ -901,7 +935,7 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 }
 
 func (c *delegateTreeController) runStopReconcileDriver(stop *delegateStopState, driver *delegateStopDriver, root *Session) {
-	err := c.drainStopAbandonable(driver.ctx, stop, root, driver.ctx.Done())
+	err := c.drainStopAbandonable(driver.ctx, stop, root, driver.ctx.Done(), false)
 	c.mu.Lock()
 	driver.err = err
 	close(driver.done)
