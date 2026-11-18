@@ -658,6 +658,43 @@ describe("a session that can't take a message yet (ruling 20)", () => {
 	// the session open. A resume tried in that gap throws at the service
 	// without reaching the hub, and the restart keeps a failed attempt instead
 	// of a sent one. It waits for the read and then goes.
+	// A push onto the same stack takes the reader away from this pane without
+	// touching its session: the binding stays open and the stop it asked for is
+	// still owed a resume. A restart that kept its controls only while focused
+	// could not call the owed step at all, and the daemon stayed stopped until
+	// the reader came back — or forever, if the covered view closed first.
+	it("resumes while the push that covered the pane is still in front", async () => {
+		const { tree, hub, route } = await mount(restartNeeded("ref-restart-covered"));
+		let stopped!: () => void;
+		hub.client.forceStop = (ref: string) => {
+			hub.requests.push({ method: "forceStop", params: { ref } });
+			return new Promise<void>((resolve) => {
+				stopped = resolve;
+			});
+		};
+		await press(tree, "Restart session");
+		// Another conversation opens over this one before the hub answers the
+		// stop, so the acknowledgement and the resume both arrive for a reader
+		// who is looking at something else.
+		navigationState.state = {
+			index: 1,
+			routes: [
+				route as unknown as { key: string; name: string },
+				{ key: "conversation-elsewhere", name: "Conversation" },
+			],
+		};
+		act(() => tree.update(<SessionScreen route={route} navigation={navigation} />));
+		await settle();
+		act(() => stopped());
+		await settle();
+		await settle();
+		expect(
+			hub.requests
+				.filter((request) => request.method === "forceStop" || request.method === "resumeThread")
+				.map((request) => request.method),
+		).toEqual(["forceStop", "resumeThread"]);
+	});
+
 	it("resumes once the read the stop started has restored the binding", async () => {
 		const { tree, hub } = await mount(restartNeeded("ref-restart-read"));
 		const reading = Promise.withResolvers<void>();
@@ -688,6 +725,46 @@ describe("a session that can't take a message yet (ruling 20)", () => {
 		await press(tree, "Restart session");
 		expect(hasTestID(tree, "session-notice-error")).toBe(true);
 		expect(pressable(tree, "Restart session")?.props.disabled).toBe(false);
+	});
+
+	// The resume recycles the socket on the same client object, and the session's
+	// registry replaces its service during that reconnect. The acknowledgement
+	// and the readback both arrive after the replacement: reading back through
+	// the service captured before the recycle installs a retired one as the
+	// store's own binding, and the screen's replacement is then ignored by Send
+	// and by older-history reads.
+	it("reads back through the service a reconnect replaced mid-resume", async () => {
+		const served = restartNeeded("ref-restart-replaced");
+		const { tree, hub } = await mount(served);
+		let resumed!: () => void;
+		hub.client.resumeThread = (ref: string) => {
+			hub.requests.push({ method: "resumeThread", params: { ref } });
+			return new Promise<void>((resolve) => {
+				resumed = resolve;
+			});
+		};
+		await press(tree, "Restart session");
+		await settle();
+		expect(hub.requests.filter((request) => request.method === "resumeThread")).toHaveLength(1);
+		// The recycle: the client is the same object, but it is no longer ready,
+		// so the session drops its binding and starts a replacement.
+		rerender(tree, "ref-restart-replaced", "connecting");
+		await settle();
+		rerender(tree, "ref-restart-replaced", "ready");
+		await settle();
+		// The daemon is up again, so the read that follows the resume finds an
+		// open session and the composer comes back.
+		(served as unknown as { status: unknown }).status = { type: "idle" };
+		// The reply lands on the service that sent it, which the session has since
+		// replaced.
+		act(() => resumed());
+		await settle();
+		await settle();
+		// The composer still sends, which it can only do when the store is bound
+		// to the service the screen is holding now.
+		await type(tree, "after the recycle");
+		await press(tree, "Send");
+		expect(hub.requests.filter((request) => request.method === "turn/start")).toHaveLength(1);
 	});
 
 	it("says so in the notice when the stop fails", async () => {

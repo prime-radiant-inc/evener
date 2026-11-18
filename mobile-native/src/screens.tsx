@@ -867,10 +867,24 @@ function ConversationScreenView({
 	// than fall back to its raw id (#2988).
 	const namedCatalog = useRef<ModelListResponse | null>(null);
 	const controls = useMemo(() => {
-		if (!service || !connected || !focused) return null;
+		// A covering screen takes the reader away, not the binding: the controls
+		// keep the session's own store and service for as long as this view is
+		// mounted. What a covered pane may *start* is the route scope's question,
+		// and every action asks it; a step the hub already acknowledged has to
+		// reach the binding whatever is on top, so it must not be handed null
+		// just because another screen was pushed over this one.
+		if (!service || !connected) return null;
 		const refreshSession = async () => {
-			if (store.getState().status === "open") await store.getState().rehydrate(service);
-			else await store.getState().resumeProjected(service, route.params.ref);
+			// The acknowledgement can outlive the service this controller was
+			// built with: a restart replaces the session's service while its
+			// reply is still out. Reading through the captured one would install
+			// a retired service as the store's own binding, and the screen's
+			// replacement would then be ignored by Send and by older-history
+			// reads. The entry is the live binding, so the read resolves it here.
+			const live = entry.service;
+			if (live === null) throw new Error("Could not read the session.");
+			if (store.getState().status === "open") await store.getState().rehydrate(live);
+			else await store.getState().resumeProjected(live, route.params.ref);
 			const current = store.getState();
 			if (current.status !== "open" || current.error) throw new Error("Could not read the session.");
 		};
@@ -961,13 +975,13 @@ function ConversationScreenView({
 			knownCatalog.current,
 		);
 	}, [
+		entry,
 		service,
 		store,
 		client,
 		route.params.ref,
 		navigation,
 		connected,
-		focused,
 		bindingGeneration,
 		bindingInstance,
 		document,
@@ -2009,6 +2023,17 @@ function ConversationScreenView({
 			screenInFront(navigation, route.key) &&
 			store.getState().conversationGeneration === bindingGeneration &&
 			store.getState().conversation?.instanceId === bindingInstance;
+		// Admitting a command asks whether the reader can see the field it came
+		// from, which is `currentBinding`. A command the hub has already taken is
+		// past that question: its read belongs to the session, and a screen pushed
+		// over this one during the reply does not make the read wrong. A cold
+		// session's own command can resume its daemon without reattaching the
+		// relay, so skipping the read leaves the old goal on screen when the
+		// reader returns.
+		const settledBinding = () =>
+			connectionReady.current &&
+			store.getState().conversationGeneration === bindingGeneration &&
+			store.getState().conversation?.instanceId === bindingInstance;
 		commandBusy.current = true;
 		setCommandPending(true);
 		try {
@@ -2113,11 +2138,14 @@ function ConversationScreenView({
 							}
 						},
 					});
-			if (!completed || !currentBinding()) return;
+			if (!completed || !settledBinding()) return;
 			if (isLocalComposerCommand(completed) || completed === "aside") return;
 			// A shut-down session stays open on its history, like the ⋯ menu's
 			// own Shut down (ruling 19): the store's error surfaces a failed read.
-			await store.getState().rehydrate(service);
+			// The read follows the entry's live service for the same reason the
+			// restart's does: a reply can outlive the binding it was sent on.
+			const live = entry.service;
+			if (live !== null) await store.getState().rehydrate(live);
 		} catch (error) {
 			if (!currentBinding()) return;
 			setActionError(
@@ -2416,6 +2444,22 @@ function ConversationScreenView({
 	useEffect(() => {
 		if (controls && hasConversation && sessionOpen) void controls.loadModels();
 	}, [controls, hasConversation, sessionOpen]);
+	// The catalog used to read again on every return, because covering this pane
+	// rebuilt its controls and the new ones started from the name the old pair
+	// had read. The controls now outlive a covering push, so that return is no
+	// longer a rebuild and the read has to be asked for: a model list can change
+	// while the reader is on another screen, and the chip should not show the
+	// list this pane read before they left.
+	const wasCovered = useRef(false);
+	useEffect(() => {
+		if (!focused) {
+			wasCovered.current = true;
+			return;
+		}
+		const returning = wasCovered.current;
+		wasCovered.current = false;
+		if (returning && controls && hasConversation && sessionOpen) void controls.loadModels();
+	}, [focused, controls, hasConversation, sessionOpen]);
 	// The hub announces a refreshed model list on evener/auth/updated (it
 	// serves a stale list at once and refreshes it behind the request), so a
 	// loaded catalog is read again in place (#3539).
