@@ -1519,7 +1519,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 						configureTranscriptWindowResponseFit(&options, transcriptTurnsListParamsFromRead(params))
 						return packThreadReadWindowItemCandidates(candidates, enrich, options)
 					}
-					return packThreadReadItemCandidates(candidates, enrich, itemLimit)
+					return packManagerThreadReadItemCandidates(candidates, enrich, itemLimit)
 				}
 				packed, packErr := pack(candidates, func(response appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error) {
 					response.Thread = threadWithPackedTurns(resp.Thread, response.Thread.Turns)

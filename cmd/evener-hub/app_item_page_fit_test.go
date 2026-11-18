@@ -485,6 +485,89 @@ func TestPackTranscriptItemPageOmitsOversizedResolvedAskStamp(t *testing.T) {
 	}
 }
 
+// TestPackManagerThreadReadItemDropsStampAtThePageCap covers the case the
+// per-item bound cannot see: a reply that is itself almost the whole Manager
+// cap, plus a stamp small enough to pass the per-item check. The page fits the
+// content soft limit and still busts the cap once the envelope is added, so the
+// read must retry with the call list off rather than return nothing at all.
+func TestPackManagerThreadReadItemDropsStampAtThePageCap(t *testing.T) {
+	const (
+		answerTurn   = "0f1c2b3a-4d5e-4f60-8a91-b2c3d4e5f607"
+		questionTurn = "1a2b3c4d-5e6f-4071-92a3-b4c5d6e7f809"
+	)
+	// 80 calls at UUID width is roughly 7.7 KiB of stamp: under the per-item
+	// limit, and enough to push an otherwise near-cap reply over the top.
+	calls := make([]appwire.PendingAskCall, 80)
+	for i := range calls {
+		calls[i] = appwire.PendingAskCall{TurnID: questionTurn, CallID: fmt.Sprintf("2b3c4d5e-6f70-4182-a3b4-%012x", i)}
+	}
+	stampBytes, err := json.Marshal(calls)
+	if err != nil {
+		t.Fatalf("marshal stamp: %v", err)
+	}
+	if len(stampBytes) > transcriptReadStampLimitBytes {
+		t.Fatalf("fixture stamp = %d bytes, want under the per-item limit %d", len(stampBytes), transcriptReadStampLimitBytes)
+	}
+	// Size the reply so the page exceeds the cap WITH the stamp and fits once
+	// the stamp is dropped. The margin covers the turn and envelope fields
+	// around the text; a smaller reply would fit as built and never exercise
+	// the retry.
+	const envelopeMargin = 4096
+	textBytes := managerReadMaxJSONBytes - len(stampBytes)/2 - envelopeMargin
+	reply := appwire.ThreadItem{
+		Type: "userMessage",
+		ID:   "answer",
+		Text: strings.Repeat("pasted ", textBytes/7+1)[:textBytes],
+		Observation: &appwire.SessionObservationMetadata{
+			Ref:                    "local:thread",
+			TurnID:                 answerTurn,
+			AnswerToTurnIDs:        []string{questionTurn},
+			ResolvedAskCalls:       calls,
+			ResolvedAskLegacyCount: 1,
+		},
+		Version: 1,
+	}
+	candidates := testWindowTurnCandidates(answerTurn, []appwire.ThreadItem{reply})
+	identity := appitempaging.CursorIdentity{ThreadRef: "local:thread", Incarnation: "near-cap", ProjectionVersion: 1}
+
+	read, err := packManagerThreadReadItemCandidates(transcriptItemCandidateResult{
+		Candidates: appitempaging.TranscriptItemWindow{Candidates: candidates},
+		Identity:   identity,
+		Exhausted:  true,
+	}, func(response appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error) {
+		return response, nil
+	}, 1)
+	if err != nil {
+		t.Fatalf("pack near-cap Manager read: %v", err)
+	}
+	encoded, err := json.Marshal(read)
+	if err != nil {
+		t.Fatalf("marshal packed page: %v", err)
+	}
+	if len(encoded) > managerReadMaxJSONBytes {
+		t.Fatalf("packed page encoded to %d bytes, Manager cap %d", len(encoded), managerReadMaxJSONBytes)
+	}
+	items := flattenTestItems(read.Thread.Turns)
+	if len(items) != 1 {
+		t.Fatalf("served item count = %d, want 1", len(items))
+	}
+	if items[0].Text != reply.Text {
+		t.Fatalf("retry must keep the reply text, got %d of %d bytes", len(items[0].Text), len(reply.Text))
+	}
+	if items[0].Observation == nil {
+		t.Fatal("retry dropped the whole observation")
+	}
+	if got := len(items[0].Observation.ResolvedAskCalls); got != 0 {
+		t.Fatalf("served %d stamp calls, want the call list dropped for the cap", got)
+	}
+	if got, want := items[0].Observation.AnswerToTurnIDs, []string{questionTurn}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("retry turn links = %v, want %v", got, want)
+	}
+	if got := items[0].Observation.ResolvedAskLegacyCount; got != 1 {
+		t.Fatalf("retry legacy count = %d, want 1", got)
+	}
+}
+
 func TestPackTranscriptItemWindowCapsFiftyItemTurnInOrder(t *testing.T) {
 	items := make([]appwire.ThreadItem, 50)
 	for i := range items {

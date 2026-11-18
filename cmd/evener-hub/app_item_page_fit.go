@@ -308,6 +308,10 @@ func candidatesForTurnIDs(
 type packItemCandidatesOptions struct {
 	requestedLimit int
 	window         *transcriptWindowPackOptions
+	// managerRead marks a read that must satisfy managerReadMaxJSONBytes rather
+	// than the wider daemon soft limit. Only then is it worth trading an
+	// optional stamp for a page that otherwise fails whole (#6323).
+	managerRead bool
 }
 
 type transcriptWindowCandidateTurn struct {
@@ -753,6 +757,19 @@ func packThreadReadWindowItemCandidates(
 	window transcriptWindowPackOptions,
 ) (appwire.ThreadReadResponse, error) {
 	return packThreadReadItemCandidatesWithOptions(candidates, enrich, packItemCandidatesOptions{window: &window})
+}
+
+// packManagerThreadReadItemCandidates packs a default (no turn window) Manager
+// read, where the whole response must fit managerReadMaxJSONBytes.
+func packManagerThreadReadItemCandidates(
+	candidates transcriptItemCandidateResult,
+	enrich func(appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error),
+	requestedLimit int,
+) (appwire.ThreadReadResponse, error) {
+	return packThreadReadItemCandidatesWithOptions(candidates, enrich, packItemCandidatesOptions{
+		requestedLimit: requestedLimit,
+		managerRead:    true,
+	})
 }
 
 func packThreadReadItemCandidatesWithOptions(
@@ -1288,14 +1305,21 @@ func packItemCandidates[T any](
 	// result too large. The nearest item is always retained, even if it alone
 	// exceeds the soft target.
 	selectedStart := len(candidates) - len(selected)
+	// stripStamps forces every call list off the page. The per-item limit below
+	// cannot see a page that fits the content soft limit yet exceeds the
+	// Manager cap once the envelope is added, because a stamp is optional
+	// evidence and the reply is what the reader asked for (#6323).
+	stripStamps := false
 	for {
 		selected = append([]appitempaging.TranscriptItemCandidate(nil), candidates[selectedStart:]...)
+		stampLimit := transcriptReadStampLimitBytes
+		if stripStamps {
+			stampLimit = 0
+		}
 		// A per-call resolution stamp is metadata the size loop above cannot
 		// shrink by dropping items, because one reply carries it whole (#6323).
-		// Bound it here, on the default Manager read, so a page holding such a
-		// reply fits the cap instead of being refused outright.
 		for i := range selected {
-			selected[i].Item = boundTranscriptItemStamp(selected[i].Item, transcriptReadStampLimitBytes)
+			selected[i].Item = boundTranscriptItemStamp(selected[i].Item, stampLimit)
 		}
 		dropped := selectedStart
 		older := hasOlder || dropped > 0
@@ -1321,10 +1345,33 @@ func packItemCandidates[T any](
 			return zero, fmt.Errorf("marshal transcript item turns: %w", marshalErr)
 		}
 		if len(encoded) <= transcriptRPCResultSoftLimit || len(selected) == 1 {
+			if options.managerRead && !stripStamps {
+				full, fullErr := json.Marshal(response)
+				if fullErr != nil {
+					return zero, fmt.Errorf("marshal manager transcript page: %w", fullErr)
+				}
+				if len(full) > managerReadMaxJSONBytes && transcriptTurnsCarryStamps(contentTurns(response)) {
+					stripStamps = true
+					continue
+				}
+			}
 			return response, nil
 		}
 		selectedStart++
 	}
+}
+
+// transcriptTurnsCarryStamps reports whether any item still carries a call
+// list, so a page is only rebuilt when stripping would change it.
+func transcriptTurnsCarryStamps(turns []appwire.Turn) bool {
+	for _, turn := range turns {
+		for _, item := range turn.Items {
+			if item.Observation != nil && len(item.Observation.ResolvedAskCalls) > 0 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func transcriptWindowIncludesItem(itemTypes []string, item appwire.ThreadItem) bool {
