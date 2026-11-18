@@ -7,7 +7,6 @@ import (
 	"os"
 	"slices"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -725,50 +724,63 @@ func TestAttentionProjectionCapturesTurnsAndHoldsTogether(t *testing.T) {
 	sess.history = append(sess.history, schema.NewTurn(schema.TurnAssistant, llm.Assistant("the generation that ran while the quiet stood")))
 	sess.mu.Unlock()
 
-	// Every capture must be one moment's answer, and this states the property
-	// without racing: a capture may return the report still held, wherever the
-	// hold left it; or it may return the report released, in which case the
-	// release's tail move has already landed and the report is the history's
-	// last turn. The torn answer — released from the holds but still sitting
-	// where the hold left it — is what makes a request end on a later message
-	// while counting the report as presented.
-	check := func(round int) {
+	// The property under test is that a capture is one moment's answer: a
+	// capture may return the report still held, wherever the hold left it; or it
+	// may return the report released, in which case the release's tail move has
+	// already landed and the report is the history's last turn. The torn answer —
+	// released from the holds but still sitting where the hold left it — is what
+	// makes a request end on a later message while counting the report as
+	// presented.
+	check := func(moment string) {
+		t.Helper()
 		projection, holds := sess.delegateAttentionModelProjection()
 		if _, held := holds[reopenedID]; held {
 			return
 		}
 		if len(projection.turns) == 0 {
-			t.Fatal("capture returned no turns")
+			t.Fatalf("%s: capture returned no turns", moment)
 		}
 		if tail := projection.turns[len(projection.turns)-1]; tail.AttentionID != reopenedID {
-			t.Fatalf("round %d: the capture reported the report released while it sat at position %d of %d instead of the tail (last attention %q): the turns and the holds were taken at two different moments, so this request would end on a later message and count the report as presented",
-				round, indexOfAttentionTurn(projection.turns, reopenedID), len(projection.turns), tail.AttentionID)
+			t.Fatalf("%s: the capture reported the report released while it sat at position %d of %d instead of the tail (last attention %q): the turns and the holds were taken at two different moments, so this request would end on a later message and count the report as presented",
+				moment, indexOfAttentionTurn(projection.turns, reopenedID), len(projection.turns), tail.AttentionID)
 		}
 	}
-	// A release racing the capture is the only way a torn pair can appear, so
-	// the release runs beside the captures rather than between them: an atomic
-	// capture answers either side of every release, and a torn one eventually
-	// answers both at once.
-	stop := make(chan struct{})
-	var writer sync.WaitGroup
-	writer.Add(1)
-	go func() {
-		defer writer.Done()
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-			}
-			sess.releaseAutomaticDriveHolds(delegateHoldReleaseArm, stoppedGeneration)
-			sess.holdDelegateAttentionFromAutomaticDriveAt(reopenedID, stoppedGeneration)
-		}
-	}()
-	for round := 0; round < 2000; round++ {
-		check(round)
+
+	// One controlled release, and no scheduling: the capture before it must
+	// answer the held state and the capture after it the released one, so a
+	// capture that paired two moments fails one of the two deterministically.
+	// The release is the production call, so the tail move and the hold deletion
+	// happen in the order production performs them.
+	check("before the release")
+	sess.releaseAutomaticDriveHolds(delegateHoldReleaseArm, stoppedGeneration)
+	check("after the release")
+}
+
+// appendCompactionMarkerAfterReopenedRow writes, after the reopened row's turn,
+// the compaction marker every later request resumes from — the shape in which a
+// pending row's turn falls behind the anchor while the fold still lists the row
+// pending.
+func (s *Session) appendCompactionMarkerAfterReopenedRow(t *testing.T, reopenedID string) {
+	t.Helper()
+	s.mu.Lock()
+	path := s.TranscriptPath()
+	sessionID := s.id
+	s.mu.Unlock()
+	writer, _, err := transcript.OpenWriterForSession(path, sessionID)
+	if err != nil {
+		t.Fatalf("open the transcript for a marker: %v", err)
 	}
-	close(stop)
-	writer.Wait()
+	if err := writer.AppendDurable(schema.NewTurn(schema.TurnSummary, llm.User("[CONTEXT SUMMARY] earlier work [END SUMMARY]"))); err != nil {
+		_ = writer.Close()
+		t.Fatalf("append the compaction marker after %q: %v", reopenedID, err)
+	}
+	if err := writer.AppendDurable(schema.NewTurn(schema.TurnAssistant, llm.Assistant("the generation that ran while the quiet stood"))); err != nil {
+		_ = writer.Close()
+		t.Fatalf("append the exchange after the marker: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close the marker writer: %v", err)
+	}
 }
 
 // indexOfAttentionTurn reports the position of attentionID's steering turn, or
@@ -811,6 +823,44 @@ func TestColdArmReleasesTheAttachedRuntimesSupersededHold(t *testing.T) {
 	}
 	if !later {
 		t.Fatal("the cold arm ended a hold a later stop installed: the wake is not newer evidence than that quiet")
+	}
+}
+
+// A cold arm reads the transcript outside the controller lock and can wait on a
+// reservation, so a run that attaches during that wait owns the row before the
+// arm resumes. Admitting the row again would release the quiet of a stop that
+// settled around the attach, restarting the very report the user quieted. The
+// arm therefore re-reads the row on every attempt and hands an attached
+// runtime's row to the resident path, which checks pending status under the
+// same claim that accepts it.
+func TestColdArmLeavesARowAnAttachedRuntimeTook(t *testing.T) {
+	t.Parallel()
+	sess, reopenedID, _ := deriveHeldFixtureWithJournal(t, delegatestore.OutcomeCancelled, "cancelled")
+	controller := sess.delegateController
+	// The stop's quiet, stamped at the generation the stop settled. Nothing this
+	// arm does may end it, because the row it would have admitted is already
+	// consumed.
+	sess.holdDelegateAttentionFromAutomaticDriveAt(reopenedID, 1)
+	writeDelegateAttentionTranscript(t, transcriptPath(controller.stateDir, "child-dlg_hold"), "child-dlg_hold", reopenedID)
+	// The attached runtime accepted the row: it is consumed in the runtime's own
+	// view, which is the fact the resident path checks under the attention claim
+	// that acceptance also takes. The child transcript the cold arm re-folds
+	// still lists it pending — the window the arm's own read cannot close,
+	// because that read takes no claim. A real runtime resolves the row in the
+	// same file the arm reads, so the fixture's two transcripts are what makes
+	// this window visible at all.
+	if err := sess.resolveAttentionDurablyForGeneration([]string{reopenedID}, delegateAttentionConsumed, 2); err != nil {
+		t.Fatalf("consume the row on the runtime: %v", err)
+	}
+
+	if err := controller.armColdDelegateAttention("dlg_hold", reopenedID); err != nil {
+		t.Fatalf("arm a row an attached runtime already consumed: %v", err)
+	}
+	sess.attentionMu.Lock()
+	held := sess.delegateAttentionHeldFromAutomaticDriveLocked(reopenedID)
+	sess.attentionMu.Unlock()
+	if !held {
+		t.Fatal("the cold arm admitted a row an attached runtime had already consumed and released the quiet a later stop installed")
 	}
 }
 
@@ -862,6 +912,52 @@ func TestColdArmReleasesARiderCapturedFramesHold(t *testing.T) {
 	sess.attentionMu.Unlock()
 	if !newerStands {
 		t.Fatal("a retry over an already-admitted row cleared a newer stop's hold: the duplicate branch must still refuse that release")
+	}
+}
+
+// Replacing the pending set is the transcript fold's word on what is owed, and
+// it must not rewrite history: an ID whose wake was already admitted stays
+// admitted across the replacement. Otherwise a delivery that committed before a
+// successor started — its wake callback still delayed — is captured by that
+// successor as an unadmitted rider, and the callback's re-arm passes as a fresh
+// wake that releases a stop the user set after the delivery landed.
+func TestWakeSetReplacementKeepsAnAdmittedWakesStatus(t *testing.T) {
+	t.Parallel()
+	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
+	const delegateID = "dlg_replace"
+	seedDelegateControllerIdle(t, controller, delegateID, "")
+	const admittedID, freshID = "delegate:dlg_replace/delivery/1", "delegate:dlg_replace/delivery/2"
+
+	// The admitted wake: a delivery committed and noted this ID before the
+	// successor captured its pending set.
+	controller.mu.Lock()
+	controller.noteDelegateAttentionLocked(delegateID, admittedID)
+	controller.mu.Unlock()
+
+	// The successor's capture: both the admitted row and a fresh frame land in
+	// the starting generation's pending set.
+	controller.mu.Lock()
+	controller.replaceDelegateAttentionLocked(delegateID, []string{admittedID, freshID})
+	_, admittedIsRider := controller.attention[delegateID].riderIDs[admittedID]
+	_, freshIsRider := controller.attention[delegateID].riderIDs[freshID]
+	controller.mu.Unlock()
+
+	if admittedIsRider {
+		t.Fatal("the replacement marked an admitted wake as an unadmitted rider: its delayed re-arm would pass as a fresh wake and release a stop that settled after it")
+	}
+	if !freshIsRider {
+		t.Fatal("the replacement left a newly captured row unmarked: the first arm that reaches it would be mistaken for a retry and would keep the older stop's quiet")
+	}
+
+	// Admission ends the mark through the shared funnel, so a delivery that
+	// commits the row leaves it admitted exactly as an arm does: its own
+	// acknowledgment retry must not pass as a fresh wake either.
+	controller.mu.Lock()
+	controller.noteDelegateAttentionLocked(delegateID, freshID)
+	_, stillRider := controller.attention[delegateID].riderIDs[freshID]
+	controller.mu.Unlock()
+	if stillRider {
+		t.Fatal("admission left the rider mark in place: the row's next arm or delivery retry would pass as a fresh wake and release a stop that settled after it")
 	}
 }
 
@@ -1165,6 +1261,62 @@ func TestDeriveHeldDelegateAttentionFromOutcome(t *testing.T) {
 		}
 	})
 
+	// The resumed history anchors on the last compaction marker, so a pending
+	// row whose transcript turn predates that marker has no turn in the history
+	// at all. Selecting it would consume it durably against a request that never
+	// carried it, and the user's report disappears. The derivation therefore
+	// restores every pending row's turn before automatic selection can reach one
+	// — and when a recorded release already ended the stop's quiet, it puts the
+	// freed report at the history tail, because the request that presents it
+	// must end on the report rather than on a later exchange.
+	t.Run("a released report predating the last compaction marker still presents", func(t *testing.T) {
+		t.Parallel()
+		sess, reopenedID, journalPath := deriveHeldFixtureWithJournal(t, delegatestore.OutcomeCancelled, "cancelled")
+		stoppedGeneration := settledGeneration(t, sess)
+		// The transcript carries the reopened row, then a compaction marker, then
+		// the exchange of the generation the quiet stood through. The reopen
+		// itself is what the fold reads as pending; the marker is what the resume
+		// anchor drops the row's turn behind.
+		sess.appendCompactionMarkerAfterReopenedRow(t, reopenedID)
+		journalDeriveHeldRelease(t, sess, stoppedGeneration)
+
+		restored := coldRestoredDeriveSession(t, sess, journalPath)
+		// The resume anchor is the production one: the history a restart builds
+		// begins at the last marker, so the row's turn is gone even though the
+		// fold still lists the row pending.
+		resumed := ResumeHistory(transcriptEntries(t, sess))
+		if indexOfAttentionTurn(resumed, reopenedID) >= 0 {
+			t.Fatal("premise broken: the resumed history kept the reopened row's turn, so this case does not exercise a marker that dropped it")
+		}
+		restored.mu.Lock()
+		restored.history = slices.Clone(resumed)
+		restoredHistory := append([]schema.Turn(nil), restored.history...)
+		restored.mu.Unlock()
+		if indexOfAttentionTurn(restoredHistory, reopenedID) >= 0 {
+			t.Fatal("premise broken: the resumed history carried the row before the derivation ran")
+		}
+		restored.deriveHeldDelegateAttentionFromOutcome()
+
+		ids, err := restored.automaticDelegateAttentionIDs()
+		if err != nil {
+			t.Fatalf("read the drive-side rows: %v", err)
+		}
+		if !slices.Contains(ids, reopenedID) {
+			t.Fatalf("the released row a compaction marker dropped is not presentable: %v", ids)
+		}
+		projection, holds := restored.delegateAttentionModelProjection()
+		if _, held := holds[reopenedID]; held {
+			t.Fatal("the capture kept a hold the journal already released")
+		}
+		if len(projection.turns) == 0 {
+			t.Fatal("the capture returned no turns: the released report was consumed with no request carrying it")
+		}
+		if tail := projection.turns[len(projection.turns)-1]; tail.AttentionID != reopenedID {
+			t.Fatalf("the first request after the reclaim does not carry the released report at its tail (position %d of %d, last attention %q): its turn preceded the last compaction marker and was never restored",
+				indexOfAttentionTurn(projection.turns, reopenedID), len(projection.turns), tail.AttentionID)
+		}
+	})
+
 	// The other direction of the same order: a wake admitted while the
 	// generation is still open supersedes only the generation before it. When
 	// the run settles cancelled, the stop that settle records is newer
@@ -1285,6 +1437,73 @@ func TestDeriveHeldDelegateAttentionFromOutcome(t *testing.T) {
 			t.Fatalf("the projection kept a row a newer stop still quiets: droppedAt=%v", droppedAt)
 		}
 	})
+
+	// A wake admitted while a generation is open supersedes the generation
+	// before that run, and the journal refuses a release for the whole of the
+	// open run. The admission still ended the quiet, so the read has to see it:
+	// otherwise a request captured between the admission and the release
+	// callback presents the fresh frame while filtering out the report the wake
+	// freed, and the released report needs yet another generation.
+	t.Run("an admission during an open run is visible to the read that follows it", func(t *testing.T) {
+		t.Parallel()
+		sess, reopenedID, _ := deriveHeldFixtureWithJournal(t, delegatestore.OutcomeCancelled, "cancelled")
+		// The successor generation opens over the settled stop, which is the
+		// state in which the journal refuses a release: the aggregate rests
+		// open, so no release event can name the generation the wake supersedes.
+		controller := sess.delegateController
+		controller.mu.Lock()
+		_, err := controller.appendLocked(delegatestore.Event{
+			Kind:       delegatestore.EventDelegateRunStarted,
+			DelegateID: "dlg_hold",
+			RunStarted: &delegatestore.RunStarted{
+				Generation: 2,
+				Trigger:    delegatestore.TriggerAttention,
+				StartedAt:  time.Unix(30, 0).UTC(),
+			},
+		})
+		controller.mu.Unlock()
+		if err != nil {
+			t.Fatalf("open the successor generation: %v", err)
+		}
+		sess.holdDelegateAttentionFromAutomaticDriveAt(reopenedID, 1)
+		// The admission: a fresh row joins the controller's wake set, and the
+		// generation it supersedes is sampled at the settled one below the open
+		// run. The journal's release for it is refused, so only the admission
+		// itself can tell the read which quiet ended.
+		const freshID = "delegate:dlg_worker/delivery/3"
+		if _, err := sess.appendDelegateNotificationDurably(freshID, acceptedTriggerText); err != nil {
+			t.Fatalf("append the fresh row: %v", err)
+		}
+		added, generation, err := controller.openDelegateAttention("dlg_hold", freshID)
+		if err != nil {
+			t.Fatalf("admit the fresh wake: %v", err)
+		}
+		if !added {
+			t.Fatal("the fresh wake was not admitted")
+		}
+		if generation != 1 {
+			t.Fatalf("the admission sampled generation %d, want the settled 1 below the open run", generation)
+		}
+		controller.mu.Lock()
+		releasedFloor := controller.durable["dlg_hold"].AttentionHoldReleasedGeneration
+		controller.mu.Unlock()
+		if releasedFloor != 0 {
+			t.Fatalf("premise broken: the journal recorded a release at %d during an open run, so the admission would not need to carry it", releasedFloor)
+		}
+
+		// The request that follows the admission, before any release callback:
+		// reconciliation must read the admission, not just the journal floor.
+		projection, holds := sess.delegateAttentionModelProjection()
+		if _, held := holds[reopenedID]; held {
+			t.Fatalf("the capture kept a hold whose quiet the admission superseded (held=%d): the request presents the fresh frame while filtering out the report the wake freed", holds[reopenedID])
+		}
+		if len(projection.turns) == 0 {
+			t.Fatal("the capture returned no turns")
+		}
+		if tail := projection.turns[len(projection.turns)-1]; tail.AttentionID != reopenedID {
+			t.Fatalf("the capture released the report but left it at position %d of %d instead of the tail: the request ends on %q and counts the report as presented", indexOfAttentionTurn(projection.turns, reopenedID), len(projection.turns), tail.AttentionID)
+		}
+	})
 }
 
 // journalDeriveHeldRelease journals the release an admitted wake records for
@@ -1313,11 +1532,17 @@ func journalDeriveHeldRelease(t *testing.T, sess *Session, generation uint64) {
 }
 
 // coldRestoredDeriveSession rebuilds the durable side of a session the idle
-// release reclaimed: a fresh controller over the same journal path, folded from
-// disk exactly as a restart folds it, and a fresh session that owns the same
-// delegate and reads the same transcript. Everything the released runtime held
-// only in memory — the holds map, the controller's wake set — is gone by
-// construction, which is the state the derivation must decide from.
+// release reclaimed: a controller over the same journal path, folded from disk
+// exactly as a restart folds it, and a session that owns the same delegate and
+// reads the same transcript. Everything the released runtime held only in
+// memory — the holds map, the controller's wake set — is gone by construction,
+// which is the state the derivation must decide from.
+//
+// The restored session is built with the reopened controller and the released
+// transcript identity from the start, so it opens no journal of its own: one
+// store per journal, closed by the one cleanup that owns it. A fixture that
+// opened a second journal and swapped the field would strand an open store, and
+// a leaked store is the same defect class as a test that cannot fail.
 func coldRestoredDeriveSession(t *testing.T, released *Session, journalPath string) *Session {
 	t.Helper()
 	released.mu.Lock()
@@ -1337,40 +1562,28 @@ func coldRestoredDeriveSession(t *testing.T, released *Session, journalPath stri
 	if err != nil {
 		t.Fatalf("reopen the journal: %v", err)
 	}
-	t.Cleanup(func() { _ = store.Close() })
-	restored := newSession(t, withDir(stateDir), withConfig(SessionConfig{StateDir: stateDir}))
-	// newSession opened a journal for the identity it minted, and this fixture
-	// reads the released session's journal instead. Close that one now and
-	// detach its ownership: leaving the field to be overwritten would strand an
-	// open store no cleanup owns, and a leaked store is a fixture defect of the
-	// same kind as a test that cannot fail.
-	restored.mu.Lock()
-	openedController := restored.delegateController
-	restored.delegateController = nil
-	restored.ownsDelegateController = false
-	restored.mu.Unlock()
-	if openedController != nil && openedController.store != nil {
-		if err := openedController.store.Close(); err != nil {
-			t.Fatalf("close the fixture's unused journal: %v", err)
-		}
-	}
-	// The released session wrote its transcript under its own session id; the
-	// restored one reads that file rather than creating an empty transcript of
-	// its own, so the fold sees the rows the stop left.
-	restored.mu.Lock()
-	restored.id = sessionID
-	restored.mu.Unlock()
 	controller, err := openDelegateTreeController(delegateTreeControllerConfig{
 		store:         store,
 		rootSessionID: "root-session",
 		stateDir:      stateDir,
 	})
 	if err != nil {
+		_ = store.Close()
 		t.Fatalf("open the restored controller: %v", err)
 	}
-	restored.delegateController = controller
-	restored.owningDelegateID = owningDelegateID
+	restored := newSession(t, withDir(stateDir), withConfig(SessionConfig{
+		StateDir: stateDir,
+		spawn: spawnConfig{
+			sessionID:          sessionID,
+			delegateController: controller,
+			owningDelegateID:   owningDelegateID,
+		},
+	}))
+	// The inherited controller is this fixture's own: it owns the store, and
+	// this is the single cleanup that closes it.
+	restored.ownsDelegateController = true
 	t.Cleanup(func() {
+		_ = controller.store.Close()
 		restored.mu.Lock()
 		restored.delegateController = nil
 		restored.owningDelegateID = ""

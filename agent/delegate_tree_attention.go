@@ -36,6 +36,13 @@ type delegateAttentionState struct {
 	// its own release. Admission clears the mark, so a retry of an older wake
 	// is a duplicate again and cannot clear a newer stop's hold.
 	riderIDs map[string]struct{}
+	// releasedGeneration is the newest settled generation an admitted wake has
+	// superseded, including admissions whose release the journal refused for the
+	// duration of an open run. Presentation reads it beside the journal's floor
+	// so a request captured between such an admission and its release callback
+	// still reads the quiet as ended instead of presenting the fresh row while
+	// filtering out the report that wake freed.
+	releasedGeneration uint64
 	// restoreFailures counts consecutive cold restores of this delegate's
 	// runtime that failed for a reason that is not transient
 	// (isTransientStartFailure); the drive gives up at
@@ -340,11 +347,9 @@ func (c *delegateTreeController) tryOpenDelegateAttention(delegateID, attentionI
 		return false, nil, delegateUpdatePlan{}, false, 0, err
 	}
 	added := c.noteDelegateAttentionLocked(delegateID, attentionID)
-	if state := c.attention[delegateID]; state != nil {
-		// This ID is admitted now, so a later arm over it is a retry of an
-		// older wake and must not release a newer stop's quiet.
-		delete(state.riderIDs, attentionID)
-	}
+	// The note above is the admission, and it ends this ID's rider mark in the
+	// same call: a later arm over it is a retry of an older wake and must not
+	// release a newer stop's quiet.
 	added = added || capturedAsRider
 	var plan delegateUpdatePlan
 	if openEvent != nil {
@@ -487,6 +492,10 @@ func (c *delegateTreeController) noteDelegateAttentionLocked(delegateID, attenti
 		return false
 	}
 	state := c.attentionStateLocked(delegateID)
+	// Admission ends a captured rider's mark, through either arm or a committed
+	// delivery: the row has had its wake, so a later retry over it is a duplicate
+	// of an older wake again and cannot clear a newer stop's quiet.
+	delete(state.riderIDs, attentionID)
 	if state.wakeIDs == nil {
 		state.wakeIDs = make(map[string]struct{})
 	}
@@ -534,10 +543,30 @@ func (c *delegateTreeController) appendAttentionWakeLocked(delegateID string, ev
 	if release, owed := c.attentionHoldReleaseEventLocked(delegateID); owed {
 		events = append(events, release)
 	}
+	// The release the journal records is refused for the whole of an open run,
+	// so the aggregate's floor alone understates what this wake already
+	// superseded. The sample is kept under the controller lock at the moment the
+	// wake commits, so a request captured before the release callback still
+	// reads the quiet as ended, and it only ever rises so a later wake cannot
+	// lower it. A refused append published no wake, so it records nothing; an
+	// admission that appends nothing at all still happened, and records.
+	record := func() {
+		if generation == 0 {
+			return
+		}
+		state := c.attentionStateLocked(delegateID)
+		if generation > state.releasedGeneration {
+			state.releasedGeneration = generation
+		}
+	}
 	if len(events) == 0 {
+		record()
 		return generation, nil
 	}
 	_, err := c.appendLocked(events...)
+	if err == nil {
+		record()
+	}
 	return generation, err
 }
 
@@ -708,14 +737,28 @@ func (c *delegateTreeController) replaceDelegateAttentionLocked(delegateID strin
 		return
 	}
 	state := c.attentionStateLocked(delegateID)
+	previous := state.wakeIDs
+	previousRiders := state.riderIDs
 	state.wakeIDs = ids
-	// Every row here was captured as a pending rider by the starting
-	// generation, not admitted by a wake of its own: a fresh watch frame that
-	// landed in the capture window is owed its own release when an arm later
-	// reaches it, and marking it keeps that arm out of the duplicate branch.
+	// A row that survives the replacement keeps the admission status it already
+	// had: an ID whose wake was admitted stays admitted, so a delayed re-arm of
+	// it is a retry of an older wake and cannot release a stop that settled
+	// after it. Every other row was captured as a pending rider by the starting
+	// generation without a wake of its own — either newly captured by this
+	// generation or an unadmitted rider retained from the last set — and is owed
+	// its own release when an arm first reaches it, which marking it as a rider
+	// keeps out of the duplicate branch.
 	riders := make(map[string]struct{}, len(ids))
 	for attentionID := range ids {
+		if _, noted := previous[attentionID]; noted {
+			if _, stillRider := previousRiders[attentionID]; !stillRider {
+				continue
+			}
+		}
 		riders[attentionID] = struct{}{}
+	}
+	if len(riders) == 0 {
+		riders = nil
 	}
 	state.riderIDs = riders
 }
@@ -1160,7 +1203,7 @@ func (c *delegateTreeController) armColdDelegateAttention(delegateID, attentionI
 		return err
 	}
 	defer release()
-	armed, generation, err := c.armColdDelegateAttentionOnce(delegateID, attentionID)
+	armed, generation, resident, err := c.armColdDelegateAttentionOnce(delegateID, attentionID)
 	c.mu.Lock()
 	root := c.rootRuntime
 	var runtime *Session
@@ -1170,8 +1213,10 @@ func (c *delegateTreeController) armColdDelegateAttention(delegateID, attentionI
 	c.mu.Unlock()
 	// The release follows the same rule the resident arm's does: a hold the
 	// runtime installs for a generation settled after this admission outranks
-	// the sample, so it stands.
-	if err == nil && armed && runtime != nil {
+	// the sample, so it stands. An arm that found a runtime resident handed the
+	// whole admission to the resident path, release included, so there is no
+	// cold sample left to apply.
+	if err == nil && armed && !resident && runtime != nil {
 		runtime.releaseAutomaticDriveHolds(delegateHoldReleaseArm, generation)
 	}
 	if err == nil && armed && root != nil {
@@ -1180,38 +1225,68 @@ func (c *delegateTreeController) armColdDelegateAttention(delegateID, attentionI
 	return err
 }
 
-func (c *delegateTreeController) armColdDelegateAttentionOnce(delegateID, attentionID string) (bool, uint64, error) {
+// armColdDelegateAttentionOnce performs one cold arm attempt. resident reports
+// that a runtime had attached and took the arm itself, which is why no cold
+// release generation accompanies it.
+func (c *delegateTreeController) armColdDelegateAttentionOnce(delegateID, attentionID string) (armed bool, generation uint64, resident bool, err error) {
 	if c == nil || delegateID == "" || attentionID == "" {
-		return false, 0, errors.New("cold delegate attention identity is incomplete")
+		return false, 0, false, errors.New("cold delegate attention identity is incomplete")
 	}
 	release, err := c.beginRetirementMutation()
 	if err != nil {
-		return false, 0, err
+		return false, 0, false, err
 	}
 	defer release()
-	c.mu.Lock()
-	aggregate := c.durable[delegateID]
-	stateDir := c.stateDir
-	transcriptRef := ""
-	if aggregate != nil {
-		transcriptRef = aggregate.Descriptor.TranscriptRef
+	for {
+		c.mu.Lock()
+		aggregate := c.durable[delegateID]
+		stateDir := c.stateDir
+		transcriptRef := ""
+		if aggregate != nil {
+			transcriptRef = aggregate.Descriptor.TranscriptRef
+		}
+		runtime := c.residentDelegateRuntimeLocked(delegateID)
+		c.mu.Unlock()
+		if transcriptRef == "" {
+			return false, 0, false, errDelegateNotControllable
+		}
+		// A run that attached since the arm began owns the row: it accepts
+		// under its own attention claim, so this cold read can see the row
+		// pending and then admit an already-consumed one. Handing the arm to
+		// the resident path is what orders the two — that path re-checks the
+		// row's pending status under the claim on every attempt, and it
+		// applies its release to the runtime that took it.
+		if runtime != nil {
+			armed, err := runtime.armDelegateAttentionInController(attentionID)
+			return armed, 0, true, err
+		}
+		path, sessionID, err := delegateTranscriptPathFromRef(stateDir, transcriptRef)
+		if err != nil {
+			return false, 0, false, err
+		}
+		ids, err := readPendingDelegateAttention(path, sessionID)
+		if err != nil {
+			return false, 0, false, err
+		}
+		// The row is re-read on every attempt, so a reservation wait that let
+		// the row be consumed ends the arm here instead of admitting a wake
+		// whose release would name the stop that just reopened it.
+		if !slices.Contains(ids, attentionID) {
+			return false, 0, false, nil
+		}
+		added, blocker, plan, emit, generation, err := c.tryOpenDelegateAttention(delegateID, attentionID)
+		if err != nil {
+			return false, 0, false, err
+		}
+		if blocker != nil {
+			<-blocker
+			continue
+		}
+		if emit {
+			c.emitDelegateUpdate(plan)
+		}
+		return added, generation, false, nil
 	}
-	c.mu.Unlock()
-	if transcriptRef == "" {
-		return false, 0, errDelegateNotControllable
-	}
-	path, sessionID, err := delegateTranscriptPathFromRef(stateDir, transcriptRef)
-	if err != nil {
-		return false, 0, err
-	}
-	ids, err := readPendingDelegateAttention(path, sessionID)
-	if err != nil {
-		return false, 0, err
-	}
-	if !slices.Contains(ids, attentionID) {
-		return false, 0, nil
-	}
-	return c.openDelegateAttention(delegateID, attentionID)
 }
 
 func (c *delegateTreeController) idleDelegateRestoreCommit(delegateID string) (delegateStartCommit, string, error) {

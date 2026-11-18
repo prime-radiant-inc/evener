@@ -1104,18 +1104,6 @@ func delegateAttentionHoldStands(held, admitted uint64) bool {
 	return held > admitted
 }
 
-// reconcileAutomaticDriveHolds ends every hold the delegate journal's release
-// floor already superseded, taking attentionMu itself. It is the form for a
-// caller that reaches presentation without already holding the lock.
-func (s *Session) reconcileAutomaticDriveHolds() {
-	if s == nil {
-		return
-	}
-	s.attentionMu.Lock()
-	defer s.attentionMu.Unlock()
-	s.reconcileAutomaticDriveHoldsLocked()
-}
-
 // reconcileAutomaticDriveHoldsLocked ends every hold the delegate journal's
 // release floor already superseded. Presentation is the one point that cannot
 // lose the race against a release: a wake journals its release before it
@@ -1147,6 +1135,15 @@ func (s *Session) reconcileAutomaticDriveHoldsLocked() {
 	floor := uint64(0)
 	if aggregate := controller.durable[s.owningDelegateID]; aggregate != nil {
 		floor = aggregate.AttentionHoldReleasedGeneration
+	}
+	// An admitted wake supersedes a settled stop even when the journal refused
+	// its release record, which it does for the whole of an open run. The
+	// controller keeps that admission, so a request captured between the wake
+	// and the release callback still reads the quiet as ended instead of
+	// presenting the fresh row while filtering out the report the wake freed.
+	if state := controller.attention[s.owningDelegateID]; state != nil &&
+		state.releasedGeneration > floor {
+		floor = state.releasedGeneration
 	}
 	controller.mu.Unlock()
 	var ended []string
@@ -1300,6 +1297,30 @@ func (s *Session) moveHeldDelegateAttentionTurnsToTail(released []string) {
 	}
 }
 
+// stopQuietedDelegateAttentionRowsLocked lists the pending rows generation's
+// attention stop owns: a well-formed reopen of that generation's source whose
+// immediate source resumes at that generation, and whose wake the controller
+// does not already note — a noted wake is a new event's arm, which presents the
+// row exactly as it would have presented it against the resident hold. The
+// caller holds attentionMu.
+func (s *Session) stopQuietedDelegateAttentionRowsLocked(fold delegateAttentionFold, noted map[string]struct{}, generation uint64) []string {
+	var rows []string
+	for _, id := range fold.pendingIDs() {
+		source, _, ok := cutDelegateAttentionReopenSegment(id)
+		if !ok {
+			continue
+		}
+		if fold.resumeGenerations[source] != generation {
+			continue
+		}
+		if _, wakeNoted := noted[id]; wakeNoted {
+			continue
+		}
+		rows = append(rows, id)
+	}
+	return rows
+}
+
 // deriveHeldDelegateAttentionFromOutcome rebuilds, on a session reconstructed
 // after an idle release, the user-stop quiet the released runtime held only in
 // memory. The idle release is transparent reclaim, not a wake from a new
@@ -1354,31 +1375,53 @@ func (s *Session) deriveHeldDelegateAttentionFromOutcome() {
 		noted = maps.Clone(state.wakeIDs)
 	}
 	controller.mu.Unlock()
-	// A release at or past the resting generation is newer evidence than the
-	// stop that generation settled: the quiet it ended must not come back.
-	if !stopped || released >= generation {
-		return
-	}
+
+	// The resumed history anchors on the last compaction marker, so a still
+	// pending row recorded before that marker has no turn in the history. Every
+	// pending row is restored here, before automatic selection can consume one:
+	// a row the drive accepts without its turn is consumed durably by a request
+	// that never carried the report, and the user is left with a silent
+	// attention. The restore is ID-keyed and idempotent, so a turn the resumed
+	// history already holds is replaced in place rather than duplicated.
 	s.attentionMu.Lock()
 	fold, err := s.delegateAttentionFoldLocked()
-	s.attentionMu.Unlock()
 	if err != nil {
+		s.attentionMu.Unlock()
 		return
 	}
-	var held []string
-	for _, id := range fold.pendingIDs() {
-		source, _, ok := cutDelegateAttentionReopenSegment(id)
-		if !ok {
-			continue
+	pendingTurns := fold.pendingTurns("")
+	for i, durable := range pendingTurns {
+		if err := s.retainDelegateAttentionTurn(durable, pendingTurns[i+1:]...); err != nil {
+			s.emit(warningDataFromError("restore a pending delegate attention turn", err))
 		}
-		if fold.resumeGenerations[source] != generation {
-			continue
-		}
-		if _, wakeNoted := noted[id]; wakeNoted {
-			continue
-		}
-		held = append(held, id)
 	}
+	// Only a stop's own rows are in question here. Every other restored session
+	// presents its pending rows exactly as the resident one would, and has no
+	// quiet to re-impose or end.
+	if !stopped || generation == 0 {
+		s.attentionMu.Unlock()
+		return
+	}
+	quieted := s.stopQuietedDelegateAttentionRowsLocked(fold, noted, generation)
+	// A release at or past the resting generation is newer evidence than the
+	// stop that generation settled: the quiet it ended must not come back. The
+	// rows that stop had quieted are the very rows that release freed, so they
+	// are the ones this restore must present — and presenting them means ending
+	// the request on them, which is what the release path's tail move exists
+	// for. Without it the restored report sits under the exchanges of the
+	// generation the quiet stood through, and the request that consumes it ends
+	// on a later assistant message. The resident release performs the same move
+	// against its in-memory hold, and the reclaim that emptied that map is what
+	// leaves this read to do it instead.
+	if released >= generation {
+		if len(quieted) != 0 {
+			s.moveHeldDelegateAttentionTurnsToTail(quieted)
+		}
+		s.attentionMu.Unlock()
+		return
+	}
+	held := quieted
+	s.attentionMu.Unlock()
 	// The stamp is the generation the quiet comes from — the one the stop
 	// settled and the fold's reopens claim — so a wake admitted at a later
 	// generation ends this hold and one admitted before it never does.
