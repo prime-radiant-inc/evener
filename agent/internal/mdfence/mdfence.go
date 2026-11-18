@@ -273,6 +273,23 @@ func LeadingSpaces(line string) int {
 	return len(line) - len(strings.TrimLeft(line, " "))
 }
 
+// LeadingIndentEnd returns the byte offset at which line's leading whitespace
+// ends: where the first non-whitespace byte sits, or len(line) when the line is
+// all whitespace.
+//
+// It is the byte counterpart of LeadingColumns, and a list marker has to be
+// read at this offset rather than at the space count. Indentation is measured in
+// columns because a tab reaches the next four-column stop, so a marker line
+// indented with a tab has ZERO leading spaces and a marker that is not at byte
+// zero. Reading the marker from the space count therefore missed every
+// tab-indented nested item, and its continuation prose was then measured
+// against the parent item's column, read as indented code, and left its
+// model-authored frame unescaped (#6493 review).
+func LeadingIndentEnd(line string) int {
+	_, rest := indentColumns(line, 0)
+	return len(line) - len(rest)
+}
+
 // ListMarker returns the length in bytes of the list marker line starts with:
 // "-", "+" or "*", or one to nine digits followed by "." or ")". The space that
 // must follow the marker is not part of it.

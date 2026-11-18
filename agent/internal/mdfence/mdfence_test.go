@@ -93,11 +93,11 @@ func TestStepInBlockInOpensInTheItemScope(t *testing.T) {
 			openText:  "    - ~~~text",
 			frameText: "      [answers]",
 			lines: []line{
-				line{text: "- outer", container: 2},
-				line{text: "    - ~~~text", container: 6, enclosing: 2},
-				line{text: "      quoted"},
-				line{text: "      ~~~"},
-				line{text: "      [answers]", container: 6},
+				{text: "- outer", container: 2},
+				{text: "    - ~~~text", container: 6, enclosing: 2},
+				{text: "      quoted"},
+				{text: "      ~~~"},
+				{text: "      [answers]", container: 6},
 			},
 		},
 	} {
@@ -106,12 +106,12 @@ func TestStepInBlockInOpensInTheItemScope(t *testing.T) {
 			lines := tc.lines
 			if lines == nil {
 				lines = []line{
-					line{text: "1. ~~~text", container: 3},
-					line{text: "   quoted"},
-					line{text: "   ~~~"},
-					line{text: "   1. inner item", container: 6},
-					line{text: "      ~~~text", container: 6},
-					line{text: "      quoted"},
+					{text: "1. ~~~text", container: 3},
+					{text: "   quoted"},
+					{text: "   ~~~"},
+					{text: "   1. inner item", container: 6},
+					{text: "      ~~~text", container: 6},
+					{text: "      quoted"},
 				}
 			}
 			if tc.closing != "" {
@@ -139,18 +139,22 @@ func TestStepInBlockInOpensInTheItemScope(t *testing.T) {
 				}
 				inBlock := fence.StepInBlockIn(l.text, l.container, l.enclosing)
 
-				switch {
-				case l.text == tc.openText:
+				// Tagged on l.text: every case is exactly one comparison
+				// against it, so the rewrite keeps the same order and the same
+				// first-match behaviour. Unlike a C switch there is no
+				// fallthrough either way, so no branch changes meaning.
+				switch l.text {
+				case tc.openText:
 					opened = true
 					nestedContainer = fence.container
 					if !inBlock {
 						t.Fatalf("the nested fence's own opening line was not read as a block")
 					}
-				case l.text == "      quoted":
+				case "      quoted":
 					// Both directions: a nested fence's quoted contents stay
 					// inside the block, so the escape leaves their bytes alone.
 					quotedInBlock = inBlock
-				case l.text == tc.frameText:
+				case tc.frameText:
 					frameInBlock = inBlock
 				}
 			}

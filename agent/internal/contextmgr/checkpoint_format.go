@@ -332,12 +332,23 @@ func extractCheckpointWorkingNotes(text string) []string {
 		for _, block := range blocks {
 			note := trimBlockEdges(block.Text)
 			if note != "" {
-				notes = append(notes, note)
+				// A working note is the model's own analytical text. This
+				// function is one of the two seams a fold re-reads an older
+				// checkpoint through, so a raw frame captured by a build that
+				// predates the capture escape would otherwise be carried
+				// forward and sent again in a user-role message (#6493
+				// review). Escaping here is idempotent, so a note this build
+				// already escaped is unchanged.
+				notes = append(notes, sysmsg.EscapeModelAuthoredFrames(note))
 			}
 		}
 		return notes
 	}
-	return extractCheckpointJSON(withoutFencedBlocks(text), "working_notes")
+	carried := extractCheckpointJSON(withoutFencedBlocks(text), "working_notes")
+	for i, note := range carried {
+		carried[i] = sysmsg.EscapeModelAuthoredFrames(note)
+	}
+	return carried
 }
 
 func markdownSection(text, heading string) string {
@@ -482,6 +493,16 @@ func cleanCheckpointConversation(entries []checkpointConversationEntry) []checkp
 		}
 		if text == "" {
 			continue
+		}
+		// An agent entry is the model's own reply, and this function is also
+		// the seam a fold re-reads an older checkpoint through. A checkpoint
+		// written before the capture escape existed carries the raw frame, so
+		// escaping only at capture would re-inject it in a user-role message on
+		// the next fold (#6493 review). The partner's entry is the authority
+		// and keeps its bytes; the transcript's own record is untouched
+		// because this returns the carried copy.
+		if role == "agent" {
+			text = sysmsg.EscapeModelAuthoredFrames(text)
 		}
 		out = append(out, checkpointConversationEntry{Role: role, Text: text})
 	}

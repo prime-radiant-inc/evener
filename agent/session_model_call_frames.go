@@ -4,9 +4,69 @@ import (
 	"slices"
 	"strings"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/sysmsg"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
+
+// escapeNoteHandoffBody escapes the model's own note in a note-handoff
+// steering turn's model-facing copy.
+//
+// The escape is keyed on provenance, not on role. A note-handoff turn is
+// user-role, so the assistant-only rule in
+// escapeModelAuthoredTurnFramesReporting cannot reach it, yet its body is
+// text the model wrote: automatic note elicitation and compact_context both
+// pin a note this session authored and publish it after a compaction as
+// steering reading `noteHandoffPrefix + "\n" + note` (#6493 review). A frame
+// in that note therefore arrived with the spelling a harness frame or a real
+// reply opens with, which is exactly what the user-turn channel must not
+// carry.
+//
+// Only a turn whose SteeringKind says it carries the model's own note is
+// touched. Genuine partner steering has no note-handoff kind, and the stored
+// turn keeps the note's bytes; this returns a copy.
+func escapeNoteHandoffBody(t schema.Turn, msg llm.Message) llm.Message {
+	if t.Kind != schema.TurnSteering || t.SteeringKind != events.SteeringKindNoteHandoff {
+		return msg
+	}
+	// The turn is built as one user text part holding the prefix and the note
+	// (appendSteeringMessagesToHistory). Escaping the whole rendered text keeps
+	// the attribution line as written — it opens no frame — and scans the note
+	// under the same rule as any other model-authored text.
+	rendered := msg.Text()
+	if !strings.HasPrefix(rendered, noteHandoffPrefix) {
+		return msg
+	}
+	escaped := sysmsg.EscapeModelAuthoredFrames(rendered)
+	if escaped == rendered {
+		return msg
+	}
+	// The escape never adds or removes a line, so the text splits back with the
+	// same per-part line counts the concatenation had.
+	texts := make([]string, 0, len(msg.Content))
+	indexes := make([]int, 0, len(msg.Content))
+	for i, p := range msg.Content {
+		if p.Kind != llm.ContentText {
+			continue
+		}
+		indexes = append(indexes, i)
+		texts = append(texts, p.Text)
+	}
+	pieces, ok := sysmsg.SplitJoinedEscape(escaped, texts)
+	if !ok {
+		return msg
+	}
+	parts := slices.Clone(msg.Content)
+	for k, at := range indexes {
+		if pieces[k] == texts[k] {
+			continue
+		}
+		parts[at].Text = pieces[k]
+	}
+	msg.Content = parts
+	return msg
+}
 
 // escapeModelAuthoredTurnFramesReporting returns msg with line-start harness
 // input frames defused in the text of an assistant-role turn, so a request the

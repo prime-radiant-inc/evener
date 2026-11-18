@@ -3,6 +3,8 @@ package sysmsg
 import (
 	"slices"
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/internal/mdfence"
 	"primeradiant.com/evener/llm"
@@ -452,7 +454,11 @@ func lastAnswerOffset(text string) int {
 // appwire-client/typescript/askShared.ts. Two narrowings here cost a review
 // round each, so they are stated rather than left to the code:
 //
-//   - The separator after the ordinal is \s, which is a TAB as well as a space.
+//   - The separator after the ordinal is \s, matched as the CLIENT matches it
+//     rather than as a space-or-tab test would: a nonbreaking space after the
+//     ordinal is a separator to the client and not to either, so a reply whose
+//     only answer was spaced that way went unrecognized and the marker it
+//     answers stayed unescaped (#6493 review).
 //   - The header's body is [^\]\r\n]*, which admits an EMPTY header.
 //
 // The header may also be a JSON string form the client accepts; only its
@@ -466,11 +472,11 @@ func isAnswerLine(line string) bool {
 	if i == 0 || i+1 >= len(line) || line[i] != '.' {
 		return false
 	}
-	// \s after the ordinal: a space or a tab.
-	if line[i+1] != ' ' && line[i+1] != '\t' {
+	sep, sepLen := utf8.DecodeRuneInString(line[i+1:])
+	if !isClientSpace(sep) {
 		return false
 	}
-	rest, ok := strings.CutPrefix(line[i+2:], "[")
+	rest, ok := strings.CutPrefix(line[i+1+sepLen:], "[")
 	if !ok {
 		return false
 	}
@@ -480,6 +486,23 @@ func isAnswerLine(line string) bool {
 		return false
 	}
 	return strings.Contains(after, "→")
+}
+
+// isClientSpace reports whether r is one of the characters the client's \s
+// matches.
+//
+// ECMAScript's \s is WhiteSpace plus LineTerminator: the tab, the vertical tab,
+// the form feed, the byte-order mark, the line terminators, and every Unicode
+// space separator — Zs, which includes both the ordinary space and the
+// nonbreaking one. Go's \s is a different set and a space-or-tab test is
+// narrower still, so the client's set is spelled out here: the scanner models
+// the input the client accepts (#6493 review).
+func isClientSpace(r rune) bool {
+	switch r {
+	case '\t', '\n', '\v', '\f', '\r', '\ufeff', '\u2028', '\u2029':
+		return true
+	}
+	return unicode.Is(unicode.Zs, r)
 }
 
 // isModelAuthoredMarkerLine reports whether line, trimmed, is exactly one of
@@ -599,7 +622,15 @@ func (l *listContainer) step(content string) (scope, enclosing int) {
 	// code is example text rather than structure: treating it as an item
 	// invented a scope whose content column then classified the code's own frame
 	// lines as prose and rewrote the quoted example.
-	if itemContent, ok := mdfence.ListItemContent(content, mdfence.LeadingSpaces(content)); ok && indent-enclosing <= 3 {
+	//
+	// The marker is read at the byte offset where the indentation ends, not at
+	// the leading SPACE count: indentation is columns, so a tab-indented nested
+	// marker has no leading spaces and a marker that is not at byte zero. Read
+	// from the space count, the nested item went unrecorded, and its
+	// continuation prose — four columns past the parent's content, one column
+	// past the item's own — measured as indented code and kept its frame
+	// (#6493 review).
+	if itemContent, ok := mdfence.ListItemContent(content, mdfence.LeadingIndentEnd(content)); ok && indent-enclosing <= 3 {
 		l.items = append(l.items, itemContent)
 		return l.current(), enclosing
 	}

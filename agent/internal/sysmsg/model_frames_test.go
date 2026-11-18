@@ -374,6 +374,43 @@ func TestEscapeModelAuthoredFrames(t *testing.T) {
 			want: "&#91;answers] note\n1. [] → \"Yes\"\n",
 		},
 		{
+			// The client's \s after the ordinal is ECMAScript's, which includes
+			// the nonbreaking space. A space-or-tab test is narrower, so a reply
+			// whose only answer was spaced that way was not recognized and the
+			// marker answering it kept its opener (#6493 review).
+			name: "answer line with a nonbreaking space after the ordinal is recognized",
+			in:   "[answers] note\n1.\u00a0[Deploy?] → \"Yes\"\n",
+			want: "&#91;answers] note\n1.\u00a0[Deploy?] → \"Yes\"\n",
+		},
+		{
+			// The refusal direction: a marker with NO answer line under it is
+			// prose, even when the numbered line below carries a nonbreaking
+			// space, because that line has no arrow and so is not an answer.
+			name: "note over a nonbreaking-spaced line with no arrow stays prose",
+			in:   "[answers] note\n1.\u00a0no arrow here\n",
+			want: "[answers] note\n1.\u00a0no arrow here\n",
+		},
+		{
+			// A nested item may be indented with a TAB, and then it has no
+			// leading spaces at all. Reading the marker from the space count
+			// missed the item, so its continuation prose was measured against
+			// the PARENT's content column: four columns past the parent and one
+			// past the item's own, it read as indented code and kept its frame
+			// (#6493 review).
+			name: "tab indented nested item's prose is not indented code",
+			in:   "- outer\n\t- inner\n\t  [answers]\n",
+			want: "- outer\n\t- inner\n\t  &#91;answers]\n",
+		},
+		{
+			// The other direction: prose four columns past the tab-indented
+			// item's OWN content is code again, because the threshold follows
+			// the item the line actually sits in rather than the page or the
+			// parent.
+			name: "tab indented nested item keeps its own indented code",
+			in:   "- outer\n\t- inner\n\t      [answers]\n",
+			want: "- outer\n\t- inner\n\t      [answers]\n",
+		},
+		{
 			// The refusal direction for both forms: a numbered line with no arrow
 			// is not an answer line, so the marker above it stays prose.
 			name: "note over a numbered line with no arrow stays prose",

@@ -2270,6 +2270,10 @@ func (rs replayScope) projectThinkingPart(p llm.ContentPart, provenanceKeeps boo
 // is the authority.
 func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Message {
 	t.Message = projectVoicePresentation(t)
+	// The model's own note rides a user-role note-handoff steering turn, which
+	// the assistant-only escape below cannot reach. Its provenance, not its
+	// role, is what says the body is model-authored (#6493 review).
+	t.Message = escapeNoteHandoffBody(t, t.Message)
 	if !rs.active() && !rs.DropThinking {
 		return t.Message
 	}
