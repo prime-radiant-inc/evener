@@ -94,6 +94,12 @@ const confirmCases: Array<[held: string, incoming: string, want: boolean]> = [
   ["x", "3", false],
   ["3@", "4", false],
   ["3", "4@", false],
+  // A malformed token names nothing, so it cannot be the thing that ends a
+  // daemonless source's ownership either. Accepting the sentinel on the held
+  // side alone let a malformed hint erase a live hold and install itself as
+  // that hold's owner.
+  [DAEMONLESS_BOOT_GENERATION, "x", false],
+  [DAEMONLESS_BOOT_GENERATION, "4@", false],
 ];
 
 test.each(confirmCases)("confirmedBootReplacement(%j, %j) is %s", (held, incoming, want) => {

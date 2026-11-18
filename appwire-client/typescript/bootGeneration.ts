@@ -88,6 +88,11 @@ export function confirmedBootReplacement(
   const heldCounter = parseBootGeneration(held);
   const incomingCounter = parseBootGeneration(incoming);
   if (!heldCounter || !incomingCounter) {
+    // A token that parses as nothing is not evidence about who serves the
+    // thread, so it cannot be the thing that ends another source's ownership.
+    // Trusting it here is what let a malformed hint erase a live hold and then
+    // install itself as that hold's owner.
+    if (!incomingCounter && incoming !== DAEMONLESS_BOOT_GENERATION) return false;
     // `daemonless` is a definite answer about who serves the thread: no daemon
     // is running it, so no delegate controller is sampling its sequence.
     return held === DAEMONLESS_BOOT_GENERATION || incoming === DAEMONLESS_BOOT_GENERATION;

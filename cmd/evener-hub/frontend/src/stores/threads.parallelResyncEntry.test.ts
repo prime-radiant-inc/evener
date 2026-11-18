@@ -2081,6 +2081,111 @@ describe("useThreadsStore.ensureThread", () => {
     threadsStore.getState().releaseThread(ref);
   });
 
+  test("a failed read that retired nothing does not refold a departed sample over the live one", async () => {
+    // The mirror of the ordering case above, and the one where the buffer is
+    // the LOSER. Boot 1's 901 is in the buffer when the repository accepts a
+    // boot 2 history update live; that hand-off retires 901 and records boot 2
+    // as the owner. Boot 2's own hold at sequence 1 then arrives and the
+    // repository holds it as its current sample. When the pending read finally
+    // fails, the failure's own boot 2 token confirms a replacement that has
+    // ALREADY happened and retires nothing - so re-offering the stale buffered
+    // 901 unconditionally restores the departed daemon's larger sequence over
+    // boot 2's live sample, and boot 2's later updates lose to it.
+    const fake = connectReadyFakeClient();
+    const ref = "ref_a";
+    const initial = versionedReadResponse(
+      ref,
+      {
+        status: { type: "active" },
+        evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+      },
+      0,
+    );
+    const refused: { reject: ((error: Error) => void) | null } = { reject: null };
+    let readCount = 0;
+    fake.on("thread/read", (params) => {
+      readCount += 1;
+      if (readCount === 1) return echoRead({ ...initial, bootGeneration: "1" }, params.requestGeneration);
+      return new Promise<ThreadReadResponse>((_resolve, reject) => {
+        refused.reject = reject;
+      });
+    });
+    await threadsStore.getState().ensureThread(ref);
+    expect(existingEntryRoute(ref)?.repository).toBeDefined();
+
+    // Boot 1's wait, published live: 901.
+    fake.emitNotification({
+      method: "evener/delegate/updated",
+      params: { threadId: "thr_ref_a", ref, delegate: { ...heldDelegateRow(), holdSequence: 901 } },
+    });
+    await flushUntil(() => existingEntryRoute(ref)?.repository?.getSnapshot()?.delegates?.[0]?.holdSequence === 901);
+
+    // A bootless resync retires nothing and starts the tracked read, so the
+    // buffer below belongs to this read.
+    fake.emitNotification({
+      method: "evener/thread/resync",
+      params: { threadId: "thr_ref_a", ref, epoch: 2 },
+    });
+    await flushUntil(() => refused.reject !== null);
+
+    // A buffered boot 1 frame that the successor read is carrying.
+    fake.emitNotification({
+      method: "evener/delegate/updated",
+      params: {
+        threadId: "thr_ref_a",
+        ref,
+        delegate: { ...heldDelegateRow(), holdSequence: 901, projectionRevision: 2 },
+      },
+    });
+    await Promise.resolve();
+
+    // Boot 2's history update is accepted LIVE by the repository. It confirms
+    // the replacement, retires 901, and records boot 2 as the hold owner.
+    fake.emitNotification({
+      method: "history/updated",
+      params: {
+        threadId: "thr_ref_a",
+        ref,
+        bootGeneration: "2",
+        epoch: 3,
+        snapshot: { incarnation: "inc-1", length: 0 },
+        turns: [],
+        items: [],
+      },
+    });
+    await flushUntil(() => existingEntryRoute(ref)?.repository?.getSnapshot()?.history?.holdOwner === "2");
+    // Non-vacuous: the retirement really removed 901.
+    expect(existingEntryRoute(ref)?.repository?.getSnapshot()?.delegates?.[0]?.holdSequence).toBeUndefined();
+
+    // Boot 2 publishes its own wait at sequence 1: a LIVE sample the repository
+    // holds, not a buffered one.
+    fake.emitNotification({
+      method: "evener/delegate/updated",
+      params: {
+        threadId: "thr_ref_a",
+        ref,
+        delegate: { ...heldDelegateRow(), holdSequence: 1, projectionRevision: 4 },
+      },
+    });
+    await flushUntil(() => existingEntryRoute(ref)?.repository?.getSnapshot()?.delegates?.[0]?.holdSequence === 1);
+
+    // The read fails, naming the boot that has already taken over.
+    refused.reject?.(
+      new WireError("thread history failed at entry 7", -32603, {
+        evenerErrorInfo: ErrorTranscriptHistoryFailed,
+        bootGeneration: "2",
+      }),
+    );
+    await flushUntil(() => threadsStore.getState().threads.get(ref)?.history?.failed !== undefined);
+
+    // The replacement's own live sample stands. Without the gate this is 901:
+    // the departed daemon's sequence restored over a wait that is still live.
+    expect(existingEntryRoute(ref)?.repository?.getSnapshot()?.delegates?.[0]?.holdSequence).toBe(1);
+    expect(threadsStore.getState().threads.get(ref)?.delegates?.[0]?.holdSequence).toBe(1);
+
+    threadsStore.getState().releaseThread(ref);
+  });
+
   test("a tracked read that fails keeps the hold the entry repository already accepted", async () => {
     const fake = connectReadyFakeClient();
     const ref = "ref_a";

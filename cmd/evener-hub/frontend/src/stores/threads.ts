@@ -64,6 +64,7 @@ import {
   olderHistoryExhausted,
   pruneBackgroundHistoryBodies,
   resolvePendingEscalation,
+  retireReplacedSourceHoldOnModel,
   retireThreadSubscriptions,
   SHUT_DOWN_STATUSES,
   type ThreadSubscriptionLease,
@@ -4495,6 +4496,11 @@ async function readThreadHydration(
           pending.epoch === getReadyEpoch() &&
           pendingThreadHydrations.get(ref) === pending
         ) {
+          // Captured BEFORE the failure is accepted: acceptReadFailure runs the
+          // same hand-off, so asking afterwards whether a hold was retired
+          // always answers no. This snapshot is the only place the outgoing
+          // samples are still visible.
+          const beforeFailure = entry.repository.getSnapshot();
           entry.repository.acceptReadFailure(errorText(err), pending.requestGeneration ?? 0, {
             lifetime: entry.lifetime,
             bootGeneration: failureOwner,
@@ -4521,9 +4527,17 @@ async function readThreadHydration(
             // hand-off cleared the hold facet, so the replacement's own sample
             // must fold back or the wait it published disappears. Only the
             // hold-bearing method is re-offered, and only after the retire.
-            for (const update of pending.notifications) {
-              if (update.notification.method !== "evener/delegate/updated") continue;
-              entry.repository.accept(update.notification, { lifetime: entry.lifetime });
+            //
+            // Only when the hand-off RETIRED something. If it retired nothing,
+            // the repository still holds its own current sample, and re-folding
+            // an older buffered one would let that sample's larger sequence
+            // outrank the replacement's and mask its later updates. Measure the
+            // retire rather than inferring it from the frame's presence.
+            if (beforeFailure && retireReplacedSourceHoldOnModel(beforeFailure, failureOwner, "authoritative")) {
+              for (const update of pending.notifications) {
+                if (update.notification.method !== "evener/delegate/updated") continue;
+                entry.repository.accept(update.notification, { lifetime: entry.lifetime });
+              }
             }
           }
         }
