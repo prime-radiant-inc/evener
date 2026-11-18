@@ -20,6 +20,7 @@ import {
   markItemIdentityOnly,
   markItemTextOmitted,
   outputImagesToItemImages,
+  recordSourceOwnerOnModel,
   retireReplacedSourceHoldOnModel,
   threadFields,
   wireImageSessionId,
@@ -1282,6 +1283,12 @@ function mergeVersionedPage<M extends ThreadModel>(
     case "defer":
       return { ...model, history: { ...held, deferredPages: [...held.deferredPages, resp] } };
     case "invalidate": {
+      // The incoming source is recorded as the hold's owner even when this
+      // page had no sample of the old one to clear, exactly as the reducer's
+      // folds do. Decided before invalidating, which names the new boot in
+      // `awaited`: a comparison run after it would find no replacement.
+      const retired = retireReplacedSourceHoldOnModel(model, resp.bootGeneration);
+      const record = recordSourceOwnerOnModel(retired ?? model, resp.bootGeneration)?.history?.holdOwner;
       // A page of the incarnation it just announced waits for that
       // incarnation's latest window.
       const history = invalidated(held, readIdentity(resp));
@@ -1291,10 +1298,10 @@ function mergeVersionedPage<M extends ThreadModel>(
       // different boot generation means a different source whose sequences
       // start from their own beginning. A same-boot epoch or incarnation
       // change here leaves the owning daemon's hold alone.
-      const retired = retireReplacedSourceHoldOnModel(model, resp.bootGeneration);
+      const nextHistory = record ? { ...history, holdOwner: record } : history;
       return {
         ...(retired ?? model),
-        history: deferred ? { ...history, deferredPages: [...history.deferredPages, resp] } : history,
+        history: deferred ? { ...nextHistory, deferredPages: [...nextHistory.deferredPages, resp] } : nextHistory,
       };
     }
     case "merge": {

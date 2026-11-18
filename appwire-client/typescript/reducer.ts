@@ -78,10 +78,19 @@ function applyHistoryUpdated<M extends ThreadModel>(model: M, params: HistoryUpd
   // alone — that daemon's delegate controller is still sampling, and an
   // unchanged hold emits no update of its own to restore what we dropped.
   if (action === "invalidate") {
-    const history = invalidated(held, signal);
     const retired = retireReplacedSourceHold(live, params.bootGeneration);
     const base = retired ?? live;
-    return { ...base, history };
+    // Record the incoming boot as the owner of whatever samples arrive next,
+    // even when there was nothing to clear. Decided BEFORE invalidating: the
+    // invalidated history already names the new boot in `awaited`, so a
+    // comparison run after it would see the new owner and record nothing.
+    // `holdOwner` is the record a structured read failure cannot remove —
+    // `awaited` goes with it. Without this, boot 6 retires the old samples and
+    // the next history/updated from boot 7 advances `awaited` only, so boot
+    // 7's own resync still compares against boot 5 and erases boot 7's hold.
+    const record = recordSourceOwnerOnModel(base, params.bootGeneration)?.history?.holdOwner;
+    const history = invalidated(held, signal);
+    return { ...base, history: record ? { ...history, holdOwner: record } : history };
   }
   if (action === "ignore" || held.invalidatedAtGeneration !== undefined) return live;
   // A notification projected after the page that omitted one of its identities

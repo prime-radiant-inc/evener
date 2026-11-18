@@ -4338,6 +4338,67 @@ test("a versioned page from a replaced source retires the hold sample", () => {
   });
 });
 
+// The page path's record is load-bearing only once `awaited` is gone: a
+// structured read failure strips it and leaves `holdOwner` as the sole owner.
+// A page that replaced the source must therefore have recorded itself, or the
+// next frame from that same source reads as another replacement and erases the
+// hold it cleared room for.
+test("a versioned page's owner record survives a read failure that strips awaited", () => {
+  const base = testHydrateV6AtBoot("5");
+  // Boot 6 replaces boot 5 through the page path: nothing to retire, but the
+  // page must record itself as the owner.
+  let result = mergeOlderItemPage(base, {
+    data: [{ id: "turn_older", status: "completed", itemsView: "full", items: [] }],
+    bootGeneration: "6",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: 1 },
+    nextCursor: "older-page",
+  });
+  expect(result.history?.invalidatedAtGeneration).toBeDefined();
+
+  // Boot 6 publishes a live hold, then its read fails — which removes awaited.
+  result = applyNotification(
+    result,
+    delegateNotification(
+      "ref_t",
+      delegateInfo({
+        delegateId: "dlg_1",
+        projectionRevision: 3,
+        drainHeldByJobs: true,
+        holdSequence: 1,
+        runningJobCount: 1,
+        oldestRunningJobStartedAt: "2026-01-04T00:00:00Z",
+      }),
+    ),
+    2500,
+  );
+  expect(result.delegates?.[0]?.holdSequence).toBe(1);
+  // A generation above the invalidation's, or the failure is superseded and no
+  // diagnostic is recorded at all — which would make this test prove nothing.
+  result = applyHistoryReadFailure(result, "thread history failed at entry 7", 9_999);
+  expect(result.history?.failed).toBeDefined();
+
+  // Boot 6's own frame while the failure stands: same source, hold survives.
+  result = applyNotification(
+    result,
+    {
+      method: "history/updated",
+      params: {
+        threadId: base.threadId,
+        ref: base.ref,
+        bootGeneration: "6",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [],
+        items: [],
+      },
+    },
+    3000,
+  );
+  expect(result.delegates?.[0]?.holdSequence).toBe(1);
+  expect(result.delegates?.[0]?.drainHeldByJobs).toBe(true);
+});
+
 test("a versioned page from the same source keeps the hold sample", () => {
   const model = testHydrateV6AtBoot("5");
   let result = applyNotification(
@@ -4396,7 +4457,10 @@ test("a failed history still retires the hold for a replaced source", () => {
 
   // Fail the history read the way a structured failure does.
   result = applyHistoryReadFailure(result, "thread history failed at entry 7", 0);
-  expect(result.history?.failed).toBe("thread history failed at entry 7");
+  // Captured, not restated: the property under test is that the SAME
+  // diagnostic survives the hold update, never that it says a given sentence.
+  const failure = result.history?.failed;
+  expect(failure).toBeDefined();
   expect(result.delegates?.[0]?.holdSequence).toBe(900);
 
   // The replacement's first frame, while the failure stands. Its sequence is
@@ -4420,12 +4484,87 @@ test("a failed history still retires the hold for a replaced source", () => {
   expect(result.delegates?.[0]?.holdSequence).toBeUndefined();
   expect(result.delegates?.[0]?.drainHeldByJobs).toBeUndefined();
   // The diagnostic survives: this is a hold fix, not a recovery change.
-  expect(result.history?.failed).toBe("thread history failed at entry 7");
+  expect(result.history?.failed).toBe(failure);
   expect(result.delegates?.[0]).toMatchObject({
     delegateId: "dlg_1",
     projectionRevision: 3,
     lifecycle: "stable",
   });
+});
+
+// The ownership record must survive a structured read failure, because that is
+// precisely what removes `awaited`. A browser resync records boot 6 as the hold
+// owner, boot 6 publishes a live hold, then a history/updated frame from boot 7
+// arrives with no sample of boot 6's to clear. If the fold advances `awaited`
+// only, the next resync from boot 7 compares against boot 6, reads as another
+// replacement, and erases the live hold boot 7 just published.
+test("a replacement with nothing to clear still becomes the hold owner", () => {
+  const base = testHydrateV6AtBoot("5");
+  const held = delegateInfo({
+    delegateId: "dlg_1",
+    projectionRevision: 3,
+    drainHeldByJobs: true,
+    holdSequence: 900,
+    runningJobCount: 2,
+    oldestRunningJobStartedAt: "2026-01-03T00:00:00Z",
+  });
+
+  // What the browser store's hand-off leaves: boot 6 recorded as the owner of
+  // the samples, with no invalidation fold run and no reboot of history.
+  const recorded: ThreadModel = {
+    ...base,
+    history: base.history && { ...base.history, holdOwner: "6" },
+  };
+  let result = applyNotification(recorded, delegateNotification("ref_t", held), 2000);
+  expect(result.delegates?.[0]?.holdSequence).toBe(900);
+
+  // Boot 7 invalidates before any read succeeds. There is no sample to clear:
+  // the delegate row here is boot 6's and stays live.
+  result = applyNotification(
+    result,
+    {
+      method: "history/updated",
+      params: {
+        threadId: base.threadId,
+        ref: base.ref,
+        bootGeneration: "7",
+        epoch: 1,
+        snapshot: { incarnation: "inc-7", length: 1 },
+        turns: [],
+        items: [],
+      },
+    },
+    3000,
+  );
+
+  // Boot 7 publishes its own live hold, then sends its own resync.
+  result = applyNotification(
+    result,
+    delegateNotification(
+      "ref_t",
+      delegateInfo({
+        delegateId: "dlg_1",
+        projectionRevision: 4,
+        drainHeldByJobs: true,
+        holdSequence: 1,
+        runningJobCount: 1,
+        oldestRunningJobStartedAt: "2026-01-04T00:00:00Z",
+      }),
+    ),
+    3500,
+  );
+  expect(result.delegates?.[0]?.holdSequence).toBe(1);
+  result = applyNotification(
+    result,
+    {
+      method: "evener/thread/resync",
+      params: { threadId: base.threadId, ref: base.ref, bootGeneration: "7", epoch: 2 },
+    },
+    4000,
+  );
+  // Boot 7's own resync is not a replacement: its hold must survive.
+  expect(result.delegates?.[0]?.holdSequence).toBe(1);
+  expect(result.delegates?.[0]?.drainHeldByJobs).toBe(true);
 });
 
 test("a failed history keeps the hold for a same-source frame", () => {
@@ -4446,6 +4585,8 @@ test("a failed history keeps the hold for a same-source frame", () => {
     2000,
   );
   result = applyHistoryReadFailure(result, "thread history failed at entry 7", 0);
+  const failure = result.history?.failed;
+  expect(failure).toBeDefined();
   result = applyNotification(
     result,
     {
@@ -4464,7 +4605,7 @@ test("a failed history keeps the hold for a same-source frame", () => {
   );
   expect(result.delegates?.[0]?.holdSequence).toBe(900);
   expect(result.delegates?.[0]?.drainHeldByJobs).toBe(true);
-  expect(result.history?.failed).toBe("thread history failed at entry 7");
+  expect(result.history?.failed).toBe(failure);
 });
 
 test("delegate/updated with same projectionRevision and later activity updates latestActivityAt", () => {
