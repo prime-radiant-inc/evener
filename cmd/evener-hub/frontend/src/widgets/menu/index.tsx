@@ -227,15 +227,19 @@ interface ScrollerRecord {
    * scroller's screen position does not move while its own content scrolls, so
    * a difference between two of these is a difference the content made. */
   contentTop: number;
-  /** A second reference inside the same scroller, and where it sat in the
-   * content. The trigger alone cannot tell a reader's drag from the browser
-   * holding a DIFFERENT row still: when a live row changes bands with both
-   * bands still populated and no height changed, the trigger's own content
-   * position does not move at all, and the browser corrects the offset around
-   * whichever row it anchored. A row the browser held still moves in the
-   * content by exactly the offset it gave back. */
-  witness: Element | null;
-  witnessTop: number;
+  /** Rows inside the same scroller, and where each sat in the content. The
+   * trigger alone cannot tell a reader's drag from the browser holding a
+   * DIFFERENT row still: when a live row changes bands with both bands still
+   * populated and no height changed, the trigger's own content position does
+   * not move at all, and the browser corrects the offset around whichever row
+   * it anchored. A row the browser held still moves in the content by exactly
+   * the offset it gave back.
+   *
+   * A record of several, because which row that is belongs to the browser: a
+   * heading, a row of either band, or the first row of the block the reader's
+   * view starts in can each be the anchor, and only the one the browser
+   * actually held can explain the offset. */
+  witnesses: WitnessPosition[];
 }
 
 /** Where `triggerEl` sits inside `scroller`'s content: the difference between
@@ -245,8 +249,14 @@ function contentTopOf(triggerEl: HTMLElement, scroller: Element): number {
   return triggerEl.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
 }
 
-/** A row the browser could have anchored on: the INNERMOST boxed element in the
- * scroller, outside the trigger's subtree.
+/** How many visible rows are asked whether the browser held them still. The
+ * anchor is always near the top of the visible block, so the scan's first few
+ * boxed leaves cover it; the cap keeps a long transcript from turning every
+ * classified scroll into a walk of its whole subtree. */
+const WITNESS_LIMIT = 8;
+
+/** Rows the browser could have anchored on: the INNERMOST VISIBLE boxed
+ * elements in the scroller, outside the trigger's subtree.
  *
  * Inner-most rather than first-with-a-box, because the two differ exactly where
  * this matters. A section wrapper around the rows - the rail's Live band - has a
@@ -255,12 +265,36 @@ function contentTopOf(triggerEl: HTMLElement, scroller: Element): number {
  * moved. The innermost box is inside a row, and anything inside a row moves
  * with that row. A box that is glued to the viewport (fixed or sticky) does not
  * move with the content either, so it is not a witness; those are rare enough
- * in a scroller that skipping them is cheap. */
-function witnessIn(scroller: Element, triggerEl: HTMLElement, ownerWindow: Window): Element | null {
-  let candidate: Element | null = null;
+ * in a scroller that skipping them is cheap.
+ *
+ * VISIBLE, because a heading of the same section is a boxed leaf too and sits
+ * first in document order. A heading the reader has scrolled past keeps its
+ * place in the content when a live row changes bands beneath it, so a witness
+ * taken there reports that nothing happened while the browser corrects the
+ * offset around the row it is actually looking at. Only a box inside the
+ * scrollport can be the row the browser held still.
+ *
+ * A SET rather than one, because which row the browser anchors on is its
+ * choice, not this widget's. Asking them all and accepting the first that
+ * accounts for the offset finds whatever the browser actually held, where
+ * betting on a single box keeps selecting a row the update happened to leave
+ * alone. */
+function witnessesIn(scroller: Element, triggerEl: HTMLElement, ownerWindow: Window): Element[] {
+  const port = scroller.getBoundingClientRect();
+  // The visible band in the same viewport coordinates the candidates report.
+  // A scroller that resolves no height at all (jsdom, an unstubbed fixture)
+  // leaves the band empty, and then no box can be shown to be in view.
+  const portTop = port.top;
+  const portBottom = port.top + (scroller.clientHeight || port.height);
+  const found: Element[] = [];
   for (const node of Array.from(scroller.querySelectorAll("*"))) {
+    if (found.length >= WITNESS_LIMIT) break;
     if (node.contains(triggerEl) || triggerEl.contains(node)) continue;
-    if (node.getBoundingClientRect().height <= 0) continue;
+    const rect = node.getBoundingClientRect();
+    if (rect.height <= 0) continue;
+    // Above the scrollport's top edge, or below its bottom: the reader cannot
+    // see it, so it is not what the browser anchored the view on.
+    if (rect.bottom <= portTop || rect.top >= portBottom) continue;
     // A box with a boxed descendant is a container, and the movement this looks
     // for happens BELOW it. Descending as far as the boxes go lands inside a
     // row, where the movement is visible.
@@ -270,32 +304,40 @@ function witnessIn(scroller: Element, triggerEl: HTMLElement, ownerWindow: Windo
     if (inner) continue;
     const position = ownerWindow.getComputedStyle(node).position;
     if (position === "fixed" || position === "sticky") continue;
-    candidate = node;
-    break;
+    found.push(node);
   }
-  return candidate;
+  return found;
 }
 
 /** One look at a scroller: its offset, the trigger's place in the content, and
- * a witness row's place. Both positions are content coordinates, so a
- * difference between two looks is something the CONTENT did. */
+ * the places of the rows the browser could be anchoring on. All positions are
+ * content coordinates, so a difference between two looks is something the
+ * CONTENT did. */
+interface WitnessPosition {
+  node: Element;
+  top: number;
+}
+
 function recordFor(
   triggerEl: HTMLElement,
   scroller: Element,
   ownerWindow: Window,
   previous?: ScrollerRecord,
 ): ScrollerRecord {
-  // The witness must be the SAME element in both looks or its two positions
-  // cannot be compared at all. Reusing the previous one while it is still in the
-  // scroller is both cheaper and the only way the difference means anything; a
-  // fresh one is taken only when the old one is gone.
-  const kept = previous?.witness ?? null;
-  const witness = kept?.isConnected && scroller.contains(kept) ? kept : witnessIn(scroller, triggerEl, ownerWindow);
+  // A witness must be the SAME element in both looks or its two positions
+  // cannot be compared at all. Reusing the previous set while those nodes are
+  // still in the scroller is both cheaper and the only way the difference means
+  // anything; a fresh set is taken only when none of the old ones survives.
+  const kept = (previous?.witnesses ?? []).filter((w) => w.node.isConnected && scroller.contains(w.node));
+  const witnessNodes = kept.length > 0 ? kept.map((w) => w.node) : witnessesIn(scroller, triggerEl, ownerWindow);
+  const witnesses: WitnessPosition[] = witnessNodes.map((node) => ({
+    node,
+    top: contentTopOf(node as HTMLElement, scroller),
+  }));
   return {
     scrollTop: scroller.scrollTop,
     contentTop: contentTopOf(triggerEl, scroller),
-    witness,
-    witnessTop: witness === null ? 0 : contentTopOf(witness as HTMLElement, scroller),
+    witnesses,
   };
 }
 
@@ -398,23 +440,31 @@ function classifyScrollerScroll(
   // Working crosses the row the browser anchored on: both bands stay populated,
   // the moved row keeps its height, and the trigger's own place in the content
   // does not change at all - while the browser still corrects the offset to
-  // hold the row it anchored. A WITNESS row inside the same scroller answers
-  // the same question from where the browser is actually looking: the row it
-  // held still moved in the content by exactly the offset it gave back. A
-  // reader's drag moves the witness with the content, by that same amount and
-  // no explanation, so this cannot be read from a scroll they made.
+  // hold the row it anchored. The rows that were VISIBLE in the same scroller
+  // answer the same question from where the browser is actually looking: the
+  // one it held still moved in the content by exactly the offset it gave back.
+  // A reader's drag moves them with the content, by that same amount and no
+  // explanation, so this cannot be read from a scroll they made.
+  //
+  // ANY of them, because the anchor is the browser's pick: it holds the row the
+  // reader's view starts at, which can be a heading, a row of the band above,
+  // or the first row that stayed put while a neighbour changed bands. Requiring
+  // a particular one to be the anchor asks this widget to guess; one row moving
+  // by the offset is the statement that the browser held THAT row.
+  //
   // A witness the update removed has no position to report, and a detached
   // element's rect is zeros - which would read as a huge movement in whichever
-  // direction the numbers happened to fall. It says nothing, so it is not used.
-  const witnessAlive = previous.witness !== null && (previous.witness as Element).isConnected;
-  const witnessMoved = witnessAlive ? contentTopOf(previous.witness as HTMLElement, scroller) - previous.witnessTop : 0;
-  if (
-    witnessAlive &&
-    witnessMoved !== 0 &&
-    Math.sign(witnessMoved) === Math.sign(moved) &&
-    Math.abs(witnessMoved) >= Math.abs(moved)
-  ) {
-    return "anchoring";
+  // direction the numbers happened to fall. It says nothing, so it is skipped.
+  for (const witness of previous.witnesses) {
+    if (!witness.node.isConnected) continue;
+    const witnessMoved = contentTopOf(witness.node as HTMLElement, scroller) - witness.top;
+    if (
+      witnessMoved !== 0 &&
+      Math.sign(witnessMoved) === Math.sign(moved) &&
+      Math.abs(witnessMoved) >= Math.abs(moved)
+    ) {
+      return "anchoring";
+    }
   }
   return "scrolled";
 }
@@ -622,8 +672,25 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         // offset while the row still sits where it sat in the content. Nothing
         // about the row moved; the reader moved the window over it, and the
         // position recorded here is theirs. Reading that offset as layout
-        // clipping is what jumps them back to the top of the list.
+        // clipping is what jumps them back to the top of the list. When nothing
+        // else about the row changed there is nothing to compare at all.
         if (now.scrolledTo !== before.scrolledTo && now.top === before.top) return;
+        // The offset moved AND the row moved in the content by a DIFFERENT
+        // amount, so the two did not travel together: part of the picture is
+        // the reader's own scroll, undelivered when the swipe and the update
+        // land in the same pass. Comparing the earlier look at the offset it
+        // was taken at then measures the row against a view the reader has
+        // already left, and a row they scrolled away from reads as a row
+        // layout just clipped. Judging both looks at the offset the reader is
+        // at NOW takes their scroll back out and leaves only what layout did.
+        //
+        // A clamp or an anchoring adjustment moves the row and the offset by
+        // the SAME amount - that is what makes it one - so it takes the other
+        // branch and keeps each look at its own offset, which is what lets a
+        // clamp cancel.
+        const readerScrolled =
+          now.scrolledTo !== before.scrolledTo && now.top - before.top !== now.scrolledTo - before.scrolledTo;
+        const was = readerScrolled ? { ...before, scrolledTo: now.scrolledTo } : before;
         // Each look is judged at the offset it was TAKEN at. A clamp moves the
         // whole list under a viewport that did not move, so reading the earlier
         // look at the later offset says the row climbed while the scrollport
@@ -661,10 +728,10 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         //   or the list had already taken away. It stays that way however it
         //   grows or however the scrollport shrinks, because no pixel of it was
         //   ever on screen to lose.
-        const becameClipped = fullyVisible(before);
-        const wasOnScreen = showEnd(before) > showStart(before);
-        const lostItsStart = showStart(now) > showStart(before);
-        const lostItsEnd = showEnd(now) < showEnd(before) && before.height <= now.height;
+        const becameClipped = fullyVisible(was);
+        const wasOnScreen = showEnd(was) > showStart(was);
+        const lostItsStart = showStart(now) > showStart(was);
+        const lostItsEnd = showEnd(now) < showEnd(was) && was.height <= now.height;
         if (!becameClipped && !(wasOnScreen && (lostItsStart || lostItsEnd))) return;
       }
       // A row inserted BELOW the focused one moves nothing above it, and the

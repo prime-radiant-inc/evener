@@ -611,22 +611,34 @@ test("a list change that lands before the popup's scroll event leaves the reader
 // corrects the offset to keep the row it anchored where the reader is looking.
 // A classifier that reads only the trigger sees an unexplained offset change
 // and takes that for a drag, closing a menu whose trigger has not moved.
+//
+// The fixture nests the rail the way it really nests, because a FLAT one asks
+// the wrong question. The real rail is a Live heading, then the rows under it.
+// The heading is a boxed leaf and comes first in document order, but the reader
+// has scrolled past it - it is above the scrollport - and it does not move in
+// the content when a row changes bands beneath it. A witness taken there
+// reports that nothing happened while the browser corrects the offset around
+// the row it is actually looking at, so the reference has to be a row the
+// reader can see.
 test("a live row changing bands leaves the menu open on its trigger", async () => {
   const user = userEvent.setup();
   const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
   Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
-  // The rail as it actually nests: a Live SECTION wrapper around the row the
-  // browser anchors on and holds still. The wrapper is fixed in the CONTENT -
-  // the rows move between bands inside it, so it neither grows nor moves
-  // relative to the rail - which means its own content position is unchanged
-  // while the offset moves. A witness taken at the wrapper reports that nothing
-  // happened, and the row inside it is the only reference that can answer.
+  // The rail as it actually nests: a Live SECTION wrapper holding the band's
+  // heading and the row the browser anchors on. The wrapper and the heading are
+  // fixed in the CONTENT - the rows move between bands inside the section, so
+  // neither grows nor moves relative to the rail - which means their content
+  // positions are unchanged while the offset moves. The heading sits above the
+  // scrollport, exactly as it does once the reader has scrolled past it, and
+  // the row inside the section is the only reference that can answer.
   let sectionTop = 100;
-  const witnessTop = 120;
+  let headingTop = -40;
+  let witnessTop = 120;
   let triggerTop = 300;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
     if (this.getAttribute("data-testid") === "live-section") return box(100, sectionTop, 200, 200);
+    if (this.getAttribute("data-testid") === "live-heading") return box(100, headingTop, 200, 20);
     if (this.getAttribute("data-testid") === "live-row") return box(100, witnessTop, 200, 40);
     if (this.tagName === "UL") return box(0, 0, 160, 120);
     return box(0, 0, 0, 0);
@@ -637,6 +649,7 @@ test("a live row changing bands leaves the menu open on its trigger", async () =
     render(
       <div data-testid="owning-scroller" style={{ overflowY: "auto" }}>
         <div data-testid="live-section">
+          <div data-testid="live-heading">Live</div>
           <div data-testid="live-row">Live session</div>
         </div>
         <Menu trigger="Actions" items={items()} />
@@ -653,17 +666,33 @@ test("a live row changing bands leaves the menu open on its trigger", async () =
     // trigger sits at exactly the same place in the CONTENT - but the browser
     // holds the row it anchored at the same place on SCREEN, and gives back 24
     // of offset to do it. The trigger slides down those 24 on screen, and the
-    // section wrapper - fixed in the content - slides down with the offset so
-    // that its own content position stays exactly where it was.
+    // section wrapper and its heading - both fixed in the content - slide down
+    // with the offset so that their own content positions stay exactly where
+    // they were. Only the row inside the section explains the offset.
     scroller.scrollTop = 316;
     triggerTop = 324;
     sectionTop = 124;
+    headingTop = -16;
     fireEvent.scroll(scroller);
     flush();
 
     // Still on screen and still the reader's: nothing they did moved it.
     expect(screen.getByRole("menu")).toBeTruthy();
     expect(screen.getByRole("menu").style.top).toBe("356px"); // 324 + 28 + TRIGGER_GAP
+
+    // The reading above must not turn into "a scroll never dismisses". The
+    // reader drags the rail 40px: the content is untouched, so every row -
+    // including the one the browser held still a moment ago - moves up the
+    // screen by 40 while its place in the content stays put, and the trigger
+    // slides out from under the popup.
+    scroller.scrollTop = 356;
+    triggerTop = 284;
+    witnessTop = 80;
+    headingTop = -56;
+    sectionTop = 84;
+    fireEvent.scroll(scroller);
+    flush();
+    expect(screen.queryByRole("menu")).toBeNull();
   } finally {
     vi.restoreAllMocks();
     if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
@@ -869,20 +898,25 @@ test("a refresh that inserts on both sides of the anchor still leaves the menu o
     flush();
     expect(screen.getByRole("menu").style.top).toBe("292px"); // 260 + 28 + TRIGGER_GAP
 
-    // Now the browser's adjustment: it lowers the offset by 24 to hold the
-    // anchor, so 324 of a new 620. Only 24 of the trigger's 40px of content
-    // movement is explained by this step - the other 16 arrived between the
-    // anchor and the trigger - so a classifier that required EQUALITY would
-    // dismiss. From the STALE position (40 moved against a 24 step) the step
-    // would be no explanation at all. Judged from the refreshed position the
-    // offset is accounted for, which is what keeps the menu open.
+    // Now the browser's adjustment: it raises the offset by 24 to hold the
+    // anchor, so 324 of a new 620. The trigger moves 40 deeper into the content
+    // in total, so it slides a further 16 DOWN the screen (260 -> 276) while the
+    // offset gives back 24 - the 16 arrived between the anchor and the trigger,
+    // below the row the browser held. That is what makes the two numbers differ:
+    // 40 of content movement against a 24 step. A classifier that required them
+    // to be EQUAL would dismiss this, and so would one reading from the STALE
+    // position, where 40 moved against a 24 step with the refresh missing. Only
+    // "the content explains at least the step" from the refreshed position keeps
+    // the menu open.
     scroller.scrollTop = 324;
+    triggerTop = 276;
     fireEvent.scroll(scroller);
     flush();
 
-    // Nobody dragged the rail: the trigger did not leave the screen.
+    // Nobody dragged the rail: the trigger did not leave the screen, and the
+    // popup followed the 16 it moved beyond the offset step.
     expect(screen.getByRole("menu")).toBeTruthy();
-    expect(screen.getByRole("menu").style.top).toBe("292px");
+    expect(screen.getByRole("menu").style.top).toBe("308px"); // 276 + 28 + TRIGGER_GAP
   } finally {
     vi.restoreAllMocks();
     if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
@@ -2892,6 +2926,83 @@ test("a focused row taller than the scrollport keeps its start in view", async (
   } finally {
     vi.restoreAllMocks();
     if (originalInnerWidth) Object.defineProperty(window, "innerWidth", originalInnerWidth);
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// The popup's own scroll event is the only thing that tells the reveal where
+// the reader is. It arrives a task later than the swipe that caused it, so a
+// turn adding rows in that same window is judged against the PRE-swipe look -
+// and a row the reader had already scrolled past reads as a row that layout
+// just clipped. Comparing the earlier look at the offset the reader is at now
+// takes their own scroll back out of the comparison, which is what keeps the
+// reveal answering "did LAYOUT hide this row" rather than "is this row on
+// screen".
+test("a swipe the popup has not reported yet is not undone by rows arriving above", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 400 });
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, 100, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "UL") return 120;
+    return this.tagName === "LI" ? 44 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "UL" ? 160 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName !== "LI" || !this.parentElement) return 0;
+    return Array.prototype.indexOf.call(this.parentElement.children, this) * 44;
+  });
+  const { flush } = captureFrames();
+  const six: MenuItem[] = [
+    { id: "overview", label: "Overview", onSelect: vi.fn() },
+    { id: "rename", label: "Rename", onSelect: vi.fn() },
+    { id: "duplicate", label: "Duplicate", onSelect: vi.fn() },
+    { id: "pin", label: "Pin", onSelect: vi.fn() },
+    { id: "archive", label: "Archive", onSelect: vi.fn() },
+    { id: "delete", label: "Delete", onSelect: vi.fn() },
+  ];
+  function GrowingMenu({ turning }: { turning: boolean }) {
+    const leading: MenuItem[] = turning
+      ? [
+          { id: "turn-stop", label: "Stop", onSelect: vi.fn() },
+          { id: "turn-steer", label: "Steer", onSelect: vi.fn() },
+        ]
+      : [];
+    return <Menu trigger="Actions" items={[...leading, ...six]} />;
+  }
+  try {
+    const view = render(<GrowingMenu turning={false} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    const overview = screen.getByRole("menuitem", { name: "Overview" });
+    overview.focus();
+    expect(document.activeElement).toBe(overview);
+    const popup = screen.getByRole("menu");
+    // Six 44px rows in a 120px scrollport: the reader can reach 144, and does -
+    // to the lower actions, away from Overview. The popup's `scroll` event is
+    // deliberately NOT fired: this is the window before a scroll is reported,
+    // where the widget's recorded look is still the pre-swipe one.
+    popup.scrollTop = 144;
+
+    // A turn starts. Stop and Steer arrive ABOVE Overview, which moves to
+    // 88..132 with the popup's port unchanged. At 144 the reader cannot see it,
+    // and they could not see it at 144 before the insertion either - it was at
+    // 0..44 - so layout hid nothing they had.
+    view.rerender(<GrowingMenu turning />);
+    flush();
+
+    expect(screen.getByRole("menuitem", { name: "Stop" })).toBeTruthy();
+    expect(document.activeElement).toBe(overview);
+    // The reader's place, not the row's: revealing Overview here would scroll
+    // back to 88 and take the lower actions away from them.
+    expect(popup.scrollTop).toBe(144);
+  } finally {
+    vi.restoreAllMocks();
     if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
   }
 });
