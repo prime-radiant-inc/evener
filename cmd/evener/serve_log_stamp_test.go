@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"os"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/internal/testwait"
 )
 
 // serveLine is one parsed componentlog record from the serve component: its
@@ -160,4 +163,64 @@ func TestEveryServeLineGoesThroughTheStamper(t *testing.T) {
 			t.Fatalf("%s:%d writes a bare \"[serve]\" prefix: route it through serveLogf so it carries its session and instant", name, line)
 		}
 	}
+}
+
+// stalledSink is a daemon output sink whose reader has stopped draining: a
+// write blocks until release closes, exactly as a full pipe does.
+type stalledSink struct {
+	release chan struct{}
+	writes  atomic.Int64
+}
+
+func (s *stalledSink) Write(p []byte) (int, error) {
+	s.writes.Add(1)
+	<-s.release
+	return len(p), nil
+}
+
+// TestServeDiagnosticSpoolDoesNotBlockOnAStalledSink is the input loop's
+// liveness property. The loop is the only goroutine that runs turns, and
+// shutdown joins it, so a diagnostic it emits may never wait on the daemon's
+// output reader: a Stop in flight would then be stuck behind a log write that
+// no one is draining, on both the turn path and the exit.
+//
+// The two halves are the before and after. The first writes straight to the
+// stalled sink, which is what the loop used to do, and it does not return. The
+// second emits through the spool, which does.
+func TestServeDiagnosticSpoolDoesNotBlockOnAStalledSink(t *testing.T) {
+	t.Parallel()
+	sink := &stalledSink{release: make(chan struct{})}
+
+	direct := make(chan struct{})
+	go func() {
+		defer close(direct)
+		serveLogf(sink, "session-1", "diagnostic straight to the sink")
+	}()
+	select {
+	case <-direct:
+		t.Fatal("a direct write to a stalled sink returned; this test cannot show what the input loop used to wait on")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	spool := newServeDiagnosticSpool(sink)
+	defer spool.Close()
+	// The worker takes the first line and blocks in the write, as the direct
+	// write above is still blocked. Everything after it must not wait.
+	spool.Logf("session-1", "first stalled diagnostic")
+	testwait.Until(t, "the spool's worker to reach the stalled write", func() bool {
+		return sink.writes.Load() == 2
+	})
+	emitted := make(chan struct{})
+	go func() {
+		defer close(emitted)
+		for range 100 {
+			spool.Logf("session-1", "diagnostic %d behind a stalled sink", 1)
+		}
+	}()
+	select {
+	case <-emitted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("emitting diagnostics blocked behind a stalled sink: the input loop would stall with it, and shutdown would wait on that loop")
+	}
+	close(sink.release)
 }

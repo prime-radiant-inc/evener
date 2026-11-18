@@ -267,8 +267,15 @@ const (
 	// PendingInputStopHeld reports pending user steering a Stop holds: the rail
 	// itself is parked, not another mutation's slot. The probe found the steer
 	// runnable and the claim refused it, and the steer runs when the user asks
-	// for something to run next.
+	// for something to run next. A queued message a Stop's QueueHeld keeps
+	// unclaimed reports this too: the reader's question is which gate is
+	// holding the work, and in both rails the answer is the user's Stop.
 	PendingInputStopHeld
+	// PendingInputClaimWriteFailed reports that the queue claim evaluated a
+	// claimable head and the store refused to write the claim. The message is
+	// still queued and no gate refused it, so this is kept apart from the
+	// outcomes that name a gate.
+	PendingInputClaimWriteFailed
 	// PendingInputClaimTookNothing reports that the probe called work runnable
 	// and the claim could not take the head it was asked for: the queue gate
 	// closed between the two (a Stop's fence or its hold), or the claim could
@@ -292,6 +299,8 @@ func (o PendingInputOutcome) String() string {
 		return "steering carrier unaddressable: no carrier could be named for the pending steer"
 	case PendingInputStopHeld:
 		return "steering held by a stop"
+	case PendingInputClaimWriteFailed:
+		return "the claim write failed; the message stays queued"
 	case PendingInputClaimTookNothing:
 		return "probe called work runnable and no claim took it"
 	default:
@@ -308,7 +317,8 @@ func (o PendingInputOutcome) String() string {
 // only has the boolean cannot see it at all.
 func (o PendingInputOutcome) RefusedRunnableInput() bool {
 	switch o {
-	case PendingInputSteeringParked, PendingInputCarrierUnaddressable, PendingInputStopHeld, PendingInputClaimTookNothing:
+	case PendingInputSteeringParked, PendingInputCarrierUnaddressable, PendingInputStopHeld,
+		PendingInputClaimWriteFailed, PendingInputClaimTookNothing:
 		return true
 	default:
 		return false
@@ -361,14 +371,10 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 	if !s.hasPendingUserInputToRun() {
 		// A steer a failed attempt parked is accepted input the user already
 		// holds a receipt for, and the park is what filters it out of the probe
-		// above -- so no later branch can report it. Wakes are answered one per
-		// external trigger while it stays parked, and it clears on the next
-		// attempt that succeeds, so this repeats no more than the condition
-		// lasts.
-		if s.steeringParkedNow() {
-			return "", false, PendingInputSteeringParked, nil
-		}
-		return "", false, PendingInputNothingRunnable, nil
+		// above -- so no later branch can report it. The park is a state, not an
+		// event: this answers every wake that lands while it holds, so one line
+		// per failed attempt is the useful count and the rest stand down quiet.
+		return "", false, s.steeringParkOutcome(), nil
 	}
 	release, admissionErr := s.beginRetirementMutation("turn")
 	if admissionErr != nil {
@@ -395,7 +401,7 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 		// steer's own acceptance wake, held while the input that then ran the
 		// carrier inline was still running. That attempt spent it; the next
 		// wake sender unparks (Session.steeringParked).
-		return "", false, PendingInputSteeringParked, nil
+		return "", false, s.steeringParkOutcome(), nil
 	}
 	if !inputHasContent(queued.Text, queued.Images, queued.SkillNames, queued.CommandNames) && s.hasPendingUserSteering() {
 		carrier, carrierSaw, carrierRefusal := s.claimSteeringCarrierInput()
@@ -410,6 +416,12 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 			// turn runs next, the same stand-down contract mintRunningTurnID's
 			// callers rely on -- and report the cause the claim observed rather
 			// than a cause this wake guessed.
+			if carrierSaw == PendingInputSteeringParked {
+				// This return is what reports the park, so the next wake
+				// answers quietly instead of repeating the same failed
+				// attempt.
+				s.markSteeringParkReported()
+			}
 			return "", false, carrierSaw, nil
 		}
 		queued = carrier
@@ -484,6 +496,10 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 	switch claimSaw {
 	case queueClaimQueueEmpty:
 		return "", false, PendingInputNothingRunnable, nil
+	case queueClaimStopHeld:
+		return "", false, PendingInputStopHeld, nil
+	case queueClaimWriteFailed:
+		return "", false, PendingInputClaimWriteFailed, nil
 	case queueClaimHeadRefused:
 		return "", false, PendingInputClaimTookNothing, nil
 	default:

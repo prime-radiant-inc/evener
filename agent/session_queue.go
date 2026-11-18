@@ -530,10 +530,19 @@ const (
 	// work was standing for a gate to refuse.
 	queueClaimQueueEmpty
 	// queueClaimHeadRefused reports that the claim read a queue head it could not
-	// take -- a Stop's fence or hold, an entry another mutation reserved, or a
-	// write of the claim itself that the store refused. Standing work is the
-	// claim's own finding in every one of those cases.
+	// take because another mutation reserved it, or because an interrupt fence
+	// is ending a turn. Standing work is the claim's own finding in every one
+	// of those cases.
 	queueClaimHeadRefused
+	// queueClaimStopHeld reports that a Stop's durable hold is what stopped the
+	// claim. It is the user's own decision rather than a slot another mutation
+	// owns, so a diagnostic that called it an ordinary refusal would leave a
+	// reader unable to tell that the queue is honoring the Stop.
+	queueClaimStopHeld
+	// queueClaimWriteFailed reports that the claim evaluated a claimable head
+	// and the store refused to write the claim. The message is still queued;
+	// what failed is the write, not a gate.
+	queueClaimWriteFailed
 )
 
 // popQueueHeadRefusingPoison is the queue head's claim: it returns the entry it
@@ -574,6 +583,8 @@ func (s *Session) popQueueHeadRefusingPoison() (queuedInput, queueClaimObservati
 		if !queueHeadClaimable(snapshot) {
 			if len(snapshot.InputQueue) == 0 {
 				observed = queueClaimQueueEmpty
+			} else if snapshot.QueueHeld {
+				observed = queueClaimStopHeld
 			} else {
 				observed = queueClaimHeadRefused
 			}
@@ -621,8 +632,9 @@ func (s *Session) popQueueHeadRefusingPoison() (queuedInput, queueClaimObservati
 	if err != nil {
 		s.emit(events.WarningData{Message: fmt.Sprintf("claim queued input failed: %v", err)})
 		// The write is the refusal here, and the message is still queued: the
-		// claim did evaluate standing work and could not move it.
-		return queuedInput{}, queueClaimHeadRefused, nil
+		// claim did evaluate standing work and could not move it. It reports
+		// the write rather than a gate, because no gate refused anything.
+		return queuedInput{}, queueClaimWriteFailed, nil
 	}
 	if queued.ClientMutationID != "" {
 		s.reflectDurableInputQueue()
@@ -881,6 +893,7 @@ func (s *Session) reconcileRecordedSteering() {
 func (s *Session) parkSteering() {
 	s.mu.Lock()
 	s.steeringParked = true
+	s.steeringParkUnreported = true
 	s.mu.Unlock()
 }
 
@@ -889,6 +902,36 @@ func (s *Session) parkSteering() {
 func (s *Session) unparkSteering() {
 	s.mu.Lock()
 	s.steeringParked = false
+	s.steeringParkUnreported = false
+	s.mu.Unlock()
+}
+
+// steeringParkOutcome reports what a wake owes a steer a failed attempt
+// parked, and records that the daemon has been told.
+//
+// The park is a state, not an event: every wake that lands while it holds sees
+// the same parked steer, and every one of them reporting it would put the same
+// line in the log once per wake -- the durable probe, the buffered acceptance
+// wake that follows the failure, and the next probe all included. One line per
+// failed attempt is the useful count, so the first wake after the park reports
+// it and the rest stand down quietly. A later failed attempt parks again and
+// reports again.
+func (s *Session) steeringParkOutcome() PendingInputOutcome {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.steeringParked || !s.hasPendingUserSteeringLocked() || !s.steeringParkUnreported {
+		return PendingInputNothingRunnable
+	}
+	s.steeringParkUnreported = false
+	return PendingInputSteeringParked
+}
+
+// markSteeringParkReported records that this wake told the daemon about the
+// park it just took. The claim that parks the steer reports it on the same
+// return, so the next wake does not repeat it.
+func (s *Session) markSteeringParkReported() {
+	s.mu.Lock()
+	s.steeringParkUnreported = false
 	s.mu.Unlock()
 }
 

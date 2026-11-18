@@ -38,6 +38,67 @@ func serveLogAt(w io.Writer, at time.Time, sessionID, format string, args ...any
 		"at", at.UTC().Format(serveLogTimeLayout), "session", sessionID)
 }
 
+// serveDiagnosticSpool carries diagnostics onto a sink the daemon does not own
+// without letting that sink stall the daemon.
+//
+// A daemon's output is a pipe to whatever started it. When that reader stops
+// draining, the pipe fills and every write blocks; a diagnostic written on the
+// input loop would then stop the only goroutine that runs turns, and shutdown,
+// which joins that loop, would wait behind it. The spool holds one line at a
+// time and drops a line that arrives while that slot is taken, so a diagnostic
+// line can never cost the daemon progress. Losing a repeat of a stand-down is
+// cheaper than stalling on the report of one.
+type serveDiagnosticSpool struct {
+	out   io.Writer
+	lines chan serveDiagnosticLine
+	stop  chan struct{}
+}
+
+// serveDiagnosticLine is one queued diagnostic, with the session it belongs to.
+type serveDiagnosticLine struct {
+	sessionID string
+	text      string
+}
+
+// newServeDiagnosticSpool starts the writer goroutine. It is the spool's one
+// worker, so lines keep their order relative to each other.
+func newServeDiagnosticSpool(out io.Writer) *serveDiagnosticSpool {
+	p := &serveDiagnosticSpool{
+		out:   out,
+		lines: make(chan serveDiagnosticLine, 1),
+		stop:  make(chan struct{}),
+	}
+	go p.run()
+	return p
+}
+
+func (p *serveDiagnosticSpool) run() {
+	for {
+		select {
+		case <-p.stop:
+			return
+		case line := <-p.lines:
+			serveLogf(p.out, line.sessionID, "%s", line.text)
+		}
+	}
+}
+
+// Logf queues one diagnostic line. It never blocks the caller: a line that
+// arrives while the worker is still writing an earlier line is dropped.
+func (p *serveDiagnosticSpool) Logf(sessionID, format string, args ...any) {
+	select {
+	case p.lines <- serveDiagnosticLine{sessionID: sessionID, text: fmt.Sprintf(format, args...)}:
+	default:
+	}
+}
+
+// Close retires the spool without waiting for a write already in flight. A
+// write stuck on a stalled sink cannot be recalled, and shutdown must not wait
+// on the sink it is trying to leave behind.
+func (p *serveDiagnosticSpool) Close() {
+	close(p.stop)
+}
+
 // retirementAttemptSummary renders an automatic retirement attempt that did
 // not retire the process for the daemon log: the error that failed it and the
 // blockers that refused it, each with the session and delegate it belongs to.

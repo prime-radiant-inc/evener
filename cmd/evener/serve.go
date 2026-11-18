@@ -906,6 +906,13 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		})
 	}
 
+	// diagnostics is the best-effort sink for lines the input loop emits. The
+	// loop is the only thing that runs turns and shutdown joins it, so a
+	// diagnostic it writes must not be able to wait on a reader that stopped
+	// draining the daemon's output.
+	diagnostics := newServeDiagnosticSpool(logOut)
+	defer diagnostics.Close()
+
 	// Input processing loop. Each turn runs under a per-turn cancellable
 	// context that is wired into the server's interrupt handler so POST
 	// /interrupt actually cancels the in-flight turn. Clearing it after the
@@ -1035,12 +1042,12 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 				serveLogf(logOut, sess.ID(), "error: %s", turnFailureSummary(processErr))
 			}
 			// Reported after runnerDone closes, never before: a Stop that
-			// captured the runner waits on that channel to finalize its fence,
-			// and a stderr pipe that has backed up would hold the fence open for
-			// as long as the write takes. The claim refused, so no turn is
-			// waiting on the line.
+			// captured the runner waits on that channel to finalize its fence.
+			// It goes through the spool rather than the sink directly, so a
+			// backed-up output pipe delays this line at most and never the loop
+			// that runs turns. The claim refused, so no turn is waiting on it.
 			if msg.QueuedInput && pendingInputStoodDown(processErr, pendingInput) {
-				serveLogf(logOut, sess.ID(), "queued input stood down: %s", pendingInput)
+				diagnostics.Logf(sess.ID(), "queued input stood down: %s", pendingInput)
 			}
 			_ = result
 			return processed

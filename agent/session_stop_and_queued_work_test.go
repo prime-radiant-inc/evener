@@ -603,6 +603,10 @@ func TestStopParksTheQueueAgainstBothRestartRails(t *testing.T) {
 // Stop is applied at the moment the queue head has been sampled and before the
 // serializer reads the claimability it will refuse on, which is the exact
 // window production has.
+//
+// The report names the Stop. A reader who is told only that no claim took the
+// work cannot tell a queue honoring the user's own Stop from a slot another
+// mutation holds, and those two need different responses.
 func TestQueuedInputWakeReportsTheQueueGateClosingAfterTheProbe(t *testing.T) {
 	t.Parallel()
 	sess := newQueuePersistTestSession(t, t.TempDir())
@@ -625,8 +629,8 @@ func TestQueuedInputWakeReportsTheQueueGateClosingAfterTheProbe(t *testing.T) {
 	if err != nil || ran {
 		t.Fatalf("wake whose queue gate closed after the probe = ran %v, err %v; want a quiet stand-down", ran, err)
 	}
-	if outcome != PendingInputClaimTookNothing {
-		t.Fatalf("outcome = %v, want claim-took-nothing: the probe called this message runnable and the claim refused it", outcome)
+	if outcome != PendingInputStopHeld {
+		t.Fatalf("outcome = %v, want stop-held: the probe called this message runnable and the Stop's hold refused it", outcome)
 	}
 	if !outcome.RefusedRunnableInput() {
 		t.Fatal("accepted input a gate refused is not reported as runnable input a gate refused")
@@ -677,6 +681,37 @@ func TestQueuedInputWakeKeepsAnEmptyClaimQuiet(t *testing.T) {
 	}
 	if got := sess.queueDepth(); got != 1 {
 		t.Fatalf("QueueDepth after the empty claim = %d, want 1: the fresh message is the user's and its own wake carries it", got)
+	}
+}
+
+// TestQueuedInputWakeReportsARefusedClaimWriteAsTheWrite pins what the wake
+// says when the store refuses the queue head's claim.
+//
+// The message stays queued and is still the user's, but no gate refused it:
+// the write did. Reporting a closed gate here sends a reader looking for a
+// Stop or a busy slot that do not exist, and the two conditions have different
+// responses.
+func TestQueuedInputWakeReportsARefusedClaimWriteAsTheWrite(t *testing.T) {
+	t.Parallel()
+	sess := newQueuePersistTestSession(t, t.TempDir())
+	defer sess.Close()
+	queueOneMutation(t, sess, "claim-write-refused", "queued while the store refuses writes")
+	sess.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
+		return errors.New("injected: claim write refused")
+	}
+
+	_, ran, outcome, err := sess.ProcessPendingUserInput(context.Background(), nil)
+	if err != nil || ran {
+		t.Fatalf("wake with the claim write refused = ran %v, err %v; want a stand-down", ran, err)
+	}
+	if outcome != PendingInputClaimWriteFailed {
+		t.Fatalf("outcome after a refused claim write = %v, want claim-write-failed: no gate refused this message", outcome)
+	}
+	if !outcome.RefusedRunnableInput() {
+		t.Fatal("accepted input whose claim write failed is not reported as runnable input standing still")
+	}
+	if got := sess.queueDepth(); got != 1 {
+		t.Fatalf("QueueDepth after the refused claim write = %d, want 1: the message is still the user's", got)
 	}
 }
 

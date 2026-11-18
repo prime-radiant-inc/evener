@@ -1565,13 +1565,30 @@ func TestBufferedAcceptanceWakeDoesNotRetryAFailedInlineCarrier(t *testing.T) {
 	if runs == 0 {
 		t.Fatal("the failed inline carrier armed no wake at all; this test would then measure nothing about what a wake reports")
 	}
+	// One line per failed attempt. The park is a state that outlives the wake
+	// that first sees it, so reporting it on every wake would put the same line
+	// in the log once per wake -- the buffered acceptance wake, the durable
+	// probe behind it, and every unrelated wake while it holds. The first wake
+	// reports it and the rest stand down quietly; a later failed attempt parks
+	// again and reports again.
+	reported := 0
 	for _, outcome := range outcomes {
-		if outcome != PendingInputSteeringParked {
-			t.Fatalf("buffered acceptance wake over a parked steer = %v, want steering-parked", outcome)
+		switch outcome {
+		case PendingInputSteeringParked:
+			reported++
+		case PendingInputNothingRunnable:
+		default:
+			t.Fatalf("buffered acceptance wake over a parked steer = %v, want steering-parked once and nothing-runnable after", outcome)
 		}
-		if !outcome.RefusedRunnableInput() {
-			t.Fatal("a parked accepted steer is not reported as runnable input standing still")
-		}
+	}
+	if reported != 1 {
+		t.Fatalf("the buffered wakes reported the same park %d time(s) over %d wake(s), want exactly 1", reported, runs)
+	}
+	if outcomes[0] != PendingInputSteeringParked {
+		t.Fatalf("first buffered wake = %v, want steering-parked: the failure happened before it was answered", outcomes[0])
+	}
+	if !PendingInputSteeringParked.RefusedRunnableInput() {
+		t.Fatal("a parked accepted steer is not reported as runnable input standing still")
 	}
 
 	// The disk has room again; a genuinely external wake carries the steer.

@@ -566,8 +566,13 @@ type Session struct {
 	// notification or continuation all stand down (steeringParkedNow) -- so
 	// nothing drains it under a turn id that is not its receipt's. Guarded by
 	// mu.
-	steeringParked   bool
-	visionTurnOwners []*struct{ _ byte }
+	steeringParked bool
+	// steeringParkUnreported says the current park has not been reported to the
+	// daemon yet: parkSteering sets it and the first wake to report the park
+	// clears it, so repeats of the same failed attempt stay out of the log
+	// while a later attempt reports again. Guarded by mu.
+	steeringParkUnreported bool
+	visionTurnOwners       []*struct{ _ byte }
 
 	// activeProvenance is the causal provenance carried by the input currently
 	// being processed. It is stamped onto every event the turn emits, reset to
