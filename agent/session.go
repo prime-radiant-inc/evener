@@ -2818,15 +2818,19 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 		// a reader can observe a fold's events after a transcript entry that
 		// another publication wrote in the meantime.
 		//
-		// The trade is real: emit is not a bounded send. It parks indefinitely
-		// against the authoritative consumer when the buffer is full (holding
-		// eventsMu for read), and it runs the job-watch fan-out synchronously,
-		// job-store persistence and cross-session notification delivery
-		// included. All of that now runs under attentionMu, so a slow daemon
-		// consumer stalls this session's transcript writes and fold publication
-		// rather than only the emitter. Accepted because a parked consumer
-		// already stalls the emitting turn and the door already spans an fsync;
-		// see publishFoldTransaction, whose deferred flush must NOT follow this
+		// The trade is real: emit is not a bounded send. A full buffer blocks
+		// it against the authoritative consumer while it holds eventsMu for
+		// read; shutdown's close budget releases it, but a consumer that only
+		// stops draining parks it there. It also runs the job-watch fan-out
+		// synchronously, evaluating the event against every watch under jm.mu.
+		// No watch can match this kind — the allowlist (watch_types.go's
+		// modelEventKinds) admits assistant.tool, communicate and
+		// job.notification — so that evaluation queues no send and no
+		// notification. All of it runs under attentionMu, so a stalled consumer
+		// stalls this session's transcript writes and fold publication rather
+		// than only the emitter. Accepted because a parked consumer already
+		// stalls the emitting turn and the door already spans an fsync; see
+		// publishFoldTransaction, whose deferred flush must NOT follow this
 		// example.
 		if hook := s.cfg.testOnly.beforeEnvironmentEventPublish; hook != nil {
 			hook()
