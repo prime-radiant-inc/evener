@@ -202,6 +202,17 @@ func (a *logicalTurnAccumulator) appendEntry(entry schema.Turn, entryIndex int, 
 // in the same logical turn, so the healed-communicate echo check scopes
 // correctly on the full read (where per-entry IDs differ within a group).
 func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, turn schema.Turn, entryIndex int) {
+	// A stamped completion or reopen entry is a control record: it projects no
+	// item of its own, but it decides how the execution ENDED. Dropping it
+	// here left a crashed execution whose recovery appended an interrupted
+	// completion reporting completed, with its unanswered call still in
+	// progress, while the index reported both as interrupted — the index folds
+	// the same entries into its summary (build.go's stampTurn completion case
+	// and interruptAwaitedCalls) (#1166 review).
+	if turn.Kind == schema.TurnCompletion || turn.Kind == schema.TurnReopen {
+		acc.appendEntry(turn, entryIndex, nil)
+		return
+	}
 	if turn.Kind.TranscriptOnly() {
 		// Written for the history projection phase 3 introduces. Today's
 		// projection passes over it: it joins no group, closes none, and
@@ -358,15 +369,35 @@ func joinItemlessRuns(turns []appwire.Turn) []appwire.Turn {
 		}
 		if n := len(joined); n > 0 && joined[n-1].ID == turn.ID && joined[n-1].Status == turn.Status {
 			joined[n-1].Items = append(joined[n-1].Items, turn.Items...)
-			if joined[n-1].Usage == nil {
-				joined[n-1].Usage = turn.Usage
-			}
+			// Both runs belong to the turn being emitted, so its usage is the
+			// SUM of theirs. Keeping the first run's alone would silently drop
+			// the other round's tokens from a turn a client reads cost from;
+			// usage is not optional data (#1166 review).
+			joined[n-1].Usage = addEvenerUsage(joined[n-1].Usage, turn.Usage)
 			joined[n-1].HasLaterItems = turn.HasLaterItems
 			continue
 		}
 		joined = append(joined, turn)
 	}
 	return joined
+}
+
+// addEvenerUsage returns the token-wise sum of two usage records, treating a
+// nil side as zero. A join that emits one turn from two runs needs the total,
+// since each run carries only its own entries' tokens.
+func addEvenerUsage(a, b *appwire.EvenerUsage) *appwire.EvenerUsage {
+	if a == nil {
+		return b
+	}
+	if b == nil {
+		return a
+	}
+	sum := *a
+	sum.InputTokens += b.InputTokens
+	sum.OutputTokens += b.OutputTokens
+	sum.CacheReadTokens += b.CacheReadTokens
+	sum.TotalTokens += b.TotalTokens
+	return &sum
 }
 
 // markSplitTurnRuns flags the runs of a turn whose items another turn
@@ -445,8 +476,17 @@ func StampGroupedTurn(turn *appwire.Turn, entries []schema.Turn) {
 	var startedAt *int64
 	var usage llm.Usage
 	interrupted := false
+	var completion *schema.TurnCompletionInfo
 	for _, entry := range entries {
 		StampTurnFailure(turn, entry)
+		// A completion entry records how the execution ended, including a
+		// status no other entry carries. The index folds the same field
+		// (build.go's stampTurn), so a recovery-written interrupted
+		// completion reports interrupted here too (#1166 review).
+		if entry.Kind == schema.TurnCompletion && entry.Completion != nil {
+			info := *entry.Completion
+			completion = &info
+		}
 		if entry.Kind == schema.TurnSteering && entry.SteeringKind == events.SteeringKindInterrupted {
 			interrupted = true
 		}
@@ -457,6 +497,20 @@ func StampGroupedTurn(turn *appwire.Turn, entries []schema.Turn) {
 		usage = usage.Add(entry.Usage)
 	}
 	turn.StartedAt = startedAt
+	if completion != nil {
+		switch completion.Status {
+		case schema.TurnFailed:
+			turn.Status = appwire.TurnStatusFailed
+		case schema.TurnInterrupted:
+			turn.Status = appwire.TurnStatusInterrupted
+		case schema.TurnCompleted:
+			// An execution whose recorded end is "completed" reports that even
+			// when its entries show no failure marker.
+			if turn.Status == "" {
+				turn.Status = appwire.TurnStatusCompleted
+			}
+		}
+	}
 	if interrupted && turn.Status != appwire.TurnStatusFailed {
 		turn.Status = appwire.TurnStatusInterrupted
 	}

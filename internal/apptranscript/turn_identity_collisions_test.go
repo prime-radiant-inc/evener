@@ -823,3 +823,152 @@ func TestSettledProvenanceNamesAnnouncementIdentity(t *testing.T) {
 			p.SourceItemID, item.ID)
 	}
 }
+
+// TestItemlessJoinKeepsBothGroupsUsage covers the usage a join like
+// joinItemlessRuns must not drop. A legacy transcript records a user input,
+// then a hook completion that closes the group, then an owned steering entry
+// that reopens the SAME id — two legacy groups whose items are adjacent only
+// because the entry between them projected nothing. If both groups recorded
+// usage, the emitted turn must carry the sum: usage is not optional data, and
+// a client that reads cost from the turn would see one round's tokens vanish
+// (#1166 review).
+func TestItemlessJoinKeepsBothGroupsUsage(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "itemless_usage"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := func(turn schema.Turn) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceVerbatim}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	user := schema.NewTurn(schema.TurnUserInput, llm.User("go"))
+	user.StableTurnID = "turn_a"
+	user.Usage = llm.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}
+	record(user)
+	// An attention resolution is transcript-only bookkeeping: it projects no
+	// item, so the groups on either side become adjacent here while the index
+	// still holds both.
+	resolution := schema.NewTurn(schema.TurnAttentionResolution, llm.System("resolved"))
+	resolution.AttentionResolution = &schema.AttentionResolutionInfo{AttentionID: "att_1", Disposition: "dismissed"}
+	record(resolution)
+	steering := schema.NewTurn(schema.TurnSteering, llm.User("again"))
+	steering.OwningTurnID = "turn_a"
+	steering.Usage = llm.Usage{InputTokens: 100, OutputTokens: 40, TotalTokens: 140}
+	record(steering)
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	var found *appwire.Turn
+	for i := range turns {
+		if turns[i].ID == "turn_a" {
+			found = &turns[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("full read turns = %+v, want a turn_a", shapesFromTurns(turns))
+	}
+	u := found.Usage
+	if u == nil {
+		t.Fatalf("turn_a usage = nil, want both groups' tokens")
+	}
+	if u.InputTokens != 110 || u.OutputTokens != 45 {
+		t.Errorf("turn_a usage input=%d output=%d, want input=110 output=45: the join must carry both groups' usage",
+			u.InputTokens, u.OutputTokens)
+	}
+}
+
+// TestPlainProjectorCarriesAnnouncementRound covers the projector the hub's
+// whole-file fallback uses. ProjectEntryParts is the identity-aware wrapper
+// and sets RoundID on the announcement; the plain ProjectTurn did not, so a
+// stamped announcement projected through the fallback carried no round and a
+// settled result — which has no round of its own — could not inherit one. A
+// client grouping by round then loses the round the call belonged to
+// (#1166 review).
+func TestPlainProjectorCarriesAnnouncementRound(t *testing.T) {
+	call := llm.ToolCallData{ID: "call_round", Name: "read_file", Arguments: json.RawMessage(`{"path":"a"}`)}
+	turn := schema.Turn{
+		Format:  schema.TurnFormatIdentity,
+		Kind:    schema.TurnAssistant,
+		TurnID:  "t_round",
+		RoundID: "r_announce",
+		Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}},
+	}
+	items := apptranscript.ProjectTurn("t_round", 1, turn, apptranscript.NewToolCallRegistry(), nil, apptranscript.ToolResultOutputImages)
+	if len(items) != 1 {
+		t.Fatalf("ProjectTurn items = %d (%+v), want the announcement", len(items), items)
+	}
+	if items[0].RoundID != "r_announce" {
+		t.Errorf("announcement round id = %q, want %q: a settled result carries no round of its own",
+			items[0].RoundID, "r_announce")
+	}
+}
+
+// TestRecoveryCompletionReportsInterrupted covers a crash recovery: the
+// execution recorded an unanswered tool announcement, and restore appended a
+// completion entry saying the turn ended interrupted. The completion is a
+// control record — it projects no item — but it is the only entry that says
+// how the execution ended. A full read that drops it reports the turn
+// completed and leaves the call in progress, while the index reports both as
+// interrupted (#1166 review).
+func TestRecoveryCompletionReportsInterrupted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "recovery_completion"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamp := func(turn schema.Turn, id string, span schema.TurnSpanKind) schema.Turn {
+		turn.Format = schema.TurnFormatIdentity
+		turn.TurnID = id
+		turn.TurnKind = span
+		return turn
+	}
+	record := func(turn schema.Turn) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceVerbatim}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	call := llm.ToolCallData{ID: "call_lost", Name: "read_file", Arguments: json.RawMessage(`{"path":"a"}`)}
+	announce := schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}
+	record(stamp(schema.NewTurn(schema.TurnUserInput, llm.User("go")), "t_crash", schema.TurnSpanExecution))
+	record(stamp(announce, "t_crash", ""))
+	// The crash left the call unanswered; restore appended the end of the turn.
+	record(stamp(schema.Turn{Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnInterrupted}}, "t_crash", ""))
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	var found *appwire.Turn
+	for i := range turns {
+		if turns[i].ID == "t_crash" {
+			found = &turns[i]
+		}
+	}
+	if found == nil {
+		t.Fatalf("full read turns = %+v, want t_crash", shapesFromTurns(turns))
+	}
+	if found.Status != appwire.TurnStatusInterrupted {
+		t.Errorf("turn status = %q, want %q: the recovery completion recorded an interrupted end",
+			found.Status, appwire.TurnStatusInterrupted)
+	}
+}

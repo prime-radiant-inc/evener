@@ -1095,6 +1095,12 @@ func toolCallItem(turnID string, turnIndex, part int, turn schema.Turn) appwire.
 		ArgumentsJSON: argumentsJSON,
 		Description:   description,
 		Status:        appwire.TurnStatusInProgress,
+		// The entry's recorded round belongs on its announcement: a settled
+		// result carries no round of its own, so a merge that cannot read it
+		// from the announcement drops it and the item loses the round a
+		// client groups by. ProjectEntryParts sets this too; the plain
+		// projector did not, so the whole-file fallback lost it.
+		RoundID: turn.RoundID,
 	}
 	if p := turn.ConversationProvenance; call.Name == "ask_user" && p != nil {
 		item.ConversationProvenance = &appwire.ConversationOutputProvenance{Version: p.Version, InstanceID: p.InstanceID,
