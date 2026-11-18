@@ -154,14 +154,14 @@ func compactArgumentSpelling(stored, original []byte) json.RawMessage {
 	return encoded
 }
 
-func (format *argumentSpelling) restore(stored []byte) []byte {
+func (spelling *argumentSpelling) restore(stored []byte) []byte {
 	digest := sha256.Sum256(stored)
-	if len(format.Edits) == 0 || !bytes.Equal(digest[:], format.Digest) {
+	if len(spelling.Edits) == 0 || !bytes.Equal(digest[:], spelling.Digest) {
 		return nil
 	}
 	original := make([]byte, 0, len(stored))
 	pos := 0
-	for _, edit := range format.Edits {
+	for _, edit := range spelling.Edits {
 		at, drop := int(edit.At), int(edit.Drop)
 		if edit.Bytes == nil || at < pos || at > len(stored) || drop < 0 || drop > len(stored)-at {
 			return nil
