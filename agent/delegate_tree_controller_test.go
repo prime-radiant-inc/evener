@@ -515,6 +515,13 @@ var delegateControllerDormancyExpectedInventory = map[delegateControllerDormancy
 	{filename: "session_attention.go", function: "(*Session).reopenConsumedDelegateAttention", kind: "session attention method", symbol: "resolveAttentionDurably"}:                    1,
 	{filename: "session_attention.go", function: "(*Session).finishAttentionTurn", kind: "session attention method", symbol: "resolveAttentionDurably"}:                                1,
 	{filename: "session_attention.go", function: "(*Session).finishRootDelegateAttentionTurn", kind: "session attention method", symbol: "resolveAttentionDurably"}:                    1,
+	// The stable-watch ingress retires the rows it replaced and the rows whose
+	// timer was cleared after their tick was already on the ledger. Both are
+	// DISCARD resolutions of rows this session owns, and both are reached from
+	// live production callers (appendStableWatchAttention, and the request
+	// boundary in session_model_call.go), not dormant paths (#2340 review M2).
+	{filename: "session_attention.go", function: "(*Session).discardSupersededStableWatchNotices", kind: "session attention method", symbol: "resolveAttentionDurably"}:                1,
+	{filename: "session_attention.go", function: "(*Session).retireClearedStableWatchAttention", kind: "session attention method", symbol: "resolveAttentionDurably"}:                  1,
 	{filename: "session_events.go", function: "(*Session).SetDescendantEventFunc", kind: "lifecycle method", symbol: "Snapshot"}:                                                       1,
 	{filename: "session_tools_job_list.go", function: "delegateRowsForSession", kind: "lifecycle method", symbol: "Snapshot"}:                                                          1,
 	{filename: "delegate_tree_controller.go", function: "(*delegateTreeController).capturedPlanLocked", kind: "lifecycle method", symbol: "captureDelegateSnapshotLocked"}:             1,
