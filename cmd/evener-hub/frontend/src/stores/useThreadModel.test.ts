@@ -8,6 +8,7 @@
 import "fake-indexeddb/auto";
 import { type ThreadReadResponse, WireError } from "@evener/appwire-client";
 import { deferred } from "@evener/appwire-client/testing/deferred";
+import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { nextMacrotask } from "@evener/appwire-client/testing/macrotask";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { beforeEach, expect, test, vi } from "vitest";
@@ -16,7 +17,7 @@ import {
   resetPendingTurnsStoreForTests,
 } from "../panes/session/composer/queue/pendingTurnsStore";
 import { withRecoveryDestinationClaim } from "../panes/session/composer/submitProtocol";
-import { resetConnectionStoreForTests } from "./connection";
+import { connectionStore, resetConnectionStoreForTests } from "./connection";
 import {
   entryTranscriptRoute,
   productionEntryTranscriptForTests,
@@ -169,6 +170,63 @@ test("a claim on a destination the hub reports deleted rejects and drops its hol
   expect(foregroundHolds("local:claim-deleted"), "a rejected acquisition leaves no count behind").toBe(holdsBefore);
 }, 20_000);
 
+// Deletion can arrive on the RETRY, not on the claim's first read: the read
+// fails in transport, its owner schedules the retry, and the retry is the
+// attempt the hub answers with the fence. Deletion is terminal, so the owned
+// lifecycle has to settle before the fence's own cache work revokes it - the
+// retirement that revocation performs removes the pending entry, and a retry
+// handler that finds no entry of its own never settles the hydration a waiting
+// claim is parked on. The claim must then reject rather than hang on a
+// lifecycle nothing will wake, and its rollback must drop exactly its count.
+test("a retry that answers deletion rejects the claim instead of hanging", async () => {
+  const ref = "local:retry-deleted";
+  const fake = connectMutationClient();
+  let reads = 0;
+  fake.on("thread/read", () => {
+    reads += 1;
+    if (reads === 1) throw new Error("transport died");
+    throw new WireError(`target has been deleted: ${ref}`, -32001, {
+      evenerErrorInfo: "actionUnavailable",
+      mutationOutcome: "targetDeleted",
+      retryDisposition: "none",
+    });
+  });
+  // The retry the failed first read arms, captured rather than awaited: its
+  // backoff is wall-clock, and what this test needs is the attempt itself.
+  let fireRetry: (() => void) | undefined;
+  const restoreScheduler = installHydrationRetrySchedulerForTests((_attempt, run) => {
+    fireRetry = run;
+    return () => {};
+  });
+  const holdsBefore = foregroundHolds(ref);
+  const claim = acquireUnreadThreadClaim(ref);
+  await flushUntil(() => fireRetry !== undefined);
+  fireRetry?.();
+  // Bounded, not `await claim`: a claim parked on an unsettled lifecycle is
+  // exactly the defect, and a test timeout would report it as a slow test
+  // rather than as a hang.
+  let outcome: "pending" | "resolved" | "rejected" = "pending";
+  void claim.then(
+    () => {
+      outcome = "resolved";
+    },
+    () => {
+      outcome = "rejected";
+    },
+  );
+  for (let turn = 0; turn < 60 && outcome === "pending"; turn += 1) await nextMacrotask();
+  expect(outcome, "a deleted destination rejects the claim rather than parking it").toBe("rejected");
+  expect(reads, "the retry ran once and was not re-armed at a deleted destination").toBe(2);
+  expect(foregroundHolds(ref), "a rejected acquisition leaves no count behind").toBe(holdsBefore);
+  // The fence is terminal: the rejected claim's rollback retired the ref and
+  // nothing re-armed a third read at a destination the hub has confirmed gone.
+  // (The `deletedRefs` marker itself is the pane's display state and retires
+  // with the model, so the read count is the standing evidence here.)
+  for (let turn = 0; turn < 20; turn += 1) await nextMacrotask();
+  expect(reads, "no read follows the fence").toBe(2);
+  restoreScheduler();
+}, 20_000);
+
 // The pane face of the same read, unchanged: a pane acquisition returns and
 // shows the deleted-session state rather than rejecting.
 test("a pane acquisition over a deleted destination still returns", async () => {
@@ -228,25 +286,38 @@ test("a failed read after a replacement does not verify a routing claim from the
   // The connection is replaced while the claim's read is still in flight, then
   // that read rejects: the shell standing in the store is all the old path
   // would have.
-  const second = connectMutationClient();
   let replacementReads = 0;
+  // The replacement's answer is held, so the lease must stay pending while it
+  // is outstanding: resolving before it arrives is exactly what accepting the
+  // shell looked like. The handler is installed BEFORE the client is connected,
+  // because the ready transition starts the refresh read: a client whose default
+  // handler answered first would verify the ref on a read this test never held.
+  const replacement = deferred<ThreadReadResponse>();
+  const second = new FakeClient("ready");
   second.on("thread/read", () => {
     replacementReads += 1;
-    return readResponse(ref);
+    return replacement.promise;
   });
+  connectionStore.getState().connect(second);
   stalled.reject(new Error("transport died"));
-  // Sampled at the instant the claim settles, not after: a resolution on the
-  // shell would be followed by the retry's own read regardless, so a later
-  // count cannot tell the two paths apart. Only a claim that waited for the
-  // re-arm has a read behind it when it hands its lease back.
-  let readsWhenResolved = -1;
-  const lease = await claim.then((settled) => {
-    readsWhenResolved = replacementReads;
-    return settled;
-  });
-  // Accepting the shell would have resolved at zero reads: a destination that
-  // advertises no Send, handed to the resend as verified.
-  expect(readsWhenResolved, "the shell was not accepted as verification").toBeGreaterThan(0);
+  let settledEarly = false;
+  void claim.then(
+    () => {
+      settledEarly = true;
+    },
+    () => {
+      settledEarly = true;
+    },
+  );
+  // Drain generously while the replacement is unanswered: the lease must not
+  // resolve on the shell, whatever else settles.
+  for (let turn = 0; turn < 60; turn += 1) await nextMacrotask();
+  expect(settledEarly, "the shell was not accepted as verification").toBe(false);
+  replacement.resolve(readResponse(ref));
+  const lease = await claim;
+  // Exactly one replacement read: the claim joined the re-armed verification
+  // instead of starting a duplicate that would supersede it.
+  expect(replacementReads, "the claim joined the replacement read").toBe(1);
   lease.release();
 }, 20_000);
 

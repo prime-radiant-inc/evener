@@ -4587,6 +4587,16 @@ async function readThreadHydration(
 // aborted, instead of this hook growing a second copy of those lines.
 function markThreadDeletedIfFenced(ref: string, err: unknown): void {
   if (mutationErrorData(err)?.mutationOutcome !== "targetDeleted") return;
+  // Settle the owner lifecycle HERE, before the cache work below, because
+  // `markCacheSessionsDeleted` revokes the ref's residency task and an issued
+  // task's abort fires its pending-entry retirement synchronously. A retry
+  // that answers the fence then finds its own pending entry gone and
+  // `scheduleOwnedHydrationRetry` returns before it can settle
+  // `firstHydration` — so a claim waiting on that lifecycle would wait
+  // forever. Deletion is terminal for both kinds: no retry may outlive it, and
+  // every owner waiting on one must be woken rather than left parked.
+  retireOwnedHydration("thread", ref);
+  retireOwnedHydration("watched", ref);
   releaseSubagentRows(ref);
   discardCanceledMutations(ref);
   markCacheSessionsDeleted([ref]);
@@ -7564,7 +7574,17 @@ async function refreshTrackedThreadNow(
   // A failed targeted predecessor may already have removed `previous`.
   // Keep the newest targeted read adoptable by the still-active initial
   // caller until a sufficient model has actually published.
-  const trackForActiveLifecycle = !hasPublishedModel && (previous !== undefined || targetedResync);
+  //
+  // A resident model is not by itself a sufficient publication. When it is the
+  // unverified shell, this read is the one that decides whether the ref is
+  // routable, so it must stay joinable: without a registration a routing claim
+  // whose own read failed cannot join the replacement and starts a duplicate,
+  // and the two reads supersede each other until one wins a race the resend
+  // should never have been in. The shell may be JOINED; it still may not
+  // certify, which is what `routingStateVerified` decides at the claim's exit.
+  const shelteringUnverifiedShell = hasPublishedModel && !routingStateVerified(ref);
+  const trackForActiveLifecycle =
+    (!hasPublishedModel || shelteringUnverifiedShell) && (previous !== undefined || targetedResync);
   if (trackForActiveLifecycle) {
     // This registration is machinery's, not a pane's: a retry or a reconnect
     // re-read that began for a ref with no pane behind it (a routing claim's
@@ -8604,14 +8624,26 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
 
         if (!claimStanding()) return;
         if (threadsStore.getState().threads.has(ref) && (!routingOnly || routingStateVerified(ref))) return;
-        if (threadsStore.getState().deletedRefs.has(ref)) return;
+        // The fence can land while this claim waits on the retry, and the retry
+        // answers it by settling rather than publishing. A routing hold has
+        // nothing to show for a deleted destination: resolving here would hand
+        // the caller a lease to resend at a ref the hub has confirmed gone. The
+        // rejection releases exactly this claim's hold. A pane resolves and
+        // lets the session surface the deleted state.
+        if (threadsStore.getState().deletedRefs.has(ref)) {
+          if (routingOnly) throw new Error("The destination was deleted before its routing state was verified");
+          return;
+        }
 
         client = await requireReadyClient();
         if (!claimStanding()) return;
         // Recheck after the possibly-long ready wait: a deletion fence can
         // land while this loop is waiting out a reconnect, and a ref known
         // deleted must not start another read on becoming ready.
-        if (threadsStore.getState().deletedRefs.has(ref)) return;
+        if (threadsStore.getState().deletedRefs.has(ref)) {
+          if (routingOnly) throw new Error("The destination was deleted before its routing state was verified");
+          return;
+        }
         inflight = inflightHydrates.get(ref);
         if (!inflight) inflight = startHydration(client, getReadyEpoch());
       }
