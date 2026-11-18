@@ -367,6 +367,32 @@ func TestSplitPreludeRunsAgreeOnCompleteness(t *testing.T) {
 	if !runs[1].HasEarlierItems || runs[1].HasLaterItems {
 		t.Errorf("last prelude run earlier=%v later=%v, want earlier=true later=false", runs[1].HasEarlierItems, runs[1].HasLaterItems)
 	}
+	// A page that ends at the prompt, or starts at the first stamped prelude
+	// item, must report the same continuation the full read reports for that
+	// boundary. The indexed count starts at the first stamped item and leaves
+	// the header's own items out, so a page cut there could advertise a whole
+	// turn and drop the continuation a client uses to fetch the rest
+	// (localDaemonWindowTransferResume) (#1166 review).
+	for _, candidate := range indexCandidates(t, path) {
+		if candidate.TurnID != appwire.SystemPreludeTurnID {
+			continue
+		}
+		var run appwire.Turn
+		for _, turn := range runs {
+			for _, item := range turn.Items {
+				if item.Position != nil && *item.Position == candidate.Position {
+					run = turn
+				}
+			}
+		}
+		if run.ID == "" {
+			continue
+		}
+		if candidate.HasEarlierItems != run.HasEarlierItems || candidate.HasLaterItems != run.HasLaterItems {
+			t.Errorf("prelude item at %+v: index earlier=%v later=%v, full read earlier=%v later=%v",
+				candidate.Position, candidate.HasEarlierItems, candidate.HasLaterItems, run.HasEarlierItems, run.HasLaterItems)
+		}
+	}
 	// The delivery is a whole turn of its own: it continues nothing.
 	for _, turn := range turns {
 		if turn.ID == "turn_delivery_1" {
@@ -392,7 +418,7 @@ func TestResultSettlesAnnouncementAcrossDeliverySplit(t *testing.T) {
 	}
 	call := func() schema.Turn {
 		tc := llm.ToolCallData{ID: "call_x", Name: "read_file", Arguments: json.RawMessage(`{"path":"a"}`)}
-		return schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &tc}}}}
+		return schema.Turn{Kind: schema.TurnAssistant, RoundID: "r_announce", Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &tc}}}}
 	}
 	stamp := func(turn schema.Turn, id string, span schema.TurnSpanKind) schema.Turn {
 		turn.Format = schema.TurnFormatIdentity
@@ -439,6 +465,16 @@ func TestResultSettlesAnnouncementAcrossDeliverySplit(t *testing.T) {
 	if calls[0].ArgumentsJSON != `{"path":"a"}` || calls[0].Output != "out" {
 		t.Errorf("settled call arguments=%q output=%q, want the announcement's arguments and the result's output", calls[0].ArgumentsJSON, calls[0].Output)
 	}
+	// The settled call keeps the ANNOUNCEMENT's identity. The announcement is
+	// the item a client already saw, and the index never replaces it: a result
+	// adds a contributor to the item at the announcing part's position
+	// (transcriptindex build.go's applyResults -> addContributor), so ID and
+	// RoundID stay the announcement's. A merge must not hand the item the
+	// result entry's own identity, or a client reconciling by item id sees one
+	// item disappear and another appear for the same call (#1166 review).
+	if calls[0].ID != "item_tool_2_0" || calls[0].RoundID != "r_announce" {
+		t.Errorf("settled call identity id=%q round=%q, want the announcement's item_tool_2_0/r_announce", calls[0].ID, calls[0].RoundID)
+	}
 	// The delivery keeps a turn of its own.
 	var delivery appwire.Turn
 	for _, turn := range turns {
@@ -459,6 +495,280 @@ func TestResultSettlesAnnouncementAcrossDeliverySplit(t *testing.T) {
 // announcement keeps its own arguments instead of receiving the first's
 // result, and the first keeps the arguments the result settled (#1166
 // review).
+// TestHiddenAnnouncementAdvancesAwaitingLookup covers a provider that reuses a
+// completed read_file call id for a later communicate. The assistant entry
+// announcing the communicate projects NO item — every communicate call is
+// deferred to its result — and that result failed prevalidation, so the
+// projector renders it as a standalone error item without an announcement.
+//
+// The index advances its awaiting entry from the assistant ENTRY whenever the
+// entry carries a tool call (transcriptindex build.go's recordTurn: "if
+// r.Kind != turnKindLegacy && entry.Kind == schema.TurnAssistant &&
+// hasToolCall(entry)"), whether or not that call projects an item. Its lookup
+// therefore stops pointing at the read_file announcement, and the failed
+// communicate result attaches to nothing. The full read must do the same: a
+// lookup advanced only by VISIBLE announcements still points at read_file and
+// would merge the communicate's error onto the earlier call, replacing its
+// name, arguments and completed status (#1166 review).
+func TestHiddenAnnouncementAdvancesAwaitingLookup(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "hidden_announcement"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamp := func(turn schema.Turn, id string, span schema.TurnSpanKind) schema.Turn {
+		turn.Format = schema.TurnFormatIdentity
+		turn.TurnID = id
+		turn.TurnKind = span
+		return turn
+	}
+	record := func(turn schema.Turn) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceVerbatim}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	readCall := llm.ToolCallData{ID: "call_reuse", Name: "read_file", Arguments: json.RawMessage(`{"path":"a"}`)}
+	commCall := llm.ToolCallData{ID: "call_reuse", Name: "communicate", Arguments: json.RawMessage(`{"message":"hi"}`)}
+	record(stamp(schema.NewTurn(schema.TurnUserInput, llm.User("go")), "t_exec", schema.TurnSpanExecution))
+	record(stamp(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		{Kind: llm.ContentToolCall, ToolCall: &readCall},
+	}}}, "t_exec", ""))
+	record(stamp(schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call_reuse", "read_file", "read-out", false)), "t_exec", ""))
+	// A later round reuses the id for a communicate, which projects no item.
+	// It has to be an INHERITED announcement: only that defers a communicate
+	// through the registry, and only then does the rejected result project an
+	// item of its own for the merge to reach.
+	commTurn := schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		{Kind: llm.ContentToolCall, ToolCall: &commCall},
+	}}}
+	commTurn.Authorship = &schema.TranscriptAuthorship{Inherited: true}
+	record(stamp(commTurn, "t_exec", ""))
+	record(stamp(schema.NewTurn(schema.TurnToolResults, llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_reuse", Name: "communicate", Content: "bad args", IsError: true, PrevalOnly: true}},
+	}}), "t_exec", ""))
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	var readItems []appwire.ThreadItem
+	for _, turn := range turns {
+		for _, item := range turn.Items {
+			if item.CallID == "call_reuse" && item.ToolName == "read_file" {
+				readItems = append(readItems, item)
+			}
+		}
+	}
+	if len(readItems) != 1 {
+		t.Fatalf("read_file items = %d (%+v), want 1", len(readItems), readItems)
+	}
+	// The earlier call survives intact: the communicate's error must not
+	// overwrite the read_file announcement it happens to share an id with.
+	if readItems[0].ToolName != "read_file" || readItems[0].ArgumentsJSON != `{"path":"a"}` ||
+		readItems[0].Output != "read-out" || readItems[0].Status != appwire.TurnStatusCompleted {
+		t.Errorf("read_file call = name=%q args=%q output=%q status=%q, want the earlier completed call untouched",
+			readItems[0].ToolName, readItems[0].ArgumentsJSON, readItems[0].Output, readItems[0].Status)
+	}
+}
+
+// TestSplitExecutionSharesOneMetadata covers a cold delivery landing inside an
+// execution that then fails. The execution's entries land on two runs of one
+// stamped id, with the delivery between them. The index holds ONE summary per
+// turn id, so both of its fragments carry the execution's whole status and
+// whole usage; a full read that stamped each run from its own local entries
+// would call the pre-delivery run completed on partial usage while the turn
+// actually failed, and a client comparing the two readers would see a turn
+// that succeeded in one and failed in the other (#1166 review).
+func TestSplitExecutionSharesOneMetadata(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "split_execution_metadata"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamp := func(turn schema.Turn, id string, span schema.TurnSpanKind) schema.Turn {
+		turn.Format = schema.TurnFormatIdentity
+		turn.TurnID = id
+		turn.TurnKind = span
+		return turn
+	}
+	record := func(turn schema.Turn) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceVerbatim}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	tc := llm.ToolCallData{ID: "call_split", Name: "read_file", Arguments: json.RawMessage(`{"path":"a"}`)}
+	goTurn := stamp(schema.NewTurn(schema.TurnUserInput, llm.User("go")), "t_exec", schema.TurnSpanExecution)
+	goTurn.Usage = llm.Usage{InputTokens: 10, OutputTokens: 1, TotalTokens: 11}
+	record(goTurn)
+	callTurn := stamp(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		{Kind: llm.ContentToolCall, ToolCall: &tc},
+	}}}, "t_exec", "")
+	callTurn.Usage = llm.Usage{InputTokens: 20, OutputTokens: 2, TotalTokens: 22}
+	record(callTurn)
+	// A cold writer's delivery, splitting the execution.
+	record(stamp(schema.NewTurn(schema.TurnSteering, llm.User("cold")), "turn_delivery_2", schema.TurnSpanDelivery))
+	// The execution fails.
+	failTurn := stamp(schema.NewTurn(schema.TurnFailure, llm.User("boom")), "t_exec", "")
+	failTurn.Usage = llm.Usage{InputTokens: 30, OutputTokens: 3, TotalTokens: 33}
+	record(failTurn)
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	var runs []appwire.Turn
+	for _, turn := range turns {
+		if turn.ID == "t_exec" && len(turn.Items) > 0 {
+			runs = append(runs, turn)
+		}
+	}
+	if len(runs) != 2 {
+		t.Fatalf("t_exec runs = %d (%+v), want the execution split by the delivery", len(runs), runs)
+	}
+	// Every visible run carries the execution's whole metadata, so no run
+	// advertises a completed turn that in fact failed, and no run reports a
+	// share of the usage that the index reports as a total.
+	for i, run := range runs {
+		if run.Status != appwire.TurnStatusFailed {
+			t.Errorf("run %d status = %q, want the execution's failed status", i, run.Status)
+		}
+		if run.Usage == nil {
+			t.Fatalf("run %d usage = nil, want the execution's total", i)
+		}
+		if got := run.Usage.InputTokens; got != 60 {
+			t.Errorf("run %d input tokens = %d, want the execution's total 60", i, got)
+		}
+	}
+}
+
+// TestItemlessDeliveryKeepsOneVisibleRun covers a stamped delivery that
+// projects no item at all, landing between two visible runs of one execution
+// (an attention-resolution entry with no text). The index has no candidate for
+// the delivery, so its items of the execution are one contiguous run; the full
+// read must not emit the execution as two adjacent turns sharing an id, which
+// a client reconciling by turn id would read as one overwriting the other
+// (#1166 review).
+func TestItemlessDeliveryKeepsOneVisibleRun(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "itemless_delivery"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stamp := func(turn schema.Turn, id string, span schema.TurnSpanKind) schema.Turn {
+		turn.Format = schema.TurnFormatIdentity
+		turn.TurnID = id
+		turn.TurnKind = span
+		return turn
+	}
+	record := func(turn schema.Turn) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceVerbatim}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	record(stamp(schema.NewTurn(schema.TurnUserInput, llm.User("go")), "t_split", schema.TurnSpanExecution))
+	// An attention resolution is a real delivery turn that projects NO item:
+	// it is transcript-only bookkeeping (agent/schema/turn.go's TranscriptOnly
+	// includes TurnAttentionResolution in the kinds that project nothing), and
+	// the writer stamps it as a delivery of its own (PlaceAsync).
+	itemless := schema.NewTurn(schema.TurnAttentionResolution, llm.System("Attention resolved."))
+	itemless.AttentionResolution = &schema.AttentionResolutionInfo{AttentionID: "att_1", Disposition: "resume"}
+	record(stamp(itemless, "turn_delivery_empty", schema.TurnSpanDelivery))
+	record(stamp(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		{Kind: llm.ContentText, Text: "done"},
+	}}}, "t_split", ""))
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	full := shapesFromTurns(turns)
+	indexed := shapesFromCandidates(indexCandidates(t, path))
+	if !reflect.DeepEqual(full, indexed) {
+		t.Fatalf("full read turn structure = %+v, want the index's %+v", full, indexed)
+	}
+}
+
+// TestLegacySiblingGroupsStayWhole covers a legacy transcript where a
+// standalone entry (a hook completion) closes one group and an explicitly
+// owned steering entry later reopens a group with the SAME id. Those are two
+// legacy groups, and the index keeps a separate summary for each — no summary
+// spans them — so each is a whole turn to the bounded reader. A full read that
+// marked them partial because the id repeats would tell a client a turn
+// continues where the index says it ends (#1166 review).
+func TestLegacySiblingGroupsStayWhole(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "legacy_siblings"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := func(turn schema.Turn) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceVerbatim}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	user := schema.NewTurn(schema.TurnUserInput, llm.User("go"))
+	user.StableTurnID = "turn_a"
+	record(user)
+	hook := schema.NewTurn(schema.TurnHookCompleted, llm.System("hook ran"))
+	hook.Hook = &schema.HookInfo{Event: "Stop"}
+	record(hook)
+	// An explicitly owned steering entry reopens the SAME id after the hook
+	// closed the group.
+	steering := schema.NewTurn(schema.TurnSteering, llm.User("again"))
+	steering.OwningTurnID = "turn_a"
+	record(steering)
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	full := shapesFromTurns(turns)
+	indexed := shapesFromCandidates(indexCandidates(t, path))
+	if !reflect.DeepEqual(full, indexed) {
+		t.Fatalf("full read turn structure = %+v, want the index's %+v", full, indexed)
+	}
+	// No legacy group claims to continue another: the index has one summary
+	// per group and reports each whole.
+	for _, turn := range turns {
+		if turn.HasEarlierItems || turn.HasLaterItems {
+			t.Errorf("legacy turn %q earlier=%v later=%v view=%q, want a whole turn",
+				turn.ID, turn.HasEarlierItems, turn.HasLaterItems, turn.ItemsView)
+		}
+	}
+}
+
 func TestDuplicateAnnouncementInOneEntrySettlesFirst(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
 	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "duplicate_announcement"})

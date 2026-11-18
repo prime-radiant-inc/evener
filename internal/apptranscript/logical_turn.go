@@ -94,6 +94,11 @@ type groupedTurn struct {
 	// entries are the group's decoded entries in arrival order, including
 	// entries whose projector emitted no items (they still carry stamps).
 	entries []schema.Turn
+	// entryIndexes is each entry's global 1-based index, parallel to entries.
+	// A stamped ASSISTANT entry advances the settlement lookup even when it
+	// projects no item, so the walk over this group needs the entries the
+	// projector never reported.
+	entryIndexes []int
 	// items are the group's projected items in arrival order, before merge.
 	items []appwire.ThreadItem
 	// itemEntries is each item's announcing entry index, parallel to items.
@@ -180,6 +185,7 @@ func (a *logicalTurnAccumulator) appendEntry(entry schema.Turn, entryIndex int, 
 	}
 	last := &a.turns[len(a.turns)-1]
 	last.entries = append(last.entries, entry)
+	last.entryIndexes = append(last.entryIndexes, entryIndex)
 	if len(items) > 0 {
 		last.items = append(last.items, items...)
 		for range items {
@@ -269,6 +275,19 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 	// the runs. Merging per run would leave the announcement unsettled and
 	// emit the result as a second item without the announcement's arguments.
 	settled := settleTurnCalls(acc.turns)
+	// A stamped turn's metadata belongs to the TURN, not to each run of it. A
+	// cold delivery can split one turn id into several runs here while the
+	// index keeps one summary for them, so stamping each run from its own
+	// entries would show a pre-delivery run as completed with a share of the
+	// usage while the turn really failed with the total — two readers
+	// describing different turns (#1166 review). The entries of every run of
+	// an id are folded once, and that one result stamps each visible run.
+	stamps := make(map[string][]schema.Turn, len(acc.turns))
+	for i := range acc.turns {
+		if acc.turns[i].stamped {
+			stamps[acc.turns[i].turnID] = append(stamps[acc.turns[i].turnID], acc.turns[i].entries...)
+		}
+	}
 	preludeMerged := false
 	for i := range acc.turns {
 		group := &acc.turns[i]
@@ -289,7 +308,11 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 			return ItemTurnProjection{}, err
 		}
 		turn := appwire.Turn{ID: group.turnID, Items: positioned, ItemsView: "full", Status: appwire.TurnStatusCompleted}
-		StampGroupedTurn(&turn, group.entries)
+		if group.stamped {
+			StampGroupedTurn(&turn, stamps[group.turnID])
+		} else {
+			StampGroupedTurn(&turn, group.entries)
+		}
 		if prelude != nil && !preludeMerged && i == 0 && group.turnID == appwire.SystemPreludeTurnID {
 			// The header items hold entry position 0, so they must stay
 			// FIRST in the merged turn: a delivery recorded before the
@@ -307,8 +330,43 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 		// No group claimed the prelude id: the header items are the turn.
 		turns = append([]appwire.Turn{*prelude}, turns...)
 	}
-	markSplitTurnRuns(turns)
+	turns = joinItemlessRuns(turns)
+	markSplitTurnRuns(turns, acc.turns)
 	return ItemTurnProjection{Turns: turns, NextEntry: entryOrdinal}, nil
+}
+
+// joinItemlessRuns folds adjacent turns that share an id into the earlier one
+// when an entry between them projected nothing.
+//
+// A stamped delivery need not project an item: an attention resolution is
+// transcript-only bookkeeping (agent/schema/turn.go), and the writer stamps it
+// a delivery of its own (agent/session_attention.go, PlaceAsync). It therefore
+// splits the execution's groups here while contributing no visible turn — the
+// index never creates a candidate for it, so its items of that execution stay
+// one contiguous run and its summary is one turn. Left alone, the full read
+// would emit two adjacent turns with the same id, and a client reconciling by
+// turn id would see one overwrite the other (#1166 review).
+//
+// Positions still increase across the join: both runs belong to the same turn
+// and their entries are contiguous in the file, apart from the item-less
+// delivery, which consumed an entry ordinal no item references.
+func joinItemlessRuns(turns []appwire.Turn) []appwire.Turn {
+	joined := turns[:0]
+	for _, turn := range turns {
+		if len(turn.Items) == 0 {
+			continue
+		}
+		if n := len(joined); n > 0 && joined[n-1].ID == turn.ID && joined[n-1].Status == turn.Status {
+			joined[n-1].Items = append(joined[n-1].Items, turn.Items...)
+			if joined[n-1].Usage == nil {
+				joined[n-1].Usage = turn.Usage
+			}
+			joined[n-1].HasLaterItems = turn.HasLaterItems
+			continue
+		}
+		joined = append(joined, turn)
+	}
+	return joined
 }
 
 // markSplitTurnRuns flags the runs of a turn whose items another turn
@@ -333,14 +391,33 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 // The flags are defined for fragments, so a split run is one: a client that
 // receives both readers is told the same thing about a turn that continues
 // past another one, and a whole turn keeps the full view.
-func markSplitTurnRuns(turns []appwire.Turn) {
+func markSplitTurnRuns(turns []appwire.Turn, groups []groupedTurn) {
+	// Only a STAMPED turn's runs are fragments of one summary: the index keys
+	// its summaries by id for new-format entries, so a stamped id split by a
+	// delivery is one turn to it. Two LEGACY groups can share an id too (a
+	// hook completion closes one, an explicitly owned steering entry later
+	// reopens it), and the index keeps a separate summary for each, so each is
+	// whole. Marking those partial would tell a client a turn continues where
+	// the index says it ends (#1166 review).
+	stamped := make(map[string]bool, len(groups))
+	for i := range groups {
+		if groups[i].stamped {
+			stamped[groups[i].turnID] = true
+		}
+	}
 	seen := make(map[string]int, len(turns))
 	for i := range turns {
+		if !stamped[turns[i].ID] {
+			continue
+		}
 		seen[turns[i].ID]++
 	}
 	first := make(map[string]int, len(seen))
 	last := make(map[string]int, len(seen))
 	for i := range turns {
+		if !stamped[turns[i].ID] {
+			continue
+		}
 		if _, ok := first[turns[i].ID]; !ok {
 			first[turns[i].ID] = i
 		}
@@ -348,7 +425,7 @@ func markSplitTurnRuns(turns []appwire.Turn) {
 	}
 	for i := range turns {
 		id := turns[i].ID
-		if seen[id] < 2 || len(turns[i].Items) == 0 {
+		if !stamped[id] || seen[id] < 2 || len(turns[i].Items) == 0 {
 			continue
 		}
 		// A run opens at the front only when it is not the turn's first, and
@@ -392,6 +469,21 @@ func StampGroupedTurn(turn *appwire.Turn, entries []schema.Turn) {
 // items of the same call: every commandExecution item that carries a call id.
 func MergesByCallID(item appwire.ThreadItem) bool {
 	return item.Type == "commandExecution" && item.CallID != ""
+}
+
+// hasRecordedToolCall reports whether an entry's recorded message carries a
+// tool call. It is the full read's copy of transcriptindex's hasToolCall
+// (build.go:921), which decides whether an ASSISTANT entry becomes its turn's
+// awaiting entry. The test is on the ENTRY, not on the items it projects: a
+// communicate call is deferred to its result and projects nothing, so an
+// item-based test would miss the entry that ends the previous awaiting.
+func hasRecordedToolCall(turn *schema.Turn) bool {
+	for _, part := range turn.Message.Content {
+		if part.Kind == llm.ContentToolCall && part.ToolCall != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // settleTurnCalls folds every logical turn's calls and returns, per turn, the
@@ -453,50 +545,85 @@ func settleTurnCalls(groups []groupedTurn) [][]appwire.ThreadItem {
 			settled[g] = merged
 			continue
 		}
-		for i, item := range group.items {
-			entry := 0
-			if i < len(group.itemEntries) {
-				entry = group.itemEntries[i]
+		// The stamped walk runs over ENTRIES, not items, because the awaitings
+		// advance per entry: the index records a turn's awaiting assistant
+		// entry whenever that entry carries a tool call (build.go:1144-1146),
+		// and a communicate call carries none of its own, so an entry that
+		// projects no item still ends the previous awaiting. An item-only walk
+		// misses that entry and keeps settling later results into an earlier
+		// call that merely shares the id (#1166 review).
+		itemAt := 0
+		for ei := range group.entries {
+			entryIndex := group.entryIndexes[ei]
+			start := itemAt
+			for itemAt < len(group.items) && group.itemEntries[itemAt] == entryIndex {
+				itemAt++
 			}
-			if !MergesByCallID(item) {
-				merged = append(merged, item)
-				continue
-			}
-			if item.Status == appwire.TurnStatusInProgress {
-				// An announcement always opens its own item, and its entry
-				// becomes the awaiting one. Only the first part of that entry
-				// to carry this id is a settlement target, which is the index's
-				// "call id already seen" rule.
+			entryItems := group.items[start:itemAt]
+			turn := &group.entries[ei]
+			if turn.Kind == schema.TurnAssistant && hasRecordedToolCall(turn) {
+				// The awaiting entry is this one, and its settlement targets
+				// are the items its parts announced. A part that projects no
+				// item contributes none: the index looks the item up by part
+				// and finds nothing, so a result for that id settles nowhere.
 				aw := open[group.turnID]
-				if aw == nil || aw.entry != entry {
-					aw = &awaiting{entry: entry, calls: make(map[string]slot)}
+				if aw == nil || aw.entry != entryIndex {
+					aw = &awaiting{entry: entryIndex, calls: make(map[string]slot)}
 					open[group.turnID] = aw
 				}
-				if _, seen := aw.calls[item.CallID]; !seen {
-					aw.calls[item.CallID] = slot{group: g, at: len(merged)}
-				}
-				merged = append(merged, item)
-				continue
-			}
-			// A result settles the awaiting entry's announcement of this id.
-			// Every matching part of one results entry attaches there, as the
-			// index contributes each of them to the same item.
-			if aw := open[group.turnID]; aw != nil {
-				if target, ok := aw.calls[item.CallID]; ok {
-					// The group being built has no published slice yet, so its
-					// slot is read from merged directly.
-					var holder *appwire.ThreadItem
-					if target.group == g {
-						holder = &merged[target.at]
-					} else {
-						holder = &settled[target.group][target.at]
+				at := len(merged)
+				for _, item := range entryItems {
+					if MergesByCallID(item) && item.Status == appwire.TurnStatusInProgress {
+						if _, seen := aw.calls[item.CallID]; !seen {
+							aw.calls[item.CallID] = slot{group: g, at: at}
+						}
 					}
-					*holder = MergeThreadItems(*holder, item)
+					at++
+				}
+			}
+			for _, item := range entryItems {
+				if !MergesByCallID(item) {
+					merged = append(merged, item)
 					continue
 				}
+				// A result settles the awaiting entry's announcement of this
+				// id. Every matching part of one results entry attaches there,
+				// as the index contributes each of them to the same item.
+				if item.Status != appwire.TurnStatusInProgress {
+					if aw := open[group.turnID]; aw != nil {
+						if target, ok := aw.calls[item.CallID]; ok {
+							// The group being built has no published slice
+							// yet, so its slot is read from merged directly.
+							var holder *appwire.ThreadItem
+							if target.group == g {
+								holder = &merged[target.at]
+							} else {
+								holder = &settled[target.group][target.at]
+							}
+							// The announcement is the item a client already
+							// saw, so the settled item keeps ITS identity: the
+							// index never replaces it, it adds a contributor to
+							// the item at the announcing part's position
+							// (build.go's applyResults -> addContributor).
+							// Merging the result's own ID here would make one
+							// item vanish and another appear for the same call,
+							// which is what a client reconciles by. RoundID has
+							// no general fallback either: a results entry
+							// carries none, so a merge that does not force it
+							// drops the round the announcement belonged to
+							// (#1166 review).
+							identity, round := holder.ID, holder.RoundID
+							*holder = MergeThreadItems(*holder, item)
+							holder.ID, holder.RoundID = identity, round
+							continue
+						}
+					}
+				}
+				// An announcement opens its own item: a duplicate announcement
+				// is still an announcement. A stray result opens its own
+				// record, so nothing is dropped.
+				merged = append(merged, item)
 			}
-			// A stray result opens its own record, so nothing is dropped.
-			merged = append(merged, item)
 		}
 		settled[g] = merged
 	}

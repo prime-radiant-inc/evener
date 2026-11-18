@@ -609,14 +609,45 @@ func (x *Index) preludeCandidate(i int) appitempaging.TranscriptItemCandidate {
 	position := appwire.ThreadItemPosition{Entry: 0, Item: uint32(i)}
 	item.Position = &position
 	item.TranscriptKey = ItemKey(turn.ID, position)
+	// The header prelude and the stamped pre-execution entries that share its
+	// id are ONE turn to a reader: a fresh transcript records its startup
+	// entries under the prelude id (agent/transcript/placement.go stamps them
+	// TurnSpanPrelude), and the full read emits them as a single turn with the
+	// header's items first. So a header item continues later whenever any item
+	// of that turn follows it — including the items the index holds in the
+	// stamped summary for the same id rather than in x.prelude. Counting the
+	// header's own items alone would let a page ending at the prompt claim a
+	// whole turn and drop the continuation a client fetches the rest by
+	// (#1166 review).
+	later := i+1 < len(x.prelude.Items) || x.preludeHasStampedItems()
 	return appitempaging.TranscriptItemCandidate{
 		TurnID:          turn.ID,
 		Turn:            turn,
 		Item:            item,
 		Position:        position,
 		HasEarlierItems: i > 0,
-		HasLaterItems:   i+1 < len(x.prelude.Items),
+		HasLaterItems:   later,
 	}
+}
+
+// preludeHasStampedItems reports whether the index holds items beyond the
+// header's for the prelude's turn id — the stamped pre-execution entries a
+// fresh transcript writes under that id. The header itself lives in x.prelude
+// and has no summary, so the stamped items are the only other place the same
+// turn's items can be.
+func (x *Index) preludeHasStampedItems() bool {
+	if x.prelude == nil {
+		return false
+	}
+	slot, found, err := x.turnSlotOf(x.prelude.ID)
+	if err != nil || !found {
+		return false
+	}
+	record, err := x.turnRecordAt(slot)
+	if err != nil {
+		return false
+	}
+	return record.ItemCount > 0
 }
 
 // lastCandidate is the very last item overall (prelude or indexed), or nil
