@@ -1467,7 +1467,7 @@ func TestRestoreSessionFromMeta_NoTranscript_StartsClean(t *testing.T) {
 				t.Error("request did not use the published header's system prompt")
 			}
 			systemPrompt := s.transcript.Header().SystemPrompt
-			evs := append(startupEvents, served.settle(s)...)
+			evs := slices.Concat(startupEvents, served.settle(s))
 			if !slices.ContainsFunc(evs, func(ev events.SessionEvent) bool {
 				warning, ok := ev.Data.(events.WarningData)
 				return ok && ev.Kind == events.EventWarning && warning.Code == "transcript_publication_sync"
