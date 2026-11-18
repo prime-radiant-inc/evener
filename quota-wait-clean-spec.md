@@ -30,12 +30,27 @@ first wait or the second.
   even when epoch time collides or steps back. The deadline arithmetic
   (`deadline = wall-clock wait start + delayMs`) is separate: the identity
   orders waits; the wall clock times them.
+- `resumesAt` (absolute epoch-ms instant) on the live start announcement
+  (`ThreadModelRetryParams`): the daemon's own answer for when the call
+  resumes, the same instant the read summary carries. The client renders the
+  countdown from it directly — never `identity + delayMs`, which is nonsense
+  arithmetic once the identity is a sequence. `delayMs` stays for the
+  ordinary retry line and the receipt-clock fallback.
+- `endedTurnId` on the terminal thread status frame: the id of the turn the
+  Stop ended, which the frame today omits. Without it no client rule can
+  always tell whether a buffered Stop ended the snapshot's running turn or
+  an older turn the snapshot already replaced — the exact ambiguity that
+  consumed six rounds of the previous implementation. Older-daemon frames
+  (no `endedTurnId`) preserve the running turn from the snapshot; they
+  never infer ownership.
 - **Older-daemon fallback:** a frame with no stamp (a daemon that predates the
   field) reconciles by turn ownership only, never by clock, and may not clear
   or overwrite a stamped wait's deadline (see Legacy below).
-- **Acceptance:** a late wake or read carrying wait 1's stamp, arriving while
-  the model holds wait 2 of the same turn, leaves wait 2's deadline, stamp, and
-  chip intact — even when both waits' reset deadlines match exactly.
+- **Acceptance (producer layer):** the stamp is strictly increasing per
+  turn and present on start, wake, and read summary; the start announcement
+  carries `resumesAt` agreeing with the read summary for the same wait;
+  the terminal status carries `endedTurnId`. (The stale-wake reconciliation
+  this enables is Stage 2's gate.)
 
 ## Stage 1 — Daemon projection for delegates
 
@@ -48,9 +63,9 @@ would show no wait while its sidebar row shows one.
   projection records the wait's deadline, stamp, and elapsed sample the same
   way the session's own failure facet does, so the existing read cut captures
   it without consulting the live session under the cut.
-- **Acceptance:** a fresh delegate read restores the wait during a slot hold
-  past the reset (pending state, not silence), and clears it when the retry
-  begins. The sidebar row and a newly opened pane agree at that moment.
+- **Acceptance (read layer):** a fresh delegate read restores the wait
+  during a slot hold past the reset, and clears it when the retry begins.
+  (The pane-vs-sidebar agreement this enables is Stage 3's gate.)
 - The elapsed sample the producer supplies at wait start is the call's real
   elapsed time (time already spent in the model call before the limit hit),
   not zero; verified with a call that spends measurable time before hitting
@@ -98,8 +113,8 @@ announcement carries.
 A wait carries:
 - `deadline` — absolute resume instant (ISO string). Producers: the thread
   read's failure summary (`resumesAt`), and a stamped live announcement
-  (`waitStartedAt + delayMs`, the daemon's own arithmetic). An unstamped
-  announcement (older daemon) installs no deadline.
+  (its own `resumesAt`). An unstamped announcement (older daemon) installs
+  no deadline.
 - `stamp` — the daemon-issued `waitStartedAt`, stored only as the daemon's
   value, never the client's receipt instant (a fast browser clock would
   otherwise refuse authoritative post-reset reads).
@@ -162,9 +177,15 @@ the Stop retires nothing.
   against it, and a genuinely new turn arrives post-cut, in order, and
   publishes by the ordinary reducer rules (scenario 18's start is post-cut).
 - **Wait start** (positive-delay announcement): fills the deadline and stamp
-  when the model holds none; fills chip metadata only when the stamp is
-  already held (equal); skipped when older than the held stamp, or when a
-  later buffered transition replaces its turn.
+  — but the snapshot is authoritative for wait PRESENCE too: the daemon
+  clears its live wait before emitting the wake, so a read can legitimately
+  show the same turn running with no wait while the buffer still holds the
+  start ahead of its wake. A pre-cut start against a snapshot showing no
+  wait therefore installs nothing — the wait's end is already reflected.
+  Pre-cut starts may only enrich: a matching-stamp start fills chip
+  metadata on an existing wait. New waits are established post-cut, in
+  order. Skipped when older than the held stamp, or when a later buffered
+  transition replaces its turn.
 - **Wait end** (zero-delay wake, or a same-buffer start+wake pair): clears
   the matching wait's deadline, stamp, and chip together; a same-buffer pair
   over a snapshot already showing the resumed output is one cancellation —
@@ -176,10 +197,11 @@ the Stop retires nothing.
   has its own announcement. Pre-cut, the snapshot's own transition wins: a
   snapshot naming C is not overwritten by a buffered A→B frame.
 - **Termination** (a terminal status naming no turn): applies pre-cut only
-  when the snapshot names the running turn AND nothing in the buffer
-  replaces that turn — that is the ownership evidence the frame itself
-  lacks. Otherwise it retires nothing; scenarios 10 and 19 differ exactly
-  by whether the snapshot names the turn the Stop ended.
+  when its `endedTurnId` names the turn the snapshot shows running AND
+  nothing in the buffer replaces that turn. The frame supplies its own
+  ownership; nothing is inferred. An older-daemon Stop with no
+  `endedTurnId` preserves the running turn from the snapshot — scenarios
+  10 and 19 differ exactly by whether the frame names the snapshot's turn.
 - **Legacy unstamped frames** reconcile by turn ownership: an unstamped wake
   owning the held legacy wait's turn clears that wait — deadline and chip
   together, including the chip-only case. An unstamped frame may never clear
@@ -229,8 +251,9 @@ all of them. Tests assert behavior (levels, computed values, class presence)
 9. A read the repository refuses drops only its pre-cut quota transitions;
    versioned history, queue updates, and post-cut frames deliver normally,
    each applied at most once.
-10. A buffered terminal status against a snapshot still running that turn
-    applies, ending the turn the snapshot names.
+10. A buffered terminal status whose `endedTurnId` names the turn a snapshot
+    still shows running applies, ending that turn; an older-daemon Stop with
+    no `endedTurnId` preserves the snapshot's running turn.
 11. A passed read deadline plus a late unstamped announcement with receipt
     runway: pending, not a countdown leaping forward.
 12. An equal-stamp buffered announcement fills model/elapsed/receipt metadata
