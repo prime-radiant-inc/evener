@@ -272,7 +272,7 @@ func TestReattachedSteerAppendsOneEntryPerAcceptedMutation(t *testing.T) {
 	if !restored.hasPendingUserSteering() {
 		t.Fatal("the steer did not survive the daemon replacement; nothing downstream can deliver it")
 	}
-	_, ran, err := restored.ProcessPendingUserInput(t.Context(), nil)
+	_, ran, _, err := restored.ProcessPendingUserInput(t.Context(), nil)
 	if err != nil {
 		t.Fatalf("carrier input: ran=%v err=%v", ran, err)
 	}
@@ -308,12 +308,12 @@ func TestReattachedSteerAppendsOneEntryPerAcceptedMutation(t *testing.T) {
 
 	// An incorporated steer is only a duplicate if it is appended again. Drive
 	// both ways: another wake in this process, and another replacement.
-	if _, _, err := restored.ProcessPendingUserInput(t.Context(), nil); err != nil {
+	if _, _, _, err := restored.ProcessPendingUserInput(t.Context(), nil); err != nil {
 		t.Fatalf("second wake over an incorporated steer: %v", err)
 	}
 	restored.Close()
 	again := restoreWithScriptedModel(t, dir, id)
-	if _, _, err := again.ProcessPendingUserInput(t.Context(), nil); err != nil {
+	if _, _, _, err := again.ProcessPendingUserInput(t.Context(), nil); err != nil {
 		t.Fatalf("wake after a second replacement: %v", err)
 	}
 	assertOneEntryPerMutation(t, again, steerID, schema.TurnSteering, steerText)
