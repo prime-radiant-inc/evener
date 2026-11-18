@@ -46,8 +46,28 @@ func escapeWorkingNote(msg llm.Message) string {
 	// readings see as fenced keeps its bytes. Escaping is idempotent and never
 	// adds or removes a fence delimiter, so the second pass cannot re-open what
 	// the first closed.
-	joined := strings.Join(sysmsg.EscapePhasedText(texts, phases, "openai-responses"), "\n")
-	return sysmsg.EscapeModelAuthoredFrames(joined)
+	//
+	// The escaped segments are joined back onto the parts they came from and
+	// concatenated, not joined with a separator: the adapter groups same-phase
+	// parts into one message, so the model read them as one run of characters.
+	// A path or identifier split across two parts has to stay one token in the
+	// note; escaping is what may not change that, and before the escape existed
+	// Message.Text() preserved it (#6493 review).
+	var note strings.Builder
+	segments := sysmsg.TextSegments(phases, "openai-responses")
+	escapedSegments := sysmsg.EscapePhasedText(texts, phases, "openai-responses")
+	for s, span := range segments {
+		pieces, ok := sysmsg.SplitJoinedEscape(escapedSegments[s], texts[span[0]:span[1]])
+		if !ok {
+			// The scan changed the line structure; carry the parts as they are
+			// rather than invent boundaries the model did not write.
+			pieces = texts[span[0]:span[1]]
+		}
+		for _, piece := range pieces {
+			note.WriteString(piece)
+		}
+	}
+	return sysmsg.EscapeModelAuthoredFrames(note.String())
 }
 
 // maxCheckpointChars caps a checkpoint to avoid ballooning the context. The

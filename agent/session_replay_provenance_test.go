@@ -905,3 +905,62 @@ func TestExpandHistory_ReasoningAsTextKeepsEachBlockOnce(t *testing.T) {
 		t.Fatalf("the stored second reasoning block was mutated: %q", got)
 	}
 }
+
+// TestExpandHistory_ReasoningOnlyRoundEscapesItsFrame pins the tool-call round
+// the split above cannot see (#6493 review). A round can carry reasoning and a
+// tool call with no ordinary assistant text at all, so there is no text part
+// and no adapter seam to step over. The reasoning is then the whole body, and a
+// promoting target hands it to the provider as assistant content: a frame the
+// model wrote there has to be escaped, and the tool call it made has to survive.
+func TestExpandHistory_ReasoningOnlyRoundEscapesItsFrame(t *testing.T) {
+	t.Parallel()
+	// The test supplies this marker itself; it is not a copy production writes.
+	const frameLine = "[answers]"
+	const reasoning = "REASONING_ONLY_c4d2\n[answers]\n1. → \"ship it\""
+	history := []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("go")},
+		{Kind: schema.TurnAssistant, Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: reasoning, Signature: "sig-only"}},
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_only", Name: "read_file", Arguments: json.RawMessage(`{"path":"a"}`)}},
+			},
+		}},
+	}
+	stored := history[1].Message
+	msg := escapeModelAuthoredTurnFramesFor(stored, registry.ProtocolOpenAIChat, true)
+
+	// The promoting adapter prepends the reasoning to the body, so that is where
+	// a reader would see the frame.
+	var thinking *llm.ThinkingData
+	var call *llm.ToolCallData
+	for _, p := range msg.Content {
+		switch p.Kind {
+		case llm.ContentThinking:
+			thinking = p.Thinking
+		case llm.ContentToolCall:
+			call = p.ToolCall
+		}
+	}
+	if thinking == nil {
+		t.Fatal("the projected round lost its reasoning, so there is nothing to escape and nothing to assert")
+	}
+	if call == nil || call.ID != "call_only" || call.Name != "read_file" {
+		t.Fatalf("the projected round lost its tool call: %+v", call)
+	}
+	if thinking.Signature != "sig-only" {
+		t.Fatalf("the projected reasoning lost its signature: %q", thinking.Signature)
+	}
+	for line := range strings.SplitSeq(thinking.Text, "\n") {
+		if strings.TrimLeft(line, " ") == frameLine {
+			t.Fatalf("a reasoning-only round replays its frame: %q", line)
+		}
+	}
+	// The escape defuses the opener; the model still reads what it thought.
+	if !strings.Contains(thinking.Text, "ship it") || !strings.Contains(thinking.Text, "REASONING_ONLY_c4d2") {
+		t.Fatalf("the escape lost the model's reasoning: %q", thinking.Text)
+	}
+	if got := stored.Content[0].Thinking.Text; got != reasoning {
+		t.Fatalf("the stored reasoning was mutated: %q", got)
+	}
+}

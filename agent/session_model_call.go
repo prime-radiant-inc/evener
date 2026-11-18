@@ -218,6 +218,11 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// A request's coverage belongs to its history snapshot. A later fold may
 	// replace a retracted frontier before this request stages its inputs.
 	historyCoverage := s.snapshotConversationCoverageLocked(historyTurns)
+	// The revision travels with the history it describes. Reading it later, at
+	// the tail of this build or at dispatch, would record whatever a fold in
+	// between had published rather than what this request presents (#6493
+	// review).
+	historySnapshotRevision := s.historyRevision
 	inFlightFrom := s.turnHistoryBaseline
 	suppressedDocuments := make(map[string]struct{}, len(s.rejectedToolResultDocuments)+len(s.pendingToolResultDocuments))
 	for id := range s.rejectedToolResultDocuments {
@@ -451,7 +456,10 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// follows the skill rebuilds because credit belongs to what the request
 	// actually carries.
 	s.stagePresentedAttentionCoverage(ctx, presentedTurns, deltaTurns)
-	s.stageConversationInputsWithCoverage(presentedTurns, historyCoverage)
+	// The later snapshots and appends above are append-only, which by
+	// construction does not bump historyRevision, so the snapshot's revision
+	// still describes the fold state this request presents.
+	s.stageConversationInputsWithCoverage(presentedTurns, historyCoverage, historySnapshotRevision)
 	t.RequestBuild = time.Since(tPhaseStart)
 	return profile, sys, history, req, fullHistory, reasoningEffort, nil
 }

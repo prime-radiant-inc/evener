@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/sysmsg"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
@@ -165,6 +166,24 @@ func responsesContinuationAnchorCarriesEscapableText(history []schema.Turn, from
 		// provider in the retained prefix (#6493 review).
 		if _, changed := escapeModelAuthoredTurnFramesReporting(history[i].Message, registry.ProtocolOpenAIResponses, false); changed {
 			return true
+		}
+		// The scan above reads one run of equal phases as one message, because
+		// that is how this adapter reassembles it. A retained Responses output
+		// is not necessarily shaped that way: the decoder keeps the phase and
+		// drops the boundary between two output messages that share one, so a
+		// fence left open in the first can spare a frame the second opens while
+		// the provider still holds that frame at the start of its own message
+		// (#6493 review). Asking each part on its own closes it: a frame spared
+		// only because an earlier part opened a fence is still escaped when its
+		// own part is scanned alone. The direction is safe — refusing an anchor
+		// sends full history, where the escape applies — and a part with
+		// nothing to escape is byte-identical either way, so a clean anchor
+		// stays eligible.
+		_, texts, _ := sysmsg.WireTextParts(history[i].Message)
+		for _, text := range texts {
+			if sysmsg.EscapeModelAuthoredFrames(text) != text {
+				return true
+			}
 		}
 	}
 	return false

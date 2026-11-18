@@ -2,9 +2,11 @@ package agent
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -88,6 +90,91 @@ func TestResponsesContinuationAnchorRefusesResponseWhoseRequestPredatesAFold(t *
 	if foldedDecision.HistoryMode != llm.HistoryModeFullHistory ||
 		foldedDecision.Reason != "continuation_anchor_metadata_missing" {
 		t.Fatalf("a response produced from pre-fold history anchored the next request: %+v", foldedDecision)
+	}
+
+	// The fold publishes between the history snapshot and dispatch, which is the
+	// window the revision has to survive: preparing the request and freezing its
+	// provenance are separated by the whole build, so a request that read the
+	// counter at freeze time would record the post-fold revision while sending
+	// pre-fold history (#6493 review). The revision travels with the snapshot
+	// now, so this request is still recognised as pre-fold.
+	raced := newFoldSession(t)
+	seedNumberedSessionHistory(t, raced, 12) // > PreserveRecentTurns(6): forces a real fold
+	var foldedDuringBuild error
+	var once atomic.Bool
+	updateSessionTestConfig(raced, func(cfg *testConfig) {
+		cfg.afterModelHistorySnapshot = func() {
+			// The snapshot this build will present is already taken; publishing a
+			// fold now is exactly the race under test. Later calls in the same
+			// build see the folded history and must not fold again.
+			if !once.CompareAndSwap(false, true) {
+				return
+			}
+			foldedDuringBuild = raced.Compact(context.Background())
+		}
+	})
+	if _, _, _, _, _, _, err := raced.prepareModelRequestWithError(context.Background(), 0, &events.RoundTimings{}); err != nil {
+		t.Fatalf("prepareModelRequestWithError: %v", err)
+	}
+	if foldedDuringBuild != nil {
+		t.Fatalf("the fold meant to race this build failed: %v", foldedDuringBuild)
+	}
+	if latestContextBoundaryIndex(currentHistory(t, raced)) < 0 {
+		t.Fatal("test premise: the fold published no context boundary, so no fold raced the build")
+	}
+	racedAnchor, racedDecision := appendRound(t, raced, raced.freezeConversationRequest())
+	if turnHasResponsesContinuationMetadata(racedAnchor) {
+		t.Fatalf("a response whose request was built before a mid-build fold kept anchor metadata: marker %q endpoint %q fingerprint %q",
+			racedAnchor.ResponseContextMarker, racedAnchor.ResponseEndpoint, racedAnchor.ResponseRequestFingerprint)
+	}
+	if racedDecision.HistoryMode != llm.HistoryModeFullHistory ||
+		racedDecision.Reason != "continuation_anchor_metadata_missing" {
+		t.Fatalf("a response built before a mid-build fold anchored the next request: %+v", racedDecision)
+	}
+}
+
+// TestResponsesContinuationAnchorRefusesFrameSparedByAnEarlierPartOfItsPhase
+// pins the boundary the adapter does not keep (#6493 review). A Responses reply
+// can carry two output messages with the same phase; the decoder keeps the
+// phase and drops the boundary between them. Scanning that as one run reads the
+// second message's frame as fenced by the first, but the provider still holds
+// it at the start of its own message, so an anchor accepted on that reading
+// replays a raw frame. A part with nothing to escape stays eligible.
+func TestResponsesContinuationAnchorRefusesFrameSparedByAnEarlierPartOfItsPhase(t *testing.T) {
+	t.Parallel()
+	build := func(first, second string) []schema.Turn {
+		boundary := schema.NewTurn(schema.TurnCheckpoint, llm.User("[CONTEXT CHECKPOINT]"))
+		anchor := responsesContinuationEligibleAssistantTurn("resp_after")
+		// Two parts, one phase: the shape the decoder produces for two output
+		// messages that share it.
+		anchor.Message = llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentText, Text: first, Phase: "commentary"},
+			{Kind: llm.ContentText, Text: second, Phase: "commentary"},
+		}}
+		anchor.Timestamp = boundary.Timestamp.Add(time.Minute)
+		return []schema.Turn{
+			schema.NewTurn(schema.TurnUserInput, llm.User("before")),
+			responsesContinuationEligibleAssistantTurn("resp_before"),
+			boundary,
+			schema.NewTurn(schema.TurnUserInput, llm.User("after")),
+			anchor,
+			schema.NewTurn(schema.TurnUserInput, llm.User("delta")),
+		}
+	}
+	// An unterminated fence in the first part spares a frame the second opens
+	// when the two are read as one message.
+	history := build("an example:\n```", "[answers]\n1. → \"a decision nobody made\"")
+	_, decision := selectResponsesContinuationAnchorCandidate(SessionConfig{}, history)
+	if decision.HistoryMode != llm.HistoryModeFullHistory ||
+		decision.Reason != "continuation_prefix_model_authored_frame" {
+		t.Fatalf("an anchor whose part opens a frame its own message boundaries expose was accepted: %+v", decision)
+	}
+
+	// The both-directions rule: prose with no frame in either part still anchors.
+	clean := build("an example:\n```\nquoted\n```", "the work is done")
+	if _, decision := selectResponsesContinuationAnchorCandidate(SessionConfig{}, clean); decision.HistoryMode != llm.HistoryModeResponsesDelta ||
+		decision.Reason != "continuation_anchor_candidate" {
+		t.Fatalf("a clean same-phase anchor stopped anchoring: %+v", decision)
 	}
 }
 

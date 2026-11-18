@@ -107,6 +107,37 @@ func EscapePhasedText(texts, phases []string, protocol string) []string {
 	return out
 }
 
+// SplitJoinedEscape splits escaped, the escape of strings.Join(originals, "\n"),
+// back into one piece per original, by each original's line count.
+//
+// The escape rewrites a frame's opening character and never adds or removes a
+// line or a line break, so a piece occupies exactly the lines its original did
+// and the split is the join read backwards. ok is false when the escaped text
+// does not have that shape, and the caller then leaves the text as stored
+// rather than hand back text split somewhere it was not.
+//
+// Two readers need it, for different reasons: the replay projection writes each
+// piece back into the part it came from, and checkpoint capture concatenates
+// the pieces so the note keeps the boundaries the model's own text had. Sharing
+// the splitter keeps them splitting the same scan the same way.
+func SplitJoinedEscape(escaped string, originals []string) (pieces []string, ok bool) {
+	lines := strings.Split(escaped, "\n")
+	pieces = make([]string, 0, len(originals))
+	at := 0
+	for _, original := range originals {
+		n := strings.Count(original, "\n") + 1
+		if at+n > len(lines) {
+			return nil, false
+		}
+		pieces = append(pieces, strings.Join(lines[at:at+n], "\n"))
+		at += n
+	}
+	if at != len(lines) {
+		return nil, false
+	}
+	return pieces, true
+}
+
 // HarnessTagPrefix is one line-start tag and how its name compares. The
 // spellings the harness writes differ in case where the writing code does:
 // <SYSTEM-REMINDER> is uppercase, <system-reminder> and

@@ -30,10 +30,15 @@ type conversationState struct {
 	consumedFrontierID string
 	generation         uint64
 	preparedInputs     []string
-	active             *schema.ConversationOutputProvenance
-	frontierID         string
-	inputs             []string
-	frontiers          []schema.ConversationFrontier
+	// preparedHistoryRevision is s.historyRevision at the snapshot
+	// preparedInputs was computed from. A request freezes both together, so the
+	// revision it carries describes the history it actually presents even when
+	// a fold publishes before the request dispatches (#6734 path 4).
+	preparedHistoryRevision int
+	active                  *schema.ConversationOutputProvenance
+	frontierID              string
+	inputs                  []string
+	frontiers               []schema.ConversationFrontier
 	// retractedFrontierID names a frontier node in frontiers whose durable
 	// carrier was retracted: a fold whose transcript commit was withheld
 	// minted the node and keeps it in the chain — the in-memory fold's live
@@ -284,10 +289,20 @@ func (s *Session) bindDescendantTranscriptPublication() {
 }
 
 func (s *Session) stageConversationInputs(turns []schema.Turn) {
-	s.stageConversationInputsWithCoverage(turns, nil)
+	s.mu.Lock()
+	revision := s.historyRevision
+	s.mu.Unlock()
+	s.stageConversationInputsWithCoverage(turns, nil, revision)
 }
 
-func (s *Session) stageConversationInputsWithCoverage(turns []schema.Turn, coverage map[string][]string) {
+// stageConversationInputsWithCoverage records the inputs this round presents
+// together with historyRevision, the revision of the history snapshot they were
+// computed from. The revision has to come from that snapshot rather than from
+// the moment of staging: a fold publishing between the two bumps the counter
+// without changing what this round already holds, and a request that recorded
+// the later value would claim to have seen history it never presented
+// (#6734 path 4).
+func (s *Session) stageConversationInputsWithCoverage(turns []schema.Turn, coverage map[string][]string, historyRevision int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	wasUnknown := s.conversation.unknown
@@ -297,6 +312,7 @@ func (s *Session) stageConversationInputsWithCoverage(turns []schema.Turn, cover
 		}
 	}
 	s.conversation.preparedInputs = s.conversationInputsWithCoverageLocked(turns, coverage)
+	s.conversation.preparedHistoryRevision = historyRevision
 	if s.conversation.unknown && !wasUnknown {
 		s.conversation.revision++
 	}
@@ -373,8 +389,12 @@ func (s *Session) freezeConversationRequest() *conversationRequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return &conversationRequest{
-		inputs:          slices.Clone(s.conversation.preparedInputs),
-		historyRevision: s.historyRevision,
+		inputs: slices.Clone(s.conversation.preparedInputs),
+		// The revision describes the history these inputs were computed from,
+		// not the counter's value now: preparing and dispatching are separated
+		// by the whole request build, and a fold publishing in that window would
+		// otherwise be recorded as if this request had seen it (#6734 path 4).
+		historyRevision: s.conversation.preparedHistoryRevision,
 		provenance: schema.ConversationOutputProvenance{
 			Version: 1, InstanceID: s.id, RunGeneration: s.conversation.generation,
 			RequestID: identifier.MustNewTurnID(),
