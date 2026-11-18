@@ -88,6 +88,17 @@ func (t *WSTransport) Send(ctx context.Context, msg Message) error {
 		return err
 	}
 	t.rec.RecordSend(data)
+	// A caller that is already gone must not have its frame written: the
+	// detach below is only for a write admitted while its caller was still
+	// waiting. Forwarding a pre-canceled frame would apply a mutation the
+	// caller cancelled — attach's pumpTransport reads a frame from stdin and
+	// still forwards it after Ctrl-C ended the bridge, which would land during
+	// shutdown. The check sits here, after the attempted-send record and
+	// immediately before the detach, so it refuses only frames no write has
+	// started for.
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	writeCtx, cancelWrite := frameWriteContext(ctx)
 	err = writeWebSocket(t.conn, writeCtx, websocket.MessageText, data)
 	cancelWrite()

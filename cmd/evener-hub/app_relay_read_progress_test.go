@@ -495,14 +495,27 @@ func testHubRelayInterruptedRead(t *testing.T, disconnect bool) {
 	if got := f.relays.relayCommandCount(rootRef); got != 0 {
 		t.Fatalf("interrupted read retained %d command owners", got)
 	}
-	// Assert the read the hub served, not the absence of an error string: the
-	// response must describe the ref that was requested. The subscription this
-	// read establishes is proved by the live notes below, which only reach a
-	// subscribed connection.
-	served, err := client.ThreadRead(f.ctx, appwire.ThreadReadParams{Ref: rootRef, Subscribe: true})
+	// The read after the interruption must be served *and subscribed*, and the
+	// subscription has to be this read's own. `client` subscribed to rootRef
+	// before the interrupted read, so that subscription alone would carry root
+	// notes to the relay and out to any downstream connection: a follow-up read
+	// that returned the right ref without subscribing would still look fine.
+	// Move the relay-holding demand to the child ref and withdraw rootRef, then
+	// run the follow-up read on a fresh downstream client, so the only
+	// subscription that can deliver the notes below is the one that read
+	// establishes.
+	if _, err := client.ThreadRead(f.ctx, appwire.ThreadReadParams{Ref: childRef, Subscribe: true}); err != nil {
+		t.Fatalf("hold the relay on %s: %v", childRef, err)
+	}
+	if _, err := client.ThreadUnsubscribe(f.ctx, appwire.ThreadUnsubscribeParams{Ref: rootRef}); err != nil {
+		t.Fatalf("withdraw the pre-interruption %s subscription: %v", rootRef, err)
+	}
+	after := f.open()
+	served, err := after.ThreadRead(f.ctx, appwire.ThreadReadParams{Ref: rootRef, Subscribe: true})
 	if err != nil {
 		t.Fatalf("read after interruption: %v", err)
 	}
+	// Assert the read the hub served, not the absence of an error string.
 	if served.Thread.Evener.Ref != rootRef {
 		t.Fatalf("read after interruption served ref %q, want %q", served.Thread.Evener.Ref, rootRef)
 	}
@@ -510,7 +523,7 @@ func testHubRelayInterruptedRead(t *testing.T, disconnect bool) {
 		f.daemon.RecordAppEvent(events.SessionEvent{Kind: events.EventNotesUpdated, SessionID: rootID, Data: events.NotesUpdatedData{HumanNote: value}})
 	}
 	for _, want := range []string{"new-epoch-first", "new-epoch-second"} {
-		got := nextRelayProgressNote(f.ctx, t, client)
+		got := nextRelayProgressNote(f.ctx, t, after)
 		if got.Ref != rootRef || got.ThreadID != rootID || got.HumanNote != want {
 			t.Fatalf("notification after interruption = %+v, want %s on %s", got, want, rootRef)
 		}
