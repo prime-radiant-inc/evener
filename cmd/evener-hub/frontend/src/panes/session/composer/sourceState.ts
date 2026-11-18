@@ -17,8 +17,10 @@ import {
   type CompositionImageRecord,
   clearDraft,
   clearPersistedDraftIfRevisionMatches,
+  dedupeAnchors,
   markDraftEdited,
   readComposerDraft,
+  readComposerDraftImageAnchors,
   readComposerDraftImageMarkers,
   readComposerDraftRevisionId,
   readComposerDraftSnapshot,
@@ -43,6 +45,7 @@ import {
   recoveryDeclaredMarkers,
   recoveryImageReferencesUnavailable,
   recoveryTileEligibility,
+  rowCommittedAnchors,
 } from "./recovery/recoveryDraft";
 import {
   materializeSelectionReferences,
@@ -461,7 +464,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   // a reload read the peer's literal prose as an anchor and refuse a draft that
   // is complete. The unbacked half keeps a known missing image's tag only while
   // the text still spells it.
-  function recordedMarkerNumbers(text: string): number[] {
+  function recordedMarkerAnchors(text: string): CompositionImageAnchor[] {
     const snapshot = state.getState();
     const staged = sendableAttachments(operations.items, text, {
       foreign: snapshot.foreignImageIds,
@@ -484,7 +487,37 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     // composition is not this composer's draft, so a list derived from the live
     // store describes numbering the row may not use; the row's own record
     // answers for it (see `compositionImageRecord`).
-    return [...new Set([...staged, ...unbacked])].sort((left, right) => left - right);
+    // The stored anchors keep their OCCURRENCES, so the persisted draft says
+    // which of two identical spellings the warning was about. A bare number
+    // cannot: it always resolves to the first spelling, and deleting that
+    // literal then cleared the warning while the real missing reference was
+    // still in the text.
+    const carried: CompositionImageAnchor[] =
+      ownsDraft() && currentDraftRevisionId === readComposerDraftRevisionId(ref)
+        ? readComposerDraftImageAnchors(ref)
+        : [];
+    // The live anchors are the ones this composer currently holds, WITH their
+    // offsets - that is the fact the bare numbers below cannot express.
+    const live = adoptedAnchors.filter(
+      (anchor) => anchor.offset === undefined || spellingSurvives({ ...anchor, offset: anchor.offset }, text),
+    );
+    // A staged or unbacked marker is already described by the two lists above
+    // only when it has NO occurrence to carry: those entries are offsetless.
+    // An occurrence the record kept is a distinct fact - which spelling - so it
+    // survives even when its number is also staged.
+    const covered = new Set([...staged, ...unbacked]);
+    return [
+      ...live,
+      ...unbacked
+        .filter((marker) => !live.some((anchor) => anchor.marker === marker && anchor.offset !== undefined))
+        .map((marker) => ({ marker })),
+      ...staged.map((marker) => ({ marker })),
+      ...carried.filter(
+        (anchor) =>
+          anchor.offset !== undefined ||
+          (!covered.has(anchor.marker) && !live.some((item) => item.marker === anchor.marker)),
+      ),
+    ];
   }
 
   // Build the composition image record for a composition about to be saved.
@@ -619,9 +652,11 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   // ONE function for both durable writers (the recovery commit and the
   // stale-lease preservation), because two filters for one question is how
   // they drift apart.
-  function ownedCompositionAttachments(candidates: readonly InputAttachment[]): InputAttachment[] {
-    const foreign = new Set(state.getState().foreignImageIds);
-    const owned = operations.items.filter((item) => !foreign.has(item.id) && item.data !== undefined);
+  function compositionAttachmentsWhere(
+    candidates: readonly InputAttachment[],
+    include: (item: PendingAttachment) => boolean,
+  ): InputAttachment[] {
+    const owned = operations.items.filter((item) => item.data !== undefined && include(item));
     return candidates.filter((candidate) =>
       owned.some(
         (item) =>
@@ -631,6 +666,26 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
           item.mediaType === candidate.mediaType,
       ),
     );
+  }
+
+  function ownedCompositionAttachments(candidates: readonly InputAttachment[]): InputAttachment[] {
+    const foreign = new Set(state.getState().foreignImageIds);
+    return compositionAttachmentsWhere(candidates, (item) => !foreign.has(item.id));
+  }
+
+  // The same list, narrowed to the tiles a Send from this composition would
+  // carry. Both are views of ONE caller-supplied list, resolved by attachment
+  // identity, because the payload needs the sendable subset while the durable
+  // composition must keep everything it owns.
+  function sendableCompositionAttachments(candidates: readonly InputAttachment[], text: string): InputAttachment[] {
+    const snapshot = state.getState();
+    const sendable = new Set(
+      sendableAttachments(operations.items, text, {
+        foreign: snapshot.foreignImageIds,
+        restored: snapshot.restoredImageIds,
+      }).map((item) => item.id),
+    );
+    return compositionAttachmentsWhere(candidates, (item) => sendable.has(item.id));
   }
 
   function persistDraft(text: string): void {
@@ -645,7 +700,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
           : {}),
         ...(selectionMetaRef.current.mentions ? { mentions: selectionMetaRef.current.mentions } : {}),
       },
-      recordedMarkerNumbers(text),
+      recordedMarkerAnchors(text),
     );
     ownedDraftRevisionRef.current = readDraftRevision(ref);
   }
@@ -753,6 +808,12 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     return [...new Set(adoptedAnchors.map((anchor) => anchor.marker))].sort((left, right) => left - right);
   }
 
+  /** True while `anchor`'s offset still spells its own marker in `text`. */
+  function spellingSurvives(anchor: { marker: number; offset: number }, text: string): boolean {
+    const spelling = markerText(anchor.marker);
+    return text.slice(anchor.offset, anchor.offset + spelling.length) === spelling;
+  }
+
   /** Where a pure insertion turned `shorter` into `longer`, if it did.
    *
    * `longer` is `shorter` with `delta` characters spliced in at one point.
@@ -804,9 +865,20 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     if (delta > 0) {
       const at = insertionPoint(before, after, delta);
       if (at !== undefined) {
-        adoptedAnchors = adoptedAnchors.map((anchor) =>
-          anchor.offset >= at ? { ...anchor, offset: anchor.offset + delta } : anchor,
-        );
+        // An insertion BEFORE an anchor cannot touch it, and the anchor is
+        // shifted to follow its own text. An insertion INSIDE it destroys the
+        // spelling the anchor named: `[image 1]` edited to `[imXage 1]` leaves
+        // an offset that no longer reads as a marker, so the anchor is retired
+        // rather than carried. Keeping it was the defect: the obsolete tag
+        // survived invisibly and came back as a blocked Send the moment the
+        // person typed the literal `[image 1]` somewhere else.
+        adoptedAnchors = adoptedAnchors.flatMap((anchor) => {
+          if (anchor.offset >= at) {
+            const shifted = { ...anchor, offset: anchor.offset + delta };
+            return spellingSurvives(shifted, after) ? [shifted] : [];
+          }
+          return anchor.offset + markerText(anchor.marker).length <= at ? [anchor] : [];
+        });
         return;
       }
     } else if (delta < 0) {
@@ -969,7 +1041,17 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     // The row's own record, read by the row that ARRIVED. `tiles` is keyed by
     // attachment id and `anchors` by spelling; neither is a marker-number list
     // borrowed from whatever the store happens to hold.
-    const incomingRecord = incomingRowId === null ? undefined : readCompositionImageRecord(incomingRowId);
+    // The row's anchors, live copy first. The live copy is the localStorage
+    // record; the durable copy is the `anchors` field the merge transaction
+    // committed beside the text, carried here on the decoded draft. Reading only
+    // the live copy was the defect: the two stores cannot share a transaction,
+    // so a closed pane or a full quota left a row whose text spells `[image 1]`
+    // and nothing saying that reference had no bytes, and a reopen shipped it
+    // as prose. Both describe the same revision when both exist.
+    const liveRecord = incomingRowId === null ? undefined : readCompositionImageRecord(incomingRowId);
+    const incomingRecord =
+      liveRecord ??
+      (rowCommittedAnchors(recovered).length > 0 ? { anchors: rowCommittedAnchors(recovered) } : undefined);
     const restoredMarkers = new Set(recovered.attachments.map((item) => item.marker));
     const declared = new Set(recoveryDeclaredMarkers(recovered));
     const spoken = new Set(markerNumbersIn(recovered.text));
@@ -1040,11 +1122,21 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     // An offsetless anchor is resolved when it is installed, against the text it
     // is installed into.
     const namedOccurrences = resolveAnchors(declaredAnchors, recovered.text);
-    // One anchor per marker here. The row's record can name the same marker
-    // twice - once as an occurrence, once in the older number-only shape - and
-    // taking both would bind TWO spellings to one missing image: deleting the
-    // reference would retire one and leave the other refusing a Send the person
-    // had repaired. The occurrence is the answer; the number is its fallback.
+    // The offsets already named, by OCCURRENCE. Two spellings of one marker are
+    // two references - that is the whole reason an offset is carried - so a
+    // marker-keyed set here would drop a second genuine missing reference and
+    // leave its spelling shipping as prose. What must NOT double is one
+    // SPELLING: the row's record can name the same marker once as an occurrence
+    // and once in the older number-only shape, and both resolve to the same
+    // first spelling only when that spelling is still unclaimed.
+    // One missing image per marker on the NUMBER-ONLY paths below. A record can
+    // name one marker twice - once as an occurrence, once in the older
+    // number-only shape - and binding both would put TWO spellings behind one
+    // missing image: deleting the reference retires one and the other goes on
+    // refusing a Send the person had repaired. Two GENUINE references of one
+    // marker are different: the record names each with its own offset, they
+    // come through `namedOccurrences` as two distinct occurrences, and the set
+    // below is only what the number-only fallbacks may not re-add.
     const claimed = new Set(namedOccurrences.map((anchor) => anchor.marker));
     const anchors: CompositionImageAnchor[] = [
       ...namedOccurrences,
@@ -1134,11 +1226,11 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   // same way). Only the markers its record names as having had image bytes
   // count - a marker the record does not name was literal prose.
   //
-  // A LOCAL DRAFT record states numbers, not occurrences: it is written by a
-  // composer from its own live tags, and the text it describes is that
-  // composer's. There is no second spelling to confuse here, so each number
-  // adopts its first spelling - the reading those records always had.
-  adoptUnbackedImageMarkers(readComposerDraftImageMarkers(ref).map((marker) => ({ marker })));
+  // A local draft record states OCCURRENCES, because the writer now records the
+  // spelling its warning was about. An older record states bare numbers, and
+  // the reader turns each into an offsetless anchor that adopts its first
+  // spelling - the reading those records always had.
+  adoptUnbackedImageMarkers(readComposerDraftImageAnchors(ref));
 
   function queueRecoveryPersistence(
     clientMutationId: string,
@@ -1173,7 +1265,37 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     // it per tile, keyed by attachment id, so this write is only about which
     // tiles the row owns. Deriving an ineligible list from marker numbers was
     // the defect - the numbers move, and a number is not an owner.
-    nextAttachments = ownedCompositionAttachments(nextAttachments);
+    // TWO lists, from one snapshot, exactly as activation builds them.
+    //
+    // `outgoingAttachments` is what a Send would put on the wire: the sendable
+    // selection, from the ONE selection function. A tile whose reference the
+    // person deleted is not in it.
+    //
+    // `ownedAttachments` is the composition this row keeps, that tile included,
+    // so its bytes survive a reload. Writing the owned tiles into the payload
+    // as well was the defect: a reopen whose eligibility record could not be
+    // written (full quota, or a refusal restored without one) found those bytes
+    // in `payload.input` and no exclusion record to say otherwise, so the tile
+    // took the markerless-image exemption and the next Send carried an image
+    // the person had excluded.
+    //
+    // Deliberately NOT narrowed: the exemption itself is untouched. It is
+    // granted only where the payload provably has no reference, and this split
+    // is what keeps a released tile out of the payload while preserving it.
+    //
+    // Both views come from the caller's ONE list, resolved by attachment
+    // IDENTITY - the wire shape carries no id, so they are matched back against
+    // the owned tiles on their bytes, and a number alone would let a foreign
+    // tile and an owned one swap places. Sendability is then decided by the same
+    // selection function the Send path uses.
+    const outgoingAttachments = sendableCompositionAttachments(nextAttachments, nextText);
+    // The payload's images are paired with the durable list BY INDEX
+    // (`recoverMutationComposition`), so the sendable tiles must come first, in
+    // the order the payload carries them, and the excluded ones may only follow.
+    const excludedAttachments = ownedCompositionAttachments(nextAttachments).filter(
+      (candidate) => !outgoingAttachments.includes(candidate),
+    );
+    nextAttachments = [...outgoingAttachments, ...excludedAttachments];
     // The tiles whose facts this save describes, captured HERE with the text
     // and before the first await. The record and the durable row are written to
     // two stores, so a live store read after the await can describe an edit
@@ -1271,7 +1393,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
           clientMutationId,
           ref,
           nextText,
-          nextAttachments,
+          outgoingAttachments,
           nextSkillNames,
           nextCommandNames,
           nextMentions,
@@ -1281,6 +1403,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
           { [clientMutationId]: lease.compositionRevision },
           compositionOwnerId,
           nextComposerText,
+          nextAttachments,
         );
         if (!updated) {
           if (!disposed && currentRecoveryId() === clientMutationId) {
@@ -1670,6 +1793,36 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
             ...outgoingAttachments,
             ...wireEntries.filter((entry) => !sendableIds.has(entry.id)).map((entry) => entry.wire),
           ];
+          // The anchors the merged composition carries, resolved HERE, once,
+          // because they are committed by the same transaction that commits the
+          // text. Reading them after the write left a window a closed pane or a
+          // full localStorage quota could fall into: the row held a merged text
+          // spelling `[image 1]` with no fact saying that reference had no
+          // bytes, and a reopen shipped it as prose.
+          // Deduplicated by the same identity rule the live record uses, so a
+          // merge that re-derives an anchor it already had commits it once.
+          const mergedAnchors = dedupeAnchors([
+            // The owner's anchors are already in the merged text's coordinates:
+            // the merge's own text is the PREFIX of the merged text, so its
+            // offsets still spell their markers at the same positions.
+            ...(readCompositionImageRecord(ownerId)?.anchors ?? []),
+            // The incoming row's anchors were resolved in ITS text, which is
+            // not the merged text and not a prefix of it. Copying them raw filed
+            // offsets into a document they never described, so a warning could
+            // land on whatever spelling happened to sit at that position in the
+            // combined text. Translate them the same way adoption does.
+            ...anchorsIntoMergedText(
+              readCompositionImageRecord(record.clientMutationId)?.anchors ?? [],
+              recovered.text,
+              merged.text,
+            ),
+            // The anchors this merge itself creates. They were resolved in
+            // the row's OWN text, so they are moved into the merged text
+            // here - by occurrence, not by arithmetic, because the merge
+            // renumbers the row's tile-backed markers and a wider number
+            // shifts every offset after it.
+            ...adopted.anchors,
+          ]);
           const updated = await updateRecoveryPendingTurn(
             ownerId,
             ref,
@@ -1690,6 +1843,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
             compositionOwnerId,
             undefined,
             ownedAttachments,
+            mergedAnchors,
           );
           if (!updated) return false;
           // The transaction has ALREADY merged this text and consumed the
@@ -1710,16 +1864,9 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
             compositionImageRecord(
               merged.text,
               committedTiles,
-              [
-                ...(readCompositionImageRecord(ownerId)?.anchors ?? []),
-                ...(readCompositionImageRecord(record.clientMutationId)?.anchors ?? []),
-                // The anchors this merge itself creates. They were resolved in
-                // the row's OWN text, so they are moved into the merged text
-                // here - by occurrence, not by arithmetic, because the merge
-                // renumbers the row's tile-backed markers and a wider number
-                // shifts every offset after it.
-                ...adopted.anchors,
-              ],
+              // The SAME anchors the transaction committed, from the same
+              // snapshot. Two computations of one fact is how they drift.
+              mergedAnchors,
               // `adopted` supplies the exemptions this merge installs: an incoming missing reference is an anchor of the
               // composition being committed, and the row must carry it in the
               // same transaction that merges its text. Without it a close
@@ -2056,7 +2203,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
         // stood for are gone. Only the anchors the record itself listed as
         // having had bytes are unbacked - anything else spelled "[image N]" in
         // the text is prose the person typed, and it sends as text.
-        adoptUnbackedImageMarkers(readComposerDraftImageMarkers(ref).map((marker) => ({ marker })));
+        adoptUnbackedImageMarkers(readComposerDraftImageAnchors(ref));
         // A rebind can land on a PEER's newer draft while this source already
         // holds staged work of its own. Marker numbers are not identity: the
         // peer's "[image 1]" is a different image, and the local bytes staged

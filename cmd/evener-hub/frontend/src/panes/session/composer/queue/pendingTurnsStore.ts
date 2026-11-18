@@ -730,6 +730,10 @@ export function updateRecoveryPendingTurn(
   // subset. Two lists, because "what ships" and "what the person can still
   // see" are different questions and the row must answer both.
   ownedAttachments?: InputAttachment[],
+  // The missing-image anchors this text carries, committed atomically with it,
+  // so a merge cannot leave a row whose text spells a reference its provenance
+  // does not know about.
+  anchors?: { marker: number; offset?: number }[],
 ): ReturnType<typeof updateRecoveryMutation> {
   // Composer serializes edits before resending. A committed edit must release
   // that chain even when the recovery tray cannot refresh yet.
@@ -750,6 +754,7 @@ export function updateRecoveryPendingTurn(
         compositionOwnerId,
         composerText,
         ownedAttachments,
+        anchors,
       );
       void refreshPendingTurnsProjection(ref);
       return updated;

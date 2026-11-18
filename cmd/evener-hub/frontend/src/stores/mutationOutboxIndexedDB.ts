@@ -83,6 +83,21 @@ type VersionedMutationRecoveryRecord = MutationRecoveryRecord & {
   // and on legacy marked rows written before this field existed, which fail
   // closed to a fresh id.
   originalWirePayload?: Record<string, unknown>;
+  // The missing-image anchors this composition's text carries, written in the
+  // SAME transaction as the text they describe.
+  //
+  // They are provenance the composition cannot lose. The live record for them
+  // lives in localStorage, and a recovery merge changes its IndexedDB row
+  // while the browser may close before the localStorage write lands - or the
+  // write may fail outright at a full quota. A reopen then finds the merged
+  // text, which spells `[image 1]`, and no fact saying that reference had no
+  // bytes, so the reference ships as prose. Putting them here makes the text
+  // and its anchors one durable fact: whoever reads the text reads the anchors
+  // that belong to that exact revision.
+  //
+  // Optional: rows written before this field existed fall back to the
+  // localStorage record, which is what every reader used before.
+  anchors?: { marker: number; offset?: number }[];
 };
 
 function retainedDisplaySource(subject: MutationRecord): MutationRecord | undefined {
@@ -1945,6 +1960,11 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
     // Absent means "the request is the whole composition", which is what every
     // caller meant before the distinction existed.
     ownedAttachments?: MutationAttachment[],
+    // The missing-image anchors this text carries, committed atomically with
+    // it. Absent means "this write says nothing new about anchors", which is
+    // every non-merge caller: an autosave derives them from the live editor
+    // and does not touch the row's own copy.
+    anchors?: { marker: number; offset?: number }[],
   ): Promise<MutationRecoveryRecord | undefined> {
     const outcome = await this.#write([RECOVERY_STORE, OUTBOX_STORE], "updateRecoveryInput", async (transaction) => {
       const store = transaction.objectStore(RECOVERY_STORE);
@@ -1990,6 +2010,8 @@ export class MutationOutboxIndexedDB implements WebQueuedMessageStorage<Mutation
         // Locations belong to composerText. A full replacement can omit them
         // to clear old atoms, while a partial update preserves the pair.
         composerMentions: composerText === undefined ? (composerMentions ?? record.composerMentions) : composerMentions,
+        // Written with the text, so the pair cannot disagree.
+        ...(anchors === undefined ? {} : { anchors }),
       };
       await requestResult(store.put(next));
       // Round-9 Medium: consuming a recovery row ends its wire's life in this

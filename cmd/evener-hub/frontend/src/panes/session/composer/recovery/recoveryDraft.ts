@@ -4,7 +4,7 @@ import type { MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import { createSecureUUID } from "../../../../stores/secureUUID";
 import { arrayBufferToBase64 } from "../attachments/encodePng";
 import type { PendingAttachment } from "../attachments/useAttachments";
-import { readCompositionImageRecord } from "../draft";
+import { type CompositionImageAnchor, readCompositionImageRecord } from "../draft";
 import { parseSkillDocument, skillAtomMentions } from "../skillDocument";
 
 export interface RecoveredComposerDraft {
@@ -44,6 +44,25 @@ const declaredImageMarkers = new WeakMap<RecoveredComposerDraft, number[]>();
 // the id this draft is about to use. Nothing downstream ever compares a
 // number to decide eligibility.
 const recoveredTileEligibility = new WeakMap<RecoveredComposerDraft, ReadonlyMap<string, boolean>>();
+
+// The missing-image anchors the ROW's own record committed, carried with the
+// draft they describe.
+//
+// The live copy of these facts is the localStorage composition record, and a
+// merge writes its text and bytes to IndexedDB while writing that record to
+// localStorage - two stores that cannot share a transaction. A browser closed
+// between them, or a full quota, leaves a row whose text spells `[image 1]`
+// with nothing to say that reference had no bytes, and a reopen ships the
+// spelling as prose. The merge transaction writes these anchors into the row
+// itself, so they arrive HERE with the text they belong to. Same technique as
+// the eligibility map above: a fact the decoder resolved, owned by the draft
+// that resolved it.
+const durableCompositionAnchors = new WeakMap<RecoveredComposerDraft, CompositionImageAnchor[]>();
+
+/** The anchors committed atomically with this row's text, if it carries any. */
+export function rowCommittedAnchors(draft: RecoveredComposerDraft): CompositionImageAnchor[] {
+  return durableCompositionAnchors.get(draft) ?? [];
+}
 
 /** Per-tile Send eligibility restored with this draft, keyed by its minted id. */
 export function recoveryTileEligibility(draft: RecoveredComposerDraft): ReadonlyMap<string, boolean> {
@@ -202,6 +221,10 @@ export function recoveryComposerDraft(
     ...(recovered.mentions ? { mentions: recovered.mentions } : {}),
   };
   recoveredTileEligibility.set(draft, eligibilityById);
+  // The anchors this row's text carries, committed by the same transaction that
+  // wrote that text. Present on any row a merge created; absent on rows written
+  // before the field existed, where the localStorage record remains the answer.
+  durableCompositionAnchors.set(draft, (record as { anchors?: CompositionImageAnchor[] }).anchors ?? []);
   if (recovered.imageReferences === "unavailable") unavailableImageReferences.add(draft);
   declaredImageMarkers.set(
     draft,

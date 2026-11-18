@@ -63,7 +63,13 @@ export interface ComposerDraft extends SkillEditorValue {
 // wrote, and those adopt no unbacked markers: an old record cannot prove an
 // anchor had bytes, and refusing on a guess would refuse legitimate prose.
 interface StoredComposerDraft extends ComposerDraft {
-  imageMarkers?: number[];
+  // A bare number says "this draft had an image under marker N". Two literals
+  // can spell the same number, and only one of them is the reference: the
+  // number cannot say WHICH. So a marker may be recorded as an occurrence -
+  // `{ marker, offset }` - and a reader that finds a number treats it as the
+  // first spelling, which is what every record written before this shape
+  // meant.
+  imageMarkers?: (number | { marker: number; offset?: number })[];
 }
 
 // A remount inherits the same draft revision. Editing or replacing its
@@ -153,7 +159,18 @@ function isStoredComposerDraft(value: unknown): value is StoredComposerDraft {
     (record.revisionId === undefined || typeof record.revisionId === "string") &&
     (record.imageMarkers === undefined ||
       (Array.isArray(record.imageMarkers) &&
-        record.imageMarkers.every((marker) => Number.isSafeInteger(marker) && marker > 0))) &&
+        record.imageMarkers.every(
+          (entry) =>
+            // The older number-only shape: "marker N had bytes".
+            (Number.isSafeInteger(entry) && (entry as number) > 0) ||
+            // The occurrence shape: the marker AND the spelling it meant.
+            (typeof entry === "object" &&
+              entry !== null &&
+              Number.isSafeInteger((entry as { marker?: unknown }).marker) &&
+              (entry as { marker: number }).marker > 0 &&
+              ((entry as { offset?: unknown }).offset === undefined ||
+                (Number.isInteger((entry as { offset: number }).offset) && (entry as { offset: number }).offset >= 0))),
+        ))) &&
     (record.mentions === undefined ||
       (Array.isArray(record.mentions) &&
         record.mentions.every(
@@ -253,7 +270,7 @@ export function readDraftEditedAt(ref: string): number {
 export function writeComposerDraft(
   ref: string,
   value: ComposerDraft,
-  imageMarkers?: readonly number[],
+  imageMarkers?: readonly (number | CompositionImageAnchor)[],
 ): string | undefined {
   markDraftEdited(ref);
   // Three outcomes, and they differ: a stored draft, a deliberate blank
@@ -278,7 +295,17 @@ export function writeComposerDraft(
           ...value,
           revisionId,
           editedAt: Date.now(),
-          ...(imageMarkers && imageMarkers.length > 0 ? { imageMarkers: [...imageMarkers] } : {}),
+          ...(imageMarkers && imageMarkers.length > 0
+            ? {
+                imageMarkers: imageMarkers.map((entry) =>
+                  typeof entry === "number" || entry.offset === undefined
+                    ? typeof entry === "number"
+                      ? entry
+                      : { marker: entry.marker }
+                    : { marker: entry.marker, offset: entry.offset },
+                ),
+              }
+            : {}),
         }),
       );
       try {
@@ -330,12 +357,47 @@ export function readComposerDraftImageMarkers(ref: string): number[] {
     const structured = localStorage.getItem(composerDraftStorageKey(ref));
     if (structured !== null) {
       const parsed: unknown = JSON.parse(structured);
-      if (isStoredComposerDraft(parsed)) return parsed.imageMarkers ?? [];
+      if (isStoredComposerDraft(parsed)) return storedMarkerNumbers(parsed.imageMarkers);
     }
   } catch {
     // Fall through to the side record, which is also best-effort.
   }
   return readImageProvenance(ref) ?? [];
+}
+
+/**
+ * The anchor OCCURRENCES a persisted draft recorded, in the shape the composer
+ * uses internally.
+ *
+ * A record written before the occurrence shape existed carries bare numbers.
+ * Each one becomes an offsetless anchor, which the installer resolves against
+ * the first spelling in the text it lands in - exactly the reading those
+ * records got before. A record that does carry an offset keeps it, so the
+ * warning stays bound to the spelling it was about even when a second
+ * identical spelling appears.
+ */
+export function readComposerDraftImageAnchors(ref: string): CompositionImageAnchor[] {
+  try {
+    const structured = localStorage.getItem(composerDraftStorageKey(ref));
+    if (structured !== null) {
+      const parsed: unknown = JSON.parse(structured);
+      if (isStoredComposerDraft(parsed))
+        return (parsed.imageMarkers ?? []).map((entry) =>
+          typeof entry === "number"
+            ? { marker: entry }
+            : entry.offset === undefined
+              ? { marker: entry.marker }
+              : { marker: entry.marker, offset: entry.offset },
+        );
+    }
+  } catch {
+    // Fall through to the side record, which is also best-effort.
+  }
+  return (readImageProvenance(ref) ?? []).map((marker) => ({ marker }));
+}
+
+function storedMarkerNumbers(markers: StoredComposerDraft["imageMarkers"]): number[] {
+  return [...new Set((markers ?? []).map((entry) => (typeof entry === "number" ? entry : entry.marker)))];
 }
 
 // ── The composition image record ────────────────────────────────────────────
@@ -517,7 +579,7 @@ export function moveCompositionImageRecord(
 // number is not "offset 0": it means "this number's first spelling", so it
 // agrees with another bare number of the same marker and with nothing that
 // carries an offset.
-function dedupeAnchors(anchors: readonly CompositionImageAnchor[]): CompositionImageAnchor[] {
+export function dedupeAnchors(anchors: readonly CompositionImageAnchor[]): CompositionImageAnchor[] {
   const seen = new Set<string>();
   const out: CompositionImageAnchor[] = [];
   for (const anchor of anchors) {
@@ -585,9 +647,32 @@ function readImageProvenance(ref: string): number[] | undefined {
  * its text moves to a recovery row, or reopening it would restore the
  * anchors untagged. An empty list is written, not omitted - it is how the
  * removal of a reference becomes permanent. */
-export function writeComposerImageMarkers(ref: string, markers: readonly number[]): void {
+export function writeComposerImageMarkers(ref: string, markers: readonly (number | CompositionImageAnchor)[]): void {
   try {
-    const next = [...new Set(markers)].sort((left, right) => left - right);
+    // The side record keeps the OCCURRENCE when one is known, so a text that
+    // moved into a recovery row does not lose which spelling its warning was
+    // about. Number-only entries stay numbers, so an older reader still reads
+    // a record this build writes.
+    const normalized = markers.map((entry) =>
+      typeof entry === "number"
+        ? entry
+        : entry.offset === undefined
+          ? entry.marker
+          : { marker: entry.marker, offset: entry.offset },
+    );
+    const seen = new Set<string>();
+    const next = normalized
+      .filter((entry) => {
+        const key = typeof entry === "number" ? `${entry}@*` : `${entry.marker}@${entry.offset}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      })
+      .sort((left, right) => {
+        const leftMarker = typeof left === "number" ? left : left.marker;
+        const rightMarker = typeof right === "number" ? right : right.marker;
+        return leftMarker - rightMarker;
+      });
     localStorage.setItem(imageProvenanceStorageKey(ref), JSON.stringify(next));
   } catch {
     // Best-effort, like every other composer persistence: losing this only

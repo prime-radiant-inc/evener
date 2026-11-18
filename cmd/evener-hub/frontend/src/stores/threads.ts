@@ -4046,6 +4046,10 @@ export async function updateRecoveryMutation(
   // questions, and collapsing them is how a released tile's bytes are lost on
   // one side or the other.
   ownedAttachments?: InputAttachment[],
+  // The composition's missing-image anchors, committed in the same transaction
+  // as the text. See `updateRecoveryInput`: these are the facts a reopen needs
+  // to keep a `[image N]` with no bytes from shipping as prose.
+  anchors?: { marker: number; offset?: number }[],
 ): Promise<MutationRecoveryRecord | undefined> {
   const runtime = requireMutationRuntime();
   await runtime.start;
@@ -4061,6 +4065,7 @@ export async function updateRecoveryMutation(
     expectedRecoveryRevisions,
     compositionOwnerId,
     ownedAttachments === undefined ? undefined : durableAttachments(ownedAttachments),
+    anchors,
   );
   if (!record) return undefined;
   notifyMutationPersistence([targetRef]);
