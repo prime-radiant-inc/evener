@@ -195,33 +195,47 @@ func TestFallbackKeepsOpaqueAndWebSearchScopeAcrossProtocols(t *testing.T) {
 func TestFallbacksWithoutRawReplayShareTheRoundsHistory(t *testing.T) {
 	t.Parallel()
 	producerProtocol := registry.ProtocolOpenAIResponses
-	primary := NewOpenAIProfile("primary")
-	adapter := &agenttest.ModelTrackingAdapter{Provider: primary.ID(), Respond: func(req llm.Request) (llm.Response, error) {
+	adapter := &agenttest.ModelTrackingAdapter{Provider: "openai", Respond: func(req llm.Request) (llm.Response, error) {
 		switch req.Model {
 		case "fallback-b":
 			// The registry now routes the unstamped turn's issuer over chat.
 			producerProtocol = registry.ProtocolOpenAIChat
-		case "fallback-c":
+		case "fallback-d":
 			return agenttest.FinalResponse("done"), nil
 		}
 		return llm.Response{}, llm.ErrorFromHTTPStatus(req.Provider, 404, "", nil, nil)
 	}}
-	s := newSession(t, withProfile(primary), withAdapter(adapter), withConfig(SessionConfig{ModelFallbacks: []string{"fallback-b", "fallback-c"}}))
+	instance := openaiInstance("https://gateway.example.invalid/v1")
+	instance.Models = map[string]registry.Model{"fallback-d": {Transport: &registry.Transport{StreamEndpoint: "/alternate"}}}
+	client := registryClient(t, map[string]registry.Provider{"openai": instance}, adapter)
+	primary := resolveClientProfile(t, client, "openai/primary")
+	s := newSession(t, withProfile(primary), withClient(client), withConfig(SessionConfig{ModelFallbacks: []string{"fallback-b", "fallback-c", "fallback-d"}}))
+	const cipher = "sealed-on-the-original-deployment"
+	sealed := schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("ordinary answer"),
+		ResponseProvider: primary.ID(), ResponseProtocol: primary.Protocol(), ResponseReasoningRoute: primary.ReasoningReplayRoute(),
+	}
+	sealed.Message.Content = append(sealed.Message.Content, llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{EncryptedContent: cipher}})
 	s.setRoundFallbackSource(roundFallbackSource{
-		turns: []schema.Turn{assistantWebSearchTurn("archive", "reasoner")},
-		scope: replayScope{Protocol: primary.Protocol(), InFlightFrom: 1, protocolOf: func(string) string { return producerProtocol }},
+		turns: []schema.Turn{assistantWebSearchTurn("archive", "reasoner"), sealed},
+		scope: replayScope{Instance: primary.ID(), Protocol: primary.Protocol(), InFlightFrom: 2, protocolOf: func(string) string { return producerProtocol }},
 	})
 	req := llm.Request{Provider: primary.ID(), Model: primary.Model(), Messages: []llm.Message{llm.User("r08")}}
 	if _, _, _, _, err := s.callModelWithFallback(tripwireCtx(t), primary, req, nil, "", 0); err != nil {
 		t.Fatal(err)
 	}
 	requests := adapter.Requests()
-	if len(requests) != 3 {
-		t.Fatalf("got %d model calls, want the primary and both fallbacks", len(requests))
+	if len(requests) != 4 {
+		t.Fatalf("got %d model calls, want the primary and all three fallbacks", len(requests))
 	}
 	for _, req := range requests[1:] {
 		if !hasContentKind(req.Messages, llm.ContentWebSearch) {
 			t.Errorf("%s lost the web search in this round's common history", req.Model)
+		}
+		hasCipher := slices.ContainsFunc(req.Messages, func(msg llm.Message) bool {
+			return slices.ContainsFunc(msg.Content, func(p llm.ContentPart) bool { return p.Thinking != nil && p.Thinking.EncryptedContent == cipher })
+		})
+		if want := req.Model != "fallback-d"; hasCipher != want {
+			t.Errorf("%s received the original deployment's ciphertext = %t, want %t", req.Model, hasCipher, want)
 		}
 	}
 }

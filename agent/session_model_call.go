@@ -1732,21 +1732,29 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		// change from racing/leaking into this request's fallback, and lets a
 		// fallback that supports a higher level than the primary use it.
 		origEffort := requestedEffort
-		// Native plaintext and Responses ciphertext need an issuer-specific
-		// expansion. Other fallbacks can project their own policies on one list.
+		// All attempts see one interpretation of the round's stored history,
+		// even when a registry refresh moves an unstamped turn's issuer. Only
+		// reasoning needs to be projected again for a different destination.
+		commonScope := fallbackSource.scope
+		commonScope.protocolOf = roundReplayLookup(commonScope.protocolOf)
+		commonScope.canonicalModel = roundReplayLookup(commonScope.canonicalModel)
 		var sharedHistory []llm.Message
+		var sharedResponses bool
+		var sharedRoute string
 		historyForFallback := func(fb *provider.Profile) []llm.Message {
 			if !hasFallbackSource {
 				return fullHistory
 			}
-			scope := fallbackSource.scope
+			scope := commonScope
 			scope.setReasoningTextTarget(fb)
-			if scope.reasoningTextTarget == nil && sharedHistory != nil {
+			responses := fb.Protocol() == registry.ProtocolOpenAIResponses
+			shareable := scope.reasoningTextTarget == nil || !scope.reasoningTextTarget.ReplaysRawReasoning()
+			if shareable && sharedHistory != nil && responses == sharedResponses && scope.reasoningRoute == sharedRoute {
 				return sharedHistory
 			}
 			messages := s.requestMessages(fallbackSource.system, expandHistory(fallbackSource.turns, scope))
-			if scope.reasoningTextTarget == nil {
-				sharedHistory = messages
+			if shareable {
+				sharedHistory, sharedResponses, sharedRoute = messages, responses, scope.reasoningRoute
 			}
 			return messages
 		}
@@ -1861,6 +1869,23 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		}
 	}
 	return withPreviews(modelResp), req, attempt, usedProfile, nil
+}
+
+// roundReplayLookup fixes each issuer's resolved identity for the lifetime of
+// one fallback chain, including an issuer that resolves to the empty string.
+func roundReplayLookup(resolve func(string) string) func(string) string {
+	if resolve == nil {
+		return nil
+	}
+	resolved := make(map[string]string)
+	return func(ref string) string {
+		if value, ok := resolved[ref]; ok {
+			return value
+		}
+		value := resolve(ref)
+		resolved[ref] = value
+		return value
+	}
 }
 
 func shouldRetryResponsesContinuationAsFullHistory(req llm.Request, err error) bool {
