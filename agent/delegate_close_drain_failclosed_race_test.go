@@ -20,7 +20,7 @@ import (
 // interleaving is the count: exactly one delivery per round.
 func TestFailClosedAnnounceAndRetryContendForOneClaim(t *testing.T) {
 	const rounds = 50
-	for i := 0; i < rounds; i++ {
+	for i := range rounds {
 		s := newTestSessionForEnvctx(t)
 		s.events = make(chan events.SessionEvent, 8)
 		s.authoritativeConsumer = true
@@ -33,20 +33,11 @@ func TestFailClosedAnnounceAndRetryContendForOneClaim(t *testing.T) {
 		held := events.ErrorData{Error: "parked"}
 		s.failedClosed.pending.Store(&held)
 
-		ctx, cancel := context.WithCancel(t.Context())
-		defer cancel()
-
-		var wg sync.WaitGroup
-		wg.Add(2)
-		go func() {
-			defer wg.Done()
-			s.announceFailClosed()
-		}()
-		go func() {
-			defer wg.Done()
-			s.retryCloseFailClosed(ctx)
-		}()
-		wg.Wait()
+		// Run in its own function so the cancel is released every round. A
+		// defer in the loop body accumulated one live context per round, which
+		// is the leak that makes a long contention test hang where a short one
+		// passes.
+		runFailClosedClaimRace(t, s)
 
 		if got := len(s.events); got != 1 {
 			t.Fatalf("round %d delivered %d diagnostics, want exactly 1: at-most-once announcement is broken", i, got)
@@ -57,6 +48,30 @@ func TestFailClosedAnnounceAndRetryContendForOneClaim(t *testing.T) {
 		// The channel is per-round, so the next round starts clean.
 		s.authoritativeConsumer = false
 	}
+}
+
+// runFailClosedClaimRace is one round of the announcement race: the ordinary
+// announce and the close's post-cleanup retry contend for the single claim.
+// It takes its own context so the cancel is deferred here, where it runs once,
+// rather than in the caller's loop body.
+func runFailClosedClaimRace(t *testing.T, s *Session) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+
+	var wg sync.WaitGroup
+	wg.Go(func() { s.announceFailClosed() })
+	wg.Go(func() { s.retryCloseFailClosed(ctx) })
+	wg.Wait()
+
+	if got := len(s.events); got != 1 {
+		t.Fatalf("round delivered %d diagnostics, want exactly 1: at-most-once announcement is broken", got)
+	}
+	if !s.failedClosed.announced.Load() {
+		t.Fatal("round left the claim open after delivering once")
+	}
+	// The channel is per-round, so the next round starts clean.
+	s.authoritativeConsumer = false
 }
 
 // A retry whose own send fails must not keep the claim. Clearing pending and
@@ -83,12 +98,8 @@ func TestFailClosedRepeatedFailedAttemptsLeaveOneRetryableCopy(t *testing.T) {
 	// Two expired attempts, the shape of two concurrent hook completions. Each
 	// claims independently, as two callers racing the stream would.
 	var wg sync.WaitGroup
-	for i := 0; i < 2; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			s.announceFailClosedOn(bound)
-		}()
+	for range 2 {
+		wg.Go(func() { s.announceFailClosedOn(bound) })
 	}
 	wg.Wait()
 

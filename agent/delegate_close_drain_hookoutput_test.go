@@ -5,6 +5,7 @@ import (
 	"sync"
 	"testing"
 
+	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/plugin"
@@ -100,7 +101,10 @@ func TestOrdinaryNotificationHookOutputOutlivesACanceledDispatchContext(t *testi
 			case <-stopConsumer:
 				return
 			case ev := <-root.events:
-				if w, ok := ev.Data.(events.WarningData); ok && w.Message == "hook output" {
+				// Match the diagnostic's SOURCE, not its wording: this test is
+				// about the hook's output being delivered at all, and the message
+				// text is the hook command's own copy rather than the behavior.
+				if w, ok := ev.Data.(events.WarningData); ok && w.Source == string(diagnostic.SourceHook) {
 					once.Do(func() { close(delivered) })
 				}
 			}
