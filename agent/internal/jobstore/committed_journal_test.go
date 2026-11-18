@@ -490,6 +490,81 @@ func TestCommittedJournalKeepsTheGenerationAcrossACleanRollback(t *testing.T) {
 // also counts opens: an ordinary boundary read over an untouched journal opens
 // the file zero times, which is the incremental path this boundary exists to
 // keep cheap.
+// TestCommittedJournalLeavesTheWriterObligationOnAnUnsettledTail pins High 6.
+//
+// A foreign writer tears the tail. A boundary read notices the change and runs
+// the repair — and in that moment the name answers ENOENT, because a
+// rename-and-replace is between its two steps. The repair returns without an
+// error and without having examined anything, and the read still answers with
+// the bounded view it can decode, which is what an activity page needs.
+//
+// Proceeding is not the same as being settled. The baseline this call records
+// is the store's claim that it knows where its tail is, and the next append
+// consults it to decide whether to inspect the tail at all: it compares the file
+// against that baseline, finds it unchanged, skips the repair, and joins its
+// event onto the fragment. One malformed line is fsynced where two records
+// should be, and every later read and reopen fails on it.
+//
+// So a tail this call could not settle leaves the baseline unsampled. The read
+// still answers; the writer still owes the repair.
+func TestCommittedJournalLeavesTheWriterObligationOnAnUnsettledTail(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "jobs.jsonl")
+	fs := &vanishOnNthStatFs{Fs: afero.NewOsFs()}
+	s, err := openFs(fs, path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	if err := s.Append(Event{Kind: EventJobStarted, JobID: "job_before", Type: JobShell}); err != nil {
+		t.Fatalf("first append: %v", err)
+	}
+
+	partial := []byte(`{"kind":"job_started","seq":`)
+	if err := os.WriteFile(path, append(mustReadFile(t, path), partial...), 0o644); err != nil {
+		t.Fatalf("tear the tail: %v", err)
+	}
+	torn, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat the torn journal: %v", err)
+	}
+	// The boundary read's first stat of the name notices the change; the second
+	// is the repair's own recheck, and vanishing there is the case that returns
+	// settled=false with no error. Faulting the first would take a different
+	// branch — the journal is simply absent — and the append below would then
+	// repair for the wrong reason.
+	fs.vanishOnNthStat(2)
+
+	state, err := s.CommittedJournal()
+	if err != nil {
+		t.Fatalf("boundary read across a vanished tail recheck: %v", err)
+	}
+	if state.Size != torn.Size() {
+		t.Fatalf("boundary size = %d, want the %d bytes the read could decode", state.Size, torn.Size())
+	}
+
+	// The corruption is the assertion. An unsampled baseline makes this append
+	// examine the tail and cut the fragment first, so the write lands on a clean
+	// end and the journal stays readable.
+	if err := s.Append(Event{Kind: EventJobStarted, JobID: "job_after_torn", Type: JobShell}); err != nil {
+		t.Fatalf("append after an unsettled boundary read: %v", err)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen the journal after that append: %v (the boundary read recorded a baseline it never examined, so the append joined the fragment)", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	records, err := reopened.Load()
+	if err != nil {
+		t.Fatalf("fold the reopened journal: %v (the boundary read recorded a baseline it never examined, so the append joined the fragment)", err)
+	}
+	if records["job_before"] == nil {
+		t.Fatal("the record appended before the tear is missing from the reopened journal")
+	}
+	if records["job_after_torn"] == nil {
+		t.Fatal("the append after the tear is missing from the reopened journal")
+	}
+}
+
 func TestCommittedJournalRepairsATornTailBeforeReportingIt(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "jobs.jsonl")
 	fs := &syncFailFS{Fs: afero.NewOsFs()}

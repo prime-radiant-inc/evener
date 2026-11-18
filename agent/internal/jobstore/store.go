@@ -864,17 +864,38 @@ func (s *Store) CommittedJournal() (CommittedJournalState, error) {
 		// appends are recorded by noteAppendedLocked, so the stat above matches
 		// what the store wrote and this branch is not taken: the incremental
 		// read stays a stat.
+		//
 		// A reader may proceed on an unsettled tail: it reports a boundary and
 		// withholds what it cannot decode, and an absent name has no boundary to
 		// report yet. Refusing here would fail an ordinary activity read of a
 		// journal that is being replaced, which is exactly what the incremental
 		// path must tolerate.
-		if _, err := s.recoverTrailingPartialLineLocked(); err != nil {
+		//
+		// But the WRITER's baseline is a different question, and proceeding is not
+		// the same as being settled. Recording the sample below says "this store
+		// knows what its tail is", and that is what lets the next append skip the
+		// repair: it compares the file against this baseline, finds it unchanged,
+		// and writes onto whatever fragment was never examined. So a tail this
+		// call could not settle — the held handle's stat failed, or the name was
+		// momentarily gone — leaves the baseline unsampled, and the next append
+		// has to inspect the tail before it writes. The read still answers, with
+		// the bounded view it can decode.
+		settled, err := s.recoverTrailingPartialLineLocked()
+		if err != nil {
 			return CommittedJournalState{}, err
 		}
 		if repaired, statErr := s.fs.Stat(s.path); statErr == nil {
 			info = repaired
 			size, mod = repaired.Size(), repaired.ModTime()
+		}
+		if !settled {
+			s.sampled = false
+			s.named = info
+			s.contentTracked = true
+			if !lagging {
+				s.laggingAppendEnd = 0
+			}
+			return CommittedJournalState{Path: s.path, Size: size, Generation: s.journalGen, MetadataResolvesWrites: !s.cursor.disabled && !s.metadataLagging}, nil
 		}
 	}
 	s.journalSize, s.journalMod, s.sampled = size, mod, true
@@ -892,7 +913,7 @@ func (s *Store) CommittedJournal() (CommittedJournalState, error) {
 	if !lagging {
 		s.laggingAppendEnd = 0
 	}
-	return CommittedJournalState{Path: s.path, Size: size, Generation: s.journalGen, MetadataResolvesWrites: !s.cursor.disabled}, nil
+	return CommittedJournalState{Path: s.path, Size: size, Generation: s.journalGen, MetadataResolvesWrites: !s.cursor.disabled && !s.metadataLagging}, nil
 }
 
 // journalRealSizeLocked reports the journal's actual length, asking the file
@@ -1387,6 +1408,34 @@ func (s *Store) noteAppendedLocked(startOffset, endOffset int64, verified os.Fil
 		if verified.Size() < endOffset {
 			s.journalSize = endOffset
 			s.laggingAppendEnd = endOffset
+			// The filesystem under-reported bytes this append just made durable.
+			// That is the definition of metadata that cannot resolve a write, and
+			// it is established HERE, before the cursor checks below — several of
+			// which return early for exactly this sample. Inferring reliability
+			// from the cursor's survival is therefore not sound: a lagging sample
+			// invalidates the cursor before reaching the check that would mark the
+			// metadata unreliable, so the boundary keeps advertising trustworthy
+			// metadata while a same-length rewrite under the same lag goes
+			// unnoticed and activity reads serve the old rows.
+			s.metadataLagging = true
+		} else if verified.Size() > endOffset {
+			// The sample is longer than the bytes this append made durable. Those
+			// extra bytes are not this store's write: a foreign writer appended
+			// a fragment between the fsync and the stat, or the store's own write
+			// ended short of where the file now ends. Recording that size as the
+			// append's baseline would make the next append see an unchanged
+			// length, skip the tail inspection, and join its event to the
+			// fragment — one malformed line, reported as success, and the journal
+			// no longer reopens.
+			//
+			// So the baseline is left unsampled and the append's own confirmed end
+			// is kept as the place to inspect from. The next read or write
+			// reconciles those extra bytes before anything is appended past them;
+			// until then this store does not claim to know what the tail is.
+			s.journalSize = endOffset
+			s.laggingAppendEnd = endOffset
+			s.sampled = false
+			s.metadataLagging = true
 		}
 	} else {
 		// Nothing was verified after the bytes were made durable under the
