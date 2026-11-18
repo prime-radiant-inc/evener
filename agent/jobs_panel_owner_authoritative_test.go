@@ -1056,6 +1056,49 @@ func TestLoadSessionJobGetKeepsForwardedTerminalOverTornOwnerTail(t *testing.T) 
 	}
 }
 
+// TestLoadSessionJobGetReportsValidationFailureAsUnavailableNotScanned: a legacy
+// row names a hinted owner whose journal path is not a regular file, so
+// validation rejects it before jobstore opens anything. No scan ran and nothing
+// in that journal was ever read — so the wire must say the owner was
+// unavailable, not that a scan stopped at durable corruption. The two codes tell
+// a client different things: one means "ask again, the bytes may be readable
+// later", the other means "the history itself is damaged".
+func TestLoadSessionJobGetReportsValidationFailureAsUnavailableNotScanned(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	scopedSession := identifier.MustNewSessionID()
+	hintedSession := identifier.MustNewSessionID()
+	jobID := "job_legacy_b7c8d9e0"
+	started := time.Date(2026, 11, 21, 8, 0, 0, 0, time.UTC)
+
+	writeJobJournalLines(t, jobsDir(stateDir, scopedSession),
+		`{"kind":"job_started","seq":1,"ts":"`+started.Format(time.RFC3339)+
+			`","job_id":"`+jobID+`","type":"shell","status":"running","owner_session_id":"`+hintedSession+
+			`","visible_to_session_id":"`+scopedSession+`","started_at":"`+started.Format(time.RFC3339)+`"}`+"\n",
+	)
+	// The hinted owner's journal path is a DIRECTORY: validation rejects it as a
+	// non-regular leaf, so no scan is ever attempted.
+	if err := os.MkdirAll(filepath.Join(jobsDir(stateDir, hintedSession), "jobs.jsonl"), 0o755); err != nil {
+		t.Fatalf("mkdir non-regular owner journal: %v", err)
+	}
+
+	job, found, err := LoadSessionJobGet(stateDir, scopedSession, jobID, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the scoped copy")
+	}
+	if !slices.Contains(job.Diagnostics, "owner_unavailable") {
+		t.Fatalf("Diagnostics = %v, want owner_unavailable: the hinted owner's journal could not be read",
+			job.Diagnostics)
+	}
+	if slices.Contains(job.Diagnostics, "journal_scan_incomplete") {
+		t.Fatalf("Diagnostics = %v, want no journal_scan_incomplete: validation rejected the path, "+
+			"so no scan ran and no durable corruption was observed", job.Diagnostics)
+	}
+}
+
 // TestLoadSessionJobGetRejectsContradictoryLegacyHint pins corroboration.
 // The hinted journal contains the job ID but its row names a
 // DIFFERENT owner, so it is a forwarded copy living in another ancestor, not the
@@ -2250,6 +2293,129 @@ func TestLoadSessionJobGetRechecksWhenOnlyTheLoserIsPermanentlyDamaged(t *testin
 	}
 	if second.ExitCode == nil || *second.ExitCode != exit {
 		t.Fatalf("exitCode = %v, want the ancestor's %d", second.ExitCode, exit)
+	}
+}
+
+// TestLoadSessionJobGetRechecksWhenTheOtherJournalIsCleanButGrowable: the
+// requested ancestor's journal holds only a forwarded notification for an
+// owner-encoded job and ends at a clean record boundary, so its row has no
+// status at all. The owner's journal holds a start and then durable corruption.
+// Neither row establishes the job's state, so the owner wins on authority and
+// the selected record carries the owner's scan error.
+//
+// The recheck must stay ON. "This record's scan cannot go further" is a
+// permanent answer only when no other consulted journal can still grow: the
+// ancestor's scan reached its end at a boundary, so a finish appended to it
+// lands on the next read — and a terminal observation outranks the owner's
+// running prefix. A gate that only asks "is anything torn?" answers false here,
+// because a clean-ended journal is neither torn nor damaged, and the pane then
+// misses the finish until a refresh or a reconnect.
+//
+// The second half is what makes the first half mean anything: a predicate that
+// only returned true would not show that the read a recheck issues can ever
+// reach the finish.
+func TestLoadSessionJobGetRechecksWhenTheOtherJournalIsCleanButGrowable(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 20, 14, 0, 0, 0, time.UTC)
+	ended := started.Add(time.Minute)
+	exit := 11
+
+	// The ancestor's journal: a forwarded notification and nothing else, ending at
+	// a clean boundary. It names the job without ever stating its status.
+	writeJobJournalLines(t, jobsDir(stateDir, rootSession),
+		`{"kind":"job_notification_pending","seq":1,"job_id":"`+jobID+`","terminal_generation":"gen_forwarded"}`+"\n",
+	)
+	// The owner's journal: its own start, then a newline-terminated malformed
+	// line, which is durable corruption the scan cannot read past.
+	writeJobJournalLines(t, jobsDir(stateDir, ownerSession),
+		jobStartedLine(jobID, ownerSession, started)+"\n",
+		`{"kind":"job_finished","seq":2,"status":`+"\n",
+	)
+
+	first, found, err := LoadSessionJobGet(stateDir, rootSession, jobID, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet (owner corrupt): %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the owner's running prefix")
+	}
+	if !first.StatusUnconfirmed {
+		t.Fatalf("StatusUnconfirmed = false (diagnostics %v): neither journal settled the job's state",
+			first.Diagnostics)
+	}
+	if !first.StatusRecheckable {
+		t.Fatalf("StatusRecheckable = false (diagnostics %v): the owner's scan cannot go further, "+
+			"but the ancestor reached a clean boundary and a finish appended there outranks it",
+			first.Diagnostics)
+	}
+
+	// The repair: a finish lands in the ancestor's journal, whose clean prefix
+	// still proves this session's scope for the job.
+	writeJobJournalLines(t, jobsDir(stateDir, rootSession),
+		`{"kind":"job_notification_pending","seq":1,"job_id":"`+jobID+`","terminal_generation":"gen_forwarded"}`+"\n",
+		`{"kind":"job_finished","seq":2,"ts":"`+ended.Format(time.RFC3339)+
+			`","job_id":"`+jobID+`","status":"command_exited_nonzero","reason":"exit_nonzero","exit_code":`+
+			strconv.Itoa(exit)+`,"ended_at":"`+ended.Format(time.RFC3339)+`","terminal_generation":"gen_real"}`+"\n",
+	)
+
+	// The read a recheck issues. No refresh, no reconnect: the same call the
+	// reader makes on its slow cadence.
+	second, found, err := LoadSessionJobGet(stateDir, rootSession, jobID, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet (ancestor finished): %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the ancestor's completed record")
+	}
+	if !second.Terminal {
+		t.Fatalf("terminal = false (status %q, diagnostics %v): the finish appended to the ancestor "+
+			"states what the owner's corrupt line hid", second.Status, second.Diagnostics)
+	}
+	if second.ExitCode == nil || *second.ExitCode != exit {
+		t.Fatalf("exitCode = %v, want the ancestor's %d", second.ExitCode, exit)
+	}
+}
+
+// TestLoadSessionJobGetStopsRechecksWhenBothJournalsArePermanentlyDamaged: both
+// consulted journals stopped at durable corruption, so neither can grow. This is
+// the counterpart that keeps the clean-boundary rule from widening into "always
+// recheck": the stop survives when every eligible source is permanently damaged,
+// not only when there happens to be a single source.
+func TestLoadSessionJobGetStopsRechecksWhenBothJournalsArePermanentlyDamaged(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 20, 15, 0, 0, 0, time.UTC)
+
+	writeJobJournalLines(t, jobsDir(stateDir, rootSession),
+		jobStartedLine(jobID, ownerSession, started)+"\n",
+		`{"kind":"job_finished","seq":2,"status":`+"\n",
+	)
+	writeJobJournalLines(t, jobsDir(stateDir, ownerSession),
+		jobStartedLine(jobID, ownerSession, started)+"\n",
+		`{"kind":"job_finished","seq":2,"status":`+"\n",
+	)
+
+	job, found, err := LoadSessionJobGet(stateDir, rootSession, jobID, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the owner's running prefix")
+	}
+	if !job.StatusUnconfirmed {
+		t.Fatalf("StatusUnconfirmed = false (diagnostics %v): both scans stopped at durable corruption",
+			job.Diagnostics)
+	}
+	if job.StatusRecheckable {
+		t.Fatalf("StatusRecheckable = true (diagnostics %v): every consulted journal stopped at durable "+
+			"corruption, so no later read gets behind either bad line", job.Diagnostics)
 	}
 }
 

@@ -195,6 +195,19 @@ type sessionJobRecordDiagnostics struct {
 	// clean record boundary. The record is then a statement about the prefix,
 	// not necessarily about the job: see stateEstablished.
 	ScanIncomplete bool
+	// CleanBoundary is set by a journal read whose scan reached the END of the
+	// journal at a record boundary — a readable place to append, not a damaged
+	// one. It says the journal can still GROW: a finish appended there lands on
+	// the next read, and may outrank the row this read selected. That is a
+	// different fact from TornTail (an append half-landed) and from
+	// ScanIncomplete (an append cannot be reached at all), which is why it is
+	// carried separately and merged across every consulted journal.
+	//
+	// This describes the JOURNAL, so it is not evidence against any record: a
+	// record's own confidence is recordStatusUnconfirmed's question. It exists
+	// for statusRecheckableOnWire, which asks whether any eligible source could
+	// still answer.
+	CleanBoundary bool
 }
 
 // sessionJobRecordRead is one cold per-session job read: the record the read
@@ -419,9 +432,15 @@ func loadSessionJobRecord(stateDir, sessionID, jobID string, fence OwnerDeletion
 			// including durable corruption that made its journal unreadable — and a
 			// claim nothing corroborated is not an owner, so the scoped copy keeps
 			// fallback status rather than pretending to be the owner's.
-			if hintErr != nil {
-				local.diagnostics.ScanIncomplete = true
-			}
+			//
+			// A hintErr is a VALIDATION failure (a symlinked prefix, a non-regular
+			// leaf, a stat error), so no scan ever ran on that path and no durable
+			// corruption was observed. ScanIncomplete is the wire's "the scan stopped
+			// at a bad line" code, and claiming it here would tell a client the
+			// history is damaged when the truth is that it could not be opened —
+			// owner_unavailable, set just below, is that truth. Only the diagnostics
+			// the journal reader actually returned are merged; readSessionJobJournal
+			// reports its own scan damage through corroborated.diagnostics.
 			local.diagnostics.mergeIntegrity(corroborated.diagnostics)
 			local.diagnostics.OwnerUnavailable = true
 			local.diagnostics.ForwardedFallback = true
@@ -717,20 +736,31 @@ func statusRecheckableOnWire(read sessionJobRecordRead) bool {
 	// holding an append in flight, because completing that append can produce a
 	// terminal observation that OUTRANKS this unconfirmed row on the next read.
 	//
-	// The load-bearing fact is that TornTail and scanErr are mutually exclusive
-	// for one journal: ScanEventsWithDiagnostics sets TornTail only on the
-	// unterminated-final-line break, which returns a nil error. So while THIS
-	// branch's scan error is non-nil, this branch's own TornTail is false, and a
-	// torn flag in the merged aggregate can only have come from the other journal
-	// the read consulted. Reading the aggregate here is therefore reading a fact
-	// about the OTHER source — the opposite of the mistake this predicate was
-	// fixed for, where an ancestor's damage was taken as evidence against an
-	// intact owner record.
+	// There are TWO ways another journal can still answer, and both are carried on
+	// the merged diagnostics:
+	//
+	//   - TornTail: an append landed without its newline and can complete.
+	//   - CleanBoundary: the scan reached the end of that journal at a record
+	//     boundary, so an append there lands on the next read. A journal holding
+	//     only a forwarded notification is exactly this shape — it names the job
+	//     without stating its status, and a finish appended behind it outranks
+	//     this row.
+	//
+	// The load-bearing fact is that both flags are mutually exclusive with a scan
+	// ERROR for one journal: ScanEventsWithDiagnostics sets TornTail only on the
+	// unterminated-final-line break, which returns a nil error, and returns an
+	// error only from the durable-corruption path, which stops before any
+	// boundary. So while THIS branch's scan error is non-nil, this branch's own
+	// TornTail and CleanBoundary are both false, and either flag in the merged
+	// aggregate can only have come from the other journal the read consulted.
+	// Reading the aggregate here is therefore reading a fact about the OTHER
+	// source — the opposite of the mistake this predicate was fixed for, where an
+	// ancestor's damage was taken as evidence against an intact owner record.
 	//
 	// ScanIncomplete is deliberately NOT consulted: it says some journal had
 	// durable corruption, but not which one, so it can neither confirm nor deny
 	// that another source is still growable.
-	return read.diagnostics.TornTail
+	return read.diagnostics.TornTail || read.diagnostics.CleanBoundary
 }
 
 // mergeIntegrity folds another read's damage report into d. Diagnostics are not
@@ -740,6 +770,7 @@ func (d *sessionJobRecordDiagnostics) mergeIntegrity(other sessionJobRecordDiagn
 	d.TornTail = d.TornTail || other.TornTail
 	d.IncompleteLifecycle = d.IncompleteLifecycle || other.IncompleteLifecycle
 	d.ScanIncomplete = d.ScanIncomplete || other.ScanIncomplete
+	d.CleanBoundary = d.CleanBoundary || other.CleanBoundary
 }
 
 // readSessionJobJournal folds one session's durable jobs.jsonl and reports the
@@ -765,7 +796,16 @@ func readSessionJobJournal(stateDir, sessionID, jobID string) (sessionJobRecordR
 	events, readDiagnostics, scanErr := jobstore.ScanEventsWithDiagnostics(context.Background(), path, jobstore.ScanLimits{})
 	// A torn tail is not an error at all: the scan reached a clean boundary and
 	// the unterminated append rides the diagnostic.
-	diagnostics := sessionJobRecordDiagnostics{TornTail: readDiagnostics.TornTail, ScanIncomplete: scanErr != nil}
+	// CleanBoundary and ScanIncomplete are mutually exclusive for one journal, for
+	// the same reason TornTail and ScanIncomplete are: ScanEventsWithDiagnostics
+	// returns an error only from the durable-corruption path, which stops before
+	// any boundary. A nil error therefore means the scan read to the end of the
+	// file and could be appended to.
+	diagnostics := sessionJobRecordDiagnostics{
+		TornTail:       readDiagnostics.TornTail,
+		ScanIncomplete: scanErr != nil,
+		CleanBoundary:  scanErr == nil,
+	}
 	recs, foldErr := jobstore.FoldChecked(events)
 	if foldErr != nil && errors.Is(foldErr, jobstore.ErrIncompleteLifecycle) {
 		diagnostics.IncompleteLifecycle = true
