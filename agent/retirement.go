@@ -78,7 +78,13 @@ type RetirementController struct {
 	eligibleSince     time.Time
 	failure           string
 	lastAttempt       *RetirementAttempt
-	claim             *RetirementClaim
+	// lastReported is the last attempt whose report the caller accepted. It
+	// tracks what the reader was actually told, not what Run tried to say: a
+	// report the sink refused was never made, so the next attempt with the same
+	// reason is free to try again. lastAttempt still records every attempt,
+	// because a snapshot describes what happened, not what was logged.
+	lastReported *RetirementAttempt
+	claim        *RetirementClaim
 	// evidenceGate is a test-only observation seam: when set it runs inside
 	// nonBlockingEvidenceRead, with the caller's captured root and generation
 	// already fixed, so a test can change the controller identity while that read
@@ -717,9 +723,11 @@ func RealRetirementClock() RetirementClock { return clock.Real() }
 // Every tick that reaches an attempt and does not retire is recorded as the
 // snapshot's LastAttempt: the full-evidence blockers of a refusal, or the
 // error of a failed claim or consumer. report, when non-nil, receives the
-// attempt only when its reason differs from the previous attempt's, so a
-// daemon refused for the same reason every interval logs it once.
-func (c *RetirementController) Run(ctx context.Context, retire func(context.Context, *RetirementClaim) error, report func(RetirementAttempt)) error {
+// attempt only when its reason differs from the last one the caller accepted,
+// so a daemon refused for the same reason every interval logs it once. The
+// callback reports whether its line reached the reader: a refused report was
+// never made, so the same reason may be offered again on the next attempt.
+func (c *RetirementController) Run(ctx context.Context, retire func(context.Context, *RetirementClaim) error, report func(RetirementAttempt) bool) error {
 	var timer clock.Timer
 	disarm := func() {
 		if timer != nil {
@@ -775,18 +783,24 @@ func (c *RetirementController) Run(ctx context.Context, retire func(context.Cont
 			evaluate()
 		case <-tick:
 			if attempt := c.attemptRetirement(ctx, retire); attempt != nil {
-				// Run is the only writer of lastAttempt, so the reason it
+				// Report before recording, so a reader that sees this attempt
+				// in a snapshot knows the line about it was already offered.
+				// A refused report is not a report: the sink dropped it, so the
+				// next attempt with the same reason may say it again.
+				// Run is the only writer of both fields, so the reason it
 				// compares against cannot change before the store below.
 				c.mu.Lock()
-				changed := c.lastAttempt == nil || !sameRetirementReason(*c.lastAttempt, *attempt)
+				changed := c.lastReported == nil || !sameRetirementReason(*c.lastReported, *attempt)
 				c.mu.Unlock()
+				reported := false
 				if changed && report != nil {
-					report(*attempt)
+					reported = report(*attempt)
 				}
-				// Recorded after the report, so a reader that sees this
-				// attempt in a snapshot knows its report was already made.
 				c.mu.Lock()
 				c.lastAttempt = attempt
+				if reported {
+					c.lastReported = attempt
+				}
 				c.mu.Unlock()
 			}
 			evaluate()

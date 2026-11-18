@@ -1094,7 +1094,12 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	} else {
 		defer func() {
 			removeRendezvousAtShutdown(rvRegistration.Remove, deps.rendezvousRetryPause, func(err error) {
-				serveLogf(logOut, live.session().ID(), "rendezvous removal failed after %d attempts, entry may be stale: %v", rendezvousRemovalAttempts, err)
+				// Through the spool, not the pipe. This runs on the way out
+				// after both loops have exited, so a line written here is the
+				// last thing between the daemon and its exit; the pipe it would
+				// block on is the pipe a stand-down record may already have
+				// filled.
+				diagnostics.Logf(live.session().ID(), "rendezvous removal failed after %d attempts, entry may be stale: %v", rendezvousRemovalAttempts, err)
 			})
 		}()
 		// The idle clock may only start once the daemon has published its
@@ -1108,12 +1113,16 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		retirementLoopDone = make(chan struct{})
 		go func() {
 			defer close(retirementLoopDone)
-			_ = retiring.retirement.Run(ctx, retiring.consumeClaim, func(attempt agent.RetirementAttempt) {
+			_ = retiring.retirement.Run(ctx, retiring.consumeClaim, func(attempt agent.RetirementAttempt) bool {
 				// Through the spool for the same reason the input loop's records
 				// are: shutdown joins this loop after the input loop, so a report
 				// that waited on a reader which stopped draining the daemon's
 				// output would hold the exit open after the turns were done.
-				diagnostics.Logf(live.session().ID(), "%s", retirementAttemptSummary(attempt))
+				//
+				// The result travels back so a refused offer does not silence
+				// the reason: the controller compares against the last reason it
+				// actually reported, not the last one it attempted.
+				return diagnostics.Logf(live.session().ID(), "%s", retirementAttemptSummary(attempt))
 			})
 		}()
 	}

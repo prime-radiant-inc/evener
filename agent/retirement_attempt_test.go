@@ -11,6 +11,15 @@ import (
 // attempt Run reports, so a test can see which outcomes reached the log.
 func startReportingRetirementRun(t *testing.T, ctrl *RetirementController, consume func(context.Context, *RetirementClaim) error) chan RetirementAttempt {
 	t.Helper()
+	return startReportingRetirementRunWith(t, ctrl, consume, func(RetirementAttempt) bool { return true })
+}
+
+// startReportingRetirementRunWith is startReportingRetirementRun with the
+// caller deciding whether each report reached its reader. It exists to drive
+// the case where the sink refuses a line: the controller must not treat a
+// refused report as one the reader saw.
+func startReportingRetirementRunWith(t *testing.T, ctrl *RetirementController, consume func(context.Context, *RetirementClaim) error, accept func(RetirementAttempt) bool) chan RetirementAttempt {
+	t.Helper()
 	reports := make(chan RetirementAttempt, 8)
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -20,7 +29,10 @@ func startReportingRetirementRun(t *testing.T, ctrl *RetirementController, consu
 	})
 	go func() {
 		defer close(done)
-		_ = ctrl.Run(ctx, consume, func(attempt RetirementAttempt) { reports <- attempt })
+		_ = ctrl.Run(ctx, consume, func(attempt RetirementAttempt) bool {
+			reports <- attempt
+			return accept(attempt)
+		})
 	}()
 	return reports
 }
@@ -154,6 +166,56 @@ func TestRetirementTimerRecordsPreparationError(t *testing.T) {
 	clk.fire(t)
 	if report := awaitRetirementReport(t, reports); report.Error != "job store closed" {
 		t.Fatalf("reported attempt = %+v, want the changed preparation error", report)
+	}
+}
+
+// TestRetirementReportRefusedByTheSinkIsRetried pins that a report the sink
+// refused is not treated as one the reader saw: the next attempt that fails the
+// same way says it again, while the status snapshot keeps recording the attempt
+// itself. Without this, a line dropped during a burst would silence that reason
+// for the rest of the daemon's life.
+func TestRetirementReportRefusedByTheSinkIsRetried(t *testing.T) {
+	t.Parallel()
+	clk := newRetirementAckClock()
+	ctrl, err := NewRetirementController(time.Hour, clk)
+	if err != nil {
+		t.Fatalf("NewRetirementController: %v", err)
+	}
+	consume := func(_ context.Context, claim *RetirementClaim) error {
+		if err := ctrl.Abort(claim, "prepare_failed"); err != nil {
+			t.Errorf("Abort: %v", err)
+		}
+		return errors.New("lane read failed")
+	}
+	// The first report is refused, the way the spool refuses a line that
+	// arrives while its worker is busy; the rest are accepted.
+	accepted := 0
+	reports := startReportingRetirementRunWith(t, ctrl, consume, func(RetirementAttempt) bool {
+		accepted++
+		return accepted > 1
+	})
+	root := newQueuePersistTestSession(t, t.TempDir())
+	defer root.Close()
+	if err := ctrl.AttachRoot(root); err != nil {
+		t.Fatalf("AttachRoot: %v", err)
+	}
+	clk.awaitArm(t)
+
+	clk.Advance(time.Hour)
+	clk.fire(t)
+	if report := awaitRetirementReport(t, reports); report.Error != "lane read failed" {
+		t.Fatalf("reported attempt = %+v, want the preparation error", report)
+	}
+	// The status snapshot records the attempt regardless of whether its line
+	// reached the reader: it describes what happened, not what was logged.
+	if last := awaitLastAttemptAt(t, ctrl, clk.Now()); last.Error != "lane read failed" {
+		t.Fatalf("snapshot last attempt = %+v, want the preparation error", last)
+	}
+
+	clk.Advance(time.Hour)
+	clk.fire(t)
+	if report := awaitRetirementReport(t, reports); report.Error != "lane read failed" {
+		t.Fatalf("reported attempt after the refused one = %+v, want the same reason said again", report)
 	}
 }
 

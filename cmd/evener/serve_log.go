@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"sync/atomic"
 	"time"
 
 	"primeradiant.com/evener/agent"
@@ -54,11 +53,18 @@ type serveDiagnosticSpool struct {
 	lines chan serveDiagnosticLine
 	stop  chan struct{}
 	done  chan struct{}
-	// writing is set for as long as the worker is inside a write. The one slot
-	// is free only when it is clear, so an offer can never land in a slot the
-	// worker has already drained.
-	writing atomic.Int32
 }
+
+// serveDiagnosticSpoolCapacity is how many lines the spool holds before it
+// starts refusing. A burst is normal: one failed turn emits its error record,
+// and the wake answering it reports the park in the same breath. Capacity one
+// would refuse every line of that burst behind a blocked worker and leave the
+// park unreported until some later wake happened by, so the buffer is deep
+// enough to hold the largest burst the shutdown path emits.
+//
+// It is a bound, not a queue: offers stay nonblocking and a sink that never
+// drains still costs the daemon nothing.
+const serveDiagnosticSpoolCapacity = 4
 
 // serveDiagnosticLine is one queued diagnostic, with the session it belongs to.
 type serveDiagnosticLine struct {
@@ -76,7 +82,7 @@ type serveDiagnosticLine struct {
 func newServeDiagnosticSpool(out io.Writer) *serveDiagnosticSpool {
 	p := &serveDiagnosticSpool{
 		out:   out,
-		lines: make(chan serveDiagnosticLine, 1),
+		lines: make(chan serveDiagnosticLine, serveDiagnosticSpoolCapacity),
 		stop:  make(chan struct{}),
 		done:  make(chan struct{}),
 	}
@@ -89,13 +95,7 @@ func (p *serveDiagnosticSpool) run() {
 	for {
 		select {
 		case line := <-p.lines:
-			// Hold the slot until the write finishes. Reading the line frees
-			// the channel, so a worker that read and then blocked would let the
-			// next offer land in a slot nothing will read again -- accepted and
-			// then dropped, which is the one outcome the caller cannot see.
-			p.writing.Store(1)
 			serveLogAt(p.out, line.at, line.sessionID, "%s", line.text)
-			p.writing.Store(0)
 		case <-p.stop:
 			// A stop can arrive while a line this spool accepted is still
 			// queued. Drain what is already here before exiting: the record
@@ -129,9 +129,6 @@ func (p *serveDiagnosticSpool) Logf(sessionID, format string, args ...any) bool 
 // emitted, which is what the worker stamps rather than the moment the sink
 // became free.
 func (p *serveDiagnosticSpool) logAt(at time.Time, sessionID, format string, args ...any) bool {
-	if p.writing.Load() != 0 {
-		return false
-	}
 	select {
 	case p.lines <- serveDiagnosticLine{sessionID: sessionID, text: fmt.Sprintf(format, args...), at: at}:
 		return true

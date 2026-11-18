@@ -424,6 +424,53 @@ func TestRetirementTeardownReportDoesNotBlockOnAStalledSink(t *testing.T) {
 	}
 }
 
+// TestRendezvousRemovalWarningIsAnOfferToTheSpool covers the last report the
+// daemon makes on its way out: the warning that its rendezvous entry may be
+// stale. It runs after both processing loops have exited, so a synchronous
+// write there is the one line that can still hold the exit behind a pipe the
+// daemon has stopped draining.
+//
+// The property that keeps it bounded is that the report is an offer to the
+// spool: it must return with the sink stalled, and it must refuse rather than
+// wait when the spool is already full.
+func TestRendezvousRemovalWarningIsAnOfferToTheSpool(t *testing.T) {
+	t.Parallel()
+	sink := &stalledSink{release: make(chan struct{}), onEnter: make(chan struct{})}
+	t.Cleanup(func() { close(sink.release) })
+	spool := newServeDiagnosticSpool(sink)
+	t.Cleanup(spool.Close)
+
+	// The worker is stuck in a write, and the pipe is the same stall the
+	// removal warning would otherwise write to.
+	spool.Logf("session-1", "the line the sink is stuck on")
+	<-sink.onEnter
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		removeRendezvousAtShutdown(
+			func() error { return errors.New("injected: remove failed") },
+			func() <-chan time.Time {
+				elapsed := make(chan time.Time, 1)
+				elapsed <- time.Now()
+				return elapsed
+			},
+			func(err error) {
+				spool.Logf("session-1", "rendezvous removal failed after attempts, entry may be stale: %v", err)
+			},
+		)
+	}()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the removal warning did not return with the pipe stalled: a synchronous write there holds the daemon's exit")
+	}
+
+	if got := sink.writes.Load(); got != 1 {
+		t.Fatalf("the sink saw %d writes while the removal warning was reported, want 1: the warning went to the pipe instead of the spool", got)
+	}
+}
+
 // TestServeDiagnosticSpoolReportsWhetherItAcceptedALine pins the contract the
 // park's once-per-attempt report depends on.
 //
@@ -437,14 +484,34 @@ func TestServeDiagnosticSpoolReportsWhetherItAcceptedALine(t *testing.T) {
 	spool := newServeDiagnosticSpool(sink)
 	t.Cleanup(spool.Close)
 
-	// The worker takes this line and blocks in the sink, so the one slot is
-	// occupied from here on.
-	if !spool.Logf("session-1", "the line that fills the slot") {
+	// The worker takes this line and blocks in the sink, so the buffer begins
+	// filling from here on.
+	if !spool.Logf("session-1", "the line the worker is stuck writing") {
 		t.Fatal("the first offer was refused with an idle spool")
 	}
 	<-sink.onEnter
 
-	if spool.Logf("session-1", "an offer behind the blocked write") {
-		t.Fatal("an offer was accepted while the one slot was taken: a caller would then clear state for a line that was dropped")
+	// The burst the shutdown path actually emits: a failed turn reports its
+	// error, and the wake answering the same failure reports the park. A worker
+	// stuck in one write must not refuse either, or the park goes unreported
+	// until some later wake happens by.
+	burst := []string{"error: the turn failed", "queued input stood down: the steer is parked"}
+	for _, line := range burst {
+		if !spool.Logf("session-1", "%s", line) {
+			t.Fatalf("a two-line burst was refused while the worker was busy: %q would reach no reader until a later wake", line)
+		}
+	}
+
+	// The buffer is a bound, not a queue. Offering well past any capacity must
+	// be refused rather than wait, so a sink that never drains cannot grow the
+	// daemon's memory or hold a caller that promised not to block.
+	refused := false
+	for i := range 16 {
+		if !spool.Logf("session-1", "flood record %d", i) {
+			refused = true
+		}
+	}
+	if !refused {
+		t.Fatal("sixteen offers past a two-line burst were all accepted with the worker stuck: the spool is unbounded, so a stalled sink would grow without limit")
 	}
 }
