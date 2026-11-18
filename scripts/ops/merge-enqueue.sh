@@ -927,7 +927,6 @@ start_helper() {
   fi
   local status=0
   wait "$child" || status=$?
-  child=""
   child_is_helper=false
   # The child's exit is not the queue's answer. An EVENER_DEV_BIN wrapper is
   # allowed to start the real helper in the background and exit 0 at once, and
@@ -943,14 +942,31 @@ start_helper() {
   # trusted: the recorded group is still populated after the child is gone, which
   # is exactly the shape of a wrapper that left its helper running.
   #
-  # Only on a zero exit. A non-zero status is the wrapper's own answer about a run
-  # that failed, and replacing it with "the helper outlived its wrapper" would
-  # report a different defect than the one that happened.
-  if [ "$status" -eq 0 ] && helper_group_leaves_survivors "$helper_group"; then
-    echo "merge-enqueue: the helper exited without reporting a queue outcome, but the process group it started is still running; an EVENER_DEV_BIN wrapper must exec the helper or wait for it and forward its status" >&2
+  # Every exit, not only a zero one. A wrapper that starts the helper and then
+  # exits 1 leaves it polling or submitting just as a wrapper that exits 0 does,
+  # and the status it chose describes its own run, not a queue answer: passing it
+  # through would report a drop or a timeout for a PR the launcher never asked
+  # GitHub about, and the EXIT trap would remove the group file the helper is
+  # still using. A wrapper that stays attached has no survivors here and its own
+  # status passes through untouched, which is the contract.
+  #
+  # 2 rather than the wrapper's status is the contract's own choice: 1 means the
+  # queue dropped the PR and invites a retry, and nothing here reached the queue.
+  # A live helper is stopped first, so this returns 2 with nothing left alive.
+  if helper_group_leaves_survivors "$helper_group"; then
+    if [ "$status" -eq 0 ]; then
+      echo "merge-enqueue: the helper exited without reporting a queue outcome, but the process group it started is still running; an EVENER_DEV_BIN wrapper must exec the helper or wait for it and forward its status" >&2
+    else
+      echo "merge-enqueue: the helper exited $status and left the process group it started still running, so that status is not a queue outcome; an EVENER_DEV_BIN wrapper must exec the helper or wait for it and forward its status" >&2
+    fi
     stop_helper_tree "" "$helper_group"
-    return 2
+    status=2
   fi
+  # Cleared only now. A signal that arrives during the survivor scan above runs
+  # reap_child through the trap, and reap_child reaches the helper through this
+  # pid; clearing it first left the handler with nothing to stop and let it exit
+  # 130 over a live helper.
+  child=""
   # 126 and 127 are the shell's "found but could not execute" and "not found".
   # A noexec mount produces the first after a successful build, and neither is
   # a decision the helper made: the helper's own codes are 0, 1, 2 and 130.

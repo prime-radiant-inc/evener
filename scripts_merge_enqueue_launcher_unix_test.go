@@ -3059,6 +3059,56 @@ func TestMergeEnqueueLauncherHelpPrintsTheWholeContract(t *testing.T) {
 	}
 }
 
+// TestMergeEnqueueLauncherDoesNotPassThroughAWrapperStatusOverALiveHelper pins
+// that the survivor check runs on every exit, not only a zero one.
+//
+// A wrapper that starts the helper in the background and then exits 1 is the same
+// defect as one that exits 0, with a worse report. The launcher used to pass the
+// wrapper's status straight through, so the operator was told "the queue dropped
+// your PR, retry" -- a queue outcome -- for a run that never asked GitHub
+// anything, while the helper went on polling or submitting and the EXIT trap
+// removed the group file it was publishing into. A drop report invites a retry of
+// a PR that may already be queued.
+//
+// The oracle is the launcher's status and the helper's death, not a log line: 2
+// is "the launcher could not get as far as a decision", and the helper the wrapper
+// left must be stopped before that status is returned.
+func TestMergeEnqueueLauncherDoesNotPassThroughAWrapperStatusOverALiveHelper(t *testing.T) {
+	t.Parallel()
+	f := newLauncherFixture(t, `#!/usr/bin/env bash
+set -uo pipefail
+# The wrapper starts the helper, records it, and exits 1 without waiting for it: a
+# status that describes the wrapper and not the queue.
+"$EVENER_FIXTURE_HELPER" &
+printf 'inner-pid=%s;pgid=%s\n' "$!" "$(ps -o pgid= -p "$!" | tr -d ' ')" >> "$EVENER_FIXTURE_LOG"
+exit 1
+`)
+	inner := filepath.Join(f.dir, "helper.sh")
+	writeTestFile(t, inner, []byte(`#!/usr/bin/env bash
+trap '' TERM
+printf 'helper-started\n' >> "$EVENER_FIXTURE_LOG"
+while :; do sleep 0.05; done
+`), 0o755)
+	cmd := f.launcherCmd(t, "--pr", "6499", "--wait", "570", "--repo", "example.invalid/none")
+	cmd.Env = append(cmd.Env,
+		"EVENER_FIXTURE_HELPER="+inner,
+		"EVENER_HELPER_TERM_GRACE_SECONDS=0",
+		"EVENER_STOP_TREE_GRACE_SECONDS=1",
+	)
+	t.Cleanup(func() { assertNoSurvivors(t, f.dir) })
+	runLauncher(t, cmd, f)
+	innerPID, _ := logPIDAndGroup(t, f, "inner-pid=")
+	if innerPID == 0 {
+		t.Fatalf("the wrapper never recorded the helper it started: %s", f.output(t))
+	}
+	// 1 is the wrapper's own status and would read as a queue drop. The launcher
+	// must answer 2, which is its own failure, and must not leave the helper alive.
+	mustExit(t, cmd, f, 2)
+	testwait.Until(t, fmt.Sprintf("the helper the wrapper left behind (pid %d) to be stopped before the launcher returns", innerPID), func() bool {
+		return pidGone(innerPID)
+	})
+}
+
 // TestMergeEnqueueLauncherDoesNotReportSuccessForAWrapperThatLeftItsHelper pins
 // that the launcher's exit status is a queue outcome and not a process spawn.
 //
