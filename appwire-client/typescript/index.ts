@@ -23,6 +23,8 @@ export {
   isFailedJobOutcome,
   jobCommandLabel,
   jobStatusDisplay,
+  jobStatusDisplayUnconfirmed,
+  jobStatusUnconfirmed,
   parseActivityJob,
   parseActivityTree,
   reconcileActivityState,

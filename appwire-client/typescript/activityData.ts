@@ -70,6 +70,37 @@ export function jobStatusDisplay(status: string, reason?: string): string {
   }
 }
 
+// The diagnostic codes a retained read attaches when its own journal did not
+// reach a clean record boundary. A row carrying one of these describes what the
+// intact prefix said, not what the job did: the finish may be the very line
+// that failed to decode. Kept as a set rather than a single code because the
+// distinction a client cares about — "this status is not confirmed" — is the
+// same for all of them.
+const UNCONFIRMED_INTEGRITY_CODES = new Set(["journal_scan_incomplete", "incomplete_lifecycle"]);
+
+// jobStatusUnconfirmed reports whether a retained row's nonterminal status is
+// NOT established. A job whose start survived a corrupt journal line reaches a
+// client as `running` with a diagnostic, and that running word is a statement
+// about the prefix, not about the job: a surface that treats it as live shows a
+// finished job as running and polls for a finish that will never arrive.
+//
+// Terminal rows are always confirmed — the first terminal write is a complete
+// observation on its own, so damage after it can add nothing. A live row carries
+// no diagnostics at all.
+export function jobStatusUnconfirmed(job: Pick<ActivityJob, "terminal" | "diagnostics">): boolean {
+  if (job.terminal) return false;
+  const diagnostics = job.diagnostics;
+  if (!diagnostics || diagnostics.length === 0) return false;
+  return diagnostics.some((code) => UNCONFIRMED_INTEGRITY_CODES.has(code));
+}
+
+// jobStatusDisplayUnconfirmed is the display word for a status the read could
+// not establish. It says what is true of the record rather than guessing at the
+// job: the job may have finished, and the surface cannot say.
+export function jobStatusDisplayUnconfirmed(status: string): string {
+  return `${status} (unconfirmed)`;
+}
+
 export interface ActivityBranchState {
   error?: string;
   truncated?: boolean;

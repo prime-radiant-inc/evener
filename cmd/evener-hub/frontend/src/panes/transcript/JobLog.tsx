@@ -1,6 +1,11 @@
 // Job output uses its owning session's byte pages, the workspace pane's
 // retained reader and the same virtual list as session transcripts.
-import { jobCommandLabel, jobStatusDisplay } from "@evener/appwire-client";
+import {
+  jobCommandLabel,
+  jobStatusDisplay,
+  jobStatusDisplayUnconfirmed,
+  jobStatusUnconfirmed,
+} from "@evener/appwire-client";
 import type { Virtualizer } from "@tanstack/react-virtual";
 import { useEffect, useLayoutEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { useStore } from "zustand";
@@ -362,7 +367,9 @@ function JobLogBody({ reader, jobId, paneId }: { reader: JobLogReader; jobId: st
       <div className={CLASS.body}>
         {job && (
           <span className={CLASS.joblogNote} data-testid="joblog-status">
-            {jobStatusDisplay(job.status, job.reason)}
+            {jobStatusUnconfirmed(job)
+              ? jobStatusDisplayUnconfirmed(jobStatusDisplay(job.status, job.reason))
+              : jobStatusDisplay(job.status, job.reason)}
             {job.exitCode !== undefined ? ` · Exit code ${job.exitCode}` : null}
           </span>
         )}

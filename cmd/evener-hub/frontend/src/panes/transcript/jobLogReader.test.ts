@@ -453,3 +453,36 @@ test("reconnect preserves a visible later-page row and reconciles the new floor"
   expect(recovered.windows.older?.rows[0]?.line[0]?.text).toBe("FIRST_ROW");
   expect(recovered.scrollCapture).toEqual({ byteOffset: 80, pixelOffset: -4, following: false });
 });
+
+// A retained row whose nonterminal status is unconfirmed describes the intact
+// prefix, not the job: the finish may be the line that failed to decode. Polling
+// it at the live rate asks an unanswerable question once a second, forever. This
+// asserts the SCHEDULE — no further metadata or output read is requested — and
+// not the wording a surface renders.
+test("an unconfirmed nonterminal status schedules no further live reads", async () => {
+  const first = await peer.request(OUTPUT);
+  peer.reply(await peer.request(META), {
+    ...metadata(false),
+    diagnostics: ["journal_scan_incomplete"],
+  });
+  peer.reply(first, page());
+  await observed((snapshot) => snapshot.windows.live !== null && snapshot.job !== null);
+
+  // Let the initial pair settle: whichever of the two replies lands second may
+  // pace one more read before the reader knows the row is unconfirmed.
+  await vi.advanceTimersByTimeAsync(2000);
+  const before = { metadata: peer.requests(META).length, output: peer.requests(OUTPUT).length };
+  await vi.advanceTimersByTimeAsync(5000);
+
+  expect(peer.requests(META)).toHaveLength(before.metadata);
+  expect(peer.requests(OUTPUT)).toHaveLength(before.output);
+});
+
+// The counterpart: a healthy live row keeps the normal cadence, so the stop
+// above cannot be satisfied by simply stopping for every job.
+test("a confirmed running status keeps polling at the live rate", async () => {
+  await initial();
+  const before = peer.requests(META).length;
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(peer.requests(META).length).toBeGreaterThan(before);
+});

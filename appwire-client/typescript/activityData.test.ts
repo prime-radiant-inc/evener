@@ -12,6 +12,8 @@ import {
   delegateHasActiveWork,
   jobCommandLabel,
   jobStatusDisplay,
+  jobStatusDisplayUnconfirmed,
+  jobStatusUnconfirmed,
   parseActivityJob,
   parseActivityTree,
   reconcileActivityState,
@@ -37,6 +39,30 @@ describe("jobStatusDisplay", () => {
   it("keeps a machinery failed status raw", () => {
     expect(jobStatusDisplay("failed")).toBe("failed");
     expect(jobStatusDisplay("failed", "wait_failed")).toBe("failed");
+  });
+});
+
+describe("jobStatusUnconfirmed", () => {
+  it("is true for a nonterminal row carrying a scan-integrity diagnostic", () => {
+    expect(jobStatusUnconfirmed({ terminal: false, diagnostics: ["journal_scan_incomplete"] })).toBe(true);
+    expect(jobStatusUnconfirmed({ terminal: false, diagnostics: ["incomplete_lifecycle"] })).toBe(true);
+  });
+
+  it("is false for a terminal row even when damage was reported after its finish", () => {
+    expect(jobStatusUnconfirmed({ terminal: true, diagnostics: ["journal_scan_incomplete"] })).toBe(false);
+  });
+
+  it("is false for a live row and for a row whose damage says nothing about its state", () => {
+    expect(jobStatusUnconfirmed({ terminal: false })).toBe(false);
+    expect(jobStatusUnconfirmed({ terminal: false, diagnostics: [] })).toBe(false);
+    expect(jobStatusUnconfirmed({ terminal: false, diagnostics: ["forwarded_fallback", "owner_unavailable"] })).toBe(
+      false,
+    );
+  });
+
+  it("marks the displayed word rather than replacing it", () => {
+    expect(jobStatusDisplayUnconfirmed(jobStatusDisplay("running"))).toContain(jobStatusDisplay("running"));
+    expect(jobStatusDisplayUnconfirmed(jobStatusDisplay("running"))).not.toBe(jobStatusDisplay("running"));
   });
 });
 

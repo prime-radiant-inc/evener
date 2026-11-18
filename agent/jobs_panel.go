@@ -309,9 +309,14 @@ func loadSessionJobRecord(stateDir, sessionID, jobID string, fence OwnerDeletion
 		// a journal. Validate it before it reaches the deletion fence or a
 		// filesystem lookup, so a malformed claim cannot name a path or a session
 		// the fence is never consulted for.
-		if err := schema.ValidateSessionID(hint); err != nil {
-			// A claim that is not a session id cannot corroborate anything. The
-			// scoped record is the surviving evidence and says so.
+		if hintErr := schema.ValidateSessionID(hint); hintErr != nil {
+			// The discard is deliberate, not a swallowed failure: a malformed claim is
+			// not a failure of THIS read. The caller asked about the scoped session,
+			// whose record is intact, and a claim that is not a session id cannot
+			// corroborate anything, so there is no branch to consult and nothing to
+			// retry. Returning nil here is the ANSWER — the scoped copy stands, and the
+			// two flags below say why it is fallback evidence rather than the owner's.
+			_ = hintErr
 			local.diagnostics.OwnerUnavailable = true
 			local.diagnostics.ForwardedFallback = true
 			return local, nil

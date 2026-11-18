@@ -2286,8 +2286,12 @@ export interface JobActivityJob {
    * not exist or could not be established as authoritative. It does not mean
    * the owner's journal was empty.
    *
-   * owner_unavailable means the owner's journal could not be read at all, so a
-   * forwarded copy had to stand in for it.
+   * owner_unavailable means the lookup could not obtain a USABLE owner record,
+   * so a forwarded copy had to stand in for it. That covers more than a read
+   * failure: the owner's journal may be absent or unreadable, it may be
+   * readable and hold no record of this job, or a legacy owner hint may have
+   * failed corroboration. A caller must not read this code as proof that the
+   * journal itself was broken.
    *
    * The three integrity codes — journal_torn_tail, incomplete_lifecycle and
    * journal_scan_incomplete — describe damage in EITHER journal the read

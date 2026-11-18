@@ -2,6 +2,7 @@ import {
   errorText,
   type JobActivityJob,
   jobOutputPrunedBounds,
+  jobStatusUnconfirmed,
   parseActivityJob,
   parseJobOutputPage,
 } from "@evener/appwire-client";
@@ -33,6 +34,24 @@ export type JobLogReaderSnapshot = {
 
 const READ_INTERVAL_MS = 1000;
 const messageOf = (error: unknown) => errorText(error);
+
+// livePollingStopped reports whether this reader has nothing left to wait for.
+//
+// A retained row whose nonterminal status is unconfirmed is the case that
+// matters: its journal stopped at damage, so the status describes the intact
+// prefix and not the job. Polling such a row at the live rate asks the same
+// unanswerable question once a second, forever, and shows a reader a finished
+// job that looks live. The reader stops scheduling and stays useful: the
+// recovered command and whatever output survived remain readable, output
+// paging still works, refresh() re-reads on demand, and a reconnect read still
+// happens, because those are the ways a person establishes what happened.
+//
+// A terminal row is confirmed and already stops. A healthy live row carries no
+// diagnostics and keeps the normal cadence.
+function livePollingStopped(job: JobActivityJob | null): boolean {
+  if (job === null) return false;
+  return job.terminal || jobStatusUnconfirmed(job);
+}
 
 export class JobLogReader {
   private snapshot: JobLogReaderSnapshot = {
@@ -246,7 +265,10 @@ export class JobLogReader {
           drainPending = true;
           this.liveDueAt = Date.now();
         }
-        this.metadataDueAt = job.terminal ? Number.POSITIVE_INFINITY : Date.now() + READ_INTERVAL_MS;
+        // An unconfirmed nonterminal row gets no further metadata reads: the
+        // journal cannot establish the job's state, so the next read would ask
+        // the same unanswerable question.
+        this.metadataDueAt = livePollingStopped(job) ? Number.POSITIVE_INFINITY : Date.now() + READ_INTERVAL_MS;
         this.publish({ job, metadataError: null, drainPending });
       })
       .catch((error: unknown) => {
@@ -291,8 +313,12 @@ export class JobLogReader {
             page.offsetBytes + page.bytesReturned === page.totalBytes
           )
             drainPending = false;
-          this.liveDueAt =
-            this.snapshot.job?.terminal && !drainPending ? Number.POSITIVE_INFINITY : Date.now() + READ_INTERVAL_MS;
+          // Output stops following only when the row is settled: terminal with
+          // nothing left to drain, or an unconfirmed status that no amount of
+          // further reading can turn into an answer. A pending drain still
+          // finishes, because those bytes were already written.
+          const settled = livePollingStopped(this.snapshot.job) && !drainPending;
+          this.liveDueAt = settled ? Number.POSITIVE_INFINITY : Date.now() + READ_INTERVAL_MS;
         } else {
           this.historyServedSinceLive = Date.now() >= this.liveDueAt || drainPending;
           if (pendingDemand === demand && demand !== null) {

@@ -270,15 +270,23 @@ is returned and flagged, because dropping it would erase the only surviving
 record of a descendant whose journal is gone. The response says so. Its
 `diagnostics` carries one code per fact the read could not establish:
 `forwarded_fallback` (a forwarded copy, not the owner's record),
-`owner_unavailable` (the owner's journal was absent or unreadable),
-`journal_torn_tail` (the journal ended in an unterminated append) and
+`owner_unavailable` (the lookup could not obtain a usable owner record — the
+journal may be absent or unreadable, may hold no record of this job, or a legacy
+owner hint may have failed corroboration),
+`journal_torn_tail` (a journal ended in an unterminated append) and
 `incomplete_lifecycle` (its events do not describe a whole job). A fifth,
-`journal_scan_incomplete`, means the journal stopped at durable corruption
+`journal_scan_incomplete`, means a journal stopped at durable corruption
 rather than at a clean record boundary: the row is the best reconstruction of
 the intact prefix, so a non-terminal status is not evidence the job is still
 running, and a complete record from the other branch is kept instead of that
-partial one. A client can then tell a stale forwarded running row from a live
-one.
+partial one. The three integrity codes describe damage in EITHER journal the
+read consulted, not only the one that supplied the row.
+
+A client that sees an unconfirmed non-terminal status — a retained row carrying
+`journal_scan_incomplete` or `incomplete_lifecycle` and no terminal write — must
+not poll it as if it were live. The status describes the prefix, not the job. The
+recovered command, the output that survived, paging, manual refresh and a
+reconnect read all still work; those are how a person establishes what happened.
 
 The deletion fence is applied to the owner before its journal or log is served.
 A deletion records its fence before the on-disk tombstone lands, so a read honors
