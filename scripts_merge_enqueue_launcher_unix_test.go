@@ -798,6 +798,42 @@ func (f launcherFixture) output(t *testing.T) string {
 	return strings.Join(parts, " | ")
 }
 
+// launcherEnv is the environment every launcher fixture runs under.
+//
+// One function rather than the same list in each constructor, so a pin added for
+// a finding lands in both and a case cannot accidentally get the developer's
+// machine through the half it did not edit.
+func (f launcherFixture) launcherEnv() []string {
+	return envOverride(os.Environ(),
+		"EVENER_DEV_BIN="+f.path,
+		"EVENER_FIXTURE_LOG="+f.log,
+		"PATH="+os.Getenv("PATH"),
+		// TMPDIR is the case's own directory, so a helper the launcher builds
+		// and runs carries this case's marker in its argv. That is what lets
+		// cleanup find a helper whose PID the case never learned -- including
+		// the real one, were a case ever to reach it.
+		"TMPDIR="+f.tmpDir(),
+		// The fallback roots too, for the same reason: a TMPDIR the launcher
+		// rejects must send it to the fixture's own runtime directory, not to
+		// the developer's. A case that wants them unusable overrides these.
+		"XDG_RUNTIME_DIR="+f.runtimeDir(),
+		"HOME="+f.homeDir(),
+		// GOTOOLCHAIN is inherited like every other variable, and an explicit one
+		// makes a fixture build fail on something no fixture is about. A developer
+		// with `GOTOOLCHAIN=go1.99.0` exported -- or a go.mod in a parent directory
+		// asking for a release that does not exist -- turns every build into a failed
+		// download, and the case fails on a timeout that says nothing about the
+		// launcher.
+		//
+		// `auto` and not `local`. `local` would forbid the switch this repository
+		// itself needs: the go on PATH here is 1.22.2 and go.work asks for 1.27, so a
+		// fixture that builds the real module would fail with "go.work requires go >=
+		// 1.27.0" on a machine that is working correctly. `auto` keeps the
+		// repository's own resolutions and refuses only a value the caller exported.
+		"GOTOOLCHAIN=auto",
+	)
+}
+
 // launcherCmd builds the launcher command with the fixture as its helper.
 //
 // Its output goes to files, not pipes. A pipe is part of what the defect leaves
@@ -812,21 +848,7 @@ func (f launcherFixture) launcherCmd(t *testing.T, args ...string) *exec.Cmd {
 	t.Helper()
 	cmd := exec.Command("bash", append([]string{mergeEnqueueLauncher}, args...)...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Env = envOverride(os.Environ(),
-		"EVENER_DEV_BIN="+f.path,
-		"EVENER_FIXTURE_LOG="+f.log,
-		"PATH="+os.Getenv("PATH"),
-		// TMPDIR is the case's own directory, so a helper the launcher builds
-		// and runs carries this case's marker in its argv. That is what lets
-		// cleanup find a helper whose PID the case never learned -- including
-		// the real one, were a case ever to reach it.
-		"TMPDIR="+f.tmpDir(),
-		// The fallback roots too, for the same reason: a TMPDIR the launcher
-		// rejects must send it to the fixture's own runtime directory, not to
-		// the developer's. A case that wants them unusable overrides these.
-		"XDG_RUNTIME_DIR="+f.runtimeDir(),
-		"HOME="+f.homeDir(),
-	)
+	cmd.Env = f.launcherEnv()
 	return cmd
 }
 
@@ -910,21 +932,7 @@ func (f launcherFixture) launcherCmdAt(t *testing.T, script string, args ...stri
 	t.Helper()
 	cmd := exec.Command("bash", append([]string{script}, args...)...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
-	cmd.Env = envOverride(os.Environ(),
-		"EVENER_DEV_BIN="+f.path,
-		"EVENER_FIXTURE_LOG="+f.log,
-		"PATH="+os.Getenv("PATH"),
-		// TMPDIR is the case's own directory, so a helper the launcher builds
-		// and runs carries this case's marker in its argv. That is what lets
-		// cleanup find a helper whose PID the case never learned -- including
-		// the real one, were a case ever to reach it.
-		"TMPDIR="+f.tmpDir(),
-		// The fallback roots too, for the same reason: a TMPDIR the launcher
-		// rejects must send it to the fixture's own runtime directory, not to
-		// the developer's. A case that wants them unusable overrides these.
-		"XDG_RUNTIME_DIR="+f.runtimeDir(),
-		"HOME="+f.homeDir(),
-	)
+	cmd.Env = f.launcherEnv()
 	return cmd
 }
 
@@ -1500,12 +1508,12 @@ printf 'helper-ran\n' >> "$EVENER_FIXTURE_LOG"
 
 func TestMergeEnqueueLauncherRunsTheHelperInItsOwnProcessGroup(t *testing.T) {
 	t.Parallel()
-	gh := filepath.Join(t.TempDir(), "gh.sh")
-	writeTestFile(t, gh, []byte(`#!/usr/bin/env bash
-trap 'printf "gh-termed\n" >> "$EVENER_FIXTURE_LOG"; exit 0' TERM
-printf 'gh-pid=%s;pgid=%s\n' "$$" "$(ps -o pgid= -p "$$" | tr -d ' ')" >> "$EVENER_FIXTURE_LOG"
-while :; do sleep 0.05; done
-`), 0o755)
+	// Inside the fixture, not `t.TempDir()`. `t.TempDir()` is under the ambient
+	// TMPDIR, and a TMPDIR on a noexec mount -- the ordinary container shape --
+	// makes this script unrunnable: the helper starts it, the kernel refuses, and
+	// the case waits out its deadline on a call that could never happen. The
+	// fixture's own directory is one the case already requires to be exec-capable
+	// for its helper, so an executable belongs there.
 	f := newLauncherFixture(t, `#!/usr/bin/env bash
 set -uo pipefail
 trap 'printf "helper-interrupted\n" >> "$EVENER_FIXTURE_LOG"; kill -TERM "$gh" 2>/dev/null; exit 130' INT TERM
@@ -1514,6 +1522,12 @@ gh=$!
 printf 'helper-pid=%s;pgid=%s\n' "$$" "$(ps -o pgid= -p "$$" | tr -d ' ')" >> "$EVENER_FIXTURE_LOG"
 while :; do sleep 0.05; done
 `)
+	gh := filepath.Join(f.dir, "gh.sh")
+	writeTestFile(t, gh, []byte(`#!/usr/bin/env bash
+trap 'printf "gh-termed\n" >> "$EVENER_FIXTURE_LOG"; exit 0' TERM
+printf 'gh-pid=%s;pgid=%s\n' "$$" "$(ps -o pgid= -p "$$" | tr -d ' ')" >> "$EVENER_FIXTURE_LOG"
+while :; do sleep 0.05; done
+`), 0o755)
 	var helperPID, ghPID int
 	cmd := f.launcherCmd(t, "--pr", "6499", "--wait", "570", "--repo", "example.invalid/none")
 	cmd.Env = append(cmd.Env, "EVENER_FIXTURE_GH="+gh)
@@ -3200,10 +3214,29 @@ func TestMergeEnqueueLauncherDoesNotReportSuccessForAWrapperThatLeftItsHelper(t 
 set -uo pipefail
 # The wrapper starts the helper and exits zero without waiting for it: the shape
 # the override contract forbids, and the one the launcher used to read as success.
+#
+# It waits for the helper's readiness marker before exiting, and that wait is the
+# difference between a case and a coin toss. The helper publishes its call group
+# to the handle and logs it a moment after it starts; an earlier version of this
+# fixture exited as soon as it had logged the inner pid, so if the launcher
+# reached its survivor check and froze the helper first, the call was never
+# logged, the case waited for a line that could no longer appear, and it timed
+# out on a launcher that had done the right thing. The marker makes "the helper
+# is up and has published" the precondition of the wrapper's exit, so the state
+# the assertions need is established before the case depends on it.
 "$EVENER_FIXTURE_HELPER" &
 printf 'inner-pid=%s;pgid=%s\n' "$!" "$(ps -o pgid= -p "$!" | tr -d ' ')" >> "$EVENER_FIXTURE_LOG"
+deadline=$((SECONDS + 30))
+while [ "$SECONDS" -lt "$deadline" ]; do
+  [ -f "$EVENER_FIXTURE_READY" ] && break
+  sleep 0.02
+done
+if [ ! -f "$EVENER_FIXTURE_READY" ]; then
+  printf 'wrapper-readiness-timeout\n' >> "$EVENER_FIXTURE_LOG"
+fi
 exit 0
 `)
+	ready := filepath.Join(f.dir, "helper-ready")
 	inner := filepath.Join(f.dir, "helper.sh")
 	writeTestFile(t, inner, []byte(`#!/usr/bin/env bash
 trap '' TERM
@@ -3218,6 +3251,9 @@ set +m
 printf '%s\n' "$call" > "$EVENER_MERGEQ_GH_GROUP_FILE"
 printf 'call-pid=%s;pgid=%s\n' "$call" "$(ps -o pgid= -p "$call" | tr -d ' ')" >> "$EVENER_FIXTURE_LOG"
 printf 'helper-started\n' >> "$EVENER_FIXTURE_LOG"
+# Published and logged, so the wrapper may exit -- and only now, because the
+# assertions below read these two lines.
+: > "$EVENER_FIXTURE_READY"
 while :; do sleep 0.05; done
 `), 0o755)
 	gh := filepath.Join(f.dir, "gh.sh")
@@ -3229,6 +3265,7 @@ while :; do sleep 0.05; done
 	cmd.Env = append(cmd.Env,
 		"EVENER_FIXTURE_HELPER="+inner,
 		"EVENER_FIXTURE_GH="+gh,
+		"EVENER_FIXTURE_READY="+ready,
 		"EVENER_HELPER_TERM_GRACE_SECONDS=0",
 		"EVENER_STOP_TREE_GRACE_SECONDS=1",
 	)
