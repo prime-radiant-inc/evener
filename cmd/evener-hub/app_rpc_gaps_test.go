@@ -206,23 +206,53 @@ func TestPastFallbackReadsOneRosterPublication(t *testing.T) {
 	const sessionID = "02wMz5Txv5aIxgf9yVdd0N"
 
 	t.Run("claims and live entries", func(t *testing.T) {
-		// The older publication holds a confirmed, incompatible owner.
-		beforeRefresh := hubcore.RosterSnapshot{
-			Live: []hubcore.LiveEntry{{
-				Entry:     rendezvous.Entry{PID: 4242, Protocol: "evener-appwire-v4", ThreadID: sessionID, SessionID: sessionID},
-				SessionID: sessionID,
-				Status:    appwire.ThreadStatusRestartRequired,
-			}},
+		// The older publication holds a confirmed owner that only the per-PID
+		// projection carries. Two daemons report the same session id — which is
+		// NOT the thread id — and the newer one wins the per-session preference,
+		// so Live holds the decoy and Confirmed holds both. Only the entry Live
+		// drops names the thread, through its workspace ref.
+		//
+		// That makes the mutation meaningful: a direct scan of Live, and the
+		// ancestry walk over the same Live, both miss the owner and read the
+		// publication as absence. A fixture whose owner sat in both fields would
+		// pass either way, because the ancestry walk would recover what the
+		// direct scan missed.
+		const sharedSessionID = "02wMz5Txv9sharedSessionX"
+		older := time.Date(2026, 11, 18, 10, 0, 0, 0, time.UTC)
+		beforeRefresh := hubcore.NewRosterWithEntries(
+			hubcore.LiveEntry{
+				Entry: rendezvous.Entry{
+					PID: 4242, Protocol: "evener-appwire-v4", ThreadID: "other-thread", SessionID: sharedSessionID,
+					WorkspaceRef: localAppRef(sessionID), StartedAt: older,
+				},
+				SessionID: sharedSessionID,
+				Status:    appwire.ThreadStatusActive,
+			},
+			hubcore.LiveEntry{
+				Entry: rendezvous.Entry{
+					PID: 4343, Protocol: "evener-appwire-v4", ThreadID: "third-thread", SessionID: sharedSessionID,
+					StartedAt: older.Add(time.Hour),
+				},
+				SessionID: sharedSessionID,
+				Status:    appwire.ThreadStatusActive,
+			},
+		).OwnershipSnapshot()
+		// The fixture only means something while Live hides the owner.
+		if live := beforeRefresh.Live; len(live) != 1 || live[0].PID != 4343 {
+			t.Fatalf("fixture does not dedupe the owner out of Live: %+v", live)
+		}
+		if len(beforeRefresh.Confirmed) != 2 {
+			t.Fatalf("fixture does not carry both processes in Confirmed: %+v", beforeRefresh.Confirmed)
 		}
 		// The newer one replaced that owner with an unverified claim.
-		afterRefresh := hubcore.RosterSnapshot{
+		afterRefresh := hubcore.OwnershipSnapshot{
 			Unconfirmed: []rendezvous.Entry{{PID: 4242, ThreadID: sessionID}},
 		}
-		original := rosterSnapshot
-		t.Cleanup(func() { rosterSnapshot = original })
-		publications := []hubcore.RosterSnapshot{beforeRefresh, afterRefresh}
+		original := rosterOwnershipSnapshot
+		t.Cleanup(func() { rosterOwnershipSnapshot = original })
+		publications := []hubcore.OwnershipSnapshot{beforeRefresh, afterRefresh}
 		reads := 0
-		rosterSnapshot = func(*hubcore.Roster) hubcore.RosterSnapshot {
+		rosterOwnershipSnapshot = func(*hubcore.Roster) hubcore.OwnershipSnapshot {
 			if reads >= len(publications) {
 				return publications[len(publications)-1]
 			}
@@ -261,17 +291,16 @@ func TestPastFallbackReadsOneRosterPublication(t *testing.T) {
 			}
 		}
 		// The older publication: the parent runs, incompatible, and reports no
-		// child ids — so nothing in it names the child directly.
-		beforeRefresh := hubcore.RosterSnapshot{
-			Live: []hubcore.LiveEntry{{
-				Entry:     rendezvous.Entry{PID: 4242, Protocol: "evener-appwire-v4", ThreadID: parentID, SessionID: parentID},
-				SessionID: parentID,
-				Status:    appwire.ThreadStatusRestartRequired,
-			}},
-		}
-		original := rosterSnapshot
-		t.Cleanup(func() { rosterSnapshot = original })
-		rosterSnapshot = func(*hubcore.Roster) hubcore.RosterSnapshot { return beforeRefresh }
+		// child ids — so nothing in it names the child directly. Built by the
+		// roster so its owner appears in the same fields a real one produces.
+		beforeRefresh := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+			Entry:     rendezvous.Entry{PID: 4242, Protocol: "evener-appwire-v4", ThreadID: parentID, SessionID: parentID},
+			SessionID: parentID,
+			Status:    appwire.ThreadStatusRestartRequired,
+		}).OwnershipSnapshot()
+		original := rosterOwnershipSnapshot
+		t.Cleanup(func() { rosterOwnershipSnapshot = original })
+		rosterOwnershipSnapshot = func(*hubcore.Roster) hubcore.OwnershipSnapshot { return beforeRefresh }
 		// The newer publication no longer has the parent at all: the roster the
 		// walk would otherwise read is empty.
 		stamp := savedHistoryStampFor(
@@ -526,4 +555,149 @@ func TestSessionOperationsStampsFailedWindowContinuation(t *testing.T) {
 	if data.BootGeneration != appwire.UnknownOwnerBootGeneration {
 		t.Fatalf("failed continuation boot generation = %q, want %q", data.BootGeneration, appwire.UnknownOwnerBootGeneration)
 	}
+}
+
+// TestSuccessfulSavedFallbackTakesNoRosterSnapshot pins the cost of the stamp
+// decision. savedHistoryStampFor asks the roster whether absence is established,
+// which takes a snapshot and can walk persisted ancestry; only a FAILED saved
+// read is stamped, so a successful fallback must not pay for either. The
+// fallback must still be taken and must still carry daemonless.
+func TestSuccessfulSavedFallbackTakesNoRosterSnapshot(t *testing.T) {
+	cfg, entry, _ := seedIndexedPastSession(t,
+		execution("turn_m1", schema.NewTurn(schema.TurnUserInput, llm.User("question"))),
+	)
+	sources := appsource.NewRegistry()
+	// A relay outage with no roster configured: the saved read succeeds, so
+	// nothing about ownership is ever asked.
+	sources.Add(&pastFallbackRelaySource{readErr: appwire.RetryableSessionUnavailable("relay connection ended before route publication")})
+	originalOwnership := rosterOwnershipSnapshot
+	t.Cleanup(func() { rosterOwnershipSnapshot = originalOwnership })
+	snapshots := 0
+	// This is the seam the saved-history stamp reaches, so counting it observes
+	// the call a successful fallback must not make.
+	rosterOwnershipSnapshot = func(r *hubcore.Roster) hubcore.OwnershipSnapshot {
+		snapshots++
+		return originalOwnership(r)
+	}
+	cfg.Roster = hubcore.NewRoster("", nil)
+	server := newHubAppServer(cfg, sources)
+	value, err := server.Router().Dispatch(context.Background(), appwire.Request{
+		ID: appwire.NewIntID(1), Method: appwire.MethodThreadRead,
+		Params: mustPagingJSON(t, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID, IncludeTurns: true, ItemLimit: 40}),
+	})
+	if err != nil {
+		t.Fatalf("saved fallback after a relay outage was refused: %v", err)
+	}
+	response, ok := value.(appwire.ThreadReadResponse)
+	if !ok {
+		t.Fatalf("thread/read response = %T", value)
+	}
+	if len(response.Thread.Turns) == 0 {
+		t.Fatal("saved fallback answered no turns")
+	}
+	if response.BootGeneration != appwire.DaemonlessBootGeneration {
+		t.Fatalf("successful saved fallback boot generation = %q, want %q", response.BootGeneration, appwire.DaemonlessBootGeneration)
+	}
+	if snapshots != 0 {
+		t.Fatalf("successful saved fallback took %d roster snapshots, want 0", snapshots)
+	}
+}
+
+// TestPastFallbackPaddedThreadIDWithOwnerStampsOwnerUnknown pins the identity
+// the absence check asks about. The saved lookup resolves the target through
+// localPastThreadID, which trims a padded id; the roster check used the raw
+// value, matched no owner for the session the lookup had just found, and called
+// it absent. A confirmed owner plus a padded id must not produce daemonless.
+//
+// The same normalization must not invent absence either: a genuinely absent
+// owner keeps the daemonless stamp.
+func TestPastFallbackPaddedThreadIDWithOwnerStampsOwnerUnknown(t *testing.T) {
+	const sessionID = "02wMz5Txv5aIxgf9yVdd0N"
+	for _, tc := range []struct {
+		name    string
+		roster  *hubcore.Roster
+		want    string
+		wantWhy string
+	}{
+		{
+			name: "confirmed owner",
+			roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+				Entry:     rendezvous.Entry{PID: 4242, Protocol: "evener-appwire-v4", ThreadID: sessionID, SessionID: sessionID},
+				SessionID: sessionID,
+				Status:    appwire.ThreadStatusRestartRequired,
+			}),
+			want:    appwire.UnknownOwnerBootGeneration,
+			wantWhy: "a confirmed owner the route lookup skips is not absence",
+		},
+		{
+			name:    "no owner",
+			roster:  hubcore.NewRoster("", nil),
+			want:    appwire.DaemonlessBootGeneration,
+			wantWhy: "an answered roster with no owner is established absence",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.want == appwire.UnknownOwnerBootGeneration && tc.roster.DaemonOwnershipAbsent() {
+				t.Fatal("fixture does not hold a confirmed running owner")
+			}
+			if tc.want == appwire.DaemonlessBootGeneration && !tc.roster.DaemonOwnershipAbsent() {
+				t.Fatal("fixture does not hold established absence")
+			}
+			// The padded id is the whole point: it is the string the saved
+			// lookup trims and the roster check must trim with it.
+			params := appwire.ThreadReadParams{ThreadID: "  " + sessionID + "\t"}
+			stamp := savedHistoryStampFor(t.Context(), hubcore.WebConfig{Roster: tc.roster}, params, appwire.SessionUnavailable(threadNotFoundMessagePrefix+sessionID))
+			err := stamp(appwire.TranscriptHistoryFailed(0))
+			requireSavedHistoryFailureStamp(t, err, tc.want)
+		})
+	}
+}
+
+// TestPastFallbackOverlappingDaemonsStampsOwnerUnknown pins a hole the per-session
+// listing leaves in the absence check. Two confirmed daemons can report the same
+// session id; the listing keeps one per session, preferring the newer process.
+// When the entry it keeps names no route to the requested thread and the entry it
+// drops does, a scan of that listing finds no owner and calls the thread absent,
+// although a live confirmed process holds the workspace ref.
+//
+// The two entries deliberately share a session id that is NOT the thread id. Were
+// it the thread id, the surviving entry would match on its own session field and
+// the test would pass without ever consulting the dropped owner.
+func TestPastFallbackOverlappingDaemonsStampsOwnerUnknown(t *testing.T) {
+	const (
+		sessionID       = "02wMz5Txv5aIxgf9yVdd0N"
+		sharedSessionID = "02wMz5Txv9sharedSessionX"
+	)
+	older := time.Date(2026, 11, 18, 10, 0, 0, 0, time.UTC)
+	newer := older.Add(time.Hour)
+	// The older process carries the workspace route to this thread.
+	owner := hubcore.LiveEntry{
+		Entry: rendezvous.Entry{
+			PID: 4242, Protocol: "evener-appwire-v4", ThreadID: "other-thread", SessionID: sharedSessionID,
+			WorkspaceRef: localAppRef(sessionID), StartedAt: older,
+		},
+		SessionID: sharedSessionID,
+		Status:    appwire.ThreadStatusActive,
+	}
+	// A newer process claims the same session id without that route. It wins the
+	// per-session preference, so the listing drops the owner above.
+	decoy := hubcore.LiveEntry{
+		Entry: rendezvous.Entry{
+			PID: 4343, Protocol: "evener-appwire-v4", ThreadID: "third-thread", SessionID: sharedSessionID,
+			StartedAt: newer,
+		},
+		SessionID: sharedSessionID,
+		Status:    appwire.ThreadStatusActive,
+	}
+	roster := hubcore.NewRosterWithEntries(owner, decoy)
+	// The fixture only means something while the listing hides the owner.
+	if live := roster.List(); len(live) != 1 || live[0].PID != decoy.PID {
+		t.Fatalf("fixture does not dedupe the owner away: %+v", live)
+	}
+	if roster.DaemonOwnershipAbsent() {
+		t.Fatal("fixture does not hold a live owner")
+	}
+	stamp := savedHistoryStampFor(t.Context(), hubcore.WebConfig{Roster: roster}, appwire.ThreadReadParams{Ref: "local:" + sessionID}, appwire.SessionUnavailable(threadNotFoundMessagePrefix+sessionID))
+	err := stamp(appwire.TranscriptHistoryFailed(0))
+	requireSavedHistoryFailureStamp(t, err, appwire.UnknownOwnerBootGeneration)
 }

@@ -463,6 +463,92 @@ func TestJobs_JobTreeRootSessionIDRedirect(t *testing.T) {
 
 // A delegates journal ending in a torn, unterminated batch still loads, and
 // the report carries a diagnostic for the ignored tail.
+// A jobs.jsonl ending in a torn, unterminated event still loads, and the report
+// carries a diagnostic for the ignored tail — the job-journal counterpart of
+// TestJobs_DelegateDiagnosticsTornTail below, which is what makes the two
+// stores' integrity reports the same shape. The rows before the torn append are
+// still shown: the read recovers them and only the tail is lost.
+func TestJobs_JobJournalTornTailDiagnostic(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	writeSession(t, bucket, sidA)
+	writeJobsEvents(t, filepath.Join(bucket, "sessions", sidA, "jobs.jsonl"), []jobstore.Event{
+		{Kind: jobstore.EventJobStarted, JobID: completedJobID, Type: jobstore.JobShell},
+	})
+	f, err := os.OpenFile(filepath.Join(bucket, "sessions", sidA, "jobs.jsonl"), os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(`{"kind":"job_finished","seq":2,`); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	r, err := Jobs(t.Context(), base, sidA, JobOpts{})
+	if err != nil {
+		t.Fatalf("Jobs: %v", err)
+	}
+	if len(r.Diagnostics) != 1 {
+		t.Fatalf("diagnostics = %v, want exactly one torn-tail diagnostic", r.Diagnostics)
+	}
+	if len(r.Jobs) != 1 || r.Jobs[0].JobID != completedJobID {
+		t.Fatalf("jobs = %+v, want the recovered %s row alongside the diagnostic", r.Jobs, completedJobID)
+	}
+}
+
+// A jobs.jsonl whose only event is a finish folds to a record, but the report
+// must say the lifecycle is incomplete rather than presenting the row as an
+// ordinary job.
+func TestJobs_JobJournalIncompleteLifecycleDiagnostic(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	writeSession(t, bucket, sidA)
+	writeJobsEvents(t, filepath.Join(bucket, "sessions", sidA, "jobs.jsonl"), []jobstore.Event{
+		{Kind: jobstore.EventJobFinished, JobID: "job_orphan", Status: jobstore.StatusCompleted, TerminalGen: "gen"},
+	})
+
+	r, err := Jobs(t.Context(), base, sidA, JobOpts{})
+	if err != nil {
+		t.Fatalf("Jobs: %v", err)
+	}
+	if len(r.Diagnostics) != 1 {
+		t.Fatalf("diagnostics = %v, want exactly one incomplete-lifecycle diagnostic", r.Diagnostics)
+	}
+	if len(r.Jobs) != 1 {
+		t.Fatalf("jobs = %+v, want the best-effort row alongside the diagnostic", r.Jobs)
+	}
+}
+
+// A journal whose only content is a torn append folds to zero rows, so the
+// default text output said "no jobs recorded" — an ordinary empty history for a
+// journal that is in fact damaged. The text report must name the diagnosis, in
+// the no-rows case too.
+func TestJobs_RenderReportsDiagnosticsWithNoRows(t *testing.T) {
+	base := t.TempDir()
+	bucket := stateHomeBucket(base, hash1)
+	writeSession(t, bucket, sidA)
+	writeFile(t, filepath.Join(bucket, "sessions", sidA, "jobs.jsonl"), `{"kind":"job_started","seq":1,"job_id":"job_torn`)
+
+	r, err := Jobs(t.Context(), base, sidA, JobOpts{})
+	if err != nil {
+		t.Fatalf("Jobs: %v", err)
+	}
+	if len(r.Jobs) != 0 {
+		t.Fatalf("jobs = %+v, want none from a journal holding only a torn append", r.Jobs)
+	}
+	if len(r.Diagnostics) == 0 {
+		t.Fatal("diagnostics is empty, want the torn-tail diagnostic")
+	}
+	out := RenderJobs(r)
+	for _, diagnostic := range r.Diagnostics {
+		if !strings.Contains(out, diagnostic) {
+			t.Errorf("render missing diagnostic %q; got:\n%s", diagnostic, out)
+		}
+	}
+}
+
 func TestJobs_DelegateDiagnosticsTornTail(t *testing.T) {
 	base := t.TempDir()
 	bucket := stateHomeBucket(base, hash1)

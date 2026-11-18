@@ -225,72 +225,108 @@ func TestWSTransportPing(t *testing.T) {
 // coder/websocket registers a context.AfterFunc on each write's context and
 // closes the whole connection when that context ends (conn.go's
 // setupWriteTimeout). A transport carries many callers' frames over one
-// connection, so a write that kept one caller's cancellation let that caller's
-// cancel close the shared socket — issue #6824, where a canceled relay read
-// closed the hub's daemon connection and the read after it failed with "use of
-// closed network connection" although nobody had closed it.
+// connection, so a write that kept one caller's cancellation would let that
+// caller's cancel close the shared socket and fail every other caller's next
+// frame on a connection nobody closed.
 //
 // A caller that is already gone must not get its frame written at all. attach's
 // pumpTransport reads a frame from stdin and forwards it even after Ctrl-C
 // ended the bridge, so a pre-canceled frame that Send still wrote would apply a
 // mutation the person cancelled, during shutdown.
 //
-// The seam is the exact context handed to the library write, so these
-// assertions are about what the library is told to watch, not about this
-// package's own bookkeeping.
+// Both kinds of caller are covered, because the policy must hold whatever the
+// caller's context carries: one with a deadline, and one without. The seam is
+// the exact context handed to the library write, so these assertions are about
+// what the library is told to watch, not about this package's own bookkeeping.
 func TestWSTransportSendCancellationPolicy(t *testing.T) {
 	t.Run("in flight survives its caller's cancellation", func(t *testing.T) {
-		entered, release := make(chan context.Context, 1), make(chan struct{})
-		var releaseOnce sync.Once
-		releaseWrite := func() { releaseOnce.Do(func() { close(release) }) }
-		var senders sync.WaitGroup
-		restoreWrite := installWriteWebSocket(t, func(_ *websocket.Conn, ctx context.Context, _ websocket.MessageType, _ []byte) error {
-			entered <- ctx
-			<-release
-			return nil
-		})
-		// Release the parked write and wait for its sender before the seam is
-		// restored: an assertion that fails here must not leave a goroutine
-		// inside this test's replacement for the rest of the process.
-		t.Cleanup(func() {
-			releaseWrite()
-			senders.Wait()
-			restoreWrite()
-		})
-		transport := &WSTransport{conn: &websocket.Conn{}}
-
 		deadline := time.Now().Add(time.Minute)
-		callerCtx, cancelCaller := context.WithDeadline(context.WithValue(t.Context(), wsTransportPingContextKey{}, "value"), deadline)
-		defer cancelCaller()
-		senders.Add(1)
-		done := make(chan error, 1)
-		go func() {
-			defer senders.Done()
-			done <- transport.Send(callerCtx, RequestMessage(NewIntID(1), MethodThreadList, ThreadListParams{}))
-		}()
-		var writeCtx context.Context
-		select {
-		case writeCtx = <-entered:
-		case <-time.After(5 * time.Second):
-			t.Fatal("the write never reached the transport")
-		}
-		if writeCtx == callerCtx {
-			t.Fatal("the write ran on the caller's own context: its cancellation would close the shared connection")
-		}
-		cancelCaller()
-		if err := writeCtx.Err(); err != nil {
-			t.Fatalf("the in-flight write context ended with the caller's cancellation: %v", err)
-		}
-		if got := writeCtx.Value(wsTransportPingContextKey{}); got != "value" {
-			t.Fatalf("write context value = %v, want the caller's value carried through", got)
-		}
-		gotDeadline, ok := writeCtx.Deadline()
-		if !ok || !gotDeadline.Equal(deadline) {
-			t.Fatalf("write context deadline = %v (%t), want the caller's deadline %v kept", gotDeadline, ok, deadline)
-		}
-		releaseWrite()
-		if err := <-done; err != nil {
-			t.Fatalf("send: %v", err)
+		// A caller that carries a deadline is not the only kind. A detach that
+		// held only for deadline-bearing callers would still let every other
+		// caller's cancellation close the shared socket, so both kinds run the
+		// same gated assertion.
+		for _, tc := range []struct {
+			name      string
+			newCaller func(t *testing.T) (context.Context, context.CancelFunc)
+			verify    func(t *testing.T, writeCtx context.Context)
+		}{
+			{
+				name: "with a deadline",
+				newCaller: func(t *testing.T) (context.Context, context.CancelFunc) {
+					return context.WithDeadline(context.WithValue(t.Context(), wsTransportPingContextKey{}, "value"), deadline)
+				},
+				verify: func(t *testing.T, writeCtx context.Context) {
+					t.Helper()
+					if got := writeCtx.Value(wsTransportPingContextKey{}); got != "value" {
+						t.Fatalf("write context value = %v, want the caller's value carried through", got)
+					}
+					gotDeadline, ok := writeCtx.Deadline()
+					if !ok || !gotDeadline.Equal(deadline) {
+						t.Fatalf("write context deadline = %v (%t), want the caller's deadline %v kept", gotDeadline, ok, deadline)
+					}
+				},
+			},
+			{
+				name: "without a deadline",
+				newCaller: func(t *testing.T) (context.Context, context.CancelFunc) {
+					return context.WithCancel(t.Context())
+				},
+				verify: func(t *testing.T, writeCtx context.Context) {
+					t.Helper()
+					if gotDeadline, ok := writeCtx.Deadline(); ok {
+						t.Fatalf("write context deadline = %v, want none for a caller that set none", gotDeadline)
+					}
+				},
+			},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				entered, release := make(chan context.Context, 1), make(chan struct{})
+				var releaseOnce sync.Once
+				releaseWrite := func() { releaseOnce.Do(func() { close(release) }) }
+				var senders sync.WaitGroup
+				restoreWrite := installWriteWebSocket(t, func(_ *websocket.Conn, ctx context.Context, _ websocket.MessageType, _ []byte) error {
+					entered <- ctx
+					<-release
+					return nil
+				})
+				// Release the parked write and wait for its sender before the seam
+				// is restored: an assertion that fails here must not leave a
+				// goroutine inside this test's replacement for the rest of the
+				// process.
+				t.Cleanup(func() {
+					releaseWrite()
+					senders.Wait()
+					restoreWrite()
+				})
+				transport := &WSTransport{conn: &websocket.Conn{}}
+
+				callerCtx, cancelCaller := tc.newCaller(t)
+				defer cancelCaller()
+				senders.Add(1)
+				done := make(chan error, 1)
+				go func() {
+					defer senders.Done()
+					done <- transport.Send(callerCtx, RequestMessage(NewIntID(1), MethodThreadList, ThreadListParams{}))
+				}()
+				var writeCtx context.Context
+				select {
+				case writeCtx = <-entered:
+				case <-time.After(5 * time.Second):
+					t.Fatal("the write never reached the transport")
+				}
+				if writeCtx == callerCtx {
+					t.Fatal("the write ran on the caller's own context: its cancellation would close the shared connection")
+				}
+				cancelCaller()
+				if err := writeCtx.Err(); err != nil {
+					t.Fatalf("the in-flight write context ended with the caller's cancellation: %v", err)
+				}
+				tc.verify(t, writeCtx)
+				releaseWrite()
+				if err := <-done; err != nil {
+					t.Fatalf("send: %v", err)
+				}
+			})
 		}
 	})
 

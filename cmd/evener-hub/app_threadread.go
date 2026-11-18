@@ -258,16 +258,31 @@ func stampSavedHistoryReadError(err error, bootGeneration string) error {
 // absence on its own, because a daemon the hub cannot route to by ref cannot be
 // serving that thread. Everything else (a relay outage, a protocol refusal, a
 // deadline) says the read failed, not that its owner is gone.
+//
+// The decision is deferred until the saved read actually fails. Only a failure
+// is stamped, and asking the roster costs a snapshot and can walk persisted
+// ancestry; a successful fallback needs neither. Deferring does not split the
+// check across publications: rosterEstablishesAbsence takes its one snapshot at
+// the moment the stamp is chosen, and the stamp runs at most once.
 func savedHistoryStampFor(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams, readErr error) func(error) error {
-	switch {
-	case errors.Is(readErr, appsource.ErrSourceNotFound):
+	if errors.Is(readErr, appsource.ErrSourceNotFound) {
+		// Absence on its own, so no roster question is needed even on failure.
 		return daemonlessReadError
-	case isDeadSessionError(readErr) || daemonOwnershipMayHaveChanged(readErr):
-		if rosterEstablishesAbsence(ctx, cfg, params) {
-			return daemonlessReadError
-		}
 	}
-	return unknownOwnerReadError
+	if !isDeadSessionError(readErr) && !daemonOwnershipMayHaveChanged(readErr) {
+		return unknownOwnerReadError
+	}
+	return func(err error) error {
+		if err == nil {
+			// The fallback answered. Nothing failed, so nothing is stamped, and
+			// in particular this pays for no roster snapshot or ancestry walk.
+			return nil
+		}
+		if rosterEstablishesAbsence(ctx, cfg, params) {
+			return daemonlessReadError(err)
+		}
+		return unknownOwnerReadError(err)
+	}
 }
 
 // rosterEstablishesAbsence reports whether one roster publication established
@@ -285,22 +300,26 @@ func rosterEstablishesAbsence(ctx context.Context, cfg hubcore.WebConfig, params
 	if cfg.Roster == nil {
 		return false
 	}
-	threadID := params.ThreadID
-	if params.Ref != "" {
-		ref, err := appwire.ParseRef(params.Ref)
-		if err != nil || ref.SourceID != appwire.LocalSourceID {
-			return false
-		}
-		threadID = ref.ThreadID
-	}
-	if threadID == "" {
+	// The identity used to look the session up and the identity used to ask who
+	// owns it must be the same string. localPastThreadID is what the saved
+	// lookup resolves through, so it trims a padded ThreadID and parses a ref;
+	// asking the roster about the raw value instead would match no owner for a
+	// session the lookup had just found, and "unknown" would silently become
+	// "absent". A non-local or unparseable target is not absence: nothing here
+	// established who serves it.
+	threadID, ok := localPastThreadID(params)
+	if !ok || threadID == "" {
 		return false
 	}
-	snapshot := rosterSnapshot(cfg.Roster)
+	snapshot := rosterOwnershipSnapshot(cfg.Roster)
 	if snapshot.OwnershipError != nil || len(snapshot.Unconfirmed) != 0 {
 		return false
 	}
-	for _, entry := range snapshot.Live {
+	// Every confirmed process, not the per-session listing: two daemons can
+	// overlap on one session, and the entry the listing drops may be the one
+	// whose workspace ref or reported children name this thread. Absence is a
+	// claim about all of them.
+	for _, entry := range snapshot.Confirmed {
 		if entry.Crashed {
 			continue
 		}
@@ -321,7 +340,7 @@ func rosterEstablishesAbsence(ctx context.Context, cfg hubcore.WebConfig, params
 	// ancestry and its second result only says whether that owner is
 	// incompatible, so both cases leave ownership established, not absent. An
 	// unverifiable chain or incomplete scan comes back as an error.
-	if owner, _, err := lookupDaemonOwnerIn(ctx, cfg, rosterViewOf(snapshot), params.Ref, params.ThreadID, false); err != nil || owner.SessionID != "" {
+	if owner, _, err := lookupDaemonOwnerIn(ctx, cfg, rosterViewOf(snapshot.RosterSnapshot), localAppRef(threadID), threadID, false); err != nil || owner.SessionID != "" {
 		return false
 	}
 	return true
