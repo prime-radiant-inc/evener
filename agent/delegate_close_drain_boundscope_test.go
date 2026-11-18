@@ -51,6 +51,23 @@ func TestPublicationBoundDoesNotReachAnUnrelatedSibling(t *testing.T) {
 		t.Fatal("a plan produced outside any pass carries a bound: the deadline would apply to a caller that supplied none")
 	}
 
+	// The receiver must be CLOSING for any plan's bound to apply at all:
+	// emitDelegateUpdate narrows a send only where the target supplied its own
+	// bound (see publishedBound). Without this, both plans take the ordinary
+	// unbounded path, the other pass's spent bound is never consulted, and the
+	// sibling's arrival proves nothing about isolation -- which is exactly what
+	// the earlier version of this test did.
+	closing, cancelClosing := context.WithCancel(t.Context())
+	root.closeCtxMu.Lock()
+	root.closeCtx = closing
+	root.closeCtxMu.Unlock()
+	t.Cleanup(func() {
+		root.closeCtxMu.Lock()
+		root.closeCtx = nil
+		root.closeCtxMu.Unlock()
+		cancelClosing()
+	})
+
 	// A full authoritative stream: every send below parks until a slot frees.
 	root.events = make(chan events.SessionEvent, 1)
 	root.events <- events.New(events.HookStartData{Event: "occupies the only slot"})
@@ -92,7 +109,7 @@ func TestPublicationBoundDoesNotReachAnUnrelatedSibling(t *testing.T) {
 	// The consumer resumes. A publication on the ordinary path now takes the
 	// freed slots; one carrying another pass's spent bound has already given up.
 	var mu sync.Mutex
-	var sawUpdate bool
+	var sawUpdate, sawOther bool
 	delivered := make(chan struct{})
 	var once sync.Once
 	stopConsumer := make(chan struct{})
@@ -111,6 +128,16 @@ func TestPublicationBoundDoesNotReachAnUnrelatedSibling(t *testing.T) {
 				// Require the SIBLING's own row: accepting any update lets the
 				// other pass's publication satisfy the check.
 				if update.DelegateID != siblingID {
+					// The other pass's plan carries a spent bound, so its own
+					// update must NOT arrive. Recording it is what makes this
+					// test two-sided: a fixture that quietly ignored every
+					// plan bound would let it through, and then "the sibling
+					// arrived" would be evidence of nothing at all.
+					if update.DelegateID == otherID {
+						mu.Lock()
+						sawOther = true
+						mu.Unlock()
+					}
 					continue
 				}
 				mu.Lock()
@@ -146,8 +173,12 @@ func TestPublicationBoundDoesNotReachAnUnrelatedSibling(t *testing.T) {
 	// controller.
 	<-otherDone
 	mu.Lock()
-	got := sawUpdate
+	got, otherGot := sawUpdate, sawOther
 	mu.Unlock()
+	if otherGot {
+		t.Fatal("the other pass's own EXPIRED bound did not suppress its own update: this fixture never applied " +
+			"a plan bound at all, so the sibling's arrival cannot distinguish an isolated bound from no bound")
+	}
 	if !got {
 		t.Fatal("the sibling delegate's update never reached the stream: a bound from an unrelated pass suppressed it")
 	}
