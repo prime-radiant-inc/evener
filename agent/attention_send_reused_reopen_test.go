@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"slices"
 	"testing"
 	"time"
 
@@ -93,10 +94,8 @@ func TestASendReusedReopenStaysInTheSuccessorsOwedSet(t *testing.T) {
 		}
 	}
 	c.mu.Unlock()
-	for _, id := range owed {
-		if id == reopenedID {
-			return
-		}
+	if slices.Contains(owed, reopenedID) {
+		return
 	}
 	t.Fatalf("the successor's owed set is %v and the report a stopped send reopened (%q) is not reachable through it: the send started the generation it claims, so nothing else will present it.\nrelease floor=0 reopened=%q", owed, reopenedID, reopenedID)
 }
