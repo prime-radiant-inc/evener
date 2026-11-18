@@ -2801,14 +2801,15 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 		// The entry and the event announcing it are one publication, and the
 		// transcript door is the statement that says so: the entry is in
 		// history before the event exists, so no reader can observe the event
-		// ahead of the transcript that explains it.
+		// ahead of the transcript that explains it. Held across the publish, the
+		// door also keeps a fold from committing its markers and flushing its
+		// own events between those two steps, so a reader sees the order the
+		// transcript holds.
 		//
-		// The door does NOT prevent a turn from being split. An earlier version
-		// of this comment claimed the projector read an environment event as a
-		// turn boundary; it no longer builds turns from events at all, and this
-		// event is a context facet (server/thread_envelope.go's facetsByEvent).
-		// Whether the event needs the door at all is #6513's open question, not
-		// something this comment settles.
+		// What that order keeps fresh is the thread envelope's context facet:
+		// the event refreshes it (server/thread_envelope.go's facetsByEvent)
+		// from the session's context state, and publishing under the door
+		// places that refresh after the entry it describes, never ahead of it.
 		//
 		// This is the one event published under the door, and the trade is
 		// real: emit is not a bounded send. It parks indefinitely against the
