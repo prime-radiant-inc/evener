@@ -101,7 +101,7 @@ func toResponsesInput(msgs []llm.Message, imageCap string) (instructions string,
 	for _, m := range msgs {
 		switch m.Role {
 		case llm.RoleSystem, llm.RoleDeveloper:
-			if t := strings.TrimSpace(m.Text()); t != "" {
+			if t := m.Text(); t != "" {
 				instrParts = append(instrParts, t)
 			}
 		}
@@ -155,7 +155,7 @@ func toResponsesInput(msgs []llm.Message, imageCap string) (instructions string,
 				for _, p := range m.Content {
 					switch p.Kind {
 					case llm.ContentText:
-						if strings.TrimSpace(p.Text) == "" {
+						if p.Text == "" {
 							continue
 						}
 						content = append(content, map[string]any{
