@@ -1804,6 +1804,121 @@ func TestStoreAppendAcknowledgesTheJournalAdoptionSelected(t *testing.T) {
 
 // replaceOnAdoptOpenFs swaps the journal's contents once, at the moment a second
 // adoption attempt opens the path, and only while armed.
+// TestStoreAppendAdoptsTheFileTheNameReaches pins High 2.
+//
+// A rename-and-replace is not atomic, and two of them can interleave with one
+// adoption. The name is sampled, then the candidate is opened, then the name is
+// sampled again: rotate to B before the open and back to A after it, and both
+// samples identify A while the handle in hand is B's.
+//
+// Comparing the two NAME samples therefore agrees with itself and says nothing
+// about which file was opened. Installing that handle while recording A's
+// identity makes the store append through a file the name does not reach, and
+// every post-sync check then vouches for an event that exists only in B — the
+// append reports success, and a job completion stops retrying while never
+// appearing in the journal a reader opens.
+//
+// The assertion is where the record landed, not that the append succeeded.
+func TestStoreAppendAdoptsTheFileTheNameReaches(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "jobs.jsonl")
+	fs := &rotateTwiceOnAdoptFs{Fs: afero.NewOsFs(), path: path, dir: dir}
+	s, err := openFs(fs, path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	if err := s.Append(Event{Kind: EventJobStarted, JobID: "job_original", Type: JobShell}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if _, err := s.CommittedJournal(); err != nil {
+		t.Fatalf("CommittedJournal: %v", err)
+	}
+
+	// Move the store's own file aside and install replacement A under the name,
+	// so the append below adopts. Replacement B waits off to the side; the
+	// fixture rotates it into the name for the duration of the open and rotates
+	// A back afterwards.
+	if err := os.Rename(path, filepath.Join(dir, "jobs.jsonl.original")); err != nil {
+		t.Fatalf("rename the original aside: %v", err)
+	}
+	first := []byte(`{"seq":1,"kind":"job_started","job_id":"job_first_replacement"}` + "\n")
+	if err := os.WriteFile(path, first, 0o644); err != nil {
+		t.Fatalf("write replacement A: %v", err)
+	}
+	second := []byte(`{"seq":1,"kind":"job_started","job_id":"job_second_replacement"}` + "\n")
+	if err := os.WriteFile(filepath.Join(dir, "jobs.jsonl.b"), second, 0o644); err != nil {
+		t.Fatalf("write replacement B: %v", err)
+	}
+	fs.arm()
+
+	if err := s.Append(Event{Kind: EventJobStarted, JobID: "job_adopted", Type: JobShell}); err != nil {
+		t.Fatalf("append after a double rotation: %v", err)
+	}
+	// The named journal is A, and that is where a reader looks.
+	named := mustReadFile(t, path)
+	if !bytes.Contains(named, []byte("job_adopted")) {
+		t.Fatalf("the acknowledged record is not in the named journal: %q: the store adopted the file it opened, not the file the name reaches", named)
+	}
+	if !bytes.Contains(named, []byte("job_first_replacement")) {
+		t.Fatalf("the named journal lost replacement A's own record: %q", named)
+	}
+	if bytes.Contains(named, []byte("job_second_replacement")) {
+		t.Fatalf("the named journal holds replacement B's record, so B was installed as the store's journal: %q", named)
+	}
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen the adopted journal: %v", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	folded, err := reopened.Load()
+	if err != nil {
+		t.Fatalf("Load the adopted journal: %v", err)
+	}
+	if folded["job_adopted"] == nil {
+		t.Fatal("the acknowledged record is missing from the named journal's fold")
+	}
+}
+
+// rotateTwiceOnAdoptFs performs the two-step interleaving above: it swaps
+// replacement B into the name for the duration of one OpenFile, then restores
+// replacement A before the next Stat, so both name samples identify A while the
+// opened handle is B.
+type rotateTwiceOnAdoptFs struct {
+	afero.Fs
+	path   string
+	dir    string
+	armed  atomic.Bool
+	opened atomic.Bool
+}
+
+func (r *rotateTwiceOnAdoptFs) arm() { r.armed.Store(true) }
+
+func (r *rotateTwiceOnAdoptFs) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	if r.armed.CompareAndSwap(true, false) {
+		if err := r.Rename(r.path, filepath.Join(r.dir, "jobs.jsonl.a")); err != nil {
+			panic(err)
+		}
+		if err := r.Rename(filepath.Join(r.dir, "jobs.jsonl.b"), r.path); err != nil {
+			panic(err)
+		}
+		r.opened.Store(true)
+	}
+	return r.Fs.OpenFile(name, flag, perm)
+}
+
+func (r *rotateTwiceOnAdoptFs) Stat(name string) (os.FileInfo, error) {
+	if r.opened.CompareAndSwap(true, false) {
+		if err := r.Rename(r.path, filepath.Join(r.dir, "jobs.jsonl.b-done")); err != nil {
+			panic(err)
+		}
+		if err := r.Rename(filepath.Join(r.dir, "jobs.jsonl.a"), r.path); err != nil {
+			panic(err)
+		}
+	}
+	return r.Fs.Stat(name)
+}
+
 type replaceOnAdoptOpenFs struct {
 	afero.Fs
 	path  string

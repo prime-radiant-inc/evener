@@ -1801,6 +1801,28 @@ func (s *Store) followNamedJournalLocked(named os.FileInfo, err error) (bool, er
 			_ = f.Close()
 			continue
 		}
+		// Both samples above are of the NAME. They agree with each other and say
+		// nothing about which file this handle actually reaches: rotation twice
+		// while a candidate is being examined leaves replacement A at the path
+		// both times, and the handle opened in between is B's. Installing it
+		// would make the store append through B while recording A's identity, and
+		// the post-sync check would then vouch for an event that exists only in a
+		// file the name does not reach.
+		//
+		// So the handle's own identity is compared against the name as well. This
+		// asks a question only identity can answer, and only where the filesystem
+		// exposes it: comparing handle metadata against name metadata on a
+		// filesystem that has none invents a difference and would swap the handle
+		// on every write.
+		handleInfo, handleErr := f.Stat()
+		if handleErr != nil {
+			_ = f.Close()
+			return false, fmt.Errorf("%w: %s: %w", ErrJournalReplaced, s.path, handleErr)
+		}
+		if handleInfo.Sys() != nil && named.Sys() != nil && !os.SameFile(handleInfo, named) {
+			_ = f.Close()
+			continue
+		}
 		old := s.f
 		s.f = f
 		s.seq = 0
