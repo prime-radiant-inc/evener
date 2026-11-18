@@ -295,6 +295,54 @@ test("a document scroll closes the menu", async () => {
 // pulls scrollTop back to a valid place with no user behind it. A popup asked to
 // trust the event rather than the geometry closes on that correction, which is
 // the menu vanishing because the window got taller.
+// Inside the window is not the same as inside what the reader can see. A rail
+// holds its rows in a scrollport under a fixed header, and a Live reorder can
+// push the trigger above that scrollport while the browser holds another row
+// steady. The trigger is still inside the window's bounds - the header covers
+// it - so a menu that trusts the window follows a trigger no reader can see,
+// with keyboard focus still trapped in it. The scroll correction itself is the
+// browser's, which is why a window-bounds check kept it open.
+test("a corrected scroll whose trigger the rail has clipped dismisses the menu", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  let triggerTop = 300;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.getAttribute("data-testid") === "rail-port") return box(0, 100, 300, 300);
+    if (this.getAttribute("data-testid") === "rail-row") return box(0, 120, 300, 40);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  const { flush } = captureFrames();
+  try {
+    render(
+      <div data-testid="rail-port" style={{ overflowY: "auto" }}>
+        <div data-testid="rail-row">Steady live session</div>
+        <Menu trigger="Actions" items={items()} />
+      </div>,
+    );
+    const scroller = screen.getByTestId("rail-port");
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 500 });
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 300 });
+    scroller.scrollTop = 200;
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu")).toBeTruthy();
+    // The browser corrects the offset to hold the row it anchored (its content
+    // position moved by exactly what the offset gave back) - but the trigger
+    // has been pushed ABOVE the 100..400 scrollport, behind the header.
+    scroller.scrollTop = 176;
+    triggerTop = 60;
+    fireEvent.scroll(scroller);
+    flush();
+    expect(screen.queryByRole("menu")).toBeNull();
+  } finally {
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
 test("a taller viewport that clamps an ancestor's scroll leaves the menu open and re-anchored", async () => {
   const user = userEvent.setup();
   const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
@@ -4635,6 +4683,79 @@ test("a reader's own horizontal drag survives the popup's scroll event", async (
     fireEvent.scroll(popup);
     expect(popup.scrollLeft).toBe(60);
   } finally {
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// A drag is followed by passes that change nothing. The reader drags a capped
+// popup to the far end of an overflowing label, and then the visual viewport
+// pans - which re-places the popup with its own geometry untouched. Comparing
+// the offset against the previous look sees two equal numbers on that pass, so
+// an offset-equality guard reads "nothing moved" and the reveal pulls the
+// reader back to the row's start, one pan at a time. The question is not
+// whether the offset changed since the last look: it is whether the start was
+// ALREADY out of view when that look was taken.
+test("a placement pass after the reader's drag does not pull them back", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  const PORT_WIDTH = 36;
+  const fakeViewport = new EventTarget() as EventTarget & {
+    width: number;
+    height: number;
+    offsetLeft: number;
+    offsetTop: number;
+  };
+  fakeViewport.width = 400;
+  fakeViewport.height = 800;
+  fakeViewport.offsetLeft = 0;
+  fakeViewport.offsetTop = 0;
+  vi.stubGlobal("visualViewport", fakeViewport);
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, 300, 30, 28);
+    if (this.tagName === "UL") return box(0, 300, PORT_WIDTH, 120);
+    return box(0, 0, 0, 0);
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "UL") return 120;
+    return this.tagName === "LI" ? 44 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "UL") return PORT_WIDTH;
+    return this.tagName === "LI" ? 30 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetLeft", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "LI" ? 10 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
+    return 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "scrollWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "UL" ? 96 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "UL" ? PORT_WIDTH : 0;
+  });
+  const { flush } = captureFrames();
+  try {
+    render(<Menu trigger="Actions" items={items()} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    const popup = screen.getByRole("menu");
+    // The reader drags to the far end and the browser reports it.
+    popup.scrollLeft = 60;
+    fireEvent.scroll(popup);
+    expect(popup.scrollLeft).toBe(60);
+    // The visual viewport pans. The popup's own geometry is unchanged and the
+    // trigger is still where it was, so this pass has nothing to repair.
+    fakeViewport.offsetTop = 40;
+    act(() => {
+      fakeViewport.dispatchEvent(new Event("scroll"));
+    });
+    flush();
+    expect(screen.getByRole("menu").scrollLeft).toBe(60);
+  } finally {
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
     if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
   }

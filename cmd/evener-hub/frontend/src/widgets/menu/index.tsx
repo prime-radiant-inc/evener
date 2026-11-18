@@ -130,6 +130,38 @@ function scrollContainerOf(element: HTMLElement, ownerWindow: Window): HTMLEleme
   return null;
 }
 
+/** Whether `element` is inside the part of the page a reader can actually see:
+ * the window, and the visible scrollport of every scroll container above it
+ * that clips it.
+ *
+ * The window alone answers a different question. A rail scrolled so that the
+ * trigger sits above its own scrollport still has the trigger inside the
+ * window - the rail's header covers it - so a menu that trusts the window
+ * bounds follows a trigger no reader can see, with keyboard focus still in it.
+ * The clipped case and the pan case need the same answer, and this is the
+ * narrower one. */
+function triggerVisibleOnScreen(element: HTMLElement, ownerWindow: Window): boolean {
+  const rect = element.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return false;
+  let left = 0;
+  let top = 0;
+  let right = ownerWindow.innerWidth;
+  let bottom = ownerWindow.innerHeight;
+  for (let node: HTMLElement | null = element.parentElement; node !== null; node = node.parentElement) {
+    if (!isScrollContainer(node, ownerWindow)) continue;
+    const port = node.getBoundingClientRect();
+    // A container that resolves no box - an unstubbed fixture, a display:none
+    // ancestor - clips nothing this can measure, and inventing a zero port
+    // there would hide every trigger.
+    if (port.width <= 0 || port.height <= 0) continue;
+    left = Math.max(left, port.left);
+    top = Math.max(top, port.top);
+    right = Math.min(right, port.right);
+    bottom = Math.min(bottom, port.bottom);
+  }
+  return rect.left < right && rect.right > left && rect.top < bottom && rect.bottom > top;
+}
+
 // The outermost ancestor inside the body: everything in normal flow that could
 // push the trigger down, and nothing in the body beside it (a portaled sibling
 // subtree is not laid out against this trigger).
@@ -248,12 +280,22 @@ interface RowObservation {
    * view themselves - reading that as layout clipping and pulling the offset
    * back would make the rest of the glyph unreachable. */
   scrolledAlong: number;
+  /** The row's inline start in the popup's content, so two looks can be asked
+   * which of them had it on screen. The offset alone cannot answer that: a pass
+   * that leaves the offset untouched still has to know whether the start was
+   * already out of view before it decides to bring it back. */
+  inlineStart: number;
+  /** How far the popup can scroll inline - its content width past the width it
+   * shows. Zero means nothing is out of reach on that axis. */
+  scrollWidth: number;
 }
 
 const observeRow = (popup: HTMLElement, row: HTMLElement): RowObservation => ({
   top: row.offsetTop,
   height: row.offsetHeight,
   width: row.offsetWidth,
+  inlineStart: row.offsetLeft,
+  scrollWidth: popup.scrollWidth,
   // The scrollport the reader can see into, for the same reason `revealRow`
   // reads `clientHeight`: a scrollbar laid out on the inline axis belongs to
   // the offset box and not to the port, and counting it lets a row's last few
@@ -263,6 +305,16 @@ const observeRow = (popup: HTMLElement, row: HTMLElement): RowObservation => ({
   scrolledTo: popup.scrollTop,
   scrolledAlong: popup.scrollLeft,
 });
+
+/** Whether the row's inline START was inside the popup's visible width at the
+ * offset this look was taken at. The popup's own overflow is where the width
+ * comes from, not the row's border box: a glyph wider than the row runs past a
+ * popup the row still fits, and only the popup's scroll space knows that. */
+const startInView = (obs: RowObservation): boolean => {
+  const reach = obs.scrollWidth - obs.portWidth;
+  if (reach <= 0) return true;
+  return obs.inlineStart >= obs.scrolledAlong && obs.inlineStart < obs.scrolledAlong + obs.portWidth;
+};
 
 /** What one look at a scroller saw: how far it was scrolled, and where the
  * trigger sat inside its content. */
@@ -361,8 +413,17 @@ function witnessesIn(scroller: Element, triggerEl: HTMLElement, ownerWindow: Win
       // rows answer for themselves.
       const boxed = rect.height > 0;
       if (boxed && (rect.bottom <= portTop || rect.top >= portBottom)) continue;
-      const position = ownerWindow.getComputedStyle(child).position;
+      const style = ownerWindow.getComputedStyle(child);
+      const position = style.position;
       if (position === "fixed" || position === "sticky") continue;
+      // A TRANSFORMED box moves without going anywhere. A working-status
+      // spinner rotating between two looks reports a new rect top while its row
+      // sits exactly where it sat, and that movement can land within a pixel of
+      // the offset the reader scrolled by - so the one reading that must never
+      // be excused, the reader leaving, would be read as the browser holding the
+      // view. Only a layout box is evidence: the row that holds a spinner is a
+      // stable candidate, and the fallback below keeps it one.
+      if (style.transform !== "none" && style.transform !== "") continue;
       // A box that HOLDS the trigger is the trigger's own row, and a witness
       // that always moves with the trigger explains nothing. Its siblings are
       // the section's other rows and are exactly the rows the browser anchors
@@ -859,12 +920,26 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
           // popup's own overflow: a glyph can run past the popup while the
           // row's border box still fits inside it.
           //
-          // The inline offset is the READER's when they moved it: a drag along
-          // an overflowing label takes the row's start out of view and leaves
-          // every other number alone, so no geometry changed and this pass has
-          // nothing to repair. Only an offset this widget has not accounted
-          // for - the reader's own drag - is preserved.
-          if (now.scrolledAlong === before.scrolledAlong) revealRowInline(popup, row);
+          // The inline start is the READER's when their own drag moved it out
+          // of view: a drag along an overflowing label takes the start out of
+          // view and leaves every other number alone, so no geometry changed
+          // and this pass has nothing to repair. That has to be read from the
+          // START'S VISIBILITY rather than from whether the offset moved in
+          // this pass, because a drag is followed by passes that change nothing
+          // at all: a visual-viewport pan with the popup's geometry untouched
+          // arrives with the reader's new offset already recorded, and an
+          // offset comparison then sees two equal numbers and pulls the reader
+          // back to the start. A start that was on screen before and is not now
+          // is the one case this pass wrote itself - a wrap, a narrower popup -
+          // and is what the reveal is for.
+          // Two ways a drag reads, and neither is layout's to undo: the offset
+          // moved in this pass (the reader is dragging right now), or it was
+          // already out of view when this pass began (their drag landed
+          // between passes). Only a start that WAS on screen and is not now is
+          // something this widget's own layout change did.
+          if (now.scrolledAlong !== before.scrolledAlong) return;
+          if (!startInView(before) && !startInView(now)) return;
+          revealRowInline(popup, row);
           return;
         }
         // Three ways layout can take a row out of sight, and one for rows it
@@ -1441,12 +1516,13 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
           nodeType === 1 && target !== ownerWindow
             ? classifyScrollerScroll(target as Element, triggerRef.current, scrollerRecordsRef.current)
             : "scrolled";
+        // Inside the WINDOW is not the same as inside what the reader can see:
+        // a rail scrolled far enough hides its own rows behind its header, and
+        // a trigger there is still within the window's bounds. Every scroll
+        // container above the trigger clips it, so the answer has to come from
+        // the narrowest of them as well.
         const stillOnScreen =
-          rect !== undefined &&
-          rect.top + rect.height > 0 &&
-          rect.top < ownerWindow.innerHeight &&
-          rect.left + rect.width > 0 &&
-          rect.left < ownerWindow.innerWidth;
+          rect !== undefined && triggerRef.current !== null && triggerVisibleOnScreen(triggerRef.current, ownerWindow);
         if (cause !== "scrolled" && stillOnScreen) placeNowAndAfterLayout();
         else if (stayed && grew) placeNowAndAfterLayout();
         else closeMenu();
