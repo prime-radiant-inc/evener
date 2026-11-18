@@ -232,6 +232,7 @@ test("a read whose thread no longer waits drops the quota retry with the deadlin
       maxAttempts: 1,
       delayMs: resumesAt - NOW,
       errorClass: "quota_exceeded",
+      waitStartedAt: NOW,
       groupElapsedMs: 5_000,
       attemptCap: 1,
       receivedAt: NOW,
@@ -393,7 +394,10 @@ test("a read cut before the wait keeps the live-recorded wait; a fresh authorita
         turnId: "turn_1",
         attempt: 1,
         maxAttempts: 1,
-        delayMs: resumesAt - NOW,
+        // The daemon's delay runs from the wait's own start stamp, so this
+        // makes the wait's reset exactly resumesAt - the instant the test's
+        // reads are ordered against.
+        delayMs: resumesAt - waitStartedAt,
         errorClass: "quota_exceeded",
         groupElapsedMs: 5_000,
         attemptCap: 1,
@@ -489,6 +493,7 @@ test("a legacy root read is authoritative for a live-announced wait; a legacy de
         maxAttempts: 1,
         delayMs: resumesAt - NOW,
         errorClass: "quota_exceeded",
+        waitStartedAt: NOW,
         groupElapsedMs: 5_000,
         attemptCap: 1,
       },
@@ -556,6 +561,7 @@ test("a hub-enriched root read (kind session) is authoritative for a live-announ
         maxAttempts: 1,
         delayMs: resumesAt - NOW,
         errorClass: "quota_exceeded",
+        waitStartedAt: NOW,
         groupElapsedMs: 5_000,
         attemptCap: 1,
       },
@@ -588,6 +594,7 @@ test("a wire-path fork read is authoritative for a live-announced wait; a wire-p
       maxAttempts: 1,
       delayMs: resumesAt - NOW,
       errorClass: "quota_exceeded",
+      waitStartedAt: NOW,
       groupElapsedMs: 5_000,
       attemptCap: 1,
     },
@@ -641,6 +648,7 @@ test("an ordinary retry on the resumed call retires a legacy-preserved deadline"
         maxAttempts: 1,
         delayMs: resumesAt - NOW,
         errorClass: "quota_exceeded",
+        waitStartedAt: NOW,
         groupElapsedMs: 5_000,
         attemptCap: 1,
       },
@@ -2435,4 +2443,132 @@ describe("serving-fact replacement contract", () => {
     unknownFact.fields.servingFacts = { servedFrom: "saved-index", asOf: "2026-11-08T01:02:03Z", unexpectedFact: true };
     expect(decodeCurrentTranscriptState(unknownFact)).toBeUndefined();
   });
+});
+
+// --- quota-wait freshness on the daemon's own ordering evidence -------------
+//
+// The freshness question is "did this read sample the wait", and the facts
+// that answer it belong to one clock each: the read's serving cut and the
+// wait's stamps are the daemon's, while the pane's receipt is the browser's.
+// Cross-reading the two is what lets a fast browser clock keep an ended
+// countdown alive.
+
+const DAEMON_WAIT_STARTED_AT = 1_794_060_000_000;
+const DAEMON_RESET = DAEMON_WAIT_STARTED_AT + 6 * 60 * 60_000;
+// One full day of skew, the shape a badly set machine has.
+const DAY_MS = 24 * 60 * 60_000;
+
+// The pane hears the wait live. `receivedAt` is this browser's clock, so the
+// caller decides how far that clock sits from the daemon's.
+function announcedQuotaWait(receivedAt: number): ThreadModel {
+  return applyNotification(
+    hydrateThread(read([turn("turn_1", 1)], { activeTurnId: "turn_1" }), REF, DAEMON_WAIT_STARTED_AT),
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: THREAD_ID,
+        ref: REF,
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: DAEMON_RESET - DAEMON_WAIT_STARTED_AT,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 1,
+        waitStartedAt: DAEMON_WAIT_STARTED_AT,
+      },
+    } as AnyNotification,
+    receivedAt,
+  );
+}
+
+test("a read cut after the wait ended clears it however far the browser clock runs ahead", () => {
+  // This pane's clock is a day ahead of the daemon's, so the receipt stamp it
+  // writes is later than any daemon instant the read names.
+  const announced = announcedQuotaWait(DAEMON_WAIT_STARTED_AT + DAY_MS);
+  expect(announced.quotaResumesAt).toBe(isoInstant(DAEMON_RESET));
+
+  // The cut is past the reset on the daemon's own clock, so the summary names
+  // no wait. A fast browser clock must not turn that into "the read is older
+  // than the wait", which would keep an ended countdown on screen.
+  const fresh = hydrateThread(
+    read([turn("turn_1", 1)], { activeTurnId: "turn_1", asOf: new Date(DAEMON_RESET + 1_000).toISOString() }),
+    REF,
+    DAEMON_RESET + DAY_MS,
+  );
+  const cleared = applyReadModel(announced, fresh);
+  expect(cleared.quotaResumesAt).toBeUndefined();
+  expect(cleared.modelRetry).toBeUndefined();
+});
+
+test("a read cut before the wait began keeps it however far the browser clock runs behind", () => {
+  const announced = announcedQuotaWait(DAEMON_WAIT_STARTED_AT - DAY_MS);
+  const staleCut = hydrateThread(
+    read([turn("turn_1", 1)], { activeTurnId: "turn_1", asOf: new Date(DAEMON_WAIT_STARTED_AT - 1).toISOString() }),
+    REF,
+    DAEMON_WAIT_STARTED_AT - DAY_MS,
+  );
+  const kept = applyReadModel(announced, staleCut);
+  expect(kept.quotaResumesAt).toBe(isoInstant(DAEMON_RESET));
+  expect(kept.modelRetry?.errorClass).toBe("quota_exceeded");
+});
+
+// A wait's deadline, its stamp and its retry metadata are one fact, so a
+// read may not move one without the others. A read in flight when the first
+// wait was announced captures the FIRST wait's summary; a queued message then
+// wakes the call into a second wait with a different start and reset; the
+// older response lands last. Preserving the second wait's retry metadata
+// while spreading the first wait's deadline and stamp over it would show the
+// first reset beside the second call's elapsed time - a countdown whose
+// numbers belong to a request that is gone.
+test("a read naming an older wait keeps the newer wait's deadline and stamp alongside its retry", () => {
+  const firstWaitStartedAt = DAEMON_WAIT_STARTED_AT;
+  const firstResumesAt = DAEMON_RESET;
+  const secondWaitStartedAt = DAEMON_WAIT_STARTED_AT + 30_000;
+  const secondResumesAt = secondWaitStartedAt + 60 * 60_000;
+  // The read was issued while the first wait stood: its cut postdates that
+  // wait's start and predates its reset, and its summary names that wait.
+  const inFlightResponse = read([turn("turn_1", 1)], {
+    activeTurnId: "turn_1",
+    quotaWaitResumesAt: firstResumesAt,
+    quotaWaitStartedAt: firstWaitStartedAt,
+    asOf: new Date(firstWaitStartedAt + 1_000).toISOString(),
+  });
+  const inFlight = hydrateThread(inFlightResponse, REF, firstWaitStartedAt + 1_000);
+  // The queued message woke the call into the second wait before the
+  // response landed.
+  const woken = applyNotification(
+    inFlight,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: THREAD_ID,
+        ref: REF,
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: secondResumesAt - secondWaitStartedAt,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 1,
+        waitStartedAt: secondWaitStartedAt,
+      },
+    } as AnyNotification,
+    secondWaitStartedAt,
+  );
+  expect(woken.quotaResumesAt).toBe(isoInstant(secondResumesAt));
+  expect(woken.quotaWaitStartedAt).toBe(secondWaitStartedAt);
+  // The first wait's response lands: its summary is the older fact, and it
+  // must not rewrite the second wait's deadline or stamp.
+  const merged = applyReadModel(woken, inFlight);
+  expect(merged.quotaResumesAt).toBe(isoInstant(secondResumesAt));
+  expect(merged.quotaWaitStartedAt).toBe(secondWaitStartedAt);
+  expect(merged.modelRetry?.waitStartedAt).toBe(secondWaitStartedAt);
+  // The wire path (applyReadResponse) merges the same older response, and
+  // the wait is one fact there too. The read is issued at a generation the
+  // pane's history has reached, so it merges rather than being discarded.
+  const wired = applyReadResponse(woken, inFlightResponse, secondWaitStartedAt + 2_000);
+  expect(wired.quotaResumesAt).toBe(isoInstant(secondResumesAt));
+  expect(wired.quotaWaitStartedAt).toBe(secondWaitStartedAt);
+  expect(wired.modelRetry?.waitStartedAt).toBe(secondWaitStartedAt);
 });

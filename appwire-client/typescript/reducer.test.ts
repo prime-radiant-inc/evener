@@ -3077,6 +3077,9 @@ test("evener/thread/modelRetry with the quota class records the resume instant",
         maxAttempts: 1,
         delayMs: 2 * 60 * 60_000,
         errorClass: "quota_exceeded",
+        // The daemon stamps the wait it scheduled; the instant is that
+        // stamp plus the delay, never this pane's receipt.
+        waitStartedAt: 1_000_000,
         statusCode: 429,
         groupElapsedMs: 500,
         attemptCap: 1,
@@ -3172,6 +3175,7 @@ test("thread/status/changed clearing the running turn drops the quota deadline",
         maxAttempts: 1,
         delayMs: 60 * 60_000,
         errorClass: "quota_exceeded",
+        waitStartedAt: 1_000_000,
         groupElapsedMs: 500,
         attemptCap: 1,
       },
@@ -3204,6 +3208,7 @@ test("thread/status/changed clearing the running turn drops the quota deadline",
         maxAttempts: 1,
         delayMs: 60 * 60_000,
         errorClass: "quota_exceeded",
+        waitStartedAt: 1_200_000,
         groupElapsedMs: 500,
         attemptCap: 1,
       },
@@ -3289,6 +3294,7 @@ test("a turn boundary clears the quota retry, and a stale retry for the old turn
         maxAttempts: 1,
         delayMs: 60 * 60_000,
         errorClass: "quota_exceeded",
+        waitStartedAt: 900_000,
         groupElapsedMs: 500,
         attemptCap: 1,
       },
@@ -3327,7 +3333,10 @@ test("a turn boundary clears the quota retry, and a stale retry for the old turn
 // canceled wait - the retirement is a property of the turn, not of whether
 // a retry had already arrived when it ended.
 test("a turn boundary retires a turn whose quota announcement has not arrived yet, and the queued event cannot restore the wait", () => {
-  const quotaRetry = (turnId: string) =>
+  // The daemon stamps each wait with the instant it began, so this fixture
+  // takes that instant alongside the turn: the deadline is the stamp plus
+  // the delay, whatever moment the notification happens to land.
+  const quotaRetry = (turnId: string, waitStartedAt: number) =>
     ({
       method: "evener/thread/modelRetry",
       params: {
@@ -3338,6 +3347,7 @@ test("a turn boundary retires a turn whose quota announcement has not arrived ye
         maxAttempts: 1,
         delayMs: 60 * 60_000,
         errorClass: "quota_exceeded",
+        waitStartedAt,
         groupElapsedMs: 500,
         attemptCap: 1,
       },
@@ -3395,7 +3405,7 @@ test("a turn boundary retires a turn whose quota announcement has not arrived ye
     },
     1_000_000,
   );
-  const queued = applyNotification(ended, quotaRetry("turn_1"), 1_100_000);
+  const queued = applyNotification(ended, quotaRetry("turn_1", 1_100_000), 1_100_000);
   expect(queued.quotaResumesAt).toBeUndefined();
   expect(queued.modelRetry).toBeUndefined();
   // A first announcement for a live turn the model never moved past still
@@ -3408,7 +3418,7 @@ test("a turn boundary retires a turn whose quota announcement has not arrived ye
     },
     1_150_000,
   );
-  const fresh = applyNotification(next, quotaRetry("turn_2"), 1_200_000);
+  const fresh = applyNotification(next, quotaRetry("turn_2", 1_200_000), 1_200_000);
   expect(fresh.quotaResumesAt).toBe(isoInstant(1_200_000 + 60 * 60_000));
   expect(fresh.modelRetry?.errorClass).toBe("quota_exceeded");
 
@@ -3506,6 +3516,7 @@ test("a history update completing any output item keeps the quota wait", () => {
         maxAttempts: 1,
         delayMs: 60 * 60_000,
         errorClass: "quota_exceeded",
+        waitStartedAt: 1_000_000,
         groupElapsedMs: 500,
         attemptCap: 1,
       },
@@ -3574,6 +3585,7 @@ test("the quota wake's progress state retires on the resumed call's completed ou
         maxAttempts: 1,
         delayMs: 60 * 60_000,
         errorClass: "quota_exceeded",
+        waitStartedAt: 1_000_000,
         groupElapsedMs: 500,
         attemptCap: 1,
       },

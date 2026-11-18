@@ -662,11 +662,19 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
         // live retry behind a wait that ended.
         // A stamped wait's deadline is its own arithmetic - the daemon-issued
         // start instant plus its delay - so a delayed event does not shift
-        // the pane's reset past the daemon's; an unstamped announcement (an
-        // older daemon) keeps the receipt-time arithmetic.
+        // the pane's reset past the daemon's.
+        //
+        // An unstamped announcement (an older daemon) names no instant the
+        // daemon issued, so it leaves the model's instant to the read and
+        // writes nothing itself - the pane's own receipt-based remaining
+        // wait (LivenessLine's live arm) covers a read that said nothing.
+        // Anchoring the instant to THIS pane's clock would put an unverified
+        // number in the model, where it outlives the notification.
         quotaResumesAt:
           params.errorClass === "quota_exceeded" && params.delayMs > 0
-            ? new Date((params.waitStartedAt ?? now) + params.delayMs).toISOString()
+            ? params.waitStartedAt !== undefined
+              ? new Date(params.waitStartedAt + params.delayMs).toISOString()
+              : model.quotaResumesAt
             : undefined,
         // The wait's stamp travels with its deadline, whichever route
         // learned the wait: a live announcement installs its OWN stamp, so
@@ -712,7 +720,13 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
           receivedAt: now,
         },
       };
-      return next;
+      // The zero-delay wake ends the wait, so the instant goes with it -
+      // whatever stamped the wait that is now over (a read, or an earlier
+      // announcement of the same wait).
+      if (params.errorClass !== "quota_exceeded" || params.delayMs !== 0) return next;
+      const waitEnded = { ...next };
+      delete waitEnded.quotaResumesAt;
+      return waitEnded;
     }
 
     default:
