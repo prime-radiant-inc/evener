@@ -534,12 +534,16 @@ func TestRootFrontierAttentionWakeOpensOnAssistantRecord(t *testing.T) {
 		t.Fatal("idle child delivery did not record an attention delivery turn")
 	}
 	h.assertShapes(t, previous, true)
-	// A session-owned idle write uses a gap instead of an asynchronous delivery.
-	// Both newer non-execution spans leave the frontier on the completed turn.
-	if err := sess.SetModel("gpt-5.4"); err != nil {
-		t.Fatal(err)
+	// Idle model switches record a gap. Return to the current model before
+	// the wake so it needs no environment entry before its first assistant.
+	for _, model := range []string{"gpt-5.4", sess.Profile().Model()} {
+		if err := sess.SetModel(model); err != nil {
+			t.Fatal(err)
+		}
+		h.await(t, events.EventModelChanged, func(ev events.SessionEvent) bool {
+			return ev.Data.(events.ModelChangedData).NewModel == model
+		})
 	}
-	h.await(t, events.EventModelChanged, nil)
 	gap := false
 	for _, turn := range transcriptTurns(t, sess.TranscriptPath()) {
 		if turn.Kind == schema.TurnModelSwitch && turn.TurnKind == schema.TurnSpanGap && turn.TurnID != previous {
