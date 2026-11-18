@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -1405,14 +1406,7 @@ func recordPaths(m schema.SessionMeta) []string {
 		if candidate == "" {
 			continue
 		}
-		duplicate := false
-		for _, seen := range paths {
-			if seen == candidate {
-				duplicate = true
-				break
-			}
-		}
-		if !duplicate {
+		if !slices.Contains(paths, candidate) {
 			paths = append(paths, candidate)
 		}
 	}
