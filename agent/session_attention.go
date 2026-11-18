@@ -1130,6 +1130,13 @@ const (
 // event that arrived — the site names which wake. The rows the stop never
 // touched keep their presentation either way, and a failed arm or an
 // uncommitted delivery woke nothing, so the holds stand.
+//
+// The release is durable before it is in-memory: the record names the settled
+// generation whose quiet this event superseded, so a runtime the idle release
+// later reclaims cannot have the derive rebuild a quiet this release already
+// ended. A record that cannot land leaves the reclaim no better and no worse
+// than before it existed — the resident hold still ends, and a later restore
+// rebuilds the quiet exactly as it did when the record was absent.
 func (s *Session) releaseAutomaticDriveHolds(site delegateHoldReleaseSite) {
 	// The seam is runtime-mutable through updateSessionTestConfig, so its
 	// read shares the setter's session mutex — the convention every
@@ -1137,6 +1144,11 @@ func (s *Session) releaseAutomaticDriveHolds(site delegateHoldReleaseSite) {
 	s.mu.Lock()
 	hook := s.cfg.testOnly.delegateAttentionHoldReleased
 	s.mu.Unlock()
+	// The record lands before the holds end, and it does not depend on reading
+	// them: a quiet standing on a row some earlier pass already resolved has
+	// nothing to enumerate, and an event arriving after the stop supersedes it
+	// just the same.
+	s.recordAttentionHoldRelease()
 	var released []string
 	s.attentionMu.Lock()
 	if len(s.attentionAutomaticDriveHolds) != 0 {
@@ -1151,6 +1163,44 @@ func (s *Session) releaseAutomaticDriveHolds(site delegateHoldReleaseSite) {
 	if hook != nil && released != nil {
 		sort.Strings(released)
 		hook(site, released)
+	}
+}
+
+// recordAttentionHoldRelease journals that an event newer than the generation
+// this session's delegate rests at superseded its user-stop quiet. Only a
+// delegate resting cancelled by an attention stop can owe that quiet, and only
+// the first release at a generation records it, so a fleet's ordinary arms and
+// deliveries append nothing. It is best-effort like the release's other
+// durable bookkeeping: a runtime with no controller or no owning delegate has
+// no quiet a restore could rebuild, and a journal that refuses the record only
+// restores the pre-record behaviour.
+func (s *Session) recordAttentionHoldRelease() {
+	if s == nil || s.delegateController == nil || s.owningDelegateID == "" {
+		return
+	}
+	controller := s.delegateController
+	// The generation is read and the record appended under one controller hold,
+	// so the record names exactly the generation the aggregate rests at when
+	// the release is written.
+	controller.mu.Lock()
+	aggregate := controller.durable[s.owningDelegateID]
+	if aggregate == nil || aggregate.CurrentRunOpen || aggregate.Generation == 0 ||
+		aggregate.Trigger != delegatestore.TriggerAttention ||
+		aggregate.LatestOutcome == nil || aggregate.LatestOutcome.Status != delegatestore.OutcomeCancelled ||
+		aggregate.AttentionHoldReleasedGeneration >= aggregate.Generation {
+		controller.mu.Unlock()
+		return
+	}
+	_, err := controller.appendLocked(delegatestore.Event{
+		Kind:       delegatestore.EventDelegateAttentionHoldReleased,
+		DelegateID: s.owningDelegateID,
+		AttentionHoldReleased: &delegatestore.AttentionHoldReleased{
+			Generation: aggregate.Generation,
+		},
+	})
+	controller.mu.Unlock()
+	if err != nil {
+		s.emit(warningDataFromError("record delegate attention hold release", err))
 	}
 }
 
@@ -1217,6 +1267,16 @@ func (s *Session) moveHeldDelegateAttentionTurnsToTail() {
 // rows keep their own sticky quiet. The derived hold writes the same map the
 // settle tail wrote, so the arm that presents any remaining pending row
 // releases it exactly as it releases the resident one.
+//
+// The derivation's inputs are unordered snapshots — the aggregate, the fold,
+// and the in-memory wake set — so a cancelled outcome alone cannot say whether
+// its quiet is still current. The invariant it must hold is that the derived
+// hold reflects the newest authoritative evidence: the quiet stands only while
+// no event newer than the stopped generation's settle ended it. The durable
+// release record (delegatestore.AttentionHoldReleasedGeneration) supplies that
+// order, and it is read from the same locked aggregate snapshot the outcome
+// comes from, so a release that landed after a stop is visible to the derive
+// even though the wake set it emptied did not survive the reclaim.
 func (s *Session) deriveHeldDelegateAttentionFromOutcome() {
 	if s == nil || s.delegateController == nil || s.owningDelegateID == "" {
 		return
@@ -1225,8 +1285,10 @@ func (s *Session) deriveHeldDelegateAttentionFromOutcome() {
 	controller.mu.Lock()
 	generation := uint64(0)
 	stopped := false
+	released := uint64(0)
 	if aggregate := controller.durable[s.owningDelegateID]; aggregate != nil {
 		generation = aggregate.Generation
+		released = aggregate.AttentionHoldReleasedGeneration
 		stopped = !aggregate.CurrentRunOpen &&
 			aggregate.Trigger == delegatestore.TriggerAttention &&
 			aggregate.LatestOutcome != nil &&
@@ -1237,7 +1299,9 @@ func (s *Session) deriveHeldDelegateAttentionFromOutcome() {
 		noted = maps.Clone(state.wakeIDs)
 	}
 	controller.mu.Unlock()
-	if !stopped {
+	// A release at or past the resting generation is newer evidence than the
+	// stop that generation settled: the quiet it ended must not come back.
+	if !stopped || released >= generation {
 		return
 	}
 	s.attentionMu.Lock()

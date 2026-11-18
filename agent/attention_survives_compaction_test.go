@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"slices"
@@ -550,8 +551,16 @@ func acceptedTriggerSession(t *testing.T) *Session {
 // controller is the harness's; the derivation reads only durable state.
 func deriveHeldFixture(t *testing.T, outcome delegatestore.OutcomeStatus, reason string) (*Session, string) {
 	t.Helper()
+	sess, reopenedID, _ := deriveHeldFixtureWithJournal(t, outcome, reason)
+	return sess, reopenedID
+}
+
+// deriveHeldFixtureWithJournal is deriveHeldFixture plus the fixture's journal
+// path, for a case that restores a controller from it.
+func deriveHeldFixtureWithJournal(t *testing.T, outcome delegatestore.OutcomeStatus, reason string) (*Session, string, string) {
+	t.Helper()
 	sess, _ := newCompactableSession(t)
-	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
+	controller, journalPath := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerIdle(t, controller, "dlg_hold", "")
 	controller.mu.Lock()
 	controller.live["dlg_hold"] = &delegateLiveState{runtime: sess}
@@ -583,28 +592,61 @@ func deriveHeldFixture(t *testing.T, outcome delegatestore.OutcomeStatus, reason
 		t.Fatalf("acceptDelegateAttention: %v", err)
 	}
 	// The claimed generation's rest: the run settled with the fixture's
-	// outcome, leaving the aggregate at that generation. The three durable
-	// facts the derivation reads are seeded directly — the journal's own
-	// settle path is pinned end to end by the release-restore test, and a
-	// journaled finish here would queue the run's terminal delivery, which
-	// the session's teardown then waits out.
-	controller.mu.Lock()
-	aggregate := controller.durable["dlg_hold"]
-	aggregate.Generation = 1
-	aggregate.Trigger = delegatestore.TriggerAttention
-	aggregate.CurrentRunOpen = false
-	aggregate.LatestOutcome = &delegatestore.Outcome{
-		Status:  outcome,
-		Reason:  reason,
-		EndedAt: time.Unix(20, 0).UTC(),
-	}
-	controller.durable["dlg_hold"] = aggregate
-	controller.mu.Unlock()
+	// outcome, leaving the aggregate at that generation. The stop is journaled
+	// rather than seeded in memory, so a controller reopened from the journal —
+	// the cold restore a case builds — folds exactly the aggregate the
+	// derivation reads. The finish's terminal delivery is acknowledged in the
+	// same journal so no teardown waits on a delivery nothing will present.
+	journalDeriveHeldStop(t, controller, outcome, reason)
 	reopenedID := delegateAttentionReopenID(sourceID, 1)
 	if _, err := sess.appendDelegateNotificationDurably(reopenedID, acceptedTriggerText); err != nil {
 		t.Fatalf("append the reopened row: %v", err)
 	}
-	return sess, reopenedID
+	return sess, reopenedID, journalPath
+}
+
+// journalDeriveHeldStop journals the attention generation a user's stop
+// settled: run started at generation 1, then the run finished with the given
+// outcome and the terminal error packet a stop settles. The finish's delivery
+// is acknowledged in the same batch, so the aggregate rests with no pending
+// delivery and no teardown waits on one. The stop's own hold is not written
+// here — the derivation is what rebuilds it from this evidence.
+func journalDeriveHeldStop(t *testing.T, controller *delegateTreeController, outcome delegatestore.OutcomeStatus, reason string) {
+	t.Helper()
+	const delegateID = "dlg_hold"
+	stopped := delegatestore.TerminalPacket{Kind: delegatestore.PacketTerminalError, Message: json.RawMessage(`"stopped"`)}
+	controller.mu.Lock()
+	defer controller.mu.Unlock()
+	_, err := controller.appendLocked(
+		delegatestore.Event{
+			Kind:       delegatestore.EventDelegateRunStarted,
+			DelegateID: delegateID,
+			RunStarted: &delegatestore.RunStarted{
+				Generation: 1,
+				Trigger:    delegatestore.TriggerAttention,
+				StartedAt:  time.Unix(10, 0).UTC(),
+			},
+		},
+		delegatestore.Event{
+			Kind:       delegatestore.EventDelegateRunFinished,
+			DelegateID: delegateID,
+			RunFinished: &delegatestore.RunFinished{
+				Generation:  1,
+				Outcome:     delegatestore.Outcome{Status: outcome, Reason: reason, EndedAt: time.Unix(20, 0).UTC()},
+				Disposition: delegatestore.DispositionTerminalError,
+				DeliveryID:  delegateID + "/delivery/1",
+				Packet:      &stopped,
+			},
+		},
+		delegatestore.Event{
+			Kind:                 delegatestore.EventDelegateDeliveryAcknowledged,
+			DelegateID:           delegateID,
+			DeliveryAcknowledged: &delegatestore.DeliveryAcknowledged{DeliveryID: delegateID + "/delivery/1"},
+		},
+	)
+	if err != nil {
+		t.Fatalf("journal the stopped generation: %v", err)
+	}
 }
 
 // A restored session's held rows come from durable state, and the predicate
@@ -719,6 +761,117 @@ func TestDeriveHeldDelegateAttentionFromOutcome(t *testing.T) {
 			t.Fatalf("the stopped send's busy reopen must stay presentable on the restore: %v", ids)
 		}
 	})
+
+	// The corner this derivation got wrong: the quiet a stop leaves is
+	// in-memory, and a newer event that ended it leaves no trace in the wake
+	// set once the idle release reclaims the runtime. Without a durable order,
+	// the restored session reads the stopped generation's cancelled outcome and
+	// rebuilds a quiet the newer event already released. The derivation must
+	// take its quiet only from evidence no later event has superseded.
+	t.Run("a released quiet is not re-imposed on the restore", func(t *testing.T) {
+		t.Parallel()
+		sess, reopenedID, journalPath := deriveHeldFixtureWithJournal(t, delegatestore.OutcomeCancelled, "cancelled")
+		// The stop's own quiet, written through the production setter the settle
+		// tail writes with.
+		sess.holdDelegateAttentionFromAutomaticDrive(reopenedID)
+		// The newer event's release, through the production path the arm and the
+		// committed delivery both call: the arm that presents a fresh row ends
+		// the hold before its wake.
+		sess.releaseAutomaticDriveHolds(delegateHoldReleaseArm)
+		sess.attentionMu.Lock()
+		heldBefore := sess.delegateAttentionHeldFromAutomaticDriveLocked(reopenedID)
+		sess.attentionMu.Unlock()
+		if heldBefore {
+			t.Fatal("the release left the row held on the resident runtime")
+		}
+		// The cold restore: a fresh session over the same durable evidence,
+		// rebuilt the way the idle release's restore rebuilds it. The wake set
+		// the resident runtime emptied does not survive the reclaim, so only
+		// the durable release record can tell the derivation the quiet ended.
+		restored := coldRestoredDeriveSession(t, sess, journalPath)
+		restored.deriveHeldDelegateAttentionFromOutcome()
+		ids, err := restored.automaticDelegateAttentionIDs()
+		if err != nil {
+			t.Fatalf("read the drive-side rows: %v", err)
+		}
+		if !slices.Contains(ids, reopenedID) {
+			t.Fatalf("a quiet a newer event already released was re-imposed on the restore: %v", ids)
+		}
+	})
+
+	// The direction the derivation exists for: with no newer event, the
+	// stopped generation's quiet must still stand on a cold restore.
+	t.Run("an unreleased quiet still stands on the restore", func(t *testing.T) {
+		t.Parallel()
+		sess, reopenedID, journalPath := deriveHeldFixtureWithJournal(t, delegatestore.OutcomeCancelled, "cancelled")
+		restored := coldRestoredDeriveSession(t, sess, journalPath)
+		restored.deriveHeldDelegateAttentionFromOutcome()
+		restored.attentionMu.Lock()
+		held := restored.delegateAttentionHeldFromAutomaticDriveLocked(reopenedID)
+		restored.attentionMu.Unlock()
+		if !held {
+			t.Fatal("the stop's own quiet did not survive the cold restore")
+		}
+		ids, err := restored.automaticDelegateAttentionIDs()
+		if err != nil {
+			t.Fatalf("read the drive-side rows: %v", err)
+		}
+		if slices.Contains(ids, reopenedID) {
+			t.Fatalf("the drive-side read offered a row the stop still quiets: %v", ids)
+		}
+	})
+}
+
+// coldRestoredDeriveSession rebuilds the durable side of a session the idle
+// release reclaimed: a fresh controller over the same journal path, folded from
+// disk exactly as a restart folds it, and a fresh session that owns the same
+// delegate and reads the same transcript. Everything the released runtime held
+// only in memory — the holds map, the controller's wake set — is gone by
+// construction, which is the state the derivation must decide from.
+func coldRestoredDeriveSession(t *testing.T, released *Session, journalPath string) *Session {
+	t.Helper()
+	released.mu.Lock()
+	stateDir := released.stateDir
+	sessionID := released.id
+	owningDelegateID := released.owningDelegateID
+	released.mu.Unlock()
+	if journalPath == "" {
+		t.Fatal("the fixture has no journal path to restore from")
+	}
+	// The journal's own write side closes with the released runtime; a
+	// reopened store reads the bytes the release wrote.
+	if err := released.delegateController.store.Close(); err != nil {
+		t.Fatalf("close the released journal: %v", err)
+	}
+	store, err := delegatestore.Open(journalPath)
+	if err != nil {
+		t.Fatalf("reopen the journal: %v", err)
+	}
+	t.Cleanup(func() { _ = store.Close() })
+	restored := newSession(t, withDir(stateDir), withConfig(SessionConfig{StateDir: stateDir}))
+	// The released session wrote its transcript under its own session id; the
+	// restored one reads that file rather than creating an empty transcript of
+	// its own, so the fold sees the rows the stop left.
+	restored.mu.Lock()
+	restored.id = sessionID
+	restored.mu.Unlock()
+	controller, err := openDelegateTreeController(delegateTreeControllerConfig{
+		store:         store,
+		rootSessionID: "root-session",
+		stateDir:      stateDir,
+	})
+	if err != nil {
+		t.Fatalf("open the restored controller: %v", err)
+	}
+	restored.delegateController = controller
+	restored.owningDelegateID = owningDelegateID
+	t.Cleanup(func() {
+		restored.mu.Lock()
+		restored.delegateController = nil
+		restored.owningDelegateID = ""
+		restored.mu.Unlock()
+	})
+	return restored
 }
 
 // Once a settled round of the active turn has presented a delegate attention
