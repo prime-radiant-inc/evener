@@ -39,6 +39,7 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 		"properties": map[string]any{"payload": map[string]any{"type": "object"}, "note": map[string]any{"type": "string"}},
 	}}
 	const first, second = " \tλ<&>\n", "  next\r\n"
+	const summary = " \tΣ<&>\r\n"
 	good, bad := mustJSON(t, valid), mustJSON(t, malformed)
 	const serial = "9007199254740993"
 	const scale = "6.250e+3"
@@ -66,7 +67,7 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 		thoughts    []string
 	}{
 		{&responses.Protocol{}, "input", "", `{"output":[
-			{"type":"reasoning","id":"r1","summary":[],"content":[
+			{"type":"reasoning","id":"r1","content":[
 				{"type":"reasoning_text","text":` + mustJSON(t, first) + `},
 				{"type":"reasoning_text","text":` + mustJSON(t, second) + `}]},
 			{"type":"function_call","call_id":"c1","name":"write_file","arguments":` + good + `},
@@ -80,6 +81,17 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 			name += "/" + tc.replayField
 		}
 		t.Run(name, func(t *testing.T) {
+			reply, contentType := tc.response, "application/json"
+			if tc.field == "input" {
+				contentType = "text/event-stream"
+				reply = "data: " + strings.Join([]string{
+					`{"type":"response.reasoning_summary_part.added","output_index":0,"item_id":"r1","summary_index":1,"part":{"type":"summary_text","text":""}}`,
+					`{"type":"response.reasoning_summary_text.done","output_index":0,"item_id":"r1","summary_index":1,"text":""}`,
+					`{"type":"response.reasoning_summary_text.done","output_index":0,"item_id":"r1","summary_index":0,"text":` + mustJSON(t, summary) + `}`,
+					`{"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning","id":"r1"}}`,
+					mustJSON(t, map[string]any{"type": "response.completed", "response": json.RawMessage(tc.response)}),
+				}, "\n\ndata: ") + "\n\n"
+			}
 			requests := make(chan []byte, 1)
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				body, err := io.ReadAll(r.Body)
@@ -89,8 +101,8 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 					return
 				}
 				requests <- body
-				w.Header().Set("Content-Type", "application/json")
-				_, _ = io.WriteString(w, tc.response)
+				w.Header().Set("Content-Type", contentType)
+				_, _ = io.WriteString(w, reply)
 			}))
 			t.Cleanup(srv.Close)
 			row := registry.Resolved{
@@ -107,6 +119,21 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 				req := llm.ShapeRequest(llm.Request{
 					Model: target.ModelID, Messages: messages, Tools: []llm.ToolDefinition{tool.DefWriteFile(), record, tool.DefAskUser()},
 				}, target)
+				if tc.field == "input" {
+					stream, err := tc.protocol.Stream(t.Context(), req, target)
+					if err != nil {
+						t.Fatal(err)
+					}
+					defer stream.Close() //nolint:errcheck
+					acc := llm.NewStreamAccumulator()
+					for event := range stream.Events() {
+						if event.Err != nil {
+							t.Fatal(event.Err)
+						}
+						acc.Process(event)
+					}
+					return *acc.Response(), <-requests
+				}
 				resp, err := tc.protocol.Complete(t.Context(), req, target)
 				if err != nil {
 					t.Fatal(err)
@@ -215,7 +242,7 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 			}
 			warm, cold := historyField(warmBody), historyField(coldBody)
 			for _, history := range []json.RawMessage{warm, cold} {
-				got, thoughts, details := capturedToolTurn(t, history)
+				got, thoughts, details, summaries := capturedToolTurn(t, history)
 				if got["c1"] != valid || got["c2"] != "{}" {
 					t.Errorf("outbound argument strings = %q, want original valid bytes and the rejected call's placeholder", got)
 				}
@@ -227,6 +254,9 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 				}
 				if !slices.Equal(thoughts, tc.thoughts) {
 					t.Errorf("outbound reasoning parts = %q, want %q", thoughts, tc.thoughts)
+				}
+				if tc.field == "input" && !slices.Equal(summaries, []capturedSummaryPart{{"summary_text", summary}, {"summary_text", ""}}) {
+					t.Errorf("outbound finalized summary parts = %q", summaries)
 				}
 				var want []capturedChatDetail
 				switch tc.replayField {
@@ -258,7 +288,7 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 					dst := replayScope{Instance: target.Instance, Model: target.ModelID, Protocol: target.Protocol, InFlightFrom: len(resumed), DropThinking: dropsReplayedThinking(profile)}
 					dst.setReasoningTextTarget(profile)
 					_, sent := send(expandHistory(resumed, dst), target)
-					calls, thoughts, details := capturedToolTurn(t, historyField(sent))
+					calls, thoughts, details, _ := capturedToolTurn(t, historyField(sent))
 					if len(thoughts) != 0 || len(details) != 0 || calls["c1"] != valid {
 						t.Errorf("ineligible target %s replayed reasoning %v or lost tool history", target.ModelID, thoughts)
 					}
@@ -275,15 +305,18 @@ type capturedChatDetail struct {
 	Serial, Scale          json.Number
 }
 
-func capturedToolTurn(t *testing.T, history json.RawMessage) (map[string]string, []string, []capturedChatDetail) {
+type capturedSummaryPart struct{ Type, Text string }
+
+func capturedToolTurn(t *testing.T, history json.RawMessage) (map[string]string, []string, []capturedChatDetail, []capturedSummaryPart) {
 	t.Helper()
 	var items []struct {
 		CallID           string `json:"call_id"`
 		Type             string
 		Arguments        string
-		Reasoning        string               `json:"reasoning_content"`
-		ReasoningDetails []capturedChatDetail `json:"reasoning_details"`
-		Content          json.RawMessage      `json:"content"`
+		Reasoning        string                `json:"reasoning_content"`
+		ReasoningDetails []capturedChatDetail  `json:"reasoning_details"`
+		Summary          []capturedSummaryPart `json:"summary"`
+		Content          json.RawMessage       `json:"content"`
 		ToolCalls        []struct {
 			ID       string
 			Function struct{ Arguments string }
@@ -295,6 +328,7 @@ func capturedToolTurn(t *testing.T, history json.RawMessage) (map[string]string,
 	args := make(map[string]string)
 	var reasoning []string
 	var details []capturedChatDetail
+	var summaries []capturedSummaryPart
 	for _, item := range items {
 		if item.Reasoning != "" {
 			reasoning = append(reasoning, item.Reasoning)
@@ -306,6 +340,7 @@ func capturedToolTurn(t *testing.T, history json.RawMessage) (map[string]string,
 		}
 		details = append(details, item.ReasoningDetails...)
 		if item.Type == "reasoning" {
+			summaries = append(summaries, item.Summary...)
 			var parts []struct{ Type, Text string }
 			if err := json.Unmarshal(item.Content, &parts); err != nil {
 				t.Fatal(err)
@@ -323,5 +358,5 @@ func capturedToolTurn(t *testing.T, history json.RawMessage) (map[string]string,
 			args[call.ID] = call.Function.Arguments
 		}
 	}
-	return args, reasoning, details
+	return args, reasoning, details, summaries
 }

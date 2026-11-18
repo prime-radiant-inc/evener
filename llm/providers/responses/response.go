@@ -197,7 +197,7 @@ func (item *responsesOutputItem) appendDisplay(content []llm.ContentPart) []llm.
 
 func (acc *responsesOutputAccumulator) terminalItem(kind, id, callID string, index int, out []any) *responsesOutputItem {
 	compatible := func(item *responsesOutputItem) bool {
-		return item.accepts(kind, id, -1) && (callID == "" || item.tool == nil || item.tool.callID == "" || item.tool.callID == callID)
+		return item.accepts(kind, id, -1) && item.acceptsCallID(callID)
 	}
 	named := acc.namedItem(kind, id)
 	if !compatible(named) {
@@ -207,7 +207,7 @@ func (acc *responsesOutputAccumulator) terminalItem(kind, id, callID string, ind
 		named = acc.join(named, called)
 	}
 	indexed := acc.byIndex[int64(index)]
-	if !compatible(indexed) {
+	if !compatible(indexed) || indexed.ambiguousCallIndex {
 		indexed = nil
 	}
 	if indexed == named && (named != nil || kind != "message") {
@@ -239,7 +239,7 @@ func (item *responsesOutputItem) settleReasoning(terminalItem map[string]any, te
 		return terminal
 	}
 	if terminal == nil {
-		terminal = &llm.ThinkingData{ID: item.reasoningID(terminalItem), Summary: parseReasoningSummary(terminalItem["summary"])}
+		terminal = &llm.ThinkingData{ID: item.reasoningID(terminalItem), Summary: item.reasoningSummary(terminalItem["summary"])}
 	}
 	parts, supplied := terminalItem["content"].([]any)
 	cleared := supplied && len(parts) == 0
@@ -260,9 +260,6 @@ func (item *responsesOutputItem) settleReasoning(terminalItem map[string]any, te
 	terminal.EncryptedContent = cmp.Or(terminal.EncryptedContent, ciphertext)
 	if terminal.EncryptedContent == "" && len(terminal.ResponsesTextParts) == 0 {
 		return nil
-	}
-	if terminal.Summary == nil {
-		terminal.Summary = parseReasoningSummary(item.done["summary"])
 	}
 	return terminal
 }
@@ -515,6 +512,25 @@ func (item *responsesOutputItem) reasoningID(terminal map[string]any) string {
 	return ""
 }
 
+func (item *responsesOutputItem) reasoningSummary(raw any) []string {
+	if summary := parseReasoningSummary(raw); summary != nil || item == nil {
+		return summary
+	}
+	if summary := parseReasoningSummary(item.done["summary"]); summary != nil {
+		return summary
+	}
+	// Summary arrays have no index field. A missing slot cannot be filled
+	// by shifting a later finalized part into its position.
+	var summary []string
+	for index := int64(0); ; index++ {
+		final, ok := item.finalSummaries[index]
+		if !ok {
+			return summary
+		}
+		summary = append(summary, final.text)
+	}
+}
+
 // Native bytes can consist entirely of whitespace. Such an item is kept in
 // history while still allowing the stream to supply missing answer or tool items.
 func responsesThinking(item map[string]any, prior *responsesOutputItem) (*llm.ThinkingData, reasoningContent) {
@@ -577,7 +593,7 @@ func responsesThinking(item map[string]any, prior *responsesOutputItem) (*llm.Th
 		ID:                 prior.reasoningID(item),
 		Text:               text,
 		EncryptedContent:   encrypted,
-		Summary:            parseReasoningSummary(item["summary"]),
+		Summary:            prior.reasoningSummary(item["summary"]),
 		ResponsesTextParts: textParts,
 	}, native
 }
@@ -600,6 +616,14 @@ func settleResponsesTerminalOutput(raw map[string]any, requestedModel string, bo
 	// selection can yield zero represented parts (for example, file_search_call)
 	// and still withdraw an earlier streamed tool call.
 	r.ContentAuthoritative = len(out) != 0
+	if !r.ContentAuthoritative && len(r.Message.Content) == 0 && acc.completed != 0 {
+		// A completed message can clear the generic accumulator's draft
+		// even when the terminal omits the completed item.
+		r.ContentAuthoritative = slices.ContainsFunc(acc.output, func(item *responsesOutputItem) bool {
+			parts, supplied := item.done["content"].([]any)
+			return item.kind == "message" && supplied && len(parts) == 0
+		})
+	}
 	if n := acc.completed; len(out) > 0 && n > 0 && len(out) != n {
 		r.Warnings = append(r.Warnings, llm.Warning{
 			Code:    "responses_output_item_count_mismatch",

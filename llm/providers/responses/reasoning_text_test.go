@@ -112,6 +112,12 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 	const linkedCall = `{"type":"function_call","id":"fc_1","call_id":"call_1","arguments":""}`
 	const linkedFinalCall = `{"type":"function_call","id":"fc_1","call_id":"call_1","arguments":" \t{ \"k\": 1 }\n"}`
 	const callFinalArguments = `{"type":"response.function_call_arguments.done","call_id":"call_1","arguments":" \t{ \"k\": 1 }\n"}`
+	const firstCall = `{"type":"function_call","call_id":"call_1"}`
+	const secondCall = `{"type":"function_call","call_id":"call_2"}`
+	indexedCalls := []string{
+		at(0, `{"type":"response.function_call_arguments.done","call_id":"call_1","name":"f","arguments":" \t{ \"k\": 1 }\n"}`),
+		at(0, `{"type":"response.function_call_arguments.done","call_id":"call_2","name":"g","arguments":"{ \"k\": 2 }"}`),
+	}
 	const indexedArguments = `{"type":"response.function_call_arguments.delta","delta":"{}"}`
 	const indexedFinalArguments = `{"type":"response.function_call_arguments.done","arguments":" \t{ \"k\": 1 }\n"}`
 	const indexedItemFinal = `{"type":"function_call","id":"fc_1","arguments":" \t{ \"k\": 1 }\n"}`
@@ -150,6 +156,7 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 	tool := replayItem{Type: "function_call", CallID: "call_1", Name: "f", Arguments: "{}"}
 	finalTool := tool
 	finalTool.Arguments = " \t{ \"k\": 1 }\n"
+	secondTool := replayItem{Type: "function_call", CallID: "call_2", Name: "g", Arguments: `{ "k": 2 }`}
 	linkedTool := tool
 	linkedTool.Arguments = `{ "k": 1 }`
 	linkedAnswer := replayItem{Type: "message", Phase: "commentary", Content: []replayText{{"output_text", "m1bm1"}}}
@@ -199,6 +206,12 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 		{"indexed provisional call accepts arguments without repeated IDs", []string{at(2, toolItemAdded), at(2, indexedArguments), at(2, done(emptyToolByCall))}, nil, []replayItem{tool}},
 		{"indexed named call accepts final arguments without repeated IDs", []string{at(2, toolAdded), itemArguments, at(2, indexedFinalArguments)}, nil, []replayItem{finalTool}},
 		{"indexed final arguments precede their terminal call ID", []string{at(0, indexedFinalArguments)}, []string{emptyToolByCall}, []replayItem{finalTool}},
+		{"first call at a reused index keeps its final arguments", indexedCalls, []string{firstCall}, []replayItem{finalTool}},
+		{"second call at a reused index keeps its name and final arguments", indexedCalls, []string{secondCall}, []replayItem{secondTool}},
+		{"calls at a reused index follow their selected IDs in terminal order", indexedCalls, []string{secondCall, firstCall}, []replayItem{secondTool, finalTool}},
+		{"unidentified final at a reused index belongs to neither call", append(slices.Clone(indexedCalls), at(0, `{"type":"response.function_call_arguments.done","arguments":"{\"k\":3}"}`)),
+			[]string{firstCall, secondCall}, []replayItem{finalTool, secondTool}},
+		{"terminal cannot identify a call by its reused index alone", indexedCalls, []string{emptyToolByIndex}, nil},
 		{"indexed completed item precedes its terminal call ID", []string{at(0, done(indexedItemFinal))}, []string{emptyToolByCall}, []replayItem{finalTool}},
 		{"an explicit call ID matching its item ID is already settled", []string{sameIDAdded, conflictingCallDelta}, nil, []replayItem{{Type: "function_call", CallID: "fc_1", Name: "f", Arguments: "{}"}}},
 		{"indexed arguments without an eventual call ID stay undispatched", []string{at(2, indexedArguments)}, nil, nil},

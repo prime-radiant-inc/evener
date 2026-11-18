@@ -552,7 +552,9 @@ recover an encoded object, array or XML parameter. A string field such as
   its identified or uniquely matching text block. A signed detail on its own
   supplies only that detail. A Chat fallback receives its own signed and
   encrypted details on subsequent turns and cold resumes when the recorded
-  model and serving route still match. When a Chat reply contains reasoning and no
+  model and serving route still match. Moving a Chat row to a new endpoint
+  keeps signed and encrypted details at the original endpoint, including on
+  rows that replay only opaque reasoning. When a Chat reply contains reasoning and no
   visible answer or tool call, Evener retries within its empty-answer limit.
   It saves the reasoning that the answering row can replay for the next
   attempt and for a cold resume.
@@ -570,8 +572,8 @@ recover an encoded object, array or XML parameter. A string field such as
   file search withdraws earlier streamed tool calls. A message reference with
   omitted or null `content` inherits a refusal finalized at its content index,
   even when the stream omits the completed message. An explicit empty part
-  array clears that message's earlier text and refusal. An empty final
-  output can recover an issued call.
+  array clears that message's earlier text and refusal, including when the
+  final output is empty. An empty final output can recover an issued call.
   When the final response repeats only part of a streamed item, Evener keeps
   the matching call's argument bytes, completed message phase, indexed
   answer and reasoning text, and ciphertext from the stream. A reasoning
@@ -582,13 +584,18 @@ recover an encoded object, array or XML parameter. A string field such as
   index order. An empty terminal output keeps these parts at the item's
   stream position. An explicit empty `content` array clears the item's
   earlier plaintext. A matching encrypted item still carries its ciphertext
-  and selected summary.
+  and selected summary. When the terminal omits `summary`, the item inherits
+  its completed summary array or the finalized summary parts at consecutive
+  indexes starting at zero. An explicit `summary` array, including `[]`,
+  takes precedence.
   If a reply contains no visible answer or tool call, Evener still retries
   within its empty-answer limit. It saves eligible reasoning and native
   assistant message parts for the next attempt and a cold resume.
-  Evener uses the stream index and item ID to collect a function's arguments. The
-  provider must supply a `call_id` before Evener can dispatch the tool and
-  return its result under that ID. Reasoning shown only as deltas remains
+  Evener uses the stream index and item ID to collect a function's arguments.
+  When two issued calls share an index, each keeps its own arguments and
+  further events need an item or call ID to identify it. The provider must
+  supply a `call_id` before Evener can dispatch the tool and return its
+  result under that ID. Reasoning shown only as deltas remains
   visible in the transcript, including when the response ends with an
   answer. A streamed summary that differs from the item's settled text stays
   visible in the transcript. Only native reasoning parts supply replay text.

@@ -43,18 +43,34 @@ func (phase *responsesMessagePhase) observe(message map[string]any, order int, c
 }
 
 type responsesOutputItem struct {
-	kind, id    string
-	phase       responsesMessagePhase
-	index       int64
-	done        map[string]any
-	doneOrder   int
-	raw         json.RawMessage
-	text        map[int64]*responsesOutputText
-	tool        *responsesToolState
-	display     responsesFragments
-	summaries   map[int64]responsesFragments
-	displayOnly bool
-	hasNativeID bool // A native item or typed reasoning event supplied this ID.
+	kind, id           string
+	phase              responsesMessagePhase
+	index              int64
+	done               map[string]any
+	doneOrder          int
+	raw                json.RawMessage
+	text               map[int64]*responsesOutputText
+	tool               *responsesToolState
+	display            responsesFragments
+	summaries          map[int64]responsesFragments
+	finalSummaries     map[int64]responsesSummaryFinal
+	displayOnly        bool
+	hasNativeID        bool // A native item or typed reasoning event supplied this ID.
+	ambiguousCallIndex bool // Distinct issued calls claimed this index.
+}
+
+type responsesSummaryFinal struct {
+	order int
+	text  string
+}
+
+func (item *responsesOutputItem) keepSummaryFinal(index int64, final responsesSummaryFinal) {
+	if item.finalSummaries == nil {
+		item.finalSummaries = make(map[int64]responsesSummaryFinal)
+	}
+	if final.order > item.finalSummaries[index].order {
+		item.finalSummaries[index] = final
+	}
 }
 
 // Fragments from different provisional items can interleave before the provider
@@ -183,7 +199,7 @@ func (acc *responsesOutputAccumulator) reasoningDisplay(typ string, payload map[
 		return ""
 	}
 	id, _ := payload["item_id"].(string)
-	source := acc.outputItem(payload, "reasoning", id, nil, false)
+	source := acc.outputItem(responsesEventIndex(payload, "output_index"), "reasoning", id, nil, false)
 	if typ == "response.reasoning_part.added" && (source.id != "" || source.index >= 0) {
 		index := responsesEventIndex(payload, "content_index")
 		part, _ := payload["part"].(map[string]any)
@@ -215,23 +231,42 @@ func (acc *responsesOutputAccumulator) reasoningDisplay(typ string, payload map[
 	return delta
 }
 
-// The completed text belongs to one native content slot. Until an item
-// declares that slot, this event cannot add an item to the replay.
-func (acc *responsesOutputAccumulator) handleReasoningTextDone(payload map[string]any) {
+// A finalized summary or reasoning part belongs only to its indexed slot.
+// Neither can create a replayable reasoning item by itself.
+func (acc *responsesOutputAccumulator) handleReasoningPartDone(typ string, payload map[string]any) {
 	id, _ := payload["item_id"].(string)
-	index := responsesEventIndex(payload, "content_index")
-	text, ok := payload["text"].(string)
-	if !ok || index < 0 || (id == "" && responsesEventIndex(payload, "output_index") < 0) {
+	outputIndex := responsesEventIndex(payload, "output_index")
+	field, part := "content_index", payload
+	summary := typ != "response.reasoning_text.done"
+	if summary {
+		field = "summary_index"
+		if typ == "response.reasoning_summary_part.done" {
+			part, _ = payload["part"].(map[string]any)
+			if part["type"] != "summary_text" || payload["status"] == "incomplete" {
+				return
+			}
+		}
+	}
+	index := responsesEventIndex(payload, field)
+	text, ok := part["text"].(string)
+	if !ok || index < 0 || (id == "" && outputIndex < 0) {
 		return
 	}
-	item := acc.outputItem(payload, "reasoning", id, nil, false)
+	item := acc.outputItem(outputIndex, "reasoning", id, nil, false)
+	if summary && ((id != "" && item.id != id) || (outputIndex >= 0 && item.index != outputIndex)) {
+		return
+	}
 	if id != "" && item.id == id {
 		item.hasNativeID = true
 	}
 	acc.order++
-	part := item.textPart(index, false)
-	part.reasoningFinal = true
-	part.settle("reasoning_text", text, false, acc.order)
+	if summary {
+		item.keepSummaryFinal(index, responsesSummaryFinal{acc.order, text})
+		return
+	}
+	content := item.textPart(index, false)
+	content.reasoningFinal = true
+	content.settle("reasoning_text", text, false, acc.order)
 }
 
 func newResponsesOutputAccumulator() *responsesOutputAccumulator {
@@ -256,6 +291,10 @@ func (item *responsesOutputItem) accepts(kind, id string, index int64) bool {
 		(item.index < 0 || index < 0 || index == item.index)
 }
 
+func (item *responsesOutputItem) acceptsCallID(id string) bool {
+	return id == "" || item.tool == nil || item.tool.callID == "" || id == item.tool.callID
+}
+
 func (acc *responsesOutputAccumulator) namedItem(kind, id string) *responsesOutputItem {
 	item := acc.byID[id]
 	if !item.accepts(kind, id, -1) {
@@ -278,7 +317,7 @@ func (acc *responsesOutputAccumulator) join(item, other *responsesOutputItem) *r
 		return item
 	}
 	if a, b := item.tool, other.tool; a != nil && b != nil {
-		if a.callID != "" && b.callID != "" && a.callID != b.callID {
+		if !item.acceptsCallID(b.callID) {
 			return item
 		}
 		a.callID = cmp.Or(a.callID, b.callID)
@@ -294,8 +333,12 @@ func (acc *responsesOutputAccumulator) join(item, other *responsesOutputItem) *r
 	item.hasNativeID = item.hasNativeID || other.hasNativeID
 	item.phase.merge(other.phase)
 	item.index = max(item.index, other.index)
+	item.ambiguousCallIndex = item.ambiguousCallIndex || other.ambiguousCallIndex
 	item.displayOnly = item.displayOnly && other.displayOnly
 	item.display.merge(other.display)
+	for index, final := range other.finalSummaries {
+		item.keepSummaryFinal(index, final)
+	}
 	if item.summaries == nil {
 		item.summaries = other.summaries
 	} else {
@@ -338,8 +381,7 @@ func (acc *responsesOutputAccumulator) join(item, other *responsesOutputItem) *r
 
 // An item can be identified before its contents arrive. Retain the position
 // supplied by any of its events and keep first appearance for unindexed items.
-func (acc *responsesOutputAccumulator) outputItem(payload map[string]any, kind, id string, fallback *responsesOutputItem, native bool) *responsesOutputItem {
-	index := responsesEventIndex(payload, "output_index")
+func (acc *responsesOutputAccumulator) outputItem(index int64, kind, id string, fallback *responsesOutputItem, native bool) *responsesOutputItem {
 	named, indexed := acc.byID[id], acc.byIndex[index]
 	if !native {
 		if (named != nil && named.kind != kind) || (indexed != nil && indexed.kind != kind) {
@@ -406,15 +448,16 @@ func (acc *responsesOutputAccumulator) uniqueMessage(id string, index int64, pen
 
 func (acc *responsesOutputAccumulator) textOutput(payload map[string]any) *responsesOutputItem {
 	id, _ := payload["item_id"].(string)
+	index := responsesEventIndex(payload, "output_index")
 	var fallback *responsesOutputItem
-	if id == "" && responsesEventIndex(payload, "output_index") < 0 {
+	if id == "" && index < 0 {
 		var unambiguous bool
 		fallback, unambiguous = acc.uniqueMessage("", -1, true)
 		if !unambiguous {
 			return nil // Visible to the user; its owning message is ambiguous.
 		}
 	}
-	return acc.outputItem(payload, "message", id, fallback, true)
+	return acc.outputItem(index, "message", id, fallback, true)
 }
 
 func (acc *responsesOutputAccumulator) handleOutputTextDelta(payload map[string]any) string {
@@ -485,14 +528,23 @@ func (acc *responsesOutputAccumulator) callItem(callID string) *responsesOutputI
 }
 
 func (acc *responsesOutputAccumulator) toolOutput(payload map[string]any, callID, itemID, name, alias string) *responsesOutputItem {
-	if callID == "" && itemID == "" && alias == "" && responsesEventIndex(payload, "output_index") < 0 {
+	index := responsesEventIndex(payload, "output_index")
+	if owner := acc.byIndex[index]; owner != nil {
+		if !owner.acceptsCallID(callID) && (itemID == "" || owner.id != itemID) {
+			owner.ambiguousCallIndex = true
+		}
+		if owner.ambiguousCallIndex {
+			index = -1 // Only the explicit identities can select a call at this position.
+		}
+	}
+	if callID == "" && itemID == "" && alias == "" && index < 0 {
 		return nil
 	}
 	fallback := acc.callItem(callID)
 	if alias != "" {
 		fallback = cmp.Or(acc.byID[alias], acc.byCallID[alias])
 	}
-	item := acc.outputItem(payload, "function_call", itemID, fallback, true)
+	item := acc.outputItem(index, "function_call", itemID, fallback, true)
 	if item.tool == nil {
 		item.tool = new(responsesToolState)
 	}
@@ -514,14 +566,15 @@ func (acc *responsesOutputAccumulator) toolOutput(payload map[string]any, callID
 func (acc *responsesOutputAccumulator) HandleOutputItemAdded(payload, item map[string]any) {
 	itemID, _ := item["id"].(string)
 	if kind, _ := item["type"].(string); kind != "function_call" {
+		index := responsesEventIndex(payload, "output_index")
 		var fallback *responsesOutputItem
 		if kind == "message" {
-			pending, _ := acc.uniqueMessage(itemID, responsesEventIndex(payload, "output_index"), true)
+			pending, _ := acc.uniqueMessage(itemID, index, true)
 			if pending != nil && pending.id == "" && pending.index < 0 && len(pending.text) != 0 {
 				fallback = pending
 			}
 		}
-		output := acc.outputItem(payload, kind, itemID, fallback, true)
+		output := acc.outputItem(index, kind, itemID, fallback, true)
 		if kind == "message" {
 			acc.order++
 			output.phase.observe(item, acc.order, false)
@@ -632,11 +685,12 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 	it, _ := item["type"].(string)
 	itemID, _ := item["id"].(string)
 	if it != "function_call" {
+		index := responsesEventIndex(payload, "output_index")
 		var fallback *responsesOutputItem
 		if it == "message" && acc.byID[itemID] == nil {
-			fallback, _ = acc.uniqueMessage(itemID, responsesEventIndex(payload, "output_index"), true)
+			fallback, _ = acc.uniqueMessage(itemID, index, true)
 		}
-		output := acc.outputItem(payload, it, itemID, fallback, true)
+		output := acc.outputItem(index, it, itemID, fallback, true)
 		settled := item
 		if it == "message" {
 			output.settleMessage(item, acc.order)
@@ -749,6 +803,7 @@ var responsesAPIEventTypes = map[string]struct{}{
 	"response.output_text.delta":             {},
 	"response.output_text.done":              {},
 	"response.reasoning_summary_part.added":  {},
+	"response.reasoning_summary_part.done":   {},
 	"response.reasoning_summary_text.delta":  {},
 	"response.reasoning_summary_text.done":   {},
 	"response.reasoning_part.added":          {},
@@ -962,8 +1017,8 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 					return &transport.FatalStreamError{Err: llm.RewriteErrorProvider(inband, res.Instance)}
 				}
 				s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload})
-			case "response.reasoning_text.done":
-				acc.handleReasoningTextDone(payload)
+			case "response.reasoning_text.done", "response.reasoning_summary_text.done", "response.reasoning_summary_part.done":
+				acc.handleReasoningPartDone(typ, payload)
 				fallthrough
 			default:
 				// A failure frame can miss the switch above two ways: a gateway
@@ -1009,7 +1064,7 @@ func responsesContentBearingPassthrough(typ string) bool {
 		"response.output_text.done",
 		"response.output_audio.delta", "response.output_audio.done",
 		"response.output_audio_transcript.delta", "response.output_audio_transcript.done",
-		"response.reasoning_summary_text.done", "response.reasoning_text.done":
+		"response.reasoning_summary_text.done", "response.reasoning_summary_part.done", "response.reasoning_text.done":
 		return true
 	default:
 		return false

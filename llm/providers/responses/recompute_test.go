@@ -182,11 +182,47 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 			})
 		}
 	})
+	t.Run("empty terminal uses settled message parts", func(t *testing.T) {
+		const draft = `{"type":"response.output_text.delta","item_id":"m","output_index":0,"content_index":0,"delta":"draft"}`
+		const clear = `{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"m","content":[]}}`
+		const reference = `{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"m","content":null}}`
+		const other = `{"type":"response.output_text.delta","item_id":"other","output_index":1,"content_index":0,"delta":"other"}`
+		for _, tc := range []struct {
+			name   string
+			events []string
+			text   string
+		}{
+			{"completed empty array clears its earlier draft", []string{draft, clear}, ""},
+			{"repeated item reference preserves its clear", []string{draft, clear, reference}, ""},
+			{"cleared message leaves another draft selected", []string{draft, other, clear}, "other"},
+			{"item reference keeps its draft", []string{draft, reference}, "draft"},
+			{"pending draft supplies a sparse terminal", []string{draft}, "draft"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				events := append(tc.events, `{"type":"response.completed","response":{"output":[]}}`)
+				observed, live := responsesEvents(t, events...)
+				if !hasEventType(observed, llm.StreamEventTextDelta) {
+					t.Fatal("live accumulator never received the draft")
+				}
+				var want []replayItem
+				if tc.text != "" {
+					want = []replayItem{{Type: "message", Content: []replayText{{"output_text", tc.text}}}}
+				}
+				saved := recorded(t, "data: "+strings.Join(events, "\n\ndata: ")+"\n\n")
+				for _, result := range []llm.Response{*live, saved} {
+					if got := replayInput(t, result.Message, true); !reflect.DeepEqual(got, want) || result.Text() != tc.text {
+						t.Errorf("settled text = %q, native input = %+v, want %q and %+v", result.Text(), got, tc.text, want)
+					}
+				}
+			})
+		}
+	})
 	t.Run("settled reasoning retains distinct streamed summaries", func(t *testing.T) {
 		const raw = " λ\t"
 		const distinct = " λ\t "
 		for _, tc := range []struct {
 			name, display, secondSummary, wantDisplay string
+			finalSummary                              string
 			sparse, encrypted                         bool
 		}{
 			{name: "distinct summary", display: distinct, wantDisplay: distinct},
@@ -195,14 +231,18 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 			{name: "distinct summary and sparse terminal", display: distinct, wantDisplay: distinct, sparse: true},
 			{name: "only a matching summary part is suppressed", display: distinct, secondSummary: "other", wantDisplay: distinct},
 			{name: "distinct summary parts keep stream order", display: distinct, secondSummary: "second", wantDisplay: distinct + "\n\nsecond"},
+			{name: "finalized summary and display retain their own text", display: distinct, finalSummary: " confirmed\t", wantDisplay: distinct},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				item := map[string]any{"type": "reasoning", "id": "rs", "content": []map[string]string{{"type": "reasoning_text", "text": "other"}, {"type": "reasoning_text", "text": raw}}}
 				if tc.encrypted {
 					item["encrypted_content"] = "cipher"
 				}
-				complete := jsonOf(t, map[string]any{"output": []any{item}})
-				native := recorded(t, complete)
+				terminal := jsonOf(t, map[string]any{"output": []any{item}})
+				if tc.finalSummary != "" {
+					item["summary"] = []map[string]string{{"type": "summary_text", "text": tc.finalSummary}}
+				}
+				native := recorded(t, jsonOf(t, map[string]any{"output": []any{item}}))
 				wantInput := nextInput(t, native)
 				events := []string{
 					`{"type":"response.reasoning_summary_part.added","item_id":"rs","output_index":0,"summary_index":0,"part":{"type":"summary_text","text":""}}`,
@@ -215,7 +255,9 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 						`{"type":"response.reasoning_summary_part.added","item_id":"rs","output_index":0,"summary_index":1,"part":{"type":"summary_text","text":""}}`,
 						`{"type":"response.reasoning_summary_text.delta","item_id":"rs","output_index":0,"summary_index":1,"delta":`+jsonOf(t, tc.secondSummary)+`}`)
 				}
-				terminal := complete
+				if tc.finalSummary != "" {
+					events = append(events, `{"type":"response.reasoning_summary_text.done","item_id":"rs","output_index":0,"summary_index":0,"text":`+jsonOf(t, tc.finalSummary)+`}`)
+				}
 				if tc.sparse {
 					events = append(events, `{"type":"response.output_item.done","output_index":0,"item":`+jsonOf(t, item)+`}`)
 					terminal = `{"output":[]}`
@@ -347,6 +389,23 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 	const nativeItem = `{"type":"reasoning","id":"r",` + summary + nativeParts + `}`
 	const cleared = `{"type":"reasoning","id":"r","content":[],` + summary + `}`
 	const encrypted = `{"type":"reasoning","id":"r","encrypted_content":"cipher",` + summary + `}`
+	const summaryOmitted = `{"type":"reasoning","id":"r"` + nativeParts + `}`
+	const streamSummary = `"summary":[{"type":"summary_text","text":" §λ\t"},{"type":"summary_text","text":""},{"type":"summary_text","text":"\r\n<&>last "}]`
+	const summaryCompleted = `{"type":"reasoning","id":"r",` + streamSummary + nativeParts + `}`
+	const firstSummary = `{"type":"response.reasoning_summary_text.done","item_id":"r","summary_index":0,"text":" §λ\t"}`
+	const lastSummary = `{"type":"response.reasoning_summary_text.done","output_index":1,"summary_index":2,"text":"\r\n<&>last "}`
+	finalSummaries := []string{
+		"{" + display + "}",
+		`{"type":"response.reasoning_summary_text.done","output_index":1,"summary_index":0,"text":"superseded"}`,
+		`{"type":"response.reasoning_summary_part.added","output_index":1,"summary_index":2,"part":{"type":"summary_text","text":""}}`,
+		lastSummary, firstSummary,
+		`{"type":"response.reasoning_summary_part.done","item_id":"r","summary_index":1,"part":{"type":"summary_text","text":""}}`,
+		`{"type":"response.reasoning_summary_text.done","item_id":"other","summary_index":0,"text":"foreign"}`,
+		declaredItem,
+	}
+	summaryEvents := func(item string) []string {
+		return append(slices.Clone(finalSummaries), `{"type":"response.output_item.done","output_index":1,"item":`+item+`}`)
+	}
 	partAdded := func(identity string, index int, kind string) string {
 		return fmt.Sprintf(`{"type":"response.reasoning_part.added",%s,"content_index":%d,"part":{"type":%s,"text":""}}`, identity, index, jsonOf(t, kind))
 	}
@@ -449,6 +508,23 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 		{"reasoning final belongs to a different item than the slot", []string{
 			"{" + display + "}", partAdded(`"item_id":"r","output_index":1`, 0, "reasoning_text"), finalText(`"item_id":"other","output_index":1`, 0, "unowned"),
 		}, answer + "," + absentParts, answer},
+		{"finalized summaries recover the selected item's exact slots", summaryEvents(summaryOmitted), answer + "," + placeholder, answer + "," + summaryCompleted},
+		{"a finalized summary identifies a selected native item", []string{"{" + display + "}",
+			`{"type":"response.reasoning_summary_text.done","item_id":"r","output_index":1,"summary_index":0,"text":" §λ\t"}`,
+		}, answer + `,{"type":"reasoning"` + nativeParts + `}`, answer + `,{"type":"reasoning","id":"r","summary":[{"type":"summary_text","text":" §λ\t"}]` + nativeParts + `}`},
+		{"finalized summaries accompany the selected ciphertext", summaryEvents(`{"type":"reasoning","id":"r","encrypted_content":"cipher"}`),
+			answer + `,{"type":"reasoning","id":"r"}`, answer + `,{"type":"reasoning","id":"r","encrypted_content":"cipher",` + streamSummary + `}`},
+		{"empty output recovers summaries with their completed item", append(summaryEvents(summaryOmitted), answerDelta), "", answer + "," + summaryCompleted},
+		{"a sparse selection keeps only its reasoning item's summaries", append(summaryEvents(summaryOmitted),
+			`{"type":"response.output_item.done","output_index":2,"item":{"type":"reasoning","id":"other","encrypted_content":"withdrawn"}}`), placeholder, summaryCompleted},
+		{"terminal summary replaces all finalized slots", summaryEvents(summaryOmitted), answer + "," + nativeItem, answer + "," + nativeItem},
+		{"terminal empty summary clears item and slot completions", summaryEvents(nativeItem), answer + `,{"type":"reasoning","id":"r","summary":[]}`, answer + "," + summaryOmitted},
+		{"item completion's summary precedes completed slots", summaryEvents(nativeItem), answer + "," + placeholder, answer + "," + nativeItem},
+		{"summary slots cannot shift past an unfinished index", []string{"{" + display + "}", lastSummary, firstSummary, declaredItem,
+			`{"type":"response.reasoning_summary_part.done","item_id":"r","summary_index":1,"status":"incomplete","part":{"type":"summary_text","text":"draft"}}`,
+		}, answer + "," + summaryOmitted,
+			answer + `,{"type":"reasoning","id":"r","summary":[{"type":"summary_text","text":" §λ\t"}]` + nativeParts + `}`},
+		{"summary events alone cannot create a native item", append(slices.Clone(finalSummaries), answerDelta), "", answer},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			want := nextInput(t, recorded(t, `{"output":[`+tc.complete+`]}`))
