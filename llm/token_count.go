@@ -3,6 +3,8 @@ package llm
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"image"
@@ -74,7 +76,13 @@ func EstimateInputTokens(req Request) InputTokenCount {
 // and reasoning capabilities — rather than by name. Callers that have resolved
 // the request's target should prefer this.
 func EstimateInputTokensForResolved(res registry.Resolved, req Request) InputTokenCount {
-	return estimateInputTokens(targetFromResolved(res, req.Provider, req.Model), req)
+	target := targetFromResolved(res, req.Provider, req.Model)
+	if opts, _ := req.ProviderOptions[registry.ProtocolOpenAIChat].(map[string]any); opts != nil {
+		if _, useDetails := opts["reasoning"]; useDetails {
+			target.chatScalarReplay = false
+		}
+	}
+	return estimateInputTokens(target, req)
 }
 
 func estimateInputTokens(t targetInfo, req Request) InputTokenCount {
@@ -471,18 +479,23 @@ func chatReasoningChars(target targetInfo, p ContentPart) int {
 	}
 	t := p.Thinking
 	chars := 0
-	sendText := target.unsignedThinking
 	if !target.reasoningOff {
 		if details := OpenAICompatReasoningDetails(t.EncryptedContent); len(details) > 0 {
 			chars = len(t.EncryptedContent)
 			if signed := OpenAICompatSignedReasoningItem(details); signed != nil && !target.thinkingAsText {
-				text, _ := signed["text"].(string)
-				sendText = text == ""
+				if text, _ := signed["text"].(string); text == "" {
+					chars += len(t.Text)
+				}
+				return chars
 			}
 		}
 	}
-	if sendText {
-		chars += len(t.Text)
+	if target.unsignedThinking {
+		text := t.Text
+		if target.chatScalarReplay {
+			text, _ = t.ChatReplayScalar()
+		}
+		chars += len(text)
 	}
 	return chars
 }
@@ -511,7 +524,8 @@ type targetInfo struct {
 	// (chatcompletions/messages.go).
 	reasoningOff bool
 	// thinkingAsText emits the display text again in ordinary assistant content.
-	thinkingAsText bool
+	thinkingAsText   bool
+	chatScalarReplay bool
 	// dropsToolResultImages marks a resolved row whose adapter leaves a
 	// tool-result image off the wire entirely (dropsToolResultImages).
 	dropsToolResultImages bool
@@ -655,6 +669,7 @@ func targetFromResolved(res registry.Resolved, provider, model string) targetInf
 		imageDetail:           registry.StringValue(res.Caps.ImageDetail),
 		reasoningOff:          res.Caps.ReasoningDisabled(),
 		thinkingAsText:        registry.BoolValue(res.Caps.ThinkingAsText),
+		chatScalarReplay:      replaysChatScalar(res),
 		dropsToolResultImages: dropsToolResultImages(res),
 		seenToolResultDocuments: !res.Synthesized && res.Caps.AcceptsModality("pdf") &&
 			deliversToolResultDocuments(res.Protocol),
@@ -1013,35 +1028,49 @@ func localInputEstimate(req Request, callerProvider string, t dispatchTarget) In
 // caller that keeps a measurement keyed to a target does not have to re-list them
 // and drift when the rules grow.
 func EstimatorTargetsEquivalent(a, b registry.Resolved) bool {
-	if a.Protocol != b.Protocol || a.Surface != b.Surface || a.Model.Family != b.Model.Family {
-		return false
+	return estimatorTargetFor(a) == estimatorTargetFor(b)
+}
+
+// The same fields identify the rules for live measurements and saved ones.
+type estimatorTarget struct {
+	Model, WireModel, Protocol, Surface, Family, ImageDetail, ReplayRoute string
+	ThinkingAsText, RawReplay, ChatScalar, ReasoningDisabled              bool
+	MultimodalToolResults, SeesImages, SeesDocuments                      bool
+}
+
+func estimatorTargetFor(r registry.Resolved) estimatorTarget {
+	t := estimatorTarget{
+		Model: r.ModelID, WireModel: r.WireID, Protocol: r.Protocol,
+		Surface: r.Surface, Family: r.Model.Family,
+		ImageDetail:           registry.StringValue(r.Caps.ImageDetail),
+		ThinkingAsText:        registry.BoolValue(r.Caps.ThinkingAsText),
+		RawReplay:             r.ReplaysRawReasoning(),
+		ChatScalar:            replaysChatScalar(r),
+		ReasoningDisabled:     r.Caps.ReasoningDisabled(),
+		MultimodalToolResults: registry.BoolValue(r.Caps.MultimodalToolResults),
+		SeesImages:            RowSeesToolResultMedia(r, "image/png"),
+		SeesDocuments:         RowSeesToolResultMedia(r, "application/pdf"),
 	}
-	if a.ModelID != b.ModelID {
-		return false
+	if t.RawReplay {
+		t.ReplayRoute = r.ReasoningReplayRoute()
 	}
-	if registry.BoolValue(a.Caps.ThinkingAsText) != registry.BoolValue(b.Caps.ThinkingAsText) {
-		return false
-	}
-	// A turn can identify its issuer by the reported wire model.
-	replay := a.ReplaysRawReasoning()
-	if replay != b.ReplaysRawReasoning() || (replay && a.WireID != b.WireID) {
-		return false
-	}
-	if registry.StringValue(a.Caps.ImageDetail) != registry.StringValue(b.Caps.ImageDetail) {
-		return false
-	}
-	if registry.BoolValue(a.Caps.MultimodalToolResults) != registry.BoolValue(b.Caps.MultimodalToolResults) {
-		return false
-	}
-	// Effective tool-result visibility decides how much media a request carries
-	// and what the estimate prices, so a metadata refresh that changes it must
-	// invalidate a recorded measurement (#4217).
-	for _, mediaType := range []string{"image/png", "application/pdf"} {
-		if RowSeesToolResultMedia(a, mediaType) != RowSeesToolResultMedia(b, mediaType) {
-			return false
-		}
-	}
-	return a.Caps.ReasoningDisabled() == b.Caps.ReasoningDisabled()
+	return t
+}
+
+func replaysChatScalar(r registry.Resolved) bool {
+	return r.Protocol == registry.ProtocolOpenAIChat && r.ReplaysRawReasoning() &&
+		registry.StringValue(r.Caps.ReasoningField) != "reasoning_details"
+}
+
+// InputTokenMeasurementKey identifies the issuing instance and its estimator
+// rules across processes without writing connection details into a snapshot.
+func InputTokenMeasurementKey(r registry.Resolved) string {
+	data, _ := json.Marshal(struct {
+		Instance string
+		Target   estimatorTarget
+	}{r.Instance, estimatorTargetFor(r)})
+	digest := sha256.Sum256(data)
+	return hex.EncodeToString(digest[:])
 }
 
 // oSeriesModelName matches the OpenAI o-series ids the name rule may claim: "o"

@@ -1436,9 +1436,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		}
 	}()
 
-	// Seed context manager with the meta's token count.
-	if meta.LastInputTokens > 0 && s.contextMgr != nil {
-		s.contextMgr.RecordInputTokens(meta.LastInputTokens, len(s.history))
+	if s.contextMgr != nil && meta.LastInputHistoryLength >= 0 && meta.LastInputHistoryLength <= len(s.history) {
+		s.contextMgr.RestoreInputMeasurement(meta.LastInputTokens, meta.LastInputHistoryLength, meta.LastInputTarget)
 	}
 
 	// Seed persisted cumulative token totals before the first autosave can
@@ -1618,7 +1617,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		Model:             profile.Model(),
 		Restored:          true,
 		Turns:             s.modelResponses,
-		LastInputTokens:   meta.LastInputTokens,
+		LastInputTokens:   s.contextMgr.LastInputTokens(),
 		ContextWindowSize: profile.ContextWindowSize(),
 		State:             s.WireState(),
 		// TranscriptEntries is the exact count OpenWriterForSession validated

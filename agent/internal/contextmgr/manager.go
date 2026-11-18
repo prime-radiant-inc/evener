@@ -102,6 +102,7 @@ type Manager struct {
 	// Token measurement from the last API response. When available, used instead
 	// of char/4 for the bulk of history. Reset to 0 after compaction.
 	lastInputTokens     int // exact input token count from last API response
+	inputMeasurementKey string
 	historyLenAtMeasure int // number of turns when lastInputTokens was recorded
 
 	// estimate is the memo behind EstimateStatusForRevision. It is only ever a

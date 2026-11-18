@@ -16,8 +16,15 @@ import (
 func (cm *Manager) RecordInputTokens(tokens int, historyLen int) {
 	cm.mu.Lock()
 	defer cm.mu.Unlock()
+	cm.recordInputTokensLocked(tokens, historyLen)
+}
+
+func (cm *Manager) recordInputTokensLocked(tokens, historyLen int) {
 	cm.lastInputTokens = tokens
 	cm.historyLenAtMeasure = historyLen
+	if cm.profile != nil {
+		cm.inputMeasurementKey = llm.InputTokenMeasurementKey(cm.profile.Resolved())
+	}
 }
 
 // RecordInputTokensFor records an API measurement only when the manager still
@@ -31,9 +38,29 @@ func (cm *Manager) RecordInputTokensFor(profile *provider.Profile, tokens int, h
 	if !sameProfileTarget(cm.profile, profile) {
 		return false
 	}
-	cm.lastInputTokens = tokens
-	cm.historyLenAtMeasure = historyLen
+	cm.recordInputTokensLocked(tokens, historyLen)
 	return true
+}
+
+// InputMeasurement snapshots the count together with its owner and the prefix
+// it covers. A fallback can own the measurement for a session on another model.
+func (cm *Manager) InputMeasurement() (tokens, historyLen int, key string) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	if cm.lastInputTokens <= 0 {
+		return 0, 0, ""
+	}
+	return cm.lastInputTokens, cm.historyLenAtMeasure, cm.inputMeasurementKey
+}
+
+// RestoreInputMeasurement leaves pressure on its local history estimate
+// when the saved count belongs to a different or unknown target.
+func (cm *Manager) RestoreInputMeasurement(tokens, historyLen int, key string) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	if tokens > 0 && key != "" && cm.profile != nil && key == llm.InputTokenMeasurementKey(cm.profile.Resolved()) {
+		cm.lastInputTokens, cm.historyLenAtMeasure, cm.inputMeasurementKey = tokens, historyLen, key
+	}
 }
 
 // SetProfile replaces the provider profile so that ContextWindowSize() and
@@ -63,8 +90,11 @@ func (cm *Manager) SetProfile(profile *provider.Profile) {
 }
 
 func sameProfileTarget(a, b *provider.Profile) bool {
+	if a == b {
+		return true
+	}
 	if a == nil || b == nil {
-		return a == b
+		return false
 	}
 	if a.ID() != b.ID() || a.Model() != b.Model() || a.Protocol() != b.Protocol() {
 		return false
@@ -374,6 +404,10 @@ func (cm *Manager) estimateTokensFor(prof *provider.Profile, turns []schema.Turn
 func estimateTokenPartsFor(res registry.Resolved, turns []schema.Turn) llm.TokenParts {
 	dropPlainThinking := !llm.ReplaysAssistantThinking(res)
 	rawReplay := res.ReplaysRawReasoning()
+	var route string
+	if rawReplay {
+		route = res.ReasoningReplayRoute()
+	}
 	estimator := llm.TokenPartEstimatorFor(res)
 	withoutPlain := estimator.WithoutPlainThinking()
 	var parts llm.TokenParts
@@ -382,7 +416,7 @@ func estimateTokenPartsFor(res registry.Resolved, turns []schema.Turn) llm.Token
 			continue
 		}
 		pricer := estimator
-		if dropPlainThinking || (rawReplay && t.Message.Role == llm.RoleAssistant && !t.MatchesReasoningTextTarget(&res)) {
+		if dropPlainThinking || (rawReplay && t.Message.Role == llm.RoleAssistant && !t.MatchesReasoningTextTarget(&res, route)) {
 			pricer = withoutPlain
 		}
 		parts = parts.Add(pricer.Parts(t.Message))

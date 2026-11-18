@@ -508,6 +508,7 @@ type Turn struct {
 	ResponseModel                   string `json:"response_model,omitempty"`
 	ResponseProtocol                string `json:"response_protocol,omitempty"`
 	ResponseProvider                string `json:"response_provider,omitempty"`
+	ResponseReasoningRoute          string `json:"response_reasoning_route,omitempty"`
 	ResponseRequestFingerprint      string `json:"response_request_fingerprint,omitempty"`
 	ResponseRequestModel            string `json:"response_request_model,omitempty"`
 	ResponseStorageScopeFingerprint string `json:"response_storage_scope_fingerprint,omitempty"`
@@ -547,9 +548,9 @@ type Turn struct {
 // ProjectReasoningText keeps raw reasoning for the chat or Responses model
 // that issued it. Opaque continuation items keep their wire-specific rules.
 // A request projection never edits the stored message.
-func (t *Turn) ProjectReasoningText(res *registry.Resolved) llm.Message {
+func (t *Turn) ProjectReasoningText(res *registry.Resolved, route string) llm.Message {
 	msg := t.Message
-	if res == nil || msg.Role != llm.RoleAssistant || !res.ReplaysRawReasoning() || t.MatchesReasoningTextTarget(res) {
+	if res == nil || msg.Role != llm.RoleAssistant || !res.ReplaysRawReasoning() || t.MatchesReasoningTextTarget(res, route) {
 		return msg
 	}
 	if res.Protocol == registry.ProtocolOpenAIChat {
@@ -567,10 +568,11 @@ func (t *Turn) ProjectReasoningText(res *registry.Resolved) llm.Message {
 }
 
 // MatchesReasoningTextTarget compares the recorded issuer with a resolved
-// target, including any protocol or wire-model override on that model's row.
-func (t *Turn) MatchesReasoningTextTarget(res *registry.Resolved) bool {
+// target, including the request route and wire-model overrides on the row.
+func (t *Turn) MatchesReasoningTextTarget(res *registry.Resolved, route string) bool {
 	if res.Instance == "" || t.ResponseProvider != res.Instance ||
 		(t.ResponseProtocol != "" && t.ResponseProtocol != res.Protocol) ||
+		(t.ResponseReasoningRoute != "" && t.ResponseReasoningRoute != route) ||
 		(t.ResponseWireModel != "" && t.ResponseWireModel != res.WireID) {
 		return false
 	}

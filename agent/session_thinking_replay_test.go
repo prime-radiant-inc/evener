@@ -200,22 +200,24 @@ func TestFallbackReplaysOnlyItsIssuersReasoning(t *testing.T) {
 		fixedStep(withReasoningMarker(agenttest.FinalResponse("done"), fallback.Protocol(), "fallback-81")),
 		fixedStep(agenttest.FinalResponse("done")),
 		fixedStep(agenttest.FinalResponse("done")),
+		fixedStep(agenttest.FinalResponse("done")),
 	}}
 	// The profile used to assemble each request resolves on the same registry
 	// as the client dispatching it. A restart can load different wire IDs.
-	clientFor := func(wireSuffix string) *llm.Client {
+	clientFor := func(wireSuffix, deployment string) *llm.Client {
 		instances := testRegistryInstances()
 		for _, profile := range []*provider.Profile{primary, fallback} {
 			inst := instances[profile.ID()]
 			inst.Surface = registry.SurfaceOpenAI
 			inst.Models = map[string]registry.Model{"reasoner": {
 				WireID: profile.ID() + wireSuffix, Protocol: profile.Protocol(), Caps: profile.Resolved().Caps,
+				Transport: &registry.Transport{BaseURL: "https://" + profile.ID() + ".example.test/v1", Endpoint: "/generate?deployment=" + deployment + "&token=token-75c", StreamEndpoint: "/stream?deployment=" + deployment},
 			}}
 			instances[profile.ID()] = inst
 		}
 		return registryClient(t, instances, primaryAdapter, fallbackAdapter)
 	}
-	client := clientFor("-wire-1")
+	client := clientFor("-wire-1", "deployment-1")
 	resolve := func(ref string) (*provider.Profile, error) { return provider.Resolve(client.Registry(), ref) }
 	stateDir := t.TempDir()
 	s := newSession(t, withProfile(resolveClientProfile(t, client, "work/reasoner")), withClient(client), withStateDir(stateDir),
@@ -242,24 +244,31 @@ func TestFallbackReplaysOnlyItsIssuersReasoning(t *testing.T) {
 
 	meta, env := s.Meta(), s.currentEnv()
 	s.Close()
-	client = clientFor("-wire-2")
-	resumed, err := RestoreSessionFromMetaWithConfig(client, resolveClientProfile(t, client, "work/reasoner"), env, meta, RestoreSessionConfig{
-		StateDir: stateDir, ResolveProfile: resolve, ModelFallbacks: []string{"gw/reasoner"},
-		testOnly: sharingHostProbe(testConfig{skipGitSnapshot: true}),
-	})
-	if err != nil {
-		t.Fatal(err)
+	for i, redirect := range []struct{ wire, deployment string }{{"-wire-2", "deployment-1"}, {"-wire-1", "deployment-2"}} {
+		client = clientFor(redirect.wire, redirect.deployment)
+		resumed, err := RestoreSessionFromMetaWithConfig(client, resolveClientProfile(t, client, "work/reasoner"), env, meta, RestoreSessionConfig{
+			StateDir: stateDir, ResolveProfile: resolve, ModelFallbacks: []string{"gw/reasoner"},
+			testOnly: sharingHostProbe(testConfig{skipGitSnapshot: true}),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := resumed.ProcessInput(ctx, "after-redirect", nil); err != nil {
+			t.Fatal(err)
+		}
+		meta = resumed.Meta()
+		resumed.Close()
+		primaryRequests, fallbackRequests = primaryAdapter.Requests(), fallbackAdapter.Requests()
+		if len(primaryRequests) != 5+i || len(fallbackRequests) != 4+i {
+			t.Fatalf("redirect %+v made %d primary and %d fallback requests", redirect, len(primaryRequests), len(fallbackRequests))
+		}
+		for _, req := range []llm.Request{primaryRequests[4+i], fallbackRequests[3+i]} {
+			assertReasoningMarkers(t, req)
+			if !requestCarriesText(req, "follow-up") {
+				t.Errorf("%s lost conversation history across the redirect", req.Provider)
+			}
+		}
 	}
-	t.Cleanup(resumed.Close)
-	if _, err := resumed.ProcessInput(ctx, "after-redirect", nil); err != nil {
-		t.Fatal(err)
-	}
-	primaryRequests, fallbackRequests = primaryAdapter.Requests(), fallbackAdapter.Requests()
-	if len(primaryRequests) != 5 || len(fallbackRequests) != 4 {
-		t.Fatalf("resume made %d primary and %d fallback requests in total, want 5 and 4", len(primaryRequests), len(fallbackRequests))
-	}
-	assertReasoningMarkers(t, primaryRequests[4])
-	assertReasoningMarkers(t, fallbackRequests[3])
 }
 
 func TestSessionScopesReasoningTextToTheIssuingModel(t *testing.T) {

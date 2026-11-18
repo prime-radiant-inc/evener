@@ -263,6 +263,37 @@ func sameRequestPaths(a, b Transport) bool {
 		a.CountTokensEndpoint == b.CountTokensEndpoint
 }
 
+// RequestURL resolves an endpoint template exactly as a model request addresses it.
+func (r *Resolved) RequestURL(template string) string {
+	path := strings.ReplaceAll(template, "{model}", url.PathEscape(r.WireID))
+	return strings.TrimRight(r.Transport.BaseURL, "/") + path
+}
+
+// ReasoningReplayRoute identifies the destinations that may receive reasoning
+// history. A gateway can route by query string, so only the digest is durable.
+// Listing URLs, authentication headers, and other request settings do not route
+// history. A profile without a transport has no route to identify.
+func (r Resolved) ReasoningReplayRoute() string {
+	if r.Transport.BaseURL == "" {
+		return ""
+	}
+	sum := sha256.New()
+	for _, template := range [...]string{r.Transport.Endpoint, r.Transport.StreamEndpoint, r.Transport.CountTokensEndpoint} {
+		var destination string
+		if template != EndpointUnsupported {
+			destination, _, _ = strings.Cut(r.RequestURL(template), "#")
+			if strings.Contains(destination, "@") {
+				if u, err := url.Parse(destination); err == nil && u.User != nil {
+					u.User = nil
+					destination = u.String()
+				}
+			}
+		}
+		_, _ = fmt.Fprintf(sum, "%d:%s", len(destination), destination)
+	}
+	return hex.EncodeToString(sum.Sum(nil))
+}
+
 // canonicalRow replays the provider's curated layers alone into the row the
 // canonical resolution resolves: the merged curated exact row, plus every
 // curated glob row applied in the order resolveOn applies them (top-level

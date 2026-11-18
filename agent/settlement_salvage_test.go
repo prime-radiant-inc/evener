@@ -573,6 +573,9 @@ func TestSettlement_ContextLengthTerminalKeepsPrimarySalvage(t *testing.T) {
 	if got := hist[len(hist)-3].ResponseWireModel; got != "primary" {
 		t.Errorf("salvaged turn wire model = %q, want the primary that streamed the draft", got)
 	}
+	if got, want := hist[len(hist)-3].ResponseReasoningRoute, NewOpenAIProfile("primary").Resolved().ReasoningReplayRoute(); got == "" || got != want {
+		t.Errorf("salvaged turn route = %q, want the primary that streamed the draft", got)
+	}
 }
 
 // TestSettlement_CapRoundPersistsDraftAndCapAdvice covers the incident's cap

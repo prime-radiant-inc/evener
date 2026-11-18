@@ -38,17 +38,18 @@ func delegateContextEntries(parent []transcript.Entry) []transcript.Entry {
 		// parent's delivery receipts, client mutation IDs, usage, or server
 		// continuation handles. Those belong to its execution, not the child.
 		entry.Turn = schema.Turn{
-			Kind:                 t.Kind,
-			Authorship:           inheritedTranscriptAuthorship(t.Authorship),
-			Message:              t.Message,
-			Timestamp:            t.Timestamp,
-			SteeringSource:       t.SteeringSource,
-			SteeringKind:         t.SteeringKind,
-			ResponseProvider:     t.ResponseProvider,
-			ResponseModel:        t.ResponseModel,
-			ResponseRequestModel: t.ResponseRequestModel,
-			ResponseWireModel:    t.ResponseWireModel,
-			ResponseProtocol:     t.ResponseProtocol,
+			Kind:                   t.Kind,
+			Authorship:             inheritedTranscriptAuthorship(t.Authorship),
+			Message:                t.Message,
+			Timestamp:              t.Timestamp,
+			SteeringSource:         t.SteeringSource,
+			SteeringKind:           t.SteeringKind,
+			ResponseProvider:       t.ResponseProvider,
+			ResponseModel:          t.ResponseModel,
+			ResponseRequestModel:   t.ResponseRequestModel,
+			ResponseWireModel:      t.ResponseWireModel,
+			ResponseReasoningRoute: t.ResponseReasoningRoute,
+			ResponseProtocol:       t.ResponseProtocol,
 		}
 		out = append(out, entry)
 	}

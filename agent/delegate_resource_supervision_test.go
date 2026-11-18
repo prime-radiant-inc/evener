@@ -2439,7 +2439,7 @@ func TestDelegateResourceSupervision_FinalRoundFailedSalvageAddsResumeHint(t *te
 	t.Parallel()
 	child := newTestSession(t)
 	child.totalRounds = 1
-	if err := child.persistSalvagedTurn("partial final draft", "gpt-5.2", "openai", "gpt-5.2"); err != nil {
+	if err := child.persistSalvagedTurn("partial final draft", "gpt-5.2", "openai", "gpt-5.2", ""); err != nil {
 		t.Fatalf("persist final salvage: %v", err)
 	}
 	sub := &subagent{sess: child}
@@ -2453,13 +2453,13 @@ func TestDelegateResourceSupervision_SuccessExhaustionCancellationStopAndStaleSa
 	t.Parallel()
 	final := newTestSession(t)
 	final.totalRounds = 1
-	if err := final.persistSalvagedTurn("partial final draft", "gpt-5.2", "openai", "gpt-5.2"); err != nil {
+	if err := final.persistSalvagedTurn("partial final draft", "gpt-5.2", "openai", "gpt-5.2", ""); err != nil {
 		t.Fatalf("persist final salvage: %v", err)
 	}
 	final.comm.called = true
 	stale := newTestSession(t)
 	stale.totalRounds = 1
-	if err := stale.persistSalvagedTurn("stale draft", "gpt-5.2", "openai", "gpt-5.2"); err != nil {
+	if err := stale.persistSalvagedTurn("stale draft", "gpt-5.2", "openai", "gpt-5.2", ""); err != nil {
 		t.Fatalf("persist stale salvage: %v", err)
 	}
 	stale.totalRounds = 2

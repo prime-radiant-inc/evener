@@ -22,10 +22,10 @@ type attemptRecord struct {
 // behind. Best is the largest salvaged-byte snapshot, not the latest: a retry
 // that trickled must never replace the attempt that streamed most of the answer.
 type groupRecord struct {
-	Model, Provider, WireModel string
-	Attempts                   []attemptRecord
-	BestPartial                *llm.Response
-	BestBytes                  int
+	Model, Provider, WireModel, ReasoningRoute string
+	Attempts                                   []attemptRecord
+	BestPartial                                *llm.Response
+	BestBytes                                  int
 }
 
 // observe folds one attempt into the group. Called per attempt from inside

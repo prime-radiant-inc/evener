@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/chatcompletions"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -111,6 +112,10 @@ func TestFallbackKeepsOpaqueAndWebSearchScopeAcrossProtocols(t *testing.T) {
 			answer := withReasoningMarker(agenttest.FinalResponse("done"), row.Protocol, "b27")
 			// Chat decodes the scalar text and encrypted details into one part.
 			answer.Message.Content[0].Thinking.EncryptedContent = encrypted
+			answer.Message.Content[0].Thinking.ChatScalar = &llm.ChatReasoningScalar{Field: "reasoning", Text: "native-b27"}
+			answer.Message.Content = append(answer.Message.Content, llm.ContentPart{Kind: llm.ContentThinking,
+				Thinking: &llm.ThinkingData{Text: "signed-b49", EncryptedContent: `[{"type":"reasoning.text","text":"signed-b49","signature":"sig-b49"}]`},
+			})
 			fallbackAdapter := &fakeAdapter{name: row.Instance, steps: []func(llm.Request) llm.Response{
 				fixedStep(answer), fixedStep(agenttest.FinalResponse("done")),
 			}}
@@ -158,6 +163,23 @@ func TestFallbackKeepsOpaqueAndWebSearchScopeAcrossProtocols(t *testing.T) {
 				if !slices.Equal(got, want[i]) {
 					t.Errorf("fallback request %d reasoning and web search = %+v, want %+v", i, got, want[i])
 				}
+			}
+			followup := requests[1]
+			if wantTokens := llm.EstimateInputTokensForResolved(row, followup).Tokens; followup.FullHistoryInputTokensEstimate != wantTokens || followup.InputTokensEstimate != wantTokens {
+				t.Errorf("fallback estimates = %d full, %d input; projected request costs %d", followup.FullHistoryInputTokensEstimate, followup.InputTokensEstimate, wantTokens)
+			}
+			body, err := chatcompletions.DefaultProtocol.BuildBody(followup, row)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var scalars []string
+			for _, message := range body["messages"].([]map[string]any) {
+				if text, ok := message["reasoning"].(string); ok {
+					scalars = append(scalars, text)
+				}
+			}
+			if (tc.raw && !slices.Equal(scalars, []string{"native-b27"})) || (!tc.raw && len(scalars) != 0) {
+				t.Errorf("fallback wire scalars = %q", scalars)
 			}
 		})
 	}

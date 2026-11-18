@@ -34,6 +34,7 @@ type ModelAttemptMetadata struct {
 	EndpointURL             string
 	RequestModel            string
 	WireModel               string
+	ReasoningRoute          string
 	RequestFingerprint      string
 	StorageScopeFingerprint string
 	ContextMarker           string
@@ -240,13 +241,12 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// work — it is what keeps the boundary paired with the history this round
 	// actually expands (see the G4 note there).
 	scope := replayScope{
-		Instance:            profile.ID(),
-		Model:               profile.Model(),
-		Protocol:            profile.Protocol(),
-		protocolOf:          s.instanceProtocol,
-		canonicalModel:      func(model string) string { return s.canonicalModelID(profile.ID(), model) },
-		reasoningTextTarget: reasoningTextTarget(profile.Resolved()),
-		InFlightFrom:        inFlightFrom,
+		Instance:       profile.ID(),
+		Model:          profile.Model(),
+		Protocol:       profile.Protocol(),
+		protocolOf:     s.instanceProtocol,
+		canonicalModel: func(model string) string { return s.canonicalModelID(profile.ID(), model) },
+		InFlightFrom:   inFlightFrom,
 		dropsToolResult: func(tr *llm.ToolResultData) bool {
 			_, rejected := suppressedDocuments[tr.ToolCallID]
 			return rejected
@@ -255,6 +255,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		// the request copy says so and the transcript keeps the payload (#4465).
 		annotateDroppedToolResult: true,
 	}
+	scope.setReasoningTextTarget(profile.Resolved())
 	// presentedTurns is the history this request projects: a leased delegate
 	// turn projects the controller's own later snapshot, which can hold turns
 	// appended after historyTurns was taken.
@@ -1669,7 +1670,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 				return fullHistory
 			}
 			scope := fallbackSource.scope
-			scope.reasoningTextTarget = reasoningTextTarget(res)
+			scope.setReasoningTextTarget(res)
 			if scope.reasoningTextTarget == nil && sharedHistory != nil {
 				return sharedHistory
 			}
@@ -1773,7 +1774,9 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	attempt = completeAttemptMetadata(attempt, modelResp.Response)
 	attempt.conversation = modelResp.conversation
 	attempt.Protocol = group.Protocol()
-	attempt.WireModel = usedProfile.Resolved().WireID
+	answered := recorder.Groups[len(recorder.Groups)-1]
+	attempt.WireModel = answered.WireModel
+	attempt.ReasoningRoute = answered.ReasoningRoute
 	group.SettleResult(callCtx, nil)
 	for _, warning := range modelResp.Response.Warnings {
 		if warning.Code == llm.WarningCodeImageColorUnmanaged {
@@ -1974,6 +1977,7 @@ type replayScope struct {
 	// reasoningTextTarget scopes a raw-replay row's plain text to its issuer,
 	// including earlier tool rounds of the in-flight turn.
 	reasoningTextTarget *registry.Resolved
+	reasoningRoute      string
 	// notesSelfEchoFiltered marks a delta slice whose self-echo TurnNotesContext
 	// turns were already filtered against the full history slice.
 	notesSelfEchoFiltered bool
@@ -1999,11 +2003,13 @@ type replayScope struct {
 	dropsToolResultMedia func(mediaType string) bool
 }
 
-func reasoningTextTarget(res registry.Resolved) *registry.Resolved {
+func (rs *replayScope) setReasoningTextTarget(res registry.Resolved) {
+	rs.reasoningTextTarget = nil
+	rs.reasoningRoute = ""
 	if res.ReplaysRawReasoning() {
-		return &res
+		rs.reasoningTextTarget = &res
+		rs.reasoningRoute = res.ReasoningReplayRoute()
 	}
-	return nil
 }
 
 // active reports whether the scope enforces the N4 replay-provenance rules. An
@@ -2170,11 +2176,15 @@ func (rs replayScope) projectThinkingPart(p llm.ContentPart, provenanceKeeps, ke
 		return p, false
 	}
 	if !provenanceKeeps {
-		if !keepRaw || p.Kind != llm.ContentThinking || p.Thinking == nil || p.Thinking.Redacted || p.Thinking.Text == "" {
+		if !keepRaw || p.Kind != llm.ContentThinking || p.Thinking == nil || p.Thinking.Redacted {
+			return p, true
+		}
+		if scalar, _ := p.Thinking.ChatReplayScalar(); p.Thinking.Text == "" && scalar == "" {
 			return p, true
 		}
 		if encrypted := p.Thinking.EncryptedContent; encrypted != "" {
-			if rs.reasoningTextTarget.Protocol != registry.ProtocolOpenAIChat || !llm.IsOpenAICompatEncryptedReasoning(encrypted) {
+			details := llm.OpenAICompatReasoningDetails(encrypted)
+			if rs.reasoningTextTarget.Protocol != registry.ProtocolOpenAIChat || len(details) == 0 || llm.OpenAICompatSignedReasoningItem(details) != nil {
 				return p, true
 			}
 			thinking := *p.Thinking
@@ -2203,9 +2213,9 @@ func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Messa
 	}
 	keepRaw := false
 	if provenanceKeepsThinking {
-		t.Message = t.ProjectReasoningText(rs.reasoningTextTarget)
+		t.Message = t.ProjectReasoningText(rs.reasoningTextTarget, rs.reasoningRoute)
 	} else if rs.reasoningTextTarget != nil && t.Message.Role == llm.RoleAssistant {
-		keepRaw = t.MatchesReasoningTextTarget(rs.reasoningTextTarget)
+		keepRaw = t.MatchesReasoningTextTarget(rs.reasoningTextTarget, rs.reasoningRoute)
 	}
 	t.Message = projectVoicePresentation(t)
 	if !rs.active() && !rs.DropThinking {

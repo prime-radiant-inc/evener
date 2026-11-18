@@ -33,6 +33,7 @@ func TestDelegateForkContext_OptInHistory(t *testing.T) {
 			completed := schema.NewTurn(schema.TurnAssistant, forkContextToolCall("completed", "read_file"))
 			completed.ResponseID = "parent-response-anchor"
 			completed.ResponseWireModel = "wire-parent-17"
+			completed.ResponseReasoningRoute = "route-parent-28"
 			completed.Usage = llm.Usage{TotalTokens: 999}
 			root.recordTurn(completed, completed)
 			root.appendTurn(schema.TurnTool, llm.ToolResult("completed", "parent-result-sentinel", true))
@@ -108,6 +109,9 @@ func TestDelegateForkContext_OptInHistory(t *testing.T) {
 			for _, entry := range data.Entries {
 				if entry.Turn.ResponseWireModel == completed.ResponseWireModel {
 					inheritedWireModel = true
+					if entry.Turn.ResponseReasoningRoute != completed.ResponseReasoningRoute {
+						t.Error("forked history lost the parent model's request route")
+					}
 				}
 				if entry.Turn.ResponseID == "parent-response-anchor" {
 					t.Error("parent continuation anchor copied into child")

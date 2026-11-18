@@ -10,6 +10,7 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/registry"
 )
 
 func TestSessionAwaitingStringIsWireAwaiting(t *testing.T) {
@@ -83,6 +84,57 @@ func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
 	if got.CumulativeUsage != meta.CumulativeUsage {
 		t.Fatalf("Meta().CumulativeUsage = %+v, want %+v", got.CumulativeUsage, meta.CumulativeUsage)
 	}
+
+	t.Run("input measurement follows the answering target", func(t *testing.T) {
+		clientFor := func(wire string, replay bool) *llm.Client {
+			inst := testRegistryInstances()["gw"]
+			inst.Models = map[string]registry.Model{"reasoner": {
+				WireID: wire, Protocol: registry.ProtocolOpenAIResponses,
+				Caps: registry.Caps{ReplayReasoningText: &replay, ContextWindow: new(100_000)},
+			}}
+			return registryClient(t, map[string]registry.Provider{"gw": inst}, &fakeAdapter{name: "gw"})
+		}
+		for _, tc := range []struct {
+			name, wire string
+			replay     bool
+			want       int
+		}{
+			{"same", "wire-a", true, 90_000},
+			{"unknown measurement owner", "wire-a", true, 0},
+			{"replay disabled", "wire-a", false, 0},
+			{"redirected model", "wire-b", true, 0},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				state := t.TempDir()
+				client := clientFor("wire-a", true)
+				s := newSession(t, withClient(client), withStateDir(state), withProfile(resolveClientProfile(t, client, "gw/reasoner")))
+				s.contextMgr.RecordInputTokens(90_000, 0)
+				s.Close()
+				meta, err := schema.LoadSessionMeta(state, s.id)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if tc.name == "unknown measurement owner" {
+					meta.LastInputTarget = ""
+				}
+				client = clientFor(tc.wire, tc.replay)
+				restored, err := RestoreSessionFromMetaWithConfig(client, resolveClientProfile(t, client, "gw/reasoner"),
+					execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, RestoreSessionConfig{
+						StateDir: state, testOnly: sharingHostProbe(testConfig{skipGitSnapshot: true}),
+					})
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer restored.Close()
+				if got := restored.Meta().LastInputTokens; got != tc.want {
+					t.Fatalf("restored measurement = %d, want %d", got, tc.want)
+				}
+				if used := restored.contextMgr.EstimateUsage(restored.history, 100).Used; tc.want == 0 && (used <= 0 || used >= 90_000) {
+					t.Fatalf("local estimate after target change = %d", used)
+				}
+			})
+		}
+	})
 }
 
 // TestActiveTurnStartedAtMillis_MidTurnVsIdle pins the WS2 A7 accessor: an idle

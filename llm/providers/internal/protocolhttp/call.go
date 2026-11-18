@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"primeradiant.com/evener/llm"
@@ -125,8 +124,7 @@ func Prepare(ctx context.Context, c *Call) (*Prepared, error) {
 // {model} with the URL-escaped wire id (spec §9.1). Callers check for
 // registry.EndpointUnsupported first.
 func URL(res registry.Resolved, template string) string {
-	path := strings.ReplaceAll(template, "{model}", url.PathEscape(res.WireID))
-	return strings.TrimRight(res.Transport.BaseURL, "/") + path
+	return res.RequestURL(template)
 }
 
 // ModelInBody reports whether the completion path lacks {model}, in which

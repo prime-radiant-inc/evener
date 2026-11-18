@@ -1656,6 +1656,34 @@ models_endpoint = "/catalog"
 	if res, err := r.ResolveInstancePresence("configured"); err != nil || res.Caps.ReplaysReasoningText() {
 		t.Errorf("redirected default model presence replay = %v, err = %v", res.Caps.ReplaysReasoningText(), err)
 	}
+	row := mustResolve(t, r, "configured/ordinary")
+	row.Transport.Endpoint = "/models/{model}/generate?deployment=blue&token=secret-47"
+	route := row.ReasoningReplayRoute()
+	if route == "" || strings.Contains(route, "secret-47") || strings.Contains(route, "gateway.example") {
+		t.Fatal("replay route must identify the destination without persisting its URL or query tokens")
+	}
+	for _, tc := range []struct {
+		name string
+		edit func(*Resolved)
+		same bool
+	}{
+		{"base", func(r *Resolved) { r.Transport.BaseURL = "https://other.example/v1" }, false},
+		{"completion query", func(r *Resolved) { r.Transport.Endpoint = strings.ReplaceAll(r.Transport.Endpoint, "blue", "green") }, false},
+		{"stream", func(r *Resolved) { r.Transport.StreamEndpoint = "/other/stream" }, false},
+		{"counter", func(r *Resolved) { r.Transport.CountTokensEndpoint = "/other/count" }, false},
+		{"listing", func(r *Resolved) { r.Transport.ModelsEndpoint = "/other/list" }, true},
+		{"credential", func(r *Resolved) { r.Credential.Value = "rotated-91" }, true},
+		{"equivalent URL", func(r *Resolved) {
+			r.Transport.BaseURL += "/"
+			r.Transport.Endpoint = strings.ReplaceAll(r.Transport.Endpoint, "{model}", r.WireID)
+		}, true},
+	} {
+		other := row
+		tc.edit(&other)
+		if same := other.ReasoningReplayRoute() == route; same != tc.same {
+			t.Errorf("%s: same replay route = %t, want %t", tc.name, same, tc.same)
+		}
+	}
 }
 
 // A live row the gateway marks toggle-only must not inherit a curated effort
