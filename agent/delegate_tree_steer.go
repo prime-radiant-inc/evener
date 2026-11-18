@@ -502,6 +502,15 @@ func (s *Session) delegateAttentionModelProjection() (delegateModelProjection, m
 	// ride this request while selection refused to claim it — the request would
 	// carry a frame whose wake never passed its gate, and the stopped report
 	// that gate releases would be missing from the same request.
+	//
+	// The question is asked only of rows the transcript still holds pending. A
+	// row that was admitted and then consumed — the accepted trigger is resolved
+	// before its generation runs, and CommitStart replaces the wake set with what
+	// is left — is no longer pending, so it is history. Asking the shrinking wake
+	// set about it would read its absence as "never admitted" and drop the very
+	// turn this generation accepted, which settles having consumed a report the
+	// request never carried.
+	pending := delegateAttentionPendingSet(s.delegateAttentionPendingIDsLocked())
 	for _, turn := range projection.turns {
 		if turn.AttentionID == "" {
 			continue
@@ -509,7 +518,7 @@ func (s *Session) delegateAttentionModelProjection() (delegateModelProjection, m
 		if _, held := holds[turn.AttentionID]; held {
 			continue
 		}
-		if s.delegateAttentionAwaitingAdmissionLocked(turn.AttentionID) {
+		if s.delegateAttentionAwaitingAdmissionLocked(turn.AttentionID, pending) {
 			holds[turn.AttentionID] = delegateAttentionAwaitingAdmissionStamp
 		}
 	}

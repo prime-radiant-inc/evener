@@ -1122,6 +1122,19 @@ func (s *Session) pendingDelegateAttentionIDsLocked() ([]string, error) {
 	return fold.pendingIDs(), nil
 }
 
+// delegateAttentionPendingIDsLocked is pendingDelegateAttentionIDsLocked
+// without the error. A presentation read must not fail because the transcript
+// could not be folded: the fold's answer only narrows which rows the admission
+// gate may withhold, and a nil set leaves that gate exactly as strict as the
+// wake set alone, which is the stricter of the two. The caller holds attentionMu.
+func (s *Session) delegateAttentionPendingIDsLocked() []string {
+	ids, err := s.pendingDelegateAttentionIDsLocked()
+	if err != nil {
+		return nil
+	}
+	return ids
+}
+
 // delegateAttentionHeldFromAutomaticDriveLocked reports whether a user's
 // stop quieted the row from automatic drives. The settle tail's hold write
 // and the drive-side reads share this one predicate. Callers must hold
@@ -1153,18 +1166,31 @@ func (s *Session) delegateAttentionHeldFromAutomaticDriveLocked(attentionID stri
 // because the answer is made of this session's holds and the controller's
 // admission state, and a reader that took them separately would answer about a
 // moment the request is not showing.
-func (s *Session) delegateAttentionRowIsPresentableLocked(attentionID string) bool {
+func (s *Session) delegateAttentionRowIsPresentableLocked(attentionID string, pendingIDs map[string]struct{}) bool {
 	if attentionID == "" {
 		return true
 	}
 	if s.delegateAttentionHeldFromAutomaticDriveLocked(attentionID) {
 		return false
 	}
-	return !s.delegateAttentionAwaitingAdmissionLocked(attentionID)
+	return !s.delegateAttentionAwaitingAdmissionLocked(attentionID, pendingIDs)
 }
 
 // delegateAttentionAwaitingAdmissionLocked reports whether attentionID is an
 // original stable watch frame whose wake no admission has reached.
+//
+// The question is asked only about a row the transcript still holds PENDING,
+// because that is the only state in which "no admission has reached it" is a
+// statement about the row rather than about history. Admission is a fact that
+// happened; the controller's wake set reports only what is still owed. A row
+// that was admitted and then consumed — the trigger acceptance resolves before
+// its generation runs — leaves the wake set, and so does a frame an earlier
+// request already presented. Reading absence from that set as "never admitted"
+// would answer a monotonic question from evidence that shrinks, and the
+// projection would then drop the very turn the generation accepted: the run
+// settles having consumed a report no request carried. Pending is the monotonic
+// witness: a row stays pending until something admits it, and once it is resolved
+// it is history whose order the release path already owns.
 //
 // The answer is derived from the controller's own admission state rather than
 // recorded on the row: the restore that finds the frame and the arm that admits
@@ -1172,9 +1198,19 @@ func (s *Session) delegateAttentionRowIsPresentableLocked(attentionID string) bo
 // source of truth that a restart, a reclaim, or an arm landing in between could
 // leave stale. A reopened row is not an original frame, so this never covers a
 // stop's own quiet — that is the hold's job. Callers must hold attentionMu.
-func (s *Session) delegateAttentionAwaitingAdmissionLocked(attentionID string) bool {
+//
+// pendingIDs is the set of rows the caller's fold found unresolved. A nil set
+// means the caller did not fold the transcript, and the answer falls back to the
+// wake set alone, which is the pre-existing behaviour for callers that only ask
+// about rows they know are pending.
+func (s *Session) delegateAttentionAwaitingAdmissionLocked(attentionID string, pendingIDs map[string]struct{}) bool {
 	if !isOriginalStableWatchFrame(attentionID) {
 		return false
+	}
+	if pendingIDs != nil {
+		if _, pending := pendingIDs[attentionID]; !pending {
+			return false
+		}
 	}
 	controller := s.delegateController
 	if controller == nil || s.owningDelegateID == "" {
@@ -1185,6 +1221,23 @@ func (s *Session) delegateAttentionAwaitingAdmissionLocked(attentionID string) b
 		return false
 	}
 	return true
+}
+
+// delegateAttentionPendingSet indexes the rows a fold found unresolved, so the
+// presentation gates can ask "is this row still pending" without re-reading the
+// transcript. The set answers the monotonic half of the admission question: a
+// row is in it exactly while nothing has admitted or presented it, which is the
+// only window in which the controller's shrinking wake set is evidence about
+// the row itself.
+func delegateAttentionPendingSet(ids []string) map[string]struct{} {
+	if len(ids) == 0 {
+		return nil
+	}
+	pending := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		pending[id] = struct{}{}
+	}
+	return pending
 }
 
 // delegateAttentionAwaitingAdmissionStamp is the value the projection's
@@ -1768,9 +1821,13 @@ func (s *Session) automaticDelegateAttentionIDs() ([]string, error) {
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
 	s.reconcileAutomaticDriveHoldsLocked()
+	// pending is the same list this selection started from, so a row it offers is
+	// by construction one the transcript still holds pending: the admission gate
+	// below is asked about a pending row and never about history.
+	pendingSet := delegateAttentionPendingSet(pending)
 	kept := make([]string, 0, len(pending))
 	for _, id := range pending {
-		if !s.delegateAttentionRowIsPresentableLocked(id) {
+		if !s.delegateAttentionRowIsPresentableLocked(id, pendingSet) {
 			continue
 		}
 		kept = append(kept, id)

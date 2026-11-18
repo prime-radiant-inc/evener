@@ -34,7 +34,7 @@ func TestProjectionReturnsAWritableHoldSetWithNoHoldInstalled(t *testing.T) {
 	if _, err := sess.appendDelegateNotificationDurably(frameID, "a frame awaiting its arm"); err != nil {
 		t.Fatalf("append the watch frame: %v", err)
 	}
-	if !sess.delegateAttentionAwaitingAdmissionLocked(frameID) {
+	if !sess.delegateAttentionAwaitingAdmissionLocked(frameID, nil) {
 		t.Fatalf("premise broken: %q does not read as awaiting admission, so the projection writes nothing and the panic cannot be reached", frameID)
 	}
 
