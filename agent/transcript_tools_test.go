@@ -550,8 +550,9 @@ func TestFind_ProjectName_FallbacksAndOrdinaryDirectories(t *testing.T) {
 		t.Fatalf("projectName(deleted worktree without bucket metadata) = %q, want empty", got)
 	}
 
-	// 6. Two-pass bucket scan: GitOriginURL on sibling session takes precedence over older non-worktree home
-	twoPassDir := t.TempDir()
+	// 6. Two-pass bucket scan: GitOriginURL on sibling session takes precedence over older non-worktree home.
+	// The bucket must be a real project bucket: sibling inference is scoped to those (see 10).
+	twoPassDir := newBucket(t)
 	s1 := schema.SessionMeta{ID: identifier.MustNewSessionID()}
 	s1.EnvInfo.WorkingDir = "/tmp/some-plain-dir"
 	if err := schema.SaveSessionMeta(twoPassDir, s1); err != nil {
@@ -566,6 +567,72 @@ func TestFind_ProjectName_FallbacksAndOrdinaryDirectories(t *testing.T) {
 	mTestTwoPass.EnvInfo.WorkingDir = filepath.Join(twoPassDir, "worktrees", "some-bucket", "lane")
 	if got := projectName(mTestTwoPass, twoPassDir); got != "authoritative-repo" {
 		t.Fatalf("projectName(two-pass bucket scan) = %q, want %q", got, "authoritative-repo")
+	}
+
+	// 7. An ordinary non-Git directory that merely has a "worktrees" segment must
+	// keep its own basename, not be classified as a deleted Evener state worktree.
+	mOrdinaryWorktrees := schema.SessionMeta{}
+	mOrdinaryWorktrees.EnvInfo.WorkingDir = "/tmp/worktrees/notes"
+	if got := projectName(mOrdinaryWorktrees, newBucket(t)); got != "notes" {
+		t.Fatalf("projectName(/tmp/worktrees/notes) = %q, want %q", got, "notes")
+	}
+
+	// 8. A deleted delegate worktree whose WorktreeRestoreRoot is a subdirectory of
+	// the repository resolves the main root, so the project is the repo's name and
+	// not the subdirectory's.
+	restoreMain, _ := gittest.NewLinkedWorktree(t)
+	restoreSub := filepath.Join(restoreMain, "pkg")
+	if err := os.MkdirAll(restoreSub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	restoreSID := identifier.MustNewSessionID()
+	restoreMeta := schema.SessionMeta{ID: restoreSID, WorktreeRestoreRoot: restoreSub}
+	restoreMeta.EnvInfo.WorkingDir = restoreSub
+	restoreBucket := newBucket(t)
+	if err := schema.SaveSessionMeta(restoreBucket, restoreMeta); err != nil {
+		t.Fatal(err)
+	}
+	restoreWD := schema.SessionMeta{}
+	restoreWD.EnvInfo.WorkingDir = filepath.Join(t.TempDir(), "sessions", restoreSID, "worktrees", "dlg_restore_sub")
+	if got, want := projectName(restoreWD, restoreBucket), filepath.Base(restoreMain); got != want {
+		t.Fatalf("projectName(delegate restore root in repo subdirectory) = %q, want repo root %q", got, want)
+	}
+
+	// 9. Same resolution for the bucket-wide pass that reads a sibling's
+	// WorktreeRestoreRoot when the worktree's own session has no meta.
+	restoreSiblingBucket := newBucket(t)
+	siblingRestore := schema.SessionMeta{ID: identifier.MustNewSessionID(), WorktreeRestoreRoot: restoreSub}
+	if err := schema.SaveSessionMeta(restoreSiblingBucket, siblingRestore); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := projectName(restoreWD, restoreSiblingBucket), filepath.Base(restoreMain); got != want {
+		t.Fatalf("projectName(bucket-wide sibling restore root in repo subdirectory) = %q, want repo root %q", got, want)
+	}
+
+	// 10. A flat --state-dir holds sessions from several repositories, so an
+	// originless delegate worktree must not borrow a sibling's project.
+	flatDir := filepath.Join(t.TempDir(), "flat-state-dir")
+	if err := os.MkdirAll(flatDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	flatSibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	flatSibling.EnvInfo.GitOriginURL = "git@github.com:owner/other-repo.git"
+	if err := schema.SaveSessionMeta(flatDir, flatSibling); err != nil {
+		t.Fatal(err)
+	}
+	mFlat := schema.SessionMeta{}
+	mFlat.EnvInfo.WorkingDir = filepath.Join(flatDir, "sessions", identifier.MustNewSessionID(), "worktrees", "dlg_flat")
+	if got := projectName(mFlat, flatDir); got != "" {
+		t.Fatalf("projectName(flat state-dir delegate worktree) = %q, want empty (no cross-repo sibling inference)", got)
+	}
+
+	// 11. A flat --state-dir's own managed worktree lives at
+	// <stateDir>/worktrees/<projectID>/<lane>. It is still a state worktree, so it
+	// must not fall through to the lane leaf as a phantom project name.
+	mFlatManaged := schema.SessionMeta{}
+	mFlatManaged.EnvInfo.WorkingDir = filepath.Join(flatDir, "worktrees", "a-project-0123456789", "dlg_lane")
+	if got := projectName(mFlatManaged, flatDir); got != "" {
+		t.Fatalf("projectName(flat state-dir managed worktree) = %q, want empty (not the lane leaf)", got)
 	}
 }
 

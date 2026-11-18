@@ -866,11 +866,16 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir string) (string
 		return filepath.Base(repoDir), true
 	}
 
-	// (b) Evener state-dir worktrees (.../projects/<bucket>/worktrees/... or .../sessions/<sid>/worktrees/...)
-	isStateWorktree := false
+	// (b) Evener state-dir worktrees. The state root lays a managed worktree out
+	// as <bucket>/worktrees/<lane>, .../projects/<bucket>/worktrees/<lane>, or
+	// .../sessions/<sid>/worktrees/<lane>. Requiring that shape — rather than any
+	// segment named "worktrees" — keeps an ordinary directory such as
+	// /tmp/worktrees/notes from being mistaken for a deleted state worktree.
 	parts := strings.Split(clean, sep)
-	for i, part := range parts {
-		if part == "worktrees" && i > 0 {
+	isStateWorktree := bucketDir != "" &&
+		strings.HasPrefix(clean, filepath.Join(filepath.Clean(bucketDir), "worktrees")+sep)
+	for i := 0; i+2 < len(parts); i++ {
+		if (parts[i] == "projects" || parts[i] == "sessions") && parts[i+2] == "worktrees" {
 			isStateWorktree = true
 			break
 		}
@@ -898,6 +903,9 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir string) (string
 				}
 				if restore := strings.TrimSpace(meta.WorktreeRestoreRoot); restore != "" {
 					p := filepath.Base(restore)
+					if root := r.resolveMainRoot(restore); root != "" {
+						p = filepath.Base(root)
+					}
 					r.bucketProjectCache[bucketDir] = p
 					return p, true
 				}
@@ -917,6 +925,14 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir string) (string
 
 	// Scan bucket sessions in two passes:
 	// Pass 1: authoritative GitOriginURL or WorktreeRestoreRoot
+	// Only a validated project bucket holds one repository: with a flat
+	// --state-dir override, bucketDir is a shared state dir holding sessions from
+	// several repositories, so an originless delegate worktree must not borrow a
+	// sibling's project.
+	if identifier.ValidateProjectID(filepath.Base(bucketDir)) != nil {
+		r.bucketProjectCache[bucketDir] = ""
+		return "", true
+	}
 	metas, err := schema.ListSessionMetas(bucketDir)
 	if err == nil {
 		for _, sm := range metas {
@@ -927,6 +943,9 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir string) (string
 			}
 			if restore := strings.TrimSpace(sm.WorktreeRestoreRoot); restore != "" {
 				p := filepath.Base(restore)
+				if root := r.resolveMainRoot(restore); root != "" {
+					p = filepath.Base(root)
+				}
 				r.bucketProjectCache[bucketDir] = p
 				return p, true
 			}
