@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/agent"
@@ -257,27 +258,31 @@ func stampSavedHistoryReadError(err error, bootGeneration string) error {
 // absence on its own, because a daemon the hub cannot route to by ref cannot be
 // serving that thread. Everything else (a relay outage, a protocol refusal, a
 // deadline) says the read failed, not that its owner is gone.
-func savedHistoryStampFor(cfg hubcore.WebConfig, params appwire.ThreadReadParams, readErr error) func(error) error {
+func savedHistoryStampFor(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams, readErr error) func(error) error {
 	switch {
 	case errors.Is(readErr, appsource.ErrSourceNotFound):
 		return daemonlessReadError
 	case isDeadSessionError(readErr) || daemonOwnershipMayHaveChanged(readErr):
-		if rosterEstablishesAbsence(cfg, params) {
+		if rosterEstablishesAbsence(ctx, cfg, params) {
 			return daemonlessReadError
 		}
 	}
 	return unknownOwnerReadError
 }
 
-// rosterEstablishesAbsence reports whether the roster answered that no daemon
-// owns the thread. An incomplete scan, an unverified claim, a live process, or
-// a confirmed incompatible owner all leave ownership unresolved, which is not
-// the same fact as absence.
-func rosterEstablishesAbsence(cfg hubcore.WebConfig, params appwire.ThreadReadParams) bool {
+// rosterEstablishesAbsence reports whether one roster publication established
+// that no daemon owns the thread: the scan completed, the publication holds no
+// unverified claim, and no live entry — root, workspace route, or delegate
+// parent — owns it.
+//
+// Reading the three facts from one snapshot is the point. Separate calls read
+// separate publications, and a refresh landing between them can show no claims
+// in the older one and no live owner in the newer one, which reads as absence
+// although neither publication established it. Delegate ancestry is part of the
+// same question: a daemon skipped by the local route lookup because it is
+// incompatible still owns its children, and only persisted ancestry can say so.
+func rosterEstablishesAbsence(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams) bool {
 	if cfg.Roster == nil {
-		return false
-	}
-	if cfg.Roster.OwnershipError() != nil || len(cfg.Roster.UnconfirmedEntries()) != 0 {
 		return false
 	}
 	threadID := params.ThreadID
@@ -288,13 +293,34 @@ func rosterEstablishesAbsence(cfg hubcore.WebConfig, params appwire.ThreadReadPa
 		}
 		threadID = ref.ThreadID
 	}
-	for _, entry := range hubRosterList(cfg.Roster) {
+	if threadID == "" {
+		return false
+	}
+	snapshot := rosterSnapshot(cfg.Roster)
+	if snapshot.OwnershipError != nil || len(snapshot.Unconfirmed) != 0 {
+		return false
+	}
+	for _, entry := range snapshot.Live {
 		if entry.Crashed {
 			continue
 		}
-		if threadID != "" && (entry.SessionID == threadID || entry.ThreadID == threadID || localSpawnWorkspaceRef(entry.Entry) == localAppRef(threadID)) {
+		if entry.SessionID == threadID || entry.ThreadID == threadID || localSpawnWorkspaceRef(entry.Entry) == localAppRef(threadID) {
 			return false
 		}
+		// A daemon reports its in-process children, which have no route of
+		// their own and so never appear as a root match above.
+		if slices.Contains(entry.RunningSubagentIDs, threadID) {
+			return false
+		}
+	}
+	// Persisted ancestry covers the delegate whose parent the publication
+	// cannot name. lookupDaemonOwner answers the same question the read path
+	// asks: a populated owner means some live daemon serves this thread through
+	// its ancestry, and its second result only says whether that owner is
+	// incompatible. Both cases leave ownership established, not absent, and an
+	// unverifiable chain or incomplete scan comes back as an error.
+	if owner, _, err := lookupDaemonOwner(ctx, cfg, params.Ref, params.ThreadID, false); err != nil || owner.SessionID != "" {
+		return false
 	}
 	return true
 }

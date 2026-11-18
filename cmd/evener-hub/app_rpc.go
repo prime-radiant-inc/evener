@@ -1472,11 +1472,11 @@ func registerThreadHandlers(
 			stamp := unknownOwnerReadError
 			switch {
 			case srcErr != nil:
-				stamp = savedHistoryStampFor(cfg, appwire.ThreadReadParams{Ref: params.Ref, ThreadID: params.ThreadID}, srcErr)
+				stamp = savedHistoryStampFor(ctx, cfg, appwire.ThreadReadParams{Ref: params.Ref, ThreadID: params.ThreadID}, srcErr)
 			case isDeadSessionError(liveErr):
 				// A local route miss is not proof: the route lookup skips
 				// confirmed incompatible owners, so ask the roster.
-				stamp = savedHistoryStampFor(cfg, appwire.ThreadReadParams{Ref: params.Ref, ThreadID: params.ThreadID}, liveErr)
+				stamp = savedHistoryStampFor(ctx, cfg, appwire.ThreadReadParams{Ref: params.Ref, ThreadID: params.ThreadID}, liveErr)
 			}
 			return appwire.ThreadTurnsListResponse{}, stamp(pastErr)
 		}

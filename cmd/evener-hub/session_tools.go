@@ -1200,7 +1200,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 		if isTargetDeletedError(err) || params.IsPendingAskPage() {
 			return appwire.ThreadReadResponse{}, err
 		}
-		resp, ok, pastErr := unavailableThreadReadResponseOwned(ctx, cfg, sources, params, savedHistoryStampFor(cfg, params, err), func(options *transcriptWindowPackOptions) {
+		resp, ok, pastErr := unavailableThreadReadResponseOwned(ctx, cfg, sources, params, savedHistoryStampFor(ctx, cfg, params, err), func(options *transcriptWindowPackOptions) {
 			o.retainCanonicalWindowOptions(options)
 		})
 		if pastErr != nil {
@@ -1256,7 +1256,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 					// The admission refusal is a local route miss, which also
 					// happens for a confirmed incompatible owner the route
 					// lookup skips. The roster decides whether that is absence.
-					saved, found, savedErr := unavailableThreadReadResponseOwned(ctx, cfg, sources, params, savedHistoryStampFor(cfg, params, admissionErr), func(options *transcriptWindowPackOptions) {
+					saved, found, savedErr := unavailableThreadReadResponseOwned(ctx, cfg, sources, params, savedHistoryStampFor(ctx, cfg, params, admissionErr), func(options *transcriptWindowPackOptions) {
 						o.retainCanonicalWindowOptions(options)
 					})
 					if savedErr != nil {
@@ -1392,7 +1392,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 		// Keep the first attempt's saved-history eligibility if the
 		// discovered owner disappears before the retry lands.
 		if !recovered && allowPast {
-			saved, ok, pastErr := unavailableThreadReadResponseOwned(ctx, cfg, sources, params, savedHistoryStampFor(cfg, params, err), func(options *transcriptWindowPackOptions) {
+			saved, ok, pastErr := unavailableThreadReadResponseOwned(ctx, cfg, sources, params, savedHistoryStampFor(ctx, cfg, params, err), func(options *transcriptWindowPackOptions) {
 				o.retainCanonicalWindowOptions(options)
 			})
 			if pastErr != nil {

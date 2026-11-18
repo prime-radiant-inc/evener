@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
@@ -155,7 +156,7 @@ func TestPastFallbackRouteMissWithIncompatibleOwnerStampsOwnerUnknown(t *testing
 	if roster.DaemonOwnershipAbsent() {
 		t.Fatal("fixture does not hold a confirmed running owner")
 	}
-	stamp := savedHistoryStampFor(hubcore.WebConfig{Roster: roster}, appwire.ThreadReadParams{Ref: "local:" + sessionID}, appwire.SessionUnavailable(threadNotFoundMessagePrefix+sessionID))
+	stamp := savedHistoryStampFor(t.Context(), hubcore.WebConfig{Roster: roster}, appwire.ThreadReadParams{Ref: "local:" + sessionID}, appwire.SessionUnavailable(threadNotFoundMessagePrefix+sessionID))
 	err := stamp(appwire.TranscriptHistoryFailed(0))
 	requireSavedHistoryFailureStamp(t, err, appwire.UnknownOwnerBootGeneration)
 }
@@ -175,7 +176,7 @@ func TestPastFallbackIncompleteDiscoveryStampsOwnerUnknown(t *testing.T) {
 	if roster.OwnershipError() == nil {
 		t.Fatal("fixture does not hold an incomplete scan")
 	}
-	stamp := savedHistoryStampFor(hubcore.WebConfig{Roster: roster}, appwire.ThreadReadParams{Ref: "local:" + sessionID}, appwire.SessionUnavailable(threadNotFoundMessagePrefix+sessionID))
+	stamp := savedHistoryStampFor(t.Context(), hubcore.WebConfig{Roster: roster}, appwire.ThreadReadParams{Ref: "local:" + sessionID}, appwire.SessionUnavailable(threadNotFoundMessagePrefix+sessionID))
 	err := stamp(appwire.TranscriptHistoryFailed(0))
 	requireSavedHistoryFailureStamp(t, err, appwire.UnknownOwnerBootGeneration)
 }
@@ -189,9 +190,54 @@ func TestPastFallbackRosterAbsenceStampsDaemonless(t *testing.T) {
 	if !roster.DaemonOwnershipAbsent() {
 		t.Fatal("fixture does not hold established absence")
 	}
-	stamp := savedHistoryStampFor(hubcore.WebConfig{Roster: roster}, appwire.ThreadReadParams{Ref: "local:" + sessionID}, appwire.SessionUnavailable(threadNotFoundMessagePrefix+sessionID))
+	stamp := savedHistoryStampFor(t.Context(), hubcore.WebConfig{Roster: roster}, appwire.ThreadReadParams{Ref: "local:" + sessionID}, appwire.SessionUnavailable(threadNotFoundMessagePrefix+sessionID))
 	err := stamp(appwire.TranscriptHistoryFailed(0))
 	requireSavedHistoryFailureStamp(t, err, appwire.DaemonlessBootGeneration)
+}
+
+// TestPastFallbackReadsOneRosterPublication pins the race the three-accessor
+// check had. A refresh that replaces a confirmed owner with an unverified claim
+// landing between the reads shows no claims in the older publication and no
+// live owner in the newer one, so a check reading them separately concludes
+// "absent" although neither publication established that.
+//
+// The seam serves the two publications in that order. Deciding from the first
+// alone is the only answer that is sound: it holds a confirmed running owner,
+// so absence is not established. A check that takes a second publication gets
+// an empty claim list from the first and an empty live list from the second,
+// and calls that absence. No sleep is involved; the interleaving is the fixture.
+func TestPastFallbackReadsOneRosterPublication(t *testing.T) {
+	const sessionID = "02wMz5Txv5aIxgf9yVdd0N"
+	// The publication before the refresh: the incompatible daemon is live.
+	beforeRefresh := hubcore.RosterSnapshot{
+		Live: []hubcore.LiveEntry{{
+			Entry:     rendezvous.Entry{PID: 4242, Protocol: "evener-appwire-v4", ThreadID: sessionID, SessionID: sessionID},
+			SessionID: sessionID,
+			Status:    appwire.ThreadStatusRestartRequired,
+		}},
+	}
+	// The publication after it: that daemon's claim no longer resolves, so no
+	// live entry names the thread and only an unconfirmed claim is left.
+	afterRefresh := hubcore.RosterSnapshot{
+		Unconfirmed: []rendezvous.Entry{{PID: 4242, ThreadID: sessionID}},
+	}
+	original := rosterSnapshot
+	t.Cleanup(func() { rosterSnapshot = original })
+	publications := []hubcore.RosterSnapshot{beforeRefresh, afterRefresh}
+	reads := 0
+	rosterSnapshot = func(*hubcore.Roster) hubcore.RosterSnapshot {
+		if reads >= len(publications) {
+			return publications[len(publications)-1]
+		}
+		reads++
+		return publications[reads-1]
+	}
+	stamp := savedHistoryStampFor(t.Context(), hubcore.WebConfig{Roster: hubcore.NewRoster("", nil)}, appwire.ThreadReadParams{Ref: "local:" + sessionID}, appwire.SessionUnavailable(threadNotFoundMessagePrefix+sessionID))
+	err := stamp(appwire.TranscriptHistoryFailed(0))
+	requireSavedHistoryFailureStamp(t, err, appwire.UnknownOwnerBootGeneration)
+	if reads != 1 {
+		t.Fatalf("absence check read %d roster publications, want exactly 1", reads)
+	}
 }
 
 // TestPastFallbackAfterLiveFailureStampsOwnerUnknown pins the read issue #6815
@@ -218,6 +264,57 @@ func TestPastFallbackAfterLiveFailureStampsOwnerUnknown(t *testing.T) {
 		Ref: "local:" + entry.Meta.ID, IncludeTurns: true, ItemLimit: 40, RequestGeneration: 1,
 	})
 	requireSavedHistoryFailureStamp(t, err, appwire.UnknownOwnerBootGeneration)
+}
+
+// TestPastFallbackDelegateOfLiveDaemonStampsOwnerUnknown pins the delegate
+// hole in the absence check. The delegate's own id never matches its parent's
+// ids or workspace ref, so only persisted ancestry says a live daemon owns it.
+// Both parent states must be covered: an incompatible parent is skipped by the
+// local route lookup and found through ancestry, and a compatible parent is
+// found the same way. Either way a running daemon serves the delegate, so a
+// failed saved read there must not claim absence.
+func TestPastFallbackDelegateOfLiveDaemonStampsOwnerUnknown(t *testing.T) {
+	const (
+		parentID = "02wMz5Txv1C3Hut0M8GCeB"
+		childID  = "02wMz5Txv2enqVTitaig6F"
+	)
+	for _, tc := range []struct {
+		name   string
+		status string
+	}{
+		{name: "incompatible parent", status: appwire.ThreadStatusRestartRequired},
+		{name: "compatible parent", status: "active"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			stateDir := filepath.Join(root, "projects", "project-delegate-0000000000")
+			now := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+			for _, meta := range []schema.SessionMeta{
+				{ID: parentID, CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+				{ID: childID, CreatedAt: now, UpdatedAt: now, ParentSessionID: parentID, IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+			} {
+				if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+					t.Fatal(err)
+				}
+			}
+			roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+				Entry:     rendezvous.Entry{PID: 1, Protocol: "evener-appwire-v4", SessionID: parentID, ThreadID: parentID},
+				SessionID: parentID,
+				Status:    tc.status,
+			})
+			if roster.DaemonOwnershipAbsent() {
+				t.Fatal("fixture does not hold a live owner")
+			}
+			stamp := savedHistoryStampFor(
+				t.Context(),
+				hubcore.WebConfig{Roster: roster, StateDir: stateDir},
+				appwire.ThreadReadParams{Ref: "local:" + childID},
+				appwire.SessionUnavailable(threadNotFoundMessagePrefix+childID),
+			)
+			err := stamp(appwire.TranscriptHistoryFailed(0))
+			requireSavedHistoryFailureStamp(t, err, appwire.UnknownOwnerBootGeneration)
+		})
+	}
 }
 
 // TestPastFallbackWithoutServingSourceStampsDaemonless is the other direction,
