@@ -41,20 +41,15 @@ func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawM
 		var observed *responsesOutputItem
 		switch typ {
 		case "message":
+			if stream != nil {
+				id, _ := item["id"].(string)
+				observed = stream.terminalItem("message", id, itemIdx, out)
+			}
 			phase, _ := item["phase"].(string)
 			var substantive bool
-			content, substantive = appendResponsesText(content, item, phase)
+			content, substantive = observed.appendMessage(content, item, phase)
 			if substantive {
 				sparse = false
-			} else if stream != nil {
-				id, _ := item["id"].(string)
-				observed = stream.terminalMessage(id, itemIdx, out)
-				if observed != nil && len(content) <= start+1 && (observed.textComplete || len(observed.text) > 0) {
-					if phase == "" {
-						phase = observed.phase
-					}
-					content = observed.appendMessage(content[:start], phase)
-				}
 			}
 		case "function_call":
 			name, _ := item["name"].(string)
@@ -88,6 +83,16 @@ func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawM
 					args = string(content)
 				}
 			}
+			if stream != nil {
+				if prior := stream.terminalTool(callID, itemID, itemIdx, out); prior != nil {
+					callID = cmp.Or(callID, prior.id)
+					itemID = cmp.Or(itemID, prior.itemID)
+					name = cmp.Or(name, prior.name)
+					if args == "" {
+						args = prior.args.String()
+					}
+				}
+			}
 			content = append(content, llm.ContentPart{
 				Kind: llm.ContentToolCall,
 				ToolCall: &llm.ToolCallData{
@@ -113,18 +118,21 @@ func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawM
 			})
 		case "reasoning":
 			terminalReasoning = true
-			thinking, native := responsesThinking(item)
+			var prior map[string]any
 			if stream != nil {
-				if native == reasoningSubstantive {
+				id, _ := item["id"].(string)
+				observed = stream.terminalItem("reasoning", id, itemIdx, out)
+				if observed != nil {
+					prior = observed.done
+				}
+			}
+			thinking, native := responsesThinking(item, prior)
+			if stream != nil {
+				if native == reasoningSubstantive || (thinking != nil && thinking.EncryptedContent != "") {
 					sparse = false
-				} else {
-					id, _ := item["id"].(string)
-					observed = stream.byID[id]
-					if observed != nil && observed.kind == "reasoning" {
-						thinking = observed.settleReasoning(item, thinking, native)
-					} else {
-						observed = nil
-					}
+				}
+				if observed != nil {
+					thinking = observed.settleReasoning(item, thinking, native)
 				}
 			}
 			if thinking != nil {
@@ -138,57 +146,95 @@ func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawM
 		}
 	}
 	if sparse {
-		return stream.sparseContent(placeholders, terminalReasoning)
+		return stream.sparseContent(placeholders, terminalReasoning, len(out) == 0)
 	}
 	return content
 }
 
-func (acc *responsesOutputAccumulator) terminalMessage(id string, index int, out []any) *responsesOutputItem {
-	if item := acc.byID[id]; item != nil && item.kind == "message" {
+func (acc *responsesOutputAccumulator) terminalTool(callID, itemID string, index int, out []any) *responsesToolState {
+	state := acc.toolStates[callID]
+	if state == nil {
+		state = acc.toolStates[itemID]
+	}
+	if state == nil {
+		if item := acc.byIndex[int64(index)]; item != nil {
+			state = item.tool
+		}
+		if state != nil {
+			for i, entry := range out {
+				other, _ := entry.(map[string]any)
+				if i != index && other["type"] == "function_call" &&
+					((state.id != "" && other["call_id"] == state.id) ||
+						(state.itemID != "" && (other["id"] == state.itemID || other["item_id"] == state.itemID))) {
+					return nil
+				}
+			}
+		}
+	}
+	if state == nil || (itemID != "" && state.itemID != "" && itemID != state.itemID) ||
+		(callID != "" && state.id != state.itemID && callID != state.id) {
+		return nil
+	}
+	return state
+}
+
+func (acc *responsesOutputAccumulator) terminalItem(kind, id string, index int, out []any) *responsesOutputItem {
+	if item := acc.byID[id]; item != nil && item.kind == kind {
 		return item
 	}
 	indexed := acc.byIndex[int64(index)]
-	if indexed != nil && (indexed.kind != "message" || (id != "" && indexed.id != "" && indexed.id != id)) {
+	if indexed != nil && (indexed.kind != kind || (id != "" && indexed.id != "" && indexed.id != id)) {
 		indexed = nil
 	}
-	onlyMessage := true
+	onlyItem := true
 	for i, entry := range out {
 		item, _ := entry.(map[string]any)
-		if i != index && item["type"] == "message" {
-			onlyMessage = false
+		if i != index && item["type"] == kind {
+			onlyItem = false
 			if indexed != nil && indexed.id != "" && item["id"] == indexed.id {
 				indexed = nil // Another terminal message explicitly owns this stream item.
 			}
 		}
 	}
-	if indexed != nil || !onlyMessage {
+	if indexed != nil || !onlyItem || kind != "message" {
 		return indexed
 	}
 	item, _ := acc.uniqueMessage(id, -1, false)
 	return item
 }
 
-// Only a completed reasoning item with the same native ID may supply
-// reasoning absent from the terminal.
+// A matched item supplies missing continuation metadata independently of
+// the terminal's text. Only an absent or single empty part needs whole-item text.
 func (item *responsesOutputItem) settleReasoning(terminalItem map[string]any, terminal *llm.ThinkingData, terminalNative reasoningContent) *llm.ThinkingData {
-	prior, native := responsesThinking(item.done)
-	if native == reasoningAbsent {
+	if item.done == nil {
 		return terminal
 	}
-	// Terminal whitespace is already native text. A zero-length part can
-	// still be filled, and ciphertext is the preferred continuation.
-	if prior.EncryptedContent == "" && (terminalNative == reasoningWhitespace || terminalNative == native) {
-		return terminal
+	if terminalNative <= reasoningEmpty && (terminalNative == reasoningAbsent || len(terminal.ResponsesTextParts) == 1) {
+		prior, native := responsesThinking(item.done, nil)
+		if prior == nil || (native == reasoningAbsent && prior.EncryptedContent == "") {
+			return terminal
+		}
+		if terminal == nil {
+			id, _ := terminalItem["id"].(string)
+			terminal = &llm.ThinkingData{ID: id, Summary: parseReasoningSummary(terminalItem["summary"])}
+		}
+		if native > terminalNative {
+			terminal.Text, terminal.ResponsesTextParts = prior.Text, prior.ResponsesTextParts
+		}
 	}
-	if summary := parseReasoningSummary(terminalItem["summary"]); summary != nil {
-		prior.Summary = summary
+	id, _ := item.done["id"].(string)
+	ciphertext, _ := item.done["encrypted_content"].(string)
+	terminal.ID = cmp.Or(terminal.ID, id)
+	terminal.EncryptedContent = cmp.Or(terminal.EncryptedContent, ciphertext)
+	if terminal.Summary == nil {
+		terminal.Summary = parseReasoningSummary(item.done["summary"])
 	}
-	return prior
+	return terminal
 }
 
 // Empty terminals and placeholders admit observed answers and calls at their
 // stream positions. A named reasoning placeholder admits only its own reasoning.
-func (acc *responsesOutputAccumulator) sparseContent(terminal []responsesTerminalItem, terminalReasoning bool) []llm.ContentPart {
+func (acc *responsesOutputAccumulator) sparseContent(terminal []responsesTerminalItem, terminalReasoning, emptyTerminal bool) []llm.ContentPart {
 	matched := make(map[*responsesOutputItem][]llm.ContentPart, len(terminal))
 	var content []llm.ContentPart
 	var previous *responsesOutputItem
@@ -204,6 +250,17 @@ func (acc *responsesOutputAccumulator) sparseContent(terminal []responsesTermina
 	}
 	acc.orderOutput()
 	for _, item := range acc.output {
+		if emptyTerminal && item.display.Len() != 0 {
+			parts, _ := item.done["content"].([]any)
+			hasText := slices.ContainsFunc(parts, func(p any) bool {
+				part, _ := p.(map[string]any)
+				text, _ := part["text"].(string)
+				return text != ""
+			})
+			if !hasText {
+				content = append(content, llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: item.display.String()}})
+			}
+		}
 		if parts, ok := matched[item]; ok {
 			content = append(content, parts...)
 			continue
@@ -212,7 +269,7 @@ func (acc *responsesOutputAccumulator) sparseContent(terminal []responsesTermina
 			continue
 		}
 		if item.kind == "message" {
-			content = item.appendMessage(content, item.phase)
+			content, _ = item.appendMessage(content, item.done, item.phase)
 			continue
 		}
 		if item.done != nil {
@@ -231,30 +288,54 @@ func (acc *responsesOutputAccumulator) sparseContent(terminal []responsesTermina
 	return content
 }
 
-// A completed message owns its parts. Its deltas fill a single empty
-// placeholder or supply the message when no completed item arrived.
-func (item *responsesOutputItem) appendMessage(content []llm.ContentPart, phase string) []llm.ContentPart {
-	start := len(content)
-	content, substantive := appendResponsesText(content, item.done, phase)
-	if len(item.text) == 0 || len(content) > start+1 || substantive {
-		return content
-	}
-	content = content[:start]
-	for _, index := range slices.Sorted(maps.Keys(item.text)) {
-		content = append(content, llm.ContentPart{Kind: llm.ContentText, Text: item.text[index].String(), Phase: phase, ResponsesMessageStart: len(content) == start})
-	}
-	return content
-}
-
-func appendResponsesText(content []llm.ContentPart, message map[string]any, phase string) ([]llm.ContentPart, bool) {
+// Nonempty terminal text owns its index. An empty slot can be filled from
+// the same observed part; unindexed text can fill only a single-part message.
+func (item *responsesOutputItem) appendMessage(content []llm.ContentPart, message map[string]any, phase string) ([]llm.ContentPart, bool) {
 	start := len(content)
 	parts, _ := message["content"].([]any)
-	var substantive bool
-	for _, entry := range parts {
+	var observed map[int64]*responsesOutputText
+	if item != nil {
+		observed = item.text
+	}
+	appendText := func(text string) {
+		content = append(content, llm.ContentPart{Kind: llm.ContentText, Text: text, Phase: phase, ResponsesMessageStart: len(content) == start})
+	}
+	var substantive, recovered bool
+	for index, entry := range parts {
 		p, _ := entry.(map[string]any)
-		if text, ok := p["text"].(string); ok && p["type"] == "output_text" {
-			content = append(content, llm.ContentPart{Kind: llm.ContentText, Text: text, Phase: phase, ResponsesMessageStart: len(content) == start})
-			substantive = substantive || text != ""
+		if p["type"] != "output_text" {
+			continue
+		}
+		text, ok := p["text"].(string)
+		if text != "" {
+			substantive = true
+		} else {
+			source := observed[int64(index)]
+			if len(parts) == 1 && (source == nil || source.value() == "") {
+				source = observed[-1]
+			}
+			if source != nil {
+				text, ok = source.value(), true
+				recovered = recovered || text != ""
+			}
+		}
+		if ok {
+			appendText(text)
+		}
+	}
+	if !substantive && len(parts) <= 1 {
+		for _, index := range slices.Sorted(maps.Keys(observed)) {
+			if index < int64(len(parts)) && !(index == -1 && len(parts) == 0 && len(observed) == 1) {
+				continue
+			}
+			text := observed[index].value()
+			recovered = recovered || text != ""
+			appendText(text)
+		}
+	}
+	if recovered && !substantive && phase == "" {
+		for i := start; i < len(content); i++ {
+			content[i].Phase = item.phase
 		}
 	}
 	return content, substantive
@@ -290,17 +371,15 @@ const (
 
 // Native bytes can consist entirely of whitespace. Such an item is kept in
 // history while still allowing the stream to supply missing answer or tool items.
-func responsesThinking(item map[string]any) (*llm.ThinkingData, reasoningContent) {
+func responsesThinking(item, prior map[string]any) (*llm.ThinkingData, reasoningContent) {
 	id, _ := item["id"].(string)
 	encrypted, _ := item["encrypted_content"].(string)
 	native := reasoningAbsent
-	if encrypted != "" {
-		native = reasoningSubstantive
-	}
 	parts, _ := item["content"].([]any)
+	priorParts, _ := prior["content"].([]any)
 	var display strings.Builder
 	var textParts []llm.ResponsesTextPart
-	for _, part := range parts {
+	for i, part := range parts {
 		p, _ := part.(map[string]any)
 		text, ok := p["text"].(string)
 		kind, _ := p["type"].(string)
@@ -317,6 +396,12 @@ func responsesThinking(item map[string]any) (*llm.ThinkingData, reasoningContent
 				native = reasoningSubstantive
 			}
 		}
+		if text == "" && kind != "" && i < len(priorParts) {
+			source, _ := priorParts[i].(map[string]any)
+			if source["type"] == kind {
+				text, _ = source["text"].(string)
+			}
+		}
 		if len(textParts) != 0 {
 			display.WriteString(reasoningPartSeparator)
 		}
@@ -325,7 +410,7 @@ func responsesThinking(item map[string]any) (*llm.ThinkingData, reasoningContent
 		textParts = append(textParts, llm.ResponsesTextPart{Type: kind, Start: start, End: display.Len()})
 	}
 	text := display.String()
-	if native == reasoningAbsent && strings.TrimSpace(text) == "" {
+	if encrypted == "" && native == reasoningAbsent && strings.TrimSpace(text) == "" {
 		return nil, native
 	}
 	return &llm.ThinkingData{

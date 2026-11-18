@@ -2,10 +2,12 @@ package responses
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/llm"
@@ -27,21 +29,77 @@ type responsesOutputItem struct {
 	index           int64
 	done            map[string]any
 	raw             json.RawMessage
-	text            map[int64]*strings.Builder
-	textComplete    bool
+	text            map[int64]*responsesOutputText
 	tool            *responsesToolState
+	display         strings.Builder
+	displayPart     bool
+	displayOnly     bool
+}
+
+type responsesOutputText struct {
+	deltas    strings.Builder
+	final     string
+	itemFinal bool
+}
+
+func (p *responsesOutputText) value() string {
+	return cmp.Or(p.final, p.deltas.String())
+}
+
+func (item *responsesOutputItem) textPart(index int64) *responsesOutputText {
+	if item.text == nil {
+		item.text = make(map[int64]*responsesOutputText)
+	}
+	if item.text[index] == nil {
+		item.text[index] = new(responsesOutputText)
+	}
+	return item.text[index]
+}
+
+func (item *responsesOutputItem) settleText(index int64, value string, itemFinal bool) {
+	part := item.textPart(index)
+	if value != "" && (itemFinal || !part.itemFinal) {
+		part.final = value
+		part.itemFinal = itemFinal
+		part.deltas.Reset()
+	}
 }
 
 // responsesOutputAccumulator retains completed items and pending answer and
 // tool output when a terminal response omits them. The live decoder and
 // recorded SSE reader use the same item identities and settlement rules.
 type responsesOutputAccumulator struct {
-	toolStates   map[string]*responsesToolState
-	itemToCallID map[string]string
-	output       []*responsesOutputItem
-	byID         map[string]*responsesOutputItem
-	byIndex      map[int64]*responsesOutputItem
-	completed    int
+	toolStates       map[string]*responsesToolState
+	itemToCallID     map[string]string
+	output           []*responsesOutputItem
+	byID             map[string]*responsesOutputItem
+	byIndex          map[int64]*responsesOutputItem
+	completed        int
+	anonymousDisplay *responsesOutputItem
+	reasoningStarted bool
+}
+
+func (acc *responsesOutputAccumulator) reasoningDisplay(typ string, payload map[string]any) string {
+	added := typ == "response.reasoning_part.added" || typ == "response.reasoning_summary_part.added"
+	delta, _ := payload["delta"].(string)
+	if !added && delta == "" {
+		return ""
+	}
+	id, _ := payload["item_id"].(string)
+	source := acc.outputItem(payload, "reasoning", id, nil, false)
+	if added {
+		if source.displayPart {
+			source.display.WriteString(reasoningPartSeparator)
+		}
+		source.displayPart = true
+		if acc.reasoningStarted {
+			return reasoningPartSeparator
+		}
+		acc.reasoningStarted = true
+		return ""
+	}
+	source.display.WriteString(delta)
+	return delta
 }
 
 func newResponsesOutputAccumulator() *responsesOutputAccumulator {
@@ -64,18 +122,33 @@ func responsesEventIndex(payload map[string]any, field string) int64 {
 
 // An item can be identified before its contents arrive. Retain the position
 // supplied by any of its events and keep first appearance for unindexed items.
-func (acc *responsesOutputAccumulator) outputItem(payload map[string]any, kind, id string, fallback *responsesOutputItem) *responsesOutputItem {
+func (acc *responsesOutputAccumulator) outputItem(payload map[string]any, kind, id string, fallback *responsesOutputItem, native bool) *responsesOutputItem {
 	index := responsesEventIndex(payload, "output_index")
 	item := acc.byID[id]
 	if item == nil {
 		item = acc.byIndex[index]
 	}
+	if !native {
+		if item != nil && item.kind != kind {
+			id, index = "", -1 // A display delta cannot claim a different native output.
+		}
+		if id == "" && index < 0 {
+			item = acc.anonymousDisplay
+		}
+	}
 	if item == nil {
 		item = fallback
 	}
 	if item == nil || item.kind != kind || (id != "" && item.id != "" && id != item.id) {
-		item = &responsesOutputItem{kind: kind, index: -1}
+		item = &responsesOutputItem{kind: kind, index: -1, displayOnly: !native}
 		acc.output = append(acc.output, item)
+	} else if native && item.displayOnly {
+		// Unindexed native items are ordered by their first native event.
+		if item.index < 0 && index < 0 {
+			i := slices.Index(acc.output, item)
+			acc.output = append(slices.Delete(acc.output, i, i+1), item)
+		}
+		item.displayOnly = false
 	}
 	if id != "" {
 		item.id = id
@@ -84,6 +157,9 @@ func (acc *responsesOutputAccumulator) outputItem(payload map[string]any, kind, 
 	if index >= 0 {
 		item.index = index
 		acc.byIndex[index] = item
+	}
+	if !native && id == "" && index < 0 {
+		acc.anonymousDisplay = item
 	}
 	return item
 }
@@ -106,56 +182,80 @@ func (acc *responsesOutputAccumulator) uniqueMessage(id string, index int64, pen
 	return candidate, true
 }
 
-func (acc *responsesOutputAccumulator) handleOutputTextDelta(payload map[string]any) string {
-	delta, _ := payload["delta"].(string)
-	if delta == "" {
-		delta, _ = payload["text"].(string)
-	}
-	if delta == "" {
-		return ""
-	}
+func (acc *responsesOutputAccumulator) textOutput(payload map[string]any) *responsesOutputItem {
 	id, _ := payload["item_id"].(string)
 	var fallback *responsesOutputItem
 	if id == "" && responsesEventIndex(payload, "output_index") < 0 {
 		var unambiguous bool
 		fallback, unambiguous = acc.uniqueMessage("", -1, true)
 		if !unambiguous {
-			return delta // Visible to the user; its owning message is ambiguous.
+			return nil // Visible to the user; its owning message is ambiguous.
 		}
 	}
-	item := acc.outputItem(payload, "message", id, fallback)
-	if !item.textComplete {
-		if item.text == nil {
-			item.text = make(map[int64]*strings.Builder)
+	return acc.outputItem(payload, "message", id, fallback, true)
+}
+
+func (acc *responsesOutputAccumulator) handleOutputTextDelta(payload map[string]any) string {
+	delta, _ := payload["delta"].(string)
+	if delta == "" {
+		delta, _ = payload["text"].(string)
+	}
+	if delta != "" {
+		if item := acc.textOutput(payload); item != nil {
+			index := responsesEventIndex(payload, "content_index")
+			if len(item.text) == 1 {
+				for known, part := range item.text {
+					if index < 0 {
+						index = known
+					} else if known < 0 {
+						delete(item.text, known)
+						item.text[index] = part
+					}
+					break
+				}
+			}
+			p := item.textPart(index)
+			if p.final == "" {
+				p.deltas.WriteString(delta)
+			}
 		}
-		index := max(0, responsesEventIndex(payload, "content_index"))
-		if item.text[index] == nil {
-			item.text[index] = new(strings.Builder)
-		}
-		item.text[index].WriteString(delta)
 	}
 	return delta
 }
 
-// A completed message can carry only its phase. Its text supersedes deltas
-// once the provider has supplied an actual output_text value.
+func (acc *responsesOutputAccumulator) handleTextPartDone(payload map[string]any, typ string) bool {
+	part := payload
+	if typ == "response.content_part.done" {
+		part, _ = payload["part"].(map[string]any)
+		if part["type"] != "output_text" {
+			return false
+		}
+	}
+	text, ok := part["text"].(string)
+	if ok {
+		if item := acc.textOutput(payload); item != nil {
+			item.settleText(responsesEventIndex(payload, "content_index"), text, false)
+		}
+	}
+	return typ == "response.output_text.done" || text != ""
+}
+
+// Completion can supply a different subset of parts from the deltas.
 func (item *responsesOutputItem) settleMessage(message map[string]any) {
 	if phase, _ := message["phase"].(string); phase != "" {
 		item.phase = phase
 	}
 	parts, _ := message["content"].([]any)
-	for _, entry := range parts {
+	for index, entry := range parts {
 		part, _ := entry.(map[string]any)
-		if text, _ := part["text"].(string); part["type"] == "output_text" && text != "" {
-			item.textComplete = true
-			item.text = nil
-			return
+		if text, ok := part["text"].(string); ok && part["type"] == "output_text" {
+			item.settleText(int64(index), text, true)
 		}
 	}
 }
 
 func (acc *responsesOutputAccumulator) toolOutput(payload map[string]any, st *responsesToolState, itemID string) *responsesOutputItem {
-	st.output = acc.outputItem(payload, "function_call", itemID, st.output)
+	st.output = acc.outputItem(payload, "function_call", itemID, st.output, true)
 	return st.output
 }
 
@@ -196,7 +296,7 @@ func (acc *responsesOutputAccumulator) HandleOutputItemAdded(payload, item map[s
 				fallback = pending
 			}
 		}
-		output := acc.outputItem(payload, kind, itemID, fallback)
+		output := acc.outputItem(payload, kind, itemID, fallback, true)
 		output.phase, _ = item["phase"].(string)
 		return
 	}
@@ -322,7 +422,7 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 		if it == "message" && acc.byID[itemID] == nil {
 			fallback, _ = acc.uniqueMessage(itemID, responsesEventIndex(payload, "output_index"), true)
 		}
-		output := acc.outputItem(payload, it, itemID, fallback)
+		output := acc.outputItem(payload, it, itemID, fallback, true)
 		if it == "message" {
 			output.settleMessage(item)
 		}
@@ -361,6 +461,7 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 		"arguments": argsStr,
 	}
 	output.raw = rawItemToken
+	output.tool = st
 	acc.completed++
 	return item, st, argsStr, true
 }
@@ -441,6 +542,7 @@ var responsesAPIEventTypes = map[string]struct{}{
 	"response.created":                       {},
 	"response.in_progress":                   {},
 	"response.content_part.added":            {},
+	"response.content_part.done":             {},
 	"response.output_item.added":             {},
 	"response.output_item.done":              {},
 	"response.output_text.delta":             {},
@@ -476,7 +578,6 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 
 	textID := "text_1"
 	textStarted := false
-	reasoningStarted := false
 	finished := false
 	// sawResponsesEvent records an event this decoder recognizes as belonging
 	// to the Responses API. It is the whole evidence the empty-stream sentinel
@@ -573,23 +674,14 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 					s.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: textID})
 				}
 				s.Send(llm.StreamEvent{Type: llm.StreamEventTextDelta, TextID: textID, Delta: delta})
-			case "response.reasoning_summary_text.delta", "response.reasoning_text.delta":
-				// OpenAI streams reasoning as summaries; some gateways
-				// (lunaroute fronting GLM) stream the raw reasoning text
-				// instead. Both are the model thinking, so both render as
-				// reasoning.
-				delta, _ := payload["delta"].(string)
-				if delta == "" {
-					return nil
+			case "response.output_text.done", "response.content_part.done":
+				bearing := acc.handleTextPartDone(payload, typ)
+				s.Send(llm.StreamEvent{Type: llm.StreamEventProviderEvent, Raw: payload, ContentBearing: bearing})
+			case "response.reasoning_summary_text.delta", "response.reasoning_text.delta",
+				"response.reasoning_summary_part.added", "response.reasoning_part.added":
+				if delta := acc.reasoningDisplay(typ, payload); delta != "" {
+					s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: delta})
 				}
-				s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: delta})
-			case "response.reasoning_summary_part.added", "response.reasoning_part.added":
-				// Detailed reasoning arrives as multiple parts; separate them
-				// with a blank line so the rendered thought stays readable.
-				if reasoningStarted {
-					s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: reasoningPartSeparator})
-				}
-				reasoningStarted = true
 			case "response.function_call_arguments.delta":
 				st, delta, ok := acc.HandleFunctionCallArgumentsDelta(payload, ev.Data)
 				if !ok {
