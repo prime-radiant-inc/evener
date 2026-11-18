@@ -184,7 +184,7 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 	})
 	t.Run("empty terminal uses settled message parts", func(t *testing.T) {
 		const draft = `{"type":"response.output_text.delta","item_id":"m","output_index":0,"content_index":0,"delta":"draft"}`
-		const clear = `{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"m","content":[]}}`
+		const emptyMessage = `{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"m","content":[]}}`
 		const reference = `{"type":"response.output_item.done","output_index":0,"item":{"type":"message","id":"m","content":null}}`
 		const other = `{"type":"response.output_text.delta","item_id":"other","output_index":1,"content_index":0,"delta":"other"}`
 		for _, tc := range []struct {
@@ -192,14 +192,15 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 			events []string
 			text   string
 		}{
-			{"completed empty array clears its earlier draft", []string{draft, clear}, ""},
-			{"repeated item reference preserves its clear", []string{draft, clear, reference}, ""},
-			{"cleared message leaves another draft selected", []string{draft, other, clear}, "other"},
+			{"completed empty array clears its earlier draft", []string{draft, emptyMessage}, ""},
+			{"repeated item reference preserves its clear", []string{draft, emptyMessage, reference}, ""},
+			{"cleared message leaves another draft selected", []string{draft, other, emptyMessage}, "other"},
 			{"item reference keeps its draft", []string{draft, reference}, "draft"},
 			{"pending draft supplies a sparse terminal", []string{draft}, "draft"},
 		} {
 			t.Run(tc.name, func(t *testing.T) {
-				events := append(tc.events, `{"type":"response.completed","response":{"output":[]}}`)
+				events := slices.Clone(tc.events)
+				events = append(events, `{"type":"response.completed","response":{"output":[]}}`)
 				observed, live := responsesEvents(t, events...)
 				if !hasEventType(observed, llm.StreamEventTextDelta) {
 					t.Fatal("live accumulator never received the draft")
