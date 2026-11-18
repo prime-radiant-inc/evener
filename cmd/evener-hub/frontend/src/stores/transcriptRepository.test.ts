@@ -430,6 +430,66 @@ it("folds a pre-response frame from the retired source without letting it reclai
   expect(after?.history?.invalidatedAtGeneration).toBeUndefined();
 });
 
+// A saved fallback MERGES, so it retains the held boot for history validity
+// while its rows come from the saved index. The token it keeps is therefore
+// not the source that accepted the read, and treating it as one discarded a
+// buffered frame that already named the source which replaced it.
+//
+// The harm is not only the source's own content: a replacement's
+// `history/updated` is what invalidates the repository while the read is
+// pending, and the invalidation is the signal the live transcript recovers
+// from. Dropping the frame on the strength of a retained boot accepted the
+// fallback over an invalidation that had already happened, leaving the pane
+// believing a superseded snapshot was current.
+it("does not let a saved fallback's retained boot supersede a buffered replacement's frame", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const baseline = readMany(3);
+  baseline.bootGeneration = "1@other";
+  baseline.snapshot = { incarnation: identity.incarnation, length: 3 };
+  expect(owner.acceptRead(baseline, { lifetime: 1, readId: "saved-seed", boundary: "saved-seed" })).toBe(true);
+  await owner.settled();
+  expect(owner.getSnapshot()?.history?.bootGeneration).toBe("1@other");
+
+  // The fallback answered nothing live, so it establishes no source of its own
+  // and merges under the boot it held.
+  const fallback: ThreadHistoryReadResponse = read("saved", 3);
+  fallback.bootGeneration = "1@other";
+  fallback.servedFrom = "saved-index";
+  fallback.fallbackReason = "live-read-failed";
+  fallback.snapshot = { incarnation: identity.incarnation, length: 3 };
+  expect(owner.acceptRead(fallback, { lifetime: 1, readId: "saved", boundary: "saved" })).toBe(true);
+  expect(owner.getSnapshot()?.history?.bootGeneration).toBe("1@other");
+
+  // Buffered before that fallback's response: the source that replaced boot 1
+  // and the identity its frame carries.
+  owner.acceptBeforeReadCut(
+    [
+      {
+        method: "history/updated",
+        params: {
+          ref,
+          threadId,
+          bootGeneration: "2@other",
+          epoch: 4,
+          snapshot: { incarnation: identity.incarnation, length: 4 },
+        },
+      } as AnyNotification,
+    ],
+    { lifetime: 1 },
+  );
+
+  const after = owner.getSnapshot();
+  // The replacement's frame is kept, so its invalidation survives to reach the
+  // recovery path instead of being cleared by the fallback's acceptance.
+  expect(after?.history?.invalidatedAtGeneration).toBeDefined();
+  // The awaited identity is the replacement's, which is what the next read must
+  // be no older than, and it is also the owner the frame recorded.
+  expect(after?.history?.awaited?.bootGeneration).toBe("2@other");
+  expect(after?.history?.holdOwner).toBe("2@other");
+});
+
 it("persists the page observation snapshot rather than the latest completeness watermark", async () => {
   const { fixture, owner, reader, rows } = await repositoryWithPage();
   try {

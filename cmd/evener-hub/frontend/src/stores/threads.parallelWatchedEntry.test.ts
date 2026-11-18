@@ -200,6 +200,100 @@ describe("useThreadsStore.watchThread", () => {
     threadsStore.getState().releaseWatchedThread("ref_a");
   });
 
+  test("a buffered outgoing hold cannot outrank the replacement a failure names", async () => {
+    const a = connectReadyFakeClient();
+    // The thread is hydrated under boot 1, so the base model carries an owner
+    // the failure can replace.
+    a.on("thread/read", () => versionedReadResponse("ref_a", { name: "Held" }));
+    await threadsStore.getState().watchThread("ref_a", { includeTurns: true });
+
+    // The replacement's read fails, naming the source it serves under. Before it
+    // answers, the buffer already holds the outgoing source's sample (a large
+    // sequence from the daemon that is leaving) and the incoming source's own
+    // first, unheld sample.
+    const b = new FakeClient("ready");
+    let failRead: (() => void) | null = null;
+    b.on(
+      "thread/read",
+      () =>
+        new Promise<ThreadReadResponse>((_resolve, reject) => {
+          failRead = () =>
+            reject(
+              new WireError("thread history failed at entry 3", -32000, {
+                evenerErrorInfo: "transcriptHistoryFailed",
+                bootGeneration: "2",
+                epoch: 4,
+              }),
+            );
+        }),
+    );
+    connectionStore.getState().connect(b);
+    await flushUntil(() => failRead !== null);
+
+    // The outgoing source's sample, numbered from its own sequence.
+    b.emitNotification({
+      method: "evener/delegate/updated",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        delegate: {
+          delegateId: "dlg_a",
+          ownerSessionId: "s1",
+          rootSessionId: "s1",
+          transcriptRef: "ref_a",
+          status: "running",
+          holdSequence: 900,
+          drainHeldByJobs: true,
+          runningJobCount: 2,
+        },
+      },
+    } as unknown as AnyNotification);
+    // The replacement names itself, then publishes its own unheld sample.
+    b.emitNotification({
+      method: "history/updated",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        bootGeneration: "2",
+        epoch: 4,
+        snapshot: { incarnation: "inc-1", length: 2 },
+        turns: [],
+      },
+    } as unknown as AnyNotification);
+    b.emitNotification({
+      method: "evener/delegate/updated",
+      params: {
+        threadId: "thr_ref_a",
+        ref: "ref_a",
+        delegate: {
+          delegateId: "dlg_a",
+          ownerSessionId: "s1",
+          rootSessionId: "s1",
+          transcriptRef: "ref_a",
+          projectionRevision: 7,
+          status: "completed",
+        },
+      },
+    } as unknown as AnyNotification);
+
+    (failRead as unknown as () => void)();
+    await flushUntil(() => threadsStore.getState().watchedThreads.get("ref_a")?.history?.failed !== undefined);
+
+    const model = threadsStore.getState().watchedThreads.get("ref_a");
+    // The replacement is the recorded owner, so its own sample stands...
+    expect(model?.history?.holdOwner).toBe("2");
+    // ...and the retired source's sequence is gone: a wait it had already ended
+    // must not present as still pending under the replacement.
+    expect(model?.delegates?.[0]?.holdSequence).toBeUndefined();
+    // The durable half survives on both sides: the row the outgoing source
+    // published, the replacement's own newer outcome on it, and the diagnostic
+    // that names the failure.
+    expect(model?.delegates?.[0]?.status).toBe("completed");
+    expect(model?.delegates?.[0]?.delegateId).toBe("dlg_a");
+    expect(model?.history?.failed).toBeDefined();
+    threadsStore.getState().releaseWatchedThread("ref_a");
+  });
+
   test("a watched refresh preserves a live active turn omitted by the snapshot cut", async () => {
     const a = connectReadyFakeClient();
     a.on("thread/read", () =>

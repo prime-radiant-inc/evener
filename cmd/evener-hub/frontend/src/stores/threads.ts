@@ -6466,7 +6466,7 @@ function replayHydrationNotifications(
     confirmedBootReplacement(preFailureOwner, retiredBy, "authoritative");
   let incomingNamed = false;
   for (const update of notifications) {
-    const notification =
+    let notification =
       retiredBy === undefined
         ? update.notification
         : withoutRetiredSourceToken(update.notification, retiredBy, preFailureOwner ?? "");
@@ -6477,6 +6477,23 @@ function replayHydrationNotifications(
         // and reducing both to `root` would treat the outgoing boot's own frame
         // as naming the incoming one.
         if (boot !== undefined && boot !== "" && boot === retiredBy) incomingNamed = true;
+      } else if (notification.method === "evener/delegate/updated" && !incomingNamed) {
+        // A delegate sample is DURABLE - its row, lifecycle and terminal
+        // outcome do not belong to the replaced source's numbering - but the
+        // HOLD it carries does. A sample buffered before the replacement named
+        // itself was published while the retired source was the only writer on
+        // this buffer, so its hold sequence is numbered from a source that no
+        // longer serves the thread.
+        //
+        // Folding it whole reinstates that sequence AFTER the hand-off already
+        // retired the base model's copy, and the incoming source's own history
+        // update then finds itself already recorded as owner and clears
+        // nothing: the retired daemon's larger sequence outranks the
+        // replacement's first unheld frame and a wait that ended presents as
+        // still pending. Strip only the hold fields, exactly as a departed
+        // source's sample is stripped on a confirmed absence.
+        const stripped = stripDelegateHold({ ...update, notification });
+        notification = stripped.notification;
       } else if (!incomingNamed && notification.method.startsWith("overlay/")) {
         // An overlay upsert carries NO source identity
         // (`OverlayUpsertedParams` is threadId, ref, item), so position is the

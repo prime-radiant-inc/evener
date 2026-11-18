@@ -6,10 +6,12 @@ import {
   applyReadResponse,
   type CachedSessionItem,
   comparePositions,
+  confirmedBootReplacement,
   decodeTranscriptItem,
   encodeTranscriptItem,
   type HistoryState,
   handOffReplacedSource,
+  historyAnsweredLive,
   historyFallback,
   historyReplacesWindow,
   hydrateThread,
@@ -554,6 +556,14 @@ export class TranscriptRepository {
   #retirementWrite: { boundary: string; persisted: boolean } | undefined;
   #seedSnapshot: number | undefined;
   #seedAuthorityInvalid = false;
+  // The source the LAST ACCEPTED read established, which is what the pre-cut
+  // replay may treat as superseding a buffered frame. It is the read's own
+  // evidence, not the model's retained token: a saved fallback keeps the held
+  // boot for history validity, and reading that as "the source the read
+  // established" discards a buffered replacement's frame. Empty when the read
+  // established no source at all - a `live-read-failed` fallback - which
+  // supersedes nothing.
+  #acceptedReadSource = "";
   #recoveryNeeded = false;
   #disposed = false;
   #invalidated = false;
@@ -919,6 +929,18 @@ export class TranscriptRepository {
       }
     }
     this.#model = candidate;
+    // The read's OWN evidence of the source it serves under, which is what the
+    // pre-cut replay may treat as superseding a buffered frame. A saved
+    // fallback suppresses the token for history VALIDITY - its rows came from
+    // the saved index - so neither the retained boot nor the response token is
+    // that evidence there: only an enriched answer (`live-read-empty`) spoke to
+    // a live daemon, and a `live-read-failed` fallback names no source at all
+    // and supersedes nothing.
+    this.#acceptedReadSource = historyFallback(response)
+      ? historyAnsweredLive(response)
+        ? (response.bootGeneration ?? "")
+        : ""
+      : (response.bootGeneration ?? "");
     // A read installs the view the repository now serves, so a previous view's
     // exhaustion does not survive it. A saved fallback that names no
     // continuation is the whole saved transcript: the view starts exhausted,
@@ -1141,27 +1163,46 @@ export class TranscriptRepository {
    */
   acceptBeforeReadCut(notifications: readonly AnyNotification[], context: { lifetime: number }): void {
     const responseOverlayKeys = new Set(Object.keys(this.#model?.overlay ?? {}));
-    // The source the ACCEPTED read established is the authority here. A
-    // history frame buffered before that read's response carries the source it
-    // was produced under, and if that source is not the one the read installed
-    // it may not reassert itself: folding `5@root` onto a model boot 1 now
-    // serves lets the reducer accept it as a takeover, which clears the live
-    // hold boot 1 supplied and invalidates the snapshot the read just
-    // installed.
+    // The source that ACCEPTED the read is the authority here, and it is not
+    // always the token the accepted model carries. A saved fallback merges:
+    // it retains the held boot for history validity, because its rows came
+    // from the saved index, while a buffered frame may already name the
+    // source that replaced it. Reading the retained boot as "the source the
+    // read established" then discards the replacement's own frame - and if
+    // that frame invalidated the repository while the read was pending,
+    // accepting the fallback clears the invalidation and replay loses the
+    // signal the live transcript recovers from.
     //
-    // It is EXCLUDED, not blanked. Blanking its token is itself a boot change -
-    // the reducer reads `""` as a different generation, invalidates the fresh
-    // snapshot and records an empty awaited boot - so the "fix" reintroduced
-    // the harm it was meant to prevent, one field over. The accepted read is
-    // the newest recorded form of everything this frame reports, so dropping it
-    // loses nothing that is still true. Other methods from the same interval
-    // (a queue change, an overlay the response did not cover) are not history
-    // authority and still replay below.
-    const readSource = this.#model?.history?.bootGeneration ?? "";
+    // So the authority is the read's OWN evidence:
+    // - a live answer names the source it serves under, and only frames from a
+    //   source that answer superseded are excluded;
+    // - an enriched fallback (`live-read-empty`) answered live for identity
+    //   purposes, so its token is that same evidence;
+    // - a fallback that answered nothing live (`live-read-failed`) establishes
+    //   no source at all. It supersedes nothing, so every buffered frame is
+    //   kept and a replacement's invalidation survives to reach recovery.
+    //
+    // A superseded frame is EXCLUDED, not blanked. Blanking its token is itself
+    // a boot change - the reducer reads `""` as a different generation,
+    // invalidates the fresh snapshot and records an empty awaited boot - so the
+    // "fix" reintroduced the harm it was meant to prevent, one field over. The
+    // accepted read is the newest recorded form of everything that frame
+    // reports, so dropping it loses nothing that is still true. Other methods
+    // from the same interval (a queue change, an overlay the response did not
+    // cover) are not history authority and still replay below.
+    const readSource = this.#acceptedReadSource;
     for (const notification of notifications) {
       if (notification.method === "history/updated") {
         const boot = notification.params.bootGeneration;
-        if (readSource !== "" && boot !== undefined && boot !== "" && boot !== readSource) continue;
+        if (
+          readSource !== "" &&
+          boot !== undefined &&
+          boot !== "" &&
+          boot !== readSource &&
+          confirmedBootReplacement(boot, readSource, "authoritative")
+        ) {
+          continue;
+        }
         this.accept(notification, context);
       } else if (
         notification.method === "thread/queueChanged" &&
