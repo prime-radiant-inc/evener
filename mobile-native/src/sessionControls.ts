@@ -92,6 +92,13 @@ export interface ControlsSession {
 	 * discarded without throwing, and a discarded read leaves the projection
 	 * showing the value from before it. */
 	published(): boolean;
+	/** What the published projection says `setting` holds, or null while its
+	 * store is not open. This is the daemon's report, and it is a different fact
+	 * from the daemon's acceptance of a write: a pick for the next turn is
+	 * acknowledged while the projection correctly still names the one running,
+	 * so a publication alone does not establish a write. Absent on a record with
+	 * no store to ask, where a publication is the only answer there is. */
+	projected?(setting: Setting): string | null;
 	/** The values written for and not yet established by a publication. */
 	unread(): Unread;
 	/** Records one setting's outcome, or clears it once a publication catches up.
@@ -124,7 +131,15 @@ function detachedSession(): ControlsSession {
  * mounted views of the same session read one projection, so a per-view record
  * would let one dismiss a correction the other knew was outstanding.
  */
-export function sessionFacts(published: () => boolean, readsStarted: () => number = () => 0): ControlsSession {
+export function sessionFacts(
+	published: () => boolean,
+	readsStarted: () => number = () => 0,
+	// What the store shows for each setting. A record built without one has no
+	// projection to compare against - its caller never had a store - so there a
+	// publication is the answer, which is what every such caller meant before
+	// the session entry started supplying one.
+	projected?: (setting: Setting) => string | null,
+): ControlsSession {
 	let unread: Unread = { model: null, vision: null };
 	// The read count each setting's outcome was recorded at. An outcome says the
 	// projection cannot answer for that setting; only a read begun after it was
@@ -137,10 +152,20 @@ export function sessionFacts(published: () => boolean, readsStarted: () => numbe
 	const changed = () => {
 		for (const listener of listeners) listener();
 	};
-	return {
+	const facts: ControlsSession = {
 		published,
+		...(projected === undefined ? {} : { projected }),
 		unread: () => unread,
 		record: (setting, outcome) => {
+			// Every record is a write, including one that repeats the previous
+			// outcome. Two vision writes can both lose their replies with a read
+			// starting between them, and the second one matching the first is not
+			// evidence they are the same write: keeping the first one's fence would
+			// let that intervening read - which may have sampled the session before
+			// the second write applied - retire both uncertainties at once. So the
+			// fence moves on every record, and only the announcement waits for an
+			// outcome the reader can see change.
+			recordedAt = { ...recordedAt, [setting]: readsStarted() };
 			const current = unread[setting];
 			const same =
 				current === null
@@ -150,7 +175,6 @@ export function sessionFacts(published: () => boolean, readsStarted: () => numbe
 						(current.state === "unknown" || (outcome.state === "acknowledged" && current.value === outcome.value));
 			if (same) return;
 			unread = { ...unread, [setting]: outcome };
-			recordedAt = { ...recordedAt, [setting]: readsStarted() };
 			changed();
 		},
 		retirePublished: () => {
@@ -158,7 +182,26 @@ export function sessionFacts(published: () => boolean, readsStarted: () => numbe
 			const kept: Setting[] = [];
 			let retired = false;
 			for (const setting of ["model", "vision"] as const) {
-				if (unread[setting] !== null && recordedAt[setting] < started) retired = true;
+				const outcome = unread[setting];
+				if (outcome === null) continue;
+				// A record with no store behind it has no read count to fence on
+				// and no projection to compare with; a publication is the whole of
+				// the answer there, as it always was for such a caller.
+				if (projected === undefined) {
+					retired = true;
+					continue;
+				}
+				// A read begun after the write answers it only in combination with
+				// what it published. An acknowledged value is established when the
+				// projection names it: a pick the daemon accepted for the next turn
+				// leaves the projection naming the running model, and that report is
+				// correct and says nothing about the queued change. An unknown is
+				// established by any newer publication, which reports what the hub
+				// actually holds whichever way the lost write went.
+				const shown = projected(setting);
+				const answered =
+					recordedAt[setting] < started && (outcome.state === "unknown" || (shown !== null && shown === outcome.value));
+				if (answered) retired = true;
 				else if (unread[setting] !== null) kept.push(setting);
 			}
 			if (!retired) return;
@@ -175,6 +218,7 @@ export function sessionFacts(published: () => boolean, readsStarted: () => numbe
 			};
 		},
 	};
+	return facts;
 }
 
 export interface ControlsState {
@@ -483,22 +527,33 @@ export class SessionControls {
 				// reader returns, and a pick that never reattaches its relay applies
 				// with nothing on screen to say so. Visibility decides only whether
 				// the change is announced, which is the reader's question.
-				let readback = false;
+				// The acknowledgement is the record that the hub took the value, so
+				// it is written down before the read rather than after it. Another
+				// mounted view of this session reads the record to decide whether the
+				// row the projection draws is still the truth; waiting for the
+				// readback leaves that view trusting a projection this write has
+				// already invalidated, and tapping the selected row there dismisses
+				// the picker without sending the correction.
+				const setting: Setting = kind === "changeModel" ? "model" : "vision";
+				this.session.record(setting, { state: "acknowledged", value });
+				let resolved = false;
 				if (this.isCurrent("destination")) {
 					// Readiness is a separate question from the reader's presence: a
 					// transport that is away reads nothing, and the session's own
 					// reconnect read catches the screen up afterwards.
 					try {
 						await this.refresh();
-						// A read can finish without publishing: the store discards one
-						// a newer read superseded, and that leaves the projection
-						// showing the value from before this set. Only a published
-						// projection is the readback; the rest keeps the record below.
-						readback = this.session.published();
+						resolved = true;
 					} catch {
 						// The screen's own read catches up; the pick applied regardless.
 					}
 				}
+				// The publication, not this controller, is what retires the record:
+				// only a read of the session can say what the hub now holds, and the
+				// entry retires it when that read shows this value. A read that
+				// published nothing, or one that stopped at the running model while a
+				// next-turn pick is queued, leaves the record standing.
+				if (resolved && this.session.published()) this.session.retirePublished();
 				// A read can outlast the reader's stay: whoever left while it ran
 				// is owed no confirmation on the screen they left, even when the
 				// read itself failed.
@@ -511,8 +566,6 @@ export class SessionControls {
 				// hub held before, so the value it answers with is recorded against
 				// the session - a replacement binding has to see it too, and the one
 				// that sent this may be the one being retired right now.
-				const setting: Setting = kind === "changeModel" ? "model" : "vision";
-				this.session.record(setting, readback ? null : { state: "acknowledged", value });
 				if (!this.disposed) {
 					this.publish({
 						pending: null,

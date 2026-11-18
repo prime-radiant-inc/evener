@@ -178,6 +178,15 @@ class SessionEntry implements NativeConversationSession {
 		this.sessionFacts = sessionFacts(
 			() => this.store.getState().latestReadState === "ready",
 			() => this.#readsStarted,
+			// What the published projection says each setting holds, in the same
+			// shape a pick records. The model is written as one provider/model
+			// string so a queued next-turn pick and the running model cannot be
+			// mistaken for each other.
+			(setting) => {
+				const session = this.store.getState().canonicalSession();
+				if (session === null) return null;
+				return setting === "model" ? `${session.modelProvider}/${session.model}` : (session.visionModel ?? null);
+			},
 		);
 		const entry = this;
 		this.readActor = {

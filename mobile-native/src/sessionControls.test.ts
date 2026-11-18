@@ -1119,6 +1119,42 @@ describe("conversation-owned session controls", () => {
 		expect(await controls.changeModel("two", "next")).toBe(true);
 		expect(controls.getSnapshot().unread).toEqual({ model: null, vision: null });
 	});
+	// A publication is the daemon's report, not a receipt for the pick. During a
+	// running turn the hub acknowledges a pick for the next turn while the
+	// projection correctly still names the model that is running, so a read that
+	// published has answered the pick only when it shows the picked value.
+	// Treating any publication as confirmation clears the record while the
+	// projection still draws the running model as selected - and the reader who
+	// taps that row to undo the queued change closes the sheet without sending.
+	it("keeps a next-turn pick recorded while the projection still names the running model", async () => {
+		let reads = 0;
+		const session = sessionFacts(
+			() => true,
+			() => reads,
+			// The read landed and reports the model that is running, which is the
+			// truth: the pick applies from the next turn.
+			() => "one/running",
+		);
+		session.record("model", { state: "acknowledged", value: "two/next" });
+		// The readback after the pick starts, and reports the running model.
+		reads += 1;
+		session.retirePublished();
+		expect(session.unread()).toEqual({ model: { state: "acknowledged", value: "two/next" }, vision: null });
+		// What the reader then sees: the running model's row is a correction, not
+		// an already-set value, so tapping it sends the change back.
+		expect(verifiedSetting(session.unread(), "model", "one/running")).toBe(false);
+		// A read that does show the pick is the readback, and it retires it.
+		let later = 0;
+		const shown = sessionFacts(
+			() => true,
+			() => later,
+			() => "two/next",
+		);
+		shown.record("model", { state: "acknowledged", value: "two/next" });
+		later += 1;
+		shown.retirePublished();
+		expect(shown.unread()).toEqual({ model: null, vision: null });
+	});
 	// A read that resolves is not a read that published. The store discards a
 	// projection a newer read superseded without throwing, and the refresh
 	// callback sees only a store that is open with no error - so treating a
@@ -1411,6 +1447,9 @@ describe("conversation-owned session controls", () => {
 		const session = sessionFacts(
 			() => true,
 			() => reads,
+			// An unknown is answered by any newer publication, so its fence is
+			// about the read count alone.
+			() => "off",
 		);
 		// The write is recorded while that read is in flight.
 		session.record("vision", { state: "unknown" });
@@ -1418,6 +1457,34 @@ describe("conversation-owned session controls", () => {
 		session.retirePublished();
 		expect(session.unread()).toEqual({ model: null, vision: { state: "unknown" } });
 		expect(verifiedSetting(session.unread(), "vision", "off")).toBe(false);
+	});
+	// The fence belongs to the write, not to the setting. Two vision writes can
+	// both lose their replies, with a read starting between them; the second
+	// record matching the first is not evidence they are one write. If it kept
+	// the first one's fence, that intervening read - which may have sampled the
+	// session before the second write applied - could publish and retire both
+	// doubts, putting the stale Off row back within one round trip of the second
+	// lost reply.
+	it("keeps the fence of a second unanswered write with a read between them", async () => {
+		let reads = 0;
+		const session = sessionFacts(
+			() => true,
+			() => reads,
+			() => "off",
+		);
+		session.record("vision", { state: "unknown" });
+		// A read starts, and a second vision write loses its reply behind it.
+		reads += 1;
+		session.record("vision", { state: "unknown" });
+		// That read publishes: it may have sampled the session before the second
+		// write, so it answers the first doubt and not the second.
+		session.retirePublished();
+		expect(session.unread()).toEqual({ model: null, vision: { state: "unknown" } });
+		expect(verifiedSetting(session.unread(), "vision", "off")).toBe(false);
+		// The read the second write deserves is the one begun after it.
+		reads += 1;
+		session.retirePublished();
+		expect(session.unread()).toEqual({ model: null, vision: null });
 	});
 	// The hub's acknowledgement, not the read that follows it, is the record
 	// that the pick applied. A phone that reconnects while that read is still
@@ -1458,6 +1525,46 @@ describe("conversation-owned session controls", () => {
 	// Settlement is not visibility: an outer screen can cover this conversation
 	// without disposing its controls, and whatever was in flight still has to
 	// end, or the picker under that screen stays disabled for good.
+	// An acknowledgement is not a read. The hub took the value, but the other
+	// mounted view of this session still draws the projection's Off row as
+	// selected, and only the shared record tells it that row is no longer the
+	// truth. Waiting for the readback to write that down leaves the second view
+	// dismissing the picker on a row the hub no longer holds, and vision stays
+	// on with nothing sent to undo it.
+	it("records an acknowledged vision change before its readback lands", async () => {
+		const readback = Promise.withResolvers<void>();
+		const entered = Promise.withResolvers<void>();
+		const session = sessionFacts(
+			() => false,
+			() => 0,
+			() => "off",
+		);
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => ({ data: [{ provider: "one", model: "vision" }] }),
+				vision: async () => {},
+			}),
+			async () => {
+				entered.resolve();
+				await readback.promise;
+			},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+			null,
+			session,
+		);
+		await controls.loadModels();
+		const pick = controls.changeVisionModel("one", "vision");
+		await entered.promise;
+		// The readback is still out and the projection still says Off. The other
+		// view is deciding whether its Off row may dismiss on that match.
+		expect(verifiedSetting(session.unread(), "vision", "off")).toBe(false);
+		expect(verifiedSetting(session.unread(), "vision", "one/vision")).toBe(true);
+		readback.resolve();
+		await pick;
+	});
 	it.each([
 		{ name: "a successful rename", settle: "applies" },
 		{ name: "a rejected rename", settle: "refuses" },
