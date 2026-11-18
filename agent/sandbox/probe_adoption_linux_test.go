@@ -105,6 +105,47 @@ type probeOutcome struct {
 // is not a pass: nothing recorded that the command ran.
 func (o probeOutcome) ok() bool { return o.Start == probeRan && o.Exit == 0 }
 
+// outcomeFromRun turns one command's result into a probeOutcome, so every
+// invocation this file records — the control's, and production's own through
+// the recorder below — classifies a launch failure the same way.
+func outcomeFromRun(err error, stderr string) probeOutcome {
+	out := probeOutcome{Start: probeRan, Exit: -1, Stderr: stderr}
+	if err == nil {
+		out.Exit = 0
+		return out
+	}
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
+		out.Exit = exitErr.ExitCode()
+		return out
+	}
+	// The command never started, so there is no exit status to report and no
+	// stderr to explain it: the cause is the launch error itself, and dropping
+	// it is what would make this failure look like a silent exit.
+	out.Start = classifyProbeStart(err)
+	out.StartErr = err.Error()
+	return out
+}
+
+// probeRunRecorder is the production probe's own host boundary, with the raw
+// result of its last run kept. Production decides capability through
+// bwrapUsernsCheck, which takes a probeSystem; handing it a recorder means the
+// helper measures what production actually runs — its argv, its cleanup, and
+// whatever it does about an abandoned reaper — rather than a second launcher
+// that would agree with production today and drift from it tomorrow.
+type probeRunRecorder struct {
+	hostProbeSystem
+	outcome probeOutcome
+}
+
+func (r *probeRunRecorder) run(ctx context.Context, name string, args ...string) error {
+	var stderr bytes.Buffer
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Stderr = &stderr
+	err := cmd.Run()
+	r.outcome = outcomeFromRun(err, stderr.String())
+	return err
+}
+
 // fate is the outcome as one clause for a failure message: the exit status and
 // the program's first diagnostic line, or the fact that it never started and
 // why. A diagnostic must never read the same for "ran and was silent" and
@@ -240,6 +281,13 @@ func TestBwrapProbeLeavesNoAdoptedChild(t *testing.T) {
 		return
 	}
 	if !report.Probe.ok() {
+		// A launch failure never reached the probe's arguments, so it cannot be
+		// evidence that one of them was refused. Only a probe that ran has an
+		// argument to blame, and only the control passing makes that the
+		// difference between the two runs.
+		if report.Probe.Start != probeRan {
+			t.Fatalf("the capability probe never started (%s) on a host whose bwrap ran a plain namespaced sandbox (%s): the launch failed before bwrap saw any probe argument", report.Probe.fate(), report.Control.fate())
+		}
 		t.Fatalf("the capability probe failed (%s) on a host whose bwrap ran a plain namespaced sandbox (%s), so an argument the probe passes and the control does not made it fail", report.Probe.fate(), report.Control.fate())
 	}
 	if report.ControlLeft == 0 {
@@ -261,6 +309,12 @@ func TestBwrapProbeLeavesNoAdoptedChild(t *testing.T) {
 // so a classification lost in the encoding would be lost exactly where it is
 // needed.
 func TestProbeOutcomeSeparatesFailedLaunchFromSilentExit(t *testing.T) {
+	// A bare name is resolved through PATH, so the lookup failure this test
+	// needs would be a success on a developer machine that happens to have an
+	// executable of that name. Pin PATH to a directory this test owns and
+	// nothing in it, so the name cannot resolve wherever the suite runs.
+	t.Setenv("PATH", t.TempDir())
+
 	dir := t.TempDir()
 	missing := filepath.Join(dir, "no-such-bwrap")
 	notExecutable := filepath.Join(dir, "not-executable")
@@ -276,6 +330,7 @@ func TestProbeOutcomeSeparatesFailedLaunchFromSilentExit(t *testing.T) {
 		start probeStart
 		exit  int
 	}{
+		// The first and third name a path, so PATH above does not decide them.
 		{name: "program missing", argv: []string{missing}, start: probeNoProgram, exit: -1},
 		{name: "program not on PATH", argv: []string{"evener-nonexistent-bwrap-probe"}, start: probeNoProgram, exit: -1},
 		{name: "program not executable", argv: []string{notExecutable}, start: probeRefused, exit: -1},
@@ -344,7 +399,6 @@ func TestBwrapProbeOrphanHelperProcess(t *testing.T) {
 		return
 	}
 
-	probe := bwrapProbeArgs(path)
 	report := bwrapProbeOrphanReport{
 		MissingFlags: missingHelpFlags(t, path, bwrapProbeFloorFlags),
 	}
@@ -362,7 +416,15 @@ func TestBwrapProbeOrphanHelperProcess(t *testing.T) {
 		report.Control = runProbeArgv(t, control)
 		report.ControlLeft = len(reapAdopted(t))
 
-		report.Probe = runProbeArgv(t, probe)
+		// The probe is production's own function, not this file's copy of its
+		// argv: bwrapUsernsCheck decides capability and owns whatever the probe
+		// does about an abandoned reaper. Running its argv through a launcher of
+		// this file's own would measure a second executor, so a fix that reaps
+		// inside production would show up as a leak this harness reports and
+		// production does not have.
+		recorder := &probeRunRecorder{}
+		bwrapUsernsCheck(recorder, path)
+		report.Probe = recorder.outcome
 		report.ProbeLeft = reapAdopted(t)
 	}
 
