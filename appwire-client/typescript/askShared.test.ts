@@ -854,6 +854,55 @@ test("a hook-rewritten question recaps nothing while the row shows the original"
   expect(answeredAskUserReply(model, second)).toBeUndefined();
 });
 
+test("a stamped free-prose recap is refused while the row shows the original question", () => {
+  // The free-prose form of the case above. Two same-header siblings, and a
+  // pre-tool hook rewrote the FIRST to ask about tests. The stamp names only
+  // that first call, which the sibling heuristic would previously have
+  // declined, and the reply is ordinary prose about the tests. Recapping it
+  // would put the test answer beneath the deployment question the row still
+  // displays, so the raw reply stays instead.
+  const first = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_1",
+    callId: "call_1",
+    toolName: "ask_user",
+    status: "completed",
+    raw: {
+      version: 1,
+      questions: [
+        {
+          header: "Run tests?",
+          question: "Run the test suite first?",
+          options: [
+            { label: "Yes", detail: "ok" },
+            { label: "No", detail: "ok" },
+          ],
+        },
+      ],
+    },
+  });
+  const second = item({
+    argumentsJSON: askUserArgs(ONE_QUESTION),
+    turnId: "turn_1",
+    id: "ask_2",
+    callId: "call_2",
+    toolName: "ask_user",
+    status: "completed",
+  });
+  const reply = userMessage({
+    text: "Yes, run the tests first.",
+    turnId: "turn_2",
+    answerToTurnIds: ["turn_1"],
+    resolvedAskCalls: [{ turnId: "turn_1", callId: "call_1" }],
+  });
+  const model = turnsModel([first, second], [reply]);
+  expect(answeredAskUserSuffix(model, first)).toBeUndefined();
+  expect(answeredAskUserReply(model, first)).toBeUndefined();
+  // The sibling was not named by the stamp, so it keeps its own behavior.
+  expect(answeredAskUserSuffix(model, second)).toBeUndefined();
+});
+
 test("a split result row is matched by the pair, not a call id a later turn reused", () => {
   // A live item can arrive as two rows - the call and its result - so the
   // lookup falls back to finding the recorded state on a sibling row. Call ids

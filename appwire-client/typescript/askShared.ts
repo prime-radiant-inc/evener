@@ -420,6 +420,25 @@ function answerFor(
   if (at === -1) return undefined;
   const reply = findAnswerReply(items, items.slice(at + 1), item);
   if (!reply) return undefined;
+  // Every row renders its questions from argumentsJSON (the web body's
+  // parseAskUserQuestions, native's askRowQuestions), and admission's stamp
+  // makes the RAN questions authoritative for the recap. When a hook changed
+  // the question, a recap - composed OR free prose - would print the answer
+  // beneath a question it does not answer, the harm #6323 exists to prevent.
+  // The rows cannot reach the model to draw the executed question, so the
+  // honest outcome is no recap: the raw reply stays and says what was
+  // answered. This gates BOTH reply forms, because the stamp is what enabled
+  // either one; only a row that displays no question at all has nothing to
+  // mispair, and an unstamped reply was selected on the arguments it displays.
+  const revealedByStamp = resolvesThisCall(item, reply) === true;
+  const stampedQuestions = revealedByStamp ? questionsThisCallAsked(items, item) : undefined;
+  if (
+    stampedQuestions !== undefined &&
+    argumentsQuestions !== undefined &&
+    !sameQuestions(stampedQuestions, argumentsQuestions)
+  ) {
+    return undefined;
+  }
   if (reply.text.startsWith("[answers]")) {
     // Which set answers the line depends on how the reply was SELECTED (#6323):
     //
@@ -435,20 +454,8 @@ function answerFor(
     //
     // The stamp is what makes the executed set authoritative; without it the
     // arguments are the whole basis of the match.
-    const revealedByStamp = resolvesThisCall(item, reply) === true;
     const questions = revealedByStamp ? questionsThisCallAsked(items, item) : argumentsQuestions;
     if (!questions) return undefined;
-    // Every row renders its questions from argumentsJSON (the web body's
-    // parseAskUserQuestions, native's askRowQuestions). A stamped recap
-    // speaks for what RAN, so when a hook changed the question the row would
-    // show this answer under a question it does not answer - the exact harm
-    // #6323 exists to prevent. The body cannot reach the model to render the
-    // executed questions, so the honest outcome is no recap: the raw reply
-    // row stays and says what was answered. Only a row that displays no
-    // question at all (unparseable arguments) has nothing to mispair.
-    if (revealedByStamp && argumentsQuestions !== undefined && !sameQuestions(questions, argumentsQuestions)) {
-      return undefined;
-    }
     // The composed form always resolves here, even when it parses to nothing
     // or nothing matches this call's headers (the user edited the draft,
     // spec §6.1): an attempted composed reply is not free prose to echo.
