@@ -1742,7 +1742,7 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		}
 
 		// Accumulate usage and record exact input token count for pressure calculation.
-		s.recordResponseUsage(resp, req, usedProfile)
+		s.recordResponseUsage(modelResp, req, usedProfile)
 
 		// Best-effort nudge: when pressure crosses WarnThreshold, steer the agent to
 		// self-compact at its next clean seam. recordResponseUsage above just refreshed

@@ -30,6 +30,7 @@ var sessionCallModelAfterConsumeHook func()
 
 type sessionModelResponse struct {
 	conversation              *conversationRequest
+	history                   modelHistorySnapshot
 	Response                  llm.Response
 	StreamedAssistant         bool
 	CommunicatePreviewCallIDs []string

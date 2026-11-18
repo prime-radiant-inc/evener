@@ -1860,6 +1860,15 @@ func TestSession_ManageContext_ShrinksBaselineOnFold_MarkerBeforeBaseline(t *tes
 		t.Errorf("turnHistoryBaseline = %d after a %d-turn fold (history %d -> %d), want %d (the in-flight turn's actual post-fold index)",
 			gotBaseline, len(preHistory)-len(postHistory), len(preHistory), len(postHistory), wantBaseline)
 	}
+	s.contextMgr.CheckpointThreshold = 1
+	s.contextMgr.RecordInputTokens(800, len(postHistory))
+	s.appendTurn(schema.TurnUserInput, llm.User("after-orientation-27"))
+	if _, _, _, _, _, _, err := s.prepareModelRequestWithError(context.Background(), 1, &timings); err != nil {
+		t.Fatal(err)
+	}
+	if got := s.contextMgr.LastInputTokens(); got != 0 {
+		t.Errorf("moving the measured orientation turn without a checkpoint retained %d input tokens", got)
+	}
 }
 
 // indexOfSteeringMarker returns the index of the first TurnSteering turn

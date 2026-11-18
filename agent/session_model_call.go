@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -217,6 +218,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	s.attentionMu.Lock()
 	s.mu.Lock()
 	historyTurns := append([]schema.Turn{}, s.history...)
+	historyRevision := s.historyRevision
 	// A request's coverage belongs to its history snapshot. A later fold may
 	// replace a retracted frontier before this request stages its inputs.
 	historyCoverage := s.snapshotConversationCoverageLocked(historyTurns)
@@ -310,6 +312,9 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			_ = s.delegateController.AbortModelRequest(claim)
 			return nil, "", nil, llm.Request{}, nil, "", claimErr
 		}
+		// A leased projection may omit or reorder steering. Compare its
+		// actual turns before using a provider measurement for resident history.
+		historyRevision = -1
 	}
 	history = expandHistory(presentedTurns, scope)
 
@@ -322,7 +327,6 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	history = projectToolResultMediaFor(profile, history)
 
 	req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort, toolDefsJSONBytes)
-	s.setRoundFallbackSource(roundFallbackSource{system: sys, turns: presentedTurns, scope: scope})
 	req = s.attachFullHistoryInputEstimate(req, historyTurns, len(sys))
 	var budget llm.TokenBudget
 	if req, budget, err = budgetModelDispatchRequestWithBudget(profile, req); err != nil {
@@ -382,7 +386,6 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		}
 		presentedTurns = append(slices.Clip(presentedTurns), appended...)
 		req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort, toolDefsJSONBytes)
-		s.setRoundFallbackSource(roundFallbackSource{system: sys, turns: presentedTurns, scope: scope})
 		req = s.attachFullHistoryInputEstimate(req, historyTurns, len(sys))
 		budgetedReq, budgeted, budgetErr := budgetModelDispatchRequestWithBudget(profile, req)
 		if budgetErr != nil {
@@ -441,6 +444,9 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// actually carries.
 	s.stagePresentedAttentionCoverage(ctx, presentedTurns, deltaTurns)
 	s.stageConversationInputsWithCoverage(presentedTurns, historyCoverage)
+	s.setRoundFallbackSource(roundFallbackSource{
+		system: sys, scope: scope, modelHistorySnapshot: modelHistorySnapshot{turns: presentedTurns, revision: historyRevision},
+	})
 	t.RequestBuild = time.Since(tPhaseStart)
 	return profile, sys, history, req, fullHistory, reasoningEffort, nil
 }
@@ -1069,8 +1075,51 @@ func isProviderTerminalError(err error) bool {
 // needs another expansion for a different target.
 type roundFallbackSource struct {
 	system string
-	turns  []schema.Turn
 	scope  replayScope
+	modelHistorySnapshot
+}
+
+// modelHistorySnapshot is the full history behind a dispatched request,
+// including the full-history shadow of a continuation delta.
+type modelHistorySnapshot struct {
+	turns    []schema.Turn
+	revision int
+}
+
+func (h modelHistorySnapshot) matchesPrefix(history []schema.Turn, revision int) bool {
+	if h.turns == nil {
+		return false
+	}
+	// Ordinary appends preserve the revision. A fold, a replaced attention
+	// row or a leased projection needs the exact prefix check: a change to
+	// a later row still leaves the measured turns intact.
+	if h.revision == revision {
+		return len(h.turns) <= len(history)
+	}
+	return sameHistoryPrefix(h.turns, history, len(h.turns))
+}
+
+func sameHistoryPrefix(a, b []schema.Turn, n int) bool {
+	if n > len(a) || n > len(b) {
+		return false
+	}
+	// Keep the deep comparison's visited set bounded to one turn, even for
+	// a long transcript. Snapshots share their immutable nested contents.
+	for i := range n {
+		if !reflect.DeepEqual(&a[i], &b[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// A positional edit changes a measured prefix only if it touched a covered turn.
+func (s *Session) invalidateInputMeasurementFromLocked(firstChanged int) {
+	if s.contextMgr != nil {
+		if _, n, _ := s.contextMgr.InputMeasurement(); firstChanged < n {
+			s.contextMgr.RecordInputTokens(0, 0)
+		}
+	}
 }
 
 func (s *Session) setRoundFallbackSource(source roundFallbackSource) {
@@ -1249,10 +1298,11 @@ func classifyModelError(isCancellation bool, kind llm.ErrorKind, contentFilterAl
 // compaction decisions still reflect the visible conversation. Anthropic makes
 // multiple forward passes for server-side web search, reporting combined usage
 // (~2x actual); that inflated baseline is skipped so the previous value stays valid.
-func (s *Session) recordResponseUsage(resp llm.Response, req llm.Request, answeringProfile *provider.Profile) {
+func (s *Session) recordResponseUsage(modelResp sessionModelResponse, req llm.Request, answeringProfile *provider.Profile) {
 	if s.contextMgr == nil {
 		return
 	}
+	resp := modelResp.Response
 	s.contextMgr.AddUsage(resp.Usage)
 
 	tokens, record := effectiveRecordedInputTokens(
@@ -1261,13 +1311,15 @@ func (s *Session) recordResponseUsage(resp llm.Response, req llm.Request, answer
 		responseHasServerWebSearch(resp.Message.Content),
 	)
 	if record {
-		s.mu.Lock()
-		hLen := len(s.history)
-		s.mu.Unlock()
-		// Only the profile that answered may own this measurement: a SetModel
-		// during the request cleared the measurement it belonged to (roborev's
-		// fifteenth round).
-		s.contextMgr.RecordInputTokensFor(answeringProfile, tokens, hLen)
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		measured := modelResp.history
+		if !measured.matchesPrefix(s.history, s.historyRevision) {
+			// A count for a different projection cannot price resident history.
+			s.contextMgr.RecordInputTokensFor(answeringProfile, 0, 0)
+			return
+		}
+		s.contextMgr.RecordInputTokensFor(answeringProfile, tokens, len(measured.turns))
 	}
 }
 
@@ -1772,6 +1824,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		return withPreviews(modelResp), req, attempt, usedProfile, err
 	}
 	attempt = completeAttemptMetadata(attempt, modelResp.Response)
+	modelResp.history = fallbackSource.modelHistorySnapshot
 	attempt.conversation = modelResp.conversation
 	attempt.Protocol = group.Protocol()
 	answered := recorder.Groups[len(recorder.Groups)-1]

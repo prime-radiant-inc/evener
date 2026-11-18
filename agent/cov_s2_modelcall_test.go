@@ -3,6 +3,7 @@ package agent
 import (
 	"testing"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -21,7 +22,7 @@ func TestS2Cov_RecordResponseUsage(t *testing.T) {
 		Usage:   llm.Usage{InputTokens: 500, TotalTokens: 500},
 		Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentWebSearch}}},
 	}
-	sess.recordResponseUsage(webResp, llm.Request{}, sess.currentProfile())
+	sess.recordResponseUsage(sessionModelResponse{Response: webResp}, llm.Request{}, sess.currentProfile())
 
 	// Normal response with a larger full-history estimate exercises the floor.
 	cacheRead := 10
@@ -30,5 +31,9 @@ func TestS2Cov_RecordResponseUsage(t *testing.T) {
 		Usage:   llm.Usage{InputTokens: 100, CacheReadTokens: &cacheRead, CacheWriteTokens: &cacheWrite},
 		Message: llm.Assistant("done"),
 	}
-	sess.recordResponseUsage(normalResp, llm.Request{FullHistoryInputTokensEstimate: 9000}, sess.currentProfile())
+	input := modelHistorySnapshot{turns: []schema.Turn{}}
+	sess.recordResponseUsage(sessionModelResponse{Response: normalResp, history: input}, llm.Request{FullHistoryInputTokensEstimate: 9000}, sess.currentProfile())
+	if got := sess.contextMgr.LastInputTokens(); got != 9000 {
+		t.Errorf("recorded input tokens = %d, want the full-history estimate of 9000", got)
+	}
 }

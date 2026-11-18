@@ -3,9 +3,11 @@ package agent
 import (
 	"encoding/json"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
@@ -88,14 +90,14 @@ func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
 	t.Run("input measurement follows the answering target", func(t *testing.T) {
 		const original = "https://measure-a.example.test/v1"
 		const replacement = "https://measure-b.example.test/v1"
-		clientFor := func(wire, endpoint string, replay bool) *llm.Client {
+		clientFor := func(wire, endpoint string, replay bool, steps ...func(llm.Request) llm.Response) *llm.Client {
 			inst := testRegistryInstances()["gw"]
 			inst.Transport.BaseURL = endpoint
 			inst.Models = map[string]registry.Model{"reasoner": {
 				WireID: wire, Protocol: registry.ProtocolOpenAIResponses,
-				Caps: registry.Caps{ReplayReasoningText: &replay, ContextWindow: new(100_000)},
+				Caps: registry.Caps{ReplayReasoningText: &replay, ContextWindow: new(500_000)},
 			}}
-			return registryClient(t, map[string]registry.Provider{"gw": inst}, &fakeAdapter{name: "gw"})
+			return registryClient(t, map[string]registry.Provider{"gw": inst}, newFakeAdapter("gw", steps...))
 		}
 		for _, tc := range []struct {
 			name, wire, endpoint string
@@ -103,6 +105,7 @@ func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
 			want                 int
 		}{
 			{"same", "wire-a", original, true, true, 90_000},
+			{"compacted during dispatch", "wire-a", original, true, true, 0},
 			{"unknown measurement owner", "wire-a", original, true, true, 0},
 			{"replay disabled", "wire-a", original, true, false, 0},
 			{"redirected model", "wire-b", original, true, true, 0},
@@ -111,12 +114,48 @@ func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				state := t.TempDir()
-				client := clientFor("wire-a", original, tc.before)
+				report := strings.Repeat("q83x", 4_000)
+				dispatched, release := make(chan struct{}), make(chan struct{})
+				client := clientFor("wire-a", original, tc.before, func(req llm.Request) llm.Response {
+					if !requestCarriesText(req, "measured-41") || requestCarriesText(req, report) {
+						t.Error("the measured request must contain the input that preceded the report")
+					}
+					close(dispatched)
+					awaitSignal(t, release, "history change before the provider answer")
+					resp := agenttest.FinalResponse("answer-59")
+					resp.Usage = llm.Usage{InputTokens: 90_000, OutputTokens: 10, TotalTokens: 90_010}
+					return resp
+				})
 				s := newSession(t, withClient(client), withStateDir(state), withProfile(resolveClientProfile(t, client, "gw/reasoner")))
-				s.appendTurn(schema.TurnUserInput, llm.User("measured input"))
+				fold := tc.name == "compacted during dispatch"
+				if fold {
+					for range 12 {
+						s.appendTurn(schema.TurnUserInput, llm.User("old-15"))
+						s.appendTurn(schema.TurnAssistant, llm.Assistant("earlier-34"))
+					}
+				}
+				ctx := tripwireCtx(t)
+				done := make(chan struct{})
+				go func() {
+					defer close(done)
+					if _, err := s.ProcessInput(ctx, "measured-41", nil); err != nil {
+						t.Errorf("process measured input: %v", err)
+					}
+				}()
+				waitForTestSignal(t, dispatched, "provider dispatch")
+				s.mu.RLock()
 				measured := len(s.history)
-				s.contextMgr.RecordInputTokens(90_000, measured)
-				s.appendTurn(schema.TurnUserInput, llm.User("later input"))
+				s.mu.RUnlock()
+				if fold {
+					if err := s.Compact(ctx); err != nil {
+						t.Errorf("compact dispatched history: %v", err)
+					}
+				}
+				if ok, err := s.appendDelegateNotificationDurably("report-83", report); err != nil || !ok {
+					t.Errorf("append concurrent report = %v, %v", ok, err)
+				}
+				close(release)
+				waitForTestSignal(t, done, "provider settlement")
 				s.Close()
 				meta, err := schema.LoadSessionMeta(state, s.id)
 				if err != nil {
@@ -135,17 +174,94 @@ func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
 				}
 				defer restored.Close()
 				saved := restored.Meta()
+				if saved.CumulativeUsage.InputTokens != 90_000 {
+					t.Errorf("accounted provider input = %d, want 90000", saved.CumulativeUsage.InputTokens)
+				}
 				if saved.LastInputTokens != tc.want {
 					t.Fatalf("restored measurement = %d, want %d", saved.LastInputTokens, tc.want)
 				}
 				if tc.want != 0 && saved.LastInputHistoryLength != measured {
 					t.Fatalf("measured prefix = %d, want %d", saved.LastInputHistoryLength, measured)
 				}
-				if used := restored.contextMgr.EstimateUsage(restored.history, 100).Used; tc.want == 0 && (used <= 0 || used >= 90_000) {
-					t.Fatalf("local estimate after target change = %d", used)
+				used := restored.contextMgr.EstimateUsage(restored.history, 100).Used
+				if used < tc.want+len(report)/4 || (tc.want == 0 && used >= 90_000) {
+					t.Fatalf("restored pressure = %d, want the unsent report above baseline %d", used, tc.want)
 				}
 			})
 		}
+
+		t.Run("answer settles while forced fold awaits publication", func(t *testing.T) {
+			state := t.TempDir()
+			answer := agenttest.FinalResponse("answer-12")
+			answer.Usage = llm.Usage{InputTokens: 90_000}
+			client := clientFor("wire-a", original, true, fixedStep(answer))
+			profile := resolveClientProfile(t, client, "gw/reasoner")
+			s := newSession(t, withClient(client), withStateDir(state), withProfile(profile))
+			if _, err := s.appendDelegateNotificationDurably("retained-63", "prior report"); err != nil {
+				t.Fatal(err)
+			}
+			s.appendTurn(schema.TurnUserInput, llm.User("measured-12"))
+			ctx := tripwireCtx(t)
+			_, _, _, req, full, effort, err := s.prepareModelRequestWithError(ctx, 0, new(events.RoundTimings))
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, req, _, target, err := s.callModelWithFallback(ctx, profile, req, full, effort, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// These unmeasured exchanges give /compact an old prefix to fold
+			// and leave enough turns for an obsolete measured length to fit.
+			for range 12 {
+				s.appendTurn(schema.TurnUserInput, llm.User("later-27"))
+				s.appendTurn(schema.TurnAssistant, llm.Assistant("later-83"))
+			}
+			publishing, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+			pause := sync.OnceFunc(func() {
+				close(publishing)
+				awaitSignal(t, release, "answer measurement before fold publication")
+			})
+			// Publication reads the pending report after the fold finishes its
+			// token resets, before it swaps the old resident prefix.
+			updateSessionTestConfig(s, func(cfg *testConfig) {
+				cfg.delegateAttentionReadFold = func(path, sessionID string) (delegateAttentionFold, error) {
+					pause()
+					return s.attentionFoldCursor.read(path, sessionID)
+				}
+			})
+			go func() {
+				defer close(done)
+				if err := s.Compact(ctx); err != nil {
+					t.Errorf("publish forced fold: %v", err)
+				}
+			}()
+			waitForTestSignal(t, publishing, "computed fold waiting to publish")
+			s.recordResponseUsage(resp, req, target)
+			tokens, measured, _ := s.contextMgr.InputMeasurement()
+			if tokens != 90_000 || measured == 0 {
+				t.Errorf("measurement before publication = %d covering %d turns", tokens, measured)
+			}
+			close(release)
+			waitForTestSignal(t, done, "fold publication")
+			s.Close()
+			meta, err := schema.LoadSessionMeta(state, s.id)
+			if err != nil {
+				t.Fatal(err)
+			}
+			restored, err := RestoreSessionFromMetaWithConfig(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, RestoreSessionConfig{
+				StateDir: state, testOnly: sharingHostProbe(testConfig{skipGitSnapshot: true}),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer restored.Close()
+			if len(restored.history) == 0 || len(restored.history) < measured || (restored.history[0].Kind != schema.TurnSummary && restored.history[0].Kind != schema.TurnCheckpoint) {
+				t.Fatal("the restored fold must replace the measured prefix while retaining at least as many turns")
+			}
+			if got := restored.Meta().LastInputTokens; got != 0 {
+				t.Errorf("restored the old prefix's %d tokens on the new fold", got)
+			}
+		})
 	})
 }
 

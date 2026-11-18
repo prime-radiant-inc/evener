@@ -660,12 +660,16 @@ func TestHistoryRepair_InsertionBeforeBaselineShiftsBaseline(t *testing.T) {
 			schema.NewTurn(schema.TurnUserInput, llm.User("in-flight tail")),
 		}
 		s.turnHistoryBaseline = 2 // the marked turn opens the in-flight region
+		s.contextMgr.RecordInputTokens(840, len(s.history))
 		s.mu.Unlock()
 
 		if repairs := s.repairOrphanedToolResults(context.Background(), "baseline shift test"); repairs != 1 {
 			t.Fatalf("repairs = %d, want 1 — test setup invalid", repairs)
 		}
 		assertBaselineTracksMarkedTurn(t, s, marker)
+		if got := s.contextMgr.LastInputTokens(); got != 0 {
+			t.Errorf("repair within measured history retained %d input tokens", got)
+		}
 	})
 
 	t.Run("insertion exactly at the boundary", func(t *testing.T) {
@@ -680,12 +684,16 @@ func TestHistoryRepair_InsertionBeforeBaselineShiftsBaseline(t *testing.T) {
 			schema.NewTurn(schema.TurnUserInput, llm.User(marker)),
 		}
 		s.turnHistoryBaseline = 1
+		s.contextMgr.RecordInputTokens(840, 1)
 		s.mu.Unlock()
 
 		if repairs := s.repairOrphanedToolResults(context.Background(), "baseline shift test"); repairs != 1 {
 			t.Fatalf("repairs = %d, want 1 — test setup invalid", repairs)
 		}
 		assertBaselineTracksMarkedTurn(t, s, marker)
+		if got := s.contextMgr.LastInputTokens(); got != 840 {
+			t.Errorf("repair after the measured prefix left %d input tokens", got)
+		}
 	})
 }
 
@@ -716,10 +724,14 @@ func TestAttentionRemoval_DeletionBeforeBaselineShiftsBaseline(t *testing.T) {
 			schema.NewTurn(schema.TurnUserInput, llm.User(marker)),
 		}
 		s.turnHistoryBaseline = 2
+		s.contextMgr.RecordInputTokens(840, 2)
 		s.mu.Unlock()
 
 		s.removeUnverifiedDelegateAttentionTurn(unverified)
 		assertBaselineTracksMarkedTurn(t, s, marker)
+		if got := s.contextMgr.LastInputTokens(); got != 0 {
+			t.Errorf("withdrawing a measured report retained %d input tokens", got)
+		}
 	})
 
 	t.Run("deletion at the boundary leaves it alone", func(t *testing.T) {
@@ -733,6 +745,7 @@ func TestAttentionRemoval_DeletionBeforeBaselineShiftsBaseline(t *testing.T) {
 			unverified, // the first in-flight turn
 		}
 		s.turnHistoryBaseline = 2
+		s.contextMgr.RecordInputTokens(840, 2)
 		s.mu.Unlock()
 
 		s.removeUnverifiedDelegateAttentionTurn(unverified)
@@ -741,6 +754,9 @@ func TestAttentionRemoval_DeletionBeforeBaselineShiftsBaseline(t *testing.T) {
 		s.mu.Unlock()
 		if got != 2 {
 			t.Fatalf("turnHistoryBaseline = %d after deleting the first in-flight turn, want 2 (unchanged: the boundary still opens the in-flight region)", got)
+		}
+		if got := s.contextMgr.LastInputTokens(); got != 840 {
+			t.Errorf("withdrawing an unmeasured report left %d input tokens", got)
 		}
 	})
 }

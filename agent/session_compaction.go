@@ -284,6 +284,7 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 		}
 	}
 	s.mu.Lock()
+	previous := s.history
 	previousEnvironmentIDs := environmentTurnIDs(s.history)
 	voiceBefore := latestVoicePresentationTurn(s.history)
 	conversationBefore := s.conversationInputsLocked(s.history[:min(snapLen, len(s.history))])
@@ -302,6 +303,13 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 	// The appended turns may reallocate, so the history takes the new slice.
 	published, restoredAt := s.restoreUncoveredAttentionLocked(published, keptAttention)
 	s.history = published
+	if s.contextMgr != nil {
+		// A provider can measure the old history while a fold is computing.
+		// A strategy can also replace steering without emitting a checkpoint.
+		if _, n, _ := s.contextMgr.InputMeasurement(); n > 0 && !sameHistoryPrefix(previous, published, n) {
+			s.contextMgr.RecordInputTokens(0, 0)
+		}
+	}
 	// The merge-back rewrite set: the PERSISTED transcript forms of every
 	// append/write pair since this fold's snapshot (snapAppends), taken from
 	// the pair log — never the live history turns, whose tool results

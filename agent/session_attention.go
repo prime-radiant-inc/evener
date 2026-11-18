@@ -2468,12 +2468,16 @@ func (s *Session) retainDelegateAttentionTurn(turn schema.Turn, later ...schema.
 		// must not be able to publish over it and silently resurrect the
 		// stale resident turn.
 		s.history[index] = turn
+		if !reflect.DeepEqual(resident, turn) {
+			s.invalidateInputMeasurementFromLocked(index)
+		}
 		s.bumpHistoryRevisionLocked()
 		return nil
 	}
 	var at int
 	s.history, at = insertAttentionTurn(s.history, turn, later)
 	if at < len(s.history)-1 {
+		s.invalidateInputMeasurementFromLocked(at)
 		s.bumpHistoryRevisionLocked()
 	}
 	return nil
@@ -2488,6 +2492,7 @@ func (s *Session) removeUnverifiedDelegateAttentionTurn(turn schema.Turn) {
 			// not be able to publish over it and silently resurrect the
 			// removed turn.
 			s.history = append(s.history[:index], s.history[index+1:]...)
+			s.invalidateInputMeasurementFromLocked(index)
 			// Deleting a turn strictly before the N4 boundary shifts every
 			// in-flight turn left by one, so the boundary moves with them —
 			// atomically with the mutation.
@@ -2515,6 +2520,7 @@ func (s *Session) dropResidentDelegateAttentionTurnLocked(attentionID string) {
 			continue
 		}
 		s.history = append(s.history[:index], s.history[index+1:]...)
+		s.invalidateInputMeasurementFromLocked(index)
 		if index < s.turnHistoryBaseline {
 			s.turnHistoryBaseline--
 		}

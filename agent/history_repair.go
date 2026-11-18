@@ -166,6 +166,7 @@ func (s *Session) repairOrphanedToolResults(ctx context.Context, reason string) 
 	repaired, repairs, insertedAt := repairOrphanedToolResultsIndexed(s.history)
 	if repairs > 0 {
 		s.history = repaired
+		s.invalidateInputMeasurementFromLocked(insertedAt[0])
 		// A synthetic turn spliced at or before the N4 boundary shifts every
 		// in-flight turn right by one, so the boundary moves with them —
 		// atomically with the mutation, in this same locked section. "At or

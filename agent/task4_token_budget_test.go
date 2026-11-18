@@ -274,7 +274,7 @@ func TestSessionFallbackResponseUsageBelongsToFallbackTarget(t *testing.T) {
 	}))
 	client.Register(newFakeAdapter("usage-fallback", func(llm.Request) llm.Response {
 		resp := agenttest.FinalResponse("fallback")
-		resp.Usage = llm.Usage{InputTokens: 77, OutputTokens: 3, TotalTokens: 80}
+		resp.Usage = llm.Usage{InputTokens: 90_000, OutputTokens: 3, TotalTokens: 90_003}
 		return resp
 	}))
 	primary := testOpenAICompatProfile("usage-primary", "primary", 0)
@@ -289,17 +289,21 @@ func TestSessionFallbackResponseUsageBelongsToFallbackTarget(t *testing.T) {
 	sess.resolveProfile = func(string) (*provider.Profile, error) { return fallback, nil }
 	sess.contextMgr.RecordInputTokens(42, 0)
 
-	modelResp, usedReq, _, usedProfile, err := sess.callModelWithFallback(context.Background(), primary, llm.Request{
-		Provider: primary.ID(),
-		Model:    primary.Model(),
-		Messages: []llm.Message{llm.User("task")},
-	}, nil, "", 0)
+	sess.appendTurn(schema.TurnUserInput, llm.User("task"))
+	ctx := tripwireCtx(t)
+	_, _, _, req, full, effort, err := sess.prepareModelRequestWithError(ctx, 0, new(events.RoundTimings))
+	if err != nil {
+		t.Fatal(err)
+	}
+	prefix := len(sess.history)
+	sess.appendTurn(schema.TurnSteering, llm.User("late-71"))
+	modelResp, usedReq, _, usedProfile, err := sess.callModelWithFallback(ctx, primary, req, full, effort, 0)
 	if err != nil {
 		t.Fatalf("callModelWithFallback: %v", err)
 	}
-	sess.recordResponseUsage(modelResp.Response, usedReq, usedProfile)
-	if got := sess.contextMgr.LastInputTokens(); got != 77 {
-		t.Fatalf("fallback input tokens = %d, want 77", got)
+	sess.recordResponseUsage(modelResp, usedReq, usedProfile)
+	if got, turns, _ := sess.contextMgr.InputMeasurement(); got != 90_000 || turns != prefix || requestCarriesText(usedReq, "late-71") {
+		t.Fatalf("fallback measurement = %d covering %d turns, want 90000 covering its %d dispatched turns", got, turns, prefix)
 	}
 
 	// Preparing the next primary attempt retargets the manager. The fallback's
