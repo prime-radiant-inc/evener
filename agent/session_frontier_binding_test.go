@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -181,15 +182,36 @@ func TestTranscriptFrontierBindingIdleReleaseColdRestore(t *testing.T) {
 
 func TestTranscriptFrontierBindingFailedConstructors(t *testing.T) {
 	t.Parallel()
+	blockRead := func(t *testing.T, path string) {
+		t.Helper()
+		// Leave open descriptors intact while making the next lookup of
+		// this path fail, including on hosts running with elevated rights.
+		if err := os.Rename(path, path+".open"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(filepath.Base(path), path); err != nil {
+			t.Fatal(err)
+		}
+	}
 	t.Run("fresh-after-attach", func(t *testing.T) {
 		r := &frontierBindingRecorder{}
 		client := llm.NewClient()
 		client.Register(&fakeAdapter{name: "openai"})
-		cfg := SessionConfig{StateDir: t.TempDir(), ContextStrategy: "invalid-frontier-strategy", testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true}}
-		cfg.spawn.descendantPublication = r.hooks
+		cfg := SessionConfig{StateDir: t.TempDir(), testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true}}
+		cfg.spawn.descendantPublication = func(id string) TranscriptPublicationHooks {
+			hooks := r.hooks(id)
+			register := hooks.RegisterFrontier
+			hooks.RegisterFrontier = func(sample func() events.ExecutionFrontier) {
+				register(sample)
+				// The fresh root reopens the attached transcript to restore
+				// delegate attention before it announces a session.
+				blockRead(t, transcriptPath(cfg.StateDir, id))
+			}
+			return hooks
+		}
 		sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
-		if err == nil || sess != nil {
-			t.Fatalf("invalid strategy did not fail constructor: session=%p error=%v", sess, err)
+		if sess != nil || !errors.Is(err, syscall.ELOOP) {
+			t.Fatalf("fresh constructor = (%p, %v), want nil session and unreadable transcript", sess, err)
 		}
 		r.mu.Lock()
 		defer r.mu.Unlock()
@@ -218,7 +240,6 @@ func TestTranscriptFrontierBindingFailedConstructors(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		meta.Config.ContextStrategy = "invalid-frontier-strategy"
 		r := &frontierBindingRecorder{}
 		recorded := make(chan events.ExecutionFrontier, 1)
 		earlyPublication := make(chan events.SessionEvent, 1)
@@ -258,10 +279,13 @@ func TestTranscriptFrontierBindingFailedConstructors(t *testing.T) {
 			case <-tripwireCtx(t).Done():
 				t.Fatal("constructor recovery callback did not sample")
 			}
+			// Re-arming terminal notifications reads this journal after
+			// the transcript is attached and its failure recovery completes.
+			blockRead(t, filepath.Join(jobsDir(dir, original.ID()), "jobs.jsonl"))
 		}
 		sess, err := RestoreSessionFromMetaWithConfig(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), meta, cfg)
-		if err == nil || sess != nil {
-			t.Fatalf("invalid strategy did not fail restored constructor: session=%p error=%v", sess, err)
+		if sess != nil || !errors.Is(err, syscall.ELOOP) {
+			t.Fatalf("restored constructor = (%p, %v), want nil session and unreadable job journal", sess, err)
 		}
 		if sampled.TurnID != start.Turn.ID || sampled.Sequence == 0 {
 			t.Fatalf("recovery committed frontier has wrong execution: %+v", sampled)
