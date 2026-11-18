@@ -723,11 +723,13 @@ func loadLiveActivityBase(ctx context.Context, s *Session) (activityLoadedBase, 
 		// from the fold, and the overlay drops the row instead of overlaying
 		// one.
 		live := jm.liveJobRecords()
-		committed, err := jm.store.CommittedJournal()
+		committed, err := jm.store.CommittedJournal(ctx)
 		if err != nil {
 			return activityLoadedBase{}, err
 		}
-		folded, err := jm.liveActivityFold.records(ctx, committed.Path, committed, jm.store.CommittedJournal)
+		folded, err := jm.liveActivityFold.records(ctx, committed.Path, committed, func() (jobstore.CommittedJournalState, error) {
+			return jm.store.CommittedJournal(ctx)
+		})
 		if err != nil {
 			return activityLoadedBase{}, err
 		}

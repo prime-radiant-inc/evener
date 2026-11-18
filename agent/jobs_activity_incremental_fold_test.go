@@ -474,7 +474,7 @@ func seedLiveShellStarts(t *testing.T, s *Session, n int) {
 	// than the host's timestamp resolution.
 	// The journal's location comes from the store's own boundary read, which
 	// reports where it is without taking a cursor sample.
-	located, err := s.jobManager.store.CommittedJournal()
+	located, err := s.jobManager.store.CommittedJournal(context.Background())
 	if err != nil {
 		t.Fatalf("locate the journal before seeding: %v", err)
 	}
@@ -511,7 +511,7 @@ func seedLiveShellStarts(t *testing.T, s *Session, n int) {
 			if err := os.Chtimes(located.Path, pinned, pinned); err != nil {
 				t.Fatalf("pin journal mtime after seeding: %v", err)
 			}
-			if _, err := s.jobManager.store.CommittedJournal(); err != nil {
+			if _, err := s.jobManager.store.CommittedJournal(context.Background()); err != nil {
 				t.Fatalf("re-book the pinned journal baseline: %v", err)
 			}
 		}
@@ -610,7 +610,7 @@ func TestLiveActivityBase_FoldsOnlyCommittedBytes(t *testing.T) {
 	if got := base.snapshot.Jobs.len(); got != 3 {
 		t.Fatalf("load = %d records, want 3", got)
 	}
-	snapshot, err := s.jobManager.store.CommittedJournal()
+	snapshot, err := s.jobManager.store.CommittedJournal(context.Background())
 	if err != nil {
 		t.Fatalf("CommittedJournal: %v", err)
 	}
@@ -644,7 +644,7 @@ func TestLiveActivityBase_FoldsOnlyCommittedBytes(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("append: %v", err)
 	}
-	movedSnapshot, err := s.jobManager.store.CommittedJournal()
+	movedSnapshot, err := s.jobManager.store.CommittedJournal(context.Background())
 	if err != nil {
 		t.Fatalf("CommittedJournal after append: %v", err)
 	}
@@ -670,7 +670,7 @@ func TestLiveActivityBase_FoldsOnlyCommittedBytes(t *testing.T) {
 	// about decoding withholds the rest — only respecting the boundary does. That
 	// is the append-in-flight case exactly: the bytes are durable and readable,
 	// and the store has not acknowledged them.
-	final, err := s.jobManager.store.CommittedJournal()
+	final, err := s.jobManager.store.CommittedJournal(context.Background())
 	if err != nil {
 		t.Fatalf("CommittedJournal before the boundary check: %v", err)
 	}
@@ -1006,7 +1006,7 @@ func TestLiveActivityBase_CanceledRebuildLeavesTheFoldInvalid(t *testing.T) {
 	}
 
 	// Truncate to the first record behind the store's back.
-	snapshot, err := s.jobManager.store.CommittedJournal()
+	snapshot, err := s.jobManager.store.CommittedJournal(context.Background())
 	if err != nil {
 		t.Fatalf("CommittedJournal: %v", err)
 	}
@@ -1081,7 +1081,7 @@ func TestLiveActivityBase_RewritesInPlaceInvalidateTheFold(t *testing.T) {
 		t.Fatalf("first load: %v", err)
 	}
 
-	snapshot, err := s.jobManager.store.CommittedJournal()
+	snapshot, err := s.jobManager.store.CommittedJournal(context.Background())
 	if err != nil {
 		t.Fatalf("CommittedJournal: %v", err)
 	}
@@ -1221,7 +1221,7 @@ func TestLiveActivityBase_TruncationRenumbersAPagePinsTheEpoch(t *testing.T) {
 		t.Fatalf("first fold reports epoch %d, want 0: nothing was rebuilt yet", got)
 	}
 
-	snapshot, err := s.jobManager.store.CommittedJournal()
+	snapshot, err := s.jobManager.store.CommittedJournal(context.Background())
 	if err != nil {
 		t.Fatalf("CommittedJournal: %v", err)
 	}
@@ -1328,7 +1328,7 @@ func TestLiveActivityBase_KeepsARunningJobWhoseStartWasTruncatedAway(t *testing.
 
 	// Truncate the journal past everything, which removes the running job's own
 	// durable start record as well as the two earlier jobs.
-	snapshot, err := s.jobManager.store.CommittedJournal()
+	snapshot, err := s.jobManager.store.CommittedJournal(context.Background())
 	if err != nil {
 		t.Fatalf("CommittedJournal: %v", err)
 	}
@@ -1451,7 +1451,7 @@ func TestLiveActivityBase_CompletionAfterATruncatedStartStillPagesAsShell(t *tes
 
 	// Truncate past the start, then commit the completion. The durable fold now
 	// names the job through a row that carries no type and no owner.
-	snapshot, err := s.jobManager.store.CommittedJournal()
+	snapshot, err := s.jobManager.store.CommittedJournal(context.Background())
 	if err != nil {
 		t.Fatalf("CommittedJournal: %v", err)
 	}
@@ -1524,7 +1524,7 @@ func TestLiveActivityBase_WarmRefreshAfterARebuildCostsTheLiveSet(t *testing.T) 
 	// appended after it and truncated away below, so the rebuilt fold keeps the
 	// whole history and still cannot place the running job — which is the case
 	// where a per-refresh membership walk costs the history.
-	seeded, err := s.jobManager.store.CommittedJournal()
+	seeded, err := s.jobManager.store.CommittedJournal(context.Background())
 	if err != nil {
 		t.Fatalf("CommittedJournal: %v", err)
 	}
@@ -1555,7 +1555,7 @@ func TestLiveActivityBase_WarmRefreshAfterARebuildCostsTheLiveSet(t *testing.T) 
 	// Cut the running job's own start record. The rebuild that follows strands it
 	// while keeping every seeded row, and the first read after it is the one that
 	// has to establish that.
-	snapshot, err := s.jobManager.store.CommittedJournal()
+	snapshot, err := s.jobManager.store.CommittedJournal(context.Background())
 	if err != nil {
 		t.Fatalf("CommittedJournal: %v", err)
 	}
@@ -1655,7 +1655,7 @@ func TestLiveActivityBase_RefreshAfterAnOrdinaryAppendCostsTheLiveSet(t *testing
 	if _, err := loadLiveActivityBase(context.Background(), s); err != nil {
 		t.Fatalf("first load: %v", err)
 	}
-	seeded, err := s.jobManager.store.CommittedJournal()
+	seeded, err := s.jobManager.store.CommittedJournal(context.Background())
 	if err != nil {
 		t.Fatalf("CommittedJournal: %v", err)
 	}
@@ -1739,7 +1739,7 @@ func TestLiveActivityBase_EachLiveSnapshotKeepsItsOwnStrandedJobs(t *testing.T) 
 	if _, err := loadLiveActivityBase(context.Background(), s); err != nil {
 		t.Fatalf("first load: %v", err)
 	}
-	seeded, err := s.jobManager.store.CommittedJournal()
+	seeded, err := s.jobManager.store.CommittedJournal(context.Background())
 	if err != nil {
 		t.Fatalf("CommittedJournal: %v", err)
 	}
@@ -1857,7 +1857,7 @@ func TestLiveActivityBase_MixedFoldIsNeverPublishedForTheOldGeneration(t *testin
 		t.Fatalf("first load: %v", err)
 	}
 	fold := &s.jobManager.liveActivityFold
-	snapshot, err := s.jobManager.store.CommittedJournal()
+	snapshot, err := s.jobManager.store.CommittedJournal(context.Background())
 	if err != nil {
 		t.Fatalf("CommittedJournal: %v", err)
 	}
@@ -1871,7 +1871,7 @@ func TestLiveActivityBase_MixedFoldIsNeverPublishedForTheOldGeneration(t *testin
 	}); err != nil {
 		t.Fatalf("append before the mixed extension: %v", err)
 	}
-	grown, err := s.jobManager.store.CommittedJournal()
+	grown, err := s.jobManager.store.CommittedJournal(context.Background())
 	if err != nil {
 		t.Fatalf("CommittedJournal after the append: %v", err)
 	}
@@ -1939,7 +1939,7 @@ func TestLiveActivityBase_OutOfOrderAppendAdvancesTheEpoch(t *testing.T) {
 	// Append a start carrying an OLDER seq than the folded ones, which is what a
 	// second writer to this journal looks like on disk. It goes through the raw
 	// writer because the store assigns the next seq itself.
-	snapshot, err := s.jobManager.store.CommittedJournal()
+	snapshot, err := s.jobManager.store.CommittedJournal(context.Background())
 	if err != nil {
 		t.Fatalf("CommittedJournal: %v", err)
 	}
@@ -2003,7 +2003,7 @@ func TestLiveActivityBase_ObsoleteSnapshotIsResampledBeforeScanning(t *testing.T
 	if _, err := loadLiveActivityBase(context.Background(), s); err != nil {
 		t.Fatalf("first load: %v", err)
 	}
-	stale, err := s.jobManager.store.CommittedJournal()
+	stale, err := s.jobManager.store.CommittedJournal(context.Background())
 	if err != nil {
 		t.Fatalf("CommittedJournal: %v", err)
 	}
@@ -2026,7 +2026,7 @@ func TestLiveActivityBase_ObsoleteSnapshotIsResampledBeforeScanning(t *testing.T
 	if got := repaired.snapshot.Jobs.len(); got != 1 {
 		t.Fatalf("repaired load = %d records, want the 1 the file still has", got)
 	}
-	committed, err := s.jobManager.store.CommittedJournal()
+	committed, err := s.jobManager.store.CommittedJournal(context.Background())
 	if err != nil {
 		t.Fatalf("CommittedJournal after repair: %v", err)
 	}
@@ -2037,7 +2037,9 @@ func TestLiveActivityBase_ObsoleteSnapshotIsResampledBeforeScanning(t *testing.T
 	// The stalled request resumes with its obsolete snapshot. Its scan must run
 	// to the store's current boundary, not the length it remembered.
 	calls := spyLiveActivityScans(t)
-	folded, err := s.jobManager.liveActivityFold.records(context.Background(), stale.Path, stale, s.jobManager.store.CommittedJournal)
+	folded, err := s.jobManager.liveActivityFold.records(context.Background(), stale.Path, stale, func() (jobstore.CommittedJournalState, error) {
+		return s.jobManager.store.CommittedJournal(context.Background())
+	})
 	if err != nil {
 		t.Fatalf("stalled read: %v", err)
 	}
@@ -2082,14 +2084,16 @@ func TestLiveActivityBase_RebuildsAfterAConfirmedTruncation(t *testing.T) {
 
 	// A caller that samples an older boundary than the fold already consumed
 	// during a normal append is served the fold, not a rescan.
-	snapshot, err := s.jobManager.store.CommittedJournal()
+	snapshot, err := s.jobManager.store.CommittedJournal(context.Background())
 	if err != nil {
 		t.Fatalf("CommittedJournal: %v", err)
 	}
 	stale := snapshot
 	stale.Size = snapshot.Size - 1
 	calls := spyLiveActivityScans(t)
-	if _, err := s.jobManager.liveActivityFold.records(context.Background(), stale.Path, stale, s.jobManager.store.CommittedJournal); err != nil {
+	if _, err := s.jobManager.liveActivityFold.records(context.Background(), stale.Path, stale, func() (jobstore.CommittedJournalState, error) {
+		return s.jobManager.store.CommittedJournal(context.Background())
+	}); err != nil {
 		t.Fatalf("records at an older boundary: %v", err)
 	}
 	if len(*calls) != 0 {
@@ -2806,6 +2810,10 @@ func benchRefresh(b *testing.B, total int, shape string, fold bool) {
 	// a decode count against a record count. The seams below are where each lane
 	// really parses a line, so they count the work and the two metrics can be
 	// read side by side.
+	// scannedRows counts the events the incremental lane's scanner returns, and is
+	// used only to check that lane's own resume behaviour. It is NOT a decode
+	// count and must never be added to one: those events were decoded by the
+	// scanner, and decodedRead already counts them at the store seam.
 	var scannedRows int64
 	original := scanJobJournal
 	scanJobJournal = func(ctx context.Context, path string, fromOffset int64, limits jobstore.ScanLimits) ([]jobstore.Event, int64, error) {
@@ -2850,25 +2858,33 @@ func benchRefresh(b *testing.B, total int, shape string, fold bool) {
 		}
 	}
 
-	var rowsRead int64
+	// decodedRead counts journal records PARSED, through the one seam every lane
+	// reaches: the fold's scanner decodes what it reads, Store.LoadOrdered decodes
+	// what it reads, and both are counted here rather than in the caller's own
+	// bookkeeping. Counting per-lane is how the earlier version came to report a
+	// full incremental rescan as zero decodes while counting the baseline's
+	// returned records as reads.
 	var decodedRead int64
+	// recordsReturned counts records handed to the caller, which is the cloning
+	// cost and not a read. Both lanes report it the same way, so the metric means
+	// the same thing in both rows.
+	var recordsReturned int64
 	refresh := func() {
+		atDecoded := storeDecodedRows
+		defer func() { decodedRead += storeDecodedRows - atDecoded }()
 		if fold {
-			at, atDecoded := scannedRows, storeDecodedRows
-			if _, err := loadLiveActivityBase(context.Background(), s); err != nil {
+			loaded, err := loadLiveActivityBase(context.Background(), s)
+			if err != nil {
 				b.Fatalf("loadLiveActivityBase: %v", err)
 			}
-			rowsRead += scannedRows - at
-			decodedRead += storeDecodedRows - atDecoded
+			recordsReturned += int64(loaded.snapshot.Jobs.len())
 			return
 		}
-		atDecoded := storeDecodedRows
 		ordered, err := s.jobManager.store.LoadOrdered()
 		if err != nil {
 			b.Fatalf("LoadOrdered: %v", err)
 		}
-		rowsRead += int64(len(ordered))
-		decodedRead += storeDecodedRows - atDecoded
+		recordsReturned += int64(len(ordered))
 	}
 
 	b.ReportAllocs()
@@ -2879,15 +2895,17 @@ func benchRefresh(b *testing.B, total int, shape string, fold bool) {
 	b.StopTimer()
 	// Two different numbers, and neither substitutes for the other:
 	//
-	//   records/refresh — records the caller receives, which is what a page pays
-	//   to have deep-copied for it whether or not any bytes were read.
+	//   records-returned/refresh — records the caller receives. It is NOT a count of
+	//   copies: the fold hands back a published list, the baseline deep-copies one,
+	//   and that difference shows in B/op rather than here. Named for what it
+	//   counts so it cannot be read as either.
 	//   decoded/refresh — journal records actually parsed, which is the read cost
 	//   itself.
 	//
 	// The baseline now reports 0 decoded per refresh and still pays the
 	// records/refresh clone, which is the honest shape of the defect: the live
 	// path's cost per refresh was never the decode alone.
-	b.ReportMetric(float64(rowsRead)/float64(b.N), "records/refresh")
+	b.ReportMetric(float64(recordsReturned)/float64(b.N), "records-returned/refresh")
 	b.ReportMetric(float64(decodedRead)/float64(b.N), "decoded/refresh")
 	// The journal's event count is what "whole history" means here, so a reader
 	// can see the ratio rather than infer it.

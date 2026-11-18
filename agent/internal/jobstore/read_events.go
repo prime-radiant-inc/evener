@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -265,7 +264,11 @@ func ScanEventsFrom(ctx context.Context, path string, fromOffset int64, limits S
 			continue
 		}
 		var e Event
-		if err := json.Unmarshal(line, &e); err != nil {
+		// DecodeJournalEvent rather than json.Unmarshal directly: this is the other
+		// place in the package that parses a journal line, and a caller measuring
+		// what a read costs must be able to count both. Counting only the store's
+		// own decode reports a full fold rescan as zero records read.
+		if err := DecodeJournalEvent(line, &e); err != nil {
 			if !terminated && isIncompleteTrailingJSON(line, err) {
 				// Tolerate only an unterminated, syntactically incomplete final
 				// line from an in-flight append. A newline-terminated or

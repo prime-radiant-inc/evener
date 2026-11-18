@@ -3,6 +3,7 @@ package jobstore
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -63,6 +64,22 @@ type Store struct {
 	journalMod  time.Time
 	journalGen  uint64
 	sampled     bool
+	// observedSize, observedMod and observed are the READER's baseline: the name's
+	// last accounted-for length and time, kept independently of whether the
+	// writer's handle could be sampled.
+	//
+	// They are separate from sampled on purpose. sampled answers "may this store's
+	// own append be told apart from a foreign write", which is a claim about the
+	// HANDLE and is what the append path spends. Whether two boundary samples
+	// describe the same content is a claim about the NAME, and it must not inherit
+	// the handle's failures: a handle stat that cannot be taken leaves the writer
+	// unverified without saying anything at all about whether the journal's bytes
+	// changed. Inferring "changed" from "unverified" makes every read invalidate
+	// the fold, so a reader on a journal that is perfectly readable spins until
+	// its request is canceled.
+	observedSize int64
+	observedMod  time.Time
+	observed     bool
 	// laggingAppendEnd, when non-zero, is the end of an append this store made
 	// durable that the filesystem's own metadata still under-reports. The
 	// committed boundary reports it instead of the stale size, so a job that
@@ -234,6 +251,7 @@ func openFs(fs afero.Fs, path string) (*Store, error) {
 	// would have no earlier length to compare against and would report the cut
 	// as ordinary growth.
 	s.journalSize, s.journalMod, s.sampled = info.Size(), info.ModTime(), true
+	s.observedSize, s.observedMod, s.observed = info.Size(), info.ModTime(), true
 	s.named = info
 	if info.Size() == 0 {
 		return s, nil
@@ -247,6 +265,7 @@ func openFs(fs afero.Fs, path string) (*Store, error) {
 	// file the store will actually append to.
 	if repaired, err := f.Stat(); err == nil {
 		s.journalSize, s.journalMod = repaired.Size(), repaired.ModTime()
+		s.observedSize, s.observedMod = repaired.Size(), repaired.ModTime()
 		s.named = repaired
 	}
 	for _, e := range existing {
@@ -489,7 +508,16 @@ type CommittedJournalState struct {
 // look. That stronger property is the separately filed bug; this seam
 // deliberately does not take it on, and the repair below only runs while the
 // name still reaches this store's handle for the same reason.
-func (s *Store) CommittedJournal() (CommittedJournalState, error) {
+//
+// ctx bounds the one operation here that is not a stat: repairing a torn tail on
+// a changed journal, which searches backward from EOF for the last newline. Work
+// under this lock blocks every append to the journal, so a caller that abandons a
+// read must be able to stop it. A nil ctx is treated as unbounded, which is what
+// a caller with no request to respect has.
+func (s *Store) CommittedJournal(ctx context.Context) (CommittedJournalState, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.ensureOpenLocked(); err != nil {
@@ -547,8 +575,16 @@ func (s *Store) CommittedJournal() (CommittedJournalState, error) {
 	// a real truncation both report a smaller number, and only the file can say
 	// which one happened.
 	lagging := false
+	// measured is the file's real EOF, when this call took it. It outranks the
+	// path's attributes for the rest of this sample, repair included: the repair
+	// path re-stats the NAME, and a name whose attributes lag reports the length
+	// from before the append — so a restat after a partial truncation would put
+	// back the pre-append size over a file that is genuinely shorter, hiding the
+	// rows that survived and resurrecting ones that did not.
+	measured, haveMeasured := int64(0), false
 	if s.laggingAppendEnd > size {
 		onDisk, haveLength := s.journalRealSizeLocked()
+		measured, haveMeasured = onDisk, haveLength
 		switch {
 		case !haveLength:
 			// Nothing measured the file, so nothing here can tell lag from a
@@ -566,7 +602,23 @@ func (s *Store) CommittedJournal() (CommittedJournalState, error) {
 			// repaired as one rather than hidden behind the confirmed end. The
 			// measured length wins and the claim is dropped, so the change test
 			// below sees a difference and inspects the tail.
-			s.laggingAppendEnd = 0
+			//
+			// The measured length keeps winning through the repair below. A partial
+			// truncation of an appended batch lands exactly here: the EOF sits
+			// between the path's stale pre-append size and the batch's confirmed
+			// end, and the surviving prefix of the batch is still durable and must
+			// stay foldable.
+			//
+			// The claim is RE-ANCHORED to the measured end rather than cleared. The
+			// name is still reporting less than the file holds, and that stays true
+			// on the next read: clearing the claim makes each later sample trust the
+			// stale attribute again, so the boundary oscillates between the real
+			// length and the pre-batch one — and every read that answers with the
+			// stale length hides the rows the truncation left behind. The file's EOF
+			// is the evidence, and it stays the evidence until the name agrees with
+			// it.
+			s.laggingAppendEnd = onDisk
+			lagging = true
 			size = onDisk
 		}
 	}
@@ -585,7 +637,16 @@ func (s *Store) CommittedJournal() (CommittedJournalState, error) {
 		// already made durable until the attributes caught up.
 		renamed = false
 	}
-	unexpected := renamed || !s.sampled || size != s.journalSize || !mod.Equal(s.journalMod)
+	// The change test is the READER's: the name's own last-accounted-for length
+	// and time. It deliberately does not consult s.sampled.
+	//
+	// s.sampled answers whether the writer's handle could be verified, and that
+	// question fails for reasons that say nothing about the journal's content — a
+	// handle stat that errors, a torn tail, a write the filesystem cannot resolve.
+	// Folding it into this test makes every such read look like a new generation,
+	// so a reader of a perfectly stable journal discards each scan it completes
+	// and retries until its request is canceled. Content is decided by content.
+	unexpected := renamed || !s.observed || size != s.observedSize || !mod.Equal(s.observedMod)
 	if renamed {
 		// Whatever an earlier append said about its own end describes the bytes
 		// that append wrote. A replacement is a different file, so that
@@ -621,27 +682,33 @@ func (s *Store) CommittedJournal() (CommittedJournalState, error) {
 		// it can decode and withholds the line it cannot. What it withholds is
 		// the SETTLED conclusion, which is why this falls through to the
 		// unsampled branch below rather than returning early.
-		settled, err := s.recoverTrailingLineForBoundaryLocked()
+		settled, err := s.recoverTrailingLineForBoundaryLocked(ctx)
 		if err != nil {
 			return CommittedJournalState{}, err
 		}
 		if repaired, statErr := s.fs.Stat(s.path); statErr == nil {
 			info = repaired
 			size, mod = repaired.Size(), repaired.ModTime()
-			if lagging && s.laggingAppendEnd > size {
-				// The repair path re-stats the NAME, and the name is the sample
-				// that lags. Do not let it lower a boundary whose bytes were
-				// confirmed: the claim is only kept while the file itself still
-				// holds exactly those bytes, which is how a real truncation is
-				// still reported as one.
-				if onDisk, haveLength := s.journalRealSizeLocked(); haveLength && onDisk == s.laggingAppendEnd {
-					size = s.laggingAppendEnd
-				}
+			// The repair path re-stats the NAME, and the name is the sample that
+			// lags. Do not let it raise the boundary back over a length the file
+			// itself was measured at, and do not let it lower a boundary whose
+			// bytes an append confirmed: either direction hides or invents rows.
+			//
+			// The EOF is measured again HERE rather than reused from the lag
+			// check above, because the repair may just have cut a torn tail: the
+			// pre-repair length describes bytes that are no longer in the file,
+			// and reporting it would hand a fold a boundary past EOF.
+			if afterRepair, ok := s.journalRealSizeLocked(); ok {
+				size = afterRepair
+				haveMeasured, measured = true, afterRepair
+			} else if haveMeasured {
+				size = measured
 			}
 		}
 		if !settled {
 			s.sampled = false
 			s.named = info
+			s.observedSize, s.observedMod, s.observed = size, mod, true
 			if !lagging {
 				s.laggingAppendEnd = 0
 			}
@@ -661,6 +728,7 @@ func (s *Store) CommittedJournal() (CommittedJournalState, error) {
 		// against a sample that never happened.
 		s.sampled = false
 		s.named = info
+		s.observedSize, s.observedMod, s.observed = size, mod, true
 		if !lagging {
 			s.laggingAppendEnd = 0
 		}
@@ -670,6 +738,7 @@ func (s *Store) CommittedJournal() (CommittedJournalState, error) {
 		}, nil
 	}
 	s.journalSize, s.journalMod, s.sampled = size, mod, true
+	s.observedSize, s.observedMod, s.observed = size, mod, true
 	s.named = info
 	// The append's recorded end stays authoritative while the path still reports
 	// less than it. Once the path catches up it is no longer the better
@@ -1087,18 +1156,29 @@ func (s *Store) noteCommittedBoundaryLocked(startOffset, endOffset int64, sample
 	// available: the handle is the file this append writes through, so its
 	// length before the write is exactly where the append's own bytes begin.
 	//
-	// An UNSAMPLED baseline counts as an intervening change. There is no
-	// recorded length or time here to compare a pre-write sample against, which
-	// means nothing in this store vouches for the prefix the fold would extend:
-	// the last boundary read declined to vouch for it, and this append cannot
-	// supply that evidence by writing past it. Advancing the generation costs one
-	// rebuild on a path that is already exceptional — a torn tail, a vanished
-	// write, a handle that could not be sampled — and it keeps the O(delta) path
-	// reserved for journals whose prefix this store actually accounted for.
-	intervened := !wasSampled
-	if !intervened && samples.pre != nil {
-		intervened = samples.pre.Size() != beforeSize || !samples.pre.ModTime().Equal(beforeMod)
-	}
+	// There are two independent pieces of evidence about the length this append
+	// found, and the append itself produced the better one: startOffset is where
+	// its own seek landed at the end of the file, which is a fact about the file
+	// rather than an attribute a caching layer may report late. The pre-write stat
+	// is the other. Either can invalidate the recorded baseline, and BOTH are
+	// consulted — a truncation followed by an append whose pre-write stat failed
+	// or returned stale attributes is otherwise indistinguishable from ordinary
+	// growth, because the append's post-sync sample makes the numbers agree again.
+	//
+	// An UNSAMPLED baseline counts as a change. There is no recorded length or
+	// time here to compare against, which means nothing in this store vouches for
+	// the prefix the fold would extend: the last boundary read declined to vouch
+	// for it, and this append cannot supply that evidence by writing past it.
+	// Advancing the generation costs one rebuild on a path that is already
+	// exceptional — a torn tail, a vanished write, a handle that could not be
+	// sampled — and it keeps the O(delta) path reserved for journals whose prefix
+	// this store actually accounted for.
+	//
+	// With the lengths agreeing, the pre-write sample still has to account for the
+	// time: a same-length rewrite moves only that. A sample that could not be
+	// taken leaves the prefix unverified, and unverified is not preserved.
+	intervened := !wasSampled || startOffset != beforeSize ||
+		samples.pre == nil || !samples.pre.ModTime().Equal(beforeMod)
 	if verified == nil {
 		// Nothing was verified after the bytes were made durable under the
 		// handle. That is not this append's failure — the bytes are on disk —
@@ -1108,6 +1188,11 @@ func (s *Store) noteCommittedBoundaryLocked(startOffset, endOffset int64, sample
 			s.journalGen++
 		}
 		s.sampled = false
+		// The reader's baseline is left alone here on purpose: with no sample of
+		// the file after its own bytes were written, this store cannot say what the
+		// name now holds, and inventing a value would make the next read see a
+		// change that is this append's. Leaving the old baseline makes that read
+		// report the append as the change it is.
 		s.laggingAppendEnd = endOffset
 		return
 	}
@@ -1115,6 +1200,13 @@ func (s *Store) noteCommittedBoundaryLocked(startOffset, endOffset int64, sample
 		s.journalGen++
 	}
 	s.journalSize, s.journalMod, s.sampled = verified.Size(), verified.ModTime(), true
+	// The append's own bytes are accounted for, so the reader's baseline moves with
+	// them. Without this the next boundary read sees a longer name than the reader
+	// last reported and counts this store's own append as foreign content — one
+	// generation per append, which is the whole-history rebuild this seam exists to
+	// prevent. Both baselines track the same write; they differ only in what they
+	// do when a failure leaves one of them unknown.
+	s.observedSize, s.observedMod, s.observed = verified.Size(), verified.ModTime(), true
 	s.named = verified
 	// The append computed endOffset from the bytes it wrote; the stat above
 	// asked a filesystem whose attributes may lag its data. Those two are not
@@ -1333,6 +1425,53 @@ func (s *Store) recoverTrailingPartialLineLocked() (err error) {
 	return s.recoverTrailingJSONLineLocked(raw[cut+1:], int64(cut+1))
 }
 
+// trailingLineChunk is how far the backward search reads at a time. It is
+// generous enough that an ordinary record is found in one read, so the common
+// torn tail costs a single bounded read rather than a scan.
+const trailingLineChunk = 64 * 1024
+
+// trailingLineFromHandleLocked returns the offset and bytes of the final line of
+// the file this store appends through. The last byte is known NOT to be a
+// newline (the caller checked), so there is a line to find.
+//
+// It walks backward a bounded chunk at a time and returns as soon as a newline
+// is in the window, which makes the work proportional to the last line's length
+// rather than the file's. A ctx that is done stops the walk before the next
+// read: this runs under the store mutex, and an abandoned activity refresh must
+// not keep the writer waiting for it.
+//
+// The caller restores the handle to EOF; this function leaves it where its last
+// read finished.
+func (s *Store) trailingLineFromHandleLocked(ctx context.Context, size int64) (int64, []byte, error) {
+	// window is how many bytes ending at EOF have been read so far.
+	window := int64(0)
+	for {
+		if err := ctx.Err(); err != nil {
+			return 0, nil, err
+		}
+		// Grow the window by one chunk and read it whole, so the search result is
+		// always one contiguous slice.
+		window = min(size, window+trailingLineChunk)
+		start := size - window
+		if _, err := s.f.Seek(start, io.SeekStart); err != nil {
+			return 0, nil, fmt.Errorf("jobstore: seek trailing line: %w", err)
+		}
+		raw := make([]byte, window)
+		if _, err := io.ReadFull(s.f, raw); err != nil {
+			return 0, nil, fmt.Errorf("jobstore: read trailing line: %w", err)
+		}
+		if cut := bytes.LastIndexByte(raw, '\n'); cut >= 0 {
+			// The tail is everything after that newline. It may be empty, which the
+			// caller's blank check settles.
+			return start + int64(cut) + 1, raw[cut+1:], nil
+		}
+		if start == 0 {
+			// No newline anywhere in the file: the whole file is the final line.
+			return 0, raw, nil
+		}
+	}
+}
+
 // recoverTrailingLineForBoundaryLocked is CommittedJournal's trimmed tail
 // recovery: enough that a torn trailing line cannot corrupt the boundary read
 // or the append that follows it, and no more.
@@ -1364,7 +1503,7 @@ func (s *Store) recoverTrailingPartialLineLocked() (err error) {
 // does not adopt a replacement journal, and does not refuse an append on an
 // unexamined tail. Those are the separately filed bug; see CommittedJournal's
 // baseline note.
-func (s *Store) recoverTrailingLineForBoundaryLocked() (settled bool, err error) {
+func (s *Store) recoverTrailingLineForBoundaryLocked(ctx context.Context) (settled bool, err error) {
 	named, statErr := s.fs.Stat(s.path)
 	if statErr != nil {
 		if os.IsNotExist(statErr) {
@@ -1402,19 +1541,18 @@ func (s *Store) recoverTrailingLineForBoundaryLocked() (settled bool, err error)
 	if last[0] == '\n' {
 		return true, nil
 	}
-	if _, err := s.f.Seek(0, io.SeekStart); err != nil {
-		return false, fmt.Errorf("jobstore: inspect %s: %w", s.path, err)
-	}
-	raw, err := io.ReadAll(s.f)
+	// Find the start of the trailing line by walking BACKWARD in bounded chunks.
+	//
+	// Reading the whole file to find one newline is the defect this issue exists
+	// to remove, wearing a different hat: the read happens under the store mutex,
+	// cannot be canceled, and holds up every append for as long as it takes. A
+	// journal that grew large is exactly where a torn tail is most likely and
+	// where that cost is worst, so the walk is over a window at the end and grows
+	// only while the window holds no newline — one record's length, in practice,
+	// rather than the session's history.
+	offset, line, err := s.trailingLineFromHandleLocked(ctx, info.Size())
 	if err != nil {
-		return false, fmt.Errorf("jobstore: read %s: %w", s.path, err)
-	}
-	cut := bytes.LastIndexByte(raw, '\n')
-	offset := int64(0)
-	line := raw
-	if cut >= 0 {
-		offset = int64(cut + 1)
-		line = raw[cut+1:]
+		return false, err
 	}
 	if len(bytes.TrimSpace(line)) == 0 {
 		// A tail with no record in it — a lone carriage return, stray spaces, the
