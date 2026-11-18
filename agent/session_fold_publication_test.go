@@ -1089,17 +1089,23 @@ func TestFoldPublication_NamerCompletingAfterNewerFoldFlushDoesNotOverride(t *te
 	}
 }
 
-// TestPrepareModelRequest_PublishedHistoryNotAliasedToLiveHistory pins that a
-// request never expands the winning fold's live history array unlocked:
-// expandHistory iterates a message source with no lock, while
-// delegate-attention delivery goroutines mutate s.history IN PLACE under
+// TestPrepareModelRequest_PublishedHistoryNotAliasedToLiveHistory pins the
+// invariant that the request expands a SNAPSHOT of the published history,
+// never the live array: expandHistory iterates a message source with no lock
+// held, while delegate-attention delivery rewrites s.history IN PLACE under
 // s.mu (retainDelegateAttentionTurn's s.history[index] = turn;
-// removeUnverifiedDelegateAttentionTurn's element shift), and a torn
-// multi-word schema.Turn read corrupts model input. The request must therefore
-// expand a snapshot of the published history taken under s.mu, never the live
-// array delegate-attention delivery writes. The race detector is this test's
-// assertion: it fails under -race if the request expands a slice
-// delegate-attention delivery still writes.
+// removeUnverifiedDelegateAttentionTurn's element shift), so an aliased
+// expansion reads turns being rewritten underneath it and a torn multi-word
+// schema.Turn corrupts model input.
+//
+// The oracle is a structural probe, not the race detector: whether a
+// concurrent write happens to land inside expandHistory's few-microsecond
+// iteration is scheduler luck, so a race window cannot assert this
+// invariant. The probe replaces one element of the live array at a
+// deterministic point — after the round has taken its snapshot and before
+// it expands — and requires the expanded request not to observe the
+// replacement. An alias sees the write every time; a copy cannot see it at
+// all.
 func TestPrepareModelRequest_PublishedHistoryNotAliasedToLiveHistory(t *testing.T) {
 	t.Parallel()
 	s := newTestSession(t)
@@ -1109,60 +1115,83 @@ func TestPrepareModelRequest_PublishedHistoryNotAliasedToLiveHistory(t *testing.
 	// A retained delegate-attention turn seeded inside the preserved window,
 	// so it survives the fold INTO the published slice — the exact region
 	// the in-place retain replacement then keeps rewriting.
-	attn := schema.NewTurn(schema.TurnSteering, llm.User("retained delegate attention alias-race"))
-	attn.AttentionID = "att-alias-race"
+	attn := schema.NewTurn(schema.TurnSteering, llm.User("retained delegate attention, aliasing probe"))
+	attn.AttentionID = "att-published-history-alias"
 	s.mu.Lock()
 	s.history = append(s.history, attn)
 	s.mu.Unlock()
 
 	forcePressureAbove(t, s, 0.92) // > CheckpointThreshold(0.90): the round-1 fold folds and publishes
 
-	parked := make(chan struct{})
-	release := make(chan struct{})
-	var flushes atomic.Int32
+	// The probe lands on the checkpoint turn the fold publishes at index 0: a
+	// projected turn, so an aliased expansion carries its text, and a turn no
+	// other seam of this fixture rewrites.
+	const probe = "live-history-write-observed-by-request"
+	probed := false
+	var firstKind schema.TurnKind
 	updateSessionTestConfig(s, func(cfg *testConfig) {
-		cfg.beforeFoldSideEffectsFlush = func() {
-			if flushes.Add(1) == 1 {
-				close(parked)
-				<-release
+		// Runs in the request's own goroutine, after the round snapshotted
+		// history and before it expands it. Same goroutine, after the
+		// snapshot, with no lock in between: this is an aliasing probe, not a
+		// timing race, so it cannot pass by losing a schedule.
+		cfg.afterModelHistorySnapshot = func() {
+			s.mu.Lock()
+			defer s.mu.Unlock()
+			if len(s.history) > 0 {
+				firstKind = s.history[0].Kind
+				s.history[0] = schema.NewTurn(schema.TurnCheckpoint, llm.User(probe))
+				probed = true
 			}
 		}
 	})
 
 	var rt events.RoundTimings
-	prepErr := make(chan error, 1)
-	go func() {
-		_, _, _, _, _, _, err := s.prepareModelRequestWithError(context.Background(), 1, &rt)
-		prepErr <- err
-	}()
-	<-parked // the fold has published; prep has not yet reached expandHistory
-
-	// Hammer in-place replacements of the retained turn (the production
-	// mutation shape: same AttentionID, DeepEqual message, s.history[index]
-	// overwritten under s.mu) across prep's post-publish reads.
-	stop := make(chan struct{})
-	mutatorDone := make(chan struct{})
-	go func() {
-		defer close(mutatorDone)
-		for {
-			select {
-			case <-stop:
-				return
-			default:
-				if err := s.retainDelegateAttentionTurn(attn); err != nil {
-					t.Errorf("retainDelegateAttentionTurn: %v", err)
-					return
-				}
-			}
-		}
-	}()
-
-	close(release)
-	if err := <-prepErr; err != nil {
+	_, _, history, _, _, _, err := s.prepareModelRequestWithError(context.Background(), 1, &rt)
+	if err != nil {
 		t.Fatalf("prepareModelRequestWithError: %v", err)
 	}
-	close(stop)
-	<-mutatorDone
+
+	if !probed {
+		t.Fatal("afterModelHistorySnapshot never ran: the probe never reached the snapshot it exists to test")
+	}
+	// The probe must land on the fold's published array, not the pre-fold one:
+	// a fold that did not publish would leave the seeded user turn at index 0,
+	// and an alias caught there would not be the published-history aliasing
+	// this test exists to pin.
+	if firstKind != schema.TurnCheckpoint {
+		t.Fatalf("the round snapshotted history whose first turn is %q, not the fold's checkpoint: no fold published, so the probe never reached the aliasing this test exists to catch", firstKind)
+	}
+	// Prove the triggering scenario ran: the live element really was replaced,
+	// so a request that shares its storage would have to see the probe.
+	s.mu.Lock()
+	resident := s.history[0].Message.Text()
+	attnResident := false
+	for _, turn := range s.history {
+		if turn.AttentionID == attn.AttentionID {
+			attnResident = true
+			break
+		}
+	}
+	s.mu.Unlock()
+	if !strings.Contains(resident, probe) {
+		t.Fatalf("s.history[0] = %q, want the probe: the live element was not replaced, so the request could not have observed it", resident)
+	}
+	if !attnResident {
+		t.Fatal("the retained delegate-attention turn left the live history: the fixture no longer represents the in-place-write scenario")
+	}
+
+	presentedAttention := false
+	for _, msg := range history {
+		if strings.Contains(msg.Text(), probe) {
+			t.Fatalf("the request expanded a turn written to the live history after its snapshot: the published history is aliased to s.history instead of copied out of it, so an in-place delegate-attention write would tear a turn under this read")
+		}
+		if strings.Contains(msg.Text(), attn.Message.Text()) {
+			presentedAttention = true
+		}
+	}
+	if !presentedAttention {
+		t.Fatal("the expanded request does not carry the retained delegate-attention turn: the fixture did not reach the request")
+	}
 }
 
 // TestFoldPublication_OlderFoldFlushSuppressedByNewerPublication pins the
