@@ -134,6 +134,17 @@ func TestEstimateTokenPartsForDoesNotAllocate(t *testing.T) {
 			}
 		})
 	}
+	for _, protocol := range []string{registry.ProtocolOpenAIChat, registry.ProtocolOpenAIResponses} {
+		t.Run(protocol+" after model switch", func(t *testing.T) {
+			res := registry.Resolved{Instance: "gateway", ModelID: "current", Protocol: protocol, Caps: registry.Caps{ReplayReasoningText: new(true)}}
+			history := []schema.Turn{{Kind: schema.TurnAssistant, ResponseProvider: res.Instance, ResponseProtocol: protocol, ResponseRequestModel: "other",
+				Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "prior work"}}}},
+			}}
+			if allocs := testing.AllocsPerRun(20, func() { _ = estimateTokenPartsFor(res, history) }); allocs != 0 {
+				t.Fatalf("pricing a prior model's reasoning allocates %.0f times per reading", allocs)
+			}
+		})
+	}
 }
 
 // referenceEstimateTokens is the message-list estimator written out in full: it

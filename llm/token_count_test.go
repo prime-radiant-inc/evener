@@ -995,9 +995,8 @@ func TestEstimateMessagesInputTokensForResolved_AppliesTheRowsImageDetailWithout
 //     unless the value is really an OpenAI-compatible field name) and a
 //     redacted_thinking block (its data); an encrypted blob never rides, and a
 //     thinking part with no text is skipped entirely;
-//   - responses/input.go replays one reasoning item carrying a non-compat
-//     encrypted blob with its id and non-blank summaries, and drops every other
-//     shape, the part's display text included;
+//   - responses/input.go replays an encrypted item or accepted native raw
+//     reasoning with its id and non-blank summaries;
 //   - chatcompletions/messages.go replays the part's text (unless the row is
 //     declared non-reasoning without replaying thinking as text) and the compat
 //     reasoning_details array (unless the row is declared non-reasoning at all),
@@ -1034,6 +1033,10 @@ func TestEstimateMessagesInputTokensForResolved_BillsThinkingShapesByAdapter(t *
 	replay := registry.Caps{ReplayReasoningText: new(true)}
 	userThinking := thinking(&ThinkingData{ID: id, Text: text})
 	userThinking[0].Role = RoleUser
+	mixed := thinking(&ThinkingData{Text: text + summary, ResponsesTextParts: []ResponsesTextPart{
+		{Type: "reasoning_text", Start: 0, End: textChars},
+		{Type: "summary_text", Start: textChars, End: textChars + summaryChars},
+	}})
 
 	cases := []struct {
 		name string
@@ -1049,6 +1052,7 @@ func TestEstimateMessagesInputTokensForResolved_BillsThinkingShapesByAdapter(t *
 
 		{"responses bills the blob, id and summaries", row(responses, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob, ID: id, Summary: []string{summary}}), (blobChars + idChars + summaryChars) / 4},
 		{"responses bills replayed text, id and summaries", row(responses, replay), thinking(&ThinkingData{ID: id, Text: text, Summary: []string{summary}}), (idChars + textChars + summaryChars) / 4},
+		{"responses bills only the raw content in a mixed item", row(responses, replay), mixed, textChars / 4},
 		{"responses skips user-role reasoning text", row(responses, replay), userThinking, 0},
 		{"responses uses the blob when both forms are present", row(responses, replay), thinking(&ThinkingData{ID: id, Text: text, EncryptedContent: blob}), (idChars + blobChars) / 4},
 		{"responses skips display-only text on a replaying row", row(responses, replay), thinking(&ThinkingData{Text: text}), 0},

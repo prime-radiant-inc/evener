@@ -373,17 +373,19 @@ func (cm *Manager) estimateTokensFor(prof *provider.Profile, turns []schema.Turn
 // llm.TokenPartEstimator's.
 func estimateTokenPartsFor(res registry.Resolved, turns []schema.Turn) llm.TokenParts {
 	dropPlainThinking := !llm.ReplaysAssistantThinking(res)
+	rawReplay := res.ReplaysRawReasoning()
 	estimator := llm.TokenPartEstimatorFor(res)
+	withoutPlain := estimator.WithoutPlainThinking()
 	var parts llm.TokenParts
 	for _, t := range turns {
 		if t.Kind == schema.TurnAttentionResolution {
 			continue
 		}
-		message := t.ProjectReasoningText(&res)
-		if dropPlainThinking {
-			message = llm.TrimThinkingForReplayMessage(message, true)
+		pricer := estimator
+		if dropPlainThinking || (rawReplay && t.Message.Role == llm.RoleAssistant && !t.MatchesReasoningTextTarget(&res)) {
+			pricer = withoutPlain
 		}
-		parts = parts.Add(estimator.Parts(message))
+		parts = parts.Add(pricer.Parts(t.Message))
 	}
 	return parts
 }

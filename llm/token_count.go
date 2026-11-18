@@ -160,6 +160,13 @@ func (e TokenPartEstimator) Parts(m Message) TokenParts {
 	return TokenParts{Chars: chars, Counted: counted}
 }
 
+// WithoutPlainThinking prices messages whose raw reasoning is omitted while
+// still counting any opaque reasoning the target's adapter sends.
+func (e TokenPartEstimator) WithoutPlainThinking() TokenPartEstimator {
+	e.target.unsignedThinking = false
+	return e
+}
+
 // TokenParts is the additive decomposition of a local token estimate.
 type TokenParts struct {
 	// Chars is the summed character count, divided by four once in Total.
