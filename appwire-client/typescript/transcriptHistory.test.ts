@@ -1623,22 +1623,23 @@ function heldDelegate(holdSequence: number, projectionRevision: number): EvenerD
   };
 }
 
-// A descendant served by its parent daemon at "5@root" switches to its own
-// daemon at "1". The browser records "1" as the hold owner at the hand-off,
-// before the targeted read settles. A reconnect inside that window invalidates
-// history with NO boot token, and the invalidation's fallback identity (the
-// last read's "5@root", right for deciding history validity) is not evidence
-// naming a replacement. Writing it back as the owner makes the next resync from
-// "1" compare against "5@root", read as another replacement, and erase the hold
-// daemon 1 published — which emits no update of its own to restore it.
+// A descendant served by its parent daemon at "5@root" switches to a daemon
+// serving it as its own root, at "1@other". Both tokens name their root, so the
+// hand-off is a CONFIRMED replacement: it retires "5@root"'s samples and records
+// the incoming owner. A reconnect inside that window then invalidates history
+// with NO boot token, and the invalidation's fallback identity ("5@root", right
+// for deciding history validity) is not evidence naming a replacement. Writing
+// it back as the owner would make the next resync from "1@other" compare against
+// "5@root", read as another replacement, and erase the hold that daemon
+// published — which emits no update of its own to restore it.
 test("a bootless reconnect keeps the hold owner a replacement recorded", () => {
   const base = hydrateThread(
     { thread: testThread(), bootGeneration: "5@root", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 } },
     "ref_t",
     1000,
   );
-  // The retired daemon's sample: 900 outranks any sequence daemon 1 reaches
-  // first, which is why the hand-off has to drop it.
+  // The retired daemon's sample: 900 outranks any sequence the replacement
+  // reaches first, which is why the hand-off has to drop it.
   let model = applyNotification(
     base,
     { method: "evener/delegate/updated", params: { ref: "ref_t", delegate: heldDelegate(900, 3) } } as AnyNotification,
@@ -1646,15 +1647,15 @@ test("a bootless reconnect keeps the hold owner a replacement recorded", () => {
   );
   expect(model.delegates?.[0]?.holdSequence).toBe(900);
 
-  // The browser's hand-off when "1" takes over: retire 5@root's samples and
-  // record "1" as the owner, with no invalidation fold of its own.
-  const handed = handOffReplacedSource(model, "1");
+  // The browser's hand-off when the new root takes over: retire the old
+  // samples and record the incoming owner, with no invalidation fold.
+  const handed = handOffReplacedSource(model, "1@other");
   if (!handed) throw new Error("the hand-off retired nothing");
   model = handed;
   expect(model.delegates?.[0]?.holdSequence).toBeUndefined();
-  expect(model.history?.holdOwner).toBe("1");
+  expect(model.history?.holdOwner).toBe("1@other");
 
-  // Daemon 1 publishes its own live hold while no read has succeeded.
+  // The replacement publishes its own live hold while no read has succeeded.
   model = applyNotification(
     model,
     { method: "evener/delegate/updated", params: { ref: "ref_t", delegate: heldDelegate(1, 4) } } as AnyNotification,
@@ -1666,12 +1667,12 @@ test("a bootless reconnect keeps the hold owner a replacement recorded", () => {
   // source replacement and must not become the recorded owner.
   model = invalidateHistory(model);
 
-  // Daemon 1's own resync, a newer epoch of the same source: its hold stands.
+  // The same source's own resync, a newer epoch: its hold stands.
   model = applyNotification(
     model,
     {
       method: "evener/thread/resync",
-      params: { threadId: base.threadId, ref: "ref_t", bootGeneration: "1", epoch: 3 },
+      params: { threadId: base.threadId, ref: "ref_t", bootGeneration: "1@other", epoch: 3 },
     } as AnyNotification,
     3000,
   );
@@ -1679,6 +1680,47 @@ test("a bootless reconnect keeps the hold owner a replacement recorded", () => {
   expect(model.delegates?.[0]?.drainHeldByJobs).toBe(true);
   expect(model.delegates?.[0]?.runningJobCount).toBe(2);
   // The mechanism, pinned after the harm it causes: the reconnect never became
-  // the recorded owner, so daemon 1's resync compares against its own boot.
-  expect(model.history?.holdOwner).toBe("1");
+  // the recorded owner, so the source's resync compares against its own boot.
+  expect(model.history?.holdOwner).toBe("1@other");
+});
+
+// The other direction of the same rule: a bare counter does not say whose
+// counter it is, so it cannot confirm a replacement. An older daemon stamps a
+// descendant's worktree-change resync with "5" while its reads name the same
+// controller "5@root"; treating the mismatch as a takeover erases a hold
+// nothing replaced, and an unchanged hold emits no update to restore it.
+test("an uninterpretable boot token preserves the hold instead of retiring it", () => {
+  const base = hydrateThread(
+    { thread: testThread(), bootGeneration: "5@root", epoch: 1, snapshot: { incarnation: "inc-1", length: 1 } },
+    "ref_t",
+    1000,
+  );
+  let model = applyNotification(
+    base,
+    { method: "evener/delegate/updated", params: { ref: "ref_t", delegate: heldDelegate(900, 3) } } as AnyNotification,
+    2000,
+  );
+  expect(model.delegates?.[0]?.holdSequence).toBe(900);
+
+  // The older daemon's worktree-change resync, and then its following epoch
+  // bump from the same bare counter. Neither names a root, so neither confirms
+  // anything — and the second one in particular must not read the first's
+  // absence of a record as a replacement.
+  for (const epoch of [3, 4]) {
+    model = applyNotification(
+      model,
+      {
+        method: "evener/thread/resync",
+        params: { threadId: base.threadId, ref: "ref_t", bootGeneration: "5", epoch },
+      } as AnyNotification,
+      3000,
+    );
+    expect(model.delegates?.[0]?.holdSequence).toBe(900);
+    expect(model.delegates?.[0]?.drainHeldByJobs).toBe(true);
+    expect(model.delegates?.[0]?.runningJobCount).toBe(2);
+  }
+  // History still invalidates, as it must: the epoch moved.
+  expect(model.history?.invalidatedAtGeneration).toBeDefined();
+  // And no owner was recorded from the uninterpretable token.
+  expect(model.history?.holdOwner).toBeUndefined();
 });

@@ -38,6 +38,47 @@ export function compareBootGeneration(held: string, incoming: string): BootGener
 
 const MAX_UINT64 = (1n << 64n) - 1n;
 
+/**
+ * Whether two boot tokens confirm that one source REPLACED another — the only
+ * question a hold retirement may act on.
+ *
+ * `compareBootGeneration` answers what to do with history, which is the right
+ * question for a value: an ambiguous token still invalidates, and the next read
+ * replaces. A hold is different, because an unchanged hold emits no update of
+ * its own, so a retirement decided on a misread token cannot be undone.
+ *
+ * A bare counter does not say whose counter it is. An older daemon stamps a
+ * descendant's worktree-change resync with `5` while its reads name the same
+ * controller `5@root`; `compareBootGeneration` reads those owners as different
+ * and returns "replace", but nothing has been replaced. So a mismatch between a
+ * bare token and a qualified one is AMBIGUOUS, and absence of evidence is not
+ * evidence of replacement: it confirms nothing.
+ *
+ * Comparable tokens decide normally. Two qualified tokens from different roots
+ * confirm a genuine takeover — a daemon serving the thread as its own root.
+ * `daemonless` names a definite absence of a daemon, so it confirms. A token
+ * that parses as neither is malformed and names nothing.
+ */
+export function confirmedBootReplacement(held: string, incoming: string): boolean {
+  if (held === incoming) return false;
+  // An empty `held` means this model has recorded no source yet, so there is
+  // nothing whose replacement could be confirmed - not even by daemonless.
+  if (held === "") return false;
+  const heldCounter = parseBootGeneration(held);
+  const incomingCounter = parseBootGeneration(incoming);
+  if (!heldCounter || !incomingCounter) {
+    // `daemonless` is a definite answer about who serves the thread: no daemon
+    // is running it, so no delegate controller is sampling its sequence.
+    return held === DAEMONLESS_BOOT_GENERATION || incoming === DAEMONLESS_BOOT_GENERATION;
+  }
+  if (heldCounter.owner !== incomingCounter.owner) {
+    // Both sides name their root, so the owners really differ. A bare counter
+    // on either side leaves the owner unstated, which is not a difference.
+    return heldCounter.owner !== "" && incomingCounter.owner !== "";
+  }
+  return compareBootGeneration(held, incoming) === "replace";
+}
+
 // Reads a counter token the way Go's strconv.ParseUint does (decimal digits
 // only, within uint64), as a bigint so counters past 2^53 still compare
 // exactly. daemonless and malformed tokens read as undefined.

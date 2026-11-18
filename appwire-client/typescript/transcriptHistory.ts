@@ -3,7 +3,7 @@
 // `turnHistoryMerge` and `transcriptItems`; the notification folds that drive
 // these live in `reducer.ts`.
 
-import { compareBootGeneration } from "./bootGeneration";
+import { compareBootGeneration, confirmedBootReplacement } from "./bootGeneration";
 import { historyFallback, historyReplacesWindow, historyServingFacts } from "./historyServing";
 import type { HistoryState, ItemModel, OlderFrontier, ThreadModel, TurnModel } from "./model";
 import { comparePositions, SYSTEM_PRELUDE_TURN_ID } from "./model";
@@ -864,7 +864,11 @@ export function invalidated(history: HistoryState, signal: HistorySignal = {}): 
   // unchanged hold emits no update of its own to restore one dropped here.
   const explicit = signal.bootGeneration || undefined;
   const owner = history.holdOwner ?? history.awaited?.bootGeneration ?? history.bootGeneration;
-  const record = explicit !== undefined && compareBootGeneration(owner, explicit) === "replace" ? explicit : undefined;
+  // Confirmed replacement, not a bare token mismatch: an older daemon names a
+  // descendant's controller "5" on a worktree-change resync and "5@root" on
+  // its reads, and recording that "5" as the owner makes the next read's
+  // well-formed token for the SAME controller read as another replacement.
+  const record = explicit !== undefined && confirmedBootReplacement(owner, explicit) ? explicit : undefined;
   return {
     ...history,
     invalidatedAtGeneration: history.issuedGeneration,

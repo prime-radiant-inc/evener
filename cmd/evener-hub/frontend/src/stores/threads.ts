@@ -45,6 +45,7 @@ import {
   canonicalSkillNames,
   collectAuthoritativeMutationIds,
   compareBootGeneration,
+  confirmedBootReplacement,
   errorText,
   frontierFromCursor,
   handOffReplacedSource,
@@ -4428,19 +4429,29 @@ async function readThreadHydration(
     // this hydration's own base model (superseded generations are ignored by
     // applyHistoryReadFailure itself).
     if (isTranscriptHistoryFailedError(err) && pending.baseModel) {
-      // Fold the buffered updates onto the base BEFORE recording the failure.
-      // A boot-changing resync clears the old hold and buffers the replacement
-      // daemon's delegate updates; if the read then fails, publishing the raw
-      // base model discards a hold the replacement published while the read was
-      // pending, and the watched row omits that wait for its whole duration
-      // because an unchanged hold emits no further update.
+      // The failure is applied FIRST, to this hydration's own base model, and
+      // the buffered updates are then replayed onto the failed model. The order
+      // is load-bearing in both directions:
       //
-      // The failure is applied last, and to this hydration's own base model, so
-      // superseded generations are still ignored by applyHistoryReadFailure,
-      // the diagnostic still lands, and the hydration ownership checks above
-      // still decide whether anything is published at all.
-      const buffered = replayHydrationNotifications(pending.baseModel, pending.notifications).model;
-      const failedModel = applyHistoryReadFailure(buffered, errorText(err), pending.requestGeneration ?? 0);
+      // Last, a buffered `history/updated` from the replacement boot is compared
+      // against the OLD boot still in history, so it invalidates at this read's
+      // own generation - and `applyHistoryReadFailure` then reads its own
+      // failure as superseded (`requestGeneration <= invalidatedAtGeneration`)
+      // and drops the diagnostic. The store would publish invalidated history
+      // with no diagnostic, and that publication is not the live invalidation
+      // path that schedules a follow-up read.
+      //
+      // First, the failed model makes every replay take reducer.ts's
+      // failed-history branch, which keeps the diagnostic, retires only a
+      // CONFIRMED replacement, and records the incoming owner - so a hold the
+      // replacement published while the read was pending survives, which an
+      // unchanged hold could never restore on its own.
+      //
+      // Superseded generations are still ignored: the failure is applied to
+      // this hydration's own base model, and the ownership checks above still
+      // decide whether anything is published at all.
+      const failedBase = applyHistoryReadFailure(pending.baseModel, errorText(err), pending.requestGeneration ?? 0);
+      const failedModel = replayHydrationNotifications(failedBase, pending.notifications).model;
       const entry = tracked ? existingEntryRoute(ref) : undefined;
       if (!tracked) {
         putWatchedThreadModel(ref, failedModel);
@@ -5957,8 +5968,22 @@ function beginWatchedHydration(
   model: ThreadModel | undefined,
   epoch: number,
   includeTurns: boolean,
+  // The boot generation the notification that started this read named, when a
+  // resync started it. undefined for a retry or a ready-fan-out read.
+  resyncBootGeneration?: string,
 ): PendingThreadHydration {
   const previousPending = pendingWatchedHydrations.get(ref);
+  // A superseded read's delegate updates survive unless the supersession is a
+  // CONFIRMED replacement. The buffer is the only copy of a hold the
+  // replacement published while the previous read was pending: it was never
+  // folded into a model, so retiring the buffer loses it, and the next read's
+  // failure replay has nothing to publish. When the supersession IS a
+  // confirmed replacement, the buffer belongs to the replaced source and goes
+  // with it.
+  const carried =
+    previousPending && carriesBufferedHolds(previousPending, resyncBootGeneration)
+      ? previousPending.notifications.filter((update) => update.notification.method === "evener/delegate/updated")
+      : [];
   if (previousPending) retirePendingHydration(ref, previousPending, pendingWatchedHydrations);
   // Only a history-requesting read orders the repair-status sequence: a
   // lean watch the hub can answer without touching the transcript index
@@ -5981,7 +6006,7 @@ function beginWatchedHydration(
     client,
     epoch,
     mutationGeneration: mutationStateGenerations.get(ref) ?? 0,
-    notifications: [],
+    notifications: [...carried],
     backgroundBytes: 0,
     routing: pendingHydrationRouting(ref, baseModel ?? model),
     baseModel,
@@ -5992,6 +6017,21 @@ function beginWatchedHydration(
   };
   pendingWatchedHydrations.set(ref, pending);
   return pending;
+}
+
+// carriesBufferedHolds decides whether a superseded watched read's buffered
+// updates belong to the incoming source or to a source that is gone.
+//
+// Only a CONFIRMED replacement takes them: a same-boot resync, a bootless one,
+// and a token that cannot be interpreted all leave the daemon that published
+// them in charge, and the new read's buffer is the only place its hold exists.
+// A confirmed replacement discards them with the source that numbered them.
+function carriesBufferedHolds(pending: PendingThreadHydration, resyncBootGeneration: string | undefined): boolean {
+  if (!resyncBootGeneration) return true;
+  const held = pending.baseModel?.history;
+  if (!held) return true;
+  const owner = held.holdOwner ?? held.awaited?.bootGeneration ?? held.bootGeneration;
+  return !confirmedBootReplacement(owner, resyncBootGeneration);
 }
 
 function bufferPendingNotification(
@@ -6891,7 +6931,10 @@ function handleNotification(n: AnyNotification): void {
     // Run the reducer's own retirement rule over each, before the read starts.
     retireReplacedSourceHoldBeforeResync(n.params.ref, n.params.bootGeneration);
     const client = getWiredClient();
-    if (client) void handleReady(client, getReadyEpoch(), n.params.ref);
+    if (client)
+      void handleReady(client, getReadyEpoch(), n.params.ref, {
+        resyncBootGeneration: n.params.bootGeneration,
+      });
     return;
   }
   if (n.method === "evener/auth/updated") {
@@ -7567,6 +7610,10 @@ async function refreshWatchedThread(
   epoch: number,
   ref: string,
   targetedResync: boolean,
+  // The boot generation the resync that started this read named, so a
+  // superseding read can tell a confirmed replacement from a same-source or
+  // uninterpretable one. undefined for a retry or a ready-fan-out read.
+  resyncBootGeneration?: string,
 ): Promise<void> {
   if ((watchRefCounts.get(ref) ?? 0) <= 0) return;
   const generation = watchGenerations.get(ref) ?? 0;
@@ -7579,6 +7626,7 @@ async function refreshWatchedThread(
     threadsStore.getState().watchedThreads.get(ref),
     epoch,
     includeTurns,
+    resyncBootGeneration,
   );
   // Same as refreshTrackedThread: publishWatchedHydration re-decides this.
   const hydration = readThreadHydration(client, ref, Date.now(), pending, { kind: "watched", includeTurns }).then(
@@ -7639,6 +7687,12 @@ async function handleReady(
     authoritativePublishedRefs?: Set<string>;
     /** The caller's outer replay pass covers this ref. */
     deferReplay?: boolean;
+    /**
+     * The boot generation the notification that requested this refresh named
+     * (a resync push). Passed to the watched read so a superseding read can
+     * tell a confirmed replacement from a same-source or uninterpretable one.
+     */
+    resyncBootGeneration?: string;
   },
 ): Promise<void> {
   const targetedResync = targetRef !== undefined;
@@ -7670,7 +7724,9 @@ async function handleReady(
         },
       }),
     ),
-    ...Array.from(watchRefs, (ref) => refreshWatchedThread(client, epoch, ref, targetedResync)),
+    ...Array.from(watchRefs, (ref) =>
+      refreshWatchedThread(client, epoch, ref, targetedResync, options?.resyncBootGeneration),
+    ),
   ]);
 
   if (

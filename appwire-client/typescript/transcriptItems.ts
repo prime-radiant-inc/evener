@@ -2,7 +2,7 @@
 // stable-delegate helpers, and the wire-to-model item conversions. A leaf over
 // model types, identity validation and generated wire types.
 
-import { compareBootGeneration } from "./bootGeneration";
+import { confirmedBootReplacement } from "./bootGeneration";
 import { pendingTextJoined } from "./chunkview";
 import { historyServingFacts } from "./historyServing";
 import type { ItemImage, ItemModel, ThreadModel, TurnModel } from "./model";
@@ -131,7 +131,11 @@ export function retireReplacedSourceHoldOnModel<M extends ThreadModel>(
   const held = model.history;
   if (!held) return undefined;
   const owner = held.holdOwner ?? held.awaited?.bootGeneration ?? held.bootGeneration;
-  if (compareBootGeneration(owner, bootGeneration) !== "replace") return undefined;
+  // A CONFIRMED replacement, never merely a name mismatch: an older daemon
+  // stamps a descendant's worktree-change resync with a bare "5" while its
+  // reads name the same controller "5@root", and that difference retires a
+  // hold nothing replaced. An unchanged hold emits no update to restore one.
+  if (!confirmedBootReplacement(owner, bootGeneration)) return undefined;
   const delegates = retireStableDelegateHolds(model.delegates);
   if (delegates === undefined || delegates === model.delegates) return undefined;
   return { ...model, delegates };
@@ -155,7 +159,10 @@ export function recordSourceOwnerOnModel<M extends ThreadModel>(
   const held = model.history;
   if (!held) return undefined;
   const owner = held.holdOwner ?? held.awaited?.bootGeneration ?? held.bootGeneration;
-  if (compareBootGeneration(owner, bootGeneration) !== "replace") return undefined;
+  // Same confirmation as the retire: an uninterpretable token must not become
+  // the recorded owner, or the next well-formed token for that same controller
+  // reads as another replacement.
+  if (!confirmedBootReplacement(owner, bootGeneration)) return undefined;
   return { ...model, history: { ...held, holdOwner: bootGeneration } };
 }
 
