@@ -2,8 +2,10 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -12,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/envctx"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/gittest"
 	"primeradiant.com/evener/llm"
@@ -147,7 +150,89 @@ func TestRestoreEnvironmentReconcilesCompactionWithStaleMetadata(t *testing.T) {
 }
 
 func testCompactedGitObservation(t *testing.T) {
-	const launch, feature, recovery = "launch-79", "feature-41", "recovered-23"
+	const launch, feature, recovery, installed = "launch-79", "feature-41", "recovered-23", "installed-17"
+	for _, tc := range []struct {
+		name      string
+		known     bool
+		reinstall bool
+		probes    []int
+		seen      []string
+	}{
+		{"confirmed admission", true, false, []int{1, 0, 0}, []string{feature, feature, feature}},
+		{"inconclusive admission", false, false, []int{1, 1, 1}, []string{launch, launch, recovery}},
+		{"workspace changed after admission", false, true, []int{2, 0, 0}, []string{installed, installed, installed}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cwd := evalSyms(t, t.TempDir())
+			base := execenv.NewLocalExecutionEnvironment(cwd)
+			requestCwd := cwd
+			if tc.reinstall {
+				requestCwd = evalSyms(t, t.TempDir())
+			}
+			branch, known := launch, true
+			var probes int
+			s := newScriptedSummaryCompactSession(t, "admission-fold", func(llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nWork retained\n[END SUMMARY]")}
+			}, withEnv(base), withConfig(SessionConfig{StateDir: t.TempDir(), testOnly: testConfig{envProbes: &envctx.Probes{
+				Now: func() time.Time { return envctxFixedTime },
+				GitBranch: func(dir string) (string, bool) {
+					probes++
+					if dir != cwd {
+						return installed, true
+					}
+					if !known {
+						return "", false
+					}
+					return branch, true
+				},
+			}}}))
+			prompt := s.cachedSystemPrompt
+			if err := s.maybeAppendEnvironmentContext(); err != nil {
+				t.Fatal(err)
+			}
+			forceRealRoundSummaryFold(t, s, 0.5, 0.85)
+			if tc.reinstall {
+				var once sync.Once
+				updateSessionTestConfig(s, func(cfg *testConfig) {
+					cfg.afterFoldSideEffectsFlush = func() {
+						once.Do(func() {
+							if err := s.swapEnvAndRefresh(base.WithWorkingDirectory(requestCwd), nil); err != nil {
+								t.Errorf("install next workspace: %v", err)
+							}
+						})
+					}
+				})
+			}
+			probes, branch, known = 0, feature, tc.known
+			var perRequest []int
+			var seen []string
+			s.client.Register(&agenttest.ScriptedAdapter{Provider: "openai", Responder: func(req llm.Request) llm.Response {
+				perRequest = append(perRequest, probes)
+				probes = 0
+				snapshot, blocks := requestEnvironment(req)
+				seen = append(seen, snapshot.GitBranch)
+				if blocks == 0 || snapshot.Cwd != requestCwd || req.Messages[0].Text() != prompt {
+					t.Errorf("request %d has %d environment updates at %q or changed its prompt", len(seen), blocks, snapshot.Cwd)
+				}
+				if len(seen) == 1 {
+					if !slices.ContainsFunc(currentHistory(t, s), func(turn schema.Turn) bool { return turn.Kind == schema.TurnSummary }) {
+						t.Error("the first provider request arrived without a published summary fold")
+					}
+				}
+				if len(seen) == 2 {
+					branch, known = recovery, true
+				}
+				if len(seen) < 3 {
+					return agenttest.ToolCallResponse(llm.ToolCallData{ID: fmt.Sprintf("tasks-%d", len(seen)), Name: "task_list", Arguments: []byte(`{}`)})
+				}
+				return agenttest.FinalResponse("done")
+			}})
+			sendOneUserInput(t, s, "continue after folding")
+			if !slices.Equal(perRequest, tc.probes) || !slices.Equal(seen, tc.seen) {
+				t.Errorf("Git probes per request = %v, branches = %v; want %v and %v", perRequest, seen, tc.probes, tc.seen)
+			}
+		})
+	}
 	for _, mode := range []string{"warm", "cold", "cleared then cold"} {
 		t.Run(mode, func(t *testing.T) {
 			cwd, stateDir := evalSyms(t, t.TempDir()), t.TempDir()

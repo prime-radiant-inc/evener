@@ -63,6 +63,7 @@ func (s *Session) rehydrateEnvironmentContext(history []schema.Turn) {
 	// The startup prompt survives every fold. Retained environment updates
 	// supersede its facts, including an explicitly cleared path or branch.
 	baseline := envctx.State{
+		Last:                 envctx.Snapshot{Cwd: s.promptWorkingDir},
 		GitBranchUnknown:     s.cachedSystemPrompt != "" && s.promptLaunch.GitBranch == nil,
 		ScratchDirUnknown:    s.cachedSystemPrompt != "" && s.promptLaunch.ScratchDir == nil,
 		WritableRootsUnknown: s.cachedSystemPrompt != "" && s.promptLaunch.WritableRoots == nil,
@@ -91,9 +92,13 @@ func (s *Session) rehydrateEnvironmentContext(history []schema.Turn) {
 }
 
 // The durable transcript includes observations a fold removed from the model's
-// history. Fold copies repeat old facts. Only an original environment turn
-// that explicitly reports a branch or its absence updates this observation.
-func (s *Session) restoreLastGitObservation(cwd string, entries []transcript.Entry) {
+// history. Begin with the launch checkout, then apply explicit observations
+// from original environment turns. Fold copies can describe older branches.
+func (s *Session) restoreGitObservations(entries []transcript.Entry) {
+	cwd := s.promptWorkingDir
+	if branch := s.promptLaunch.GitBranch; branch != nil {
+		s.envCollector.RememberGitBranch(cwd, *branch)
+	}
 	for _, entry := range entries {
 		turn := entry.Turn
 		if turn.Kind != schema.TurnEnvironment || turn.OriginalOrdinal != nil {
@@ -106,7 +111,7 @@ func (s *Session) restoreLastGitObservation(cwd string, entries []transcript.Ent
 		state := block.State()
 		cwd = state.Last.Cwd
 		if !state.GitBranchUnknown {
-			s.lastGitObservation = envctx.GitObservation{Cwd: cwd, Branch: state.Last.GitBranch}
+			s.envCollector.RememberGitBranch(cwd, state.Last.GitBranch)
 		}
 	}
 }

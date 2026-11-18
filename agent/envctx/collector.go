@@ -33,35 +33,38 @@ type cachedProbe struct {
 	hasRun bool
 }
 
-// GitObservation belongs to the checkout that produced it. It remains useful
-// if a fold removes the environment turn which reported the branch.
-type GitObservation struct {
-	Cwd, Branch string
-}
-
 // Collector assembles Snapshots, rate-limiting the pressure probes.
 type Collector struct {
 	p               Probes
 	load, mem, disk cachedProbe
+	gitBranches     map[string]string
 }
 
 func NewCollector(p Probes) *Collector {
 	if p.Now == nil {
 		p.Now = time.Now
 	}
-	return &Collector{p: p}
+	return &Collector{p: p, gitBranches: make(map[string]string)}
 }
 
-// ReconcileGitBranch retains a definitive probe and supplies the last
-// confirmed value on an inconclusive one. It reports whether to probe again.
+// RememberGitBranch records a confirmed observation for one checkout. An
+// empty branch records that the directory was outside a worktree.
+func (c *Collector) RememberGitBranch(cwd, branch string) {
+	if cwd != "" {
+		c.gitBranches[cwd] = branch
+	}
+}
+
+// ReconcileGitBranch retains a definitive probe and supplies this checkout's
+// last confirmed value on an inconclusive one. It reports whether to probe again.
 // The caller serializes this step with workspace changes and publication.
-func (c *Collector) ReconcileGitBranch(snap *Snapshot, last *GitObservation) (retry bool) {
+func (c *Collector) ReconcileGitBranch(snap *Snapshot) (retry bool) {
 	if !snap.gitBranchUnknown {
-		*last = GitObservation{Cwd: snap.Cwd, Branch: snap.GitBranch}
+		c.RememberGitBranch(snap.Cwd, snap.GitBranch)
 		return false
 	}
-	if last.Cwd != "" && last.Cwd == snap.Cwd {
-		snap.GitBranch = last.Branch
+	if branch, known := c.gitBranches[snap.Cwd]; known {
+		snap.GitBranch = branch
 		snap.gitBranchUnknown = false
 	}
 	return c.p.GitBranch != nil

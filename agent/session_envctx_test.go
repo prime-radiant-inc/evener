@@ -91,6 +91,10 @@ func countEnvironmentTurns(s *Session) int {
 	return n
 }
 
+func (s *Session) maybeAppendEnvironmentContext() error {
+	return s.appendEnvironmentContext(true)
+}
+
 func requestEnvironment(req llm.Request) (envctx.Snapshot, int) {
 	var tracker envctx.Tracker
 	blocks := 0

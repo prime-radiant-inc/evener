@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,6 +23,92 @@ import (
 
 func TestSwapEnvAndRefresh_AppendsCurrentEnvironmentToStartupPromptHistory(t *testing.T) {
 	t.Parallel()
+	t.Run("branch observations survive a return to each checkout", func(t *testing.T) {
+		launch, other := evalSyms(t, t.TempDir()), evalSyms(t, t.TempDir())
+		unborn, outside := evalSyms(t, t.TempDir()), evalSyms(t, t.TempDir())
+		copyWorktreeBaseRepo(t, launch)
+		copyWorktreeBaseRepo(t, other)
+		gittest.Run(t, launch, "checkout", "-b", "launch-branch")
+		gittest.Run(t, other, "checkout", "-b", "other-branch")
+		gittest.Run(t, unborn, "init")
+		base := execenv.NewLocalExecutionEnvironment(launch)
+		var timeout bool
+		probes := &envctx.Probes{Now: func() time.Time { return envctxFixedTime }, GitBranch: func(cwd string) (string, bool) {
+			if timeout {
+				return "", false
+			}
+			return snapshotGitBranch(base, cwd)
+		}}
+		adapter := &agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response { return agenttest.FinalResponse("ack") }}
+		cfg := SessionConfig{StateDir: t.TempDir(), testOnly: testConfig{envProbes: probes}}
+		s := newSession(t, withEnv(base), withEnvironmentSnapshot(), withConfig(cfg), withAdapter(adapter))
+		startup := s.cachedSystemPrompt
+		visit := func(cwd, wantBranch string, unknown bool) {
+			t.Helper()
+			if err := s.swapEnvAndRefresh(base.WithWorkingDirectory(cwd), nil); err != nil {
+				t.Fatal(err)
+			}
+			round := len(adapter.Requests())
+			enqueueCompletedJobNotification(t, s, fmt.Sprintf("job_checkout_%d", round))
+			if _, err := s.ProcessInputKind(t.Context(), "", nil, EntryNotification); err != nil {
+				t.Fatal(err)
+			}
+			requests := adapter.Requests()
+			if len(requests) != round+1 || requests[round].Messages[0].Text() != startup {
+				t.Fatalf("checkout transition at round %d produced %d requests or changed the startup prompt", round, len(requests))
+			}
+			// A checkout transition must explicitly correct the branch in the
+			// same environment block, even if the model already knows the cwd.
+			for _, msg := range slices.Backward(requests[round].Messages) {
+				state := envctx.NewTracker(envctx.State{Last: envctx.Snapshot{Cwd: cwd, GitBranch: "superseded-branch"}})
+				if msg.Role == llm.RoleUser && state.ReplayBlock(msg.Text()) {
+					got := state.State()
+					if got.Last.Cwd != cwd || got.Last.GitBranch != wantBranch || got.GitBranchUnknown != unknown {
+						t.Errorf("round %d for %s reported branch %q (unknown %t), want %q (unknown %t)", round, cwd, got.Last.GitBranch, got.GitBranchUnknown, wantBranch, unknown)
+					}
+					return
+				}
+			}
+			t.Fatalf("no environment update on request %d", round)
+		}
+		// Switch away before the first input. Only the startup prompt has
+		// observed the launch branch.
+		visit(other, "other-branch", false)
+		visit(unborn, "", true)
+		visit(outside, "", false)
+		timeout = true
+		for _, cold := range []bool{false, true} {
+			if cold {
+				seedNumberedSessionHistory(t, s, 8)
+				s.contextMgr.PreserveRecentTurns = 1
+				if err := s.Compact(t.Context()); err != nil {
+					t.Fatal(err)
+				}
+				if n := countEnvironmentTurns(s); n != 0 {
+					t.Fatalf("fold retained %d environment observations", n)
+				}
+				s.Close()
+				resumed, err := RestoreSessionFromMetaWithConfig(s.client, s.profile, base.WithWorkingDirectory(outside), loadMetaForTest(t, s), RestoreSessionConfig{
+					StateDir: cfg.StateDir, testOnly: sharingHostProbe(testConfig{envProbes: probes}),
+				})
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(resumed.Close)
+				s = resumed
+			}
+			visit(other, "other-branch", false)
+			visit(launch, "launch-branch", false)
+			visit(unborn, "", true)
+			visit(outside, "", false)
+		}
+		s = newSession(t, withEnv(base.WithWorkingDirectory(unborn)), withEnvironmentSnapshot(), withConfig(cfg), withAdapter(adapter))
+		startup = s.cachedSystemPrompt
+		visit(unborn, "", true)
+		if branch := loadMetaForTest(t, s).PromptLaunch.GitBranch; branch != nil {
+			t.Errorf("an unborn checkout persisted a confirmed launch branch %q", *branch)
+		}
+	})
 	base := execenv.NewLocalExecutionEnvironment(t.TempDir())
 	parked, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	unblock := sync.OnceFunc(func() { close(release) })

@@ -222,9 +222,9 @@ func escapeInheritedHistory(inherited []transcript.Entry) []schema.Turn {
 	return escapeNotesHistoryTurns(ResumeHistory(inherited), nil)
 }
 
-// initEnvContext installs the collector and restores the tracker from the
-// launch prompt and environment turns the model will see.
-func (s *Session) initEnvContext(history []schema.Turn) {
+// initEnvContext restores the collector from all observations and the tracker
+// from the launch prompt and environment turns the model will see.
+func (s *Session) initEnvContext(launchCwd string, history []schema.Turn, entries []transcript.Entry) {
 	probes := envctx.DefaultProbes()
 	if s.cfg.testOnly.envProbes != nil {
 		probes = *s.cfg.testOnly.envProbes
@@ -234,7 +234,17 @@ func (s *Session) initEnvContext(history []schema.Turn) {
 		}
 	}
 	s.envCollector = envctx.NewCollector(probes)
+	s.promptWorkingDir = launchCwd
+	s.restoreGitObservations(entries)
 	s.rehydrateEnvironmentContext(history)
+}
+
+// An unborn HEAD or an interrupted Git probe supplies no branch observation.
+func observedGitBranch(info schema.EnvironmentInfo) *string {
+	if info.GitBranch == "" && (info.IsGitRepo || info.GitSnapshotFailed) {
+		return nil
+	}
+	return new(info.GitBranch)
 }
 
 // selectStrategy creates the appropriate contextmgr.Strategy from config.
@@ -647,7 +657,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	// just ran had nowhere to write (kata d4es). attachTranscript below is what
 	// releases what they recorded, and it runs on every path, writer or not.
 	hdr := s.transcriptHeader(s.sclock().Now().UTC())
-	s.initEnvContext(s.history)
+	s.initEnvContext(hdr.WorkingDir, s.history, nil)
 	s.setPromptEnvironmentOrigin(hdr)
 	var tw *transcript.Writer
 	if s.stateDir != "" {
@@ -1241,8 +1251,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	s.bufferArtifactStoreWarning(artifactStoreErr)
 	s.retirementController.Store(cfg.spawn.retirementController)
 	// The environment turn is durable before meta.EnvContext is checkpointed.
-	s.initEnvContext(resumeHistory)
-	s.restoreLastGitObservation(restoredTranscriptHeader.WorkingDir, transcriptEntries)
+	s.initEnvContext(restoredTranscriptHeader.WorkingDir, resumeHistory, transcriptEntries)
 	if err := s.bootstrapDelegateResources(); err != nil {
 		return nil, err
 	}
@@ -1408,14 +1417,13 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	if savedHeader == nil {
 		// The replacement prompt was rendered against the installed environment.
-		s.rehydrateEnvironmentContext(s.history)
+		s.initEnvContext(s.envInfo.WorkingDir, s.history, nil)
 	} else {
 		// An autonomous request may be first to use this checkout. Recheck
 		// an inconclusive startup probe as well as an observed change.
-		branch := s.envInfo.GitBranch
+		branch := observedGitBranch(s.envInfo)
 		state := s.envTracker.State()
-		inconclusive := branch == "" && (s.envInfo.IsGitRepo || s.envInfo.GitSnapshotFailed)
-		if state.GitBranchUnknown || (!s.cfg.testOnly.skipGitSnapshot && (inconclusive || branch != state.Last.GitBranch)) {
+		if state.GitBranchUnknown || (!s.cfg.testOnly.skipGitSnapshot && (branch == nil || *branch != state.Last.GitBranch)) {
 			s.worktreeContextPending = true
 		}
 	}
@@ -1887,7 +1895,7 @@ func (s *Session) initSessionState(runSessionStartHooks bool, savedHeader *trans
 		warning, failed := s.initializeSystemPrompt(env)
 		s.promptLaunch = schema.PromptLaunchFacts{
 			KnowledgeCutoff: new(s.profile.KnowledgeCutoff()),
-			GitBranch:       new(s.envInfo.GitBranch),
+			GitBranch:       observedGitBranch(s.envInfo),
 			ScratchDir:      new(installedScratchDir(env)),
 			WritableRoots:   new(s.workspaceWritableRoots),
 			FileToolWrites:  installedFileToolWrites(env),

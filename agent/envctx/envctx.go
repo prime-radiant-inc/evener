@@ -88,6 +88,8 @@ const OmitEndReason = "omit"
 const EndReasonAvailable = "available"
 const commitTrailerPrefix = "For new commits in this session, use this trailer: "
 const omitCommitTrailer = "Omit the Co-authored-by trailer on new commits in this session."
+const unconfirmedBranch = "(unconfirmed for this checkout)"
+const outsideWorktree = "(not in a git repository)"
 
 func NewTracker(st State) *Tracker { return &Tracker{st: st} }
 
@@ -144,11 +146,11 @@ func (t *Tracker) ReplayBlock(block string) bool {
 		case strings.HasPrefix(line, "git branch: "):
 			branch = true
 			value := strings.TrimPrefix(line, "git branch: ")
-			if value == "(not in a git repository)" {
+			t.st.GitBranchUnknown = value == unconfirmedBranch
+			if t.st.GitBranchUnknown || value == outsideWorktree {
 				value = ""
 			}
 			t.st.Last.GitBranch = value
-			t.st.GitBranchUnknown = false
 		case strings.HasPrefix(line, "session id: "):
 			t.st.Last.SessionID = strings.TrimPrefix(line, "session id: ")
 		case strings.HasPrefix(line, parentSessionPrefix):
@@ -191,6 +193,7 @@ func (t *Tracker) ReplayBlock(block string) bool {
 	}
 	if !branch && previousCwd != "" && previousCwd != t.st.Last.Cwd {
 		t.st.GitBranchUnknown = true
+		t.st.Last.GitBranch = ""
 	}
 	// Compaction may retain a changed-field block while removing its full
 	// baseline. Such a tail still needs a full emission before the next input.
@@ -212,18 +215,22 @@ func pressureValue(line, name string) string {
 // is nothing to say. A non-empty return updates the tracker state, so the
 // caller must deliver the rendered block to the model.
 func (t *Tracker) RenderDiff(cur Snapshot) string {
-	moved := t.st.Last.Cwd != "" && cur.Cwd != t.st.Last.Cwd
+	first := !t.st.HasSent
+	prev := t.st.Last
+	moved := prev.Cwd != "" && cur.Cwd != prev.Cwd
 	branchUnreported := t.st.GitBranchUnknown || moved
 	resolveBranch := branchUnreported && !cur.gitBranchUnknown
+	reportUnconfirmed := cur.gitBranchUnknown && (moved || (first && prev.Cwd != "" && t.st.GitBranchUnknown))
 	if cur.gitBranchUnknown {
-		cur.GitBranch = t.st.Last.GitBranch
+		cur.GitBranch = ""
+		if !reportUnconfirmed {
+			cur.GitBranch = prev.GitBranch
+		}
 		cur.gitBranchUnknown = false
 	}
-	first := !t.st.HasSent
 	if !first && cur == t.st.Last && !resolveBranch && !t.st.ScratchDirUnknown && !t.st.WritableRootsUnknown {
 		return ""
 	}
-	prev := t.st.Last
 
 	var lines []string
 	add := func(changed bool, line string) {
@@ -247,10 +254,12 @@ func (t *Tracker) RenderDiff(cur Snapshot) string {
 	if cur.FileToolWrites != "" && cur.FileToolWrites != prev.FileToolWrites {
 		lines = append(lines, fileToolWritesPrefix+cur.FileToolWrites)
 	}
-	if cur.GitBranch != prev.GitBranch || resolveBranch {
+	if reportUnconfirmed {
+		lines = append(lines, "git branch: "+unconfirmedBranch)
+	} else if cur.GitBranch != prev.GitBranch || resolveBranch {
 		branch := cur.GitBranch
 		if branch == "" {
-			branch = "(not in a git repository)"
+			branch = outsideWorktree
 		}
 		lines = append(lines, "git branch: "+branch)
 	}

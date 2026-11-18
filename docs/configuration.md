@@ -194,13 +194,16 @@ environment updates in the conversation supersede the launch facts.
 If a session switches models or working directories, its next request carries
 the new facts in conversation context. If the Git branch changed while the
 session was stopped, the first resumed request reports the newly observed
-branch, including when a job notification wakes the session. If a Git probe
-at user input or on a later request encounters an unborn HEAD or fails, the
-current request keeps the last confirmed branch for this checkout. Evener
-recovers that observation from the transcript even after compaction or a
-restart. Later requests retry, including autonomous tool
-rounds and job notifications. When the directory
-is confirmed outside a worktree, the next request clears that branch even if
+branch, including when a job notification wakes the session. A fold before
+dispatch reuses the branch observation from the same request. Installing
+another workspace before dispatch requires an observation of that checkout.
+If a Git probe encounters an unborn HEAD or fails, the current request keeps
+the last confirmed branch for this checkout. A checkout with no confirmed
+observation reports its branch as unconfirmed. Evener recovers each checkout’s
+last observation from the launch facts and transcript even after compaction or
+a restart. Later requests retry, including autonomous tool rounds and job
+notifications. When Git confirms the directory is outside a worktree, the
+next request clears that branch even if
 compaction removed every prior environment update. A catalog
 correction to the current model’s knowledge cutoff also appears there on
 resume. A fork receives its own session ID and commit attribution there.

@@ -2211,7 +2211,7 @@ func (s *Session) acceptUserInputWithSkillSelection(ctx context.Context, input s
 	// as a fresh projection of the persisted source of truth. Empty state
 	// appends nothing, so a fresh session's history is byte-identical.
 	if !preseededInput {
-		if err := s.maybeAppendEnvironmentContext(); err != nil {
+		if err := s.appendRequestEnvironment(nil); err != nil {
 			if returnErr := s.returnAcceptedUserTurn(queuedIdentity); returnErr != nil {
 				return errors.Join(err, returnErr)
 			}

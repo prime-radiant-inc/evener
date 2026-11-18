@@ -259,12 +259,14 @@ type Session struct {
 	envCollector *envctx.Collector
 	envTracker   *envctx.Tracker
 	// A workspace installation or a fold that removes an observation needs
-	// a fresh sample before the next request, even without a new user turn.
+	// the workspace projected again, even without a new user turn.
 	worktreeContextPending bool
 	// An inconclusive Git sample keeps the last branch usable for this
 	// request and leaves another observation due on the next dispatch.
 	gitBranchRetryAfterRequest bool
-	lastGitObservation         envctx.GitObservation
+	// Admission and preparation share one observation until the next model
+	// request takes its history snapshot, including across a fold.
+	requestEnvironment *workspaceObservation
 	// The installed workspace owns both its sandbox grants and any sample
 	// collected outside mu. A swap invalidates samples still in flight.
 	workspaceRevision      uint64
@@ -272,6 +274,7 @@ type Session struct {
 	// The frozen prompt describes the provider, model and build at launch. A
 	// changed value belongs in the next environment context.
 	promptProvider, promptModel, promptBuild string
+	promptWorkingDir                         string
 	promptLaunch                             schema.PromptLaunchFacts
 	promptProvenanceOverridden               bool
 	inheritedEnvironmentIdentity             bool
@@ -2725,32 +2728,47 @@ func (s *Session) appendTurn(kind schema.TurnKind, m llm.Message) {
 	s.appendTurnWithTranscriptMessage(kind, m, m)
 }
 
-// maybeAppendEnvironmentContext records an ENVIRONMENT turn when the observed
-// environment differs from the last emission (or on the first call ever). It
-// is the single choke point every user-input path calls immediately before
-// appending its TurnUserInput turn, so the context precedes the prompt it
-// applies to. Append-only by construction (RenderDiff never edits a prior
-// turn), so provider prompt caches survive it. A no-op when the session has
-// no envCollector (e.g. a bare struct literal built directly by a test that
-// bypasses NewSession/RestoreSessionFromMetaWithConfig).
-//
-// envTracker is read and mutated (RenderDiff) under attentionMu and mu because
-// Session.Compact can rebuild the tracker on a caller's own goroutine.
-func (s *Session) maybeAppendEnvironmentContext() error {
-	return s.appendEnvironmentContext(true)
+// workspaceObservation retains the raw probe outcome. Reconciliation against
+// retained history can supply a branch even when Git still needs a retry.
+type workspaceObservation struct {
+	revision uint64
+	snapshot envctx.Snapshot
 }
 
 // appendEnvironmentContext can persist recovery context without publishing a
-// live event: restore seeds its projection from the completed transcript.
+// live event or supplying the observation for an unrelated request.
 func (s *Session) appendEnvironmentContext(publishEvent bool) error {
+	return s.projectEnvironmentContext(publishEvent, nil, false)
+}
+
+// User admission and request preparation share the observation until the
+// request takes its history snapshot or the execution ends.
+func (s *Session) appendRequestEnvironment(observation *workspaceObservation) error {
+	return s.projectEnvironmentContext(true, observation, true)
+}
+
+func (s *Session) finishRequestEnvironmentLocked() {
+	s.requestEnvironment = nil
+	if s.gitBranchRetryAfterRequest {
+		s.worktreeContextPending = true
+		s.gitBranchRetryAfterRequest = false
+	}
+}
+
+// Collect outside the transcript door. Compare and append under the door so a
+// concurrently published fold changes the baseline used to render the diff.
+func (s *Session) projectEnvironmentContext(publishEvent bool, observation *workspaceObservation, forRequest bool) error {
 	if s.envCollector == nil {
 		return nil
 	}
 	env, revision := s.currentWorkspace()
-	snap := s.envCollector.Collect(envctx.Inputs{
-		Cwd:     env.WorkingDirectory(),
-		Sandbox: s.cfg.Sandbox,
-	})
+	if observation == nil || observation.revision != revision {
+		observation = &workspaceObservation{
+			revision: revision,
+			snapshot: s.envCollector.Collect(envctx.Inputs{Cwd: env.WorkingDirectory(), Sandbox: s.cfg.Sandbox}),
+		}
+	}
+	snap := observation.snapshot
 
 	s.attentionMu.Lock()
 	s.mu.Lock()
@@ -2768,8 +2786,11 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 		return nil
 	}
 	before := tracker.State()
+	if forRequest {
+		s.requestEnvironment = observation
+	}
 	s.worktreeContextPending = false
-	s.gitBranchRetryAfterRequest = s.envCollector.ReconcileGitBranch(&snap, &s.lastGitObservation)
+	s.gitBranchRetryAfterRequest = s.envCollector.ReconcileGitBranch(&snap)
 	s.setEnvironmentIdentity(&snap, before.Last)
 	block := tracker.RenderDiff(snap)
 	var st envctx.State

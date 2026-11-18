@@ -221,21 +221,19 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		if !s.needsEnvironmentIdentityLocked() {
 			break
 		}
+		observation := s.requestEnvironment
 		s.mu.Unlock()
 		s.attentionMu.Unlock()
 		if err := ctx.Err(); err != nil {
 			return nil, "", nil, llm.Request{}, nil, "", err
 		}
-		if err := s.maybeAppendEnvironmentContext(); err != nil {
+		if err := s.appendRequestEnvironment(observation); err != nil {
 			return nil, "", nil, llm.Request{}, nil, "", err
 		}
 	}
 	// A Git probe taken for this request can be inconclusive during user
 	// admission or preparation. Schedule its retry after the snapshot settles.
-	if s.gitBranchRetryAfterRequest {
-		s.worktreeContextPending = true
-		s.gitBranchRetryAfterRequest = false
-	}
+	s.finishRequestEnvironmentLocked()
 	historyTurns := append([]schema.Turn{}, s.history...)
 	// A request's coverage belongs to its history snapshot. A later fold may
 	// replace a retracted frontier before this request stages its inputs.

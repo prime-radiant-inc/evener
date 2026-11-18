@@ -90,6 +90,9 @@ func (s *Session) completeExecution(status schema.TurnCompletionStatus) {
 	s.mu.Lock()
 	execution := s.execution
 	s.execution = executionState{}
+	if execution.running {
+		s.finishRequestEnvironmentLocked()
+	}
 	s.roundID = ""
 	s.mu.Unlock()
 	s.endLastRound()
