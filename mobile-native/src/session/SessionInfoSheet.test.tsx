@@ -23,6 +23,7 @@ import type { SessionControls } from "../sessionControls";
 import { markers, withTestID } from "../markerTestUtils";
 import { sheetKey } from "../sheet/sheetHosts";
 import type { ToastMessage } from "../Toast";
+import { announcePick } from "./pickAnnouncements";
 import { type SessionInfoAction, type SessionInfoHost, SessionInfoSheet, sessionInfoHosts } from "./SessionInfoSheet";
 
 const navigation = vi.hoisted(() => {
@@ -917,6 +918,36 @@ describe("actions", () => {
 		press(sheet(), "Fork from latest");
 		await settle();
 		expect(calls.slice(0, 2)).toEqual(["goBack", "act:fork"]);
+	});
+
+	// A picker opened from this sheet returns to this sheet, and the
+	// conversation's toast renders underneath a full-height one: the reader
+	// comes back to a Model row that still names the previous model, with
+	// nothing saying the change the hub acknowledged. So the confirmation is
+	// offered to this sheet first, and it takes it while it is the destination.
+	it("confirms a pick that returns to this sheet on this sheet", () => {
+		provide(conversation({ capabilities: { ...NONE, changeModel: true } }));
+		const tree = sheet();
+		// The Model sheet presented over this one: both are sheets, so this sheet
+		// is still what the reader returns to.
+		navigation.sheetOver.value = true;
+		let taken = false;
+		act(() => {
+			taken = announcePick(sheetKey(HUB, REF), { text: "Model changed", kind: "model:changed" });
+		});
+		expect({ taken, toasts: markers(tree, "toast") }).toEqual({ taken: true, toasts: ["model:changed"] });
+	});
+
+	// The other direction: a pick only confirms here when the reader's
+	// destination is this sheet. Another conversation pushed over the pane this
+	// sheet is nested in is somebody else's screen, so the pick declines and the
+	// conversation's own toast is what is left.
+	it("leaves a pick to the conversation when another screen is in front", () => {
+		provide(conversation({ capabilities: { ...NONE, changeModel: true } }));
+		const tree = sheet();
+		navigation.outerCovered.value = true;
+		const taken = announcePick(sheetKey(HUB, REF), { text: "Model changed", kind: "model:changed" });
+		expect({ taken, toasts: markers(tree, "toast") }).toEqual({ taken: false, toasts: [] });
 	});
 
 	it("holds every action but Pin while the session can't take one", () => {

@@ -25,6 +25,7 @@ import { SessionControls } from "../sessionControls";
 import { Sheet } from "../sheet/Sheet";
 import { sheetKey } from "../sheet/sheetHosts";
 import { type ModelHost, ModelSheet, modelHosts } from "./ModelSheet";
+import { providePickAnnouncer, releasePickAnnouncer } from "./pickAnnouncements";
 
 // The sheet's own route on top of the stack: a real native-stack navigator
 // reports this, and the sheet closes only while it still holds.
@@ -229,6 +230,27 @@ afterEach(() => {
 });
 
 describe("choosing a model (spec 8.5)", () => {
+	// A pick opened from the Session sheet returns to that sheet, and the
+	// conversation's toast renders under a full-height one: the reader comes
+	// back to a row that still names the previous model with nothing saying the
+	// hub took the change. The surface the reader returns to answers for the
+	// confirmation, and the conversation's toast is only the fallback.
+	it("confirms a pick on the surface the reader returns to", async () => {
+		const { host, calls } = provide(conversation());
+		const surface = { owner: {}, announced: [] as string[] };
+		providePickAnnouncer(sheetKey(HUB, REF), surface.owner, (message) => {
+			surface.announced.push(message.kind ?? "");
+			return true;
+		});
+		onTestFinished(() => releasePickAnnouncer(sheetKey(HUB, REF), surface.owner));
+		const tree = sheet();
+		act(() => pressable(tree, "Claude Haiku 5")?.props.onPress());
+		await settle();
+		expect(surface.announced).toEqual(["model:changed"]);
+		expect(host.toast).not.toHaveBeenCalled();
+		expect(calls).toContain("changeModel:anthropic/claude-haiku-5");
+	});
+
 	// A reconnect replaces the controls while a pick is out. The hub's answer
 	// lands on the set that sent it, which the sheet no longer renders from, so
 	// a failure recorded only there is invisible: the picker becomes usable
@@ -630,7 +652,7 @@ describe("the vision model (ruling 17)", () => {
 	// sheet without writing anything, leaving vision on.
 	it("writes the choice a stale projection already shows as selected", async () => {
 		const { calls } = provide(conversation({ visionModel: "off" }), {
-			unread: { model: null, vision: "lunaroute/glm-5.3-vision" },
+			unread: { model: null, vision: { state: "acknowledged", value: "lunaroute/glm-5.3-vision" } },
 		});
 		const tree = sheet("vision");
 		act(() => pressable(tree, "Off")?.props.onPress());
@@ -643,7 +665,7 @@ describe("the vision model (ruling 17)", () => {
 	// must not turn every tap on a selected row into a redundant write.
 	it("keeps the shortcut when the projection shows the value the hub holds", async () => {
 		const { calls } = provide(conversation({ visionModel: "off" }), {
-			unread: { model: null, vision: "off" },
+			unread: { model: null, vision: { state: "acknowledged", value: "off" } },
 		});
 		const tree = sheet("vision");
 		act(() => pressable(tree, "Off")?.props.onPress());
@@ -654,7 +676,7 @@ describe("the vision model (ruling 17)", () => {
 	// says nothing about the other's tick.
 	it("keeps the shortcut for the other setting's row", async () => {
 		const { calls } = provide(conversation({ modelProvider: "anthropic/claude-sonnet-5" }), {
-			unread: { model: null, vision: "off" },
+			unread: { model: null, vision: { state: "acknowledged", value: "off" } },
 		});
 		const tree = sheet();
 		act(() => pressable(tree, "Claude Sonnet 5")?.props.onPress());

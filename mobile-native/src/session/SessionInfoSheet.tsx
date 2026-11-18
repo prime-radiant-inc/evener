@@ -7,7 +7,7 @@ import { useNavigation } from "@react-navigation/native";
 import type { Dispatch, SetStateAction } from "react";
 import type { NativeStackNavigationProp, NativeStackScreenProps } from "@react-navigation/native-stack";
 import { SymbolView } from "expo-symbols";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
 import { accessFacts, hostIdOf, type SessionHost, taskSettledCount } from "@evener/appwire-client";
 import { markFor } from "../board/StateMark";
@@ -28,6 +28,7 @@ import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { confirmShutDown } from "./confirmShutDown";
 import { wrapAfterSlashes } from "./format";
 import { MODEL_ACTIONS } from "./ModelSheet";
+import { useProvidePickAnnouncer } from "./pickAnnouncements";
 import {
 	canDeleteSavedSession,
 	canOpenModelSheet,
@@ -121,6 +122,23 @@ function SessionInfoBody({
 	const navigation = useNavigation<NativeStackNavigationProp<Routes>>();
 	const state = useControlsState(host.controls);
 	const { session, ready } = host;
+	// A picker opened from this sheet returns here, so a confirmed pick belongs
+	// on this sheet's own toast: the conversation's toast sits under a
+	// full-height sheet, where the reader never sees it. What decides that is
+	// whether this sheet is the reader's destination, which `screenInFront`
+	// answers: the Model sheet presented over it is this sheet's own, so closing
+	// back onto it still counts, while another conversation pushed over the pane
+	// this sheet is nested in does not - there the pick falls back to the
+	// conversation, which is where its reader is.
+	const announcePickHere = useCallback(
+		(message: ToastMessage) => {
+			if (!screenInFront(navigation, routeKey)) return false;
+			toast.show(message);
+			return true;
+		},
+		[navigation, routeKey, toast.show],
+	);
+	useProvidePickAnnouncer(sheetKey(hubId, sessionRef), announcePickHere);
 	// What a rename or compaction that outlived its controls could not confirm.
 	// A reconnect replaces the controls while the request is out, and the answer
 	// lands on the retired set this sheet no longer renders from, so its error

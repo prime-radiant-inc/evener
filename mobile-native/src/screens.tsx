@@ -167,7 +167,7 @@ import {
 	sessionRows,
 	withGhostRows,
 } from "./session/transcriptRows";
-import { SessionControls, sessionFacts, useControlsState } from "./sessionControls";
+import { SessionControls, useControlsState } from "./sessionControls";
 import { useConnectionStatusText } from "./board/connectionStatus";
 import { Composer, ModelChip } from "./session/Composer";
 import { composerRests, composerShowsStop } from "./session/composerSlot";
@@ -871,11 +871,12 @@ function ConversationScreenView({
 	// rebinding, while the catalog reads again (audit N6).
 	const knownCatalog = useRef<ModelListResponse | null>(null);
 	// The values a pick was written for and never read back, per setting. They
-	// are the session's, not this controller's: a cold pick can replace the
-	// runtime before its own answer lands, and the replacement - built while
-	// that answer is still out - has to see it when it arrives. The record
-	// therefore notifies rather than being sampled once at construction.
-	const session = useRef(sessionFacts(() => store.getState().latestReadState === "ready")).current;
+	// belong to the session, so the entry owns them: a cold pick can replace the
+	// runtime before its own answer lands, and another view of the same session
+	// reads the same projection, so a record per view would let one dismiss a
+	// correction the other knew was outstanding. Every binding therefore reads
+	// the entry's record rather than a copy of it.
+	const session = entry.sessionFacts;
 	// The last catalog whose read succeeded, kept for naming only: a later
 	// failed read clears the picker's catalog so it offers no stale choices,
 	// but the chip and the Session sheet must keep the model's name rather

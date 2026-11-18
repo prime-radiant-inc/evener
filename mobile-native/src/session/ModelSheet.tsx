@@ -12,7 +12,7 @@ import { ChoiceRow, ModelPicker } from "../ModelPicker";
 import type { ModelPickerEntry, ModelSection } from "../modelPickerEntries";
 import type { MobileConversation } from "../projectedRows";
 import type { Routes } from "../screens";
-import { type SessionControls, useControlsState } from "../sessionControls";
+import { type SessionControls, type Unread, useControlsState, verifiedSetting } from "../sessionControls";
 import { SearchField } from "../sheet/SearchField";
 import { Segmented } from "../sheet/Grouped";
 import { Sheet } from "../sheet/Sheet";
@@ -22,6 +22,9 @@ import { onTop, type StackState } from "../sheet/sheetRoutes";
 import type { ToastMessage } from "../Toast";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { effortName } from "./sessionFacts";
+import { announcePick } from "./pickAnnouncements";
+
+const NOTHING_UNREAD: Unread = { model: null, vision: null };
 
 export interface ModelHost {
 	session: MobileConversation;
@@ -44,6 +47,15 @@ export function ModelSheet({ route, navigation }: NativeStackScreenProps<Routes,
 	const host = useSheetHost(modelHosts, sheetKey(hubId, ref), sheet);
 	const [query, setQuery] = useState("");
 	if (!host) return null;
+	// The confirmation belongs to the sheet the reader comes back to. The
+	// Session sheet can be the one under this picker, and a toast on the
+	// conversation would sit underneath it: a surface registered for the session
+	// answers first, and the conversation's own toast is what is left when none
+	// is showing.
+	const confirmTo = (message: ToastMessage) => {
+		if (announcePick(sheetKey(hubId, ref), message)) return;
+		host.toast(message);
+	};
 	return (
 		<ModelSheetBody
 			host={host}
@@ -53,6 +65,7 @@ export function ModelSheet({ route, navigation }: NativeStackScreenProps<Routes,
 			finish={sheet.finish}
 			routeKey={route.key}
 			stack={() => navigation.getState() as unknown as StackState}
+			confirmTo={confirmTo}
 		/>
 	);
 }
@@ -65,6 +78,7 @@ function ModelSheetBody({
 	finish,
 	routeKey,
 	stack,
+	confirmTo,
 }: {
 	host: ModelHost;
 	vision: boolean;
@@ -77,6 +91,8 @@ function ModelSheetBody({
 	routeKey: string;
 	/** The stack as it stands at the moment of a call. */
 	stack(): StackState;
+	/** Announces the change on the surface the reader returns to. */
+	confirmTo(message: ToastMessage): void;
 }) {
 	const { palette } = useColors();
 	const scale = useTextScale();
@@ -107,9 +123,8 @@ function ModelSheetBody({
 	// the projection showing the value from before it, so a match there means
 	// "not written yet". The record of the value the hub did take is what says
 	// which of the two a match is.
-	const unread = state?.unread ?? { model: null, vision: null };
 	const verified = (setting: "model" | "vision", value: string) =>
-		unread[setting] === null || unread[setting] === value;
+		verifiedSetting(state?.unread ?? NOTHING_UNREAD, setting, value);
 	const error =
 		undelivered ?? state?.modelError ?? (state?.lastAction && MODEL_ACTIONS.has(state.lastAction) ? state.error : null);
 	const revealError = () => {
@@ -142,7 +157,8 @@ function ModelSheetBody({
 	// the reader hears about it from whichever screen is still in front, with or
 	// without a named model. The sheet's own notice is not rendered, so the toast
 	// is the one channel every vision choice shares.
-	const changedVision = () => host.toast({ text: "Vision model changed. Applies from the next turn." });
+	const changedVision = () =>
+		confirmTo({ text: "Vision model changed. Applies from the next turn.", kind: "vision:changed" });
 	const choose = (model: ModelDescriptor) => {
 		if (verified(vision ? "vision" : "model", current) && `${model.provider}/${model.model}` === current) {
 			finish();
@@ -154,7 +170,7 @@ function ModelSheetBody({
 		if (vision) closeOn(controls, controls.changeVisionModel(model.provider, model.model), changedVision);
 		else
 			closeOn(controls, controls.changeModel(model.provider, model.model), () =>
-				host.toast({ text: "Model changed. Applies from the next turn." }),
+				confirmTo({ text: "Model changed. Applies from the next turn.", kind: "model:changed" }),
 			);
 	};
 	const settings = (

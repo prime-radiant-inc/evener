@@ -26,6 +26,7 @@ import {
 } from "../nativeMutationRuntime";
 import { outboxFlush } from "../outbox/nativeOutboxFlush";
 import { reconnectDelay } from "../hubConnection";
+import { type ControlsSession, sessionFacts } from "../sessionControls";
 import { type DetailLevels, displayForLevel } from "./detailLevels";
 import { detailLevels as levelsForHub } from "./nativeDetailLevels";
 
@@ -52,6 +53,13 @@ export interface NativeConversationSession {
 	readonly ref: string;
 	readonly key: string;
 	readonly store: NativeConversationStore;
+	/** The session's shared facts: the values its writes were acknowledged for
+	 * and no publication has established yet, as one record every view and
+	 * binding reads. It lives here because it is a fact about the session, not
+	 * about a view: two mounted views of one session read one projection, so a
+	 * record kept per view would let one dismiss a correction the other knew
+	 * was outstanding. */
+	readonly sessionFacts: ControlsSession;
 	/** The stable submitter the store admits mutations through, shared so a
 	 * view's command and steer paths use the same live host lookup. */
 	readonly mutationSubmitter: ConversationMutationSubmitter;
@@ -101,6 +109,7 @@ class SessionEntry implements NativeConversationSession {
 	readonly ref: string;
 	readonly key: string;
 	readonly store: NativeConversationStore;
+	readonly sessionFacts: ControlsSession;
 	readonly mutationSubmitter: ConversationMutationSubmitter;
 	readonly readActor: NativeConversationReadActor;
 
@@ -155,6 +164,10 @@ class SessionEntry implements NativeConversationSession {
 			mutationSubmitter: this.mutationSubmitter,
 			displayConfig: this.#displayConfig,
 		});
+		// A read the store discarded returns normally, so "the refresh resolved"
+		// is not the same fact as "the projection is the one that read
+		// published". The store says which it is.
+		this.sessionFacts = sessionFacts(() => this.store.getState().latestReadState === "ready");
 		const entry = this;
 		this.readActor = {
 			get failures() {

@@ -189,6 +189,22 @@ describe("two attachments", () => {
 		expect(runtime.targetClient("hub-1", "ref-1")).toBe(client);
 	});
 
+	// Two views of one session read one projection, so they have to read one
+	// record of the values a write was acknowledged for and no read has
+	// established. Per-view records would let the second view trust the shared
+	// projection's Off selection after the first view's vision pick lost its
+	// readback, and closing its picker on that match would send nothing.
+	it("share one record of the values no read has established", async () => {
+		connected(hub("ref-1"));
+		const a = sessions.attach("hub-1", "ref-1");
+		const b = sessions.attach("hub-1", "ref-1");
+
+		expect(a.entry.sessionFacts).toBe(b.entry.sessionFacts);
+		a.entry.sessionFacts.record("vision", { state: "unknown" });
+		expect(b.entry.sessionFacts.unread().vision).toEqual({ state: "unknown" });
+		await settle();
+	});
+
 	it("release one during a held authoritative read, and the survivor sees its publication", async () => {
 		const held = deferred<ThreadReadResponse>();
 		const client = hub("ref-1", () => held.promise);

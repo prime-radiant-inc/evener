@@ -21,18 +21,62 @@ type Operation =
 	| "changeModel";
 type Setting = "model" | "vision";
 
-/** The value each setting was last written for and no publication has
- * established yet.
+/** What a setting's last write established and no publication has confirmed.
  *
  * One entry per setting, because the two are independent facts: a model pick
  * says nothing about whether the vision value the hub holds is the one on
  * screen, and a single record would have to throw one away to keep the other.
- * Null means nothing is outstanding for that setting, so the projection's own
+ *
+ * The two outcomes are not the same fact and must not be stored as one. An
+ * acknowledged value is one the hub named: the projection may not show it yet,
+ * but the hub holds it. An unknown outcome is a write whose reply never came
+ * back - the hub may hold its value, the previous one, or nothing applied at
+ * all - so the projection cannot answer anything about that setting until a
+ * read lands.
+ */
+export type UnreadValue =
+	/** The hub took this value; no publication has shown it yet. */
+	| { state: "acknowledged"; value: string }
+	/** A write was sent and its reply was lost, so the hub's value is not known. */
+	| { state: "unknown" };
+
+/** The value each setting was last written for and no publication has
+ * established yet. Null means nothing is outstanding, so the projection's own
  * value is the answer.
  */
 export interface Unread {
-	model: string | null;
-	vision: string | null;
+	model: UnreadValue | null;
+	vision: UnreadValue | null;
+}
+
+/** Whether a row showing `value` may dismiss quietly.
+ *
+ * A match against the projection is only "already set" when the projection is
+ * the truth: nothing outstanding, or an acknowledged value the projection
+ * agrees with. A projection that does not agree with an acknowledged value is
+ * one change behind, so tapping what it shows is a correction and must be
+ * sent. An unknown outcome has no answer to compare: the projection may show
+ * either value, and dismissing on a coincidence is how a change the reader
+ * meant to make disappears.
+ */
+export function verifiedSetting(unread: Unread, setting: Setting, value: string): boolean {
+	const record = unread[setting];
+	return record === null || (record.state === "acknowledged" && record.value === value);
+}
+
+/** Whether a failed write's outcome is unknown rather than refused.
+ *
+ * A refusal is the hub's answer: it names what it would not do, so the session
+ * still holds the value the projection shows. A reply that never arrived is not
+ * an answer, and it covers two shapes. The transport can reject without the hub
+ * ever speaking - a request deadline, a socket that closed mid-call - which is
+ * any error that is not a wire rejection. The hub can also answer that it lost
+ * its daemon's reply to a write it had already forwarded (sessionUnavailable),
+ * which is its own way of saying the write may have applied.
+ */
+function isLostReply(cause: unknown): boolean {
+	if (!(cause instanceof WireError)) return true;
+	return cause.evenerErrorInfo === "sessionUnavailable";
 }
 
 /** The facts about one session that outlive any one binding of it.
@@ -50,9 +94,9 @@ export interface ControlsSession {
 	published(): boolean;
 	/** The values written for and not yet established by a publication. */
 	unread(): Unread;
-	/** Records one setting's value, or clears it once a publication catches up.
+	/** Records one setting's outcome, or clears it once a publication catches up.
 	 * `null` clears that setting and leaves the other alone. */
-	record(setting: Setting, value: string | null): void;
+	record(setting: Setting, outcome: UnreadValue | null): void;
 	/** Notifies when the record changes. A set can settle after the controls
 	 * that dispatched it were replaced, so the record has to reach a binding
 	 * that already exists and not only one built afterwards. */
@@ -67,20 +111,30 @@ function detachedSession(): ControlsSession {
 	return facts;
 }
 
-/** A session's facts, for a screen that owns one session across many bindings.
- * The record lives here rather than in a controller because a set can settle
- * after the controls that dispatched it are gone, and the binding that
- * replaced them - built while the answer was still out - is the one the reader
- * will be looking at. */
+/** The session's shared facts, built by the entry that owns the session and
+ * read by every view and binding of it.
+ *
+ * The record lives on the session entry, not on a view, because a write
+ * invalidates the session's projection rather than one view's copy of it: two
+ * mounted views of the same session read one projection, so a per-view record
+ * would let one dismiss a correction the other knew was outstanding.
+ */
 export function sessionFacts(published: () => boolean): ControlsSession {
 	let unread: Unread = { model: null, vision: null };
 	const listeners = new Set<() => void>();
 	return {
 		published,
 		unread: () => unread,
-		record: (setting, value) => {
-			if (unread[setting] === value) return;
-			unread = { ...unread, [setting]: value };
+		record: (setting, outcome) => {
+			const current = unread[setting];
+			const same =
+				current === null
+					? outcome === null
+					: outcome !== null &&
+						current.state === outcome.state &&
+						(current.state === "unknown" || (outcome.state === "acknowledged" && current.value === outcome.value));
+			if (same) return;
+			unread = { ...unread, [setting]: outcome };
 			for (const listener of Array.from(listeners)) listener();
 		},
 		watch: (listener) => {
@@ -415,7 +469,7 @@ export class SessionControls {
 				// the session - a replacement binding has to see it too, and the one
 				// that sent this may be the one being retired right now.
 				const setting: Setting = kind === "changeModel" ? "model" : "vision";
-				this.session.record(setting, readback ? null : value);
+				this.session.record(setting, readback ? null : { state: "acknowledged", value });
 				if (!this.disposed) {
 					this.publish({
 						pending: null,
@@ -539,23 +593,24 @@ export class SessionControls {
 			// A write the hub never answered may still have been applied: a
 			// request that timed out while the phone was reconnecting reached the
 			// hub after the client gave up, and a cold set is applied inside the
-			// hub's own resume. A refusal is the hub's answer and leaves the
-			// projection truthful, but an unanswered write does not, so the value
-			// it was for is recorded against the session the same way an
-			// acknowledged one is. Without it a picker keeps offering the value
-			// its stale projection shows as selected, and the reader who taps it
-			// to undo the change closes the sheet without sending anything while
-			// the setting they meant to correct stays in place.
-			if (
-				(kind === "changeModel" || kind === "setVisionModel") &&
-				!(cause instanceof WireError) &&
-				this.isCurrent("session")
-			) {
+			// hub's own resume. That is not an acknowledgement and it is not the
+			// value: the hub may hold what was written, what it held before, or
+			// nothing. Recording the value would let the next tap on the row that
+			// already shows it dismiss as "already set" - the corrective Off the
+			// reader sends when vision was enabled behind a stale Off tick - and
+			// leave vision on. The setting is recorded as unknown instead, so the
+			// projection is not trusted for it until a read lands.
+			//
+			// The hub's own "the reply to a write that may have applied is gone"
+			// rejection is the same fact and takes the same path. A refusal that
+			// says nothing applied leaves the projection truthful and stays out of
+			// this record entirely.
+			if ((kind === "changeModel" || kind === "setVisionModel") && isLostReply(cause) && this.isCurrent("session")) {
 				// One setting's write says nothing about the other's: a timed-out
 				// model pick must not clear the record of a vision write that is
 				// still outstanding, or the vision row goes back to trusting a
 				// projection that write may have invalidated.
-				this.session.record(kind === "changeModel" ? "model" : "vision", value);
+				this.session.record(kind === "changeModel" ? "model" : "vision", { state: "unknown" });
 				if (!this.disposed) this.publish({ unread: this.session.unread() });
 			}
 			if (this.ends(failure)) return false;
