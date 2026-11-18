@@ -243,6 +243,64 @@ func TestDelegateRuntimeReclaim_ClearsOnlyExactResidentPointers(t *testing.T) {
 	})
 }
 
+// Capacity pressure must not close a runtime that still owes a watch append.
+//
+// A notice whose durable attention append failed lives only in a retry closure:
+// no queue entry, no pending watch send, no timer. The idle release already
+// refuses such a runtime through idleReleasePregatesClear, but capacity
+// reclamation selects candidates through claimableRuntimeSubtreeLocked, which
+// only counted inputs in flight — so pressure could evict the child and the
+// retry then discarded the sole firing when it found the session closed
+// (#2340 review M6).
+func TestDelegateRuntimeReclaim_RefusesARuntimeOwingAWatchAppend(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 4, 2)
+	c.maxRetainedTerminal = 2
+	// The runtime under test ended FIRST, so selection prefers it on the
+	// oldest-ended-at rule. That is what makes its absence from a later claim
+	// evidence of the guard rather than of selection order.
+	runtime := seedDelegateReclaimRuntime(t, c, "dlg_owing", "", time.Unix(5, 0).UTC(), false, false)
+	seedDelegateReclaimRuntime(t, c, "dlg_filler", "", time.Unix(10, 0).UTC(), false, false)
+
+	selected := func() bool {
+		t.Helper()
+		claim, err := c.ClaimRuntimeReclamation(1)
+		if err != nil {
+			t.Fatalf("ClaimRuntimeReclamation: %v", err)
+		}
+		if claim == nil {
+			t.Fatal("ClaimRuntimeReclamation returned no claim: the fixture must have a reclaimable candidate for this test to mean anything")
+		}
+		found := false
+		for _, entry := range claim.entries {
+			if entry.runtime == runtime {
+				found = true
+			}
+		}
+		if err := c.AbortRuntimeReclamation(claim); err != nil {
+			t.Fatalf("AbortRuntimeReclamation: %v", err)
+		}
+		return found
+	}
+
+	// Non-vacuity: with nothing owed the runtime IS the selection, so its
+	// absence below is the guard and not an empty candidate set.
+	if !selected() {
+		t.Fatal("setup: capacity reclamation did not select the runtime even with nothing owed, so the refusal below would prove nothing")
+	}
+
+	runtime.addPendingAttentionAppends(1)
+	if selected() {
+		t.Fatal("capacity reclamation selected the runtime while it still owed a watch append: the retry would discard the only firing")
+	}
+
+	// Discharging the obligation makes it eligible again, so the guard blocks
+	// only what is genuinely owed rather than pinning the runtime.
+	runtime.releasePendingAttentionAppends(1)
+	if !selected() {
+		t.Fatal("the runtime was not selected after the obligation cleared: the guard must not pin it forever")
+	}
+}
+
 func TestDelegateRuntimeReclaim_PrefersClosedThenAcknowledgedThenOldestThenID(t *testing.T) {
 	c, _ := newDelegateControllerTestHarness(t, 16, 4)
 	c.maxRetainedTerminal = 5
@@ -1866,7 +1924,7 @@ func TestDelegateAttentionRestoreHold_ExcludedFromReclamationCapacity(t *testing
 	// count — dlg_free alone — requires exactly the one claimable slot, so the
 	// claim must succeed; counting the held delegate too would demand two and
 	// refuse where one free candidate already covers the need.
-	claim, err := c.ClaimRuntimeReclamation(2)
+	claim, err := c.ClaimRuntimeReclamation(1)
 	if err != nil {
 		t.Fatalf("ClaimRuntimeReclamation with a held resident: %v", err)
 	}

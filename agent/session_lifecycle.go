@@ -1096,6 +1096,49 @@ func (s *Session) refuseTurnOnUnhealthyTranscript(ctx context.Context) error {
 	return refusal
 }
 
+// watchOnlyAcknowledgmentTurn reports whether this no-tool-call response is a
+// stable child ACKNOWLEDGING watch attention on a leased drain turn, with no
+// report owed and none outstanding.
+//
+// The rule is narrow on purpose, and every term is load-bearing:
+//
+//   - EntryDelegateAttention, and a lease in context. This is the leased drain
+//     turn the finalization drain opens to present a pending watch row; the
+//     run's own report turn is a different entry kind, so its report
+//     requirement is untouched.
+//   - The report was already ACCEPTED. A delegate that has not reported has
+//     nothing to acknowledge with, and its requirement must keep pointing at
+//     the report it owes -- finishing idle there would silently drop it.
+//   - noContent is false. A truly empty response is a model glitch and keeps
+//     routing to the empty-retry path; only real text is an acknowledgment.
+//   - The turn's pending attention is WATCH attention only. A delegate report
+//     or an owed update in the same set is not acknowledged by plain text.
+//
+// What it buys: the turn's settled request staged the watch row as coverage, so
+// finishing normally resolves it and the drain returns instead of re-opening a
+// turn for the same row (#2340 review M3).
+func (s *Session) watchOnlyAcknowledgmentTurn(ctx context.Context, kind EntryKind, noContent bool) bool {
+	if s == nil || kind != EntryDelegateAttention || noContent {
+		return false
+	}
+	if _, leased := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); !leased {
+		return false
+	}
+	if !s.hasAcceptedTerminalCommunicate() {
+		return false
+	}
+	pending, err := s.pendingDelegateAttentionIDs()
+	if err != nil || len(pending) == 0 {
+		return false
+	}
+	for _, attentionID := range pending {
+		if !isStableWatchAttentionID(attentionID) {
+			return false
+		}
+	}
+	return true
+}
+
 func delegateEntryRequiresReport(kind EntryKind) bool {
 	switch kind {
 	case EntryUserInput, EntryContinuation, EntryRuntime:
@@ -1829,6 +1872,18 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 				}
 			}
 			route := routeNoToolCalls(kind, priorToolActivity, noContent, s.hasAcceptedTerminalCommunicate())
+			// A leased drain turn whose only owed work is WATCH attention and
+			// whose report the session already accepted acknowledges and
+			// finishes, like a notification turn, instead of retrying toward a
+			// report it must not overwrite. Without this the drain re-opens a
+			// turn for the same row forever: recordAttentionNoAction refuses
+			// the no-action outcome once the requirement is report-required,
+			// the retry ends the turn in error, coverage is never resolved,
+			// keepingReport swallows the failure, and the row is still pending
+			// (#2340 review M3).
+			if route == runNoToolCalls && s.watchOnlyAcknowledgmentTurn(ctx, kind, noContent) {
+				route = finishIdle
+			}
 			if route == finishIdle {
 				s.finishProcessingAtBoundary(ctx, SessionIdle)
 				return "", progressed, nil

@@ -132,6 +132,20 @@ func TestDelegateWatchOnlyDrainTurnAcknowledgesAndConsumesItsRow(t *testing.T) {
 	sess.terminalCommunicateAccepted = true
 	sess.latestReport = communicateResult{called: true, reply: "already reported"}
 	sess.mu.Unlock()
+	// The turn under test answers with BARE TEXT and no tool call, which is the
+	// shape EntryDelegateAttention refuses for a delegate that already reported.
+	// A scripted final report would settle the row as an ordinary tool-call turn
+	// and never consult the acknowledgment rule.
+	main.setSteps([]func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("acknowledged the timer")} },
+	})
+	// The report is terminal for this generation. Latching terminalSeen is what
+	// makes recordAttentionNoAction REFUSE the no-action outcome: without it that
+	// branch above the acknowledgment rule accepts the turn and the rule is never
+	// consulted.
+	if err := controller.recordTerminalSeen(delegateLease{delegateID: "dlg_coordinator", generation: 1}); err != nil {
+		t.Fatalf("latch terminal-seen: %v", err)
+	}
 
 	// A pending WATCH row, appended through the production durable append.
 	attentionID := stableWatchAttentionIDPrefix + "watch:life-01-m3:job_m3:0f0f0f0f0f0f0f0f"
@@ -143,8 +157,10 @@ func TestDelegateWatchOnlyDrainTurnAcknowledgesAndConsumesItsRow(t *testing.T) {
 	}
 
 	turns := 0
+	var kinds []EntryKind
 	process := func(ctx context.Context, text string, images []ImageAttachment, kind EntryKind) (string, error) {
 		turns++
+		kinds = append(kinds, kind)
 		if turns > 2 {
 			t.Error("the drain keeps opening turns for a watch row the acknowledged turn already presented: the row is never consumed")
 			return "", context.Canceled
@@ -163,6 +179,18 @@ func TestDelegateWatchOnlyDrainTurnAcknowledgesAndConsumesItsRow(t *testing.T) {
 	}
 	if len(main.requests) == 0 {
 		t.Fatal("the drain made no model request: the acknowledgment was never elicited, so this fixture proves nothing")
+	}
+	// The drain must actually have run the leased attention turn: without that
+	// the row could settle by some other route and this fixture would prove
+	// nothing about the acknowledgment rule.
+	var sawAttention bool
+	for _, kind := range kinds {
+		if kind == EntryDelegateAttention {
+			sawAttention = true
+		}
+	}
+	if !sawAttention {
+		t.Fatalf("the drain opened %v and never chose EntryDelegateAttention", kinds)
 	}
 }
 

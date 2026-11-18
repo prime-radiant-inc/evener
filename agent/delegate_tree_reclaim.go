@@ -291,6 +291,22 @@ func (c *delegateTreeController) claimableRuntimeSubtreeLocked(rootID string) ([
 			return nil, false
 		}
 		if live := c.live[id]; live != nil {
+			// A notice whose durable attention append failed is still owed, and
+			// its only firing lives in a retry closure: no queue entry, no
+			// pending watch send, no timer. The idle release refuses such a
+			// runtime through idleReleasePregatesClear; capacity reclamation
+			// reaches the same runtime through THIS check, so the obligation
+			// has to be read here too or the two reclaim paths disagree and
+			// capacity pressure silently discards the firing (#2340 review M6).
+			//
+			// The counter is in memory and read under its own mutex, so this
+			// adds a lock the reclamation path did not take. It is the same
+			// lock, in the same order, that idleReleasePregatesClear already
+			// takes while c.mu is held (session_close's precheck, and the
+			// pre-gate loop above), so no new cycle is introduced.
+			if live.runtime != nil && live.runtime.hasPendingAttentionAppend() {
+				return nil, false
+			}
 			// Only steering a LIVE generation still owes counts as work in
 			// flight. An admission carried across a covering stop is a parcel
 			// for a successor, and stopping a delegate is normally terminal --

@@ -1999,6 +1999,17 @@ func (jm *jobManager) persistStableWatchPendings(notifs []jobNotification) bool 
 		if !n.isWatch() {
 			return false
 		}
+		// A token for a frame the SEND rail delivers is not this ingress's
+		// work: a caller token names a send the owning session renders on its
+		// own rail, while every other target is handed to the receiver by
+		// deliverStableWatchSend. Leaving such a token on the ordinary rail
+		// keeps that handoff where it already is instead of swallowing it into
+		// an attention row the send rail never settles.
+		if n.WatchSend != nil {
+			if _, _, state, ok := owner.resolveWatchSendToken(n.WatchSend); ok && state.Key.ResolvedSendTo != runtimeMessageAliasCaller {
+				return false
+			}
+		}
 	}
 	notifs = owner.deliverableStableWatchAttention(notifs)
 	if len(notifs) == 0 {
@@ -2036,6 +2047,11 @@ func persistStableWatchAttentionGroup(owner *Session, controller *delegateTreeCo
 		if err != nil {
 			failures = errors.Join(failures, err)
 			retry = append(retry, n)
+			continue
+		}
+		// A stale token, or a frame the receiver already holds whose
+		// acknowledgement was the only thing owed, has no row to arm.
+		if attentionID == "" {
 			continue
 		}
 		persisted = append(persisted, attentionID)
@@ -2119,9 +2135,7 @@ func (s *Session) addPendingAttentionAppends(n int) {
 	if s == nil || n <= 0 {
 		return
 	}
-	s.pendingJobNotifsMu.Lock()
-	s.pendingAttentionAppends += n
-	s.pendingJobNotifsMu.Unlock()
+	s.pendingAttentionAppends.Add(int64(n))
 }
 
 // releasePendingAttentionAppends discharges n of the owed appends.
@@ -2129,9 +2143,15 @@ func (s *Session) releasePendingAttentionAppends(n int) {
 	if s == nil || n <= 0 {
 		return
 	}
-	s.pendingJobNotifsMu.Lock()
-	s.pendingAttentionAppends = max(0, s.pendingAttentionAppends-n)
-	s.pendingJobNotifsMu.Unlock()
+	// A duplicate release must never drive the count negative, or the
+	// obligation would vanish while a notice is still owed.
+	for {
+		cur := s.pendingAttentionAppends.Load()
+		next := max(0, cur-int64(n))
+		if s.pendingAttentionAppends.CompareAndSwap(cur, next) {
+			return
+		}
+	}
 }
 
 // hasPendingAttentionAppend reports whether a watch notice is still owed a
@@ -2140,9 +2160,7 @@ func (s *Session) hasPendingAttentionAppend() bool {
 	if s == nil {
 		return false
 	}
-	s.pendingJobNotifsMu.Lock()
-	defer s.pendingJobNotifsMu.Unlock()
-	return s.pendingAttentionAppends > 0
+	return s.pendingAttentionAppends.Load() > 0
 }
 
 func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) error {
