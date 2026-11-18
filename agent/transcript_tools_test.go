@@ -13,7 +13,6 @@ import (
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
-	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/gittest"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
@@ -544,19 +543,9 @@ func TestFind_ProjectName_FallbacksAndOrdinaryDirectories(t *testing.T) {
 		t.Fatalf("projectName(state-dir delegate worktree) = %q, want %q", got, "my-cool-project")
 	}
 
-	// 5. Unresolvable Evener state-dir worktree must return empty, not leak worktree branch leaf.
-	// The fixture sits under this process's configured state root, which is what
-	// identifies a path as a state path: the same spelling under any other home is
-	// an ordinary directory (see TestProjectName_WorkspaceSpellingNeverOpensMeta).
-	stateRoot, err := userdirs.DefaultStateRoot()
-	if err != nil {
-		t.Fatal(err)
-	}
-	mDeleted := schema.SessionMeta{}
-	mDeleted.EnvInfo.WorkingDir = filepath.Join(stateRoot, "projects", "some-bucket", "worktrees", "some-bucket", "revert-rail-slice")
-	if got := projectName(mDeleted, t.TempDir()); got != "" {
-		t.Fatalf("projectName(deleted worktree without bucket metadata) = %q, want empty", got)
-	}
+	// 5. Unresolvable Evener state-dir worktree: see
+	// TestFind_ProjectName_StateWorktreeWithoutBucketMetadata, which pins
+	// XDG_STATE_HOME because the case turns on the configured state root.
 
 	// 6. Two-pass bucket scan: GitOriginURL on sibling session takes precedence over older non-worktree home.
 	// The bucket must be a real project bucket: sibling inference is scoped to those (see 10).
@@ -751,6 +740,89 @@ func TestFind_ProjectName_FallbacksAndOrdinaryDirectories(t *testing.T) {
 	mProjectsDemo.EnvInfo.WorkingDir = "/home/user/projects/demo/worktrees/notes"
 	if got := projectName(mProjectsDemo, newBucket(t)); got != "notes" {
 		t.Fatalf("projectName(/home/user/projects/demo/worktrees/notes) = %q, want %q", got, "notes")
+	}
+
+	// 16. A managed delegate worktree under a flat --state-dir is written at
+	// <stateDir>/worktrees/<projectID>/<lane> and records no owner session, so
+	// bucket-wide inference is unavailable. Its recorded parent lives in the same
+	// bucket, and the parent's canonical project matches the path's project
+	// segment, so the parent names the project.
+	managedRepo, _ := gittest.NewLinkedWorktree(t)
+	managedProjectID := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(managedRepo)).ID
+	managedDir := filepath.Join(t.TempDir(), "managed-flat-dir")
+	managedParentID := identifier.MustNewSessionID()
+	managedParent := schema.SessionMeta{ID: managedParentID, WorktreeRestoreRoot: managedRepo}
+	managedParent.EnvInfo.WorkingDir = managedRepo
+	if err := schema.SaveSessionMeta(managedDir, managedParent); err != nil {
+		t.Fatal(err)
+	}
+	mManaged := schema.SessionMeta{ParentSessionID: managedParentID}
+	mManaged.EnvInfo.WorkingDir = filepath.Join(managedDir, "worktrees", managedProjectID, "dlg_managed")
+	if got, want := projectName(mManaged, managedDir), filepath.Base(managedRepo); got != want {
+		t.Fatalf("projectName(managed delegate worktree in flat state dir) = %q, want parent's project %q", got, want)
+	}
+
+	// 16b. The parent's project must match the path's project segment: a
+	// different repository's parent says nothing about this worktree.
+	otherRepo, _ := gittest.NewLinkedWorktree(t)
+	otherParentID := identifier.MustNewSessionID()
+	otherParent := schema.SessionMeta{ID: otherParentID, WorktreeRestoreRoot: otherRepo}
+	otherParent.EnvInfo.WorkingDir = otherRepo
+	if err := schema.SaveSessionMeta(managedDir, otherParent); err != nil {
+		t.Fatal(err)
+	}
+	mManagedOther := schema.SessionMeta{ParentSessionID: otherParentID}
+	mManagedOther.EnvInfo.WorkingDir = filepath.Join(managedDir, "worktrees", managedProjectID, "dlg_managed_other")
+	if got := projectName(mManagedOther, managedDir); got != "" {
+		t.Fatalf("projectName(managed worktree whose parent names another project) = %q, want empty (the parent does not own this project)", got)
+	}
+}
+
+// TestFind_ProjectName_StateWorktreeWithoutBucketMetadata covers a deleted state
+// worktree whose bucket holds no metadata: the label is empty, never the lane
+// leaf, and never read from another bucket the recorded path points into. It is
+// not parallel because it pins XDG_STATE_HOME: the case turns on which state root
+// the process is configured with, and inheriting the developer's own value would
+// let the test read real metadata out of a real some-bucket directory.
+func TestFind_ProjectName_StateWorktreeWithoutBucketMetadata(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	stateRoot := filepath.Join(stateHome, "evener")
+
+	// The bucket this row was discovered in: a validated project bucket with no
+	// metadata of its own.
+	bucket := filepath.Join(stateRoot, "projects", "some-bucket")
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	mDeleted := schema.SessionMeta{}
+	mDeleted.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", "some-bucket", "revert-rail-slice")
+	if got := projectName(mDeleted, bucket); got != "" {
+		t.Fatalf("projectName(deleted worktree without bucket metadata) = %q, want empty", got)
+	}
+
+	// Another bucket under the same state root, reached by a symlink to a
+	// workspace that does hold a meta naming a project. The recorded path points
+	// into it, but the row's validated bucket is the one above, so neither the
+	// owner read nor the sibling scan may follow the link.
+	workspace := t.TempDir()
+	otherSID := identifier.MustNewSessionID()
+	workspaceMeta := schema.SessionMeta{ID: otherSID}
+	workspaceMeta.EnvInfo.GitOriginURL = "git@github.com:workspace/linked-repo.git"
+	if err := schema.SaveSessionMeta(workspace, workspaceMeta); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(stateRoot, "projects", "other-bucket")
+	if err := os.MkdirAll(filepath.Dir(other), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(workspace, other); err != nil {
+		t.Fatalf("symlink bucket: %v", err)
+	}
+	mCross := schema.SessionMeta{}
+	mCross.EnvInfo.WorkingDir = filepath.Join(other, "sessions", otherSID, "worktrees", "dlg_cross")
+	if got := projectName(mCross, bucket); got != "" {
+		t.Fatalf("projectName(recorded path into a symlinked bucket) = %q, want empty (only the validated bucket may be read)", got)
 	}
 }
 
