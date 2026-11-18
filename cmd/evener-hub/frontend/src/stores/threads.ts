@@ -6099,6 +6099,26 @@ function beginWatchedHydration(
       ? carriedHydrationUpdates(previousPending, resyncBootGeneration)
       : [];
   if (previousPending) retirePendingHydration(ref, previousPending, pendingWatchedHydrations);
+  // The carried frames are still retained payload, so they are still charged.
+  // Retiring the superseded read above RELEASED their reservation (that record
+  // is gone and its budget belongs back to the pool), and the successor kept
+  // the same updates with `backgroundBytes: 0` - so every supersession left
+  // their bytes uncounted. Repeated resyncs during slow reads retained more
+  // payload than the pending budget allows while `reservePending` answered
+  // true the whole time, because nobody was asking it about these bytes.
+  //
+  // Re-reserve exactly what the carry kept, on the successor record. A
+  // reservation that fails means the budget is already full: the successor
+  // read is the one that must fall back, so drop the carry and let the
+  // established overflow/retry path handle it rather than retaining payload
+  // nobody charged for.
+  // Only charged when the ref is still background-held: `bufferPendingNotification`
+  // charges exactly those frames, so re-charging a foreground ref's carry would
+  // invent a reservation the buffer never made.
+  const carriedBytes = backgroundHolds(ref) > 0 ? carried.reduce((total, update) => total + update.bytes, 0) : 0;
+  const charged = carriedBytes === 0 || transcriptResidency().reservePending(ref, carriedBytes);
+  const retained = charged ? carried : [];
+  const retainedBytes = charged ? carriedBytes : 0;
   // Only a history-requesting read orders the repair-status sequence: a
   // lean watch the hub can answer without touching the transcript index
   // must not advance the shared counter out from under a tracked read's
@@ -6120,8 +6140,8 @@ function beginWatchedHydration(
     client,
     epoch,
     mutationGeneration: mutationStateGenerations.get(ref) ?? 0,
-    notifications: [...carried],
-    backgroundBytes: 0,
+    notifications: [...retained],
+    backgroundBytes: retainedBytes,
     routing: pendingHydrationRouting(ref, baseModel ?? model),
     baseModel,
     requestGeneration,
@@ -10117,6 +10137,19 @@ export function backgroundTranscriptSnapshotForTests(): TranscriptResidencySnaps
 
 export function pendingThreadHydrationUpdatesForTests(): readonly ReceivedTranscriptUpdate[] {
   return [...pendingThreadHydrations.values()].flatMap((pending) => pending.notifications);
+}
+
+/** The watched lifecycle's buffered frames, which `pendingThreadHydrationUpdatesForTests`
+ * does not cover: a superseded watched read's carry lives only here. */
+export function pendingWatchedHydrationUpdatesForTests(): readonly ReceivedTranscriptUpdate[] {
+  return [...pendingWatchedHydrations.values()].flatMap((pending) => pending.notifications);
+}
+
+/** The watched lifecycle's own byte reservation. A total-only view cannot tell
+ * a charged carry from one whose bytes another pending record happens to be
+ * holding, which is exactly the accounting this rule is about. */
+export function pendingWatchedHydrationBytesForTests(): number {
+  return [...pendingWatchedHydrations.values()].reduce((total, pending) => total + pending.backgroundBytes, 0);
 }
 
 export function pendingThreadHydrationBaseModelsForTests(): readonly ThreadModel[] {

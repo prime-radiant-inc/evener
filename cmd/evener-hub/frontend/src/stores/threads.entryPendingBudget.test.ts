@@ -14,6 +14,8 @@ import {
   installHydrationRetrySchedulerForTests,
   observePendingHydrationRetirementsForTests,
   pendingThreadHydrationUpdatesForTests,
+  pendingWatchedHydrationBytesForTests,
+  pendingWatchedHydrationUpdatesForTests,
   resetThreadsStoreForTests,
   threadsStore,
 } from "./threads";
@@ -393,5 +395,71 @@ test("entry buffer exhaustion retires only that read, preserving durable bodies 
     source.resolve(currentResponse(ref, frames));
     nextSource.resolve(currentResponse(ref, frames));
     await background.release();
+  }
+});
+
+test("repeated resyncs that supersede a watched read keep its carried payload charged", async () => {
+  // RoboRev 53429 (Medium 3): retiring a superseded watched read RELEASES its
+  // byte reservation, and the successor kept the same carried updates with
+  // `backgroundBytes: 0`. Each supersession therefore left those bytes
+  // uncounted, so repeated resyncs during a slow read retained payload the
+  // pending budget never saw. The carry must be re-admitted through it.
+  //
+  // The harm is accounting, so the assertion is the watched record's OWN
+  // reservation: a total over both pending records cannot show this, because
+  // the tracked read's independent charge masks an uncharged watched carry.
+  const ref = "local:watched-budget";
+  const fake = connectClient();
+  const background = acquireBackgroundThread(ref);
+  const heldRead = deferred<ThreadReadResponse>();
+  const goal = (iterations: number) => ({ objective: `carried ${iterations}`, status: "active" as const, iterations });
+  const observations: Array<{ retained: number; charged: number; frames: number }> = [];
+  let watching: Promise<void> | undefined;
+  try {
+    await background.ready;
+    const repository = productionEntryTranscriptForTests(ref).repository;
+    if (!repository) throw new Error("expected the ordinary repository");
+    await repository.settled();
+    // First watched read answers normally, so the ref HAS a published watched
+    // model with history - the base a later carry is judged against.
+    await threadsStore.getState().watchThread(ref, { includeTurns: true });
+    await vi.waitFor(() => expect(threadsStore.getState().watchedThreads.get(ref)?.history).toBeDefined());
+    // Every later read hangs, so the buffer is the only home for new frames.
+    fake.on("thread/read", (params) =>
+      heldRead.promise.then((result) => ({ ...result, requestGeneration: params.requestGeneration })),
+    );
+    watching = threadsStore.getState().watchThread(ref, { includeTurns: true });
+    for (let attempt = 0; attempt < 4; attempt += 1) {
+      // A superseding resync carries whatever the previous read buffered.
+      fake.emitNotification({ method: "evener/thread/resync", params: { ref, threadId: `thr_${ref}` } });
+      await Promise.resolve();
+      fake.emitNotification({
+        method: "evener/goal/updated",
+        params: { ref, threadId: `thr_${ref}`, goal: goal(attempt) },
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      const watchedHeld = pendingWatchedHydrationUpdatesForTests();
+      observations.push({
+        retained: watchedHeld.reduce(
+          (sum, update) => sum + new TextEncoder().encode(JSON.stringify(update.notification)).byteLength,
+          0,
+        ),
+        charged: pendingWatchedHydrationBytesForTests(),
+        frames: watchedHeld.length,
+      });
+    }
+    // The supersessions genuinely carried frames onto the successor record, so
+    // the accounting assertion below cannot hold vacuously at zero.
+    expect(observations.at(-1)?.frames).toBeGreaterThan(1);
+    for (const observation of observations) {
+      expect(observation.retained).toBeLessThanOrEqual(LIMIT);
+      expect(observation.charged).toBe(observation.retained);
+    }
+  } finally {
+    heldRead.resolve(currentRead(ref));
+    void watching?.catch(() => undefined);
+    await background.release();
+    threadsStore.getState().releaseWatchedThread(ref);
   }
 });
