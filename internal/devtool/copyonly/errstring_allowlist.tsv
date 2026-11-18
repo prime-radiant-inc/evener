@@ -80,7 +80,7 @@ agent/job_watch_core_config_fuzz_test.go	1
 agent/job_watch_events_output_fuzz_test.go	1
 agent/job_watch_loopguard_test.go	3
 agent/job_watch_timer_args_test.go	2
-agent/jobs_activity_branches_test.go	8
+agent/jobs_activity_branches_test.go	7
 agent/jobs_activity_caps_test.go	2
 agent/jobs_cov_test.go	1
 agent/jobs_covtest2_test.go	2

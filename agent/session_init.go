@@ -2790,12 +2790,23 @@ func (s *Session) initMCP() error {
 // configs is the effective set this session connects, so a CLI entry's tools
 // are in it too. The CLI entries are removed here by name, leaving only what a
 // child — which clears the CLI layers — could rediscover on its own.
+//
+// A CLI entry that OVERRIDES another layer's server is not removed: the child
+// clears the CLI layers and discovers the server it replaces, so that
+// namespace is reachable by the child even though this session connects the
+// override. Dropping it made an override hide the very namespace it replaces,
+// and a project server "team" exposing "docs__lookup" then lost
+// "team__docs__lookup" to a CLI "team__docs" that merely registered the same
+// name.
 func otherLayerMCPNamespaces(configs []mcpconfig.ServerConfig, cliOnly []mcpconfig.CLIOnlyServer) []string {
 	if len(configs) == 0 {
 		return nil
 	}
 	cliNames := make(map[string]bool, len(cliOnly))
 	for _, entry := range cliOnly {
+		if entry.Fallback != nil {
+			continue
+		}
 		cliNames[toolname.SanitizeMCPToolName(entry.Config.Name)] = true
 	}
 	namespaces := make([]string, 0, len(configs))
@@ -2976,16 +2987,21 @@ func cliMCPToolNames(servers map[string]bool, shadowed map[string]bool, otherPre
 // so a name's origin cannot be recovered by splitting it — the server name
 // itself may contain underscores. Asking instead whether any non-CLI namespace
 // is a PREFIX of the name is the answer that does not need to split: if
-// "<prefix>_" begins the name, a server with that namespace exposing the
+// "<prefix>__" begins the name, a server with that namespace exposing the
 // remainder registers exactly this name.
 //
-// The trailing separator is required so "team" does not claim "teamwork__x".
+// The separator is registration's own DOUBLE underscore, and both characters
+// matter. A single "_" lets "github" claim "github_enterprise__search", a
+// different server the child may not reach at all — the permissive direction,
+// where the roster advertises a tool that does not exist. Requiring an exact
+// match instead would stop matching legitimate compound names like
+// "team__docs__lookup". Only the true separator gets both directions right.
 func suppliedByAnotherLayer(name string, otherPrefixes []string) bool {
 	for _, prefix := range otherPrefixes {
 		if prefix == "" {
 			continue
 		}
-		if strings.HasPrefix(name, prefix+"_") {
+		if strings.HasPrefix(name, prefix+"__") {
 			return true
 		}
 	}

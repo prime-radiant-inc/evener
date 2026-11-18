@@ -597,6 +597,13 @@ func (c *delegateTreeController) finishStoppedStartLocked(lease delegateLease, l
 	decision := c.reduceStoppedGenerationFinishIntent(finishIntent{
 		lease: lease,
 		latch: finishLatchRecoveryOnly,
+		// The runtime this start attached before its initial input committed.
+		// Without it the synthetic settlement records no observation, and a
+		// generation that HAD attached carries an empty answer once the binding
+		// is released — readers then fall back to the ceiling and list tools the
+		// child never registered. A start that never attached passes nil, which
+		// the reducer reads as "no observation", keeping the two answers apart.
+		runtime: live.runtime,
 	})
 	// Latch the caller's authenticated live state on a failed append; the
 	// reduce step carries no controller state.
@@ -959,26 +966,26 @@ func normalizeDelegateStartFailure(failure delegateFinish, fallbackReason, fallb
 
 func terminalFinishBatch(lease delegateLease, status delegatestore.OutcomeStatus, reason string, endedAt time.Time, packet delegatestore.TerminalPacket) (delegatestore.Event, delegatestore.Event) {
 	return delegatestore.Event{
-		Kind:       delegatestore.EventDelegateTerminalPrepared,
-		DelegateID: lease.delegateID,
-		TerminalPrepared: &delegatestore.TerminalPrepared{
-			Generation: lease.generation,
-			Packet:     packet,
-		},
-	}, delegatestore.Event{
-		Kind:       delegatestore.EventDelegateRunFinished,
-		DelegateID: lease.delegateID,
-		RunFinished: &delegatestore.RunFinished{
-			Generation: lease.generation,
-			Outcome: delegatestore.Outcome{
-				Status:  status,
-				Reason:  reason,
-				EndedAt: endedAt,
+			Kind:       delegatestore.EventDelegateTerminalPrepared,
+			DelegateID: lease.delegateID,
+			TerminalPrepared: &delegatestore.TerminalPrepared{
+				Generation: lease.generation,
+				Packet:     packet,
 			},
-			Disposition: delegatestore.DispositionTerminalError,
-			DeliveryID:  delegateDeliveryID(lease.delegateID, lease.generation),
-		},
-	}
+		}, delegatestore.Event{
+			Kind:       delegatestore.EventDelegateRunFinished,
+			DelegateID: lease.delegateID,
+			RunFinished: &delegatestore.RunFinished{
+				Generation: lease.generation,
+				Outcome: delegatestore.Outcome{
+					Status:  status,
+					Reason:  reason,
+					EndedAt: endedAt,
+				},
+				Disposition: delegatestore.DispositionTerminalError,
+				DeliveryID:  delegateDeliveryID(lease.delegateID, lease.generation),
+			},
+		}
 }
 
 func (c *delegateTreeController) reserveCapacityLocked(kind delegateCapacityKind) bool {

@@ -442,25 +442,15 @@ func ProjectConfigPath(env execenv.ExecutionEnvironment) string {
 	// advertises a tool the child does not have, which is the same
 	// disagreement this package exists to keep out.
 	//
-	// Freshness already resolves this way (ProjectConfigPathFresh), so both
-	// sides of the comparison ask the workspace the same question. The cost is
-	// one git fork per discovery, and discovery runs at session init.
-	root := execenv.GitRootOrEmptyFresh(env, env.WorkingDirectory())
-	if root == "" {
-		return ""
-	}
-	return filepath.Join(root, ".evener", "mcp.json")
-}
-
-// ProjectConfigPathFresh is ProjectConfigPath resolved without the per-environment
-// git-root memo. A freshness check is asking whether the workspace changed, so it
-// must not read an answer remembered from before the change.
-func ProjectConfigPathFresh(env execenv.ExecutionEnvironment) string {
+	// Freshness already resolves this way, so both sides of the comparison ask
+	// the workspace the same question. The cost is one git fork per discovery,
+	// and discovery runs at session init.
 	path, _ := ProjectConfigPathFreshDefinitive(env)
 	return path
 }
 
-// ProjectConfigPathFreshDefinitive is ProjectConfigPathFresh keeping whether the
+// ProjectConfigPathFreshDefinitive is the one resolution of this layer's path,
+// keeping whether the
 // workspace's Git root was CONFIRMED. An empty path with a false flag means the
 // root could not be determined, which is not the same fact as a confirmed
 // absence of a repository, and a caller comparing evidence must not confuse

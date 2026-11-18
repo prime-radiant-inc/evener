@@ -7,12 +7,15 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
 	taskpkg "primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/llm"
 )
 
 // AdmitStartInput is the test-only callback adapter used by controller fuzz
@@ -1004,4 +1007,89 @@ func TestDelegateControllerCommittedStartFailureAppendFailureIsNotAStopWin(t *te
 	if live := c.live["dlg_target"]; live == nil || !live.recoveryRequired {
 		t.Fatalf("live state = %#v, want recoveryRequired after a failed append", live)
 	}
+}
+
+// TestStoppedStartSettlementKeepsTheAttachedGenerationsObservation is the
+// attach-before-commit window, driven through the same calls production makes:
+// AttachRuntime, then a stop, then CompleteStartInput.
+//
+// A runtime that attached before its initial input committed HAS registered
+// tools. The synthetic settlement used to reduce without that runtime, so it
+// recorded no observation; once the binding was released every reader fell back
+// to the ceiling and listed tools the child never registered.
+//
+// The two subtests separate answers a naive fix collapses: an observed EMPTY
+// registry is a fact, and no runtime at all is a different one.
+func TestStoppedStartSettlementKeepsTheAttachedGenerationsObservation(t *testing.T) {
+	t.Parallel()
+	t.Run("an attached runtime reports its registrations", func(t *testing.T) {
+		t.Parallel()
+		c, _ := newDelegateControllerTestHarness(t, 1, 1)
+		seedDelegateControllerIdle(t, c, "dlg_target", "")
+		started, runtime := commitAttachedDelegateControllerStart(t, c, "dlg_target")
+		reg := tool.NewRegistry()
+		for _, name := range []string{"read_file", "svc__lookup"} {
+			if err := reg.Register(regTool(llm.ToolDefinition{Name: name, Description: "fixture"})); err != nil {
+				t.Fatalf("register %q: %v", name, err)
+			}
+		}
+		runtime.reg = reg
+		observed := stopStartBetweenAttachAndCommit(t, c, started)
+		if observed == nil {
+			t.Fatal("the synthetic settlement recorded no observation for a generation whose runtime had attached")
+		}
+		if !slices.Contains(*observed, "svc__lookup") {
+			t.Errorf("observation = %v, want the child's registrations", *observed)
+		}
+	})
+
+	t.Run("an attached runtime with no tools reports empty, not absent", func(t *testing.T) {
+		t.Parallel()
+		c, _ := newDelegateControllerTestHarness(t, 1, 1)
+		seedDelegateControllerIdle(t, c, "dlg_target", "")
+		started, runtime := commitAttachedDelegateControllerStart(t, c, "dlg_target")
+		runtime.reg = tool.NewRegistry()
+		observed := stopStartBetweenAttachAndCommit(t, c, started)
+		if observed == nil {
+			t.Fatal("a runtime that registered nothing settled as NO observation, so the report falls back to the ceiling")
+		}
+		if len(*observed) != 0 {
+			t.Errorf("observation = %v, want an empty list", *observed)
+		}
+	})
+}
+
+// stopStartBetweenAttachAndCommit stops the delegate after its runtime attached
+// and before its initial input commits, then settles through CompleteStartInput.
+// It returns the generation's recorded observation as the durable reader sees it
+// once the runtime is no longer bound.
+func stopStartBetweenAttachAndCommit(t *testing.T, c *delegateTreeController, started delegateStartCommit) *[]string {
+	t.Helper()
+	claim, err := c.BeginStartInput(started.lease)
+	if err != nil {
+		t.Fatalf("BeginStartInput: %v", err)
+	}
+	// The stop lands in the window: attached, not yet committed.
+	c.mu.Lock()
+	_, err = c.appendLocked(delegatestore.Event{
+		Kind:                 delegatestore.EventDelegateSubtreeStopRequested,
+		DelegateID:           started.lease.delegateID,
+		SubtreeStopRequested: &delegatestore.SubtreeStopRequested{TargetDelegateID: started.lease.delegateID},
+	})
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("append stop request: %v", err)
+	}
+	// The stop won the race, and errDelegateTargetBusy is this path's documented
+	// contract for "this lease is no longer yours" — the production caller
+	// branches on exactly this sentinel (delegate_create.go failCommittedStart).
+	// The settlement it performed is what the assertions below read.
+	if _, err := c.CompleteStartInput(claim, false, delegateFinish{}); !errors.Is(err, errDelegateTargetBusy) {
+		t.Fatalf("CompleteStartInput error = %v, want the stop-won sentinel", err)
+	}
+	// The durable record outlives the binding, which is what every reader after
+	// reclamation uses.
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.durable[started.lease.delegateID].LatestObservation
 }
