@@ -158,11 +158,14 @@ func text(s string) []llm.ContentPart { return []llm.ContentPart{{Kind: llm.Cont
 var weatherTool = llm.ToolDefinition{Name: "weather", Description: "Current weather", Parameters: map[string]any{"type": "object", "properties": map[string]any{"city": map[string]any{"type": "string"}}}}
 
 // strictWeatherTool is the same tool with its single argument declared
-// required. Rows whose provider sets strict_tools can only project a schema
-// that already requires every property: OpenAI strict mode force-requires
-// them all, so a schema that leaves one optional is sent non-strict instead
-// The rewrites agree, so these rows record the same wire schema as
-// before.
+// required, for rows whose provider sets strict_tools.
+//
+// A schema that leaves an argument optional is not certified: the projection
+// force-requires every property, so certifying one would make a documented-
+// optional argument mandatory, and that is the defect this branch exists to
+// fix. Such a tool is sent unchanged with strict false (see
+// openai-gpt-5-5-optional-argument), which is a different wire schema from
+// this one and is recorded separately rather than by reusing a strict row.
 var strictWeatherTool = llm.ToolDefinition{Name: "weather", Description: "Current weather", Parameters: map[string]any{
 	"type":                 "object",
 	"additionalProperties": false,
@@ -174,6 +177,18 @@ var strictWeatherTool = llm.ToolDefinition{Name: "weather", Description: "Curren
 func strictToolsRequest(effort string) llm.Request {
 	req := toolsRequest(effort)
 	req.Tools = []llm.ToolDefinition{strictWeatherTool}
+	return req
+}
+
+// optionalToolsRequest is toolsRequest with the same tool leaving its argument
+// optional, which is what a strict-capable row must still record: the gate
+// refuses to certify it, so it reaches the wire unchanged with strict false.
+// Without a row asserting that, the suite would prove only that an
+// already-fully-required schema survives projection, which is the one shape
+// this branch's refusal never has to handle.
+func optionalToolsRequest(effort string) llm.Request {
+	req := toolsRequest(effort)
+	req.Tools = []llm.ToolDefinition{weatherTool}
 	return req
 }
 
@@ -238,6 +253,7 @@ var cases = []wireCase{
 	{"anthropic-opus-4-7-display", "anthropic/claude-opus-4-7", false, toolsRequest("high")},
 	{"anthropic-opus-4-5-hybrid", "anthropic/claude-opus-4-5", false, toolsRequest("high")},
 	{"openai-gpt-5-5", "openai/gpt-5.5", false, strictToolsRequest("high")},
+	{"openai-gpt-5-5-optional-argument", "openai/gpt-5.5", false, optionalToolsRequest("high")},
 	{"openai-codex-gpt-5-6-lite-stream", "openai-codex/gpt-5.6", true, strictToolsRequest("")},
 	{"groq-chat-stream", "groq/openai/gpt-oss-120b", true, toolsRequest("high")},
 	{"groq-responses", "groq-responses/openai/gpt-oss-120b", false, toolsRequest("high")},
