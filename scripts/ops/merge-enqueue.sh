@@ -43,12 +43,14 @@
 # within a couple of seconds has its tree stopped, the `gh` call it was waiting
 # on included.
 #
-# The helper is built in a private scratch directory under TMPDIR or, when
-# TMPDIR's entries can be replaced by another user and a safer root exists,
-# under $XDG_RUNTIME_DIR or $HOME/.cache/evener-scratch. Where none of those is
-# safe the run still proceeds under TMPDIR, and the scratch is verified unchanged
-# just before the helper starts: a scratch that changed is exit 2. An ordinary
-# host is unaffected -- 1777 /tmp and a per-user TMPDIR are used as before.
+# The helper is built in a private scratch directory. A directory's mode
+# protects what is inside it and nothing about its own entry in its parent, so
+# the root is only usable when its resolved path and every ancestor either are
+# not writable by another user or carry the sticky bit. TMPDIR is used when its
+# chain passes that test, otherwise $XDG_RUNTIME_DIR or
+# $HOME/.cache/evener-scratch; with no usable root nothing is built (exit 2) and
+# an EVENER_DEV_BIN helper you built yourself still runs. An ordinary host is
+# unaffected -- 1777 /tmp and a per-user TMPDIR pass, and nothing moves.
 #
 # The exit codes are the contract. 0 means merged or queued, 1 means the queue
 # ended the attempt (dropped or timed out), 2 means nothing was decided: bad
@@ -57,6 +59,8 @@
 # (which a caller retries) or 126/127 (which mean "command not executable"),
 # and a helper that did start always keeps its own status.
 #
+set -euo pipefail
+
 # The decisions are internal/devtool/mergeq's, tested under `go test`; this
 # script parses its arguments and keeps the contract above. It was an
 # orchestration script whose only test seam was a fake `gh` on PATH, which
@@ -64,17 +68,15 @@
 # the argv a script hands it is an implementation restated. Porting the
 # decisions is that rule's remedy (the port-on-touch trigger), not a fixture
 # harness around the fake.
-set -euo pipefail
-
-# The contract block above is lines 2-58; the rationale after it is for a
-# reader of this file, not for --help. The range ends at the blank comment line
-# after the exit-code paragraph, so --help cannot stop mid-sentence: it used to
-# end at 50, one line before the sentence saying a started helper keeps its own
-# status, which is the half of the contract a caller relies on when it sees 1.
-# It moved to 58 when the scratch-isolation paragraph joined the contract, and
-# TestMergeEnqueueLauncherHelpPrintsTheWholeContract pins the last line so the
-# next addition cannot silently truncate it.
-usage() { sed -n '2,58p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+#
+# --help is the contract block above: every comment line from line 2 down to
+# `set -euo pipefail`. The range is derived rather than written out, because a
+# numbered range goes stale the moment a paragraph is added to the contract, and
+# it did: it ended at 50 through one review round, one line before the sentence
+# saying a started helper keeps its own status -- the half of the contract a
+# caller relies on when it sees 1. Everything below `set` is rationale for a
+# reader of this file and stays out of --help.
+usage() { sed -n '2,/^set -euo pipefail$/p' "$0" | sed -e '$d' -e 's/^# \{0,1\}//'; exit 2; }
 
 # A value-taking option at the end of the line has no value: reading $2 there is
 # an "unbound variable" abort under set -u, which exits 1 -- the code that means
@@ -152,26 +154,33 @@ if [ -n "${TMPDIR:-}" ]; then
 fi
 export TMPDIR
 
-# scratch_root_is_replaceable DIR -- succeed when another local user could rename
-# or replace DIR itself.
+# THE INVARIANT: before anything is executed from scratch, the scratch's
+# resolved path and every one of its ancestors must refuse entry to other users.
 #
 # A directory's mode protects what is inside it and says nothing about its entry
 # in its parent: the parent's owner can rename or delete a directory whatever its
-# mode is. That is the whole of the high finding on 7ef64c0d67. So the question
-# is asked about DIR's own bits, which are the parent's rule applied to it:
+# mode is. Checking one directory is therefore not enough, and checking the leaf
+# is what a review round caught: a per-user TMPDIR (mode 0700, owned by us)
+# beneath a group- or other-writable non-sticky ancestor passes a leaf check even
+# though another user can replace that ancestor and change where every path
+# beneath it resolves. The build, the probe and the exec would all follow the
+# replacement.
 #
-#   - group- or other-write lets someone else create, rename and delete entries;
-#   - the sticky bit (1777 /tmp) takes rename and delete away from everyone but
-#     the entry's owner and the directory's owner.
+# So the rule is stated over the whole chain, and it is the rule, not a note
+# about one change. A component refuses entry to others when:
 #
-# Replaceable, then, means group- or other-writable AND not sticky. 0755 is safe;
-# 1777 is safe; macOS's per-user /var/folders/.../T and systemd's
-# $XDG_RUNTIME_DIR are safe; a hand-made 0777 scratch root is not.
+#   - it is not group- or other-writable, or
+#   - it is, but carries the sticky bit (1777 /tmp), which takes rename and
+#     delete away from everyone but the entry's owner and the directory's owner.
+#
+# `/` is 0755 and macOS's /var/folders/.../T is per-user, so ordinary hosts pass
+# every link in the chain. A 0777 directory anywhere above the scratch fails it,
+# which is the point.
 #
 # `find -perm` applies the mode the kernel does and reads the same on GNU and BSD
 # find, which is why it is used instead of stat: stat's format differs between
 # them.
-scratch_root_is_replaceable() {
+dir_entry_is_replaceable() {
   local dir="$1" writable
   [ -d "$dir" ] || return 1
   writable=$(find "$dir" -maxdepth 0 \( -perm -0020 -o -perm -0002 \) -print 2>/dev/null) || writable=""
@@ -180,31 +189,54 @@ scratch_root_is_replaceable() {
   return 0
 }
 
-# The scratch root, chosen before anything is minted under it.
+# scratch_path_is_trusted DIR -- the invariant above, applied to DIR.
 #
-# The launcher builds the helper and then runs it from a scratch directory.
-# `mktemp -d` gives that directory 0700, which protects its contents and says
-# nothing about its entry: on a TMPDIR that is group- or other-writable and not
-# sticky, an attacker replaces the whole directory after the build, and the `-x`
-# test and the exec both resolve the attacker's file. The launcher then runs
-# another user's binary with the operator's credentials and its `gh` token.
+# DIR is resolved first (`cd`/`pwd -P`), because a symlink anywhere in the given
+# path makes the caller's spelling irrelevant: what gets checked has to be the
+# path the kernel will use. Then every component from DIR up to and including /
+# is tested, nearest first, so a failure names the closest problem.
+scratch_path_is_trusted() {
+  local dir resolved probe
+  [ -d "$1" ] || return 1
+  resolved=$(cd "$1" 2>/dev/null && pwd -P) || return 1
+  probe="$resolved"
+  while :; do
+    dir_entry_is_replaceable "$probe" && return 1
+    [ "$probe" = "/" ] && break
+    probe=$(dirname -- "$probe")
+    [ -n "$probe" ] || return 1
+  done
+  return 0
+}
+
+# The scratch root, chosen before anything is executed from it -- before the exec
+# probe, before the build, and before the group-file directory is minted.
 #
-# Moving TMPDIR itself, here and once, is what fixes that for every path at the
-# same time: the build scratch, the go build's own work directory and the
-# group-file directory all descend from it. Guarding one of them would have left
-# the others open.
+# This is the high finding, twice over. The launcher builds the helper and then
+# runs it from a scratch directory; `mktemp -d` gives that directory 0700, which
+# protects its contents and says nothing about its entry. An attacker who can
+# replace any component of the path after the build makes the `-x` test and the
+# exec resolve their file, and the launcher runs it with the operator's
+# credentials and its `gh` token. A leaf-only check missed the case where the
+# replacement happens at an ancestor, so this asks the question of the whole
+# chain and does it first.
 #
-# An ordinary host takes no branch: 1777 /tmp has the sticky bit and a per-user
-# TMPDIR is not other-writable, so nothing moves and nothing changes. Only a
-# genuinely shared, non-sticky TMPDIR moves, and only to a root that is not
-# replaceable either -- $XDG_RUNTIME_DIR first, then a private cache directory.
+# Three outcomes, in the order they are tried:
 #
-# When no safe root exists the run continues under the original TMPDIR. A merge
-# tool that refused to run on a host it could not prove isolated would be worse
-# for every caller than the window it leaves, and this is the launcher the whole
-# campaign merges through. The inode check before the exec is the second lock in
-# that shape, and --help names what remains.
-if scratch_root_is_replaceable "${TMPDIR:-/tmp}"; then
+#   1. The ambient TMPDIR's chain is trusted. That is the ordinary host: 1777
+#      /tmp has the sticky bit, and macOS's and systemd's per-user TMPDIRs are
+#      not other-writable. Nothing moves and nothing changes.
+#   2. $XDG_RUNTIME_DIR or $HOME/.cache/evener-scratch has a trusted chain.
+#      TMPDIR moves there and every path below it follows.
+#   3. Neither. Nothing is executed from scratch: the build path refuses with
+#      exit 2 (a launcher that cannot get as far as a decision), and the
+#      prebuilt path still runs, without a group file. A tool every lane merges
+#      through must not stop working on a host it cannot prove isolated, and the
+#      group file only widens what a forced stop can reach.
+scratch_root=""
+if scratch_path_is_trusted "${TMPDIR:-/tmp}"; then
+  scratch_root="${TMPDIR:-/tmp}"
+else
   for scratch_candidate in "${XDG_RUNTIME_DIR:-}" "${HOME:+$HOME/.cache/evener-scratch}"; do
     [ -n "$scratch_candidate" ] || continue
     case "$scratch_candidate" in
@@ -212,12 +244,14 @@ if scratch_root_is_replaceable "${TMPDIR:-/tmp}"; then
       *) continue ;;
     esac
     if [ ! -d "$scratch_candidate" ]; then
-      # 0700, so only this user can enter it. An existing cache directory is used
-      # as its owner left it.
+      # 0700 throughout, so only this user can enter it or the directories
+      # between it and $HOME. An existing cache directory is used as its owner
+      # left it, and still has to pass the chain check below.
       (umask 077 && mkdir -p "$scratch_candidate") 2>/dev/null || true
     fi
     [ -d "$scratch_candidate" ] && [ -w "$scratch_candidate" ] || continue
-    scratch_root_is_replaceable "$scratch_candidate" && continue
+    scratch_path_is_trusted "$scratch_candidate" || continue
+    scratch_root="$scratch_candidate"
     TMPDIR="$scratch_candidate"
     export TMPDIR
     break
@@ -321,20 +355,29 @@ child_running() {
 # script's. helper-group may be empty when ps cannot name it any more; the
 # recorded one is used then.
 #
-# Two sources, because neither covers the other. The helper publishes the group
-# of the call it is waiting on (internal/devtool/mergeq's ghGroupFileEnv), which
-# is the only handle that survives a `gh` wrapper starting the real CLI without
-# `exec` and then exiting: that CLI is reparented out of the helper's tree, so a
-# descendant walk cannot see it, and it is exactly the process still submitting.
-# The walk adds whatever a helper too old to publish left behind, and any call
-# forked since the last publish.
+# Three sources, because none of them covers the others. The helper publishes
+# the group of the call it is waiting on (internal/devtool/mergeq's
+# ghGroupFileEnv), which is the only handle that survives a `gh` wrapper starting
+# the real CLI without `exec` and then exiting: that CLI is reparented out of the
+# helper's tree, so a descendant walk cannot see it, and it is exactly the
+# process still submitting. The walk adds whatever a helper too old to publish
+# left behind, and any call forked since the last publish.
 #
-# The walk is every group a descendant is in, not just groups a descendant
+# The walk starts from the tracked pid and from every surviving member of the
+# recorded helper group, and the second start is what covers a wrapper that
+# exited on TERM without forwarding it: the tracked pid is gone, the Go helper it
+# started is alive in the recorded group, and it may be between starting `gh` and
+# publishing the group of that call -- so the handle is empty and a walk from the
+# dead wrapper finds nothing, while the helper's own `gh` is still submitting.
+# The group freeze in stop_helper_tree has already stopped those members, so the
+# tree read here cannot grow.
+#
+# Each walk is every group a descendant is in, not just the groups a descendant
 # leads, for the same wrapper reason. The helper's own group and this script's
 # are excluded: stop_command signals the first, and the second must never be
 # signalled.
 helper_call_groups() {
-  local pid="$1" own_group call_group descendant group published
+  local pid="$1" own_group call_group descendant group published member walked
   own_group=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ')
   call_group="$2"
   {
@@ -349,7 +392,15 @@ helper_call_groups() {
           ;;
       esac
     fi
-    for descendant in $(process_descendants "$pid"); do
+    walked=$(process_descendants "$pid")
+    if [ -n "$call_group" ] && [ "$call_group" != "$own_group" ]; then
+      for member in $(ps -axo pid=,pgid= 2>/dev/null | awk -v group="$call_group" '$2 == group { print $1 }'); do
+        [ "$member" = "$$" ] && continue
+        walked="$walked
+$(process_descendants "$member")"
+      done
+    fi
+    for descendant in $walked; do
       group=$(ps -o pgid= -p "$descendant" 2>/dev/null | tr -d ' ')
       case "$group" in
         '' | *[!0-9]*) continue ;;
@@ -567,11 +618,21 @@ mint_gh_group_file() {
     : > "$gh_group_file" 2>/dev/null || gh_group_file=""
     return 0
   fi
-  dir=$(mktemp -d "${TMPDIR:-/tmp}/merge-enqueue.XXXXXX" 2>/dev/null) || dir=""
+  # Only a trusted root. Without one the handle stays empty and the run
+  # continues: the prebuilt path must work on a host where isolation cannot be
+  # established, and the handle only widens what a forced stop can reach.
+  [ -n "${scratch_root:-}" ] || { gh_group_file=""; return 0; }
+  dir=$(mktemp -d "$scratch_root/merge-enqueue.XXXXXX" 2>/dev/null) || dir=""
   case "$dir" in
     /*) ;;
     *) dir="" ;;
   esac
+  # The mint is only as good as the chain it happened in, so the chain is checked
+  # again over the directory that actually came back.
+  if [ -n "$dir" ] && ! scratch_path_is_trusted "$dir"; then
+    rmdir "$dir" 2>/dev/null || true
+    dir=""
+  fi
   if [ -z "$dir" ]; then
     gh_group_file=""
     return 0
@@ -743,13 +804,27 @@ fi
 # reports every child status as 1, which would erase both the drop/timeout 1
 # and the refusal 2. GOFLAGS= keeps an inherited GOFLAGS from changing how it
 # builds, the same reason timing-tsv-lib.sh pins it.
+# Nothing is built unless a trusted root was found, and that refusal comes
+# before the exec probe: a probe runs a program written to disk, so running it
+# from an untrusted chain would be the very thing the chain check exists to
+# prevent. The prebuilt path is unaffected -- it was handled above and never gets
+# here -- so an operator who supplies their own helper still works on a host with
+# no trusted root; only building one needs the isolation.
+if [ -z "$scratch_root" ]; then
+  launcher_failed "no scratch root this user controls: TMPDIR, \$XDG_RUNTIME_DIR and \$HOME/.cache/evener-scratch all sit under a directory another user can replace; point TMPDIR at a private directory, or set EVENER_DEV_BIN to a helper you have built"
+fi
 scratch_dir work merge-enqueue
 # The inode of the directory scratch_dir minted, read once here and compared
-# again immediately before the exec. This is the second lock on the high finding
-# and it is only load-bearing on a host with no root whose entries another user
-# cannot replace: there the entry can be swapped between the build and the
-# launch. A swap then costs exit 2 instead of the operator's credentials.
+# again immediately before the exec. With a trusted chain this can never change
+# and the comparison is an assertion; it stays because it costs nothing and it
+# would catch a path this script mis-resolved.
 work_inode=$(ls -di "$work" 2>/dev/null | awk '{print $1}') || work_inode=""
+# The chain is re-checked after the mint, before anything runs out of it. A
+# component above the scratch could have been swapped between the check at the
+# top of the script and this line, and the mint itself would then have happened
+# somewhere the attacker chose.
+scratch_path_is_trusted "$work" ||
+  launcher_failed "the scratch root above $work became replaceable by another user; refusing to run a helper from it"
 gate_scratch_root_executes "$work" ||
   launcher_failed "scratch $work cannot execute a program (a noexec mount?); point TMPDIR at an exec-capable directory"
 build_helper "$work/evener-dev" || launcher_failed "building the evener-dev helper failed"

@@ -78,9 +78,13 @@ exit 0
 `)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
+	// An explicit handle. Empty reads EVENER_MERGEQ_GH_GROUP_FILE, and an
+	// inherited value would make this fixture publish over, and then clear, a
+	// live launcher's handle for the helper it is stopping.
+	groupFile := filepath.Join(t.TempDir(), "gh-group")
 	done := make(chan error, 1)
 	go func() {
-		_, err := (GHClient{GH: wrapper}).run(ctx, "api", "graphql")
+		_, err := (GHClient{GH: wrapper, GroupFile: groupFile}).run(ctx, "api", "graphql")
 		done <- err
 	}()
 	var childPID int
