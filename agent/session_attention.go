@@ -592,13 +592,20 @@ func (s *Session) publishAcknowledgedDelegateAttentionReport(attentionID string,
 	if s == nil || attentionID == "" {
 		return nil
 	}
+	// Publication takes the same lock the projection takes. The response that
+	// carries a new report and the release its acknowledgment owes are one
+	// fact: a projection that copied the holds before this ran would keep the
+	// released report out while the turns it copied after would include the new
+	// one, and the request would present the report whose release is still
+	// unread while withholding the one that release freed. Holding attentionMu
+	// across both makes a request see neither or both.
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
 	if turn.AttentionID != "" {
 		// The caller already folded this row: publishing reuses that read so a
 		// commit path costs no second transcript fold.
 		return s.retainDelegateAttentionTurn(turn)
 	}
-	s.attentionMu.Lock()
-	defer s.attentionMu.Unlock()
 	fold, err := s.delegateAttentionFoldLocked()
 	if err != nil {
 		return err
@@ -1746,6 +1753,31 @@ func (s *Session) publishRetainedDelegateAttentionReport(attentionID string) err
 	return nil
 }
 
+// delegateAttentionReportAwaitsAcknowledgment reports whether attentionID names
+// a delivery's report whose acknowledgment has not yet committed, so its
+// publication is still deferred.
+//
+// The evidence is the delegate journal's pending-delivery queue: a delivery is
+// queued when its terminal packet is prepared and popped by the acknowledgment,
+// so a delivery still queued is an unacknowledged deposit and one absent from it
+// has been acknowledged whichever path committed it. The transcript's commit
+// table cannot answer this — it records only the tool-results turn a resident
+// reply carried, and a stop's retry acknowledges in the journal alone.
+//
+// A row whose ID is not a delivery identity never waits here. Callers hold
+// attentionMu; the controller lock is taken inside.
+func (s *Session) delegateAttentionReportAwaitsAcknowledgment(attentionID string) bool {
+	controller := s.delegateController
+	if controller == nil || s.owningDelegateID == "" {
+		return false
+	}
+	deliveryID, ok := strings.CutPrefix(stripDelegateAttentionReopenSegments(attentionID), delegateAttentionID(""))
+	if !ok || deliveryID == "" {
+		return false
+	}
+	return controller.deliveryPending(s.owningDelegateID, deliveryID)
+}
+
 // retainPendingDelegateAttentionTurnsLocked restores every still-pending row's
 // durable turn into the history. The point of the restore is that a row's turn
 // and its pending status come from one fold: a request that presents a row must
@@ -1770,6 +1802,26 @@ func (s *Session) retainPendingDelegateAttentionTurnsLocked(fold delegateAttenti
 // its own gate passes. The caller holds attentionMu.
 func (s *Session) retainPendingDelegateAttentionTurnsExceptLocked(fold delegateAttentionFold, skip []string) error {
 	pendingTurns := fold.pendingTurns("")
+	// A delivery's report is recorded before its acknowledgment commits and
+	// published after it, because the acknowledgment is what raises the release
+	// floor the report is presented against. A compaction that restores pending
+	// turns would otherwise publish a deposit whose acknowledgment is still
+	// outstanding: the request then carries the new report while withholding the
+	// report that same acknowledgment is going to release.
+	//
+	// The record that decides this is the delegate journal's pending-delivery
+	// queue, not the transcript's commit table: a stop's retry acknowledges
+	// inside the journal and never writes a commit turn, so "no commit" cannot
+	// be read as "still deferred" without withholding rows that are already
+	// acknowledged. A row that is not a delivery's report is never deferred.
+	kept := make([]schema.Turn, 0, len(pendingTurns))
+	for _, durable := range pendingTurns {
+		if s.delegateAttentionReportAwaitsAcknowledgment(durable.AttentionID) {
+			continue
+		}
+		kept = append(kept, durable)
+	}
+	pendingTurns = kept
 	if len(skip) != 0 {
 		kept := make([]schema.Turn, 0, len(pendingTurns))
 		for _, durable := range pendingTurns {
