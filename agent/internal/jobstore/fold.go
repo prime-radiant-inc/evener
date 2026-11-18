@@ -1,9 +1,12 @@
 package jobstore
 
 import (
+	"errors"
+	"fmt"
 	"sort"
 
 	"primeradiant.com/evener/agent/provenance"
+	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/invariant"
 )
 
@@ -19,6 +22,91 @@ func Fold(events []Event) map[string]*JobRecord {
 		applyJobEvent(recs, e)
 	}
 	return recs
+}
+
+// ErrIncompleteLifecycle reports a job history whose events do not describe a
+// whole job: a terminal event with no preceding start, a start missing the
+// fields a shell job cannot run without, or a start whose OwnerSessionID
+// contradicts the owner the job ID encodes. Fold accepts these fragments by
+// design — it reconstructs the best record the log supports, and the live
+// runtime repairs what it can — so a reader that must report whether a history
+// is COMPLETE checks this sentinel from FoldChecked instead.
+var ErrIncompleteLifecycle = errors.New("jobstore: incomplete job lifecycle")
+
+// FoldChecked folds events exactly like Fold and then reports the first
+// structural gap in the lifecycle the log describes. The returned records are
+// Fold's own, so a caller that wants both the best-effort history and an
+// honest verdict about it needs one pass. Errors wrap ErrIncompleteLifecycle;
+// match them with errors.Is.
+func FoldChecked(events []Event) (map[string]*JobRecord, error) {
+	recs := Fold(events)
+	if err := checkJobLifecycles(events); err != nil {
+		return nil, err
+	}
+	return recs, nil
+}
+
+// checkJobLifecycles reports the first event that leaves a job's lifecycle
+// unaccounted for, in seq order so the report is deterministic. It validates
+// what a reader can prove from the journal alone: a start exists before any
+// terminal or notification event for that job, a start carries the fields a
+// shell job needs (a control-plane job such as a delegate row may omit them),
+// and a start's declared owner agrees with the owner its job ID encodes.
+//
+// An EMPTY owner is accepted: rows written before OwnerSessionID existed fold
+// with it unset, and rejecting them would make every pre-owner journal
+// unreadable rather than merely old.
+func checkJobLifecycles(events []Event) error {
+	sorted := append([]Event(nil), events...)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Seq < sorted[j].Seq })
+
+	started := make(map[string]bool, len(sorted))
+	for _, e := range sorted {
+		if e.JobID == "" || !IsJobRecordEvent(e.Kind) {
+			continue
+		}
+		if e.Kind == EventJobStarted {
+			if err := checkJobStart(e); err != nil {
+				return err
+			}
+			started[e.JobID] = true
+			continue
+		}
+		if !started[e.JobID] {
+			return fmt.Errorf("%w: job %q has a %s event (seq %d) with no preceding start",
+				ErrIncompleteLifecycle, e.JobID, e.Kind, e.Seq)
+		}
+	}
+	return nil
+}
+
+// checkJobStart reports a start event that cannot describe a runnable job.
+// Type is required of every start: a record with no type is what a projection
+// classifies as unsupported, and a start that cannot say what it started is a
+// fragment, not a lifecycle. StartedAt deliberately is NOT required: the fold
+// treats it as optional (a start without one folds to the zero time and the
+// activity projections render that), so demanding it here would report real
+// journals as damaged.
+func checkJobStart(e Event) error {
+	if e.Type == "" {
+		return fmt.Errorf("%w: job %q starts (seq %d) with no type",
+			ErrIncompleteLifecycle, e.JobID, e.Seq)
+	}
+	if e.OwnerSessionID == "" {
+		return nil
+	}
+	encoded, err := identifier.JobOwnerSessionID(e.JobID)
+	if err != nil {
+		// A non-conforming job ID is not this check's business: synthetic IDs
+		// such as tests' and older tooling's "job_x" carry no owner, and the
+		// owner comparison below is what the contract is about.
+		return nil //nolint:nilerr // unparseable ID carries no owner to contradict
+	}
+	if encoded != e.OwnerSessionID {
+		return fmt.Errorf("%w: job %q names owner %q but its job ID encodes %q",
+			ErrIncompleteLifecycle, e.JobID, e.OwnerSessionID, encoded)
+	}
+	return nil
 }
 
 // FoldOrdered folds events to records (like Fold) and returns them ordered by

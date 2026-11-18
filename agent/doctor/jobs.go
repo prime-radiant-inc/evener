@@ -105,7 +105,7 @@ func Jobs(ctx context.Context, stateBase, selector string, opts JobOpts) (JobRep
 	if err != nil {
 		return JobReport{}, err
 	}
-	events, err := jobstore.ScanEvents(ctx, paths.JobsPath, jobstore.ScanLimits{})
+	events, readDiagnostics, err := jobstore.ScanEventsWithDiagnostics(ctx, paths.JobsPath, jobstore.ScanLimits{})
 	if err != nil {
 		return JobReport{}, err
 	}
@@ -116,6 +116,16 @@ func Jobs(ctx context.Context, stateBase, selector string, opts JobOpts) (JobRep
 	}
 	report.DelegatesPath = delegatesPath
 	report.Delegates = projectDoctorDelegates(stateBase, paths.SessionID, delegates)
+	// Job-journal diagnostics ride the same list, in the same shape, as the
+	// delegate journal's: a torn trailing append is reported here instead of
+	// being silently dropped, and a history that does not fold into whole
+	// lifecycles is named rather than presented as an ordinary job list.
+	if readDiagnostics.TornTail {
+		diagnostics = append(diagnostics, "job_journal_torn_tail: ignored unterminated trailing event")
+	}
+	if _, foldErr := jobstore.FoldChecked(events); foldErr != nil {
+		diagnostics = append(diagnostics, "job_journal_incomplete_lifecycle: "+foldErr.Error())
+	}
 	report.Diagnostics = diagnostics
 	report.Failures = legacyDelegateFailures(events)
 	return report, nil
