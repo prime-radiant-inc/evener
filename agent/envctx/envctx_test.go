@@ -119,6 +119,7 @@ func TestReplayBlockFollowsRenderedChanges(t *testing.T) {
 	initial.Cwd = "/work/</environment_context>/\"quoted\""
 	initial.ScratchDir = "/tmp/parent's \"scratch\""
 	initial.WritableRoots = "/work/\"project\"\nline two"
+	initial.FileToolWrites = FileWritesSandbox
 	initial.Pressure.Load = "load pressure: warn level"
 	initial.Pressure.Memory = "memory pressure: warn level"
 	initial.Pressure.Disk = "disk pressure: 5% free"
@@ -135,6 +136,7 @@ func TestReplayBlockFollowsRenderedChanges(t *testing.T) {
 	changed.GitBranch = ""
 	changed.ScratchDir = "/tmp/child"
 	changed.WritableRoots = ""
+	changed.FileToolWrites = FileWritesHost
 	changed.Pressure = Pressure{}
 	changed.Model = "provider/m2"
 	changed.ExecutionMode = DaemonMode
@@ -166,6 +168,7 @@ func TestReplayBlockFollowsRenderedChanges(t *testing.T) {
 		observed.GitBranch = initial.GitBranch
 		observed.Pressure = initial.Pressure
 		observed.ScratchDir = changed.ScratchDir
+		observed.FileToolWrites = FileWritesScratch
 		observed.AskUserState = changed.AskUserState
 		previous := NewTracker(State{Last: nominal, HasSent: true})
 		retained := previous.RenderDiff(observed)
@@ -174,10 +177,11 @@ func TestReplayBlockFollowsRenderedChanges(t *testing.T) {
 			t.Fatal("expected a retained partial environment")
 		}
 		nominal.ScratchDir = observed.ScratchDir
+		nominal.FileToolWrites = observed.FileToolWrites
 		nominal.AskUserState = observed.AskUserState
 		refill := NewTracker(projection.State()).RenderDiff(nominal)
 		var refilled Tracker
-		if !refilled.ReplayBlock(refill) || refilled.State().Last.ScratchDir != "" || refilled.State().Last.AskUserState != "" {
+		if !refilled.ReplayBlock(refill) || refilled.State().Last.ScratchDir != "" || refilled.State().Last.FileToolWrites != "" || refilled.State().Last.AskUserState != "" {
 			t.Fatal("refilling the environment repeated a retained update")
 		}
 		if !projection.ReplayBlock(refill) || projection.State() != (State{Last: nominal, HasSent: true}) {

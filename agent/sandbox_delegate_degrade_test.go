@@ -5,12 +5,16 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/envctx"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/sandbox"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/internal/testfs"
 	"primeradiant.com/evener/llm"
 )
@@ -283,7 +287,8 @@ func TestDegradedReadOnlyBoundaryDisclosesUnsandboxedShellCapabilities(t *testin
 // on a host where no backend can enforce read-only. It must launch — the caller
 // asked for an agent type, not for an OS sandbox.
 func TestCreateExplorerDelegateDegradesInsteadOfRefusing(t *testing.T) {
-	root := newNoBackendDelegateSession(t)
+	adapter := &agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response { return agenttest.FinalResponse("result") }}
+	root := newNoBackendDelegateSession(t, adapter)
 
 	result := root.createDelegate(context.Background(), delegateArgs{
 		Task:      "investigate the failing test",
@@ -295,6 +300,87 @@ func TestCreateExplorerDelegateDegradesInsteadOfRefusing(t *testing.T) {
 	if result.DelegateID == "" {
 		t.Fatalf("degraded explorer delegate returned no delegate_id: %+v", result)
 	}
+	t.Run("resume-with can edit the workspace", func(t *testing.T) {
+		child := root.getSub(result.ChildSessionID)
+		waitSubagentRun(t, child)
+		source := child.sess
+		workspace := root.currentEnv().WorkingDirectory()
+		target := filepath.Join(workspace, "aside-edit.txt")
+		checkReadOnly := func(sess *Session) {
+			t.Helper()
+			local := sess.currentEnv().(*execenv.LocalExecutionEnvironment)
+			_, err := local.WriteFile(target, "denied")
+			if _, denied := errors.AsType[*sandbox.DeniedError](err); !denied || local.KernelWrapper() != nil {
+				t.Fatalf("delegate workspace write = %v, kernel wrapper = %v", err, local.KernelWrapper())
+			}
+		}
+		checkReadOnly(source)
+		header, _, _, err := readTranscript(t.Context(), transcriptPath(root.stateDir, source.ID()), "")
+		if err != nil || header.SystemPrompt == "" {
+			t.Fatalf("saved delegate prompt unavailable: %v", err)
+		}
+		asideID, err := AsideSessionWithConfig(root.stateDir, source.ID(), source.Meta().Config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		meta, err := schema.LoadSessionMeta(root.stateDir, asideID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		aside, err := RestoreSessionFromMetaWithConfig(root.Client(), root.profile, execenv.NewLocalExecutionEnvironment(workspace), meta, RestoreSessionConfig{
+			StateDir: root.stateDir, TurnEndsProcess: true, testOnly: root.cfg.testOnly,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(aside.Close)
+		if res := fileToolCall(t, aside, "write_file", map[string]string{"file_path": target, "content": "aside-edit"}); res.isError {
+			t.Fatalf("aside workspace write: %s", res.output)
+		}
+		if got, err := os.ReadFile(target); err != nil || string(got) != "aside-edit" {
+			t.Fatalf("aside workspace file = %q, %v", got, err)
+		}
+		checkRequest := func(sess *Session, want ...string) string {
+			t.Helper()
+			requests := adapter.Requests()
+			if len(requests) == 0 {
+				t.Fatal("session did not dispatch a request")
+			}
+			req := requests[len(requests)-1]
+			if req.SessionID != sess.ID() {
+				t.Fatalf("captured request for %q, want %q", req.SessionID, sess.ID())
+			}
+			prompt, history := responsesInstructionsAndHistory(responsesPromptBody(t, req, sess.profile.Resolved()))
+			var boundaries []string
+			for _, text := range history {
+				var block envctx.Tracker
+				if block.ReplayBlock(text) && block.State().Last.FileToolWrites != "" {
+					boundaries = append(boundaries, block.State().Last.FileToolWrites)
+				}
+			}
+			if !slices.Equal(boundaries, want) {
+				t.Errorf("file-tool write boundaries in provider history = %q, want %q", boundaries, want)
+			}
+			return prompt
+		}
+		if checkRequest(source) != header.SystemPrompt {
+			t.Fatal("delegate did not send its own saved system prompt")
+		}
+		for _, input := range []string{"aside-input", "another-input"} {
+			sendOneUserInput(t, aside, input)
+			if checkRequest(aside, envctx.FileWritesHost) != header.SystemPrompt {
+				t.Fatal("aside rewrote the delegate's saved system prompt")
+			}
+		}
+		nested := aside.createDelegate(t.Context(), delegateArgs{Task: "nested-input", AgentType: "explorer", ForkContext: true})
+		if nested.Err != nil {
+			t.Fatal(nested.Err)
+		}
+		next := aside.getSub(nested.ChildSessionID)
+		waitSubagentRun(t, next)
+		checkReadOnly(next.sess)
+		checkRequest(next.sess, envctx.FileWritesHost, envctx.FileWritesScratch)
+	})
 }
 
 // TestDegradedWorktreeIsolationDoesNotAddKernelConfinement proves a worktree lane
@@ -449,26 +535,17 @@ func TestRestoreDelegateSandboxFloorDegradesForReadOnlyCeiling(t *testing.T) {
 // newNoBackendDelegateSession builds a delegate-capable root session on a host
 // where no sandbox backend can enforce any mode — the ordinary unprivileged
 // container the regression was measured on.
-func newNoBackendDelegateSession(t *testing.T) *Session {
+func newNoBackendDelegateSession(t *testing.T, adapter llm.ProviderAdapter) *Session {
 	t.Helper()
 	workspace := realTempDirForTest(t)
-	client := llm.NewClient()
-	client.Register(&fakeAdapter{name: "openai"})
-	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workspace), SessionConfig{
+	return newSession(t, withAdapter(adapter), withDir(workspace), withConfig(SessionConfig{
 		StateDir:         t.TempDir(),
 		MaxSubagentDepth: 2,
 		ForceRealIO:      true,
 		testOnly: testConfig{
-			skipGitSnapshot:     true,
-			minimalSystemPrompt: true,
-			sandboxProber:       sandbox.FakeProber{Facts: sbxNoBackendFacts(t.TempDir())},
+			sandboxProber: sandbox.FakeProber{Facts: sbxNoBackendFacts(t.TempDir())},
 		},
-	})
-	if err != nil {
-		t.Fatalf("NewSession: %v", err)
-	}
-	t.Cleanup(sess.Close)
-	return sess
+	}))
 }
 
 // realTempDirForTest returns a fresh temp dir through its canonical path, so a

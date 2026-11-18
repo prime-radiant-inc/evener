@@ -178,6 +178,9 @@ Entering or leaving a worktree reports any change to the installed sandbox's
 writable roots in the next request's environment context. A resumed prompt
 without recorded launch roots gets the current grants once, including when
 spawned commands run with the host's filesystem permissions.
+File-tool write access is reported independently. When an ordinary aside
+resumes a delegate that could write only in scratch, its first request tells
+the model that file tools can edit the workspace under host permissions.
 
 The same rule governs it: every line is read from the resolved policy, quoted
 from a ruling recorded here, or measured at session start — through the

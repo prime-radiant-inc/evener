@@ -1890,6 +1890,7 @@ func (s *Session) initSessionState(runSessionStartHooks bool, savedHeader *trans
 			GitBranch:       new(s.envInfo.GitBranch),
 			ScratchDir:      new(installedScratchDir(env)),
 			WritableRoots:   new(s.workspaceWritableRoots),
+			FileToolWrites:  installedFileToolWrites(env),
 			TurnEndsProcess: new(s.cfg.TurnEndsProcess),
 			HasAskUser:      new(s.canInstructTool(askUserToolName)),
 			HasEndReason:    new(s.resultAcceptsEndReason()),

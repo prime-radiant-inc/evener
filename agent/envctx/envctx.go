@@ -71,6 +71,7 @@ const ReportToParent = "parent agent"
 const scratchDirPrefix = "writable scratch directory: "
 const writableRootsPrefix = "writable roots: "
 const hostWritableRoots = writableRootsPrefix + "host filesystem permissions govern spawned commands"
+const fileToolWritesPrefix = "file-tool writes: "
 const FileWritesHost = "host filesystem permissions"
 const FileWritesScratch = "session scratch only"
 const FileWritesSandbox = "sandbox-granted paths and session scratch"
@@ -136,6 +137,8 @@ func (t *Tracker) ReplayBlock(block string) bool {
 				t.st.Last.WritableRoots = value
 				t.st.WritableRootsUnknown = false
 			}
+		case line == fileToolWritesPrefix+FileWritesHost, line == fileToolWritesPrefix+FileWritesScratch, line == fileToolWritesPrefix+FileWritesSandbox:
+			t.st.Last.FileToolWrites = strings.TrimPrefix(line, fileToolWritesPrefix)
 		case strings.HasPrefix(line, "git branch: "):
 			branch = true
 			value := strings.TrimPrefix(line, "git branch: ")
@@ -234,6 +237,9 @@ func (t *Tracker) RenderDiff(cur Snapshot) string {
 		} else {
 			lines = append(lines, writableRootsPrefix+strconv.Quote(cur.WritableRoots))
 		}
+	}
+	if cur.FileToolWrites != "" && cur.FileToolWrites != prev.FileToolWrites {
+		lines = append(lines, fileToolWritesPrefix+cur.FileToolWrites)
 	}
 	if cur.GitBranch != prev.GitBranch || resolveBranch {
 		branch := cur.GitBranch

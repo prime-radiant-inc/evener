@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"cmp"
+
 	"primeradiant.com/evener/agent/envctx"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
@@ -123,6 +125,22 @@ func installedWritableRoots(env execenv.ExecutionEnvironment) string {
 	return ""
 }
 
+// A read-only delegate's file tools can be confined even when the host
+// cannot enforce a sandbox for spawned commands.
+func installedFileToolWrites(env execenv.ExecutionEnvironment) string {
+	local, ok := env.(*execenv.LocalExecutionEnvironment)
+	if !ok || local == nil {
+		return ""
+	}
+	if local.Sandbox == nil || !local.Sandbox.FileToolConfined() {
+		return envctx.FileWritesHost
+	}
+	if len(local.Sandbox.FileTool.WriteRoots) == 0 {
+		return envctx.FileWritesScratch
+	}
+	return envctx.FileWritesSandbox
+}
+
 // setEnvironmentIdentity supplies only facts that need to supersede the launch
 // prompt or an earlier environment block. The session lock protects the profile.
 func (s *Session) setEnvironmentIdentity(snap *envctx.Snapshot, last envctx.Snapshot) {
@@ -144,6 +162,10 @@ func (s *Session) setEnvironmentIdentity(snap *envctx.Snapshot, last envctx.Snap
 	}
 	snap.ScratchDir = installedScratchDir(s.env)
 	snap.WritableRoots = s.workspaceWritableRoots
+	fileWrites := cmp.Or(installedFileToolWrites(s.env), last.FileToolWrites)
+	if fileWrites != s.promptLaunch.FileToolWrites || last.FileToolWrites != "" {
+		snap.FileToolWrites = fileWrites
+	}
 	cutoff := s.profile.KnowledgeCutoff()
 	// When a saved prompt has no recorded cutoff, publish the current catalog
 	// fact once. Retained model updates then own the cutoff across restores.

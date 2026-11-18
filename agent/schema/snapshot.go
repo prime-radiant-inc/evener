@@ -146,6 +146,7 @@ type PromptLaunchFacts struct {
 	GitBranch       *string `json:"git_branch,omitempty"`
 	ScratchDir      *string `json:"scratch_dir,omitempty"`
 	WritableRoots   *string `json:"writable_roots,omitempty"`
+	FileToolWrites  string  `json:"file_tool_writes,omitempty"` // empty when the boundary is unknown
 	TurnEndsProcess *bool   `json:"turn_ends_process,omitempty"`
 	HasAskUser      *bool   `json:"has_ask_user,omitempty"`
 	HasEndReason    *bool   `json:"has_end_reason,omitempty"`
@@ -158,6 +159,7 @@ func (p PromptLaunchFacts) Clone() PromptLaunchFacts {
 		GitBranch:       appwire.ClonePointer(p.GitBranch),
 		ScratchDir:      appwire.ClonePointer(p.ScratchDir),
 		WritableRoots:   appwire.ClonePointer(p.WritableRoots),
+		FileToolWrites:  p.FileToolWrites,
 		TurnEndsProcess: appwire.ClonePointer(p.TurnEndsProcess),
 		HasAskUser:      appwire.ClonePointer(p.HasAskUser),
 		HasEndReason:    appwire.ClonePointer(p.HasEndReason),
@@ -718,6 +720,7 @@ func writeSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta, newPrompt
 			launch.GitBranch = cmp.Or(previous.PromptLaunch.GitBranch, launch.GitBranch)
 			launch.ScratchDir = cmp.Or(previous.PromptLaunch.ScratchDir, launch.ScratchDir)
 			launch.WritableRoots = cmp.Or(previous.PromptLaunch.WritableRoots, launch.WritableRoots)
+			launch.FileToolWrites = cmp.Or(previous.PromptLaunch.FileToolWrites, launch.FileToolWrites)
 			launch.TurnEndsProcess = cmp.Or(previous.PromptLaunch.TurnEndsProcess, launch.TurnEndsProcess)
 			launch.HasAskUser = cmp.Or(previous.PromptLaunch.HasAskUser, launch.HasAskUser)
 			launch.HasEndReason = cmp.Or(previous.PromptLaunch.HasEndReason, launch.HasEndReason)
