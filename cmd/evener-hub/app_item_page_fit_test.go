@@ -485,12 +485,16 @@ func TestPackTranscriptItemPageOmitsOversizedResolvedAskStamp(t *testing.T) {
 	}
 }
 
-// TestPackManagerThreadReadItemDropsStampAtThePageCap covers the case the
+// TestFitManagerReadUnderCapDropsStampAtThePageCap covers the case the
 // per-item bound cannot see: a reply that is itself almost the whole Manager
 // cap, plus a stamp small enough to pass the per-item check. The page fits the
 // content soft limit and still busts the cap once the envelope is added, so the
-// read must retry with the call list off rather than return nothing at all.
-func TestPackManagerThreadReadItemDropsStampAtThePageCap(t *testing.T) {
+// read must rebuild with the call list off rather than return nothing at all.
+//
+// The measurement is taken on the completed SessionOperationResponse, because
+// that object - not the intermediate ThreadReadResponse - is what
+// managerReadWithinCap enforces.
+func TestFitManagerReadUnderCapDropsStampAtThePageCap(t *testing.T) {
 	const (
 		answerTurn   = "0f1c2b3a-4d5e-4f60-8a91-b2c3d4e5f607"
 		questionTurn = "1a2b3c4d-5e6f-4071-92a3-b4c5d6e7f809"
@@ -508,10 +512,8 @@ func TestPackManagerThreadReadItemDropsStampAtThePageCap(t *testing.T) {
 	if len(stampBytes) > transcriptReadStampLimitBytes {
 		t.Fatalf("fixture stamp = %d bytes, want under the per-item limit %d", len(stampBytes), transcriptReadStampLimitBytes)
 	}
-	// Size the reply so the page exceeds the cap WITH the stamp and fits once
-	// the stamp is dropped. The margin covers the turn and envelope fields
-	// around the text; a smaller reply would fit as built and never exercise
-	// the retry.
+	// Size the reply so the completed response exceeds the cap WITH the stamp
+	// and fits once the stamp is dropped.
 	const envelopeMargin = 4096
 	textBytes := managerReadMaxJSONBytes - len(stampBytes)/2 - envelopeMargin
 	reply := appwire.ThreadItem{
@@ -527,44 +529,203 @@ func TestPackManagerThreadReadItemDropsStampAtThePageCap(t *testing.T) {
 		},
 		Version: 1,
 	}
-	candidates := testWindowTurnCandidates(answerTurn, []appwire.ThreadItem{reply})
-	identity := appitempaging.CursorIdentity{ThreadRef: "local:thread", Incarnation: "near-cap", ProjectionVersion: 1}
-
-	read, err := packManagerThreadReadItemCandidates(transcriptItemCandidateResult{
-		Candidates: appitempaging.TranscriptItemWindow{Candidates: candidates},
-		Identity:   identity,
-		Exhausted:  true,
-	}, func(response appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error) {
-		return response, nil
-	}, 1)
+	cursor := "next-page"
+	response := appwire.SessionOperationResponse{
+		Read: &appwire.ThreadHistoryReadResponse{
+			ThreadReadResponse: appwire.ThreadReadResponse{
+				Thread:      appwire.Thread{ID: "thread", Turns: []appwire.Turn{{ID: answerTurn, Items: []appwire.ThreadItem{reply}}}},
+				OlderCursor: cursor,
+			},
+		},
+	}
+	before, err := json.Marshal(response)
 	if err != nil {
-		t.Fatalf("pack near-cap Manager read: %v", err)
+		t.Fatalf("marshal near-cap response: %v", err)
 	}
-	encoded, err := json.Marshal(read)
+	if len(before) <= managerReadMaxJSONBytes {
+		t.Fatalf("fixture response = %d bytes, want over the Manager cap %d before the fallback", len(before), managerReadMaxJSONBytes)
+	}
+	fit := fitManagerReadUnderCap(response)
+	after, err := json.Marshal(fit)
 	if err != nil {
-		t.Fatalf("marshal packed page: %v", err)
+		t.Fatalf("marshal fitted response: %v", err)
 	}
-	if len(encoded) > managerReadMaxJSONBytes {
-		t.Fatalf("packed page encoded to %d bytes, Manager cap %d", len(encoded), managerReadMaxJSONBytes)
+	if len(after) > managerReadMaxJSONBytes {
+		t.Fatalf("fitted response = %d bytes, Manager cap %d", len(after), managerReadMaxJSONBytes)
 	}
-	items := flattenTestItems(read.Thread.Turns)
+	if err := managerReadWithinCap(fit); err != nil {
+		t.Fatalf("fitted response refused by the cap check: %v", err)
+	}
+	if fit.Read == nil {
+		t.Fatal("fallback dropped the read")
+	}
+	if fit.Read.OlderCursor != cursor {
+		t.Fatalf("fallback dropped the paging cursor: %q", fit.Read.OlderCursor)
+	}
+	items := flattenTestItems(fit.Read.Thread.Turns)
 	if len(items) != 1 {
 		t.Fatalf("served item count = %d, want 1", len(items))
 	}
 	if items[0].Text != reply.Text {
-		t.Fatalf("retry must keep the reply text, got %d of %d bytes", len(items[0].Text), len(reply.Text))
+		t.Fatalf("fallback must keep the reply text, got %d of %d bytes", len(items[0].Text), len(reply.Text))
 	}
 	if items[0].Observation == nil {
-		t.Fatal("retry dropped the whole observation")
+		t.Fatal("fallback dropped the whole observation")
 	}
 	if got := len(items[0].Observation.ResolvedAskCalls); got != 0 {
 		t.Fatalf("served %d stamp calls, want the call list dropped for the cap", got)
 	}
 	if got, want := items[0].Observation.AnswerToTurnIDs, []string{questionTurn}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("retry turn links = %v, want %v", got, want)
+		t.Fatalf("fallback turn links = %v, want %v", got, want)
 	}
 	if got := items[0].Observation.ResolvedAskLegacyCount; got != 1 {
-		t.Fatalf("retry legacy count = %d, want 1", got)
+		t.Fatalf("fallback legacy count = %d, want 1", got)
+	}
+	// The input response keeps its full stamp: fitting a read must not rewrite
+	// the projection every other read serves.
+	if got := len(response.Read.Thread.Turns[0].Items[0].Observation.ResolvedAskCalls); got != len(calls) {
+		t.Fatalf("input response stamp = %d calls, want %d", got, len(calls))
+	}
+}
+
+// TestFitManagerReadUnderCapCoversTheTurnsRoute covers the second Manager read
+// route. A saved-history read and a continuation answer through the turns
+// response, not the thread response, so a fallback that only touched Read left
+// those paths refusing an otherwise serviceable page.
+func TestFitManagerReadUnderCapCoversTheTurnsRoute(t *testing.T) {
+	const turnID = "0f1c2b3a-4d5e-4f60-8a91-b2c3d4e5f607"
+	calls := make([]appwire.PendingAskCall, 80)
+	for i := range calls {
+		calls[i] = appwire.PendingAskCall{TurnID: turnID, CallID: fmt.Sprintf("2b3c4d5e-6f70-4182-a3b4-%012x", i)}
+	}
+	stampBytes, err := json.Marshal(calls)
+	if err != nil {
+		t.Fatalf("marshal stamp: %v", err)
+	}
+	textBytes := managerReadMaxJSONBytes - len(stampBytes)/2 - 4096
+	reply := appwire.ThreadItem{
+		Type: "userMessage",
+		ID:   "answer",
+		Text: strings.Repeat("pasted ", textBytes/7+1)[:textBytes],
+		Observation: &appwire.SessionObservationMetadata{
+			Ref:                    "local:thread",
+			TurnID:                 turnID,
+			AnswerToTurnIDs:        []string{turnID},
+			ResolvedAskCalls:       calls,
+			ResolvedAskLegacyCount: 3,
+		},
+		Version: 1,
+	}
+	next := "continuation"
+	response := appwire.SessionOperationResponse{
+		Turns: &appwire.ThreadHistoryTurnsListResponse{
+			ThreadTurnsListResponse: appwire.ThreadTurnsListResponse{
+				Data:       []appwire.Turn{{ID: turnID, Items: []appwire.ThreadItem{reply}}},
+				NextCursor: next,
+			},
+		},
+	}
+	before, err := json.Marshal(response)
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	if len(before) <= managerReadMaxJSONBytes {
+		t.Fatalf("fixture response = %d bytes, want over the cap %d", len(before), managerReadMaxJSONBytes)
+	}
+	fit := fitManagerReadUnderCap(response)
+	if err := managerReadWithinCap(fit); err != nil {
+		t.Fatalf("fitted turns response refused by the cap check: %v", err)
+	}
+	if fit.Turns == nil || fit.Turns.NextCursor != next {
+		t.Fatalf("fallback dropped the turns cursor: %+v", fit.Turns)
+	}
+	items := flattenTestItems(fit.Turns.Data)
+	if len(items) != 1 {
+		t.Fatalf("served item count = %d, want 1", len(items))
+	}
+	if items[0].Text != reply.Text {
+		t.Fatalf("fallback must keep the reply text, got %d of %d bytes", len(items[0].Text), len(reply.Text))
+	}
+	if got := len(items[0].Observation.ResolvedAskCalls); got != 0 {
+		t.Fatalf("served %d stamp calls, want the call list dropped", got)
+	}
+	if got, want := items[0].Observation.AnswerToTurnIDs, []string{turnID}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("fallback turn links = %v, want %v", got, want)
+	}
+	if got := items[0].Observation.ResolvedAskLegacyCount; got != 3 {
+		t.Fatalf("fallback legacy count = %d, want 3", got)
+	}
+	if got := len(response.Turns.Data[0].Items[0].Observation.ResolvedAskCalls); got != len(calls) {
+		t.Fatalf("input response stamp = %d calls, want %d", got, len(calls))
+	}
+}
+
+// TestPackTranscriptWindowDropsStampBeforeTheReply covers a turn whose budget
+// overflow comes from optional metadata rather than from the reply. A stamp
+// passes the per-item bound and still pushes the turn over its window budget;
+// body trimming cannot shrink it, so eliding bodies first would demand a fetch
+// for the reader's own message while keeping a call list nobody asked for.
+func TestPackTranscriptWindowDropsStampBeforeTheReply(t *testing.T) {
+	const (
+		turnID     = "0f1c2b3a-4d5e-4f60-8a91-b2c3d4e5f607"
+		questionID = "1a2b3c4d-5e6f-4071-92a3-b4c5d6e7f809"
+	)
+	calls := make([]appwire.PendingAskCall, 80)
+	for i := range calls {
+		calls[i] = appwire.PendingAskCall{TurnID: questionID, CallID: fmt.Sprintf("2b3c4d5e-6f70-4182-a3b4-%012x", i)}
+	}
+	stampBytes, err := json.Marshal(calls)
+	if err != nil {
+		t.Fatalf("marshal stamp: %v", err)
+	}
+	if len(stampBytes) > transcriptReadStampLimitBytes {
+		t.Fatalf("fixture stamp = %d bytes, want under the per-item limit %d", len(stampBytes), transcriptReadStampLimitBytes)
+	}
+	// A 12 KiB reply fits a 16 KiB budget; the stamp is what overflows it.
+	text := strings.Repeat("pasted ", 12<<10/7+1)[:12<<10]
+	reply := appwire.ThreadItem{
+		Type: "userMessage",
+		ID:   "answer",
+		Text: text,
+		Observation: &appwire.SessionObservationMetadata{
+			Ref:                    "local:thread",
+			TurnID:                 turnID,
+			AnswerToTurnIDs:        []string{questionID},
+			ResolvedAskCalls:       calls,
+			ResolvedAskLegacyCount: 2,
+		},
+		Version: 1,
+	}
+	options := testWindowPackOptions(appwire.ThreadWindowParams{
+		TurnWindow:        &appwire.ThreadTurnWindow{Turn: turnID},
+		WindowBudgetBytes: 16 << 10,
+		MessageBytes:      16 << 10,
+	})
+	got, err := packThreadTurnsWindowItemCandidates(testWindowCandidateResult(testWindowTurnCandidates(turnID, []appwire.ThreadItem{reply})), nil, options)
+	if err != nil {
+		t.Fatalf("pack turn-window read: %v", err)
+	}
+	items := flattenTestItems(got.Data)
+	if len(items) != 1 {
+		t.Fatalf("served item count = %d, want 1", len(items))
+	}
+	if items[0].Text != text {
+		t.Fatalf("the reply was elided for %d of %d bytes: metadata displaced the body", len(items[0].Text), len(text))
+	}
+	if items[0].Truncated {
+		t.Fatal("the reply was marked truncated though dropping the stamp would have fit it")
+	}
+	if items[0].Observation == nil {
+		t.Fatal("bounded turn dropped the whole observation")
+	}
+	if got := len(items[0].Observation.ResolvedAskCalls); got != 0 {
+		t.Fatalf("served %d stamp calls, want the call list dropped as a unit", got)
+	}
+	if got, want := items[0].Observation.AnswerToTurnIDs, []string{questionID}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("turn links = %v, want %v", got, want)
+	}
+	if got := items[0].Observation.ResolvedAskLegacyCount; got != 2 {
+		t.Fatalf("legacy count = %d, want 2", got)
 	}
 }
 

@@ -585,3 +585,82 @@ func managerReadWithinCap(response appwire.SessionOperationResponse) error {
 	}
 	return nil
 }
+
+// fitManagerReadUnderCap measures the completed Manager response and, when it
+// exceeds the cap while carrying per-call ask evidence, retries with those call
+// lists omitted (#6323).
+//
+// This belongs on the finished response, not inside a packer: a Manager read
+// reaches the cap through the window packer, the saved-history packer and the
+// continuation path, and only the completed response is common to all three.
+// The evidence is optional metadata; the reply, its turn links, its legacy
+// count, its paging cursor and every envelope field are what the reader asked
+// for, so those stay. The daemon's own read has a wider soft limit and is not
+// trimmed here.
+func fitManagerReadUnderCap(response appwire.SessionOperationResponse) appwire.SessionOperationResponse {
+	raw, err := json.Marshal(response)
+	if err != nil || len(raw) <= managerReadMaxJSONBytes {
+		return response
+	}
+	if !responseCarriesResolvedAskCalls(response) {
+		return response
+	}
+	// Mutate copies rather than rebuilding the structs field by field: a
+	// hand-copied envelope silently drops every field a later reader adds.
+	trimmed := response
+	if trimmed.Read != nil {
+		read := *trimmed.Read
+		read.Thread = stripResolvedAskCallsFromThread(read.Thread)
+		trimmed.Read = &read
+	}
+	if trimmed.Turns != nil {
+		turns := *trimmed.Turns
+		turns.Data = stripResolvedAskCallsFromThread(appwire.Thread{Turns: turns.Data}).Turns
+		trimmed.Turns = &turns
+	}
+	return trimmed
+}
+
+// stripResolvedAskCallsFromThread returns the thread with every call list
+// omitted, leaving each item's other fields — text, turn links, legacy count —
+// untouched. The turns and items are copied so the caller's canonical items
+// keep their full stamps.
+func stripResolvedAskCallsFromThread(thread appwire.Thread) appwire.Thread {
+	turns := make([]appwire.Turn, len(thread.Turns))
+	copy(turns, thread.Turns)
+	for i := range turns {
+		if len(turns[i].Items) == 0 {
+			continue
+		}
+		items := make([]appwire.ThreadItem, len(turns[i].Items))
+		copy(items, turns[i].Items)
+		for j := range items {
+			items[j] = boundTranscriptItemStamp(items[j], 0)
+		}
+		turns[i].Items = items
+	}
+	thread.Turns = turns
+	return thread
+}
+
+func responseCarriesResolvedAskCalls(response appwire.SessionOperationResponse) bool {
+	if response.Read != nil {
+		for _, turn := range response.Read.Thread.Turns {
+			for _, item := range turn.Items {
+				if item.Observation != nil && len(item.Observation.ResolvedAskCalls) > 0 {
+					return true
+				}
+			}
+		}
+	}
+	if response.Turns != nil {
+		for _, turn := range response.Turns.Data {
+			for _, item := range turn.Items {
+				if item.Observation != nil && len(item.Observation.ResolvedAskCalls) > 0 {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}

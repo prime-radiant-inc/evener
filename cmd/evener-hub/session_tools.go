@@ -653,6 +653,12 @@ func (o *sessionOperations) Invoke(ctx context.Context, caller appwire.ManagerVi
 		response.Stop = &stop
 	}
 	if request.Discover != nil || request.Read != nil || request.Turns != nil || request.Fetch != nil || request.Activity != nil || request.Tasks != nil || request.Job != nil || request.JobOutput != nil || request.Models != nil {
+		// A per-item stamp bound cannot enforce a per-response cap, and the
+		// response assembled above can carry an oversized call list on any of
+		// the Manager read paths (initial read, continuation, saved session).
+		// Rebuild it once with the call lists off so the Manager gets a page
+		// rather than a refusal; the wider node read keeps the full stamp.
+		response = fitManagerReadUnderCap(response)
 		if err := managerReadWithinCap(response); err != nil {
 			return appwire.SessionOperationResponse{}, err
 		}
@@ -1519,7 +1525,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 						configureTranscriptWindowResponseFit(&options, transcriptTurnsListParamsFromRead(params))
 						return packThreadReadWindowItemCandidates(candidates, enrich, options)
 					}
-					return packManagerThreadReadItemCandidates(candidates, enrich, itemLimit)
+					return packThreadReadItemCandidates(candidates, enrich, itemLimit)
 				}
 				packed, packErr := pack(candidates, func(response appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error) {
 					response.Thread = threadWithPackedTurns(resp.Thread, response.Thread.Turns)
