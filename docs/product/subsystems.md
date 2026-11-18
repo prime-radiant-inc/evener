@@ -327,6 +327,10 @@ screenshot or report a tool named by path opens the same way on every client.
 
 ## Capabilities and configuration
 
+**S15** captures the [issued Chat model](../llm-providers.md#chat-model-provenance)
+from the answering request. **S10** preserves it on the assistant turn alongside
+the model or alias requested by the attempt that answered.
+
 Manager is an immutable session start property, not another management
 subsystem. Anyone authorized to start a session may pass `manager: true` to
 `thread/start`. S08–S09 persist the bit in session metadata and preserve it

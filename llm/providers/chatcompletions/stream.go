@@ -164,6 +164,7 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 					}
 				}
 				llm.StampEndpointURL(finalResp, r.EndpointURL, r.Material)
+				finalResp.RequestWireModel = r.RequestWireModel
 				// The provider may keep the body open after [DONE]; Finish stops
 				// the parser before its next read.
 				runner.Finish(*finalResp)

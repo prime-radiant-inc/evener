@@ -31,8 +31,7 @@ func Stream(parentCtx context.Context, c *Call, decode StreamDecoder) (llm.Strea
 		cancelAll()
 		return nil, err
 	}
-	client := llm.ClientWithAdapterTimeout(c.httpClient(), c.Req.AdapterTimeout)
-	resp, attempt, err := transport.DoWithAPIAttempts(parentCtx, client, p.Request, c.metaBuilder(p))
+	resp, attempt, err := p.exchange(parentCtx, c)
 	if err != nil {
 		returned := llm.WrapContextError(c.Res.Instance, err)
 		attempt.Complete(llm.APIAttemptResult{Err: returned}, llm.APITimeoutSourceForTransport(parentCtx, sctx, err), nil, err)
@@ -62,6 +61,7 @@ func Stream(parentCtx context.Context, c *Call, decode StreamDecoder) (llm.Strea
 	s := llm.NewChanStream(cancelAll)
 	s.Send(llm.StreamEvent{Type: llm.StreamEventStreamStart})
 	r := &Result{StatusCode: resp.StatusCode, Header: resp.Header, EndpointURL: llm.FinalResponseEndpointURL(resp, c.URL), Material: p.material, PrunedFields: p.PrunedFields}
+	r.RequestWireModel = p.requestWireModel(c, resp.Request)
 	go decode(sctx, cancelAll, resp, s, r, attempt)
 	return s, nil
 }

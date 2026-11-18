@@ -2450,6 +2450,7 @@ func TestSession_SingleAttemptMetadataRecorded(t *testing.T) {
 		resp.ID = "resp_1"
 		resp.Provider = "openai"
 		resp.Model = req.Model
+		resp.RequestWireModel = "issued-model"
 		resp.Raw = map[string]any{"endpoint_url": "https://api.openai.com/v1/responses"}
 		return resp
 	}))
@@ -2488,6 +2489,7 @@ func TestSession_SingleAttemptMetadataRecorded(t *testing.T) {
 	if assistant.ResponseProvider != "openai" ||
 		assistant.ResponseModel != "gpt-5.2" ||
 		assistant.ResponseRequestModel != "gpt-5.2" ||
+		assistant.ResponseWireModel != "issued-model" ||
 		assistant.ResponseEndpoint != "https://api.openai.com/v1/responses" {
 		t.Fatalf("assistant response metadata = %+v", assistant)
 	}

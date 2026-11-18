@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
+	"strings"
 
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providers/internal/transport"
@@ -21,11 +23,45 @@ type Result struct {
 	// a stream, whose body the decoder reads live.
 	Body []byte
 	// Raw is Body decoded as a JSON object, nil when it is not one.
-	Raw map[string]any
+	Raw              map[string]any
+	RequestWireModel string
 	// EndpointURL is the final URL after redirects, for llm.StampEndpointURL.
 	EndpointURL  string
 	Material     llm.APILogCredentialMaterial
 	PrunedFields []string
+}
+
+func (p *Prepared) exchange(ctx context.Context, c *Call) (*http.Response, *transport.APIAttemptCapture, error) {
+	client := llm.ClientWithAdapterTimeout(c.httpClient(p), c.Req.AdapterTimeout)
+	return transport.DoWithAPIAttempts(ctx, client, p.Request, c.metaBuilder(p))
+}
+
+func (p *Prepared) requestWireModel(c *Call, sent *http.Request) string {
+	if c.ModelEndpoint == "" || sent == nil {
+		return ""
+	}
+	if sent.Body != nil && sent.Body != http.NoBody {
+		// A custom redirect hook can replace or consume Body independently of GetBody.
+		if p.customRedirect {
+			return ""
+		}
+		var body map[string]json.RawMessage
+		var model string
+		if json.Unmarshal(p.Body, &body) == nil && body["model"] != nil {
+			if json.Unmarshal(body["model"], &model) == nil {
+				return llm.SafeRequestWireModel(sent, model, p.material)
+			}
+			return ""
+		}
+	}
+	templatePath, _, _ := strings.Cut(c.ModelEndpoint, "?")
+	if sent.URL != nil && strings.Contains(templatePath, "{model}") {
+		original, err := url.Parse(c.URL)
+		if err == nil && sent.URL.Scheme == original.Scheme && sent.URL.Host == original.Host && sent.URL.EscapedPath() == original.EscapedPath() {
+			return llm.SafeRequestWireModel(sent, c.Res.WireID, p.material)
+		}
+	}
+	return ""
 }
 
 // Do performs a non-streaming exchange. finish decodes a 2xx Result into
@@ -64,8 +100,7 @@ func Do(parentCtx context.Context, c *Call, finish func(r *Result) (*llm.Respons
 			Err:          attemptErr,
 		}, timeoutSource, decodeErr, transportErr)
 	}()
-	client := llm.ClientWithAdapterTimeout(c.httpClient(), c.Req.AdapterTimeout)
-	resp, att, doErr := transport.DoWithAPIAttempts(parentCtx, client, p.Request, c.metaBuilder(p))
+	resp, att, doErr := p.exchange(parentCtx, c)
 	attempt = att
 	if doErr != nil {
 		transportErr = doErr
@@ -95,6 +130,7 @@ func Do(parentCtx context.Context, c *Call, finish func(r *Result) (*llm.Respons
 		return nil
 	}
 	r := &Result{StatusCode: resp.StatusCode, Header: resp.Header, Body: rawBytes, Raw: raw, EndpointURL: llm.FinalResponseEndpointURL(resp, c.URL), Material: p.material, PrunedFields: p.PrunedFields}
+	r.RequestWireModel = p.requestWireModel(c, resp.Request)
 	response, err = finish(r)
 	if err != nil {
 		response = nil

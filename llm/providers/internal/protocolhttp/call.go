@@ -52,6 +52,8 @@ type Call struct {
 	// preparer, immediately before the final body is marshaled. Its context
 	// carries the active attempt's deadline and cancellation.
 	FinalizeBody func(ctx context.Context, body map[string]any) error
+	// ModelEndpoint opts into recording the model from the body or endpoint template.
+	ModelEndpoint string
 }
 
 // Prepared is a Call after prune → constants → auth → prepare.
@@ -60,6 +62,8 @@ type Prepared struct {
 	Body         []byte
 	PrunedFields []string
 	material     llm.APILogCredentialMaterial
+
+	customRedirect bool
 }
 
 // Prepare assembles the wire request without sending it (spec §8.2 steps
@@ -170,7 +174,7 @@ func credentialMaterial(res registry.Resolved, httpReq *http.Request) llm.APILog
 	return llm.NewAPILogCredentialMaterial(names, nil, values...)
 }
 
-func (c *Call) httpClient() *http.Client {
+func (c *Call) httpClient(p *Prepared) *http.Client {
 	var client *http.Client
 	if c.Client != nil {
 		client = c.Client
@@ -188,6 +192,7 @@ func (c *Call) httpClient() *http.Client {
 	}
 	clientCopy.CheckRedirect = func(req *http.Request, via []*http.Request) error {
 		if checkRedirect != nil {
+			p.customRedirect = true
 			if err := checkRedirect(req, via); err != nil {
 				return err
 			}

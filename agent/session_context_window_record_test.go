@@ -196,6 +196,7 @@ func TestContextStatus_DescribesTheFallbackThatServedTheRound(t *testing.T) {
 				return llm.Response{}, llm.ErrorFromHTTPStatus("anthropic", 403, "primary denied", nil, nil)
 			}
 			resp := agenttest.FinalResponse("fallback answered")
+			resp.RequestWireModel = "fallback-wire"
 			resp.Usage = llm.Usage{InputTokens: 50_000}
 			return resp, nil
 		},
@@ -231,4 +232,21 @@ func TestContextStatus_DescribesTheFallbackThatServedTheRound(t *testing.T) {
 	if metrics.Used < 50_000 || pressure != float64(metrics.Used)/float64(metrics.Window) {
 		t.Fatalf("used %d and pressure %v must both be measured against the fallback window %d", metrics.Used, pressure, metrics.Window)
 	}
+	meta := sess.Meta()
+	sess.Close()
+	restored, err := RestoreSessionFromMetaWithConfig(c, primary, execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer restored.Close()
+	for i := len(restored.history) - 1; i >= 0; i-- {
+		turn := restored.history[i]
+		if turn.Kind == schema.TurnAssistant {
+			if turn.ResponseWireModel != "fallback-wire" || turn.ResponseRequestModel != "claude-opus-4-5" {
+				t.Fatalf("fallback wire/request model = %q/%q", turn.ResponseWireModel, turn.ResponseRequestModel)
+			}
+			return
+		}
+	}
+	t.Fatal("no assistant turn")
 }

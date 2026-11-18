@@ -324,6 +324,14 @@ func containsCredentialEvidence(text string, material APILogCredentialMaterial) 
 	return containsCredentialDurableStringEvidenceParts(text, credentialEvidencePatterns(material), material.secretNames)
 }
 
+// SafeRequestWireModel returns an issued model only when safe to persist.
+func SafeRequestWireModel(req *http.Request, model string, material APILogCredentialMaterial) string {
+	if model == "" || containsCredentialEvidence(model, APILogCredentialMaterialForRequest(req, material)) {
+		return ""
+	}
+	return model
+}
+
 func containsCredentialHeaderValueEvidence(value string, patterns, secretNames []string) bool {
 	if containsCredentialEvidenceParts(value, patterns, secretNames) {
 		return true

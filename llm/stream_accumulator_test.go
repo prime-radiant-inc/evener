@@ -72,6 +72,7 @@ func TestStreamAccumulator_FinishWithMetadataOnlyResponse_PreservesAccumulatedCo
 		Model:    "gpt-5.4",
 		Raw:      map[string]any{"id": "resp_1"},
 	}
+	final.RequestWireModel = "issued-model"
 	acc.Process(StreamEvent{Type: StreamEventFinish, Response: &final})
 
 	got := acc.Response()
@@ -83,6 +84,9 @@ func TestStreamAccumulator_FinishWithMetadataOnlyResponse_PreservesAccumulatedCo
 	}
 	if got.Provider != "openai" || got.Model != "gpt-5.4" {
 		t.Fatalf("provider/model = %q/%q", got.Provider, got.Model)
+	}
+	if got.RequestWireModel != final.RequestWireModel {
+		t.Fatalf("wire model = %q, want %q", got.RequestWireModel, final.RequestWireModel)
 	}
 	if got.Text() != "Hello" {
 		t.Fatalf("text = %q, want Hello", got.Text())

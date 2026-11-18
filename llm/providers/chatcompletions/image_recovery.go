@@ -52,7 +52,7 @@ func runImageRecovery[T any](ctx context.Context, p *Protocol, req llm.Request, 
 		if stream {
 			operation, endpoint = "chat.completions(stream)", res.Transport.StreamEndpoint
 		}
-		call := p.completionCall(operation, http.MethodPost, protocolhttp.URL(res, endpoint), body, req, res)
+		call := p.completionCall(operation, http.MethodPost, endpoint, body, req, res)
 		finalize := call.FinalizeBody
 		call.FinalizeBody = func(attemptCtx context.Context, body map[string]any) error {
 			if err := finalize(attemptCtx, body); err != nil {

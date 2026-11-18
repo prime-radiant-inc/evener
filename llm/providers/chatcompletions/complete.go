@@ -28,8 +28,9 @@ func (p *Protocol) call(operation, method, url string, body map[string]any, req 
 	return &protocolhttp.Call{Operation: operation, EndpointFamily: endpointFamily, Method: method, URL: url, Body: body, Headers: headers, Req: req, Res: res, Client: p.Client}
 }
 
-func (p *Protocol) completionCall(operation, method, url string, body map[string]any, req llm.Request, res registry.Resolved) *protocolhttp.Call {
-	call := p.call(operation, method, url, body, req, res)
+func (p *Protocol) completionCall(operation, method, endpoint string, body map[string]any, req llm.Request, res registry.Resolved) *protocolhttp.Call {
+	call := p.call(operation, method, protocolhttp.URL(res, endpoint), body, req, res)
+	call.ModelEndpoint = endpoint
 	call.FinalizeBody = func(_ context.Context, finalBody map[string]any) error {
 		reconcilePreparedOutput(finalBody, req, res)
 		return nil
@@ -45,6 +46,7 @@ func (p *Protocol) Complete(ctx context.Context, req llm.Request, res registry.R
 	return runImageRecovery(ctx, p, req, res, false, func(call *protocolhttp.Call, recovery *imageRecovery) (llm.Response, error) {
 		return protocolhttp.Complete(ctx, call, func(r *protocolhttp.Result) (llm.Response, error) {
 			resp, err := fromChatCompletionResponse(r.Raw, res.Caps.FinishReasonMap, r.Body)
+			resp.RequestWireModel = r.RequestWireModel
 			resp.Warnings = append(resp.Warnings, recovery.warnings...)
 			return resp, err
 		})

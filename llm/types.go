@@ -678,6 +678,8 @@ type Response struct {
 	Raw       map[string]any `json:"raw,omitempty"`
 	Warnings  []Warning      `json:"warnings,omitempty"`
 	RateLimit *RateLimitInfo `json:"rate_limit,omitempty"`
+	// RequestWireModel is the model sent by the request that produced this response.
+	RequestWireModel string `json:"-"`
 }
 
 // Text returns the concatenated text content of the response message.

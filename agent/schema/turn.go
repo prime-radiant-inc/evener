@@ -521,6 +521,8 @@ type Turn struct {
 	ResponseRequestFingerprint      string `json:"response_request_fingerprint,omitempty"`
 	ResponseRequestModel            string `json:"response_request_model,omitempty"`
 	ResponseStorageScopeFingerprint string `json:"response_storage_scope_fingerprint,omitempty"`
+	// ResponseWireModel identifies the issued model when transport evidence is available.
+	ResponseWireModel string `json:"response_wire_model,omitempty"`
 	// RoundID names the model round an ASSISTANT entry (including a salvage
 	// entry) records: every request from the round's first attempt up to the
 	// first recorded ASSISTANT entry shares it.

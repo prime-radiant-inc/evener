@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/internal/protocolhttp"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -85,6 +86,87 @@ func TestCompleteDecodesTextToolCallsAndUsage(t *testing.T) {
 	}
 	if got.header.Get("session_id") != "s1" || got.header.Get("x-client-request-id") != "s1" || got.header.Get("x-session-affinity") != "s1" {
 		t.Fatalf("affinity headers: %v", got.header)
+	}
+}
+
+func TestRecordsFinalWireModel(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, location, rewrite, sent, want string
+		status                              int
+		urlModel, stream, redirectHeader    bool
+	}{
+		{name: "raw string", sent: "body-wire", want: "body-wire"},
+		{name: "ordinary replay", location: "/answer", status: 307, sent: "body-wire", want: "body-wire"},
+		{name: "dropped body", location: "/answer", status: 303},
+		{name: "rewritten body", location: "/answer", status: 307, rewrite: "other-wire", sent: "other-wire"},
+		{name: "query-only redirect", location: "?route=1", status: 303, urlModel: true, want: "m-wire"},
+		{name: "redirect credential", location: "/answer?api_key=body-wire", status: 307, sent: "body-wire"},
+		{name: "redirect header credential", location: "?route=1", status: 303, urlModel: true, redirectHeader: true},
+		{name: "path changed", location: "/answer", status: 303, urlModel: true},
+		{name: "stream raw string", stream: true, sent: "body-wire", want: "body-wire"},
+		{name: "stream rewritten body", stream: true, location: "/answer", status: 307, rewrite: "other-wire", sent: "other-wire"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := liveRes(&httptest.Server{URL: "https://example.invalid"}, nil)
+			if tc.urlModel {
+				res.Transport.Endpoint = "/models/{model}"
+			} else if tc.name == "raw string" || tc.stream {
+				res.Transport.Body = map[string]any{"model": json.RawMessage(`"body-wire"`)}
+			} else {
+				res.Transport.Body = map[string]any{"model": "body-wire"}
+			}
+			response := chatJSON
+			if tc.stream {
+				response = chatSSE
+			}
+			var got string
+			client := &http.Client{Transport: listingRoundTripper(func(r *http.Request) (*http.Response, error) {
+				if r.Body != nil {
+					defer r.Body.Close()
+				}
+				if r.Response == nil && tc.status != 0 {
+					return &http.Response{Request: r, StatusCode: tc.status, Header: http.Header{"Location": {tc.location}}}, nil
+				}
+				if r.Body != nil {
+					var body struct{ Model string }
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						return nil, err
+					}
+					got = body.Model
+				}
+				return &http.Response{Request: r, StatusCode: 200, Body: io.NopCloser(strings.NewReader(response))}, nil
+			})}
+			if tc.rewrite != "" {
+				client.CheckRedirect = func(r *http.Request, _ []*http.Request) error {
+					r.Body = io.NopCloser(strings.NewReader(`{"model":"` + tc.rewrite + `"}`))
+					r.ContentLength = 0
+					return nil
+				}
+			}
+			if tc.redirectHeader {
+				client.CheckRedirect = func(r *http.Request, _ []*http.Request) error {
+					r.Header.Set("X-API-Key", "m-wire")
+					return nil
+				}
+			}
+			p, ctx := &Protocol{Client: client}, context.Background()
+			var resp llm.Response
+			var err error
+			if tc.stream {
+				resp, err = protocolhttp.CompleteViaStream(ctx, res.Instance, func(ctx context.Context) (llm.Stream, error) {
+					return p.Stream(ctx, userReq("hi"), res)
+				})
+			} else {
+				resp, err = p.Complete(ctx, userReq("hi"), res)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != tc.sent || resp.RequestWireModel != tc.want || resp.Model != "m-wire" {
+				t.Fatalf("sent/stamped/reported = %q/%q/%q, want %q/%q/%q", got, resp.RequestWireModel, resp.Model, tc.sent, tc.want, "m-wire")
+			}
+		})
 	}
 }
 

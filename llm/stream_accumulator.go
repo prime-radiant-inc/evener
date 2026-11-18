@@ -294,6 +294,7 @@ func copyResponseMetadata(dst *Response, src *Response) {
 	if src.Model != "" {
 		dst.Model = src.Model
 	}
+	dst.RequestWireModel = src.RequestWireModel
 	if src.Provider != "" {
 		dst.Provider = src.Provider
 	}

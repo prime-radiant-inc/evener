@@ -53,6 +53,7 @@ func delegateContextEntries(parent []transcript.Entry) []transcript.Entry {
 			ResponseProvider:     t.ResponseProvider,
 			ResponseModel:        t.ResponseModel,
 			ResponseRequestModel: t.ResponseRequestModel,
+			ResponseWireModel:    t.ResponseWireModel,
 			ResponseProtocol:     t.ResponseProtocol,
 		}
 		position[uint64(i)] = len(out)

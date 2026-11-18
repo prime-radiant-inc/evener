@@ -80,6 +80,16 @@ The registry supplies the instance, model facts, protocol, and surface. The prof
 `resp.Provider` and error labels are stamped back to the instance name
 centrally, in `llm.Client`, not by each protocol package.
 
+### Chat model provenance
+
+The assistant turn records the answering attempt's requested model or alias
+(`response_request_model`) and verified wire model (`response_wire_model`).
+Wire evidence comes from the serialized body or the final model path. The
+field is absent when evidence is unavailable or contains credentials. A
+caller-controlled redirect with a body leaves the wire model unknown.
+`response_model` uses the provider report when present and falls back to the
+requested model when the stream omits it.
+
 ### Responses function-call identity
 
 The Responses adapter settles repeated records in the provider's final output
