@@ -84,14 +84,22 @@ func (r RunRef) String() string {
 func dropOutcome(ctx context.Context, opts Options, st Status, c Client, now func() time.Time) (Outcome, *ExitError) {
 	ref := mergeGroupRef(ctx, opts, st.Base, c)
 	event, err := c.QueueDrop(ctx, opts.Repo, opts.PR)
+	// The context is checked whether or not the read returned an error, and it is
+	// checked before the error is interpreted. A ctx whose deadline expired or
+	// whose cancellation arrived while a descendant held the output pipe can still
+	// hand back a complete, valid answer -- the drain bound lets the call return
+	// the bytes it received. Deciding a drop from that answer prints
+	// `MERGEQ dropped` with re-enqueue advice for a PR the operator cancelled, and
+	// exits 1, while the launcher reports 130 for the same invocation. The
+	// distinction between "the operator stopped asking" and "GitHub said this" is
+	// the whole point of this branch, so it is asked first and on both paths.
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return Outcome{}, &ExitError{Kind: Interrupted, Detail: ctxErr.Error()}
+	}
 	if err != nil {
-		// An interrupt during this read is not a verdict: reporting it as an
-		// unreadable reason would print a drop with re-enqueue advice for a
-		// PR the operator stopped asking about, and exit 1. The context is
-		// what separates the two.
-		if ctxErr := ctx.Err(); ctxErr != nil {
-			return Outcome{}, &ExitError{Kind: Interrupted, Detail: ctxErr.Error()}
-		}
+		// Not an interrupt, so the reason genuinely could not be read. Reporting it
+		// as an unreadable reason is still a drop, and the run it names is what the
+		// operator needs.
 		return Outcome{
 			Kind:      Dropped,
 			PRState:   st.State,

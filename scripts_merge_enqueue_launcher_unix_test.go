@@ -2082,7 +2082,13 @@ scratch_path_is_trusted "$2"`
 		replaceable := func(path string) error {
 			return runLauncherFunc(t, validatorFuncs, `dir_entry_is_replaceable "$2"`, path)
 		}
-		root := resolvePath(t, t.TempDir())
+		// Under a base whose whole ancestry the launcher accepts, not under ambient
+		// t.TempDir(). This case resolves a directory and then chmods the RESOLVED
+		// path: when an ancestor under TMPDIR is replaceable, the resolution can
+		// lead outside the fixture, and requirePrivateChain would then chmod a
+		// directory this test does not own. Establishing the base first means the
+		// resolved path and the created path are the same thing by construction.
+		root := fixtureScratchBase(t)
 		requirePrivateChain(t, root, root)
 		leaf := resolvePathAfterCreate(t, filepath.Join(root, "leaf"))
 		requirePrivateChain(t, root, leaf)
@@ -2337,6 +2343,25 @@ scratch_path_is_trusted "$2"`
 				name: "a security grant is a replaceable directory",
 				acl:  " 0: user:nobody allow list,writesecurity\n",
 				want: true,
+			},
+			{
+				// Darwin moves the action along by one field for an inherited entry.
+				// A parser that insists on `allow` in field 3 skips the line and
+				// reports no grant at all -- an inherited mutation grant on a 0755
+				// directory with a trusted owner, which is exactly the shape this
+				// predicate exists to refuse.
+				name: "an inherited mutation grant is read, not skipped",
+				acl:  " 0: user:nobody inherited allow read,write\n",
+				want: true,
+			},
+			{
+				// The other direction, so the fix is not a blanket rejection of
+				// `inherited`: an inherited read-only grant is harmless and most
+				// ACLs on a Mac carry one. Refusing it stops the launcher on an
+				// ordinary machine.
+				name: "an inherited read-only grant is not a replaceable directory",
+				acl:  " 0: group:writers inherited allow list,search\n",
+				want: false,
 			},
 			{
 				name: "a named user granted add_file",

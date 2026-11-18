@@ -61,20 +61,24 @@ func fixtureExecDir(t *testing.T) string {
 	return ""
 }
 
-// fixtureBaseCandidates is the bases to try, in the launcher's own order plus
+// fixtureBaseCandidates is the bases to try: the launcher's own order first, then
 // the root every Unix has.
 //
-// /tmp is named explicitly because the other candidates all descend from the
-// runner's environment. Under umask 0002 the module runner makes group-writable
-// components in TMPDIR, and a headless run with no XDG_RUNTIME_DIR and a fresh
-// HOME that has no .cache leaves nothing else -- so the fixtures would fail to
-// start on a machine that has an executable, root-owned, sticky /tmp the whole
-// time. The exec probe in execDirUnder is what decides whether it is usable.
+// /tmp is last and named explicitly because the other candidates all descend
+// from the runner's environment, and that environment can offer nothing. Under
+// umask 0002 the module runner makes group-writable components in TMPDIR, which
+// the ancestor rule refuses; a headless run has no XDG_RUNTIME_DIR; and the
+// module gate hands the test a private HOME whose cache lives in a separate
+// XDG_CACHE_HOME, so $HOME/.cache does not exist. Without /tmp those runs failed
+// to start a fixture on a machine with an executable, root-owned, sticky /tmp the
+// whole time. It goes after the environment's own roots so a host that offers a
+// usable one still uses it; the exec probe in execDirUnder decides usability.
 func fixtureBaseCandidates() []string {
-	candidates := []string{os.TempDir(), "/tmp"}
+	candidates := []string{os.TempDir()}
 	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
 		candidates = append(candidates, dir)
 	}
+	candidates = append(candidates, "/tmp")
 	if home, err := os.UserHomeDir(); err == nil {
 		candidates = append(candidates, filepath.Join(home, ".cache"))
 	}
@@ -126,17 +130,23 @@ func execDirUnder(t *testing.T, base string) (dir, reason string) {
 	}
 	// MkdirTemp is 0700 whatever the runner's umask is, which keeps the fixture's
 	// own entry private once the chain above it is trusted.
-	dir, err = os.MkdirTemp(resolved, "mergeq-fixture.")
+	//
+	// The created path is held in its own variable, not in the named result. A
+	// `return "", reason` below clears the result, and a cleanup closing over that
+	// result would then RemoveAll("") and leave the directory and its probe behind
+	// on every rejected candidate -- a leak in the code that exists to refuse
+	// candidates, which is the one place it is least likely to be noticed.
+	created, err := os.MkdirTemp(resolved, "mergeq-fixture.")
 	if err != nil {
 		return "", fmt.Sprintf("cannot create a directory in it (%v)", err)
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	probe := filepath.Join(dir, "exec-probe.sh")
+	t.Cleanup(func() { _ = os.RemoveAll(created) })
+	probe := filepath.Join(created, "exec-probe.sh")
 	writeExecutable(t, probe, "#!/usr/bin/env bash\nexit 0\n")
 	if err := exec.Command(probe).Run(); err != nil {
 		return "", fmt.Sprintf("the filesystem cannot execute a program there (%v)", err)
 	}
-	return dir, ""
+	return created, ""
 }
 
 // replaceableAncestor names the first component of path that another local user
@@ -828,16 +838,16 @@ func TestMergEQFixtureBaseIsTrustedAndExecutable(t *testing.T) {
 		// Not parallel: it changes the process environment the candidate list
 		// reads, and t.Setenv panics in a parallel test.
 		//
-		// The fallback is established BEFORE TMPDIR is invalidated. Overriding
-		// TMPDIR leaves the case depending on whatever XDG_RUNTIME_DIR and HOME the
-		// runner happens to supply, and the default module runner supplies neither a
-		// runtime dir nor a HOME with a .cache: the case would then fail on a
-		// machine whose original TMPDIR was perfectly usable, which says nothing
-		// about the rule it exists to test. Naming a fixture-owned base makes the
-		// case independent of the runner; which candidate is actually selected is
-		// still the candidate list's business, so the assertion below is about the
-		// property (a replaceable TMPDIR is passed over, and what replaces it is
-		// trusted) rather than about this one base.
+		// The fallback is established BEFORE TMPDIR is invalidated, and it is the
+		// runtime directory rather than only a validated base. Overriding TMPDIR
+		// otherwise leaves the case depending on whatever XDG_RUNTIME_DIR and HOME
+		// the runner supplies, and the module gate supplies neither a runtime dir
+		// nor a HOME with a .cache -- its cache lives in XDG_CACHE_HOME -- so
+		// fixtureExecDir would fail before reaching the assertion. That is the
+		// vacuous shape: a test that cannot reach its own check proves nothing.
+		// Owning the runtime dir puts a usable candidate immediately after the
+		// replaceable TMPDIR, so the assertion below is about the fallback and not
+		// about which roots this host happens to have.
 		fallback, reason := execDirUnder(t, fixtureExecDir(t))
 		if reason != "" {
 			t.Fatalf("could not establish the fallback this case needs: %s", reason)
@@ -859,6 +869,9 @@ func TestMergEQFixtureBaseIsTrustedAndExecutable(t *testing.T) {
 		got := fixtureExecDir(t)
 		if strings.HasPrefix(got, dir+string(os.PathSeparator)) {
 			t.Fatalf("fixtureExecDir returned %s under a replaceable TMPDIR: the fixtures would execute a program from a path another user can swap", got)
+		}
+		if !strings.HasPrefix(got, fallback+string(os.PathSeparator)) {
+			t.Fatalf("fixtureExecDir returned %s, want a directory under the fixture-owned runtime dir %s: that candidate is named before every other and is valid, so a pass over it means the candidate order or its validation is wrong", got, fallback)
 		}
 		if reason := replaceableAncestor(t, got); reason != "" {
 			t.Fatalf("fixtureExecDir fell back to %s, which the launcher would not build under (%s): passing over the replaceable TMPDIR is only a fix if what replaces it is trusted", got, reason)

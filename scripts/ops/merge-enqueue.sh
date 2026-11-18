@@ -304,13 +304,28 @@ acl_ls_e_grants_foreign_write() {
     # their own attributes, cannot widen the ACL, and stay out for the
     # same reason the read-only ones do.
     #
+    # The action is not always in $3. Darwin renders an inherited entry as
+    # ` 0: user:nobody inherited allow read,write`, with the marker between the
+    # principal and the action, so a parser that insists on $3 == "allow" skips
+    # the entry entirely and reports an inherited grant as no grant at all. This
+    # is a mutation grant on a 0755 directory with a trusted owner, which is
+    # precisely the shape this predicate exists to refuse: the inherited
+    # permission is still effective, and its holder can still replace entries.
+    # The marker is therefore consumed, not skipped -- the action and the
+    # permission list are read from whichever fields they actually landed in, so
+    # an inherited `read` stays accepted while an inherited `write` does not.
+    #
     # $2 requires a name after the colon, which excludes `user::` and `group::` --
     # the owner and owning group, whose bits the caller has already read from the
     # mode. Each permission is matched as a whole comma-separated item for the
     # same reason as the field split: a permission list is not prose, and a group
     # called `appendage` is not a grant.
-    $2 ~ /^(user|group):[^:]/ && $3 == "allow" &&
-      $4 ~ /(^|,)(writesecurity|write|add_file|add_subdirectory|delete|append)(,|$)/ { found = 1 }
+    $2 ~ /^(user|group):[^:]/ {
+      action = ($3 == "inherited") ? $4 : $3
+      perms  = ($3 == "inherited") ? $5 : $4
+      if (action == "allow" &&
+          perms ~ /(^|,)(writesecurity|write|add_file|add_subdirectory|delete|append)(,|$)/) { found = 1 }
+    }
     END { exit found ? 0 : 1 }
   '
 }
