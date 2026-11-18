@@ -1238,11 +1238,37 @@ func (s *Store) noteContentBeforeStoreWriteLocked(info os.FileInfo, err error) e
 	// smaller number, and only the file can say which one happened. A length
 	// the file contradicts clears the claim, so a genuine truncation still
 	// moves the generation below.
-	if s.laggingAppendEnd > size {
-		if onDisk, haveLength := s.journalRealSizeLocked(); haveLength && onDisk >= s.laggingAppendEnd {
-			size = s.laggingAppendEnd
-		} else {
+	//
+	// The recorded end is only ever used to explain a length that TRAILS it, and
+	// only when the file's own length agrees with the record exactly. A file that
+	// reports LESS than the recorded end is the lag this exists for: the bytes
+	// are there, the attributes have not caught up. A file whose real length is
+	// GREATER than the recorded end has grown by bytes this store did not write,
+	// and that is not lag — it is unexplained growth, which is the fragment a
+	// foreign writer leaves. Substituting the recorded end there would swallow
+	// the very difference the change test is looking for, skip the repair, and
+	// let this append join the fragment.
+	//
+	// The recorded end explains exactly one thing: a length that TRAILS it,
+	// because this store wrote those bytes and the attributes have not caught up.
+	// The file's own length has to agree with the record for that to hold. When
+	// it reports MORE, the file has grown by bytes this store did not write —
+	// the fragment a foreign writer leaves — and substituting the recorded end
+	// there would swallow the very difference the change test looks for, skip the
+	// repair, and let this append join the fragment. So the record is used only
+	// on an exact match, and otherwise the file's length is the number compared.
+	if s.laggingAppendEnd > 0 {
+		onDisk, haveLength := s.journalRealSizeLocked()
+		switch {
+		case !haveLength:
 			s.laggingAppendEnd = 0
+		case onDisk == s.laggingAppendEnd:
+			if s.laggingAppendEnd > size {
+				size = s.laggingAppendEnd
+			}
+		default:
+			s.laggingAppendEnd = 0
+			size = onDisk
 		}
 	}
 	changed := !s.sampled || size != s.journalSize || !mod.Equal(s.journalMod)
@@ -1516,10 +1542,19 @@ func (s *Store) recoverTrailingPartialLineLocked() (settled bool, err error) {
 		return false, fmt.Errorf("jobstore: stat %s: %w", s.path, handleErr)
 	}
 	if !sameJournalFile(info, named) {
-		// The name reaches a different file. This store's tail is not the one a
-		// reader will see, so repairing it would edit a file nobody reads, and
-		// the replacement is someone else's to examine.
-		return false, nil
+		// A difference is only a finding when identity can actually be decided.
+		// A filesystem that reports no identity for its files leaves only size
+		// and modification time, and on such a filesystem those numbers LAG the
+		// bytes — which is the very state the caller is here to reconcile. Two
+		// files are not different because a lagging length says so; the handle
+		// this store appends through is the only tail it can examine, and the
+		// post-sync check still asks the name whether the write reached it.
+		if info.Sys() != nil && named.Sys() != nil {
+			// The name reaches a different file. This store's tail is not the one
+			// a reader will see, so repairing it would edit a file nobody reads,
+			// and the replacement is someone else's to examine.
+			return false, nil
+		}
 	}
 	if info.Size() == 0 {
 		return true, nil

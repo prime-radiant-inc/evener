@@ -1061,6 +1061,76 @@ func TestStoreAppendKeepsOneGenerationUnderSustainedLag(t *testing.T) {
 	}
 }
 
+// TestStoreAppendRepairsAFragmentHiddenByALaggingLength pins High 3.
+//
+// A store appends its own bytes and records where they end. The filesystem's
+// attributes lag, reporting a shorter length than the bytes on disk, and an
+// unrelated writer then appends a torn fragment. Two facts now hold at once:
+// the attributes still trail the store's own recorded end, and the file's real
+// length is PAST that end by bytes the store never wrote.
+//
+// Reconciling the first fact by substituting the recorded end feeds the change
+// test a length that matches its recorded one, so nothing looks changed, the
+// tail is never examined, and this append joins the fragment. The journal ends
+// up with one malformed line and reports success for it.
+//
+// The recorded end explains a length that TRAILS it. Growth PAST it is
+// unexplained, and unexplained bytes are exactly what the change test is for.
+func TestStoreAppendRepairsAFragmentHiddenByALaggingLength(t *testing.T) {
+	base := afero.NewOsFs()
+	path := filepath.Join(t.TempDir(), "jobs.jsonl")
+	fs := &staleStatFs{Fs: base}
+	s, err := openFs(fs, path)
+	if err != nil {
+		t.Fatalf("openFs: %v", err)
+	}
+	s.disableSync = true
+	t.Cleanup(func() { _ = s.Close() })
+
+	if err := s.Append(Event{Kind: EventJobStarted, JobID: "job_first", Type: JobShell}); err != nil {
+		t.Fatalf("first append: %v", err)
+	}
+	// Freeze what the attributes report. The store's own appended end is past
+	// this number, which is the lag it records.
+	frozen, err := base.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	fs.stale = snapshotInfo(frozen)
+	if err := s.Append(Event{Kind: EventJobStarted, JobID: "job_lagged", Type: JobShell}); err != nil {
+		t.Fatalf("append under lagging metadata: %v", err)
+	}
+
+	// A foreign writer leaves a torn record at the end. The attributes above
+	// still report the frozen length, so the store sees a length that trails its
+	// recorded end while the file itself has grown past it.
+	if err := os.WriteFile(path, append(mustReadFile(t, path), `{"kind":"job_started","seq":`...), 0o644); err != nil {
+		t.Fatalf("tear the tail out of band: %v", err)
+	}
+
+	if err := s.Append(Event{Kind: EventJobStarted, JobID: "job_after_torn", Type: JobShell}); err != nil {
+		t.Fatalf("append across a fragment hidden by a lagging length: %v", err)
+	}
+
+	// The fragment must have been repaired, not joined: a join produces one
+	// unreadable line, and the repaired journal must be readable and hold every
+	// record the store believes it wrote.
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen the journal: %v (the append joined the fragment and fsynced one malformed line)", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	records, err := reopened.Load()
+	if err != nil {
+		t.Fatalf("fold the reopened journal: %v", err)
+	}
+	for _, want := range []string{"job_first", "job_lagged", "job_after_torn"} {
+		if records[want] == nil {
+			t.Fatalf("%s is missing from the journal after the fragment was repaired", want)
+		}
+	}
+}
+
 // TestCommittedJournalKeepsOneGenerationAcrossLaggingReads pins M2.
 //
 // An append records its own end, and a filesystem whose attributes lag reports
