@@ -258,8 +258,8 @@ type Session struct {
 	// and the compaction paths in publishFoldTransaction and handleCompactionTurn.
 	envCollector *envctx.Collector
 	envTracker   *envctx.Tracker
-	// A worktree tool can install an environment between model requests.
-	// The next request must observe it even if no user input intervenes.
+	// A workspace installation or a fold that removes an observation needs
+	// a fresh sample before the next request, even without a new user turn.
 	worktreeContextPending bool
 	// The frozen prompt describes the provider, model and build at launch. A
 	// changed value belongs in the next environment context.

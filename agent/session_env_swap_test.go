@@ -88,19 +88,22 @@ func TestWorktreeToolReportsWorkspaceOnNextModelRequest(t *testing.T) {
 		}
 	}
 	cfg := worktreeTestSessionConfig()
+	cfg.StateDir = t.TempDir()
 	cfg.testOnly.envProbes = &envctx.Probes{
 		Now:       func() time.Time { return envctxFixedTime },
 		GitBranch: func(cwd string) string { return strings.TrimSpace(wtGit(t, cwd, "symbolic-ref", "--short", "HEAD")) },
 	}
-	r := newWorktreeRepoWithConfig(t, cfg, withSteps(
+	root := t.TempDir()
+	copyWorktreeBaseRepo(t, root)
+	s := newSession(t, withDir(root), withConfig(cfg), withSteps(
 		record(agenttest.ToolCallResponse(llm.ToolCallData{ID: "create", Name: "manage_worktree", Arguments: []byte(`{"operation":"create","name":"autonomous-work"}`)})),
 		record(agenttest.FinalResponse("created")),
 		record(agenttest.FinalResponse("still here")),
 	))
-	sendOneUserInput(t, r.s, "create a worktree")
-	sendOneUserInput(t, r.s, "continue")
-	cwd := r.s.currentEnv().WorkingDirectory()
-	if len(requests) != 3 || cwd == r.mainRoot {
+	sendOneUserInput(t, s, "create a worktree")
+	sendOneUserInput(t, s, "continue")
+	cwd := s.currentEnv().WorkingDirectory()
+	if len(requests) != 3 || cwd == root {
 		t.Fatalf("worktree creation produced %d requests and cwd %q", len(requests), cwd)
 	}
 	for i, req := range requests {
@@ -112,15 +115,39 @@ func TestWorktreeToolReportsWorkspaceOnNextModelRequest(t *testing.T) {
 			}
 		}
 		last := tracker.State().Last
-		if len(req.Messages) == 0 || req.Messages[0].Text() != r.s.cachedSystemPrompt {
+		if len(req.Messages) == 0 || req.Messages[0].Text() != s.cachedSystemPrompt {
 			t.Errorf("request %d lost its startup prompt", i)
 		}
 		if i == 0 {
-			if blocks != 1 || last.Cwd != r.mainRoot || last.GitBranch == branch {
+			if blocks != 1 || last.Cwd != root || last.GitBranch == branch {
 				t.Errorf("first request has %d blocks and workspace %q on %q", blocks, last.Cwd, last.GitBranch)
 			}
 		} else if blocks != 2 || last.Cwd != cwd || last.GitBranch != branch {
 			t.Errorf("request %d has %d blocks and workspace %q on %q, want %q on %q", i, blocks, last.Cwd, last.GitBranch, cwd, branch)
+		}
+	}
+	seedNumberedSessionHistory(t, s, 8)
+	s.contextMgr.PreserveRecentTurns = 1
+	if err := s.Compact(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if got := countEnvironmentTurns(s); got != 0 {
+		t.Fatalf("fold retained %d workspace observations, want none", got)
+	}
+	for round := range 2 {
+		_, _, _, req, _, _, err := s.prepareModelRequestWithError(t.Context(), round+1, &events.RoundTimings{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		var tracker envctx.Tracker
+		for _, msg := range req.Messages {
+			if msg.Role == llm.RoleUser {
+				tracker.ReplayBlock(msg.Text())
+			}
+		}
+		last := tracker.State().Last
+		if req.Messages[0].Text() != s.cachedSystemPrompt || last.Cwd != cwd || last.GitBranch != branch || countEnvironmentTurns(s) != 1 {
+			t.Errorf("post-fold request %d carries %d observations and workspace %q on %q", round, countEnvironmentTurns(s), last.Cwd, last.GitBranch)
 		}
 	}
 }

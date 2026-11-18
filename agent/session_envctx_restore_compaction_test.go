@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/envctx"
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -87,6 +88,9 @@ func TestRestoreEnvironmentReconcilesCompactionWithStaleMetadata(t *testing.T) {
 			}
 			stateDir, cwd := s.stateDir, s.currentEnv().WorkingDirectory()
 			s.Close()
+			if retained == "none" {
+				cwd = t.TempDir()
+			}
 			meta := loadMetaForTest(t, s)
 			meta.EnvContext = &stale
 			if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
@@ -104,6 +108,21 @@ func TestRestoreEnvironmentReconcilesCompactionWithStaleMetadata(t *testing.T) {
 			defer restored.Close()
 			if got, want := restored.envTracker.State().HasSent, retained == "full"; got != want {
 				t.Fatalf("restored complete environment = %v, want %v for retained %s", got, want, retained)
+			}
+			if retained == "none" {
+				_, _, _, req, _, _, err := restored.prepareModelRequestWithError(t.Context(), 1, &events.RoundTimings{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				var projected envctx.Tracker
+				for _, msg := range req.Messages {
+					if msg.Role == llm.RoleUser {
+						projected.ReplayBlock(msg.Text())
+					}
+				}
+				if projected.State().Last.Cwd != cwd || req.Messages[0].Text() != s.cachedSystemPrompt {
+					t.Errorf("first resumed request reports cwd %q, want %q with the original prompt", projected.State().Last.Cwd, cwd)
+				}
 			}
 			sendOneUserInput(t, restored, "resume")
 			wantCount := before

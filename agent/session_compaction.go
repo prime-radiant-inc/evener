@@ -1140,6 +1140,7 @@ func (s *Session) stageCompactionEffects(ctx context.Context, history *[]schema.
 	commit.restoreEnvContextTrackerLocked = func(removed bool) {
 		if removed && len(pendingCompactionTurns) > 0 && s.envTracker != nil {
 			s.rehydrateEnvironmentContext(s.history)
+			s.worktreeContextPending = true
 		}
 	}
 	flush := func() {

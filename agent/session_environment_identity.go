@@ -8,6 +8,15 @@ import (
 )
 
 func (s *Session) setPromptEnvironmentOrigin(header transcript.Header) {
+	if s.envTracker != nil && s.env != nil {
+		cwd := s.envTracker.State().Last.Cwd
+		if cwd == "" {
+			cwd = header.WorkingDir
+		}
+		if cwd != "" && cwd != s.env.WorkingDirectory() {
+			s.worktreeContextPending = true
+		}
+	}
 	s.promptProvider, s.promptModel, s.promptBuild = header.ProfileID, header.Model, header.BuildVersion
 	if s.promptProvider == "" || s.promptModel == "" {
 		s.promptProvider, s.promptModel = s.profile.ID(), s.profile.Model()
