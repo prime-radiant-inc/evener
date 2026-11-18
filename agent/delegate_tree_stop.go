@@ -850,7 +850,7 @@ func (s *Session) publishDrainWarnings(ctx context.Context, warningsOnly bool, w
 		return
 	}
 	if warningsOnly {
-		s.emitCloseDrainWarnings(ctx, warnings)
+		s.emitCloseDrainWarnings(ctx, warnings, hookOnPublication)
 		return
 	}
 	for _, warning := range warnings {

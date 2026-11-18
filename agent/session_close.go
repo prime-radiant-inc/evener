@@ -594,7 +594,7 @@ func (s *Session) warnIncompleteCloseBeforeDisposal(ctx context.Context, what st
 	warning := events.WarningData{Message: fmt.Sprintf("%s close incomplete: %v", what, err)}
 	publishCtx, cancelPublish := closeCascadePublicationContext(ctx)
 	defer cancelPublish()
-	s.emitCloseDrainWarnings(publishCtx, []events.WarningData{warning})
+	s.emitCloseDrainWarnings(publishCtx, []events.WarningData{warning}, hookOnAttempt)
 }
 
 // closeOwnedArtifactStore closes the root-owned artifact store after
