@@ -72,11 +72,13 @@ func TestAskResolutionProjectsCallLevelEvidence(t *testing.T) {
 		t.Fatalf("resolvedAskCalls = %+v, want the admitted calls in order %+v", got, pair.Calls)
 	}
 
-	// The wire's (turn, call) pairs are the pairs the ask rows themselves
-	// project, so a client can match a reply to the call it answered. Both
-	// clients match on the PAIR, so a call id alone is not enough: a row
-	// projected under a different turn than the stamp would still satisfy a
-	// call-id-only check and break every consumer.
+	// This verifies the wire join: every serialized (turn, call) pair is a
+	// pair the ask rows themselves project, so a consumer that joins on the
+	// pair reaches a real row. The join is on the pair and not the call id
+	// alone, because a row projected under a different turn than the stamp
+	// would satisfy a call-id-only check and point at the wrong row. Which
+	// consumers adopt the pair for recap selection is the recap follow-up,
+	// not this test.
 	projectedAskCalls := map[appwire.PendingAskCall]bool{}
 	for _, entry := range answerLinkRecords(t, s) {
 		if entry.Kind != schema.TurnAssistant {
