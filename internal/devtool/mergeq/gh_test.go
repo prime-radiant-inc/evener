@@ -61,9 +61,17 @@ func fixtureExecDir(t *testing.T) string {
 	return ""
 }
 
-// fixtureBaseCandidates is the bases to try, in the launcher's own order.
+// fixtureBaseCandidates is the bases to try, in the launcher's own order plus
+// the root every Unix has.
+//
+// /tmp is named explicitly because the other candidates all descend from the
+// runner's environment. Under umask 0002 the module runner makes group-writable
+// components in TMPDIR, and a headless run with no XDG_RUNTIME_DIR and a fresh
+// HOME that has no .cache leaves nothing else -- so the fixtures would fail to
+// start on a machine that has an executable, root-owned, sticky /tmp the whole
+// time. The exec probe in execDirUnder is what decides whether it is usable.
 func fixtureBaseCandidates() []string {
-	candidates := []string{os.TempDir()}
+	candidates := []string{os.TempDir(), "/tmp"}
 	if dir := os.Getenv("XDG_RUNTIME_DIR"); dir != "" {
 		candidates = append(candidates, dir)
 	}
@@ -71,6 +79,34 @@ func fixtureBaseCandidates() []string {
 		candidates = append(candidates, filepath.Join(home, ".cache"))
 	}
 	return candidates
+}
+
+// launcherMergeEnqueue is the script whose validator decides what a scratch root
+// is, read from the repository rather than restated here. The path is relative
+// to this package's directory, which is where `go test` runs it from:
+// internal/devtool/mergeq.
+var launcherMergeEnqueue = filepath.Join("..", "..", "..", "scripts", "ops", "merge-enqueue.sh")
+
+// launcherValidatorFuncs is the launcher's own trust rule, as sed expressions.
+// One list, never a subset at a call site: a predicate that runs with a helper
+// undefined silently skips the branch that needed it.
+const launcherValidatorFuncs = "/^acl_getfacl_grants_foreign_write()/,/^}/p;" +
+	"/^acl_getfacl_has_mask()/,/^}/p;" +
+	"/^acl_getfacl_group_grants_write()/,/^}/p;" +
+	"/^acl_ls_e_grants_foreign_write()/,/^}/p;" +
+	"/^dir_acl_grants_foreign_write()/,/^}/p;" +
+	"/^dir_entry_is_replaceable()/,/^}/p;" +
+	"/^dir_is_owned_by_trusted()/,/^}/p;" +
+	"/^scratch_path_is_trusted()/,/^}/p"
+
+// launcherTrustsPath asks the launcher's own validator whether it would accept
+// path, ancestors included, by sourcing the script's functions and running the
+// predicate. It is the oracle for "would the launcher build here", so these
+// fixtures never restate a rule they could ask about.
+func launcherTrustsPath(t *testing.T, path string) bool {
+	t.Helper()
+	script := `eval "$(sed -n '` + launcherValidatorFuncs + `' "$1")"; scratch_path_is_trusted "$2"`
+	return exec.Command("bash", "-c", script, "bash", launcherMergeEnqueue, path).Run() == nil
 }
 
 // execDirUnder returns a private, exec-capable directory under base, or "" and
@@ -85,7 +121,7 @@ func execDirUnder(t *testing.T, base string) (dir, reason string) {
 	if err != nil {
 		return "", fmt.Sprintf("cannot resolve it (%v)", err)
 	}
-	if reason := replaceableAncestor(resolved); reason != "" {
+	if reason := replaceableAncestor(t, resolved); reason != "" {
 		return "", reason
 	}
 	// MkdirTemp is 0700 whatever the runner's umask is, which keeps the fixture's
@@ -106,23 +142,36 @@ func execDirUnder(t *testing.T, base string) (dir, reason string) {
 // replaceableAncestor names the first component of path that another local user
 // can replace, or "" when the chain is this user's to control.
 //
-// It walks from the root down, because that is the direction the question is
-// asked in: each component has to be trusted before the next can be, and a
-// component that cannot be inspected is a refusal rather than a pass.
+// The launcher's own validator is the authority. It checks the resolved chain
+// from the root down, refuses group- and other-writable components unless a
+// trusted sticky bit protects them, and on Darwin reads the extended ACL too.
+// Asking it directly is the only way these fixtures and the launcher cannot
+// disagree: reimplementing the rule in Go drifted the first time it was tried --
+// the Go version accepted a group-writable ancestor whenever the test process
+// belonged to the owning group, which the launcher rejects. Another member of
+// that group is another user, and can replace the entry just the same.
 //
-// A component is trusted when this user or root owns it and no one else can
-// write to it. Two exceptions match the launcher's. A sticky directory is
-// trusted even when world-writable, because the sticky bit stops another user
-// renaming or deleting an entry this user created -- that is what makes /tmp
-// usable at all. A group-writable directory is trusted when the group is one of
-// this process's groups, because then the "other user" is this user.
-func replaceableAncestor(path string) string {
-	groups := map[int]bool{os.Getgid(): true}
-	if gids, err := os.Getgroups(); err == nil {
-		for _, gid := range gids {
-			groups[gid] = true
-		}
+// The Go walk stays in front of it and can only add refusals, never remove one:
+// it names the specific component, which the bash predicate does not, and it is
+// the only part that reports a component it cannot inspect at all.
+func replaceableAncestor(t *testing.T, path string) string {
+	t.Helper()
+	if reason := replaceableAncestorByMode(path); reason != "" {
+		return reason
 	}
+	if launcherTrustsPath(t, path) {
+		return ""
+	}
+	return path + " is not a path the launcher would build under, and its own rule is the authority here: a component is replaceable, or an ACL grants write to another user"
+}
+
+// replaceableAncestorByMode is the part of the launcher's rule that needs no ACL
+// reader, and it names the component that failed.
+//
+// Group-writable is refused whether or not this process is in the group. Another
+// member of the group is another user: they can rename or delete the fixture's
+// entry and put their own script where the test will execute it.
+func replaceableAncestorByMode(path string) string {
 	for _, component := range pathComponents(path) {
 		info, err := os.Stat(component)
 		if err != nil {
@@ -138,6 +187,8 @@ func replaceableAncestor(path string) string {
 		if uid := int(stat.Uid); uid != os.Getuid() && uid != 0 {
 			return fmt.Sprintf("%s is owned by uid %d, not by this user or root", component, uid)
 		}
+		// A sticky directory is settled: another user may add entries but cannot
+		// rename or delete one this user created, which is what makes /tmp usable.
 		if info.Mode()&os.ModeSticky != 0 {
 			continue
 		}
@@ -145,8 +196,8 @@ func replaceableAncestor(path string) string {
 		if perm&0o002 != 0 {
 			return component + " is writable by other users and has no sticky bit, so another user can replace entries in it"
 		}
-		if perm&0o020 != 0 && !groups[int(stat.Gid)] {
-			return fmt.Sprintf("%s is writable by group %d, which this process is not in", component, stat.Gid)
+		if perm&0o020 != 0 {
+			return fmt.Sprintf("%s is writable by group %d with no sticky bit, so another member of that group can replace entries in it", component, stat.Gid)
 		}
 	}
 	return ""
@@ -701,7 +752,7 @@ func TestMergEQFixtureBaseIsTrustedAndExecutable(t *testing.T) {
 		if info.Mode()&os.ModeSticky != 0 {
 			t.Skipf("%s came back sticky, so it is not the replaceable base this case needs", dir)
 		}
-		if reason := replaceableAncestor(dir); reason == "" {
+		if reason := replaceableAncestor(t, dir); reason == "" {
 			t.Fatalf("%s is writable by other users with no sticky bit, and the ancestor rule accepted it: another user can replace entries in it, so a script this test executes from there may not be the script it wrote", dir)
 		}
 		// And the refusal reaches the function the fixtures actually call, not only
@@ -710,10 +761,63 @@ func TestMergEQFixtureBaseIsTrustedAndExecutable(t *testing.T) {
 			t.Fatalf("execDirUnder(%s) returned %s under a replaceable ancestor: the fixture would execute a program from a path another user can swap", dir, got)
 		}
 	})
+	t.Run("a group-writable ancestor is refused even for a member", func(t *testing.T) {
+		t.Parallel()
+		// The case the pre-fix predicate got wrong. 0770 is writable by the owning
+		// group but not by others, so an other-writable check does not see it --
+		// and the old Go rule accepted it whenever this process was in that group.
+		// Being in the group is not the question: another member is another user,
+		// and can rename or delete the fixture's entry and put their own script
+		// where the test will execute it. The launcher refuses it, so the fixtures
+		// have to as well.
+		dir := filepath.Join(t.TempDir(), "group-writable")
+		if err := os.Mkdir(dir, 0o770); err != nil {
+			t.Fatalf("create %s: %v", dir, err)
+		}
+		if err := os.Chmod(dir, 0o770); err != nil {
+			t.Fatalf("make %s group-writable: %v", dir, err)
+		}
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("stat %s: %v", dir, err)
+		}
+		if info.Mode()&os.ModeSticky != 0 {
+			t.Skipf("%s came back sticky, so it is not the group-writable base this case needs", dir)
+		}
+		if info.Mode().Perm()&0o002 != 0 {
+			t.Skipf("%s came back other-writable, so it does not isolate the group bit", dir)
+		}
+		// The premise: this process IS in the owning group, which is what made the
+		// old predicate accept it.
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok {
+			t.Skip("cannot read the owning group on this platform")
+		}
+		inGroup := int(stat.Gid) == os.Getgid()
+		if !inGroup {
+			if gids, err := os.Getgroups(); err == nil {
+				for _, gid := range gids {
+					if gid == int(stat.Gid) {
+						inGroup = true
+						break
+					}
+				}
+			}
+		}
+		if !inGroup {
+			t.Skipf("%s is owned by group %d, which this process is not in, so the pre-fix acceptance cannot be reproduced here", dir, stat.Gid)
+		}
+		if reason := replaceableAncestor(t, dir); reason == "" {
+			t.Fatalf("%s is writable by group %d and this test was expected to refuse it: another member of that group can replace entries in it", dir, stat.Gid)
+		}
+		if got, reason := execDirUnder(t, dir); reason == "" {
+			t.Fatalf("execDirUnder(%s) returned %s under a group-writable ancestor: the fixture would execute a program from a path another member of the group can swap", dir, got)
+		}
+	})
 	t.Run("an exec-capable base is accepted", func(t *testing.T) {
 		t.Parallel()
 		base := fixtureExecDir(t)
-		if reason := replaceableAncestor(base); reason != "" {
+		if reason := replaceableAncestor(t, base); reason != "" {
 			t.Fatalf("the base the fixtures use is replaceable: %s", reason)
 		}
 		if err := exec.Command(filepath.Join(base, "exec-probe.sh")).Run(); err != nil {
@@ -723,6 +827,22 @@ func TestMergEQFixtureBaseIsTrustedAndExecutable(t *testing.T) {
 	t.Run("a replaceable TMPDIR falls back rather than failing the case", func(t *testing.T) {
 		// Not parallel: it changes the process environment the candidate list
 		// reads, and t.Setenv panics in a parallel test.
+		//
+		// The fallback is established BEFORE TMPDIR is invalidated. Overriding
+		// TMPDIR leaves the case depending on whatever XDG_RUNTIME_DIR and HOME the
+		// runner happens to supply, and the default module runner supplies neither a
+		// runtime dir nor a HOME with a .cache: the case would then fail on a
+		// machine whose original TMPDIR was perfectly usable, which says nothing
+		// about the rule it exists to test. Naming a fixture-owned base makes the
+		// case independent of the runner; which candidate is actually selected is
+		// still the candidate list's business, so the assertion below is about the
+		// property (a replaceable TMPDIR is passed over, and what replaces it is
+		// trusted) rather than about this one base.
+		fallback, reason := execDirUnder(t, fixtureExecDir(t))
+		if reason != "" {
+			t.Fatalf("could not establish the fallback this case needs: %s", reason)
+		}
+		t.Setenv("XDG_RUNTIME_DIR", fallback)
 		dir := filepath.Join(t.TempDir(), "replaceable-tmp")
 		if err := os.Mkdir(dir, 0o777); err != nil {
 			t.Fatalf("create %s: %v", dir, err)
@@ -739,6 +859,9 @@ func TestMergEQFixtureBaseIsTrustedAndExecutable(t *testing.T) {
 		got := fixtureExecDir(t)
 		if strings.HasPrefix(got, dir+string(os.PathSeparator)) {
 			t.Fatalf("fixtureExecDir returned %s under a replaceable TMPDIR: the fixtures would execute a program from a path another user can swap", got)
+		}
+		if reason := replaceableAncestor(t, got); reason != "" {
+			t.Fatalf("fixtureExecDir fell back to %s, which the launcher would not build under (%s): passing over the replaceable TMPDIR is only a fix if what replaces it is trusted", got, reason)
 		}
 	})
 }

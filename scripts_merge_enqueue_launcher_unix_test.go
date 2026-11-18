@@ -677,10 +677,21 @@ func TestMergeEnqueueLauncherNoexecFixturesValidateTheirBaseFirst(t *testing.T) 
 // fixture cannot fix ancestors it does not own, so it does the next honest thing:
 // it looks for a base whose ancestry it does accept, and when there is none it
 // says so at once instead of spending a deadline proving nothing.
+//
+// /tmp is in the list because every other candidate descends from the runner's
+// environment, and that environment can leave nothing usable: umask 0002 makes
+// the module runner's own components group-writable, which the launcher's rule
+// rejects, and a headless run has no XDG_RUNTIME_DIR and often a fresh HOME with
+// no .cache. Without /tmp those runs failed to start a fixture on a machine with
+// an executable, root-owned, sticky /tmp the whole time. A root-owned sticky
+// directory is one the fixture does not have to take on trust, and the
+// launcher's own validator still decides whether it is usable -- a host that
+// mounts /tmp noexec, or has no /tmp, moves to the next candidate as before.
 func fixtureScratchBase(t *testing.T) string {
 	t.Helper()
 	return firstTrustedScratchBase(t, []string{
 		os.TempDir(),
+		"/tmp",
 		os.Getenv("XDG_RUNTIME_DIR"),
 		func() string {
 			if home := os.Getenv("HOME"); home != "" {
