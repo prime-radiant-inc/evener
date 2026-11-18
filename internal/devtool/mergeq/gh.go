@@ -156,6 +156,22 @@ func clearGHGroup(path string) {
 // lost, so a run must read the state back before calling the call a failure.
 var ErrIncompleteReply = errors.New("gh exited before its reply arrived, and a descendant it left behind kept the pipe open past the drain bound")
 
+// RefusalError is a call that completed and was refused: gh exited non-zero
+// with something to say, or exited zero with a decodable answer that says no.
+//
+// It is a distinct type because the run has to tell a refusal from an unknown
+// ending, and the context cannot make that distinction. A refusal can arrive
+// just before a budget expires, with the drain crossing it afterwards, so the
+// call's context is expired while its answer is a definite no: reconciling that
+// as uncertain spends a read looking for this invocation's work and finds
+// whatever is there, including an entry another operator made for the same pull
+// request. The answer is an answer.
+type RefusalError struct {
+	Detail string
+}
+
+func (e *RefusalError) Error() string { return e.Detail }
+
 // completeReply reports whether out is a whole JSON document.
 //
 // Every call this client makes asks for JSON: `gh api graphql` answers in it,
@@ -212,7 +228,10 @@ func (c GHClient) run(ctx context.Context, args ...string) ([]byte, error) {
 	}
 	if err != nil {
 		if detail := strings.TrimSpace(stderr.String()); detail != "" {
-			return nil, errors.New(detail)
+			// A call that ran, failed, and said why has answered: the answer is
+			// no. Reported as a RefusalError so a caller cannot confuse it with a
+			// reply that was lost, whatever the context did in the meantime.
+			return nil, &RefusalError{Detail: detail}
 		}
 		return nil, err
 	}

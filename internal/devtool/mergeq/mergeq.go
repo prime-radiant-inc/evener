@@ -46,6 +46,15 @@ const (
 	// run for as long as GitHub takes to answer, past the --wait the caller asked
 	// for.
 	finalObservationAllowance = pollInterval
+	// startupAllowance bounds the two reads that place the pull request before
+	// anything is decided: its state, and whether it has already merged.
+	//
+	// They ran on the run's signal-only context, which carries no deadline at
+	// all, so a stalled `gh pr view` held a `--wait 570` invocation for as long as
+	// GitHub took -- before the wait had even started, so the number the operator
+	// asked for bounded nothing. The allowance is a read's notion of bounded, the
+	// same one every other observation uses.
+	startupAllowance = pollInterval
 	// dropDiagnosticAllowance bounds the two reads that only EXPLAIN a drop the
 	// status read already observed: the merge-group run and the removal reason.
 	// They share one allowance, because neither is what decided the run -- the
@@ -288,17 +297,36 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 	if err := ctx.Err(); err != nil {
 		return Outcome{}, &ExitError{Kind: Interrupted, Detail: err.Error()}
 	}
-	st, exitErr := readStatus(ctx, opts, c)
-	if exitErr != nil {
+	// The starting lookups are bounded, and they are the only reads before the
+	// caller's budget exists. On the signal-only context a stalled `gh pr view`
+	// held a `--wait 570` invocation for as long as GitHub took, before the wait
+	// even began: the number the operator asked for bounded nothing, because the
+	// thing it was meant to bound had not started.
+	//
+	// An allowance that expires here is neither a cancellation nor a queue
+	// verdict: the run never learned anything. That is the lookup failure exit 2
+	// is for, and the operator's signal stays the interrupt it was.
+	startCtx, stopStart := context.WithTimeout(ctx, startupAllowance)
+	st, exitErr := readStatus(startCtx, opts, c)
+	if exitErr == nil && st.State != mergedState {
+		var out Outcome
+		var merged bool
+		out, merged, exitErr = mergedOutcome(startCtx, opts, c)
+		if exitErr == nil && merged {
+			stopStart()
+			return out, nil
+		}
+	}
+	// The ending is read before the cancel for the same reason the enqueue's is:
+	// cancelling sets the context's error whatever it was, so a check that runs
+	// afterwards sees Canceled and calls an expired allowance a cancellation.
+	startExpired := errors.Is(startCtx.Err(), context.DeadlineExceeded)
+	stopStart()
+	if exitErr = startupEnding(ctx, startExpired, exitErr); exitErr != nil {
 		return Outcome{}, exitErr
 	}
 	if st.State == mergedState {
 		return Outcome{Kind: Merged, SHA: st.MergeSHA()}, nil
-	}
-	if out, merged, exitErr := mergedOutcome(ctx, opts, c); exitErr != nil {
-		return Outcome{}, exitErr
-	} else if merged {
-		return out, nil
 	}
 	// The caller's limit for the whole invocation, established BEFORE the enqueue
 	// is confirmed. It used to be created after that confirmation returned, which
@@ -306,6 +334,10 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 	// wait wait, on top of a --wait that had already begun. Everything below --
 	// the confirmation reads and the wait itself -- spends what is left of this.
 	deadline := clock.Now().Add(opts.Wait)
+	// Every read that cannot draw on the wait spends the same post-deadline
+	// allowance, the confirmation included. It is created here so the
+	// confirmation and the wait below cannot each mint one of their own.
+	post := &postDeadline{}
 	if st.Entry == nil {
 		// The mutation is bounded too. On the signal-only context it had no limit at
 		// all, so a stalled call blocked the confirmation from starting and held the
@@ -337,15 +369,23 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 			// refusal. A cancellation is not uncertain -- the operator stopped it --
 			// and refusalFor below is what tells that apart.
 			//
-			// Only the two endings that leave the outcome unknown are reconciled.
+			// Only the endings that leave the outcome unknown are reconciled.
 			// Anything else the call reported is a refusal it stated, and a
 			// refusal is an answer: reconciling it spends a read looking for a
 			// queue entry that a different invocation may have put there.
-			uncertain := errors.Is(enqueueErr, ErrIncompleteReply) || enqueueExpired
+			//
+			// A RefusalError is checked first and outranks the expired context,
+			// because the two can be true at once: gh can return the refusal just
+			// before the budget expires, with the drain crossing it afterwards.
+			// The context then says "expired" while the mutation's answer was a
+			// definite no.
+			var refusal *RefusalError
+			uncertain := !errors.As(enqueueErr, &refusal) &&
+				(errors.Is(enqueueErr, ErrIncompleteReply) || enqueueExpired)
 			if !uncertain {
 				return Outcome{}, refusalFor(ctx, EnqueueFailed, enqueueErr)
 			}
-			if st, exitErr = confirmEnqueue(ctx, opts, c, clock, deadline); exitErr != nil {
+			if st, exitErr = confirmEnqueue(ctx, opts, c, clock, deadline, post); exitErr != nil {
 				return Outcome{}, exitErr
 			}
 			if st.State == mergedState {
@@ -356,7 +396,7 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 				// the honest report is that the enqueue could not be confirmed.
 				return Outcome{}, refusalFor(ctx, EnqueueFailed, enqueueErr)
 			}
-		} else if st, exitErr = confirmEnqueue(ctx, opts, c, clock, deadline); exitErr != nil {
+		} else if st, exitErr = confirmEnqueue(ctx, opts, c, clock, deadline, post); exitErr != nil {
 			return Outcome{}, exitErr
 		}
 		if st.State == mergedState {
@@ -382,16 +422,9 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 	// deadline was established before the enqueue, so the wait and the
 	// confirmation share one budget rather than each starting its own.
 	//
-	// recheckDeadline is the ONE post-deadline allowance the reads that cannot
-	// draw on the wait are bounded by. The poll that finds the wait spent and the
-	// recheck after the loop both spend it, so the pair costs one allowance
-	// rather than two. Rounding each of them up to a fresh interval is what let a
-	// `--wait 1` go on reading for about a minute after the second it asked for.
-	//
-	// It is an instant, not a duration: a read's budget is what remains of it, so
-	// a read that used the allowance up leaves the next one nothing and it says
-	// so instead of issuing a call that never starts.
-	var recheckDeadline time.Time
+	// post is the shared post-deadline allowance the confirmation above may have
+	// already spent part of; the poll that finds the wait spent and the recheck
+	// after the loop draw on what is left of it.
 	var out Outcome
 	var read Status
 	var merged, expired bool
@@ -430,10 +463,7 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 		budget := deadline.Sub(clock.Now())
 		afterDeadline := budget <= 0
 		if budget <= 0 {
-			if recheckDeadline.IsZero() {
-				recheckDeadline = deadline.Add(finalObservationAllowance)
-			}
-			if budget = recheckDeadline.Sub(clock.Now()); budget <= 0 {
+			if budget = post.take(clock, deadline); budget <= 0 {
 				break
 			}
 		}
@@ -468,13 +498,20 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 	// allowance, so the pair costs one interval rather than two: a fresh timer
 	// per observation is what let a `--wait 1` keep reading for about a minute
 	// after the second it asked for.
-	if recheckDeadline.IsZero() {
-		recheckDeadline = deadline.Add(finalObservationAllowance)
-	}
-	if recheck := recheckDeadline.Sub(clock.Now()); recheck > 0 {
+	if recheck := post.take(clock, deadline); recheck > 0 {
 		out, merged, read, exitErr, expired = observe(ctx, opts, c, recheck)
 		if expired {
-			return Outcome{}, lookupNotRead()
+			// A recheck that ran out is not a reason to throw away an answer that
+			// already arrived. The poll before this one confirmed the PR is still
+			// queued at a known position, read on the post-deadline allowance, so
+			// the run has this instant's queue: reporting exit 2 there told the
+			// operator nothing was decided while the documented repeat-on-timeout
+			// workflow was the right one. Only a run with no post-deadline answer
+			// at all has nothing to report.
+			if !answeredAfterDeadline {
+				return Outcome{}, lookupNotRead()
+			}
+			return timedOutAt(st), nil
 		}
 		if exitErr != nil {
 			return Outcome{}, exitErr
@@ -497,7 +534,16 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 	if st.Entry == nil {
 		return dropOutcome(ctx, opts, st, c, clock.Now)
 	}
-	return Outcome{Kind: TimedOut, Position: st.Entry.Position, QueueState: st.Entry.State}, nil
+	return timedOutAt(st), nil
+}
+
+// timedOutAt is the timeout verdict for a status read after the deadline: the
+// queue position and state as of that read, which is what a caller repeats on.
+func timedOutAt(st Status) Outcome {
+	if st.Entry == nil {
+		return Outcome{Kind: TimedOut}
+	}
+	return Outcome{Kind: TimedOut, Position: st.Entry.Position, QueueState: st.Entry.State}
 }
 
 // lookupNotRead is the refusal for a run that reached its deadline without a
@@ -511,6 +557,43 @@ func lookupNotRead() *ExitError {
 	return &ExitError{
 		Kind:   LookupFailed,
 		Detail: "the final observation of the queue did not complete within the wait's allowance, so whether the pull request is still queued was not read",
+	}
+}
+
+// startupEnding turns what the starting lookups reported into the run-ending
+// refusal, telling the operator's signal apart from the allowance running out.
+//
+// The two endings are the same context error to a reader that only asks whether
+// the context is done, and they are different codes: 130 says the operator
+// stopped it and 2 says nothing was decided. refusalFor already answers the
+// cancellation, so an Interrupted it reports is kept; an allowance that expired
+// under a live parent becomes the lookup failure, because the run reached no
+// queue answer and the caller has to know the difference between "I stopped
+// this" and "this could not be read".
+func startupEnding(ctx context.Context, startExpired bool, exitErr *ExitError) *ExitError {
+	if ctx.Err() != nil {
+		return &ExitError{Kind: Interrupted, Detail: ctx.Err().Error()}
+	}
+	if exitErr == nil {
+		// A read that reported no failure on an expired allowance never answered:
+		// the context ended while it was running and it returned no error.
+		if startExpired {
+			return startupNotRead()
+		}
+		return nil
+	}
+	if exitErr.Kind != Interrupted {
+		return exitErr
+	}
+	return startupNotRead()
+}
+
+// startupNotRead is the refusal for a run whose first lookups could not answer
+// within their allowance.
+func startupNotRead() *ExitError {
+	return &ExitError{
+		Kind:   LookupFailed,
+		Detail: "reading the pull request did not complete within the starting allowance, so its queue state was not read",
 	}
 }
 
@@ -592,8 +675,8 @@ func readStatus(ctx context.Context, opts Options, c Client) (Status, *ExitError
 // An allowance that expires is not a cancellation: the operator did not stop
 // anything, and exit 130 would say they had. The run does not know whether the
 // enqueue landed, which is a lookup failure -- exit 2 -- and says so.
-func confirmEnqueue(ctx context.Context, opts Options, c Client, clock Clock, deadline time.Time) (Status, *ExitError) {
-	readCtx, stop := context.WithTimeout(ctx, remainingAllowance(opts, clock, deadline))
+func confirmEnqueue(ctx context.Context, opts Options, c Client, clock Clock, deadline time.Time, post *postDeadline) (Status, *ExitError) {
+	readCtx, stop := context.WithTimeout(ctx, post.budget(clock, deadline, opts.Wait))
 	defer stop()
 	st, exitErr := readStatus(readCtx, opts, c)
 	if exitErr != nil && exitErr.Kind == Interrupted && ctx.Err() == nil {
@@ -605,6 +688,55 @@ func confirmEnqueue(ctx context.Context, opts Options, c Client, clock Clock, de
 		}
 	}
 	return st, exitErr
+}
+
+// postDeadline is the ONE allowance the reads that cannot draw on the wait are
+// bounded by: the confirmation that follows an enqueue, the poll that finds the
+// wait spent, and the recheck after the loop.
+//
+// It is shared rather than granted per read because a fresh interval each time is
+// how `--wait 1` spent about a minute reading after the second it asked for. It
+// is an instant, not a duration, so a read's budget is what remains of it.
+//
+// The confirmation draws on it too, and that is the other half of the same rule.
+// An enqueue that succeeds just before the deadline leaves the confirmation less
+// time than it needs, and reporting the queue unread there wastes the only read
+// that could have confirmed an accepted mutation -- while the same read starting
+// one moment later would have got a full allowance. A budget boundary is not a
+// verdict.
+type postDeadline struct {
+	// at is when the allowance ends. Zero means not yet established.
+	at time.Time
+}
+
+// budget is what a read starting now may spend: what is left of the caller's
+// wait, or what is left of the post-deadline allowance when that is spent.
+//
+// A read that would get nothing is reported as zero, which the caller must treat
+// as "the queue could not be read" rather than handing it to a context builder:
+// a zero-length budget builds an already-expired context, and a read handed one
+// never starts.
+func (p *postDeadline) budget(clock Clock, deadline time.Time, wait time.Duration) time.Duration {
+	if wait <= 0 {
+		return p.take(clock, deadline)
+	}
+	if left := deadline.Sub(clock.Now()); left > 0 {
+		return left
+	}
+	return p.take(clock, deadline)
+}
+
+// take is what is left of the post-deadline allowance, establishing it from the
+// wait's deadline the first time it is asked for. It returns zero once spent.
+func (p *postDeadline) take(clock Clock, deadline time.Time) time.Duration {
+	if p.at.IsZero() {
+		p.at = deadline.Add(finalObservationAllowance)
+	}
+	left := p.at.Sub(clock.Now())
+	if left <= 0 {
+		return 0
+	}
+	return left
 }
 
 // remainingAllowance is how much of the caller's budget is left for a read that

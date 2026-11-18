@@ -1066,7 +1066,8 @@ start_helper() {
   local helper_scratch="${2:-}" published_call
   cd "$root" || return 2
   # Monitor mode gives the helper its own process group, following run_bounded
-  # in scripts/lib/gate-bounded.sh. Two reasons, both #6730's review:
+  # in scripts/lib/gate-bounded.sh. Two reasons, and the invariant is that a
+  # terminal signal must not decide a cancellation for the helper:
   #
   #   - A terminal Ctrl-C reaches the foreground process group, which used to
   #     include the helper's `gh`. `gh` would then die before the helper's own

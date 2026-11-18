@@ -3287,6 +3287,13 @@ exit 0
 	runLauncher(t, cmd, f, &helperPID)
 	helperPID, helperGroup := logPIDAndGroup(t, f, "helper-pid=")
 	cliPID, cliGroup := logPIDAndGroup(t, f, "cli-pid=")
+	// The CLI publishes its own group, and that is the only handle that survives
+	// its reparenting. Registered here, as soon as the fixture has reported it, so
+	// a launcher that fails to stop the CLI leaves the sweep reporting a survivor
+	// rather than a TERM-ignoring loop running for the rest of the session. The
+	// sweep's own path match is diagnostic only, which is why this registration is
+	// what makes the cleanup total.
+	t.Cleanup(func() { killGroups(cliGroup) })
 	if cliGroup == helperGroup {
 		t.Fatalf("the fixture CLI is in the helper's group %d: this case needs it outside the helper's tree", helperGroup)
 	}

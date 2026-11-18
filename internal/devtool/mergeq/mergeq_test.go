@@ -884,6 +884,255 @@ func TestWaitBudgetBoundsTheReadsItMakes(t *testing.T) {
 	}
 }
 
+// TestARefusalAcrossTheDeadlineIsStillARefusal pins that an expired context does
+// not launder a definite no into an unknown.
+//
+// gh can return the refusal just before the budget expires, with the output drain
+// crossing it afterwards, so the call's context is expired while its answer is a
+// definite refusal. Treating that as uncertain sends the run to reconcile, and an
+// entry another operator made for the same pull request then turns a refused
+// `--jump` into reported success -- the truthfulness bug this is about, not a
+// timeout one. The refusal outranks the expired context.
+func TestARefusalAcrossTheDeadlineIsStillARefusal(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	c := &refusingEnqueueClient{now: &now, spend: time.Second}
+	c.statuses = []Status{
+		{ID: "PR_6499", State: "OPEN"},
+		// Another operator's entry: the reconciliation's fresh read finds this and
+		// would report it as this invocation's success.
+		{ID: "PR_6499", State: "OPEN", Entry: queueEntry(3)},
+	}
+	clock := Clock{
+		Now:   func() time.Time { return now },
+		Sleep: func(_ context.Context, d time.Duration) bool { now = now.Add(d); return true },
+	}
+	out, exitErr := Execute(context.Background(), opts(time.Second), c, clock)
+	if exitErr == nil {
+		t.Fatalf("outcome = %+v with no error: a refused --jump was reported as success because another operator had queued the PR", out)
+	}
+	if exitErr.Kind != EnqueueFailed {
+		t.Fatalf("kind = %v, want EnqueueFailed: the call returned a refusal, which is an answer even when the allowance expired while its output drained", exitErr.Kind)
+	}
+	// The answer is not just the code. A reconciled refusal spends a read looking
+	// for this invocation's work and would find the other operator's entry; the
+	// refused invocation must not read the queue at all after the mutation.
+	if c.reads != 1 {
+		t.Fatalf("%d status read(s) followed the refusal, want none: a refusal is an answer, and reconciling it is what let another operator's queue entry be reported as this invocation's success", c.reads-1)
+	}
+}
+
+// refusingEnqueueClient returns a definitive refusal AFTER spending the whole
+// wait, which is the drain crossing the deadline on a call that answered no.
+type refusingEnqueueClient struct {
+	fakeClient
+	now   *time.Time
+	spend time.Duration
+	// reads counts the status reads, which is how the case sees whether the run
+	// went on to reconcile a refusal it already had an answer for.
+	reads int
+}
+
+func (c *refusingEnqueueClient) Status(ctx context.Context, repo, pr string) (Status, error) {
+	c.reads++
+	return c.fakeClient.Status(ctx, repo, pr)
+}
+
+func (c *refusingEnqueueClient) Enqueue(ctx context.Context, _, _ string, _ bool) error {
+	// The call waits out its allowance and THEN reports the refusal, which is the
+	// reviewer's interleaving: gh answered no just before the deadline and the
+	// drain crossed it, so the context is expired while the answer is definite.
+	// The clock is advanced first so the post-deadline allowance is still there for
+	// a reconciliation read to spend -- if the run wrongly reconciles.
+	*c.now = c.now.Add(c.spend - time.Millisecond)
+	<-ctx.Done()
+	return &RefusalError{Detail: "the pull request is already in the merge queue, so --jump was refused"}
+}
+
+// TestAStalledStartingLookupIsBounded pins that the first reads are bounded too.
+//
+// The starting status and merge probes ran on the run's signal-only context,
+// which carries no deadline: a stalled `gh pr view` held a `--wait 570`
+// invocation for as long as GitHub took, before the wait had even started, so
+// the number the operator asked for bounded nothing. They are given a finite
+// allowance now, and an allowance that expires is a lookup failure (exit 2)
+// rather than an interrupt -- the operator stopped nothing.
+//
+// The assertion is on the deadline the read RECEIVES, not on waiting one out:
+// waiting a real allowance to expire would spend the suite's half-minute proving
+// that a timer fires, and the finding is about which budget applies.
+func TestAStalledStartingLookupIsBounded(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	clock := Clock{
+		Now: func() time.Time { return now },
+		// The wait is never entered: the starting read answers first, so this fake
+		// only has to keep a real hour from being waited out.
+		Sleep: func(_ context.Context, d time.Duration) bool { now = now.Add(d); return true },
+	}
+	var stdout, stderr strings.Builder
+	c := &stalledStartingClient{}
+	_ = Run(context.Background(), opts(time.Hour), c, clock, &stdout, &stderr)
+	if !c.bounded {
+		t.Fatal("the first status read was issued on a context carrying no deadline: a stalled gh pr view holds the whole invocation before the wait it was asked for even starts")
+	}
+	// The run's own cancellation is still the interrupt, and the allowance is not
+	// allowed to become one: an expired starting read is exit 2, not 130.
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	cancelled := &cancelledStartingClient{cancel: cancel}
+	if code := Run(cancelCtx, opts(time.Hour), cancelled, clock, &stdout, &stderr); code != InterruptedExit {
+		t.Fatalf("Run = exit %d (stderr %q), want %d: a starting read ended by the operator's signal is not a lookup failure", code, stderr.String(), InterruptedExit)
+	}
+}
+
+// stalledStartingClient records whether its first read carried a deadline, which
+// is what tells a bounded read from one that can hold the run forever.
+type stalledStartingClient struct {
+	fakeClient
+	bounded bool
+	// seen says the first read has been recorded. Only that one is the starting
+	// lookup: the wait's own polls also reach Status, and one of them overwriting
+	// the answer hid an unbounded starting read on the first run of this case.
+	seen bool
+}
+
+func (c *stalledStartingClient) Status(ctx context.Context, _, _ string) (Status, error) {
+	if !c.seen {
+		c.seen = true
+		_, c.bounded = ctx.Deadline()
+	}
+	return Status{ID: "PR_6499", State: "OPEN", Entry: queueEntry(1)}, nil
+}
+
+// cancelledStartingClient cancels the run on its first read, which is the
+// signal arriving while the starting lookup is in flight.
+type cancelledStartingClient struct {
+	fakeClient
+	cancel func()
+}
+
+func (c *cancelledStartingClient) Status(ctx context.Context, _, _ string) (Status, error) {
+	c.cancel()
+	<-ctx.Done()
+	return Status{}, ctx.Err()
+}
+
+// TestTheConfirmationSpendsThePostDeadlineAllowance pins that a budget boundary
+// is not a verdict.
+//
+// An enqueue that succeeds just before the deadline leaves the confirmation less
+// time than the read needs. Reporting the queue unread there loses the only read
+// that could confirm an accepted mutation, while the same read starting a moment
+// later would have had a full allowance: the outcome depends on a boundary
+// nobody asked about. The confirmation therefore draws on the same shared
+// post-deadline allowance the wait's last reads use.
+func TestTheConfirmationSpendsThePostDeadlineAllowance(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	// The mutation spends the whole wait, so the confirmation starts with nothing
+	// left of the caller's budget.
+	c := &spendingEnqueueClient{now: &now, spend: time.Second}
+	c.statuses = []Status{
+		{ID: "PR_6499", State: "OPEN"},
+		{ID: "PR_6499", State: "OPEN", Entry: queueEntry(2)},
+	}
+	// The clock has to read the same variable the client advances: a fakeClock
+	// value copies the instant, so the run would see a clock that never moved and
+	// the case would pass whatever the confirmation did.
+	clock := Clock{
+		Now:   func() time.Time { return now },
+		Sleep: func(_ context.Context, d time.Duration) bool { now = now.Add(d); return true },
+	}
+	out, exitErr := Execute(context.Background(), opts(time.Second), c, clock)
+	if exitErr != nil {
+		t.Fatalf("Execute: %v, want the confirmation to draw on the post-deadline allowance and report where the accepted enqueue landed", exitErr)
+	}
+	// The mutation spent the whole wait, so the run's verdict is a timeout -- but
+	// throws the confirmation away. The position is what proves the confirmation
+	// read happened.
+	if out.Kind != TimedOut || out.Position != 2 {
+		t.Fatalf("outcome = %+v, want TimedOut at position 2: the enqueue was accepted, the confirmation read confirmed it, and only the wait had run out", out)
+	}
+}
+
+// spendingEnqueueClient spends its whole wait inside the enqueue call, the way a
+// mutation that answers just before the deadline does, and then lets the reads
+// that follow answer.
+type spendingEnqueueClient struct {
+	fakeClient
+	now   *time.Time
+	spend time.Duration
+}
+
+func (c *spendingEnqueueClient) Enqueue(context.Context, string, string, bool) error {
+	*c.now = c.now.Add(c.spend)
+	return nil
+}
+
+// TestAStalledRecheckKeepsTheConfirmedPosition pins that a recheck which never
+// answers does not throw away an answer that already arrived.
+//
+// The first post-deadline poll confirms the PR is still queued at a known
+// position. If the follow-up recheck then stalls, the run still has this
+// instant's queue -- read after the deadline -- so reporting exit 2 ("nothing was
+// decided") denies what it saw and stops the documented repeat-on-timeout
+// workflow. The verdict is `MERGEQ timeout`, which is exit 1, with the position
+// that read confirmed.
+func TestAStalledRecheckKeepsTheConfirmedPosition(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	c := &stallAfterFirstPostDeadlineClient{fakeClient: fakeClient{statuses: []Status{{ID: "PR_6499", State: "OPEN", Entry: queueEntry(4)}}}}
+	c.now = &now
+	clock := Clock{
+		Now: func() time.Time { return now },
+		// The sleep spends the wait, so the next read is a post-deadline poll.
+		Sleep: func(_ context.Context, d time.Duration) bool { now = now.Add(d); c.waited = true; return true },
+	}
+	var stdout, stderr strings.Builder
+	if code := Run(context.Background(), opts(time.Second), c, clock, &stdout, &stderr); code != 1 {
+		t.Fatalf("Run = exit %d (stdout %q, stderr %q), want 1: the queue was confirmed after the deadline, so this is the repeat-on-timeout verdict and not a launcher failure", code, stdout.String(), stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "position=4") {
+		t.Fatalf("stdout %q does not name the position the post-deadline read confirmed: the confirmed answer was discarded", stdout.String())
+	}
+}
+
+// stallAfterFirstPostDeadlineClient answers the post-deadline poll, then reports
+// its allowance as spent on every read after it, which is a recheck that never
+// completes.
+type stallAfterFirstPostDeadlineClient struct {
+	fakeClient
+	now *time.Time
+	// waited says the run has entered its wait, so the reads being seen are the
+	// ones the finding is about. Without it the STARTING read would set the
+	// fixture's state, and every read after it would stall on a real thirty-second
+	// context: the case would cost a minute and never reach the branch it names.
+	waited   bool
+	answered bool
+}
+
+func (c *stallAfterFirstPostDeadlineClient) Status(ctx context.Context, repo, pr string) (Status, error) {
+	if !c.waited {
+		return c.fakeClient.Status(ctx, repo, pr)
+	}
+	if c.answered {
+		// The recheck waits out its own allowance, which is the ending observe()
+		// classifies as expired rather than cancelled. An error returned without
+		// waiting would look like a failed lookup and never reach the branch this
+		// case is about.
+		<-ctx.Done()
+		return Status{}, ctx.Err()
+	}
+	c.answered = true
+	// Leave the recheck a millisecond of the shared allowance: the poll straddled
+	// the deadline late, so almost all of the post-deadline allowance is gone by
+	// the time the recheck starts. A real expired context rather than a stand-in,
+	// and it costs a millisecond rather than an interval.
+	*c.now = c.now.Add(finalObservationAllowance - time.Millisecond)
+	return c.fakeClient.Status(ctx, repo, pr)
+}
+
 // TestTheWaitSpendsOnePostDeadlineAllowance pins how long a run may keep reading
 // after the wait its caller asked for has run out.
 //
