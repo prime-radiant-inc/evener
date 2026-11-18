@@ -452,7 +452,89 @@ test("a live row arriving above the trigger anchors the scroll and leaves the me
 // reader scrolled 40px down it, so the trigger ends 40px HIGHER on screen while
 // the offset gains exactly those 40 - its place in the content is unmoved, and
 // that is what makes the offset change the reader's.
-test("a scroll that moves the trigger out from under the popup still closes the menu", async () => {
+// A live update can move the trigger twice before any scroll is classified, and
+// only the SECOND of those movements is the browser's correction. A row
+// arriving inside the visible area moves the trigger down while the offset
+// stays put; the menu re-anchors around it. A later insertion above the visible
+// area then makes the browser move the offset to hold the trigger where it now
+// is, and that step has to be judged against the RE-ANCHORED position. Judged
+// against the position from before the first insertion, both shifts land in one
+// comparison, the offset step looks like a reader's scroll, and the menu closes.
+test("a clamp after a live insertion still leaves the menu open and re-anchored", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  // The trigger's screen position, moved by the first insertion and then held
+  // still by the browser's correction.
+  let triggerTop = 300;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  // The menu follows the first insertion through this observer: no scroll
+  // event is emitted for it, which is the whole difficulty.
+  class FiringResizeObserver {
+    static callback: ResizeObserverCallback | null = null;
+    constructor(callback: ResizeObserverCallback) {
+      FiringResizeObserver.callback = callback;
+    }
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  vi.stubGlobal("ResizeObserver", FiringResizeObserver);
+  const { flush } = captureFrames();
+  try {
+    render(
+      <div data-testid="owning-scroller" style={{ overflowY: "auto" }}>
+        <Menu trigger="Actions" items={items()} />
+      </div>,
+    );
+    const scroller = screen.getByTestId("owning-scroller");
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 500 });
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 200 });
+    scroller.scrollTop = 300;
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu").style.top).toBe("332px"); // 300 + 28 + 4
+
+    // A session enters Live INSIDE the visible area: the trigger slides 40
+    // down the content, and the offset is untouched. The pane reports a reflow
+    // and the popup follows to 340 + 28 + 4.
+    triggerTop = 340;
+    act(() => {
+      FiringResizeObserver.callback?.([], {} as ResizeObserver);
+    });
+    flush();
+    expect(screen.getByRole("menu").style.top).toBe("372px");
+
+    // Now a second session enters ABOVE the visible area. The content grows by
+    // 40, and the browser moves the offset by the same 40 so the trigger stays
+    // where the reader is looking: 340 of a new 580.
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 580 });
+    scroller.scrollTop = 340;
+    fireEvent.scroll(scroller);
+    flush();
+
+    // The correction is the browser's, not the reader's: the menu is still
+    // open and still on its trigger.
+    expect(screen.getByRole("menu")).toBeTruthy();
+    expect(screen.getByRole("menu").style.top).toBe("372px");
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// The other side of that reading, and the one that keeps this a fix rather than
+// a suppression: a scroll that really does slide the trigger out from under the
+// popup still closes the menu. Here the rail's content is untouched and the
+// reader scrolled 40px down it, so the trigger ends 40px HIGHER on screen while
+// the offset gains exactly those 40 - its place in the content is unmoved, and
+// that is what makes the offset change the reader's.
+test("a scroll of the trigger's scroller that moves the trigger still closes the menu", async () => {
   const user = userEvent.setup();
   const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
   Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
@@ -621,43 +703,6 @@ test("an equally hidden row is not revealed when the scrollport shrinks", async 
     // Not revealed: no pixel of the row changed from visible to hidden.
     expect(popup.scrollTop).toBe(0);
     expect(document.activeElement).toBe(last);
-  } finally {
-    vi.restoreAllMocks();
-    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
-  }
-});
-
-// The other half, and the one that keeps the dismissal: a scroll of the
-// trigger's own container that really does move the trigger still closes the
-// menu. Without this, "stop closing on scroll" would pass the test above and be
-// worse than the bug it replaced. The viewport is unchanged here, so the clamp
-// reading has nothing to stand on.
-test("a scroll that moves the trigger out from under the popup still closes the menu", async () => {
-  const user = userEvent.setup();
-  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
-  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
-  let triggerTop = 400;
-  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
-    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
-    if (this.tagName === "UL") return box(0, 0, 160, 120);
-    return box(0, 0, 0, 0);
-  });
-  stubPopupLayoutBox(window, 160, 120);
-  try {
-    render(
-      <div data-testid="owning-scroller">
-        <Menu trigger="Actions" items={items()} />
-      </div>,
-    );
-    await user.click(screen.getByRole("button", { name: "Actions" }));
-    expect(screen.getByRole("menu")).toBeTruthy();
-
-    // The reader scrolls the trigger's container: the trigger slides up under
-    // the fixed popup with the window exactly as tall as it was.
-    triggerTop = 260;
-    fireEvent.scroll(screen.getByTestId("owning-scroller"));
-
-    expect(screen.queryByRole("menu")).toBeNull();
   } finally {
     vi.restoreAllMocks();
     if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
@@ -1959,6 +2004,73 @@ test("a label that wraps above the focused row reveals it, without any item or p
 // box does not change at all (it is height-capped, so it stays capped at the
 // same size). No placement pass sees it, because nothing about the menu's
 // geometry moved - only what sits above the row holding focus.
+// The mirror of the case above, and the one a hidden-pixel count gets wrong. The
+// reader scrolled 50px past the first row, which is 44px tall: all of it is
+// hidden. The popup then narrows and that row's label wraps to 60px, so the
+// same 50px offset leaves the row's LAST 10px showing. It went from entirely
+// out of sight to partly in sight without the reader touching the scroll - and
+// a count of hidden pixels calls 50 worse than 44 and yanks them back to the
+// top, out of the actions they were reading.
+test("a wrap that brings part of a hidden row into view leaves the reader's scroll alone", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  const PORT = 120;
+  // Four rows; the first is 44px, or 60px once its label wraps.
+  let firstHeight = 44;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, 300, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, PORT);
+    return box(0, 0, 0, 0);
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "UL") return PORT;
+    if (this.tagName !== "LI" || !this.parentElement) return 0;
+    return Array.prototype.indexOf.call(this.parentElement.children, this) === 0 ? firstHeight : 44;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "UL" ? 160 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName !== "LI" || !this.parentElement) return 0;
+    const index = Array.prototype.indexOf.call(this.parentElement.children, this);
+    return index === 0 ? 0 : firstHeight + (index - 1) * 44;
+  });
+  const { flush } = captureFrames();
+  const four: MenuItem[] = [
+    { id: "overview", label: "Overview", onSelect: vi.fn() },
+    { id: "archive", label: "Archive", onSelect: vi.fn() },
+    { id: "rename", label: "Rename", onSelect: vi.fn() },
+    { id: "delete", label: "Delete", onSelect: vi.fn() },
+  ];
+  try {
+    render(<Menu trigger="Actions" items={four} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    const first = screen.getByRole("menuitem", { name: "Overview" });
+    // Focus stays on Overview, and the reader scrolls to 50: the row spans
+    // 0..44, so all 44 of its pixels are above a scrollport starting at 50.
+    expect(document.activeElement).toBe(first);
+    const popup = screen.getByRole("menu");
+    popup.scrollTop = 50;
+    expect(popup.scrollTop).toBe(50);
+
+    // The popup narrows and Overview's label wraps. The row is 60px now, so it
+    // spans 0..60 and the scrollport at 50 shows its last 10px. Nothing the
+    // reader did moved; layout brought part of the row INTO view.
+    firstHeight = 60;
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 600 });
+    fireEvent(window, new Event("resize"));
+    flush();
+
+    // They stay where they were, reading the lower actions.
+    expect(popup.scrollTop).toBe(50);
+    expect(document.activeElement).toBe(first);
+  } finally {
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
 test("a row inserted above the focused row leaves it in view", async () => {
   const user = userEvent.setup();
   const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");

@@ -212,6 +212,41 @@ interface ScrollerRecord {
   contentTop: number;
 }
 
+/** Where `triggerEl` sits inside `scroller`'s content: the difference between
+ * two readings is what the content above the trigger did, with the reader's own
+ * scroll taken back out. */
+function contentTopOf(triggerEl: HTMLElement, scroller: Element): number {
+  return triggerEl.getBoundingClientRect().top - scroller.getBoundingClientRect().top + scroller.scrollTop;
+}
+
+/** Re-record where the trigger sits inside every scroller that holds it, for the
+ * scrollers whose offset has not moved since the last look.
+ *
+ * A placement pass follows a LAYOUT change rather than a scroll. When a live
+ * row arrives inside the visible area the trigger moves deeper into the content
+ * while the offset does not move at all, so the recorded position is stale from
+ * the moment the menu re-anchors around it. A later anchoring adjustment then
+ * measures its offset step against a content position that already includes
+ * the earlier shift, the two no longer cancel, and the menu closes on an update
+ * the reader did not cause.
+ *
+ * A scroller whose offset HAS moved is left exactly as it was: that movement is
+ * a scroll this widget has not classified yet, and overwriting the offset here
+ * would erase the only evidence of what the scroll did - a clamp or an
+ * anchoring adjustment would then read as the reader leaving. */
+function refreshScrollerBaselines(
+  triggerEl: HTMLElement,
+  ownerWindow: Window,
+  records: WeakMap<Element, ScrollerRecord>,
+): void {
+  for (let node: HTMLElement | null = triggerEl; node !== null; node = node.parentElement) {
+    if (!isScrollContainer(node, ownerWindow)) continue;
+    const recorded = records.get(node);
+    if (recorded !== undefined && recorded.scrollTop !== node.scrollTop) continue;
+    records.set(node, { scrollTop: node.scrollTop, contentTop: contentTopOf(triggerEl, node) });
+  }
+}
+
 /** What a scroller that holds the trigger just did, read from its own numbers.
  *
  * A `scroll` from it has three causes, and only the last one takes the trigger
@@ -244,7 +279,7 @@ function classifyScrollerScroll(
   if (triggerEl === null) return "scrolled";
   const now = scroller.scrollTop;
   const previous = records.get(scroller);
-  const contentTop = triggerEl.getBoundingClientRect().top - scroller.getBoundingClientRect().top + now;
+  const contentTop = contentTopOf(triggerEl, scroller);
   records.set(scroller, { scrollTop: now, contentTop });
   if (previous === undefined) return "scrolled";
   const maximum = scroller.scrollHeight - scroller.clientHeight;
@@ -466,27 +501,31 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         // back is the bug this asks about. A row that was never visible and
         // stayed exactly as hidden as it was is not a row layout hid, either.
         //
-        // Hidden pixels are counted INSIDE the row. The gap between the row and
-        // the scrollport is not the row's, and counting it makes a row that is
-        // entirely out of sight look worse whenever the scrollport shrinks -
-        // 44px hidden becomes 64px hidden without a single pixel of the row
-        // coming back into view. Clamped to the row's own height, an
-        // equally-hidden row stays equal and nothing moves the reader.
+        // The question is whether the row got HARDER to see, and the answer is
+        // counted in the row's own pixels - how many of them the scrollport
+        // shows. Counting hidden pixels instead answers a different question:
+        // a row can gain hidden pixels above it and lose none of what it had
+        // on screen, because it grew. A first row the reader scrolled 50px
+        // past is 44px entirely hidden; the popup narrows, the label wraps,
+        // and the same 50px offset leaves 10px of the now-60px row showing.
+        // That is 50 hidden pixels against 44 - "worse" by the count, and
+        // plainly better on screen. Scrolling back to it there takes the lower
+        // actions the reader reached out of their hands.
+        //
+        // A row with no visible pixels in either observation is a row the
+        // reader scrolled away from, and it stays that way however it grows.
+        // A row that had visible pixels and lost them is the case this reveal
+        // is for. Both fall out of the one comparison: more visible is never a
+        // reason to move the reader.
         const scrollTop = popup.scrollTop;
         const hiddenBelow = (obs: RowObservation) =>
           Math.min(obs.height, Math.max(0, obs.top + obs.height - (scrollTop + obs.portHeight)));
         const hiddenAbove = (obs: RowObservation) => Math.min(obs.height, Math.max(0, scrollTop - obs.top));
-        // A row with nothing visible in EITHER observation is a row the reader
-        // scrolled away from, and it stays that way however it grows: a label
-        // above it wrapping taller makes a hidden row more hidden, but no pixel
-        // of it was ever on screen to lose. Revealing there takes the reader off
-        // the actions they were reading. A row that had visible pixels and lost
-        // them is the case this reveal is for.
-        const wasVisible = (obs: RowObservation) => hiddenAbove(obs) < obs.height && hiddenBelow(obs) < obs.height;
-        if (!wasVisible(before) && !wasVisible(now)) return;
-        const worseBelow = hiddenBelow(now) > hiddenBelow(before);
-        const worseAbove = hiddenAbove(now) > hiddenAbove(before);
-        if (!worseBelow && !worseAbove) return;
+        // The gap between a row and the scrollport is not the row's, so each
+        // side is clamped to the row's own height: an equally-hidden row stays
+        // equal when the scrollport shrinks under it.
+        const visiblePixels = (obs: RowObservation) => obs.height - hiddenAbove(obs) - hiddenBelow(obs);
+        if (visiblePixels(now) >= visiblePixels(before)) return;
       }
       // A row inserted BELOW the focused one moves nothing above it, and the
       // reader's own scroll to the lower actions must survive that: the guards
@@ -611,6 +650,10 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     setPosition((current) =>
       current !== null && current.left === next.left && current.top === next.top ? current : next,
     );
+    // This pass has just laid the popup out around wherever the trigger is NOW,
+    // so that is the position any later scroll is judged against - see
+    // refreshScrollerBaselines.
+    refreshScrollerBaselines(triggerEl, ownerWindow, scrollerRecordsRef.current);
     // The origin is read against the trigger's rect, so it takes the same
     // translated position: `placed` is in the visual viewport's coordinates,
     // and comparing it with a layout-coordinate trigger picks the wrong edge
