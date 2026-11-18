@@ -1019,6 +1019,40 @@ test("an epoch change wins over an applied row with the same id at a lower revis
   expect(row?.status).toBe("running");
 });
 
+// A replacement daemon numbers its hold samples from its own start, so a
+// sequence from the retired epoch must not judge a frame from the new one: a
+// larger retired number would either suppress a real wait or keep a finished
+// one visible. This is the "within the source epoch" half of the ordering rule.
+test("a replacement epoch's frame is not judged by the retired hold sequence", async () => {
+  const { client, store } = await pushOwner();
+  // The old daemon's last sample carries a high sequence while held.
+  client.emitNotification(
+    pushedFrame(
+      frameInfo({
+        projectionRevision: 5,
+        drainHeldByJobs: true,
+        holdSequence: 900,
+        runningJobCount: 2,
+        oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+      }),
+    ),
+  );
+  expect(store.getSnapshot().delegates.rows[0]?.holdSequence).toBe(900);
+
+  // The replacement announces its epoch through a summary read, as it does in
+  // production, and then frames the row with its own low sequence and no hold.
+  client.on("evener/thread/activity/read", ({ scope }) => ({
+    ...summaryFixture(scope),
+    context: pushContext({ epoch: "epoch-2" }),
+  }));
+  await store.refresh("summary");
+  client.emitNotification(pushedFrame(frameInfo({ projectionRevision: 1, holdSequence: 1 })));
+  const row = store.getSnapshot().delegates.rows[0];
+  expect(row?.drainHeldByJobs ?? false).toBe(false);
+  expect(row?.holdSequence).toBe(1);
+  expect(row?.runningJobCount ?? 0).toBe(0);
+});
+
 test("extending the epoch comparison to root reads neither loops nor misses the change", async () => {
   const { client, store } = await pushOwner();
   expect(callsTo(client, "evener/thread/delegates/list")).toBe(1);
@@ -2289,12 +2323,23 @@ test("a buffered frame places on the identity its walk served, never on the twin
 
 test("a frame that arrives while a replacement is announced is not overwritten by its read", async () => {
   const client = activityClient();
+  // The row starts held: a previous daemon retired this session while it was
+  // waiting on a shell, so the retained sequence is the old daemon's and is
+  // higher than anything the replacement will assign for a long time.
   client.on("evener/thread/activity/read", ({ scope }) => ({ ...summaryFixture(scope), context: pushContext() }));
   client.on("evener/thread/delegates/list", ({ scope }) => ({
     context: pushContext(),
     scope: scope ?? "session",
     page: { complete: true, issues: [] },
-    delegates: [delegateRow({ status: "running" })],
+    delegates: [
+      delegateRow({
+        status: "running",
+        drainHeldByJobs: true,
+        holdSequence: 900,
+        runningJobCount: 2,
+        oldestRunningJobStartedAt: "2026-11-18T10:00:00Z",
+      }),
+    ],
   }));
   const store = owner(client);
   store.start();
@@ -2314,19 +2359,31 @@ test("a frame that arrives while a replacement is announced is not overwritten b
   expect(store.getSnapshot().delegates.loading).toBe(true);
   client.emitNotification(
     pushedFrame(
-      frameInfo({ delegateId: "delegate-1", projectionRevision: 9, status: "completed", reportPreview: "settled" }),
+      // The resumed delegate is running again and is not waiting on a shell,
+      // but the replacement numbers its hold samples from its own start.
+      frameInfo({
+        delegateId: "delegate-1",
+        projectionRevision: 9,
+        status: "completed",
+        reportPreview: "settled",
+        holdSequence: 1,
+      }),
     ),
   );
   reconciled.resolve({
     context: pushContext({ epoch: "epoch-2" }),
     scope: "session",
     page: { complete: true, issues: [] },
-    delegates: [delegateRow({ status: "running" })],
+    delegates: [delegateRow({ status: "running", holdSequence: 1 })],
   });
   await activityState(store, () => !store.getSnapshot().delegates.loading);
   const row = store.getSnapshot().delegates.rows[0];
   expect(row?.status).toBe("completed");
   expect(row?.reportPreview).toBe("settled");
+  // The retired daemon's hold cannot survive into the replacement's epoch.
+  expect(row?.drainHeldByJobs ?? false).toBe(false);
+  expect(row?.holdSequence).toBe(1);
+  expect(row?.runningJobCount ?? 0).toBe(0);
 });
 
 test("a terminal frame racing the first response of a retained owner waits for the ordering it establishes", async () => {

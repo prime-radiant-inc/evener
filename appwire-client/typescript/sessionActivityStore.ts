@@ -1110,7 +1110,14 @@ export class SessionActivityStore {
     // Its `holdSequence` is the ordering, and it is compared against the row we
     // are merging into — never against the durable winner, which may be this
     // very frame: a higher revision does not mean a newer hold sample.
-    const held = joinDelegateHold(merged, current, frame);
+    //
+    // A retired record means the ordering has left the epoch this row's
+    // sequence was assigned in: a replacement daemon numbers its samples from
+    // its own start, so a larger retired sequence would suppress a real wait,
+    // or keep a finished one visible. The frame is first sight for this epoch,
+    // exactly as it is for the durable fields above.
+    const holdComparable = applied === undefined ? undefined : current;
+    const held = joinDelegateHold(merged, holdComparable, frame);
     return delegateRowsEqual(held, current) ? current : held;
   }
   private joinDelegateRows(
@@ -1152,8 +1159,14 @@ export class SessionActivityStore {
         // a frame that touched this identity since then carries a later one. The
         // source's sequence decides between them, not the order they arrived
         // in: the row keeps whichever sample the producer took later.
+        //
+        // Only within one source epoch, though. A retained row's sequence was
+        // assigned by the daemon that has since been replaced, and its numbers
+        // restart at 1, so comparing across the boundary would carry a finished
+        // wait forward — or suppress a real one. A row the ordering no longer
+        // covers contributes no sample.
         const resolved =
-          existing !== undefined && (existing.holdSequence ?? 0) > (candidate.holdSequence ?? 0)
+          existing !== undefined && currentOrdering && (existing.holdSequence ?? 0) > (candidate.holdSequence ?? 0)
             ? keepDelegateHold(candidate, existing)
             : candidate;
         merged = existing && delegateRowsEqual(resolved, existing) ? existing : resolved;
@@ -1594,17 +1607,25 @@ export function isValidActivityTimestamp(value: string): boolean {
  * A newer sequence is a change even when the displayed fields match: a client
  * that saw an intervening hold needs this sample's sequence to clear it. An
  * exact duplicate stays suppressed. A producer that predates the field sends
- * none, and both sides read 0, so its frames keep the old behaviour. */
-function joinDelegateHold(row: SessionDelegate, current: SessionDelegate, frame: EvenerDelegateInfo): SessionDelegate {
-  const currentSequence = current.holdSequence ?? 0;
+ * none, and both sides read 0, so its frames keep the old behaviour.
+ *
+ * `previous` is undefined when the row's sample belongs to a retired epoch and
+ * cannot be compared: the frame then supplies its own hold, as it does for
+ * every durable field. */
+function joinDelegateHold(
+  row: SessionDelegate,
+  previous: SessionDelegate | undefined,
+  frame: EvenerDelegateInfo,
+): SessionDelegate {
+  const currentSequence = previous?.holdSequence ?? 0;
   const frameSequence = frame.holdSequence ?? 0;
   const newer =
     currentSequence > frameSequence
       ? {
-          drainHeldByJobs: current.drainHeldByJobs,
-          runningJobCount: current.runningJobCount,
-          oldestRunningJobStartedAt: current.oldestRunningJobStartedAt,
-          holdSequence: current.holdSequence,
+          drainHeldByJobs: previous?.drainHeldByJobs ?? row.drainHeldByJobs,
+          runningJobCount: previous?.runningJobCount ?? row.runningJobCount,
+          oldestRunningJobStartedAt: previous?.oldestRunningJobStartedAt ?? row.oldestRunningJobStartedAt,
+          holdSequence: previous?.holdSequence ?? row.holdSequence,
         }
       : {
           drainHeldByJobs: frame.drainHeldByJobs,

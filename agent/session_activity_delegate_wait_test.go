@@ -641,25 +641,31 @@ func TestOwnedShellLeavingTheRunningMapPublishesTheHold(t *testing.T) {
 	}
 
 	// The second shell ends the drain entirely, so the row stops claiming it.
+	// Only a clear published after this point counts: finishing the first shell
+	// can also publish a temporary clear while the drain runs a notification
+	// turn, and that clear says nothing about the second shell having left.
+	beforeSecond := len(recordedHoldFrames(&recorder, result.DelegateID))
 	env.finishSecond()
-	testwait.Until(t, "a frame after the last owned shell that no longer holds", func() bool {
-		seen := false
-		for _, frame := range recordedHoldFrames(&recorder, result.DelegateID) {
-			if frame.DrainHeldByJobs {
-				seen = true
-				continue
-			}
-			if seen {
+	// Synchronize on the read, which is the state the running map actually
+	// reports, rather than on a frame: a clear published before finalization
+	// removed the second shell would let the assertion run while the row still
+	// legitimately holds one job.
+	var done appwire.SessionDelegate
+	testwait.Until(t, "a read row that no longer reports the shell wait", func() bool {
+		done = requireDelegateActivityRow(t, delegateActivityRows(t, parent), result.DelegateID)
+		return !done.DrainHeldByJobs && done.RunningJobCount == 0
+	})
+
+	// And the frame the second shell's completion published says the same, so
+	// the two carriers cannot drift.
+	testwait.Until(t, "a frame from the second shell's completion that no longer holds", func() bool {
+		for _, frame := range recordedHoldFrames(&recorder, result.DelegateID)[beforeSecond:] {
+			if !frame.DrainHeldByJobs && frame.RunningJobCount == 0 {
 				return true
 			}
 		}
 		return false
 	})
-	done := requireDelegateActivityRow(t, delegateActivityRows(t, parent), result.DelegateID)
-	if done.DrainHeldByJobs || done.RunningJobCount != 0 {
-		t.Fatalf("read row after the last shell left = hold %v, count %d; want no shell wait",
-			done.DrainHeldByJobs, done.RunningJobCount)
-	}
 }
 
 // The drain parks the run on its owned jobs, but it also runs turns to handle a
