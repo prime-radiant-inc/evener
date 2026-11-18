@@ -248,8 +248,10 @@ func TestDelegateManagerRoleNotInheritedOnCreateOrResume(t *testing.T) {
 		}
 		t.Cleanup(aside.Close)
 		captured := make(chan llm.Request, 2)
-		finish := func(req llm.Request) llm.Response { captured <- req; return agenttest.FinalResponse("result") }
-		client.Register(newFakeAdapter("openai", finish, finish))
+		client.Register(&agenttest.ScriptedAdapter{Provider: "openai", Responder: func(req llm.Request) llm.Response {
+			captured <- req
+			return agenttest.FinalResponse("result")
+		}})
 		check := func(s *Session, wantParent bool, wantAudiences ...string) string {
 			t.Helper()
 			var req llm.Request
