@@ -614,20 +614,32 @@ func (s *Session) publishAcknowledgedDelegateAttentionReport(attentionID string,
 	if beforePublication != nil {
 		beforePublication()
 	}
-	if turn.AttentionID != "" {
-		// The caller already folded this row: publishing reuses that read so a
-		// commit path costs no second transcript fold.
-		return s.retainDelegateAttentionTurn(turn)
-	}
+	// The row's resolution is re-read here, under the same lock, because the
+	// acknowledgment that made this report publishable also makes it eligible
+	// for a drive, and a drive can resolve it before this callback runs. A row a
+	// drive consumed, or a stop discarded and reopened under a held identity, is
+	// complete: its history belongs to the path that resolved it, and inserting
+	// it from here re-presents a report the user stopped or duplicates one that
+	// request already carried. The caller's fold cannot answer this — it was
+	// taken before the acknowledgment, which is exactly the interval the drive
+	// resolves in.
 	fold, err := s.delegateAttentionFoldLocked()
 	if err != nil {
 		return err
 	}
-	turn, ok := fold.turns[attentionID]
+	if _, resolved := fold.resolutions[attentionID]; resolved {
+		return nil
+	}
+	if turn.AttentionID != "" {
+		// The caller already folded this row's content: publishing reuses that
+		// read rather than taking the turn from the fold above.
+		return s.retainDelegateAttentionTurn(turn)
+	}
+	resolvedTurn, ok := fold.turns[attentionID]
 	if !ok {
 		return nil
 	}
-	return s.retainDelegateAttentionTurn(turn)
+	return s.retainDelegateAttentionTurn(resolvedTurn)
 }
 
 // appendDelegateNotificationDurably appends one private, model-bound attention
@@ -1810,9 +1822,14 @@ func (s *Session) delegateAttentionDeliveryAwaitsAcknowledgment(deliveryID strin
 	if controller == nil || deliveryID == "" {
 		return false
 	}
-	source, ok := parseDelegateDeliveryID(deliveryID)
+	source, ok := delegatestore.ParseDeliveryPoster(deliveryID)
 	if !ok {
-		return false
+		// An identity neither shape can split is not evidence of an
+		// acknowledgment. Treating it as acknowledged is how an update's
+		// deposit got published ahead of the acknowledgment that releases the
+		// older report; withholding is the recoverable direction, and the row's
+		// own arm republishes it.
+		return true
 	}
 	return controller.deliveryPendingForReceiver(source, deliveryID, s.owningDelegateID)
 }
@@ -2313,10 +2330,18 @@ func (s *Session) holdAcceptedTrigger(attentionID string) {
 // what admission means, so the hold ends here rather than waiting for a wake
 // that already committed. Other pending stopped reports keep their quiet.
 //
-// The tail move is unconditional because no settled request has presented this
-// trigger: the owed generation has no RunStarted, so nothing has been answered
-// for at any position. A turn the resumed history already holds is replaced in
-// place and then moved, so restoration stays idempotent.
+// The trigger's own order is only in question when it is a reopened row. A
+// reopen's turn was appended where the settle left it, so the exchanges of a
+// generation that ran while the quiet stood sit after it, and ending the
+// recovered request on the report is what the release owes. Every other
+// recovered trigger keeps its arrival order: an update and the terminal report
+// behind it can both be pending when a drive accepts the update, and moving the
+// update to the tail would put it after that report — reversing the delivery
+// queue, which is the order the resident release preserves. So the move is
+// keyed on what the row is, not on which path restored it.
+//
+// A turn the resumed history already holds is replaced in place and then moved,
+// so restoration stays idempotent.
 func (s *Session) restoreAcceptedTrigger(attentionID string, turns []schema.Turn) error {
 	s.holdAcceptedTrigger(attentionID)
 	for i, turn := range turns {
@@ -2325,11 +2350,13 @@ func (s *Session) restoreAcceptedTrigger(attentionID string, turns []schema.Turn
 		}
 	}
 	s.clearDelegateAttentionHold(attentionID)
-	s.attentionMu.Lock()
-	err := s.moveResidentDelegateAttentionTurnToTailLocked(attentionID)
-	s.attentionMu.Unlock()
-	if err != nil {
-		s.emit(warningDataFromError("restore the recovered delegate attention trigger", err))
+	if _, _, reopened := cutDelegateAttentionReopenSegment(attentionID); reopened {
+		s.attentionMu.Lock()
+		err := s.moveResidentDelegateAttentionTurnToTailLocked(attentionID)
+		s.attentionMu.Unlock()
+		if err != nil {
+			s.emit(warningDataFromError("restore the recovered delegate attention trigger", err))
+		}
 	}
 	return nil
 }

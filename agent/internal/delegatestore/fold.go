@@ -685,6 +685,31 @@ func IsUpdateDeliveryID(deliveryID string) bool {
 	return err == nil
 }
 
+// ParseDeliveryPoster returns the delegate whose queue a delivery identity is
+// filed under. Both identity shapes answer here — a generation's report
+// (<id>/delivery/<generation>) and an update (<id>/update/<seq>) — because the
+// queue is keyed by the delegate that POSTED the packet, and a caller that
+// handles one shape and returns false for the other reads that other kind as
+// acknowledged. There is no third shape, and both are minted here, so this is
+// the only place that needs to know them.
+//
+// An identity this cannot split returns ok false and must be treated as
+// unanswerable, never as acknowledged.
+func ParseDeliveryPoster(deliveryID string) (delegateID string, ok bool) {
+	if delegateID, seq, found := strings.Cut(deliveryID, "/update/"); found && delegateID != "" {
+		if _, err := strconv.ParseUint(seq, 10, 64); err == nil {
+			return delegateID, true
+		}
+		return "", false
+	}
+	if delegateID, generation, found := strings.Cut(deliveryID, "/delivery/"); found && delegateID != "" {
+		if _, err := strconv.ParseUint(generation, 10, 64); err == nil {
+			return delegateID, true
+		}
+	}
+	return "", false
+}
+
 func validateEventEnvelope(event Event) error {
 	if event.DelegateID == "" {
 		return fmt.Errorf("delegate event %q has empty delegate id", event.Kind)

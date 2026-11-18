@@ -2251,11 +2251,21 @@ func TestDelegateAttention_PostAckArmReadFailureRetriesExactID(t *testing.T) {
 		t.Fatalf("delivery plans = %#v, want one", plans)
 	}
 
+	// The failure has to land on the read armDelegateAttentionsOnce takes after
+	// the acknowledgment commits (its surviving-row check), because that is the
+	// read whose failure this path is supposed to absorb. An earlier read fails
+	// for its own reason and the test would prove nothing about the arm.
+	// Counting is what identifies it: the deferred append folds once per append
+	// (two), and publication re-reads the row's resolution under the lock (one,
+	// see publishAcknowledgedDelegateAttentionReport), which puts the arm's read
+	// fourth. A fold added ahead of the arm moves this count with it; retarget
+	// the injected failure to that same read rather than to the same number.
+	const postAckArmFoldRead = 4
 	readCalls := 0
 	injected := errors.New("injected post-ack attention fold failure")
 	root.cfg.testOnly.delegateAttentionReadFold = func(path, sessionID string) (delegateAttentionFold, error) {
 		readCalls++
-		if readCalls == 3 {
+		if readCalls == postAckArmFoldRead {
 			return delegateAttentionFold{}, injected
 		}
 		return readDelegateAttentionFold(path, sessionID)

@@ -455,8 +455,10 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 				}
 			}
 			kept := make([]schema.Turn, 0, len(captured))
+			withheld := false
 			for i, turn := range captured {
 				if !eligible[i] {
+					withheld = true
 					continue
 				}
 				if identity := delegateAttentionTurnIdentity(turn); identity != "" {
@@ -471,6 +473,18 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			}
 			appended = kept
 			historyTurns = append([]schema.Turn{}, captured...)
+			// The rebuild's own capture decides whether this request is a
+			// standard view of the resident history, and the initial
+			// projection's answer does not carry: a watch frame can land after
+			// that projection and be withheld here while its wake is pending.
+			// A request that withholds a row must not use or seed an anchor — if
+			// it seeded one, the frame admitted before the next round would sit
+			// before that anchor and an otherwise eligible delta would skip it,
+			// leaving a turn the model has never seen. The flag is therefore the
+			// union of what the projection withheld and what this capture does.
+			if withheld {
+				heldDropped = true
+			}
 			if len(appended) == 0 {
 				// Nothing the reload added may be presented: the request keeps what
 				// it already carried rather than rebuilding around an empty append.

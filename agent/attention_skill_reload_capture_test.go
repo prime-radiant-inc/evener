@@ -6,7 +6,10 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/llm"
 )
 
 // TestTheSkillReloadDecidesEligibilityInsideItsCapture pins that the reload's
@@ -105,5 +108,123 @@ func TestTheSkillReloadDecidesEligibilityInsideItsCapture(t *testing.T) {
 	runtime.attentionMu.Unlock()
 	if !stillPending {
 		t.Fatalf("premise broken: %q is no longer pending after the round, so this cannot tell withholding from resolution", frameID)
+	}
+}
+
+// TestAFilteredSkillReloadDoesNotSeedAContinuationAnchor pins the rebuild's own
+// answer about whether it presents a standard view of the resident history.
+//
+// The load-bearing case is a frame that lands after the initial projection and
+// is withheld by the reload's capture while its wake is still pending. The
+// initial projection saw a complete history and reported no drops; the rebuild
+// sees the frame and withholds it. Reusing the initial flag lets the filtered
+// request seed a continuation anchor. The frame is then admitted before the next
+// round and sits before that anchor in resident history, so an otherwise
+// eligible delta skips it — a turn the model has never seen, which is the worst
+// shape this machinery takes. A request that withholds a row must therefore
+// neither use nor seed an anchor.
+func TestAFilteredSkillReloadDoesNotSeedAContinuationAnchor(t *testing.T) {
+	const marker = "the frame the reload's own capture withheld"
+	adapter := &agenttest.FakeAdapter{
+		Provider: "openai",
+		PlanResponsesContinuationFunc: func(req llm.Request) (llm.ResponsesContinuationPlan, error) {
+			return phase4DIContinuationPlan(req), nil
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	profile := NewOpenAIProfile("gpt-5.4")
+	stateDir := realTempDirForTest(t)
+	runtime, err := NewSession(client, withTestSessionNamer(client, profile), execenv.NewLocalExecutionEnvironment(stateDir), SessionConfig{
+		StateDir:                    stateDir,
+		OpenAIResponsesContinuation: "auto",
+		MaxSubagentDepth:            1,
+		testOnly: testConfig{
+			responsesContinuationSupportRegistry: map[llm.ResponsesEndpointFamily]llm.ResponsesContinuationSupport{
+				llm.ResponsesEndpointFamilyOpenAIPublic: phase4DIEnabledSupport(),
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() {
+		runtime.mu.Lock()
+		runtime.delegateController = nil
+		runtime.owningDelegateID = ""
+		runtime.mu.Unlock()
+		drainSessionEvents(runtime)
+		runtime.Close()
+	})
+	drainSessionEvents(runtime)
+
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, c, "dlg_anchor", "")
+	lease := delegateLease{delegateID: "dlg_anchor", generation: 1}
+	runtime.delegateController = c
+	runtime.owningDelegateID = lease.delegateID
+	c.mu.Lock()
+	c.live[lease.delegateID].runtime = runtime
+	c.live[lease.delegateID].binding.runtime = runtime
+	c.mu.Unlock()
+
+	// A stored anchor from an earlier round, so the initial projection is a
+	// standard view and reports no drops.
+	anchor := responsesContinuationEligibleAssistantTurn("resp_reload_anchor")
+	anchor.ResponseIDHash = "cont-handle-v1:response_id:reload_anchor"
+	anchor.ResponseRequestFingerprint = "cont-req-v1:reload_anchor"
+	anchor.ResponseStorageScopeFingerprint = "cont-scope-v1:reload_anchor"
+	runtime.mu.Lock()
+	runtime.history = append(runtime.history, anchor)
+	runtime.mu.Unlock()
+
+	// The reload obligation makes the delivery path append a typed notification,
+	// which is what triggers the rebuild.
+	missing := filepath.Join(stateDir, "skills", "opaque", "SKILL.md")
+	if err := runtime.persistSkillToolObligations(&schema.SkillTurnState{Obligations: []schema.SkillDeliveryObligation{{
+		InvocationID: "inv-anchor-reload",
+		ToolCallID:   "skill-anchor-reload",
+		Identity: schema.SkillContentIdentity{
+			Name:         "opaque",
+			DeclaredName: "opaque",
+			Source:       missing,
+			FileDigest:   "anchor-reload-file",
+		},
+		Route: "model_tool",
+	}}}); err != nil {
+		t.Fatalf("record the reload obligation: %v", err)
+	}
+
+	// The frame lands after the initial projection: appended from the seam the
+	// rebuild's capture follows, so the projection never saw it and the rebuild
+	// does.
+	const frameID = "watch:wd_anchor:1"
+	appended := false
+	updateSessionTestConfig(runtime, func(cfg *testConfig) {
+		cfg.afterDelegateAttentionProjection = func() {
+			if appended {
+				return
+			}
+			appended = true
+			if _, err := runtime.appendDelegateNotificationDurably(frameID, marker); err != nil {
+				t.Errorf("append the frame: %v", err)
+			}
+		}
+	})
+
+	ctx := context.WithValue(context.WithValue(context.Background(), delegateRunLeaseContextKey{}, lease), delegateAttentionRunContextKey{}, struct{}{})
+	var timings events.RoundTimings
+	_, _, history, req, _, _, err := runtime.prepareModelRequestWithError(ctx, 1, &timings)
+	if err != nil {
+		t.Fatalf("prepare the attention-run request: %v", err)
+	}
+	if !appended {
+		t.Fatal("premise broken: the frame never landed, so the rebuild never had to decide about it")
+	}
+	if presented := countMessageText(history, marker); presented != 0 {
+		t.Fatalf("the request presented %q, which the reload's own capture withheld: this case does not exercise a filtered rebuild", frameID)
+	}
+	if req.HistoryMode != llm.HistoryModeFullHistory || req.PreviousResponseID != "" || req.Continuation != nil {
+		t.Fatalf("the filtered rebuild dispatched mode=%q previous=%q continuation=%+v, want full history with no anchor: a request that withheld a row must neither continue from a stored anchor nor seed one, or a frame admitted before the next round sits ahead of that anchor and an eligible delta skips a turn the model has never seen", req.HistoryMode, req.PreviousResponseID, req.Continuation)
 	}
 }
