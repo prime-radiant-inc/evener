@@ -33,6 +33,11 @@ export type JobLogReaderSnapshot = {
 };
 
 const READ_INTERVAL_MS = 1000;
+/** How often an unconfirmed row whose evidence could still change is re-read.
+ * Slower than the live rate on purpose: the row is not being followed, it is
+ * being re-checked, and a torn append or an unconsultable owner takes far longer
+ * to settle than a second. */
+const UNCONFIRMED_RECHECK_MS = 15000;
 const messageOf = (error: unknown) => errorText(error);
 
 // livePollingStopped reports whether this reader has nothing left to wait for.
@@ -51,6 +56,35 @@ const messageOf = (error: unknown) => errorText(error);
 function livePollingStopped(job: JobActivityJob | null): boolean {
   if (job === null) return false;
   return job.terminal || jobStatusUnconfirmed(job);
+}
+
+// statusRecheckable reports whether a later read could still settle this row.
+//
+// Durable corruption is the one damage that cannot: the scan cannot get past the
+// bad line, so the finish is not going to be read no matter how long the reader
+// waits. A torn tail is an append that may complete, a statusless fragment is a
+// journal that may yet state the status, and a forwarded copy's owner may become
+// consultable — resuming the session is what repairs all three, and it can
+// happen while this reader is still connected. Stopping on "maybe" and never
+// looking again misses the moment it becomes "no".
+//
+// This reads the aggregate diagnostics, which is safe here and only here: it can
+// narrow a SLOW cadence, never promote an unconfirmed row to the live rate and
+// never slow a healthy one. The confidence decision itself stays with
+// statusUnconfirmed, which describes the selected record alone.
+function statusRecheckable(job: JobActivityJob | null): boolean {
+  if (job === null) return false;
+  return !(job.diagnostics ?? []).includes("journal_scan_incomplete");
+}
+
+// metadataDeadlineAfter is when to read this row's metadata again. A healthy row
+// keeps the live cadence, a terminal row is settled, and an unconfirmed row is
+// re-checked slowly when a later write could change the answer and never when it
+// could not.
+function metadataDeadlineAfter(job: JobActivityJob | null): number {
+  if (job === null || !livePollingStopped(job)) return Date.now() + READ_INTERVAL_MS;
+  if (job.terminal) return Number.POSITIVE_INFINITY;
+  return statusRecheckable(job) ? Date.now() + UNCONFIRMED_RECHECK_MS : Number.POSITIVE_INFINITY;
 }
 
 export class JobLogReader {
@@ -385,7 +419,7 @@ export class JobLogReader {
           // waiting out a cadence paced by the reply that cannot answer it.
           this.metadataDueAt = Date.now();
         } else {
-          this.metadataDueAt = livePollingStopped(job) ? Number.POSITIVE_INFINITY : Date.now() + READ_INTERVAL_MS;
+          this.metadataDueAt = metadataDeadlineAfter(job);
         }
         // The output deadline follows the METADATA too, not only the page that
         // happened to arrive last. Metadata may settle after a failed output

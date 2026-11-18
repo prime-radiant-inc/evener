@@ -644,6 +644,64 @@ test("a refresh tail owed when the previous tail fails is still sent", async () 
   expect(peer.requests(OUTPUT)).toHaveLength(after.output);
 });
 
+// Unconfirmed means "the evidence cannot say YET", and for a torn tail the
+// evidence can change: resuming the session completes the append or writes the
+// finish, while the pane is still connected and still stopped. Stopping without
+// ever looking again is a one-way door, so a recheckable row is re-read on a slow
+// cadence and the finish it finds takes over as a normal terminal observation.
+test("a torn-tail unconfirmed row is re-checked and follows a later finish", async () => {
+  const first = await peer.request(OUTPUT);
+  peer.reply(await peer.request(META), {
+    ...metadata(false),
+    diagnostics: ["journal_torn_tail"],
+    statusUnconfirmed: true,
+  });
+  peer.reply(first, page());
+  await observed((snapshot) => snapshot.job?.statusUnconfirmed === true && snapshot.windows.live !== null);
+  const settled = { metadata: peer.requests(META).length, output: peer.requests(OUTPUT).length };
+
+  // Not at the live rate: the row is being re-checked, not followed.
+  await vi.advanceTimersByTimeAsync(2000);
+  expect(peer.requests(META)).toHaveLength(settled.metadata);
+
+  // The recheck lands on the repair: the journal now records the finish.
+  await vi.advanceTimersByTimeAsync(14000);
+  const recheck = peer.requests(META)[settled.metadata];
+  if (!recheck)
+    throw new Error(`no recheck request, meta=${peer.requests(META).length} want more than ${settled.metadata}`);
+  peer.reply(recheck, metadata(true));
+  const finished = await observed(
+    (snapshot) => snapshot.job?.terminal === true && snapshot.job.statusUnconfirmed !== true,
+  );
+  expect(finished.job?.status).toBe("completed");
+
+  // And the finish is drained, so the pane shows the final bytes.
+  await vi.advanceTimersByTimeAsync(1000);
+  const drain = await peer.request(OUTPUT, settled.output);
+  peer.reply(drain, page(100, "DONE\n", 105));
+  const drained = await observed((snapshot) => snapshot.windows.totalBytes === 105);
+  expect(drained.windows.totalBytes).toBe(105);
+});
+
+// The counterpart that makes the distinction real: durable corruption cannot be
+// read past, so no waiting turns it into an answer and the reader must not keep
+// asking. This is the case that stays stopped forever.
+test("a durable-corruption unconfirmed row is never re-checked", async () => {
+  const first = await peer.request(OUTPUT);
+  peer.reply(await peer.request(META), {
+    ...metadata(false),
+    diagnostics: ["journal_scan_incomplete"],
+    statusUnconfirmed: true,
+  });
+  peer.reply(first, page());
+  await observed((snapshot) => snapshot.job?.statusUnconfirmed === true && snapshot.windows.live !== null);
+
+  const settled = { metadata: peer.requests(META).length, output: peer.requests(OUTPUT).length };
+  await vi.advanceTimersByTimeAsync(60000);
+  expect(peer.requests(META)).toHaveLength(settled.metadata);
+  expect(peer.requests(OUTPUT)).toHaveLength(settled.output);
+});
+
 // A terminal row's tail is the read that captures its final bytes, so a
 // transient failure there must not park the deadline. The reconnect that asked
 // for the read has already been served, and unchanged terminal metadata creates

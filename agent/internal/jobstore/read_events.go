@@ -133,10 +133,21 @@ func ScanEventsWithDiagnostics(ctx context.Context, path string, limits ScanLimi
 // (a non-nil slice with a non-nil error, toOffset 0), so a caller that
 // specifically recognizes ErrScanLimitExceeded can degrade to a truncated-
 // but-honest partial result instead of discarding everything already read.
+//
+// A malformed JSON line returns its partial result the same way and for the
+// same reason: the events decoded BEFORE the bad line are still true statements
+// about this journal, so they are returned alongside the parse error, with
+// toOffset 0 because the scan did not reach a resumable record boundary. A
+// caller that recognizes neither sentinel and treats any non-nil error as a
+// failed read ignores the slice, which stays correct: the read did fail, and
+// reusing toOffset would resume inside the damaged line.
+//
 // MaxLineBytes is different: exceeding it returns ErrLineTooLong with NO
 // partial result (nil events, toOffset 0) — a single line that long is
 // corruption serious enough that there is nothing safe to salvage from
-// this scan.
+// this scan. That is the ONLY case that returns no events with an error, which
+// is what lets a caller tell "too damaged to trust any of it" from "the prefix
+// is sound, the read stopped at one bad line".
 func ScanEventsFrom(ctx context.Context, path string, fromOffset int64, limits ScanLimits) ([]Event, int64, error) {
 	events, offset, _, err := ScanEventsFromWithDiagnostics(ctx, path, fromOffset, limits)
 	return events, offset, err

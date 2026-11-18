@@ -1294,10 +1294,11 @@ func TestLoadSessionJobGetPreservesLaunchFieldsFromLegacyOwner(t *testing.T) {
 	}
 }
 
-// TestLoadSessionJobGetReportsCorruptOwnerJournalAsDamage is the low: an encoded
-// owner journal that hits a malformed line before decoding any record for this
-// job must still hand its damage report back, so the caller serving the
-// forwarded copy can say the owner's history is CORRUPT rather than absent.
+// TestLoadSessionJobGetReportsCorruptOwnerJournalAsDamage: an encoded owner
+// journal that hits a malformed line before decoding any record for this job
+// must still hand its damage report back, so the caller serving the forwarded
+// copy can say the owner's history is CORRUPT rather than absent. A corrupt
+// journal and a missing one are different states and must stay distinguishable.
 func TestLoadSessionJobGetReportsCorruptOwnerJournalAsDamage(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
