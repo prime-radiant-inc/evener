@@ -179,15 +179,12 @@ func (s *Session) bumpHistoryRevisionLocked() {
 //     effects re-enter emit/steering/transcript machinery that itself takes
 //     these locks, and none of them need the ordering guarantee. The lone
 //     deliberate exception is appendEnvironmentContext's EventEnvironment,
-//     which publishes under attentionMu so the entry is in history before the
-//     event exists. No reader can observe the event ahead of the transcript
-//     that explains it. For fold ordering, the door guarantees that no fold
-//     commits between that append and the event's enqueue. The thread
-//     envelope's context facet is a sample taken later: the bridge reads the
-//     session's current context when it handles the event, on its own
-//     consumer goroutine, after the enqueue, so a fold that commits in
-//     between is already reflected there. The door does not order that
-//     refresh. It is one emit of known
+//     which publishes under attentionMu. The door makes it one publication:
+//     the entry is in history before the event exists, so no reader observes
+//     the event ahead of the transcript that explains it, and no fold commits
+//     its markers between those two steps. The bridge samples the thread
+//     envelope's context when it handles the event, so that refresh is a
+//     trigger, not a snapshot the door ordered. It is one emit of known
 //     content; this flush is unbounded work (naming, hook user messages) that
 //     re-enters these very locks, so it stays out here.
 //

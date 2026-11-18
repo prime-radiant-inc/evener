@@ -1040,24 +1040,12 @@ func TestPoisonedWriterDoesNotPopAQueuedMessage(t *testing.T) {
 }
 
 // TestEnvironmentEventPublishesInsideTheTranscriptOrderingBoundary: the entry
-// and the live event that announces it are one publication. Emitted after the
-// transcript door is released, a concurrent fold can take that door in between,
-// commit its compaction markers and flush its own events, so a live reader sees
-// the compaction ahead of the environment block while the transcript holds them
-// the other way round. The entry is in history before the event exists, so no
-// reader observes the event ahead of the transcript that explains it, and the
-// door guarantees, for fold ordering, that no fold commits between that append
-// and the event's enqueue. The thread envelope's context facet is a sample
-// taken later: the bridge reads the session's current context when it handles
-// the event, on its own consumer goroutine, after the enqueue, so a fold that
-// commits in between is already reflected there. The door does not order that
-// refresh.
-//
-// The door is the statement: while it is held, no fold can publish, so a
-// fold's markers cannot land between this entry and the event that announces
-// it. A fold's own deferred events flush after the door releases and can
-// follow a later environment event. A publication that can take the door is a
-// publication that happens outside it.
+// and the live event that announces it are one publication. The entry is in
+// history before the event exists, so no reader observes the event ahead of
+// the transcript that explains it, and no fold commits its markers between
+// those two steps. The bridge samples the thread envelope's context when it
+// handles the event, so that refresh is a trigger rather than a snapshot the
+// door ordered.
 func TestEnvironmentEventPublishesInsideTheTranscriptOrderingBoundary(t *testing.T) {
 	t.Parallel()
 	sess := newTestSessionForEnvctx(t)
