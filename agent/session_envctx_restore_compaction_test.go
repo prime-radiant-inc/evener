@@ -388,9 +388,10 @@ func testCompactedGitObservation(t *testing.T) {
 			cwd, stateDir := evalSyms(t, t.TempDir()), t.TempDir()
 			copyWorktreeBaseRepo(t, cwd)
 			gittest.Run(t, cwd, "checkout", "-b", launch)
+			env, cfg := compactedCheckoutEnvironment(cwd)
 			s := newScriptedSummaryCompactSession(t, "env-fold-observation", func(llm.Request) llm.Response {
 				return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nWork retained\n[END SUMMARY]")}
-			}, withDir(cwd), withStateDir(stateDir), withEnvironmentSnapshot())
+			}, withEnv(env), withStateDir(stateDir), withEnvironmentSnapshot(), withConfig(SessionConfig{testOnly: cfg}))
 			prompt := s.cachedSystemPrompt
 			gittest.Run(t, cwd, "checkout", "-b", feature)
 			want := feature
@@ -434,7 +435,8 @@ func testCompactedGitObservation(t *testing.T) {
 			restore := func() {
 				t.Helper()
 				s.Close()
-				restored, err := RestoreSessionFromMetaWithConfig(s.client, s.profile, execenv.NewLocalExecutionEnvironment(cwd), loadMetaForTest(t, s), RestoreSessionConfig{StateDir: stateDir})
+				env, cfg := compactedCheckoutEnvironment(cwd)
+				restored, err := RestoreSessionFromMetaWithConfig(s.client, s.profile, env, loadMetaForTest(t, s), RestoreSessionConfig{StateDir: stateDir, testOnly: cfg})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -487,6 +489,14 @@ func testCompactedGitObservation(t *testing.T) {
 	}
 }
 
+func compactedCheckoutEnvironment(cwd string) (*execenv.LocalExecutionEnvironment, testConfig) {
+	env := execenv.NewLocalExecutionEnvironment(cwd)
+	return env, testConfig{envProbes: &envctx.Probes{
+		Now:       func() time.Time { return envctxFixedTime },
+		GitBranch: func(dir string) (string, bool) { return snapshotGitBranch(env, dir) },
+	}}
+}
+
 func testCompactedLaunchBranch(t *testing.T) {
 	const branch, recovered = "launch-branch-19", "recovered-branch-41"
 	type notification struct {
@@ -495,6 +505,12 @@ func testCompactedLaunchBranch(t *testing.T) {
 		wantTurns                  int
 	}
 	coldOutside := notification{restore: true, wantTurns: 1}
+	restoreUnavailable := []notification{
+		{restore: true, wantBranch: branch, wantTurns: 1},
+		{restore: true, wantBranch: branch, wantTurns: 1},
+		{reopen: true, wantBranch: recovered, wantTurns: 2},
+		{wantBranch: recovered, wantTurns: 2},
+	}
 	for _, tc := range []struct {
 		name, checkout string
 		unrecorded     bool
@@ -509,20 +525,33 @@ func testCompactedLaunchBranch(t *testing.T) {
 			{wantBranch: branch, wantTurns: 1},
 			{leaveRepo: true, wantTurns: 2},
 		}},
-		{"cold unavailable checkout", "unavailable", false, []notification{
-			{restore: true, wantBranch: branch, wantTurns: 1},
-			{restore: true, wantBranch: branch, wantTurns: 1},
-			{reopen: true, wantBranch: recovered, wantTurns: 2},
-			{wantBranch: recovered, wantTurns: 2},
-		}},
+		{"cold unavailable checkout", "unavailable", false, restoreUnavailable},
+		{"cold dangling git symlink", "symlink", false, restoreUnavailable},
+		{"cold dangling gitfile", "gitfile", false, restoreUnavailable},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cwd, stateDir := evalSyms(t, t.TempDir()), t.TempDir()
 			copyWorktreeBaseRepo(t, cwd)
 			gittest.Run(t, cwd, "checkout", "-b", branch)
+			unavailablePath := cwd
+			if tc.checkout == "symlink" || tc.checkout == "gitfile" {
+				entry := filepath.Join(cwd, ".git")
+				unavailablePath = filepath.Join(t.TempDir(), "gitdir")
+				if err := os.Rename(entry, unavailablePath); err != nil {
+					t.Fatal(err)
+				}
+				if tc.checkout == "symlink" {
+					if err := os.Symlink(unavailablePath, entry); err != nil {
+						t.Fatal(err)
+					}
+				} else if err := os.WriteFile(entry, []byte("gitdir: "+unavailablePath+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			env, cfg := compactedCheckoutEnvironment(cwd)
 			s := newScriptedSummaryCompactSession(t, "env-fold-git", func(llm.Request) llm.Response {
 				return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nSaved work summary\n[END SUMMARY]")}
-			}, withDir(cwd), withStateDir(stateDir), withEnvironmentSnapshot())
+			}, withEnv(env), withStateDir(stateDir), withEnvironmentSnapshot(), withConfig(SessionConfig{testOnly: cfg}))
 			prompt := s.transcript.Header().SystemPrompt
 			if !strings.Contains(prompt, branch) {
 				t.Fatal("launch branch missing from provider prompt")
@@ -546,12 +575,12 @@ func testCompactedLaunchBranch(t *testing.T) {
 			}
 			var parked string
 			switch tc.checkout {
-			case "unavailable":
+			case "unavailable", "symlink", "gitfile":
+				gittest.Run(t, cwd, "checkout", "-b", recovered)
 				parked = filepath.Join(t.TempDir(), "checkout")
-				if err := os.Rename(cwd, parked); err != nil {
+				if err := os.Rename(unavailablePath, parked); err != nil {
 					t.Fatal(err)
 				}
-				gittest.Run(t, parked, "checkout", "-b", recovered)
 			case "unborn":
 				gittest.Run(t, cwd, "checkout", "--orphan", "unborn")
 			case "outside":
@@ -569,7 +598,8 @@ func testCompactedLaunchBranch(t *testing.T) {
 							t.Fatal(err)
 						}
 					}
-					restored, err := RestoreSessionFromMetaWithConfig(s.client, s.profile, execenv.NewLocalExecutionEnvironment(cwd), meta, RestoreSessionConfig{StateDir: stateDir})
+					env, cfg := compactedCheckoutEnvironment(cwd)
+					restored, err := RestoreSessionFromMetaWithConfig(s.client, s.profile, env, meta, RestoreSessionConfig{StateDir: stateDir, testOnly: cfg})
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -580,7 +610,7 @@ func testCompactedLaunchBranch(t *testing.T) {
 					leaveRepo()
 				}
 				if wake.reopen {
-					if err := os.Rename(parked, cwd); err != nil {
+					if err := os.Rename(parked, unavailablePath); err != nil {
 						t.Fatal(err)
 					}
 				}

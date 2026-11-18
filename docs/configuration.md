@@ -201,10 +201,11 @@ If the launch branch is unknown and a Git probe is available, the first request
 samples it even when an idle goal starts before any user input. Branch updates
 name their working directory so a retained update still identifies its checkout
 after a fold.
-An unborn HEAD, an unavailable working directory, or a checkout Git refuses
-to inspect leaves the branch unconfirmed at launch. If a later probe fails,
-the request keeps the last confirmed branch for this checkout, including one
-observed during restore or when entering or leaving a worktree.
+Git may be unable to confirm a branch at launch because HEAD is unborn, the working
+directory or linked `.git` metadata is unavailable, or Git refuses to inspect the
+checkout. If a later probe fails, the request keeps the last confirmed branch
+for this checkout, including one observed during restore or when entering or
+leaving a worktree.
 A delegate created with `fork_context` can use the last branch its copied
 environment turns confirm for this checkout. A confirmed observation at the
 delegate's own launch or first request supersedes the parent's.

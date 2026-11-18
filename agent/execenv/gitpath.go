@@ -215,13 +215,14 @@ func structuralWorktreeRoot(cwd string) (string, bool) {
 }
 
 // HasGitEntryAncestor reports whether cwd or an ancestor holds a ".git" entry.
+// A symlink is present even when Git cannot reach its target.
 // An absence is known only for an accessible working directory whose .git
 // lookups all returned ErrNotExist. An unavailable directory leaves it unknown.
 func HasGitEntryAncestor(cwd string) (present, known bool) {
 	cwd = filepath.Clean(cwd)
 	dir := cwd
 	for {
-		_, err := os.Stat(filepath.Join(dir, ".git"))
+		_, err := os.Lstat(filepath.Join(dir, ".git"))
 		if err == nil {
 			return true, true
 		}
