@@ -5,6 +5,7 @@ import { act } from "react-test-renderer";
 import { describe, expect, it } from "vitest";
 import { renderHook, settle } from "../renderNative.testkit";
 import { SessionControls } from "../sessionControls";
+import { ResumeNotDispatched } from "../connection";
 import { attemptControl, useSessionRestart } from "./sessionRestart";
 
 function controls({
@@ -30,6 +31,58 @@ function controls({
 }
 
 describe("one step of a restart", () => {
+	// A resume that never reached the wire is a refusal, not the hub's answer:
+	// nothing was sent, so the step is still owed. The connection says so with
+	// its own error, and a step that rethrows it is a step the hook can never
+	// settle - it stays in "resuming" and never tries again when the phone
+	// reconnects, leaving a stopped daemon with the resume still owed.
+	it("keeps the resume owed when the connection never sent it", async () => {
+		const neverSent = controls({
+			resume: async () => {
+				throw new ResumeNotDispatched("The connection closed");
+			},
+		});
+		expect(await attemptControl(neverSent.made, "resume")).toBe("refused");
+	});
+
+	// The same refusal through the hook: the resume goes out on the binding that
+	// comes back rather than the restart hanging on the one that could not send.
+	it("sends the owed resume after a refusal the connection reported", async () => {
+		let sent = 0;
+		let refuse = true;
+		const made = new SessionControls(
+			{
+				forceStop: async () => {},
+				resume: async () => {
+					if (refuse) throw new ResumeNotDispatched("The connection closed");
+					sent += 1;
+				},
+			} as unknown as ConstructorParameters<typeof SessionControls>[0],
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		let settled = "open:closed";
+		const hook = renderHook(() => useSessionRestart(made, settled));
+		await act(async () => {
+			await hook.result.current.restart();
+		});
+		await settle();
+		expect(sent).toBe(0);
+		// The hook is still waiting to send it, not settled with a failure.
+		expect(hook.result.current.busy).toBe(true);
+		expect(hook.result.current.error).toBeNull();
+		// The phone reconnects: the resume the stop owed goes out.
+		refuse = false;
+		settled = "open:ready";
+		hook.rerender();
+		await settle();
+		expect(sent).toBe(1);
+		expect(hook.result.current.busy).toBe(false);
+	});
+
 	it("is done when the step goes through", async () => {
 		expect(await attemptControl(controls().made, "forceStop")).toBe("done");
 		expect(await attemptControl(controls().made, "resume")).toBe("done");

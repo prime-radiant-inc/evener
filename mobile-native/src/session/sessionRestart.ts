@@ -5,6 +5,7 @@
 // current once they can take it.
 import { useCallback, useEffect, useRef, useState } from "react";
 import { type SessionControls, useControlsState } from "../sessionControls";
+import { ResumeNotDispatched } from "../connection";
 
 /** How one step went: done, failed at the hub, or refused by the controls
  * before any request went out (another action pending, or the session not
@@ -20,6 +21,14 @@ export async function attemptControl(controls: SessionControls, kind: "forceStop
 	});
 	try {
 		if (await (kind === "forceStop" ? controls.forceStop() : controls.resume())) return "done";
+	} catch (cause) {
+		// A resume the connection never sent is a refusal before dispatch, not
+		// the hub's answer: the step is still owed, and the hook retries it on
+		// whatever binding can send next. A resume that went out and then
+		// failed is not caught here, because replaying it could resume the
+		// session twice.
+		if (kind === "resume" && cause instanceof ResumeNotDispatched) return "refused";
+		throw cause;
 	} finally {
 		unsubscribe();
 	}

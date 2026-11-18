@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { Thread, WebSocketLike } from "@evener/appwire-client";
 import { createConversationService } from "./conversation/services/conversation";
 import { createConversationStore } from "./conversation/state/conversation";
-import { createHubClient } from "./connection";
+import { createHubClient, ResumeNotDispatched } from "./connection";
 import { SessionControls } from "./sessionControls";
 
 const thread: Thread = {
@@ -146,13 +146,19 @@ class ExternalScriptedWebSocket implements WebSocketLike {
 	}
 }
 
-async function connectedFixture(readBarrier?: Promise<void>, ackBarrier?: Promise<void>) {
+async function connectedFixture(readBarrier?: Promise<void>, ackBarrier?: Promise<void>, haltDialAfter?: number) {
 	const sockets: ExternalScriptedWebSocket[] = [];
 	const readStarted = deferred<void>();
+	const secondDial = deferred<void>();
 	const state = { readBarrier, ackBarrier, readStarted: () => readStarted.resolve(), readCount: 0, resumed: false };
 	const client = createHubClient("https://hub.test", "", () => {
 		const socket = new ExternalScriptedWebSocket(state);
 		sockets.push(socket);
+		if (sockets.length === 2) secondDial.resolve();
+		// A dial past this point never opens: the handshake a recycling resume
+		// waits on is one that does not finish in this test's lifetime, which is
+		// what a phone that lost its connection mid-recycle looks like.
+		if (haltDialAfter !== undefined && sockets.length > haltDialAfter) return socket;
 		queueMicrotask(() => socket.onopen?.());
 		return socket;
 	});
@@ -160,7 +166,7 @@ async function connectedFixture(readBarrier?: Promise<void>, ackBarrier?: Promis
 	const service = createConversationService(client);
 	const store = createConversationStore();
 	await store.getState().openProjected(service, "local:thread-1");
-	return { client, service, store, sockets, state, readStarted };
+	return { client, service, store, sockets, state, readStarted, secondDial };
 }
 
 describe("native resume recovery integration", () => {
@@ -283,6 +289,39 @@ describe("two resumes owed on one connection", () => {
 		} finally {
 			state.resumed = true;
 			service.close();
+			client.close();
+		}
+	});
+});
+
+// The resume recycles the socket and waits for a fresh handshake before it
+// sends. That wait can end without a resume on the wire: the phone lost its
+// connection mid-recycle, or the handshake never finished. The connection is
+// the only thing that can tell that apart from the hub answering, so it says
+// so with its own error and the restart keeps the step owed instead of
+// dropping it with a daemon stopped.
+describe("a resume whose own reconnect never completed", () => {
+	it("reports a resume that never reached the wire as not dispatched", async () => {
+		// The dial the resume's recycle starts never opens, so the handshake it
+		// waits on is still outstanding and nothing has been sent when the
+		// connection goes away underneath it.
+		const { client, secondDial } = await connectedFixture(undefined, undefined, 1);
+		try {
+			const resume = client.resumeThread("local:thread-1");
+			// The resume has recycled its socket and is waiting on the dial that
+			// never finishes; only now is the failure the reconnect's, not the
+			// precondition's.
+			await secondDial.promise;
+			client.close();
+			const cause = await resume.then(
+				() => undefined,
+				(error: unknown) => error,
+			);
+			// Nothing was sent, so the step is still owed and the caller may retry
+			// it. Reported as the hub's answer instead, the restart drops it and
+			// leaves the daemon stopped.
+			expect(cause).toBeInstanceOf(ResumeNotDispatched);
+		} finally {
 			client.close();
 		}
 	});

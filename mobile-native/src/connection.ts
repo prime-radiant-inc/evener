@@ -265,7 +265,25 @@ export function createHubClient(origin: string, token: string, socketFactory: Na
 			}),
 	});
 	const resumeThread = client.resumeThread.bind(client);
-	client.resumeThread = (ref: string, options?: Parameters<typeof resumeThread>[1]) =>
-		admitResume(client, () => resumeThread(ref, options));
+	client.resumeThread = (ref: string, options?: Parameters<typeof resumeThread>[1]) => {
+		// The client recycles the socket and waits for a fresh handshake before
+		// it sends, so a backgrounded phone or a handshake that times out fails
+		// the call with nothing on the wire. `beforeRequest` runs after that
+		// reconnect and immediately before the RPC, so having reached it is the
+		// proof that the resume left; failing short of it is a resume still owed.
+		let reachedSend = false;
+		return admitResume(client, () =>
+			resumeThread(ref, {
+				...options,
+				beforeRequest: async () => {
+					await options?.beforeRequest?.();
+					reachedSend = true;
+				},
+			}),
+		).catch((cause: unknown) => {
+			if (reachedSend || cause instanceof ResumeNotDispatched) throw cause;
+			throw new ResumeNotDispatched(cause instanceof Error ? cause.message : "The connection did not come back");
+		});
+	};
 	return client;
 }

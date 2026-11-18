@@ -713,6 +713,55 @@ test("a fenced settle leaves the session alone when the caller refuses the resum
 	await runtime.stop();
 });
 
+// A resume can be decided on a fenced read and then wait: the connection
+// carries one explicit resume at a time, so it sits behind another session's.
+// The message that made the resume worth sending can be withdrawn while it
+// waits. Sending it anyway recycles the shared socket and restarts a session
+// whose only reason to resume is gone, so the reason is asked again at the
+// point of send, after the wait and before the socket is recycled.
+test("drops an automatic resume whose message was withdrawn before it was sent", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase(), { createMutationId: () => "mutation-1" });
+	const client = new FakeClient("ready");
+	client.on("thread/read", () => readResponse("ref-1", { resumeRequired: true }));
+	client.on("thread/resume", () => readResponse("ref-1"));
+	client.on("turn/start", appliedReceipt);
+	await registerAndStart(runtime, client);
+	await runtime.submit(request("send"));
+
+	// The connection carries one explicit resume at a time, so this one waits
+	// for a slot another session's resume holds. Nothing has been sent yet, and
+	// the wait is where the message behind it can be withdrawn.
+	let releaseSlot!: () => void;
+	const slot = new Promise<void>((resolve) => {
+		releaseSlot = resolve;
+	});
+	const send = client.resumeThread.bind(client);
+	client.resumeThread = ((ref: string, options?: { beforeRequest?: () => void | Promise<void> }) =>
+		slot.then(() => send(ref, options))) as typeof client.resumeThread;
+	let waiting = true;
+	let asks = 0;
+	let decided!: () => void;
+	const decisionMade = new Promise<void>((resolve) => {
+		decided = resolve;
+	});
+	const settle = runtime.settleTarget("hub-1", "ref-1", client, {
+		mayResumeFenced: async () => {
+			asks += 1;
+			decided();
+			return waiting;
+		},
+	});
+	await decisionMade;
+	// The row the resume was decided on is withdrawn while its slot is still
+	// held, so the send that follows must see that and leave the socket alone.
+	waiting = false;
+	releaseSlot();
+	expect(await settle).toBe("blocked");
+	expect(client.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+	expect(asks).toBe(2);
+	await runtime.stop();
+});
+
 // A resume can hand back a different identity. The parked row must move with
 // it, keeping its clientMutationId (the daemon's reconciliation key) and taking
 // the resumed instance fence, or it dispatches against an instance the daemon

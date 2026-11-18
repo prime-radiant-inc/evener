@@ -93,12 +93,17 @@ export class ApprovalControls {
 			});
 			if (!receipt || typeof receipt !== "object" || Array.isArray(receipt))
 				throw new Error("Malformed resolution receipt");
-			if (this.disposed) return false;
 			// The receipt is the hub's acknowledgement, and it is what settles this
 			// decision. The read that follows is catch-up: it brings the session's
 			// new state on screen, and a read that fails leaves the acknowledgement
 			// standing rather than turning an accepted decision into an unconfirmed
 			// one the reader is offered again.
+			//
+			// A controller disposed while the reply was out still reports the
+			// receipt: the decision is the hub's, and the dock confirms on it. Only
+			// the catch-up read needs a live binding, and whether the reader is
+			// told is the screen's question.
+			if (this.disposed) return true;
 			if (!this.current()) throw new Error("Session changed");
 			await this.refreshAuthoritative(true);
 			return true;

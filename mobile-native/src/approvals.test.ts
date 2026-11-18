@@ -83,6 +83,37 @@ describe("native approval projection", () => {
 });
 
 describe("approval decisions", () => {
+	// A reconnect can replace these controls while the decision is out. The
+	// receipt is the hub's answer, and it is what settles the decision: a
+	// controller that reports nothing because it was replaced hides a decision
+	// the hub took, and the dock leaves the reader unsure about something that
+	// already happened. Only the catch-up read needs the live binding.
+	it("confirms a decision the hub took even after its controls were replaced", async () => {
+		let answer!: () => void;
+		const sent: unknown[] = [];
+		const controls = new ApprovalControls(
+			{
+				request: (method: string, params: unknown) => {
+					sent.push({ method, params });
+					return new Promise<object>((resolve) => {
+						answer = () => resolve({});
+					});
+				},
+			} as unknown as ConversationClientLike,
+			"local:s",
+			() => [pending],
+			() => true,
+			async () => {},
+			() => true,
+		);
+		const decision = controls.resolve(pending, true);
+		await Promise.resolve();
+		expect(sent).toHaveLength(1);
+		controls.dispose();
+		answer();
+		await expect(decision).resolves.toBe(true);
+	});
+
 	// Admitting a decision is the reader's question. A press from a pane another
 	// conversation now covers reaches nobody the reader can see, so it must not
 	// reach the hub either; the decision is still there when they come back.

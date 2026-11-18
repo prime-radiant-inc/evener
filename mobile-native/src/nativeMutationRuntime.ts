@@ -34,6 +34,16 @@ import {
 import { MutationOutboxSQLite, type RecoveryResendCommit } from "./mutationOutboxStorage";
 import { isSqliteStorageFailure, type SqliteSync } from "./sqliteSync";
 
+/** A queued resume whose reason to resume went away before its slot came up.
+ * It carries nothing to report: the message it was sent for is gone, and the
+ * row stays parked until something asks for the session again. */
+class ObsoleteResume extends Error {
+	constructor() {
+		super("The reason this resume was decided on no longer holds");
+		this.name = "ObsoleteResume";
+	}
+}
+
 export interface NativeMutationRuntimeOptions {
 	createMutationId?: () => string;
 	now?: () => number;
@@ -724,7 +734,27 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 			// work, so the lease is checked again here, not only before.
 			if (!this.#isCurrentRead(lease)) return "stale";
 			// A refused resume leaves the row parked and the next settle retries.
-			const resumed = await client.resumeThread(targetRef).catch(() => undefined);
+			//
+			// This call can wait behind another session's resume for the
+			// connection's one slot, and the message it was decided on can be
+			// withdrawn while it waits. So the reason to resume is asked again at
+			// the point of send, once the slot is held and before the socket is
+			// recycled: a resume whose message is gone would restart a session for
+			// nothing and drop every healthy request on that transport with it.
+			//
+			// The read lease itself cannot be the thing re-asked here. A resume
+			// recycles its own transport, and the registration clears its read
+			// token on the way through, so every resume would look superseded.
+			// What survives the recycle is the caller's own question - is the
+			// message this was decided on still waiting - so that is what is asked.
+			const stillWanted = options.mayResumeFenced;
+			const resumed = await client
+				.resumeThread(targetRef, {
+					beforeRequest: async () => {
+						if (!(await stillWanted())) throw new ObsoleteResume();
+					},
+				})
+				.catch(() => undefined);
 			if (!resumed) return "blocked";
 			// A resume can return a different identity. The parked rows still name
 			// the old ref and its instance, so they move to the resumed one before
