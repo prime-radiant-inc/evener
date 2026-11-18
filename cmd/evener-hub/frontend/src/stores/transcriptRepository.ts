@@ -862,12 +862,29 @@ export class TranscriptRepository {
   /** Accept a complete wire read under its captured reader lifetime. */
   acceptRead(
     response: ThreadReadResponse,
-    request: { lifetime: number; readId: string; boundary: string; preserveEnded?: boolean },
+    request: {
+      lifetime: number;
+      readId: string;
+      boundary: string;
+      preserveEnded?: boolean;
+      // When the read was ISSUED, on this client's clock. The quota merge
+      // orders a read against the wait announcement this pane received with
+      // it, so a read cut in the gap between the session's wait and the
+      // bridge's projection refresh cannot be read as a wait that ended.
+      issuedAt?: number;
+      // When this pane received the quota wait's announcement the merge base
+      // may predate. Both instants are this client's, so a skewed browser
+      // clock cancels out of the ordering.
+      announcedAt?: number;
+    },
   ): boolean {
     if (this.#sealed || !this.#acceptsLifetime(request.lifetime) || !this.#matchesRead(response)) return false;
     const before = this.#model;
     let candidate = before
-      ? applyReadResponse(before, response, this.#now())
+      ? applyReadResponse(before, response, this.#now(), undefined, {
+          issuedAt: request.issuedAt,
+          ...(request.announcedAt === undefined ? {} : { announcedAt: request.announcedAt }),
+        })
       : (() => {
           const hydrated = hydrateThread(response, this.#binding.ref, this.#now());
           return response.changes
@@ -2404,6 +2421,7 @@ export class TranscriptRepository {
       // queued or promoted since then can be legitimately absent from it, so
       // its absence proves nothing and the owner must not replay from it.
       const mutationGeneration = this.#binding.mutationGeneration?.();
+      const issuedAt = this.#now();
       const response = await read(undefined, controller.signal);
       if (!current()) return { kind: "cancelled" };
       if (!response.snapshot || !this.#matchesRead(response)) throw new Error("final read has no authority");
@@ -2416,6 +2434,7 @@ export class TranscriptRepository {
           readId: boundary,
           boundary,
           preserveEnded: true,
+          issuedAt,
         })
       )
         throw new Error("final read was discarded");
@@ -2588,13 +2607,20 @@ export class TranscriptRepository {
     // Same rule as the final read: absence proves delivery only for the
     // mutation state the read was issued under.
     const mutationGeneration = this.#binding.mutationGeneration?.();
+    const issuedAt = this.#now();
     const response = await read(held, signal);
     if (!current()) return;
     if (!response.snapshot || !this.#matchesRead(response)) throw new Error("end disposition has no history authority");
     const fixed = response.snapshot;
     const boundary = `end:${this.#boundary}:${fixed.length}`;
     if (
-      !this.acceptRead(response, { lifetime: this.#binding.lifetime, readId: boundary, boundary, preserveEnded: true })
+      !this.acceptRead(response, {
+        lifetime: this.#binding.lifetime,
+        readId: boundary,
+        boundary,
+        preserveEnded: true,
+        issuedAt,
+      })
     )
       throw new Error("end disposition read was discarded");
     if (current() && this.#model) {

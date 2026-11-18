@@ -545,6 +545,15 @@ export interface ThreadModel {
   // what keeps that read from restoring its deadline. Cleared by the next
   // wait's announcement, which owns the stale-event rule from there on.
   quotaWaitEndedAt?: number;
+  // This pane's own clock, at the moment a turn boundary retired the running
+  // turn (the same instant that wrote retiredQuotaTurn). A read may end that
+  // retirement - reviving the turn and restoring its deadline - only when the
+  // read was ISSUED after this instant: a read issued before the boundary
+  // captured a state in which the turn still ran, so naming it running is the
+  // snapshot's age, not news. Both instants are this client's, so a skew
+  // against the daemon cancels out. Absent when no boundary has retired a
+  // turn since the model was built.
+  quotaWaitRetiredAt?: number;
   // Wave 5 T1: the following are all sourced from thread.evener
   // (appwire/types_thread.go's EvenerThread) and are SNAPSHOT-ONLY -
   // hydrateThread populates them, and applyNotification updates them ONLY

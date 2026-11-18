@@ -416,6 +416,16 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
         ...(quotaRetryEnded && !retiredTurnRevived ? { modelRetry: undefined } : {}),
         ...(retiredQuotaTurn !== undefined ? { retiredQuotaTurn } : {}),
         ...(retiredTurnRevived ? { retiredQuotaTurn: undefined } : {}),
+        // The retirement's own instant travels with it: a read that captured
+        // the turn still running must not revive it, and "still running" is
+        // exactly what a read ISSUED before this boundary shows. The stamp is
+        // cleared with the retirement, so a revived turn leaves nothing for a
+        // later read to be ordered against.
+        ...(retiredQuotaTurn !== undefined
+          ? { quotaWaitRetiredAt: now }
+          : retiredTurnRevived
+            ? { quotaWaitRetiredAt: undefined }
+            : {}),
         ...(n.params.activeTurnId ? { runningTurnId: n.params.activeTurnId } : {}),
         status,
         // The work-clock anchor (activeTurnStartedAt) has no live push to

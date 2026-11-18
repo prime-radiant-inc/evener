@@ -86,6 +86,7 @@ const CURRENT_TRANSCRIPT_FIELD_KEYS = [
   "quotaReadReportsWaits",
   "retiredQuotaTurn",
   "quotaWaitEndedAt",
+  "quotaWaitRetiredAt",
   "goal",
   "humanNote",
   "agentNote",

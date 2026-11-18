@@ -1074,6 +1074,102 @@ function quotaReadPredatesWait(
   return cutMs < waitStartedAt;
 }
 
+export interface QuotaReadEvidence {
+  // The instant this pane SENT the read.
+  //
+  // It is not the read's serving cut: the cut is the daemon's clock, and
+  // comparing it against anything this browser stamped is the cross-clock error
+  // the countdown rules must never make. This instant is compared only against
+  // other browser instants - another read's, or a frame's receipt - which is
+  // what makes the comparisons below exact under any skew.
+  issuedAt?: number;
+  // When this pane RECEIVED the quota wait's announcement, when the merge base
+  // does not carry it. A read is usually merged against the model it was
+  // issued from, and that model predates the announcement by construction -
+  // exactly the race the announcement's receipt has to order. A caller holding
+  // the live model supplies it here. Absent means the base itself is the live
+  // model, whose own modelRetry carries the receipt.
+  announcedAt?: number;
+}
+
+// quotaReadNewerThanWait reports whether the read can be ordered against the
+// wait the pane holds. It answers with ORDER, never with a duration: a read
+// issued before this pane received the wait's announcement cannot be newer than
+// the wait's publication, whatever either clock says.
+//
+// Why the receipt instant bounds the publication. The daemon stamps the wait
+// into the thread projection BEFORE it emits the announcement that publishes it
+// (server/bridge.go refreshes the envelope, then records the event), and the
+// announcement reaches this pane after that. So the projection knew the wait
+// before the pane did. A read issued at or after the pane received the
+// announcement therefore reached the daemon after the wait was projected, and
+// its absent summary is a statement about a published wait rather than the
+// silence of a cut taken in the gap between the two.
+//
+// A wait this pane learned ONLY from a read has no announcement to order
+// against: the read is that wait's sole route, and its absent summary is the
+// only evidence the pane will ever get. That case keeps the shipped rule.
+//
+// This is the bound quotaReadPredatesWait cannot supply on its own. A cut
+// stamped between the session's wait and the bridge's projection refresh has an
+// asOf LATER than waitStartedAt and carries no summary, so the cut comparison
+// reads it as a wait that ended and erases a live countdown for the rest of the
+// wait.
+function quotaReadNewerThanWait(model: Pick<ThreadModel, "modelRetry">, evidence: QuotaReadEvidence): boolean {
+  const announcedAt =
+    evidence.announcedAt ??
+    (model.modelRetry?.errorClass === "quota_exceeded" ? model.modelRetry.receivedAt : undefined);
+  if (announcedAt === undefined) return true;
+  return evidence.issuedAt !== undefined && evidence.issuedAt >= announcedAt;
+}
+
+// quotaReadMayEndWait is the ONE predicate every quota read merge asks before
+// it retires a held wait. Its rule, in the reviewer's words: RETIRE ON
+// ESTABLISHED REPLACEMENT, PRESERVE WHEN EVIDENCE IS MERELY ABSENT.
+//
+// "Established replacement" is turn ownership - the read names a different
+// running turn than the wait's, which is the read's own fact and needs no
+// serving cut. An established replacement outranks the cut comparison: a
+// response that declares its cut unavailable still proves the wait's turn
+// ended, and letting the unavailable cut veto that retired nothing while the
+// pane counted down a canceled wait. "Merely absent" is everything else: a cut
+// in the projection's publication gap, a declared-unavailable cut, or a read
+// issued before this pane heard of the wait at all.
+function quotaReadMayEndWait(
+  read: Pick<ThreadModel, "servingFacts">,
+  model: Pick<ThreadModel, "quotaWaitStartedAt" | "modelRetry">,
+  evidence: QuotaReadEvidence,
+  waitTurnReplaced: boolean,
+): boolean {
+  if (waitTurnReplaced) return true;
+  // A caller that supplies no issue instant is a caller with no announcement
+  // to order against: it keeps the shipped cut-only rule rather than being
+  // read as "unordered", which would preserve every wait it ever saw.
+  if (evidence.issuedAt === undefined) return !quotaReadPredatesWait(read, model);
+  return quotaReadNewerThanWait(model, evidence) && !quotaReadPredatesWait(read, model);
+}
+
+// quotaReadIssuedAfterRetirement reports whether the read can end a turn's
+// retirement. Both instants are this client's: the boundary's receipt stamp on
+// the model, and the read's own issue instant. A read issued before the
+// boundary captured a state in which the turn still ran, so its "running"
+// verdict is the snapshot's age rather than news that the turn came back.
+//
+// A model carrying no retirement stamp predates this rule; it keeps the
+// shipped revival, which is what lets an already-saved model recover.
+function quotaReadIssuedAfterRetirement(
+  model: Pick<ThreadModel, "quotaWaitRetiredAt">,
+  evidence: QuotaReadEvidence,
+): boolean {
+  if (model.quotaWaitRetiredAt === undefined) return true;
+  // Same convention as quotaReadMayEndWait: a caller that supplies no issue
+  // instant has no client-clock evidence to order with, so it keeps the
+  // shipped revival. Every production read supplies one, so the ordering binds
+  // where it can be checked and nothing is silently refused where it cannot.
+  if (evidence.issuedAt === undefined) return true;
+  return evidence.issuedAt > model.quotaWaitRetiredAt;
+}
+
 // quotaWaitEndedOnModel reports whether the wait the read names by stamp is
 // one the pane watched end, or an EARLIER wait of the same turn: the wake
 // recorded the last ended wait's stamp independently of the chip, and every
@@ -1091,11 +1187,8 @@ function quotaWaitEndedOnModel(
   read: Pick<ThreadModel, "quotaWaitStartedAt">,
   model: Pick<ThreadModel, "quotaWaitEndedAt">,
 ): boolean {
-  return (
-    model.quotaWaitEndedAt !== undefined &&
-    read.quotaWaitStartedAt !== undefined &&
-    read.quotaWaitStartedAt <= model.quotaWaitEndedAt
-  );
+  if (read.quotaWaitStartedAt === undefined) return false;
+  return model.quotaWaitEndedAt !== undefined && read.quotaWaitStartedAt <= model.quotaWaitEndedAt;
 }
 
 // quotaWaitWakeRecorded reports whether the model carries the zero-delay
@@ -1137,6 +1230,9 @@ export function applyReadResponse<M extends ThreadModel>(
   // hub omits OlderCursor and Snapshot for includeTurns:false) must pass
   // "unknown": its absent cursor is not a source-named end of history.
   frontier: OlderFrontier = frontierFromCursor(resp),
+  // The ordering evidence the quota rules need, all of it this client's own.
+  // A caller that does not supply it gets the shipped cut-only ordering.
+  evidence: QuotaReadEvidence = {},
 ): ThreadModel & ModelExtras<M> {
   const held = model.history ?? EMPTY_HISTORY;
   const disposition = readDisposition(held, resp);
@@ -1238,17 +1334,35 @@ export function applyReadResponse<M extends ThreadModel>(
     base.modelRetry.turnId !== undefined &&
     readRunningTurnId !== undefined &&
     readRunningTurnId !== base.modelRetry.turnId;
+  // A retired turn's retirement ends when the read names that turn running
+  // again (the remote-relay recovery read) AND the read was issued after the
+  // boundary that retired it. Without the ordering leg a read captured while
+  // the turn was still waiting - the read in flight when the Stop landed -
+  // revives a turn the pane watched end merely by arriving late: Stop emits no
+  // zero-delay wake, so there is no ended-wait stamp to reject it, and the
+  // read reinstalls the deadline over the stop that canceled it. A fresh
+  // recovery read after the relay's synthetic idle is issued after the
+  // boundary, so the revival the relay path needs still happens.
+  //
+  // Decided HERE, before the quota block, because an accepted revival also
+  // retracts the boundary's verdict on the wait it brings back: the boundary
+  // recorded that wait as ended, and the ended-wait check below must not use
+  // that record to reject the very countdown the revival restores.
+  const retiredTurnNamedRunning =
+    readRunningTurnId !== undefined &&
+    readRunningTurnId === model.retiredQuotaTurn &&
+    quotaReadIssuedAfterRetirement(model, evidence);
   // A recorded wake suppresses the deadline a pre-wake snapshot carries for
   // the same stamped wait: the read's summary is a stale cut, the wake the
-  // newer fact. A read whose serving cut predates the wait is the same race
-  // from the other side: its absent field is a stale cut's silence, not a
-  // statement the wait ended, so it clears neither the deadline nor the
-  // retry the live announcement recorded.
-  const readPredatesWait = quotaReadPredatesWait(fields, model);
+  // newer fact. A read that cannot be ordered against the wait is the same
+  // race from the other side: its absent field is stale or unordered silence
+  // rather than a statement the wait ended, so it clears neither the deadline
+  // nor the retry the live announcement recorded.
+  const readMayEndWait = quotaReadMayEndWait(fields, model, evidence, waitTurnReplaced);
   const wakeSuppressesDeadline = quotaWaitWakeRecorded(fields, model);
   const readNamesEndedWait = quotaWaitEndedOnModel(fields, model);
   const clearedQuotaWait =
-    (fields.quotaResumesAt === undefined && (quotaSnapshotAuthoritative || waitTurnReplaced) && !readPredatesWait) ||
+    (fields.quotaResumesAt === undefined && (quotaSnapshotAuthoritative || waitTurnReplaced) && readMayEndWait) ||
     (fields.quotaResumesAt !== undefined && (wakeSuppressesDeadline || readNamesEndedWait))
       ? { quotaResumesAt: undefined }
       : {};
@@ -1257,13 +1371,19 @@ export function applyReadResponse<M extends ThreadModel>(
   // unconditionally), so a later no-wait read does not unsay it.
   const keptQuotaReadReportsWaits =
     base.quotaReadReportsWaits || fields.quotaReadReportsWaits ? { quotaReadReportsWaits: true } : {};
-  // Same rule as applyReadModel: a retired turn's retirement ends when the
-  // read names that turn running again (the remote-relay recovery read),
-  // or the turn's own zero-delay wake is rejected next.
-  const clearedRetiredQuotaTurn =
-    readRunningTurnId !== undefined && readRunningTurnId === model.retiredQuotaTurn
-      ? { retiredQuotaTurn: undefined }
-      : {};
+  const clearedRetiredQuotaTurn = retiredTurnNamedRunning ? { retiredQuotaTurn: undefined } : {};
+  // And until the retirement ends, the read's own deadline for that turn never
+  // installs. A snapshot captured while the turn still waited carries the
+  // wait's summary, and the fields spread would put it back over the Stop that
+  // canceled it - the deadline and the retired marker disagreeing about a turn
+  // the pane watched end. Re-spreading the held pair (absence included) keeps
+  // the Stop's verdict whole; the ordering gate above is what lets a genuinely
+  // newer read revive the turn and bring its deadline with it.
+  const retiredTurnStillEnded =
+    model.retiredQuotaTurn !== undefined && readRunningTurnId === model.retiredQuotaTurn && !retiredTurnNamedRunning;
+  const heldRetiredWaitFields: Partial<ThreadModel> = retiredTurnStillEnded
+    ? { quotaResumesAt: model.quotaResumesAt, quotaWaitStartedAt: model.quotaWaitStartedAt }
+    : {};
   // A read that names a DIFFERENT running turn retires the old turn's retry
   // metadata even while the new turn waits its own wait: the snapshot's new
   // deadline is real, but the retained retry (its elapsed time, its model)
@@ -1288,7 +1408,7 @@ export function applyReadResponse<M extends ThreadModel>(
         quotaSnapshotAuthoritative &&
         fields.quotaResumesAt !== model.quotaResumesAt));
   const clearedQuotaRetry =
-    !readPredatesWait &&
+    readMayEndWait &&
     (quotaSnapshotAuthoritative || waitTurnReplaced) &&
     (fields.quotaResumesAt === undefined || quotaRetryFromAnotherCall) &&
     base.modelRetry?.errorClass === "quota_exceeded"
@@ -1317,6 +1437,7 @@ export function applyReadResponse<M extends ThreadModel>(
       ...clearedQuotaWait,
       ...clearedQuotaRetry,
       ...heldOlderWaitFields,
+      ...heldRetiredWaitFields,
       ...keptQuotaReadReportsWaits,
       ...clearedRetiredQuotaTurn,
       ...runningTurn(resp.thread),
@@ -1400,6 +1521,9 @@ export function applyReadModel<M extends ThreadModel>(
   model: M,
   fresh: ThreadModel,
   changes?: ThreadReadResponse["changes"],
+  // The ordering evidence the quota rules need, all of it this client's own.
+  // A caller that does not supply it gets the shipped cut-only ordering.
+  evidence: QuotaReadEvidence = {},
 ): ThreadModel & ModelExtras<M> {
   const held = model.history ?? EMPTY_HISTORY;
   const freshHistory = fresh.history;
@@ -1510,22 +1634,30 @@ export function applyReadModel<M extends ThreadModel>(
     base.modelRetry.turnId !== undefined &&
     freshRunningTurnId !== undefined &&
     freshRunningTurnId !== base.modelRetry.turnId;
+  // Same rule and same ordering as applyReadResponse: the retirement ends only
+  // for a read issued after the boundary that made it, and an accepted revival
+  // retracts that boundary's verdict on the wait it brings back so the
+  // ended-wait check below cannot use it to reject the revived countdown.
+  const retiredTurnNamedRunning =
+    freshRunningTurnId !== undefined &&
+    freshRunningTurnId === model.retiredQuotaTurn &&
+    quotaReadIssuedAfterRetirement(model, evidence);
   // Same rule as applyReadResponse: a recorded wake suppresses the deadline a
   // pre-wake snapshot carries for the same stamped wait. The suppression
   // must fire even though the wake already cleared the model's own deadline:
   // the read's fields spread reinstalls the stale cut's, and only this
-  // override drops it again. And a read whose serving cut predates the wait
-  // is the same race from the other side: its absent field is a stale
-  // cut's silence, so it clears neither the deadline nor the retry the
+  // override drops it again. And a read that cannot be ordered against the
+  // wait is the same race from the other side: its absent field is stale or
+  // unordered silence, so it clears neither the deadline nor the retry the
   // live announcement recorded.
-  const readPredatesWait = quotaReadPredatesWait(fresh, model);
+  const readMayEndWait = quotaReadMayEndWait(fresh, model, evidence, waitTurnReplaced);
   const wakeSuppressesDeadline = quotaWaitWakeRecorded(fresh, model);
   const readNamesEndedWait = quotaWaitEndedOnModel(fresh, model);
   const clearedQuotaWait =
     (fresh.quotaResumesAt === undefined &&
       (quotaSnapshotAuthoritative || waitTurnReplaced) &&
       model.quotaResumesAt !== undefined &&
-      !readPredatesWait) ||
+      readMayEndWait) ||
     (fresh.quotaResumesAt !== undefined && (wakeSuppressesDeadline || readNamesEndedWait))
       ? { quotaResumesAt: undefined }
       : {};
@@ -1542,7 +1674,7 @@ export function applyReadModel<M extends ThreadModel>(
         quotaSnapshotAuthoritative &&
         fresh.quotaResumesAt !== model.quotaResumesAt));
   const clearedQuotaRetry =
-    !readPredatesWait &&
+    readMayEndWait &&
     (quotaSnapshotAuthoritative || waitTurnReplaced) &&
     (fresh.quotaResumesAt === undefined || quotaRetryFromAnotherCall) &&
     model.modelRetry?.errorClass === "quota_exceeded"
@@ -1559,16 +1691,16 @@ export function applyReadModel<M extends ThreadModel>(
   // reporting waits, so a later no-wait read does not unsay it.
   const keptQuotaReadReportsWaits =
     base.quotaReadReportsWaits || fresh.quotaReadReportsWaits ? { quotaReadReportsWaits: true } : {};
-  // A retired turn's retirement ends the moment the turn runs again: a
-  // remote relay's exhausted-redial idle retires the turn, and the daemon's
-  // recovery read names the same turn running (its wait's summary riding the
-  // thread) - the marker exists to reject queued deliveries against a turn
-  // the pane watched end, and a read that shows the turn running ends that
-  // judgment, or the turn's own zero-delay wake is rejected next.
-  const clearedRetiredQuotaTurn =
-    freshRunningTurnId !== undefined && freshRunningTurnId === model.retiredQuotaTurn
-      ? { retiredQuotaTurn: undefined }
-      : {};
+  const clearedRetiredQuotaTurn = retiredTurnNamedRunning ? { retiredQuotaTurn: undefined } : {};
+  // Same rule as applyReadResponse: until the retirement ends, the read's own
+  // deadline for that turn never installs. A snapshot captured while the turn
+  // still waited carries the wait's summary, and spreading it would put a
+  // countdown back over the Stop that canceled it.
+  const retiredTurnStillEnded =
+    model.retiredQuotaTurn !== undefined && freshRunningTurnId === model.retiredQuotaTurn && !retiredTurnNamedRunning;
+  const heldRetiredWaitFields: Partial<ThreadModel> = retiredTurnStillEnded
+    ? { quotaResumesAt: model.quotaResumesAt, quotaWaitStartedAt: model.quotaWaitStartedAt }
+    : {};
   let next = withDisplay(
     {
       ...base,
@@ -1578,6 +1710,7 @@ export function applyReadModel<M extends ThreadModel>(
       ...clearedQuotaWait,
       ...clearedQuotaRetry,
       ...heldOlderWaitFields,
+      ...heldRetiredWaitFields,
       ...keptQuotaReadReportsWaits,
       ...clearedRetiredQuotaTurn,
       ...(freshRunningTurnId ? { runningTurnId: freshRunningTurnId } : {}),

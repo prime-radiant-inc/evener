@@ -1074,6 +1074,8 @@ async function acceptEntryTranscriptHydration(
   if (productionRoute && authorities && lifetime?.freshForegroundLifetime) settleCacheLifetimeAfterHydration(ref);
   const adoptedRead = repository.acceptRead(response, {
     lifetime: fixture.lifetime,
+    issuedAt: hydration.issuedAt,
+    ...(hydration.announcedAt === undefined ? {} : { announcedAt: hydration.announcedAt }),
     ...nextTranscriptReadIdentity(),
   });
   repository.acceptBeforeReadCut(
@@ -4349,6 +4351,18 @@ interface ThreadHydration {
   response: ThreadReadResponse;
   fixtureNotifications: ReceivedTranscriptUpdate[];
   discardHeldHistory?: true;
+  // When the read that produced this response was issued, on this client's
+  // clock. The quota merge orders a read against the wait announcement the
+  // pane received with it, so a read cut in the gap between the session's
+  // wait and the bridge's projection refresh is not read as a wait that
+  // ended. Both instants are this client's, so a skewed browser clock
+  // cancels out of the comparison.
+  issuedAt: number;
+  // When this pane received the quota wait's announcement, if the subscription
+  // model holds one the read's merge base predates. The two instants are on
+  // this client's clock, so the merge can order the read against the wait
+  // without consulting the daemon's.
+  announcedAt?: number;
 }
 
 // The two hydration lifecycles read a ref the same way and differ in these
@@ -4383,6 +4397,17 @@ async function readThreadHydration(
   const releaseLease = () => lease.release();
   signal?.addEventListener("abort", releaseLease, { once: true });
   const held = discardHeldHistory ? undefined : heldSnapshotFor(pending.baseModel);
+  // Stamped BEFORE the request so the instant bounds when the read left this
+  // pane, never when it came back: a response that sat in flight while a wait
+  // was announced is older than that announcement.
+  const issuedAt = now;
+  // The live model can carry a quota announcement the merge base predates: the
+  // base is the model at issue time, and the announcement lands during the
+  // read. QuotaReadEvidence orders the two by this instant, so capture it here
+  // rather than letting the base's silence read as "no wait was ever
+  // announced".
+  const liveRetry = threadsStore.getState().threads.get(ref)?.modelRetry;
+  const announcedAt = liveRetry?.errorClass === "quota_exceeded" ? liveRetry.receivedAt : undefined;
   try {
     try {
       if (signal?.aborted) throw new Error("Thread hydration attempt was retired");
@@ -4481,7 +4506,10 @@ async function readThreadHydration(
             threadsStore.getState().cacheLifetimes.get(ref),
             threadsStore.getState().threads.get(ref),
           )
-        : applyReadResponse(pending.baseModel, response, now, frontier)
+        : applyReadResponse(pending.baseModel, response, now, frontier, {
+            issuedAt,
+            ...(announcedAt === undefined ? {} : { announcedAt }),
+          })
       : hydrateThread(response, ref, now, frontier);
   // The response cut retires buffered input from the legacy hydrator because
   // its snapshot is authoritative for that route. The entry repository also
@@ -4497,6 +4525,8 @@ async function readThreadHydration(
     model: cutModel,
     response,
     fixtureNotifications,
+    issuedAt,
+    ...(announcedAt === undefined ? {} : { announcedAt }),
     ...(discardHeldHistory ? { discardHeldHistory: true } : {}),
   };
 }

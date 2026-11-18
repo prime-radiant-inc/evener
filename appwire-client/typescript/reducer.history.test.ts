@@ -484,6 +484,170 @@ test("a read cut before the wait keeps the live-recorded wait; a fresh authorita
   expect(ended.modelRetry).toBeUndefined();
 });
 
+// M1: the session stamps the wait before the asynchronous bridge updates the
+// read projection, so a cut taken in that gap has an asOf LATER than the wait's
+// start and still carries no summary. Ordering against the cut alone reads that
+// silence as proof the wait ended and erases a live countdown for the rest of
+// the wait. The order that settles it is the one the client can see: the
+// announcement reached this pane BEFORE it issued the read, and the daemon
+// projects the wait before it emits that announcement, so a read issued after
+// the receipt reached a projection that already knew the wait. Both instants
+// are this client's clock, so a skewed browser cancels out.
+test("a read issued before the wait's announcement cannot clear the live countdown", () => {
+  const resumesAt = 4_102_400_000;
+  const waitStartedAt = 4_000_000_000;
+  const announcedAt = 500_000;
+  let model = hydrateThread(read([turn("turn_1", 1)], { activeTurnId: "turn_1" }), REF, NOW);
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: THREAD_ID,
+        ref: REF,
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: resumesAt - waitStartedAt,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 1,
+        waitStartedAt,
+      },
+    } as AnyNotification,
+    announcedAt,
+  );
+  expect(model.quotaResumesAt).toBeDefined();
+  // The read was ISSUED before this pane heard of the wait, and its cut landed
+  // after the wait began but before the bridge refreshed the projection.
+  const inTheGap = hydrateThread(
+    read([turn("turn_1", 1)], { activeTurnId: "turn_1", asOf: new Date(waitStartedAt + 40_000).toISOString() }),
+    REF,
+    announcedAt - 1,
+  );
+  const kept = applyReadModel(model, inTheGap, undefined, { issuedAt: announcedAt - 1 });
+  expect(kept.quotaResumesAt).toBe(model.quotaResumesAt);
+  expect(kept.modelRetry?.errorClass).toBe("quota_exceeded");
+  // A read issued AFTER the receipt reached a projection that already carried
+  // the wait, so its silence is the wait having ended and the countdown goes.
+  const afterReceipt = hydrateThread(
+    read([turn("turn_1", 1)], { activeTurnId: "turn_1", asOf: new Date(waitStartedAt + 40_000).toISOString() }),
+    REF,
+    announcedAt + 1,
+  );
+  const cleared = applyReadModel(kept, afterReceipt, undefined, { issuedAt: announcedAt + 1 });
+  expect(cleared.quotaResumesAt).toBeUndefined();
+  expect(cleared.modelRetry).toBeUndefined();
+});
+
+// M2: a read captured while the turn was waiting can land AFTER the pane
+// received Stop. Stop produces no zero-delay wake, so the ended-wait check has
+// no stamp to reject it, and the read revives the retired turn merely by
+// naming it running - reinstalling the deadline the Stop cancelled. A read may
+// end a retirement only when it was issued after the boundary that made it.
+// The relay's recovery read is the case that must still work: it is issued
+// after the synthetic idle, so it revives the turn and restores its wait.
+test("a read captured before Stop cannot revive the retired turn, but a recovery read issued after it can", () => {
+  const resumesAt = 4_102_400_000;
+  const waitStartedAt = 4_000_000_000;
+  const stopAt = 600_000;
+  let model = hydrateThread(read([turn("turn_1", 1)], { activeTurnId: "turn_1" }), REF, NOW);
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: THREAD_ID,
+        ref: REF,
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: resumesAt - waitStartedAt,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 1,
+        waitStartedAt,
+      },
+    } as AnyNotification,
+    stopAt - 1_000,
+  );
+  expect(model.quotaResumesAt).toBeDefined();
+  // Stop: the turn ends with no wake of its own.
+  const stopped = applyNotification(
+    model,
+    { method: "thread/status/changed", params: { threadId: THREAD_ID, ref: REF, status: { type: "idle" } } },
+    stopAt,
+  );
+  expect(stopped.quotaResumesAt).toBeUndefined();
+  expect(stopped.retiredQuotaTurn).toBe("turn_1");
+  const waitingSnapshot = (now: number) =>
+    hydrateThread(
+      read([turn("turn_1", 1)], {
+        activeTurnId: "turn_1",
+        quotaWaitResumesAt: resumesAt,
+        quotaWaitStartedAt: waitStartedAt,
+        asOf: new Date(waitStartedAt + 1_000).toISOString(),
+      }),
+      REF,
+      now,
+    );
+  // The in-flight read, issued BEFORE Stop, lands after it. It names turn_1
+  // running and carries the wait's summary, but it captured a state the Stop
+  // superseded: nothing installs.
+  const stale = applyReadModel(stopped, waitingSnapshot(stopAt + 1), undefined, { issuedAt: stopAt - 2_000 });
+  expect(stale.quotaResumesAt).toBeUndefined();
+  expect(stale.retiredQuotaTurn).toBe("turn_1");
+  // The relay's recovery read, issued AFTER the synthetic idle, names the same
+  // turn running and its wait live: the retirement was the relay's, and the
+  // turn comes back with its countdown.
+  const recovered = applyReadModel(stopped, waitingSnapshot(stopAt + 2), undefined, { issuedAt: stopAt + 2 });
+  expect(recovered.retiredQuotaTurn).toBeUndefined();
+  expect(recovered.quotaResumesAt).toBe(isoInstant(resumesAt));
+});
+
+// M3: the pane reconnects after another client stopped a waiting turn and
+// started a replacement. The response declares its serving cut unavailable, so
+// the cut comparison returns "predates the wait" and used to veto the quota
+// clearing - even though the response names a DIFFERENT running turn, which is
+// an established replacement and the read's own fact, needing no cut at all.
+// The pane then counted down a canceled wait over the turn that replaced it.
+test("a read declaring its cut unavailable still retires the wait when it establishes a replacement turn", () => {
+  const resumesAt = 4_102_400_000;
+  const waitStartedAt = 4_000_000_000;
+  let model = hydrateThread(read([turn("turn_1", 1)], { activeTurnId: "turn_1" }), REF, NOW);
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: THREAD_ID,
+        ref: REF,
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: resumesAt - waitStartedAt,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 1,
+        waitStartedAt,
+      },
+    } as AnyNotification,
+    NOW - 1_000,
+  );
+  expect(model.quotaResumesAt).toBeDefined();
+  expect(model.modelRetry?.errorClass).toBe("quota_exceeded");
+  // The reconnect: turn_2 runs, and the source says outright that it cannot
+  // stamp the cut this response was served from.
+  const unavailableCut = hydrateThread(read([turn("turn_2", 1)], { activeTurnId: "turn_2" }), REF, NOW + 1);
+  unavailableCut.servingFacts = { servingFactsUnavailableReason: "older-source" };
+  const next = applyReadModel(model, unavailableCut);
+  // The replacement turn's existence is the read's own fact: the old wait and
+  // its retry go with the turn that carried them.
+  expect(next.quotaResumesAt).toBeUndefined();
+  expect(next.modelRetry).toBeUndefined();
+  expect(next.runningTurnId).toBe("turn_2");
+});
+
 // A legacy ROOT daemon predates the capability bit but its reads always
 // attached the wait summary, so their absent field is authoritative even when
 // the pane learned of the wait through the live announcement alone: it opened

@@ -888,6 +888,7 @@ export {
   fromWireChange,
   transcriptDisplaySupport,
 } from "./transcriptDisplayStore";
+export type { QuotaReadEvidence } from "./transcriptHistory";
 export {
   applyHistoryReadFailure,
   applyReadModel,

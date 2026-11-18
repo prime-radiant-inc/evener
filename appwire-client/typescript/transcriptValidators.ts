@@ -68,6 +68,7 @@ export type CurrentTranscriptFields = Pick<
   | "quotaReadReportsWaits"
   | "retiredQuotaTurn"
   | "quotaWaitEndedAt"
+  | "quotaWaitRetiredAt"
   | "goal"
   | "humanNote"
   | "agentNote"
@@ -875,6 +876,7 @@ export function validCurrentFields(value: unknown): value is CurrentTranscriptFi
   if (value.quotaResumesAt !== undefined && typeof value.quotaResumesAt !== "string") return false;
   if (value.quotaWaitStartedAt !== undefined && !isFiniteNumber(value.quotaWaitStartedAt)) return false;
   if (value.quotaWaitEndedAt !== undefined && !isFiniteNumber(value.quotaWaitEndedAt)) return false;
+  if (value.quotaWaitRetiredAt !== undefined && !isFiniteNumber(value.quotaWaitRetiredAt)) return false;
   if (value.quotaReadReportsWaits !== undefined && typeof value.quotaReadReportsWaits !== "boolean") return false;
   if (value.retiredQuotaTurn !== undefined && typeof value.retiredQuotaTurn !== "string") return false;
   for (const key of [
