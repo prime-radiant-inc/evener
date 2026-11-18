@@ -1,16 +1,17 @@
 package agent
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -44,7 +45,13 @@ func TestDelegateInlineAckAppendFailureSettlesThroughRealToolRound(t *testing.T)
 	// The child's first generation is held until the root's opening turn has
 	// ended, so the send in the second turn reaches an idle child. A send into a
 	// running generation is refused as concurrent_send and never waits inline.
-	releaseFirstGeneration := make(chan struct{})
+	// The release is idempotent and deferred: a Fatalf in the opening turn skips
+	// everything after it, and the scripted adapter does not observe
+	// cancellation, so an unreleased gate would leave its worker blocked through
+	// cleanup.
+	firstGeneration := make(chan struct{})
+	releaseFirstGeneration := sync.OnceFunc(func() { close(firstGeneration) })
+	defer releaseFirstGeneration()
 	adapter.script("root",
 		func(llm.Request) llm.Response {
 			return delegateToolResponse("create", "WORKER-BRIEF: answer when asked.")
@@ -69,7 +76,7 @@ func TestDelegateInlineAckAppendFailureSettlesThroughRealToolRound(t *testing.T)
 	)
 	adapter.script("WORKER-BRIEF",
 		func(llm.Request) llm.Response {
-			<-releaseFirstGeneration
+			<-firstGeneration
 			return agenttest.FinalResponse("GEN1_READY")
 		},
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("GEN2_ANSWER") },
@@ -120,7 +127,7 @@ func TestDelegateInlineAckAppendFailureSettlesThroughRealToolRound(t *testing.T)
 
 	// Let the first generation report, and wait for it to reach the root, so the
 	// child is idle and its result is queued ahead of the send's own reply.
-	close(releaseFirstGeneration)
+	releaseFirstGeneration()
 	waitForRootAttention(t, root, 1)
 
 	// Turn two carries the send. Its acknowledgment append fails, which is the
@@ -170,6 +177,46 @@ func TestDelegateInlineAckAppendFailureSettlesThroughRealToolRound(t *testing.T)
 		t.Fatal("the injected acknowledgment append failure never fired")
 	}
 
+	// Before the fault is cleared, the round must have persisted the send result
+	// and its delivery binding. Stop reconciliation acknowledges the in-memory
+	// receipt, so without this a round that left a retryable receipt but never
+	// wrote the answer or the commit would settle and still pass.
+	rootPath := transcriptPath(root.stateDir, root.ID())
+	persisted, err := readTranscriptFull(ctx, rootPath, "")
+	if err != nil {
+		t.Fatalf("read root transcript: %v", err)
+	}
+	sentAnswer := false
+	for _, entry := range persisted.Entries {
+		if entry.Turn.Kind != schema.TurnToolResults {
+			continue
+		}
+		for _, part := range entry.Turn.Message.Content {
+			if part.ToolResult == nil || part.ToolResult.ToolCallID != "send" {
+				continue
+			}
+			if part.ToolResult.IsError {
+				t.Fatalf("the persisted send result is an error: %v", part.ToolResult.Content)
+			}
+			if text := fmt.Sprint(part.ToolResult.Content); !strings.Contains(text, "GEN2_ANSWER") {
+				t.Fatalf("persisted send result = %q, want it to carry the delegate's answer GEN2_ANSWER", text)
+			}
+			sentAnswer = true
+		}
+	}
+	if !sentAnswer {
+		t.Fatal("the tool round persisted no send result for the delegate_send call")
+	}
+	rootFold, err := readDelegateAttentionFold(rootPath, root.ID())
+	if err != nil {
+		t.Fatalf("read root attention fold: %v", err)
+	}
+	for _, deliveryID := range inlineIDs {
+		if got := rootFold.deliveryCommits[deliveryID]; got != "send" {
+			t.Fatalf("persisted delivery %q is committed by tool call %q, want the send call", deliveryID, got)
+		}
+	}
+
 	// From here the store accepts the acknowledgment, so a stop retrying it
 	// settles instead of reporting a lost result.
 	controller.mu.Lock()
@@ -185,7 +232,10 @@ func TestDelegateInlineAckAppendFailureSettlesThroughRealToolRound(t *testing.T)
 	if stop == nil {
 		t.Fatal("no stop state after StopSubtree")
 	}
-	if err := controller.drainStopForClose(context.Background(), stop); err != nil {
+	// The tripwire context, not Background: a receipt left tracked by
+	// reconciliation has no owner left to signal progress, so a drain that
+	// waits on one must fail here rather than hang until the package timeout.
+	if err := controller.drainStopForClose(ctx, stop); err != nil {
 		t.Fatalf("close drain after the real ack-append failure = %v, want the retried acknowledgment to settle the stop", err)
 	}
 	if !channelClosed(stop.done) {

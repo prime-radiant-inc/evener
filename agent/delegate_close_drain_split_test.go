@@ -74,6 +74,10 @@ func TestDelegateStopCloseDrainLeavesOtherSubtreeReplayToItsOwnStop(t *testing.T
 	c, storePath := newDelegateControllerTestHarness(t, 2, 2)
 	root := newRootRuntimeForClose(t, c)
 	root.events = make(chan events.SessionEvent, 8)
+	var published []delegateUpdatePlan
+	c.mu.Lock()
+	c.emitUpdate = func(plan delegateUpdatePlan) { published = append(published, plan) }
+	c.mu.Unlock()
 
 	const (
 		first  = "dlg_first"
@@ -179,6 +183,68 @@ func TestDelegateStopCloseDrainLeavesOtherSubtreeReplayToItsOwnStop(t *testing.T
 	}
 	if ackIndex < requestIndex {
 		t.Fatal("the second subtree's delivery was acknowledged before its own stop was requested: another subtree's replay reached it")
+	}
+
+	// The per-subtree drains leave snapshot publication to the close, so the
+	// close itself must publish exactly one snapshot for every subtree it
+	// stopped: none means deferring quietly became dropping, and more than one
+	// means a drain published inside the loop, where event backpressure can
+	// spend a later subtree's stop budget.
+	publishedRows := make(map[string]int)
+	for _, plan := range published {
+		for _, row := range plan.rows {
+			publishedRows[row.id]++
+		}
+	}
+	for _, id := range []string{first, second} {
+		if got := publishedRows[id]; got != 1 {
+			t.Fatalf("subtree %q snapshot publications = %d, want exactly one from the close: %#v", id, got, publishedRows)
+		}
+	}
+}
+
+// errInjectedStopCompletionAppend fails the durable stop-completion append of a
+// pass that has already abandoned an inline receipt. A sentinel, so the test
+// proves the pass ended at that append rather than matching production copy.
+var errInjectedStopCompletionAppend = errors.New("injected stop completion append failure")
+
+// The lost-result warning for an abandoned receipt exists only in the pass that
+// abandons it: the abandon takes the receipt out of the admission map, so no
+// later pass can notice it again. Reconciliation can then fail on the stop's
+// own completion append, and it reports that failure to the drain. The warning
+// must survive that error rather than being thrown away with the plan, or the
+// user never learns the result was lost.
+func TestDelegateStopCloseDrainReportsLostResultWhenStopCompletionAppendFails(t *testing.T) {
+	f := newStrandedStopFixture(t, strandedStopOptions{updates: 1, inline: true, realRoot: true})
+	if f.root == nil {
+		t.Fatal("fixture did not create the root runtime")
+	}
+	f.root.events = make(chan events.SessionEvent, 8)
+
+	// The pass abandons the unowned inline receipt and then fails its own stop
+	// completion append, which is the step that returns an error to the drain.
+	f.controller.appendFault = func(batch []delegatestore.Event) error {
+		for _, event := range batch {
+			if event.Kind == delegatestore.EventDelegateSubtreeStopCompleted {
+				return errInjectedStopCompletionAppend
+			}
+		}
+		return nil
+	}
+
+	err := f.controller.drainStopForClose(context.Background(), f.controller.stopForResult(f.stop))
+	if !errors.Is(err, errInjectedStopCompletionAppend) {
+		t.Fatalf("close drain error = %v, want the injected stop-completion append failure", err)
+	}
+
+	found := false
+	for _, warning := range drainSessionWarnings(f.root) {
+		if warning.Code == events.WarningCodeDelegateDeliveryResultLost && warning.DelegateID == "dlg_target" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("the pass abandoned an inline receipt but failed its stop-completion append, and the lost result was never reported")
 	}
 }
 

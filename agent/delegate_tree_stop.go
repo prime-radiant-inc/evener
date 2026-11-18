@@ -747,7 +747,34 @@ func (c *delegateTreeController) closeRuntimeTree(ctx context.Context) error {
 	if _, err := c.joinStopReconcileDriver(ctx); err != nil {
 		return err
 	}
+	// Every subtree's stop is durable; publish the snapshots the per-subtree
+	// drains deliberately left for here, now that no later stop depends on this
+	// call returning promptly.
+	c.publishCloseSnapshots()
 	return nil
+}
+
+// publishCloseSnapshots emits one snapshot per durable delegate after the close
+// loop has admitted every subtree's stop. It runs there rather than inside each
+// subtree's drain because publishing can block on a stalled authoritative event
+// consumer, which must not consume the budget a later subtree needs to reach
+// its own durable stop.
+func (c *delegateTreeController) publishCloseSnapshots() {
+	if c == nil || c.rootRuntime == nil {
+		return
+	}
+	c.mu.Lock()
+	ids := make([]string, 0, len(c.durable))
+	for id := range c.durable {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	plans := delegateMutationPlans{}
+	for _, id := range ids {
+		plans.updates = append(plans.updates, c.capturedPlanLocked(id))
+	}
+	c.mu.Unlock()
+	c.emitDelegateUpdates(plans)
 }
 
 func (c *delegateTreeController) stopSubtreeForClose(ctx context.Context, targetID string) (delegateStopResult, delegateCancelPlan, delegateMutationPlans, error) {
@@ -857,6 +884,18 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 		if plans.retirementRelease != nil {
 			retirementReleases = append(retirementReleases, plans.retirementRelease)
 		}
+		// Publish this pass's warnings before anything below can return or
+		// re-enter the loop, and before the error check: a pass that abandons
+		// an inline receipt also drops it, so that pass alone can report the
+		// loss. A failed append, a failed cleanup, or the next pass would
+		// otherwise leave the notice unpublished with no receipt left to
+		// recreate it.
+		if root != nil {
+			for _, warning := range plans.warnings {
+				root.emit(warning)
+			}
+			plans.warnings = nil
+		}
 		if err != nil {
 			if errors.Is(err, errDelegateTargetBusy) {
 				if channelClosed(abandon) {
@@ -865,17 +904,6 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 				continue
 			}
 			return err
-		}
-		// Publish this pass's warnings before any step below can return or
-		// re-enter the loop. A pass that abandons an inline receipt also drops
-		// it, so that pass alone can report the loss; the next one has no
-		// receipt left to notice. A shell repair or attention cleanup that
-		// fails after this point would otherwise end the pass with the notice
-		// still unpublished, and nothing later would recreate it.
-		if root != nil {
-			for _, warning := range plans.warnings {
-				root.emit(warning)
-			}
 		}
 		for _, plan := range plans.shellRepairs {
 			if err := executeDelegateShellRepair(plan, c.now()); err != nil {
@@ -896,6 +924,12 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 			// Published above, once.
 			rootPlans.warnings = nil
 			if closeDrain {
+				// Snapshot publication is the one part of this hand-off that
+				// can block on a wedged authoritative event consumer.
+				// closeRuntimeTree publishes the final snapshots after every
+				// subtree's durable stop is admitted, so backpressure cannot
+				// spend a later subtree's budget.
+				rootPlans.updates = nil
 				rootPlans.deliveries = nil
 			}
 			if err := root.executeDelegateMutationPlans(rootPlans); err != nil {

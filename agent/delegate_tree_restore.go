@@ -419,7 +419,12 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 			RequestSeq: stop.requestSeq,
 		},
 	}); err != nil {
-		return delegateMutationPlans{}, err
+		// Keep this pass's warnings. A receipt abandoned earlier in the pass is
+		// already dropped from the admission map, so no later pass can report
+		// its lost result: the caller must publish these before it acts on the
+		// error. Nothing else here is safe to act on, so only the warnings
+		// survive.
+		return delegateMutationPlans{warnings: plans.warnings}, err
 	}
 	close(stop.done)
 	c.stop = nil
