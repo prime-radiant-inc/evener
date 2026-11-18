@@ -8,10 +8,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 	"testing"
 
@@ -36,6 +36,97 @@ const bwrapProbeOrphanReportEnv = "EVENER_TEST_BWRAP_PROBE_ORPHAN_REPORT"
 // the step: a skip there would report success for a measurement never taken.
 const bwrapProbeRequiredEnv = "EVENER_TEST_BWRAP_PROBE_REQUIRED"
 
+// probeStart classifies how a bwrap invocation ended before any exit status
+// existed. probeRan means the command ran, so its exit status is the whole
+// story; every other value means it never started, and no exit status exists.
+type probeStart string
+
+const (
+	// probeRan means the command ran: it was launched and reached an exit.
+	probeRan probeStart = "ran"
+	// probeNoProgram means the launcher resolved no such program: a path whose
+	// file is gone (ENOENT), or a bare name os/exec could not resolve on PATH
+	// (exec.ErrNotFound). Either way the command never started.
+	probeNoProgram probeStart = "no-program"
+	// probeRefused means the program exists and the kernel declined to execute
+	// it (EACCES, EPERM).
+	probeRefused probeStart = "refused"
+	// probeNoStart is a launch failure with neither a missing program nor a
+	// refusal to name: a fork failure, a host at its process limit, and the
+	// like.
+	probeNoStart probeStart = "no-start"
+)
+
+// classifyProbeStart reports how err ended an invocation before it could reach
+// an exit status. os/exec reports a command that ran and exited nonzero as
+// *exec.ExitError, so anything else is the launch's own failure; separating
+// them here is what keeps "never started" from sharing a shape with "ran".
+func classifyProbeStart(err error) probeStart {
+	switch {
+	case err == nil:
+		return probeRan
+	case isExitStatus(err):
+		return probeRan
+	case errors.Is(err, fs.ErrNotExist), errors.Is(err, exec.ErrNotFound):
+		return probeNoProgram
+	case errors.Is(err, fs.ErrPermission):
+		return probeRefused
+	default:
+		return probeNoStart
+	}
+}
+
+// isExitStatus reports whether err is a command's own nonzero exit rather than
+// a failure to launch it.
+func isExitStatus(err error) bool {
+	_, ok := errors.AsType[*exec.ExitError](err)
+	return ok
+}
+
+// probeOutcome is how one bwrap invocation ended, in the terms a failure
+// message and a test can both use: an exit status when the command ran, and the
+// launch failure's class and text when it never started. It is what the helper
+// process writes into its report, so a launch failure survives the process
+// boundary that a bare -1 exit status cannot describe.
+type probeOutcome struct {
+	// Start is probeRan when the command ran, so Exit is its status. Any other
+	// value means it never started and Exit is -1.
+	Start probeStart `json:"start"`
+	// Exit is the exit status, or -1 when no status exists.
+	Exit int `json:"exit"`
+	// StartErr is the launch failure's text, empty when the command ran. A
+	// message may show it; no test asserts on it.
+	StartErr string `json:"start_err"`
+	// Stderr is what the program wrote to stderr.
+	Stderr string `json:"stderr"`
+}
+
+// ok reports whether the invocation ran and exited 0. An outcome with no class
+// is not a pass: nothing recorded that the command ran.
+func (o probeOutcome) ok() bool { return o.Start == probeRan && o.Exit == 0 }
+
+// fate is the outcome as one clause for a failure message: the exit status and
+// the program's first diagnostic line, or the fact that it never started and
+// why. A diagnostic must never read the same for "ran and was silent" and
+// "never started": those outcomes mean opposite things about the probe, one
+// measured it and the other measured nothing. Exit alone cannot carry that
+// difference — a launch failure and a process a signal killed both reach -1 and
+// write no stderr — so the clause is built from Start and StartErr as well.
+//
+// An outcome with no class at all — a report that never recorded one — reads as
+// never started rather than as a silent success, so a missing field cannot make
+// a measurement that was never taken look like a probe that passed.
+func (o probeOutcome) fate() string {
+	switch o.Start {
+	case probeRan:
+		return fmt.Sprintf("exit %d: %s", o.Exit, firstLine(o.Stderr))
+	case probeNoProgram, probeRefused, probeNoStart:
+		return fmt.Sprintf("never started (%s): %s", o.Start, o.StartErr)
+	default:
+		return "never started (no outcome recorded)"
+	}
+}
+
 // bwrapProbeOrphanReport is what the helper measured.
 type bwrapProbeOrphanReport struct {
 	// Prereq names a host prerequisite the helper could not satisfy, such as a
@@ -46,25 +137,15 @@ type bwrapProbeOrphanReport struct {
 	// non-empty list means the host's bwrap predates the probe's floor, so
 	// there is no probe here to measure.
 	MissingFlags []string `json:"missing_flags"`
-	// ControlOK is whether bwrap ran a plain namespaced sandbox — its own argv,
-	// not the probe's — so capability is answered without the flag under test.
-	ControlOK bool `json:"control_ok"`
-	// ControlExit is the control's exit status, or -1 when it never ran.
-	ControlExit int `json:"control_exit"`
-	// ControlStderr is what the control's bwrap wrote to stderr.
-	ControlStderr string `json:"control_stderr"`
+	// Control is the plain namespaced run — its own argv, not the probe's — so
+	// capability is answered without whatever the probe does to avoid a reaper.
+	Control probeOutcome `json:"control"`
 	// ControlLeft counts the processes the control abandoned. The control does
-	// not ask for --as-pid-1, so it should leave a reaper behind: a zero here
-	// means this harness cannot see the leak it is looking for.
+	// not reap what bwrap abandons, so it should leave a reaper behind: a zero
+	// here means this harness cannot see the leak it is looking for.
 	ControlLeft int `json:"control_left"`
-	// ProbeHasFlag is whether the probe's argv still carries --as-pid-1.
-	ProbeHasFlag bool `json:"probe_has_flag"`
-	// ProbeOK is whether the probe under test exited 0.
-	ProbeOK bool `json:"probe_ok"`
-	// ProbeExit is the probe's exit status, or -1 when it never ran.
-	ProbeExit int `json:"probe_exit"`
-	// ProbeStderr is what the probe's bwrap wrote to stderr.
-	ProbeStderr string `json:"probe_stderr"`
+	// Probe is the probe under test.
+	Probe probeOutcome `json:"probe"`
 	// ProbeLeft lists the processes the probe abandoned, which is the leak.
 	ProbeLeft []int `json:"probe_left"`
 }
@@ -73,9 +154,11 @@ type bwrapProbeOrphanReport struct {
 // test owns, independent of what bwrapProbeArgs returns: a host bwrap that does
 // not list one of them cannot run any version of the probe, so the adoption
 // question is not measurable there and the test skips. --as-pid-1 is
-// deliberately absent: it is the measurement. A flag added to the probe later
-// is also absent, so a bwrap that rejects it fails the probe — and this test
-// with it — instead of passing by way of a skip.
+// deliberately absent, because the probe does not need it to be correct: a fix
+// that reaps the reaper instead of avoiding it leaves this test measurable. A
+// flag added to the probe later is also absent, so a bwrap that rejects it
+// fails the probe — and this test with it — instead of passing by way of a
+// skip.
 var bwrapProbeFloorFlags = []string{
 	"--unshare-user", "--unshare-pid", "--die-with-parent", "--new-session",
 	"--ro-bind", "--proc", "--dev", "--argv0",
@@ -85,7 +168,9 @@ var bwrapProbeFloorFlags = []string{
 // of its contract: it must succeed, and it must leave no process behind that it
 // never waited for. The probe asks bwrap for a PID namespace whose command
 // (`true`) creates no children, so the reaper bwrap forks for --unshare-pid has
-// nothing to reap; the flag under test removes that fork.
+// nothing to reap, and the probe must not leave that fork behind. How it avoids
+// leaving one is not this test's business: asking bwrap not to fork it and
+// reaping it afterwards are both accepted.
 //
 // The test needs BOTH answers to pass: the probe must exit 0, and it must leave
 // no adopted child. Capability is decided by a plain namespaced run that does
@@ -132,11 +217,6 @@ func TestBwrapProbeLeavesNoAdoptedChild(t *testing.T) {
 	if err := json.Unmarshal(data, &report); err != nil {
 		t.Fatalf("decode the adoption helper's report: %v\noutput:\n%s", err, out)
 	}
-	// The pair is the evidence: the same harness sees the plain run leak and the
-	// probe run not, so a clean result cannot be a harness that sees nothing.
-	t.Logf("plain namespaced run (no --as-pid-1): exit %d, %d adopted; probe: exit %d, adopted %v",
-		report.ControlExit, report.ControlLeft, report.ProbeExit, report.ProbeLeft)
-
 	if report.Prereq != "" {
 		unmeasurable(t, report.Prereq)
 		return
@@ -147,21 +227,91 @@ func TestBwrapProbeLeavesNoAdoptedChild(t *testing.T) {
 		unmeasurable(t, fmt.Sprintf("this host's bwrap predates the probe (no %s)", strings.Join(report.MissingFlags, ", ")))
 		return
 	}
+	// The pair is the evidence: the same harness sees the plain run leak and the
+	// probe run not, so a clean result cannot be a harness that sees nothing.
+	t.Logf("plain namespaced run (not the probe's argv): %s, %d adopted; probe: %s, adopted %v",
+		report.Control.fate(), report.ControlLeft, report.Probe.fate(), report.ProbeLeft)
+
 	if len(report.ProbeLeft) > 0 {
 		t.Fatalf("bwrap's capability probe left processes %v adopted and unreaped: the probe asked for a PID-namespace reaper whose exit no owner waits for", report.ProbeLeft)
 	}
-	if !report.ControlOK {
-		unmeasurable(t, fmt.Sprintf("this host's bwrap cannot create a namespaced sandbox (plain run exit %d: %s)", report.ControlExit, firstLine(report.ControlStderr)))
+	if !report.Control.ok() {
+		unmeasurable(t, fmt.Sprintf("this host's bwrap cannot create a namespaced sandbox (plain run %s)", report.Control.fate()))
 		return
 	}
-	if !report.ProbeHasFlag {
-		t.Fatalf("the probe's argv no longer carries --as-pid-1, so this test would prove nothing: the reaper it exists to catch is back")
-	}
-	if !report.ProbeOK {
-		t.Fatalf("the capability probe failed (exit %d: %s) on a host whose bwrap ran a plain namespaced sandbox (exit %d), so an argument the probe passes and the control does not made it fail", report.ProbeExit, firstLine(report.ProbeStderr), report.ControlExit)
+	if !report.Probe.ok() {
+		t.Fatalf("the capability probe failed (%s) on a host whose bwrap ran a plain namespaced sandbox (%s), so an argument the probe passes and the control does not made it fail", report.Probe.fate(), report.Control.fate())
 	}
 	if report.ControlLeft == 0 {
 		t.Fatalf("the plain namespaced run left no adopted child either, so this harness cannot see the leak it is measuring for: if this bwrap now reaps its own reaper, the regression is obsolete rather than broken")
+	}
+}
+
+// TestProbeOutcomeSeparatesFailedLaunchFromSilentExit drives the helper that
+// produces the adoption report through the conditions that must not read alike:
+// a launch that found no program, a launch the kernel refused, a program that
+// ran and wrote nothing, and a program a signal killed. The failed launches and
+// the killed program all reach exit -1 with empty stderr, so an outcome made
+// only of an exit status and stderr would report every one of them as
+// "exit -1: no diagnostic" — the same shape a probe that ran and said nothing
+// produces, which is the ambiguity the adoption test exists to remove.
+//
+// The outcome is checked after a JSON round trip because that is how it reaches
+// the parent test: the helper process writes the report and the parent reads it,
+// so a classification lost in the encoding would be lost exactly where it is
+// needed.
+func TestProbeOutcomeSeparatesFailedLaunchFromSilentExit(t *testing.T) {
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "no-such-bwrap")
+	notExecutable := filepath.Join(dir, "not-executable")
+	if err := os.WriteFile(notExecutable, []byte("#!/bin/sh\n"), 0o600); err != nil {
+		t.Fatalf("write the file the kernel should refuse to execute: %v", err)
+	}
+
+	const silentExit = "ran and was silent"
+	const killedExit = "ran and was killed"
+	cases := []struct {
+		name  string
+		argv  []string
+		start probeStart
+		exit  int
+	}{
+		{name: "program missing", argv: []string{missing}, start: probeNoProgram, exit: -1},
+		{name: "program not on PATH", argv: []string{"evener-nonexistent-bwrap-probe"}, start: probeNoProgram, exit: -1},
+		{name: "program not executable", argv: []string{notExecutable}, start: probeRefused, exit: -1},
+		{name: silentExit, argv: []string{"/bin/sh", "-c", "exit 7"}, start: probeRan, exit: 7},
+		{name: killedExit, argv: []string{"/bin/sh", "-c", "kill -9 $$"}, start: probeRan, exit: -1},
+	}
+	outcomes := map[string]probeOutcome{}
+	for _, tc := range cases {
+		out := roundTripOutcome(t, runProbeArgv(t, tc.argv))
+		outcomes[tc.name] = out
+		t.Logf("%s: %s", tc.name, out.fate())
+		if out.Start != tc.start || out.Exit != tc.exit {
+			t.Errorf("%s: got start %q exit %d, want start %q exit %d", tc.name, out.Start, out.Exit, tc.start, tc.exit)
+		}
+		if out.Start != probeRan && out.StartErr == "" {
+			t.Errorf("%s: the launch failed and the outcome carries no cause: %s", tc.name, out.fate())
+		}
+	}
+	// The invariant, stated as one comparison the per-case table cannot make: a
+	// process killed by a signal DID run, and it also reports exit -1 with empty
+	// stderr. That is the outcome a failed launch is most likely to be confused
+	// with, so the two must not report the same thing; if they do, the parent
+	// test cannot say which one it measured.
+	//
+	// The never-started cases are selected by what each case is meant to be, not
+	// by what it reported: selecting on the report would skip a launch failure
+	// that reports itself as a run, which is the one case this check exists for.
+	killed := outcomes[killedExit]
+	for _, tc := range cases {
+		if tc.start == probeRan {
+			continue
+		}
+		out := outcomes[tc.name]
+		if out.Start == killed.Start && out.Exit == killed.Exit {
+			t.Errorf("%s and %s both report start %q exit %d, so a launch that never happened is indistinguishable from a run that was cut short", tc.name, killedExit, out.Start, out.Exit)
+		}
 	}
 }
 
@@ -197,26 +347,22 @@ func TestBwrapProbeOrphanHelperProcess(t *testing.T) {
 	probe := bwrapProbeArgs(path)
 	report := bwrapProbeOrphanReport{
 		MissingFlags: missingHelpFlags(t, path, bwrapProbeFloorFlags),
-		ProbeHasFlag: slices.Contains(probe, "--as-pid-1"),
-		ControlExit:  -1,
-		ProbeExit:    -1,
 	}
 	if len(report.MissingFlags) == 0 {
 		// The control is its own argv, written here rather than derived from the
 		// probe, so a bad probe flag shows up as a probe failure and not as a
-		// host that cannot run sandboxes. It omits --as-pid-1 by construction.
+		// host that cannot run sandboxes. It omits the probe's reaper handling
+		// by construction.
 		control := []string{
 			path,
 			"--unshare-user", "--unshare-pid", "--die-with-parent", "--new-session",
 			"--ro-bind", "/", "/", "--proc", "/proc", "--dev", "/dev",
 			"--", "true",
 		}
-		report.ControlExit, report.ControlStderr = runProbeArgv(t, control)
-		report.ControlOK = report.ControlExit == 0
+		report.Control = runProbeArgv(t, control)
 		report.ControlLeft = len(reapAdopted(t))
 
-		report.ProbeExit, report.ProbeStderr = runProbeArgv(t, probe)
-		report.ProbeOK = report.ProbeExit == 0
+		report.Probe = runProbeArgv(t, probe)
 		report.ProbeLeft = reapAdopted(t)
 	}
 
@@ -271,12 +417,11 @@ func firstLine(diagnostic string) string {
 	return "no diagnostic"
 }
 
-// runProbeArgv runs one bwrap invocation and reports its exit status, or -1
-// when it never reached one, with what bwrap wrote to stderr so a failure names
-// an unsupported option or a refused namespace instead of only a status. Run
-// (not Start) reaps the bwrap process we spawned ourselves; anything still left
-// is a process bwrap forked and abandoned.
-func runProbeArgv(t *testing.T, argv []string) (int, string) {
+// runProbeArgv runs one bwrap invocation and reports how it ended: its exit
+// status with what bwrap wrote to stderr, or the launch failure that kept it
+// from reaching one. Run (not Start) reaps the bwrap process we spawned
+// ourselves; anything still left is a process bwrap forked and abandoned.
+func runProbeArgv(t *testing.T, argv []string) probeOutcome {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(t.Context(), probeCommandTimeout*4)
 	defer cancel()
@@ -284,13 +429,37 @@ func runProbeArgv(t *testing.T, argv []string) (int, string) {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
 	cmd.Stderr = &stderr
 	err := cmd.Run()
+	out := probeOutcome{Start: probeRan, Exit: -1, Stderr: stderr.String()}
 	if err == nil {
-		return 0, stderr.String()
+		out.Exit = 0
+		return out
 	}
 	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
-		return exitErr.ExitCode(), stderr.String()
+		out.Exit = exitErr.ExitCode()
+		return out
 	}
-	return -1, stderr.String()
+	// The command never started, so there is no exit status to report and no
+	// stderr to explain it: the cause is the launch error itself, and dropping
+	// it is what would make this failure look like a silent exit.
+	out.Start = classifyProbeStart(err)
+	out.StartErr = err.Error()
+	return out
+}
+
+// roundTripOutcome encodes and decodes an outcome the way the helper hands it
+// to the parent test, so a classification the report cannot carry fails here
+// rather than reading as "no diagnostic" in the parent.
+func roundTripOutcome(t *testing.T, out probeOutcome) probeOutcome {
+	t.Helper()
+	data, err := json.Marshal(out)
+	if err != nil {
+		t.Fatalf("encode the outcome: %v", err)
+	}
+	var decoded probeOutcome
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatalf("decode the outcome: %v", err)
+	}
+	return decoded
 }
 
 // reapAdopted drains every child this subreaper adopted and returns their pids.
