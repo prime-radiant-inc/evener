@@ -765,7 +765,23 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 							// "retry" is what schedules the flush's backoff.
 							throw new ResumeAbandoned("retry");
 						}
-						if (!held) throw new ResumeAbandoned("blocked");
+						// The predicate reads storage, so it is an await of its own and a
+						// newer authoritative read can take the target over inside it.
+						// Recycling the socket then would interrupt that read's healthy
+						// work on behalf of an answer already superseded.
+						if (!this.#isCurrentRead(lease)) throw new ResumeAbandoned("stale");
+						if (!held) {
+							// A withdrawal found here is the same fact as one found
+							// before the slot was taken, and it owes the same thing: the
+							// read this settle already made is the only proof of what
+							// landed, so it must not be thrown away. An older attempted
+							// send still waiting would otherwise stay "submitting" with
+							// nothing left to surface it. The target stays fenced, so
+							// reconciliation settles what the read proves without
+							// dispatching anything.
+							await this.reconcileAuthoritativeRead(lease, response);
+							throw new ResumeAbandoned("blocked");
+						}
 					},
 					// The handshake between here and the frame is another window: the
 					// reader can discard the last waiting message while the resume's
@@ -1031,6 +1047,28 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 			return;
 		}
 		await this.#settleRetainedConsumed();
+	}
+
+	/** Whether a target still holds a message worth resuming a session for.
+	 *
+	 * This is the resume decision, so every caller that resumes for a message
+	 * has to ask it the same way: the outbox flush, a direct send, and the
+	 * shared session-message helper all park a row and then resume, and each
+	 * one used to answer for itself. Two answered "true", which restarts a
+	 * session for work the reader may have discarded in the meantime.
+	 *
+	 * Narrower than "anything waiting", in two ways. A pending interrupt is
+	 * not a reason to restart a session - the person stopped it - so a Stop
+	 * left across a reconnect must not bring it back. Nor is a row whose
+	 * attempt already went out: its outcome is unknown, not known-undelivered,
+	 * and the daemon may already hold that message, so resuming to deliver it
+	 * again could duplicate it.
+	 */
+	async messageWaiting(targetRef: string): Promise<boolean> {
+		const records = await this.storage.listOutbox(targetRef);
+		return records.some(
+			(record) => record.state === "submitting" && record.method !== "turn/interrupt" && record.attempted === false,
+		);
 	}
 
 	/** The mutations this phone submitted to a target this launch, by id,

@@ -2509,3 +2509,83 @@ test("a live frame naming another mutation leaves this record alone", async () =
 	expect(await runtime.storage.getOptimistic("mutation-1")).toMatchObject({ state: "accepted" });
 	await runtime.stop();
 });
+
+// The waiting-message predicate is an await of its own, and a newer
+// authoritative read can take the target over inside it. Resuming then would
+// restart a session and interrupt that newer read's healthy work on behalf of
+// an answer that is already superseded.
+test("drops an automatic resume a newer read took over while its message was being asked", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase(), { createMutationId: () => "mutation-1" });
+	const client = new FakeClient("ready");
+	client.on("thread/read", () => readResponse("ref-1", { resumeRequired: true }));
+	client.on("thread/resume", () => readResponse("ref-1"));
+	client.on("turn/start", appliedReceipt);
+	await registerAndStart(runtime, client);
+	await runtime.submit(request("send"));
+	const send = client.resumeThread.bind(client);
+	client.resumeThread = (async (
+		ref: string,
+		options?: { beforeRecycle?: () => void | Promise<void>; beforeRequest?: () => void | Promise<void> },
+	) => {
+		await options?.beforeRecycle?.();
+		return send(ref, options);
+	}) as typeof client.resumeThread;
+	let calls = 0;
+	const answer = await runtime.settleTarget("hub-1", "ref-1", client, {
+		mayResumeFenced: async () => {
+			// Asked before the slot opens, when the answer is still good; the
+			// takeover happens while this second ask is out, which is the window
+			// only a recheck after it can see.
+			calls += 1;
+			if (calls === 1) return true;
+			runtime.beginAuthoritativeRead("hub-1", "ref-1", client);
+			return true;
+		},
+	});
+	// Superseded, so the flush looks again rather than the resume recycling the
+	// socket for an answer a newer read already replaced.
+	expect(answer).toBe("stale");
+	expect(client.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+	await runtime.stop();
+});
+
+// A withdrawal found once the resume's slot comes up is the same fact as one
+// found before it, and owes the same thing: the read this settle already made
+// is the only proof of what landed. Without reconciling it, an older attempted
+// send stays "submitting" with nothing left to surface it.
+test("reconciles the captured read when the message is withdrawn after the slot opens", async () => {
+	const runtime = new NativeMutationRuntime(openDatabase(), { createMutationId: () => "mutation-1" });
+	const client = new FakeClient("ready");
+	client.on("thread/read", () => readResponse("ref-1", { resumeRequired: true }));
+	client.on("thread/resume", () => readResponse("ref-1"));
+	client.on("turn/start", appliedReceipt);
+	await registerAndStart(runtime, client);
+	await runtime.submit(request("send"));
+	let waiting = true;
+	let asks = 0;
+	const send = client.resumeThread.bind(client);
+	client.resumeThread = (async (
+		ref: string,
+		options?: { beforeRecycle?: () => void | Promise<void>; beforeRequest?: () => void | Promise<void> },
+	) => {
+		// The slot opens and the reader withdraws the message before the
+		// revalidation reads it, so only that second ask can see the withdrawal.
+		waiting = false;
+		await options?.beforeRecycle?.();
+		return send(ref, options);
+	}) as typeof client.resumeThread;
+	const reconcile = vi.spyOn(runtime, "reconcileAuthoritativeRead");
+	const answer = await runtime.settleTarget("hub-1", "ref-1", client, {
+		mayResumeFenced: async () => {
+			asks += 1;
+			// Decided while the fence was first seen: the message is still waiting,
+			// so the resume is admitted and waits for its slot. The reader then
+			// withdraws it, which only the revalidation can see.
+			return asks === 1 ? true : waiting;
+		},
+	});
+	expect(answer).toBe("blocked");
+	expect(client.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+	expect(reconcile).toHaveBeenCalled();
+	await runtime.stop();
+});

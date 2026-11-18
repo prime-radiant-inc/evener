@@ -185,7 +185,7 @@ export async function readSendAction(
  * resume's own read is what releases the parked message, so the release runs
  * once, after it, and never against the still-fenced session. */
 export async function submitSessionMessage(
-	runtime: Pick<NativeMutationRuntime, "submit" | "settleTarget">,
+	runtime: Pick<NativeMutationRuntime, "submit" | "settleTarget" | "messageWaiting">,
 	client: AppwireClientLike | null,
 	target: SessionTarget,
 	kind: SessionMessageKind,
@@ -211,9 +211,13 @@ export async function submitSessionMessage(
 		// that is the one path that also retargets the parked row when the resume
 		// hands back a different identity. Calling resumeThread here would leave
 		// this message addressing the identity the daemon just retired.
+		// The row this resume is for may be withdrawn while the resume waits for
+		// the connection's one slot or for its replacement handshake. Asking the
+		// message rather than answering "true" keeps the phone from restarting a
+		// session for work the reader discarded in the meantime.
 		await runtime
 			.settleTarget(target.hubId, target.ref, client, {
-				mayResumeFenced: async () => true,
+				mayResumeFenced: () => runtime.messageWaiting(target.ref),
 			})
 			.catch(() => undefined);
 		return;

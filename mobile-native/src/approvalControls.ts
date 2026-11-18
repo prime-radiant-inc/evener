@@ -22,6 +22,13 @@ export class ApprovalControls {
 		private approvals: () => SandboxEscalationRequested[],
 		private current: () => boolean,
 		private refreshSession: () => Promise<void>,
+		// Applies a receipt the hub issued to the session's pending approvals.
+		// The receipt settles the decision, so this runs before the catch-up
+		// read: a card the hub has already decided must leave the dock even when
+		// that read fails, or the next waiting approval stays hidden behind a
+		// card nothing will clear. A resolving client receives no resolved
+		// notification for its own call, so nothing else would.
+		private settled: (escalationId: string) => void,
 		// Admission's question, which is not settlement's: is the pane that shows
 		// this decision the one in front? A decision already sent settles on its
 		// binding and never asks. A decision not yet sent must not reach the hub
@@ -99,6 +106,9 @@ export class ApprovalControls {
 			// standing rather than turning an accepted decision into an unconfirmed
 			// one the reader is offered again.
 			//
+			// Settling the dock's own copy belongs to the acknowledgement, not to
+			// the read that follows it.
+			this.settled(displayed.escalationId);
 			// A controller disposed while the reply was out still reports the
 			// receipt: the decision is the hub's, and the dock confirms on it. Only
 			// the catch-up read needs a live binding, and whether the reader is

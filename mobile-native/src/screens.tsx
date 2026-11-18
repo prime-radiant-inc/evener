@@ -1024,6 +1024,14 @@ function ConversationScreenView({
 							await store.getState().rehydrate(live);
 							if (store.getState().error) throw new Error("Could not read the session.");
 						},
+						// The receipt settles the dock's own copy: a resolving client
+						// receives no resolved notification for its own call, so the
+						// card it decided has to leave the pending list here or a
+						// failed catch-up read leaves it in front of the next one.
+						(escalationId) =>
+							store
+								.getState()
+								.applyEscalationDecision({ ref: route.params.ref, generation: bindingGeneration }, escalationId),
 						// Admitting a decision is the reader's question, and it is a
 						// different one from settling a decision already sent: a
 						// decision the reader cannot see must not reach the hub merely
@@ -2741,9 +2749,16 @@ function ConversationScreenView({
 	const recoverFenced = useCallback(
 		async (through: NonNullable<typeof service>, hubId: string, ref: string): Promise<boolean> => {
 			if (client === null) return false;
-			const answered = await getNativeMutationRuntime()
+			const runtime = getNativeMutationRuntime();
+			const answered = await runtime
 				.settleTarget(hubId, ref, client, {
-					mayResumeFenced: async () => true,
+					// The message this recovery is for can be withdrawn while the
+					// resume waits for the connection's one slot or its replacement
+					// handshake. Asking the durable row, rather than answering
+					// "true", keeps the phone from restarting a session for work the
+					// reader discarded in the meantime - and still resumes when
+					// another never-attempted message needs the session.
+					mayResumeFenced: () => runtime.messageWaiting(ref),
 				})
 				.catch(() => undefined);
 			if (answered === "reconciled" || answered === "open") {

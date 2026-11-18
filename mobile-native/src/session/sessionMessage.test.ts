@@ -196,6 +196,7 @@ describe("submitting a message to a session", () => {
 				calls.push(["settle", ...args]);
 				return "reconciled" as const;
 			},
+			messageWaiting: async () => true,
 		};
 		const client = new FakeClient("ready");
 		await submitSessionMessage(
@@ -224,6 +225,7 @@ describe("submitting a message to a session", () => {
 	it("keeps a message it admitted when the release can't run", async () => {
 		const runtime = {
 			submit: async () => ({ clientMutationId: "mutation-1" }),
+			messageWaiting: async () => true,
 			settleTarget: async (): Promise<"blocked"> => {
 				throw new Error("offline");
 			},
@@ -237,6 +239,7 @@ describe("submitting a message to a session", () => {
 			submit: async () => {
 				throw new Error("The mutations database is unavailable");
 			},
+			messageWaiting: async () => true,
 			settleTarget: settle,
 		};
 		await expect(submitSessionMessage(runtime, new FakeClient("ready"), target, "send", "hi")).rejects.toThrow(
@@ -372,4 +375,37 @@ describe("following a session from a screen above it", () => {
 		});
 		expect(link.getSnapshot()?.status).toBe("idle");
 	});
+});
+
+// The resume this helper starts is for the message it just admitted. That
+// message can be withdrawn while the resume waits for the connection's slot or
+// for its replacement handshake, so the predicate has to ask the durable row
+// rather than answer "true": a session restarted for work the reader discarded
+// is exactly what the withdrawal rule exists to prevent.
+it("resumes for the message it admitted, asking whether that message still waits", async () => {
+	const seen: ((...args: unknown[]) => unknown)[] = [];
+	let waits: boolean[] = [];
+	const runtime = {
+		submit: async () => ({ clientMutationId: "mutation-1" }),
+		messageWaiting: async () => {
+			waits.push(true);
+			return false;
+		},
+		settleTarget: async (
+			_hubId: string,
+			_ref: string,
+			_client: unknown,
+			options?: { mayResumeFenced?: () => unknown },
+		) => {
+			if (options?.mayResumeFenced) seen.push(options.mayResumeFenced);
+			return "blocked" as const;
+		},
+	};
+	await submitSessionMessage(runtime, new FakeClient("ready"), target, "send", "hi", true);
+	// The resume asked the durable row, not a constant.
+	expect(seen).toHaveLength(1);
+	expect(waits).toHaveLength(0);
+	expect(await seen[0]?.()).toBe(false);
+	expect(waits).toHaveLength(1);
+	waits = [];
 });

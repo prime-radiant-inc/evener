@@ -40,6 +40,7 @@ import {
 	mergeSavedViewPage,
 	notificationTargetsThread,
 	notificationTouchesTranscript,
+	resolvePendingEscalation,
 	sessionControls,
 	WireError,
 } from "@evener/appwire-client";
@@ -458,6 +459,11 @@ export interface LiveConversationState extends ConversationState {
 	// by the store; the dispatcher is responsible for passing only generic
 	// sanitized messages.
 	publishExternalError(message: string, expectedRef: string | null, expectedGeneration: number): void;
+	// Removes one escalation the hub acknowledged from the pending list, when
+	// the store still holds the session the decision was made on. The receipt is
+	// what settles a decision, so this runs even when the catch-up read that
+	// follows it fails: otherwise the settled card stays in front of the dock.
+	applyEscalationDecision(expected: { ref: string | null; generation: number }, escalationId: string): void;
 }
 
 // Check if an error is a WireError carrying the actionUnavailable
@@ -2934,6 +2940,28 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					return;
 				}
 				set({ error: message });
+			},
+
+			// A decision the hub acknowledged settles on the session's binding,
+			// which is the same rule every other acknowledged mutation follows: the
+			// receipt is the record, and the read after it is catch-up. The dock
+			// renders its cards from this store, so a card the hub has already
+			// decided must leave the pending list here or the next waiting approval
+			// stays hidden behind a card nothing will clear when the catch-up read
+			// fails.
+			//
+			// The identity is the guard: a resolve answered after the reader moved
+			// to another session must not remove a card from that session's list,
+			// and an escalation id that is no longer pending is a no-op, so this is
+			// safe to call from a binding that has since been replaced.
+			applyEscalationDecision(expected: { ref: string | null; generation: number }, escalationId: string) {
+				const state = get();
+				if (state.ref !== expected.ref || state.conversationGeneration !== expected.generation) return;
+				const conversation = state.conversation;
+				if (conversation === null) return;
+				const settled = resolvePendingEscalation(conversation, escalationId);
+				if (settled === conversation) return;
+				set({ conversation: settled as typeof conversation });
 			},
 		};
 	});

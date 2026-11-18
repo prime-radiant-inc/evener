@@ -104,6 +104,7 @@ describe("approval decisions", () => {
 			() => [pending],
 			() => true,
 			async () => {},
+			() => {},
 			() => true,
 		);
 		const decision = controls.resolve(pending, true);
@@ -133,6 +134,7 @@ describe("approval decisions", () => {
 			() => true,
 			async () => {},
 			// Nothing is in front of this pane: another conversation is.
+			() => {},
 			() => inFront,
 		);
 		const covered = controls.resolve(pending, true);
@@ -165,6 +167,7 @@ describe("approval decisions", () => {
 			async () => {
 				refreshed++;
 			},
+			() => {},
 			() => true,
 		);
 		const request = controls.resolve(pending, true);
@@ -199,6 +202,7 @@ describe("approval decisions", () => {
 			() => values,
 			() => current,
 			async () => {},
+			() => {},
 			() => true,
 		);
 		values = [{ ...displayed, deniedPath: "/different" }];
@@ -231,6 +235,7 @@ describe("approval decisions", () => {
 			() => [pending],
 			() => true,
 			async () => {},
+			() => {},
 			() => true,
 		);
 		await controls.resolve(pending, false);
@@ -262,6 +267,7 @@ describe("approval decisions", () => {
 				async () => {
 					refreshed++;
 				},
+				() => {},
 				() => true,
 			);
 			await controls.resolve(pending, true);
@@ -289,6 +295,7 @@ describe("approval decisions", () => {
 				// failing leaves the decision settled rather than unconfirmed.
 				throw new Error("The read lost its connection.");
 			},
+			() => {},
 			() => true,
 		);
 		expect(await controls.resolve(pending, true)).toBe(true);
@@ -313,6 +320,7 @@ describe("approval decisions", () => {
 			async () => {
 				if (refreshFails) throw new Error("offline");
 			},
+			() => {},
 			() => true,
 		);
 		// Nothing came back for this decision, so it stays unconfirmed and a
@@ -347,6 +355,7 @@ describe("approval decisions", () => {
 			async () => {
 				values = [];
 			},
+			() => {},
 			() => true,
 		);
 		await controls.resolve(pending, true);
@@ -376,6 +385,7 @@ describe("approval decisions", () => {
 					release = resolve;
 				});
 			},
+			() => {},
 			() => true,
 		);
 		const reading = controls.refresh();
@@ -415,6 +425,7 @@ describe("approval decisions", () => {
 			async () => {
 				reads++;
 			},
+			() => {},
 			() => true,
 		);
 		const request = controls.resolve(pending, true);
@@ -528,4 +539,39 @@ it("unsubscribes a failed initial read", async () => {
 	await store.getState().openProjected(createConversationService(client), "local:s");
 	expect(store.getState().status).toBe("error");
 	expect(unsubscribed).toBe(1);
+});
+
+// A resolving client receives no resolved notification for its own call, so the
+// receipt is the only thing that can settle the dock's copy of the decision. The
+// catch-up read that follows is a different question: it brings the session's
+// new state on screen, and its failure must not leave a card the hub already
+// decided at the head of the pending list, where it hides the approval behind it.
+it("settles an acknowledged decision even when its catch-up read fails", async () => {
+	const { service } = boundary();
+	const store = createConversationStore();
+	await store.getState().openProjected(service, "local:s");
+	const generation = store.getState().conversationGeneration;
+	expect(store.getState().conversation?.pendingEscalations).toHaveLength(1);
+	// The receipt comes back; only the catch-up read fails.
+	const client = Object.assign(new FakeClient("ready"), {
+		request: async () => ({}),
+	});
+	const controls = new ApprovalControls(
+		client,
+		"local:s",
+		() => store.getState().conversation?.pendingEscalations ?? [],
+		() => true,
+		async () => {
+			throw new Error("The read lost its connection.");
+		},
+		(escalationId) => store.getState().applyEscalationDecision({ ref: "local:s", generation }, escalationId),
+		() => true,
+	);
+	expect(await controls.resolve(pending, true)).toBe(true);
+	// The receipt settled the dock's copy; the failed read did not undo it.
+	expect(store.getState().conversation?.pendingEscalations).toEqual([]);
+	// A decision must not settle a list belonging to another session.
+	store.getState().applyEscalationDecision({ ref: "local:other", generation }, "approval");
+	expect(store.getState().error).toBeNull();
+	controls.dispose();
 });
