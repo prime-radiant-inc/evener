@@ -181,7 +181,7 @@ export function mergeTranscriptItemVersioned(
     !supersedes(heldVersion, incomingVersion) &&
     !(heldVersion === incomingVersion && itemIsIdentityOnly(held) && !itemIsIdentityOnly(incoming))
   ) {
-    if (heldVersion === incomingVersion && lackingAskEvidence(held) && carriesAskEvidence(incoming)) {
+    if (heldVersion === incomingVersion && fillsAskEvidence(held, incoming)) {
       return withAskEvidence(held, incoming);
     }
     return held;
@@ -189,29 +189,30 @@ export function mergeTranscriptItemVersioned(
   return mergeReplacedItem(held, incoming);
 }
 
-// lackingAskEvidence reports whether a held row never received admission's
-// per-call resolution evidence. A client that cached a reply before the field
-// existed has text but no call list, and an online refresh of the SAME item
-// version now carries it (#6323). Version precedence would keep the held row
-// and the evidence would never arrive, so the equal-version case is allowed to
-// fill it in.
-function lackingAskEvidence(item: ItemModel): boolean {
-  return item.resolvedAskCalls === undefined && item.resolvedAskLegacyCount === undefined;
-}
-
-function carriesAskEvidence(item: ItemModel): boolean {
-  return item.resolvedAskCalls !== undefined || item.resolvedAskLegacyCount !== undefined;
+// fillsAskEvidence reports whether incoming supplies an ask-resolution field
+// the held row lacks. The two fields arrive independently — a bounded read can
+// carry the legacy count while omitting the call list — so each is tested on
+// its own. Gating on both being absent let a held count block the call list
+// that a later refresh of the SAME item version supplies (#6323).
+function fillsAskEvidence(held: ItemModel, incoming: ItemModel): boolean {
+  const missingCalls = held.resolvedAskCalls === undefined && incoming.resolvedAskCalls !== undefined;
+  const missingCount = held.resolvedAskLegacyCount === undefined && incoming.resolvedAskLegacyCount !== undefined;
+  return missingCalls || missingCount;
 }
 
 // withAskEvidence returns the held row plus only the evidence it lacks. Text,
 // identity and every other field stay the held row's: this exists to fill an
-// absence, not to replace a row the version rule chose to keep.
+// absence, not to replace a row the version rule chose to keep. The text
+// presence marker is non-enumerable, so a spread drops it; without
+// copyItemTextPresence the held row would come back reading as an
+// authoritative empty settle and block the local text reconciliation that is
+// still owed for it.
 function withAskEvidence(held: ItemModel, incoming: ItemModel): ItemModel {
-  const filled: ItemModel = { ...held };
-  if (incoming.resolvedAskCalls !== undefined) {
+  const filled: ItemModel = copyItemTextPresence(held, { ...held });
+  if (held.resolvedAskCalls === undefined && incoming.resolvedAskCalls !== undefined) {
     filled.resolvedAskCalls = incoming.resolvedAskCalls.map((call) => ({ ...call }));
   }
-  if (incoming.resolvedAskLegacyCount !== undefined) {
+  if (held.resolvedAskLegacyCount === undefined && incoming.resolvedAskLegacyCount !== undefined) {
     filled.resolvedAskLegacyCount = incoming.resolvedAskLegacyCount;
   }
   return filled;
@@ -328,11 +329,19 @@ export function mergeHistory(turns: TurnModel[], fragment: HistoryFragment, held
       heldItem.version === incoming.version &&
       itemIsIdentityOnly(heldItem) &&
       !itemIsIdentityOnly(incoming);
-    if (index === -1 ? heldOnly : !supersedes(heldItem?.version, incoming.version) && !identityUpgrade) continue;
+    // A same-version refresh may supply ask-resolution evidence the held row
+    // never had (#6323). The entry cache handles that case, and a live refresh
+    // reaches the model through this merge instead, whose version check would
+    // otherwise drop the incoming row before the evidence could be filled.
+    const evidenceFill =
+      heldItem !== undefined && heldItem.version === incoming.version && fillsAskEvidence(heldItem, incoming);
+    if (index === -1 ? heldOnly : !supersedes(heldItem?.version, incoming.version) && !identityUpgrade && !evidenceFill)
+      continue;
     // Copy a turn's items once per merge, then edit the copy in place.
     const writable = ownedItems.has(turn.id) ? turn : { ...turn, items: [...turn.items] };
     ownedItems.add(turn.id);
     if (index === -1) writable.items.splice(itemsBefore(writable.items, incoming.position), 0, incoming);
+    else if (evidenceFill && heldItem !== undefined) writable.items[index] = withAskEvidence(heldItem, incoming);
     else {
       // A higher-version replacement is otherwise authoritative for every
       // field it carries, but an OMITTED text field is not a replacement —

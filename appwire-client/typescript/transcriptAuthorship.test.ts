@@ -8,6 +8,7 @@ import {
   threadModelFromCache,
 } from "./transcriptCache";
 import { hydrateThread, mergeTranscriptItemVersioned } from "./transcriptHistory";
+import { itemTextPresence, markItemTextOmitted } from "./transcriptItems";
 import { mergeTurnHistory } from "./turnHistoryMerge";
 
 const author = {
@@ -146,12 +147,13 @@ test("an equal-version refresh fills missing ask evidence without replacing the 
   // because the evidence rides the observation rather than the item version.
   // Version precedence would keep the held row forever, so the field would
   // never arrive for anyone with a warm cache.
-  const held: ItemModel = { id: "answer", turnId: "turn", type: "userMessage", text: "the reply", version: 4 };
+  const heldText = "the reply the browser already holds";
+  const held: ItemModel = { id: "answer", turnId: "turn", type: "userMessage", text: heldText, version: 4 };
   const refreshed: ItemModel = {
     id: "answer",
     turnId: "turn",
     type: "userMessage",
-    text: "the reply",
+    text: "a different body the refresh also carries",
     version: 4,
     resolvedAskCalls: [{ turnId: "turn-question", callId: "call-1" }],
     resolvedAskLegacyCount: 0,
@@ -159,7 +161,9 @@ test("an equal-version refresh fills missing ask evidence without replacing the 
   const filled = mergeTranscriptItemVersioned(held, 4, refreshed, 4);
   expect(filled.resolvedAskCalls).toEqual([{ turnId: "turn-question", callId: "call-1" }]);
   expect(filled.resolvedAskLegacyCount).toBe(0);
-  expect(filled.text).toBe("the reply");
+  // The held text wins: filling evidence must not let a same-version refresh
+  // replace the body a reader is already looking at.
+  expect(filled.text).toBe(heldText);
   // Evidence the held row already has is not replaced by an equal-version
   // refresh, and a refresh carrying none leaves the held row untouched.
   const withEvidence: ItemModel = {
@@ -169,6 +173,16 @@ test("an equal-version refresh fills missing ask evidence without replacing the 
   expect(mergeTranscriptItemVersioned(withEvidence, 4, refreshed, 4).resolvedAskCalls).toEqual([
     { turnId: "turn-question", callId: "call-held" },
   ]);
+  expect(mergeTranscriptItemVersioned(held, 4, refreshed, 4).text).toBe(heldText);
+  // A held row whose body the read omitted carries that fact in a
+  // non-enumerable marker. Filling ask evidence must preserve it: without the
+  // marker the row reads as an authoritative empty settle, and the local
+  // reconciliation that still owes this reply its body will refuse to supply
+  // it.
+  const omittedBody = markItemTextOmitted({ ...held, text: "" });
+  const omittedFilled = mergeTranscriptItemVersioned(omittedBody, 4, refreshed, 4);
+  expect(itemTextPresence(omittedFilled)).toBe("omitted");
+  expect(omittedFilled.resolvedAskCalls).toEqual([{ turnId: "turn-question", callId: "call-1" }]);
   expect(
     mergeTranscriptItemVersioned(
       held,

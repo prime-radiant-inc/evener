@@ -1279,13 +1279,22 @@ func packItemCandidates[T any](
 					// gets no turns and no continuation. The budget above is a
 					// content measure; the page has to survive the response cap
 					// it is finally checked against, follow-ups included.
+					//
+					// Compare against the same limit the unstripped page above
+					// is held to, not the bare response cap: the final
+					// response adds envelope fields after packing, and the
+					// original check reserves that margin. Measuring the
+					// stripped page against the bare cap would accept a page
+					// whose follow-ups and envelope land in the margin band,
+					// and the final fitter would then refuse the whole page
+					// with the call lists already gone.
 					structuredFits := true
 					if windowOptions.StructuredFollowUpParams != nil {
 						structuredBytes, structuredErr := transcriptWindowStructuredPageSize(page(stripped), *windowOptions.StructuredFollowUpParams)
 						if structuredErr != nil {
 							return zero, structuredErr
 						}
-						structuredFits = structuredBytes <= managerReadMaxJSONBytes
+						structuredFits = structuredBytes <= transcriptWindowMaximumContentBudget
 					}
 					if structuredFits {
 						return stripped, nil
@@ -1486,12 +1495,20 @@ func transcriptWindowItemHasBody(item appwire.ThreadItem) bool {
 // full stamps.
 func transcriptWindowTurnOmitStamps(turn appwire.Turn) (appwire.Turn, bool) {
 	changed := false
-	items := make([]appwire.ThreadItem, len(turn.Items))
-	copy(items, turn.Items)
-	for i := range items {
-		omitted := boundTranscriptItemStamp(items[i], 0)
-		if items[i].Observation != nil && omitted.Observation != nil && len(omitted.Observation.ResolvedAskCalls) != len(items[i].Observation.ResolvedAskCalls) {
+	var items []appwire.ThreadItem
+	for i := range turn.Items {
+		omitted := boundTranscriptItemStamp(turn.Items[i], 0)
+		if turn.Items[i].Observation == nil || omitted.Observation == nil ||
+			len(omitted.Observation.ResolvedAskCalls) == len(turn.Items[i].Observation.ResolvedAskCalls) {
+			continue
+		}
+		if !changed {
+			// A trimming attempt that removes nothing must not copy, and the
+			// page is retried at every window size. Copy on the first change
+			// so the caller's canonical items keep their full stamps.
 			changed = true
+			items = make([]appwire.ThreadItem, len(turn.Items))
+			copy(items, turn.Items)
 		}
 		items[i] = omitted
 	}
@@ -1505,15 +1522,19 @@ func transcriptWindowTurnOmitStamps(turn appwire.Turn) (appwire.Turn, bool) {
 // transcriptWindowTurnsOmitStamps applies transcriptWindowTurnOmitStamps across
 // a page, reporting whether any turn carried a call list (#6323).
 func transcriptWindowTurnsOmitStamps(turns []appwire.Turn) ([]appwire.Turn, bool) {
-	pageTurns := make([]appwire.Turn, len(turns))
-	copy(pageTurns, turns)
 	changed := false
-	for i := range pageTurns {
-		omitted, turnChanged := transcriptWindowTurnOmitStamps(pageTurns[i])
-		if turnChanged {
-			changed = true
-			pageTurns[i] = omitted
+	var pageTurns []appwire.Turn
+	for i := range turns {
+		omitted, turnChanged := transcriptWindowTurnOmitStamps(turns[i])
+		if !turnChanged {
+			continue
 		}
+		if !changed {
+			changed = true
+			pageTurns = make([]appwire.Turn, len(turns))
+			copy(pageTurns, turns)
+		}
+		pageTurns[i] = omitted
 	}
 	if !changed {
 		return turns, false
