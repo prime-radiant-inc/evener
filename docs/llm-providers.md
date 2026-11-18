@@ -527,6 +527,10 @@ the HTTP origin, escaped path and query identify the deployment. Evener saves
 that identity as a digest independently of the display URL. Returning to the
 same deployment preserves its bytes through a cold resume. Another deployment
 receives the full visible conversation.
+Chat's HTTP adapter binds the serving digest to the configured provider
+instance. Distinct instances sharing operation URLs keep separate native
+history, including after redirects. Rotating credentials on the same instance
+preserves its serving identity.
 Gemini models on one provider instance can continue each other’s signed
 tool calls through the same configured operation templates. A different
 project or an unconfigured redirect has its own deployment identity.

@@ -102,6 +102,47 @@ func TestRequestProjectsReasoningForEachServingOrigin(t *testing.T) {
 	if full[1].Content[2].ToolCall.ThoughtSignature != "one" || delta.PreviousResponseID != "anchor" {
 		t.Fatal("projection mutated the source")
 	}
+	t.Run("Chat serving proof belongs to its configured instance", func(t *testing.T) {
+		issuer := registry.Resolved{Instance: "first", Protocol: registry.ProtocolOpenAIChat, Transport: row.Transport}
+		issuer.Credential.Value = "fixture-first"
+		other := issuer
+		other.Instance = "second"
+		other.Credential.Value = "fixture-second"
+		rotated := issuer
+		rotated.Credential.Value = "fixture-rotated"
+		visible := turn("", "answer")
+		visible.Content = append(visible.Content, ContentPart{Kind: ContentRedThinking, Thinking: &ThinkingData{EncryptedContent: "sealed"}})
+		result := ToolResult("answer", "ok", false)
+		for _, tc := range []struct{ name, served, replay string }{
+			{"configured operations", issuer.RequestURL(issuer.Transport.StreamEndpoint), issuer.RequestURL(issuer.Transport.Endpoint)},
+			{"redirected recipient", "https://redirect.example.invalid/route", "https://redirect.example.invalid/route"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				u, err := url.Parse(tc.served)
+				if err != nil {
+					t.Fatal(err)
+				}
+				response := Response{Message: visible}
+				StampHTTPResponseEndpoint(&response, &http.Response{Request: &http.Request{URL: u}}, "", APILogCredentialMaterial{}, issuer)
+				req := Request{Messages: []Message{response.Message, result}}
+				for _, owner := range []registry.Resolved{issuer, rotated} {
+					got, changed := req.ForReasoningEndpoint(tc.replay, owner)
+					if changed || !reflect.DeepEqual(got, req) {
+						t.Fatal("the issuing instance lost native state")
+					}
+				}
+				for _, target := range []string{tc.replay, response.ServingOrigin} {
+					got, changed := req.ForReasoningEndpoint(target, other)
+					if !changed || len(got.Messages) != 2 || got.Messages[0].HasNativeReasoning() {
+						t.Fatalf("another instance at the same URL received native state for %s", tc.name)
+					}
+					if got.Messages[0].Text() != "answer" || len(got.Messages[0].Content) != 2 || got.Messages[0].Content[1].ToolCall.ID != "answer" || !reflect.DeepEqual(got.Messages[1], result) {
+						t.Fatal("another instance lost visible history or the tool exchange")
+					}
+				}
+			})
+		}
+	})
 	t.Run("admission prices the largest single recipient and retains the source history", func(t *testing.T) {
 		row.Caps.ContextWindow = new(3_100)
 		origin := parseServingURL(row.Transport.BaseURL).origin
