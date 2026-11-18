@@ -577,23 +577,38 @@ func SaveSessionMetaWithFS(fs afero.Fs, dir string, meta SessionMeta) error {
 	})
 }
 
-// PublishReplacementTranscript pairs a missing transcript with its new launch
-// facts. The header becomes visible only after it and the metadata are
-// complete. Concurrent recoveries cannot replace a published transcript.
-func PublishReplacementTranscript(fs afero.Fs, dir string, meta SessionMeta, writeHeader func(string) error) error {
+// PublishSessionTranscript reserves the final path for its first publisher.
+// When recovering a missing transcript or reusing an ID with metadata, the
+// new header becomes visible only after its matching launch facts are durable.
+func PublishSessionTranscript(fs afero.Fs, dir string, meta SessionMeta, recovering bool, writeHeader func(string) error) error {
 	if fs == nil {
 		fs = sessionMetaFS
 	}
-	return withSessionMetaWriteLock(fs, dir, meta.ID, func() error {
+	// The transcript always lives on disk, including when an embedding test
+	// provides a separate filesystem for best-effort metadata persistence.
+	return withSessionMetaWriteLock(sessionMetaFS, dir, meta.ID, func() error {
 		path := SessionTranscriptPath(dir, meta.ID)
 		sessionsDir := filepath.Dir(path)
 		if _, err := os.Lstat(path); err == nil {
-			return &os.PathError{Op: "recover transcript", Path: path, Err: os.ErrExist}
+			return &os.PathError{Op: "create transcript", Path: path, Err: os.ErrExist}
 		} else if !errors.Is(err, os.ErrNotExist) {
 			return err
 		}
-		// The transcript uses the OS even when a caller injects a metadata FS.
-		if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+		if !recovering {
+			if _, err := lstatIfPossible(fs, SessionMetaPath(dir, meta.ID)); errors.Is(err, os.ErrNotExist) {
+				// Readers can open the header before startup's final autosave.
+				// Provide its facts first when possible. With no previous
+				// sidecar to supersede, its write can fail independently of
+				// the transcript and the normal autosave retries it.
+				if err := fs.MkdirAll(sessionsDir, 0o755); err == nil {
+					_ = writeSessionMetaLocked(fs, dir, meta, false)
+				}
+				return writeHeader(path)
+			} else if err != nil {
+				return err
+			}
+		}
+		if err := fs.MkdirAll(sessionsDir, 0o755); err != nil {
 			return err
 		}
 		staging, err := os.MkdirTemp(sessionsDir, ".prompt-*")

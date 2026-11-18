@@ -15,12 +15,14 @@ import (
 
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/agent/envctx"
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
 
@@ -1064,7 +1066,7 @@ func TestRestoreSessionFromMeta_NoTranscript_StartsClean(t *testing.T) {
 	writeTestFile(t, appendFile, instruction)
 
 	meta := schema.SessionMeta{
-		ID:        "01JTEST_META_CLEAN_001",
+		ID:        identifier.MustNewSessionID(),
 		ProfileID: "openai",
 		Model:     "gpt-5.2",
 		Config:    schema.ConfigSnapshot{MaxToolRoundsPerInput: 200, SystemPromptAppend: []string{appendFile}},
@@ -1127,12 +1129,36 @@ func TestRestoreSessionFromMeta_NoTranscript_StartsClean(t *testing.T) {
 	restore := func(saved schema.SessionMeta, cfg RestoreSessionConfig) (*Session, error) {
 		return RestoreSessionFromMetaWithConfig(c, profile, execenv.NewLocalExecutionEnvironment(dir), saved, cfg)
 	}
-	for _, closeWinner := range []bool{false, true} {
-		name := "winning writer open"
-		if closeWinner {
-			name = "winning writer closed"
+	start := func(fresh bool, cfg RestoreSessionConfig) (*Session, error) {
+		if !fresh {
+			return restore(meta, cfg)
 		}
-		t.Run(name, func(t *testing.T) {
+		return NewSession(c, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+			SessionID: meta.ID, StateDir: cfg.StateDir, TurnEndsProcess: cfg.TurnEndsProcess,
+			ForceRealIO: cfg.ForceRealIO, testOnly: cfg.testOnly,
+		})
+	}
+	lastRequest := func(t *testing.T, s *Session) (string, string) {
+		t.Helper()
+		requests := adapter.Requests()
+		prompt, history := responsesInstructionsAndHistory(responsesPromptBody(t, requests[len(requests)-1], s.profile.Resolved()))
+		var observations envctx.Tracker
+		for _, msg := range history {
+			observations.ReplayBlock(msg)
+		}
+		return prompt, observations.State().Last.ExecutionMode
+	}
+	for _, tc := range []struct {
+		name                                     string
+		freshWinner, freshContender, closeWinner bool
+	}{
+		{name: "winning writer open"},
+		{name: "winning writer closed", closeWinner: true},
+		{name: "fresh writer wins", freshWinner: true},
+		{name: "fresh launch during replacement", freshContender: true},
+		{name: "fresh retry after replacement closed", freshContender: true, closeWinner: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			stateDir := t.TempDir()
 			if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
 				t.Fatal(err)
@@ -1160,7 +1186,7 @@ func TestRestoreSessionFromMeta_NoTranscript_StartsClean(t *testing.T) {
 			}
 			finished := make(chan result, 1)
 			go func() {
-				s, err := restore(meta, contenderCfg)
+				s, err := start(tc.freshContender, contenderCfg)
 				finished <- result{s, err}
 			}()
 			select {
@@ -1168,7 +1194,16 @@ func TestRestoreSessionFromMeta_NoTranscript_StartsClean(t *testing.T) {
 			case r := <-finished:
 				t.Fatalf("contender exited before prompt initialization: %v", r.err)
 			}
-			winner, err := restore(meta, cfg)
+			if tc.freshContender && !tc.closeWinner {
+				// Recovery has checked the final path and holds the publication lock.
+				cfg.testOnly.sessionInitFault = func(point string) error {
+					if point == "restore_new_transcript" {
+						release()
+					}
+					return nil
+				}
+			}
+			winner, err := start(tc.freshWinner, cfg)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -1182,7 +1217,7 @@ func TestRestoreSessionFromMeta_NoTranscript_StartsClean(t *testing.T) {
 				t.Fatal(err)
 			}
 			winnerPrompt := winner.transcript.Header().SystemPrompt
-			if closeWinner {
+			if tc.closeWinner {
 				winner.Close()
 			}
 			release()
@@ -1201,7 +1236,7 @@ func TestRestoreSessionFromMeta_NoTranscript_StartsClean(t *testing.T) {
 			cfg.TurnEndsProcess = true
 			// One caller loaded its snapshot before either recovery began.
 			supplied := current
-			if closeWinner {
+			if tc.closeWinner {
 				supplied = beforeRecovery
 			}
 			supplied.PinnedNote = "caller-pinned-823"
@@ -1217,18 +1252,89 @@ func TestRestoreSessionFromMeta_NoTranscript_StartsClean(t *testing.T) {
 			if _, err := cold.ProcessInput(t.Context(), "cold input", nil); err != nil {
 				t.Fatal(err)
 			}
-			requests := adapter.Requests()
-			prompt, history := responsesInstructionsAndHistory(responsesPromptBody(t, requests[len(requests)-1], cold.profile.Resolved()))
-			var observations envctx.Tracker
-			for _, msg := range history {
-				observations.ReplayBlock(msg)
-			}
-			if prompt != winnerPrompt || observations.State().Last.ExecutionMode != envctx.OneShotMode {
+			if prompt, mode := lastRequest(t, cold); prompt != winnerPrompt || mode != envctx.OneShotMode {
 				t.Error("cold one-shot request lost the daemon prompt or its current job-lifetime guidance")
 			}
 			all, err := os.ReadFile(path)
 			if err != nil || !bytes.HasPrefix(all, prefix) {
 				t.Errorf("winning transcript prefix lost on restore: %v", err)
+			}
+		})
+	}
+	t.Run("fresh header observed before initial autosave", func(t *testing.T) {
+		cfg := SessionConfig{SessionID: meta.ID, StateDir: t.TempDir()}
+		var reader *Session
+		cfg.spawn.descendantEvent = func(ev events.SessionEvent) {
+			if ev.Kind == events.EventSessionStart {
+				var err error
+				reader, err = restore(meta, RestoreSessionConfig{StateDir: cfg.StateDir, TurnEndsProcess: true})
+				if err != nil {
+					t.Fatal(err)
+				}
+			}
+		}
+		winner, err := NewSession(c, profile, execenv.NewLocalExecutionEnvironment(dir), cfg)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer winner.Close()
+		if reader == nil {
+			t.Fatal("fresh launch did not publish its start")
+		}
+		defer reader.Close()
+		if mode := reader.Meta().PromptLaunch.TurnEndsProcess; mode == nil || *mode || reader.cachedSystemPrompt != winner.cachedSystemPrompt {
+			t.Error("the new header and the facts read for its job-lifetime guidance describe different launches")
+		}
+	})
+	for _, missingFacts := range []bool{false, true} {
+		name := "owned reader opens a published replacement"
+		if missingFacts {
+			name = "owned reader keeps supplied facts when sidecar disappears"
+		}
+		t.Run(name, func(t *testing.T) {
+			cfg := RestoreSessionConfig{StateDir: t.TempDir()}
+			cfg.TurnEndsProcess = missingFacts
+			if err := schema.SaveSessionMeta(cfg.StateDir, meta); err != nil {
+				t.Fatal(err)
+			}
+			var winnerPrompt string
+			owned := cfg
+			owned.AcquireSessionOwnership = func(string) error { return nil }
+			owned.TurnEndsProcess, owned.CompactAtPercent = !cfg.TurnEndsProcess, 63
+			owned.testOnly.metaFS = &afterPromptMetaOpenFS{Fs: afero.NewOsFs(), afterOpen: sync.OnceFunc(func() {
+				// This descriptor retains the owned snapshot while the public
+				// restore publishes a replacement prompt and its launch facts.
+				winner, err := restore(meta, cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				winnerPrompt = winner.transcript.Header().SystemPrompt
+				winner.Close()
+				if missingFacts {
+					if err := os.Remove(schema.SessionMetaPath(cfg.StateDir, meta.ID)); err != nil {
+						t.Fatal(err)
+					}
+				}
+			})}
+			reader, err := restore(meta, owned)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer reader.Close()
+			if reader.Meta().Config.CompactAtPercent != owned.CompactAtPercent {
+				t.Fatal("owned restore lost its runtime compaction setting")
+			}
+			if _, err := reader.ProcessInput(t.Context(), "owned input", nil); err != nil {
+				t.Fatal(err)
+			}
+			prompt, mode := lastRequest(t, reader)
+			wantMode := envctx.OneShotMode
+			if missingFacts {
+				wantMode = envctx.DaemonMode
+			}
+			launch := reader.Meta().PromptLaunch.TurnEndsProcess
+			if winnerPrompt == "" || prompt != winnerPrompt || launch == nil || *launch != cfg.TurnEndsProcess || mode != wantMode {
+				t.Error("owned request lost the published prompt, launch facts, or current job-lifetime guidance")
 			}
 		})
 	}
@@ -1269,6 +1375,19 @@ func TestRestoreSessionFromMeta_NoTranscript_StartsClean(t *testing.T) {
 			}
 		})
 	}
+}
+
+type afterPromptMetaOpenFS struct {
+	afero.Fs
+	afterOpen func()
+}
+
+func (fs *afterPromptMetaOpenFS) Open(name string) (afero.File, error) {
+	f, err := fs.Fs.Open(name)
+	if err == nil && strings.HasSuffix(name, ".meta.json") {
+		fs.afterOpen()
+	}
+	return f, err
 }
 
 func TestRestoreSessionFromMeta_TranscriptWithCompaction(t *testing.T) {

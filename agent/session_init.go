@@ -373,6 +373,24 @@ func (s *Session) createTranscript(path, faultPoint string, hdr transcript.Heade
 	return transcript.NewWriter(path, hdr)
 }
 
+func (s *Session) publishTranscript(meta schema.SessionMeta, hdr transcript.Header, recovering bool) (*transcript.Writer, error) {
+	var writer *transcript.Writer
+	err := schema.PublishSessionTranscript(s.cfg.testOnly.metaFS, s.stateDir, meta, recovering, func(path string) error {
+		faultPoint := "new_transcript"
+		if recovering {
+			faultPoint = "restore_new_transcript"
+		}
+		var err error
+		writer, err = s.createTranscript(path, faultPoint, hdr)
+		return err
+	})
+	if err != nil {
+		_ = writer.Close()
+		return nil, err
+	}
+	return writer, nil
+}
+
 // installContextStrategy selects the configured context strategy and registers
 // the tools it provides.
 func (s *Session) installContextStrategy() error {
@@ -672,7 +690,10 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		}
 		hdr.AgentTasks = agentTasks
 		var twErr error
-		tw, twErr = s.createTranscript(schema.SessionTranscriptPath(s.stateDir, s.id), "new_transcript", hdr)
+		tw, twErr = s.publishTranscript(s.Meta(), hdr, false)
+		if errors.Is(twErr, os.ErrExist) {
+			return nil, twErr
+		}
 		if twErr != nil {
 			// Buffered, not emitted directly (kata et0x): SESSION_START has not
 			// fired yet at this point in construction, and every other
@@ -1074,13 +1095,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		}
 		if resumeTranscript != nil {
 			restoredTranscriptHeader = resumeTranscript.Header()
-			if restoreCfg.AcquireSessionOwnership == nil {
-				// A replacement header can postdate the caller's snapshot. Its
-				// published launch facts belong to those prompt bytes. An embedder
-				// with no readable sidecar can still supply its own snapshot.
-				if published, err := schema.LoadSessionMetaWithFS(metaFS, cfg.StateDir, meta.ID); err == nil {
-					meta.PromptLaunch = published.PromptLaunch
-				}
+			// A public recovery can publish after the caller's snapshot or
+			// ownership reload. Only launch facts follow the opened header.
+			if published, err := schema.LoadSessionMetaWithFS(metaFS, cfg.StateDir, meta.ID); err == nil {
+				meta.PromptLaunch = published.PromptLaunch
 			}
 		}
 		restoredTranscriptOpened = openErr == nil
@@ -1485,11 +1503,8 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		tw = resumeTranscript
 		if tw == nil {
 			meta.PromptLaunch = s.promptLaunch
-			err := schema.PublishReplacementTranscript(s.cfg.testOnly.metaFS, s.stateDir, meta, func(path string) error {
-				var err error
-				resumeTranscript, err = s.createTranscript(path, "restore_new_transcript", s.transcriptHeader(meta.CreatedAt))
-				return err
-			})
+			var err error
+			resumeTranscript, err = s.publishTranscript(meta, s.transcriptHeader(meta.CreatedAt), true)
 			if err != nil {
 				return nil, fmt.Errorf("create transcript for resume: %w", err)
 			}

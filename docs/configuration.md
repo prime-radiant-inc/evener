@@ -193,10 +193,12 @@ environment updates in the conversation supersede the launch facts.
 When the transcript is missing, Evener renders a new prompt. A caller with
 a valid session snapshot can recover even if the saved metadata contains
 malformed JSON. Evener preserves those bytes beside the recovered metadata.
-The first
-restore to publish its header establishes the launch facts. A failed
-publication can be retried. Reopening that header uses its recorded launch
-facts even when an embedding application supplies an older session snapshot.
+When a fresh launch and a recovery use the same session ID, the first to
+publish the transcript keeps its header, launch facts, and subsequent turns.
+A failed publication can be retried. Reopening a header uses its recorded
+launch facts even when an embedding application holds session ownership and
+supplies an older snapshot. If the metadata cannot be reread after the
+header opens, the restore uses the launch facts it already has.
 
 If a session switches models or working directories, its next request carries
 the new facts in conversation context. If the Git branch changed while the
