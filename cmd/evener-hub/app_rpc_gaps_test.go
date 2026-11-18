@@ -195,49 +195,94 @@ func TestPastFallbackRosterAbsenceStampsDaemonless(t *testing.T) {
 	requireSavedHistoryFailureStamp(t, err, appwire.DaemonlessBootGeneration)
 }
 
-// TestPastFallbackReadsOneRosterPublication pins the race the three-accessor
-// check had. A refresh that replaces a confirmed owner with an unverified claim
-// landing between the reads shows no claims in the older publication and no
-// live owner in the newer one, so a check reading them separately concludes
-// "absent" although neither publication established that.
+// TestPastFallbackReadsOneRosterPublication pins the race a decision spanning
+// several roster reads has. Each subtest gives the check an older publication
+// through the seam and a newer one through the roster itself: a refresh landed
+// in between. The decision must come from the older publication alone, so
+// where it holds an owner the answer is unknown, never absence.
 //
-// The seam serves the two publications in that order. Deciding from the first
-// alone is the only answer that is sound: it holds a confirmed running owner,
-// so absence is not established. A check that takes a second publication gets
-// an empty claim list from the first and an empty live list from the second,
-// and calls that absence. No sleep is involved; the interleaving is the fixture.
+// No sleep is involved; the interleaving is the fixture.
 func TestPastFallbackReadsOneRosterPublication(t *testing.T) {
 	const sessionID = "02wMz5Txv5aIxgf9yVdd0N"
-	// The publication before the refresh: the incompatible daemon is live.
-	beforeRefresh := hubcore.RosterSnapshot{
-		Live: []hubcore.LiveEntry{{
-			Entry:     rendezvous.Entry{PID: 4242, Protocol: "evener-appwire-v4", ThreadID: sessionID, SessionID: sessionID},
-			SessionID: sessionID,
-			Status:    appwire.ThreadStatusRestartRequired,
-		}},
-	}
-	// The publication after it: that daemon's claim no longer resolves, so no
-	// live entry names the thread and only an unconfirmed claim is left.
-	afterRefresh := hubcore.RosterSnapshot{
-		Unconfirmed: []rendezvous.Entry{{PID: 4242, ThreadID: sessionID}},
-	}
-	original := rosterSnapshot
-	t.Cleanup(func() { rosterSnapshot = original })
-	publications := []hubcore.RosterSnapshot{beforeRefresh, afterRefresh}
-	reads := 0
-	rosterSnapshot = func(*hubcore.Roster) hubcore.RosterSnapshot {
-		if reads >= len(publications) {
-			return publications[len(publications)-1]
+
+	t.Run("claims and live entries", func(t *testing.T) {
+		// The older publication holds a confirmed, incompatible owner.
+		beforeRefresh := hubcore.RosterSnapshot{
+			Live: []hubcore.LiveEntry{{
+				Entry:     rendezvous.Entry{PID: 4242, Protocol: "evener-appwire-v4", ThreadID: sessionID, SessionID: sessionID},
+				SessionID: sessionID,
+				Status:    appwire.ThreadStatusRestartRequired,
+			}},
 		}
-		reads++
-		return publications[reads-1]
-	}
-	stamp := savedHistoryStampFor(t.Context(), hubcore.WebConfig{Roster: hubcore.NewRoster("", nil)}, appwire.ThreadReadParams{Ref: "local:" + sessionID}, appwire.SessionUnavailable(threadNotFoundMessagePrefix+sessionID))
-	err := stamp(appwire.TranscriptHistoryFailed(0))
-	requireSavedHistoryFailureStamp(t, err, appwire.UnknownOwnerBootGeneration)
-	if reads != 1 {
-		t.Fatalf("absence check read %d roster publications, want exactly 1", reads)
-	}
+		// The newer one replaced that owner with an unverified claim.
+		afterRefresh := hubcore.RosterSnapshot{
+			Unconfirmed: []rendezvous.Entry{{PID: 4242, ThreadID: sessionID}},
+		}
+		original := rosterSnapshot
+		t.Cleanup(func() { rosterSnapshot = original })
+		publications := []hubcore.RosterSnapshot{beforeRefresh, afterRefresh}
+		reads := 0
+		rosterSnapshot = func(*hubcore.Roster) hubcore.RosterSnapshot {
+			if reads >= len(publications) {
+				return publications[len(publications)-1]
+			}
+			reads++
+			return publications[reads-1]
+		}
+		stamp := savedHistoryStampFor(t.Context(), hubcore.WebConfig{Roster: hubcore.NewRoster("", nil)}, appwire.ThreadReadParams{Ref: "local:" + sessionID}, appwire.SessionUnavailable(threadNotFoundMessagePrefix+sessionID))
+		err := stamp(appwire.TranscriptHistoryFailed(0))
+		requireSavedHistoryFailureStamp(t, err, appwire.UnknownOwnerBootGeneration)
+		if reads != 1 {
+			t.Fatalf("absence check read %d roster publications, want exactly 1", reads)
+		}
+	})
+
+	t.Run("ancestry walk", func(t *testing.T) {
+		// This one reaches the ancestry lookup, where the check used to leave
+		// the publication it had captured. The older publication holds the
+		// delegate's parent: a live, incompatible daemon that reports no child
+		// ids, so only ancestry can connect the two. By the time a walk over
+		// the live roster got to the parent, a refresh had removed it, and an
+		// empty newer publication read as absence although the older one —
+		// the publication the check started from — held a running owner.
+		const (
+			parentID = "02wMz5Txv1C3Hut0M8GCeB"
+			childID  = "02wMz5Txv2enqVTitaig6F"
+		)
+		root := t.TempDir()
+		stateDir := filepath.Join(root, "projects", "project-delegate-0000000000")
+		now := time.Date(2026, 11, 18, 12, 0, 0, 0, time.UTC)
+		for _, meta := range []schema.SessionMeta{
+			{ID: parentID, CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+			{ID: childID, CreatedAt: now, UpdatedAt: now, ParentSessionID: parentID, IsSubagent: true, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
+		} {
+			if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+				t.Fatal(err)
+			}
+		}
+		// The older publication: the parent runs, incompatible, and reports no
+		// child ids — so nothing in it names the child directly.
+		beforeRefresh := hubcore.RosterSnapshot{
+			Live: []hubcore.LiveEntry{{
+				Entry:     rendezvous.Entry{PID: 4242, Protocol: "evener-appwire-v4", ThreadID: parentID, SessionID: parentID},
+				SessionID: parentID,
+				Status:    appwire.ThreadStatusRestartRequired,
+			}},
+		}
+		original := rosterSnapshot
+		t.Cleanup(func() { rosterSnapshot = original })
+		rosterSnapshot = func(*hubcore.Roster) hubcore.RosterSnapshot { return beforeRefresh }
+		// The newer publication no longer has the parent at all: the roster the
+		// walk would otherwise read is empty.
+		stamp := savedHistoryStampFor(
+			t.Context(),
+			hubcore.WebConfig{Roster: hubcore.NewRoster("", nil), StateDir: stateDir},
+			appwire.ThreadReadParams{Ref: "local:" + childID},
+			appwire.SessionUnavailable(threadNotFoundMessagePrefix+childID),
+		)
+		err := stamp(appwire.TranscriptHistoryFailed(0))
+		requireSavedHistoryFailureStamp(t, err, appwire.UnknownOwnerBootGeneration)
+	})
 }
 
 // TestPastFallbackAfterLiveFailureStampsOwnerUnknown pins the read issue #6815

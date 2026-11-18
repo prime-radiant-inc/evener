@@ -1003,13 +1003,26 @@ type RosterSnapshot struct {
 	OwnershipError error
 	Live           []LiveEntry
 	Unconfirmed    []rendezvous.Entry
+	// BySession is the publication's session-keyed view, the map Find answers
+	// from. Live may hold several entries naming one session; this holds the
+	// one Find would return, so both answers come from the same publication.
+	BySession map[string]LiveEntry
 }
 
-// Snapshot is OwnershipError, List and UnconfirmedEntries from one publication.
+// Snapshot is OwnershipError, List, UnconfirmedEntries and the session-keyed
+// view Find answers from, all from one publication. A caller whose decision
+// needs several of those facts must take them here together: separate accessors
+// read separate publications, and two publications that disagree do not
+// establish either answer.
 func (r *Roster) Snapshot() RosterSnapshot {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return RosterSnapshot{OwnershipError: r.ownershipErr, Live: r.listLocked(), Unconfirmed: slices.Clone(r.unconfirmed)}
+	return RosterSnapshot{
+		OwnershipError: r.ownershipErr,
+		Live:           r.listLocked(),
+		Unconfirmed:    slices.Clone(r.unconfirmed),
+		BySession:      maps.Clone(r.bySess),
+	}
 }
 
 func (r *Roster) listLocked() []LiveEntry {

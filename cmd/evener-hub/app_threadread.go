@@ -314,12 +314,14 @@ func rosterEstablishesAbsence(ctx context.Context, cfg hubcore.WebConfig, params
 		}
 	}
 	// Persisted ancestry covers the delegate whose parent the publication
-	// cannot name. lookupDaemonOwner answers the same question the read path
-	// asks: a populated owner means some live daemon serves this thread through
-	// its ancestry, and its second result only says whether that owner is
-	// incompatible. Both cases leave ownership established, not absent, and an
+	// cannot name. It is asked from the snapshot just taken, not from the
+	// roster: the walk is part of this decision, so it must not answer from a
+	// later publication that could have retracted an owner this one showed. A
+	// populated owner means some live daemon serves this thread through its
+	// ancestry and its second result only says whether that owner is
+	// incompatible, so both cases leave ownership established, not absent. An
 	// unverifiable chain or incomplete scan comes back as an error.
-	if owner, _, err := lookupDaemonOwner(ctx, cfg, params.Ref, params.ThreadID, false); err != nil || owner.SessionID != "" {
+	if owner, _, err := lookupDaemonOwnerIn(ctx, cfg, rosterViewOf(snapshot), params.Ref, params.ThreadID, false); err != nil || owner.SessionID != "" {
 		return false
 	}
 	return true
