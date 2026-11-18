@@ -96,6 +96,18 @@ type Store struct {
 	// from, which is the fault-injection shape a handful of tests construct.
 	contentTracked bool
 
+	// metadataLagging records that this filesystem has DEMONSTRATED it cannot
+	// resolve a write with its metadata: an append reported a length that did not
+	// include the bytes that append had just made durable.
+	//
+	// It is separate from cursor.disabled on purpose. The cursor is one consumer
+	// of that judgement, and it can be invalidated for unrelated reasons —
+	// including by the very lagging sample that establishes this — so inferring
+	// the judgement from the cursor's survival loses it exactly when it was just
+	// proven. A fold reader asks whether a length difference can vouch for a
+	// prefix's bytes, and that answer must not depend on whether the cursor lived.
+	metadataLagging bool
+
 	// disableSync, when set, skips the per-append fsync. Production opens via
 	// Open, which leaves this false, so the durable write path is unchanged. The
 	// on-disk bytes are identical either way.
@@ -779,7 +791,7 @@ func (s *Store) CommittedJournal() (CommittedJournalState, error) {
 				s.journalGen++
 			}
 			s.sampled = false
-			return CommittedJournalState{Path: s.path, Size: 0, Generation: s.journalGen, MetadataResolvesWrites: !s.cursor.disabled}, nil
+			return CommittedJournalState{Path: s.path, Size: 0, Generation: s.journalGen, MetadataResolvesWrites: !s.cursor.disabled && !s.metadataLagging}, nil
 		}
 		return CommittedJournalState{}, fmt.Errorf("jobstore: stat %s: %w", s.path, err)
 	}

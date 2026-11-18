@@ -1088,6 +1088,69 @@ func TestCommittedJournalReportsAConfirmedAppendPastLaggingMetadata(t *testing.T
 // The boundary read already settles the lag before comparing. The pre-write
 // check has to do the same thing for the same reason: the store's own bytes are
 // not a rewrite.
+// TestStoreBoundaryStopsVouchingForMetadataThatUnderReports pins medium 9.
+//
+// A confirmed append knows exactly where its bytes end. The stat taken after it
+// asks a filesystem whose attributes may lag the data, and when that sample
+// reports LESS than the append wrote, the store has direct evidence that
+// metadata cannot resolve its writes.
+//
+// That evidence has to outlive the cursor. Bookkeeping drops the cursor for
+// exactly this sample, and a rule that infers metadata reliability from the
+// cursor's survival therefore never records the finding: the boundary keeps
+// advertising trustworthy metadata while a same-length rewrite during the same
+// lag leaves the reconciled size and timestamp unchanged, so repeated activity
+// reads serve rows the rewrite removed.
+//
+// The assertion is the claim the boundary makes to its callers.
+func TestStoreBoundaryStopsVouchingForMetadataThatUnderReports(t *testing.T) {
+	base := afero.NewOsFs()
+	path := filepath.Join(t.TempDir(), "jobs.jsonl")
+	fs := &staleStatFs{Fs: base}
+	s, err := openFs(fs, path)
+	if err != nil {
+		t.Fatalf("openFs: %v", err)
+	}
+	s.disableSync = true
+	t.Cleanup(func() { _ = s.Close() })
+
+	if err := s.Append(Event{Kind: EventJobStarted, JobID: "job_first", Type: JobShell}); err != nil {
+		t.Fatalf("first append: %v", err)
+	}
+	before, err := s.CommittedJournal()
+	if err != nil {
+		t.Fatalf("CommittedJournal: %v", err)
+	}
+	if !before.MetadataResolvesWrites {
+		t.Fatal("the first boundary read already reports untrustworthy metadata, so this fixture cannot show the append's evidence being recorded")
+	}
+	// Freeze the reported attributes: the next append's bytes are durable and
+	// the path keeps reporting the length it had before them.
+	frozen, err := base.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	fs.stale = snapshotInfo(frozen)
+	if err := s.Append(Event{Kind: EventJobStarted, JobID: "job_under_reported", Type: JobShell}); err != nil {
+		t.Fatalf("append under lagging metadata: %v", err)
+	}
+
+	after, err := s.CommittedJournal()
+	if err != nil {
+		t.Fatalf("CommittedJournal after the under-reported append: %v", err)
+	}
+	actual, err := afero.ReadFile(base, path)
+	if err != nil {
+		t.Fatalf("read the journal: %v", err)
+	}
+	if after.Size != int64(len(actual)) {
+		t.Fatalf("committed length = %d with %d bytes on disk, so this append did not under-report and the fixture cannot show the claim", after.Size, len(actual))
+	}
+	if after.MetadataResolvesWrites {
+		t.Fatal("the boundary still advertises metadata that resolves writes, though this append's own stat reported less than the bytes it confirmed: a same-length rewrite under the same lag would then go unnoticed and reads would serve the old rows")
+	}
+}
+
 func TestStoreAppendKeepsOneGenerationUnderSustainedLag(t *testing.T) {
 	base := afero.NewOsFs()
 	path := filepath.Join(t.TempDir(), "jobs.jsonl")
