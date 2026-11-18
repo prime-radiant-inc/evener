@@ -2744,6 +2744,15 @@ func (s *Session) resolveAttentionDurablyForGeneration(ids []string, disposition
 	if s.delegateController != nil {
 		s.delegateController.attentionCauses.forget(ids...)
 	}
+	// The retained notice facts retire with their row. The write is inline
+	// rather than through forgetPendingStableWatchNotice because this function
+	// already holds attentionMu, which that helper takes.
+	for _, attentionID := range ids {
+		delete(s.stableWatchPending, attentionID)
+	}
+	if len(s.stableWatchPending) == 0 {
+		s.stableWatchPending = nil
+	}
 	return nil
 }
 

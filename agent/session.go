@@ -1021,9 +1021,11 @@ type Session struct {
 	// makes the obligation visible to idleReleasePregatesClear, so the release
 	// waits for the append instead of outrunning it.
 	//
-	// Guarded by pendingJobNotifsMu for the same reason the queue is: the
-	// retry closure runs on the clock's goroutine.
-	pendingAttentionAppends int
+	// Atomic rather than guarded by pendingJobNotifsMu, unlike the queue: the
+	// retry closure runs on the clock's goroutine, and reclamation reads it
+	// while holding the controller mutex. A plain load under that mutex keeps
+	// the controller's lock order untouched, and a counter needs nothing more.
+	pendingAttentionAppends atomic.Int64
 	// jobNotifsDelivered counts the job notifications acceptNotificationInput
 	// has delivered to the model over the session's lifetime. The one-shot
 	// drain reads it across an undisposed-job announcement turn: growth means a
@@ -1320,6 +1322,19 @@ type Session struct {
 	// restores them into history so the retry wake still sees their content.
 	// Guarded by attentionMu; reset with attentionCoveredIDs at turn start.
 	attentionFoldedCovered []foldedCoveredAttentionTurn
+	// stableWatchPending retains each pending stable-watch attention row's own
+	// NOTICE FACTS, keyed by the attention id they answer, so the presentation
+	// boundary can re-apply the delivery rules the ordinary queue applies while
+	// it folds and presents. Those rules need facts the durable row does not
+	// hold: the row says only rendered text, that text is immutable, and a
+	// timer's clear, a second tick and a newer job snapshot all arrive after
+	// the row was written (#2340 review M2). Guarded by attentionMu; an entry
+	// is deleted when its row resolves.
+	stableWatchPending map[string]stableWatchPendingNotice
+	// stableWatchPendingSeq orders retained notices by arrival, so a newer
+	// snapshot of one job can be recognised as newer without a transcript
+	// read. Guarded by attentionMu.
+	stableWatchPendingSeq uint64
 	// attentionStagedIDs is one round's candidate coverage: the attention
 	// the round's built request presents. The round loop promotes it into
 	// attentionCoveredIDs only when the round's call settles, so a failed
@@ -1526,6 +1541,18 @@ func (s *Session) appendOrFoldJobNotificationLocked(n jobNotification) {
 }
 
 func (s *Session) enqueueJobNotificationAndNotify(n jobNotification) {
+	// A watch notice bound for a stable child belongs in durable attention, not
+	// on this rail (LIFE-01, #2340 review). The ordinary rail is drained only by
+	// an EntryNotification turn, and for a stable child such a turn must refuse
+	// to carry a watch notice — so a raw token left here did not merely go
+	// unrendered: it made the next ordinary turn requeue its WHOLE batch,
+	// completions included, and stand down. That turn is also the unleased one
+	// this issue closes. Handing the notice to the one stable ingress keeps its
+	// rules (deliverability, folding, retry, arming) in the single place they
+	// live, rather than teaching this rail to apply a subset of them.
+	if n.isWatch() && s.jobManager != nil && stableDelegateChild(s) && s.jobManager.persistStableWatchPendings([]jobNotification{n}) {
+		return
+	}
 	s.pendingJobNotifsMu.Lock()
 	s.appendOrFoldJobNotificationLocked(n)
 	held := s.notifyWakeHolds > 0

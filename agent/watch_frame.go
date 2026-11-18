@@ -35,7 +35,7 @@ func watchSendDiagnosticNotification(watchID, jobID, reason string) jobNotificat
 
 // watchSendDiagnosticForState is watchSendDiagnosticNotification for a site
 // that holds the failed send's own state, and it stamps the send's delivery id
-// as the notice's occurrence.
+// together with the stage that failed as the notice's occurrence.
 //
 // Without that stamp two failures of the SAME watch and job whose rendered
 // reasons happen to match — "watch send pending state failed: <err>" is the
@@ -44,13 +44,34 @@ func watchSendDiagnosticNotification(watchID, jobID, reason string) jobNotificat
 // reused the first's resolved row: no new row, no wake, and a lost notice
 // (#2340 review). Replaying one delivery's diagnostic still yields its original
 // identity, because the delivery id is minted once per send.
-func watchSendDiagnosticForState(state jobstore.WatchSendState, reason string) jobNotification {
+//
+// The stage is part of the identity for the same reason the delivery is. One
+// delivery can fail more than once at DIFFERENT stages: the write of the
+// dropped state fails, a retry succeeds, and the final drop diagnostic follows
+// for the same delivery. Without the stage both notices claimed one identity,
+// and the transcript's conflicting-content check rejected the second — so the
+// final diagnostic never landed and its retry kept the runtime resident
+// (#2340 review M4). Replaying one stage reuses its row; a different stage is a
+// different notice. The payload is stable across retries of one stage because
+// every retry re-persists the same notice object.
+func watchSendDiagnosticForState(state jobstore.WatchSendState, stage string, reason string) jobNotification {
 	n := watchSendDiagnosticNotification(state.Key.WatchID, state.Key.ResolvedWatchedIdentity, reason)
 	if state.DeliveryID != "" {
-		n.Occurrence = "diagnostic:" + state.DeliveryID
+		n.Occurrence = "diagnostic:" + stage + ":" + state.DeliveryID
 	}
 	return n
 }
+
+// The diagnostic stages a watch-send delivery can fail at. Each is part of its
+// notice's occurrence identity (see watchSendDiagnosticForState), so one
+// delivery's failures at different stages are different notices.
+const (
+	watchSendStagePendingState  = "pending_state"
+	watchSendStageStableEnqueue = "stable_enqueue"
+	watchSendStageDroppedState  = "dropped_state"
+	watchSendStageDrop          = "drop"
+	watchSendStageEvicted       = "evicted"
+)
 
 func (jm *jobManager) watchNotificationFromWatch(cfg *watchConfig, jobID, reason string, root *provenance.Causal) jobNotification {
 	return jm.watchNotificationWithDelivery(cfg, jobID, reason, root, "")
@@ -431,6 +452,11 @@ func persistStableWatchAttention(owner *Session, controller *delegateTreeControl
 	if err != nil {
 		return "", err
 	}
+	// Nothing to arm: the notice was a stale token, or a frame the receiver
+	// already holds and only its acknowledgement was owed.
+	if attentionID == "" {
+		return "", nil
+	}
 	if err := owner.armDelegateAttention(attentionID); err != nil {
 		return "", err
 	}
@@ -442,7 +468,32 @@ func persistStableWatchAttention(owner *Session, controller *delegateTreeControl
 // first wake: a wake that lands while later rows in the same batch are still
 // unwritten lets the child's first request miss them and start a second
 // generation for one batch (LIFE-01, #2340 review L2).
+//
+// A caller-targeted wake token is resolved here, against the CURRENT pending
+// frame, before anything is rendered or persisted (LIFE-01, #2340 review). A
+// token is not a diagnostic: its content is a rendered frame that only the
+// resolution step populates, so persisting it unrendered gave the model an
+// empty watch-send body while the send stayed pending for good. The token's
+// family is the send rail's ("watch:<delivery>:<seq>"), not the diagnostic one,
+// and the send is acknowledged only after its frame is durable.
+//
+// An empty return with no error means there is nothing to arm: a stale token
+// (replaced, cleared, dropped or settled) or a frame the receiver already took
+// whose acknowledgement was the only thing owed.
 func appendStableWatchAttention(owner *Session, controller *delegateTreeController, n jobNotification) (string, error) {
+	if n.WatchSend != nil {
+		return appendCallerWatchSendAttention(owner, controller, n.WatchSend)
+	}
+	// A notice whose family this receiver already holds a PENDING row for
+	// supersedes that row rather than appending beside it.
+	// deliverableStableWatchAttention folds within ONE enqueue batch, but a
+	// timer callback enqueues its own batch: two ticks of one timer then wrote
+	// two rows the model read as two reminders, and a newer long-running-job
+	// snapshot queued behind an older one listing jobs that had already
+	// finished. The queue folded both across callbacks; this is the same rule
+	// (#2340 review M2).
+	folded, superseded := owner.foldPendingStableWatchNotice(n)
+	n = folded
 	attentionID := stableWatchDiagnosticAttentionID(n)
 	// Register the notice's own cause BEFORE the item can be presented: a
 	// runaway-watch diagnostic carries the chain the breaker stopped, and the
@@ -463,7 +514,310 @@ func appendStableWatchAttention(owner *Session, controller *delegateTreeControll
 		}
 		return "", err
 	}
+	owner.notePendingStableWatchNotice(n, attentionID)
+	// The survivor is durable, so the rows it folded are retired rather than
+	// presented: keeping them pending would show the model the older tick or
+	// snapshot beside the newer one that already replaced it. A failed
+	// discard keeps them pending -- the retry appends a row that already
+	// exists, folds onto it, and tries again (#2340 review M2).
+	owner.discardSupersededStableWatchNotices(controller, superseded)
 	return attentionID, nil
+}
+
+// appendCallerWatchSendAttention turns a caller-targeted wake token into durable
+// attention carrying its rendered frame, then acknowledges that exact send.
+//
+// The token names a delivery by key, update sequence and delivery id; the frame
+// lives in the manager's pending entry, and only resolveWatchSendToken can say
+// whether this token is still the current one (latest-frame-wins). Rendering
+// from the token itself is the bug this replaces: a token carries no body, so
+// the model was woken by an empty watch-send block while the send it named
+// stayed pending and re-tokened forever.
+//
+// The acknowledgement is the same durable settle the ordinary rail performs
+// after its reminder is persisted, and it runs only after the frame is durable
+// here — at-least-once holds either way, because an unsettled frame is still
+// pending and its token is re-minted.
+func appendCallerWatchSendAttention(owner *Session, controller *delegateTreeController, tok *watchSendToken) (string, error) {
+	jm, cfg, state, ok := owner.resolveWatchSendToken(tok)
+	if !ok {
+		return "", nil // stale token: replaced, cleared, dropped, or settled
+	}
+	// A caller token names a send the owning session renders on its OWN rail.
+	// A non-caller target here would be a mis-tokened sidecar frame, which the
+	// send rail delivers itself; leave it to that rail rather than render it.
+	if state.Key.ResolvedSendTo != runtimeMessageAliasCaller {
+		return "", nil
+	}
+	if jm.watchSendTranscribed(state.DeliveryID) {
+		// The frame is already durable in this receiver's transcript and only
+		// its acknowledgement is outstanding.
+		return "", jm.settleTranscribedWatchSend(cfg, state)
+	}
+	attentionID := stableWatchAttentionID(state)
+	rendered := jm.renderWatchSendFrame(cfg, state)
+	if rendered != state.Frame {
+		// The hourly backstop notice renders content the pending state does not
+		// hold. Persist the exact frame first, so a replay after a restart
+		// presents the same text instead of conflicting with the row the
+		// receiver already took — the same ordering the sidecar rail keeps.
+		noticed := state
+		noticed.Frame = rendered
+		if err := jm.appendWatchSendEvents([]jobstore.Event{{
+			Kind:      jobstore.EventWatchSendPending,
+			TS:        jm.now(),
+			WatchSend: &noticed,
+		}}); err != nil {
+			return "", err
+		}
+		jm.rememberRenderedWatchSendFrame(cfg, noticed)
+	}
+	if controller != nil {
+		controller.attentionCauses.remember(attentionID, state.Provenance)
+	}
+	// The rendered frame is the content, under the send rail's own family, so
+	// the projection filter and the settlement retry recognise it as watch
+	// attention of the send family rather than a diagnostic.
+	if _, err := owner.appendDelegateNotificationDurably(attentionID, stableWatchNotificationContent(rendered)); err != nil {
+		if controller != nil {
+			controller.attentionCauses.forget(attentionID)
+		}
+		return "", err
+	}
+	// The frame is durable, so from here a settle failure must not render it a
+	// second time: the transcribed mark turns the retry into an acknowledgement
+	// only.
+	jm.noteWatchSendTranscribed(state.DeliveryID)
+	if err := jm.settleWatchSendDelivered(cfg, state); err != nil {
+		return "", err
+	}
+	return attentionID, nil
+}
+
+// stableWatchPendingNotice retains one pending stable-watch row's NOTICE FACTS
+// so the leased presentation can re-apply the delivery rules the ordinary queue
+// applies when it folds (#2340 review M2).
+//
+// A record is what the notice would still render as, plus the identity its
+// presentation has to answer for:
+//
+//   - occurrence is the notice's own firing identity. A later notice of the
+//     same occurrence is a REPLAY of this one (a retry, a restore) and must not
+//     supersede it.
+//   - watchID, jobID, snapshot and diagnostic identify the notice's family, so
+//     the presentation rules can tell "one watch's second tick" from "an
+//     unrelated notice that happens to share a batch".
+//   - order is arrival sequence, so an older long-running snapshot can be
+//     recognised as older than the one already held.
+type stableWatchPendingNotice struct {
+	attentionID string
+	occurrence  string
+	// family names the fold group the notice belongs to (see
+	// stableWatchPendingFamily), or "" for a notice that is a fact of its own.
+	family string
+	// fires is the total the row stands for, so a tick folded into it on the
+	// durable side still counts its predecessor's fires.
+	fires int
+	// provenance is the union of the folded notices' lineages: the turn that
+	// presents the row must descend from every fire it answers.
+	provenance *provenance.Causal
+	// watchID is the timer the row belongs to, for the liveness recheck.
+	watchID string
+	// order is arrival sequence: a newer snapshot replaces an older one, and a
+	// moved record can be told from a still-current one.
+	order uint64
+}
+
+// stableWatchPendingFamily names the notice family whose pending rows fold
+// together, or "" when the notice is a fact of its own.
+//
+// Only two families fold, and they are the queue's own two fold rules: a
+// repeating timer's ticks collapse into one counted reminder, and a
+// long-running-jobs reminder is a SNAPSHOT that a newer one replaces. A
+// terminal notice, a one-shot fire and a failure diagnostic are separate facts
+// and are never folded away (#2340 review M2).
+func stableWatchPendingFamily(n jobNotification) string {
+	switch {
+	case n.isLongRunningJobsReminder():
+		return "snapshot"
+	case n.WatchID != "" && !n.Terminal:
+		return "tick:" + n.WatchID
+	default:
+		return ""
+	}
+}
+
+// stableWatchNoticeOccurrence is the identity a replay of n reproduces. A
+// producer that stamps Occurrence owns it; otherwise the notice's own facts
+// identify it, exactly as its attention id does.
+func stableWatchNoticeOccurrence(n jobNotification) string {
+	if n.Occurrence != "" {
+		return n.Occurrence
+	}
+	return stableWatchDiagnosticAttentionID(n)
+}
+
+// foldPendingStableWatchNotice applies the queue's cross-callback fold to n and
+// records it as pending, returning the notice to persist and the rows the
+// surviving notice supersedes.
+//
+// The durable row cannot be rewritten -- extendDelegateAttention rejects a
+// second append of one attention id with different content, and that
+// immutability is what makes the transcript the delivery ledger. So a fold is
+// expressed as IDENTITY plus RETIREMENT: the surviving notice carries the
+// TOTAL (a summed fire count, the newer snapshot), it persists under its own
+// occurrence, and the rows it supersedes are discarded durably once that append
+// has landed. Until the append lands the superseded rows stay pending, which is
+// the at-least-once side of the trade: a failed append loses no firing.
+func (s *Session) foldPendingStableWatchNotice(n jobNotification) (jobNotification, []string) {
+	if s == nil {
+		return n, nil
+	}
+	family := stableWatchPendingFamily(n)
+	occurrence := stableWatchNoticeOccurrence(n)
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	if s.stableWatchPending == nil {
+		s.stableWatchPending = make(map[string]stableWatchPendingNotice)
+	}
+	s.stableWatchPendingSeq++
+	var superseded []string
+	if family != "" {
+		for _, held := range s.stableWatchPending {
+			if held.family != family || held.occurrence == occurrence {
+				continue
+			}
+			// A tick of one watch folds its count into the survivor; every other
+			// family member is simply replaced, because the survivor's content is
+			// a newer statement of the same fact.
+			if family == "tick:"+n.WatchID {
+				n.Fires += held.fires
+				n.Provenance = provenance.Union(n.Provenance, held.provenance)
+			}
+			superseded = append(superseded, held.attentionID)
+		}
+	}
+	return n, superseded
+}
+
+// notePendingStableWatchNotice records that n's row is pending under its own
+// occurrence, replacing whatever this session held for it.
+func (s *Session) notePendingStableWatchNotice(n jobNotification, attentionID string) {
+	if s == nil || attentionID == "" {
+		return
+	}
+	family := stableWatchPendingFamily(n)
+	record := stableWatchPendingNotice{
+		attentionID: attentionID,
+		occurrence:  stableWatchNoticeOccurrence(n),
+		family:      family,
+		fires:       n.Fires,
+		provenance:  n.Provenance,
+		watchID:     n.WatchID,
+		order:       0,
+	}
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	if s.stableWatchPending == nil {
+		s.stableWatchPending = make(map[string]stableWatchPendingNotice)
+	}
+	s.stableWatchPendingSeq++
+	record.order = s.stableWatchPendingSeq
+	s.stableWatchPending[attentionID] = record
+}
+
+// pendingStableWatchNotice returns the retained facts of a pending row.
+func (s *Session) pendingStableWatchNotice(attentionID string) (stableWatchPendingNotice, bool) {
+	if s == nil || attentionID == "" {
+		return stableWatchPendingNotice{}, false
+	}
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	held, ok := s.stableWatchPending[attentionID]
+	return held, ok
+}
+
+// retireClearedStableWatchAttention drops the pending rows of a watch that has
+// been CLEARED, so a tick persisted before the clear cannot reach the model.
+//
+// The enqueue-time rule (watchTickDeliverable) drops a cleared timer's tick
+// before it is persisted; a tick already on the ledger needs the same answer at
+// the moment it would be presented, which is exactly when the ordinary queue
+// re-checks its entries (#2340 review M2). Presentation is the only place that
+// can: the row's durable content is text, and the clear is a later fact.
+//
+// It is one call with two conditions, both required: the row must be a TIMER
+// row this session retained facts for, and its timer must be gone. A row whose
+// facts were not retained (an older row, a cold restart) is left alone -- the
+// fail-open side, because presenting a tick whose timer cannot be checked beats
+// losing it.
+func (s *Session) retireClearedStableWatchAttention() {
+	if s == nil {
+		return
+	}
+	// The liveness answer takes jm.mu, so the candidate list is snapshotted
+	// under attentionMu and asked about after it is released: attentionMu is
+	// taken under jm.mu elsewhere (stableWatchOwner), and the reverse order here
+	// would close that cycle.
+	s.attentionMu.Lock()
+	candidates := make(map[string]string, len(s.stableWatchPending))
+	for attentionID, held := range s.stableWatchPending {
+		if held.watchID != "" {
+			candidates[attentionID] = held.watchID
+		}
+	}
+	s.attentionMu.Unlock()
+	var cleared []string
+	for attentionID, watchID := range candidates {
+		if !s.timerWatchIsLive(watchID) {
+			cleared = append(cleared, attentionID)
+		}
+	}
+	if len(cleared) == 0 {
+		return
+	}
+	if err := s.resolveAttentionDurably(cleared, delegateAttentionDiscarded); err != nil {
+		s.emit(warningDataFromError("retire cleared watch attention", err))
+		return
+	}
+	for _, attentionID := range cleared {
+		s.attentionMu.Lock()
+		s.dropResidentDelegateAttentionTurnLocked(attentionID)
+		delete(s.stableWatchPending, attentionID)
+		s.attentionMu.Unlock()
+	}
+	if s.delegateController != nil {
+		s.delegateController.attentionCauses.forget(cleared...)
+	}
+}
+
+// discardSupersededStableWatchNotices durably retires the rows a surviving
+// notice folded, and drops their resident turns.
+//
+// The discard is the same one a stop-drain performs -- delegation:discarded,
+// the disposition the fold records for an item that was superseded rather than
+// read. Losing the discard keeps the rows pending, so the next ingress attempt
+// retries it; presenting a superseded row beside its replacement is the state
+// this exists to prevent, and a pending row that the model never reads is the
+// cheaper failure (#2340 review M2).
+func (s *Session) discardSupersededStableWatchNotices(controller *delegateTreeController, attentionIDs []string) {
+	if s == nil || len(attentionIDs) == 0 {
+		return
+	}
+	ids := appendUniqueStrings(nil, attentionIDs...)
+	if err := s.resolveAttentionDurably(ids, delegateAttentionDiscarded); err != nil {
+		s.emit(warningDataFromError("retire superseded watch attention", err))
+		return
+	}
+	for _, attentionID := range ids {
+		s.attentionMu.Lock()
+		s.dropResidentDelegateAttentionTurnLocked(attentionID)
+		delete(s.stableWatchPending, attentionID)
+		s.attentionMu.Unlock()
+	}
+	if controller != nil {
+		controller.attentionCauses.forget(ids...)
+	}
 }
 
 // stableWatchAttentionIDPrefix names the durable-attention rows this ingress

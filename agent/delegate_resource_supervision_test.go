@@ -596,6 +596,169 @@ func TestDelegateResourceSupervision_StableAttentionObeysQueueDeliveryRules(t *t
 	}
 }
 
+// TestDelegateResourceSupervision_StableWatchFoldSpansEnqueueBatches pins the
+// cross-batch half of LIFE-01's folding rule (#2340 review M2).
+//
+// The local fold in deliverableStableWatchAttention sees ONE enqueue batch, and
+// a timer callback enqueues a batch of its own. The fold only has work to do
+// while the child is BUSY: a tick that arrives with the child idle is presented
+// and settled by the turn its own wake opens, so two ticks separated by a full
+// turn are two reminders and that is correct. The bug is the busy case, and the
+// fixture has to hold the child in a leased turn to reach it.
+//
+// So the child is put in a turn that blocks inside the provider call. Both
+// ticks are then appended while that turn is running, which is exactly the
+// window the queue folded across callbacks and the durable route did not.
+func TestDelegateResourceSupervision_StableWatchFoldSpansEnqueueBatches(t *testing.T) {
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			close(entered)
+			<-release
+			return agenttest.FinalResponse("warm result")
+		},
+	})
+	root := restoreSupervisionRoot(t, fixture, nil)
+	started := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "start", 0)
+	if started.result.Err != nil {
+		t.Fatalf("start stable delegate: %v", started.result.Err)
+	}
+	<-entered
+	sub := root.subagents.get(fixture.childID)
+	if sub == nil {
+		t.Fatal("the stable child was not tracked")
+	}
+
+	jm := sub.sess.jobManager
+	if jm == nil {
+		t.Fatal("the stable child has no job manager")
+	}
+	timerID := "watch:life-01-batches"
+	jm.mu.Lock()
+	jm.watches[watchKey{VisibleSessionID: jm.sessionID, Target: "self", Slot: timerID}] = &watchConfig{watchID: timerID, target: "self", timer: true}
+	jm.mu.Unlock()
+
+	// Two ticks of ONE timer, appended as two batches exactly as two timer
+	// callbacks do, while the child is mid-turn. Each tick carries its own
+	// occurrence, because a real fire stamps one.
+	// Each tick carries the lineage of its own callback, which is what the fold
+	// has to union: the turn that presents the survivor must descend from both
+	// fires, or the runaway fuse counts one fire where two happened.
+	tick := func(n int) jobNotification {
+		fire := provenance.Causal{FireKeys: []provenance.FireKey{{WatchID: timerID, WatchGeneration: "gen-1", DeliveryID: fmt.Sprintf("tick-%d", n)}}}
+		return jobNotification{Kind: jobNotificationKindWatch, WatchID: timerID, Fires: 1, Reason: "repeat", Status: jobNotificationEventWatch, Occurrence: fmt.Sprintf("tick:%s:%d", timerID, n), Provenance: &fire}
+	}
+	first, second := tick(1), tick(2)
+	if !jm.persistStableWatchPendings([]jobNotification{first}) {
+		t.Fatal("the production stable ingress declined the first tick")
+	}
+	if !jm.persistStableWatchPendings([]jobNotification{second}) {
+		t.Fatal("the production stable ingress declined the second tick")
+	}
+
+	// One pending row, and it stands for BOTH fires. A fold that drops the count
+	// tells the model the timer fired once when it fired twice.
+	pending, err := sub.sess.pendingDelegateAttentionIDs()
+	if err != nil {
+		t.Fatalf("reading pending attention: %v", err)
+	}
+	var rows []string
+	for _, attentionID := range pending {
+		if isStableWatchAttentionID(attentionID) {
+			rows = append(rows, attentionID)
+		}
+	}
+	if len(rows) != 1 {
+		t.Fatalf("two ticks of one busy timer left %d pending watch rows, want 1: the second callback appended a row beside the first instead of folding into it, so the model reads the same timer twice: %v", len(rows), rows)
+	}
+	held, ok := sub.sess.pendingStableWatchNotice(rows[0])
+	if !ok {
+		t.Fatalf("the surviving row %q kept no notice facts, so its fold cannot be checked", rows[0])
+	}
+	if held.fires != 2 {
+		t.Fatalf("the surviving tick stands for %d fires, want 2: the fold replaced the count instead of adding to it, and the reminder understates the ticks it stands for", held.fires)
+	}
+	if n := len(held.provenance.FireKeys); n != 2 {
+		t.Fatalf("the surviving tick carries %d of the 2 fires' lineages: a turn presenting it descends from only one callback, so the runaway fuse counts one fire for two", n)
+	}
+
+	// A newer long-running snapshot replaces an older pending one rather than
+	// queueing behind it: the older one names jobs that may already have
+	// finished.
+	older := jobNotification{Kind: jobNotificationKindWatch, Occurrence: "reminder:older", Reason: longRunningJobsReason, Description: "older snapshot"}
+	newer := jobNotification{Kind: jobNotificationKindWatch, Occurrence: "reminder:newer", Reason: longRunningJobsReason, Description: "newer snapshot"}
+	if !older.isLongRunningJobsReminder() {
+		t.Fatal("setup: the fixture notice is not a long-running-jobs reminder, so this arm tests nothing")
+	}
+	if !jm.persistStableWatchPendings([]jobNotification{older}) {
+		t.Fatal("the production stable ingress declined the older snapshot")
+	}
+	if !jm.persistStableWatchPendings([]jobNotification{newer}) {
+		t.Fatal("the production stable ingress declined the newer snapshot")
+	}
+	pending, err = sub.sess.pendingDelegateAttentionIDs()
+	if err != nil {
+		t.Fatalf("reading pending attention: %v", err)
+	}
+	snapshots := 0
+	for _, attentionID := range pending {
+		if held, ok := sub.sess.pendingStableWatchNotice(attentionID); ok && held.family == "snapshot" {
+			snapshots++
+		}
+	}
+	if snapshots != 1 {
+		t.Fatalf("%d reminders are pending, want 1: a newer snapshot must replace an older undelivered one, or the model reads a list of jobs that already finished", snapshots)
+	}
+
+	// A cleared timer's tick that was already persisted must not survive the
+	// clear: the enqueue-time rule cannot help, because the tick is already on
+	// the ledger. The request boundary re-applies the deliverability rule.
+	clearedID := "watch:life-01-cleared-after-persist"
+	jm.mu.Lock()
+	jm.watches[watchKey{VisibleSessionID: jm.sessionID, Target: "self", Slot: clearedID}] = &watchConfig{watchID: clearedID, target: "self", timer: true}
+	jm.mu.Unlock()
+	cleared := jobNotification{Kind: jobNotificationKindWatch, WatchID: clearedID, Fires: 1, Reason: "repeat", Status: jobNotificationEventWatch, Occurrence: "tick:" + clearedID + ":1"}
+	if !jm.persistStableWatchPendings([]jobNotification{cleared}) {
+		t.Fatal("the production stable ingress declined the clear-arm tick")
+	}
+	jm.mu.Lock()
+	delete(jm.watches, watchKey{VisibleSessionID: jm.sessionID, Target: "self", Slot: clearedID})
+	jm.mu.Unlock()
+	clearedAttentionID := stableWatchDiagnosticAttentionID(cleared)
+	if _, ok := sub.sess.pendingStableWatchNotice(clearedAttentionID); !ok {
+		t.Fatal("setup: the cleared timer's tick was not retained, so the retire arm proves nothing")
+	}
+	sub.sess.retireClearedStableWatchAttention()
+	held, ok = sub.sess.pendingStableWatchNotice(clearedAttentionID)
+	if ok {
+		t.Fatalf("a cleared timer's persisted tick is still pending and would reach the model: watch %q survived the clear (fires=%d)", clearedAttentionID, held.fires)
+	}
+
+	// Everything above happened while the child held a leased turn, which is the
+	// only window this rule governs. Retire the rows the arms above created so
+	// the child is not still owed attention when the turn is released: a pending
+	// watch row is a reason to run a turn, and the wait below would honour it.
+	pending, err = sub.sess.pendingDelegateAttentionIDs()
+	if err != nil {
+		t.Fatalf("reading pending attention: %v", err)
+	}
+	var created []string
+	for _, attentionID := range pending {
+		if isStableWatchAttentionID(attentionID) {
+			created = append(created, attentionID)
+		}
+	}
+	if len(created) == 0 {
+		t.Fatal("no watch rows survived to retire, so the arms above proved nothing")
+	}
+	sub.sess.discardSupersededStableWatchNotices(sub.sess.delegateController, created)
+
+	close(release)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+}
+
 // TestDelegateResourceSupervision_StableChildMustHaveALeaseForModelTurns pins
 // the admission half of LIFE-01 (#2340): a stable delegate child REFUSES a model
 // call and a tool call that carry no lease, instead of presenting them as an
@@ -4965,8 +5128,8 @@ func TestStableWatchDiagnosticsGetOneAttentionItemPerFailedDelivery(t *testing.T
 			DeliveryID: deliveryID,
 		}
 	}
-	first := watchSendDiagnosticForState(send("wd_first"), reason)
-	second := watchSendDiagnosticForState(send("wd_second"), reason)
+	first := watchSendDiagnosticForState(send("wd_first"), watchSendStageDrop, reason)
+	second := watchSendDiagnosticForState(send("wd_second"), watchSendStageDrop, reason)
 	firstID := stableWatchDiagnosticAttentionID(first)
 	secondID := stableWatchDiagnosticAttentionID(second)
 	if firstID == secondID {
@@ -4980,8 +5143,120 @@ func TestStableWatchDiagnosticsGetOneAttentionItemPerFailedDelivery(t *testing.T
 		t.Fatalf("ids %q and %q are not stable watch attention ids", firstID, secondID)
 	}
 	// Replaying one failure folds into the SAME item, or a retry duplicates it.
-	if replay := stableWatchDiagnosticAttentionID(watchSendDiagnosticForState(send("wd_first"), reason)); replay != firstID {
+	if replay := stableWatchDiagnosticAttentionID(watchSendDiagnosticForState(send("wd_first"), watchSendStageDrop, reason)); replay != firstID {
 		t.Fatalf("replay of the first failed delivery got attention id %q, want %q: a retry must not append a second item", replay, firstID)
+	}
+}
+
+// One delivery can fail TWICE at different stages, and those are two notices.
+//
+// The dropped-state write fails, a retry succeeds, and the final drop
+// diagnostic follows for the same delivery. Keying identity on the delivery
+// alone gave both the same attention id, so the transcript's
+// conflicting-content check rejected the second: the final diagnostic never
+// landed, and its paced retry read as a permanent conflict, keeping the
+// runtime resident (#2340 review M4). The stage is now part of the identity,
+// while a replay of one stage still reuses its own row.
+func TestStableWatchDiagnosticStagesOfOneDeliveryStayDistinct(t *testing.T) {
+	t.Parallel()
+	const (
+		watchID = "watch:life-04-stage"
+		jobID   = "job:life-04-stage"
+		reason  = "watch send pending state failed: store unavailable"
+	)
+	state := jobstore.WatchSendState{
+		Key:        jobstore.WatchSendKey{WatchID: watchID, ResolvedWatchedIdentity: jobID},
+		DeliveryID: "wd_shared",
+	}
+	pendingID := stableWatchDiagnosticAttentionID(watchSendDiagnosticForState(state, watchSendStagePendingState, reason))
+	dropID := stableWatchDiagnosticAttentionID(watchSendDiagnosticForState(state, watchSendStageDrop, reason))
+	if pendingID == dropID {
+		t.Fatalf("one delivery's %s and %s diagnostics share attention id %q: the second content cannot land", watchSendStagePendingState, watchSendStageDrop, dropID)
+	}
+	// Each stage's own replay must still fold into its own row, or every retry
+	// would append a second item.
+	if replay := stableWatchDiagnosticAttentionID(watchSendDiagnosticForState(state, watchSendStageDrop, reason)); replay != dropID {
+		t.Fatalf("replay of the %s stage got %q, want %q", watchSendStageDrop, replay, dropID)
+	}
+	if replay := stableWatchDiagnosticAttentionID(watchSendDiagnosticForState(state, watchSendStagePendingState, reason)); replay != pendingID {
+		t.Fatalf("replay of the %s stage got %q, want %q", watchSendStagePendingState, replay, pendingID)
+	}
+}
+
+// A caller watch token must reach durable attention CARRYING its frame.
+//
+// A caller target's wake token names a pending send; the text the model reads
+// comes from that pending entry, and only the resolution step populates it.
+// The stable ingress persisted the notice without resolving it, so the woken
+// child's reminder was an empty <job-notification event="watch_send"> block and
+// the send it named stayed pending — re-tokened on every later drain, each time
+// waking the child for nothing. The restore and drain paths enqueued the same
+// raw tokens, so an ordinary completion turn could requeue its whole batch and
+// stand down (#2340 review high).
+func TestStableCallerWatchTokenReachesAttentionWithItsFrame(t *testing.T) {
+	t.Parallel()
+	const frameText = "the frame the woken child must read"
+	sess, _ := newCompactableSession(t)
+	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, controller, "dlg_child", "")
+	sess.mu.Lock()
+	sess.delegateController = controller
+	sess.owningDelegateID = "dlg_child"
+	sess.mu.Unlock()
+	controller.mu.Lock()
+	controller.live["dlg_child"].binding.runtime = sess
+	controller.mu.Unlock()
+	// The manager is the session's own, bound to it as the stable owner, so
+	// the ingress below is the production one for this child.
+	sess.jobManager.bindDelegateParent(controller, delegateLease{delegateID: "dlg_child", generation: 1}, nil, sess)
+
+	// A live caller-targeted watch whose frame is pending: the shape a busy
+	// delivery leaves behind, and the shape a wake token names.
+	installWatchBelowValidation(t, sess.jobManager, watchArgs{
+		Target: runtimeMessageAliasCaller,
+		Events: []string{"communicate"},
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "ping"},
+	})
+	cfg := sess.jobManager.watches[watchKey{VisibleSessionID: sess.jobManager.sessionID, Target: runtimeMessageAliasCaller, SendTo: runtimeMessageAliasCaller}]
+	if cfg == nil {
+		t.Fatal("setup: the caller watch config was not installed")
+	}
+	state := jobstore.WatchSendState{
+		Key: jobstore.WatchSendKey{
+			VisibleSessionID:        sess.jobManager.sessionID,
+			WatchID:                 cfg.watchID,
+			WatchTarget:             runtimeMessageAliasCaller,
+			ResolvedWatchedIdentity: "job_caller",
+			ResolvedSendTo:          runtimeMessageAliasCaller,
+			WatchGeneration:         cfg.generation,
+		},
+		DeliveryID: "dlv_caller_frame",
+		UpdateSeq:  1,
+		Message:    "ping",
+		Frame:      frameText,
+	}
+	sess.jobManager.rememberUnpersistedTerminalPendingWatchSend(cfg, state)
+	if state.Frame != frameText {
+		t.Fatalf("setup: the pending frame is %q, want %q", state.Frame, frameText)
+	}
+
+	token := watchSendTokenNotification("", state)
+	if !sess.jobManager.persistStableWatchPendings([]jobNotification{token}) {
+		t.Fatal("the production stable ingress declined a caller watch token: it would stay on the ordinary rail")
+	}
+
+	attentionID := stableWatchAttentionID(state)
+	var content string
+	for _, turn := range currentHistory(t, sess) {
+		if turn.AttentionID == attentionID {
+			content = turn.Message.Text()
+		}
+	}
+	if !strings.Contains(content, frameText) {
+		t.Fatalf("the woken child's watch attention does not carry its frame: got %q, want the pending frame %q in it. A woken turn with an empty body spends a provider call to read nothing", content, frameText)
+	}
+	if sess.jobManager.hasPendingWatchSends() {
+		t.Fatal("the send named by the token is still pending after its frame reached durable attention: it will be re-tokened and wake the child again")
 	}
 }
 
