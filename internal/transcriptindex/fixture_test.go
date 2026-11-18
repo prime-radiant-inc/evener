@@ -553,6 +553,20 @@ func newFormatFixtures(header, prelude transcript.Header) []fixture {
 		entryLine(completion("turn_m16", schema.TurnCompleted, 48, 2500)),
 	}
 
+	// A retry that ends FAILED with no diagnostic of its own: the recovered
+	// attempt's TURN_FAILURE is history, so this turn reports the failure with
+	// no message borrowed from the attempt the reopen recovered (the readers'
+	// fallback text, never the earlier attempt's diagnostic).
+	failedRetryAgain := []fixtureLine{
+		entryLine(opens("turn_m24", execution, user("fail once"))),
+		entryLine(inTurn("turn_m24", standalone(schema.TurnFailure, "first attempt failed"))),
+		entryLine(completion("turn_m24", schema.TurnFailed, 96, 120)),
+		entryLine(reopen("turn_m24")),
+		entryLine(inTurn("turn_m24", assistant(text("second run")))),
+		// Its own diagnostic write failed, so only the completion says failed.
+		entryLine(completion("turn_m24", schema.TurnFailed, 97, 200)),
+	}
+
 	legacyPrefix := []fixtureLine{
 		entryLine(user("legacy question")),
 		entryLine(assistant(text("legacy answer"), call("lg1", "read_file", `{}`))),
@@ -622,6 +636,7 @@ func newFormatFixtures(header, prelude transcript.Header) []fixture {
 		{name: "delivery inside an execution", header: header, lines: deliveries},
 		{name: "failed execution and retry", header: header, lines: failedRetry},
 		{name: "open and reclaimed", header: header, lines: reclaimed},
+		{name: "failed retry without its own diagnostic", header: header, lines: failedRetryAgain},
 		{name: "legacy prefix", header: header, lines: legacyPrefix},
 		{name: "fold copies", header: header, lines: folds},
 		{name: "communicate echoes", header: header, lines: echoes},

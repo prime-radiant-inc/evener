@@ -376,3 +376,25 @@ func TestCallWithoutResultsIsInterruptedAtCompletion(t *testing.T) {
 		}
 	}
 }
+
+// TestFailedRetryDoesNotBorrowAnEarlierDiagnostic covers an execution that
+// failed, was reopened, and whose retry ended failed with no diagnostic of its
+// own. The recovered attempt's TURN_FAILURE is history: a reopen starts a new
+// attempt, so the index must not keep pointing at it and report its message as
+// this turn's error. Both readers apply that rule, so a paged read and a
+// whole-file read name the same attempt (#1166 review).
+func TestFailedRetryDoesNotBorrowAnEarlierDiagnostic(t *testing.T) {
+	candidates := indexedCandidates(t, newFormatFixture(t, "failed retry without its own diagnostic"), -1)
+	retried := turnOf(t, candidates, "turn_m24")
+	if retried.Status != appwire.TurnStatusFailed {
+		t.Fatalf("retried turn = %s, want failed: only its completion says failed", dump(retried))
+	}
+	// No diagnostic of its own means no error object: the recovered attempt's
+	// message names an attempt that is not this one, and a synthesised
+	// fallback would be a message no failure recorded. Whole-file replay
+	// reports the same absence.
+	if retried.Error != nil {
+		t.Errorf("retried turn error = %q, want none: the recovered attempt's diagnostic belongs to history",
+			retried.Error.Message)
+	}
+}

@@ -901,6 +901,12 @@ func (r *reader) turn(slot uint32) (stampedTurn, error) {
 			}
 			apptranscript.StampTurnFailure(&turn, *failure)
 		}
+		// A failed turn whose CURRENT attempt recorded no diagnostic of its own
+		// — a retry whose buffered diagnostic write failed, after a reopen
+		// cleared the recovered attempt's pointer — reports NO error here, and
+		// must report none in whole-file replay too. Synthesising the fallback
+		// text named nobody and made the two readers disagree about the same
+		// turn (#1166 review).
 	case statusInterrupted:
 		turn.Status = appwire.TurnStatusInterrupted
 	case statusOpen:

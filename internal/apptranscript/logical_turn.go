@@ -514,6 +514,31 @@ func groupExecutions(groups []groupedTurn, controls map[string][]indexedTurn) ma
 	return execs
 }
 
+// terminalFailure returns the failure entry that ended the execution's CURRENT
+// attempt: the last TURN_FAILURE recorded after the execution's last reopen.
+// A reopen starts a new attempt, so a failure before it belongs to history. It
+// reports false when the current attempt recorded none, which is a retry that
+// ended without a diagnostic — not a reason to borrow an older attempt's.
+func (ex *turnExecution) terminalFailure() (schema.Turn, bool) {
+	start := -1
+	for _, control := range ex.controls {
+		if control.turn.Kind == schema.TurnReopen && control.index > start {
+			start = control.index
+		}
+	}
+	// The highest position after the reopen wins: that is the last failure of
+	// this attempt. Map order is not iteration order, so the position is
+	// compared rather than taken as it comes.
+	best, found := -1, schema.Turn{}
+	for index, entry := range ex.entriesByIndex {
+		if index <= start || entry.Kind != schema.TurnFailure || index <= best {
+			continue
+		}
+		best, found = index, entry
+	}
+	return found, best >= 0
+}
+
 // sortedEntryIndexes lists the execution's entry positions in file order, so a
 // fold that depends on what had arrived by a given point can walk them.
 func (ex *turnExecution) sortedEntryIndexes() []int {
@@ -674,14 +699,19 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 				turn.Error = nil
 			}
 			stampExecutionControls(&turn, ex.controls)
-			// The diagnostic belongs to the attempt that ended the execution.
-			// A reopen clears the one StampGroupedTurn stamped, so when the
-			// fold's final state is failed it must be re-derived from the LAST
-			// failure entry in the execution — the retry's own diagnostic, not
-			// the attempt it recovered from (#1166 review).
+			// The diagnostic belongs to the attempt that ended the execution,
+			// and an ATTEMPT begins at a reopen. Scanning the whole execution
+			// history picked the last TURN_FAILURE regardless of which attempt
+			// wrote it, so a retry whose own buffered diagnostic write failed
+			// reported the recovered attempt's error — a diagnostic naming the
+			// wrong attempt, which is worse than none. The fold therefore
+			// resolves the failure by position: only a failure recorded AFTER
+			// the execution's last reopen describes this attempt. Earlier
+			// failures keep their own items in history; they just no longer
+			// name this turn's error (#1166 review).
 			if turn.Status == appwire.TurnStatusFailed {
-				for _, entry := range ex.entries {
-					StampTurnFailure(&turn, entry)
+				if failure, ok := ex.terminalFailure(); ok {
+					StampTurnFailure(&turn, failure)
 				}
 			}
 		} else {
@@ -899,14 +929,31 @@ type awaitKey struct {
 	call  string
 }
 
-// recordedPart reports which content part an entry reserves for a call id, and
+// reservationCache answers "which part did this entry record for that call?"
+// once per entry. ReservedCalls allocates a map, so asking it per announcement
+// made a batch of N calls do quadratic work and allocate N maps of size N;
+// the merge folds thousands of items per long transcript, so this is a real
+// per-read cost rather than a theoretical one (#1166 review).
+type reservationCache struct {
+	entries map[int]schema.Turn
+	byEntry map[int]map[string]int
+}
+
+func newReservationCache(entries map[int]schema.Turn) *reservationCache {
+	return &reservationCache{entries: entries, byEntry: make(map[int]map[string]int, len(entries))}
+}
+
+// reserved reports which content part an entry reserves for a call id, and
 // whether the entry records that id at all.
-func recordedPart(entries map[int]schema.Turn, entry int, callID string) (int, bool) {
-	turn, ok := entries[entry]
-	if !ok {
-		return 0, false
+func (c *reservationCache) reserved(entry int, callID string) (int, bool) {
+	reserved, seen := c.byEntry[entry]
+	if !seen {
+		if turn, ok := c.entries[entry]; ok {
+			reserved = ReservedCalls(&turn)
+		}
+		c.byEntry[entry] = reserved
 	}
-	part, recorded := ReservedCalls(&turn)[callID]
+	part, recorded := reserved[callID]
 	return part, recorded
 }
 
@@ -1043,6 +1090,7 @@ func mergeExecutionItems(items []appwire.ThreadItem, itemEntries []int, itemAnno
 	// announcement, and the result goes to the first recorded part — the part
 	// ReservedCalls reserves for that entry.
 	callIndex := map[awaitKey]int{}
+	reservations := newReservationCache(entries)
 	for at, item := range items {
 		group := 0
 		if at < len(groupOfItem) {
@@ -1064,7 +1112,7 @@ func mergeExecutionItems(items []appwire.ThreadItem, itemEntries []int, itemAnno
 				// items instead did the opposite: it gave the hidden part's
 				// reservation to the visible command and let a result overwrite
 				// it, while the index left the command untouched (#1166 review).
-				if reservedPart, announced := recordedPart(entries, entry, item.CallID); announced && !partProjectsItem(entries, entry, reservedPart) {
+				if reservedPart, announced := reservations.reserved(entry, item.CallID); announced && !partProjectsItem(entries, entry, reservedPart) {
 					merged = append(merged, item)
 					mergedGrp = append(mergedGrp, group)
 					continue

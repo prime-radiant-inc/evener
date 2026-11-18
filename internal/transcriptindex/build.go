@@ -1137,6 +1137,14 @@ func stampFold(r *turnRecord, entry *schema.Turn, ordinal uint64, offset int64, 
 			}
 		case schema.TurnReopen:
 			r.Status, r.HasCompletion, r.DurationMS, r.CompletedAt = statusOpen, false, 0, 0
+			// The diagnostic belongs to the attempt that ended. A reopen
+			// starts a NEW attempt, so the recovered attempt's failure is
+			// history, not this turn's error: keeping the pointer made a
+			// retry that later failed report the first attempt's diagnostic
+			// (see StampTurnFailure in window.go's reader). Whole-file replay
+			// applies the same rule, so a reload and a paged read name the
+			// same attempt's failure.
+			r.FailureOffset, r.FailureLength = 0, 0
 		}
 	}
 	if r.Kind != turnKindLegacy && entry.Kind == schema.TurnAssistant && hasToolCall(entry) {

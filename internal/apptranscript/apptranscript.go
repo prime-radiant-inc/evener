@@ -1005,7 +1005,16 @@ func projectIdentityAssistant(turnID string, turnIndex int, turn schema.Turn, re
 			if part.ToolCall == nil {
 				continue
 			}
-			reg.Names[part.ToolCall.ID] = part.ToolCall.Name
+			// First recorded part wins, like the reservation itself. A provider
+			// that reuses one id in a later part must not rename the call the
+			// entry RESERVED: an unnamed result resolves through this map, and
+			// a later communicate part overwriting it made the result classify
+			// as a communicate before settlement could see it — the same
+			// mutable-lookup-by-id defect the reservation fix closed, one table
+			// over (#1166 review).
+			if _, named := reg.Names[part.ToolCall.ID]; !named {
+				reg.Names[part.ToolCall.ID] = part.ToolCall.Name
+			}
 			if part.ToolCall.Name == "communicate" {
 				if turn.Authorship != nil && turn.Authorship.Inherited {
 					if reg.CommRawArgs == nil {

@@ -1738,3 +1738,154 @@ func TestHiddenReservationDoesNotClaimAVisibleReuse(t *testing.T) {
 			command.Status, appwire.TurnStatusInProgress)
 	}
 }
+
+// TestRetryReportsItsOwnDiagnostic covers an execution that failed, was
+// reopened, and whose retry then ended in a failed completion. The diagnostic
+// belongs to the attempt that ended the turn: the recovered attempt's error is
+// history, and reporting it as the retry's error names the wrong attempt. Both
+// readers resolve the failure by position after the last reopen, so a reload
+// and a paged read agree on which attempt's message a client shows (#1166
+// review).
+func TestRetryReportsItsOwnDiagnostic(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "retry_diagnostic"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := func(turn schema.Turn, place transcript.Placement) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: place}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	failure := func(message string) schema.Turn {
+		turn := schema.NewTurn(schema.TurnFailure, llm.System(message))
+		turn.Error = &schema.TurnFailureInfo{Message: message, Source: "provider"}
+		return turn
+	}
+	w.BeginExecution("t_retry", false)
+	record(schema.NewTurn(schema.TurnUserInput, llm.User("go")), transcript.PlaceSession)
+	// First attempt fails and the execution ends interrupted.
+	record(failure("first attempt: provider error"), transcript.PlaceSession)
+	record(schema.Turn{Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnInterrupted}}, transcript.PlaceCompletion)
+	// Recovery reclaims the turn and runs it again.
+	w.BeginExecution("t_retry", true)
+	record(schema.Turn{Kind: schema.TurnReopen}, transcript.PlaceSession)
+	record(schema.NewTurn(schema.TurnUserInput, llm.User("again")), transcript.PlaceSession)
+	// The retry's own diagnostic write failed, so the attempt ends failed with
+	// no message of its own.
+	record(schema.Turn{Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnFailed}}, transcript.PlaceCompletion)
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	var retried *appwire.Turn
+	for i := range turns {
+		if turns[i].ID == "t_retry" {
+			retried = &turns[i]
+		}
+	}
+	if retried == nil {
+		t.Fatalf("full read turns = %+v, want the retried turn", shapesFromTurns(turns))
+	}
+	if retried.Status != appwire.TurnStatusFailed {
+		t.Fatalf("status = %q, want %q: the retry's completion says failed",
+			retried.Status, appwire.TurnStatusFailed)
+	}
+	// The recovered attempt's diagnostic must NOT be presented as the retry's.
+	// The retry recorded no diagnostic of its own, so the correct answer is no
+	// error at all — an absent diagnostic is honest, and borrowing the
+	// recovered attempt's names an attempt that did not fail now.
+	if retried.Error != nil {
+		t.Errorf("turn error = %+v, want none: the retry recorded no diagnostic, and the first attempt's belongs to the attempt the reopen recovered from",
+			*retried.Error)
+	}
+}
+
+// TestUnnamedResultResolvesTheReservedCall covers a stamped assistant entry
+// that announces a visible command and then a communicate part sharing its
+// provider id, with a result that records no name of its own. The entry
+// reserves the FIRST recorded part, so that is the call an unnamed result
+// belongs to; resolving the name through the mutable registry let the later
+// part rename the call and the result took the communicate branch, which
+// renders an agentMessage instead of settling the command (#1166 review).
+func TestUnnamedResultResolvesTheReservedCall(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "unnamed_result"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := func(turn schema.Turn, place transcript.Placement) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: place}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	visible := llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+		ID: "call_reused", Name: "read_file", Arguments: json.RawMessage(`{"path":"a"}`),
+	}}
+	hidden := llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+		ID: "call_reused", Name: "communicate", Arguments: json.RawMessage(`{"message":"hi"}`),
+	}}
+	w.BeginExecution("t_unnamed", false)
+	record(schema.NewTurn(schema.TurnUserInput, llm.User("go")), transcript.PlaceSession)
+	record(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{
+		Role: llm.RoleAssistant, Content: []llm.ContentPart{visible, hidden},
+	}}, transcript.PlaceSession)
+	// The result names no tool: it must resolve to the reserved part's call.
+	record(schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{
+		Role: llm.RoleTool,
+		Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
+			ToolCallID: "call_reused", Content: "file contents",
+		}}},
+	}}, transcript.PlaceSession)
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	var settled *appwire.ThreadItem
+	for _, turn := range turns {
+		if turn.ID != "t_unnamed" {
+			continue
+		}
+		for i := range turn.Items {
+			it := &turn.Items[i]
+			if it.CallID == "call_reused" && it.ID == "item_tool_2_0" {
+				settled = it
+			}
+		}
+	}
+	if settled == nil {
+		t.Fatalf("full read turns = %+v, want the reserved announcement settled", shapesFromTurns(turns))
+	}
+	// The reserved call is the read_file, so its result settles that item and
+	// must not be reclassified as a delivered communicate message.
+	if settled.ToolName != "read_file" {
+		t.Errorf("settled item tool = %q, want %q: the entry reserved its first recorded part",
+			settled.ToolName, "read_file")
+	}
+	if settled.Type != "commandExecution" {
+		t.Errorf("settled item type = %q, want %q: an unnamed result belongs to the reserved call",
+			settled.Type, "commandExecution")
+	}
+	if settled.Status != appwire.TurnStatusCompleted {
+		t.Errorf("settled item status = %q, want %q: its result arrived",
+			settled.Status, appwire.TurnStatusCompleted)
+	}
+}

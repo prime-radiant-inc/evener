@@ -222,6 +222,13 @@ func referenceProjectionAndRegistry(t testing.TB, path string) ([]referenceTurn,
 		case schema.TurnReopen:
 			if s.execution {
 				s.open, s.completion = true, nil
+				// A reopen starts a NEW attempt, so the recovered attempt's
+				// diagnostic is history: only a failure recorded after this
+				// point names the turn's error. Keeping s.failure made a retry
+				// that ended failed without a diagnostic of its own report the
+				// recovered attempt's message, which is what the index and
+				// whole-file replay must not do either (#1166 review).
+				s.failure = nil
 			}
 		case schema.TurnFailure:
 			failure := entry
