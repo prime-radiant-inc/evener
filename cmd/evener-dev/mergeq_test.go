@@ -196,11 +196,34 @@ func TestMergeEnqueueRejectsASignedWait(t *testing.T) {
 // would reject it, so the flag is parsed as a decimal integer.
 func TestMergeEnqueueReadsWaitAsDecimal(t *testing.T) {
 	t.Parallel()
-	merged := "abcdef0123456789abcdef0123456789abcdef01"
-	q := &stubQueue{status: mergeq.Status{ID: "PR_6499", State: "MERGED", MergeCommit: &merged}}
+	// A PR that stays queued, so the wait runs to its deadline and the run
+	// reports a timeout. That is what makes the parse observable: read `08` as
+	// zero and the no-wait branch reports "queued" at exit 0 without sleeping at
+	// all. A case starting from a merged PR returns before the wait is reached,
+	// so it passes whichever way the seconds are read -- which is why this case
+	// starts queued.
+	q := &stubQueue{status: mergeq.Status{ID: "PR_6499", State: "OPEN", Entry: entry(1)}}
+	// The clock records what the wait consumed rather than asserting on the exit
+	// alone: eight seconds is the claim, and a narrower number would still time
+	// out eventually.
+	var now time.Time
+	var slept time.Duration
+	clock := mergeq.Clock{
+		Now: func() time.Time { return now },
+		Sleep: func(_ context.Context, d time.Duration) bool {
+			now = now.Add(d)
+			slept += d
+			return true
+		},
+	}
 	var stdout, stderr strings.Builder
-	if code := runMergeEnqueue([]string{"--pr", "6499", "--wait", "08"}, q, pausedClock(), &stdout, &stderr); code != 0 {
-		t.Fatalf("--wait 08 = exit %d, want 0 (stderr %q)", code, stderr.String())
+	if code := runMergeEnqueue([]string{"--pr", "6499", "--wait", "08"}, q, clock, &stdout, &stderr); code != 1 {
+		t.Fatalf("--wait 08 = exit %d, want 1: eight seconds of a PR that never moves is a timeout, and an exit of 0 means the seconds were read as zero (stderr %q)", code, stderr.String())
+	}
+	// Eight seconds, not one and not eighty. The poll interval shortens the last
+	// sleep to land on the deadline, so the total is the wait itself.
+	if slept != 8*time.Second {
+		t.Fatalf("--wait 08 consumed %v, want 8s: the flag is decimal seconds", slept)
 	}
 }
 

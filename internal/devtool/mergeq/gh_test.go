@@ -138,6 +138,44 @@ exit 0
 // The oracle is the victim file's bytes, not an error: a publisher that refused
 // by failing would pass an error check and leave the operator's file intact by
 // accident, and the point is that the handle still gets published.
+// TestGHDrainWithoutAReplyIsNotSuccess pins the rule the drain bound cannot
+// state by itself. orphanpipe reads ErrWaitDelay after a zero exit as success,
+// because normally the child answered and only a descendant kept the pipe open.
+// A gh wrapper that backgrounds the real CLI and returns exits before writing
+// anything, and that case must not read as a reply: Enqueue would report a
+// mutation that never landed.
+func TestGHDrainWithoutAReplyIsNotSuccess(t *testing.T) {
+	t.Parallel()
+	// Both scripts exit 0 and leave a descendant holding the pipe. The first
+	// writes nothing before it goes; the second writes a whole reply first and
+	// then leaves the same kind of descendant behind. Only the first is a
+	// missing answer, and the drain bound must tell them apart.
+	silent := filepath.Join(t.TempDir(), "gh-silent")
+	writeExecutable(t, silent, "#!/usr/bin/env bash\n( sleep 30 ) &\nexit 0\n")
+	answered := filepath.Join(t.TempDir(), "gh-answered")
+	writeExecutable(t, answered, "#!/usr/bin/env bash\nprintf '{\"data\":{\"repository\":{\"pullRequest\":{\"id\":\"PR_1\",\"state\":\"OPEN\"}}}}'\n( sleep 30 ) &\nexit 0\n")
+
+	c := GHClient{GH: silent, GroupFile: filepath.Join(t.TempDir(), "group")}
+	out, err := c.run(context.Background(), "api", "graphql")
+	if err == nil {
+		t.Fatalf("a wrapper that exited before answering was read as a successful call (out %q): an enqueue would be reported as landed on a reply nobody received", string(out))
+	}
+	if !errors.Is(err, errIncompleteReply) {
+		t.Fatalf("error = %v, want errIncompleteReply", err)
+	}
+
+	// And the case the drain bound exists for still succeeds: a complete reply,
+	// with a descendant merely holding the pipe open.
+	c = GHClient{GH: answered, GroupFile: filepath.Join(t.TempDir(), "group")}
+	out, err = c.run(context.Background(), "api", "graphql")
+	if err != nil {
+		t.Fatalf("a complete reply with a descendant holding the pipe was refused: %v", err)
+	}
+	if len(out) == 0 {
+		t.Fatal("the complete reply was discarded")
+	}
+}
+
 func TestGHPublishRefusesAPlantedSymlink(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

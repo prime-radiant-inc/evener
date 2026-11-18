@@ -134,6 +134,30 @@ func clearGHGroup(path string) {
 // wrapper dies, so the helper would report 130 while the CLI was still
 // submitting the enqueue. The group kill is what makes "the wait stopped" mean
 // the request stopped, not just that this process stopped waiting for it.
+// errIncompleteReply is a call whose captured output was cut off by the drain
+// bound before the reply arrived.
+//
+// It exists because the drain bound cannot tell the two cases apart on its own.
+// orphanpipe.ChildErr reads ErrWaitDelay after a zero exit as the success it
+// usually is: the child answered, and only a descendant it left behind kept the
+// pipe open. That reasoning holds for output the child finished writing. It
+// does NOT hold when the child exited before writing anything -- a gh wrapper
+// that backgrounds the real CLI and returns. There is then no answer at all,
+// and reporting success would tell the caller an enqueue mutation landed on a
+// reply nobody received.
+var errIncompleteReply = errors.New("gh exited before its reply arrived, and a descendant it left behind kept the pipe open past the drain bound")
+
+// completeReply reports whether out is a whole JSON document.
+//
+// Every call this client makes asks for JSON: `gh api graphql` answers in it,
+// and the `gh pr view`/`gh run list` calls pass --json. A reply the drain bound
+// cut off mid-write is therefore invalid JSON, and one that never started is
+// empty. Both are incomplete, which is the distinction the drain bound cannot
+// make by itself.
+func completeReply(out []byte) bool {
+	return len(out) > 0 && json.Valid(out)
+}
+
 func (c GHClient) run(ctx context.Context, args ...string) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, c.ghName(), args...)
 	cmd.SysProcAttr = procgroup.SysProcAttr()
@@ -160,13 +184,22 @@ func (c GHClient) run(ctx context.Context, args ...string) ([]byte, error) {
 	groupFile := c.groupFile()
 	publishGHGroup(groupFile, cmd.Process.Pid)
 	defer clearGHGroup(groupFile)
-	err := orphanpipe.ChildErr(cmd, cmd.Wait())
+	rawErr := cmd.Wait()
+	err := orphanpipe.ChildErr(cmd, rawErr)
 	// The group dies with the call whether or not the context fired: on a clean
 	// exit nobody ran Cancel, and a wrapper's CLI would otherwise survive it.
 	// After the reap the pid names no process this call owns, and the group
 	// still holds whatever the call left in it.
 	if cmd.Process != nil {
 		procgroup.KillGroupAfterReap(cmd.Process.Pid)
+	}
+	// The drain bound fired on a call that left nothing decodable behind. The
+	// child exited zero, so ChildErr read that as success, and a caller would
+	// then report an enqueue that never happened. Only the drain case is
+	// reclassified: a non-zero exit keeps its own error, and so does a call that
+	// answered in full with a descendant merely holding the pipe.
+	if errors.Is(rawErr, exec.ErrWaitDelay) && !completeReply(stdout.Bytes()) {
+		return nil, errIncompleteReply
 	}
 	if err != nil {
 		if detail := strings.TrimSpace(stderr.String()); detail != "" {

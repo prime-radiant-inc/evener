@@ -72,12 +72,11 @@ set -euo pipefail
 # harness around the fake.
 #
 # --help is the contract block above: every comment line from line 2 down to
-# `set -euo pipefail`. The range is derived rather than written out, because a
-# numbered range goes stale the moment a paragraph is added to the contract, and
-# it did: it ended at 50 through one review round, one line before the sentence
-# saying a started helper keeps its own status -- the half of the contract a
-# caller relies on when it sees 1. Everything below `set` is rationale for a
-# reader of this file and stays out of --help.
+# `set -euo pipefail`. The range is derived, not written out, because a numbered
+# range goes stale the moment a paragraph is added to the contract -- and one
+# that stops a line short drops the end of the contract silently, which is where
+# the sentences a caller reads an exit status against live. Everything below
+# `set` is rationale for a reader of this file and stays out of --help.
 usage() { sed -n '2,/^set -euo pipefail$/p' "$0" | sed -e '$d' -e 's/^# \{0,1\}//'; exit 2; }
 
 # A value-taking option at the end of the line has no value: reading $2 there is
