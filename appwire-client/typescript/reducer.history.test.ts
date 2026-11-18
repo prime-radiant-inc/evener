@@ -2525,6 +2525,26 @@ test("a read cut before the wait began keeps it however far the browser clock ru
   expect(kept.modelRetry?.errorClass).toBe("quota_exceeded");
 });
 
+// A source that cannot stamp a cut SAYS SO rather than leaving the field blank:
+// the versioned read marks "older-source" when it had to fall back, and a peer
+// hub propagates that for a source older than itself. Such a read carries no
+// ordering evidence at all, so its absent summary is silence, not a verdict -
+// and a remote pane refreshing as a wait begins would otherwise erase the
+// countdown the daemon had just published.
+test("a read declaring no serving cut cannot clear a wait the pane holds", () => {
+  const announced = announcedQuotaWait(DAEMON_WAIT_STARTED_AT);
+  expect(announced.quotaResumesAt).toBe(isoInstant(DAEMON_RESET));
+  const declared = {
+    ...read([turn("turn_1", 1)], { activeTurnId: "turn_1" }),
+    servingFactsUnavailableReason: "older-source",
+  };
+  const uncut = hydrateThread(declared, REF, NOW);
+  expect(uncut.servingFacts?.servingFactsUnavailableReason).toBe("older-source");
+  const kept = applyReadModel(announced, uncut);
+  expect(kept.quotaResumesAt).toBe(isoInstant(DAEMON_RESET));
+  expect(kept.modelRetry?.errorClass).toBe("quota_exceeded");
+});
+
 // An announcement from a daemon too old to issue a wait stamp carries no
 // instant the daemon named. The reducer must not stand in for it with this
 // pane's receipt time: the read merge orders its serving cut against the
@@ -2625,4 +2645,183 @@ test("a read naming an older wait keeps the newer wait's deadline and stamp alon
   expect(wired.quotaResumesAt).toBe(isoInstant(secondResumesAt));
   expect(wired.quotaWaitStartedAt).toBe(secondWaitStartedAt);
   expect(wired.modelRetry?.waitStartedAt).toBe(secondWaitStartedAt);
+});
+
+// The same two waits, but the delayed read lands after BOTH wakes. By then the
+// wake has cleared the pair and recorded the second wait's stamp, so the held
+// model has no deadline left to re-spread. Matching the read's stamp only
+// against that one ended stamp let the FIRST wait's snapshot through - its
+// stamp is not equal, so it read as a newer wait - and reinstated a countdown
+// over a request already out. Ordering against the ended stamp rejects it, and
+// the cleared pair stays cleared.
+test("a delayed read of the first of two waits cannot restore it after both wakes", () => {
+  const firstWaitStartedAt = DAEMON_WAIT_STARTED_AT;
+  const firstResumesAt = DAEMON_RESET;
+  const secondWaitStartedAt = DAEMON_WAIT_STARTED_AT + 30_000;
+  const secondResumesAt = secondWaitStartedAt + 60 * 60_000;
+  // Both waits' snapshots, captured while each stood.
+  const firstWaitRead = read([turn("turn_1", 1)], {
+    activeTurnId: "turn_1",
+    quotaWaitResumesAt: firstResumesAt,
+    quotaWaitStartedAt: firstWaitStartedAt,
+    asOf: new Date(firstWaitStartedAt + 1_000).toISOString(),
+  });
+  let model = hydrateThread(firstWaitRead, REF, firstWaitStartedAt + 1_000);
+  // The first wait wakes into the second, which is then announced too.
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: THREAD_ID,
+        ref: REF,
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: 0,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 1,
+        waitStartedAt: firstWaitStartedAt,
+      },
+    } as AnyNotification,
+    secondWaitStartedAt,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: THREAD_ID,
+        ref: REF,
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: secondResumesAt - secondWaitStartedAt,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 6_000,
+        attemptCap: 1,
+        waitStartedAt: secondWaitStartedAt,
+      },
+    } as AnyNotification,
+    secondWaitStartedAt + 1_000,
+  );
+  expect(model.quotaResumesAt).toBe(isoInstant(secondResumesAt));
+  // The second wait wakes as well: the pair clears, and the ended stamp names
+  // it.
+  const bothEnded = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: THREAD_ID,
+        ref: REF,
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: 0,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 7_000,
+        attemptCap: 1,
+        waitStartedAt: secondWaitStartedAt,
+      },
+    } as AnyNotification,
+    secondWaitStartedAt + 2_000,
+  );
+  expect(bothEnded.quotaWaitEndedAt).toBe(secondWaitStartedAt);
+  expect(bothEnded.quotaResumesAt).toBeUndefined();
+  // The first wait's delayed response finally lands. Its summary describes a
+  // wait the pane left two wakes ago, so no countdown may return.
+  const firstWaitModel = hydrateThread(firstWaitRead, REF, firstWaitStartedAt + 1_000);
+  const merged = applyReadModel(bothEnded, firstWaitModel);
+  expect(merged.quotaResumesAt).toBeUndefined();
+  expect(merged.quotaWaitStartedAt).toBeUndefined();
+  // The wire path agrees.
+  const wired = applyReadResponse(bothEnded, firstWaitRead, secondWaitStartedAt + 3_000);
+  expect(wired.quotaResumesAt).toBeUndefined();
+  expect(wired.quotaWaitStartedAt).toBeUndefined();
+});
+
+// The same two waits once the resumed call has failed again on its own: an
+// ordinary retry replaces the wake, so the model holds no wait stamp at all.
+// There is then nothing for the older-wait override to compare against, and
+// the ended stamp is the only ordering evidence left. Matching it by equality
+// lets the first wait's delayed snapshot through - its stamp differs from the
+// second wait's, so it reads as a newer wait - and puts a countdown back over a
+// request that already ran and failed.
+test("an ordinary retry does not leave a delayed first-wait read free to restore it", () => {
+  const firstWaitStartedAt = DAEMON_WAIT_STARTED_AT;
+  const secondWaitStartedAt = DAEMON_WAIT_STARTED_AT + 30_000;
+  const secondResumesAt = secondWaitStartedAt + 60 * 60_000;
+  const firstWaitRead = read([turn("turn_1", 1)], {
+    activeTurnId: "turn_1",
+    quotaWaitResumesAt: DAEMON_RESET,
+    quotaWaitStartedAt: firstWaitStartedAt,
+    asOf: new Date(firstWaitStartedAt + 1_000).toISOString(),
+  });
+  let model = hydrateThread(firstWaitRead, REF, firstWaitStartedAt + 1_000);
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: THREAD_ID,
+        ref: REF,
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: secondResumesAt - secondWaitStartedAt,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 6_000,
+        attemptCap: 1,
+        waitStartedAt: secondWaitStartedAt,
+      },
+    } as AnyNotification,
+    secondWaitStartedAt,
+  );
+  // The second wait wakes, then the resumed request fails as an ordinary
+  // provider error: the retry chip no longer names any wait.
+  const woken = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: THREAD_ID,
+        ref: REF,
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: 0,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 7_000,
+        attemptCap: 1,
+        waitStartedAt: secondWaitStartedAt,
+      },
+    } as AnyNotification,
+    secondWaitStartedAt + 2_000,
+  );
+  const failedAgain = applyNotification(
+    woken,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: THREAD_ID,
+        ref: REF,
+        turnId: "turn_1",
+        attempt: 2,
+        maxAttempts: 4,
+        delayMs: 30_000,
+        errorClass: "server_error",
+        groupElapsedMs: 8_000,
+        attemptCap: 4,
+      },
+    } as AnyNotification,
+    secondWaitStartedAt + 3_000,
+  );
+  // No held stamp anywhere: the ended stamp is the only ordering evidence.
+  expect(failedAgain.quotaWaitStartedAt).toBeUndefined();
+  expect(failedAgain.modelRetry?.waitStartedAt).toBeUndefined();
+  expect(failedAgain.quotaWaitEndedAt).toBe(secondWaitStartedAt);
+  const merged = applyReadModel(failedAgain, hydrateThread(firstWaitRead, REF, firstWaitStartedAt + 1_000));
+  expect(merged.quotaResumesAt).toBeUndefined();
 });

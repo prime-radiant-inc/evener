@@ -1022,10 +1022,20 @@ function quotaReadNamesOlderWait(
   return readStamp < heldStamp;
 }
 
-// quotaReadPredatesWait reports whether the read's serving cut cannot speak
-// against the wait the pane holds: it was cut before the wait existed, so its
-// absent failure summary is that cut's silence rather than a statement the
-// wait ended.
+// quotaReadPredatesWait reports whether the read cannot speak against the wait
+// the pane holds: its cut predates the wait, or the source DECLARED that it
+// supplies no cut at all. Either way its absent failure summary is silence
+// rather than a statement the wait ended.
+//
+// UNKNOWN is not ABSENT, and the wire already carries the difference. A source
+// that cannot stamp a cut says so - servingFactsUnavailableReason, which the
+// versioned read fills in as "older-source" when it had to fall back, and which
+// a peer hub propagates for a source older than itself. That is a read with no
+// ordering evidence, so it cannot end a live wait: a remote pane refreshing
+// while a wait begins would otherwise erase a countdown the daemon had just
+// published. Facts that are simply MISSING are a different thing - the legacy
+// methods predate serving facts entirely, and their silence is the shipped
+// authority rule those routes have always had, so they keep it.
 //
 // Both instants are the DAEMON's: the cut is the source's own read-cut stamp
 // (server/appwire_read_handlers.go writes it from time.Now), and the wait's
@@ -1056,20 +1066,27 @@ function quotaReadPredatesWait(
   model: Pick<ThreadModel, "quotaWaitStartedAt" | "modelRetry">,
 ): boolean {
   const asOf = read.servingFacts?.asOf;
-  if (asOf === undefined) return false;
-  const cutMs = Date.parse(asOf);
-  if (!Number.isFinite(cutMs)) return false;
   const waitStartedAt = model.quotaWaitStartedAt ?? model.modelRetry?.waitStartedAt;
   if (waitStartedAt === undefined) return false;
+  if (asOf === undefined) return read.servingFacts?.servingFactsUnavailableReason !== undefined;
+  const cutMs = Date.parse(asOf);
+  if (!Number.isFinite(cutMs)) return false;
   return cutMs < waitStartedAt;
 }
 
 // quotaWaitEndedOnModel reports whether the wait the read names by stamp is
-// one the pane watched end: the wake recorded its stamp independently of
-// the chip, so the read's deadline for THAT wait never installs - not over
-// the ordinary backoff the resumed request can carry, not over anything
-// else. A read naming any other wait (a later wait of the same turn, or a
-// pre-stamp legacy source) keeps the existing rules.
+// one the pane watched end, or an EARLIER wait of the same turn: the wake
+// recorded the last ended wait's stamp independently of the chip, and every
+// stamp at or before it belongs to a wait the pane already left. The read's
+// deadline for such a wait never installs - not over the ordinary backoff the
+// resumed request can carry, not over anything else. A read naming a LATER
+// wait (the call hit the limit again) keeps the existing rules.
+//
+// Ordering rather than equality is what a pane living through two waits of one
+// turn needs. A delayed read that captured the FIRST wait can land after both
+// wakes; compared only against the second wait's stamp it would look like a
+// new wait and restore a countdown for a request that is gone. Every stamp is
+// the daemon's own, so the comparison needs no client clock.
 function quotaWaitEndedOnModel(
   read: Pick<ThreadModel, "quotaWaitStartedAt">,
   model: Pick<ThreadModel, "quotaWaitEndedAt">,
@@ -1077,7 +1094,7 @@ function quotaWaitEndedOnModel(
   return (
     model.quotaWaitEndedAt !== undefined &&
     read.quotaWaitStartedAt !== undefined &&
-    model.quotaWaitEndedAt === read.quotaWaitStartedAt
+    read.quotaWaitStartedAt <= model.quotaWaitEndedAt
   );
 }
 
@@ -1281,11 +1298,15 @@ export function applyReadResponse<M extends ThreadModel>(
   // deadline and stamp must not spread over the newer wait whose retry the
   // merge preserves above. Deadline, stamp and retry move together, so the
   // held wait's pair is re-spread here - after the fields - as one fact.
+  //
+  // Re-spread UNCONDITIONALLY, absence included. A wake clears the pair while
+  // the resumed request runs, so a held wait can legitimately have no deadline
+  // at all; skipping the key then let the stale read's deadline install over a
+  // wait that had already ended, which is a countdown for a request that is
+  // gone. Writing undefined keeps "no wait" a fact rather than a gap the
+  // snapshot fills.
   const heldOlderWaitFields: Partial<ThreadModel> = quotaReadNamesOlderWait(fields, model)
-    ? {
-        ...(model.quotaResumesAt !== undefined ? { quotaResumesAt: model.quotaResumesAt } : {}),
-        ...(model.quotaWaitStartedAt !== undefined ? { quotaWaitStartedAt: model.quotaWaitStartedAt } : {}),
-      }
+    ? { quotaResumesAt: model.quotaResumesAt, quotaWaitStartedAt: model.quotaWaitStartedAt }
     : {};
   let next = withDisplay(
     {
@@ -1527,13 +1548,12 @@ export function applyReadModel<M extends ThreadModel>(
     model.modelRetry?.errorClass === "quota_exceeded"
       ? { modelRetry: undefined }
       : {};
-  // Same rule as applyReadResponse: an older wait's deadline and stamp do not
-  // spread over the newer wait whose retry the merge preserves.
+  // Same rule as applyReadResponse, absence included: an older wait's deadline
+  // and stamp do not spread over the newer wait whose retry the merge
+  // preserves, and a wait the pane watched end stays ended rather than being
+  // restored by a snapshot that captured it.
   const heldOlderWaitFields: Partial<ThreadModel> = quotaReadNamesOlderWait(fresh, model)
-    ? {
-        ...(model.quotaResumesAt !== undefined ? { quotaResumesAt: model.quotaResumesAt } : {}),
-        ...(model.quotaWaitStartedAt !== undefined ? { quotaWaitStartedAt: model.quotaWaitStartedAt } : {}),
-      }
+    ? { quotaResumesAt: model.quotaResumesAt, quotaWaitStartedAt: model.quotaWaitStartedAt }
     : {};
   // Sticky, as in applyReadResponse: a source that once reported a wait keeps
   // reporting waits, so a later no-wait read does not unsay it.

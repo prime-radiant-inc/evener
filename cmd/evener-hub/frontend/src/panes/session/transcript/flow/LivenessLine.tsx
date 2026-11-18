@@ -138,11 +138,27 @@ export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId, ret
   // stamp, so nothing can put an instant in the model) counts from receipt,
   // where both `now` and `receivedAt` are this client's clock and the
   // difference carries no skew.
+  // A stamped quota wait's basis is the DAEMON's instant, and the generic
+  // retry line's only wait field is this client's receipt duration - a second
+  // basis. While the daemon's countdown is live, `quotaWait` below answers
+  // first and this line never speaks. Once that countdown expires (or when no
+  // read has named the instant yet) the receipt duration would claim
+  // "retrying in 7200s" - and, past the stuck threshold, hang it off a stall
+  // warning - for a wait the daemon already ended. So a stamped wait leaves
+  // the generic formatter entirely, and the ordinary silence reading stands
+  // in: it infers something about the silence, never about the wait. The
+  // wake's zero-delay announcement and the resumed call's ordinary retries
+  // are not waits and still drive retry-progress text.
+  const stampedQuotaWait =
+    retry !== undefined &&
+    retry.errorClass === "quota_exceeded" &&
+    retry.delayMs > 0 &&
+    retry.waitStartedAt !== undefined;
   const liveRemaining =
     retry !== undefined &&
     retry.errorClass === "quota_exceeded" &&
     retry.delayMs > 0 &&
-    retry.waitStartedAt === undefined &&
+    !stampedQuotaWait &&
     retry.turnId !== undefined &&
     retry.turnId === turnId &&
     now - retry.receivedAt < retry.delayMs
@@ -150,7 +166,13 @@ export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId, ret
       : undefined;
   const remaining = fromRead ?? (liveRemaining !== undefined && liveRemaining > 0 ? liveRemaining : null);
   const quotaWait: QuotaWait | undefined = remaining === null ? undefined : { remainingMs: remaining };
-  const { level, text } = describeLiveness(now - lastFrameAt, active, runningSubagents, retryWait, quotaWait);
+  const { level, text } = describeLiveness(
+    now - lastFrameAt,
+    active,
+    runningSubagents,
+    stampedQuotaWait ? undefined : retryWait,
+    quotaWait,
+  );
   if (level === "none" || text === null) return null;
 
   return (

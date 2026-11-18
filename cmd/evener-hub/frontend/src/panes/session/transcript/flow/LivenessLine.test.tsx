@@ -11,7 +11,7 @@ import { resetThreadsStoreForTests, threadsStore } from "../../../../stores/thre
 import { seedCurrentDelegate } from "../tools/currentDelegate.testFixture";
 import { resetSubagentModuleStoreForTests, turnScopeKey, upsertSubagentRow } from "../tools/subagentModuleStore";
 import { LivenessLine } from "./LivenessLine";
-import { describeLiveness, formatExactGap, formatQuietBucket } from "./liveness";
+import { describeLiveness, formatExactGap, formatQuietBucket, formatRetryWait } from "./liveness";
 
 afterEach(() => {
   cleanup();
@@ -403,7 +403,7 @@ test("a usage-limit retry with no read at all still says when the wait resumes",
 // runs an hour fast, so the receipt says the two-hour wait began only an hour
 // ago while the daemon's instant has already passed. Mixing the bases made
 // the countdown reach zero and then leap back to the receipt's hour.
-test("a stamped usage-limit wait past its daemon deadline does not fall back to the receipt countdown", () => {
+test("a stamped usage-limit wait past its daemon deadline claims no retry duration and no retry stall", () => {
   const waitStartedAt = 1_000_000;
   const twoHours = 2 * 60 * 60_000;
   const skew = 60 * 60_000;
@@ -453,7 +453,28 @@ test("a stamped usage-limit wait past its daemon deadline does not fall back to 
   );
 
   const el = screen.queryByTestId("liveness-line");
-  expect(el?.getAttribute("data-level") ?? "none").not.toBe("quota");
+  // The defect this guards is subtler than a wrong level: suppressing the
+  // quota chip while still handing the retry to the generic formatter renders
+  // the RECEIPT duration - "retrying in 7200s" - and past the stuck threshold
+  // hangs it off a stall warning, for a wait the daemon's own instant already
+  // ended. The pane then states a duration on one clock basis beneath a
+  // verdict the other clock basis produced. Both are absent here: the line
+  // says what it says about the silence with the retry contributing nothing.
+  //
+  // Asserted as the two things the line must not claim, computed from the same
+  // formatters the component uses rather than pinned as copy: the retry's own
+  // line text appears nowhere, and the decision equals the retry-free one.
+  const gap = now - (now - skew);
+  const retryLine = formatRetryWait({
+    attempt: 1,
+    attemptCap: 0,
+    delayMs: twoHours,
+    errorClass: "quota_exceeded",
+    groupElapsedMs: 5_000,
+    inProgress: false,
+  });
+  expect(el?.textContent ?? "").not.toContain(retryLine);
+  expect(el?.getAttribute("data-level") ?? "none").toBe(describeLiveness(gap, true, 0).level);
 });
 
 // The regression this guards: over a six-hour wait plenty of frames land that
