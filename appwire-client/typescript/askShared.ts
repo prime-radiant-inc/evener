@@ -102,64 +102,6 @@ export function parseAskUserQuestions(item: Pick<ItemModel, "argumentsJSON">): A
   return questions.length > 0 ? questions : undefined;
 }
 
-// canonicalAskUserQuestions reads the questions a call ACTUALLY asked, from
-// the successful tool result's recorded state (schema.AskUserState, which the
-// wire carries on the result item's `raw` and a client fold merges onto the
-// call). It exists because argumentsJSON is only what the model SENT: a
-// pre-tool hook may have changed the questions, and the result is the record
-// of what ran (#6323).
-//
-// Three outcomes, and the difference matters to an attribution check:
-//   - no recorded state at all (a daemon that carries none, or a row whose
-//     result the page did not load): undefined, meaning "no better evidence
-//     than the arguments";
-//   - a state whose every question parses: those questions;
-//   - a state this client cannot enumerate - a question that does not parse,
-//     or an empty list where the tool requires at least one: null, meaning the
-//     call's questions are unprovable. A caller must treat that as
-//     unattributable rather than fall back to the arguments, which are exactly
-//     what the state supersedes.
-function canonicalAskUserQuestions(item: Pick<ItemModel, "raw">): AskUserQuestion[] | null | undefined {
-  const raw = item.raw;
-  if (typeof raw !== "object" || raw === null) return undefined;
-  const questions = (raw as { questions?: unknown }).questions;
-  if (!Array.isArray(questions)) return undefined;
-  if (questions.length === 0) return null;
-  // schema.AskUserQuestion's own omitempty rules, not the arguments shape's:
-  // an unset header, detail, why or if_unanswered is ABSENT here, whereas
-  // parseQuestion's arguments-shaped check would read a missing detail as a
-  // malformed option and lose a state the daemon recorded correctly.
-  const parsed = questions.map((question, index) => canonicalAskQuestion(question, index));
-  if (parsed.some((question) => question === undefined)) return null;
-  return parsed.filter((question): question is AskUserQuestion => question !== undefined);
-}
-
-function canonicalAskQuestion(raw: unknown, index: number): AskUserQuestion | undefined {
-  if (typeof raw !== "object" || raw === null) return undefined;
-  const obj = raw as Record<string, unknown>;
-  const header = typeof obj.header === "string" && obj.header !== "" ? obj.header : `Question ${index + 1}`;
-  if (typeof obj.question !== "string" || !Array.isArray(obj.options) || obj.options.length === 0) return undefined;
-  const options: AskUserOption[] = [];
-  for (const option of obj.options) {
-    if (typeof option !== "object" || option === null) return undefined;
-    const fields = option as Record<string, unknown>;
-    if (typeof fields.label !== "string") return undefined;
-    options.push({
-      label: fields.label,
-      detail: typeof fields.detail === "string" ? fields.detail : "",
-      recommended: fields.recommended === true,
-    });
-  }
-  return {
-    header,
-    question: obj.question,
-    options,
-    multiSelect: obj.multi_select === true,
-    why: typeof obj.why === "string" ? obj.why : undefined,
-    ifUnanswered: typeof obj.if_unanswered === "string" ? obj.if_unanswered : undefined,
-  };
-}
-
 // One line of a composed [answers] reply (appwire-client/typescript/askAnswers.ts's composeAskAnswers,
 // byte-exact format): "N. [Header] → resolution text[ — note: "..."]". Safe
 // headers are raw; headers containing ]/CR/LF are JSON strings, so their
@@ -221,154 +163,6 @@ function parseAskAnswerLines(text: string): Map<string, string> {
 // Any reply that fails is one the recap does not fully stand in for, and its
 // raw row must stay: a duplicate row is cosmetic, a silently dropped answer
 // is not.
-//
-// composedReplyRepeatsAHeader is the third rule on its own, because admission's
-// call stamp (#6323) needs the same refusal without the composer-byte-exactness
-// the rest of this predicate demands: the stamp proves WHICH call a reply
-// answers, never that the recap restates that answer faithfully.
-function composedReplyRepeatsAHeader(text: string): boolean {
-  const seen = new Set<string>();
-  for (const line of text.split("\n")) {
-    const answer = parseAskAnswerLine(line);
-    if (!answer) continue;
-    if (seen.has(answer.header)) return true;
-    seen.add(answer.header);
-  }
-  return false;
-}
-
-// stampedComposedRecapIsAttributable answers the stamp's other, separate
-// question: given that admission named this reply for a call, can the recap
-// be shown for that call at all? The stamp proves which calls the reply
-// ANSWERS; it never proves the recap restates each answer faithfully, and it
-// says nothing about what this CLIENT has loaded. Three composed shapes break
-// the recap, and each keeps the raw row instead:
-//
-//   - a header repeats among the answer lines, so the header-keyed parse keeps
-//     only the last line (composedReplyRepeatsAHeader);
-//   - a header identifies more than one QUESTION across the calls the reply
-//     names. One line cannot say which of them it answered, so recapping it
-//     would show the same value on both and one call would be answered
-//     nothing. Counting questions, not calls, also covers one call that asks
-//     the same header twice (legal: two questions may share a header);
-//   - a call the stamp names is not in the loaded items. A transcript page may
-//     split one turn's ask rows, so a partial view undercounts headers and
-//     would attribute a line to the wrong ask. The count is evidence only when
-//     every named call is present with questions this client can enumerate;
-//   - a call's questions cannot be enumerated from its recorded state: the
-//     result says it asked a question this client cannot parse. Falling back
-//     to the original arguments would count the questions the model SENT,
-//     which is exactly the list a hook may have changed, so the header set is
-//     unprovable and the attribution is refused rather than guessed;
-//   - admission also consumed questions it could NOT name
-//     (resolvedAskLegacyCount). Those are restored from records that predate
-//     call ids, their headers never reach the wire, and one of them may share
-//     the header an answer line names - so the named calls cannot account for
-//     the line on their own.
-//
-// Where no header is shared this way every named call's answers are its own,
-// and the recap is taken as before - including a reply stamped for only one of
-// two same-header siblings. Free prose names no header, so it is never refused
-// here.
-function stampedComposedRecapIsAttributable(items: readonly ItemModel[], reply: ItemModel): boolean {
-  if (!reply.text.startsWith("[answers]")) return true;
-  if (composedReplyRepeatsAHeader(reply.text)) return false;
-  // A named call fully accounts for the line only when nothing else was
-  // consumed: an unnamed question carrying the same header would be displayed
-  // under the named ask, which may not be the one the human answered.
-  if (reply.resolvedAskLegacyCount !== undefined && reply.resolvedAskLegacyCount > 0) return false;
-  const questionsPerHeader = new Map<string, number>();
-  for (const named of reply.resolvedAskCalls ?? []) {
-    const call = items.find(
-      (candidate) =>
-        isAckedAskCall(candidate) && candidate.turnId === named.turnId && candidate.callId === named.callId,
-    );
-    if (call === undefined) return false;
-    const questions = questionsThisCallAsked(items, call);
-    if (questions === undefined) return false;
-    for (const question of questions) {
-      questionsPerHeader.set(question.header, (questionsPerHeader.get(question.header) ?? 0) + 1);
-    }
-  }
-  for (const count of questionsPerHeader.values()) {
-    if (count > 1) return false;
-  }
-  return true;
-}
-
-// questionsThisCallAsked is the one source for both halves of the composed
-// recap: the attribution check counts headers from it, and answerFor renders
-// the recap's lines from it (#6323). Two sources is how a reply passed the
-// check and then displayed an answer under a question it may not answer.
-//
-// It prefers the record of what RAN: the successful result's canonical state.
-// The original arguments are the model's intent, and a pre-tool hook may have
-// replaced the questions after it was sent. Where no state exists at all (an
-// older daemon, a result the page did not load) the arguments stand in, but
-// only when EVERY question in them parses: one that does not could be the
-// question a hook replaced, so the header set is unprovable and the caller
-// refuses the recap rather than guessing.
-function questionsThisCallAsked(items: readonly ItemModel[], call: ItemModel): AskUserQuestion[] | undefined {
-  const canonical = canonicalAskUserQuestions(call);
-  if (canonical === null) return undefined;
-  if (canonical !== undefined) return canonical;
-  // A row with no call id cannot be matched to a recorded result, so its
-  // arguments are the only evidence it can offer - and the same rule applies
-  // to both callers, so neither can see a set the other does not.
-  if (call.callId === undefined) return everyAskQuestionFromArguments(call);
-  // The fold that merges a result onto its call does not always run (a live
-  // item may arrive as two rows), so look for the recorded state on the pair
-  // before concluding the page carries none. The PAIR, not the call id: the
-  // session questions guide allows a call id to repeat across executions, and
-  // a later execution's result is not this call's record of what ran.
-  for (const candidate of items) {
-    if (candidate === call) continue;
-    if (candidate.turnId !== call.turnId || candidate.callId !== call.callId) continue;
-    const sibling = canonicalAskUserQuestions(candidate);
-    if (sibling === null) return undefined;
-    if (sibling !== undefined) return sibling;
-  }
-  return everyAskQuestionFromArguments(call);
-}
-
-// sameQuestions answers whether two lists are the same questions in the same
-// order: the header each answer is keyed by AND the text a row displays. A
-// hook may keep the header and rewrite the question, so headers alone cannot
-// stand for "the row shows what the reply answers" (#6323).
-function sameQuestions(asked: readonly AskUserQuestion[], displayed: readonly AskUserQuestion[]): boolean {
-  if (asked.length !== displayed.length) return false;
-  for (let index = 0; index < asked.length; index += 1) {
-    const askedQuestion = asked[index];
-    const displayedQuestion = displayed[index];
-    if (askedQuestion === undefined || displayedQuestion === undefined) return false;
-    if (askedQuestion.header !== displayedQuestion.header) return false;
-    if (askedQuestion.question !== displayedQuestion.question) return false;
-  }
-  return true;
-}
-
-// everyAskQuestionFromArguments is parseAskUserQuestions with the lossy step
-// removed: parseAskUserQuestions drops a question it cannot parse and returns
-// the rest, which is right for rendering and wrong for counting, because the
-// dropped one is precisely the question whose header the count needs. Any
-// unusable question here means the list is not evidence.
-function everyAskQuestionFromArguments(item: Pick<ItemModel, "argumentsJSON">): AskUserQuestion[] | undefined {
-  const args = parseArgs(item.argumentsJSON);
-  let raw: unknown = args.questions;
-  if (!Array.isArray(raw) && typeof args.question === "string" && Array.isArray(args.options)) {
-    const wrapped: Record<string, unknown> = { question: args.question, options: args.options };
-    if (typeof args.header === "string" && args.header !== "") wrapped.header = args.header;
-    if (typeof args.why === "string" && args.why !== "") wrapped.why = args.why;
-    if (typeof args.if_unanswered === "string" && args.if_unanswered !== "") wrapped.if_unanswered = args.if_unanswered;
-    if (args.multi_select === true) wrapped.multi_select = true;
-    raw = [wrapped];
-  }
-  if (!Array.isArray(raw) || raw.length === 0) return undefined;
-  const parsed = raw.map((question, index) => parseQuestion(question, index));
-  if (parsed.some((question) => question === undefined)) return undefined;
-  return parsed.filter((question): question is AskUserQuestion => question !== undefined);
-}
-
 function composedReplyCoversCall(
   text: string,
   questions: readonly AskUserQuestion[],
@@ -378,7 +172,6 @@ function composedReplyCoversCall(
   if (askedHeaders.size !== questions.length) return false;
   const lines = text.split("\n");
   if (lines[0] !== "[answers]") return false;
-  if (composedReplyRepeatsAHeader(text)) return false;
   const seen = new Set<string>();
   let ordinal = 0;
   for (const line of lines.slice(1)) {
@@ -388,6 +181,7 @@ function composedReplyCoversCall(
     ordinal += 1;
     if (answer.ordinal !== ordinal) return false;
     if (!askedHeaders.has(answer.header)) return false;
+    if (seen.has(answer.header)) return false;
     seen.add(answer.header);
     if (answer.rest.includes(" — note: ")) return false;
   }
@@ -414,48 +208,14 @@ function answerFor(
   item: ItemModel,
 ): { reply: ItemModel; suffix: string; carriesWholeReply: boolean } | undefined {
   if (item.error !== undefined) return undefined;
-  const argumentsQuestions = parseAskUserQuestions(item);
+  const questions = parseAskUserQuestions(item);
+  if (!questions) return undefined;
   const items = model.turns.flatMap((turn) => turn.items);
   const at = items.findIndex((i) => i.id === item.id);
   if (at === -1) return undefined;
   const reply = findAnswerReply(items, items.slice(at + 1), item);
   if (!reply) return undefined;
-  // Every row renders its questions from argumentsJSON (the web body's
-  // parseAskUserQuestions, native's askRowQuestions), and admission's stamp
-  // makes the RAN questions authoritative for the recap. When a hook changed
-  // the question, a recap - composed OR free prose - would print the answer
-  // beneath a question it does not answer, the harm #6323 exists to prevent.
-  // The rows cannot reach the model to draw the executed question, so the
-  // honest outcome is no recap: the raw reply stays and says what was
-  // answered. This gates BOTH reply forms, because the stamp is what enabled
-  // either one; only a row that displays no question at all has nothing to
-  // mispair, and an unstamped reply was selected on the arguments it displays.
-  const revealedByStamp = resolvesThisCall(item, reply) === true;
-  const stampedQuestions = revealedByStamp ? questionsThisCallAsked(items, item) : undefined;
-  if (
-    stampedQuestions !== undefined &&
-    argumentsQuestions !== undefined &&
-    !sameQuestions(stampedQuestions, argumentsQuestions)
-  ) {
-    return undefined;
-  }
   if (reply.text.startsWith("[answers]")) {
-    // Which set answers the line depends on how the reply was SELECTED (#6323):
-    //
-    //   - admission's stamp named this call, so the reply answers what RAN.
-    //     Both the check and this render must read questionsThisCallAsked, or
-    //     a header a hook rewrote passes the count and then renders under the
-    //     question the model sent;
-    //   - no stamp matched, and the reply was chosen by linkedReplyAnswersThisCall
-    //     comparing the ARGUMENT headers it answers - through the same lossy
-    //     parse that selection used. The same set must render that choice, or
-    //     the recap looks up a header this call never showed, and the executed
-    //     set cannot speak for a selection made on the sent one.
-    //
-    // The stamp is what makes the executed set authoritative; without it the
-    // arguments are the whole basis of the match.
-    const questions = revealedByStamp ? questionsThisCallAsked(items, item) : argumentsQuestions;
-    if (!questions) return undefined;
     // The composed form always resolves here, even when it parses to nothing
     // or nothing matches this call's headers (the user edited the draft,
     // spec §6.1): an attempted composed reply is not free prose to echo.
@@ -475,7 +235,6 @@ function answerFor(
       carriesWholeReply: composedReplyCoversCall(reply.text, questions, answers),
     };
   }
-  if (!argumentsQuestions) return undefined;
   // A linked reply whose text is not the composed form is the spec's other
   // reply form - free prose (§4.3: "either the numbered [answers] form ...
   // or free prose; treat either as the reply to everything you asked") -
@@ -543,9 +302,9 @@ function isAckedAskCall(candidate: ItemModel): boolean {
 // call asks and no sibling also asks (a shared header could belong to
 // either); a composed reply answering only the sibling's headers says
 // nothing about this call. (The wire's link names an execution turn, not a
-// call - the whole heuristic exists because of that granularity. Admission's
-// call-level evidence, resolvedAskCalls, replaces it with an exact match
-// wherever the daemon stamped one; see resolvesThisCall.)
+// call - the whole heuristic exists because of that granularity, and
+// exposing admission's call-level AskResolution on the wire would replace
+// it with an exact match; see the follow-up issue filed from #5836.)
 function linkedReplyAnswersThisCall(items: readonly ItemModel[], item: ItemModel, reply: ItemModel): boolean {
   const siblings = items.filter((i) => i.id !== item.id && i.turnId === item.turnId && isAckedAskCall(i));
   if (siblings.length === 0) return true;
@@ -561,21 +320,6 @@ function linkedReplyAnswersThisCall(items: readonly ItemModel[], item: ItemModel
     answersOwn = true;
   }
   return answersOwn;
-}
-
-// resolvesThisCall answers whether admission's own per-call evidence names
-// this ask row: the reply consumed the call (turnId, callId) this item IS.
-// Identity is the pair, not the call id alone, because a call id can repeat
-// in different executions. Undefined evidence (an unfenced whole-set answer,
-// or a daemon predating the field) says nothing, so the caller keeps the
-// turn-granular heuristic. A row with no callId is not one of the named calls
-// either: admission only ever names calls it can identify, and guessing here
-// is the mis-ordering this field exists to remove.
-function resolvesThisCall(item: ItemModel, reply: ItemModel): boolean | undefined {
-  const calls = reply.resolvedAskCalls;
-  if (calls === undefined) return undefined;
-  if (item.callId === undefined) return false;
-  return calls.some((call) => call.turnId === item.turnId && call.callId === item.callId);
 }
 
 // isUserAuthoredSteer answers one wire-level question: is this steering item
@@ -639,22 +383,6 @@ function findAnswerReply(
     if (candidate.answerToTurnIds !== undefined) {
       if (!isAnswerCarrier(candidate)) continue;
       if (!candidate.answerToTurnIds.includes(item.turnId)) return shapeMatch;
-      // Admission's call list is exact evidence and outranks the heuristic:
-      // a reply naming this call answers it even beside acked siblings that
-      // ask the same header, and one naming only the siblings does not.
-      const resolved = resolvesThisCall(item, candidate);
-      if (resolved === true) {
-        // The stamp proves the reply answers THIS call. It does not prove the
-        // recap restates that answer faithfully, so the composed form must
-        // also be attributable to exactly one question per header, over a view
-        // that holds every call the stamp names. When it is not, this call has
-        // no recap at all: the stamp settles WHICH reply answered it, so
-        // refusing that reply's recap must end the search rather than hand the
-        // call to a later, unrelated message and hide that message's own row.
-        if (!stampedComposedRecapIsAttributable(items, candidate)) return undefined;
-        return candidate;
-      }
-      if (resolved === false) continue;
       if (linkedReplyAnswersThisCall(items, item, candidate)) return candidate;
       continue;
     }
