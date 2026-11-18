@@ -19,6 +19,12 @@ type serveLine struct {
 	session string
 }
 
+// serveLogStampFor renders an instant the way serveLogAt stamps it, so a test
+// can compare a parsed line's instant against a time it chose.
+func serveLogStampFor(at time.Time) string {
+	return at.UTC().Format(serveLogTimeLayout)
+}
+
 // parseServeLine reads the fields the stamper emits. A line that does not
 // carry both a session and an instant, or that was not tagged by the serve
 // component, fails the test.
@@ -196,10 +202,17 @@ func TestServeDiagnosticSpoolDoesNotBlockOnAStalledSink(t *testing.T) {
 		defer close(direct)
 		serveLogf(sink, "session-1", "diagnostic straight to the sink")
 	}()
+	// The sink's counter is what establishes the direct write is inside the
+	// sink and therefore blocked on release, so nothing here depends on an
+	// interval having elapsed: the write increments before it waits, so a
+	// counter of one means the goroutine cannot have returned.
+	testwait.Until(t, "the direct write to reach the stalled sink", func() bool {
+		return sink.writes.Load() == 1
+	})
 	select {
 	case <-direct:
 		t.Fatal("a direct write to a stalled sink returned; this test cannot show what the input loop used to wait on")
-	case <-time.After(50 * time.Millisecond):
+	default:
 	}
 
 	spool := newServeDiagnosticSpool(sink)
@@ -217,10 +230,78 @@ func TestServeDiagnosticSpoolDoesNotBlockOnAStalledSink(t *testing.T) {
 			spool.Logf("session-1", "diagnostic %d behind a stalled sink", 1)
 		}
 	}()
-	select {
-	case <-emitted:
-	case <-time.After(10 * time.Second):
-		t.Fatal("emitting diagnostics blocked behind a stalled sink: the input loop would stall with it, and shutdown would wait on that loop")
+	testwait.Until(t, "100 diagnostics to be enqueued behind a write still blocked in the sink", func() bool {
+		select {
+		case <-emitted:
+			return true
+		default:
+			return false
+		}
+	})
+	// The sink is still stalled at this point: release has not closed, so the
+	// worker cannot have finished its write. That is what makes the emits
+	// above meaningful -- they completed against a sink that is still stuck.
+	if got := sink.writes.Load(); got != 2 {
+		t.Fatalf("the sink saw %d writes while 100 diagnostics were enqueued, want 2: the worker drained the spool instead of blocking in the first write, so this proves nothing", got)
 	}
 	close(sink.release)
+}
+
+// gatedSink records the instant its first write began blocking and releases
+// only when told, so a test can hold a line in the sink while later events
+// happen.
+type gatedSink struct {
+	release chan struct{}
+	entered chan struct{}
+	lines   chan string
+	once    atomic.Bool
+}
+
+func (s *gatedSink) Write(p []byte) (int, error) {
+	if s.once.CompareAndSwap(false, true) {
+		close(s.entered)
+		<-s.release
+	}
+	s.lines <- string(p)
+	return len(p), nil
+}
+
+// A diagnostic waits in the spool while the sink is blocked on the line before
+// it, and the stamp it carries has to be the moment it was emitted. Stamping in
+// the worker would place a stand-down after events that happened while it
+// waited, which is the ordering the instant exists to establish.
+func TestServeDiagnosticSpoolStampsWhenTheLineIsEmitted(t *testing.T) {
+	t.Parallel()
+	sink := &gatedSink{
+		release: make(chan struct{}),
+		entered: make(chan struct{}),
+		lines:   make(chan string, 4),
+	}
+	spool := newServeDiagnosticSpool(sink)
+	defer spool.Close()
+
+	blocker := time.Date(2026, 7, 31, 18, 26, 56, 0, time.UTC)
+	waiting := time.Date(2026, 7, 31, 18, 26, 57, 0, time.UTC)
+	released := time.Date(2026, 7, 31, 18, 27, 30, 0, time.UTC)
+
+	// The first line reaches the sink and blocks there.
+	spool.logAt(blocker, "session-1", "the line the sink is stuck on")
+	<-sink.entered
+
+	// The second is emitted while the sink is blocked, and the sink does not
+	// resume until much later.
+	spool.logAt(waiting, "session-1", "a line that waits behind the sink")
+	testwait.Until(t, "the waiting line to be enqueued", func() bool {
+		return len(spool.lines) == 1
+	})
+	close(sink.release)
+
+	first := parseServeLine(t, <-sink.lines)
+	second := parseServeLine(t, <-sink.lines)
+	if first.at != serveLogStampFor(blocker) {
+		t.Fatalf("the blocked line's instant = %q, want %q", first.at, serveLogStampFor(blocker))
+	}
+	if second.at != serveLogStampFor(waiting) {
+		t.Fatalf("the waiting line's instant = %q, want %q: it was stamped when the sink resumed (%q), not when it was emitted", second.at, serveLogStampFor(waiting), serveLogStampFor(released))
+	}
 }

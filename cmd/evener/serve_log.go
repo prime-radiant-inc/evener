@@ -58,6 +58,11 @@ type serveDiagnosticSpool struct {
 type serveDiagnosticLine struct {
 	sessionID string
 	text      string
+	// at is the moment the line was emitted, not the moment the worker
+	// reached the sink. A line held here while an earlier write blocks would
+	// otherwise be stamped after events that happened while it waited, which
+	// is the ordering the stamp exists to establish.
+	at time.Time
 }
 
 // newServeDiagnosticSpool starts the writer goroutine. It is the spool's one
@@ -78,7 +83,7 @@ func (p *serveDiagnosticSpool) run() {
 		case <-p.stop:
 			return
 		case line := <-p.lines:
-			serveLogf(p.out, line.sessionID, "%s", line.text)
+			serveLogAt(p.out, line.at, line.sessionID, "%s", line.text)
 		}
 	}
 }
@@ -86,8 +91,15 @@ func (p *serveDiagnosticSpool) run() {
 // Logf queues one diagnostic line. It never blocks the caller: a line that
 // arrives while the worker is still writing an earlier line is dropped.
 func (p *serveDiagnosticSpool) Logf(sessionID, format string, args ...any) {
+	p.logAt(time.Now(), sessionID, format, args...)
+}
+
+// logAt is Logf against a caller-supplied instant: the moment the line was
+// emitted, which is what the worker stamps rather than the moment the sink
+// became free.
+func (p *serveDiagnosticSpool) logAt(at time.Time, sessionID, format string, args ...any) {
 	select {
-	case p.lines <- serveDiagnosticLine{sessionID: sessionID, text: fmt.Sprintf(format, args...)}:
+	case p.lines <- serveDiagnosticLine{sessionID: sessionID, text: fmt.Sprintf(format, args...), at: at}:
 	default:
 	}
 }

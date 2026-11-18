@@ -684,6 +684,43 @@ func TestQueuedInputWakeKeepsAnEmptyClaimQuiet(t *testing.T) {
 	}
 }
 
+// TestQueuedInputWakeKeepsAnEmptyClaimQuietWhenTheSaveFails is the same empty
+// claim with the store refusing the write.
+//
+// The claim selected nothing, so the save was writing a snapshot it had not
+// changed; a failure there says nothing about the head. Letting the write's
+// error replace the observation turns "the queue was empty" into "a message is
+// still queued", which is a condition this claim never saw -- and the wake then
+// logs a stand-down the daemon reader would chase.
+func TestQueuedInputWakeKeepsAnEmptyClaimQuietWhenTheSaveFails(t *testing.T) {
+	t.Parallel()
+	sess := newQueuePersistTestSession(t, t.TempDir())
+	defer sess.Close()
+	queueOneMutation(t, sess, "canceled-then-the-save-fails", "canceled before the claim runs")
+	sess.cfg.testOnly.queueHeadClaimSampled = func() {
+		sess.cfg.testOnly.queueHeadClaimSampled = nil
+		if _, _, err := sess.CancelQueued(context.Background(), 0, ""); err != nil {
+			t.Errorf("cancel the probed entry inside the wake's window: %v", err)
+		}
+		// Armed after the cancel commits, so the refusal lands on the claim's
+		// own save and not on the cancel that emptied the queue.
+		sess.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
+			return errors.New("injected: claim write refused")
+		}
+	}
+
+	_, ran, outcome, err := sess.ProcessPendingUserInput(context.Background(), nil)
+	if err != nil || ran {
+		t.Fatalf("wake whose empty claim could not be saved = ran %v, err %v; want a quiet stand-down", ran, err)
+	}
+	if outcome != PendingInputNothingRunnable {
+		t.Fatalf("outcome after an empty claim whose save failed = %v, want nothing-runnable: the save wrote a snapshot the claim never changed, so it says nothing about the head", outcome)
+	}
+	if outcome.RefusedRunnableInput() {
+		t.Fatal("a failed save of an unchanged snapshot is reported as runnable input a gate refused, so the daemon logs a stand-down over work this wake never saw")
+	}
+}
+
 // TestQueuedInputWakeReportsARefusedClaimWriteAsTheWrite pins what the wake
 // says when the store refuses the queue head's claim.
 //

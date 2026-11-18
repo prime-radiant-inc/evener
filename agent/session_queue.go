@@ -631,6 +631,14 @@ func (s *Session) popQueueHeadRefusingPoison() (queuedInput, queueClaimObservati
 	}
 	if err != nil {
 		s.emit(events.WarningData{Message: fmt.Sprintf("claim queued input failed: %v", err)})
+		// A save that failed while this claim had selected nothing was saving
+		// an unchanged snapshot, so it says nothing about the head. The
+		// observation stands: reporting the write would replace an empty or
+		// Stop-held queue with "a message is still queued", which is a
+		// condition this claim never saw.
+		if queued.ClientMutationID == "" {
+			return queuedInput{}, observed, nil
+		}
 		// The write is the refusal here, and the message is still queued: the
 		// claim did evaluate standing work and could not move it. It reports
 		// the write rather than a gate, because no gate refused anything.

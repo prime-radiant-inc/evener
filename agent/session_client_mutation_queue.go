@@ -298,7 +298,7 @@ func (o PendingInputOutcome) String() string {
 	case PendingInputCarrierUnaddressable:
 		return "steering carrier unaddressable: no carrier could be named for the pending steer"
 	case PendingInputStopHeld:
-		return "steering held by a stop"
+		return "pending input held by a stop"
 	case PendingInputClaimWriteFailed:
 		return "the claim write failed; the message stays queued"
 	case PendingInputClaimTookNothing:
