@@ -584,8 +584,14 @@ func retainedJobReadOutranks(existingIsOwner bool, existing sessionJobRecordRead
 // terminal write fixes the status, end time and exit code, so damage after it
 // can add nothing to that answer.
 //
-// A NON-TERMINAL record is established only when its scan reached a clean record
-// boundary. Both kinds of damage leave the finish unaccounted for, and both are
+// A NON-TERMINAL record is established only when its own status is established.
+// A clean scan of the journal is necessary but not sufficient: the record can
+// carry its own reason to doubt the status it states. An owner start with no
+// `type` whose journal the fold could not pair with a launch is the case that
+// matters — its running status is a fragment, and a fragment must not displace a
+// terminal observation however clean the scan that produced it.
+//
+// Both kinds of scan damage leave the finish unaccounted for, and both are
 // therefore incomplete evidence: durable corruption can be the finish itself,
 // and a torn tail is an append that landed without its newline — the in-flight
 // finish, or one that will never complete. Reading either as "still running"
@@ -607,7 +613,10 @@ func stateEstablished(read sessionJobRecordRead) bool {
 	if read.record.Status == "" {
 		return false
 	}
-	return read.scanErr == nil && !read.diagnostics.TornTail
+	// The record's own confidence, not the journal's aggregate: this is the same
+	// signal the wire carries, asked here so a nonterminal record that cannot
+	// state its status never outranks a terminal one that can.
+	return !recordStatusUnconfirmed(read.record, read.scanErr, read.diagnostics)
 }
 
 // statusUnconfirmedOnWire reports whether the SELECTED STATUS is unestablished,

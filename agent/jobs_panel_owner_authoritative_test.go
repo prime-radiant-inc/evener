@@ -135,10 +135,9 @@ func TestLoadsessionJobRecordDiagnostics_OwnerAvailableHasNoFallback(t *testing.
 	}
 }
 
-// TestLoadSessionJobRecordFallsBackToForwardedCopyWhenOwnerUnavailable pins the
-// other half of the ruling the triage warns about: dropping forwarded copies
-// outright would erase the only surviving evidence for a descendant whose own
-// journal is gone. The forwarded record must still be returned — and must say
+// TestLoadSessionJobRecordFallsBackToForwardedCopyWhenOwnerUnavailable: dropping
+// forwarded copies outright would erase the only surviving evidence for a
+// descendant whose own journal is gone. The forwarded record must still be returned — and must say
 // it is a fallback.
 func TestLoadSessionJobRecordFallsBackToForwardedCopyWhenOwnerUnavailable(t *testing.T) {
 	t.Parallel()
@@ -497,9 +496,9 @@ func TestLoadSessionJobGetRequiresRequestedScope(t *testing.T) {
 	}
 }
 
-// TestLoadSessionJobGetHonorsOwnerTombstone is the other half of medium 3: the
-// job IS in the requested session's scope — the forwarded copy is right there —
-// but the owner's deletion fence stands. A deletion that failed after writing
+// TestLoadSessionJobGetHonorsOwnerTombstone: the job IS in the requested
+// session's scope — the forwarded copy is right there — but the owner's deletion
+// fence stands. A deletion that failed after writing
 // the tombstone leaves the owner's work directory behind, so the marker is the
 // evidence, and neither the owner's journal nor the forwarded copy may be
 // served.
@@ -695,9 +694,8 @@ func TestLoadSessionJobGetResolvesLegacyIDByOwnerHint(t *testing.T) {
 	}
 }
 
-// TestLoadSessionJobGetRejectsUncorroboratedLegacyHint is the other half of low
-// 4: an owner field that names a session with no record of the job is not
-// evidence. The scoped copy then stands — flagged as a fallback, never silently
+// TestLoadSessionJobGetRejectsUncorroboratedLegacyHint: an owner field that
+// names a session with no record of the job is not evidence. The scoped copy then stands — flagged as a fallback, never silently
 // presented as the owner's.
 func TestLoadSessionJobGetRejectsUncorroboratedLegacyHint(t *testing.T) {
 	t.Parallel()
@@ -799,10 +797,9 @@ func TestLoadSessionJobGetReportsScanDamageNotHealthyRunning(t *testing.T) {
 	}
 }
 
-// TestLoadSessionJobGetKeepsForwardedTerminalOverDamagedOwnerPrefix is the other
-// half of medium 3, and the half a naive "return the error" fix would get wrong.
-// The owner's journal holds a start and then durable corruption, so its decoded
-// prefix cannot say whether the job finished. The ancestor's forwarded copy is
+// TestLoadSessionJobGetKeepsForwardedTerminalOverDamagedOwnerPrefix: the owner's
+// journal holds a start and then durable corruption, so its decoded prefix
+// cannot say whether the job finished. The ancestor's forwarded copy is
 // complete and terminal: it observed the finish. The damaged owner prefix must
 // not displace that settled answer — an unreadable journal past the start is not
 // evidence that the job is still running.
@@ -1894,5 +1891,61 @@ func TestLoadSessionJobOutputPageFencesUncorroboratedHintWithExplicitPath(t *tes
 	if !found || page.Data != "owner bytes" {
 		t.Fatalf("found = %v, data = %q: an abandoned deletion must not make the job permanently unreadable",
 			found, page.Data)
+	}
+}
+
+// TestLoadSessionJobGetKeepsForwardedTerminalOverTypelessOwnerStart: an owner
+// start with no `type` folds into a row whose running status the fold cannot
+// establish, because a type is what a launch records and its absence is what an
+// orphan or notification fragment looks like. A clean scan of that journal is
+// not evidence about the job's state, so the row may not displace the ancestor's
+// observed finish. The forwarded terminal facts survive, and the owner's own
+// diagnostic still travels with them.
+func TestLoadSessionJobGetKeepsForwardedTerminalOverTypelessOwnerStart(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 19, 17, 0, 0, 0, time.UTC)
+	ended := started.Add(time.Minute)
+	exit := 3
+
+	// The owner's journal: a start that records no type, and nothing else.
+	writeJobJournalLines(t, jobsDir(stateDir, ownerSession),
+		`{"kind":"job_started","seq":1,"ts":"`+started.Format(time.RFC3339)+
+			`","job_id":"`+jobID+`","status":"running","owner_session_id":"`+ownerSession+
+			`","started_at":"`+started.Format(time.RFC3339)+`"}`+"\n",
+	)
+
+	rootStore := openJobJournal(t, jobsDir(stateDir, rootSession))
+	appendJobEvent(t, rootStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: rootSession,
+		StartedAt: &started,
+	})
+	appendJobEvent(t, rootStore, jobstore.Event{
+		Kind: jobstore.EventJobFinished, TS: ended, JobID: jobID,
+		Status: jobstore.StatusCommandExitedNonzero, Reason: "exit_nonzero", ExitCode: &exit,
+		EndedAt: &ended, TerminalGen: "gen_forwarded",
+	})
+	closeJobJournal(t, rootStore)
+
+	job, found, err := LoadSessionJobGet(stateDir, rootSession, jobID, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the observed finish")
+	}
+	if job.Status != string(jobstore.StatusCommandExitedNonzero) {
+		t.Fatalf("status = %q, want %q: a fragment whose status was never established cannot displace an observed finish",
+			job.Status, jobstore.StatusCommandExitedNonzero)
+	}
+	if job.ExitCode == nil || *job.ExitCode != exit {
+		t.Fatalf("exitCode = %v, want %d from the observed finish", job.ExitCode, exit)
+	}
+	if job.EndedAt == "" {
+		t.Fatal("endedAt is empty, want the observed finish's end time")
 	}
 }

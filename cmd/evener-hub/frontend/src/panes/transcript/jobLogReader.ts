@@ -72,6 +72,9 @@ export class JobLogReader {
   private terminalObservation = 0;
   private keep: "start" | "end" = "start";
   private outputInFlight: Promise<void> | null = null;
+  /** Which read holds the pane's single output slot, so an invalidation can tell
+   * whether the reply it discards was the one a live tail was owed for. */
+  private outputInFlightKind: "live" | "older" | null = null;
   private metadataInFlight = false;
   private historyServedSinceLive = false;
   private nextReadAt = 0;
@@ -92,6 +95,15 @@ export class JobLogReader {
    * work due. Recurring reads may only be suppressed after an attempt to read
    * has actually finished. */
   private liveAttempted = false;
+  /** The metadata request whose reply a refresh is waiting for, as a sequence
+   * number. A refresh asks to see the row afresh, and a request already in
+   * flight when the person pressed it answers a question about the row BEFORE
+   * the press: an unconfirmed reply from it would settle the metadata schedule
+   * on stale evidence at the same moment the refreshed output read was on its
+   * way. Only a request STARTED after the press may decide whether recurring
+   * polling continues. */
+  private metadataRefreshWanted = 0;
+  private metadataStarted = 0;
   private timeout: ReturnType<typeof setTimeout> | undefined;
 
   /** Whether a live tail read is owed regardless of the recurring cadence: one a
@@ -100,6 +112,18 @@ export class JobLogReader {
    * would leave a reader waiting on evidence only that read could produce. */
   private tailOwed(): boolean {
     return this.explicitTailOwed || !this.liveAttempted;
+  }
+
+  /** Ends the current generation, so a reply still in flight belongs to it and
+   * will be discarded. Such a reply has not done the work it was sent for: the
+   * obligation was cleared when the read STARTED, and a settled attempt marks
+   * the initial load no longer owed, so nothing would send a replacement. Restore
+   * the obligation here, once, for every invalidation — hiding or unmounting the
+   * pane, a replaced connection — because a guard at each trigger is how one of
+   * them ends up with no read scheduled. */
+  private invalidate() {
+    this.generation++;
+    if (this.outputInFlightKind === "live") this.explicitTailOwed = true;
   }
 
   constructor(
@@ -117,13 +141,13 @@ export class JobLogReader {
       });
     }
     this.unsubscribeView = view.subscribe(() => {
-      this.generation++;
+      this.invalidate();
       if (!view.alive) this.dispose();
       else this.pump();
     });
     this.unsubscribeConnection = connectionStore.subscribe((next, previous) => {
       if (next.client === previous.client && (next.state === "ready") === (previous.state === "ready")) return;
-      this.generation++;
+      this.invalidate();
       if (next.state === "ready") {
         this.liveDueAt = Date.now();
         this.metadataDueAt = Date.now();
@@ -166,7 +190,7 @@ export class JobLogReader {
   setMounted(mounted: boolean) {
     if (this.disposed || mounted === this.mounted) return;
     this.mounted = mounted;
-    this.generation++;
+    this.invalidate();
     this.view.setReadable(mounted);
     this.pump();
   }
@@ -189,6 +213,11 @@ export class JobLogReader {
     if (this.disposed) return;
     this.liveDueAt = Date.now();
     this.metadataDueAt = Date.now();
+    // One metadata read issued AFTER this press must land before the schedule
+    // settles again. A reply from a request that was already in flight does not
+    // count, and while this is outstanding the metadata deadline stays due so a
+    // fresh request is sent as soon as the slot frees.
+    this.metadataRefreshWanted = this.metadataStarted + 1;
     // An explicit refresh is how a person asks again after the schedule settled
     // on an unconfirmed row, so it clears the output deadline the failed or
     // unconfirmed attempt parked, not only the two above.
@@ -241,7 +270,7 @@ export class JobLogReader {
   dispose() {
     if (this.disposed) return;
     this.disposed = true;
-    this.generation++;
+    this.invalidate();
     this.stopTimeout();
     this.unsubscribeView();
     this.unsubscribeConnection();
@@ -311,6 +340,7 @@ export class JobLogReader {
 
   private readMetadata() {
     this.metadataInFlight = true;
+    const sequence = ++this.metadataStarted;
     const generation = this.generation;
     const current = () => this.readable() && this.generation === generation;
     void threadsStore
@@ -330,13 +360,27 @@ export class JobLogReader {
         // An unconfirmed nonterminal row gets no further metadata reads: the
         // journal cannot establish the job's state, so the next read would ask
         // the same unanswerable question.
-        this.metadataDueAt = livePollingStopped(job) ? Number.POSITIVE_INFINITY : Date.now() + READ_INTERVAL_MS;
+        // An outstanding refresh needs a reply from a request issued AFTER it
+        // was pressed. A stale reply answers the row as it was before the press,
+        // so it publishes what it learned but does not settle the schedule on
+        // that basis: the deadline stays due and a fresh request follows.
+        const stale = this.metadataRefreshWanted > sequence;
+        if (!stale) this.metadataRefreshWanted = 0;
+        if (stale) {
+          // Send the post-refresh request as soon as the slot frees, rather than
+          // waiting out a cadence paced by the reply that cannot answer it.
+          this.metadataDueAt = Date.now();
+        } else {
+          this.metadataDueAt = livePollingStopped(job) ? Number.POSITIVE_INFINITY : Date.now() + READ_INTERVAL_MS;
+        }
         // The output deadline follows the METADATA too, not only the page that
         // happened to arrive last. Metadata may settle after a failed output
         // attempt, or a refresh may deliver the page before the metadata that
         // says the row is unconfirmed; reconciling on the read that changed the
-        // answer keeps the schedule honest in both orders.
-        this.reconcileLiveDeadline(job, drainPending);
+        // answer keeps the schedule honest in both orders. A STALE reply is not
+        // that read: it describes the row before the refresh, so parking the
+        // deadline on it would cancel the output read the press already owed.
+        if (!stale) this.reconcileLiveDeadline(job, drainPending);
         this.publish({ job, metadataError: null, drainPending });
       })
       .catch((error: unknown) => {
@@ -354,6 +398,7 @@ export class JobLogReader {
     const generation = this.generation;
     const observation = this.terminalObservation;
     const kind = selection === null ? "live" : "older";
+    this.outputInFlightKind = kind;
     const keep = kind === "live" ? "end" : this.keep;
     // Whatever a person asked for is being served now. A history page satisfies
     // its own demand, so only the asked-for tail clears this flag.
@@ -423,10 +468,19 @@ export class JobLogReader {
         // metadata arrived after this failure. "Do not poll again yet" and "do
         // not read again at all" are different statements, and only the first is
         // true here.
+        // Only an UNCONFIRMED nonterminal row justifies stopping. A terminal row
+        // is a different case: its tail is the read that captures the final
+        // bytes, and a transient failure there leaves the pane holding old output
+        // and an error forever, because unchanged terminal metadata creates no
+        // new drain to ask again. Keep that read owed — the same drain a manual
+        // refresh arms — until a terminal page actually arrives.
         const automatic = selection === null && this.snapshot.pendingDemand === null && !this.snapshot.drainPending;
-        const stop = automatic && livePollingStopped(this.snapshot.job);
+        const job = this.snapshot.job;
+        const terminal = job?.terminal === true;
+        const stop = automatic && !terminal && job !== null && jobStatusUnconfirmed(job);
         this.nextReadAt = Date.now() + READ_INTERVAL_MS;
         if (stop) this.liveDueAt = Number.POSITIVE_INFINITY;
+        else if (terminal) this.liveDueAt = Date.now() + READ_INTERVAL_MS;
         const bounds = jobOutputPrunedBounds(error);
         let windows = this.snapshot.windows;
         let outputError = messageOf(error);
@@ -447,6 +501,7 @@ export class JobLogReader {
         // history page says nothing about whether this reader has read its tail.
         if (kind === "live") this.liveAttempted = true;
         this.outputInFlight = null;
+        this.outputInFlightKind = null;
         this.pump();
       });
   }

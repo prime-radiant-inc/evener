@@ -47,9 +47,9 @@ func TestScanEventsWithDiagnostics_ReportsTornTail(t *testing.T) {
 	}
 }
 
-// TestScanEventsWithDiagnostics_CleanJournalHasNoTornTail pins the other half:
-// a journal that ends on a completed record reports nothing, so a caller
-// cannot learn to ignore the diagnostic as always-on.
+// TestScanEventsWithDiagnostics_CleanJournalHasNoTornTail: a journal that ends
+// on a completed record reports nothing, so a caller cannot learn to ignore the
+// diagnostic as always-on.
 func TestScanEventsWithDiagnostics_CleanJournalHasNoTornTail(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -137,10 +137,9 @@ func TestFoldChecked_RejectsStartWithoutType(t *testing.T) {
 	}
 }
 
-// TestFoldChecked_AcceptsLegacyEmptyOwner pins the compatibility ruling the
-// issue's triage warns about: rows written before OwnerSessionID existed fold
-// with it unset, and tightening validation must not make every pre-owner
-// journal unreadable.
+// TestFoldChecked_AcceptsLegacyEmptyOwner: rows written before OwnerSessionID
+// existed fold with it unset, and tightening validation must not make every
+// pre-owner journal unreadable.
 func TestFoldChecked_AcceptsLegacyEmptyOwner(t *testing.T) {
 	t.Parallel()
 	started := diagTime()

@@ -643,3 +643,99 @@ test("a refresh tail owed when the previous tail fails is still sent", async () 
   expect(peer.requests(META)).toHaveLength(after.metadata);
   expect(peer.requests(OUTPUT)).toHaveLength(after.output);
 });
+
+// A terminal row's tail is the read that captures its final bytes, so a
+// transient failure there must not park the deadline. The reconnect that asked
+// for the read has already been served, and unchanged terminal metadata creates
+// no fresh drain, so nothing else would ask again: the pane would keep its old
+// output and error until some unrelated refresh. One retry, then the schedule
+// settles again once the terminal page arrives.
+test("a failed reconnect tail on a settled terminal job is retried", async () => {
+  const first = await peer.request(OUTPUT);
+  peer.reply(await peer.request(META), metadata(true));
+  peer.reply(first, page(0, "FINAL\n", 6));
+  // The terminal observation arms a drain of its own; settling it is what leaves
+  // the reader with nothing due, which is the state the reconnect starts from.
+  peer.reply(await peer.request(OUTPUT, 1), page(6, "", 6));
+  await observed((state) => state.job?.terminal === true && !state.drainPending && state.windows.live !== null);
+  const settled = peer.requests(OUTPUT).length;
+
+  connectionStore.setState({ state: "reconnecting" });
+  connectionStore.setState({ state: "ready" });
+  peer.fail(await peer.request(OUTPUT, settled), "temporarily unavailable");
+  await observed((state) => state.outputError !== null);
+
+  await vi.advanceTimersByTimeAsync(1000);
+  expect(peer.requests(OUTPUT)).toHaveLength(settled + 2);
+  const retry = peer.requests(OUTPUT)[settled + 1];
+  if (!retry) throw new Error("missing retry request");
+  expect(retry.params.beforeBytes).toBeUndefined();
+  peer.reply(retry, page(6, "AFTER\n", 12));
+  const snapshot = await observed((state) => state.windows.totalBytes === 12);
+  expect(snapshot.outputError).toBeNull();
+
+  const after = peer.requests(OUTPUT).length;
+  await vi.advanceTimersByTimeAsync(5000);
+  expect(peer.requests(OUTPUT)).toHaveLength(after);
+});
+
+// A refresh asks for the row as it is NOW. A metadata read already in flight
+// when the person pressed answers a question about the row BEFORE the press, so
+// its unconfirmed reply may publish what it learned but must not settle the
+// schedule: parking the deadline on it leaves the pane showing the old status
+// while the refreshed tail sits behind a deadline nothing will re-arm. One read
+// issued after the press decides whether recurring polling continues.
+test("an in-flight metadata reply does not settle a refresh that started after it", async () => {
+  await initial();
+
+  // The paced metadata read is in flight when Refresh is pressed.
+  await vi.advanceTimersByTimeAsync(1000);
+  const inFlight = await peer.request(META, 1);
+  reader.refresh();
+
+  peer.reply(inFlight, { ...metadata(false), statusUnconfirmed: true });
+  await vi.advanceTimersByTimeAsync(2500);
+  expect(peer.requests(META).length).toBeGreaterThan(2);
+
+  // The post-press reply is the one that settles the schedule, and it sees the
+  // finish the stale reply could not.
+  const fresh = await peer.request(META, 2);
+  peer.reply(fresh, metadata(true));
+  const snapshot = await observed((state) => state.job?.terminal === true);
+  expect(snapshot.job?.statusUnconfirmed).not.toBe(true);
+});
+
+// Hiding the pane discards the reply of a tail that was still in flight, and a
+// reply nobody can use has not done the work it was sent for. Starting the read
+// had already cleared the explicit obligation, and an earlier settled tail left
+// the initial load no longer owed, so nothing re-armed it: the pane came back to
+// its old output and error and waited for some unrelated refresh. The pane keeps
+// its single output slot; the replacement tail is the one the press asked for.
+test("a tail invalidated by hiding the pane is owed again when it returns", async () => {
+  await initial();
+  reader.refresh();
+  const held = await peer.request(OUTPUT, 1);
+
+  // The refresh's metadata lands first, reports the row unconfirmed, and parks
+  // the live deadline while that tail is still in flight.
+  peer.reply(await peer.request(META, 1), { ...metadata(false), statusUnconfirmed: true });
+  await observed((snapshot) => snapshot.job?.statusUnconfirmed === true);
+
+  const view = [...conversationPaneLifetime(pane).readViews.values()][0];
+  if (!view) throw new Error("missing output read view");
+  view.setReadable(false);
+  view.setReadable(true);
+
+  // The held reply now belongs to an older generation, so it publishes nothing
+  // and settling it must still leave a tail owed.
+  peer.reply(held, page(100, "STALE\n"));
+  await vi.advanceTimersByTimeAsync(2000);
+  expect(peer.requests(OUTPUT).length).toBeGreaterThan(2);
+  expect(reader.getSnapshot().windows.live?.bytes).toEqual(new Uint8Array([84, 65, 73, 76, 10]));
+
+  const replacement = await peer.request(OUTPUT, 2);
+  expect(replacement.params.beforeBytes).toBeUndefined();
+  peer.reply(replacement, page(105, "FRESH", 110));
+  const snapshot = await observed((state) => state.windows.totalBytes === 110);
+  expect(snapshot.windows.live?.bytes).toEqual(new Uint8Array([84, 65, 73, 76, 10, 70, 82, 69, 83, 72]));
+});
