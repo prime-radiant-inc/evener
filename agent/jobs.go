@@ -450,8 +450,15 @@ type runningJob struct {
 	structured              any
 	structuredCaptureFailed bool
 	terminal                *terminalJob
-	finalize                *finalizeAttempt
-	forwardDisabled         bool
+	// retainedFinish is the terminal event a previous attempt built and could
+	// not persist. A retry must write THIS event, not build another one: the
+	// terminal generation in it is what a completion notification is armed for,
+	// and the fold keeps the first finish it sees. Minting a second generation
+	// leaves the armed notification tied to an event the journal does not carry,
+	// so a running session never reports its completion.
+	retainedFinish  *jobstore.Event
+	finalize        *finalizeAttempt
+	forwardDisabled bool
 	// completion distinguishes a durable terminal close of done from teardown
 	// abandonment. Stop receipts must not treat both channel closes as the same
 	// lifecycle proof.
@@ -1785,10 +1792,25 @@ func (jm *jobManager) writeFinishJob(run *runningJob, status jobstore.Status, re
 		TerminalGen:            terminal.generation,
 		Provenance:             provenance.Clone(run.rec.Provenance),
 	}
+	// A previous attempt already built this finish and failed to persist it. The
+	// terminal generation is the identity a completion notification is armed
+	// against, and the fold keeps the first finish it meets — so the retry must
+	// carry the SAME event, not a freshly minted one. Building a new generation
+	// here is how a retried finish leaves the armed notification pointing at an
+	// event the journal does not hold, and the session silently skips its
+	// completion.
+	if run.retainedFinish != nil {
+		terminal.generation = run.retainedFinish.TerminalGen
+		finished = *run.retainedFinish
+	}
 	terminal.finished = finished
+	// Hold it until it is durable. A retry reads this field, and clearing it
+	// happens only once the append has succeeded.
+	run.retainedFinish = &finished
 	if err := jm.appendEvent(finished); err != nil {
 		return nil, &terminalRecordPersistError{status: finished.Status, err: err}
 	}
+	run.retainedFinish = nil
 
 	jm.mu.Lock()
 	if jm.running[run.rec.JobID] == run {
