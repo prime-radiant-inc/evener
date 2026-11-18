@@ -212,6 +212,9 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 		{"indexed call retains its call ID when the item ID arrives", []string{at(2, toolDelta), at(2, toolItemAdded), finalArguments}, nil, []replayItem{finalTool}},
 		{"indexed provisional call accepts arguments without repeated IDs", []string{at(2, toolItemAdded), at(2, indexedArguments), at(2, done(emptyToolByCall))}, nil, []replayItem{tool}},
 		{"indexed named call accepts final arguments without repeated IDs", []string{at(2, toolAdded), itemArguments, at(2, indexedFinalArguments)}, nil, []replayItem{finalTool}},
+		{"issued call claims its first index before an index-only final", []string{
+			`{"type":"response.function_call_arguments.delta","call_id":"call_1","delta":"{"}`, at(2, toolAdded), at(2, indexedFinalArguments),
+		}, nil, []replayItem{finalTool}},
 		{"indexed final arguments precede their terminal call ID", []string{at(0, indexedFinalArguments)}, []string{emptyToolByCall}, []replayItem{finalTool}},
 		{"issued call repeats finalized arguments at another index", []string{indexedCalls[0], at(1, callFinalArguments)}, nil, []replayItem{finalTool}},
 		{"issued call gains its item ID at another index", []string{indexedCalls[0], at(1, done(linkedCall)), finalArguments}, nil, []replayItem{finalTool}},

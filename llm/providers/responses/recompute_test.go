@@ -214,6 +214,7 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 		const missingRefusal = `{"type":"response.output_item.done","output_index":0,"item":` + selectRefusal + `}`
 		const freshDelta = `{"type":"response.output_text.delta","item_id":"m","output_index":0,"content_index":0,"delta":"fresh-42"}`
 		withoutIndex := func(frame string) string { return strings.Replace(frame, `"output_index":0,`, "", 1) }
+		unindexedDraft := strings.Replace(draft, `"content_index":0,`, "", 1)
 		indexedClear := strings.Replace(emptyMessage, `"id":"m",`, "", 1)
 		const link = `{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"m"}}`
 		emptyText := []replayText{{"output_text", ""}}
@@ -225,6 +226,8 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 			parts    []replayText
 		}{
 			{"completed empty array clears its earlier draft", []string{draft, emptyMessage}, "", nil},
+			{"unindexed draft stays withdrawn after an explicit clear", []string{unindexedDraft, emptyMessage}, selectMissing, nil},
+			{"single selected slot inherits its unindexed draft", []string{unindexedDraft, missingFirst}, selectMissing, draftText},
 			{"terminal reselect after a clear cannot recover the withdrawn answer", []string{draft, completedAnswer, emptyMessage}, selectMissing, nil},
 			{"an explicitly blank terminal slot stays blank after a clear", []string{draft, completedAnswer, emptyMessage}, firstOnly, emptyText},
 			{"fresh delta fills the terminal slot after a clear", []string{draft, completedAnswer, emptyMessage, freshDelta}, selectMissing, []replayText{{"output_text", "fresh-42"}}},
