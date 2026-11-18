@@ -607,48 +607,6 @@ test("a confirmed running status keeps polling at the live rate", async () => {
   expect(peer.requests(META).length).toBeGreaterThan(before);
 });
 
-// A queued history page must not keep a failing unconfirmed tail's deadline
-// alive. The reader would otherwise retry the tail AHEAD of the page that can
-// succeed: the demand is what the person is waiting for, and the tail is the
-// read that just failed. The condition is the one `historyServedSinceLive`
-// records, so this builds it: a page is served after the live deadline, which
-// under the old scheduling made a live retry win over a queued demand.
-test("a failed refresh tail with a queued page does not retry the tail first", async () => {
-  await initial();
-  // A live tail settles, pacing the next live read.
-  await vi.advanceTimersByTimeAsync(1000);
-  peer.reply(await peer.request(META, 1), metadata());
-  peer.reply(await peer.request(OUTPUT, 1), page());
-  await observed((snapshot) => snapshot.windows.live !== null);
-
-  // A page is served after the live deadline, so later scheduling has a live
-  // observation to weigh a queued demand against.
-  await vi.advanceTimersByTimeAsync(1000);
-  reader.capture({ byteOffset: 100, pixelOffset: -3, following: false });
-  reader.demand({ direction: "backward", boundaryBytes: 100, limitBytes: 105 }, "start");
-  peer.reply(await peer.request(OUTPUT, 2), page(90, "OLDER_ROW\n", 105));
-  await observed((snapshot) => snapshot.windows.older !== null);
-
-  // Refresh starts a tail; its metadata reports the row unconfirmed while that
-  // tail is still in flight, and a further page demand is queued behind it.
-  reader.refresh();
-  const failing = await peer.request(OUTPUT, 3);
-  peer.reply(await peer.request(META, 2), { ...metadata(false), statusUnconfirmed: true });
-  await observed((snapshot) => snapshot.job?.statusUnconfirmed === true);
-  reader.demand({ direction: "backward", boundaryBytes: 100, limitBytes: 105 }, "start");
-
-  peer.fail(failing, "output unavailable");
-  await observed((snapshot) => snapshot.outputError !== null);
-
-  // After the backoff the QUEUED PAGE takes the slot. A live tail retrying the
-  // read that just failed would arrive here with no beforeBytes.
-  await vi.advanceTimersByTimeAsync(1000);
-  const next = await peer.request(OUTPUT, 4);
-  expect(next.params.beforeBytes).toBe(100);
-  peer.reply(next, page(90, "OLDER_ROW\n", 105));
-  await observed((snapshot) => snapshot.windows.older !== null);
-});
-
 // A refresh issued while a tail read is still in flight, whose metadata arrives
 // BEFORE that old tail fails, must still send the tail it owes. The old failure
 // starts the slot's one-second backoff and parks the live deadline, so a wakeup

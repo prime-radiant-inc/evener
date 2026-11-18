@@ -423,13 +423,7 @@ export class JobLogReader {
         // metadata arrived after this failure. "Do not poll again yet" and "do
         // not read again at all" are different statements, and only the first is
         // true here.
-        // A queued history page is NOT a reason to keep the recurring deadline
-        // alive: it would retry the failing tail ahead of the page that can
-        // succeed. Park the recurring deadline and let the pending page use the
-        // slot once the backoff expires. A terminal drain is different — those
-        // bytes were already written — and a newer explicit refresh or reconnect
-        // re-opens the tail through tailOwed() on its own.
-        const automatic = selection === null && !this.snapshot.drainPending;
+        const automatic = selection === null && this.snapshot.pendingDemand === null && !this.snapshot.drainPending;
         const stop = automatic && livePollingStopped(this.snapshot.job);
         this.nextReadAt = Date.now() + READ_INTERVAL_MS;
         if (stop) this.liveDueAt = Number.POSITIVE_INFINITY;
