@@ -414,6 +414,14 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 					Evener: appwire.EvenerThread{Ref: ref, InstanceID: ownerThreadID, Kind: "subagent", ParentRef: parentRef},
 				},
 			}
+			// A delegate's read serves this stored projection, whose failure
+			// field the execution boundaries below keep turn-correct: the
+			// quota wait lands with the announcement and drops at the
+			// boundary, so the projection reports the wait authoritatively.
+			// Without the bit a reconnecting pane treats the (correct) absent
+			// field as a source that cannot speak for the wait and keeps a
+			// stale live wait on screen.
+			projection.thread.Evener.Capabilities.QuotaWaitSnapshot = true
 			s.appDescendants[threadID] = projection
 		}
 		// The history exists before the thread becomes readable (it is readable
@@ -454,6 +462,13 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 				projection.thread = params.Thread
 				projection.thread.Evener.Kind = "subagent"
 				projection.thread.Evener.Access = appwire.SessionAccess(start.Sandbox, start.SandboxNet)
+				// The stored projection is this delegate's read source, and its
+				// failure field is turn-correct (the boundaries above drop a
+				// wait whose execution ended), so it reports the quota wait
+				// authoritatively: without the bit, a reconnecting pane treats
+				// the (correct) absent wait as a source that cannot speak for
+				// it and keeps a stale live wait on screen.
+				projection.thread.Evener.Capabilities.QuotaWaitSnapshot = true
 				projection.thread.Evener.Tasks = appwire.CloneTaskAggregate(params.Thread.Evener.Tasks)
 				projection.thread.Evener.Goal = cloneGoalState(params.Thread.Evener.Goal)
 				params.Thread = projection.thread

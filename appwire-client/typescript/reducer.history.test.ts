@@ -364,6 +364,40 @@ test("a read from a quota-snapshot source clears a wait it reports ended", () =>
   expect(next.modelRetry).toBeUndefined();
 });
 
+// Turn ownership is the read's own fact: even a source that cannot report
+// the wait names the running turn, and a read that names a DIFFERENT turn
+// than the wait's is proof the wait's turn ended. The canceled deadline and
+// its chip must clear there, or the old countdown hides the new turn's
+// liveness for as long as the reconnect pane lives.
+test("a read naming a different running turn clears the wait even from a source that cannot report it", () => {
+  const resumesAt = 4_102_400_000;
+  let model = hydrateThread(
+    read([turn("turn_1", 1)], { activeTurnId: "turn_1", quotaWaitResumesAt: resumesAt }),
+    REF,
+    NOW,
+  );
+  model = {
+    ...model,
+    modelRetry: {
+      attempt: 1,
+      maxAttempts: 1,
+      delayMs: resumesAt - NOW,
+      errorClass: "quota_exceeded",
+      turnId: "turn_1",
+      groupElapsedMs: 5_000,
+      attemptCap: 1,
+      receivedAt: NOW,
+    },
+  };
+  // Another client stopped the waiting turn and started turn_2 while this
+  // pane was away; the source is an older daemon that cannot report waits.
+  const fresh = hydrateThread(read([turn("turn_2", 1)], { activeTurnId: "turn_2" }), REF, NOW + 1);
+  fresh.capabilities = { ...fresh.capabilities, quotaWaitSnapshot: false };
+  const next = applyReadModel(model, fresh);
+  expect(next.quotaResumesAt).toBeUndefined();
+  expect(next.modelRetry).toBeUndefined();
+});
+
 function page(turns: Turn[], options: Snapshot & { authoritative?: boolean } = {}): ThreadTurnsListResponse {
   return {
     data: turns,

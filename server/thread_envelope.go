@@ -92,7 +92,15 @@ type threadEnvelope struct {
 	PendingQuestion       *appwire.PendingQuestion
 	// Failure summarizes the failed turn the session rests on (S1c). The
 	// snapshot shows it only while the status is systemError.
-	Failure               *appwire.ThreadFailure
+	Failure *appwire.ThreadFailure
+	// turnFailureFence fences stale failure samples against the turn they
+	// were sampled for. SetProcessingTurn bumps it when it publishes a
+	// replacement turn (and clears Failure with it): a failure sample
+	// captured before that publish - the bridge can sample the old turn's
+	// quota wait just before a Stop - must not restore the canceled wait
+	// under the new turn's identity. A sample that started before the bump
+	// drops its failure facet instead of overwriting the cleared envelope.
+	turnFailureFence      uint64
 	PendingEscalations    []appwire.SandboxEscalationRequested
 	ReasoningEffort       string
 	ReasoningEffortLevels []string
@@ -390,6 +398,7 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	cwdCarrierGeneration := s.appEnvelope.cwdCarrierGeneration
 	notesCarrierGeneration := s.appEnvelope.notesCarrierGeneration
 	urlsCarrierGeneration := s.appEnvelope.urlsCarrierGeneration
+	turnFailureFence := s.appEnvelope.turnFailureFence
 	ref := s.appRef
 	s.mu.RUnlock()
 	if src == nil {
@@ -516,6 +525,13 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 		}
 		if assignFacets&facetGoal != 0 && s.appEnvelope.goalCarrierGeneration != goalCarrierGeneration {
 			assignFacets &^= facetGoal
+		}
+		// A failure sample taken before SetProcessingTurn published the
+		// replacement turn belongs to the turn that earned it, which is no
+		// longer running: drop it, the way the task/goal guards drop a sample
+		// a newer carrier superseded.
+		if assignFacets&facetTurnFailure != 0 && s.appEnvelope.turnFailureFence != turnFailureFence {
+			assignFacets &^= facetTurnFailure
 		}
 		cwdStale := s.appEnvelope.cwdCarrierGeneration != cwdCarrierGeneration
 		// The notes and URLs carriers ride the goal facet's sample (SessionMeta

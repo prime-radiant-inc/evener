@@ -823,7 +823,12 @@ func (s *Server) SetProcessingTurn(turnID string) {
 		// resting-turn summary clears the same way and to the same effect -
 		// the next turn's status is not systemError, and this turn's own
 		// TURN_ENDED re-samples every facet if it fails.
+		// The fence bump completes the clear: a failure sample the bridge
+		// took BEFORE this publish (the old turn's wait, sampled just before
+		// the Stop) is still in flight, and the assign drops it instead of
+		// restoring the canceled wait under this turn's identity.
 		s.appEnvelope.Failure = nil
+		s.appEnvelope.turnFailureFence++
 		// Until the execution's own EXECUTION_STARTED is projected, a
 		// terminal status still queued from the input before it must not be
 		// published over this one (RecordAppEvent defers it).

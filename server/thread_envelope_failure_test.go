@@ -208,3 +208,62 @@ func TestNewTurnPublishRetiresAStaleEnvelopeQuotaWait(t *testing.T) {
 		t.Fatalf("a new turn's read names turn %q, want turn_2", got)
 	}
 }
+
+// The bridge can sample the old turn's quota failure just before the Stop and
+// store that sample after SetProcessingTurn has already published the
+// replacement turn: the sample is still in flight when the publish clears the
+// envelope. The assign must drop it (a turn fence), not restore the canceled
+// wait under the new turn's identity.
+func TestInFlightFailureSampleCannotRestoreAWaitUnderANewTurn(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	waiting := &appwire.ThreadFailure{Title: "Usage limit reached", Cause: &appwire.DiagnosticCause{Kind: "provider", Status: 429}, ResumesAt: 1_800_000_000_000}
+	// The source holds its failure sample open (afterSampling takes the value,
+	// then parks) while the turn publishes and the store proceeds without it.
+	src := &stubThreadEnvelopeSource{failure: waiting}
+	publishEnvelope(srv, src)
+	srv.SetState(appwire.ThreadStatusActive)
+
+	// The bridge refreshes the failure facet for the OLD turn's MODEL_RETRY.
+	// The hooks arm only now: the seed sample above ran without them.
+	gate := make(chan struct{})
+	src.failureSampled = make(chan struct{})
+	src.parkAfterFailureSample = func() { <-gate }
+	sampleStored := make(chan struct{})
+	go func() {
+		BridgeEvent(srv, events.SessionEvent{Kind: events.EventModelRetry, SessionID: "root", Data: events.ModelRetryData{Attempt: 1, DelayMS: 7_200_000, ErrorClass: "quota_exceeded"}}, nil)
+		close(sampleStored)
+	}()
+	// The wait ends on another client's Stop (the source stops reporting it)
+	// and the next turn publishes while the failure sample is still parked.
+	<-src.failureSampled
+	src.failure = nil
+	srv.SetProcessingTurn("turn_2")
+	close(gate)
+	<-sampleStored
+	if got := readThreadOverWire(t, srv, "local:root").Evener.Failure; got != nil {
+		t.Fatalf("an in-flight sample restored the stopped wait's summary %+v under the new turn", got)
+	}
+}
+
+// A delegate's read serves its stored projection, whose failure field the
+// execution boundaries keep turn-correct, so it must advertise the
+// quotaWaitSnapshot capability: without the bit, a pane reconnecting after a
+// same-turn wake treats the projection's (correct) absent wait as a source
+// that cannot speak for it and keeps the stale countdown on screen.
+func TestDescendantReadAdvertisesQuotaWaitSnapshot(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_root")
+	srv.RecordDescendantAppEvent("th_root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "th_child"})
+	read := func() appwire.Thread {
+		t.Helper()
+		response, err := srv.handleAppThreadRead(context.Background(), appwire.ThreadReadParams{ThreadID: "th_child"})
+		if err != nil {
+			t.Fatalf("thread/read: %v", err)
+		}
+		return response.Thread
+	}
+	if got := read().Evener.Capabilities.QuotaWaitSnapshot; !got {
+		t.Fatalf("a delegate's read does not advertise quotaWaitSnapshot")
+	}
+}

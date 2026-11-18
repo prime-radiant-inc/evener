@@ -42,6 +42,11 @@ type stubThreadEnvelopeSource struct {
 	// parkAfterMeta runs after SessionMeta has copied its return value, allowing a
 	// test to hold an old goal sample in flight while a direct carrier commits.
 	parkAfterMeta func()
+	// parkAfterFailureSample runs after RestingFailure has copied its return
+	// value, holding a failure sample in flight past whatever the test does
+	// before the store commits; failureSampled signals the copy happened.
+	parkAfterFailureSample func()
+	failureSampled         chan struct{}
 }
 
 func (s *stubThreadEnvelopeSource) LatestExecutionTurnID() string { return "" }
@@ -96,7 +101,16 @@ func (s *stubThreadEnvelopeSource) FailedToolCalls() (int, bool) {
 	return s.failedToolCalls, s.failuresMeasured
 }
 
-func (s *stubThreadEnvelopeSource) RestingFailure() *appwire.ThreadFailure { return s.failure }
+func (s *stubThreadEnvelopeSource) RestingFailure() *appwire.ThreadFailure {
+	failure := s.failure
+	if s.failureSampled != nil {
+		s.failureSampled <- struct{}{}
+	}
+	if s.parkAfterFailureSample != nil {
+		s.parkAfterFailureSample()
+	}
+	return failure
+}
 
 func (s *stubThreadEnvelopeSource) PendingEscalations() []appwire.SandboxEscalationRequested {
 	return append([]appwire.SandboxEscalationRequested(nil), s.escalations...)

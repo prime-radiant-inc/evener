@@ -1012,14 +1012,26 @@ export function applyReadResponse<M extends ThreadModel>(
   // design, not authoritatively empty) never clears a known wait - the live
   // announcement is the only wait evidence there is, and a refresh during a
   // multi-hour wait would otherwise erase the countdown and report a stall.
+  // The one exception is turn ownership: a read that names a DIFFERENT
+  // running turn than the wait's is proof the wait's turn ended, on any
+  // source - the running turn is the read's own fact, not the quota
+  // field's - so the wait and its chip clear together there.
   const quotaSnapshotAuthoritative = fields.capabilities?.quotaWaitSnapshot === true;
-  const clearedQuotaWait =
-    fields.quotaResumesAt === undefined && quotaSnapshotAuthoritative ? { quotaResumesAt: undefined } : {};
+  const readRunningTurnId = runningTurn(resp.thread).runningTurnId;
   // A read that shows no wait is authoritative that the wait ended: the chip
   // goes with the deadline, or the canceled turn's "waiting for quota" reads
   // over whatever runs next. The wake's own zero-delay announcement already
   // cleared a wait that survived into the same turn; this is the reconnect
   // half, where the snapshot speaks for a turn the client never watched end.
+  const waitTurnReplaced =
+    base.modelRetry?.errorClass === "quota_exceeded" &&
+    base.modelRetry.turnId !== undefined &&
+    readRunningTurnId !== undefined &&
+    readRunningTurnId !== base.modelRetry.turnId;
+  const clearedQuotaWait =
+    fields.quotaResumesAt === undefined && (quotaSnapshotAuthoritative || waitTurnReplaced)
+      ? { quotaResumesAt: undefined }
+      : {};
   // A read that names a DIFFERENT running turn retires the old turn's retry
   // metadata even while the new turn waits its own wait: the snapshot's new
   // deadline is real, but the retained retry (its elapsed time, its model)
@@ -1030,17 +1042,15 @@ export function applyReadResponse<M extends ThreadModel>(
   // can wait twice (the first wait ended by a steer, the retry hit the limit
   // again), and matching turn ids are not evidence the two waits share a
   // call - the moved deadline names a new wait whose elapsed time the
-  // retained metadata does not carry. Both apply only where the snapshot
-  // can speak for the wait at all.
-  const readRunningTurnId = runningTurn(resp.thread).runningTurnId;
+  // retained metadata does not carry. The moved-deadline rule needs the
+  // capability (the absent field on the same turn is otherwise meaningless);
+  // the replaced-turn rule does not, for the same reason as above.
   const quotaRetryFromAnotherCall =
-    quotaSnapshotAuthoritative &&
     base.modelRetry?.errorClass === "quota_exceeded" &&
     base.modelRetry.turnId !== undefined &&
-    ((readRunningTurnId !== undefined && readRunningTurnId !== base.modelRetry.turnId) ||
-      fields.quotaResumesAt !== model.quotaResumesAt);
+    (waitTurnReplaced || (quotaSnapshotAuthoritative && fields.quotaResumesAt !== model.quotaResumesAt));
   const clearedQuotaRetry =
-    quotaSnapshotAuthoritative &&
+    (quotaSnapshotAuthoritative || waitTurnReplaced) &&
     (fields.quotaResumesAt === undefined || quotaRetryFromAnotherCall) &&
     base.modelRetry?.errorClass === "quota_exceeded"
       ? { modelRetry: undefined }
@@ -1224,25 +1234,33 @@ export function applyReadModel<M extends ThreadModel>(
     fresh.scratchDir === undefined && model.scratchDir !== undefined ? { scratchDir: undefined } : {};
   // Same snapshot-support rule as applyReadResponse: a source without
   // quotaWaitSnapshot cannot speak for the wait, so its read never clears
-  // one the live announcements recorded.
+  // one the live announcements recorded - except by turn ownership, the
+  // read's own fact: a read naming a DIFFERENT running turn than the wait's
+  // is proof the wait's turn ended on any source, and clears wait and chip
+  // together.
   const quotaSnapshotAuthoritative = fresh.capabilities?.quotaWaitSnapshot === true;
+  const waitTurnReplaced =
+    base.modelRetry?.errorClass === "quota_exceeded" &&
+    base.modelRetry.turnId !== undefined &&
+    freshRunningTurnId !== undefined &&
+    freshRunningTurnId !== base.modelRetry.turnId;
   const clearedQuotaWait =
-    fresh.quotaResumesAt === undefined && quotaSnapshotAuthoritative && model.quotaResumesAt !== undefined
+    fresh.quotaResumesAt === undefined &&
+    (quotaSnapshotAuthoritative || waitTurnReplaced) &&
+    model.quotaResumesAt !== undefined
       ? { quotaResumesAt: undefined }
       : {};
   // Same cross-turn and moved-deadline rules as applyReadResponse: a read
   // naming a different running turn, or moving the deadline within the same
   // turn, retires the retained retry metadata - the new deadline renders
-  // alone until a matching live announcement arrives. Both apply only where
-  // the snapshot can speak for the wait at all.
+  // alone until a matching live announcement arrives. The moved-deadline
+  // rule needs the capability; the replaced-turn rule does not.
   const quotaRetryFromAnotherCall =
-    quotaSnapshotAuthoritative &&
     base.modelRetry?.errorClass === "quota_exceeded" &&
     base.modelRetry.turnId !== undefined &&
-    ((freshRunningTurnId !== undefined && freshRunningTurnId !== base.modelRetry.turnId) ||
-      fresh.quotaResumesAt !== model.quotaResumesAt);
+    (waitTurnReplaced || (quotaSnapshotAuthoritative && fresh.quotaResumesAt !== model.quotaResumesAt));
   const clearedQuotaRetry =
-    quotaSnapshotAuthoritative &&
+    (quotaSnapshotAuthoritative || waitTurnReplaced) &&
     (fresh.quotaResumesAt === undefined || quotaRetryFromAnotherCall) &&
     model.modelRetry?.errorClass === "quota_exceeded"
       ? { modelRetry: undefined }
