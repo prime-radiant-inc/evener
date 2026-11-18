@@ -596,6 +596,65 @@ func TestDelegateResourceSupervision_StableAttentionObeysQueueDeliveryRules(t *t
 	}
 }
 
+// TestDelegateResourceSupervision_FoldLeavesAPresentedTickAlone pins the other
+// half of the cross-batch fold (#2340 review).
+//
+// A leased request starts with tick A. Tick B arrives while that turn is still
+// running, and the local ingress folds B onto A. But A was already PRESENTED:
+// the model has read the count A stands for, so folding it into B counts that
+// fire twice and retiring A discards the coverage its reader acquired. A row a
+// settled request presented is not unread, and the fold must skip it.
+func TestDelegateResourceSupervision_FoldLeavesAPresentedTickAlone(t *testing.T) {
+	t.Parallel()
+	sess, _ := newCompactableSession(t)
+	jm := sess.jobManager
+	if jm == nil {
+		t.Fatal("the fixture session has no job manager")
+	}
+	const timerID = "watch:fold-covered"
+	jm.mu.Lock()
+	jm.watches[watchKey{VisibleSessionID: jm.sessionID, Target: "self", Slot: timerID}] = &watchConfig{watchID: timerID, target: "self", timer: true}
+	jm.mu.Unlock()
+	tick := func(n int) jobNotification {
+		return jobNotification{Kind: jobNotificationKindWatch, WatchID: timerID, Fires: 1, Reason: "repeat", Status: jobNotificationEventWatch, Occurrence: "tick:" + timerID + ":" + strconv.Itoa(n)}
+	}
+	first, second := tick(1), tick(2)
+	firstID := stableWatchDiagnosticAttentionID(first)
+	if _, err := sess.appendDelegateNotificationDurably(firstID, "tick one was presented"); err != nil {
+		t.Fatalf("persist the first tick: %v", err)
+	}
+	sess.notePendingStableWatchNotice(first, firstID)
+	// The turn's settled request presented it: coverage is promoted at request
+	// settle, which is what makes the row READ rather than pending-unread.
+	sess.attentionMu.Lock()
+	sess.attentionCoveredIDs = map[string]struct{}{firstID: {}}
+	sess.attentionMu.Unlock()
+
+	folded, superseded := sess.foldPendingStableWatchNotice(second)
+	if slices.Contains(superseded, firstID) {
+		t.Fatalf("the fold superseded %q, a row a settled request already presented: retiring it discards the coverage its reader acquired and the count it holds is re-presented on the next request", firstID)
+	}
+	if folded.Fires != second.Fires {
+		t.Fatalf("the survivor counts %d fires, want %d: a presented tick's count was folded in, so the model reads the same fire twice", folded.Fires, second.Fires)
+	}
+
+	// Non-vacuity: an UNREAD row of the same family must still fold, or this
+	// fixture would pass with the fold disabled entirely.
+	third := tick(3)
+	thirdID := stableWatchDiagnosticAttentionID(third)
+	if _, err := sess.appendDelegateNotificationDurably(thirdID, "tick three was never presented"); err != nil {
+		t.Fatalf("persist the third tick: %v", err)
+	}
+	sess.notePendingStableWatchNotice(third, thirdID)
+	folded, superseded = sess.foldPendingStableWatchNotice(tick(4))
+	if !slices.Contains(superseded, thirdID) {
+		t.Fatalf("an UNREAD tick of the same family was not superseded: the fold stopped folding, so this fixture no longer distinguishes read from unread")
+	}
+	if folded.Fires != 2 {
+		t.Fatalf("the survivor counts %d fires for two unread ticks, want 2", folded.Fires)
+	}
+}
+
 // TestDelegateResourceSupervision_RecoveryDropOfAStableParentIsDurableAttention
 // pins that the unreachable-child recovery renderer hands its watch-drop
 // diagnostic to the durable ingress when the recovering parent is ITSELF a

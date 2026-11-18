@@ -700,6 +700,21 @@ func (s *Session) foldPendingStableWatchNotice(n jobNotification) (jobNotificati
 			if held.family != family || held.occurrence == occurrence {
 				continue
 			}
+			// A row a SETTLED request already presented is not unread, and folding
+			// it would say otherwise. The model has read that tick's count; adding
+			// it to this survivor counts the same fire twice, and retiring the row
+			// discards the coverage the reader acquired for it. Leave it alone: its
+			// own turn end settles it, and this notice stands for its own fire
+			// only (#2340 review).
+			// A row a SETTLED request already presented is not unread, and folding
+			// it would say otherwise. The model has read that tick's count; adding
+			// it to this survivor counts the same fire twice, and retiring the row
+			// discards the coverage the reader acquired for it. Leave it alone: its
+			// own turn end settles it, and this notice stands for its own fire
+			// only (#2340 review).
+			if s.attentionIDCoveredLocked(held.attentionID) {
+				continue
+			}
 			// A tick of one watch folds its count into the survivor; every other
 			// family member is simply replaced, because the survivor's content is
 			// a newer statement of the same fact.
@@ -711,6 +726,17 @@ func (s *Session) foldPendingStableWatchNotice(n jobNotification) (jobNotificati
 		}
 	}
 	return n, superseded
+}
+
+// attentionIDCoveredLocked reports whether a settled round of the running turn
+// already presented this attention, so re-presenting it would show the model a
+// fact it has read. The caller holds attentionMu.
+func (s *Session) attentionIDCoveredLocked(attentionID string) bool {
+	if attentionID == "" {
+		return false
+	}
+	_, covered := s.attentionCoveredIDs[attentionID]
+	return covered
 }
 
 // notePendingStableWatchNotice records that n's row is pending under its own
