@@ -1977,6 +1977,70 @@ func TestMergeEnqueueLauncherDoesNotBuildUnderAReplaceableRoot(t *testing.T) {
 		if err := cmd.Run(); err == nil {
 			t.Fatalf("%s grants %s rwx under the r-x mask in %q, which cannot replace entries; the reader reported a foreign write", probe, user, string(listing))
 		}
+		// The mode's group bits are not the owning group's permission when an
+		// access ACL is present. On Linux, `ls -l` prints the MASK in the group
+		// position, so a wide mask makes the mode read `rwx` while the owning group
+		// and every named entry are read-only. The whole predicate used to answer
+		// "replaceable" from those bits, refusing a directory nobody can write to.
+		//
+		// The premise is read back from the tool: the mode must actually show a
+		// write in the group position for this case to mean anything, because the
+		// whole defect is the mode disagreeing with the ACL.
+		if err := exec.Command(setfacl, "-b", probe).Run(); err != nil {
+			t.Fatalf("reset the ACL: %v", err)
+		}
+		// The mode first, and the mask last: chmod on a directory that already has
+		// an access ACL rewrites the mask, so setting the mode in between would
+		// leave the mask at whatever the mode says and this case would be about a
+		// mask nobody set. That is the premise check below doing its job -- the
+		// first version of this test set the mode after the mask and did not have
+		// the mode it claimed.
+		if err := os.Chmod(probe, 0o750); err != nil {
+			t.Fatalf("set a known mode: %v", err)
+		}
+		for _, acl := range [][]string{
+			{"-m", "u:" + user + ":r-x"},
+			{"-m", "g::r-x"},
+			{"-m", "m::rwx"},
+		} {
+			if out, err := exec.Command(setfacl, append(append([]string{}, acl...), probe)...).CombinedOutput(); err != nil {
+				t.Fatalf("setfacl %v in %s: %v: %s", acl, probe, err, string(out))
+			}
+		}
+		t.Cleanup(func() { _ = exec.Command("setfacl", "-b", probe).Run() })
+		modeOut, err := exec.Command("stat", "-c", "%A", probe).Output()
+		if err != nil {
+			t.Fatalf("read the mode back: %v", err)
+		}
+		mode := strings.TrimSpace(string(modeOut))
+		// The group triad is mode[4:7]; `w` in it is the mask showing through.
+		if len(mode) < 7 || !strings.Contains(mode[4:7], "w") {
+			t.Fatalf("%s reads %q, and this case needs the MASK in the group position for the mode to be the misleading half: the defect is the mode saying write when the ACL does not", probe, mode)
+		}
+		aclOut, err := exec.Command(getfacl, "-p", "-c", probe).Output()
+		if err != nil {
+			t.Fatalf("read the ACL back: %v", err)
+		}
+		for _, line := range []string{"group::r-x", "mask::rwx", "user:" + user + ":r-x"} {
+			if !strings.Contains(string(aclOut), line) {
+				t.Fatalf("the ACL was not set as this case claims: %q is missing from %q", line, string(aclOut))
+			}
+		}
+		if err := exec.Command("bash", "-c",
+			`eval "$(sed -n '/^acl_getfacl_grants_foreign_write()/,/^}/p;/^acl_getfacl_has_mask()/,/^}/p;/^acl_getfacl_group_grants_write()/,/^}/p;/^acl_ls_e_grants_foreign_write()/,/^}/p;/^dir_acl_grants_foreign_write()/,/^}/p;/^dir_entry_is_replaceable()/,/^}/p;/^dir_is_owned_by_trusted()/,/^}/p' "$1")"; dir_entry_is_replaceable "$2"`,
+			"bash", mergeEnqueueLauncher, probe).Run(); err == nil {
+			t.Fatalf("%s reads %q with owning group r-x, %s at r-x and a rwx mask: nobody can write, so the predicate must not call it replaceable -- the mode's group position is the mask, not the group", probe, mode, user)
+		}
+		// And the opposite, so the fix is not "ignore the group bits entirely": an
+		// owning group that really may write under a wide mask is a grant.
+		if err := exec.Command(setfacl, "-m", "g::rwx", probe).Run(); err != nil {
+			t.Fatalf("grant the owning group write: %v", err)
+		}
+		if err := exec.Command("bash", "-c",
+			`eval "$(sed -n '/^acl_getfacl_grants_foreign_write()/,/^}/p;/^acl_getfacl_has_mask()/,/^}/p;/^acl_getfacl_group_grants_write()/,/^}/p;/^acl_ls_e_grants_foreign_write()/,/^}/p;/^dir_acl_grants_foreign_write()/,/^}/p;/^dir_entry_is_replaceable()/,/^}/p;/^dir_is_owned_by_trusted()/,/^}/p' "$1")"; dir_entry_is_replaceable "$2"`,
+			"bash", mergeEnqueueLauncher, probe).Run(); err != nil {
+			t.Fatalf("%s grants its owning group rwx through an access ACL, so another user in that group can replace entries; the predicate called it safe (%v)", probe, err)
+		}
 	})
 
 	// macOS has no getfacl. `ls -lde` is the only thing that prints an ACL there,

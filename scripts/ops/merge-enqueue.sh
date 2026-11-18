@@ -240,6 +240,39 @@ acl_getfacl_grants_foreign_write() {
   '
 }
 
+# acl_getfacl_has_mask -- read `getfacl -p -c` output on stdin and report whether
+# it carries a mask line, that is, whether this directory has a POSIX access ACL.
+#
+# This is the fact that decides whether the mode's group bits may be read as the
+# owning group's permission, and on Linux they may not be: with an access ACL
+# present, `ls -l` prints the MASK in the group position. So `drwxrwxr-x` on such
+# a directory does not say the owning group may write -- it says the mask caps
+# named entries and the owning group at rwx, and the actual owning-group
+# permission is on the `group::` line. Reading the mode instead marks a
+# directory replaceable when the mask is wide and every entry under it is
+# read-only, which refuses a root nobody can tamper with.
+acl_getfacl_has_mask() {
+  awk -F: '$1 == "mask" { found = 1 } END { exit found ? 0 : 1 }'
+}
+
+# acl_getfacl_group_grants_write -- read `getfacl -p -c` output on stdin and
+# report whether the OWNING GROUP may replace entries, which is `group::` AND
+# the mask.
+#
+# The `#effective:` comments getfacl prints are not used: they are a rendering,
+# and a directory whose ACL cannot be shown to limit the owning group has to
+# come back replaceable rather than trusted.
+acl_getfacl_group_grants_write() {
+  awk -F: '
+    $1 == "group" && $2 == "" { group = $3 }
+    $1 == "mask"              { seenmask = 1; if (index($3, "w")) maskw = 1 }
+    END {
+      if (!index(group, "w")) exit 1
+      exit (!seenmask || maskw) ? 0 : 1
+    }
+  '
+}
+
 # acl_ls_e_grants_foreign_write -- read macOS `ls -lde` ACL lines on stdin.
 #
 # Darwin has no getfacl; it prints an ACL as numbered entries after the mode
@@ -341,12 +374,41 @@ dir_acl_grants_foreign_write() {
 # would turn a harmless grant into a refusal to merge. So the marker decides
 # only whether the ACL has to be read, and dir_acl_grants_foreign_write answers
 # what it grants. When it cannot read the ACL, its answer is yes.
+#
+# The mode's group bits are read as the owning group's permission ONLY when the
+# directory has no access ACL. On Linux with an access ACL present, `ls -l` puts
+# the MASK in the group position, so `drwxrwxr-x` there means "the mask permits
+# rwx", not "the owning group may write". Treating the mask as a grant refuses a
+# directory whose every named entry and owning group are read-only -- a root
+# nobody can tamper with -- and getting this backwards in the other direction is
+# worse: a directory whose owning group may write through an ACL a mask-only
+# read would miss has to come back replaceable. So the owning-group answer comes
+# from the ACL itself when there is one, and from the mode when there is not.
+#
+# The other-user bits are read from the mode either way. No ACL can widen
+# `other`; it is the mode's own field.
 dir_entry_is_replaceable() {
-  local dir="$1" writable
+  local dir="$1" writable acl
   [ -d "$dir" ] || return 0
   dir_is_owned_by_trusted "$dir" || return 0
   dir_acl_grants_foreign_write "$dir" && return 0
-  writable=$(find "$dir" -maxdepth 0 \( -perm -0020 -o -perm -0002 \) -print 2>/dev/null) || return 0
+  # Other-writable is a mode fact and is checked first, because it needs no ACL.
+  writable=$(find "$dir" -maxdepth 0 -perm -0002 -print 2>/dev/null) || return 0
+  if [ -n "$writable" ]; then
+    [ -k "$dir" ] && return 1
+    return 0
+  fi
+  # The owning group. With an access ACL the mode's group position is the mask,
+  # so the group's own permission has to be read from `group::` and capped by it.
+  if [ -n "$(ls -ldn "$dir" 2>/dev/null | awk 'NR == 1 { print }' | grep -F '+')" ] && command -v getfacl >/dev/null 2>&1; then
+    acl=$(getfacl -p -c "$dir" 2>/dev/null) || return 0
+    if printf '%s\n' "$acl" | acl_getfacl_has_mask; then
+      # A mask means the group position is not the group. The ACL is authoritative.
+      printf '%s\n' "$acl" | acl_getfacl_group_grants_write && return 0
+      return 1
+    fi
+  fi
+  writable=$(find "$dir" -maxdepth 0 -perm -0020 -print 2>/dev/null) || return 0
   [ -n "$writable" ] || return 1
   [ -k "$dir" ] && return 1
   return 0
