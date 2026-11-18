@@ -106,6 +106,23 @@ func TestRenderDiffGitBranchGoneRendersPlaceholder(t *testing.T) {
 			t.Fatalf("replayed checkout = %+v, want confirmed absence in %+v", replayed.State().Last, cur)
 		}
 	})
+	t.Run("replayed checkout and branch before a full observation", func(t *testing.T) {
+		before := State{Last: fullSnap(), HasSent: true}
+		confirmed := before.Last
+		confirmed.Cwd += "/another-checkout"
+		confirmed.GitBranch = "work"
+		diff := NewTracker(before).RenderDiff(confirmed)
+		restored := NewTracker(State{})
+		if !restored.ReplayBlock(diff) || restored.State().HasSent {
+			t.Fatal("expected a partial baseline from the replayed checkout change")
+		}
+		unknown := confirmed
+		unknown.GitBranch, unknown.GitBranchUnknown = "", true
+		block := restored.RenderDiff(unknown)
+		if block == "" || restored.State() != (State{Last: confirmed, HasSent: true}) {
+			t.Fatalf("full observation state = %+v, want the confirmed checkout %+v", restored.State(), confirmed)
+		}
+	})
 }
 
 func TestRenderDiffPressureAppearAndClear(t *testing.T) {

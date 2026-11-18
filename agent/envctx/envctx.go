@@ -119,7 +119,8 @@ func pressureValue(line, name string) string {
 func (t *Tracker) RenderDiff(cur Snapshot) string {
 	first := !t.st.HasSent
 	prev := t.st.Last
-	if !first && cur.Cwd == prev.Cwd && cur.GitBranchUnknown && !prev.GitBranchUnknown {
+	// A replayed diff can confirm the branch before a full baseline exists.
+	if cur.Cwd == prev.Cwd && cur.GitBranchUnknown && !prev.GitBranchUnknown && (!first || prev.GitBranch != "") {
 		cur.GitBranch = prev.GitBranch
 		cur.GitBranchUnknown = false
 	}

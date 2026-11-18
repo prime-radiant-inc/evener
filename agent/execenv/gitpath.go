@@ -220,8 +220,14 @@ func HasGitEntryAncestor(cwd string) (present, known bool) {
 	cwd = filepath.Clean(cwd)
 	dir := cwd
 	for {
-		_, err := os.Stat(filepath.Join(dir, ".git"))
+		path := filepath.Join(dir, ".git")
+		entry, err := os.Lstat(path)
 		if err == nil {
+			if entry.Mode()&fs.ModeSymlink != 0 {
+				if _, err := os.Stat(path); err != nil {
+					return false, false
+				}
+			}
 			return true, true
 		}
 		if !errors.Is(err, fs.ErrNotExist) {

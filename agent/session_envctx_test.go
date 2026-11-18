@@ -450,6 +450,14 @@ func TestSecondUserTurnEmitsNoEnvironmentContextWhenUnchanged(t *testing.T) {
 		if err := os.Rename(filepath.Join(checkout, ".git"), filepath.Join(root, "metadata")); err != nil {
 			t.Fatal(err)
 		}
+		metadata := filepath.Join(checkout, ".git")
+		if err := os.Symlink(filepath.Join(root, "unavailable-metadata"), metadata); err != nil {
+			t.Fatal(err)
+		}
+		check("confirm-branch", 1)
+		if err := os.Remove(metadata); err != nil {
+			t.Fatal(err)
+		}
 		check("", 2)
 	})
 }
