@@ -933,13 +933,30 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 	// the repository enclosing the state directory before the verified parent was
 	// consulted. The same resolved form is what the bounded walk and the metadata
 	// fallback below both see.
-	lanePath := identifier.ResolveClean(wd)
-	if _, laneRoot, _, _, isLane := r.stateWorktreeOwner(lanePath, bucketDir); isLane {
-		if root := resolveMainRootWithin(lanePath, laneRoot); root != "" {
-			return filepath.Base(root)
+	//
+	// Every recorded path is tried for that classification, not just the display
+	// one. A session launched through a symlink to its lane records the symlink as
+	// its working directory and the lane itself as its worktree path; once the lane
+	// is removed the alias dangles, and reading only the alias would walk Git from
+	// a name that resolves nowhere and label the transcript with whatever encloses
+	// it. The lane that the record names is the identity, so it is found wherever
+	// the record kept it.
+	//
+	// A recorded path that is not absolute names no checkout at all: it would be
+	// walked relative to this process's directory, which is not where the session
+	// ran. Records are written absolute; one that is not is no evidence here.
+	for _, recorded := range recordPaths(m) {
+		if !filepath.IsAbs(recorded) {
+			continue
 		}
-		name, _ := r.worktreePathFallback(lanePath, bucketDir, m.ParentSessionID)
-		return name
+		lanePath := identifier.ResolveClean(recorded)
+		if _, laneRoot, _, _, isLane := r.stateWorktreeOwner(lanePath, bucketDir); isLane {
+			if root := resolveMainRootWithin(lanePath, laneRoot); root != "" {
+				return filepath.Base(root)
+			}
+			name, _ := r.worktreePathFallback(lanePath, bucketDir, m.ParentSessionID)
+			return name
+		}
 	}
 
 	// 2. Resolve the main checkout from the .git layout. A label never needs a
@@ -1106,49 +1123,34 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 			if origin := strings.TrimSpace(meta.EnvInfo.GitOriginURL); origin != "" {
 				found = append(found, projectEvidence{name: repoBasename(origin), rank: evidenceRankOwnerOrigin})
 			}
-			if restore := strings.TrimSpace(meta.WorktreeRestoreRoot); restore != "" {
-				// The owner's restore path is read through the same lane boundary
-				// as everything else. When the state home sits inside a checkout,
-				// an unbounded walk from a deleted restore lane finds that
-				// checkout's .git and names the transcript after the repository
-				// that happens to enclose the state dir — before the parent lookup
-				// can recover the project the lane belonged to. Bounded, a lane
-				// that no longer resolves names nothing, and the parent is what
-				// still answers. An ordinary restore directory is its own answer:
-				// it is where the session ran.
-				// Whether this path is a state lane is taken from the structural
-				// lookup that just read it, never re-derived from the path as
-				// recorded: an alias to a lane is not a directory of its own, and
-				// classifying the alias would offer its leaf as a project name
-				// ahead of the parent that can still name the repository. A lane
-				// answers nothing whether or not it resolves, while an ordinary
-				// recorded directory that has since moved is still where the
-				// session ran.
-				root, recorded, _, isLane := r.projectAt(restore, bound)
-				switch {
-				case root != "":
-					found = append(found, projectEvidence{name: filepath.Base(root), projectID: recorded, rank: evidenceRankOwnerRestore})
-				case isLane:
-					// A recognized lane contributes nothing, so the parent or a
-					// sibling can still answer.
-				default:
-					// An ordinary recorded directory: its basename is the
-					// recorded-path fallback, and it is not a claim about projects.
-					found = append(found, projectEvidence{name: filepath.Base(restore), rank: evidenceRankOwnerHome})
-				}
-			}
-			// HomeDir falls back to the working directory and, inside a worktree,
-			// is the restore root the branch above already read. It is classified
-			// the same way and by the same lookup, so a home path that is a lane
-			// leaves the label to the parent rather than offering its leaf.
-			if home := strings.TrimSpace(meta.HomeDir()); home != "" && home != strings.TrimSpace(meta.WorktreeRestoreRoot) {
-				root, _, _, isLane := r.projectAt(home, bound)
-				switch {
-				case root != "":
-					found = append(found, projectEvidence{name: filepath.Base(root), rank: evidenceRankOwnerHome})
-				case isLane:
-				default:
-					found = append(found, projectEvidence{name: filepath.Base(home), rank: evidenceRankOwnerHome})
+			// The owner's record is read as a record, through the same lookup as
+			// every other record. Its restore root leads because it is the preferred
+			// display source, but a field that establishes nothing does not veto the
+			// fields after it: an owner launched with a relative --dir records a
+			// restore root that names no checkout while its working directory still
+			// names one, and a session launched through a symlink records an alias
+			// that dangles once the lane is removed while its saved lane path still
+			// records the project.
+			//
+			// Every path is read through the same lane boundary. When the state home
+			// sits inside a checkout, an unbounded walk from a deleted lane finds that
+			// checkout's .git and names the transcript after the repository that
+			// happens to enclose the state dir, before the parent lookup can recover
+			// the project the lane belonged to. A recognized lane therefore answers
+			// nothing here — its leaf is a lane name, never a repository — and the
+			// parent or a sibling is what still answers.
+			checkout, recorded, _, isLane := r.projectRecord(meta, bound)
+			switch {
+			case checkout != "":
+				found = append(found, projectEvidence{name: filepath.Base(checkout), projectID: recorded, rank: evidenceRankOwnerRestore})
+			case isLane:
+				// A recognized lane contributes nothing, so the parent or a sibling
+				// can still answer.
+			default:
+				// An ordinary recorded directory that no longer resolves: its basename
+				// is the recorded-path fallback, and it is not a claim about projects.
+				if display := strings.TrimSpace(meta.HomeDir()); display != "" {
+					found = append(found, projectEvidence{name: filepath.Base(display), rank: evidenceRankOwnerHome})
 				}
 			}
 		}
@@ -1386,11 +1388,61 @@ func (r *projectNameResolver) siblingEvidenceFor(bucketDir string) []projectEvid
 // origin — as conflicting. Confined to the lane root, a deleted lane still
 // names the project its path records.
 func (r *projectNameResolver) recordedProject(m schema.SessionMeta, bucketDir string) (checkout, projectID string, ok, isLane bool) {
-	recorded := strings.TrimSpace(m.WorktreeRestoreRoot)
-	if recorded == "" {
-		recorded = strings.TrimSpace(m.HomeDir())
+	return r.projectRecord(m, bucketDir)
+}
+
+// recordPaths lists the paths a session record carries, strongest first. A record
+// is not one path: a session that entered a worktree keeps the root it entered
+// from, the lane it entered, and the directory it runs in, and any of them can be
+// the one that still says which project it belongs to. The restore root leads
+// because it is the preferred display source, and the working directory trails
+// because it is the loosest claim — but a field that establishes nothing is
+// skipped rather than allowed to mask the ones after it.
+func recordPaths(m schema.SessionMeta) []string {
+	var paths []string
+	for _, candidate := range []string{m.WorktreeRestoreRoot, m.WorktreePath, m.EnvInfo.WorkingDir} {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" {
+			continue
+		}
+		duplicate := false
+		for _, seen := range paths {
+			if seen == candidate {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			paths = append(paths, candidate)
+		}
 	}
-	return r.projectAt(recorded, bucketDir)
+	return paths
+}
+
+// projectRecord answers what a session's record names, trying each recorded path
+// in strength order. The first path that names a project answers. A path that
+// establishes nothing — relative to a directory nobody recorded, gone, refused,
+// or a lane whose project its path does not carry — is no evidence about the
+// record's project, and it does not veto the fields after it.
+//
+// This is the one place that decides it, for the row itself, for its parent and
+// for a sibling: a record consulted through a single preferred field answers
+// differently depending on which field a display preference picked.
+func (r *projectNameResolver) projectRecord(m schema.SessionMeta, bucketDir string) (checkout, projectID string, ok, isLane bool) {
+	recordIsLane := false
+	for _, recorded := range recordPaths(m) {
+		checkout, projectID, ok, lane := r.projectAt(recorded, bucketDir)
+		if ok {
+			return checkout, projectID, true, lane
+		}
+		if lane {
+			// Still remembered when nothing answers: the record names a state lane
+			// in at least one field, so its leaf is a lane name and never a
+			// repository, whatever the other fields say.
+			recordIsLane = true
+		}
+	}
+	return "", "", false, recordIsLane
 }
 
 // projectAt is recordedProject's rule, applied to a path. checkout is the
@@ -1503,8 +1555,11 @@ func (r *projectNameResolver) projectAt(recorded, bucketDir string) (checkout, p
 // It is deliberately uncached. A cache keyed by the directory has to carry the
 // refusal as a second field that every future caller must remember to read, and
 // a cache entry that drops it does not cost time — it produces a wrong label on
-// a later row. Nothing here decodes a bucket or reruns a walk, so the reuse
-// F4 asked for lives where the cost was: bucketMetaSnapshot.
+// a later row. Refusal has to survive separate from absence for the same reason:
+// "there is no repository here" and "there is a repository here that I could not
+// read" are different answers, and only the first licenses treating the surviving
+// directory as a project of its own. Nothing here decodes a bucket or reruns a
+// walk, so the reuse lives where the cost was: bucketMetaSnapshot.
 func resolveMainRootOutcome(dir string) (root string, refused bool) {
 	// The alias is resolved here rather than at each caller: a walk over a
 	// symlink's own parents describes the link, not the checkout, and can miss the

@@ -354,7 +354,12 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 	}
 	restoreRoot := ""
 	if s.worktreeRestoreEnv != nil {
-		restoreRoot = s.worktreeRestoreEnv.WorkingDirectory()
+		// Persisted in the same form the working directory is, and for the same
+		// reason: this is where the session ran, and an identity derived from it
+		// later is a hash of an absolute canonical path. Canonicalizing here is the
+		// only point at which the directory a relative root is relative to is still
+		// known.
+		restoreRoot = canonicalStateDir(s.worktreeRestoreEnv.WorkingDirectory())
 	}
 	jobTreeRootSessionID := ""
 	jobTreeRevision := uint64(0)

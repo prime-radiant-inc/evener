@@ -2602,8 +2602,6 @@ func TestFind_ChildrenOf_ProjBucket(t *testing.T) {
 	}
 }
 
-// --- roborev fix round 3: RED test for finding 4 ---
-
 // TestFind_ChildrenOf_BareIDResolvesCrossBucket asserts that children_of with a
 // bare session ID resolves the parent cross-bucket (mirroring resolveTranscript's
 // bare-ID semantics), not just the current bucket. A parent in a legacy-named
@@ -3284,7 +3282,12 @@ func TestFind_ProjectName_MissingSiblingCheckoutProvesNothing(t *testing.T) {
 // down the ordinary-directory branch, where its basename is offered as a project
 // name ahead of the parent that can still name the repository.
 func TestFind_ProjectName_OwnerRestoreSymlinkAliasIsStillALane(t *testing.T) {
-	stateDir := t.TempDir()
+	// The bucket is canonicalized the way session construction canonicalizes it.
+	// A flat bucket kept in its lexical spelling would differ from the physical
+	// path the lane alias resolves to, and the row would then be labelled from the
+	// alias — passing or failing on whether the temp directory happens to sit under
+	// a symlinked prefix such as macOS's /var.
+	stateDir := canonicalStateDir(t.TempDir())
 	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
 		t.Fatalf("mkdir state dir: %v", err)
 	}
@@ -3335,7 +3338,7 @@ func TestFind_ProjectName_OwnerRestoreSymlinkAliasIsStillALane(t *testing.T) {
 // outranks the parent; classified from the structural lookup it is a lane and
 // contributes nothing.
 func TestFind_ProjectName_OwnerHomeSymlinkAliasIsStillALane(t *testing.T) {
-	stateDir := t.TempDir()
+	stateDir := canonicalStateDir(t.TempDir())
 	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
 		t.Fatalf("mkdir state dir: %v", err)
 	}
@@ -3432,5 +3435,110 @@ func TestFind_ProjectName_SiblingRestoreSymlinkAliasIsStillALane(t *testing.T) {
 	lane.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", projectA.ID, "dlg_alias_only")
 	if got := projectName(lane, bucket); got != "" {
 		t.Fatalf("projectName(lane whose only sibling recorded a symlink to a state lane) = %q, want empty (a lane leaf is not a project)", got)
+	}
+}
+
+// TestFind_ProjectName_RestoreRootDoesNotMaskTheWorkingDir covers a parent that
+// entered a managed worktree before the working directory was recorded absolute.
+// Its restore root is a relative ".", which names no checkout; its working
+// directory is still the absolute checkout the lane was created from. A record
+// consulted through one preferred field answers with nothing and takes the
+// still-valid field down with it, so the deleted lane loses its only label.
+//
+// Not parallel: the relative restore root is what this case is about.
+func TestFind_ProjectName_RestoreRootDoesNotMaskTheWorkingDir(t *testing.T) {
+	stateDir := canonicalStateDir(t.TempDir())
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+
+	checkout := newNamedCheckout(t, "masked-repo")
+	parent := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	parent.WorktreeRestoreRoot = "."
+	parent.EnvInfo.WorkingDir = checkout
+	if err := schema.SaveSessionMeta(stateDir, parent); err != nil {
+		t.Fatal(err)
+	}
+
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(checkout))
+	row := schema.SessionMeta{ParentSessionID: parent.ID}
+	row.EnvInfo.WorkingDir = filepath.Join(stateDir, "worktrees", project.ID, "dlg_masked")
+	if got, want := projectName(row, stateDir), filepath.Base(checkout); got != want {
+		t.Fatalf("projectName(deleted lane whose parent recorded a relative restore root and an absolute working dir) = %q, want the working directory's %q", got, want)
+	}
+}
+
+// TestFind_ProjectName_SiblingRestoreRootDoesNotMaskItsLane covers the same
+// masking in the direction that mislabels rather than omits. A sibling in a
+// legacy-named bucket — the one shape where sibling inference is still allowed
+// without a project to check against — records a restore root that has
+// disappeared AND the managed lane path it occupied, which records its project.
+// Reading only the restore root makes the sibling look like an unrelated
+// directory and lends its saved origin to the row; reading the lane path first
+// makes it evidence for its own project and nothing for a different one.
+func TestFind_ProjectName_SiblingRestoreRootDoesNotMaskItsLane(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+	// A legacy bucket: the layout ancestor exists but the basename is not a
+	// project ID, so the bucket records no project of its own.
+	bucket := filepath.Join(stateHome, "evener", "projects", "legacy-bucket")
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	repoB := newNamedCheckout(t, "repo-b")
+	projectB := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repoB))
+	sibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	sibling.WorktreeRestoreRoot = filepath.Join(t.TempDir(), "gone-restore")
+	sibling.WorktreePath = filepath.Join(bucket, "worktrees", projectB.ID, "dlg_sibling_lane")
+	sibling.EnvInfo.WorkingDir = sibling.WorktreePath
+	sibling.EnvInfo.GitOriginURL = "git@github.com:owner/repo-b.git"
+	if err := schema.SaveSessionMeta(bucket, sibling); err != nil {
+		t.Fatal(err)
+	}
+
+	// The row is a managed lane of a DIFFERENT project. B's origin must not label
+	// it, and the sibling's lane path is what makes that provable.
+	repoA := newNamedCheckout(t, "repo-a")
+	projectA := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repoA))
+	if projectA.ID == projectB.ID {
+		t.Fatalf("fixture projects collided at %q", projectA.ID)
+	}
+	row := schema.SessionMeta{}
+	row.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", projectA.ID, "dlg_other")
+	if got := projectName(row, bucket); got != "" {
+		t.Fatalf("projectName(lane of repo A beside a sibling whose restore root is gone and whose lane records repo B) = %q, want empty", got)
+	}
+}
+
+// TestFind_ProjectName_DanglingWorkdirAliasUsesSavedLanePath covers the row
+// itself having been launched through a symlink to its managed lane: the symlink
+// is recorded as the working directory and the lane itself as the worktree path.
+// Once the lane is removed the alias dangles, so a walk that starts from the
+// alias climbs to whatever encloses it — here a checkout that is not the lane's
+// project at all, and the exit is the alias basename. The lane path the record
+// still carries is the identity, and it is what the row must be labelled from.
+func TestFind_ProjectName_DanglingWorkdirAliasUsesSavedLanePath(t *testing.T) {
+	stateDir := canonicalStateDir(t.TempDir())
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+
+	// The alias sits inside an unrelated checkout, so an unbounded walk from it
+	// names that checkout rather than nothing.
+	unrelated := newNamedCheckout(t, "unrelated-repo")
+	alias := filepath.Join(unrelated, "lane-alias")
+	if err := os.Symlink(filepath.Join(stateDir, "worktrees", "gone-project-0123456789", "dlg_alias"), alias); err != nil {
+		t.Fatalf("symlink dangling alias: %v", err)
+	}
+
+	// The row records both: the alias as its working directory and the lane
+	// itself as its saved worktree path. Its project is the one the lane path
+	// records, whose checkout is gone.
+	row := schema.SessionMeta{}
+	row.WorktreePath = filepath.Join(stateDir, "worktrees", "gone-project-0123456789", "dlg_alias")
+	row.EnvInfo.WorkingDir = alias
+	if got := projectName(row, stateDir); got != "" {
+		t.Fatalf("projectName(row whose dangling workdir alias sits inside %q and whose saved lane path records another project) = %q, want empty", "unrelated-repo", got)
 	}
 }

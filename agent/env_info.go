@@ -1,8 +1,6 @@
 package agent
 
 import (
-	"path/filepath"
-
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/hostresources"
 	"primeradiant.com/evener/agent/internal/clock"
@@ -25,11 +23,13 @@ func envInfoFromEnv(env execenv.ExecutionEnvironment, clk clock.Clock) schema.En
 	// --dir . leaves the directory the process launched in as a relative string.
 	// Hashing that string as given yields an ID no checkout has, which makes a
 	// lane created from this checkout read as a different repository's.
-	if wd != "" {
-		if absolute, err := filepath.Abs(wd); err == nil {
-			wd = absolute
-		}
-	}
+	//
+	// It goes through canonicalStateDir rather than filepath.Abs for the symlink
+	// half of that: Abs cleans ".." lexically, while the kernel resolves it
+	// against the physical parent, so `--dir link/..` would record a directory the
+	// commands never ran in and the startup snapshot would then describe a
+	// checkout the session is not in.
+	wd = canonicalStateDir(wd)
 	return schema.EnvironmentInfo{
 		WorkingDir: wd,
 		Platform:   plat,

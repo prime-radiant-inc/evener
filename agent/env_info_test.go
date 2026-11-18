@@ -36,6 +36,47 @@ func TestEnvInfoFromEnvRecordsAbsoluteWorkingDir(t *testing.T) {
 	}
 }
 
+// TestEnvInfoFromEnvDoesNotFoldDotDotAcrossSymlink covers an absolute --dir whose
+// ".." sits behind a symlink. The kernel resolves `link/..` against the physical
+// parent of link's target, so cleaning it lexically records a different directory
+// than the one the session's commands run in. The record would then describe a
+// checkout the session is not in: the startup Git snapshot would save that
+// repository's branch and origin.
+func TestEnvInfoFromEnvDoesNotFoldDotDotAcrossSymlink(t *testing.T) {
+	root := t.TempDir()
+	physical := filepath.Join(root, "physical")
+	sibling := filepath.Join(root, "sibling")
+	for _, dir := range []string{physical, sibling} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	link := filepath.Join(sibling, "link")
+	if err := os.Symlink(physical, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	// `link/..` denotes sibling — the physical parent of what link points at — and
+	// lexical cleaning calls it sibling too, so the case only differs when the
+	// target is nested one level deeper than the link.
+	nested := filepath.Join(physical, "nested")
+	if err := os.MkdirAll(nested, 0o755); err != nil {
+		t.Fatalf("mkdir nested: %v", err)
+	}
+	if err := os.Remove(link); err != nil {
+		t.Fatalf("remove link: %v", err)
+	}
+	if err := os.Symlink(nested, link); err != nil {
+		t.Fatalf("relink: %v", err)
+	}
+
+	// The kernel resolves link/.. to physical; a lexical clean gives sibling.
+	got := envInfoFromEnv(execenv.NewLocalExecutionEnvironment(link+string(filepath.Separator)+".."), clock.Real()).WorkingDir
+	if want := canonicalStateDir(physical); got != want {
+		t.Fatalf("envInfoFromEnv(--dir %s/..).WorkingDir = %q, want the physical parent %q", link, got, want)
+	}
+}
+
 // TestFind_ProjectName_RelativeWorkDirStillNamesItsLane covers a parent launched
 // with a relative working directory. A delegate lane's path records the project
 // ID of the checkout it was created from, and that ID is a hash of the checkout's
