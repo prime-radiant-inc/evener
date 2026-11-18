@@ -246,6 +246,42 @@ func TestInFlightFailureSampleCannotRestoreAWaitUnderANewTurn(t *testing.T) {
 	}
 }
 
+// A delegate's projected deadline is the wait's own arithmetic - its
+// daemon-issued start stamp plus its delay - not the projection's receipt
+// time, so the pane's reset matches the rail's for the same call however long
+// the announcement sat in the bridge.
+func TestDescendantReadDeadlineDerivesFromTheWaitStamp(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_root")
+	srv.RecordDescendantAppEvent("th_root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "th_child"})
+	read := func() *appwire.ThreadFailure {
+		t.Helper()
+		response, err := srv.handleAppThreadRead(context.Background(), appwire.ThreadReadParams{ThreadID: "th_child"})
+		if err != nil {
+			t.Fatalf("thread/read: %v", err)
+		}
+		return response.Thread.Evener.Failure
+	}
+
+	const waitStartedAt = int64(4_000_000_000)
+	const delayMS = int64(7_200_000)
+	srv.RecordDescendantAppEvent("th_root", events.SessionEvent{
+		Kind:      events.EventModelRetry,
+		SessionID: "th_child",
+		Data:      events.ModelRetryData{Attempt: 1, DelayMS: delayMS, ErrorClass: "quota_exceeded", WaitStartedAt: waitStartedAt},
+	})
+	failure := read()
+	if failure == nil {
+		t.Fatal("a waiting delegate's read carries no failure summary")
+	}
+	if want := waitStartedAt + delayMS; failure.ResumesAt != want {
+		t.Fatalf("projected deadline = %d, want the wait's own %d (stamp plus delay)", failure.ResumesAt, want)
+	}
+	if failure.WaitStartedAt != waitStartedAt {
+		t.Fatalf("projected summary's stamp = %d, want %d", failure.WaitStartedAt, waitStartedAt)
+	}
+}
+
 // A delegate's read serves its stored projection, whose failure field the
 // execution boundaries keep turn-correct, so it must advertise the
 // quotaWaitSnapshot capability: without the bit, a pane reconnecting after a

@@ -601,12 +601,13 @@ function validModelRetry(value: unknown): boolean {
       "model",
       "groupElapsedMs",
       "attemptCap",
+      "waitStartedAt",
       "receivedAt",
     ]) &&
     ["attempt", "maxAttempts", "delayMs", "groupElapsedMs", "attemptCap", "receivedAt"].every((key) =>
       isFiniteNumber(value[key]),
     ) &&
-    ["statusCode"].every((key) => value[key] === undefined || isFiniteNumber(value[key])) &&
+    ["statusCode", "waitStartedAt"].every((key) => value[key] === undefined || isFiniteNumber(value[key])) &&
     ["errorClass", "turnId", "model"].every((key) => value[key] === undefined || typeof value[key] === "string")
   );
 }

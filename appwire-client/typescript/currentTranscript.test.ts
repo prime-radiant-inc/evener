@@ -81,6 +81,41 @@ function filteredReadPage(): ThreadTurnsListResponse {
 }
 
 describe("current transcript checkpoints", () => {
+  // A checkpoint taken while a quota wait runs carries the wait's identity
+  // (modelRetry.waitStartedAt): the decoder's field allowlist must admit the
+  // stamp, or the whole checkpoint is discarded and the pane loses its wait
+  // on restore.
+  it("preserves a quota wait's stamp across checkpoint restore", () => {
+    const ref = "local:quota-wait";
+    let model = hydrateThread(currentRead(ref), ref, 1);
+    model = applyNotification(
+      model,
+      {
+        method: "evener/thread/modelRetry",
+        params: {
+          threadId: "local:quota-wait",
+          ref,
+          turnId: "turn_1",
+          attempt: 1,
+          maxAttempts: 1,
+          delayMs: 60 * 60_000,
+          errorClass: "quota_exceeded",
+          groupElapsedMs: 5_000,
+          attemptCap: 1,
+          waitStartedAt: 4_000_000_000,
+        },
+      } as never,
+      2,
+    );
+    expect(model.modelRetry?.waitStartedAt).toBe(4_000_000_000);
+    const encoded = currentTranscriptState(model);
+    const decoded = decodeCurrentTranscriptState(JSON.parse(JSON.stringify(encoded)));
+    if (!decoded) throw new Error("valid quota-wait checkpoint did not decode");
+    const restored = threadModelFromCurrentState(decoded);
+    expect(restored.modelRetry?.waitStartedAt).toBe(4_000_000_000);
+    expect(restored.modelRetry?.errorClass).toBe("quota_exceeded");
+  });
+
   it.each(["checkpoint", "session-cache"] as const)(
     "preserves normal-page omissions across %s restore without advancing completeness",
     (format) => {

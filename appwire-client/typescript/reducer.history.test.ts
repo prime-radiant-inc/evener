@@ -326,9 +326,13 @@ test("a read from a source that cannot report the wait keeps a known live wait",
   const resumesAt = 4_102_400_000;
   // This pane hydrated from a summary-less read once already, so the model
   // carries no read-reported wait evidence, then received the live
-  // announcement.
+  // announcement. The thread is a DELEGATE (its read names kind subagent):
+  // the legacy delegate route's reads omit the summary by design, which is
+  // the one shape the absent field must not clear - a legacy ROOT read is
+  // authoritative for the wait (see the root/delegate test below).
   let model = hydrateThread(read([turn("turn_1", 1)], { activeTurnId: "turn_1" }), REF, NOW);
   model.capabilities = { ...model.capabilities, quotaWaitSnapshot: false };
+  model.kind = "subagent";
   model = {
     ...model,
     quotaResumesAt: resumesAt,
@@ -344,12 +348,65 @@ test("a read from a source that cannot report the wait keeps a known live wait",
     },
   };
   // Reconnect mid-wait: the source's read carries no failure field and no
-  // quotaWaitSnapshot capability - an older daemon by design.
+  // quotaWaitSnapshot capability - an older daemon's delegate route by
+  // design.
   const fresh = hydrateThread(read([turn("turn_1", 1)], { activeTurnId: "turn_1" }), REF, NOW + 1);
   fresh.capabilities = { ...fresh.capabilities, quotaWaitSnapshot: false };
+  fresh.kind = "subagent";
   const next = applyReadModel(model, fresh);
   expect(next.quotaResumesAt).toBe(resumesAt);
   expect(next.modelRetry?.errorClass).toBe("quota_exceeded");
+});
+
+// A legacy ROOT daemon predates the capability bit but its reads always
+// attached the wait summary, so their absent field is authoritative even when
+// the pane learned of the wait through the live announcement alone: it opened
+// before the wait, saw the announcement, and reconnected after the wake. The
+// thread's own shape names the route - a root read carries no kind and no
+// parentRef, a delegate read carries one of them - so the same-turn reconnect
+// clears the ended countdown. A legacy DELEGATE's read keeps the
+// live-announcement-only preservation.
+test("a legacy root read is authoritative for a live-announced wait; a legacy delegate read is not", () => {
+  const resumesAt = 4_102_400_000;
+  const liveAnnounced = (turnId: string) =>
+    ({
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: THREAD_ID,
+        ref: REF,
+        turnId,
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: resumesAt - NOW,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 1,
+      },
+    }) as AnyNotification;
+  const legacyRootReconnect = () => {
+    const fresh = hydrateThread(read([turn("turn_1", 1)], { activeTurnId: "turn_1" }), REF, NOW + 1);
+    fresh.capabilities = { ...fresh.capabilities, quotaWaitSnapshot: false };
+    return fresh;
+  };
+
+  // The root route: the reconnect clears the ended wait.
+  let root = hydrateThread(read([turn("turn_1", 1)], { activeTurnId: "turn_1" }), REF, NOW);
+  root.capabilities = { ...root.capabilities, quotaWaitSnapshot: false };
+  root = applyNotification(root, liveAnnounced("turn_1"), NOW);
+  const rootNext = applyReadModel(root, legacyRootReconnect());
+  expect(rootNext.quotaResumesAt).toBeUndefined();
+  expect(rootNext.modelRetry).toBeUndefined();
+
+  // The delegate route: the reconnect preserves the live-only wait.
+  let delegate = hydrateThread(read([turn("turn_1", 1)], { activeTurnId: "turn_1" }), REF, NOW);
+  delegate.capabilities = { ...delegate.capabilities, quotaWaitSnapshot: false };
+  delegate = applyNotification(delegate, liveAnnounced("turn_1"), NOW);
+  const delegateReconnect = hydrateThread(read([turn("turn_1", 1)], { activeTurnId: "turn_1" }), REF, NOW + 1);
+  delegateReconnect.capabilities = { ...delegateReconnect.capabilities, quotaWaitSnapshot: false };
+  delegateReconnect.kind = "subagent";
+  const delegateNext = applyReadModel(delegate, delegateReconnect);
+  expect(delegateNext.quotaResumesAt).toBe(resumesAt);
+  expect(delegateNext.modelRetry?.errorClass).toBe("quota_exceeded");
 });
 
 // The same read from a source whose snapshot CAN report the wait clears it:
@@ -459,33 +516,42 @@ test("a source whose read once carried a wait summary clears the wait on a later
 // time plus delay) and the snapshot's reset instant differ by the delivery
 // delay. Two waits sharing one reset instant (a same-turn re-wait at the same
 // provider window) still retire the old retry's metadata: their stamps
-// differ.
+// differ. The model comes from folding the live notification, so the
+// browser-stamped deadline really differs from the provider's instant.
 test("a read names the same wait by its stamp, not its deadline: elapsed time survives a refresh", () => {
   const resumesAt = 4_102_400_000;
   const waitStartedAt = 4_000_000_000;
-  let model = hydrateThread(
-    read([turn("turn_1", 1)], { activeTurnId: "turn_1", quotaWaitResumesAt: resumesAt }),
-    REF,
-    NOW,
+  // The pane hydrated before the wait, then received the (delayed) live
+  // announcement: the reducer stamped the deadline at receipt time, now+2s
+  // past the provider's own reset instant.
+  let model = hydrateThread(read([turn("turn_1", 1)], { activeTurnId: "turn_1" }), REF, NOW);
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: THREAD_ID,
+        ref: REF,
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: resumesAt - NOW,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 14 * 60_000,
+        attemptCap: 1,
+        waitStartedAt,
+      },
+    } as AnyNotification,
+    // The announcement landed 2s late: the browser-stamped deadline runs
+    // past the provider's reset instant.
+    NOW + 2_000,
   );
-  model = {
-    ...model,
-    modelRetry: {
-      attempt: 1,
-      maxAttempts: 1,
-      // The reducer stamped the deadline at receipt time: delivery delay makes
-      // this differ from the snapshot's instant.
-      delayMs: resumesAt - NOW + 2_000,
-      errorClass: "quota_exceeded",
-      turnId: "turn_1",
-      waitStartedAt,
-      groupElapsedMs: 14 * 60_000,
-      attemptCap: 1,
-      receivedAt: NOW,
-    },
-  };
+  expect(model.quotaResumesAt).toBe(NOW + 2_000 + (resumesAt - NOW));
+  expect(model.quotaResumesAt).not.toBe(resumesAt);
+
   // The refresh's snapshot carries the SAME wait's stamp and the provider's
-  // own reset instant.
+  // own reset instant: the same wait, so the retry metadata (and its elapsed
+  // time) survives the differing deadlines.
   const fresh = hydrateThread(
     read([turn("turn_1", 1)], {
       activeTurnId: "turn_1",
@@ -496,7 +562,6 @@ test("a read names the same wait by its stamp, not its deadline: elapsed time su
     NOW + 1,
   );
   const next = applyReadModel(model, fresh);
-  // Same wait: the retry metadata (and its elapsed time) survives.
   expect(next.modelRetry?.errorClass).toBe("quota_exceeded");
   expect(next.modelRetry?.groupElapsedMs).toBe(14 * 60_000);
 

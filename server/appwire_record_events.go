@@ -488,7 +488,18 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 				// announcement that starts the retry drops it.
 				if params.ErrorClass == "quota_exceeded" {
 					if params.DelayMS > 0 {
-						resumesAt := time.Now().UTC().Add(time.Duration(params.DelayMS) * time.Millisecond)
+						// The deadline is the wait's own arithmetic - its daemon-issued
+						// start stamp plus its delay - not this projection's receipt
+						// time, so the pane's reset matches the rail's for the same
+						// call however long the event sat in the bridge. Events that
+						// predate the stamp (an older daemon) keep the receipt-time
+						// arithmetic.
+						var resumesAt time.Time
+						if params.WaitStartedAt > 0 {
+							resumesAt = time.UnixMilli(params.WaitStartedAt).Add(time.Duration(params.DelayMS) * time.Millisecond)
+						} else {
+							resumesAt = time.Now().UTC().Add(time.Duration(params.DelayMS) * time.Millisecond)
+						}
 						projection.thread.Evener.Failure = &appwire.ThreadFailure{
 							Title:         appwire.Excerpt(usageLimitFailureTitle, appwire.MaxFailureTitleRunes),
 							ResumesAt:     resumesAt.UnixMilli(),

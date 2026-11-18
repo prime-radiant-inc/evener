@@ -937,8 +937,11 @@ export function readDisposition(held: HistoryState, resp: ReadDispositionSignal)
  */
 // quotaWaitStampMoved reports whether the wait a read names is not the wait a
 // retained quota retry announced, by the daemon-issued WaitStartedAt stamps
-// both routes carry. Undefined when either side predates the stamp (an older
-// daemon), so the caller falls back to the moved-deadline comparison there.
+// both routes carry. A MATCHING stamp is decisive - the same wait, whatever
+// the delivery delay did to the browser-computed deadline - so the caller
+// must skip its deadline comparison entirely when this returns false with
+// both stamps present; the comparison is only the fallback for a side that
+// predates the stamp (an older daemon).
 function quotaWaitStampMoved(
   read: Pick<ThreadModel, "quotaResumesAt" | "quotaWaitStartedAt">,
   model: Pick<ThreadModel, "modelRetry">,
@@ -947,6 +950,17 @@ function quotaWaitStampMoved(
   const readStamp = read.quotaWaitStartedAt;
   if (retryStamp === undefined || readStamp === undefined) return false;
   return retryStamp !== readStamp;
+}
+
+// quotaWaitStampsCorrelate reports whether both routes carry wait stamps at
+// all: when they do, the stamp comparison above is the whole correlation and
+// the deadline fallback must not also run (a delivery-delayed deadline would
+// discard a matching wait's elapsed time).
+function quotaWaitStampsCorrelate(
+  read: Pick<ThreadModel, "quotaResumesAt" | "quotaWaitStartedAt">,
+  model: Pick<ThreadModel, "modelRetry">,
+): boolean {
+  return model.modelRetry?.waitStartedAt !== undefined && read.quotaWaitStartedAt !== undefined;
 }
 
 export function applyReadResponse<M extends ThreadModel>(
@@ -1034,8 +1048,19 @@ export function applyReadResponse<M extends ThreadModel>(
   // that names a DIFFERENT running turn than the wait's is proof the wait's
   // turn ended, on any source - the running turn is the read's own fact, not
   // the quota field's - so the wait and its chip clear together there.
+  // A ROOT read on a legacy daemon (no bit) is also authoritative: the base
+  // revision's root reads attached the failure summary unconditionally, so
+  // their absent field speaks for the wait. A legacy DELEGATE's read is not -
+  // the delegate route predates the summary entirely - which is what the
+  // thread's own kind names: a delegate read carries kind "subagent" or a
+  // parentRef, a root read carries neither.
   const quotaSnapshotAuthoritative =
-    fields.capabilities?.quotaWaitSnapshot === true || base.quotaReadReportsWaits === true;
+    fields.capabilities?.quotaWaitSnapshot === true ||
+    base.quotaReadReportsWaits === true ||
+    (base.modelRetry?.errorClass === "quota_exceeded" &&
+      base.quotaReadReportsWaits === undefined &&
+      fields.kind === undefined &&
+      fields.parentRef === undefined);
   const readRunningTurnId = runningTurn(resp.thread).runningTurnId;
   // A read that shows no wait is authoritative that the wait ended: the chip
   // goes with the deadline, or the canceled turn's "waiting for quota" reads
@@ -1076,7 +1101,9 @@ export function applyReadResponse<M extends ThreadModel>(
     base.modelRetry.turnId !== undefined &&
     (waitTurnReplaced ||
       quotaWaitStampMoved(fields, model) ||
-      (quotaSnapshotAuthoritative && fields.quotaResumesAt !== model.quotaResumesAt));
+      (!quotaWaitStampsCorrelate(fields, model) &&
+        quotaSnapshotAuthoritative &&
+        fields.quotaResumesAt !== model.quotaResumesAt));
   const clearedQuotaRetry =
     (quotaSnapshotAuthoritative || waitTurnReplaced) &&
     (fields.quotaResumesAt === undefined || quotaRetryFromAnotherCall) &&
@@ -1266,12 +1293,19 @@ export function applyReadModel<M extends ThreadModel>(
   // one the live announcements recorded - except by the capability, by the
   // model's own quotaReadReportsWaits (only a prior READ's failure summary
   // sets it, so its presence means this source's reads already reported a
-  // wait: a base-revision daemon predating the bit), or by turn ownership, the
-  // read's own fact: a read naming a DIFFERENT running turn than the wait's
-  // is proof the wait's turn ended on any source, and clears wait and chip
-  // together.
+  // wait: a base-revision daemon predating the bit), by the root-thread
+  // evidence (a base-revision ROOT read attached the summary unconditionally;
+  // a delegate read names itself with kind or parentRef), or by turn
+  // ownership, the read's own fact: a read naming a DIFFERENT running turn
+  // than the wait's is proof the wait's turn ended on any source, and clears
+  // wait and chip together.
   const quotaSnapshotAuthoritative =
-    fresh.capabilities?.quotaWaitSnapshot === true || base.quotaReadReportsWaits === true;
+    fresh.capabilities?.quotaWaitSnapshot === true ||
+    base.quotaReadReportsWaits === true ||
+    (base.modelRetry?.errorClass === "quota_exceeded" &&
+      base.quotaReadReportsWaits === undefined &&
+      fresh.kind === undefined &&
+      fresh.parentRef === undefined);
   const waitTurnReplaced =
     base.modelRetry?.errorClass === "quota_exceeded" &&
     base.modelRetry.turnId !== undefined &&
@@ -1292,7 +1326,9 @@ export function applyReadModel<M extends ThreadModel>(
     base.modelRetry.turnId !== undefined &&
     (waitTurnReplaced ||
       quotaWaitStampMoved(fresh, model) ||
-      (quotaSnapshotAuthoritative && fresh.quotaResumesAt !== model.quotaResumesAt));
+      (!quotaWaitStampsCorrelate(fresh, model) &&
+        quotaSnapshotAuthoritative &&
+        fresh.quotaResumesAt !== model.quotaResumesAt));
   const clearedQuotaRetry =
     (quotaSnapshotAuthoritative || waitTurnReplaced) &&
     (fresh.quotaResumesAt === undefined || quotaRetryFromAnotherCall) &&
