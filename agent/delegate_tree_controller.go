@@ -1350,6 +1350,25 @@ func (c *delegateTreeController) recordAttentionNoAction(lease delegateLease) (b
 	return decision.recorded, decision.err
 }
 
+// terminalSeenForLease reports whether the exact generation this lease names
+// has already produced a terminal result, as recorded by recordTerminalSeen.
+//
+// It answers from the GENERATION's evidence rather than from a session-level
+// latch: the latch is set only on a TurnEndsProcess session, while a stable
+// delegate serving under `serve` never ends its process, so the same fact lives
+// on the controller's evidence for the lease. A caller asking "may this turn
+// acknowledge instead of reporting again" must ask the generation whose report
+// it is answering for.
+func (c *delegateTreeController) terminalSeenForLease(lease delegateLease) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	evidence, err := c.completionEvidenceLocked(lease)
+	if err != nil {
+		return false
+	}
+	return evidence.terminalSeen
+}
+
 func (c *delegateTreeController) recordTerminalSeen(lease delegateLease) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()

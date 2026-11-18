@@ -117,6 +117,23 @@ func TestDelegateUpdatePendingAcrossCompactionIsPresentedAndConsumedOnce(t *test
 // the context deadline.
 func TestDelegateWatchOnlyDrainTurnAcknowledgesAndConsumesItsRow(t *testing.T) {
 	t.Parallel()
+	// A process-ending run: the session latch is the evidence that the report
+	// was accepted.
+	runWatchOnlyAckDrain(t, true)
+}
+
+// A stable delegate under `serve` never ends its process, so the session latch
+// never moves even though the run's report WAS accepted. The fact belongs to
+// the generation, and it is the generation the turn is acknowledging: the same
+// plain-text acknowledgment must consume the row here too, or the drain
+// re-opens a turn for a report it must not overwrite (#2340 review High).
+func TestServeStableDelegateAcknowledgesWatchRowWithoutTheSessionLatch(t *testing.T) {
+	t.Parallel()
+	runWatchOnlyAckDrain(t, false)
+}
+
+func runWatchOnlyAckDrain(t *testing.T, sessionLatch bool) {
+	t.Helper()
 	sess, main := newCompactableSession(t)
 	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
 	seedDelegateControllerRunning(t, controller, "dlg_coordinator", "")
@@ -127,9 +144,11 @@ func TestDelegateWatchOnlyDrainTurnAcknowledgesAndConsumesItsRow(t *testing.T) {
 	sess.owningDelegateID = "dlg_coordinator"
 	// The report was already accepted: this delegate owes nothing but the watch
 	// acknowledgment, which is what makes the no-action outcome the right
-	// answer and its refusal the defect.
+	// answer and its refusal the defect. Which surface carries that fact is the
+	// arm's variable: a process-ending run keeps it on the session, a stable
+	// delegate keeps it on the generation.
 	sess.mu.Lock()
-	sess.terminalCommunicateAccepted = true
+	sess.terminalCommunicateAccepted = sessionLatch
 	sess.latestReport = communicateResult{called: true, reply: "already reported"}
 	sess.mu.Unlock()
 	// The turn under test answers with BARE TEXT and no tool call, which is the

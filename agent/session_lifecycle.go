@@ -1106,7 +1106,9 @@ func (s *Session) refuseTurnOnUnhealthyTranscript(ctx context.Context) error {
 //     turn the finalization drain opens to present a pending watch row; the
 //     run's own report turn is a different entry kind, so its report
 //     requirement is untouched.
-//   - The report was already ACCEPTED. A delegate that has not reported has
+//   - The report was already ACCEPTED, on the SESSION (a process-ending run) or
+//     on this exact generation (a stable delegate, whose process does not end,
+//     so the session latch never moves). A delegate that has not reported has
 //     nothing to acknowledge with, and its requirement must keep pointing at
 //     the report it owes -- finishing idle there would silently drop it.
 //   - noContent is false. A truly empty response is a model glitch and keeps
@@ -1121,10 +1123,17 @@ func (s *Session) watchOnlyAcknowledgmentTurn(ctx context.Context, kind EntryKin
 	if s == nil || kind != EntryDelegateAttention || noContent {
 		return false
 	}
-	if _, leased := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease); !leased {
+	lease, leased := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
+	if !leased {
 		return false
 	}
-	if !s.hasAcceptedTerminalCommunicate() {
+	// The report this turn is acknowledging belongs to THIS generation, so ask
+	// the generation. The session latch only moves on a TurnEndsProcess session,
+	// while a stable delegate under `serve` keeps running after its report: the
+	// latch stayed false, this turn was refused, the controller declined an
+	// attention-only completion after the report, and the drain paid for another
+	// turn on the same unresolved row indefinitely (#2340 review High).
+	if !s.hasAcceptedTerminalCommunicate() && !s.terminalSeenForLease(lease) {
 		return false
 	}
 	pending, err := s.pendingDelegateAttentionIDs()
@@ -1137,6 +1146,16 @@ func (s *Session) watchOnlyAcknowledgmentTurn(ctx context.Context, kind EntryKin
 		}
 	}
 	return true
+}
+
+// terminalSeenForLease reports whether the exact generation this lease names
+// has already produced its terminal result. It is the generation-scoped form of
+// hasAcceptedTerminalCommunicate, for a run that does not end its process.
+func (s *Session) terminalSeenForLease(lease delegateLease) bool {
+	if s == nil || s.delegateController == nil {
+		return false
+	}
+	return s.delegateController.terminalSeenForLease(lease)
 }
 
 func delegateEntryRequiresReport(kind EntryKind) bool {
