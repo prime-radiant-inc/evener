@@ -5320,6 +5320,6 @@ it("keeps the held body when a same-version merge supplies ask evidence", () => 
   const merged = mergeLocalItem(held, durable);
   // The durable body is recovered, and the evidence the held row lacked is
   // filled in — the fill must not be read as a replacement that discards it.
-  expect(merged.text).toBe("the durable body");
+  expect(merged.text).toBe(durable.text);
   expect(merged.resolvedAskCalls).toEqual([{ turnId: "turn_1", callId: "call-6" }]);
 });

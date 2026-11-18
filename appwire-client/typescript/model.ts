@@ -92,7 +92,14 @@ export interface ItemModel {
   // guessing by header. Undefined for ordinary messages, for unfenced
   // whole-set answers (which record no call list), for any answer from a
   // daemon that predates the field, and on a BOUNDED read that omitted the
-  // list to fit its page. A consumer must fall back to the link and then to
+  // list to fit its page. Undefined too for a fenced inline steer answering a
+  // question in its own still-running execution: the projection emits an
+  // observation only when the answer has a recorded turn link, and that steer
+  // records none, so the captured calls never reach the wire. The reverse is
+  // not a symmetric absence — the turn links EXCLUDE the active execution,
+  // while a published call list can still contain calls captured there — so
+  // this list is never merely the turn links at call granularity. A consumer
+  // must fall back to the link and then to
   // the composed "[answers]" text shape in every one of those cases, EXCEPT
   // that an omitted list arriving with a positive resolvedAskLegacyCount is
   // not the same absence: the count still says unnamed questions were

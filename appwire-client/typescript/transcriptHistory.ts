@@ -334,8 +334,13 @@ export function mergeHistory(turns: TurnModel[], fragment: HistoryFragment, held
     // ask-evidence fill (#6323) together; re-deriving any of them here is how
     // the upgrade and the fill came to disagree, with a pruned placeholder
     // gaining evidence but keeping an empty body the refresh supplied.
+    // A held row with no recorded version must still pass through the merge:
+    // `supersedes` already gives the incoming row precedence there, and the
+    // omission-tolerant merge is what stops a sparse tool update from erasing
+    // output or images the reader already has, or a text-omitting update from
+    // blanking the row.
     const merged =
-      index === -1 || heldItem === undefined || heldItem.version === undefined
+      index === -1 || heldItem === undefined
         ? incoming
         : mergeTranscriptItemVersioned(heldItem, heldItem.version, incoming, incoming.version ?? 0);
     if (index === -1 ? heldOnly : merged === heldItem) continue;

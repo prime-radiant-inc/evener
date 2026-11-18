@@ -230,6 +230,35 @@ test("an equal-version refresh fills missing ask evidence without replacing the 
   expect(enrichedPlaceholder.resolvedAskCalls).toEqual([{ turnId: "turn-question", callId: "call-1" }]);
 });
 
+test("a versionless held row still keeps the fields a sparse update omits", () => {
+  // A live refresh can reissue an item the model already holds at no recorded
+  // version. Version precedence gives the incoming row that slot, but an
+  // omission-tolerant merge must still fill what the update did not carry: a
+  // sparse tool update that drops output or images must not erase them, and a
+  // text-omitting update must not blank the row.
+  const held: ItemModel = {
+    id: "tool",
+    turnId: "turn",
+    type: "toolCall",
+    text: "the output the reader already holds",
+    output: "kept output",
+  };
+  const sparse: ItemModel = {
+    id: "tool",
+    turnId: "turn",
+    type: "toolCall",
+    text: "",
+    status: "completed",
+  };
+  markItemTextOmitted(sparse);
+  const merged = mergeHistory([{ id: "turn", status: "completed", items: [held] }], {
+    turns: [{ id: "turn", status: "completed", items: [] }],
+    items: [sparse],
+  });
+  expect(merged[0]?.items[0]?.output).toBe(held.output);
+  expect(merged[0]?.items[0]?.text).toBe(held.text);
+});
+
 test("old missing and invalid metadata never borrows thread identity", () => {
   expect(first(hydrated(null)).authorship).toBeUndefined();
   expect(first(hydrated({ author: { kind: "agent", sessionRef: "not a ref" }, inherited: true })).authorship).toEqual({
