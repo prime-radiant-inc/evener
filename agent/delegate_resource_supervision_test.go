@@ -5394,6 +5394,83 @@ func TestStableCallerWatchTokenReachesAttentionWithItsFrame(t *testing.T) {
 	}
 }
 
+// TestStableCallerWatchTokenRetryArmsTheRowItAlreadyWrote pins the retry half of
+// the caller-send route (#2340 review).
+//
+// The first attempt can land the rendered frame in the transcript and then fail
+// the settle. The retry then takes the transcribed branch, which reports "nothing
+// to arm" and returns no attention id — so the durable row the first attempt
+// wrote is never woken, and the child never reads the frame it already holds.
+// The retry must name the row it wrote, not the token it consumed.
+func TestStableCallerWatchTokenRetryArmsTheRowItAlreadyWrote(t *testing.T) {
+	t.Parallel()
+	const frameText = "the frame whose settle failed once"
+	sess, _ := newCompactableSession(t)
+	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, controller, "dlg_child", "")
+	sess.mu.Lock()
+	sess.delegateController = controller
+	sess.owningDelegateID = "dlg_child"
+	sess.mu.Unlock()
+	controller.mu.Lock()
+	controller.live["dlg_child"].binding.runtime = sess
+	controller.mu.Unlock()
+	sess.jobManager.bindDelegateParent(controller, delegateLease{delegateID: "dlg_child", generation: 1}, nil, sess)
+
+	installWatchBelowValidation(t, sess.jobManager, watchArgs{
+		Target: runtimeMessageAliasCaller,
+		Events: []string{"communicate"},
+		Send:   &watchSendArgs{To: runtimeMessageAliasCaller, Message: "ping"},
+	})
+	cfg := sess.jobManager.watches[watchKey{VisibleSessionID: sess.jobManager.sessionID, Target: runtimeMessageAliasCaller, SendTo: runtimeMessageAliasCaller}]
+	if cfg == nil {
+		t.Fatal("setup: the caller watch config was not installed")
+	}
+	state := jobstore.WatchSendState{
+		Key: jobstore.WatchSendKey{
+			VisibleSessionID:        sess.jobManager.sessionID,
+			WatchID:                 cfg.watchID,
+			WatchTarget:             runtimeMessageAliasCaller,
+			ResolvedWatchedIdentity: "job_caller_retry",
+			ResolvedSendTo:          runtimeMessageAliasCaller,
+			WatchGeneration:         cfg.generation,
+		},
+		DeliveryID: "dlv_caller_retry",
+		UpdateSeq:  1,
+		Message:    "ping",
+		Frame:      frameText,
+	}
+	sess.jobManager.rememberUnpersistedTerminalPendingWatchSend(cfg, state)
+	attentionID := stableWatchAttentionID(state)
+
+	// The first attempt writes the row, then its settle fails — the ordering a
+	// journal error leaves behind.
+	failAppendN(sess.jobManager, jobstore.EventWatchSendDelivered, 1)
+	token := watchSendTokenNotification("", state)
+	if _, err := appendStableWatchAttention(sess, controller, token); err == nil {
+		t.Fatal("setup: the first attempt's settle was not refused, so this fixture cannot reach the transcribed branch")
+	}
+	if !sess.jobManager.watchSendTranscribed(state.DeliveryID) {
+		t.Fatal("setup: the transcribed mark was not set, so the retry will not take the acknowledged-frame branch")
+	}
+	pending, err := sess.pendingDelegateAttentionIDs()
+	if err != nil {
+		t.Fatalf("read pending attention: %v", err)
+	}
+	if !slices.Contains(pending, attentionID) {
+		t.Fatalf("setup: the frame is not durably pending (pending=%v, want %q)", pending, attentionID)
+	}
+
+	// The retry must name the row, so the group arms it.
+	retried, err := appendStableWatchAttention(sess, controller, token)
+	if err != nil {
+		t.Fatalf("the retry of an acknowledged frame failed: %v", err)
+	}
+	if retried != attentionID {
+		t.Fatalf("the retry returned attention id %q, want %q: returning \"\" tells the caller there is nothing to arm, so the durable row is never woken and the child never reads the frame it already holds", retried, attentionID)
+	}
+}
+
 // TestStableWatchNoticeGroupIsDurableBeforeItWakes pins review L2: one output
 // chunk can produce several watch notices for the same stable delegate, and
 // arming is what wakes the child. An arm that lands while a later row in the same

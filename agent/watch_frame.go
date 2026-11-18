@@ -549,12 +549,18 @@ func appendCallerWatchSendAttention(owner *Session, controller *delegateTreeCont
 	if state.Key.ResolvedSendTo != runtimeMessageAliasCaller {
 		return "", nil
 	}
+	attentionID := stableWatchAttentionID(state)
 	if jm.watchSendTranscribed(state.DeliveryID) {
 		// The frame is already durable in this receiver's transcript and only
-		// its acknowledgement is outstanding.
-		return "", jm.settleTranscribedWatchSend(cfg, state)
+		// its acknowledgement is outstanding. The row is returned, not "":
+		// the first attempt can have landed the append and then failed the
+		// settle, and a retry that reports "nothing to arm" leaves a durable
+		// row no wake ever points at (#2340 review).
+		if err := jm.settleTranscribedWatchSend(cfg, state); err != nil {
+			return "", err
+		}
+		return attentionID, nil
 	}
-	attentionID := stableWatchAttentionID(state)
 	rendered := jm.renderWatchSendFrame(cfg, state)
 	if rendered != state.Frame {
 		// The hourly backstop notice renders content the pending state does not
