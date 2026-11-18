@@ -722,10 +722,21 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
             : params.errorClass === "quota_exceeded" && params.delayMs > 0
               ? undefined
               : model.quotaWaitEndedAt,
-        // A newly recorded wait owns the stale-event rule from here on; the
-        // turn the last boundary retired no longer names one.
-        retiredQuotaTurn:
-          params.errorClass === "quota_exceeded" && params.delayMs > 0 ? undefined : model.retiredQuotaTurn,
+        // A retirement marker NAMES ONE TURN, and only evidence about that
+        // turn may clear it. The boundary writes the ended turn's id so a
+        // queued delivery for it cannot restamp a wait it no longer owns.
+        // Everything else in this case is evidence about a DIFFERENT turn -
+        // an announcement for the retired turn itself was rejected above -
+        // so none of it speaks for that marker.
+        //
+        // Clearing here on any new wait was the bug: a replacement turn's own
+        // announcement erased the previous turn's retirement, after which a
+        // read that captured the retired turn still running was accepted as
+        // the running turn, this reducer then rejected the replacement's wake
+        // as stale against it, and the pane kept counting down a wait that had
+        // already resumed. A retirement ends where it began - the boundary's
+        // own revival, or a read ordered after the boundary - not here.
+        retiredQuotaTurn: model.retiredQuotaTurn,
         // The wake's zero-delay announcement is the request going out: real
         // motion, unlike the wait that preceded it. Restamping here gives the
         // resumed request its own stall clock - otherwise the first ordinary

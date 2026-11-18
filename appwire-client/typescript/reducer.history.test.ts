@@ -540,6 +540,100 @@ test("a read issued before the wait's announcement cannot clear the live countdo
   expect(cleared.modelRetry).toBeUndefined();
 });
 
+// A retirement marker names ONE turn, and a replacement turn's own wait says
+// nothing about it. Clearing the marker on any new announcement let turn B's
+// announcement erase turn A's retirement; a read that captured A still waiting
+// was then accepted as the running turn while B's deadline was preserved, and
+// the reducer rejected B's later wake as stale against A - so the pane counted
+// down a wait that had already resumed.
+test("a replacement turn's announcement cannot clear the previous turn's retirement", () => {
+  const firstStart = 4_000_000_000;
+  const secondStart = 4_400_000_000;
+  const stopAt = 600_000;
+  let model = hydrateThread(read([turn("turn_1", 1)], { activeTurnId: "turn_1" }), REF, NOW);
+  model = applyNotification(
+    model,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: THREAD_ID,
+        ref: REF,
+        turnId: "turn_1",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: 60 * 60_000,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 1,
+        waitStartedAt: firstStart,
+      },
+    } as AnyNotification,
+    stopAt - 1_000,
+  );
+  // Stop ends turn_1; the marker records it.
+  const stopped = applyNotification(
+    model,
+    { method: "thread/status/changed", params: { threadId: THREAD_ID, ref: REF, status: { type: "idle" } } },
+    stopAt,
+  );
+  expect(stopped.retiredQuotaTurn).toBe("turn_1");
+  // Turn B starts.
+  const started = applyNotification(
+    stopped,
+    {
+      method: "thread/status/changed",
+      params: { threadId: THREAD_ID, ref: REF, status: { type: "active" }, activeTurnId: "turn_2" },
+    },
+    stopAt + 1,
+  );
+  // B announces its own quota wait. That announcement is evidence about B, so
+  // it must leave A's retirement standing.
+  const announcing = applyNotification(
+    started,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: THREAD_ID,
+        ref: REF,
+        turnId: "turn_2",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: 60 * 60_000,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 1,
+        waitStartedAt: secondStart,
+      },
+    } as AnyNotification,
+    stopAt + 2,
+  );
+  expect(announcing.retiredQuotaTurn).toBe("turn_1");
+  expect(announcing.quotaResumesAt).toBe(isoInstant(secondStart + 60 * 60_000));
+  // B's wake names B, and B is the running turn, so it is not rejected as a
+  // stale delivery for a retired one: the countdown ends with the resume.
+  const woken = applyNotification(
+    announcing,
+    {
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: THREAD_ID,
+        ref: REF,
+        turnId: "turn_2",
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: 0,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5_000,
+        attemptCap: 1,
+        waitStartedAt: secondStart,
+      },
+    } as AnyNotification,
+    stopAt + 3,
+  );
+  expect(woken.quotaResumesAt).toBeUndefined();
+  expect(woken.modelRetry?.delayMs).toBe(0);
+});
+
 // M2: the receipt must belong to the wait being reconciled. A refresh issued
 // during wait A can take its snapshot after wait B begins but before B reaches
 // the daemon projection, and return after the pane receives B's announcement.

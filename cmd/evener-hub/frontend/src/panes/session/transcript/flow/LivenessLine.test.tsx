@@ -255,6 +255,56 @@ test("omits the model tag when the retry's model matches the session's primary m
   );
 });
 
+// A model switch is exactly what wakes a quota wait, and the zero-delay wake
+// still carries the model that HIT the limit rather than the one now running.
+// If the resumed call outlasts the quiet threshold, a tag taken from that frame
+// labels a live call with the provider that failed and is no longer in use.
+test("omits the model tag on a zero-delay quota wake, which names the model that failed rather than the one running", () => {
+  render(
+    <LivenessLine
+      lastFrameAt={0}
+      now={30_000}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      primaryModel="claude-opus-4"
+      retry={rawRetry({
+        attempt: 1,
+        attemptCap: 4,
+        delayMs: 0,
+        errorClass: "quota_exceeded",
+        model: "gpt-5",
+        receivedAt: 30_000,
+      })}
+    />,
+  );
+  expect(screen.getByTestId("liveness-line").textContent).not.toContain("gpt-5");
+});
+
+// The wait's own announcement keeps its tag: there the named model is the one
+// that failed and is still the one waiting.
+test("keeps the model tag on a quota wait that is still counting down", () => {
+  render(
+    <LivenessLine
+      lastFrameAt={0}
+      now={30_000}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      primaryModel="claude-opus-4"
+      retry={rawRetry({
+        attempt: 1,
+        attemptCap: 4,
+        delayMs: 5_000,
+        errorClass: "quota_exceeded",
+        model: "gpt-5",
+        receivedAt: 30_000,
+      })}
+    />,
+  );
+  expect(screen.getByTestId("liveness-line").textContent).toContain("gpt-5");
+});
+
 test("shows the retry group's elapsed time from groupElapsedMs", () => {
   render(
     <LivenessLine

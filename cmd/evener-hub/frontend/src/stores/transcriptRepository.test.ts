@@ -5361,3 +5361,32 @@ it("folds a buffered quota announcement that predates the adopted snapshot", asy
   expect(model?.quotaResumesAt).toBe(new Date(resumesAt).toISOString());
   expect(model?.modelRetry?.errorClass).toBe("quota_exceeded");
 });
+
+// The replay is narrowed to QUOTA frames on purpose. An ordinary retry is
+// pacing, not state: a retry that succeeds while the read is in flight leaves
+// the snapshot already holding the tool call it produced, so the buffered
+// history update is a duplicate the reducer folds to no change - and replaying
+// the retry then reinstalls an indicator for a call that is over, which stays
+// on screen while the foreground tool runs.
+it("does not replay an ordinary retry that the adopted snapshot has already absorbed", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  expect(owner.acceptRead(read("row-1"), { lifetime: 1, readId: "pre-cut", boundary: "pre-cut" })).toBe(true);
+  const ordinaryRetry = {
+    method: "evener/thread/modelRetry",
+    params: {
+      threadId,
+      ref,
+      turnId: "turn_1",
+      attempt: 2,
+      maxAttempts: 4,
+      delayMs: 5_000,
+      errorClass: "overloaded",
+      groupElapsedMs: 5_000,
+      attemptCap: 4,
+    },
+  } as AnyNotification;
+  owner.acceptBeforeReadCut([ordinaryRetry], { lifetime: 1 });
+  expect(owner.getSnapshot()?.modelRetry).toBeUndefined();
+});

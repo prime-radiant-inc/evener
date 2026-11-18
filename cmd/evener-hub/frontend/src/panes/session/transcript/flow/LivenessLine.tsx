@@ -87,12 +87,19 @@ export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId, ret
   // The line holds the count itself whether or not a turn runs, so a starting
   // turn has it without relying on another surface holding it.
   const runningSubagents = useSubagentCounts(sessionRef ?? null)?.active ?? turnRunning;
+  // A zero-delay quota frame is the WAKE: the call is going out again, and the
+  // model it names is the one that hit the limit, not the one now running (a
+  // model switch is exactly what wakes a wait). Tagging the resumed call with
+  // the old model outlives the quiet threshold and labels a live call with the
+  // wrong provider. The wait's own announcement keeps its tag, because there
+  // the named model is the one that failed.
+  const retryModelOmitted = retry?.errorClass === "quota_exceeded" && retry.delayMs === 0;
   const retryWait: RetryWait | undefined = retry && {
     attempt: retry.attempt,
     attemptCap: retry.attemptCap,
     delayMs: retry.delayMs,
     errorClass: retry.errorClass,
-    model: retry.model && retry.model !== primaryModel ? retry.model : undefined,
+    model: !retryModelOmitted && retry.model && retry.model !== primaryModel ? retry.model : undefined,
     groupElapsedMs: retry.groupElapsedMs,
     inProgress: lastFrameAt > retry.receivedAt || now - retry.receivedAt >= retry.delayMs,
   };

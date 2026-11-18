@@ -61,6 +61,18 @@ function offeredContentFingerprint(batch: Parameters<SessionEntryCache["commitBa
   );
 }
 
+// isQuotaRetry names the frames that carry quota-wait STATE rather than model
+// pacing: a quota-class retry, whether it opens a wait (positive delay) or is
+// the wake that ends one (zero delay). Both ends belong in pre-cut replay
+// because a model adopted from a snapshot taken before the transition has no
+// other route to it. Ordinary retries are left out deliberately - see
+// acceptBeforeReadCut's comment on why replaying one can reinstate a finished
+// call's indicator.
+function isQuotaRetry(notification: AnyNotification): boolean {
+  if (notification.method !== "evener/thread/modelRetry") return false;
+  return (notification.params as { errorClass?: unknown }).errorClass === "quota_exceeded";
+}
+
 // Local bodies can fill omissions at the same version, but cannot overwrite
 // explicit values (including empty ones). Keep normal version/identity rules;
 // only when the held item wins at equal version, use it as the authoritative
@@ -1150,14 +1162,22 @@ export class TranscriptRepository {
   acceptBeforeReadCut(notifications: readonly AnyNotification[], context: { lifetime: number }): void {
     const responseOverlayKeys = new Set(Object.keys(this.#model?.overlay ?? {}));
     for (const notification of notifications) {
-      // A quota wait's announcement is the one frame whose loss erases a
-      // countdown outright: the wait has no other route into a model adopted
-      // from a snapshot taken before it, so a pane that buffered it while the
-      // read was in flight must still fold it here. The snapshot's own summary
-      // is not a substitute - that is exactly the projection the announcement
-      // outran - and the wait's wake is a zero-delay frame of the same method,
-      // so both ends of the transition travel this route.
-      if (notification.method === "history/updated" || notification.method === "evener/thread/modelRetry") {
+      // A QUOTA frame is the one retry whose loss erases state outright: the
+      // wait has no other route into a model adopted from a snapshot taken
+      // before it, so a pane that buffered it while the read was in flight
+      // must still fold it here. The snapshot's own summary is not a
+      // substitute - that is exactly the projection the announcement outran -
+      // and the wait's wake is a zero-delay frame of the same method, so both
+      // ends of the transition travel this route.
+      //
+      // ORDINARY retries stay out, and that narrowing is the whole rule. They
+      // are pacing, not state: a retry that SUCCEEDS while the read is in
+      // flight leaves the snapshot already carrying the tool call it produced,
+      // so the buffered history update is a duplicate the reducer folds to no
+      // change - and replaying the retry then reinstalls an indicator for a
+      // call that is over. Re-applying a frame the snapshot has absorbed is
+      // only safe when the frame carries state the snapshot cannot express.
+      if (notification.method === "history/updated" || isQuotaRetry(notification)) {
         this.accept(notification, context);
       } else if (
         notification.method === "thread/queueChanged" &&
