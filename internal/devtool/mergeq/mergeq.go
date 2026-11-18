@@ -307,24 +307,32 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 	// the confirmation reads and the wait itself -- spends what is left of this.
 	deadline := clock.Now().Add(opts.Wait)
 	if st.Entry == nil {
-		// A run that asked for no wait has no caller budget to lend the
-		// confirmation, so it gets the same allowance as the other reads that
-		// decide an outcome. Never the signal-only context: that carries no
-		// deadline at all, which is what let a stalled gh call hold the command.
-		confirmBudget := finalObservationAllowance
-		if opts.Wait > 0 {
-			confirmBudget = deadline.Sub(clock.Now())
-		}
-		if err := c.Enqueue(ctx, opts.Repo, st.ID, opts.Jump); err != nil {
+		// The mutation is bounded too. On the signal-only context it had no limit at
+		// all, so a stalled call blocked the confirmation from starting and held the
+		// command for as long as GitHub took. It spends the same caller budget as
+		// everything else here: a mutation that eats the whole --wait leaves the
+		// confirmation with nothing, which it reports rather than spends twice.
+		enqueueCtx, stopEnqueue := context.WithTimeout(ctx, remainingAllowance(opts, clock, deadline))
+		enqueueErr := c.Enqueue(enqueueCtx, opts.Repo, st.ID, opts.Jump)
+		stopEnqueue()
+		if enqueueErr != nil {
 			// A reply lost to the drain bound is not a refusal: GitHub may have
 			// accepted the mutation before the answer was cut off, so calling it
 			// a failure would report an enqueue that already landed. Read the
 			// state once and let it decide. An explicit refusal, and a
 			// cancellation, keep their own paths below and above.
-			if !errors.Is(err, ErrIncompleteReply) {
-				return Outcome{}, refusalFor(ctx, EnqueueFailed, err)
+			//
+			// A mutation whose own deadline expired is the same question with the
+			// same answer: the call may have been accepted before the allowance ran
+			// out, so it is reconciled with a bounded read rather than reported as a
+			// refusal. A cancellation is not uncertain -- the operator stopped it --
+			// and refusalFor below is what tells that apart.
+			uncertain := errors.Is(enqueueErr, ErrIncompleteReply) ||
+				(enqueueCtx.Err() != nil && ctx.Err() == nil)
+			if !uncertain {
+				return Outcome{}, refusalFor(ctx, EnqueueFailed, enqueueErr)
 			}
-			if st, exitErr = confirmEnqueue(ctx, opts, c, confirmBudget); exitErr != nil {
+			if st, exitErr = confirmEnqueue(ctx, opts, c, clock, deadline); exitErr != nil {
 				return Outcome{}, exitErr
 			}
 			if st.State == mergedState {
@@ -333,9 +341,9 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 			if st.Entry == nil {
 				// Still absent after a fresh read: the mutation did not land, and
 				// the honest report is that the enqueue could not be confirmed.
-				return Outcome{}, refusalFor(ctx, EnqueueFailed, err)
+				return Outcome{}, refusalFor(ctx, EnqueueFailed, enqueueErr)
 			}
-		} else if st, exitErr = confirmEnqueue(ctx, opts, c, confirmBudget); exitErr != nil {
+		} else if st, exitErr = confirmEnqueue(ctx, opts, c, clock, deadline); exitErr != nil {
 			return Outcome{}, exitErr
 		}
 		if st.State == mergedState {
@@ -378,7 +386,24 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 		// caller set, and the loop treats that as the budget being spent rather
 		// than as an answer: the observation after the loop has its own
 		// allowance and is the one that decides.
-		out, merged, read, exitErr, expired := observe(ctx, opts, c, deadline.Sub(clock.Now()))
+		//
+		// A sleep that spent the last of the budget leaves this poll nothing to
+		// read with, and a zero budget builds an ALREADY-EXPIRED context: the gh
+		// call never starts, so the run reaches its timeout verdict having made one
+		// fewer real observation than the wait allowed, and a merge that became
+		// visible in that gap is reported as still queued. The poll therefore gets
+		// the same allowance the observation after the loop uses, so the recheck is
+		// a call that actually runs. It is a recheck and not a second wait: the
+		// wait still ends at the caller's deadline.
+		//
+		// The regression test could not see this because its fake counted the call
+		// anyway. A read that never starts and a read that answers look identical to
+		// a fake that does not look at its context.
+		budget := deadline.Sub(clock.Now())
+		if budget < finalObservationAllowance {
+			budget = finalObservationAllowance
+		}
+		out, merged, read, exitErr, expired := observe(ctx, opts, c, budget)
 		if expired {
 			break
 		}
@@ -494,8 +519,8 @@ func readStatus(ctx context.Context, opts Options, c Client) (Status, *ExitError
 	return st, nil
 }
 
-// confirmEnqueue reads the status once after an enqueue, bounded by an
-// allowance of its own.
+// confirmEnqueue reads the status once after an enqueue, bounded by whatever the
+// caller's budget has left AT THE MOMENT THE READ STARTS.
 //
 // The refresh that follows an enqueue is what decides whether the PR is queued,
 // so it is part of the answer and not a diagnostic. On the signal-only context
@@ -504,11 +529,17 @@ func readStatus(ctx context.Context, opts Options, c Client) (Status, *ExitError
 // already landed was never reported. `--wait 0` is the sharpest case, because
 // there is no wait at all to end and nothing else to bound it.
 //
+// The budget is computed here and not by the caller, and that ordering is the
+// finding this fixes: a budget calculated before the mutation was handed to a
+// read that started after it returned, so a 50-second mutation against `--wait
+// 60` left the confirmation with almost a full minute of its own. A limit is
+// what is left when the thing it limits begins.
+//
 // An allowance that expires is not a cancellation: the operator did not stop
 // anything, and exit 130 would say they had. The run does not know whether the
 // enqueue landed, which is a lookup failure -- exit 2 -- and says so.
-func confirmEnqueue(ctx context.Context, opts Options, c Client, budget time.Duration) (Status, *ExitError) {
-	readCtx, stop := context.WithTimeout(ctx, budget)
+func confirmEnqueue(ctx context.Context, opts Options, c Client, clock Clock, deadline time.Time) (Status, *ExitError) {
+	readCtx, stop := context.WithTimeout(ctx, remainingAllowance(opts, clock, deadline))
 	defer stop()
 	st, exitErr := readStatus(readCtx, opts, c)
 	if exitErr != nil && exitErr.Kind == Interrupted && ctx.Err() == nil {
@@ -520,6 +551,31 @@ func confirmEnqueue(ctx context.Context, opts Options, c Client, budget time.Dur
 		}
 	}
 	return st, exitErr
+}
+
+// remainingAllowance is how much of the caller's budget is left for a read that
+// is about to start.
+//
+// A run that asked for no wait has no caller budget to lend, so its reads get the
+// allowance the other outcome-deciding reads use. A run that did ask for one gets
+// what remains of it.
+//
+// A budget with nothing left falls back to that same allowance rather than
+// returning zero. A zero-length budget builds an ALREADY-EXPIRED context, and a
+// read handed one never starts: it would report "did not complete within the
+// allowance" for a call that was never made. That is the defect the wait loop had
+// in its last poll, one place over, so it is not repeated here. The final
+// observation sets this precedent explicitly -- it gets an allowance of its own
+// because "the wait's budget has nothing left to lend it".
+func remainingAllowance(opts Options, clock Clock, deadline time.Time) time.Duration {
+	if opts.Wait <= 0 {
+		return finalObservationAllowance
+	}
+	left := deadline.Sub(clock.Now())
+	if left <= 0 {
+		return finalObservationAllowance
+	}
+	return left
 }
 
 // refusalFor turns a failed client call into the run-ending refusal.

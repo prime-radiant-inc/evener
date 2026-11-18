@@ -162,26 +162,45 @@ func execDirUnder(t *testing.T, base string) (dir, reason string) {
 // belonged to the owning group, which the launcher rejects. Another member of
 // that group is another user, and can replace the entry just the same.
 //
-// The Go walk stays in front of it and can only add refusals, never remove one:
-// it names the specific component, which the bash predicate does not, and it is
-// the only part that reports a component it cannot inspect at all.
+// The Go walk runs only AFTER a refusal, to name the component. It cannot add a
+// refusal of its own: the mode bits it reads are the ACL mask on a directory
+// carrying a POSIX access ACL, so it called a directory group-writable that the
+// launcher accepts. One rule decides, the other explains.
 func replaceableAncestor(t *testing.T, path string) string {
 	t.Helper()
-	if reason := replaceableAncestorByMode(path); reason != "" {
-		return reason
-	}
 	if launcherTrustsPath(t, path) {
 		return ""
+	}
+	// The launcher refused, and only now is the Go walk consulted -- to name which
+	// component it was, which the bash predicate does not say.
+	//
+	// It used to run FIRST, and that ordering made it a second, stricter rule
+	// rather than a diagnostic: `os.Stat` reports the group bits from the mode,
+	// and on a directory carrying a POSIX access ACL those bits are the MASK. A
+	// mask of rwx with `group::` at r-x and no named entry holding write is a
+	// directory the launcher accepts -- it reads the ACL -- while the mode walk
+	// called it group-writable and refused it. When such a directory is the only
+	// executable candidate (a runner with a noexec /tmp, for instance) the
+	// fixtures then failed while setting themselves up, on a host where the
+	// launcher would have built perfectly well.
+	//
+	// Deciding first and explaining second is what keeps the two from disagreeing:
+	// one rule answers the question, and the other only says why.
+	if reason := replaceableAncestorByMode(path); reason != "" {
+		return reason
 	}
 	return path + " is not a path the launcher would build under, and its own rule is the authority here: a component is replaceable, or an ACL grants write to another user"
 }
 
-// replaceableAncestorByMode is the part of the launcher's rule that needs no ACL
-// reader, and it names the component that failed.
+// replaceableAncestorByMode names the component that failed, once the launcher
+// has already refused the path.
 //
-// Group-writable is refused whether or not this process is in the group. Another
-// member of the group is another user: they can rename or delete the fixture's
-// entry and put their own script where the test will execute it.
+// It is a diagnostic and not a second rule. It reads the mode bits, which on a
+// directory carrying a POSIX access ACL are the ACL MASK rather than the owning
+// group's permission -- so it can name a component the launcher accepted, and
+// using its answer to decide would refuse a usable base. It runs only after the
+// launcher's own verdict, where being over-specific costs a clearer message and
+// nothing else.
 func replaceableAncestorByMode(path string) string {
 	for _, component := range pathComponents(path) {
 		info, err := os.Stat(component)
@@ -804,6 +823,52 @@ func TestMergEQFixtureBaseIsTrustedAndExecutable(t *testing.T) {
 		// the predicate: handing it this base must not return a directory.
 		if got, reason := execDirUnder(t, dir); reason == "" {
 			t.Fatalf("execDirUnder(%s) returned %s under a replaceable ancestor: the fixture would execute a program from a path another user can swap", dir, got)
+		}
+	})
+	t.Run("a writable ACL mask over a read-only group is accepted", func(t *testing.T) {
+		t.Parallel()
+		// The opposite disagreement, and the one that broke fixture setup rather
+		// than weakening a check: on Linux the mode's group position is the ACL MASK
+		// when an access ACL is present, so a directory whose mask is rwx while
+		// `group::` is r-x and no named entry holds write is NOT group-writable. The
+		// launcher reads the ACL and accepts it. The Go mode walk read 0775 and
+		// refused it.
+		//
+		// On a runner where such a directory is the only executable candidate -- a
+		// noexec /tmp, for instance -- every fixture then failed while setting itself
+		// up, on a host where the launcher would have built perfectly well. That is
+		// why the launcher decides and the mode walk only explains afterwards.
+		dir := widenedFixtureDir(t, "acl-mask-readonly-group")
+		if _, err := exec.LookPath("setfacl"); err != nil {
+			t.Skipf("setfacl is not installed, so a POSIX access ACL cannot be manufactured here: %v", err)
+		}
+		if _, err := exec.LookPath("getfacl"); err != nil {
+			t.Skipf("getfacl is not installed, so the launcher could not read the ACL either and this premise has no meaning: %v", err)
+		}
+		if err := exec.Command("setfacl", "-m", "g::r-x", "-m", "m::rwx", dir).Run(); err != nil {
+			t.Skipf("could not set the ACL on %s (%v): the filesystem may not support POSIX ACLs", dir, err)
+		}
+		t.Cleanup(func() { _ = exec.Command("setfacl", "-b", dir).Run() })
+		// The premise, checked rather than assumed: the mask carries write, the
+		// owning group does not, and no named entry does.
+		acl, err := exec.Command("getfacl", "-p", "-c", dir).Output()
+		if err != nil {
+			t.Fatalf("read the ACL of %s: %v", dir, err)
+		}
+		text := string(acl)
+		if !strings.Contains(text, "mask::rwx") || !strings.Contains(text, "group::r-x") {
+			t.Skipf("the ACL came back as %q, which is not the writable-mask/read-only-group shape this case needs", strings.TrimSpace(text))
+		}
+		if !launcherTrustsPath(t, dir) {
+			t.Skipf("the launcher itself refuses %s, so this host cannot show the disagreement: %s", dir, text)
+		}
+		if reason := replaceableAncestor(t, dir); reason != "" {
+			t.Fatalf("the fixture selector refused %s, which the launcher accepts: the mode bits are the ACL mask here, not the owning group's permission, so a selector that decides on them fails on a host where the launcher works (%s)", dir, reason)
+		}
+		if got, reason := execDirUnder(t, dir); reason != "" {
+			t.Fatalf("execDirUnder(%s) refused a directory the launcher accepts (%s): on a runner where this is the only executable candidate, every fixture would fail during setup", dir, reason)
+		} else if !strings.HasPrefix(got, dir+string(os.PathSeparator)) {
+			t.Fatalf("execDirUnder(%s) returned %s, want a directory under it", dir, got)
 		}
 	})
 	t.Run("a group-writable ancestor is refused even for a member", func(t *testing.T) {

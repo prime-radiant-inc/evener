@@ -790,6 +790,13 @@ func TestWaitBudgetBoundsTheReadsItMakes(t *testing.T) {
 	if len(c.duringWait) == 0 {
 		t.Fatalf("no read was made during the wait, so this case did not reach the path it exists to test (reads %d, stdout %q)", c.reads, stdout.String())
 	}
+	// A read handed an already-expired context never reaches gh. Counting one as an
+	// observation is how the loop's last poll hid: the fake answered, the count
+	// looked right, and the real command would have failed before contacting
+	// anything -- leaving the run one recheck short of the wait it was given.
+	if c.expiredReads != 0 {
+		t.Fatalf("%d read(s) were issued on a context that was already over, so those gh calls could never have started: the run reached its verdict having made fewer observations than the wait allowed, and a merge in that gap is reported as still queued", c.expiredReads)
+	}
 	for i, had := range c.duringWait {
 		if !had {
 			t.Fatalf("poll read %d of %d was issued with a context carrying no deadline: the wait's budget bounds only the sleeps, so one stalled gh call holds the run past the --wait the caller asked for", i+1, len(c.duringWait))
@@ -904,12 +911,26 @@ type deadlineRecordingClient struct {
 	// duringWait records, per read made after the wait began, whether that read
 	// carried a deadline.
 	duringWait []bool
-	overBudget bool
+	// expiredReads counts reads the run issued on a context that was already over:
+	// calls that could never reach GitHub. They are excluded from duringWait and
+	// asserted separately, because a fake that counted them made a run with one
+	// fewer real observation look correct.
+	expiredReads int
+	overBudget   bool
 }
 
 func (c *deadlineRecordingClient) record(ctx context.Context) {
 	c.reads++
 	if !c.waited {
+		return
+	}
+	// A read whose context is already expired is a call that never starts, not an
+	// observation. Counting it is what hid the loop's last poll being handed a
+	// spent budget: the fake answered, the count looked right, and the real gh
+	// would have failed before contacting anything. Every read this fake records
+	// is therefore one that began with a live context.
+	if ctx.Err() != nil {
+		c.expiredReads++
 		return
 	}
 	deadline, ok := ctx.Deadline()
