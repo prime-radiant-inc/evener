@@ -3,6 +3,7 @@ package responses
 import (
 	"bytes"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -123,7 +124,7 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			want := nextInput(t, recorded(t, `{"output":[`+tc.complete+`]}`))
-			events := append(tc.events, `{"type":"response.completed","response":{"output":[`+tc.terminal+`]}}`)
+			events := slices.Concat(tc.events, []string{`{"type":"response.completed","response":{"output":[` + tc.terminal + `]}}`})
 			_, live := responsesEvents(t, events...)
 			saved := recorded(t, "data: "+strings.Join(events, "\n\ndata: ")+"\n\n")
 			for _, result := range []llm.Response{*live, saved} {
