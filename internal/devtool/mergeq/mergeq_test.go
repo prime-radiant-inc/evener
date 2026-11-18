@@ -644,6 +644,83 @@ func TestMergedCommitWinsOverAStaleQueueSnapshot(t *testing.T) {
 	}
 }
 
+// TestAnExplicitMutationRefusalIsNotReconciled pins which enqueue failures are
+// reconciled against a fresh read, and which are answers.
+//
+// Reconciling is right for a reply that was lost and for a call whose own
+// allowance expired: in both, GitHub may have accepted the mutation before the
+// answer was lost, so a refusal would report an enqueue that had already landed.
+// A failure the call itself reported is neither. Reconciling it reads the queue
+// looking for this invocation's work, and finds whatever is there -- including an
+// entry another operator made for the same pull request after the initial
+// lookup. That entry then turns a refused mutation into reported success.
+//
+// The ordering is what makes the difference: the enqueue context's error has to
+// be read before the cancel, because cancelling sets it to Canceled whatever it
+// was, and a check that runs afterwards calls every failure uncertain.
+func TestAnExplicitMutationRefusalIsNotReconciled(t *testing.T) {
+	t.Parallel()
+	c := &fakeClient{
+		enqueueErr: errors.New("gh: the pull request is already in the merge queue and --jump was refused"),
+		statuses: []Status{
+			{ID: "PR_6499", State: "OPEN"},
+			// Another operator queued it after the lookup above. Reconciling an
+			// explicit refusal against this read reports their entry as the work
+			// of an invocation GitHub refused.
+			{ID: "PR_6499", State: "OPEN", Entry: queueEntry(3)},
+		},
+	}
+	out, exitErr := Execute(context.Background(), opts(0), c, SystemClock)
+	if exitErr == nil {
+		t.Fatalf("outcome = %+v with no error: an enqueue GitHub refused was reported as success, from another operator's queue entry", out)
+	}
+	if exitErr.Kind != EnqueueFailed {
+		t.Fatalf("kind = %v, want EnqueueFailed: the call reported a refusal, which is an answer and not something to reconcile", exitErr.Kind)
+	}
+}
+
+// TestAnExpiredMutationIsReconciled pins the other side of the same rule: a call
+// whose own allowance ran out is not a refusal, because the mutation may have
+// landed before the allowance did. It is read back and reported as what the queue
+// says.
+func TestAnExpiredMutationIsReconciled(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	// The stalled call also moves the clock past the deadline, which is what the
+	// wait looks like from the run's side afterwards: the caller's budget is spent
+	// and the confirmation draws the post-deadline allowance instead.
+	c := &expiringEnqueueClient{now: &now}
+	c.statuses = []Status{
+		{ID: "PR_6499", State: "OPEN"},
+		{ID: "PR_6499", State: mergedState},
+	}
+	// One millisecond of wait: the mutation's allowance is what is left of it, and
+	// the stalled call is what spends it, so the outcome is the real ending rather
+	// than an error built to look like it.
+	out, exitErr := Execute(context.Background(), opts(time.Millisecond), c, (&fakeClock{now: now}).clock())
+	if exitErr != nil {
+		t.Fatalf("Execute: %v, want the queue read back and reported: a call that ran out of its own allowance may have landed, so it is not a refusal", exitErr)
+	}
+	if out.Kind != Merged {
+		t.Fatalf("outcome = %+v, want Merged: the enqueue expired and the read that followed found the pull request merged", out)
+	}
+}
+
+// expiringEnqueueClient is a client whose enqueue call spends its whole
+// allowance, the way a stalled gh call does, and returns the context's error.
+type expiringEnqueueClient struct {
+	fakeClient
+	// now is the run's clock, moved past the deadline when the call gives up, so
+	// the read that follows starts with the wait already spent.
+	now *time.Time
+}
+
+func (c *expiringEnqueueClient) Enqueue(ctx context.Context, _, _ string, _ bool) error {
+	<-ctx.Done()
+	*c.now = c.now.Add(time.Hour)
+	return ctx.Err()
+}
+
 // TestWaitingRunReportsTheQueuedPositionFirst pins the progress line a waiting
 // run prints before it waits: the operator sees where the PR entered the queue,
 // and the outcome line is still the last one.
@@ -807,6 +884,50 @@ func TestWaitBudgetBoundsTheReadsItMakes(t *testing.T) {
 	}
 }
 
+// TestTheWaitSpendsOnePostDeadlineAllowance pins how long a run may keep reading
+// after the wait its caller asked for has run out.
+//
+// The reads that cannot draw on the wait get a post-deadline allowance, because
+// the queue can finish in the moment after the deadline and a run that stopped
+// looking at the deadline would miss that merge. Granting it to EACH of them is
+// what made the limit untrue: the poll that straddled the deadline rounded its
+// spent budget up to a fresh interval, and the recheck after the loop started
+// another one, so `--wait 1` could go on reading for about a minute. One
+// allowance bounds both, and the run's last read is inside it.
+//
+// The assertion is on the deadlines the reads RECEIVE, because that is what the
+// wait controls: waiting a real allowance out would spend the suite's time
+// proving that a timer fires.
+func TestTheWaitSpendsOnePostDeadlineAllowance(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
+	start := now
+	c := &deadlineRecordingClient{status: Status{ID: "PR_6499", State: "OPEN", Entry: queueEntry(1)}}
+	c.now = &now
+	// Each read takes the whole allowance it is given, which is the stall the
+	// finding describes: a run that grants a fresh allowance per observation then
+	// goes on for a whole extra interval, and one that shares it does not.
+	c.stall = finalObservationAllowance
+	clock := Clock{
+		Now: func() time.Time { return now },
+		// Every sleep spends what it is given, so the wait's second is spent by the
+		// first sleep and every read after it draws on the post-deadline allowance.
+		Sleep: func(_ context.Context, d time.Duration) bool { now = now.Add(d); c.waited = true; return true },
+	}
+	var stdout, stderr strings.Builder
+	_ = Run(context.Background(), opts(time.Second), c, clock, &stdout, &stderr)
+	if len(c.duringWait) == 0 {
+		t.Fatalf("no read was made during the wait, so this case did not reach the path it exists to test (reads %d, stdout %q)", c.reads, stdout.String())
+	}
+	// One allowance past the deadline, and no further. Since every read spends its
+	// whole budget, the clock's final position IS how long the run got to keep
+	// reading: a second allowance shows up here as another interval.
+	if limit := time.Second + finalObservationAllowance; now.Sub(start) > limit {
+		t.Fatalf("the run went on for %v against a --wait of %v, want at most %v: each post-deadline read starting its own allowance is how --wait 1 spent about a minute reading",
+			now.Sub(start), time.Second, limit)
+	}
+}
+
 // TestThePostEnqueueConfirmationIsBounded pins that the read which decides
 // whether an enqueue landed carries a deadline.
 //
@@ -917,6 +1038,13 @@ type deadlineRecordingClient struct {
 	// fewer real observation look correct.
 	expiredReads int
 	overBudget   bool
+	// now and stall model a read that takes its whole allowance: each read moves
+	// the run's clock on by stall. It is what makes the post-deadline allowance
+	// observable at all, because a read that answers instantly leaves the next one
+	// the full allowance and a run that starts two allowances then looks exactly
+	// like one that shares a single one.
+	now   *time.Time
+	stall time.Duration
 }
 
 func (c *deadlineRecordingClient) record(ctx context.Context) {
@@ -944,6 +1072,16 @@ func (c *deadlineRecordingClient) record(ctx context.Context) {
 
 func (c *deadlineRecordingClient) Status(ctx context.Context, _, _ string) (Status, error) {
 	c.record(ctx)
+	// The stall lands on the status read, which is the last read of an
+	// observation: one observe() therefore spends one allowance, which is the
+	// unit the finding is about. Charging it per read would count the merge
+	// lookup as well and make one observation look like two allowances.
+	//
+	// Only after the wait has begun: the reads before it are not bounded by the
+	// wait, and advancing the clock there would move the deadline the loop reads.
+	if c.now != nil && c.waited {
+		*c.now = c.now.Add(c.stall)
+	}
 	return c.status, nil
 }
 

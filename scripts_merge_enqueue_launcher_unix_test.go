@@ -1224,31 +1224,97 @@ func buildIn(t *testing.T, marker string) (pid, group int) {
 	return 0, 0
 }
 
-// assertNoSurvivors fails when any process still names marker and KILLs it
-// first, so a failing case reports a leak without leaving one.
+// assertNoSurvivors fails when any process still names marker, and KILLs the
+// ones this test owns first, so a failing case reports a leak without leaving
+// one.
+//
+// Ownership, not the marker, decides what gets signalled. The marker is a path
+// under the case's own directory, and it appears in the argv of every process
+// the case started -- but also in the argv of anyone else who happens to name
+// that path, such as a developer tailing the fixture's log while a stalled case
+// is being looked at. That process is in its own process group, and killing
+// `-pgid` for it killed the developer's shell along with it. So a match is only
+// signalled when it is a descendant of this test process: a process the case
+// started, directly or through the launcher. Everything else is reported with
+// its pid and command line and left alone, because a test must not signal what
+// it cannot show it owns.
 func assertNoSurvivors(t *testing.T, marker string) {
 	t.Helper()
+	procs := scanProcs(t)
 	// A zombie is dead and this process cannot reap it: it is another process's
 	// exit this one has no business reporting as a leak.
-	var survivors []procLine
-	for _, proc := range processesNaming(t, marker) {
-		if pidGone(proc.pid) {
-			continue
+	live := make([]procLine, 0, len(procs))
+	for _, proc := range procs {
+		if !pidGone(proc.pid) {
+			live = append(live, proc)
 		}
-		survivors = append(survivors, proc)
 	}
+	survivors, owned := survivorsOf(live, marker, os.Getpid())
 	if len(survivors) == 0 {
 		return
 	}
 	var described []string
 	for _, proc := range survivors {
-		described = append(described, fmt.Sprintf("%d(pgid %d) %s", proc.pid, proc.pgid, proc.cmd))
+		state := "left alone: this test cannot show it owns that process"
+		if slices.Contains(owned, proc) {
+			state = "killed"
+		}
+		described = append(described, fmt.Sprintf("%d(pgid %d) %s [%s]", proc.pid, proc.pgid, proc.cmd, state))
 	}
-	for _, proc := range survivors {
+	for _, proc := range owned {
 		_ = syscall.Kill(-proc.pgid, syscall.SIGKILL)
 		_ = syscall.Kill(proc.pid, syscall.SIGKILL)
 	}
 	t.Fatalf("left behind after cleanup: %s", strings.Join(described, " | "))
+}
+
+// survivorsOf splits the processes naming marker into the ones to report and the
+// ones this test may signal, given a process table of live processes and the
+// test's own pid.
+//
+// The split is what the sweep's safety rests on, so it is a function of its inputs
+// rather than a loop inside the assertion: a case can hand it a process table it
+// built and ask whom it would signal.
+func survivorsOf(procs []procLine, marker string, self int) (survivors, owned []procLine) {
+	for _, proc := range procs {
+		if proc.pid == self || !strings.Contains(proc.cmd, marker) {
+			continue
+		}
+		survivors = append(survivors, proc)
+		if descendsFrom(procs, proc.pid, self) {
+			owned = append(owned, proc)
+		}
+	}
+	return survivors, owned
+}
+
+// descendsFrom reports whether pid is a descendant of root according to the
+// parent links in procs.
+//
+// It is how the sweep tells a process the case started from one that merely
+// names the fixture path. A process reparented to init is not a descendant of
+// anything here, which is the honest answer: its parent link was cut, so the
+// only claim left would be the path in its argv, and that is not ownership.
+func descendsFrom(procs []procLine, pid, root int) bool {
+	if pid == root {
+		return true
+	}
+	parent := make(map[int]int, len(procs))
+	for _, proc := range procs {
+		parent[proc.pid] = proc.ppid
+	}
+	// Bounded by the process count: a parent cycle would otherwise spin here.
+	for range len(procs) {
+		next, ok := parent[pid]
+		if !ok || next <= 1 {
+			return false
+		}
+		if next == root {
+			return true
+		}
+		pid = next
+	}
+	return false
 }
 
 // waitExit waits for cmd to exit, bounded. It reports the exit code and true,
@@ -3749,6 +3815,50 @@ func TestMergeEnqueueLauncherRefusesANonNumericWaitBeforeBuilding(t *testing.T) 
 // through one review round. Comparing the printed lines against the header's own
 // comment block says the whole contract came out without restating any of it, so
 // the help text stays free to change wording.
+// TestTheSurvivorSweepOnlySignalsWhatItOwns pins whom the teardown's sweep may
+// signal.
+//
+// The marker is the case's own fixture path, and it matches every process the
+// case started -- but also anything else that names that path, such as a
+// developer's `tail -f` on the fixture log while a stalled case is looked at.
+// The sweep used to KILL the process group of every match, so that tail took the
+// developer's shell with it: a test signalling what it cannot show it owns. The
+// ownership claim is a parent link, so a match that is not a descendant of this
+// test process is reported and left running.
+//
+// The table is built here rather than observed on the machine: the question is
+// which of two indistinguishable-by-argv processes the sweep signals, and a case
+// that had to start a real orphan to ask it would be measuring the machine.
+func TestTheSurvivorSweepOnlySignalsWhatItOwns(t *testing.T) {
+	t.Parallel()
+	const marker = "/tmp/mergeq-fixture.12345"
+	const self = 4242
+	procs := []procLine{
+		// The test itself: never a survivor, because it is not a process the case
+		// started.
+		{pid: self, ppid: 1, pgid: self, cmd: "/tmp/go-build/test -test.run=TestTheSurvivorSweep"},
+		// A helper the case started: a descendant, so it may be signalled.
+		{pid: 5000, ppid: self, pgid: 5000, cmd: "bash " + marker + "/helper.sh"},
+		// A developer's tail, in its own group, naming the same path and no
+		// relation to this test. This is the process the old sweep killed.
+		{pid: 6000, ppid: 1, pgid: 6000, cmd: "tail -f " + marker + "/launcher.log"},
+		// A grandchild of the test, reached through the helper above: still owned.
+		{pid: 5001, ppid: 5000, pgid: 5000, cmd: "go build -o " + marker + "/evener-dev"},
+	}
+	survivors, owned := survivorsOf(procs, marker, self)
+	if len(survivors) != 3 {
+		t.Fatalf("watch list = %d process(es), want the three that name the fixture: %+v", len(survivors), survivors)
+	}
+	var signalled []int
+	for _, proc := range owned {
+		signalled = append(signalled, proc.pid)
+	}
+	if want := []int{5000, 5001}; !slices.Equal(signalled, want) {
+		t.Fatalf("signalled %v, want %v: a process is signalable only when this test is its ancestor, and the tail at 6000 is nobody's descendant here",
+			signalled, want)
+	}
+}
+
 func TestMergeEnqueueLauncherHelpPrintsTheWholeContract(t *testing.T) {
 	t.Parallel()
 	out, err := exec.Command("bash", mergeEnqueueLauncher, "--help").CombinedOutput()

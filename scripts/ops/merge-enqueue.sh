@@ -58,8 +58,15 @@
 # ended the attempt (dropped or timed out), 2 means nothing was decided: bad
 # arguments, a failed GitHub call, or a launcher that could not run the helper.
 # 130 means an operator stopped it. A launcher failure is never reported as 1
-# (which a caller retries) or 126/127 (which mean "command not executable"),
-# and a helper that did start always keeps its own status.
+# (which a caller retries) or 126/127 (which mean "command not executable").
+#
+# A helper that reports one of its own outcomes -- 0, 1, 2 or 130 -- keeps it.
+# The launcher answers 2 itself for a status the contract does not define: a
+# helper killed between polls, so the run reached no queue decision, and a
+# helper that left the GitHub call it published still running, because a status
+# returned while a submit is in flight is not a queue outcome. An EVENER_DEV_BIN
+# wrapper therefore has to run the helper in a way that lets the launcher see
+# its status: exec it, or wait for it and exit with what it exited with.
 #
 set -euo pipefail
 
