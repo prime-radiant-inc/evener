@@ -154,10 +154,9 @@ func TestChatStrictToolsStillStrictifyFullyRequiredSchemas(t *testing.T) {
 func TestChatNonStrictToolsKeepParameterlessToolsOpen(t *testing.T) {
 	t.Parallel()
 	req := userReq("hi")
-	req.Tools = []llm.ToolDefinition{{Name: "current_time"}}
-	// A prepared request: this is the case the open schema exists for, because
-	// prepareTools compiled the definition against it locally.
-	req = llm.MarkPreparedTools(req)
+	// A prepared definition: this is the case the open schema exists for,
+	// because prepareTools compiled the definition against it locally.
+	req.Tools = []llm.ToolDefinition{llm.ToolDefinition{Name: "current_time"}.WithNoParametersDeclared()}
 
 	body := build(t, req, resolved(func(c *registry.Caps) { c.StrictTools = new(false) }))
 	fn := body["tools"].([]map[string]any)[0]["function"].(map[string]any)
@@ -215,8 +214,7 @@ func TestChatDirectCallKeepsParameterlessToolWithoutParameters(t *testing.T) {
 func TestChatStrictToolsKeepParameterlessToolsClosed(t *testing.T) {
 	t.Parallel()
 	req := userReq("hi")
-	req.Tools = []llm.ToolDefinition{{Name: "current_time"}}
-	req = llm.MarkPreparedTools(req)
+	req.Tools = []llm.ToolDefinition{llm.ToolDefinition{Name: "current_time"}.WithNoParametersDeclared()}
 
 	body := build(t, req, resolved(func(c *registry.Caps) { c.StrictTools = new(true) }))
 	fn := body["tools"].([]map[string]any)[0]["function"].(map[string]any)

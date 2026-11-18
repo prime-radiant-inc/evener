@@ -419,6 +419,38 @@ type ToolDefinition struct {
 	// opts the tool out of strict mode instead of allowing the API to
 	// normalize the schema into strict mode automatically.
 	Strict *bool `json:"strict,omitempty"`
+
+	// declaredNoParameters records that the caller declared this tool with no
+	// parameters at all, as distinct from declaring the open empty object.
+	// prepareTools fills Parameters with the open schema either way, because
+	// that is the schema the adapters put on the wire and the budget has to
+	// price it. The distinction still decides strict projection: only a tool
+	// that declares no arguments can be sent in strict mode, which admits
+	// exactly the empty argument set. An open object accepts arbitrary keys and
+	// cannot be closed without changing what the caller declared.
+	declaredNoParameters bool
+}
+
+// DeclaresNoParameters reports whether the caller declared this tool without a
+// parameter schema, as opposed to declaring an open one.
+//
+// An adapter reads this instead of testing Parameters for nil, because a
+// prepared definition carries the open schema there: the wire and the token
+// budget both need it present, and the declaration still has to be recoverable
+// for the strict decision.
+func (t ToolDefinition) DeclaresNoParameters() bool { return t.declaredNoParameters }
+
+// WithNoParametersDeclared returns t marked as declaring no parameter schema,
+// with the open empty schema filled in the way preparation fills it. It is what
+// prepareTools produces for a tool the caller declared with nil Parameters, so
+// a caller outside this package can build the same definition to test an
+// adapter against.
+func (t ToolDefinition) WithNoParametersDeclared() ToolDefinition {
+	if t.Parameters == nil {
+		t.Parameters = map[string]any{"type": "object", "properties": map[string]any{}}
+	}
+	t.declaredNoParameters = true
+	return t
 }
 
 // ToolChoice controls whether and which tool the model is allowed or required to call.
@@ -484,38 +516,8 @@ type Request struct {
 	// drift the estimate silently. Rebuild the list and re-measure instead.
 	ToolsJSONBytes int `json:"-"`
 
-	// preparedTools reports that Tools came from prepareTools, which supplies
-	// the open empty schema for a parameterless tool so the local validator has
-	// something to compile. An override adapter needs that same schema in the
-	// definition it marshals, and preparedTools is how the client tells such a
-	// request from a direct Complete or Stream call, which never went through
-	// preparation and must keep passing the nil through untouched.
-	preparedTools bool
-
 	AdapterTimeout *AdapterTimeout `json:"adapter_timeout,omitempty"`
 }
-
-// MarkPreparedTools marks req as one that tool preparation built. It is the only
-// way to set the marker, so every request an adapter sees as prepared came
-// through this call rather than through a field a caller could set by accident.
-func MarkPreparedTools(req Request) Request {
-	req.preparedTools = true
-	return req
-}
-
-// PreparedTools reports whether Tools came from prepareTools, which supplies the
-// open empty schema for a parameterless tool so the local validator has
-// something to compile.
-//
-// A built-in adapter needs this to tell a request preparation built from a
-// direct Complete or Stream call. Preparation keeps a no-argument definition
-// distinct by leaving its Parameters nil, and the local validator compiles that
-// definition against the open empty object, so on a prepared request the wire
-// has to carry that same schema or the provider reads "no schema" where the
-// validator reads "any object". A direct call never went through preparation,
-// so its nil is the caller's own no-argument declaration and must reach the
-// adapter unchanged.
-func (req Request) PreparedTools() bool { return req.preparedTools }
 
 // FinishReason holds a canonical finish reason alongside the raw provider value.
 type FinishReason struct {

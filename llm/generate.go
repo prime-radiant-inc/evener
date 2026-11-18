@@ -251,10 +251,10 @@ func prepareGeneration(opts GenerateOptions) (*generationState, error) {
 
 // request builds the model request for one step from opts and the conversation so far.
 func (gs *generationState) request(opts GenerateOptions, history []Message) Request {
-	// preparedTools marks this request as one preparation built: Tools came from
-	// prepareTools, so the adapters find the nil a parameterless definition
-	// keeps, and can tell that apart from a direct call's nil.
-	return MarkPreparedTools(Request{
+	// Each definition carries its own declaration, so the adapters can recover
+	// "no arguments" from the same list the budget prices and the override
+	// adapter marshals. Nothing request-scoped has to be marked.
+	return Request{
 		Model:                opts.Model,
 		Provider:             opts.Provider,
 		Messages:             append([]Message{}, history...),
@@ -285,7 +285,7 @@ func (gs *generationState) request(opts GenerateOptions, history []Message) Requ
 		ProviderOptions:      opts.ProviderOptions,
 		WebSearch:            opts.WebSearch,
 		AdapterTimeout:       opts.AdapterTimeout,
-	})
+	}
 }
 
 // endsToolLoop reports whether a step's response is the last one: it carries no
@@ -395,13 +395,19 @@ func prepareTools(tools []Tool) (map[string]Tool, []ToolDefinition, error) {
 		if err := ValidateToolName(name); err != nil {
 			return nil, nil, err
 		}
-		// A definition that declares no parameters keeps its nil: the adapters
-		// distinguish "this tool takes no arguments" from "this tool advertises
-		// the open empty object", and only the first is strict-expressible.
-		// Validate and compile against the default without writing it back.
-		declared := t.Definition.Parameters
+		// A definition that declares no parameters carries the open empty schema
+		// in this catalog, because that is the schema every adapter puts on the
+		// wire for it and the budget has to price what goes on the wire. What the
+		// declaration was is kept separately: "no arguments" and "the open empty
+		// object" are different claims, and only the first is strict-expressible.
+		//
+		// Keeping the schema here rather than restoring it at dispatch is what
+		// stops the stamp from describing a list no adapter sends: the stamp is
+		// measured from this catalog, so a nil here would have the budget admit a
+		// request the wire is larger than.
 		if t.Definition.Parameters == nil {
 			t.Definition.Parameters = defaultToolParameters()
+			t.Definition.declaredNoParameters = true
 		}
 		if err := validateToolParameters(t.Definition.Parameters); err != nil {
 			return nil, nil, err
@@ -410,7 +416,6 @@ func prepareTools(tools []Tool) (map[string]Tool, []ToolDefinition, error) {
 		if err != nil {
 			return nil, nil, err
 		}
-		t.Definition.Parameters = declared
 		t.schema = s
 		idx[name] = t
 		defs = append(defs, t.Definition)

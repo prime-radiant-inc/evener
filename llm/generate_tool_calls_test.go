@@ -417,8 +417,31 @@ func TestPrepareToolsPreservesTheNoArgumentDefinition(t *testing.T) {
 	if len(defs) != 2 {
 		t.Fatalf("got %d definitions, want 2", len(defs))
 	}
-	if defs[0].Parameters != nil {
-		t.Fatalf("a tool that declared no parameters came out with %#v: the adapter can no longer tell it apart from an explicitly open schema", defs[0].Parameters)
+	// The catalog carries the open empty schema, because that is what every
+	// adapter puts on the wire for a parameterless tool and the budget has to
+	// price it. A nil here would have the stamp describe a list smaller than the
+	// request, which is how admission came to accept requests the wire was over.
+	if defs[0].Parameters == nil {
+		t.Fatal("a tool that declared no parameters came out with nil: the budget and the wire would disagree about this request")
+	}
+	if typ, _ := defs[0].Parameters["type"].(string); typ != "object" {
+		t.Fatalf("parameters = %#v, want the open empty object every adapter sends", defs[0].Parameters)
+	}
+	if props, ok := defs[0].Parameters["properties"].(map[string]any); !ok || len(props) != 0 {
+		t.Fatalf("properties = %#v, want an empty object", defs[0].Parameters["properties"])
+	}
+	if _, has := defs[0].Parameters["additionalProperties"]; has {
+		t.Fatalf("additionalProperties = %#v, want it absent: this is the open schema", defs[0].Parameters["additionalProperties"])
+	}
+	// The declaration is still recoverable, which is what strict projection
+	// needs: an open object cannot be closed without narrowing what the caller
+	// declared, and a no-argument tool can be sent strict.
+	if !defs[0].DeclaresNoParameters() {
+		t.Fatal("the no-argument declaration was lost: strict projection can no longer tell it from an explicitly open schema")
+	}
+	// A caller who supplied a schema is not marked, and keeps the schema as given.
+	if defs[1].DeclaresNoParameters() {
+		t.Fatal("an explicitly supplied open schema was recorded as a no-argument declaration")
 	}
 	if defs[1].Parameters == nil {
 		t.Fatal("an explicitly supplied schema must be preserved as given")

@@ -42,12 +42,14 @@ func toolSchema(t llm.ToolDefinition, strict bool) (params map[string]any, toolS
 		toolStrict = *t.Strict
 	}
 	params = t.Parameters
-	if params == nil {
+	if t.DeclaresNoParameters() || params == nil {
 		// A tool that declares no parameters takes the empty object. On the
 		// strict path the root has to be explicitly closed, because strict
 		// mode accepts that and only that: an open root is not certifiable,
 		// and sending it non-strict would accept any keys the tool rejects.
-		// With strict mode off the advertised shape is unchanged.
+		// With strict mode off the advertised shape is unchanged, and for a
+		// prepared definition that shape is the open empty object it already
+		// carries.
 		params = map[string]any{"type": "object", "properties": map[string]any{}}
 		if toolStrict {
 			params["additionalProperties"] = false

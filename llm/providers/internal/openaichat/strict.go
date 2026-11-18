@@ -754,6 +754,28 @@ func certifiedByReadableKeyword(m map[string]any) bool {
 //
 // A shape that does not encode as a JSON array, or one whose encoding fails, is
 // unreadable and infers nothing.
+// encodedScalarValue returns the value a const keyword puts on the wire, so the
+// type this file states describes that JSON rather than the Go value behind it.
+//
+// A caller may write a const as a plain string or as a non-nil *string, and the
+// request encoder emits the same JSON string for both. Reading the Go kind
+// would type one and leave the other typeless, and a provider that requires an
+// explicit type on every node rejects the whole request over the one it missed.
+// Decoding the encoding is the rule enumMembers already applies to its members.
+func encodedScalarValue(value any) (any, bool) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return nil, false
+	}
+	var decoded any
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.UseNumber()
+	if err := decoder.Decode(&decoded); err != nil {
+		return nil, false
+	}
+	return decoded, true
+}
+
 func enumMembers(raw any) ([]any, bool) {
 	if raw == nil {
 		return nil, false
@@ -808,7 +830,17 @@ func derivedScalarType(m map[string]any, dialect schemaDialect) (string, bool) {
 		if !dialect.readsConst() {
 			return "", false
 		}
-		values = []any{m["const"]}
+		// The type has to describe the JSON the encoder sends, not the Go value
+		// that produced it. A caller may write the value as a plain string or as
+		// a non-nil *string, and the request encoder sends the same JSON string
+		// for both; classifying the Go value would type one and not the other.
+		// Reading it through its encoding is the rule the enum path already
+		// applies to its members.
+		encoded, ok := encodedScalarValue(m["const"])
+		if !ok {
+			return "", false
+		}
+		values = []any{encoded}
 	case m["enum"] != nil:
 		list, ok := enumMembers(m["enum"])
 		if !ok {

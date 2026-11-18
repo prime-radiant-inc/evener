@@ -3007,3 +3007,77 @@ func TestFullyRequiredSchemaIsCertifiedInEitherPropertyMapSpelling(t *testing.T)
 		}
 	}
 }
+
+// A const written as a plain string and the same const written as a non-nil
+// *string are the same value on the wire: the request encoder emits the string
+// both times. Inference read the Go value instead of the encoding, and a
+// *string with no custom marshaler reached the pointer case of the scalar
+// switch, which names no type — so one spelling was certified and the other was
+// left typeless, and a provider demanding an explicit type rejected the whole
+// request over it. The enum path already reads its members through their
+// encoding; const now does the same, so both spellings state one type and
+// accept the same value.
+func TestConstStatesTheTypeItsEncodingNames(t *testing.T) {
+	t.Parallel()
+	fast := "fast"
+	cases := map[string]struct {
+		constValue any
+		want       string
+	}{
+		"plain string":        {constValue: "fast", want: "string"},
+		"non-nil pointer":     {constValue: &fast, want: "string"},
+		"boolean":             {constValue: true, want: "boolean"},
+		"integer":             {constValue: 3, want: "number"},
+		"string-encoding int": {constValue: stringlyFast, want: "string"},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			emitted := SupplyDerivedTypes(map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties":           map[string]any{"mode": map[string]any{"const": tc.constValue}},
+				"required":             []string{"mode"},
+			})
+			modeSchema := emitted["properties"].(map[string]any)["mode"].(map[string]any)
+			if modeSchema["type"] != tc.want {
+				t.Fatalf("emitted type = %#v, want %q: the type must describe the JSON the encoder sends, not the Go value behind it", modeSchema["type"], tc.want)
+			}
+			// The accepted set is the same for both spellings: whatever the
+			// advertised const names still validates. The const keyword itself is
+			// left as the caller wrote it, so the value is read through its
+			// encoding here too rather than compared as a Go value.
+			if tc.want == "string" && !schemaAccepts(t, emitted, map[string]any{"mode": "fast"}) {
+				t.Fatal("the emitted schema rejects the value the advertised const names")
+			}
+		})
+	}
+}
+
+// The const's own accepted set must survive the encoding: a pointer to a string
+// and the string itself have to admit exactly the same argument, which is what
+// makes stating the same type for both correct rather than a guess.
+func TestConstPointerAndStringAdmitTheSameArgument(t *testing.T) {
+	t.Parallel()
+	fast := "fast"
+	for name, constValue := range map[string]any{
+		"plain string":    "fast",
+		"non-nil pointer": &fast,
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			emitted := SupplyDerivedTypes(map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties":           map[string]any{"mode": map[string]any{"const": constValue}},
+				"required":             []string{"mode"},
+			})
+			if !schemaAccepts(t, emitted, map[string]any{"mode": "fast"}) {
+				t.Fatal("the emitted schema rejects the value the advertised const names")
+			}
+			if schemaAccepts(t, emitted, map[string]any{"mode": "safe"}) {
+				t.Fatal("the emitted schema accepts a value the advertised const excludes")
+			}
+		})
+	}
+}

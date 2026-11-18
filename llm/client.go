@@ -207,48 +207,6 @@ func (c *Client) Register(adapter ProviderAdapter) {
 	c.overridesMu.Unlock()
 }
 
-// withOpenParameterlessSchemas restores the open empty schema for a tool that
-// declared no parameters, for the override adapter boundary only.
-//
-// prepareTools leaves a no-argument definition's Parameters nil, and the local
-// validator compiles that definition against the open empty object. A built-in
-// adapter reads the nil itself and chooses between the closed and the open
-// empty schema. A registered override never takes part in that contract: it
-// marshals the definition straight through, or hands it to something that
-// does, so omitting the key would have the provider read "no schema" where the
-// validator reads "any object". Those requests are the ones preparation built,
-// and that is exactly what this restores.
-//
-// A direct Complete or Stream call never went through preparation. Its nil
-// Parameters is what the caller wrote, and an adapter that reads nil as "this
-// tool declares no arguments" is entitled to see it. Rewriting that nil would
-// hand such an adapter a schema permitting arbitrary keys in place of a
-// no-argument declaration, so the rewrite is limited to prepared requests.
-func withOpenParameterlessSchemas(req Request) Request {
-	if len(req.Tools) == 0 || !req.PreparedTools() {
-		return req
-	}
-	tools := make([]ToolDefinition, len(req.Tools))
-	copy(tools, req.Tools)
-	changed := false
-	for i := range tools {
-		if tools[i].Parameters == nil {
-			tools[i].Parameters = defaultToolParameters()
-			changed = true
-		}
-	}
-	if !changed {
-		return req
-	}
-	req.Tools = tools
-	// The stamp describes the list this request arrived with. Restoring a
-	// schema adds bytes the stamp never measured, so it is refreshed here
-	// rather than left to describe a list this request no longer carries: a
-	// count that omits them admits a request the budget would have rejected.
-	req.ToolsJSONBytes = ToolsJSONBytes(tools)
-	return req
-}
-
 // SetDefaultProvider pins the default instance name for requests that
 // name none. A pin outranks both the registry and registration order.
 func (c *Client) SetDefaultProvider(name string) {
@@ -383,15 +341,6 @@ func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 		req = ShapeRequest(req, t.res)
 	}
 	base := func(ctx context.Context, req Request) (Response, error) {
-		// The parameterless fallback runs before budget admission, because it
-		// changes the tool list the budget prices: restoring the open schema
-		// adds bytes, and admitting a request on a count that omits them can
-		// dispatch something the budget would have rejected. It applies only to
-		// the override branch and only to prepared requests, so a protocol
-		// request and a direct override call keep the list they came with.
-		if t.override != nil {
-			req = withOpenParameterlessSchemas(req)
-		}
 		if t.resolved {
 			var err error
 			req, err = shapeAndApplyTokenBudget(req, t.res)
@@ -434,13 +383,6 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 		req = ShapeRequest(req, t.res)
 	}
 	base := func(ctx context.Context, req Request) (Stream, error) {
-		// The override boundary is where a parameterless tool's declared nil
-		// has to become the open schema the local validator compiled, and it
-		// has to happen before budget admission for the same reason as on the
-		// Complete path.
-		if t.override != nil {
-			req = withOpenParameterlessSchemas(req)
-		}
 		if t.resolved {
 			var err error
 			req, err = shapeAndApplyTokenBudget(req, t.res)
