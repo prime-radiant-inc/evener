@@ -59,6 +59,9 @@ type groupedTurn struct {
 	// turnID is the logical turn's id: the group's first entry's
 	// persistedTurnID.
 	turnID string
+	// stamped is true when the group was opened by an identity-format
+	// entry's own TurnID rather than by the legacy kind-and-owner rules.
+	stamped bool
 	// entries are the group's decoded entries in arrival order, including
 	// entries whose projector emitted no items (they still carry stamps).
 	entries []schema.Turn
@@ -85,21 +88,51 @@ type TurnGrouper struct {
 	Open bool
 	// TurnID is the latest group's turn id.
 	TurnID string
+	// Stamped reports whether the latest group was opened by an
+	// identity-format entry. A stamped entry joins a group by its id, but ONLY
+	// a group that is itself stamped: the index gives an identity entry its own
+	// summary regardless of the legacy group before it (build.go's
+	// applyIdentity resets the grouper), so an id shared with a legacy group
+	// must not make the two one turn (#1166 review).
+	Stamped bool
 }
 
 // Place reports the turn the entry belongs to and whether it starts a new
 // logical turn. entryIndex is the entry's 1-based index (its ordinal + 1).
 func (g *TurnGrouper) Place(entry *schema.Turn, entryIndex int) (turnID string, newTurn bool) {
+	if entry.Format == schema.TurnFormatIdentity && entry.TurnID != "" {
+		// A stamped entry joins the turn the writer named, and the id is the
+		// whole join key — matching the index, whose summaries are keyed by
+		// id across both formats. Entries of one turn are contiguous in the
+		// file: the writer closes a turn with a completion entry, so the
+		// next stamped entry carries a different id and opens the next
+		// group. Both closing kinds (TURN_COMPLETION, TURN_REOPEN) are
+		// transcript-only, so they never reach here and never need to.
+		//
+		// Without this branch a stamped entry fell through to the kind rules
+		// below, which invent a turn id from the entry's ordinal instead of
+		// using the owner the writer recorded. A session-start hook
+		// completing before any turn is named then opened a group of its own
+		// while the index kept it in the turn its stamp names, so the two
+		// readers disagreed about a turn boundary on the same transcript
+		// (#1166).
+		if g.TurnID == entry.TurnID && g.Stamped {
+			g.Open = false
+			return g.TurnID, false
+		}
+		g.TurnID, g.Open, g.Stamped = entry.TurnID, false, true
+		return g.TurnID, true
+	}
 	kind, owner := entry.Kind, entry.OwningTurnID
 	switch {
 	case opensLogicalTurn(kind, entry.GoalContinuation != nil):
-		g.TurnID, g.Open = persistedTurnID(*entry, entryIndex), true
+		g.TurnID, g.Open, g.Stamped = persistedTurnID(*entry, entryIndex), true, false
 		return g.TurnID, true
 	case kind == schema.TurnSteering && owner != "":
 		if g.Open && g.TurnID == owner {
 			return g.TurnID, false
 		}
-		g.TurnID, g.Open = owner, true
+		g.TurnID, g.Open, g.Stamped = owner, true, false
 		return g.TurnID, true
 	case continuesLogicalTurn(kind) && g.Open:
 		return g.TurnID, false
@@ -107,7 +140,7 @@ func (g *TurnGrouper) Place(entry *schema.Turn, entryIndex int) (turnID string, 
 		// Standalone kind, or a continuation with no open group: its own
 		// group. A standalone closes it; a stray continuation stays open for
 		// later continuations.
-		g.TurnID, g.Open = persistedTurnID(*entry, entryIndex), continuesLogicalTurn(kind)
+		g.TurnID, g.Open, g.Stamped = persistedTurnID(*entry, entryIndex), continuesLogicalTurn(kind), false
 		return g.TurnID, true
 	}
 }
@@ -117,7 +150,7 @@ func (g *TurnGrouper) Place(entry *schema.Turn, entryIndex int) (turnID string, 
 // group).
 func (a *logicalTurnAccumulator) appendEntry(entry schema.Turn, entryIndex int, items []appwire.ThreadItem) {
 	if turnID, newTurn := a.grouper.Place(&entry, entryIndex); newTurn {
-		a.turns = append(a.turns, groupedTurn{turnID: turnID})
+		a.turns = append(a.turns, groupedTurn{turnID: turnID, stamped: entry.Format == schema.TurnFormatIdentity && entry.TurnID != ""})
 	}
 	last := &a.turns[len(a.turns)-1]
 	last.entries = append(last.entries, entry)
@@ -172,15 +205,33 @@ func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, t
 func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Header) (ItemTurnProjection, error) {
 	turns := []appwire.Turn{}
 	entryOrdinal := uint64(0)
-	if prelude := PreludeTurn(header); prelude != nil {
-		positioned, err := positionPreludeItems(prelude.Items)
+	var prelude *appwire.Turn
+	if p := PreludeTurn(header); p != nil {
+		positioned, err := positionPreludeItems(p.Items)
 		if err != nil {
 			return ItemTurnProjection{}, err
 		}
-		prelude.Items = positioned
-		turns = append(turns, *prelude)
+		p.Items = positioned
+		prelude = p
 		entryOrdinal = 1
 	}
+	// visibleRuns are, per stamped turn id, the groups that still emit items.
+	// A stamped turn the file records in more than one run must say so: each
+	// run is a FRAGMENT of one turn, not a whole turn of its own, or a client
+	// keyed by turn id holds two complete turns the index reports as one
+	// (#1166).
+	visibleRuns := map[string][]int{}
+	for i := range acc.turns {
+		if group := &acc.turns[i]; group.stamped && len(group.items) > 0 {
+			visibleRuns[group.turnID] = append(visibleRuns[group.turnID], i)
+		}
+	}
+	emittedAny := false
+	preludeEmitted := false
+	// headerStandalone is true once the header was emitted WITHOUT merging
+	// into a leading prelude run. It is then its own visible fragment of the
+	// prelude turn, and the runs after it must count it as one.
+	headerStandalone := false
 	for i := range acc.turns {
 		group := &acc.turns[i]
 		groupOrdinal := entryOrdinal
@@ -199,9 +250,69 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 		if err != nil {
 			return ItemTurnProjection{}, err
 		}
-		turn := appwire.Turn{ID: group.turnID, Items: positioned, ItemsView: "full", Status: appwire.TurnStatusCompleted}
+		turn := appwire.Turn{ID: group.turnID, Items: positioned, ItemsView: appwire.TurnItemsViewFull, Status: appwire.TurnStatusCompleted}
 		StampGroupedTurn(&turn, group.entries)
+		if prelude != nil && !preludeEmitted {
+			// The header's items and a LEADING prelude run are ONE turn: the
+			// writer stamps a fresh transcript's pre-execution entries with
+			// the same id the header content is projected under. They merge
+			// only when the prelude run is the first thing the read emits;
+			// otherwise the header stands alone at position 0.
+			if group.turnID == appwire.SystemPreludeTurnID && !emittedAny {
+				merged := make([]appwire.ThreadItem, 0, len(prelude.Items)+len(turn.Items))
+				merged = append(merged, prelude.Items...)
+				turn.Items = append(merged, turn.Items...)
+				preludeEmitted = true
+			} else {
+				// The header stands alone at position 0, but a stamped run of
+				// the prelude turn still follows it: the prompt and that run
+				// are two fragments of ONE turn. Emitted as a whole turn the
+				// header claimed the prelude ended, so a client keyed by turn
+				// id saw two "turn_system" turns where the index keeps one.
+				if len(visibleRuns[appwire.SystemPreludeTurnID]) > 0 {
+					prelude.ItemsView = appwire.TurnItemsViewFragment
+					prelude.HasLaterItems = true
+					prelude.HasEarlierItems = false
+				}
+				turns = append(turns, *prelude)
+				preludeEmitted = true
+				headerStandalone = true
+			}
+		}
+		// Every visible run of a turn the file records in more than one span is
+		// a FRAGMENT, and the flags come from the runs that still have items:
+		// an itemless run is not a boundary, so its neighbour must not claim a
+		// continuation it does not have. A turn the file records in one span
+		// keeps "full".
+		//
+		// A header emitted on its own is one of those visible fragments: the
+		// prompt and the stamped prelude items are ONE turn, so a run that
+		// follows the header has an earlier fragment even when it is the only
+		// stamped run of its id.
+		if runs := visibleRuns[group.turnID]; group.stamped {
+			at := 0
+			for k, run := range runs {
+				if run == i {
+					at = k
+				}
+			}
+			visible, earlier := len(runs), at > 0
+			if headerStandalone && group.turnID == appwire.SystemPreludeTurnID {
+				visible++
+				earlier = true
+			}
+			if visible > 1 {
+				turn.ItemsView = appwire.TurnItemsViewFragment
+				turn.HasEarlierItems = earlier
+				turn.HasLaterItems = at < len(runs)-1
+			}
+		}
 		turns = append(turns, turn)
+		emittedAny = true
+	}
+	if prelude != nil && !preludeEmitted {
+		// No visible run claimed the prelude id: the header items are the turn.
+		turns = append([]appwire.Turn{*prelude}, turns...)
 	}
 	return ItemTurnProjection{Turns: turns, NextEntry: entryOrdinal}, nil
 }
