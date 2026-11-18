@@ -76,7 +76,10 @@ export interface ConversationClientLike extends Pick<AppwireClientLike, "state" 
 	): Promise<MethodTypes[M]["result"]>;
 	onNotification(cb: (n: AnyNotification) => void): () => void;
 	forceStop?(ref: string): Promise<void>;
-	resumeThread?(ref: string): Promise<MethodTypes["thread/resume"]["result"]>;
+	resumeThread?(
+		ref: string,
+		options?: { beforeRecycle?: () => void | Promise<void>; beforeRequest?: () => void | Promise<void> },
+	): Promise<MethodTypes["thread/resume"]["result"]>;
 }
 
 // A function that generates a clientMutationId. Default uses crypto.randomUUID

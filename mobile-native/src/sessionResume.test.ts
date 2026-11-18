@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { Thread, WebSocketLike } from "@evener/appwire-client";
 import { createConversationService } from "./conversation/services/conversation";
 import { createConversationStore } from "./conversation/state/conversation";
-import { createHubClient, ResumeNotDispatched } from "./connection";
+import { createHubClient, ResumeAbandoned, ResumeNotDispatched } from "./connection";
 import { SessionControls } from "./sessionControls";
 
 const thread: Thread = {
@@ -249,6 +249,42 @@ describe("native resume recovery integration", () => {
 // that never reached the hub is not the hub's answer: the later one waits for
 // the slot instead of ending as a failed attempt the restart would drop.
 describe("two resumes owed on one connection", () => {
+	// The collateral case, on the real client: a resume the caller decides is no
+	// longer wanted must not retire the transport, because retiring it is what
+	// drops every request the socket is carrying. The ordering is the
+	// connection's, so this observes the socket rather than the call.
+	it("does not retire the transport when the resume is abandoned first", async () => {
+		const { client, sockets } = await connectedFixture();
+		try {
+			// One socket so far: the connected one. A resume that got past the
+			// abandonment would retire it and dial a second.
+			expect(sockets).toHaveLength(1);
+			const before = sockets[0].methods.filter((method) => method === "thread/resume").length;
+			// `beforeRecycle` is the connection wrapper's addition, so it is not on
+			// the client class's own signature; the caller that needs it is the
+			// runtime, which types the seam itself.
+			const admitting = client as unknown as {
+				resumeThread(
+					ref: string,
+					options?: { beforeRecycle?: () => void | Promise<void> },
+				): ReturnType<typeof client.resumeThread>;
+			};
+			await admitting
+				.resumeThread("local:thread-1", {
+					beforeRecycle: () => {
+						throw new ResumeAbandoned("blocked");
+					},
+				})
+				.catch(() => undefined);
+			// No replacement transport was dialed, so nothing in flight was dropped,
+			// and no resume frame was written on the one that was already there.
+			expect(sockets).toHaveLength(1);
+			expect(sockets[0].methods.filter((method) => method === "thread/resume")).toHaveLength(before);
+		} finally {
+			client.close();
+		}
+	});
+
 	// Outbox recovery reaches the client directly rather than through a
 	// service, so a queue kept in the service would not see it: the restart behind
 	// it would be refused before dispatch and end with the daemon stopped. The
@@ -301,6 +337,33 @@ describe("two resumes owed on one connection", () => {
 // so with its own error and the restart keeps the step owed instead of
 // dropping it with a daemon stopped.
 describe("a resume whose own reconnect never completed", () => {
+	// The resume can get as far as a finished handshake and still never be
+	// admitted: the client checks its readiness at the request boundary, and a
+	// transport that dropped in between refuses there without a frame leaving.
+	// Everything earlier looks like progress — the recycle happened, the
+	// handshake completed, the caller's own hook ran — and none of it means the
+	// hub was asked. Reported as though it had been, the restart drops the step
+	// and the daemon stays stopped after connectivity returns.
+	it("keeps a resume owed when the transport refuses it before the frame", async () => {
+		const { client } = await connectedFixture();
+		try {
+			const resume = client.resumeThread("local:thread-1", {
+				beforeRequest: () => {
+					// The phone loses the connection inside the last window there is:
+					// after the handshake the resume waited for, before the frame.
+					client.close();
+				},
+			});
+			const outcome = await resume.then(
+				() => "sent",
+				(cause: unknown) => cause,
+			);
+			expect(outcome).toBeInstanceOf(ResumeNotDispatched);
+		} finally {
+			client.close();
+		}
+	});
+
 	it("reports a resume that never reached the wire as not dispatched", async () => {
 		// The dial the resume's recycle starts never opens, so the handshake it
 		// waits on is still outstanding and nothing has been sent when the

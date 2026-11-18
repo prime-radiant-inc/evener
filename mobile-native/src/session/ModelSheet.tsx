@@ -83,6 +83,13 @@ function ModelSheetBody({
 	const list = useRef<SectionList<ModelPickerEntry, ModelSection>>(null);
 	const { session, controls, ready } = host;
 	const state = useControlsState(controls);
+	// The reason a pick the reader made could not be confirmed. A reconnect can
+	// replace the controls while the pick is out, and the answer lands on the
+	// replaced set, which this sheet no longer renders from — so it is read from
+	// the set that sent it and kept here. Without that, the pick fails, the
+	// picker becomes usable again after reconnect, and nothing ever says the
+	// change did not go through.
+	const [undelivered, setUndelivered] = useState<string | null>(null);
 	// The screen loads the catalog when it opens; a sheet opened before that
 	// finished, after it failed, or while the hub was away asks again.
 	useEffect(() => {
@@ -94,18 +101,28 @@ function ModelSheetBody({
 	const levels = vision ? [] : sessionEffortLevels(session.reasoningEffortLevels, session.supportsReasoning);
 	const current = vision ? session.visionModel : session.modelProvider;
 	const canChange = vision ? session.capabilities.changeVisionModel : session.capabilities.changeModel;
-	const error = state?.modelError ?? (state?.lastAction && MODEL_ACTIONS.has(state.lastAction) ? state.error : null);
+	const error =
+		undelivered ?? state?.modelError ?? (state?.lastAction && MODEL_ACTIONS.has(state.lastAction) ? state.error : null);
 	const revealError = () => {
 		// Each refusal reveals the first header row, even when it repeats the
 		// previous message after the user has scrolled away to try again.
 		if (controls?.getSnapshot().error) list.current?.getScrollResponder()?.scrollTo({ y: 0, animated: true });
 	};
-	const closeOn = (change: Promise<boolean>, then?: () => void) =>
+	const closeOn = (sentWith: SessionControls | null, change: Promise<boolean>, then?: () => void) =>
 		void change.then((changed) => {
 			if (!changed) {
+				// The report belongs to the set that dispatched it: those controls
+				// recorded the hub's answer even after they were replaced. Falling
+				// back to the current set would show this sheet's own empty state.
+				const failure = sentWith?.getSnapshot().error ?? null;
+				if (failure) setUndelivered(failure);
 				revealError();
 				return;
 			}
+			// A pick that lands answers the refusal that came before it, whichever
+			// row dispatched it: the carried report is about this sheet's last
+			// attempt, not about the model it finally chose.
+			setUndelivered(null);
 			// A pick that outlived this sheet still reports the change it made and
 			// takes the reader nowhere: only a sheet still on top has anything to
 			// close.
@@ -123,9 +140,11 @@ function ModelSheetBody({
 			return;
 		}
 		if (!controls) return;
-		if (vision) closeOn(controls.changeVisionModel(model.provider, model.model), changedVision);
+		// A new pick answers for itself, so the previous refusal stops showing.
+		setUndelivered(null);
+		if (vision) closeOn(controls, controls.changeVisionModel(model.provider, model.model), changedVision);
 		else
-			closeOn(controls.changeModel(model.provider, model.model), () =>
+			closeOn(controls, controls.changeModel(model.provider, model.model), () =>
 				host.toast({ text: "Model changed. Applies from the next turn." }),
 			);
 	};
@@ -184,7 +203,7 @@ function ModelSheetBody({
 									onPress={() =>
 										session.visionModel === ""
 											? finish()
-											: controls && closeOn(controls.setVisionModel(""), changedVision)
+											: controls && closeOn(controls, controls.setVisionModel(""), changedVision)
 									}
 								/>
 								<ChoiceRow
@@ -194,7 +213,7 @@ function ModelSheetBody({
 									onPress={() =>
 										session.visionModel === "off"
 											? finish()
-											: controls && closeOn(controls.setVisionModel("off"), changedVision)
+											: controls && closeOn(controls, controls.setVisionModel("off"), changedVision)
 									}
 								/>
 							</>

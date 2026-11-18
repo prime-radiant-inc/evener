@@ -33,16 +33,7 @@ import {
 } from "./conversation/state/conversationMutation";
 import { MutationOutboxSQLite, type RecoveryResendCommit } from "./mutationOutboxStorage";
 import { isSqliteStorageFailure, type SqliteSync } from "./sqliteSync";
-
-/** A queued resume whose reason to resume went away before its slot came up.
- * It carries nothing to report: the message it was sent for is gone, and the
- * row stays parked until something asks for the session again. */
-class ObsoleteResume extends Error {
-	constructor() {
-		super("The reason this resume was decided on no longer holds");
-		this.name = "ObsoleteResume";
-	}
-}
+import { ResumeAbandoned } from "./connection";
 
 export interface NativeMutationRuntimeOptions {
 	createMutationId?: () => string;
@@ -736,25 +727,53 @@ export class NativeMutationRuntime implements ConversationMutationSubmitter, Nat
 			// A refused resume leaves the row parked and the next settle retries.
 			//
 			// This call can wait behind another session's resume for the
-			// connection's one slot, and the message it was decided on can be
-			// withdrawn while it waits. So the reason to resume is asked again at
-			// the point of send, once the slot is held and before the socket is
-			// recycled: a resume whose message is gone would restart a session for
-			// nothing and drop every healthy request on that transport with it.
+			// connection's one slot, and both things it was decided on can move
+			// while it waits: a newer read can take the target over, and the
+			// message can be withdrawn. So both are asked again in `beforeRecycle`,
+			// which the connection runs once the slot is held and the transport can
+			// send, but *before* the resume retires that transport. Checking after
+			// the recycle would be too late: the resume has already dropped every
+			// healthy request the socket was carrying, which is the harm.
 			//
-			// The read lease itself cannot be the thing re-asked here. A resume
-			// recycles its own transport, and the registration clears its read
-			// token on the way through, so every resume would look superseded.
-			// What survives the recycle is the caller's own question - is the
-			// message this was decided on still waiting - so that is what is asked.
+			// The read lease is asked through `#isCurrentRead` at the same point
+			// rather than at `beforeRequest`: by then the recycle has cleared this
+			// registration's read token, so every resume would look superseded.
+			//
+			// The caller's predicate reads storage, so a failure there is not the
+			// same answer as a withdrawal. A withdrawn message rests as "blocked";
+			// a failed read answers "retry", which is what schedules the flush's
+			// existing storage backoff instead of stranding the waiting row.
 			const stillWanted = options.mayResumeFenced;
-			const resumed = await client
+			// The connection's wrapper adds `beforeRecycle`; the shared client seam
+			// still describes only the underlying call, so this one site widens it.
+			const admitting = client as AppwireClientLike & {
+				resumeThread(
+					ref: string,
+					options?: { beforeRecycle?: () => void | Promise<void>; beforeRequest?: () => void | Promise<void> },
+				): ReturnType<AppwireClientLike["resumeThread"]>;
+			};
+			const attempt = await admitting
 				.resumeThread(targetRef, {
-					beforeRequest: async () => {
-						if (!(await stillWanted())) throw new ObsoleteResume();
+					beforeRecycle: async () => {
+						if (!this.#isCurrentRead(lease)) throw new ResumeAbandoned("stale");
+						let held: boolean;
+						try {
+							held = await stillWanted();
+						} catch {
+							// The predicate could not read storage. The message may well
+							// still be waiting, so this is not a withdrawal: answering
+							// "retry" is what schedules the flush's backoff.
+							throw new ResumeAbandoned("retry");
+						}
+						if (!held) throw new ResumeAbandoned("blocked");
 					},
 				})
-				.catch(() => undefined);
+				.catch((cause: unknown) => {
+					if (cause instanceof ResumeAbandoned) return cause;
+					return null;
+				});
+			if (attempt instanceof ResumeAbandoned) return attempt.verdict;
+			const resumed = attempt ?? undefined;
 			if (!resumed) return "blocked";
 			// A resume can return a different identity. The parked rows still name
 			// the old ref and its instance, so they move to the resumed one before

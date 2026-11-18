@@ -1,4 +1,4 @@
-import { AppwireClient } from "@evener/appwire-client";
+import { AppwireClient, WireError } from "@evener/appwire-client";
 import type { WebSocketLike } from "@evener/appwire-client";
 import { hubRPCURL, parseHubOrigin } from "@evener/appwire-client/hubOrigin";
 
@@ -203,6 +203,26 @@ export class ResumeNotDispatched extends Error {
 	}
 }
 
+/** A resume that reached the connection and then turned out not to be wanted.
+ * Nothing was sent: the transport is left alone and the answer says whether
+ * to ask again ("retry"), wait for a newer read ("stale"), or rest ("blocked"). */
+export class ResumeAbandoned extends Error {
+	constructor(readonly verdict: "blocked" | "retry" | "stale") {
+		super("The reason to resume no longer holds");
+		this.name = "ResumeAbandoned";
+	}
+}
+
+/** What a caller may say about a resume it is asking for. `beforeRecycle` runs
+ * once the connection's slot is held and the transport can send, but before
+ * the resume retires that transport — the last point at which abandoning the
+ * call costs nothing. `beforeRequest` runs after the fresh handshake, before
+ * the RPC, for anything that can still change while the handshake is out. */
+export interface ResumeAdmission {
+	beforeRecycle?: () => void | Promise<void>;
+	beforeRequest?: () => void | Promise<void>;
+}
+
 /** One explicit resume at a time per connection. Every caller — a restart and
  * the outbox's recovery alike — goes through the client's own `resumeThread`,
  * so the slot is enforced there rather than beside any one of them. A queued
@@ -210,7 +230,11 @@ export class ResumeNotDispatched extends Error {
  * socket dropped is not evidence that the next one can be sent, and dispatching
  * into the reconnect is how a restart ends with the daemon stopped. */
 const resumeSlots = new WeakMap<object, Promise<void>>();
-function admitResume<T>(client: AppwireClient, run: () => Promise<T>): Promise<T> {
+function admitResume<T>(
+	client: AppwireClient,
+	run: () => Promise<T>,
+	beforeRecycle?: () => void | Promise<void>,
+): Promise<T> {
 	const previous = resumeSlots.get(client) ?? Promise.resolve();
 	let release!: () => void;
 	const held = new Promise<void>((resolve) => {
@@ -220,10 +244,15 @@ function admitResume<T>(client: AppwireClient, run: () => Promise<T>): Promise<T
 		client,
 		previous.then(() => held),
 	);
-	return previous
-		.then(() => waitForReady(client))
-		.then(() => run())
-		.finally(() => release());
+	return (
+		previous
+			.then(() => waitForReady(client))
+			// Abandoning here is free: the transport has not been retired, so nothing
+			// it is carrying is lost and no other caller sees a recycle for nothing.
+			.then(() => beforeRecycle?.())
+			.then(() => run())
+			.finally(() => release())
+	);
 }
 
 /** Resolves once the client can send, or rejects with a resume that was never
@@ -255,34 +284,94 @@ function waitForReady(client: AppwireClient): Promise<void> {
 
 const DEFAULT_RESUME_WAIT_MS = 30_000;
 
+/** Watches one socket for the resume frame. The client writes every request as
+ * JSON with its method, so the frame is identified by that alone; a socket
+ * that fails to send records nothing, which is the point. */
+function watchResumeFrames(socket: WebSocketLike, seen: { sent: boolean }): WebSocketLike {
+	return {
+		get onopen() {
+			return socket.onopen;
+		},
+		set onopen(value) {
+			socket.onopen = value;
+		},
+		get onmessage() {
+			return socket.onmessage;
+		},
+		set onmessage(value) {
+			socket.onmessage = value;
+		},
+		get onerror() {
+			return socket.onerror;
+		},
+		set onerror(value) {
+			socket.onerror = value;
+		},
+		get onclose() {
+			return socket.onclose;
+		},
+		set onclose(value) {
+			socket.onclose = value;
+		},
+		send(data: string) {
+			// Recorded after the socket takes it: a send that throws left nothing.
+			socket.send(data);
+			if (data.includes('"method":"thread/resume"')) seen.sent = true;
+		},
+		close(code?: number) {
+			socket.close(code);
+		},
+	};
+}
+
 export function createHubClient(origin: string, token: string, socketFactory: NativeSocketFactory): AppwireClient {
+	// Whether the hub was actually asked is a fact about one frame, and the
+	// socket's own send is the only place that fact exists. Everything earlier
+	// is intent: the client retires the transport, re-handshakes, runs
+	// `beforeRequest`, and only then passes its readiness admission, which can
+	// still refuse without a byte leaving. Marking dispatch anywhere before the
+	// frame is what let a never-sent resume be reported as though the hub had
+	// answered it.
+	const resumeFrame = { sent: false };
 	const client = new AppwireClient({
 		url: connectionTarget(origin),
 		clientInfo: { name: "evener-native", version: "0.3.0" },
 		socketFactory: (url) =>
-			socketFactory(url, {
-				headers: token ? { Authorization: `Bearer ${token}` } : {},
-			}),
+			watchResumeFrames(
+				socketFactory(url, {
+					headers: token ? { Authorization: `Bearer ${token}` } : {},
+				}),
+				resumeFrame,
+			),
 	});
 	const resumeThread = client.resumeThread.bind(client);
 	client.resumeThread = (ref: string, options?: Parameters<typeof resumeThread>[1]) => {
-		// The client recycles the socket and waits for a fresh handshake before
-		// it sends, so a backgrounded phone or a handshake that times out fails
-		// the call with nothing on the wire. `beforeRequest` runs after that
-		// reconnect and immediately before the RPC, so having reached it is the
-		// proof that the resume left; failing short of it is a resume still owed.
-		let reachedSend = false;
-		return admitResume(client, () =>
-			resumeThread(ref, {
-				...options,
-				beforeRequest: async () => {
-					await options?.beforeRequest?.();
-					reachedSend = true;
-				},
-			}),
+		const admission = options as ResumeAdmission | undefined;
+		resumeFrame.sent = false;
+		return admitResume(
+			client,
+			() =>
+				resumeThread(ref, {
+					...options,
+					beforeRequest: async () => {
+						await options?.beforeRequest?.();
+					},
+				}),
+			admission?.beforeRecycle,
 		).catch((cause: unknown) => {
-			if (reachedSend || cause instanceof ResumeNotDispatched) throw cause;
-			throw new ResumeNotDispatched(cause instanceof Error ? cause.message : "The connection did not come back");
+			// The caller decided the resume was not wanted: nothing was sent, and
+			// its own verdict says how to ask again.
+			if (cause instanceof ResumeAbandoned || cause instanceof ResumeNotDispatched) throw cause;
+			// The hub answered. That is its own refusal, not a transport accident,
+			// and it must stay visible.
+			if (cause instanceof WireError) throw cause;
+			// No resume frame left the socket, so there is nothing the hub could
+			// have taken: the step is still owed and may be sent again.
+			if (!resumeFrame.sent)
+				throw new ResumeNotDispatched(cause instanceof Error ? cause.message : "The connection did not come back");
+			// The frame went out. Whether the hub took it is unknowable here,
+			// so it is reported and never replayed.
+			throw cause;
 		});
 	};
 	return client;

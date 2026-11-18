@@ -725,6 +725,18 @@ test("drops an automatic resume whose message was withdrawn before it was sent",
 	client.on("thread/read", () => readResponse("ref-1", { resumeRequired: true }));
 	client.on("thread/resume", () => readResponse("ref-1"));
 	client.on("turn/start", appliedReceipt);
+	// The unrelated read's answer is held until after the resume's slot opens,
+	// so it is genuinely in flight when the withdrawable resume reaches the head
+	// of the queue. A resume that retired the socket would reject it.
+	let answerUnrelated!: () => void;
+	const unrelatedHeld = new Promise<void>((resolve) => {
+		answerUnrelated = resolve;
+	});
+	client.on("thread/read", async (params: unknown) => {
+		if ((params as { ref: string }).ref !== "ref-2") return readResponse("ref-1", { resumeRequired: true });
+		await unrelatedHeld;
+		return readResponse("ref-2");
+	});
 	await registerAndStart(runtime, client);
 	await runtime.submit(request("send"));
 
@@ -736,8 +748,17 @@ test("drops an automatic resume whose message was withdrawn before it was sent",
 		releaseSlot = resolve;
 	});
 	const send = client.resumeThread.bind(client);
-	client.resumeThread = ((ref: string, options?: { beforeRequest?: () => void | Promise<void> }) =>
-		slot.then(() => send(ref, options))) as typeof client.resumeThread;
+	// The connection admits one resume at a time and asks the caller again once
+	// its slot comes up, before it retires the socket. This stands in for that
+	// ordering: the wait, then the revalidation, then the call.
+	client.resumeThread = (async (
+		ref: string,
+		options?: { beforeRecycle?: () => void | Promise<void>; beforeRequest?: () => void | Promise<void> },
+	) => {
+		await slot;
+		await options?.beforeRecycle?.();
+		return send(ref, options);
+	}) as typeof client.resumeThread;
 	let waiting = true;
 	let asks = 0;
 	let decided!: () => void;
@@ -755,9 +776,16 @@ test("drops an automatic resume whose message was withdrawn before it was sent",
 	// The row the resume was decided on is withdrawn while its slot is still
 	// held, so the send that follows must see that and leave the socket alone.
 	waiting = false;
+	// An unrelated request is in flight on the same connection while the resume
+	// waits. A resume retires the socket, and retiring it rejects everything the
+	// transport is carrying — so a resume that should never have been sent does
+	// not just restart a session for nothing, it drops this reader's work.
+	const unrelated = client.request("thread/read", { ref: "ref-2", includeTurns: true, itemsView: "fragment" });
 	releaseSlot();
 	expect(await settle).toBe("blocked");
 	expect(client.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+	answerUnrelated();
+	await expect(unrelated).resolves.toBeDefined();
 	expect(asks).toBe(2);
 	await runtime.stop();
 });

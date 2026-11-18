@@ -228,6 +228,63 @@ afterEach(() => {
 });
 
 describe("choosing a model (spec 8.5)", () => {
+	// A reconnect replaces the controls while a pick is out. The hub's answer
+	// lands on the set that sent it, which the sheet no longer renders from, so
+	// a failure recorded only there is invisible: the picker becomes usable
+	// again after reconnect and nothing says the change could not be confirmed.
+	// This is the same defect as a pick that never reports, through the path a
+	// recycled connection takes.
+	it("reports a pick the hub could not confirm after its controls were replaced", async () => {
+		let answer!: () => void;
+		const answered = new Promise<void>((resolve) => {
+			answer = resolve;
+		});
+		// What the controls that send the pick record when the hub's answer lands
+		// on them. The sheet renders from whichever set the host currently holds,
+		// and after a reconnect that is a different one.
+		const sent = {
+			pending: null,
+			lastAction: "changeModel",
+			error: "rejection-sentinel",
+			notice: null,
+			catalog: CATALOG,
+			loadingModels: false,
+			modelError: null,
+		} as ControlsState;
+		const sending = {
+			...fakeControls([]),
+			getSnapshot: () => sent,
+			changeModel: vi.fn(async () => {
+				await answered;
+				return false;
+			}),
+		};
+		const first = provide(conversation(), {}, { controls: sending as unknown as SessionControls });
+		const tree = sheet();
+		// The reader picks, on the set that is about to be replaced.
+		const choice = pressable(tree, "Claude Haiku 5");
+		if (!choice) throw new Error("Missing model row");
+		await act(async () => {
+			choice.props.onPress();
+			await settle();
+		});
+		// The reconnect replaces them while the pick is still out. The set the
+		// sheet now renders from has nothing to say about this pick.
+		let second!: ReturnType<typeof provide>;
+		await act(async () => {
+			second = provide(conversation());
+			await settle();
+		});
+		expect(second.controls).not.toBe(first.controls);
+		// The answer lands on the retired set: the hub did not confirm the change.
+		expect(tree.root.findAll((node) => node.props.accessibilityRole === "alert")).toHaveLength(0);
+		await act(async () => {
+			answer();
+			await settle();
+		});
+		expect(tree.root.findAll((node) => node.props.accessibilityRole === "alert")).toHaveLength(1);
+	});
+
 	it("lists recent models first, then each provider's", () => {
 		provide(conversation());
 		const tree = sheet();
