@@ -130,6 +130,18 @@ function scrollContainerOf(element: HTMLElement, ownerWindow: Window): HTMLEleme
   return null;
 }
 
+/** The part of the page a reader can see, narrowed by every scroll container
+ * above `element` that clips it. */
+interface VisibleRegion {
+  left: number;
+  top: number;
+  right: number;
+  bottom: number;
+}
+
+const intersectsRegion = (rect: DOMRect, region: VisibleRegion): boolean =>
+  rect.left < region.right && rect.right > region.left && rect.top < region.bottom && rect.bottom > region.top;
+
 /** Whether `element` is inside the part of the page a reader can actually see:
  * the VIEWPORT, and the visible scrollport of every scroll container above it
  * that clips it.
@@ -149,6 +161,11 @@ function scrollContainerOf(element: HTMLElement, ownerWindow: Window): HTMLEleme
 function triggerVisibleOnScreen(element: HTMLElement, ownerWindow: Window): boolean {
   const rect = element.getBoundingClientRect();
   if (rect.width <= 0 || rect.height <= 0) return false;
+  return intersectsRegion(rect, visibleRegionAround(element, ownerWindow, rect));
+}
+
+function visibleRegionAround(element: HTMLElement, ownerWindow: Window, rect: DOMRect): VisibleRegion {
+  if (rect.width <= 0 || rect.height <= 0) return { left: 0, top: 0, right: 0, bottom: 0 };
   const viewport = ownerWindow.visualViewport;
   let left = viewport ? viewport.offsetLeft : 0;
   let top = viewport ? viewport.offsetTop : 0;
@@ -166,7 +183,23 @@ function triggerVisibleOnScreen(element: HTMLElement, ownerWindow: Window): bool
     right = Math.min(right, port.right);
     bottom = Math.min(bottom, port.bottom);
   }
-  return rect.left < right && rect.right > left && rect.top < bottom && rect.bottom > top;
+  return { left, top, right, bottom };
+}
+
+/** Whether the trigger resolves a box AND that box lies entirely outside what
+ * the reader can see.
+ *
+ * The difference from `triggerVisibleOnScreen` is the unmeasurable case, and it
+ * matters wherever the question arrives without a scroll behind it. An
+ * unstubbed fixture, or a trigger inside a `display: none` ancestor, resolves
+ * no box at all - that says nothing about where it is, and dismissing on it
+ * would close the menu wherever geometry cannot be read. Only a trigger that
+ * HAS a box and sits outside every visible region is evidence that it is
+ * hidden. */
+function triggerMeasurablyHidden(element: HTMLElement, ownerWindow: Window): boolean {
+  const rect = element.getBoundingClientRect();
+  if (rect.width <= 0 || rect.height <= 0) return false;
+  return !intersectsRegion(rect, visibleRegionAround(element, ownerWindow, rect));
 }
 
 // The outermost ancestor inside the body: everything in normal flow that could
@@ -350,6 +383,12 @@ interface ScrollerRecord {
    * view starts in can each be the anchor, and only the one the browser
    * actually held can explain the offset. */
   witnesses: WitnessPosition[];
+  /** The scroller's inline offset. A rail that scrolls SIDEWAYS to reach a
+   * deeply nested row can have that row disappear under a scrollLeft the
+   * browser then clamps - with scrollTop untouched, so a classifier reading
+   * only the vertical axis sees no offset at all and cannot tell the
+   * correction from nothing happening. */
+  scrollLeft: number;
 }
 
 /** Where `triggerEl` sits inside `scroller`'s content: the difference between
@@ -489,6 +528,7 @@ function recordFor(triggerEl: HTMLElement, scroller: Element, ownerWindow: Windo
   }));
   return {
     scrollTop: scroller.scrollTop,
+    scrollLeft: scroller.scrollLeft,
     contentTop: contentTopOf(triggerEl, scroller),
     witnesses,
   };
@@ -508,7 +548,10 @@ function recordFor(triggerEl: HTMLElement, scroller: Element, ownerWindow: Windo
  * A scroller whose offset HAS moved is left exactly as it was: that movement is
  * a scroll this widget has not classified yet, and overwriting the offset here
  * would erase the only evidence of what the scroll did - a clamp or an
- * anchoring adjustment would then read as the reader leaving. */
+ * anchoring adjustment would then read as the reader leaving. Either axis
+ * counts, because a rail that scrolls sideways clamps the inline offset on its
+ * own: a placement triggered by the row that disappeared would otherwise
+ * overwrite the pre-clamp offset while the vertical one it watches sat still. */
 function refreshScrollerBaselines(
   triggerEl: HTMLElement,
   ownerWindow: Window,
@@ -517,7 +560,9 @@ function refreshScrollerBaselines(
   for (let node: HTMLElement | null = triggerEl; node !== null; node = node.parentElement) {
     if (!isScrollContainer(node, ownerWindow)) continue;
     const recorded = records.get(node);
-    if (recorded !== undefined && recorded.scrollTop !== node.scrollTop) continue;
+    if (recorded !== undefined && (recorded.scrollTop !== node.scrollTop || recorded.scrollLeft !== node.scrollLeft)) {
+      continue;
+    }
     records.set(node, recordFor(triggerEl, node, ownerWindow));
   }
 }
@@ -557,6 +602,18 @@ function classifyScrollerScroll(
   const contentTop = contentTopOf(triggerEl, scroller);
   records.set(scroller, recordFor(triggerEl, scroller, scroller.ownerDocument.defaultView ?? window));
   if (previous === undefined) return "scrolled";
+  // The same reading on the other axis, and it has to come first: a rail wide
+  // enough to scroll sideways clamps its inline offset when the row that made
+  // it wide disappears, and leaves `scrollTop` alone. A vertical reading then
+  // finds no offset change at all and cannot say whether the correction
+  // happened - so a menu belonging to an untouched, still-visible row closes on
+  // a row that left somewhere else in the rail. Both the endpoint and the
+  // previous offset are the scroller's own numbers, so a reader scrolling
+  // sideways to a legal place is not a clamp and still dismisses.
+  const maximumLeft = scroller.scrollWidth - scroller.clientWidth;
+  if (previous.scrollLeft > maximumLeft && Math.abs(scroller.scrollLeft - maximumLeft) <= CLAMP_ROUNDING) {
+    return "clamp";
+  }
   const maximum = scroller.scrollHeight - scroller.clientHeight;
   // The browser may land a correction a fraction short of the endpoint the
   // whole-pixel `scrollHeight - clientHeight` describes: 199.5 against 200 is a
@@ -1291,11 +1348,15 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     }
   }
 
-  // `reveal` is for a replacement focused OUT of a keypress: a row the reader
-  // did not move to. It is revealed inside the popup's own scroll, and the
-  // focus itself carries preventScroll so the browser cannot pan the page to
-  // it. Arrow-key navigation keeps the plain focus(), whose native scroll
-  // already stays within the popup.
+  // `reveal` is for a row this widget focuses on the reader's behalf: a
+  // navigation target, or a replacement for one that left. Either way the focus
+  // carries preventScroll and the popup's own scroll does the revealing,
+  // because the browser's native focus scroll answers a different question. It
+  // moves the least that shows SOME of the row, so an action taller than the
+  // scrollport can come to focus with its label above the popup - and a
+  // pinch-zoomed page can pan toward the row's old coordinates as it does.
+  // revealRow keeps an oversized row's start on screen and moves a row that
+  // fits by the least that shows it whole.
   function focusIndex(index: number, reveal = false) {
     if (index === -1) return;
     const entry = itemAt(items, index);
@@ -1382,19 +1443,19 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     switch (event.key) {
       case "ArrowDown":
         event.preventDefault();
-        focusIndex(stepEnabledIndex(items, current, 1));
+        focusIndex(stepEnabledIndex(items, current, 1), true);
         break;
       case "ArrowUp":
         event.preventDefault();
-        focusIndex(stepEnabledIndex(items, current, -1));
+        focusIndex(stepEnabledIndex(items, current, -1), true);
         break;
       case "Home":
         event.preventDefault();
-        focusIndex(firstEnabledIndex(items));
+        focusIndex(firstEnabledIndex(items), true);
         break;
       case "End":
         event.preventDefault();
-        focusIndex(lastEnabledIndex(items));
+        focusIndex(lastEnabledIndex(items), true);
         break;
       case "Enter":
       case " ": {
@@ -1536,7 +1597,13 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         const stillOnScreen =
           rect !== undefined && triggerRef.current !== null && triggerVisibleOnScreen(triggerRef.current, ownerWindow);
         if (cause !== "scrolled" && stillOnScreen) placeNowAndAfterLayout();
-        else if (stayed && grew) placeNowAndAfterLayout();
+        // The growth fallback reads "an unchanged rect since the last
+        // placement" as "the browser clamped, and nobody moved the trigger".
+        // That reading is only worth keeping while the trigger is somewhere a
+        // reader can see: a rail header can already have covered it when the
+        // resize pass measured it, and an unchanged rect there is a trigger
+        // held still behind the header, not one the correction preserved.
+        else if (stayed && grew && stillOnScreen) placeNowAndAfterLayout();
         else closeMenu();
       }
     }
@@ -1685,11 +1752,24 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         }
         return true;
       });
+    // A content change can take the trigger away with no scroll behind it. An
+    // insertion BELOW the row the browser anchors pushes everything under it
+    // down, so a trigger near the bottom of the scrollport slides past the
+    // header while `scrollTop` never moves - nothing to classify, no event to
+    // classify it from, and a repositioned popup left holding keyboard focus on
+    // a trigger no reader can see. The visibility question is asked HERE, off
+    // the same predicate the scroll path uses, and it decides between the two
+    // answers a content change has: re-anchor while the trigger is still
+    // visible, dismiss when it is measurably gone. A trigger whose geometry
+    // cannot be read is neither, and keeps the menu - no measurement is not
+    // evidence of absence.
     const mutations: MutationObserver | null =
       typeof Mutations === "undefined" || triggerEl === null
         ? null
         : new Mutations((records) => {
-            if (movedTheTrigger(records)) placeAfterLayout();
+            if (!movedTheTrigger(records)) return;
+            if (triggerMeasurablyHidden(triggerEl, ownerWindow)) closeMenu();
+            else placeAfterLayout();
           });
     if (mutations !== null && triggerEl !== null) {
       // characterData, because a heading above the trigger can be RENAMED in
@@ -1751,7 +1831,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
       popupMutations?.disconnect();
       popupEl?.removeEventListener("scroll", onPopupScroll);
     };
-  }, [isOpen, ownerDocument, placeAfterLayout, revealFocusedRowIfClipped]);
+  }, [isOpen, ownerDocument, closeMenu, placeAfterLayout, revealFocusedRowIfClipped]);
 
   const iconOnly = label !== undefined;
   const triggerClassName = [

@@ -1186,6 +1186,64 @@ test("a live row leaving above the trigger anchors the scroll and leaves the men
   }
 });
 
+// A rail scrolls SIDEWAYS when a deeply nested row is wider than it is. The row
+// that made it wide can then disappear while the rail is at its inline limit,
+// and the browser clamps `scrollLeft` - with `scrollTop` untouched. A
+// classifier that reads only the vertical offset finds no change at all, so it
+// cannot tell that correction from nothing happening, and the menu of an
+// untouched, still-visible row closes because something left elsewhere in the
+// rail. Both numbers come from the scroller itself, so a reader scrolling
+// sideways to a legal place is still the reader.
+test("a horizontal clamp from a vanished wide row leaves the menu open", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, 300, 40, 28);
+    if (this.getAttribute("data-testid") === "rail-port") return box(0, 0, 300, 600);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  const { flush } = captureFrames();
+  try {
+    render(
+      <div data-testid="rail-port" style={{ overflowY: "auto", overflowX: "auto" }}>
+        <Menu trigger="Actions" items={items()} />
+      </div>,
+    );
+    const scroller = screen.getByTestId("rail-port");
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 600 });
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 300 });
+    // The rail is 300 wide and its widest row makes 500 of content, so 200 is
+    // the furthest inline offset - and that is where the reader left it.
+    Object.defineProperty(scroller, "scrollWidth", { configurable: true, value: 500 });
+    Object.defineProperty(scroller, "clientWidth", { configurable: true, value: 300 });
+    scroller.scrollLeft = 200;
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu")).toBeTruthy();
+    // The wide row disappears, so the rail's inline range falls to 80 and the
+    // browser pulls scrollLeft back to it. The trigger never moved and the
+    // vertical offset is untouched throughout.
+    Object.defineProperty(scroller, "scrollWidth", { configurable: true, value: 380 });
+    scroller.scrollLeft = 80;
+    fireEvent.scroll(scroller);
+    flush();
+    expect(screen.getByRole("menu")).toBeTruthy();
+    // A reader scrolling sideways to a place that was already legal is not a
+    // clamp: the offset arrives from inside the range, so the reading that
+    // separates them cannot excuse it.
+    Object.defineProperty(scroller, "scrollWidth", { configurable: true, value: 500 });
+    scroller.scrollLeft = 120;
+    fireEvent.scroll(scroller);
+    flush();
+    expect(screen.queryByRole("menu")).toBeNull();
+  } finally {
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
 // The other side of that reading, and the one that keeps this a fix rather than
 // a suppression: a scroll that really does slide the trigger out from under the
 // popup still closes the menu. Here the rail's content is untouched and the
@@ -1261,6 +1319,138 @@ test("a clamp after a live insertion still leaves the menu open and re-anchored"
     // open and still on its trigger.
     expect(screen.getByRole("menu")).toBeTruthy();
     expect(screen.getByRole("menu").style.top).toBe("372px");
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// A content change can carry the trigger out of sight with no scroll behind it.
+// An insertion BELOW the row the browser anchors pushes everything under it
+// down, so a trigger near the bottom of the rail's scrollport slides behind the
+// header while `scrollTop` never moves - no event to classify, nothing to
+// classify it from, and the popup is re-positioned and left holding keyboard
+// focus on a trigger no reader can see. The visibility question has to be asked
+// after the change itself, and it separates the two answers a change has.
+test("a rail content change that clips the trigger dismisses the menu without scrolling the rail", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  let triggerTop = 300;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.getAttribute("data-testid") === "rail-port") return box(0, 100, 300, 300);
+    if (this.getAttribute("data-testid") === "rail-row") return box(0, 120, 300, 40);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  const callbacks = new Map<Element, MutationCallback>();
+  class CapturingMutationObserver {
+    constructor(private readonly callback: MutationCallback) {}
+    observe(target: Element): void {
+      callbacks.set(target, this.callback);
+    }
+    disconnect(): void {}
+    takeRecords(): MutationRecord[] {
+      return [];
+    }
+  }
+  vi.stubGlobal("MutationObserver", CapturingMutationObserver);
+  const { flush } = captureFrames();
+  try {
+    render(
+      <div data-testid="rail-port" style={{ overflowY: "auto" }}>
+        <div data-testid="rail-row">Steady live session</div>
+        <Menu trigger="Actions" items={items()} />
+      </div>,
+    );
+    const scroller = screen.getByTestId("rail-port");
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 1200 });
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 300 });
+    scroller.scrollTop = 200;
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu")).toBeTruthy();
+    const onRailChange = callbacks.get(scroller);
+    if (onRailChange === undefined) throw new Error("the menu observed no mutation for the rail scroller");
+    const offsetBefore = scroller.scrollTop;
+    // A live session arrives below the anchored row and pushes the trigger out
+    // of the scrollport, which ends at 400. The offset does not move: this is
+    // the change the browser makes no correction for, and the popup's own
+    // re-anchoring pass would otherwise follow the trigger behind the header.
+    triggerTop = 500;
+    act(() => {
+      const record = { addedNodes: [], removedNodes: [] } as unknown as MutationRecord;
+      Object.defineProperty(record, "target", { value: scroller });
+      onRailChange([record], {} as MutationObserver);
+    });
+    flush();
+    expect(screen.queryByRole("menu")).toBeNull();
+    // Dismissed, and the rail's own offset is where the reader left it - the
+    // menu's dismissal is never allowed to move the page under them.
+    expect(scroller.scrollTop).toBe(offsetBefore);
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// The other direction, so the answer is not "a rail content change dismisses":
+// a change that moves the trigger while leaving it inside the scrollport is a
+// live update the menu has to survive and follow.
+test("a rail content change that leaves the trigger visible re-anchors the menu", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  let triggerTop = 300;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.getAttribute("data-testid") === "rail-port") return box(0, 100, 300, 300);
+    if (this.getAttribute("data-testid") === "rail-row") return box(0, 120, 300, 40);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  const callbacks = new Map<Element, MutationCallback>();
+  class CapturingMutationObserver {
+    constructor(private readonly callback: MutationCallback) {}
+    observe(target: Element): void {
+      callbacks.set(target, this.callback);
+    }
+    disconnect(): void {}
+    takeRecords(): MutationRecord[] {
+      return [];
+    }
+  }
+  vi.stubGlobal("MutationObserver", CapturingMutationObserver);
+  const { flush } = captureFrames();
+  try {
+    render(
+      <div data-testid="rail-port" style={{ overflowY: "auto" }}>
+        <div data-testid="rail-row">Steady live session</div>
+        <Menu trigger="Actions" items={items()} />
+      </div>,
+    );
+    const scroller = screen.getByTestId("rail-port");
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 1200 });
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 300 });
+    scroller.scrollTop = 200;
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu").style.top).toBe("332px"); // 300 + 28 + 4
+    const onRailChange = callbacks.get(scroller);
+    if (onRailChange === undefined) throw new Error("the menu observed no mutation for the rail scroller");
+    // The insertion pushes the trigger 40 down the screen, still well inside
+    // the scrollport's 100..400: the menu follows it and stays open.
+    triggerTop = 340;
+    act(() => {
+      const record = { addedNodes: [], removedNodes: [] } as unknown as MutationRecord;
+      Object.defineProperty(record, "target", { value: scroller });
+      onRailChange([record], {} as MutationObserver);
+    });
+    flush();
+    expect(screen.getByRole("menu").style.top).toBe("372px"); // 340 + 28 + 4
   } finally {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
@@ -3101,6 +3291,74 @@ test("a focused row that wraps until it is clipped is revealed", async () => {
   }
 });
 
+// Native focus scrolling answers a different question from the one this widget
+// asks. It moves the least that shows SOME of the row, so an action taller than
+// the scrollport can come to focus with its label above the popup - Enter then
+// invokes an action whose beginning the reader has never seen. Keyboard
+// navigation therefore has to reveal the row itself, through the popup's own
+// scroll, exactly as a recovered replacement focus does.
+test("keyboard navigation reveals an oversized row from its own start", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  const PORT = 56;
+  const OVERSIZED = 100;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, 300, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, PORT);
+    return box(0, 0, 0, 0);
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "UL") return PORT;
+    if (this.tagName !== "LI" || !this.parentElement) return 0;
+    return Array.prototype.indexOf.call(this.parentElement.children, this) === 1 ? OVERSIZED : 44;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "UL" ? 160 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName !== "LI" || !this.parentElement) return 0;
+    const index = Array.prototype.indexOf.call(this.parentElement.children, this);
+    let top = 0;
+    for (let i = 0; i < index; i += 1) top += i === 1 ? OVERSIZED : 44;
+    return top;
+  });
+  const { flush } = captureFrames();
+  const four: MenuItem[] = [
+    { id: "overview", label: "Overview", onSelect: vi.fn() },
+    { id: "archive", label: "Archive", onSelect: vi.fn() },
+    { id: "rename", label: "Rename", onSelect: vi.fn() },
+    { id: "delete", label: "Delete", onSelect: vi.fn() },
+  ];
+  try {
+    render(<Menu trigger="Actions" items={four} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    const popup = screen.getByRole("menu");
+    // Archive spans 44..144 inside a 56px scrollport, so no offset shows it
+    // whole. The reader works down to Rename, the row below it, which the
+    // browser's own focus scroll brings into the scrollport - leaving the popup
+    // at 132, with Archive's start 88px above it. jsdom performs no native
+    // focus scroll, so that position is written directly: the question this
+    // test asks is whether the widget moves the popup ITSELF when focus
+    // returns to the oversized row, and a scroll left by the browser is the
+    // state it has to answer from.
+    await user.keyboard("{ArrowDown}");
+    await user.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Rename" }));
+    popup.scrollTop = 132;
+    flush();
+    await user.keyboard("{ArrowUp}");
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Archive" }));
+    // Revealed to its own start, which is the end that carries the label. The
+    // least scroll that fits its END would put that start at -44.
+    expect(popup.scrollTop).toBe(44);
+    flush();
+  } finally {
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
 // A row that grows downward does not take anything away from the reader. They
 // scrolled down to the turn controls with Overview still holding focus, and the
 // scrollport shows exactly its FIRST 20px at the bottom edge. An activity count
@@ -4025,7 +4283,10 @@ test("a panned visual viewport still grows the popup out of its trigger's edge",
     offsetTop: number;
   };
   fakeViewport.width = 800;
-  fakeViewport.height = 800;
+  // 740 inside an 800-tall layout viewport, so the 60px pan below is a
+  // position the browser can actually reach: the visible region's bottom sits
+  // at 800 (60 + 740) and never past the layout viewport's own edge.
+  fakeViewport.height = 740;
   fakeViewport.offsetLeft = 0;
   fakeViewport.offsetTop = 60;
   vi.stubGlobal("visualViewport", fakeViewport);
