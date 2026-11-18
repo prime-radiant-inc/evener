@@ -67,6 +67,7 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 	const earlierAnswer = `{"type":"message","content":[{"type":"output_text","text":"m_earlier"}]}`
 	const answerItem = `{"type":"message","content":[{"type":"output_text","text":"m1"}]}`
 	const emptyAnswer = `{"type":"message","id":"msg_2","content":[{"type":"output_text","text":""}]}`
+	const unnamedEmptyAnswer = `{"type":"message","content":[{"type":"output_text","text":""}]}`
 	const secondAnswer = `{"type":"message","id":"msg_2","content":[{"type":"output_text","text":""},{"type":"output_text","text":" \t"},{"type":"output_text","text":"m2"}]}`
 	const answerDelta = `{"type":"response.output_text.delta","delta":"m1"}`
 	const toolDelta = `{"type":"response.function_call_arguments.delta","name":"f","call_id":"call_1","delta":"{}"}`
@@ -76,11 +77,17 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 	const blankPart = `{"type":"response.output_text.delta","item_id":"msg_2","content_index":1,"delta":" \t"}`
 	const toolAdded = `{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"f"}}`
 	const argumentsDone = `{"type":"response.function_call_arguments.done","item_id":"fc_1","arguments":"{}"}`
+	const finalArguments = `{"type":"response.function_call_arguments.done","item_id":"fc_1","arguments":" \t{ \"k\": 1 }\n"}`
+	const itemArguments = `{"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{}"}`
+	const namedFinalArguments = `{"type":"response.function_call_arguments.done","item_id":"fc_1","call_id":"call_1","name":"f","arguments":" \t{ \"k\": 1 }\n"}`
 	done := func(item string) string { return `{"type":"response.output_item.done","item":` + item + "}" }
 	at := func(index int, event string) string {
 		return `{"output_index":` + strconv.Itoa(index) + "," + event[1:]
 	}
 	const messageAdded = `{"type":"response.output_item.added","item":{"type":"message","id":"msg_2","phase":"commentary"}}`
+	const indexOnlyAdded = `{"type":"response.output_item.added","item":{"type":"message","phase":"commentary"}}`
+	const otherMessageAdded = `{"type":"response.output_item.added","item":{"type":"message","id":"msg_3","phase":"final_answer"}}`
+	const emptyFinal = `{"type":"message","id":"msg_3","phase":"final_answer","content":[{"type":"output_text","text":""}]}`
 	const reasoningAdded = `{"type":"response.output_item.added","item":{"type":"reasoning","id":"rs_1"}}`
 	const emptyCommentary = `{"type":"message","id":"msg_2","phase":"commentary","content":[{"type":"output_text","text":""}]}`
 	var prefix strings.Builder
@@ -107,6 +114,15 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 	rawWithSummary.Summary = []replayText{{"summary_text", "s1"}}
 	encrypted := replayItem{Type: "reasoning", ID: "rs_1", Encrypted: "e1", Summary: []replayText{}}
 	tool := replayItem{Type: "function_call", CallID: "call_1", Name: "f", Arguments: "{}"}
+	finalTool := tool
+	finalTool.Arguments = " \t{ \"k\": 1 }\n"
+	announcedAnswer := answer
+	announcedAnswer.Phase = "commentary"
+	blankCommentary := replayItem{Type: "message", Phase: "commentary", Content: []replayText{{"output_text", ""}}}
+	unnamedBlank := replayItem{Type: "message", Content: []replayText{{"output_text", ""}}}
+	blankFinal := blankCommentary
+	blankFinal.Phase = "final_answer"
+	indexedParts := replayItem{Type: "message", Phase: "commentary", Content: []replayText{{"output_text", " \t"}, {"output_text", "m2"}}}
 	for _, tc := range []struct {
 		name   string
 		events []string
@@ -114,6 +130,19 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 		want   []replayItem
 	}{
 		{"settled item", nil, []string{reasoningItem, answerItem}, []replayItem{raw, answer}},
+		{"reasoning deltas alone stay on display", nil, nil, nil},
+		{"indexed answer and final arguments without completed items", []string{at(2, toolAdded), toolDelta, finalArguments, at(0, messageAdded), laterPart, blankPart, at(1, answerDelta)}, nil, []replayItem{indexedParts, answer, finalTool}},
+		{"final arguments identify the call", []string{itemArguments, namedFinalArguments}, nil, []replayItem{finalTool}},
+		{"announced message owns anonymous text", []string{messageAdded, answerDelta}, []string{emptyAnswer}, []replayItem{announcedAnswer}},
+		{"late announcement identifies pending anonymous text", []string{answerDelta, messageAdded}, []string{emptyAnswer}, []replayItem{announcedAnswer}},
+		{"announced index owns anonymous text", []string{at(0, indexOnlyAdded), answerDelta}, []string{emptyAnswer}, []replayItem{announcedAnswer}},
+		{"a distinct indexed completion keeps both messages", []string{at(0, answerDelta), at(1, done(secondAnswer))}, nil, []replayItem{answer, multipart}},
+		{"unnamed terminal matches its only announced message", []string{messageAdded, answerDelta}, []string{unnamedEmptyAnswer}, []replayItem{announcedAnswer}},
+		{"unnamed terminal leaves the explicitly matched message available", []string{at(0, messageAdded), answerDelta}, []string{unnamedEmptyAnswer, emptyAnswer}, []replayItem{unnamedBlank, announcedAnswer}},
+		{"sparse message keeps an indexed completed reasoning sibling", []string{at(0, done(reasoningItem)), at(1, indexOnlyAdded), answerDelta}, []string{unnamedEmptyAnswer}, []replayItem{raw, announcedAnswer}},
+		{"empty message preserves earlier tool sibling", []string{at(0, toolAdded), at(1, messageAdded), answerDelta, finalArguments}, []string{emptyAnswer}, []replayItem{finalTool, announcedAnswer}},
+		{"ambiguous anonymous text stays unassigned", []string{at(0, messageAdded), at(1, otherMessageAdded), answerDelta}, []string{emptyCommentary, emptyFinal}, []replayItem{blankCommentary, blankFinal}},
+		{"substantive terminal replaces anonymous text and sparse siblings", []string{messageAdded, answerDelta, toolDelta}, []string{secondAnswer}, []replayItem{multipart}},
 		{"standalone empty native answer", nil, []string{emptyAnswer}, []replayItem{{Type: "message", Content: []replayText{{"output_text", ""}}}}},
 		{"empty native answer with a matching streamed answer", []string{otherAnswerDelta}, []string{emptyAnswer}, []replayItem{otherAnswer}},
 		{"distinct native messages sharing a phase", nil, []string{answerItem, secondAnswer}, []replayItem{answer, multipart}},
@@ -187,7 +216,7 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 				t.Fatal("stream did not settle")
 			}
 			if got := replayInput(t, acc.Response().Message, true); !reflect.DeepEqual(got, tc.want) {
-				t.Fatalf("next input = %#v, want %#v", got, tc.want)
+				t.Errorf("next input = %#v, want %#v", got, tc.want)
 			}
 			recorded, err := ExtractRecordedResponse([]byte(sse.String()), "glm-5.3")
 			if err != nil {
@@ -195,7 +224,7 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 			}
 			if got, want := replayInput(t, recorded.Message, true), replayInput(t, settled.Message, true); !reflect.DeepEqual(got, want) {
 				t.Fatalf("recorded input = %#v, live settled input = %#v", got, want)
-			} else if len(settled.Message.Content) != 0 && !reflect.DeepEqual(got, tc.want) {
+			} else if !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("recorded input = %#v, want %#v", got, tc.want)
 			}
 		})

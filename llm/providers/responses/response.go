@@ -13,6 +13,11 @@ import (
 	"primeradiant.com/evener/llm/providers/internal/protocolhttp"
 )
 
+type responsesTerminalItem struct {
+	observed *responsesOutputItem
+	parts    []llm.ContentPart
+}
+
 // responseContentFromOutputItems converts a Responses API output-item array
 // into message content parts. It walks the same wire shape whether the items
 // come from a terminal response.completed payload or output_item.done events.
@@ -20,34 +25,37 @@ func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawM
 	var rawBodyItems []json.RawMessage
 	var rawBodyCaptured bool
 	var content []llm.ContentPart
-	onlyReasoningPlaceholders := stream != nil
+	sparse := stream != nil
+	var placeholders []responsesTerminalItem
+	var terminalReasoning bool
 	for itemIdx, itemAny := range out {
 		item, ok := itemAny.(map[string]any)
 		if !ok {
 			continue
 		}
 		typ, _ := item["type"].(string)
-		if typ != "reasoning" {
-			onlyReasoningPlaceholders = false
+		if typ != "reasoning" && typ != "message" {
+			sparse = false
 		}
+		start := len(content)
+		var observed *responsesOutputItem
 		switch typ {
 		case "message":
-			var prior *responsesOutputItem
-			if stream != nil {
+			phase, _ := item["phase"].(string)
+			var substantive bool
+			content, substantive = appendResponsesText(content, item, phase)
+			if substantive {
+				sparse = false
+			} else if stream != nil {
 				id, _ := item["id"].(string)
-				prior = stream.byID[id]
-				if prior == nil {
-					prior = stream.byIndex[int64(itemIdx)]
-				}
-				if prior == nil && len(out) == 1 {
-					prior = stream.anonymousText
-				}
-				if prior != nil && (prior.kind != "message" || (prior.id != "" && id != "" && prior.id != id)) {
-					prior = nil
+				observed = stream.terminalMessage(id, itemIdx, out)
+				if observed != nil && len(content) <= start+1 && (observed.textComplete || len(observed.text) > 0) {
+					if phase == "" {
+						phase = observed.phase
+					}
+					content = observed.appendMessage(content[:start], phase)
 				}
 			}
-			phase, _ := item["phase"].(string)
-			content = prior.appendMessage(content, item, phase)
 		case "function_call":
 			name, _ := item["name"].(string)
 			args, _ := item["arguments"].(string)
@@ -104,12 +112,19 @@ func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawM
 				},
 			})
 		case "reasoning":
+			terminalReasoning = true
 			thinking, native := responsesThinking(item)
 			if stream != nil {
 				if native == reasoningSubstantive {
-					onlyReasoningPlaceholders = false
+					sparse = false
 				} else {
-					thinking = stream.settleReasoning(item, thinking, native)
+					id, _ := item["id"].(string)
+					observed = stream.byID[id]
+					if observed != nil && observed.kind == "reasoning" {
+						thinking = observed.settleReasoning(item, thinking, native)
+					} else {
+						observed = nil
+					}
 				}
 			}
 			if thinking != nil {
@@ -118,21 +133,44 @@ func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawM
 		default:
 			// ignore
 		}
+		if sparse && len(content) > start {
+			placeholders = append(placeholders, responsesTerminalItem{observed, content[start:len(content):len(content)]})
+		}
 	}
-	if onlyReasoningPlaceholders {
-		return stream.sparseContent(content, len(out) != 0)
+	if sparse {
+		return stream.sparseContent(placeholders, terminalReasoning)
 	}
 	return content
 }
 
+func (acc *responsesOutputAccumulator) terminalMessage(id string, index int, out []any) *responsesOutputItem {
+	if item := acc.byID[id]; item != nil && item.kind == "message" {
+		return item
+	}
+	indexed := acc.byIndex[int64(index)]
+	if indexed != nil && (indexed.kind != "message" || (id != "" && indexed.id != "" && indexed.id != id)) {
+		indexed = nil
+	}
+	onlyMessage := true
+	for i, entry := range out {
+		item, _ := entry.(map[string]any)
+		if i != index && item["type"] == "message" {
+			onlyMessage = false
+			if indexed != nil && indexed.id != "" && item["id"] == indexed.id {
+				indexed = nil // Another terminal message explicitly owns this stream item.
+			}
+		}
+	}
+	if indexed != nil || !onlyMessage {
+		return indexed
+	}
+	item, _ := acc.uniqueMessage(id, -1, false)
+	return item
+}
+
 // Only a completed reasoning item with the same native ID may supply
 // reasoning absent from the terminal.
-func (acc *responsesOutputAccumulator) settleReasoning(item map[string]any, terminal *llm.ThinkingData, terminalNative reasoningContent) *llm.ThinkingData {
-	id, _ := item["id"].(string)
-	output := acc.byID[id]
-	if output == nil || output.kind != "reasoning" {
-		return terminal
-	}
+func (output *responsesOutputItem) settleReasoning(item map[string]any, terminal *llm.ThinkingData, terminalNative reasoningContent) *llm.ThinkingData {
 	prior, native := responsesThinking(output.done)
 	if native == reasoningAbsent {
 		return terminal
@@ -148,33 +186,33 @@ func (acc *responsesOutputAccumulator) settleReasoning(item map[string]any, term
 	return prior
 }
 
-// An empty terminal or one containing only reasoning placeholders relies on
-// observed output for its answer and calls. Named terminal placeholders admit
-// only their matching reasoning. A stream of deltas alone remains available
-// to the caller's accumulator, including its display-only reasoning.
-func (acc *responsesOutputAccumulator) sparseContent(reasoning []llm.ContentPart, hasTerminalItems bool) []llm.ContentPart {
-	if acc.completed == 0 && len(reasoning) == 0 {
-		return nil
-	}
-	matched := make(map[*responsesOutputItem]llm.ContentPart, len(reasoning))
+// Empty terminals and placeholders admit observed answers and calls at their
+// stream positions. A named reasoning placeholder admits only its own reasoning.
+func (acc *responsesOutputAccumulator) sparseContent(terminal []responsesTerminalItem, terminalReasoning bool) []llm.ContentPart {
+	matched := make(map[*responsesOutputItem][]llm.ContentPart, len(terminal))
 	var content []llm.ContentPart
-	for _, part := range reasoning {
-		if item := acc.byID[part.Thinking.ID]; item != nil && item.kind == "reasoning" {
-			matched[item] = part
+	var previous *responsesOutputItem
+	for _, item := range terminal {
+		if item.observed != nil {
+			previous = item.observed
+			matched[previous] = item.parts
+		} else if previous != nil {
+			matched[previous] = append(matched[previous], item.parts...)
 		} else {
-			content = append(content, part)
+			content = append(content, item.parts...)
 		}
 	}
 	acc.orderOutput()
 	for _, item := range acc.output {
-		if hasTerminalItems && item.kind == "reasoning" {
-			if part, ok := matched[item]; ok {
-				content = append(content, part)
-			}
+		if parts, ok := matched[item]; ok {
+			content = append(content, parts...)
+			continue
+		}
+		if terminalReasoning && item.kind == "reasoning" {
 			continue
 		}
 		if item.kind == "message" {
-			content = item.appendMessage(content, item.done, item.phase)
+			content = item.appendMessage(content, item.phase)
 			continue
 		}
 		if item.done != nil {
@@ -193,39 +231,33 @@ func (acc *responsesOutputAccumulator) sparseContent(reasoning []llm.ContentPart
 	return content
 }
 
-// A terminal message owns its parts. A single empty placeholder can be filled
-// by its completed output item or its text deltas.
-func (prior *responsesOutputItem) appendMessage(content []llm.ContentPart, message map[string]any, phase string) []llm.ContentPart {
+// A completed message owns its parts. Its deltas fill a single empty
+// placeholder or supply the message when no completed item arrived.
+func (item *responsesOutputItem) appendMessage(content []llm.ContentPart, phase string) []llm.ContentPart {
 	start := len(content)
-	content = appendResponsesText(content, message, phase)
-	if prior == nil || len(content) > start+1 || (len(content) > start && content[start].Text != "") {
+	content, substantive := appendResponsesText(content, item.done, phase)
+	if len(item.text) == 0 || len(content) > start+1 || substantive {
 		return content
 	}
-	if phase == "" {
-		phase = prior.phase
-	}
-	if prior.textComplete {
-		return appendResponsesText(content[:start], prior.done, phase)
-	}
-	if len(prior.text) != 0 {
-		content = content[:start]
-		for _, index := range slices.Sorted(maps.Keys(prior.text)) {
-			content = append(content, llm.ContentPart{Kind: llm.ContentText, Text: prior.text[index].String(), Phase: phase, ResponsesMessageStart: len(content) == start})
-		}
+	content = content[:start]
+	for _, index := range slices.Sorted(maps.Keys(item.text)) {
+		content = append(content, llm.ContentPart{Kind: llm.ContentText, Text: item.text[index].String(), Phase: phase, ResponsesMessageStart: len(content) == start})
 	}
 	return content
 }
 
-func appendResponsesText(content []llm.ContentPart, message map[string]any, phase string) []llm.ContentPart {
+func appendResponsesText(content []llm.ContentPart, message map[string]any, phase string) ([]llm.ContentPart, bool) {
 	start := len(content)
 	parts, _ := message["content"].([]any)
+	var substantive bool
 	for _, entry := range parts {
 		p, _ := entry.(map[string]any)
 		if text, ok := p["text"].(string); ok && p["type"] == "output_text" {
 			content = append(content, llm.ContentPart{Kind: llm.ContentText, Text: text, Phase: phase, ResponsesMessageStart: len(content) == start})
+			substantive = substantive || text != ""
 		}
 	}
-	return content
+	return content, substantive
 }
 
 // Providers may omit an index on some or all items. Fill unclaimed positions

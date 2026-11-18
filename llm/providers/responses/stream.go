@@ -36,13 +36,12 @@ type responsesOutputItem struct {
 // tool output when a terminal response omits them. The live decoder and
 // recorded SSE reader use the same item identities and settlement rules.
 type responsesOutputAccumulator struct {
-	toolStates    map[string]*responsesToolState
-	itemToCallID  map[string]string
-	output        []*responsesOutputItem
-	byID          map[string]*responsesOutputItem
-	byIndex       map[int64]*responsesOutputItem
-	anonymousText *responsesOutputItem
-	completed     int
+	toolStates   map[string]*responsesToolState
+	itemToCallID map[string]string
+	output       []*responsesOutputItem
+	byID         map[string]*responsesOutputItem
+	byIndex      map[int64]*responsesOutputItem
+	completed    int
 }
 
 func newResponsesOutputAccumulator() *responsesOutputAccumulator {
@@ -89,6 +88,24 @@ func (acc *responsesOutputAccumulator) outputItem(payload map[string]any, kind, 
 	return item
 }
 
+// Missing identity can be filled only when one compatible message exists.
+func (acc *responsesOutputAccumulator) uniqueMessage(id string, index int64, pendingOnly bool) (*responsesOutputItem, bool) {
+	var candidate *responsesOutputItem
+	for _, item := range acc.output {
+		if item.kind != "message" || (id != "" && item.id != "" && item.id != id) || (pendingOnly && item.done != nil) {
+			continue
+		}
+		if index >= 0 && item.index >= 0 && item.index != index {
+			continue
+		}
+		if candidate != nil {
+			return nil, false
+		}
+		candidate = item
+	}
+	return candidate, true
+}
+
 func (acc *responsesOutputAccumulator) handleOutputTextDelta(payload map[string]any) string {
 	delta, _ := payload["delta"].(string)
 	if delta == "" {
@@ -99,13 +116,14 @@ func (acc *responsesOutputAccumulator) handleOutputTextDelta(payload map[string]
 	}
 	id, _ := payload["item_id"].(string)
 	var fallback *responsesOutputItem
-	if id == "" && payload["output_index"] == nil {
-		fallback = acc.anonymousText
+	if id == "" && responsesEventIndex(payload, "output_index") < 0 {
+		var unambiguous bool
+		fallback, unambiguous = acc.uniqueMessage("", -1, true)
+		if !unambiguous {
+			return delta // Visible to the user; its owning message is ambiguous.
+		}
 	}
 	item := acc.outputItem(payload, "message", id, fallback)
-	if item.id == "" && item.index < 0 {
-		acc.anonymousText = item
-	}
 	if !item.textComplete {
 		if item.text == nil {
 			item.text = make(map[int64]*strings.Builder)
@@ -141,22 +159,28 @@ func (acc *responsesOutputAccumulator) toolOutput(payload map[string]any, st *re
 	return st.output
 }
 
-// toolStateFor is the accumulated state for one function call: the entry
-// filed under call_id, else the one an earlier event filed under item_id,
-// else a fresh state keyed by call_id. The callers already resolved call_id
-// through itemToCallID, so an item_id hit here is a call the stream named by
-// item alone.
+// Both native IDs name the same call. A call known only by item ID can gain
+// its call ID and function name from a later event.
 func (acc *responsesOutputAccumulator) toolStateFor(callID, itemID, name string) *responsesToolState {
-	if st := acc.toolStates[callID]; st != nil {
-		return st
+	st := acc.toolStates[callID]
+	if st == nil {
+		st = acc.toolStates[itemID]
 	}
+	if st == nil {
+		st = &responsesToolState{id: callID}
+	}
+	if st.id == itemID && callID != itemID {
+		st.id = callID
+	}
+	if st.name == "" {
+		st.name = name
+	}
+	acc.toolStates[st.id] = st
 	if itemID != "" {
-		if st := acc.toolStates[itemID]; st != nil {
-			return st
-		}
+		st.itemID = itemID
+		acc.toolStates[itemID] = st
+		acc.itemToCallID[itemID] = st.id
 	}
-	st := &responsesToolState{id: callID, name: name}
-	acc.toolStates[callID] = st
 	return st
 }
 
@@ -165,7 +189,14 @@ func (acc *responsesOutputAccumulator) toolStateFor(callID, itemID, name string)
 func (acc *responsesOutputAccumulator) HandleOutputItemAdded(payload, item map[string]any) {
 	itemID, _ := item["id"].(string)
 	if kind, _ := item["type"].(string); kind != "function_call" {
-		output := acc.outputItem(payload, kind, itemID, nil)
+		var fallback *responsesOutputItem
+		if kind == "message" {
+			pending, _ := acc.uniqueMessage(itemID, responsesEventIndex(payload, "output_index"), true)
+			if pending != nil && pending.id == "" && pending.index < 0 && len(pending.text) != 0 {
+				fallback = pending
+			}
+		}
+		output := acc.outputItem(payload, kind, itemID, fallback)
 		output.phase, _ = item["phase"].(string)
 		return
 	}
@@ -178,23 +209,7 @@ func (acc *responsesOutputAccumulator) HandleOutputItemAdded(payload, item map[s
 	if stateID == "" {
 		return
 	}
-	st := acc.toolStates[stateID]
-	if st == nil {
-		st = &responsesToolState{id: stateID}
-	}
-	if callID != "" {
-		st.id = callID
-		acc.toolStates[callID] = st
-	}
-	if itemID != "" {
-		st.itemID = itemID
-		acc.itemToCallID[itemID] = st.id
-		acc.toolStates[itemID] = st
-	}
-	if st.name == "" && name != "" {
-		st.name = name
-	}
-	acc.toolStates[stateID] = st
+	st := acc.toolStateFor(stateID, itemID, name)
 	acc.toolOutput(payload, st, itemID)
 }
 
@@ -228,9 +243,6 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDelta(payload 
 	}
 	st := acc.toolStateFor(callID, itemID, name)
 	acc.toolOutput(payload, st, itemID).tool = st
-	if st.name == "" && name != "" {
-		st.name = name
-	}
 	if delta != "" {
 		fragment := []byte(delta)
 		if rawDelta, rawOK := captureResponsesDeltaRaw(eventData); rawOK && rawDelta != nil {
@@ -264,11 +276,8 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDone(payload m
 	if callID == "" {
 		return nil, false
 	}
-	st := acc.toolStateFor(callID, itemID, "")
-	if itemID != "" {
-		st.itemID = itemID
-		acc.itemToCallID[itemID] = st.id
-	}
+	name, _ := payload["name"].(string)
+	st := acc.toolStateFor(callID, itemID, name)
 	if argsStr != "" {
 		acc.toolOutput(payload, st, itemID).tool = st
 		st.args.Reset()
@@ -310,13 +319,10 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 	itemID, _ := item["id"].(string)
 	if it != "function_call" {
 		var fallback *responsesOutputItem
-		if it == "message" {
-			fallback = acc.anonymousText
+		if it == "message" && acc.byID[itemID] == nil {
+			fallback, _ = acc.uniqueMessage(itemID, responsesEventIndex(payload, "output_index"), true)
 		}
 		output := acc.outputItem(payload, it, itemID, fallback)
-		if output == acc.anonymousText {
-			acc.anonymousText = nil
-		}
 		if it == "message" {
 			output.settleMessage(item)
 		}
@@ -339,14 +345,6 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 		return item, nil, "", false
 	}
 	st := acc.toolStateFor(callID, itemID, name)
-	if itemID != "" {
-		st.itemID = itemID
-		acc.itemToCallID[itemID] = st.id
-		acc.toolStates[itemID] = st
-	}
-	if st.name == "" && name != "" {
-		st.name = name
-	}
 	if argsStr != "" {
 		st.args.Reset()
 		st.args.WriteString(argsStr)
