@@ -551,7 +551,12 @@ test("a correction that clips the trigger dismisses without scrolling the rail b
   const user = userEvent.setup();
   const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
   Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
-  let triggerTop = 300;
+  // Inside the rail's 0..200 client area at the open, because the case this
+  // test drives is a correction that carries the trigger OUT of it. A trigger
+  // already outside was never in sight, and a correction is not allowed to
+  // dismiss one the viewport had already taken - that is the resize path this
+  // widget exists to survive.
+  let triggerTop = 150;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
     if (this.getAttribute("data-testid") === "rail-port") return box(0, 0, 300, 200);
@@ -591,6 +596,105 @@ test("a correction that clips the trigger dismisses without scrolling the rail b
     expect(screen.queryByRole("menu")).toBeNull();
     expect(document.activeElement).toBe(trigger);
     expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// The mirror of that dismissal, and the reason "is it visible now" cannot make
+// it on its own. The reader shrinks the window, the rail closes over the
+// trigger, and the menu stays open and re-anchors - that is what this widget
+// does. Then a live row arrives ABOVE the browser's scroll anchor: scroll
+// anchoring holds the row the reader was looking at exactly where it is on
+// screen and moves the offset to pay for the insertion. The trigger does not
+// move by a pixel. The scroll handler sees a genuine correction - the geometry
+// says so - and dismisses on it, which takes the menu away for the very resize
+// that just kept it open.
+//
+// Nothing here changes the trigger's position: not the shrink, not the
+// insertion, not the correction. Both ends of the sequence are offscreen, so
+// only "was it visible when the popup was placed" separates the correction that
+// follows a resize from the one that follows nothing at all.
+test("a scroll correction after a resize clipped the trigger leaves the menu open", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  // The rail's box runs 100..(100 + railHeight); the trigger sits at 360, in
+  // sight until the window shrinks.
+  const RAIL_TOP = 100;
+  let railHeight = 400;
+  const triggerTop = 360;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.getAttribute("data-testid") === "rail-port") return box(0, RAIL_TOP, 300, railHeight);
+    if (this.getAttribute("data-testid") === "rail-row") return box(0, 20, 300, 40);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.getAttribute("data-testid") === "rail-port") return railHeight;
+    return this.tagName === "UL" ? 120 : 0;
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  // Both observers stay silent. The shrink reaches the widget through the
+  // window's own resize, and the anchoring correction through the scroll the
+  // browser emits for it - which is the whole path under test.
+  class SilentResizeObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  vi.stubGlobal("ResizeObserver", SilentResizeObserver);
+  class SilentMutationObserver {
+    observe() {}
+    disconnect() {}
+    takeRecords(): MutationRecord[] {
+      return [];
+    }
+  }
+  vi.stubGlobal("MutationObserver", SilentMutationObserver);
+  const { flush } = captureFrames();
+  try {
+    const view = render(
+      <div data-testid="rail-port" style={{ overflowY: "auto" }}>
+        <div data-testid="rail-row">Steady live session</div>
+        <Menu trigger="Actions" items={items()} />
+      </div>,
+    );
+    const scroller = screen.getByTestId("rail-port");
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 1200 });
+    // 340 of scroll in a 400px box: the offset sits inside the range, so the
+    // correction below is an anchoring adjustment and not a clamp.
+    scroller.scrollTop = 340;
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu")).toBeTruthy();
+
+    // The reader shortens the window and the rail with it, so the trigger falls
+    // below the rail's client area. The menu stays - and this is the placement
+    // that records the trigger as already out of sight.
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 600 });
+    railHeight = 200;
+    fireEvent(window, new Event("resize"));
+    flush();
+    expect(screen.getByRole("menu")).toBeTruthy();
+
+    // A live row arrives ABOVE the anchored row. The browser holds the anchored
+    // row still on screen and moves the offset by the row's height, so the
+    // trigger - below both - does not move at all. Inserted into the DOM for
+    // real, so nothing about this sequence is a handler call.
+    const railRow = screen.getByTestId("rail-row");
+    const arriving = document.createElement("div");
+    arriving.textContent = "Session that just went live";
+    railRow.before(arriving);
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 1240 });
+    scroller.scrollTop = 380;
+    fireEvent.scroll(scroller);
+    flush();
+
+    expect(screen.getByRole("menu")).toBeTruthy();
+    view.unmount();
   } finally {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
@@ -5539,6 +5643,158 @@ test("opening the menu moves no focus itself, so a zoomed page is not panned to 
   }
 });
 
+// The composer's session menu during an active turn, which is where a lost
+// focus move costs the reader their turn. Stop is the FIRST entry while the
+// session is working - it is the row that slid into Find's place when the
+// viewport crossed the threshold and SessionChrome dropped Find.
+//
+// The sequence is the reader's: open the menu on a working session, put focus
+// on Find, let a resize remove Find, then press Enter - aimed at the action
+// they were on. Choosing a replacement for them focuses Stop, and that Enter
+// interrupts the turn. Nothing but "the turn is still running" proves the fix:
+// an assertion on where focus landed would pass on a fix that still armed Stop.
+test("removing the focused Find action does not arm Stop for the next Enter", async () => {
+  const user = userEvent.setup();
+  const onStop = vi.fn();
+  const onFind = vi.fn();
+  function WorkingSessionMenu() {
+    const [showFind, setShowFind] = useState(() => window.innerHeight >= 480);
+    useEffect(() => {
+      const onResize = () => setShowFind(window.innerHeight >= 480);
+      window.addEventListener("resize", onResize);
+      return () => window.removeEventListener("resize", onResize);
+    }, []);
+    // Stop first, as SessionMenu renders it while a turn is running: it is the
+    // row that takes Find's index the moment Find is dropped.
+    const list: MenuItem[] = [
+      { id: "stop", label: "Stop", onSelect: onStop },
+      ...(showFind ? [{ id: "find", label: "Find in session…", onSelect: onFind }] : []),
+      { id: "rename", label: "Rename", onSelect: vi.fn() },
+      { id: "archive", label: "Archive", onSelect: vi.fn() },
+    ];
+    return <Menu trigger="Actions" items={list} />;
+  }
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  try {
+    render(<WorkingSessionMenu />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu")).toBeTruthy();
+    // The menu opens on its first row, Stop; one step reaches Find - the action
+    // the reader is about to choose.
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Stop" }));
+    await user.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Find in session…" }));
+
+    // A resize crosses the threshold and the caller drops Find. Focus stays in
+    // the menu, and no row is armed for the next Enter.
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 400 });
+    fireEvent(window, new Event("resize"));
+    expect(screen.queryByRole("menuitem", { name: "Find in session…" })).toBeNull();
+    // Focus stayed in the menu. Deliberately a containment check, not a
+    // position one: both the buggy and the fixed behavior keep focus inside the
+    // popup, and the difference between them is only whether the row it landed
+    // on is armed. The Enter below is therefore the assertion that decides
+    // this test - a position check here would pass on the bug.
+    const popup = screen.getByRole("menu");
+    expect(popup.contains(document.activeElement)).toBe(true);
+
+    // The Enter the reader meant for Find. It must interrupt nothing.
+    await user.keyboard("{Enter}");
+
+    expect(onStop).not.toHaveBeenCalled();
+    expect(onFind).not.toHaveBeenCalled();
+    // Still open, so the reader can see what is on offer and choose.
+    expect(popup.contains(screen.getByRole("menu"))).toBe(true);
+  } finally {
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// The other half: a replacement is not chosen for the reader, but it IS still
+// one keystroke away. Once they move focus themselves, Enter does exactly what
+// it always did - the fix must not cost the menu its ordinary activation.
+test("an arrow after the focused action is removed arms the row it lands on", async () => {
+  const user = userEvent.setup();
+  const onStop = vi.fn();
+  function WorkingSessionMenu() {
+    const [showFind, setShowFind] = useState(() => window.innerHeight >= 480);
+    useEffect(() => {
+      const onResize = () => setShowFind(window.innerHeight >= 480);
+      window.addEventListener("resize", onResize);
+      return () => window.removeEventListener("resize", onResize);
+    }, []);
+    const list: MenuItem[] = [
+      { id: "stop", label: "Stop", onSelect: onStop },
+      ...(showFind ? [{ id: "find", label: "Find in session…", onSelect: vi.fn() }] : []),
+      { id: "rename", label: "Rename", onSelect: vi.fn() },
+    ];
+    return <Menu trigger="Actions" items={list} />;
+  }
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  try {
+    render(<WorkingSessionMenu />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Stop" }));
+    await user.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Find in session…" }));
+
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 400 });
+    fireEvent(window, new Event("resize"));
+    expect(document.activeElement).toBe(screen.getByRole("menu"));
+
+    // The reader chooses. ArrowDown from the menu is its first item, and the
+    // Enter after it is about the row they are now looking at.
+    await user.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Stop" }));
+    await user.keyboard("{Enter}");
+    expect(onStop).toHaveBeenCalledOnce();
+  } finally {
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// The other arrow, from the same state. Landing on the FIRST enabled row going
+// down and the LAST going up is what Home/End already do unconditionally, and
+// what a step between two real rows already does by wrapping - so the popup as
+// the starting point changes nothing, and a reader cannot tell which of the
+// three doors they came through.
+test("ArrowUp from the focused menu lands on the last enabled row", async () => {
+  const user = userEvent.setup();
+  function WorkingSessionMenu() {
+    const [showFind, setShowFind] = useState(() => window.innerHeight >= 480);
+    useEffect(() => {
+      const onResize = () => setShowFind(window.innerHeight >= 480);
+      window.addEventListener("resize", onResize);
+      return () => window.removeEventListener("resize", onResize);
+    }, []);
+    const list: MenuItem[] = [
+      { id: "stop", label: "Stop", onSelect: vi.fn() },
+      ...(showFind ? [{ id: "find", label: "Find in session…", onSelect: vi.fn() }] : []),
+      { id: "rename", label: "Rename", onSelect: vi.fn() },
+    ];
+    return <Menu trigger="Actions" items={list} />;
+  }
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  try {
+    render(<WorkingSessionMenu />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    await user.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Find in session…" }));
+
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 400 });
+    fireEvent(window, new Event("resize"));
+    expect(document.activeElement).toBe(screen.getByRole("menu"));
+
+    await user.keyboard("{ArrowUp}");
+    expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Rename" }));
+  } finally {
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
 // With the menu open and "Pin this session…" focused, a caller that drops an
 // EARLIER entry (SessionChrome drops "Find in session…" below 480px) left the
 // stored index pointing at "Archive". Enter then archived the session while
@@ -5601,7 +5857,7 @@ function ReturningFindMenu({ onFind, onOverview }: { onFind: () => void; onOverv
   return <Menu trigger="Actions" items={list} />;
 }
 
-test("an entry that leaves and comes back cannot retarget Enter away from the row focus was moved to", async () => {
+test("an entry that leaves and comes back cannot retarget Enter away from the row the reader then chose", async () => {
   const user = userEvent.setup();
   const onFind = vi.fn();
   const onOverview = vi.fn();
@@ -5616,7 +5872,13 @@ test("an entry that leaves and comes back cannot retarget Enter away from the ro
     Object.defineProperty(window, "innerHeight", { configurable: true, value: 400 });
     fireEvent(window, new Event("resize"));
     expect(screen.queryByRole("menuitem", { name: "Find in session…" })).toBeNull();
-    // Focus had to move somewhere: the surviving row the id resolution names.
+    // Focus stayed inside the menu but on no ROW: choosing a replacement on the
+    // reader's behalf is what could land it on Stop during a live turn.
+    expect(document.activeElement).toBe(screen.getByRole("menu"));
+
+    // The reader makes an explicit choice. That is what arms a row, and the
+    // roving step starts from the list rather than from the removed entry.
+    await user.keyboard("{ArrowDown}");
     expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Overview" }));
 
     // Find comes back. Focus is still on Overview, so Enter must activate

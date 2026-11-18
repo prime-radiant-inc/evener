@@ -912,6 +912,23 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     closeMenu(true);
   }, [closeMenu]);
 
+  // Has the region placement answers to moved since the last placement pass?
+  // A pinch zoom and iOS's keyboard inset both move the VISUAL viewport and
+  // leave `innerHeight` alone, so the layout height cannot answer this on its
+  // own - and neither can the trigger's current rect, which is the same
+  // clipped position whether the viewport moved under it or layout pushed it
+  // out. Read, never consumed: it is the placement pass that moves the
+  // baseline, so a notification that only re-places leaves this reading intact
+  // for whichever one judges the same move next.
+  //
+  // Shared by every path that has to decide WHO moved the trigger - the scroll
+  // handler, and both observers inside the effect below - because the answer
+  // is one fact and two definitions of it drift apart.
+  const viewportMovedSincePlacement = useCallback(
+    () => visibleViewportAtPlacementRef.current !== visibleViewportSignature(ownerDocument.defaultView ?? window),
+    [ownerDocument],
+  );
+
   // Where the focused row sat the last time this widget looked, and in what
   // scrollport. The reveal runs on the answer to one question, so this is the
   // one fact it is answered from: layout moved the row (or the scrollport under
@@ -1421,14 +1438,27 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // recovers. A focus that has moved to a real control (the person tabbed
     // away, a Dialog took it) is theirs, not ours to reclaim.
     if (focused !== null && focused !== ownerDocument.body) return;
-    const index = indexOfActive();
-    if (index === -1) return;
-    // focusIndex, not node.focus(): the replacement BECOMES the active item.
-    // Focusing it without adopting it leaves activeId naming the entry that
-    // left, so a caller that brings that entry back re-points activeId at a
-    // row the person is no longer on - and the id would then name the
-    // action while focus names a different row.
-    focusIndex(index, true);
+    // The menu itself, NOT the row that slid into the removed one's place.
+    //
+    // Choosing a replacement is the whole hazard this avoids. The entry that
+    // left was where the person was looking, and the row now occupying its
+    // index is an arbitrary neighbour: in the composer's session menu during
+    // an active turn, the first enabled row can be Stop, and an Enter aimed at
+    // Find would interrupt the turn. Focus therefore lands on the popup, which
+    // is inside the menu and is nobody's action, and it stays there until the
+    // person moves it. See handleMenuKeyDown: an Enter with no row focused
+    // activates nothing, so a stray keypress costs a second press rather than
+    // a turn. Arrows, Home, End and Tab all still start from the list and put
+    // real focus on a row - that IS the explicit choice, and from then on
+    // Enter works exactly as it always did.
+    //
+    // preventScroll for the same reason every other focus this widget makes
+    // carries it: the popup is already placed where the reader is looking, and
+    // a plain focus() of it would scroll the page to the portal's own
+    // coordinates.
+    // No popup is no recovery: there is nothing to keep focus inside, and
+    // leaving focus where it fell is what this did before it had a target.
+    popup?.focus({ preventScroll: true });
   }, [isOpen, ownerDocument, itemIds]);
 
   // Record which row holds focus, so a list change can tell a row that LEFT
@@ -1551,10 +1581,24 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     switch (event.key) {
       case "ArrowDown":
         event.preventDefault();
+        // From the popup ITSELF there is no row to step away from: that is the
+        // state a removed focused row leaves behind (see the recovery effect),
+        // and the APG's own answer for a menu holding focus is its first item.
+        // Stepping from the roving id instead would skip whichever row the id
+        // resolution names, because that resolution is where a step from
+        // "nothing" would have arrived.
+        if (focused === -1) {
+          focusIndex(firstEnabledIndex(items), true);
+          break;
+        }
         focusIndex(stepEnabledIndex(items, current, 1), true);
         break;
       case "ArrowUp":
         event.preventDefault();
+        if (focused === -1) {
+          focusIndex(lastEnabledIndex(items), true);
+          break;
+        }
         focusIndex(stepEnabledIndex(items, current, -1), true);
         break;
       case "Home":
@@ -1569,6 +1613,18 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
       case " ": {
         // The item under focus, which is what the person is looking at. A
         // stale index here is how a stray Enter archives a session.
+        //
+        // FOCUS is the requirement, not the roving id. Those differ in exactly
+        // one state, and it is the state this widget puts itself in on purpose:
+        // the row that had focus was removed, so focus moved to the popup
+        // itself rather than to whichever row slid into its index (see the
+        // recovery effect). Adopting `firstEnabledIndex` there is how an Enter
+        // aimed at Find interrupts an active turn, because the replacement can
+        // be Stop. With no row focused there is nothing the person is looking
+        // at, so this key activates nothing - an arrow, Home, End or Tab puts
+        // real focus on a row first, and from then on this is the ordinary
+        // case.
+        if (focused === -1) break;
         const item = items[current];
         if (item !== undefined) {
           event.preventDefault();
@@ -1718,8 +1774,27 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         // reveal a trigger they cannot see. A reader's own scroll keeps the
         // ordinary close - they chose where to go, and the trigger coming back
         // into view is the consequence of that choice.
-        else if (cause !== "scrolled") closeMenuRestoringFocusWithoutScroll();
-        else closeMenu();
+        //
+        // Who moved it is the question, and "is it visible now" cannot answer
+        // it - that is the same trap the mutation path had. A correction that
+        // follows a resize finds the trigger in the position the RESIZE put it:
+        // scroll anchoring holds the row still, `scrollTop` moves to pay for a
+        // live insertion above the anchor, and the correction is the browser
+        // preserving the reader's view of a row the viewport had already taken.
+        // Dismissing there undoes the resize that just kept the menu open, one
+        // notification later. The placement pass records whether the trigger
+        // was in sight when the popup was laid out, and that is the fact this
+        // needs: a correction may only dismiss a trigger that WAS visible then.
+        // The visual-viewport signature is the other half, unchanged from the
+        // observer: a zoom that moved the region without a placement since
+        // leaves the visibility reading describing a viewport that no longer
+        // exists. Both are read here, and neither is spent - the placement pass
+        // owns them.
+        else if (cause !== "scrolled") {
+          const layoutTook = !viewportMovedSincePlacement() && triggerVisibleAtLastPlacementRef.current;
+          if (layoutTook) closeMenuRestoringFocusWithoutScroll();
+          else placeNowAndAfterLayout();
+        } else closeMenu();
       }
     }
     // A resize re-anchors, it never dismisses. The resize this menu actually
@@ -1753,7 +1828,15 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
       placeNowAndAfterLayout();
     };
     return watchViewport(rootRef.current, onScrollCapture, resizeToPlace);
-  }, [isOpen, closeMenu, closeMenuRestoringFocusWithoutScroll, ownerDocument, placeMenu, placeAfterLayout]);
+  }, [
+    isOpen,
+    closeMenu,
+    closeMenuRestoringFocusWithoutScroll,
+    ownerDocument,
+    placeMenu,
+    placeAfterLayout,
+    viewportMovedSincePlacement,
+  ]);
 
   // A resize event is not the only thing that moves the trigger, and the
   // resize itself is not the moment the trigger has finished moving:
@@ -1846,14 +1929,6 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // not this case, so it is judged by the same rule as any other.)
     const popupOnly = (entries: ResizeObserverEntry[]) =>
       entries.length > 0 && entries.every((entry) => entry.target === popupRef.current);
-    // Has the region placement answers to moved since the last placement pass?
-    // A pinch zoom and iOS's keyboard inset both move the VISUAL viewport and
-    // leave `innerHeight` alone, so the layout height cannot answer this on its
-    // own. Read, never consumed: it is the placement pass that moves the
-    // baseline, so a delivery that only re-places leaves this reading intact for
-    // whichever notification judges the same move next.
-    const viewportMovedSincePlacement = (): boolean =>
-      visibleViewportAtPlacementRef.current !== visibleViewportSignature(ownerWindow);
     const onObservedSize = (entries: ResizeObserverEntry[]) => {
       const viewportChanged = ownerWindow.innerHeight !== observedViewportHeightRef.current;
       observedViewportHeightRef.current = ownerWindow.innerHeight;
@@ -2051,7 +2126,14 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
       popupMutations?.disconnect();
       popupEl?.removeEventListener("scroll", onPopupScroll);
     };
-  }, [isOpen, ownerDocument, closeMenuRestoringFocusWithoutScroll, placeAfterLayout, revealFocusedRowIfClipped]);
+  }, [
+    isOpen,
+    ownerDocument,
+    closeMenuRestoringFocusWithoutScroll,
+    placeAfterLayout,
+    revealFocusedRowIfClipped,
+    viewportMovedSincePlacement,
+  ]);
 
   const iconOnly = label !== undefined;
   const triggerClassName = [
@@ -2099,6 +2181,11 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
               className={CLASS.popup}
               data-motion={phase}
               inert={phase === "closing"}
+              // Focusable so focus can stay INSIDE the menu when the row holding
+              // it is removed - see the recovery effect. -1 keeps it out of the
+              // tab order, so the roving row remains the only Tab stop and
+              // FocusScope's trap is unchanged.
+              tabIndex={-1}
               style={{ top: position.top, left: position.left, transformOrigin: origin }}
               onKeyDown={handleMenuKeyDown}
               onFocus={handlePopupFocus}
