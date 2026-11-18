@@ -933,6 +933,28 @@ function ConversationScreenView({
 						current.ref === route.params.ref
 					);
 				}
+				// An owed resume is work the reader already asked for, not a new
+				// request, so coverage does not refuse it: a root-stack push over a
+				// Duo conversation must not leave the daemon stopped with nothing
+				// left to retry it. It still needs a binding that can actually
+				// send. A ready transport is not enough - a reconnect restores the
+				// client before the replacement service has opened its thread, and
+				// a resume written into that gap throws without reaching the hub,
+				// which the restart reads as a failure and gives up on. The store
+				// says which it is: it is open only once a read of this binding
+				// published this instance, so an opening binding refuses here
+				// instead and the retry survives until it is ready.
+				if (scope === "send") {
+					return (
+						currentDestination.current.store === store &&
+						currentDestination.current.client === client &&
+						connectionReady.current &&
+						current.ref === route.params.ref &&
+						current.status === "open" &&
+						current.conversationGeneration === bindingGeneration &&
+						current.conversation?.instanceId === bindingInstance
+					);
+				}
 				// Starting an action is a reader's question, so it keeps the route
 				// fence: a covered pane offers nothing to press.
 				if (

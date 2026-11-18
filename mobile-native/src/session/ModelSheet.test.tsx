@@ -252,12 +252,43 @@ describe("choosing a model (spec 8.5)", () => {
 		expect(calls).toEqual(["changeModel"]);
 	});
 
+	// The hub can refuse a pick after the controls that sent it have been
+	// replaced: a recycle disposes the set mid-pick and the screen provides a
+	// new one. The refusal is recorded on the set that sent the write, and the
+	// header the picker scrolls to reads the replacement's snapshot instead, so
+	// an open picker would show no reason at all for a pick that did not
+	// happen.
+	it("shows the sending binding's refusal after its controls were replaced", async () => {
+		const calls: string[] = [];
+		const answer = Promise.withResolvers<boolean>();
+		const sending = fakeControls(calls);
+		const refusal = "Could not confirm the action: refused";
+		sending.changeModel.mockImplementation(async (provider, model) => {
+			calls.push(`changeModel:${provider}/${model}`);
+			return answer.promise;
+		});
+		provide(conversation(), {}, { controls: sending as unknown as SessionControls });
+		const tree = sheet();
+		act(() => pressable(tree, "Claude Haiku 5")?.props.onPress());
+		// The recycle lands while the answer is out: the screen provides a
+		// replacement set, and this one recorded nothing.
+		provide(conversation(), {}, { controls: fakeControls(calls) as unknown as SessionControls });
+		await settle();
+		// What publish writes on the set that dispatched, when the hub refuses.
+		Object.assign(sending.getSnapshot(), { lastAction: "changeModel", error: refusal });
+		answer.resolve(false);
+		await settle();
+		expect(renderedText(tree)).toContain(refusal);
+		// The picker stays open for the retry, and nothing announces a change.
+		expect(navigation.goBack).not.toHaveBeenCalled();
+	});
+
 	// A set the hub acknowledged whose readback never landed leaves the
 	// projection showing the value from before it. That stale row must not read
 	// as "already set": tapping it is the correction the reader means to make,
 	// and dismissing there is how the change disappears with nothing sent.
 	it("sends the correction for the value a prior pick was acknowledged for", async () => {
-		const { calls } = provide(conversation(), {
+		const { calls, host } = provide(conversation(), {
 			// The hub took the haiku pick; the projection is still one change
 			// behind and draws the sonnet row as selected.
 			unread: { model: { state: "acknowledged", value: "anthropic/claude-haiku-5" }, vision: null },
@@ -266,11 +297,11 @@ describe("choosing a model (spec 8.5)", () => {
 		// Tapping the shown row is the correction: it writes sonnet back.
 		act(() => pressable(tree, "Claude Sonnet 5")?.props.onPress());
 		await settle();
-		expect(calls).toEqual([
-			"changeModel:anthropic/claude-sonnet-5",
-			"goBack",
-			"toast:Model changed. Applies from the next turn.",
-		]);
+		// The request and the dismissal, in order. The confirmation is recorded
+		// after them, and its wording is not what this asserts.
+		expect(calls.slice(0, 2)).toEqual(["changeModel:anthropic/claude-sonnet-5", "goBack"]);
+		// The confirmation is a toast, and its wording is not the assertion.
+		expect(host.toast).toHaveBeenCalledOnce();
 	});
 
 	it("searches the models", () => {

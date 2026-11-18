@@ -287,6 +287,34 @@ describe("conversation-owned session controls", () => {
 		expect(controls.getSnapshot()).toMatchObject({ pending: null, error: null });
 	});
 
+	// A restart the reader already asked for is owed work, not a new request. A
+	// root-stack push can cover a Duo conversation while the force-stop is
+	// still out, and refusing the resume there leaves the daemon stopped with
+	// nothing left to retry it: the restart reads the refusal and stops.
+	// Pressing something new on a covered pane is still refused, because that
+	// is the reader's to start and a covered pane offers nothing to press.
+	it("admits an owed resume under a covering screen, and still refuses a new action there", async () => {
+		let resumes = 0;
+		const controls = new SessionControls(
+			await boundary({
+				resume: async () => {
+					resumes += 1;
+				},
+				compact: async () => {},
+			}),
+			async () => {},
+			() => {},
+			// The pane is covered, so the reader's own fence answers no; the send
+			// scope answers for the owed resume alone.
+			(scope) => scope === "send" || scope === "session" || scope === "destination",
+			() => null,
+			() => true,
+		);
+		expect(await controls.compact()).toBe(false);
+		expect(await controls.resume()).toBe(true);
+		expect(resumes).toBe(1);
+	});
+
 	it("does not recover a stale binding", async () => {
 		let attempts = 0;
 		const service = await boundary({

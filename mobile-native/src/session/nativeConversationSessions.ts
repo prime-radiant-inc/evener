@@ -139,14 +139,6 @@ class SessionEntry implements NativeConversationSession {
 	#bindingGeneration = 0;
 	#retryAttemptBinding: number | null = null;
 	#readListeners = new Set<() => void>();
-	// How many reads this store has started, watched rather than sampled: the
-	// unread record retires an outcome only once a read begun after it was
-	// recorded publishes, since an earlier read may have sampled the session
-	// before that write. Counted from the transition into "reading" rather than
-	// from every state the store announces while a read is open, or one attempt
-	// would look like several and the fence would admit a stale read's answer.
-	#readsStarted = 0;
-	#lastReadState: ReturnType<NativeConversationSession["store"]["getState"]>["latestReadState"] | null = null;
 
 	constructor(options: {
 		hubId: string;
@@ -177,7 +169,15 @@ class SessionEntry implements NativeConversationSession {
 		// published". The store says which it is.
 		this.sessionFacts = sessionFacts(
 			() => this.store.getState().latestReadState === "ready",
-			() => this.#readsStarted,
+			// The store's own read identity, not a count this entry keeps: a
+			// rehydrate that supersedes a read still in flight starts after a
+			// write without the state ever leaving `reading`, and counting
+			// transitions would give both reads one identity. Then the read that
+			// started later and published the value could not retire the record of
+			// the write it answered, and a later tap on the row it shows would send
+			// the setter again - starting a stopped daemon to reapply what it
+			// already holds.
+			() => this.store.getState().latestReadAttempt,
 			// What the published projection says each setting holds, in the same
 			// shape a pick records. The model is written as one provider/model
 			// string so a queued next-turn pick and the running model cannot be
@@ -185,7 +185,14 @@ class SessionEntry implements NativeConversationSession {
 			(setting) => {
 				const session = this.store.getState().canonicalSession();
 				if (session === null) return null;
-				return setting === "model" ? `${session.modelProvider}/${session.model}` : (session.visionModel ?? null);
+				if (setting === "vision") return session.visionModel ?? null;
+				// A read hydrates both modelProvider and model from the wire's one
+				// qualified field, so joining them here would report
+				// `anthropic/claude-haiku-5/anthropic/claude-haiku-5` and no
+				// acknowledged pick could ever match it. The pair is split only once
+				// a live thread/model/changed arrives; until then both fields hold
+				// the qualified identifier.
+				return session.model === session.modelProvider ? session.model : `${session.modelProvider}/${session.model}`;
 			},
 		);
 		const entry = this;
@@ -439,17 +446,11 @@ class SessionEntry implements NativeConversationSession {
 	#observeRead(): void {
 		if (this.#retired) return;
 		const state = this.store.getState();
-		// A read starts by marking "reading", and the store announces every
-		// change - rows arriving, mutations binding - so only the entry into that
-		// state is an attempt.
-		if (state.latestReadState === "reading" && this.#lastReadState !== "reading") {
-			this.#readsStarted += 1;
-		} else if (state.latestReadState === "ready") {
+		if (state.latestReadState === "ready") {
 			// The projection has caught up with every write a read begun after it
 			// can have observed, so nothing is outstanding for a picker to doubt.
 			this.sessionFacts.retirePublished();
 		}
-		this.#lastReadState = state.latestReadState;
 		// A rehydrate failure keeps the retained display model readable and only
 		// moves latestReadState to "error"; following status alone would never
 		// arm the retry. Both the status failure and the read-state failure are

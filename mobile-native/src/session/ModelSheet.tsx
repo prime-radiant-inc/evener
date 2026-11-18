@@ -87,24 +87,40 @@ function ModelSheetBody({
 	// which of the two a match is.
 	const verified = (setting: "model" | "vision", value: string) =>
 		verifiedSetting(state?.unread ?? NOTHING_UNREAD, setting, value);
-	const error = state?.modelError ?? (state?.lastAction && MODEL_ACTIONS.has(state.lastAction) ? state.error : null);
+	// A refusal belongs to the set that dispatched the write: a recycle can
+	// replace this sheet's controls while the answer is out, and the set that
+	// sent it is the one that recorded what the hub said. The replacement's
+	// snapshot has no such error, so reading that one would show the refusal
+	// nowhere after a rebind - the picker stays open and silent, which reads as
+	// a pick that did nothing. The refusal is held here until the reader tries
+	// again.
+	const [refused, setRefused] = useState<string | null>(null);
+	const error =
+		refused ?? state?.modelError ?? (state?.lastAction && MODEL_ACTIONS.has(state.lastAction) ? state.error : null);
 	// Each refusal reveals the first header row, even when it repeats the
-	// previous message after the user has scrolled away to try again. The
-	// refusal belongs to the set that dispatched it: a recycle can replace this
-	// sheet's set while the answer is out, and the set that sent the write is
-	// the one that recorded what the hub said.
+	// previous message after the user has scrolled away to try again.
 	const revealError = (from: SessionControls | null = controls) => {
 		if (from?.getSnapshot().error) list.current?.getScrollResponder()?.scrollTo({ y: 0, animated: true });
 	};
-	const closeOn = (sentWith: SessionControls | null, change: Promise<boolean>, then?: () => void) =>
+	/** Sends one change through the controls that can take it now, and settles
+	 * the sheet on what the hub answered them. `sentWith` is the binding that
+	 * dispatched, which may be replaced while the answer is out. */
+	const closeOn = (sentWith: SessionControls | null, change: Promise<boolean>, then?: () => void) => {
+		// A new attempt is the reader's, so the previous refusal stops being the
+		// answer to what the picker now shows.
+		setRefused(null);
 		void change.then((changed) => {
-			if (!changed) {
-				revealError(sentWith);
+			if (changed) {
+				finish();
+				then?.();
 				return;
 			}
-			finish();
-			then?.();
+			// That binding is the authority on what the hub said, whether or not it
+			// is still the set this sheet reads.
+			setRefused(sentWith?.getSnapshot().error ?? null);
+			revealError(sentWith);
 		});
+	};
 	const choose = (model: ModelDescriptor) => {
 		if (verified(vision ? "vision" : "model", current) && `${model.provider}/${model.model}` === current) {
 			finish();
