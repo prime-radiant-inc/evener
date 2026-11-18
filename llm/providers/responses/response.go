@@ -141,7 +141,9 @@ func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawM
 		default:
 			// ignore
 		}
-		if sparse && len(content) > start {
+		if sparse && (len(content) > start || typ == "message" && observed != nil) {
+			// A selected message can clear its parts. Remember that empty result
+			// so sparse recovery does not reconstruct it from earlier events.
 			placeholders = append(placeholders, responsesTerminalItem{observed, content[start:len(content):len(content)]})
 		}
 	}
@@ -233,7 +235,7 @@ func (acc *responsesOutputAccumulator) terminalItem(kind, id, callID string, ind
 // A terminal can omit native reasoning or supply a single placeholder. An
 // explicit empty array clears the content. Other typed slots own their indexes.
 func (item *responsesOutputItem) settleReasoning(terminalItem map[string]any, terminal *llm.ThinkingData, terminalNative reasoningContent) *llm.ThinkingData {
-	if item.done == nil {
+	if item.done == nil && len(item.text) == 0 {
 		return terminal
 	}
 	if terminal == nil {
@@ -247,7 +249,10 @@ func (item *responsesOutputItem) settleReasoning(terminalItem map[string]any, te
 		placeholder = part["text"] == ""
 	}
 	if !cleared && (terminalNative == reasoningAbsent || placeholder) {
-		if prior, native := responsesThinking(item.done, item); prior != nil && native > terminalNative {
+		// The stream can supply several native slots even when their item
+		// repeats only the types and their text arrived in indexed finals.
+		prior, _ := responsesThinking(item.done, item)
+		if prior != nil && slices.ContainsFunc(prior.ResponsesTextParts, func(p llm.ResponsesTextPart) bool { return p.Type == "reasoning_text" }) {
 			terminal.Text, terminal.ResponsesTextParts = prior.Text, prior.ResponsesTextParts
 		}
 	}
@@ -323,19 +328,19 @@ func (acc *responsesOutputAccumulator) sparseContent(terminal []responsesTermina
 	return content
 }
 
-// An item reference can omit the selected message's content. Its completed
-// refusal still selects that message and withdraws unrelated streamed calls.
-func (item *responsesOutputItem) messageWithCompletedRefusal(message map[string]any) map[string]any {
-	if _, supplied := message["content"]; supplied || item == nil || item.done == nil || message == nil {
+// A message reference inherits its completed refusal or explicit empty list.
+// A completed refusal withdraws unrelated streamed calls.
+func (item *responsesOutputItem) messageWithCompletedSelection(message map[string]any) map[string]any {
+	if _, supplied := message["content"].([]any); supplied || item == nil || item.done == nil || message == nil {
 		return message
 	}
-	parts, _ := item.done["content"].([]any)
-	for _, entry := range parts {
-		if p, _ := entry.(map[string]any); p["type"] == "refusal" {
-			message = maps.Clone(message)
-			message["content"] = parts
-			break
-		}
+	parts, supplied := item.done["content"].([]any)
+	if supplied && (len(parts) == 0 || slices.ContainsFunc(parts, func(entry any) bool {
+		p, _ := entry.(map[string]any)
+		return p["type"] == "refusal"
+	})) {
+		message = maps.Clone(message)
+		message["content"] = parts
 	}
 	return message
 }
@@ -357,8 +362,11 @@ func responsesMessagePartText(kind string, part map[string]any) (string, bool) {
 // the same observed part; unindexed text can fill only a single-part message.
 func (item *responsesOutputItem) appendMessage(content []llm.ContentPart, message map[string]any, streamOnly bool) ([]llm.ContentPart, bool) {
 	start := len(content)
-	message = item.messageWithCompletedRefusal(message)
-	parts, _ := message["content"].([]any)
+	message = item.messageWithCompletedSelection(message)
+	parts, explicitParts := message["content"].([]any)
+	if explicitParts && len(parts) == 0 {
+		return content, false
+	}
 	var observed map[int64]*responsesOutputText
 	if item != nil {
 		observed = item.text
@@ -403,9 +411,8 @@ func (item *responsesOutputItem) appendMessage(content []llm.ContentPart, messag
 	if !substantive && len(parts) <= 1 {
 		// A completed refusal can select a message whose parts were omitted.
 		// An explicit part list owns the membership of that message.
-		_, explicitParts := message["content"]
 		if !explicitParts && item != nil {
-			_, explicitParts = item.done["content"]
+			_, explicitParts = item.done["content"].([]any)
 		}
 		for _, index := range slices.Sorted(maps.Keys(observed)) {
 			onlyUnindexed := index == -1 && len(parts) == 0 && len(observed) == 1
@@ -513,7 +520,7 @@ func (item *responsesOutputItem) reasoningID(terminal map[string]any) string {
 func responsesThinking(item map[string]any, prior *responsesOutputItem) (*llm.ThinkingData, reasoningContent) {
 	encrypted, _ := item["encrypted_content"].(string)
 	native := reasoningAbsent
-	parts, _ := item["content"].([]any)
+	parts, supplied := item["content"].([]any)
 	var display strings.Builder
 	var textParts []llm.ResponsesTextPart
 	appendPart := func(kind, text string) {
@@ -551,8 +558,8 @@ func responsesThinking(item map[string]any, prior *responsesOutputItem) (*llm.Th
 		appendPart(kind, text)
 	}
 	var announced bool
-	if _, supplied := item["content"]; !supplied && prior != nil {
-		if _, completed := prior.done["content"]; !completed {
+	if !supplied && prior != nil {
+		if _, completed := prior.done["content"].([]any); !completed {
 			for _, index := range slices.Sorted(maps.Keys(prior.text)) {
 				part := prior.text[index]
 				if part.reasoningType == "reasoning_text" && part.reasoningFinal {

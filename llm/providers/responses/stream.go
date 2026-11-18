@@ -640,7 +640,7 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 		settled := item
 		if it == "message" {
 			output.settleMessage(item, acc.order)
-			settled = output.messageWithCompletedRefusal(item)
+			settled = output.messageWithCompletedSelection(item)
 		}
 		output.done, output.raw = settled, rawItemToken
 		output.doneOrder = acc.order

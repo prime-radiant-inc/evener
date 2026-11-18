@@ -83,6 +83,8 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 		refused := part{"type": "refusal", "refusal": refusal}
 		const reference = `{"type":"message","id":"msg1","role":"assistant"}`
 		const selected = `{"output":[` + reference + `]}`
+		const nullReference = `{"type":"message","id":"msg1","role":"assistant","content":null}`
+		const emptyMessage = `{"type":"message","id":"msg1","content":[]}`
 		refusalDone := func(index int, value string) string {
 			return fmt.Sprintf(`{"type":"response.refusal.done","item_id":"msg1","output_index":1,"content_index":%d,"refusal":%s}`, index, jsonOf(t, value))
 		}
@@ -102,6 +104,9 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 			{name: "selected completed refusal", text: refusal, terminal: `{"output":[` + reference + `]}`, parts: []part{refused}, completed: []string{completedRefusal}},
 			{name: "metadata-only completion retains selected refusal", text: refusal, terminal: `{"output":[` + reference + `]}`, parts: []part{refused}, completed: []string{completedRefusal, reference}},
 			{name: "selected refusal final without an item completion", text: refusal, terminal: selected, parts: []part{refused}, frames: []string{refusalDone(0, refusal)}},
+			{name: "null message content selects its finalized refusal", text: refusal, terminal: `{"output":[` + nullReference + `]}`, parts: []part{refused}, frames: []string{refusalDone(0, refusal)}},
+			{name: "null item and terminal content keep the completed refusal", text: refusal, terminal: `{"output":[` + nullReference + `]}`, parts: []part{refused}, completed: []string{completedRefusal, nullReference}},
+			{name: "null item content keeps the finalized empty refusal", terminal: selected, parts: []part{{"type": "refusal", "refusal": ""}}, frames: []string{refusalDone(0, "")}, completed: []string{nullReference}},
 			{name: "first refusal and later text settle in content order", text: refusal + "second", terminal: selected, parts: []part{refused, {"type": "output_text", "text": "second"}}, frames: []string{secondText, refusalDone(0, "earlier"), refusalDone(0, refusal), refusalPartDone}},
 			{name: "last refusal follows a streamed text part", text: "draft" + refusal, terminal: selected, parts: []part{{"type": "output_text", "text": "draft"}, refused}, frames: []string{refusalDone(1, refusal)}},
 			{name: "empty finalized refusal selects its message", terminal: selected, parts: []part{{"type": "refusal", "refusal": ""}}, frames: []string{refusalDone(0, "")}},
@@ -110,6 +115,10 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 			{name: "terminal refusal text owns its slot", text: "terminal", parts: []part{{"type": "refusal", "refusal": "terminal"}}, frames: []string{refusalDone(0, refusal)}},
 			{name: "explicit final answer withdraws other refusal and call", text: "final", parts: []part{{"type": "output_text", "text": "final"}}, frames: []string{`{"type":"response.refusal.done","item_id":"other","output_index":2,"content_index":0,"refusal":"other"}`}},
 			{name: "terminal answer replaces completed refusal", text: "final", parts: []part{{"type": "output_text", "text": "final"}}, completed: []string{completedRefusal}},
+			{name: "explicit empty message parts clear the refusal beside a selected call", terminal: `{"output":[` + call + `,` + emptyMessage + `]}`, frames: []string{refusalDone(0, refusal)}, wantCalls: 1},
+			{name: "explicit empty message clears its completed refusal in sparse output", terminal: `{"output":[` + emptyMessage + `]}`, completed: []string{completedRefusal}, wantCalls: 1},
+			{name: "explicit empty message clears its draft in sparse output", terminal: `{"output":[` + emptyMessage + `]}`, wantCalls: 1},
+			{name: "null message contents keep a completed empty list", terminal: selected, completed: []string{completedRefusal, emptyMessage, nullReference}, wantCalls: 1},
 			{name: "only a provider file search", terminal: `{"output":[{"type":"file_search_call","id":"fs1","status":"completed","queries":["fixture"]}]}`},
 			{name: "empty output recovers the stream", text: "draft", terminal: `{"output":[]}`, wantCalls: 1},
 			{name: "empty output recovers finalized message and issued call", text: refusal, terminal: `{"output":[]}`, frames: []string{refusalDone(0, refusal)}, wantCalls: 1},
@@ -341,6 +350,15 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 	partAdded := func(identity string, index int, kind string) string {
 		return fmt.Sprintf(`{"type":"response.reasoning_part.added",%s,"content_index":%d,"part":{"type":%s,"text":""}}`, identity, index, jsonOf(t, kind))
 	}
+	const twoParts = `{"type":"reasoning","id":"r","content":[{"type":"reasoning_text","text":" λ\t"},{"type":"reasoning_text","text":"\r\n<&>"}]}`
+	announcedSlots := []string{
+		"{" + display + "}", declaredItem, partAdded(`"item_id":"r"`, 0, "reasoning_text"), finalText(`"item_id":"r"`, 0, " λ\t"),
+		partAdded(`"item_id":"r"`, 1, "reasoning_text"), finalText(`"item_id":"r"`, 1, "\r\n<&>"),
+	}
+	completedSlots := []string{
+		"{" + display + "}", finalText(`"item_id":"r","output_index":1`, 1, "\r\n<&>"), finalText(`"item_id":"r","output_index":1`, 0, " λ\t"),
+		`{"type":"response.output_item.done","output_index":1,"item":{"type":"reasoning","id":"r","content":[{"type":"reasoning_text"},{"type":"reasoning_text"}]}}`,
+	}
 	for _, tc := range []struct {
 		name     string
 		events   []string
@@ -369,6 +387,13 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 			"{" + display + "}", finalText(`"item_id":"r"`, 0, "earlier"), finalText(`"item_id":"r"`, 2, "\t"),
 			`{"type":"response.output_item.done","item":` + reasoning(nil, "") + `}`,
 		}, placeholder + "," + answer, reasoning(nil, "\t") + "," + answer},
+		{"single placeholder preserves both finalized completed slots", completedSlots, answer + "," + placeholder, answer + "," + twoParts},
+		{"single placeholder preserves finalized announced slots without an item completion", announcedSlots, answer + "," + placeholder, answer + "," + twoParts},
+		{"placeholder recovers missing siblings along with completed slots", slices.Concat(completedSlots, []string{answerDelta, strings.Replace(toolDone, `"output_index":1`, `"output_index":2`, 1)}),
+			placeholder, answer + "," + twoParts + "," + tool},
+		{"single declared terminal slot owns its index", completedSlots, answer + `,{"type":"reasoning","id":"r","content":[{"type":"reasoning_text"}]}`,
+			answer + `,{"type":"reasoning","id":"r","content":[{"type":"reasoning_text","text":" λ\t"}]}`},
+		{"explicit empty array clears the finalized completed slots", completedSlots, answer + "," + cleared, answer},
 		{"announced reasoning ID fills an omitted terminal ID", []string{"{" + display + "}", declaredItem},
 			answer + `,{"type":"reasoning",` + summary + nativeParts + `},` + tool, answer + "," + nativeItem + "," + tool},
 		{"explicit terminal reasoning ID owns its value", []string{"{" + display + "}", declaredItem},
@@ -389,6 +414,9 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 		{"empty finalized text keeps a native slot", []string{
 			"{" + display + "}", partAdded(`"item_id":"r"`, 0, "reasoning_text"), finalText(`"item_id":"r"`, 0, ""),
 		}, answer + "," + absentParts, answer + `,{"type":"reasoning","id":"r",` + summary + `,"content":[{"type":"reasoning_text","text":""}]}`},
+		{"null part lists recover announced finalized reasoning", slices.Concat(announcedSlots, []string{
+			`{"type":"response.output_item.done","output_index":1,"item":{"type":"reasoning","id":"r","content":null}}`,
+		}), answer + `,{"type":"reasoning","id":"r","content":null}`, answer + "," + twoParts},
 		{"empty output keeps the announced and finalized slots at the item position", []string{
 			"{" + display + "}", strings.Replace(toolDone, `"output_index":1`, `"output_index":2`, 1),
 			declaredItem, partAdded(`"item_id":"r"`, 2, "reasoning_text"), finalText(`"output_index":1`, 2, "\r\n<&>"),
