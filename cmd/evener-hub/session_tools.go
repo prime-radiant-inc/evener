@@ -653,9 +653,16 @@ func (o *sessionOperations) Invoke(ctx context.Context, caller appwire.ManagerVi
 		response.Stop = &stop
 	}
 	if request.Discover != nil || request.Read != nil || request.Turns != nil || request.Fetch != nil || request.Activity != nil || request.Tasks != nil || request.Job != nil || request.JobOutput != nil || request.Models != nil {
-		if err := managerReadWithinCap(response); err != nil {
-			return appwire.SessionOperationResponse{}, err
+		// A per-item stamp bound cannot enforce a per-response cap, and the
+		// response assembled above can carry an oversized call list on any of
+		// the Manager read paths (initial read, continuation, saved session).
+		// Rebuild it once with the call lists off so the Manager gets a page
+		// rather than a refusal; the wider node read keeps the full stamp.
+		fitted, fitErr := managerReadFitUnderCap(response)
+		if fitErr != nil {
+			return appwire.SessionOperationResponse{}, fitErr
 		}
+		response = fitted
 	}
 	return response, nil
 }

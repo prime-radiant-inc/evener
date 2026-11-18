@@ -136,8 +136,12 @@ questions. **S05** owns the bounded row and pair-fenced page contract;
 **S06–S07** preserve it through local and remote capability gates. The hub
 roster derives attention and Manager notices from those facts, joins discovery
 through its existing workspace identities, and owns bounded segment recovery.
-**S02–S03** retain their presentation behavior. **S06** resolves voice question
-membership through the same pending-call pages when the row prefix is truncated.
+The shared Go transcript projector publishes the call-level resolution evidence
+onto the AppWire observation (`resolvedAskCalls`, `resolvedAskLegacyCount`), and
+**S02–S03** receive it through the shared AppWire client. How a client renders an
+answer recap from it is a separate decision, tracked in #6765. **S06** resolves
+voice question membership through the same pending-call pages when the row
+prefix is truncated.
 Manager argument preparation and tool dispatch share an opt-in exact decoder for
 fence revisions and page bounds, including pre-tool hook views and replacements.
 Other arguments keep their numeric decoding.

@@ -711,7 +711,13 @@ func pastHistoryChanges(cfg hubcore.WebConfig, entry hubcore.PastEntry, changes 
 	var items []appwire.ThreadItem
 	for _, candidate := range changes.Items {
 		if !inWindow[candidate.Item.TranscriptKey] {
-			items = append(items, candidate.Item)
+			// Changes ride the same bounded read as the window, so their call
+			// lists take the same per-item bound: a reply recorded after the
+			// latest window arrives here, not in it, and an 8 KiB+ list would
+			// otherwise inflate the read the bound exists to keep small. The
+			// rows are copied by the bound, so canonical evidence keeps the
+			// full stamp.
+			items = append(items, boundTranscriptItemStamp(candidate.Item, transcriptReadStampLimitBytes))
 		}
 	}
 	var turns []appwire.Turn
