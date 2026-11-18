@@ -89,9 +89,18 @@ func TestSession_OpenAIResponsesContinuationPhase4DIProducesStoredFullHistoryAnc
 	if req.Continuation.EndpointFamily != string(llm.ResponsesEndpointFamilyOpenAIPublic) ||
 		req.Continuation.RequestFingerprint != "cont-req-v1:phase4d" ||
 		req.Continuation.StorageScopeFingerprint != "cont-scope-v1:phase4d" ||
-		req.Continuation.ContextMarker != responseContextMarkerV1 ||
 		req.Continuation.StoragePolicyLabel != llm.ResponsesStoragePolicyPublicOpenAIStore {
 		t.Fatalf("Continuation metadata = %+v", req.Continuation)
+	}
+	// The full-history request was built from the escaped dispatch copy, so this
+	// response's retained prefix is defused text. What the request must record is
+	// the capability that follows from it, not a particular marker: the response
+	// it produces is a usable anchor. Which marker carries that state is the
+	// predicate's business, and pinning the spelling here is what made this test
+	// contradict the behaviour it was written to protect (#6493 review).
+	if !responsesContinuationMarkerAcceptsAnchor(req.Continuation.ContextMarker) {
+		t.Fatalf("full-history request recorded marker %q, which is not accepted as an anchor",
+			req.Continuation.ContextMarker)
 	}
 
 	assistant := latestAssistantTurn(t, sess)
@@ -100,9 +109,18 @@ func TestSession_OpenAIResponsesContinuationPhase4DIProducesStoredFullHistoryAnc
 		assistant.ResponseEndpoint != "https://api.openai.com/v1/responses" ||
 		assistant.ResponseRequestFingerprint != "cont-req-v1:phase4d" ||
 		assistant.ResponseStorageScopeFingerprint != "cont-scope-v1:phase4d" ||
-		assistant.ResponseContextMarker != responseContextMarkerV1 ||
 		assistant.ResponseRequestModel != "gpt-5.4" {
 		t.Fatalf("assistant continuation fields = %+v", assistant)
+	}
+	// The stored turn must describe the same state the request declared, or the
+	// next request reads a different prefix than the provider actually holds.
+	if assistant.ResponseContextMarker != req.Continuation.ContextMarker {
+		t.Fatalf("assistant marker = %q, request marker = %q",
+			assistant.ResponseContextMarker, req.Continuation.ContextMarker)
+	}
+	if !responsesContinuationMarkerAcceptsAnchor(assistant.ResponseContextMarker) {
+		t.Fatalf("stored full-history response recorded marker %q, which is not accepted as an anchor",
+			assistant.ResponseContextMarker)
 	}
 }
 

@@ -1238,4 +1238,32 @@ func TestExpandHistory_ReasoningOnlyRoundEscapesItsFrame(t *testing.T) {
 	if got := stored.Content[0].Thinking.Text; got != reasoning {
 		t.Fatalf("the stored reasoning was mutated: %q", got)
 	}
+
+	// The same round through the helper the request builder actually calls. The
+	// escaper reports whether it changed the message, and the target helper has
+	// to believe that report rather than compare the two messages' Text(): a
+	// rewrite confined to reasoning leaves Text() identical, so a Text()
+	// comparison discards the rewrite and the dispatch copy keeps the raw
+	// reasoning bytes (#6493 review).
+	dispatch := dispatchCopyForTarget(history, replayScope{Protocol: registry.ProtocolOpenAIChat}, true)
+	var dispatched *llm.ThinkingData
+	for i := range dispatch {
+		if dispatch[i].Role != llm.RoleAssistant {
+			continue
+		}
+		for _, p := range dispatch[i].Content {
+			if p.Kind == llm.ContentThinking && p.Thinking != nil {
+				dispatched = p.Thinking
+			}
+		}
+	}
+	if dispatched == nil {
+		t.Fatal("the dispatch copy lost its reasoning, so there is nothing to assert")
+	}
+	if dispatched.Text == reasoning {
+		t.Fatalf("the dispatch copy kept the model's raw reasoning bytes: %q", dispatched.Text)
+	}
+	if dispatched.Signature != "sig-only" {
+		t.Fatalf("the dispatch copy lost the reasoning signature: %q", dispatched.Signature)
+	}
 }
