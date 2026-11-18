@@ -584,9 +584,16 @@ func TestLiveActivityBase_ReadsOnlyTheAppendedDelta(t *testing.T) {
 // its rollback, so a reader that respects that length can never fold a start
 // whose append is still in flight — and one whose fsync then rolls it back
 // leaves no row behind and emits no revision to invalidate a continuation that
-// counted one. The store-side proof that a rolled-back append never enters the
-// boundary is TestCommittedJournalExcludesARolledBackAppend; this test pins that
-// the live path is the reader that respects it.
+// counted one.
+//
+// The scan itself is what enforces that, so this test also drives it with a
+// journal that holds a COMPLETE record past a positive boundary. Checking only
+// the offset handed to the scanner cannot distinguish "the fold stops at the
+// boundary" from "the fold reads the file and trusts the offset", and only the
+// second shape fails when a whole record sits beyond the sampled length: it is
+// decodable, so nothing about decoding withholds it. Here the record beyond the
+// boundary must be absent, and must appear exactly once when the boundary
+// advances past it.
 func TestLiveActivityBase_FoldsOnlyCommittedBytes(t *testing.T) {
 	stateDir := t.TempDir()
 	s := newSession(t, withConfig(SessionConfig{StateDir: stateDir}))
@@ -656,6 +663,74 @@ func TestLiveActivityBase_FoldsOnlyCommittedBytes(t *testing.T) {
 	if len(*calls) != 1 || (*calls)[0].fromOffset == 0 || (*calls)[0].eventsRead != 1 || (*calls)[0].endOffset != moved {
 		t.Fatalf("scan after a committed append = %+v, want one delta scan to the new boundary %d", *calls, moved)
 	}
+
+	// Now the shape the offset check alone cannot catch: a COMPLETE record past a
+	// positive boundary. The fold is driven with an explicit committed length that
+	// stops after the first record, while the file holds all of them, so nothing
+	// about decoding withholds the rest — only respecting the boundary does. That
+	// is the append-in-flight case exactly: the bytes are durable and readable,
+	// and the store has not acknowledged them.
+	final, err := s.jobManager.store.CommittedJournal()
+	if err != nil {
+		t.Fatalf("CommittedJournal before the boundary check: %v", err)
+	}
+	raw, err := os.ReadFile(final.Path)
+	if err != nil {
+		t.Fatalf("read journal: %v", err)
+	}
+	firstEnd := bytes.IndexByte(raw, '\n')
+	if firstEnd < 0 || firstEnd+1 >= len(raw) {
+		t.Fatalf("fixture journal holds no record beyond the first line")
+	}
+	short := int64(firstEnd + 1)
+	at := func(size int64) jobstore.CommittedJournalState {
+		return jobstore.CommittedJournalState{Path: final.Path, Size: size, Generation: final.Generation, MetadataResolvesWrites: final.MetadataResolvesWrites}
+	}
+	var fold liveJobFold
+	capped, err := fold.records(context.Background(), final.Path, at(short), nil)
+	if err != nil {
+		t.Fatalf("records at a boundary inside the journal: %v", err)
+	}
+	admittedIDs := activityRecordIDs(slices.Collect(capped.jobs.all()))
+	for _, id := range admittedIDs {
+		if id != "job_live_000000" {
+			t.Fatalf("a fold bounded at byte %d named %q, whose record starts after it: %v", short, id, admittedIDs)
+		}
+	}
+	if len(admittedIDs) != 1 {
+		t.Fatalf("a fold bounded at byte %d named %d records, want the 1 whose record ends there: %v", short, len(admittedIDs), admittedIDs)
+	}
+
+	// Advance the boundary past every record and the rows appear, each exactly
+	// once: the delta the fold withheld is read now, and nothing is counted twice.
+	full, err := fold.records(context.Background(), final.Path, at(final.Size), nil)
+	if err != nil {
+		t.Fatalf("records at the full boundary: %v", err)
+	}
+	for rec := range full.jobs.all() {
+		if got := countJobNamed(full.jobs, rec.JobID); got != 1 {
+			t.Fatalf("%q appears %d times after the boundary advanced past it, want exactly 1", rec.JobID, got)
+		}
+	}
+	if got := full.jobs.len(); got != 4 {
+		t.Fatalf("the advanced fold = %d records, want the 4 the journal holds", got)
+	}
+}
+
+// countJobNamed reports how many rows in list name jobID. It exists so an
+// assertion about a row appearing "exactly once" counts rows rather than
+// matching a rendered list, which is why the two are not the same question.
+func countJobNamed(list *activityJobList, jobID string) int {
+	if list == nil {
+		return 0
+	}
+	count := 0
+	for rec := range list.all() {
+		if rec.JobID == jobID {
+			count++
+		}
+	}
+	return count
 }
 
 // TestLiveActivityBase_LastWaiterLeavingStopsTheScan pins the fold's lifetime:
@@ -2720,9 +2795,17 @@ func benchRefresh(b *testing.B, total int, shape string, fold bool) {
 	s := newBenchSession(b, stateDir)
 	seedBenchShellStarts(b, s, total)
 
-	// Count the events each refresh actually decodes. The live path reads
-	// through this seam; LoadOrdered does not, so its rows come from the slice
-	// it returns instead.
+	// Count the events each refresh actually decodes, in BOTH lanes, and never
+	// the records it returns.
+	//
+	// Those are different numbers for the baseline. LoadOrdered serves its
+	// cached fold once the journal is unchanged, so it decodes nothing and
+	// returns the whole history: a "rows" metric built from the returned slice
+	// would report the baseline at 6000 rows per refresh no matter what it cost,
+	// and comparing the incremental path against that number would be comparing
+	// a decode count against a record count. The seams below are where each lane
+	// really parses a line, so they count the work and the two metrics can be
+	// read side by side.
 	var scannedRows int64
 	original := scanJobJournal
 	scanJobJournal = func(ctx context.Context, path string, fromOffset int64, limits jobstore.ScanLimits) ([]jobstore.Event, int64, error) {
@@ -2731,12 +2814,30 @@ func benchRefresh(b *testing.B, total int, shape string, fold bool) {
 		return events, toOffset, err
 	}
 	b.Cleanup(func() { scanJobJournal = original })
+	var storeDecodedRows int64
+	originalDecode := jobstore.DecodeJournalEvent
+	jobstore.DecodeJournalEvent = func(data []byte, v any) error {
+		storeDecodedRows++
+		return originalDecode(data, v)
+	}
+	b.Cleanup(func() { jobstore.DecodeJournalEvent = originalDecode })
 
+	// Prime BOTH lanes so every measured iteration is the refresh shape a
+	// subscription actually repeats, not a first cold read.
+	//
+	// The baseline must be primed for the comparison to mean anything. Its store
+	// keeps a fold cache, so a repeat LoadOrdered returns the cached records
+	// without decoding a line; leaving the first, cold decode inside the timed
+	// loop would put the baseline's one-off read into an average of twenty and
+	// report a cost per refresh that no steady-state reader pays. Priming makes
+	// the two lanes answer the same question: what does one more refresh cost.
 	if fold {
-		// Prime the fold so every measured iteration is the refresh shape a
-		// subscription actually repeats, not its first cold read.
 		if _, err := loadLiveActivityBase(context.Background(), s); err != nil {
 			b.Fatalf("prime fold: %v", err)
+		}
+	} else {
+		if _, err := s.jobManager.store.LoadOrdered(); err != nil {
+			b.Fatalf("prime LoadOrdered: %v", err)
 		}
 	}
 	if shape == "after-one-append" {
@@ -2750,20 +2851,24 @@ func benchRefresh(b *testing.B, total int, shape string, fold bool) {
 	}
 
 	var rowsRead int64
+	var decodedRead int64
 	refresh := func() {
 		if fold {
-			at := scannedRows
+			at, atDecoded := scannedRows, storeDecodedRows
 			if _, err := loadLiveActivityBase(context.Background(), s); err != nil {
 				b.Fatalf("loadLiveActivityBase: %v", err)
 			}
 			rowsRead += scannedRows - at
+			decodedRead += storeDecodedRows - atDecoded
 			return
 		}
+		atDecoded := storeDecodedRows
 		ordered, err := s.jobManager.store.LoadOrdered()
 		if err != nil {
 			b.Fatalf("LoadOrdered: %v", err)
 		}
 		rowsRead += int64(len(ordered))
+		decodedRead += storeDecodedRows - atDecoded
 	}
 
 	b.ReportAllocs()
@@ -2772,7 +2877,18 @@ func benchRefresh(b *testing.B, total int, shape string, fold bool) {
 		refresh()
 	}
 	b.StopTimer()
-	b.ReportMetric(float64(rowsRead)/float64(b.N), "rows/refresh")
+	// Two different numbers, and neither substitutes for the other:
+	//
+	//   records/refresh — records the caller receives, which is what a page pays
+	//   to have deep-copied for it whether or not any bytes were read.
+	//   decoded/refresh — journal records actually parsed, which is the read cost
+	//   itself.
+	//
+	// The baseline now reports 0 decoded per refresh and still pays the
+	// records/refresh clone, which is the honest shape of the defect: the live
+	// path's cost per refresh was never the decode alone.
+	b.ReportMetric(float64(rowsRead)/float64(b.N), "records/refresh")
+	b.ReportMetric(float64(decodedRead)/float64(b.N), "decoded/refresh")
 	// The journal's event count is what "whole history" means here, so a reader
 	// can see the ratio rather than infer it.
 	journalRows := int64(total)

@@ -1367,3 +1367,286 @@ func TestCommittedJournalReportsClosedAndUnusable(t *testing.T) {
 		t.Fatalf("CommittedJournal on a closed store = %v, want ErrStoreClosed", err)
 	}
 }
+
+// TestCommittedJournalAppendAfterSameLengthRewriteMovesTheGeneration pins the
+// change the append path used to overwrite: a rewrite that kept the length, then
+// an append, with the fold cached across both.
+//
+// The rewrite alone is caught by the boundary read that follows it — mtime moved
+// — so the interesting shape is the one where the store's own append happens
+// first. Booking only the append's post-sync sample replaces the baseline the
+// rewrite invalidated with bytes the append wrote, and the next boundary read
+// then finds length and time agreeing. The generation would never move, and the
+// fold built from the rewritten prefix would be extended with the append rather
+// than rebuilt — serving the rows the rewrite removed for as long as the file
+// sits still.
+func TestCommittedJournalAppendAfterSameLengthRewriteMovesTheGeneration(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "jobs.jsonl")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	if err := s.Append(incrementalTestEvent(0)); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	first, err := s.CommittedJournal()
+	if err != nil {
+		t.Fatalf("CommittedJournal: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read journal: %v", err)
+	}
+	// Rewrite the SAME length, an hour ahead so no clock granularity hides it.
+	rewritten := bytes.Replace(raw, []byte(`"job_0"`), []byte(`"job_9"`), 1)
+	if len(rewritten) != len(raw) {
+		t.Fatalf("fixture rewrite changed the length (%d -> %d)", len(raw), len(rewritten))
+	}
+	if err := os.WriteFile(path, rewritten, 0o644); err != nil {
+		t.Fatalf("rewrite journal: %v", err)
+	}
+	future := time.Now().Add(time.Hour)
+	if err := os.Chtimes(path, future, future); err != nil {
+		t.Fatalf("stamp rewritten journal: %v", err)
+	}
+
+	// The append lands after the rewrite and before any boundary read: this is
+	// the case that has to notice the change itself.
+	if err := s.Append(incrementalTestEvent(1)); err != nil {
+		t.Fatalf("append after rewrite: %v", err)
+	}
+	after, err := s.CommittedJournal()
+	if err != nil {
+		t.Fatalf("CommittedJournal after the append: %v", err)
+	}
+	if after.Generation <= first.Generation {
+		t.Fatalf("generation = %d after a same-length rewrite and an append, want it past the %d it reported before: a fold would extend the rewritten prefix instead of rebuilding it", after.Generation, first.Generation)
+	}
+}
+
+// TestCommittedJournalAppendAfterTruncationMovesTheGeneration is the other half
+// of the same hole, with the shape that loses rows outright rather than serving
+// stale ones: the journal is cut short, a short append lands, and the two
+// together can be no longer than the baseline the previous boundary reported.
+// An append that booked only its own post-sync sample would then look like an
+// ordinary continuation at the same length, and a fold would keep rows for jobs
+// the truncation deleted while omitting the one that just committed.
+func TestCommittedJournalAppendAfterTruncationMovesTheGeneration(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "jobs.jsonl")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	for i := range 4 {
+		if err := s.Append(incrementalTestEvent(i)); err != nil {
+			t.Fatalf("append %d: %v", i, err)
+		}
+	}
+	full, err := s.CommittedJournal()
+	if err != nil {
+		t.Fatalf("CommittedJournal: %v", err)
+	}
+	// Keep the first record whole and cut the rest.
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read journal: %v", err)
+	}
+	cut := bytes.IndexByte(raw, '\n')
+	if cut < 0 {
+		t.Fatalf("fixture journal holds no complete record")
+	}
+	if err := os.Truncate(path, int64(cut+1)); err != nil {
+		t.Fatalf("truncate journal: %v", err)
+	}
+	// A short append over the cut, still under the pre-truncation length.
+	if err := s.Append(incrementalTestEvent(9)); err != nil {
+		t.Fatalf("append after truncation: %v", err)
+	}
+
+	after, err := s.CommittedJournal()
+	if err != nil {
+		t.Fatalf("CommittedJournal after the append: %v", err)
+	}
+	if after.Generation <= full.Generation {
+		t.Fatalf("generation = %d after a truncation and an append (size %d against the earlier %d), want it past %d: a fold would keep the deleted rows and miss the new one", after.Generation, after.Size, full.Size, full.Generation)
+	}
+}
+
+// TestCommittedJournalBlankTailKeepsTheGeneration pins that a tail holding no
+// record settles.
+//
+// An out-of-band writer can leave a lone carriage return, or plain spaces, after
+// the last newline. Nothing there can be decoded and the scanner skips a blank
+// line, so the preceding records are readable — but if the boundary reports the
+// tail as unsettled it clears its baseline, and then EVERY later read of the
+// same unchanged file advances the generation again. A fold compares the
+// generation before publishing, so each read discards the scan it just
+// completed and retries: the read either spins until its context is canceled or
+// answers nothing, forever, over bytes that are already fine.
+//
+// The assertion is the stability, not the repair: repeated reads of the same
+// file must report one generation and must still return the records before the
+// tail.
+func TestCommittedJournalBlankTailKeepsTheGeneration(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "jobs.jsonl")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = s.Close() }()
+	if err := s.Append(incrementalTestEvent(0)); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	committed, err := s.CommittedJournal()
+	if err != nil {
+		t.Fatalf("CommittedJournal: %v", err)
+	}
+	// A lone carriage return after the last newline: blank, unterminated, and
+	// not a record any reader can decode.
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		t.Fatalf("open journal: %v", err)
+	}
+	if _, err := f.Write([]byte("\r")); err != nil {
+		_ = f.Close()
+		t.Fatalf("write blank tail: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close journal: %v", err)
+	}
+
+	settled, err := s.CommittedJournal()
+	if err != nil {
+		t.Fatalf("CommittedJournal over a blank tail: %v", err)
+	}
+	if settled.Size != committed.Size+1 {
+		// The blank tail is terminated rather than cut, so the boundary covers it.
+		if settled.Size < committed.Size {
+			t.Fatalf("boundary size = %d over a blank tail, want at least the committed %d", settled.Size, committed.Size)
+		}
+	}
+	// This read is the one that may legitimately see a change: the foreign
+	// carriage return is content the store did not write.
+	if settled.Generation <= committed.Generation {
+		t.Fatalf("generation = %d after a foreign blank tail, want it past the %d it was", settled.Generation, committed.Generation)
+	}
+
+	// From here the file is unchanged, so nothing may move again.
+	for i := range 3 {
+		again, err := s.CommittedJournal()
+		if err != nil {
+			t.Fatalf("repeated CommittedJournal %d: %v", i, err)
+		}
+		if again.Generation != settled.Generation {
+			t.Fatalf("repeated read %d of an unchanged journal moved the generation %d -> %d: a fold discards its completed scan and retries", i, settled.Generation, again.Generation)
+		}
+		if again.Size != settled.Size {
+			t.Fatalf("repeated read %d reported size %d, want the unchanged %d", i, again.Size, settled.Size)
+		}
+	}
+	// And the records before the tail are still readable.
+	events, err := s.LoadEvents()
+	if err != nil {
+		t.Fatalf("LoadEvents over a blank tail: %v", err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("LoadEvents returned %d events over a blank tail, want the 1 record before it", len(events))
+	}
+}
+
+// TestCommittedJournalLaggedNameKeepsTheAppendEnd pins the case where the two
+// samples an append takes disagree: the HANDLE reports the length the append
+// made durable and the NAME still reports the length from before it.
+//
+// That disagreement is ordinary attribute caching — the bytes are durable, the
+// path's metadata has not caught up — and clearing the confirmed end on it is
+// what hides a job. The next boundary read then trusts the name's shorter
+// length as the boundary, and the fold stops short of a row the append already
+// committed, until the attributes catch up. The end has to be kept until a name
+// sample agrees; the file's own EOF is what still makes a real truncation
+// visible.
+func TestCommittedJournalLaggedNameKeepsTheAppendEnd(t *testing.T) {
+	t.Parallel()
+	const path = "/jobs.jsonl"
+	base := afero.NewMemMapFs()
+	fs := &staleStatFs{Fs: base}
+	s, err := openFs(fs, path)
+	if err != nil {
+		t.Fatalf("openFs: %v", err)
+	}
+	s.disableSync = true
+	defer func() { _ = s.Close() }()
+
+	if err := s.Append(incrementalTestEvent(0)); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	// Freeze the name at the pre-append length while the handle keeps reporting
+	// the truth, which is exactly the divergence staleStatFs models.
+	frozen, err := base.Stat(path)
+	if err != nil {
+		t.Fatalf("stat: %v", err)
+	}
+	fs.stale = snapshotInfo(frozen)
+	before, err := s.CommittedJournal()
+	if err != nil {
+		t.Fatalf("CommittedJournal: %v", err)
+	}
+	if err := s.Append(incrementalTestEvent(1)); err != nil {
+		t.Fatalf("append under a lagging name: %v", err)
+	}
+	onDisk, err := base.Stat(path)
+	if err != nil {
+		t.Fatalf("stat durable journal: %v", err)
+	}
+
+	// The durable bytes are the boundary, not the name's stale length.
+	after, err := s.CommittedJournal()
+	if err != nil {
+		t.Fatalf("CommittedJournal under a lagging name: %v", err)
+	}
+	if after.Size != onDisk.Size() {
+		t.Fatalf("boundary size = %d under a lagging name, want the durable %d: the job the append committed is hidden until the attributes catch up", after.Size, onDisk.Size())
+	}
+	if after.Size <= before.Size {
+		t.Fatalf("boundary size = %d, want it past the %d it was before the append", after.Size, before.Size)
+	}
+	// The lag is real and must still be reported: a reader holding a cached
+	// prefix cannot trust this filesystem to tell it what changed.
+	if after.MetadataResolvesWrites {
+		t.Fatalf("a lagging name reported MetadataResolvesWrites=true, want false")
+	}
+	// The records the append made durable are visible at that boundary.
+	events, err := s.LoadEvents()
+	if err != nil {
+		t.Fatalf("LoadEvents under a lagging name: %v", err)
+	}
+	if len(events) != 2 {
+		t.Fatalf("LoadEvents returned %d events, want the 2 durably appended", len(events))
+	}
+
+	// A real truncation is still a truncation even while a claim about the
+	// append's end is outstanding: the file's own EOF decides.
+	cutter, err := base.OpenFile(path, os.O_RDWR, 0o644)
+	if err != nil {
+		t.Fatalf("open durable journal to truncate: %v", err)
+	}
+	if err := cutter.Truncate(before.Size); err != nil {
+		_ = cutter.Close()
+		t.Fatalf("truncate durable journal: %v", err)
+	}
+	if err := cutter.Close(); err != nil {
+		t.Fatalf("close durable journal: %v", err)
+	}
+	truncated, err := s.CommittedJournal()
+	if err != nil {
+		t.Fatalf("CommittedJournal after truncation: %v", err)
+	}
+	if truncated.Size != before.Size {
+		t.Fatalf("boundary size = %d after truncation, want the %d the file now holds", truncated.Size, before.Size)
+	}
+}

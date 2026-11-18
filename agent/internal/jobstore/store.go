@@ -275,6 +275,12 @@ func (s *Store) Append(e Event) error {
 	if err != nil {
 		return fmt.Errorf("jobstore: seek append start: %w", err)
 	}
+	// The file as this append found it, before any of its own bytes exist. The
+	// boundary books its baseline from the POST-write sample, so without this
+	// one an intervening truncation or in-place rewrite would be overwritten
+	// rather than noticed and the next boundary read would compare against
+	// bytes this append wrote. See noteCommittedBoundaryLocked.
+	pre, _ := s.f.Stat()
 	b = append(b, '\n')
 	if err := s.writeLineLocked(b); err != nil {
 		return s.appendFailureLocked("write event", err, startOffset)
@@ -287,9 +293,10 @@ func (s *Store) Append(e Event) error {
 	// boundary's baseline, and it is weaker evidence than a name verification
 	// would be: it says what the file this store holds reports, not that the
 	// journal's NAME still reaches that file. See CommittedJournal.
-	verified, _ := s.f.Stat()
+	post, _ := s.f.Stat()
+	named, _ := s.fs.Stat(s.path)
 	s.noteAppendedLocked(startOffset, startOffset+int64(len(b)))
-	s.noteCommittedBoundaryLocked(startOffset, startOffset+int64(len(b)), verified)
+	s.noteCommittedBoundaryLocked(startOffset, startOffset+int64(len(b)), appendSamples{pre: pre, post: post, named: named})
 	return nil
 }
 
@@ -330,6 +337,9 @@ func (s *Store) AppendBatch(events []Event) error {
 	if err != nil {
 		return fmt.Errorf("jobstore: seek append start: %w", err)
 	}
+	// See Append: the pre-write sample is what lets the boundary tell this
+	// append from one that landed after someone else changed the file.
+	pre, _ := s.f.Stat()
 	nextSeq := s.seq
 	written := int64(0)
 	for _, e := range events {
@@ -350,9 +360,10 @@ func (s *Store) AppendBatch(events []Event) error {
 	}
 	s.seq = nextSeq
 	// See Append: the handle's own sample books the boundary's baseline.
-	verified, _ := s.f.Stat()
+	post, _ := s.f.Stat()
+	named, _ := s.fs.Stat(s.path)
 	s.noteAppendedLocked(startOffset, startOffset+written)
-	s.noteCommittedBoundaryLocked(startOffset, startOffset+written, verified)
+	s.noteCommittedBoundaryLocked(startOffset, startOffset+written, appendSamples{pre: pre, post: post, named: named})
 	return nil
 }
 
@@ -565,6 +576,15 @@ func (s *Store) CommittedJournal() (CommittedJournalState, error) {
 	// a foreign append, a truncation, a rewrite — is content the store did not
 	// write, and an incremental fold may not extend across it.
 	renamed := s.named == nil || !sameJournalFile(s.named, info)
+	if renamed && lagging {
+		// The name reports less than the append confirmed, but opening the name
+		// returned exactly the confirmed byte count: the name still reaches this
+		// store's file and only its attributes trail the data. That is lag, not a
+		// replacement, and reading it as one would throw away the confirmed end
+		// and cap the boundary at the stale length — hiding a job the append
+		// already made durable until the attributes caught up.
+		renamed = false
+	}
 	unexpected := renamed || !s.sampled || size != s.journalSize || !mod.Equal(s.journalMod)
 	if renamed {
 		// Whatever an earlier append said about its own end describes the bytes
@@ -608,6 +628,16 @@ func (s *Store) CommittedJournal() (CommittedJournalState, error) {
 		if repaired, statErr := s.fs.Stat(s.path); statErr == nil {
 			info = repaired
 			size, mod = repaired.Size(), repaired.ModTime()
+			if lagging && s.laggingAppendEnd > size {
+				// The repair path re-stats the NAME, and the name is the sample
+				// that lags. Do not let it lower a boundary whose bytes were
+				// confirmed: the claim is only kept while the file itself still
+				// holds exactly those bytes, which is how a real truncation is
+				// still reported as one.
+				if onDisk, haveLength := s.journalRealSizeLocked(); haveLength && onDisk == s.laggingAppendEnd {
+					size = s.laggingAppendEnd
+				}
+			}
 		}
 		if !settled {
 			s.sampled = false
@@ -995,9 +1025,35 @@ func (s *Store) noteAppendedLocked(startOffset, endOffset int64) {
 	s.cursor.mod = info.ModTime()
 }
 
+// appendSamples is what one append observed about the journal around its own
+// write: the handle before the bytes existed, the handle after they were
+// durable, and the NAME right after the sync.
+//
+// All three are optional. A nil entry means that stat failed, which is not the
+// append's failure — the bytes are on disk — but it is a question left
+// unanswered, and the boundary must not spend an unanswered question as a
+// favourable one.
+type appendSamples struct {
+	pre   os.FileInfo
+	post  os.FileInfo
+	named os.FileInfo
+}
+
 // noteCommittedBoundaryLocked books the append's own post-sync sample as the
-// committed boundary's baseline, and records when that sample proves this
+// committed boundary's baseline, advances the content generation when the file
+// changed between two boundary reads, and records when a sample proves this
 // filesystem's metadata cannot resolve a write.
+//
+// The pre-write sample is what makes the FIRST of those possible. Booking only
+// the post-write sample would overwrite the baseline the previous boundary read
+// reported, and a truncation or a same-length rewrite that landed between the
+// two reads would then be indistinguishable from this append's own growth: the
+// next boundary read would compare its stat against bytes this append wrote,
+// see them agree, and keep the generation — serving a fold built from content
+// the rewrite removed, indefinitely, because a stable file never contradicts it
+// again. Comparing the pre-write sample against the baseline is what notices
+// the intervening change, and it is the only place the comparison can be made:
+// by the time the append finishes, the evidence is gone.
 //
 // It is deliberately separate from noteAppendedLocked. That function's sample
 // is the CURSOR's, and its timestamp comparison is the calibration that decides
@@ -1005,27 +1061,58 @@ func (s *Store) noteAppendedLocked(startOffset, endOffset int64) {
 // change must leave exactly as it was. This one answers a different question:
 // what length may a reader fold up to.
 //
-// verified is the append's own post-sync stat of the journal, or nil when that
-// stat failed. It is the HANDLE's sample rather than a statement about the
-// name: whether the name still reaches this file is a separate, stronger
-// question (name verification) that this change does not answer. Booking it is
-// still the honest thing to do — it says what the file this store writes
-// through reports — and it is what lets the next boundary read tell an ordinary
-// append from a truncation or a rewrite. See CommittedJournal.
-func (s *Store) noteCommittedBoundaryLocked(startOffset, endOffset int64, verified os.FileInfo) {
+// samples.post is the HANDLE's sample rather than a statement about the name:
+// whether the name still reaches this file is a separate, stronger question
+// (name verification) that this change does not answer. Booking it is still the
+// honest thing to do — it says what the file this store writes through reports
+// — and it is what lets the next boundary read tell an ordinary append from a
+// truncation or a rewrite. See CommittedJournal.
+func (s *Store) noteCommittedBoundaryLocked(startOffset, endOffset int64, samples appendSamples) {
+	verified := samples.post
 	// What this store believed about the file BEFORE this write. The append's
 	// own sample overwrites those fields below, and the question that needs a
 	// "before" — did the length move while the timestamp did not — cannot be
 	// asked afterwards.
 	beforeSize, beforeMod, wasSampled := s.journalSize, s.journalMod, s.sampled
+	// Did the file change between the boundary read that booked this baseline
+	// and the moment this append began writing? An ordinary append answers no:
+	// the handle is the length and time the previous boundary read recorded, and
+	// the bytes this append is about to add are the only difference. A
+	// truncation, an in-place rewrite, or a replacement answers yes, and those
+	// are content this store did not write — the generation must move for them
+	// even though this append is about to make the numbers agree again.
+	//
+	// The comparison is made against the PRE-write handle rather than the name.
+	// That is the weaker evidence the seam documents above, applied where it is
+	// available: the handle is the file this append writes through, so its
+	// length before the write is exactly where the append's own bytes begin.
+	//
+	// An UNSAMPLED baseline counts as an intervening change. There is no
+	// recorded length or time here to compare a pre-write sample against, which
+	// means nothing in this store vouches for the prefix the fold would extend:
+	// the last boundary read declined to vouch for it, and this append cannot
+	// supply that evidence by writing past it. Advancing the generation costs one
+	// rebuild on a path that is already exceptional — a torn tail, a vanished
+	// write, a handle that could not be sampled — and it keeps the O(delta) path
+	// reserved for journals whose prefix this store actually accounted for.
+	intervened := !wasSampled
+	if !intervened && samples.pre != nil {
+		intervened = samples.pre.Size() != beforeSize || !samples.pre.ModTime().Equal(beforeMod)
+	}
 	if verified == nil {
 		// Nothing was verified after the bytes were made durable under the
 		// handle. That is not this append's failure — the bytes are on disk —
 		// but the next boundary read has nothing to compare against, so it must
 		// not pretend the file is unchanged.
+		if intervened {
+			s.journalGen++
+		}
 		s.sampled = false
 		s.laggingAppendEnd = endOffset
 		return
+	}
+	if intervened {
+		s.journalGen++
 	}
 	s.journalSize, s.journalMod, s.sampled = verified.Size(), verified.ModTime(), true
 	s.named = verified
@@ -1036,7 +1123,23 @@ func (s *Store) noteCommittedBoundaryLocked(startOffset, endOffset int64, verifi
 	// reports less than the store just made durable, the boundary must report
 	// the append's end, or the record that just committed is omitted until the
 	// metadata catches up.
+	//
+	// The claim is kept when the NAME still reports less than the append
+	// confirmed, even though the handle already reports the full length. Those
+	// two samples describe one file through two paths, and the path's attributes
+	// are the ones that lag: a handle stat that has caught up and a name stat
+	// that has not is the ordinary shape of attribute caching, not evidence that
+	// the lag is over. Dropping the claim on that shape would let the next
+	// boundary read trust the stale name length as the boundary, capping the
+	// scan short of a row the append already made durable until the path's
+	// attributes caught up. CommittedJournal keeps the claim until a name sample
+	// agrees, and it checks the file's own EOF meanwhile so a real truncation is
+	// still reported as one.
 	s.laggingAppendEnd = 0
+	if samples.named != nil && samples.named.Size() < endOffset {
+		s.laggingAppendEnd = endOffset
+		s.metadataLagging = true
+	}
 	if verified.Size() < endOffset {
 		// A short sample has two causes and they need opposite answers. If the
 		// FILE is at least endOffset long, the bytes this append confirmed are
@@ -1095,6 +1198,18 @@ func (s *Store) noteUnresolvableTimestampLocked(startOffset, endOffset int64, ve
 	}
 }
 
+// DecodeJournalEvent is how this package turns one journal line into an Event.
+//
+// It is a variable for the same reason openScanEventsFile beside it is: a
+// caller measuring what a read COSTS has to be able to count the records
+// actually decoded, and a returned slice cannot say that. Store.LoadOrdered
+// serves its cached fold without decoding anything, so counting the records it
+// RETURNS prices a refresh of an unchanged journal as a full decode of the
+// history — the very cost the incremental path is compared against. Replacing
+// this is a measurement seam, not a policy one: the store decodes by unmarshalling,
+// exactly as below, and a replacement must do the same.
+var DecodeJournalEvent = json.Unmarshal
+
 // advanceCursorLocked decodes the log from the cursor's offset to the file's real
 // EOF, committing every newline-terminated line to the cursor. An unterminated
 // final line is decoded and returned separately: it is not durable bytes the
@@ -1129,7 +1244,7 @@ func (s *Store) advanceCursorLocked() (tail []Event, err error) {
 		var e Event
 		decoded := false
 		if len(line) > 0 {
-			if err := json.Unmarshal(line, &e); err != nil {
+			if err := DecodeJournalEvent(line, &e); err != nil {
 				return nil, fmt.Errorf("jobstore: parse event line %d: %w", lineNo, err)
 			}
 			decoded = true
@@ -1300,6 +1415,24 @@ func (s *Store) recoverTrailingLineForBoundaryLocked() (settled bool, err error)
 	if cut >= 0 {
 		offset = int64(cut + 1)
 		line = raw[cut+1:]
+	}
+	if len(bytes.TrimSpace(line)) == 0 {
+		// A tail with no record in it — a lone carriage return, stray spaces, the
+		// whitespace an interrupted writer left. Nothing here can be decoded and
+		// nothing is being withheld: the scanner skips a blank line whether or not
+		// it is terminated, so the records before it are all readable either way.
+		//
+		// Terminating it is what settles it. Left unterminated, this function
+		// answers "unsettled", the boundary clears its baseline, and every later
+		// read finds an unsampled file, advances the generation again and
+		// discards the scan it just completed — a fold that can never publish
+		// anything while the file sits still. One newline makes the tail an
+		// ordinary blank line, which is what the file's next reader already
+		// ignores, and the boundary becomes stable.
+		if err := s.finishTrailingJSONLineLocked(); err != nil {
+			return false, err
+		}
+		return true, nil
 	}
 	var e Event
 	if decodeErr := json.Unmarshal(line, &e); decodeErr == nil {
