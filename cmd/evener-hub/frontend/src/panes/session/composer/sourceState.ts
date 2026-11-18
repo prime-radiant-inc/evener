@@ -504,6 +504,10 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     // files every restored image ineligible and the next reopen then withholds
     // the exemption the record invented.
     sending?: { readonly restored: readonly string[]; readonly foreign: readonly string[] },
+    // The recovery revision this record describes, when the caller knows it.
+    // `undefined` leaves the record unstamped, which readers trust: that is the
+    // shape a record written for a row whose revision this writer could not see.
+    revision?: number,
   ): CompositionImageRecord {
     const snapshot = state.getState();
     const sendableIds = new Set(
@@ -539,7 +543,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     const anchors = [...new Set(priorAnchors.filter((marker) => spoken.has(marker) && !tileMarkers.has(marker)))].sort(
       (left, right) => left - right,
     );
-    return { anchors, tiles };
+    return { anchors, tiles, ...(revision === undefined ? {} : { revision }) };
   }
 
   // Which of a caller's `InputAttachment`s belong to THIS composition.
@@ -885,6 +889,12 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     // tiles the row owns. Deriving an ineligible list from marker numbers was
     // the defect - the numbers move, and a number is not an owner.
     nextAttachments = ownedCompositionAttachments(nextAttachments);
+    // The tiles whose facts this save describes, captured HERE with the text
+    // and before the first await. The record and the durable row are written to
+    // two stores, so a live store read after the await can describe an edit
+    // that the row this write commits never had - facts stamped for revision N
+    // but built from the store as it stands at revision N+1.
+    const committedTilesForRecord = operations.items;
     const isEmptyCleanup = compositionIsEmpty({
       text: nextText,
       attachments: nextAttachments,
@@ -1026,12 +1036,21 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
           //
           // Ownership, not eligibility, decides what goes in: the released
           // bytes are part of the composition the person can see.
+          //
+          // The facts are stamped with the revision this write just created.
+          // The record and the row are two stores: stamping lets a reader tell
+          // "these facts describe the row I am opening" from "these facts
+          // describe an older composition of it", which is the difference
+          // between honouring a deleted reference and restoring the exemption
+          // the person's edit revoked.
           writeCompositionImageRecord(
             clientMutationId,
             compositionImageRecord(
               nextText,
-              operations.items,
+              committedTilesForRecord,
               readCompositionImageRecord(clientMutationId)?.anchors ?? [],
+              undefined,
+              recoveryCompositionRevision(updated),
             ),
           );
         }

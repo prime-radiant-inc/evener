@@ -74,7 +74,28 @@ export function recoveryComposerDraft(record: MutationRecoveryRecord): Recovered
   const recovered = recoverMutationComposition(record);
   // The record this row's composition was written with, read BEFORE the ids are
   // minted below so the facts can be attached to them as they are created.
-  const storedTiles = readCompositionImageRecord(record.clientMutationId)?.tiles ?? [];
+  //
+  // A record whose revision does not match the row is NOT an answer about this
+  // row: text and bytes are committed to IndexedDB, these facts to
+  // localStorage, and a crash between the two leaves the pair disagreeing. The
+  // only safe reading of a mismatch is the one that withholds permission.
+  //
+  // Withholding must be EXPLICIT. An empty fact list is not withholding: the
+  // adoption below treats a restored tile whose marker the text does not spell
+  // as exempt, which is the grant this change exists to stop. So a mismatch
+  // marks every restored tile ineligible instead of falling back to no facts.
+  //
+  // A record from before this field existed has no stamp and is trusted, which
+  // is what it did before the field existed. A record moved to a replacement
+  // row by `moveCompositionImageRecord` also carries no stamp: it describes the
+  // same composition under a different row id, and the replacement row's
+  // revision counts something else.
+  const storedRecord = readCompositionImageRecord(record.clientMutationId);
+  const storedRevisionMatches =
+    storedRecord !== undefined &&
+    (storedRecord.revision === undefined || storedRecord.revision === (record.compositionRevision ?? 0));
+  const storedTiles = storedRevisionMatches ? storedRecord.tiles : [];
+  const withholdEligibility = storedRecord !== undefined && !storedRevisionMatches;
   const eligibilityById = new Map<string, boolean>();
   const draft: RecoveredComposerDraft = {
     text: recovered.text,
@@ -89,6 +110,7 @@ export function recoveryComposerDraft(record: MutationRecoveryRecord): Recovered
       // this draft exists, only the id is consulted.
       const stored = storedTiles.find((tile) => tile.marker === attachment.marker);
       if (stored) eligibilityById.set(id, stored.eligible);
+      else if (withholdEligibility) eligibilityById.set(id, false);
       return {
         ...attachment,
         id,

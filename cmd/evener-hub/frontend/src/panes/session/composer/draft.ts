@@ -384,6 +384,23 @@ export type CompositionTileFacts = {
 };
 
 export type CompositionImageRecord = {
+  /** The recovery composition revision these facts describe.
+   *
+   * Text and bytes live in IndexedDB, these facts live in localStorage, and
+   * the two writes cannot be one transaction. Without this field a crash
+   * between them left the pair able to disagree IN THE PERMISSIVE DIRECTION:
+   * the new text and bytes were durable while the reader saw the PREVIOUS
+   * revision's eligibility, so a tile whose reference the person had just
+   * deleted reopened with the markerless-image exemption and the next Send
+   * carried the image they excluded.
+   *
+   * A record whose revision does not match the row's is not an answer about
+   * that row. Readers withhold the exemption in that case rather than trust a
+   * fact written for a composition they are not looking at.
+   *
+   * Absent on records an older build wrote; a missing revision is treated as
+   * unknown, which also withholds. */
+  revision?: number;
   anchors: number[];
   tiles: CompositionTileFacts[];
 };
@@ -413,7 +430,14 @@ export function readCompositionImageRecord(clientMutationId: string): Compositio
             Number.isSafeInteger((tile as CompositionTileFacts).marker),
         )
       : [];
-    return { anchors, tiles };
+    // An older record carries no revision. Reading it as `undefined` rather
+    // than inventing one keeps "I do not know which composition this
+    // describes" distinct from "it describes revision 0".
+    const revision =
+      typeof record.revision === "number" && Number.isSafeInteger(record.revision) && record.revision >= 0
+        ? record.revision
+        : undefined;
+    return { anchors, tiles, ...(revision !== undefined ? { revision } : {}) };
   } catch {
     return undefined;
   }
@@ -444,6 +468,11 @@ export function writeCompositionImageRecord(clientMutationId: string, record: Co
         eligible: tile.eligible,
         hasBytes: tile.hasBytes,
       })),
+      // Carried through. Rebuilding the record field by field is how a field
+      // stops being written: the reader below treats a missing stamp as "trust
+      // it", so dropping this one here would quietly turn every stamped record
+      // back into an unstamped one and re-open the stale-grant window.
+      ...(record.revision === undefined ? {} : { revision: record.revision }),
     };
     localStorage.setItem(compositionImageRecordKey(clientMutationId), JSON.stringify(next));
   } catch {

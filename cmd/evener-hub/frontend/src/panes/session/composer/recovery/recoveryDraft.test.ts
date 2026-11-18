@@ -1,8 +1,70 @@
 import { buildComposerInput, type InputItem } from "@evener/appwire-client";
-import { expect, test } from "vitest";
+import { afterEach, expect, test } from "vitest";
+import { installLocalStorage, MemoryStorage } from "../../../../storageTestUtils";
 import type { MutationAttachment, MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
 import type { PendingAttachment } from "../attachments/useAttachments";
-import { mergeRecoveryComposerDraft, recoveryComposerDraft } from "./recoveryDraft";
+import { readCompositionImageRecord, writeCompositionImageRecord } from "../draft";
+import { mergeRecoveryComposerDraft, recoveryComposerDraft, recoveryTileEligibility } from "./recoveryDraft";
+
+afterEach(() => {
+  installLocalStorage(new MemoryStorage());
+});
+
+// The facts and the composition live in two stores, so a crash between the
+// IndexedDB commit and the localStorage write leaves the pair disagreeing.
+// `eligible: true` is a GRANT - it is what lets a restored image ship with no
+// reference in the prose - so the only safe reading of a record that describes
+// a DIFFERENT revision is to withhold it. Trusting a stale grant is how an
+// image the person deleted comes back on the next Send.
+test("a record written for another revision withholds the restored-image exemption", () => {
+  installLocalStorage(new MemoryStorage());
+  // The row is at revision 2. The record describes revision 1, where the tile
+  // was still eligible; the person deleted its reference in revision 2.
+  writeCompositionImageRecord("mutation-1", {
+    anchors: [],
+    tiles: [{ id: "old-tile", marker: 1, eligible: true, hasBytes: true }],
+    revision: 1,
+  });
+  const record = recoveryRecord(
+    [
+      { type: "text", text: "caption" },
+      { type: "image", mediaType: "image/png", data: "AQID", name: "kept.png" },
+    ],
+    {
+      composerText: "caption",
+      attachments: [durableAttachment(1, "kept.png")],
+      compositionRevision: 2,
+    },
+  );
+
+  const draft = recoveryComposerDraft(record);
+
+  const eligibility = [...recoveryTileEligibility(draft).values()];
+  expect(eligibility).toEqual([false]);
+});
+
+test("a record stamped for its own revision is honoured", () => {
+  installLocalStorage(new MemoryStorage());
+  writeCompositionImageRecord("mutation-1", {
+    anchors: [],
+    tiles: [{ id: "old-tile", marker: 1, eligible: false, hasBytes: true }],
+    revision: 2,
+  });
+  const record = recoveryRecord(
+    [
+      { type: "text", text: "caption" },
+      { type: "image", mediaType: "image/png", data: "AQID", name: "kept.png" },
+    ],
+    {
+      composerText: "caption",
+      attachments: [durableAttachment(1, "kept.png")],
+      compositionRevision: 2,
+    },
+  );
+
+  expect([...recoveryTileEligibility(recoveryComposerDraft(record)).values()]).toEqual([false]);
+  expect(readCompositionImageRecord("mutation-1")?.revision).toBe(2);
+});
 
 function recoveryRecord(input: InputItem[], extra: Partial<MutationRecoveryRecord> = {}): MutationRecoveryRecord {
   return {
