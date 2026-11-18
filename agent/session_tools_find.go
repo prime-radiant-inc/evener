@@ -943,27 +943,54 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 	// it. The lane that the record names is the identity, so it is found wherever
 	// the record kept it.
 	//
+	// A lane that answers nothing is REMEMBERED, not returned from. The record
+	// carries the root the session entered from as well, and a pruned lane whose
+	// checkout survives names the project through that root. Answering "" for the
+	// lane would discard a field that still says which project the session
+	// belonged to, which is the same mistake as letting a field that establishes
+	// nothing veto the ones after it.
+	//
 	// A recorded path that is not absolute names no checkout at all: it would be
 	// walked relative to this process's directory, which is not where the session
 	// ran. Records are written absolute; one that is not is no evidence here.
+	laneSeen := false
+	laneFallback := ""
 	for _, recorded := range recordPaths(m) {
 		if !filepath.IsAbs(recorded) {
 			continue
 		}
-		lanePath := identifier.ResolveClean(recorded)
-		if _, laneRoot, _, _, isLane := r.stateWorktreeOwner(lanePath, bucketDir); isLane {
-			if root := resolveMainRootWithin(lanePath, laneRoot); root != "" {
+		recorded = identifier.ResolveClean(recorded)
+		if _, laneRoot, _, _, isLane := r.stateWorktreeOwner(recorded, bucketDir); isLane {
+			if root := resolveMainRootWithin(recorded, laneRoot); root != "" {
 				return filepath.Base(root)
 			}
-			name, _ := r.worktreePathFallback(lanePath, bucketDir, m.ParentSessionID)
-			return name
+			if !laneSeen {
+				laneSeen = true
+				laneFallback, _ = r.worktreePathFallback(recorded, bucketDir, m.ParentSessionID)
+			}
+			continue
 		}
+		// An ordinary recorded path answers only while the directory it names is
+		// still there. Its Git ancestry describes the space the directory occupied,
+		// and once it is gone that space belongs to whatever encloses it — an
+		// affiliation the directory never had. projectAt is where that rule lives,
+		// so this asks it rather than testing existence again here.
+		if checkout, _, ok, _ := r.projectAt(recorded, bucketDir); ok && checkout != "" {
+			return filepath.Base(checkout)
+		}
+	}
+	if laneSeen {
+		return laneFallback
 	}
 
 	// 2. Resolve the main checkout from the .git layout. A label never needs a
-	// process: see resolveMainRootOutcome.
-	if root := r.resolveMainRoot(wd); root != "" {
-		return filepath.Base(root)
+	// process: see resolveMainRootOutcome. Gated on the directory existing for the
+	// reason step 1 gives: a walk from a path that is gone describes its
+	// surroundings, not the checkout that used to sit there.
+	if directoryExists(wd) {
+		if root := r.resolveMainRoot(wd); root != "" {
+			return filepath.Base(root)
+		}
 	}
 
 	// 3. ONLY if wd is structurally a worktree path whose checkout directory has no .git layout to resolve:
@@ -1119,7 +1146,7 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 	//
 	// A refused or unreadable owner is no evidence: the owner may be gone with the
 	// lane, and that must not stop the parent or a sibling from answering.
-	if stateDir == bound && ownerSessionID != "" {
+	if sameBucket(stateDir, bound) && ownerSessionID != "" {
 		if meta, ok := r.loadOwnedSessionMeta(bound, ownerSessionID); ok {
 			if origin := strings.TrimSpace(meta.EnvInfo.GitOriginURL); origin != "" {
 				found = append(found, projectEvidence{name: repoBasename(origin), rank: evidenceRankOwnerOrigin})
@@ -1171,7 +1198,7 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 	// parent whose own checkout is gone still offers its saved origin: the origin
 	// names a repository without needing anything on disk.
 	if parentSessionID != "" {
-		tiedToLane := stateDir == bound || managedProjectID != "" || parentSessionID == ownerSessionID
+		tiedToLane := sameBucket(stateDir, bound) || managedProjectID != "" || parentSessionID == ownerSessionID
 		if tiedToLane {
 			if parent, ok := r.loadOwnedSessionMeta(bound, parentSessionID); ok {
 				checkout, recorded, resolved, _ := r.recordedProject(parent, bound)
@@ -1201,7 +1228,7 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 	// cost is one checkout resolution per sibling; paying that for a row an owner
 	// or a verified parent has already answered is what turned a 1,000-sibling
 	// bucket into 1,000 walks per result.
-	siblingsAllowed := stateDir == bound && r.classifyBucket(bound) != bucketUnrelated
+	siblingsAllowed := sameBucket(stateDir, bound) && r.classifyBucket(bound) != bucketUnrelated
 	if siblingsAllowed && evidenceWins(found, admissible) {
 		siblingsAllowed = false
 	}
@@ -1220,13 +1247,24 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 	// contradicts the lane's recorded project never reaches here: it is the same
 	// repository test applied to every source, so a refused interpretation of one
 	// source leaves the others untouched.
+	//
+	// Among equally strong candidates a verified identifier outranks an inference.
+	// A sibling that records an origin but no project is unknown-project evidence:
+	// it is admissible, and it is the fallback that keeps a pruned lane's label
+	// alive, but it is not a claim about THIS lane. When another candidate at the
+	// same rank positively names the project the lane's path records, that one
+	// answers — otherwise the label depends on which sibling happened to be read
+	// first. Rank still decides across sources, so nothing below the tie changes.
 	best := projectEvidence{rank: evidenceRankBasename + 1}
+	bestNamed := false
 	for _, cand := range found {
 		if cand.name == "" || !admissible(cand.projectID) {
 			continue
 		}
-		if cand.rank < best.rank {
+		named := managedProjectID != "" && cand.projectID == managedProjectID
+		if cand.rank < best.rank || (cand.rank == best.rank && named && !bestNamed) {
 			best = cand
+			bestNamed = named
 		}
 	}
 	if best.name == "" {
@@ -1636,7 +1674,7 @@ func (r *projectNameResolver) isStateBucket(candidate, bucket string) bool {
 	if candidate == "" || !filepath.IsAbs(candidate) {
 		return false
 	}
-	if candidate == bucket {
+	if sameBucket(candidate, bucket) {
 		return true
 	}
 	home := stateHomeFor(candidate)
@@ -1644,6 +1682,53 @@ func (r *projectNameResolver) isStateBucket(candidate, bucket string) bool {
 		return false
 	}
 	return r.isConfiguredStateHome(home)
+}
+
+// sameBucket reports whether two spellings name the same state directory.
+//
+// A historical record keeps the spelling the session used, and a symlinked
+// $XDG_STATE_HOME is the ordinary way that differs from what discovery opens:
+// startup writes buckets under the physical path while a session launched
+// through the link records the link. Comparing the strings then says "different
+// bucket" about one directory, which discards that bucket's owner and sibling
+// evidence from a lane that lives in it.
+//
+// Only the prefixes that still exist are resolved. EvalSymlinks fails on a whole
+// path once any component is gone, and a deleted lane is exactly the case this
+// has to answer, so resolving the full path would answer "different" for the one
+// input that matters most. Walking up to the nearest existing ancestor and
+// resolving that gives the same directory when both spellings reach the same
+// place on disk, and leaves two genuinely different buckets different.
+func sameBucket(a, b string) bool {
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	if a == "" || b == "" {
+		return false
+	}
+	return identifier.ResolveClean(existingPrefix(a)) == identifier.ResolveClean(existingPrefix(b))
+}
+
+// existingPrefix returns path with every missing tail component kept, so the
+// result names the same directory but reaches an ancestor that still exists.
+// Resolving a whole path fails once any component is gone, and a deleted lane is
+// the case sameBucket has to answer.
+func existingPrefix(path string) string {
+	clean := filepath.Clean(path)
+	var missing []string
+	for {
+		if _, err := os.Lstat(clean); err == nil {
+			return filepath.Join(append([]string{clean}, missing...)...)
+		}
+		parent := filepath.Dir(clean)
+		if parent == clean {
+			// Nothing along the path exists, not even the root. The cleaned form is
+			// the whole answer and it matches nothing else.
+			return filepath.Join(append([]string{clean}, missing...)...)
+		}
+		missing = append([]string{filepath.Base(clean)}, missing...)
+		clean = parent
+	}
 }
 
 // isConfiguredStateHome reports whether home is the state home this process

@@ -395,6 +395,13 @@ type Session struct {
 	// session has never entered a worktree through the tool (single saved env,
 	// not a stack — spec §7 "env-restore model").
 	//
+	// worktreeRestoreRoot is that environment's working directory in the canonical
+	// spelling the persisted record uses. It is captured when the environment is
+	// parked rather than derived when the record is written, because the write runs
+	// under s.mu and resolving a path there blocks every autosave and status read
+	// on a directory the session is no longer using — a checkout on a stalled mount
+	// would hold the session lock. Empty exactly when worktreeRestoreEnv is nil.
+	//
 	// worktreeCurrentPath is the worktree path the session currently occupies
 	// (empty when at the restore/main root) — managed or path-entered, both
 	// (spec §7 "Persistence and resume"). It drives the create-away leave
@@ -431,6 +438,7 @@ type Session struct {
 	// change who holds the lane at the one moment between deciding to release
 	// and releasing. Nil in production.
 	worktreeRestoreEnv                  *execenv.LocalExecutionEnvironment
+	worktreeRestoreRoot                 string
 	worktreeCurrentPath                 string
 	worktreeCurrentManaged              bool
 	worktreeGitVersionOK                bool

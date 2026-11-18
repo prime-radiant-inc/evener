@@ -223,6 +223,9 @@ func (s *Session) resumeWorktreeReentry(meta schema.SessionMeta) error {
 				restoreRoot, err)})
 		} else {
 			s.worktreeRestoreEnv = parked
+			// Captured here, where the parking happens, so the record never has to
+			// resolve it under s.mu. See Session.worktreeRestoreRoot.
+			s.worktreeRestoreRoot = canonicalStateDir(parked.WorkingDirectory())
 		}
 	}
 	return nil

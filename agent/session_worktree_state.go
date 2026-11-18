@@ -653,9 +653,17 @@ func (s *Session) enterWorktree(path string, managed bool) error {
 
 	// The occupancy is recorded under the swap's own install lock hold: the
 	// parked environment must be visible to a close the moment next is.
+	// Captured out here, before the swap takes s.mu, for the reason the snapshot
+	// no longer resolves it: canonicalizing is a filesystem call, and doing it
+	// under the lock would stall the session on the directory being left.
+	restoreRoot := ""
+	if saveRestore {
+		restoreRoot = canonicalStateDir(prior.WorkingDirectory())
+	}
 	record := func() {
 		if saveRestore {
 			s.worktreeRestoreEnv = prior
+			s.worktreeRestoreRoot = restoreRoot
 		}
 		s.worktreeCurrentPath = path
 		s.worktreeCurrentManaged = managed
@@ -696,10 +704,18 @@ func (s *Session) adoptWorktreeLane(env execenv.ExecutionEnvironment, lane Workt
 			return err
 		}
 	}
+	// Captured before the lock, for the reason the snapshot no longer resolves it:
+	// canonicalStateDir is a filesystem call and must not run under s.mu. See
+	// Session.worktreeRestoreRoot.
+	restoreRoot = ""
+	if restore != nil {
+		restoreRoot = canonicalStateDir(restore.WorkingDirectory())
+	}
 	s.mu.Lock()
 	s.worktreeCurrentPath = canonical
 	s.worktreeCurrentManaged = lane.Managed
 	s.worktreeRestoreEnv = restore
+	s.worktreeRestoreRoot = restoreRoot
 	s.mu.Unlock()
 	return nil
 }
@@ -811,6 +827,7 @@ func (s *Session) exitWorktree() (string, bool, error) {
 
 	record := func() {
 		s.worktreeRestoreEnv = nil
+		s.worktreeRestoreRoot = ""
 		s.worktreeCurrentPath = ""
 		s.worktreeCurrentManaged = false
 	}

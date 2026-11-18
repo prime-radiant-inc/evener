@@ -9,6 +9,7 @@ import (
 	"primeradiant.com/evener/agent/internal/clock"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/testfs"
 )
 
 // TestEnvInfoFromEnvRecordsAbsoluteWorkingDir pins the recorded form of the
@@ -30,7 +31,12 @@ func TestEnvInfoFromEnvRecordsAbsoluteWorkingDir(t *testing.T) {
 
 	// An absolute record is stored as it was given: making a relative path
 	// absolute must not rewrite a path through an alias on the way.
-	absolute := t.TempDir()
+	//
+	// The expected value is the canonical spelling because that is what the
+	// recorder produces. t.TempDir() returns the lexical one, and on a host whose
+	// temp prefix is a symlink (macOS /var → /private/var) the two differ, so
+	// comparing against the raw spelling fails for a reason unrelated to the test.
+	absolute := testfs.CanonicalTempDir(t)
 	if got := envInfoFromEnv(execenv.NewLocalExecutionEnvironment(absolute), clock.Real()).WorkingDir; got != absolute {
 		t.Fatalf("envInfoFromEnv(absolute).WorkingDir = %q, want %q unchanged", got, absolute)
 	}

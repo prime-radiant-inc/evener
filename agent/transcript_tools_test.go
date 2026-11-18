@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/gittest"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/testfs"
 	"primeradiant.com/evener/llm"
 )
 
@@ -3286,7 +3287,11 @@ func TestFind_ProjectName_MissingSiblingCheckoutProvesNothing(t *testing.T) {
 // to differ keeps the trigger live on whatever filesystem runs this.
 func symlinkedBucket(t *testing.T) (canonical, lexical string) {
 	t.Helper()
-	physical := t.TempDir()
+	// The expected physical spelling is canonical for the same reason the bucket
+	// is: t.TempDir() returns the lexical path, and on a host whose temp prefix is
+	// a symlink the two differ, so comparing against the raw spelling would fail at
+	// setup for a reason unrelated to what these tests exercise.
+	physical := testfs.CanonicalTempDir(t)
 	lexical = filepath.Join(t.TempDir(), "state-link")
 	if err := os.Symlink(physical, lexical); err != nil {
 		t.Skipf("filesystem does not support symlinks: %v", err)
@@ -3566,5 +3571,141 @@ func TestFind_ProjectName_DanglingWorkdirAliasUsesSavedLanePath(t *testing.T) {
 	row.EnvInfo.WorkingDir = alias
 	if got := projectName(row, stateDir); got != "" {
 		t.Fatalf("projectName(row whose dangling workdir alias sits inside %q and whose saved lane path records another project) = %q, want empty", "unrelated-repo", got)
+	}
+}
+
+// TestFind_ProjectName_DeletedLaneUsesSurvivingRestoreRoot covers the originless
+// root session of a flat state dir after its managed worktree is pruned while
+// the original checkout is still there. The record keeps both the lane it
+// occupied and the root it entered from; the lane field is tried first, and
+// answering "" from it would discard a restore root that still names the
+// project. A missing lane is no evidence, so the surviving root answers.
+func TestFind_ProjectName_DeletedLaneUsesSurvivingRestoreRoot(t *testing.T) {
+	stateDir := canonicalStateDir(t.TempDir())
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+
+	checkout := newNamedCheckout(t, "surviving-repo")
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(checkout))
+
+	// The lane is gone; the checkout it was cut from is not.
+	row := schema.SessionMeta{}
+	row.WorktreePath = filepath.Join(stateDir, "worktrees", project.ID, "dlg_pruned")
+	row.WorktreeRestoreRoot = checkout
+	row.EnvInfo.WorkingDir = row.WorktreePath
+	if got, want := projectName(row, stateDir), "surviving-repo"; got != want {
+		t.Fatalf("projectName(originless row whose lane was pruned and whose restore root still exists) = %q, want %q", got, want)
+	}
+}
+
+// TestFind_ProjectName_DeletedNestedCheckoutIsNotItsEnclosingRepo covers an
+// originless ordinary checkout nested inside another repository, deleted, so
+// only its recorded path survives. A Git walk from the missing directory climbs
+// to the enclosing repository's .git and labels the row with it — an
+// affiliation the deleted checkout never had. The directory does not exist, so
+// its ancestry is not evidence; the recorded basename is.
+func TestFind_ProjectName_DeletedNestedCheckoutIsNotItsEnclosingRepo(t *testing.T) {
+	stateDir := canonicalStateDir(t.TempDir())
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+
+	enclosing := newNamedCheckout(t, "enclosing-repo")
+	gone := filepath.Join(enclosing, "pkg", "nested-checkout")
+
+	row := schema.SessionMeta{}
+	row.EnvInfo.WorkingDir = gone
+	if got, want := projectName(row, stateDir), "nested-checkout"; got != want {
+		t.Fatalf("projectName(originless row whose nested checkout was deleted from inside %q) = %q, want the recorded basename %q", "enclosing-repo", got, want)
+	}
+}
+
+// TestFind_ProjectName_LaneThroughSymlinkedStateHomeKeepsBucketEvidence covers a
+// historical lane recorded through a symlinked XDG_STATE_HOME. Discovery works
+// from the physical bucket path; the record keeps the link's spelling. The lane
+// is deleted, so resolving the full lane path fails and the alias survives, and
+// comparing the two spellings as strings makes the lane read as foreign to its
+// own bucket — owner and sibling evidence are discarded even though both name
+// the same directory. The existing prefixes are what has to be compared.
+func TestFind_ProjectName_LaneThroughSymlinkedStateHomeKeepsBucketEvidence(t *testing.T) {
+	physical := t.TempDir()
+	linkParent := t.TempDir()
+	linkedHome := filepath.Join(linkParent, "state-home-link")
+	if err := os.Symlink(physical, linkedHome); err != nil {
+		t.Fatalf("symlink state home: %v", err)
+	}
+	t.Setenv("XDG_STATE_HOME", linkedHome)
+
+	bucket := filepath.Join(physical, "evener", "projects", "linked-lane-bucket")
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+	sibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	sibling.EnvInfo.GitOriginURL = "git@github.com:owner/linked-lane-repo.git"
+	if err := schema.SaveSessionMeta(bucket, sibling); err != nil {
+		t.Fatal(err)
+	}
+
+	// The row records the lane through the link; discovery opens the physical
+	// bucket. The lane directory does not exist, so only the spelling differs.
+	aliasBucket := filepath.Join(linkedHome, "evener", "projects", "linked-lane-bucket")
+	row := schema.SessionMeta{}
+	row.EnvInfo.WorkingDir = filepath.Join(aliasBucket, "worktrees", "dlg_linked_lane")
+	if got, want := projectName(row, bucket), "linked-lane-repo"; got != want {
+		t.Fatalf("projectName(deleted lane recorded through a symlinked state home) = %q, want the sibling's %q", got, want)
+	}
+}
+
+// TestFind_ProjectName_RecordedProjectOutranksForeignOrigin covers a managed
+// lane whose path records its project while one sibling names a different
+// repository by origin and another positively names the lane's project. The
+// origin sibling is admissible — it is unknown-project evidence inside the
+// bucket — but it is an inference where the other is a verification, and
+// letting the tie fall to whichever row came first labels the lane with
+// another repository. A verified identifier outranks an inference.
+func TestFind_ProjectName_RecordedProjectOutranksForeignOrigin(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	laneRepo := newNamedCheckout(t, "verified-repo")
+	laneProject := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(laneRepo))
+	bucket, err := RuntimeDirForProjectWithStateHome(laneProject, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	// The intruder is presented FIRST, which is the order that lets a tie answer
+	// with the wrong repository.
+	intruder := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	intruder.EnvInfo.GitOriginURL = "git@github.com:owner/intruder-repo.git"
+	intruder.EnvInfo.WorkingDir = filepath.Join(t.TempDir(), "deleted-intruder")
+
+	// This sibling positively identifies the lane's project: it sits in the
+	// checkout the lane was cut from, so its resolved working directory carries
+	// that project's ID as well as the origin that names it.
+	verified := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	verified.EnvInfo.GitOriginURL = "git@github.com:owner/verified-repo.git"
+	verified.EnvInfo.WorkingDir = laneRepo
+
+	resolver := newProjectNameResolver(map[string][]schema.SessionMeta{
+		bucket: {intruder, verified},
+	})
+	row := schema.SessionMeta{}
+	row.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", laneProject.ID, "dlg_ranked")
+	if got, want := resolver.projectName(row, bucket), "verified-repo"; got != want {
+		t.Fatalf("projectName(managed lane whose recorded project is named by one sibling while another sibling's origin names a different repo) = %q, want the verified %q", got, want)
+	}
+
+	// The negative direction: with no sibling naming the lane's project, the
+	// origin-only inference must still answer.
+	originOnly := newProjectNameResolver(map[string][]schema.SessionMeta{
+		bucket: {intruder},
+	})
+	if got, want := originOnly.projectName(row, bucket), "intruder-repo"; got != want {
+		t.Fatalf("projectName(managed lane whose only sibling records an origin) = %q, want the origin-only inference %q", got, want)
 	}
 }

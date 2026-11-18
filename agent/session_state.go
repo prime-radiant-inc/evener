@@ -352,15 +352,12 @@ func (s *Session) metaWithNotes(human, agentNote string, urls []schema.SessionUR
 		// under instead of being rewritten as a parentless subagent.
 		parentID = s.restoredMetaParentSessionID
 	}
-	restoreRoot := ""
-	if s.worktreeRestoreEnv != nil {
-		// Persisted in the same form the working directory is, and for the same
-		// reason: this is where the session ran, and an identity derived from it
-		// later is a hash of an absolute canonical path. Canonicalizing here is the
-		// only point at which the directory a relative root is relative to is still
-		// known.
-		restoreRoot = canonicalStateDir(s.worktreeRestoreEnv.WorkingDirectory())
-	}
+	// Read, never resolved, here: this runs under s.mu, and the canonical form was
+	// captured when the environment was parked. Resolving the path at snapshot time
+	// held the session lock across a filesystem call on a directory the session may
+	// no longer be using, so a stale checkout on a stalled mount could stall every
+	// autosave and status read behind it.
+	restoreRoot := s.worktreeRestoreRoot
 	jobTreeRootSessionID := ""
 	jobTreeRevision := uint64(0)
 	if s.jobActivityClock != nil {
