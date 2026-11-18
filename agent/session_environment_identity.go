@@ -78,6 +78,9 @@ func (s *Session) rehydrateEnvironmentContext(history []schema.Turn) {
 	if roots := s.promptLaunch.WritableRoots; roots != nil {
 		baseline.Last.WritableRoots = *roots
 	}
+	if cutoff := s.promptLaunch.KnowledgeCutoff; cutoff != nil {
+		baseline.Last.KnowledgeCutoff = *cutoff
+	}
 	baseline.Last.ShellNetwork = s.promptLaunch.ShellNetwork
 	baseline.Last.DetachedShell = s.promptLaunch.DetachedShell
 	s.envTracker = envctx.NewTracker(baseline)
@@ -94,29 +97,42 @@ func (s *Session) rehydrateEnvironmentContext(history []schema.Turn) {
 	}
 }
 
-// The durable transcript includes observations a fold removed from the model's
-// history. Begin with the launch checkout, then apply explicit observations
-// from original environment turns. Fold copies can describe older branches.
-func (s *Session) restoreGitObservations(entries []transcript.Entry) {
-	cwd := s.promptWorkingDir
+// The durable transcript keeps workspace observations removed by a fold. Git
+// uses the latest confirmation for each checkout. A scratch directory once
+// advertised still needs reopening after a temporary failure cleared its path.
+func (s *Session) restoreWorkspaceObservations(entries []transcript.Entry) bool {
+	scratch := s.promptLaunch.ScratchDir
+	reopenScratch := (scratch == nil && s.cachedSystemPrompt != "") || (scratch != nil && *scratch != "")
+	replay := func(cwd string, entries []transcript.Entry) {
+		for _, entry := range entries {
+			turn := entry.Turn
+			if turn.Kind != schema.TurnEnvironment || turn.OriginalOrdinal != nil {
+				continue
+			}
+			block := envctx.NewTracker(envctx.State{Last: envctx.Snapshot{Cwd: cwd}, GitBranchUnknown: true})
+			if !block.ReplayBlock(turn.Message.Text()) {
+				continue
+			}
+			state := block.State()
+			reopenScratch = reopenScratch || state.Last.ScratchDir != ""
+			cwd = state.Last.Cwd
+			if !state.GitBranchUnknown {
+				s.envCollector.RememberGitBranch(cwd, state.Last.GitBranch)
+			}
+		}
+	}
+	if s.isSubagentSession() && s.fork.divergence > 0 {
+		// A context-fork delegate's own launch follows its copied prefix.
+		// Only the parent's environment turns can identify the parent's checkout.
+		end := min(s.fork.divergence-1, len(entries))
+		replay("", entries[:end])
+		entries = entries[end:]
+	}
 	if branch := s.promptLaunch.GitBranch; branch != nil {
-		s.envCollector.RememberGitBranch(cwd, *branch)
+		s.envCollector.RememberGitBranch(s.promptWorkingDir, *branch)
 	}
-	for _, entry := range entries {
-		turn := entry.Turn
-		if turn.Kind != schema.TurnEnvironment || turn.OriginalOrdinal != nil {
-			continue
-		}
-		block := envctx.NewTracker(envctx.State{Last: envctx.Snapshot{Cwd: cwd}, GitBranchUnknown: true})
-		if !block.ReplayBlock(turn.Message.Text()) {
-			continue
-		}
-		state := block.State()
-		cwd = state.Last.Cwd
-		if !state.GitBranchUnknown {
-			s.envCollector.RememberGitBranch(cwd, state.Last.GitBranch)
-		}
-	}
+	replay(s.promptWorkingDir, entries)
+	return reopenScratch
 }
 
 func installedScratchDir(env execenv.ExecutionEnvironment) string {
@@ -190,16 +206,12 @@ func (s *Session) setEnvironmentIdentity(snap *envctx.Snapshot, last envctx.Snap
 		snap.FileToolWrites = fileWrites
 	}
 	snap.ShellNetwork, snap.DetachedShell = s.shellCapabilities()
-	cutoff := s.profile.KnowledgeCutoff()
-	// When a saved prompt has no recorded cutoff, publish the current catalog
-	// fact once. Retained model updates then own the cutoff across restores.
-	changedCutoff := s.cachedSystemPrompt != ""
-	if launch := s.promptLaunch.KnowledgeCutoff; launch != nil {
-		changedCutoff = *launch != cutoff
-	}
-	if fork || changedModel || (s.promptModel != "" && changedCutoff) || last.Model != "" {
+	snap.KnowledgeCutoff = s.profile.KnowledgeCutoff()
+	// A fold can retain a cutoff update without the model line that preceded it.
+	unknownCutoff := s.promptLaunch.KnowledgeCutoff == nil && s.cachedSystemPrompt != ""
+	reportCutoff := s.promptModel != "" && (unknownCutoff || last.KnowledgeCutoff != snap.KnowledgeCutoff)
+	if fork || changedModel || reportCutoff || last.Model != "" {
 		snap.Model = s.profile.ID() + "/" + s.profile.Model()
-		snap.KnowledgeCutoff = cutoff
 	}
 	overrideTrailer := fork || s.promptProvenanceOverridden || last.CommitTrailer != "" || last.OmitCommitTrailer
 	if overrideTrailer || changedModel || (s.promptBuild != "" && s.promptBuild != BuildVersion) {

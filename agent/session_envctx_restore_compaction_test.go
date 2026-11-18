@@ -24,6 +24,7 @@ import (
 func TestRestoreEnvironmentReconcilesCompactionWithStaleMetadata(t *testing.T) {
 	t.Run("checkout in the launch prompt", testCompactedLaunchBranch)
 	t.Run("inconclusive checkout after fold", testCompactedGitObservation)
+	t.Run("cutoff correction without its model line", testCompactedKnowledgeCutoff)
 	t.Run("branch retained from a removed worktree", func(t *testing.T) {
 		const launchBranch = "launch-unborn"
 		const linkedBranch = "linked-update"
@@ -210,8 +211,89 @@ func TestRestoreEnvironmentReconcilesCompactionWithStaleMetadata(t *testing.T) {
 			}
 			want := envctx.NewCollector(*probes).Collect(envctx.Inputs{Cwd: cwd, Sandbox: restored.cfg.Sandbox})
 			want.ShellNetwork, want.DetachedShell = meta.PromptLaunch.ShellNetwork, meta.PromptLaunch.DetachedShell
+			want.KnowledgeCutoff = restored.profile.KnowledgeCutoff()
 			if got := restored.envTracker.State(); !got.HasSent || got.Last != want {
 				t.Fatalf("restored environment state = %+v, want complete %+v", got, want)
+			}
+		})
+	}
+}
+
+func testCompactedKnowledgeCutoff(t *testing.T) {
+	const firstCutoff, unobserved = "2026-09", "unobserved"
+	for _, tc := range []struct {
+		name, cutoff string
+		omitted      bool
+	}{
+		{"revised", "2026-10", false},
+		{"cleared", "", false},
+		{"omitted", firstCutoff, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			now := envctxFixedTime
+			cwd := t.TempDir()
+			cfg := SessionConfig{StateDir: t.TempDir(), testOnly: testConfig{envProbes: &envctx.Probes{Now: func() time.Time { return now }}}}
+			s := newScriptedSummaryCompactSession(t, "fold-cutoff", func(llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nSaved work summary\n[END SUMMARY]")}
+			}, withDir(cwd), withConfig(cfg))
+			t.Cleanup(func() { s.Close() })
+			launch, prompt := s.profile, s.transcript.Header().SystemPrompt
+			resume := func(cutoff string) {
+				t.Helper()
+				s.Close()
+				row := launch.Resolved()
+				row.Caps.KnowledgeCutoff = new(cutoff)
+				restored, err := RestoreSessionFromMetaWithConfig(s.client, launch.WithResolved(row), execenv.NewLocalExecutionEnvironment(cwd), loadMetaForTest(t, s), RestoreSessionConfig{StateDir: cfg.StateDir, testOnly: cfg.testOnly})
+				if err != nil {
+					t.Fatal(err)
+				}
+				s = restored
+			}
+			resume(firstCutoff)
+			if err := s.maybeAppendEnvironmentContext(); err != nil {
+				t.Fatal(err)
+			}
+			resume(tc.cutoff)
+			seedNumberedSessionHistory(t, s, 8)
+			if tc.omitted {
+				now = now.Add(time.Hour)
+			}
+			if err := s.maybeAppendEnvironmentContext(); err != nil {
+				t.Fatal(err)
+			}
+			tail := s.history[len(s.history)-1]
+			s.contextMgr.PreserveRecentTurns = 2
+			if err := s.Compact(t.Context()); err != nil {
+				t.Fatal(err)
+			}
+			if retained := historyEnvironmentTurnIDs(s); !slices.Equal(retained, []string{tail.StableTurnID}) {
+				t.Fatalf("fold retained environment turns %v, want only %s", retained, tail.StableTurnID)
+			}
+			wantRetained := tc.cutoff
+			if tc.omitted {
+				wantRetained = unobserved
+			}
+			update := envctx.NewTracker(envctx.State{Last: envctx.Snapshot{KnowledgeCutoff: unobserved}})
+			if !update.ReplayBlock(tail.Message.Text()) || update.State().Last.Model != "" || update.State().Last.KnowledgeCutoff != wantRetained {
+				t.Fatalf("retained update identifies model %q and cutoff %q, want empty model and cutoff %q", update.State().Last.Model, update.State().Last.KnowledgeCutoff, wantRetained)
+			}
+			resume(launch.KnowledgeCutoff())
+			adapter := &agenttest.ScriptedAdapter{Provider: launch.ID(), Responder: func(llm.Request) llm.Response { return agenttest.FinalResponse("ack") }}
+			s.client.Register(adapter)
+			for round := range 2 {
+				enqueueCompletedJobNotification(t, s, fmt.Sprintf("job_cutoff_%d", round))
+				if _, err := s.ProcessInputKind(t.Context(), "", nil, EntryNotification); err != nil {
+					t.Fatal(err)
+				}
+				req := adapter.Requests()[round]
+				got, blocks := requestEnvironment(req)
+				wantCutoff, wantBlocks := launch.KnowledgeCutoff(), 2
+				if tc.omitted {
+					wantCutoff, wantBlocks = "", 1
+				}
+				if req.Messages[0].Text() != prompt || req.Model != launch.Model() || got.KnowledgeCutoff != wantCutoff || blocks != wantBlocks {
+					t.Errorf("request %d retained prompt %t, model %q, cutoff %q, %d environment blocks; want model %q, cutoff %q, %d blocks", round, req.Messages[0].Text() == prompt, req.Model, got.KnowledgeCutoff, blocks, launch.Model(), wantCutoff, wantBlocks)
+				}
 			}
 		})
 	}

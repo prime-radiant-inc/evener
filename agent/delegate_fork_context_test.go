@@ -8,9 +8,11 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/envctx"
+	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/gittest"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
@@ -19,6 +21,7 @@ import (
 // Completed tool exchanges must survive, while the in-flight spawn must not.
 func TestDelegateForkContext_OptInHistory(t *testing.T) {
 	t.Parallel()
+	t.Run("checkout observations", testForkDelegateCheckout)
 	for _, option := range []any{nil, false, true} {
 		name := "default"
 		if option != nil {
@@ -114,6 +117,72 @@ func TestDelegateForkContext_OptInHistory(t *testing.T) {
 				if entry.Turn.ResponseID == "parent-response-anchor" {
 					t.Error("parent continuation anchor copied into child")
 				}
+			}
+		})
+	}
+}
+
+func testForkDelegateCheckout(t *testing.T) {
+	const parentBranch, childBranch, dispatchBranch = "parent-17", "child-28", "dispatch-39"
+	for _, tc := range []struct {
+		name, launch, dispatch, want string
+		moved, legacy                bool
+	}{
+		{name: "shared checkout", want: parentBranch},
+		{name: "confirmed child launch", launch: childBranch, want: childBranch},
+		{name: "confirmed child dispatch", dispatch: dispatchBranch, want: dispatchBranch},
+		{name: "different checkout", moved: true},
+		{name: "inherited branch without a checkout", legacy: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cwd := evalSyms(t, t.TempDir())
+			copyWorktreeBaseRepo(t, cwd)
+			base := execenv.NewLocalExecutionEnvironment(cwd)
+			var childProbe bool
+			probes := &envctx.Probes{GitBranch: func(dir string) (string, bool) {
+				if childProbe {
+					return tc.dispatch, tc.dispatch != ""
+				}
+				return snapshotGitBranch(base, dir)
+			}}
+			root := newSession(t, withEnv(base), withEnvironmentSnapshot(), withConfig(SessionConfig{
+				StateDir: t.TempDir(), MaxSubagentDepth: 1, ForceRealIO: true, testOnly: testConfig{envProbes: probes},
+			}))
+			gittest.Run(t, cwd, "checkout", "-b", parentBranch)
+			if tc.legacy {
+				// Older environment turns could name a branch before any turn named its checkout.
+				root.appendTurn(schema.TurnEnvironment, llm.User("<environment_context>\ngit branch: "+parentBranch+"\n</environment_context>"))
+			} else if err := root.maybeAppendEnvironmentContext(); err != nil {
+				t.Fatal(err)
+			}
+			if tc.moved {
+				cwd = evalSyms(t, t.TempDir())
+				gittest.Run(t, cwd, "init")
+				if err := root.swapEnvAndRefresh(base.WithWorkingDirectory(cwd), nil); err != nil {
+					t.Fatal(err)
+				}
+			} else if tc.launch != "" {
+				gittest.Run(t, cwd, "checkout", "-b", tc.launch)
+			} else {
+				gittest.Run(t, cwd, "checkout", "--orphan", "unborn")
+			}
+			childProbe = true
+			adapter := newTask6FrozenDescriptorAdapter()
+			root.client.Register(adapter)
+			t.Cleanup(adapter.releaseRun)
+			result := root.createDelegate(t.Context(), delegateArgs{Task: "inspect checkout", ForkContext: true, DelegationAllowance: new(0)})
+			if result.Err != nil {
+				t.Fatal(result.Err)
+			}
+			select {
+			case req := <-adapter.entered:
+				child := root.getSub(result.ChildSessionID).sess
+				state, _ := requestEnvironmentState(req)
+				if state.Last.Cwd != cwd || state.Last.GitBranch != tc.want || state.GitBranchUnknown != (tc.want == "") || req.Messages[0].Text() != child.transcript.Header().SystemPrompt {
+					t.Errorf("first delegate request saw cwd %q, branch %q, unknown %t; want %q on %q, original prompt %t", state.Last.Cwd, state.Last.GitBranch, state.GitBranchUnknown, cwd, tc.want, req.Messages[0].Text() == child.transcript.Header().SystemPrompt)
+				}
+			case <-time.After(10 * time.Second): // TRIPWIRE: the scripted provider signals its first request.
+				t.Fatal("forked delegate did not issue a request")
 			}
 		})
 	}
@@ -273,32 +342,52 @@ func TestDelegateForkContext_RejectsDifferentModelBeforeCreation(t *testing.T) {
 func TestDelegateForkContext_DirectResumeKeepsAssignment(t *testing.T) {
 	t.Parallel()
 	meta, client, profile, stateDir, workspace, _ := closedDelegateResourceBootstrapFixture(t)
+	workspace = evalSyms(t, workspace)
 	meta.IsSubagent = true
 	meta.ParentSessionID = identifier.MustNewSessionID()
-	meta.DivergenceTurn = 2
+	meta.DivergenceTurn = 3
 	meta.OriginalPrompt = "assigned-unit-sentinel"
+	if branch := meta.PromptLaunch.GitBranch; branch == nil || *branch != "" {
+		t.Fatal("fixture did not launch outside a worktree")
+	}
 	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
 		t.Fatal(err)
 	}
-	writer, err := transcript.NewWriter(transcriptPath(stateDir, meta.ID), transcript.Header{SessionID: meta.ID, ParentSessionID: meta.ParentSessionID, Task: meta.OriginalPrompt})
+	header := transcript.Header{SessionID: meta.ID, ParentSessionID: meta.ParentSessionID, Task: meta.OriginalPrompt, WorkingDir: workspace, SystemPrompt: "\tdelegate prompt\n"}
+	writer, err := transcript.NewWriter(transcriptPath(stateDir, meta.ID), header)
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, input := range []string{"parent-request-sentinel", "assigned-unit-sentinel"} {
-		if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User(input))); err != nil {
+	parentEnv := envctx.NewTracker(envctx.State{}).RenderDiff(envctx.Snapshot{Cwd: workspace, GitBranch: "parent-17"})
+	for _, turn := range []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("parent-request-sentinel")),
+		schema.NewTurn(schema.TurnEnvironment, llm.User(parentEnv)),
+		schema.NewTurn(schema.TurnUserInput, llm.User(meta.OriginalPrompt)),
+	} {
+		if err := writer.Append(turn); err != nil {
 			t.Fatal(err)
 		}
 	}
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
-	restored, err := restoreDelegateResourceBootstrapSession(client, profile, workspace, meta, stateDir)
+	restored, err := restoreDelegateResourceBootstrapSessionWithTestConfig(client, profile, workspace, meta, stateDir, testConfig{
+		envProbes: &envctx.Probes{GitBranch: func(string) (string, bool) { return "", false }},
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer restored.Close()
 	if got := restored.Meta(); !got.IsSubagent || got.OriginalPrompt != "assigned-unit-sentinel" {
 		t.Fatalf("directly resumed delegate identity = %+v", got)
+	}
+	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("done") })
+	client.Register(adapter)
+	sendOneUserInput(t, restored, "resume checkout inspection")
+	req := adapter.Requests()[0]
+	state, _ := requestEnvironmentState(req)
+	if state.Last.Cwd != workspace || state.GitBranchUnknown || state.Last.GitBranch != "" || req.Messages[0].Text() != header.SystemPrompt {
+		t.Errorf("resumed delegate saw cwd %q, branch %q, unknown %t; want confirmed outside at %q, original prompt %t", state.Last.Cwd, state.Last.GitBranch, state.GitBranchUnknown, workspace, req.Messages[0].Text() == header.SystemPrompt)
 	}
 }
 

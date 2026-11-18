@@ -223,8 +223,9 @@ func escapeInheritedHistory(inherited []transcript.Entry) []schema.Turn {
 }
 
 // initEnvContext restores the collector from all observations and the tracker
-// from the launch prompt and environment turns the model will see.
-func (s *Session) initEnvContext(launchCwd string, history []schema.Turn, entries []transcript.Entry) {
+// from the launch prompt and environment turns the model will see. It reports
+// whether the restored workspace should open its scratch before dispatch.
+func (s *Session) initEnvContext(launchCwd string, history []schema.Turn, entries []transcript.Entry) bool {
 	probes := envctx.DefaultProbes()
 	if s.cfg.testOnly.envProbes != nil {
 		probes = *s.cfg.testOnly.envProbes
@@ -235,12 +236,13 @@ func (s *Session) initEnvContext(launchCwd string, history []schema.Turn, entrie
 	}
 	s.envCollector = envctx.NewCollector(probes)
 	s.promptWorkingDir = launchCwd
-	s.restoreGitObservations(entries)
+	reopenScratch := s.restoreWorkspaceObservations(entries)
 	s.rehydrateEnvironmentContext(history)
 	if probes.GitBranch != nil && s.envTracker.State().GitBranchUnknown {
 		// An autonomous request can precede the first user input.
 		s.worktreeContextPending = true
 	}
+	return reopenScratch
 }
 
 // An unborn HEAD or an interrupted Git probe supplies no branch observation.
@@ -661,7 +663,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	// just ran had nowhere to write (kata d4es). attachTranscript below is what
 	// releases what they recorded, and it runs on every path, writer or not.
 	hdr := s.transcriptHeader(s.sclock().Now().UTC())
-	s.initEnvContext(hdr.WorkingDir, s.history, nil)
+	s.initEnvContext(hdr.WorkingDir, s.history, inheritedContext)
 	s.setPromptEnvironmentOrigin(hdr)
 	var tw *transcript.Writer
 	if s.stateDir != "" {
@@ -1254,8 +1256,13 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	s.restoreConversation(transcriptEntries)
 	s.bufferArtifactStoreWarning(artifactStoreErr)
 	s.retirementController.Store(cfg.spawn.retirementController)
+	// A bare delegate resume has no live spawn carrier. Its persisted role
+	// identifies the inherited history and tool set, and its parent remains
+	// part of the same pair in subsequent session metadata.
+	s.restoredMetaIsSubagent = meta.IsSubagent
+	s.restoredMetaParentSessionID = meta.ParentSessionID
 	// The environment turn is durable before meta.EnvContext is checkpointed.
-	s.initEnvContext(restoredTranscriptHeader.WorkingDir, resumeHistory, transcriptEntries)
+	reopenScratch := s.initEnvContext(restoredTranscriptHeader.WorkingDir, resumeHistory, transcriptEntries)
 	if err := s.bootstrapDelegateResources(); err != nil {
 		return nil, err
 	}
@@ -1368,15 +1375,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// without waiting for the next mutation to publish.
 	s.seedCommittedNotes()
 
-	// ask_user root-only gating (spec §7.1): a bare `serve --resume
-	// <delegate-id>` restores with an empty spawn carrier (spawn is json:"-",
-	// never persisted), so cfg.spawn.parentSessionID alone would miss it.
-	// Derive subagent-ness from the persisted meta flag before
-	// initSessionState builds the tool registry.
-	s.restoredMetaIsSubagent = meta.IsSubagent
-	// The spawn parent travels with the flag: Meta() rewrites both on every
-	// autosave, and the hub reads them as a pair.
-	s.restoredMetaParentSessionID = meta.ParentSessionID
 	// A delegate resumed on its own keeps its scratch in its root's tree, and
 	// Meta() keeps recording that root for the next resume.
 	if restoreCfg.spawn.parentSessionID == "" {
@@ -1413,6 +1411,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	var savedHeader *transcript.Header
 	if restoredTranscriptOpened {
 		savedHeader = &restoredTranscriptHeader
+		if local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment); ok && reopenScratch {
+			local.PrepareSessionScratch()
+		}
 	}
 	s.setPromptEnvironmentOrigin(restoredTranscriptHeader)
 	promptSources, err := s.initSessionState(!restoreCfg.deferRestoreSideEffects, savedHeader)
@@ -1708,17 +1709,8 @@ func (s *Session) initSessionState(runSessionStartHooks bool, savedHeader *trans
 	s.envInfo = ei
 	s.workspaceWritableRoots = installedWritableRoots(env)
 
-	if savedHeader == nil {
-		if !s.cfg.testOnly.skipGitSnapshot {
-			s.capabilities = probeCapabilities(env, ei.WorkingDir)
-		}
-	} else if local, ok := env.(*execenv.LocalExecutionEnvironment); ok {
-		// Reopen scratch advertised in the saved context before reporting its
-		// availability. Older prompts can name scratch without a recorded path.
-		workspace := s.envTracker.State()
-		if workspace.Last.ScratchDir != "" || workspace.ScratchDirUnknown {
-			local.PrepareSessionScratch()
-		}
+	if savedHeader == nil && !s.cfg.testOnly.skipGitSnapshot {
+		s.capabilities = probeCapabilities(env, ei.WorkingDir)
 	}
 
 	// Session init whose launch cwd is already inside a managed worktree

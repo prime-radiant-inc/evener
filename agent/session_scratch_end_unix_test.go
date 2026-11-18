@@ -498,7 +498,8 @@ func TestDelegateResumedAsRootKeepsItsTreeAcrossResumes(t *testing.T) {
 // restored session reopens the same directory, files and all.
 func TestResumeReopensTheSameScratch(t *testing.T) {
 	dir, workspace := t.TempDir(), t.TempDir()
-	t.Setenv("TMPDIR", t.TempDir())
+	scratchBase := t.TempDir()
+	t.Setenv("TMPDIR", scratchBase)
 	adapter := &agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response { return agenttest.FinalResponse("done") }}
 	launchEnv := execenv.NewLocalExecutionEnvironment(workspace)
 	cfg := SessionConfig{StateDir: dir}
@@ -549,6 +550,42 @@ func TestResumeReopensTheSameScratch(t *testing.T) {
 	t.Setenv("TMPDIR", workspace)
 	t.Setenv("HOME", workspace)
 	t.Setenv("XDG_CACHE_HOME", workspace)
+	reopen := func(t *testing.T, state string, previous *Session) *Session {
+		t.Helper()
+		checkpoint, err := schema.LoadSessionMeta(state, previous.ID())
+		if err != nil {
+			t.Fatal(err)
+		}
+		env := execenv.NewLocalExecutionEnvironment(workspace)
+		resumed, err := RestoreSessionFromMetaWithConfig(previous.client, previous.profile, env, checkpoint, RestoreSessionConfig{StateDir: state, testOnly: testConfig{skipGitSnapshot: true}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(resumed.Close)
+		return resumed
+	}
+	checkRecovery := func(t *testing.T, state string, before *Session, wantPath, wantPrompt string) {
+		t.Helper()
+		t.Setenv("TMPDIR", scratchBase)
+		resumed := reopen(t, state, before)
+		sendOneUserInput(t, resumed, "use the restored file")
+		requests := adapter.Requests()
+		req := requests[len(requests)-1]
+		path := installedScratchDir(resumed.currentEnv())
+		if path != wantPath {
+			t.Errorf("scratch at the first resumed request = %q, want %q", path, wantPath)
+		} else if b, err := os.ReadFile(filepath.Join(path, "notes.md")); err != nil || string(b) != "keep" {
+			t.Errorf("reopened scratch file = %q, error %v", b, err)
+		}
+		updates := requestScratchUpdates(req)
+		if len(updates) < 2 || updates[len(updates)-2] != "" || updates[len(updates)-1] != wantPath {
+			t.Errorf("scratch updates after the directory recovered = %q, want a clear followed by %q", updates, wantPath)
+		}
+		if req.Messages[0].Text() != wantPrompt {
+			t.Error("recovering scratch changed the saved system prompt")
+		}
+		resumed.Close()
+	}
 	for _, version := range []string{"recorded", "unrecorded"} {
 		t.Run("unavailable_"+version, func(t *testing.T) {
 			state := t.TempDir()
@@ -600,6 +637,7 @@ func TestResumeReopensTheSameScratch(t *testing.T) {
 				}
 				restored.Close()
 			}
+			checkRecovery(t, state, root2, scratch, prompt)
 		})
 	}
 	t.Run("unavailable_at_launch", func(t *testing.T) {
@@ -614,6 +652,7 @@ func TestResumeReopensTheSameScratch(t *testing.T) {
 				t.Fatalf("checkpoint %d lost the known empty launch scratch path", round+1)
 			}
 			if round > 0 {
+				t.Setenv("TMPDIR", scratchBase)
 				live, err = RestoreSessionFromMetaWithConfig(live.client, live.profile, execenv.NewLocalExecutionEnvironment(workspace), checkpoint, RestoreSessionConfig{StateDir: state, testOnly: testConfig{skipGitSnapshot: true}})
 				if err != nil {
 					t.Fatal(err)
@@ -625,7 +664,23 @@ func TestResumeReopensTheSameScratch(t *testing.T) {
 			if updates := requestScratchUpdates(requests[len(requests)-1]); len(updates) != 0 {
 				t.Errorf("request %d repeated a known empty scratch path: %#v", round+1, updates)
 			}
-			live.Close()
+			if round == 0 {
+				live.Close()
+			}
 		}
+		// The first command can provision scratch long after an empty launch.
+		lateScratch := mintRootScratch(t, live)
+		sendOneUserInput(t, live, "keep the scratch file")
+		requests := adapter.Requests()
+		latePrompt := requests[len(requests)-1].Messages[0].Text()
+		if updates := requestScratchUpdates(requests[len(requests)-1]); !slices.Equal(updates, []string{lateScratch}) {
+			t.Fatalf("scratch advertised after launch = %q, want %q", updates, lateScratch)
+		}
+		live.Close()
+		t.Setenv("TMPDIR", workspace)
+		missing := reopen(t, state, live)
+		sendOneUserInput(t, missing, "continue while unavailable")
+		missing.Close()
+		checkRecovery(t, state, missing, lateScratch, latePrompt)
 	})
 }
