@@ -93,12 +93,13 @@ type logicalTurnAccumulator struct {
 // TurnGrouper applies the logical-turn grouping rule to entries in file order.
 // Its zero value is the state before the first entry.
 //
-// Resuming a scan needs Open, TurnID and Stamped: Stamped is what lets an
-// identity entry rejoin the group its id names, so a caller that restores only
-// Open and TurnID resumes LEGACY grouping, where the next stamped entry opens a
-// new run even under the same id. The transcript index persists exactly those
-// two fields (index.go's Open/OpenTurnID), which is sound there because its
-// legacy-only grouping never asks Stamped.
+// A stamp extends a run only when that run is stamped with the same turn ID;
+// a turn's separate runs are associated later, by turn ID, during projection.
+// A grouper restored with Stamped unset therefore opens a run where an intact
+// one would extend the current run, and both projections agree on the turn.
+// The transcript index persists just Open and TurnID (index.go's
+// Open/OpenTurnID), which is sound there: its new-format entries never reach
+// Place, so its legacy-only grouping never asks Stamped.
 type TurnGrouper struct {
 	// Open reports whether continuations join the latest group.
 	Open bool
@@ -413,10 +414,15 @@ func executionItems(runs []int, groups []groupedTurn) map[int][]appwire.ThreadIt
 	// and TOOL entries, never for an announcement), not from the item's status,
 	// so this asks the same question.
 	entryKind := map[int]schema.TurnKind{}
+	// entryRound is, per entry index, the round the entry recorded. A projector
+	// that does not apply the identity read model leaves it off the item, so the
+	// settlement below reads it from the entry that announced the call.
+	entryRound := map[int]string{}
 	for _, run := range runs {
 		for k, entryIndex := range groups[run].entryIndexes {
 			if k < len(groups[run].entries) {
 				entryKind[entryIndex] = groups[run].entries[k].Kind
+				entryRound[entryIndex] = groups[run].entries[k].RoundID
 			}
 		}
 	}
@@ -494,9 +500,16 @@ func executionItems(runs []int, groups []groupedTurn) map[int][]appwire.ThreadIt
 			target := calls[at-1]
 			// Keep the opener's item and round identity while merging the
 			// result's payload and status. The merge derives conversation
-			// provenance from the incoming item ID.
+			// provenance from the incoming item ID. The projected opener may
+			// carry no round (a projector that does not apply the identity read
+			// model leaves it off), and the round the entry recorded is still
+			// the identity a client reconciles by.
 			opener := out[target.run][target.at]
-			item.ID, item.RoundID = opener.ID, opener.RoundID
+			round := opener.RoundID
+			if round == "" {
+				round = entryRound[target.entry]
+			}
+			item.ID, item.RoundID = opener.ID, round
 			merged := MergeThreadItems(opener, item)
 			merged.TurnID = opener.TurnID
 			out[target.run][target.at] = merged
