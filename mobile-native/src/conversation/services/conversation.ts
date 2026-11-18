@@ -716,6 +716,10 @@ export function createConversationService<ReadLease = unknown>(
 		let replacementReadRequired = false;
 		for (const buffered of opening.modelControl) {
 			const params = buffered.notification.params;
+			// A malformed frame must not discard the read it was buffered
+			// alongside: no snapshot means no authority to compare, so it cannot
+			// apply and the transcript this read produced is still valid.
+			if (params.modelControl === null || params.modelControl === undefined) continue;
 			if (
 				params.threadId === responseThreadId &&
 				params.ref === opening.ref &&

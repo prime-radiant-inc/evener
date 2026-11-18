@@ -114,7 +114,11 @@ function ModelSheetBody({
 		// frame keeps - and closing on it would strand the choice the departed
 		// process never applied. There the row runs through the resume and sends
 		// once on the authority the post-resume read establishes.
-		if (`${model.provider}/${model.model}` === current && !coldSessionCanResume(session)) {
+		//
+		// That exception is the primary picker's alone. A vision model is a
+		// setting the saved read already reports as in effect, so re-picking it
+		// changes nothing and must not start a daemon to say so.
+		if (`${model.provider}/${model.model}` === current && (vision || !coldSessionCanResume(session))) {
 			finish();
 			return;
 		}

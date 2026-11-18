@@ -3230,6 +3230,46 @@ it("does not replay quarantined model control from the read's retired authority"
   owner.dispose();
 });
 
+it("keeps a read whose pre-cut model-control frame carries no snapshot", () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const current = read("current", 2);
+  current.thread.evener.instanceId = threadId;
+  current.thread.evener.capabilities = { ...ALL_CAPABILITIES, modelControlVersion: 1 };
+  current.thread.evener.modelControl = {
+    authority: { instanceId: threadId, bootGeneration: "1" },
+    revision: 2,
+    active: {
+      modelProvider: "openai",
+      model: "gpt-5.5",
+      reasoningEffortLevels: [],
+      supportsReasoning: true,
+    },
+  };
+  expect(owner.acceptRead(current, { lifetime: 1, readId: "current", boundary: "current" })).toBe(true);
+
+  // A malformed frame for this ref and thread: nothing to compare an authority
+  // against, so it cannot apply. It must not throw away the transcript the read
+  // just produced either.
+  owner.acceptBeforeReadCut(
+    [
+      {
+        method: "thread/model/controlChanged",
+        params: { ref, threadId, modelControl: null },
+      } as unknown as AnyNotification,
+    ],
+    { lifetime: 1 },
+  );
+
+  expect(owner.getSnapshot()?.history?.length).toBe(2);
+  expect(owner.getSnapshot()?.modelControlState).toEqual({
+    kind: "ready",
+    snapshot: current.thread.evener.modelControl,
+  });
+  owner.dispose();
+});
+
 it("accepts a matching recorded append into a seeded model's current source authority", async () => {
   const fixture = createEntryCacheFixture();
   fixtures.push(fixture);

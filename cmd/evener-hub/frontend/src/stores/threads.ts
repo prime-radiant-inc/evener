@@ -4441,6 +4441,10 @@ function replayQuarantinedModelControl(
   for (const update of notifications) {
     const notification = update.notification;
     if (notification.method !== "thread/model/controlChanged") continue;
+    // No snapshot means nothing to compare an authority against. Skipping the
+    // frame keeps the read that carried it; dereferencing it threw away an
+    // otherwise successful hydration.
+    if (!notification.params.modelControl) continue;
     if (!sameModelControlAuthority(authority, notification.params.modelControl.authority)) continue;
     const result = applyModelControlNotification(replayed, notification, update.now);
     replayed = result.model;

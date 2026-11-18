@@ -284,14 +284,20 @@ function isStringArrayOrNull(value: unknown): value is string[] | null {
   return value === null || (Array.isArray(value) && value.every((entry) => typeof entry === "string"));
 }
 
-function isCompleteSnapshot(value: unknown): value is ModelControlSnapshot {
+// requireLevels says the caller cannot tolerate a null effort ladder. A read
+// may report null for a model with no ladder and the client normalizes it
+// before publishing a typed snapshot, but a model-set reply is the value a
+// direct caller receives as `string[]`, so null there is an incomplete success.
+function isCompleteSnapshot(value: unknown, requireLevels = false): value is ModelControlSnapshot {
   if (!isRecord(value) || !isRecord(value.authority) || !isRecord(value.active)) return false;
   if (!isNonEmptyString(value.authority.instanceId) || !isNonEmptyString(value.authority.bootGeneration)) return false;
   if (typeof value.revision !== "number" || !Number.isSafeInteger(value.revision) || value.revision <= 0) return false;
   if (!isNonEmptyString(value.active.modelProvider) || !isNonEmptyString(value.active.model)) return false;
-  if (!isStringArrayOrNull(value.active.reasoningEffortLevels) || typeof value.active.supportsReasoning !== "boolean") {
-    return false;
-  }
+  const levels = value.active.reasoningEffortLevels;
+  const levelsValid = requireLevels
+    ? Array.isArray(levels) && levels.every((entry) => typeof entry === "string")
+    : isStringArrayOrNull(levels);
+  if (!levelsValid || typeof value.active.supportsReasoning !== "boolean") return false;
   if (value.desired === undefined) return true;
   if (!isRecord(value.desired)) return false;
   return (
@@ -321,7 +327,7 @@ export function validateThreadModelSetResponse(value: unknown, clientMutationId:
     !isRecord(value) ||
     value.modelControlVersion !== 1 ||
     (value.disposition !== "accepted" && value.disposition !== "superseded") ||
-    !isCompleteSnapshot(value.modelControl)
+    !isCompleteSnapshot(value.modelControl, true)
   ) {
     throw malformedModelSetResponse(clientMutationId);
   }

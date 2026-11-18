@@ -655,6 +655,58 @@ describe("AppwireClient", () => {
     await expect(stale).resolves.toEqual(superseded);
   });
 
+  test("thread/model/set refuses a reply whose effort ladder is null", async () => {
+    // The generated snapshot type says reasoningEffortLevels is string[], and a
+    // direct SDK caller indexes it. A read may report null for a model with no
+    // ladder and the client normalizes it, but a model-set reply carrying null
+    // would hand that caller a null under a string[] type. The Go client
+    // rejects the same reply as incomplete.
+    const fake = new FakeSocket({ autoInitialize: true });
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
+    await connectReady(fake, client);
+    const params: ThreadModelSetParams = {
+      ref: "local:th_1",
+      modelProvider: "work",
+      model: "gpt-5.5",
+      clientMutationId: "cm_null_levels",
+      expectedInstanceId: "instance_1",
+      expectedBootGeneration: "7",
+    };
+    const nullLevels = {
+      modelControlVersion: 1,
+      disposition: "accepted",
+      modelControl: {
+        authority: { instanceId: "instance_1", bootGeneration: "7" },
+        revision: 2,
+        active: {
+          modelProvider: "work",
+          model: "gpt-5.5",
+          reasoningEffortLevels: null,
+          supportsReasoning: false,
+        },
+      },
+    };
+
+    const call = client.request("thread/model/set", params);
+    const frame = lastSentFrame(fake);
+    fake.receive({ id: frame.id, result: nullLevels });
+    const error = await call.catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(WireError);
+    expect(mutationErrorData(error)).toMatchObject({ mutationOutcome: "unknown", retryDisposition: "blocked" });
+    // An empty ladder is the valid way to say "no levels", and it still passes.
+    const emptyLevels = {
+      ...nullLevels,
+      modelControl: {
+        ...nullLevels.modelControl,
+        active: { ...nullLevels.modelControl.active, reasoningEffortLevels: [] },
+      },
+    };
+    const accepted = client.request("thread/model/set", params);
+    const acceptedFrame = lastSentFrame(fake);
+    fake.receive({ id: acceptedFrame.id, result: emptyLevels });
+    await expect(accepted).resolves.toEqual(emptyLevels);
+  });
+
   test("thread/model/set attributes a malformed reply to the mutation that sent it", async () => {
     // A caller may reuse one params object for a second switch while the first
     // is pending. The first request serialized cm_first, so its malformed reply

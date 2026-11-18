@@ -1184,7 +1184,9 @@ export class TranscriptRepository {
         const held =
           this.#model?.modelControlState.kind === "ready" ? this.#model.modelControlState.snapshot : undefined;
         const incoming = notification.params.modelControl;
-        if (held && sameModelControlAuthority(held.authority, incoming.authority)) {
+        // A frame with no snapshot cannot match a held authority, and reading
+        // through it threw away an otherwise valid read.
+        if (held && incoming && sameModelControlAuthority(held.authority, incoming.authority)) {
           this.accept(notification, context);
         }
       } else if (

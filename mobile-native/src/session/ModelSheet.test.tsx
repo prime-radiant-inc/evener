@@ -980,6 +980,65 @@ describe("the vision model (ruling 17)", () => {
 		await settle();
 		expect(calls).toEqual(["setVisionModel:off", "goBack"]);
 	});
+
+	it("closes on the already-selected vision model without starting a daemon", async () => {
+		// The cold-session exception belongs to the primary picker, where a
+		// retained row can be a pick the departed daemon never applied. A vision
+		// model is a setting the saved read already reports as in effect, so
+		// re-picking it changes nothing and must not resume or send anything.
+		const client = new FakeClient("ready");
+		client.on("thread/unsubscribe", () => ({}));
+		client.on("thread/resume", () => {
+			throw new Error("a matching vision pick must not resume the session");
+		});
+		client.on("thread/vision-model/set", () => {
+			throw new Error("a matching vision pick must not be dispatched");
+		});
+		// COLD_THREAD is the production saved read: advertised change flags and
+		// no model-control envelope. The vision setting it reports is the one in
+		// effect, which is what makes re-picking it a no-op.
+		const thread = {
+			...COLD_THREAD,
+			evener: { ...COLD_THREAD.evener, visionModel: "lunaroute/glm-5.3-vision" },
+		};
+		client.on("thread/read", () => ({ thread }));
+		const service = createConversationService(client);
+		const cold = await service.open(REF);
+		// The production cold read: the past capabilities, no model control.
+		expect(cold.modelControlState.kind).toBe("unsupported");
+		expect(cold.visionModel, "the opened session keeps the vision setting the read reported").toBe(
+			"lunaroute/glm-5.3-vision",
+		);
+		const controls = new SessionControls(
+			service,
+			async () => {},
+			() => {},
+			() => true,
+			() => cold,
+			() => true,
+			CATALOG,
+		);
+		onTestFinished(() => {
+			controls.dispose();
+			service.close();
+		});
+		provide(cold, {}, { controls });
+		const tree = sheet("vision");
+		const rows = tree.root.findAll(
+			(node) =>
+				String(node.type) === "Pressable" && (node.props.accessibilityLabel ?? textOf(node)) === "GLM 5.3 Vision",
+		);
+		const states = rows.map((node) => node.props.accessibilityState);
+		const selected = rows.find((node) => node.props.accessibilityState?.selected === true);
+		expect(states, "exactly one GLM row is the current vision model").toContainEqual(
+			expect.objectContaining({ selected: true }),
+		);
+		act(() => selected?.props.onPress?.());
+		await settle();
+		expect(navigation.goBack).toHaveBeenCalledTimes(1);
+		expect(client.calls.filter((call) => call.method === "thread/vision-model/set")).toHaveLength(0);
+		expect(client.calls.filter((call) => call.method === "thread/resume")).toHaveLength(0);
+	});
 });
 
 describe("when nothing can change", () => {
