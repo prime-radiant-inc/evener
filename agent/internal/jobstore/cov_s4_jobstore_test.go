@@ -657,9 +657,14 @@ func TestStoreOpenTruncateRecoveryFaults(t *testing.T) {
 		op   int
 		want string
 	}{
-		{name: "truncate", op: 8, want: "truncate trailing partial line"},
-		{name: "seek", op: 9, want: "seek after trailing recovery"},
-		{name: "sync", op: 10, want: "sync trailing recovery"},
+		// These are measured, not derived: opening a journal with a torn tail now
+		// stats the name once before it inspects the tail, so every destructive
+		// repair step sits one operation earlier than it used to. Reading the
+		// table's numbers forward would fault a neighbouring operation and
+		// silently stop testing the step each case names.
+		{name: "truncate", op: 7, want: "truncate trailing partial line"},
+		{name: "seek", op: 8, want: "seek after trailing recovery"},
+		{name: "sync", op: 9, want: "sync trailing recovery"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			err := openFsUnderFault(t, content, planFaultAt(tc.op))
