@@ -56,7 +56,7 @@ import {
 } from "./sessionCacheSchema";
 import { SessionEntryCache } from "./sessionEntryCache";
 import { pumpIndexedDBUntil } from "./testing/indexedDBPump";
-import { bodyOwners, isMutationPinned } from "./threadOwners";
+import { bodyOwners, isMutationPinned, pinMutation, unpinMutation } from "./threadOwners";
 import {
   acquireBackgroundThread,
   backgroundTranscriptSnapshotForTests,
@@ -1170,6 +1170,53 @@ it("a pane opening after a routing hold still restores its bodies", async () => 
   ).toEqual(["recorded"]);
   background.release();
 });
+
+// A mutation pin keeps a ref alive after its pane goes away, but pinning only
+// attaches a reader: it does not restore bodies. When a resend pins a
+// background destination whose cached bodies are already pruned, the first
+// pane to open is still the first body owner and must spend its open.
+it("a pane opening on a pinned background destination still restores its bodies", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  let now = 1_000;
+  const storage = new SessionEntryCache({
+    databaseName: SESSION_CACHE_DATABASE_NAME,
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    ttlMs: 100,
+    now: () => now,
+  });
+  caches.push(storage);
+  setProductionEntryCacheForTests(storage);
+  const client = connect();
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  await settleEntryTranscriptForTests("local:a");
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  const rows = await storage.getLatest(key, 10);
+  expect(rows).toHaveLength(1);
+  now += 1_000;
+  await storage.commitBatch({
+    historyKey: "other-history",
+    clearEpoch: 0,
+    items: rows.map((row) => ({ ...row, historyKey: "other-history" })),
+  });
+  expect(await storage.getLatest(key, 10)).toEqual([]);
+  pinMutation("local:a");
+  expect(bodyOwners("local:a"), "a pin is not a body owner").toBe(0);
+  const before = client.calls.filter((call) => call.method === "thread/read").length;
+  await threadsStore.getState().ensureThread("local:a");
+  expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(before + 1);
+  expect(
+    threadsStore
+      .getState()
+      .threads.get("local:a")
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text),
+  ).toEqual(["recorded"]);
+  unpinMutation("local:a");
+  background.release();
+}, 20_000);
 
 // A routing hold asks for routing state, not transcript bodies. When another
 // background owner keeps the model resident but its cached bodies are gone, a

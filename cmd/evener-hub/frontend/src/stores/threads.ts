@@ -8212,9 +8212,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     let client = requireClient();
     const routingOnly = opts?.routingOnly === true;
     const count = foregroundHolds(ref);
-    // Read before this acquisition's own hold: another mounted reader owns the
-    // live bodies only if it held them before this call.
-    const bodyOwned = threadBodyOwned(ref);
+    // The pane-only count, also read before this call's own hold: a history
+    // hold or a mutation pin keeps the ref alive after a Clear but is not the
+    // first pane open, and must not stop that pane from beginning the fresh
+    // lifetime its read needs to resume cached writes.
+    const paneBodyOwners = bodyOwners(ref);
     if (count === 0) {
       ensureGenerations.set(ref, (ensureGenerations.get(ref) ?? 0) + 1);
       beginCanonicalThreadClaim(ref, true);
@@ -8227,29 +8229,34 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     syncTranscriptResidencyOwners(ref);
     // Retention alone grants no write permission: only an explicit pane open
     // begins the fresh foreground lifetime that lifts a Clear's suppression.
-    // The body-owned predicate as it stood BEFORE this call's own hold, not the
-    // total foreground count: a routing hold already standing here must not be
-    // what decides this pane's lifetime is not the fresh one a Clear's
-    // suppression waits for.
-    if (!routingOnly && !bodyOwned) acquireCacheLifetimeForeground(ref);
+    // The pane-only count as it stood BEFORE this call's own hold, not the
+    // total foreground count and not the body-owned predicate: a routing hold
+    // already standing here must not be what decides this pane's lifetime is
+    // not the fresh one, and neither must a history hold or mutation pin, which
+    // keep the ref alive after a Clear without being a pane.
+    if (paneBodyOwners === 0 && !routingOnly) acquireCacheLifetimeForeground(ref);
     syncThreadSubscription(ref, client);
-    const lifetime = threadsStore.getState().cacheLifetimes.get(ref);
+    // Routing state is verified when this ref's route has accepted a source
+    // read, or when no production route exists to verify against. The cache
+    // lifetime's `shell` marker is not used here: nothing in the tree sets it,
+    // and the route's own flag is the one real code maintains.
+    const routingVerified = () =>
+      threadsStore.getState().cacheLifetimes.get(ref)?.shell !== true &&
+      entryTranscriptRoute(ref)?.cachedUnverified !== true;
     // A routing hold needs verified routing state and nothing else: identity,
     // status and capabilities from a model whose read has landed. A resident
     // verified model answers it here - no transcript open, and no post-Clear
     // reconciliation, both of which are the pane's work.
-    if (
-      routingOnly &&
-      threadsStore.getState().threads.has(ref) &&
-      lifetime?.shell !== true &&
-      entryTranscriptRoute(ref)?.cachedUnverified !== true
-    )
-      return;
+    if (routingOnly && threadsStore.getState().threads.has(ref) && routingVerified()) return;
     // Already hydrated: no re-read. The exception is a clear-suppressed ref
     // whose new explicit foreground lifetime owes an authoritative hydration
     // even while its stale display model is still resident.
     if (threadsStore.getState().threads.has(ref) && !needsClearLifetimeReconciliation(ref) && !routingOnly) {
-      if (bodyOwned) return; // Another mounted reader already owns the live bodies.
+      // Another mounted reader already owns the live bodies. A history hold or
+      // mutation pin answers the retention and Clear-suppression questions,
+      // not this one: a pin attaches a reader, it does not restore bodies, so
+      // the first pane to open after an eviction must still spend its open.
+      if (paneBodyOwners > 0) return;
       if (await openEntryTranscript(ref)) return;
       if (ensureGenerations.get(ref) !== generation || foregroundHolds(ref) <= 0) return;
       // Missing or unwritten backing rows cannot establish the captured view.
@@ -8344,6 +8351,10 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     let inflight = inflightHydrates.get(ref);
     if (!inflight) inflight = startHydration(client, cachedBase !== undefined ? getReadyEpoch() : claimEpoch);
     cachedBase = undefined; // the claim's arming consumed the shell; every re-arm reads the current model
+    // The read failure this loop is recovering from, kept for the re-arm's
+    // routing verdict: a routing hold that finds an unverified model must hand
+    // its caller the failure, not the shell's empty capabilities.
+    let lastReadError: unknown;
     try {
       for (;;) {
         const inflightClient = inflightHydrates.client(ref) ?? client;
@@ -8381,6 +8392,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             return;
           }
         } catch (err) {
+          lastReadError = err;
           const replacement = inflightHydrates.get(ref);
           const lifecycleActive = ensureGenerations.get(ref) === generation && foregroundHolds(ref) > 0;
           if (lifecycleActive && replacement && replacement !== inflight) {
@@ -8388,6 +8400,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             continue;
           }
           if (lifecycleActive && threadsStore.getState().threads.has(ref)) {
+            // A routing hold cannot accept presence as verification: the model
+            // standing here may be the shell whose read just failed. Retrying
+            // is the pane's recovery; the resend gets the failure and stays
+            // available for another press.
+            if (routingOnly) throw err;
             // The held model may be the shell a missed open published after
             // fencing its local read: a failed source read must not strand a
             // body-suppressed display on the next successful read. The
@@ -8404,7 +8421,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           // `deletedRefs` field doc) instead of re-arming another read.
           if (threadsStore.getState().deletedRefs.has(ref)) return;
           if (getWiredClient() !== inflightClient || getReadyEpoch() !== inflightEpoch) {
-            if (threadsStore.getState().threads.has(ref)) return;
+            // Presence alone is not verification for a routing hold: the model
+            // standing here may be the shell whose read just failed. A routing
+            // hold that finds an unverified model falls through to the retry
+            // below rather than resolving on the shell's empty capabilities.
+            if (threadsStore.getState().threads.has(ref) && (!routingOnly || routingVerified())) return;
             // requireReadyClient re-reads the CURRENT client on the way out,
             // so a client captured before the wait is never stamped onto a
             // hydration that outlived it. Same shape as the re-arm below and
@@ -8427,7 +8448,14 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
         }
 
         if (foregroundHolds(ref) <= 0) return;
-        if (threadsStore.getState().threads.has(ref)) return;
+        if (threadsStore.getState().threads.has(ref)) {
+          // A routing hold resolves only on verified routing state. The model
+          // standing here after a failed or superseded read may be the shell
+          // that read never replaced, so the resend gets the failure and stays
+          // available for another press. A pane lets its display stand.
+          if (!routingOnly || routingVerified()) return;
+          throw lastReadError ?? new Error("routing state is unverified after the read settled");
+        }
         if (threadsStore.getState().deletedRefs.has(ref)) return;
 
         client = await requireReadyClient();
@@ -9482,7 +9510,7 @@ installEntryRouteHost({
 function onCacheEpochObserved(observed: number): void {
   if (!observeCacheEpoch(observed)) return;
   threadsStore.setState((s) => ({
-    cacheLifetimes: suppressCacheLifetimesBefore(s.cacheLifetimes, observed, heldCountsAtStore),
+    cacheLifetimes: suppressCacheLifetimesBefore(s.cacheLifetimes, observed, threadBodyOwned),
   }));
 }
 
@@ -9674,7 +9702,7 @@ export async function clearCachedSessions(): Promise<{ committed: boolean }> {
   // same set the marker refused during the flight, re-derived at commit so a
   // lease captured mid-flight is covered too.
   threadsStore.setState((s) => {
-    const cacheLifetimes = suppressCacheLifetimesBefore(s.cacheLifetimes, result.epoch, heldCountsAtStore);
+    const cacheLifetimes = suppressCacheLifetimesBefore(s.cacheLifetimes, result.epoch, threadBodyOwned);
     return s.clearInFlight === armed ? { cacheLifetimes, clearInFlight: undefined } : { cacheLifetimes };
   });
   postCacheChannelMessage({ kind: "clear", epoch: result.epoch });
