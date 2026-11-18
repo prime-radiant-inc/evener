@@ -16,15 +16,20 @@ import (
 )
 
 type responsesToolState struct {
-	id, itemID, name    string
-	started             bool
-	argumentsSeen, done bool
-	args                bytes.Buffer
+	id, itemID, name string
+	started          bool
+	args             bytes.Buffer
+	output           *responsesOutputItem
 }
 
-type responsesOutputDelta struct {
-	text *strings.Builder
-	tool *responsesToolState
+type responsesOutputItem struct {
+	kind, id, phase string
+	index           int64
+	done            map[string]any
+	raw             json.RawMessage
+	text            strings.Builder
+	textComplete    bool
+	tool            *responsesToolState
 }
 
 // responsesOutputAccumulator retains completed items and pending answer and
@@ -33,31 +38,51 @@ type responsesOutputDelta struct {
 type responsesOutputAccumulator struct {
 	toolStates    map[string]*responsesToolState
 	itemToCallID  map[string]string
-	output        []any
-	rawOutput     []json.RawMessage
-	reasoningByID map[string]map[string]any
-	textByID      map[string]*strings.Builder
-	outputDeltas  []responsesOutputDelta
+	output        []*responsesOutputItem
+	byID          map[string]*responsesOutputItem
+	byIndex       map[int64]*responsesOutputItem
+	anonymousText *responsesOutputItem
+	completed     int
 }
 
 func newResponsesOutputAccumulator() *responsesOutputAccumulator {
 	return &responsesOutputAccumulator{
 		toolStates:   map[string]*responsesToolState{},
 		itemToCallID: map[string]string{},
+		byID:         map[string]*responsesOutputItem{},
+		byIndex:      map[int64]*responsesOutputItem{},
 	}
 }
 
-// Output returns the accumulated output array, in the wire shape a
-// response.completed payload's "output" field carries.
-func (acc *responsesOutputAccumulator) Output() []any { return acc.output }
-
-// RawOutput returns the raw JSON item tokens aligned with Output. An entry is
-// nil when the source event did not expose a decodable item token.
-func (acc *responsesOutputAccumulator) RawOutput() []json.RawMessage { return acc.rawOutput }
-
-func (acc *responsesOutputAccumulator) appendOutput(item any, rawItem json.RawMessage) {
-	acc.output = append(acc.output, item)
-	acc.rawOutput = append(acc.rawOutput, rawItem)
+// An item can be identified before its contents arrive. Retain the position
+// supplied by any of its events and keep first appearance for unindexed items.
+func (acc *responsesOutputAccumulator) outputItem(payload map[string]any, kind, id string, fallback *responsesOutputItem) *responsesOutputItem {
+	index := int64(-1)
+	if n, ok := payload["output_index"].(json.Number); ok {
+		if i, err := n.Int64(); err == nil && i >= 0 {
+			index = i
+		}
+	}
+	item := acc.byID[id]
+	if item == nil {
+		item = acc.byIndex[index]
+	}
+	if item == nil {
+		item = fallback
+	}
+	if item == nil || item.kind != kind || (id != "" && item.id != "" && id != item.id) {
+		item = &responsesOutputItem{kind: kind, index: -1}
+		acc.output = append(acc.output, item)
+	}
+	if id != "" {
+		item.id = id
+		acc.byID[id] = item
+	}
+	if index >= 0 {
+		item.index = index
+		acc.byIndex[index] = item
+	}
+	return item
 }
 
 func (acc *responsesOutputAccumulator) handleOutputTextDelta(payload map[string]any) string {
@@ -69,43 +94,40 @@ func (acc *responsesOutputAccumulator) handleOutputTextDelta(payload map[string]
 		return ""
 	}
 	id, _ := payload["item_id"].(string)
-	text := acc.textByID[id]
-	if text == nil {
-		if acc.textByID == nil {
-			acc.textByID = make(map[string]*strings.Builder)
-		}
-		text = new(strings.Builder)
-		acc.textByID[id] = text
-		acc.outputDeltas = append(acc.outputDeltas, responsesOutputDelta{text: text})
+	var fallback *responsesOutputItem
+	if id == "" && payload["output_index"] == nil {
+		fallback = acc.anonymousText
 	}
-	text.WriteString(delta)
+	item := acc.outputItem(payload, "message", id, fallback)
+	if item.id == "" && item.index < 0 {
+		acc.anonymousText = item
+	}
+	if !item.textComplete {
+		item.text.WriteString(delta)
+	}
 	return delta
 }
 
-func (acc *responsesOutputAccumulator) settleMessageText(item map[string]any) {
-	id, _ := item["id"].(string)
-	text := acc.textByID[id]
-	if text == nil {
-		text = acc.textByID[""]
+// A completed message can carry only its phase. Its text supersedes deltas
+// once the provider has supplied an actual output_text value.
+func (item *responsesOutputItem) settleMessage(message map[string]any) {
+	if phase, _ := message["phase"].(string); phase != "" {
+		item.phase = phase
 	}
-	if text == nil {
-		return
-	}
-	parts, _ := item["content"].([]any)
-	for _, part := range parts {
-		p, _ := part.(map[string]any)
-		if value, _ := p["text"].(string); p["type"] == "output_text" && value != "" {
-			text.Reset()
+	parts, _ := message["content"].([]any)
+	for _, entry := range parts {
+		part, _ := entry.(map[string]any)
+		if text, _ := part["text"].(string); part["type"] == "output_text" && text != "" {
+			item.textComplete = true
+			item.text.Reset()
 			return
 		}
 	}
 }
 
-func (acc *responsesOutputAccumulator) rememberToolArguments(st *responsesToolState) {
-	if !st.argumentsSeen {
-		acc.outputDeltas = append(acc.outputDeltas, responsesOutputDelta{tool: st})
-		st.argumentsSeen = true
-	}
+func (acc *responsesOutputAccumulator) toolOutput(payload map[string]any, st *responsesToolState, itemID string) *responsesOutputItem {
+	st.output = acc.outputItem(payload, "function_call", itemID, st.output)
+	return st.output
 }
 
 // toolStateFor is the accumulated state for one function call: the entry
@@ -127,16 +149,16 @@ func (acc *responsesOutputAccumulator) toolStateFor(callID, itemID, name string)
 	return st
 }
 
-// HandleOutputItemAdded pre-registers a function_call tool state from a
-// response.output_item.added event's item, keyed by whichever of
-// call_id/item_id are present. Non-function_call items are a no-op (the
-// wire shape carries no other item type worth pre-registering here).
-func (acc *responsesOutputAccumulator) HandleOutputItemAdded(item map[string]any) {
-	if itemType, _ := item["type"].(string); itemType != "function_call" {
+// HandleOutputItemAdded retains item positions and message phases before
+// deltas arrive, and registers both identities of a function call.
+func (acc *responsesOutputAccumulator) HandleOutputItemAdded(payload, item map[string]any) {
+	itemID, _ := item["id"].(string)
+	if kind, _ := item["type"].(string); kind != "function_call" {
+		output := acc.outputItem(payload, kind, itemID, nil)
+		output.phase, _ = item["phase"].(string)
 		return
 	}
 	callID, _ := item["call_id"].(string)
-	itemID, _ := item["id"].(string)
 	name, _ := item["name"].(string)
 	stateID := callID
 	if stateID == "" {
@@ -162,6 +184,7 @@ func (acc *responsesOutputAccumulator) HandleOutputItemAdded(item map[string]any
 		st.name = name
 	}
 	acc.toolStates[stateID] = st
+	acc.toolOutput(payload, st, itemID)
 }
 
 // HandleFunctionCallArgumentsDelta merges one
@@ -193,7 +216,7 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDelta(payload 
 		return nil, "", false
 	}
 	st := acc.toolStateFor(callID, itemID, name)
-	acc.rememberToolArguments(st)
+	acc.toolOutput(payload, st, itemID).tool = st
 	if st.name == "" && name != "" {
 		st.name = name
 	}
@@ -236,7 +259,7 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDone(payload m
 		acc.itemToCallID[itemID] = st.id
 	}
 	if argsStr != "" {
-		acc.rememberToolArguments(st)
+		acc.toolOutput(payload, st, itemID).tool = st
 		st.args.Reset()
 		if rawArgs, rawOK := captureResponsesArgumentsDoneRaw(eventData); rawOK && rawArgs != nil {
 			if content, err := protocolhttp.RawStringContent(rawArgs); err == nil {
@@ -250,17 +273,16 @@ func (acc *responsesOutputAccumulator) HandleFunctionCallArgumentsDone(payload m
 }
 
 // HandleOutputItemDone processes a response.output_item.done event's item,
-// appending it to the accumulated output (mirroring the terminal payload's
-// "output" array shape). For function_call items it also resolves/updates
+// recording its settled output. For function_call items it also resolves/updates
 // tool state, using the item's own "arguments" when present or falling back
 // to whatever deltas were accumulated.
 //
 // It returns the raw item (nil if the payload carried none -- e.g. the
 // event was malformed), and, only for a function_call item whose call_id
 // resolved, the tool state and its full arguments string with ok=true.
-// ok=false covers both "not a function_call" (rawItem is non-nil; already
-// appended to Output()) and "function_call with no resolvable call_id"
-// (rawItem is non-nil, not appended) -- callers distinguish the two by
+// ok=false covers both "not a function_call" (the item is recorded) and
+// "function_call with no resolvable call_id" (the item is skipped).
+// Callers distinguish the two by
 // checking rawItem's own "type" field, matching the two different
 // live-stream fallbacks (best-effort end-of-text vs. raw passthrough).
 func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]any, eventData []byte) (rawItem map[string]any, state *responsesToolState, argsStr string, ok bool) {
@@ -274,21 +296,24 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 	}
 	rawItemToken := captureResponsesOutputItemRaw(eventData)
 	it, _ := item["type"].(string)
+	itemID, _ := item["id"].(string)
 	if it != "function_call" {
+		var fallback *responsesOutputItem
 		if it == "message" {
-			acc.settleMessageText(item)
+			fallback = acc.anonymousText
 		}
-		if id, _ := item["id"].(string); it == "reasoning" && id != "" {
-			if acc.reasoningByID == nil {
-				acc.reasoningByID = make(map[string]map[string]any)
-			}
-			acc.reasoningByID[id] = item
+		output := acc.outputItem(payload, it, itemID, fallback)
+		if output == acc.anonymousText {
+			acc.anonymousText = nil
 		}
-		acc.appendOutput(item, rawItemToken)
+		if it == "message" {
+			output.settleMessage(item)
+		}
+		output.done, output.raw = item, rawItemToken
+		acc.completed++
 		return item, nil, "", false
 	}
 	callID, _ := item["call_id"].(string)
-	itemID, _ := item["id"].(string)
 	name, _ := item["name"].(string)
 	argsStr, _ = item["arguments"].(string)
 	if rawArgs, rawOK := captureResponsesItemArgsRaw(rawItemToken); rawOK && rawArgs != nil {
@@ -303,7 +328,6 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 		return item, nil, "", false
 	}
 	st := acc.toolStateFor(callID, itemID, name)
-	st.done = true
 	if itemID != "" {
 		st.itemID = itemID
 		acc.itemToCallID[itemID] = st.id
@@ -319,13 +343,16 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 	if argsStr == "" {
 		argsStr = st.args.String()
 	}
-	acc.appendOutput(map[string]any{
+	output := acc.toolOutput(payload, st, itemID)
+	output.done = map[string]any{
 		"type":      "function_call",
 		"call_id":   st.id,
 		"id":        st.itemID,
 		"name":      st.name,
 		"arguments": argsStr,
-	}, rawItemToken)
+	}
+	output.raw = rawItemToken
+	acc.completed++
 	return item, st, argsStr, true
 }
 
@@ -525,7 +552,7 @@ func (p *Protocol) decodeStream(sctx context.Context, cancel context.CancelFunc,
 			switch typ {
 			case "response.output_item.added":
 				if item, ok := payload["item"].(map[string]any); ok {
-					acc.HandleOutputItemAdded(item)
+					acc.HandleOutputItemAdded(payload, item)
 				}
 			case "response.output_text.delta":
 				delta := acc.handleOutputTextDelta(payload)

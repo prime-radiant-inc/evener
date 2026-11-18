@@ -1,8 +1,10 @@
 package responses
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/invariant"
@@ -17,13 +19,16 @@ func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawM
 	var rawBodyItems []json.RawMessage
 	var rawBodyCaptured bool
 	var content []llm.ContentPart
-	var recovered int
+	onlyReasoningPlaceholders := stream != nil
 	for itemIdx, itemAny := range out {
 		item, ok := itemAny.(map[string]any)
 		if !ok {
 			continue
 		}
 		typ, _ := item["type"].(string)
+		if typ != "reasoning" {
+			onlyReasoningPlaceholders = false
+		}
 		switch typ {
 		case "message":
 			phase, _ := item["phase"].(string)
@@ -99,9 +104,13 @@ func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawM
 				},
 			})
 		case "reasoning":
-			thinking, filled := stream.settleReasoning(item)
-			if filled {
-				recovered++
+			thinking := responsesThinking(item)
+			if stream != nil {
+				if hasResponsesReasoning(thinking) {
+					onlyReasoningPlaceholders = false
+				} else {
+					thinking = stream.settleReasoning(item, thinking)
+				}
 			}
 			if thinking != nil {
 				content = append(content, llm.ContentPart{Kind: llm.ContentThinking, Thinking: thinking})
@@ -110,70 +119,97 @@ func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawM
 			// ignore
 		}
 	}
-	if recovered > 0 && recovered == len(content) {
-		return stream.outputWithRecoveredReasoning(content)
+	if onlyReasoningPlaceholders {
+		return stream.sparseContent(content, len(out) != 0)
 	}
 	return content
 }
 
-// settleReasoning reports whether a matching completed item supplied native
-// reasoning that the terminal omitted.
-func (acc *responsesOutputAccumulator) settleReasoning(item map[string]any) (*llm.ThinkingData, bool) {
-	terminal := responsesThinking(item)
+// Only a completed reasoning item with the same native ID may supply
+// reasoning absent from the terminal.
+func (acc *responsesOutputAccumulator) settleReasoning(item map[string]any, terminal *llm.ThinkingData) *llm.ThinkingData {
 	id, _ := item["id"].(string)
-	if acc == nil || acc.reasoningByID[id] == nil || hasResponsesReasoning(terminal) {
-		return terminal, false
+	output := acc.byID[id]
+	if output == nil || output.kind != "reasoning" {
+		return terminal
 	}
-	prior := responsesThinking(acc.reasoningByID[id])
+	prior := responsesThinking(output.done)
 	if !hasResponsesReasoning(prior) {
-		return terminal, false
+		return terminal
 	}
 	if summary := parseReasoningSummary(item["summary"]); len(summary) > 0 {
 		prior.Summary = summary
 	}
-	return prior, true
+	return prior
 }
 
-// A terminal made entirely of reasoning placeholders supplies their order
-// and summaries. The completed items place them among any settled siblings.
-func (acc *responsesOutputAccumulator) outputWithRecoveredReasoning(reasoning []llm.ContentPart) []llm.ContentPart {
-	ids := make(map[string]bool, len(reasoning))
-	for _, part := range reasoning {
-		ids[part.Thinking.ID] = true
+// An empty terminal or one containing only reasoning placeholders relies on
+// observed output for its answer and calls. Named terminal placeholders admit
+// only their matching reasoning. A stream of deltas alone remains available
+// to the caller's accumulator, including its display-only reasoning.
+func (acc *responsesOutputAccumulator) sparseContent(reasoning []llm.ContentPart, hasTerminalItems bool) []llm.ContentPart {
+	if acc.completed == 0 && len(reasoning) == 0 {
+		return nil
 	}
+	matched := make(map[*responsesOutputItem]llm.ContentPart, len(reasoning))
 	var content []llm.ContentPart
-	for i, entry := range acc.output {
-		item, _ := entry.(map[string]any)
-		if item["type"] == "reasoning" {
-			if id, _ := item["id"].(string); ids[id] {
-				content = append(content, reasoning[0])
-				reasoning = reasoning[1:]
-				delete(ids, id)
+	for _, part := range reasoning {
+		if item := acc.byID[part.Thinking.ID]; item != nil && item.kind == "reasoning" {
+			matched[item] = part
+		} else {
+			content = append(content, part)
+		}
+	}
+	acc.orderOutput()
+	for _, item := range acc.output {
+		if hasTerminalItems && item.kind == "reasoning" {
+			if part, ok := matched[item]; ok {
+				content = append(content, part)
 			}
 			continue
 		}
-		parts := responseContentFromOutputItems(acc.output[i:i+1], nil, acc.rawOutput[i:i+1], nil)
-		content = append(content, parts...)
-	}
-	return acc.withOutputDeltas(content)
-}
-
-// Completed items take precedence over deltas of the same answer or call.
-func (acc *responsesOutputAccumulator) withOutputDeltas(content []llm.ContentPart) []llm.ContentPart {
-	if len(content) == 0 {
-		return content
-	}
-	for _, delta := range acc.outputDeltas {
-		if delta.text != nil && delta.text.Len() != 0 {
-			content = append(content, llm.ContentPart{Kind: llm.ContentText, Text: delta.text.String()})
+		if item.text.Len() > 0 {
+			content = append(content, llm.ContentPart{Kind: llm.ContentText, Text: item.text.String(), Phase: item.phase})
+			continue
 		}
-		if st := delta.tool; st != nil && !st.done {
+		if item.done != nil {
+			parts := responseContentFromOutputItems([]any{item.done}, nil, []json.RawMessage{item.raw}, nil)
+			if item.kind == "message" && item.phase != "" {
+				for i := range parts {
+					parts[i].Phase = item.phase
+				}
+			}
+			if len(parts) != 0 {
+				content = append(content, parts...)
+				continue
+			}
+		}
+		if st := item.tool; st != nil {
 			content = append(content, llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
 				ID: st.id, ItemID: st.itemID, Name: st.name, Type: "function", Arguments: st.args.Bytes(),
 			}})
 		}
 	}
 	return content
+}
+
+// Providers may omit an index on some or all items. Fill unclaimed positions
+// by first appearance without allocating a slice sized by a wire index.
+func (acc *responsesOutputAccumulator) orderOutput() {
+	if len(acc.byIndex) == 0 {
+		return
+	}
+	var next int64
+	for _, item := range acc.output {
+		if item.index < 0 {
+			for acc.byIndex[next] != nil {
+				next++
+			}
+			item.index = next
+			next++
+		}
+	}
+	slices.SortStableFunc(acc.output, func(a, b *responsesOutputItem) int { return cmp.Compare(a.index, b.index) })
 }
 
 func hasResponsesReasoning(t *llm.ThinkingData) bool {
@@ -239,12 +275,8 @@ func fromResponses(raw map[string]any, requestedModel string, body []byte) llm.R
 // An empty output array uses the stream's completed items and pending output.
 func settleResponsesTerminalOutput(raw map[string]any, requestedModel string, body []byte, acc *responsesOutputAccumulator) llm.Response {
 	out, _ := raw["output"].([]any)
-	if len(out) == 0 {
-		content := responseContentFromOutputItems(acc.Output(), nil, acc.RawOutput(), nil)
-		return responseWithContent(raw, requestedModel, acc.withOutputDeltas(content))
-	}
 	r := responseWithContent(raw, requestedModel, responseContentFromOutputItems(out, body, nil, acc))
-	if n := len(acc.Output()); n > 0 && len(out) != n {
+	if n := acc.completed; len(out) > 0 && n > 0 && len(out) != n {
 		r.Warnings = append(r.Warnings, llm.Warning{
 			Code:    "responses_output_item_count_mismatch",
 			Message: fmt.Sprintf("terminal output items=%d differ from accumulated stream items=%d", len(out), n),

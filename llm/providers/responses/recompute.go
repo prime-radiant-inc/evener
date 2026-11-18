@@ -102,7 +102,7 @@ func extractResponsesFromSSE(body []byte, requestedModel string) (llm.Response, 
 		switch typ {
 		case "response.output_item.added":
 			if item, ok := payload["item"].(map[string]any); ok {
-				acc.HandleOutputItemAdded(item)
+				acc.HandleOutputItemAdded(payload, item)
 			}
 		case "response.output_text.delta":
 			acc.handleOutputTextDelta(payload)

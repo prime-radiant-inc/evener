@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -64,18 +65,26 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 	const toolAdded = `{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"f"}}`
 	const argumentsDone = `{"type":"response.function_call_arguments.done","item_id":"fc_1","arguments":"{}"}`
 	done := func(item string) string { return `{"type":"response.output_item.done","item":` + item + "}" }
+	at := func(index int, event string) string {
+		return `{"output_index":` + strconv.Itoa(index) + "," + event[1:]
+	}
+	const messageAdded = `{"type":"response.output_item.added","item":{"type":"message","id":"msg_2","phase":"commentary"}}`
+	const reasoningAdded = `{"type":"response.output_item.added","item":{"type":"reasoning","id":"rs_1"}}`
+	const emptyCommentary = `{"type":"message","id":"msg_2","phase":"commentary","content":[{"type":"output_text","text":""}]}`
 	var prefix strings.Builder
 	for _, ev := range []string{
-		`{"type":"response.reasoning_part.added","item_id":"rs_1","output_index":0,"content_index":0,"part":{"type":"reasoning_text","text":""}}`,
-		`{"type":"response.reasoning_text.delta","item_id":"rs_1","output_index":0,"content_index":0,"delta":"r1"}`,
-		`{"type":"response.reasoning_text.delta","item_id":"rs_1","output_index":0,"content_index":0,"delta":" "}`,
-		`{"type":"response.reasoning_part.added","item_id":"rs_1","output_index":0,"content_index":1,"part":{"type":"reasoning_text","text":""}}`,
-		`{"type":"response.reasoning_text.delta","item_id":"rs_1","output_index":0,"content_index":1,"delta":"r2"}`,
+		`{"type":"response.reasoning_part.added","item_id":"rs_1","content_index":0,"part":{"type":"reasoning_text","text":""}}`,
+		`{"type":"response.reasoning_text.delta","item_id":"rs_1","content_index":0,"delta":"r1"}`,
+		`{"type":"response.reasoning_text.delta","item_id":"rs_1","content_index":0,"delta":" "}`,
+		`{"type":"response.reasoning_part.added","item_id":"rs_1","content_index":1,"part":{"type":"reasoning_text","text":""}}`,
+		`{"type":"response.reasoning_text.delta","item_id":"rs_1","content_index":1,"delta":"r2"}`,
 	} {
 		prefix.WriteString("data: " + ev + "\n\n")
 	}
 	answer := replayItem{Type: "message", Content: []replayText{{"output_text", "m1"}}}
 	otherAnswer := replayItem{Type: "message", Content: []replayText{{"output_text", "m2"}}}
+	commentary := otherAnswer
+	commentary.Phase = "commentary"
 	raw := replayItem{Type: "reasoning", ID: "rs_1", Content: []replayText{{"reasoning_text", " r3 "}, {"reasoning_text", ""}, {"reasoning_text", "r4"}}, Summary: []replayText{}}
 	rawWithSummary := raw
 	rawWithSummary.Summary = []replayText{{"summary_text", "s1"}}
@@ -107,6 +116,14 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 		{"terminal raw reasoning wins", []string{done(earlierItem)}, []string{reasoningItem, answerItem}, []replayItem{raw, answer}},
 		{"terminal encrypted reasoning wins", []string{done(reasoningItem)}, []string{encryptedItem, answerItem}, []replayItem{encrypted, answer}},
 		{"completed encrypted reasoning survives a placeholder", []string{done(encryptedItem)}, []string{blankReasoning, answerItem}, []replayItem{encrypted, answer}},
+		{"placeholder with completed answer only", []string{done(answerItem)}, []string{emptyReasoning}, []replayItem{answer}},
+		{"unmatched reasoning leaves completed answer and tool", []string{done(otherItem), done(answerItem), done(toolItem)}, []string{summaryItem}, []replayItem{answer, tool}},
+		{"indexed delta before completed reasoning", []string{at(1, done(reasoningItem)), at(0, otherAnswerDelta)}, []string{emptyReasoning}, []replayItem{otherAnswer, raw}},
+		{"added positions order sparse text tool and reasoning", []string{at(2, reasoningAdded), at(1, toolAdded), at(0, messageAdded), done(reasoningItem), argumentsDone, otherAnswerDelta}, nil, []replayItem{commentary, tool, raw}},
+		{"unindexed events preserve first appearance", []string{done(reasoningItem), otherAnswerDelta, done(toolItem)}, []string{emptyReasoning}, []replayItem{raw, otherAnswer, tool}},
+		{"late message index retains its commentary delta", []string{done(reasoningItem), otherAnswerDelta, at(0, done(emptyCommentary))}, []string{emptyReasoning}, []replayItem{commentary, raw}},
+		{"indexed tool delta before completed reasoning", []string{at(1, done(reasoningItem)), at(0, toolDelta)}, []string{emptyReasoning}, []replayItem{tool, raw}},
+		{"substantive terminal owns its answer", []string{done(otherItem), done(earlierAnswer), toolDelta}, []string{answerItem}, []replayItem{answer}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var sse strings.Builder
@@ -122,33 +139,32 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 			}
 			defer stream.Close() //nolint:errcheck
 			var live strings.Builder
+			var settled *llm.Response
 			acc := llm.NewStreamAccumulator()
 			for ev := range stream.Events() {
 				acc.Process(ev)
 				if ev.Type == llm.StreamEventReasoningDelta {
 					live.WriteString(ev.ReasoningDelta)
 				}
+				if ev.Type == llm.StreamEventFinish {
+					settled = ev.Response
+				}
 			}
 			if got := live.String(); got != "r1 \n\nr2" {
 				t.Fatalf("live reasoning = %q", got)
 			}
-			if acc.Response() == nil {
+			if acc.Response() == nil || settled == nil {
 				t.Fatal("stream did not settle")
 			}
 			if got := replayInput(t, acc.Response().Message, true); !reflect.DeepEqual(got, tc.want) {
 				t.Fatalf("next input = %#v, want %#v", got, tc.want)
 			}
-			for _, item := range tc.want {
-				if item.Type == "reasoning" {
-					recorded, err := ExtractRecordedResponse([]byte(sse.String()), "glm-5.3")
-					if err != nil {
-						t.Fatal(err)
-					}
-					if got := replayInput(t, recorded.Message, true); !reflect.DeepEqual(got, tc.want) {
-						t.Fatalf("recorded input = %#v, want %#v", got, tc.want)
-					}
-					break
-				}
+			recorded, err := ExtractRecordedResponse([]byte(sse.String()), "glm-5.3")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got, want := replayInput(t, recorded.Message, true), replayInput(t, settled.Message, true); !reflect.DeepEqual(got, want) {
+				t.Fatalf("recorded input = %#v, live settled input = %#v", got, want)
 			}
 		})
 	}
