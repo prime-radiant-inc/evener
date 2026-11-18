@@ -2804,6 +2804,11 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 		// ahead of the transcript that explains it. Held across both steps, the
 		// door also keeps a fold from committing its markers between them.
 		//
+		// It keeps an in-flight send ahead of the terminal SESSION_END too:
+		// announceSessionEnd takes this same door, so a live reader cannot see
+		// the environment event behind the boundary that says the session is
+		// over.
+		//
 		// The event is a trigger, not a snapshot: the bridge samples current
 		// context when it handles the event (server/thread_envelope.go's
 		// facetsByEvent), so the sample can reflect state a later publication
@@ -2811,20 +2816,17 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 		// events: a fold commits its markers under the door and flushes its
 		// buffered events only after releasing it (publishFoldTransaction), so
 		// a reader can observe a fold's events after a transcript entry that
-		// another publication wrote in the meantime. The sequence fixes the
-		// entry before the send with no fold's markers between those two
-		// steps, and that is all it fixes.
+		// another publication wrote in the meantime.
 		//
-		// This is the one event published under the door, and the trade is
-		// real: emit is not a bounded send. It parks indefinitely against the
-		// authoritative consumer when the buffer is full (holding eventsMu for
-		// read), and it runs the job-watch fan-out synchronously, job-store
-		// persistence and cross-session notification delivery included. All of
-		// that now runs under attentionMu, so a slow daemon consumer stalls
-		// this session's transcript writes and fold publication rather than
-		// only the emitter. Accepted because a parked consumer already stalls
-		// the emitting turn and the door already spans an fsync; see
-		// publishFoldTransaction, whose deferred flush must NOT follow this
+		// The trade is real: emit is not a bounded send. It parks indefinitely
+		// against the authoritative consumer when the buffer is full (holding
+		// eventsMu for read), and it runs the job-watch fan-out synchronously,
+		// job-store persistence and cross-session notification delivery
+		// included. All of that now runs under attentionMu, so a slow daemon
+		// consumer stalls this session's transcript writes and fold publication
+		// rather than only the emitter. Accepted because a parked consumer
+		// already stalls the emitting turn and the door already spans an fsync;
+		// see publishFoldTransaction, whose deferred flush must NOT follow this
 		// example.
 		if hook := s.cfg.testOnly.beforeEnvironmentEventPublish; hook != nil {
 			hook()
