@@ -2323,11 +2323,17 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 							// visible turns stay exactly where they were, because the
 							// rows were not carried and certifying the page would skip
 							// them.
+							// Both sides must exist for a hand-off to mean anything: a
+							// discard has no incoming history to read an owner from, and
+							// a held model with no history has no held samples either.
+							// The guard above tests `.invalidatedAtGeneration`, which
+							// does not narrow `history` itself.
 							const heldHistory = currentConv.history;
+							const pageHistory = versionedMerge.history;
 							const retired =
-								heldHistory === undefined
+								heldHistory === undefined || pageHistory === undefined
 									? undefined
-									: handOffPageHold(currentConv, heldHistory, versionedMerge, versionedMerge.history);
+									: handOffPageHold(currentConv, heldHistory, versionedMerge, pageHistory);
 							if (retired) set({ conversation: { ...currentConv, ...retired } });
 							set({ loadingOlder: false });
 							return { status: "ignored" };
