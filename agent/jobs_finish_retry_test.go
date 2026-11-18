@@ -4,6 +4,7 @@ import (
 	"errors"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/internal/jobstore"
 )
@@ -46,6 +47,12 @@ func TestWriteFinishJobRetriesTheRetainedTerminalEvent(t *testing.T) {
 		t.Fatal("the refused finish retained no event, so the retry has nothing to reuse and must mint a new generation")
 	}
 	firstGeneration := run.retainedFinish.TerminalGen
+	firstEndedAt := run.retainedFinish.TS
+	// Move the clock between the two attempts. A frozen clock makes the retry's
+	// fresh sample identical to the retained one by construction, and a fixture
+	// that cannot tell them apart cannot show a divergence: with this line
+	// removed the assertions below pass either way.
+	freezeClockAt(jm, frozenTestTime.Add(5*time.Minute))
 
 	var persisted []jobstore.Event
 	jm.appendEvent = func(event jobstore.Event) error {
@@ -64,6 +71,19 @@ func TestWriteFinishJobRetriesTheRetainedTerminalEvent(t *testing.T) {
 	}
 	if terminal == nil || terminal.generation != firstGeneration {
 		t.Fatalf("the retried finish completed with terminal generation %v, want the %q the refused attempt built", terminal, firstGeneration)
+	}
+	// The completion has ONE end time. The journal keeps the retained event's,
+	// so the live view and the notification have to report the same one rather
+	// than the retry's clock: otherwise a delayed retry tells a reader the job
+	// ended when the retry ran, not when it finished.
+	if persisted[0].TS != firstEndedAt {
+		t.Fatalf("the retry persisted ended-at %v, want the retained %v", persisted[0].TS, firstEndedAt)
+	}
+	if terminal.endedAt != firstEndedAt {
+		t.Fatalf("the retried finish reports ended-at %v, but the record it persisted says %v: one completion, two timestamps", terminal.endedAt, persisted[0].TS)
+	}
+	if run.rec.EndedAt == nil || !run.rec.EndedAt.Equal(firstEndedAt) {
+		t.Fatalf("the in-memory record reports ended-at %v, but the record it persisted says %v", run.rec.EndedAt, persisted[0].TS)
 	}
 	if run.retainedFinish != nil {
 		t.Fatal("the durable retry left the retained event in place, so a later finish would reuse a generation that is already spent")

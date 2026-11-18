@@ -1802,6 +1802,17 @@ func (jm *jobManager) writeFinishJob(run *runningJob, status jobstore.Status, re
 	if run.retainedFinish != nil {
 		terminal.generation = run.retainedFinish.TerminalGen
 		finished = *run.retainedFinish
+		// The in-memory terminal state and the notification carry the same
+		// completion the journal is about to hold. Reusing the retained event's
+		// generation but re-sampling its end time gives one completion two
+		// timestamps: the durable record keeps the original, and everything a
+		// reader of the live session sees reports the retry's clock instead. A
+		// delayed retry then shows a finish that happened minutes after it did.
+		if finished.EndedAt != nil {
+			terminal.endedAt = *finished.EndedAt
+		} else {
+			terminal.endedAt = finished.TS
+		}
 	}
 	terminal.finished = finished
 	// Hold it until it is durable. A retry reads this field, and clearing it
