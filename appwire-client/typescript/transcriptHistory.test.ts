@@ -2060,3 +2060,46 @@ test("a deferred page from a replacement still retires the retired source's hold
   expect(merged.delegates?.[0]?.delegateId).toBe("dlg_held");
   expect(holdOwnerOf(merged.history!)).toBe("1");
 });
+
+test("a merged page that records the incoming owner does not keep the retired source's wait", () => {
+  // RoboRev 53429 (Medium 5): the MERGE branch. `owned` handed the incoming
+  // owner to history, but the merged model was rebuilt from the ORIGINAL
+  // `model` (`withOlderFrontier(model, ...)` and `withDisplay(next, ...)`), so
+  // the page published the new owner beside the retired daemon's 900. A newer
+  // boot then reads as a takeover against an owner it already is, and - worse
+  // - the wait stays visible until a latest-window read happens to succeed.
+  // The merge must build from the hand-off's model.
+  // The held model is a saved read: its history identity is the fallback's,
+  // while the recorded hold OWNER is the live daemon still sampling. The
+  // incoming page shares the held identity, so its content MERGES (a differing
+  // boot would take the invalidate branch, which retires on its own).
+  const held = mergeOlderItemPage(
+    pageOrderingModel(),
+    normalHistoryPage(120, [positionedFragmentTurn("older", [["older-item", 10]])]),
+  );
+  const withHold = {
+    ...held,
+    history: { ...held.history!, bootGeneration: "1", holdOwner: "5@root" },
+    delegates: [heldDelegate(900, 3)],
+  };
+  const replacementPage: ThreadHistoryTurnsListResponse = {
+    // Longer than the held 120: a shorter same-incarnation page is a
+    // "discard", which is the sibling branch, and this test is the MERGE one.
+    ...normalHistoryPage(130, [positionedFragmentTurn("older", [["older-item", 10]])]),
+    bootGeneration: "1",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: 130 },
+  };
+
+  const merged = mergeOlderItemPage(withHold, replacementPage);
+
+  // The page's CONTENT merged (its own row joined the held one).
+  expect(merged.history?.turns.length).toBeGreaterThan(1);
+  // The page named a replacement, so the incoming boot is the recorded owner...
+  expect(holdOwnerOf(merged.history!)).toBe("1");
+  // ...and the retired source's wait is not still on the model beside it.
+  // Reverting the merge to `model` leaves 900 here, which outranks every
+  // sequence the replacement numbering from its own start will reach.
+  expect(merged.delegates?.[0]?.holdSequence).toBeUndefined();
+  expect(merged.delegates?.[0]?.delegateId).toBe("dlg_held");
+});

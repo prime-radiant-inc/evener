@@ -1446,8 +1446,15 @@ function mergeVersionedPage<M extends ThreadModel>(
           );
       // A page that names no successor cursor names the end of older history
       // for the range it serves (#5585).
+      // The merged model is built from the hand-off's model, not the original:
+      // `owned` gives history the incoming owner, but spreading `model` here
+      // rebuilt the result from the PRE-hand-off delegates, so a page that
+      // retired the held samples published the new owner beside the retired
+      // wait - visible until a latest-window read succeeded, and for good if
+      // that read failed.
+      const merged = handed ?? model;
       const next = {
-        ...(takeCursor ? withOlderFrontier(model, resp.nextCursor) : model),
+        ...(takeCursor ? withOlderFrontier(merged, resp.nextCursor) : merged),
         ...(servingFacts ? { servingFacts } : {}),
       };
       // The held length never advances from a page: a page's snapshot length
