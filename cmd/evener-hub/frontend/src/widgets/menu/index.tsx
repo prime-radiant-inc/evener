@@ -311,18 +311,26 @@ function classifyScrollerScroll(
   if (previous.scrollTop > maximum && Math.abs(now - maximum) <= CLAMP_ROUNDING) return "clamp";
   const moved = now - previous.scrollTop;
   const contentMoved = contentTop - previous.contentTop;
-  // The offset grew, and the trigger moved deeper into the content by AT LEAST
-  // that much. That is the browser holding the anchor still: it moves the
-  // offset by whatever arrived above the anchor, and the trigger - which can
-  // sit below the anchor - moves by that plus whatever arrived between the
-  // two. One refresh can put rows on both sides of the anchor, so the offset
-  // is a lower bound and not the whole story: requiring the two numbers to be
-  // equal dismisses exactly that case.
+  // The offset moved, in the same direction as the trigger's place in the
+  // content, by AT LEAST as much. That is the browser holding the anchor
+  // still: it moves the offset by whatever arrived above the anchor, and the
+  // trigger - which can sit below the anchor - moves by that plus whatever
+  // arrived between the two. One refresh can put rows on both sides of the
+  // anchor, so the offset is a lower bound and not the whole story: requiring
+  // the two numbers to be equal dismisses exactly that case.
+  //
+  // Both directions count, because a rail both gains and loses rows. A session
+  // arriving above the anchor grows the offset; one LEAVING above it shrinks
+  // the offset by the height that went, and slides the rest of the content up
+  // with it. The reader is sitting still in both, and in both the trigger is
+  // where they left it.
   //
   // A reader's own scroll never looks like this. Their drag moves the offset
   // with the content untouched, so `contentMoved` is zero and nothing above
   // them explains the movement.
-  if (moved > 0 && contentMoved >= moved) return "anchoring";
+  if (moved !== 0 && Math.sign(contentMoved) === Math.sign(moved) && Math.abs(contentMoved) >= Math.abs(moved)) {
+    return "anchoring";
+  }
   return "scrolled";
 }
 
@@ -523,19 +531,16 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         // `before === null` is the first look: the row was just focused and the
         // popup was placed around it, so layout has not moved it out of view.
         if (before === null) return;
-        // The offset both looks are judged at. It is the reader's present one,
-        // because that is the world they are looking at - EXCEPT when the
-        // browser moved it. A popup whose content shrank clamps an offset that
-        // is now past the end, and judging the old row at the clamped offset
-        // makes a row that was never in sight look as though it had been, which
-        // scrolls the reader back to it. So a clamp is judged where it started:
-        // that is a fact read before the correction, not after it.
-        const rangeNow = popup.scrollHeight - popup.offsetHeight;
-        const clamped = before.scrolledTo > rangeNow && Math.abs(now.scrolledTo - rangeNow) <= CLAMP_ROUNDING;
-        const viewportTop = clamped ? before.scrolledTo : now.scrolledTo;
+        // Each look is judged at the offset it was TAKEN at. A clamp moves the
+        // whole list under a viewport that did not move, so reading the earlier
+        // look at the later offset says the row climbed while the scrollport
+        // stayed put - clipping no layout produced - and reading the later look
+        // at the earlier offset says the same thing backwards. Measured where
+        // each was taken, a clamp cancels: the row moved by exactly what the
+        // offset gave back, so the part of it on screen is the part that was.
         const hiddenBelow = (obs: RowObservation) =>
-          Math.min(obs.height, Math.max(0, obs.top + obs.height - (viewportTop + obs.portHeight)));
-        const hiddenAbove = (obs: RowObservation) => Math.min(obs.height, Math.max(0, viewportTop - obs.top));
+          Math.min(obs.height, Math.max(0, obs.top + obs.height - (obs.scrolledTo + obs.portHeight)));
+        const hiddenAbove = (obs: RowObservation) => Math.min(obs.height, Math.max(0, obs.scrolledTo - obs.top));
         // Each side is clamped to the row's own height: the gap between a row
         // and the scrollport is not the row's, so an equally hidden row stays
         // equal when the scrollport shrinks under it.

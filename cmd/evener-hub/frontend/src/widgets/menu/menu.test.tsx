@@ -458,6 +458,60 @@ test("a live row arriving above the trigger anchors the scroll and leaves the me
   }
 });
 
+// The mirror of the reading above, and the reason it cannot be one-directional:
+// a rail loses rows as well as gaining them. A session ends, its Live row goes
+// above the visible area, and the browser lowers the offset by the height that
+// left so the pinned section stays where the reader is looking. Both offsets
+// are inside the range, so nothing was clamped, and the trigger never moved on
+// screen. A classifier that only accepts a GROWING offset reads this as the
+// reader scrolling and takes the menu away on a live update they did not cause.
+test("a live row leaving above the trigger anchors the scroll and leaves the menu open", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  const triggerTop = 300;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  const { flush } = captureFrames();
+  try {
+    render(
+      <div data-testid="owning-scroller" style={{ overflowY: "auto" }}>
+        <Menu trigger="Actions" items={items()} />
+      </div>,
+    );
+    const scroller = screen.getByTestId("owning-scroller");
+    // The rail scrolled deep into Live: 340 of 400 available in a 200px box, so
+    // the offset sits well inside the range rather than at its end.
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 600 });
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 200 });
+    scroller.scrollTop = 340;
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu").style.top).toBe("332px"); // 300 + 28 + 4
+
+    // A session ends and its Live row leaves above the visible area. The rail's
+    // content shrinks by the 40 the row took, and the browser lowers the offset
+    // by the same 40 to hold the pinned section still: 300 of a new 360. The
+    // previous offset of 340 was inside that range too, so the browser is not
+    // correcting an invalid position - this is anchoring, and only the
+    // direction of the offset change separates it from a reader's scroll.
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 560 });
+    scroller.scrollTop = 300;
+    fireEvent.scroll(scroller);
+    flush();
+
+    // The trigger is exactly where the reader left it, so the menu stays.
+    expect(screen.getByRole("menu")).toBeTruthy();
+    expect(screen.getByRole("menu").style.top).toBe("332px");
+  } finally {
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
 // The other side of that reading, and the one that keeps this a fix rather than
 // a suppression: a scroll that really does slide the trigger out from under the
 // popup still closes the menu. Here the rail's content is untouched and the
@@ -564,6 +618,18 @@ test("a refresh that inserts on both sides of the anchor still leaves the menu o
     return box(0, 0, 0, 0);
   });
   stubPopupLayoutBox(window, 160, 120);
+  // The pane's own layout notification, fired by hand: this is the reflow pass
+  // that must refresh the recorded content position while the offset stays put.
+  class FiringResizeObserver {
+    static callback: ResizeObserverCallback | null = null;
+    constructor(callback: ResizeObserverCallback) {
+      FiringResizeObserver.callback = callback;
+    }
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  vi.stubGlobal("ResizeObserver", FiringResizeObserver);
   const { flush } = captureFrames();
   try {
     render(
@@ -578,21 +644,33 @@ test("a refresh that inserts on both sides of the anchor still leaves the menu o
     await user.click(screen.getByRole("button", { name: "Actions" }));
     expect(screen.getByRole("menu")).toBeTruthy();
 
-    // Live inserts 40px above the browser's anchor, so the offset moves by 40;
-    // it also inserts 20px between that anchor and the trigger, so the trigger
-    // sits 60 deeper in the content. 340 is inside the range throughout.
-    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 560 });
-    scroller.scrollTop = 340;
-    // 600 before, 660 after, against an offset that gained 40: the anchor
-    // caught the 40 above it and the extra 20 between it and the trigger moved
-    // the trigger with the content.
-    triggerTop = 320;
+    // A refresh inserts 40px above the visible area with the offset untouched:
+    // the trigger slides 40 deeper into the content while the browser holds the
+    // anchor where it was. The menu follows, and this is the pass that must
+    // refresh the recorded content position - nothing has scrolled yet, so the
+    // position from before it would be stale from here on.
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 620 });
+    triggerTop = 260;
+    act(() => {
+      FiringResizeObserver.callback?.([], {} as ResizeObserver);
+    });
+    flush();
+    expect(screen.getByRole("menu").style.top).toBe("292px"); // 260 + 28 + TRIGGER_GAP
+
+    // Now the browser's adjustment: it lowers the offset by 24 to hold the
+    // anchor, so 324 of a new 620. Only 24 of the trigger's 40px of content
+    // movement is explained by this step - the other 16 arrived between the
+    // anchor and the trigger - so a classifier that required EQUALITY would
+    // dismiss. From the STALE position (40 moved against a 24 step) the step
+    // would be no explanation at all. Judged from the refreshed position the
+    // offset is accounted for, which is what keeps the menu open.
+    scroller.scrollTop = 324;
     fireEvent.scroll(scroller);
     flush();
 
     // Nobody dragged the rail: the trigger did not leave the screen.
     expect(screen.getByRole("menu")).toBeTruthy();
-    expect(screen.getByRole("menu").style.top).toBe("352px"); // 320 + 28 + TRIGGER_GAP
+    expect(screen.getByRole("menu").style.top).toBe("292px");
   } finally {
     vi.restoreAllMocks();
     if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
@@ -744,6 +822,8 @@ test("a label that wraps above a fully hidden focused row does not pull the read
     expect(document.activeElement).toBe(first);
     const popup = screen.getByRole("menu");
     popup.scrollTop = 100;
+    // A reader's scroll always emits the event, so the widget sees it.
+    fireEvent.scroll(popup);
     expect(popup.scrollTop).toBe(100);
 
     // The activity count arrives and wraps the Overview label. Overview is 60px
@@ -807,6 +887,8 @@ test("an equally hidden row is not revealed when the scrollport shrinks", async 
     // The reader goes to the top of the list. Delete spans 132..176, so all of
     // it is below a 120px scrollport: 44 of 44 pixels hidden.
     popup.scrollTop = 0;
+    // A reader's scroll always emits the event, so the widget sees it.
+    fireEvent.scroll(popup);
 
     // The window shrinks and the scrollport with it, to 100. Delete is still
     // beyond the end, still entirely hidden.
@@ -1895,6 +1977,8 @@ test("a focused row the reader scrolled away from is not pulled back by a taller
     // They scroll back up by hand, to the top of the list. Focus stays on
     // Delete, out of sight below, because that is where they left it.
     popup.scrollTop = 0;
+    // A reader's scroll always emits the event, so the widget sees it.
+    fireEvent.scroll(popup);
     expect(popup.scrollTop).toBe(0);
 
     // The window is a little taller, and the popup's scrollport with it - still
@@ -2168,6 +2252,8 @@ test("a wrap that brings part of a hidden row into view leaves the reader's scro
     expect(document.activeElement).toBe(first);
     const popup = screen.getByRole("menu");
     popup.scrollTop = 50;
+    // A reader's scroll always emits the event, so the widget sees it.
+    fireEvent.scroll(popup);
     expect(popup.scrollTop).toBe(50);
 
     // The popup narrows and Overview's label wraps. The row is 60px now, so it
@@ -2241,6 +2327,8 @@ test("a focused row that wraps until it is clipped is revealed", async () => {
     // The reader scrolls to 40. Archive spans 44..88 in a 56px scrollport from
     // 40, which ends at 96: fully visible, 8px to spare.
     popup.scrollTop = 40;
+    // A reader's scroll always emits the event, so the widget sees it.
+    fireEvent.scroll(popup);
     expect(popup.scrollTop).toBe(40);
 
     // The label wraps. Archive is 44..100 at the same offset, so 4px of it now
@@ -2308,6 +2396,8 @@ test("a focused row that unwraps above the scrollport keeps the reader's offset"
     expect(document.activeElement).toBe(focused);
     // Overview is 0..60 and the reader scrolls to 35, so 25 of its pixels show.
     popup.scrollTop = 35;
+    // A reader's scroll always emits the event, so the widget sees it.
+    fireEvent.scroll(popup);
 
     // The window widens and the label unwraps: Overview is 0..44, and the same
     // 35px offset leaves 9 pixels of it on screen.
@@ -2636,6 +2726,7 @@ test("a row inserted below the focused row leaves the reader's scroll where they
     expect(document.activeElement).toBe(first);
     const popup = screen.getByRole("menu");
     popup.scrollTop = 40;
+    fireEvent.scroll(popup);
     expect(popup.scrollTop).toBe(40);
 
     // A turn starts under the menu: Stop arrives BELOW Delete, so the row
@@ -2680,6 +2771,7 @@ test("a position-only placement leaves the reader's scroll where they put it", a
     expect(document.activeElement).toBe(screen.getByRole("menuitem", { name: "Rename" }));
     const popup = screen.getByRole("menu");
     popup.scrollTop = 40;
+    fireEvent.scroll(popup);
     reveal.mockClear();
 
     // The trigger moves and the popup follows - the popup's own height does
@@ -2742,6 +2834,7 @@ test("a width-only change leaves the reader's scroll where they put it", async (
     expect(document.activeElement).toBe(first);
     const popup = screen.getByRole("menu");
     popup.scrollTop = 40;
+    fireEvent.scroll(popup);
     expect(popup.scrollTop).toBe(40);
 
     // A label further down the list widens the popup. No row's top or height
