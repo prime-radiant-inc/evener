@@ -162,6 +162,13 @@ type Session struct {
 	cliMCPExclusionKnown   bool
 	cliMCPExclusionApplied bool
 	cliMCPExclusionVersion uint64
+	// freshnessCheck is non-nil while one freshness check is in flight, so a
+	// stalled filesystem costs the request path one goroutine however many
+	// requests arrive meanwhile. The in-flight check carries its own result:
+	// waiting on a check and then reading session state could see a newer check's
+	// unfinished answer instead.
+	freshnessCheckMu sync.Mutex
+	freshnessCheck   *exclusionFreshnessCheck
 	// cachedExclusionVersion is the decision version the cached TOOL DEFINITIONS
 	// were built from, and cachedPromptExclusionVersion the one the cached SYSTEM
 	// PROMPT was built from. They are two fields because they are two caches with

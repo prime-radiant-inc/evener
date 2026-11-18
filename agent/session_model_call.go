@@ -124,7 +124,17 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// in-place branch switch adding a fallback server). Rebuild before this
 	// request if it changed, so the model is not shown a capability list the
 	// current workspace contradicts.
-	s.refreshCachesForExclusionChange()
+	//
+	// Bounded by the TURN's context: the check reads config layers and forks git,
+	// so a stalled workspace mount would otherwise block request preparation with
+	// no way for Stop to interrupt it. A check that cannot finish inside the bound
+	// is unknown reachability — names stay eligible, nothing is excluded on an
+	// answer that was never obtained, and the next request re-runs it.
+	// The bound is the turn's own deadline, whichever comes first. A turn context
+	// with no deadline still must not wait forever on a stalled mount.
+	freshCtx, cancelFresh := context.WithTimeout(ctx, exclusionFreshnessRequestBudget)
+	s.refreshCachesForExclusionChangeContext(freshCtx)
+	cancelFresh()
 	// --- Phase: SystemPrompt ---
 	tPhaseStart := s.sclock().Now()
 

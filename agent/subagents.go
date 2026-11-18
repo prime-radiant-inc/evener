@@ -727,6 +727,14 @@ func (s *Session) childExclusionDecision(isolationName string) (managerOnly, cli
 	return managerOnly, cliMCP, shared && isolationName != "worktree"
 }
 
+// exclusionFreshnessRequestBudget bounds how long one model request waits for the
+// CLI-MCP freshness check. The check reads at most two config layers and forks
+// git for the root; the git half already carries gitExecTimeout, and this bound
+// covers the reads on a mount that has stopped answering. Exceeding it is
+// unknown reachability, never a negative: the names stay eligible and the next
+// request re-runs the check.
+const exclusionFreshnessRequestBudget = 12 * time.Second
+
 // cliMCPClassificationEvidence is what the CLI-only MCP classification was
 // derived from, so a later check can tell whether it still describes the
 // session's workspace. Every input that can make an excluded name reachable
@@ -768,6 +776,23 @@ func (s *Session) cliMCPClassificationCurrent(evidence cliMCPClassificationEvide
 // itself, so it must be called without s.mu — which is exactly what the request
 // path does before it renders the prompt or the tool definitions.
 func (s *Session) refreshCLIEvidenceFreshness() {
+	s.refreshCLIEvidenceFreshnessContext(context.Background())
+}
+
+// refreshCLIEvidenceFreshnessContext is refreshCLIEvidenceFreshness bounded by
+// the caller's context.
+//
+// The check touches the filesystem and forks git, and the request path calls it
+// before EVERY model request. A workspace mount that stalls makes those calls
+// block indefinitely, and nothing in them observes cancellation, so without this
+// bound request preparation would hang with no way for Stop to interrupt it.
+//
+// A check that cannot finish inside the context's bound is UNKNOWN reachability,
+// which every reader already treats as "let the child try": names stay eligible
+// and nothing is excluded on an answer that was never obtained. The next request
+// re-runs the check, so the exclusion recovers as soon as the filesystem
+// answers again rather than staying stranded.
+func (s *Session) refreshCLIEvidenceFreshnessContext(ctx context.Context) {
 	s.delegateExclusionsMu.RLock()
 	evidence := s.cliMCPEvidence
 	names := len(s.cliMCPToolNames)
@@ -787,11 +812,75 @@ func (s *Session) refreshCLIEvidenceFreshness() {
 	if names == 0 && !applied {
 		return
 	}
-	fresh := s.cliMCPClassificationCurrent(evidence)
+	fresh, settled := s.sampleExclusionFreshness(ctx, evidence)
+	if !settled {
+		// Unknown, not stale: nothing was established about the layers, so the
+		// verdict is forgotten rather than recorded as a negative. The next
+		// request re-runs the check, so the exclusion recovers when the
+		// filesystem answers again.
+		s.delegateExclusionsMu.Lock()
+		s.forgetCLIEvidenceFreshnessLocked()
+		s.delegateExclusionsMu.Unlock()
+		return
+	}
 	s.delegateExclusionsMu.Lock()
 	s.cliMCPEvidenceFresh = fresh
 	s.cliMCPEvidenceFreshKnown = true
 	s.delegateExclusionsMu.Unlock()
+}
+
+// exclusionFreshnessCheck is one in-flight freshness check. Its result lives
+// here rather than on the session so every waiter reads the answer to the check
+// it waited on; done closes after fresh and settled are written.
+type exclusionFreshnessCheck struct {
+	done    chan struct{}
+	fresh   bool
+	settled bool
+}
+
+// sampleExclusionFreshness resolves the freshness verdict, bounded by ctx.
+//
+// At most ONE check is in flight at a time. A stalled workspace mount makes the
+// underlying read or git call block without observing cancellation, so a check
+// started per request would accumulate a goroutine per model round for as long
+// as the stall lasts. A request that finds a check already running waits on it
+// rather than starting another.
+//
+// That bounds the cost to one goroutine per stall, not one forever: a check whose
+// waiter gave up keeps blocking until the filesystem answers, and the next
+// request starts a new one rather than waiting on the abandoned check, because
+// the abandoned one may never answer. The requests themselves stay bounded; the
+// outstanding goroutines are at most one per request interval spent stalling.
+//
+// settled is false when ctx ended before the check answered. That is UNKNOWN
+// reachability, never "stale": nothing was established about the layers.
+func (s *Session) sampleExclusionFreshness(ctx context.Context, evidence cliMCPClassificationEvidence) (fresh, settled bool) {
+	s.freshnessCheckMu.Lock()
+	check := s.freshnessCheck
+	if check == nil {
+		// The result lives on the check, not on the session: a waiter that read
+		// session fields after done closed could race a newer check and report its
+		// unfinished answer as this one's.
+		check = &exclusionFreshnessCheck{done: make(chan struct{})}
+		s.freshnessCheck = check
+		go func() {
+			fresh, settled := s.cliMCPClassificationCurrent(evidence), true
+			s.freshnessCheckMu.Lock()
+			check.fresh = fresh
+			check.settled = settled
+			s.freshnessCheck = nil
+			s.freshnessCheckMu.Unlock()
+			close(check.done)
+		}()
+	}
+	s.freshnessCheckMu.Unlock()
+
+	select {
+	case <-check.done:
+	case <-ctx.Done():
+		return false, false
+	}
+	return check.fresh, check.settled
 }
 
 // forgetCLIEvidenceFreshness drops the stored verdict. A verdict is an answer
@@ -875,7 +964,10 @@ func (s *Session) callableToolNames() map[string]bool {
 // non-nil slice, empty when the registry was empty at publish time. Callers
 // distinguish "registered nothing" from "never observed" by nil, so the empty
 // case must not collapse into it.
-// Callers hold s.mu.
+//
+// It takes no lock: the snapshot is an atomic pointer, and the fallback reads the
+// registry's own accessor. That is what lets the tree controller read a child's
+// tools while holding ITS mutex, without waiting on this session's.
 func (s *Session) callableToolOrder() []string {
 	if s == nil || s.reg == nil {
 		return nil
@@ -980,6 +1072,14 @@ func (s *Session) exclusionVersion() uint64 {
 // on the request path, before the prompt is built, which is exactly where a stale
 // capability list would otherwise be served.
 func (s *Session) refreshCachesForExclusionChange() {
+	s.refreshCachesForExclusionChangeContext(context.Background())
+}
+
+// refreshCachesForExclusionChangeContext is refreshCachesForExclusionChange
+// bounded by the caller's context. The request path passes the TURN's context so
+// Stop can interrupt the freshness check instead of leaving preparation blocked
+// on a stalled workspace mount.
+func (s *Session) refreshCachesForExclusionChangeContext(ctx context.Context) {
 	if s == nil {
 		return
 	}
@@ -987,7 +1087,7 @@ func (s *Session) refreshCachesForExclusionChange() {
 	// verdict is resolved HERE, without s.mu, and stored; the ceiling build below
 	// reads the stored answer, so no filesystem read or git fork happens inside
 	// the session lock.
-	s.refreshCLIEvidenceFreshness()
+	s.refreshCLIEvidenceFreshnessContext(ctx)
 	s.childExclusionDecision("")
 	version := s.exclusionVersion()
 	s.mu.Lock()

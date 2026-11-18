@@ -840,10 +840,13 @@ func observedDelegateTools(sess *Session) []string {
 	// sampled from it would advertise a name the child removes before its first
 	// model request. Status and list read the same snapshot, so the two surfaces
 	// describe one child the same way.
-	sess.mu.Lock()
-	names := sess.callableToolOrder()
-	sess.mu.Unlock()
-	return names
+	// Taken WITHOUT sess.mu. The callable set is published atomically, and this
+	// helper is called from settlements that already hold the delegate tree
+	// controller's mutex: locking the child here let contention in one child stall
+	// status reads, starts and stops across the whole tree. A published snapshot
+	// always yields a non-nil slice — empty when the registry was empty at publish
+	// time — so the absent-versus-empty distinction survives.
+	return sess.callableToolOrder()
 }
 
 func startedDelegateResult(descriptor delegatestore.Descriptor, delegateID string, committed delegateUpdatePlan, plans delegateMutationPlans, err error) delegateResult {

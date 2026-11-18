@@ -658,12 +658,20 @@ func layerEvidenceCurrent(recorded LayerEvidence, path string) bool {
 	if path != recorded.Path {
 		return false
 	}
-	if recorded.Digest == "" {
-		_, err := os.Lstat(recorded.Path)
-		return errors.Is(err, os.ErrNotExist)
-	}
-	info, err := os.Lstat(recorded.Path)
+	// os.Stat, not Lstat: DISCOVERY follows the path, so a dangling symlink is
+	// recorded absent here exactly as the read that parsed the layer saw it. Lstat
+	// finds the link itself and would call such a layer present, marking unchanged
+	// evidence stale forever and leaving CLI-only tools advertised while the child
+	// discovers no fallback. A link whose target appears is then a change, and the
+	// recorded-absent branch answers it by existence alone.
+	info, err := os.Stat(recorded.Path)
 	if err != nil {
+		// Absent is a successful stat of nothing, which is exactly what a layer
+		// recorded absent continues to be. Any other failure is unknown.
+		return errors.Is(err, os.ErrNotExist) && recorded.Digest == ""
+	}
+	if recorded.Digest == "" {
+		// Recorded absent, yet the path resolves now: the layer changed.
 		return false
 	}
 	if info.Mode().IsRegular() && info.Size() != recorded.Size {

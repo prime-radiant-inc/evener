@@ -628,7 +628,7 @@ func TestStartInputFailureBatch(t *testing.T) {
 	t.Parallel()
 	c := &delegateTreeController{now: time.Now}
 	lease := delegateLease{delegateID: "dlg_1", generation: 1}
-	terminal, finish := c.startInputFailureBatch(lease, delegateFinish{})
+	terminal, finish := c.startInputFailureBatch(lease, delegateFinish{}, nil)
 	if terminal.Kind != delegatestore.EventDelegateTerminalPrepared {
 		t.Fatalf("terminal kind = %v", terminal.Kind)
 	}

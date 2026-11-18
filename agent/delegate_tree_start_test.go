@@ -1059,6 +1059,76 @@ func TestStoppedStartSettlementKeepsTheAttachedGenerationsObservation(t *testing
 	})
 }
 
+// TestStartInputFailureSettlementKeepsTheAttachedGenerationsObservation is the
+// same attach-before-commit window as the stopped-start case, settled by the
+// OTHER exit: the initial input never commits.
+//
+// This path admits a settlement only when a runtime is attached, and the
+// synthetic packet it builds carries no observation of its own. Without recording
+// the runtime's, releasing the binding leaves no answer, so availability falls
+// back to the frozen ceiling and names tools the child never registered.
+//
+// An observed EMPTY registry stays a recorded empty list — the fact that the child
+// registered nothing — and must not collapse into the absent case, which means
+// nothing was observed at all.
+func TestStartInputFailureSettlementKeepsTheAttachedGenerationsObservation(t *testing.T) {
+	t.Parallel()
+	t.Run("an attached runtime reports its registrations", func(t *testing.T) {
+		t.Parallel()
+		c, _ := newDelegateControllerTestHarness(t, 1, 1)
+		seedDelegateControllerIdle(t, c, "dlg_target", "")
+		started, runtime := commitAttachedDelegateControllerStart(t, c, "dlg_target")
+		reg := tool.NewRegistry()
+		for _, name := range []string{"read_file", "svc__lookup"} {
+			if err := reg.Register(regTool(llm.ToolDefinition{Name: name, Description: "fixture"})); err != nil {
+				t.Fatalf("register %q: %v", name, err)
+			}
+		}
+		runtime.reg = reg
+		observed := failStartInputBetweenAttachAndCommit(t, c, started)
+		if observed == nil {
+			t.Fatal("an uncommitted start over an attached runtime recorded no observation, so availability falls back to the ceiling")
+		}
+		if !slices.Contains(*observed, "svc__lookup") {
+			t.Errorf("observation = %v, want the child's registrations", *observed)
+		}
+	})
+
+	t.Run("an attached runtime with no tools reports empty, not absent", func(t *testing.T) {
+		t.Parallel()
+		c, _ := newDelegateControllerTestHarness(t, 1, 1)
+		seedDelegateControllerIdle(t, c, "dlg_target", "")
+		started, runtime := commitAttachedDelegateControllerStart(t, c, "dlg_target")
+		runtime.reg = tool.NewRegistry()
+		observed := failStartInputBetweenAttachAndCommit(t, c, started)
+		if observed == nil {
+			t.Fatal("a runtime that registered nothing settled as NO observation, so the report falls back to the ceiling")
+		}
+		if len(*observed) != 0 {
+			t.Errorf("observation = %v, want an empty list", *observed)
+		}
+	})
+}
+
+// failStartInputBetweenAttachAndCommit settles a start whose runtime attached but
+// whose initial input never committed, through the calls production makes, and
+// returns the generation's recorded observation as a reader sees it once the
+// binding is released.
+func failStartInputBetweenAttachAndCommit(t *testing.T, c *delegateTreeController, started delegateStartCommit) *[]string {
+	t.Helper()
+	claim, err := c.BeginStartInput(started.lease)
+	if err != nil {
+		t.Fatalf("BeginStartInput: %v", err)
+	}
+	// committed=false is the input-failure exit: the write did not land.
+	if _, err := c.CompleteStartInput(claim, false, delegateFinish{}); err != nil {
+		t.Fatalf("CompleteStartInput: %v", err)
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.durable[started.lease.delegateID].LatestObservation
+}
+
 // stopStartBetweenAttachAndCommit stops the delegate after its runtime attached
 // and before its initial input commits, then settles through CompleteStartInput.
 // It returns the generation's recorded observation as the durable reader sees it

@@ -482,7 +482,7 @@ func (c *delegateTreeController) CompleteStartInput(claim delegateInputClaim, co
 		return delegateMutationPlans{}, errDelegateTargetBusy
 	}
 	if !committed {
-		terminal, finish := c.startInputFailureBatch(lease, failure)
+		terminal, finish := c.startInputFailureBatch(lease, failure, c.boundRuntimeLocked(live, lease.generation))
 		if _, finishErr := c.appendLocked(terminal, finish); finishErr != nil {
 			live.recoveryRequired = true
 			return delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(lease.delegateID)}}, finishErr
@@ -947,9 +947,29 @@ func (c *delegateTreeController) beginRuntimeBoundary(lease delegateLease) error
 	return err
 }
 
-func (c *delegateTreeController) startInputFailureBatch(lease delegateLease, failure delegateFinish) (delegatestore.Event, delegatestore.Event) {
+// startInputFailureBatch settles a start whose initial input never committed.
+//
+// This path attaches a runtime BEFORE the input is written, and the guard above
+// admits it only when live.binding.runtime is attached, so a settlement here
+// almost always has one to sample. The synthetic packet it builds carries no
+// observation of its own, so without recording the runtime's the binding is
+// released with no answer and readers fall back to the frozen ceiling — naming
+// tools the child never registered. runtime is sampled BY GENERATION for the
+// reason boundRuntimeLocked documents: live.runtime is the resident child and
+// can belong to another generation.
+//
+// nil means no observation, which stays distinct from an observed empty
+// registry.
+func (c *delegateTreeController) startInputFailureBatch(lease delegateLease, failure delegateFinish, runtime *Session) (delegatestore.Event, delegatestore.Event) {
 	failure = normalizeDelegateStartFailure(failure, "input_persist_failed", "input persistence failed", c.now())
-	return terminalFinishBatch(lease, failure.outcome, failure.reason, failure.endedAt, *failure.packet)
+	terminal, finish := terminalFinishBatch(lease, failure.outcome, failure.reason, failure.endedAt, *failure.packet)
+	// The synthetic packet has no metadata, so the fold reads the observation
+	// from the RunFinished event. Set it only when one was observed: an absent
+	// field stays absent and an observed empty registry stays empty.
+	if observed := observedDelegateTools(runtime); observed != nil {
+		finish.RunFinished.ObservedTools = &observed
+	}
+	return terminal, finish
 }
 
 func (c *delegateTreeController) committedStartFailureBatch(lease delegateLease, failure delegateFinish) (delegatestore.Event, delegatestore.Event) {
