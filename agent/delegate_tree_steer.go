@@ -470,7 +470,6 @@ func (s *Session) delegateAttentionModelProjection() (delegateModelProjection, m
 	defer s.attentionMu.Unlock()
 	s.reconcileAutomaticDriveHoldsLocked()
 	holds := maps.Clone(s.attentionAutomaticDriveHolds)
-	admitted := s.admittedDelegateAttentionRows()
 	// The held IDs and the history they filter are taken under this one hold,
 	// so a release — which takes attentionMu to move its rows and drop its
 	// holds — either landed before this capture and is in both, or waits and
@@ -488,18 +487,6 @@ func (s *Session) delegateAttentionModelProjection() (delegateModelProjection, m
 		inFlightFrom: s.turnHistoryBaseline,
 	}
 	s.mu.Unlock()
-	// A frame whose wake no arm has admitted yet is withheld from the request for
-	// the same reason selection withholds it: presenting it would deliver a
-	// report whose wake never ran, and the stop it superseded would stay quiet.
-	// The boundary is an index into the turns, so each drop strictly before it
-	// moves it, the same rule the held filter follows.
-	withheld, withheldAt := filterAwaitingDelegateAttentionTurns(projection.turns, admitted)
-	for _, at := range withheldAt {
-		if at < projection.inFlightFrom {
-			projection.inFlightFrom--
-		}
-	}
-	projection.turns = withheld
 	return projection, holds
 }
 
