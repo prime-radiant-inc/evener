@@ -96,37 +96,36 @@ func dropOutcome(ctx context.Context, opts Options, st Status, c Client, now fun
 	if ctxErr := ctx.Err(); ctxErr != nil {
 		return Outcome{}, &ExitError{Kind: Interrupted, Detail: ctxErr.Error()}
 	}
-	if err != nil {
-		// Not an interrupt, so the reason genuinely could not be read. Reporting it
-		// as an unreadable reason is still a drop, and the run it names is what the
-		// operator needs.
-		return Outcome{
-			Kind:      Dropped,
-			PRState:   st.State,
-			DropClass: DropReasonUnreadable,
-			Reason:    "could not read the queue removal reason; see " + ref.String() + " before re-enqueueing",
-			Run:       ref,
-		}, nil //nolint:nilerr // an unreadable reason is still a drop: the run the drop named is what the operator needs, and classifyDropReason's other classes would claim knowledge this read does not have
-	}
-	if event == nil {
-		return Outcome{
-			Kind:      Dropped,
-			PRState:   st.State,
-			DropClass: DropReasonUnavailable,
-			Reason:    "the queue removal reason was unavailable; see " + ref.String() + " before re-enqueueing",
-			Run:       ref,
-		}, nil
-	}
-	class, advice := classifyDropReason(event.Reason, ref)
-	if now().Sub(event.CreatedAt) > stalenessWindow {
-		class = DropEventStale
-		advice = "the latest queue removal event predates this drop; see " + ref.String() + " before re-enqueueing"
+	// The read is not an interrupt, so whatever it produced is a drop and the run
+	// it names is the operator's next step either way. The three cases are decided
+	// into values here and leave through the single return below.
+	//
+	// Every case that reaches this point discards the read's error on purpose: a
+	// reason that could not be read is a drop whose class says so, not a failure
+	// of the command, and returning the error instead would turn a queue outcome
+	// the operator needs into a lookup failure that exits 2. Writing it as one
+	// return rather than a nil error returned from inside `if err != nil` is what
+	// makes that a stated design instead of a suppression: `nilerr` has no
+	// nil-returning branch under a live error to object to, so nothing here needs
+	// a //nolint and none is used.
+	class := DropReasonUnavailable
+	reason := "the queue removal reason was unavailable; see " + ref.String() + " before re-enqueueing"
+	switch {
+	case err != nil:
+		class = DropReasonUnreadable
+		reason = "could not read the queue removal reason; see " + ref.String() + " before re-enqueueing"
+	case event != nil:
+		class, reason = classifyDropReason(event.Reason, ref)
+		if now().Sub(event.CreatedAt) > stalenessWindow {
+			class = DropEventStale
+			reason = "the latest queue removal event predates this drop; see " + ref.String() + " before re-enqueueing"
+		}
 	}
 	return Outcome{
 		Kind:      Dropped,
 		PRState:   st.State,
 		DropClass: class,
-		Reason:    advice,
+		Reason:    reason,
 		Run:       ref,
 	}, nil
 }

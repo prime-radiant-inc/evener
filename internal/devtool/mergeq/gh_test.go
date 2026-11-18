@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -806,12 +807,7 @@ func TestMergEQFixtureBaseIsTrustedAndExecutable(t *testing.T) {
 		inGroup := int(stat.Gid) == os.Getgid()
 		if !inGroup {
 			if gids, err := os.Getgroups(); err == nil {
-				for _, gid := range gids {
-					if gid == int(stat.Gid) {
-						inGroup = true
-						break
-					}
-				}
+				inGroup = slices.Contains(gids, int(stat.Gid))
 			}
 		}
 		if !inGroup {
