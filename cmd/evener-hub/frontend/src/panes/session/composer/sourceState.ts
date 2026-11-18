@@ -53,6 +53,7 @@ import {
   patchSelectionText,
   type SkillEditorValue,
   serializeSkillDocument,
+  type TextChangeRange,
 } from "./skillDocument";
 import { pushRecoveryRefusal, sendableAttachments } from "./submitProtocol";
 
@@ -150,8 +151,8 @@ export interface ComposerSourceState {
    * Both adoption paths call this - activation and the mount-time auto
    * restore - because each replaces the snapshot's provenance wholesale. */
   adoptRecoveredImageFacts(recovered: RecoveredComposerDraft, incomingRowId: string | null): void;
-  updateText(text: string): void;
-  editText(text: string): void;
+  updateText(text: string, changed?: TextChangeRange): void;
+  editText(text: string, changed?: TextChangeRange): void;
   updateSkillNames(names: string[]): void;
   editSkillNames(names: string[]): void;
   updateSelectionMeta(value: SkillEditorValue): void;
@@ -378,13 +379,13 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   function currentDraftText(): string {
     return ownsDraft() ? textRef.current : readComposerDraft(ref).text;
   }
-  function updateText(text: string): void {
+  function updateText(text: string, changed?: TextChangeRange): void {
     if (disposed) return;
     if (text.trim() !== "") cancelCleanupRetry();
     // An anchor follows the text it was adopted with. Reconciling on the WRITE
     // rather than re-reading spellings afterwards is what keeps two identical
     // `[image 1]` occurrences distinct: only the one the person removed goes.
-    reconcileAdoptedAnchors(textRef.current, text);
+    reconcileAdoptedAnchors(textRef.current, text, changed);
     textRef.current = text;
     state.setState({ text });
     refreshUnbackedImageMarkers();
@@ -409,11 +410,11 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
       ownedDraftRevisionRef.current = readDraftRevision(ref);
     }
   }
-  function editText(text: string): void {
+  function editText(text: string, changed?: TextChangeRange): void {
     if (disposed) return;
     cancelCleanupRetry();
     markEdited();
-    updateText(text);
+    updateText(text, changed);
   }
   function editSkillNames(names: string[]): void {
     if (disposed) return;
@@ -506,7 +507,7 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     // An occurrence the record kept is a distinct fact - which spelling - so it
     // survives even when its number is also staged.
     const covered = new Set([...staged, ...unbacked]);
-    return [
+    const anchors: CompositionImageAnchor[] = [
       ...live,
       ...unbacked
         .filter((marker) => !live.some((anchor) => anchor.marker === marker && anchor.offset !== undefined))
@@ -518,6 +519,29 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
           (!covered.has(anchor.marker) && !live.some((item) => item.marker === anchor.marker)),
       ),
     ];
+    return anchors.filter((anchor) => {
+      // A retired occurrence is not carried forward, and neither is a bare
+      // number whose marker this source retired: the marker IS the fallback
+      // spelling of the same reference.
+      if (retiredAnchors.has(anchorKey(anchor))) return false;
+      // The text, not the stale list, decides whether a reference survives.
+      //
+      // A failed decode strips both the tile and its reference, text first, and
+      // the stored list still names that marker for one more save - which made
+      // the persisted draft name an image whose bytes it no longer held. That
+      // is the issue this PR exists to fix, and the cascade guard caught it
+      // ("persisted draft names the markers whose bytes it holds", actual
+      // [4, 6, 5] where 5 was the failed decode's marker).
+      //
+      // Holding an offset does not exempt an anchor: an occurrence whose exact
+      // spelling is still where it was is alive, but one whose offset no longer
+      // lands on its spelling is only dead when the text spells that marker
+      // nowhere else. Offsets move with edits before them, so the second test
+      // keeps an anchor that merely slid, and drops the one whose reference is
+      // gone - which is the distinction the stored list cannot make alone.
+      if (markerNumbersIn(text).includes(anchor.marker)) return true;
+      return anchor.offset !== undefined && spellingSurvives({ ...anchor, offset: anchor.offset }, text);
+    });
   }
 
   // Build the composition image record for a composition about to be saved.
@@ -764,6 +788,23 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   // literal spelling beside it stays prose.
   let adoptedAnchors: { marker: number; offset: number }[] = [];
 
+  /** Occurrences this composer RETIRED, as `marker:offset` (or `marker:` bare).
+   *
+   * A stored draft record is copied forward so an anchor adopted before this
+   * source started editing is not lost. That copy is only safe for
+   * occurrences this source has NOT retired: an edit that removes a reference
+   * drops it from `adoptedAnchors`, and re-admitting it from the stored list
+   * would bring the warning back the moment the person typed the same spelling
+   * at the same place - blocking a Send they had repaired. Nothing else in the
+   * pipeline remembers the retirement, because the retirement IS the absence
+   * from `adoptedAnchors`.
+   */
+  const retiredAnchors = new Set<string>();
+
+  function anchorKey(anchor: { marker: number; offset?: number }): string {
+    return `${anchor.marker}:${anchor.offset ?? ""}`;
+  }
+
   function markerNumbersIn(text: string): number[] {
     return Array.from(text.matchAll(markerPattern()), (match) => Number(match[1]));
   }
@@ -859,8 +900,51 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
    * neither reconstruction holds (a replacement, or several edits at once) is
    * the shared prefix and suffix the best available bound.
    */
-  function reconcileAdoptedAnchors(before: string, after: string): void {
+  function reconcileAdoptedAnchors(before: string, after: string, changed?: TextChangeRange): void {
     if (before === after || adoptedAnchors.length === 0) return;
+    // Remember what this edit retires, wherever in this function it happens.
+    // The retirement's only other record is the absence from
+    // `adoptedAnchors`, which a stored draft record would then silently undo.
+    const beforeReconcile = adoptedAnchors;
+    try {
+      reconcileAdoptedAnchorsInner(before, after, changed);
+    } finally {
+      for (const anchor of beforeReconcile) {
+        if (!adoptedAnchors.some((kept) => anchorKey(kept) === anchorKey(anchor))) {
+          retiredAnchors.add(anchorKey(anchor));
+          // A retirement is also the whole marker: an anchor with no offset is
+          // the offsetless fallback for the same reference, and re-admitting
+          // that would restore the warning under a different spelling.
+          retiredAnchors.add(`${anchor.marker}:`);
+        }
+      }
+    }
+  }
+
+  function reconcileAdoptedAnchorsInner(before: string, after: string, changed?: TextChangeRange): void {
+    // When the editor reports what it replaced, the range settles the one
+    // question two strings cannot: WHICH of two identical spellings went.
+    // `[image 1][image 1]` with the second one a reference, edited to
+    // `[image 1]`, is indistinguishable from editing away the first - both
+    // readings explain the strings, and the inference below takes the earlier
+    // one, which retires the reference while keeping the prose. The reported
+    // range names the removed span outright.
+    if (changed !== undefined && changed.to > changed.from) {
+      adoptedAnchors = adoptedAnchors.flatMap((anchor) => {
+        const length = markerText(anchor.marker).length;
+        const anchorEnd = anchor.offset + length;
+        // An occurrence the change does not touch survives untouched.
+        if (anchorEnd <= changed.from) return [anchor];
+        if (anchor.offset >= changed.to) return [{ ...anchor, offset: anchor.offset + (after.length - before.length) }];
+        // It OVERLAPS the replaced span, so its own characters are gone. An
+        // anchor whose offset sits past the span in the PREVIOUS text shifted
+        // by the same delta; one inside it is retired. This branch is only
+        // taken for an edit that actually removed or rewrote text, which is
+        // what keeps a pure insertion beside an anchor from retiring it.
+        return [];
+      });
+      return;
+    }
     const delta = after.length - before.length;
     if (delta > 0) {
       const at = insertionPoint(before, after, delta);

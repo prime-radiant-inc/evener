@@ -2,7 +2,7 @@ import { baseKeymap, deleteSelection } from "prosemirror-commands";
 import { closeHistory, history, redo, undo } from "prosemirror-history";
 import { keymap } from "prosemirror-keymap";
 import { Fragment, type Node as ProseMirrorNode } from "prosemirror-model";
-import { type Command, EditorState, Plugin, TextSelection } from "prosemirror-state";
+import { type Command, EditorState, Plugin, TextSelection, type Transaction } from "prosemirror-state";
 import { EditorView } from "prosemirror-view";
 import { forwardRef, type HTMLAttributes, useImperativeHandle, useLayoutEffect, useRef } from "react";
 import { flushSync } from "react-dom";
@@ -16,6 +16,7 @@ import {
   type SkillEditorValue,
   serializeSkillDocument,
   skillSchema,
+  type TextChangeRange,
   textOffsetToDocumentPosition,
 } from "./skillDocument";
 import styles from "./skilleditor.module.css";
@@ -35,9 +36,36 @@ export interface SkillEditorHandle {
   insertCommand(start: number, end: number, name: string): boolean;
 }
 
+/** The span `transaction` replaced, as text offsets into `before`.
+ *
+ * Folds every `replace` step to its bounding span against the ORIGINAL
+ * document. A step's positions are in the document it applied to, so a later
+ * step's offsets are only meaningful after the earlier ones; taking the union
+ * against `before` is exact for the single-step edits typing and deletion
+ * produce, and conservative (wider than the edit) for a compound one. Wider is
+ * safe: the range's only use is telling a text change WHICH occurrence it
+ * cannot have kept, and an over-wide span falls back to the inference rather
+ * than asserting the wrong answer.
+ */
+function changedRange(before: ProseMirrorNode, transaction: Transaction): TextChangeRange | undefined {
+  let from = Number.POSITIVE_INFINITY;
+  let to = -1;
+  transaction.steps.forEach((step) => {
+    step.getMap().forEach((oldStart, oldEnd) => {
+      if (oldEnd === oldStart && oldStart === 0 && from !== Number.POSITIVE_INFINITY) return;
+      from = Math.min(from, oldStart);
+      to = Math.max(to, oldEnd);
+    });
+  });
+  if (from === Number.POSITIVE_INFINITY) return undefined;
+  const start = documentPositionToTextOffset(before, from);
+  const end = documentPositionToTextOffset(before, to);
+  return end > start ? { from: start, to: end } : undefined;
+}
+
 export interface SkillEditorProps {
   value: SkillEditorValue;
-  onChange(value: SkillEditorValue, cursor: number): void;
+  onChange(value: SkillEditorValue, cursor: number, changed?: TextChangeRange): void;
   onKeyDown?: HTMLAttributes<HTMLDivElement>["onKeyDown"];
   onPaste?: HTMLAttributes<HTMLDivElement>["onPaste"];
   onFocus?: HTMLAttributes<HTMLDivElement>["onFocus"];
@@ -280,6 +308,7 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
       {
         state: createState(latest.current.value),
         dispatchTransaction: (transaction) => {
+          const before = view.state.doc;
           view.updateState(view.state.apply(transaction));
           view.dom.dataset.empty = String(view.state.doc.content.size === 0);
           // An externally applied value is the controlled value arriving, not
@@ -289,6 +318,7 @@ export const SkillEditor = forwardRef<SkillEditorHandle, SkillEditorProps>(funct
             latest.current.onChange(
               serializeSkillDocument(view.state.doc),
               documentPositionToTextOffset(view.state.doc, view.state.selection.head),
+              changedRange(before, transaction),
             );
           }
         },

@@ -18,6 +18,7 @@ import {
   markDraftEdited,
   readComposerDraft,
   readComposerDraftImageAnchors,
+  readComposerDraftImageMarkers,
   readComposerDraftRevisionId,
   readCompositionImageRecord,
   readDraftRevision,
@@ -1155,6 +1156,112 @@ test("deleting the last missing reference retires the row's tag", async () => {
   } finally {
     source.dispose();
     storage.close();
+  }
+});
+
+// The cascade guard's own complaint, in the unit suite.
+//
+// A failed decode strips the tile AND its reference, text first. The stored
+// draft record is copied forward so an anchor adopted before this source
+// started editing is not lost - but that copy kept naming the marker for one
+// more save, so the persisted draft named an image whose bytes it no longer
+// held. That is the issue this PR exists to fix, and it is the shape the
+// browser journey failed on ("after mounted image settlement and Return,
+// persisted draft names the markers whose bytes it holds": actual [4, 6, 5]).
+test("a stored anchor whose reference the edit removed is not carried forward", () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  // An earlier save left this record behind, naming a reference that existed
+  // then. The offset makes it an OCCURRENCE, which is the shape the writer now
+  // emits and the only shape that can say WHICH spelling it meant.
+  writeComposerDraft("root", { text: "keep [image 4]\n\nbad [image 5]", skillNames: [] }, [
+    { marker: 4 },
+    { marker: 5, offset: 20 },
+  ]);
+
+  const source = createTestComposerSource("root");
+  try {
+    // The first save is what makes this source the record's owner; until it
+    // runs, the stored list is somebody else's and is not carried.
+    source.persistDraft(source.getSnapshot().text);
+    expect(readComposerDraftImageMarkers("root")).toEqual([4, 5]);
+    // The failed decode: the reference and its tile leave together, and the
+    // composer saves what is left.
+    const after = "keep [image 4]\n\nbad ";
+    source.updateText(after);
+    source.persistDraft(after);
+    // Marker 5 has no bytes and no spelling left, so the saved draft must not
+    // name it. Marker 4 is still there and still must be named.
+    expect(readComposerDraft("root")?.text).toEqual(after);
+    expect(readComposerDraftImageMarkers("root")).toEqual([4]);
+  } finally {
+    source.dispose();
+    storage.close();
+  }
+});
+
+// The case the text filter above cannot see, and the reason retirement is its
+// own fact rather than a second reading of the same question.
+//
+// The person removes the missing reference and repairs the draft by typing a
+// literal `[image 5]` somewhere else. Marker 5 is still spelled in the text, so
+// "does the text still say 5?" answers yes - but the REFERENCE the warning was
+// about is gone. Carrying the old occurrence forward resurrects a warning on a
+// spelling the person never called an image, and blocks a Send they repaired.
+// Only the retirement of that occurrence records the difference.
+test("a retired reference is not resurrected by the same number typed elsewhere", () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  writeComposerDraft("root", { text: "a [image 5] b", skillNames: [] }, [{ marker: 5, offset: 2 }]);
+
+  const source = createTestComposerSource("root");
+  try {
+    // The first save makes this source the record's owner, so the stored
+    // occurrence is carried rather than ignored.
+    source.persistDraft(source.getSnapshot().text);
+    expect(source.getSnapshot().unbackedImageMarkers).toEqual([5]);
+
+    // The reference goes; an ordinary spelling of the same number arrives.
+    const repaired = "a x b [image 5]";
+    source.updateText(repaired);
+    source.persistDraft(repaired);
+
+    // The repaired draft says the number as prose, so nothing is unbacked and
+    // the person's edit is sendable.
+    expect(source.getSnapshot().unbackedImageMarkers).toEqual([]);
+    // And the SAVED draft must not name it either: a record that still lists
+    // marker 5 as having had bytes brings the warning back on the next reload,
+    // blocking a Send the person repaired by deleting the reference.
+    expect(readComposerDraftImageMarkers("root")).toEqual([]);
+  } finally {
+    source.dispose();
+    storage.close();
+  }
+});
+
+// Medium 2 (`sourceState.ts:804-810`). Two IDENTICAL spellings sit beside each
+// other and the second one is the reference. Deleting it leaves `[image 1]`,
+// which the prefix/suffix inference cannot tell from having deleted the first:
+// both readings explain the two strings, and the inference takes the earlier
+// one - so it retires the reference and keeps the prose, and the warning
+// survives on a spelling the person never called an image. The editor knows
+// which span it replaced, so passing that span down classifies the deletion
+// instead of guessing at it.
+test("deleting the tagged spelling retires it even beside an identical one", () => {
+  installLocalStorage(new MemoryStorage());
+  const text = "[image 1][image 1]";
+  // The SECOND spelling is the reference that lost its bytes.
+  writeComposerDraft("root", { text, skillNames: [] }, [{ marker: 1, offset: 9 }]);
+  const source = createTestComposerSource("root");
+  try {
+    expect(source.getSnapshot().unbackedImageMarkers).toEqual([1]);
+    // Remove the tagged occurrence. The editor reports the span it replaced.
+    const after = "[image 1]";
+    source.updateText(after, { from: 9, to: 18 });
+    // What survives is prose the person typed, so nothing is unbacked.
+    expect(source.getSnapshot().unbackedImageMarkers).toEqual([]);
+  } finally {
+    source.dispose();
   }
 });
 

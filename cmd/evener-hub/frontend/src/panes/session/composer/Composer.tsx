@@ -98,7 +98,7 @@ import {
 import { consumeQuoteInsert, useQuoteInsertRequest } from "./quoteInsert";
 import { SkillEditor, type SkillEditorHandle } from "./SkillEditor";
 import { SlashCompletionMenu } from "./SlashCompletionMenu";
-import { maskSkillAtoms, type SkillEditorValue } from "./skillDocument";
+import { maskSkillAtoms, type SkillEditorValue, type TextChangeRange } from "./skillDocument";
 import type { ComposerSourceState } from "./sourceState";
 import { recordStoplessComposer } from "./stoplessComposer";
 import { pushRecoveryRefusal, sendableAttachments, unbackedMarkersIn } from "./submitProtocol";
@@ -1055,10 +1055,10 @@ function ComposerWithSubmission({
   // already fill.
   const showActivityLine = isMobile && !ownsActivityCounts && !folded && (!ended || showFollowUpCard);
 
-  function handleTextChange(value: SkillEditorValue, caret: number): void {
+  function handleTextChange(value: SkillEditorValue, caret: number, changed?: TextChangeRange): void {
     editSkillNames(value.skillNames);
     updateSelectionMeta(value);
-    editText(value.text);
+    editText(value.text, changed);
     if (recoveryOwnerLeaseRef.current === null) persistDraft(value.text);
     // Every keystroke re-evaluates the trailing-token match fresh - a token
     // Escape just closed (useSlashCompletion's token) reopens on the

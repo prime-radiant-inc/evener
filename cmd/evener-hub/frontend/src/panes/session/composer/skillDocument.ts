@@ -211,3 +211,17 @@ export function documentPositionToTextOffset(doc: ProseMirrorNode, position: num
   });
   return offset;
 }
+
+/** The span one user edit replaced, in serialized UTF-16 text.
+ *
+ * The editor KNOWS this: a transaction carries the steps that produced it, so
+ * the range can be REPORTED rather than inferred from two strings. The
+ * difference matters because a reader that infers cannot separate two adjacent
+ * identical spellings of the same marker, and retires the wrong one.
+ */
+export interface TextChangeRange {
+  /** Offset in the PREVIOUS text where the replaced span began. */
+  from: number;
+  /** Offset in the PREVIOUS text where it ended. */
+  to: number;
+}

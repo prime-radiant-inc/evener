@@ -9,6 +9,7 @@ import {
   draftStorageKey,
   moveCompositionImageRecord,
   readComposerDraft,
+  readComposerDraftImageAnchors,
   readComposerDraftImageMarkers,
   readComposerDraftRevisionId,
   readCompositionImageRecord,
@@ -484,4 +485,22 @@ test("a moved image record describes the replacement row's revision, not the con
   expect(moved?.revision).toBe(0);
   // The COMPOSITION's facts travel intact; only the revision they describe moves.
   expect(moved?.tiles).toEqual([{ id: "tile-1", marker: 1, eligible: true, hasBytes: true }]);
+});
+
+// Medium 5 (`sourceState.ts:1543-1548`, the carry half). The carry carried
+// marker NUMBERS, so the pane receiving the text could not tell which of two
+// identical spellings the warning had been about. It resolved to the first one,
+// which here is prose - so the real missing reference became sendable literal
+// text and a harmless word was refused instead.
+test("a carried draft keeps which spelling its missing reference was", () => {
+  installLocalStorage(new MemoryStorage());
+  const text = "prose [image 1] literal, real [image 1] reference";
+  const realOffset = text.lastIndexOf("[image 1]");
+  writeComposerDraft("from", { text, skillNames: [] }, [{ marker: 1, offset: realOffset }]);
+
+  carryComposerDraft("from", "to");
+
+  // The occurrence travels, not just the number: only the offset says which
+  // spelling had no bytes behind it.
+  expect(readComposerDraftImageAnchors("to")).toEqual([{ marker: 1, offset: realOffset }]);
 });

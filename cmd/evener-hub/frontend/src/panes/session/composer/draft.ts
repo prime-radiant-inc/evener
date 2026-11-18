@@ -688,13 +688,42 @@ export function clearComposerImageMarkers(ref: string): void {
   }
 }
 
-// The recorded markers a new text still spells. Provenance travels only with
-// the anchor it describes: a marker whose "[image N]" the text no longer
-// contains has no image reference left to lose.
-function markersStillSpelled(text: string, markers: readonly number[]): number[] {
-  if (markers.length === 0) return [];
-  const spelled = new Set(Array.from(text.matchAll(markerPattern()), (match) => Number(match[1])));
-  return markers.filter((marker) => spelled.has(marker));
+// The recorded anchors a new text still spells. Provenance travels only with
+// the anchor it describes: a reference whose "[image N]" the text no longer
+// contains has no image left to lose.
+//
+// OCCURRENCES, not numbers. Two spellings of one marker are two references and
+// only one of them is the one with no bytes; carrying the number alone hands
+// the new pane the first spelling instead, so the warning lands on prose and
+// the real missing reference sends as literal text. An occurrence survives
+// while its own offset still spells its number, and an offsetless anchor
+// survives while the number is spelled anywhere - the reading number-only
+// records got before offsets existed.
+function anchorsStillSpelled(text: string, anchors: readonly CompositionImageAnchor[]): CompositionImageAnchor[] {
+  if (anchors.length === 0) return [];
+  const spelled = Array.from(text.matchAll(markerPattern()), (match) => ({
+    marker: Number(match[1]),
+    offset: match.index ?? 0,
+  }));
+  const out: CompositionImageAnchor[] = [];
+  for (const anchor of anchors) {
+    const spelledSomewhere = spelled.some((occurrence) => occurrence.marker === anchor.marker);
+    if (!spelledSomewhere) continue;
+    // An occurrence keeps its offset only where that offset still spells it.
+    // This store cannot relocate an anchor: falling back to "the first
+    // spelling" would re-tag exactly the occurrence the offset exists to
+    // distinguish. But when the new text is a DIFFERENT text - `writeDraft`
+    // replacing a value - every offset is stale by construction, and dropping
+    // the anchor outright would lose provenance an edit merely shifted. So a
+    // stale offset degrades to the offsetless reading: the number is still
+    // an anchor, resolved against the first spelling when installed.
+    out.push(
+      anchor.offset !== undefined && spelled.some((o) => o.marker === anchor.marker && o.offset === anchor.offset)
+        ? { marker: anchor.marker, offset: anchor.offset }
+        : { marker: anchor.marker },
+    );
+  }
+  return out;
 }
 
 // Explicit atoms follow their visible labels across text edits. Names-only
@@ -704,7 +733,7 @@ export function writeDraft(ref: string, value: string): void {
   writeComposerDraft(
     ref,
     current.mentions ? patchSelectionText(current, value) : { ...current, text: value },
-    markersStillSpelled(value, readComposerDraftImageMarkers(ref)),
+    anchorsStillSpelled(value, readComposerDraftImageAnchors(ref)),
   );
 }
 
@@ -741,7 +770,11 @@ export function carryComposerDraft(fromRef: string, toRef: string): void {
   // The carried text keeps its anchors' provenance: the new pane holds none of
   // the bytes (this function's own note above), so a marker it names is an
   // anchor with no image and must refuse rather than send as literal text.
-  writeComposerDraft(toRef, from, markersStillSpelled(from.text, readComposerDraftImageMarkers(fromRef)));
+  //
+  // The offsets survive the carry unchanged: the carried TEXT is the text
+  // those offsets were resolved against, so a spelling that was the second of
+  // two identical ones in one pane is the second of two in the other.
+  writeComposerDraft(toRef, from, anchorsStillSpelled(from.text, readComposerDraftImageAnchors(fromRef)));
 }
 
 // Recovery persistence owns the text in IndexedDB. Removing its redundant
