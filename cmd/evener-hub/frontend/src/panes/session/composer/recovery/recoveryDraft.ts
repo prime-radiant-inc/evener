@@ -286,13 +286,24 @@ export function recoveryComposerDraft(
       // permission, which is the grant that let a deleted reference be sent
       // again. So every reason to withhold writes `false` rather than omitting
       // the entry.
+      //
+      // A row that COMMITS ITS OWN COMPOSITION answers both directions from
+      // that composition, and the side record gets no vote. It writes its
+      // payload and its attachment list in one IndexedDB transaction; the side
+      // record is a later, separate stamp, and a pane that closes between them
+      // - or removes a restored markerless tile mid-save - leaves it describing
+      // the composition before the edit. Letting it decide then withheld an
+      // image the row's own payload had committed as sendable, and the next
+      // Send silently omitted it. A tile in the payload is sendable; the
+      // owned-only tiles stay visible and withheld. The side record answers
+      // only for OLDER rows, which never made the claim.
       if (excludedMarkers.has(attachment.marker)) eligibilityById.set(id, false);
       // The row's own answer first: its payload, read back. Only the withholding
       // direction is written, because an absent fact is permission - a tile the
       // row committed as sendable needs no entry, and `true` would merely
       // restate the default.
       else if (statesOwnComposition && !payloadMarkers.has(attachment.marker)) eligibilityById.set(id, false);
-      else if (stored) eligibilityById.set(id, stored.eligible);
+      else if (stored && !statesOwnComposition) eligibilityById.set(id, stored.eligible);
       else if (withholdEligibility) eligibilityById.set(id, false);
       return {
         ...attachment,

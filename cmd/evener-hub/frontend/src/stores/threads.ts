@@ -87,6 +87,7 @@ import {
 import { useEffect, useMemo, useSyncExternalStore } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
+import type { CompositionImageAnchor } from "../panes/session/composer/draft";
 import { releaseSubagentRows } from "../panes/session/transcript/tools/subagentModuleStore";
 import { resetActivityPanelStoreForTests } from "./activityPanel";
 import { backgroundTranscriptOptions } from "./backgroundTranscriptOptions";
@@ -4093,6 +4094,14 @@ export async function preserveRecoveryMutation(
   // subset. Two lists, because "what ships" and "what the person can still see"
   // are different questions and the preserved row must answer both.
   ownedAttachments?: InputAttachment[],
+  // The missing-image references this composition's text carries, committed
+  // WITH it. A pane closed between the IndexedDB commit and the localStorage
+  // side write otherwise leaves the replacement row with no statement about
+  // its own anchors, and the next reader falls back to a side record that
+  // describes the row this one replaced - so a missing reference sends as
+  // prose. An EMPTY list is an answer ("this composition reserves nothing")
+  // and is passed through as one; only `undefined` means "not stated".
+  anchors?: readonly CompositionImageAnchor[],
 ): Promise<MutationRecoveryRecord | undefined> {
   const runtime = requireMutationRuntime();
   await runtime.start;
@@ -4106,6 +4115,7 @@ export async function preserveRecoveryMutation(
     localDraftRevisionId,
     imageFacts,
     ownImageFacts,
+    anchors,
   );
   if (!record) return undefined;
   notifyMutationPersistence([targetRef]);

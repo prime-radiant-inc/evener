@@ -58,9 +58,12 @@ function changedRange(before: ProseMirrorNode, transaction: Transaction): TextCh
     });
   });
   if (from === Number.POSITIVE_INFINITY) return undefined;
-  const start = documentPositionToTextOffset(before, from);
-  const end = documentPositionToTextOffset(before, to);
-  return end > start ? { from: start, to: end } : undefined;
+  // A PURE INSERTION reports a zero-width span, and that empty span is the
+  // whole answer: it names exactly where the text went in. Discarding it made
+  // the source fall back to "the earliest splice that explains the strings",
+  // so pasting `[image 1]` immediately after a missing `[image 1]` moved the
+  // warning onto the pasted copy instead of leaving it on the reference.
+  return { from: documentPositionToTextOffset(before, from), to: documentPositionToTextOffset(before, to) };
 }
 
 export interface SkillEditorProps {

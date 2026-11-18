@@ -777,6 +777,11 @@ export function preserveRecoveryPendingTurn(
   // The composition the preserved row owns, when `attachments` is only what it
   // would send. See `preserveRecoveryMutation`.
   ownedAttachments?: InputAttachment[],
+  // The missing-image references this composition's text carries, committed
+  // WITH it. See `preserveRecoveryMutation`: a row that cannot state its own
+  // anchors leaves the next reader on a side record describing the row it
+  // replaced. An empty list is an answer; only `undefined` means "not stated".
+  anchors?: readonly { marker: number; offset?: number }[],
 ): ReturnType<typeof preserveRecoveryMutation> {
   return trackProjectionWork(
     (async () => {
@@ -793,6 +798,7 @@ export function preserveRecoveryPendingTurn(
         imageFacts,
         ownImageFacts,
         ownedAttachments,
+        anchors,
       );
       void refreshPendingTurnsProjection(ref);
       return preserved;

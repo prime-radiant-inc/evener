@@ -443,6 +443,17 @@ export type CompositionTileFacts = {
   eligible: boolean;
   /** Whether this tile still holds bytes (false: a markerless restored image). */
   hasBytes: boolean;
+  /** A digest of the bytes this tile holds, when it holds any.
+   *
+   * `hasBytes` answers "is there an image"; it cannot answer "WHICH image", and
+   * two panes can stage different files under one marker with the same name and
+   * media type. A reuse decision that compares only the boolean lets one pane
+   * call the other's row proof its own image was saved. Committed with the
+   * facts so a later reader can compare without the bytes living here. Absent
+   * on records written before this field existed, and absent is compared as
+   * "no digest known", never as a match for a real one.
+   */
+  digest?: string;
 };
 
 /** One reference with no bytes behind it, and WHICH spelling it was.
@@ -606,6 +617,11 @@ export function writeCompositionImageRecord(clientMutationId: string, record: Co
         marker: tile.marker,
         eligible: tile.eligible,
         hasBytes: tile.hasBytes,
+        // Carried, not rebuilt. Dropping it here would make every record look
+        // like one written before the field existed, and the reuse comparison
+        // would fall back to matching on `hasBytes` alone - the defect this
+        // field exists to close.
+        ...(tile.digest === undefined ? {} : { digest: tile.digest }),
       })),
       // Carried through. Rebuilding the record field by field is how a field
       // stops being written: the reader below treats a missing stamp as "trust
