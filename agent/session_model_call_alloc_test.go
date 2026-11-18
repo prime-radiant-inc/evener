@@ -96,14 +96,29 @@ func requestHistoryPayload(i int) string {
 	return fmt.Sprintf("fixture-turn-%04d-payload", i)
 }
 
+// requestHistoryLane selects whether the fixture keeps the session's own
+// context strategy, which is the only difference between the two lanes: with it
+// every preparation runs the per-request fold pass, without it preparation takes
+// the no-fold path.
+type requestHistoryLane bool
+
+const (
+	requestHistoryNoFoldLane requestHistoryLane = false
+	requestHistoryFoldLane   requestHistoryLane = true
+)
+
 // newRequestHistoryPreparationSession builds a real Session on an isolated
 // temporary state directory and replaces its history with text-only fixture
-// turns. The context strategy is removed so preparation takes the
-// no-fold path, and the missing personal AGENTS.md keeps ambient instructions
-// out of the fixture. One preparation runs before returning, so every
-// measurement lane starts from a settled projection instead of each caller
-// hand-rolling its own warm-up.
-func newRequestHistoryPreparationSession(tb testing.TB, turns int) *Session {
+// turns. The missing personal AGENTS.md keeps ambient instructions out of the
+// fixture. One preparation runs before returning, so every measurement lane
+// starts from a settled projection instead of each caller hand-rolling its own
+// warm-up.
+//
+// On the fold lane that warm-up must actually publish a fold. A preparation whose
+// publication is refused still returns every fixture message and still measures,
+// so without this assertion the allocation budget below would be green while the
+// publish pass it exists to bound never ran.
+func newRequestHistoryPreparationSession(tb testing.TB, turns int, lane requestHistoryLane) *Session {
 	tb.Helper()
 	s, err := NewSession(benchClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(tb.TempDir()), SessionConfig{
 		StateDir:         tb.TempDir(),
@@ -115,15 +130,35 @@ func newRequestHistoryPreparationSession(tb testing.TB, turns int) *Session {
 		tb.Fatalf("NewSession: %v", err)
 	}
 	tb.Cleanup(s.Close)
-	s.strategy = nil
+	if !bool(lane) {
+		s.strategy = nil
+	} else if s.strategy == nil {
+		tb.Fatalf("NewSession built no context strategy: the fold lane would measure the no-fold path")
+	}
 	s.mu.Lock()
 	s.history = make([]schema.Turn, 0, turns)
 	for i := range turns {
 		s.history = append(s.history, schema.NewTurn(schema.TurnUserInput, llm.User(requestHistoryPayload(i))))
 	}
 	s.mu.Unlock()
+	publicationsBefore := requestHistoryFoldPublications(tb, s)
 	prepareRequestHistoryRound(tb, s)
+	if lane {
+		if after := requestHistoryFoldPublications(tb, s); after <= publicationsBefore {
+			tb.Fatalf("fold lane published no fold: publication revision %d before the warm-up preparation and %d after it, so the pass this lane measures never ran", publicationsBefore, after)
+		}
+	}
 	return s
+}
+
+// requestHistoryFoldPublications reports the revision of the newest fold
+// publication, the counter publishFoldTransaction stamps under s.mu when a fold
+// publishes. It is zero until a fold publishes.
+func requestHistoryFoldPublications(tb testing.TB, s *Session) int {
+	tb.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.newestPublishedFoldRevision
 }
 
 // prepareRequestHistoryRound runs one real preparation and returns the
@@ -267,7 +302,7 @@ func measureRequestHistoryBytesAttributableToPreparation(t *testing.T, round fun
 func TestPrepareModelRequestHistoryAllocationBudget(t *testing.T) {
 	for _, turns := range requestHistoryFixtureTurns {
 		t.Run(fmt.Sprintf("%d turns", turns), func(t *testing.T) {
-			s := newRequestHistoryPreparationSession(t, turns)
+			s := newRequestHistoryPreparationSession(t, turns, requestHistoryNoFoldLane)
 
 			// The session arrives settled; this is the assertion round: source
 			// stability across the settle and this round, and this round's
@@ -303,7 +338,7 @@ func TestPrepareModelRequestHistoryAllocationBudget(t *testing.T) {
 // in a comment.
 // Serial: it measures process-global TotalAlloc, like its siblings.
 func TestPrepareModelRequestHistoryCeilingCatchesDeadCopy(t *testing.T) {
-	s := newRequestHistoryPreparationSession(t, requestHistoryBudgetTurns)
+	s := newRequestHistoryPreparationSession(t, requestHistoryBudgetTurns, requestHistoryNoFoldLane)
 	deadCopyBytes := int64(requestHistoryBudgetTurns) * int64(unsafe.Sizeof(schema.Turn{}))
 
 	measure := func(copyBearing bool) int64 {
@@ -444,7 +479,7 @@ const churnCleanRounds = 2
 const minimumChurnTicks = 10
 
 func TestPrepareModelRequestHistoryBudgetIgnoresConcurrentBackground(t *testing.T) {
-	s := newRequestHistoryPreparationSession(t, requestHistoryBudgetTurns)
+	s := newRequestHistoryPreparationSession(t, requestHistoryBudgetTurns, requestHistoryNoFoldLane)
 	quiet := measureRequestHistoryBytesPerPreparation(t, s)
 	churned, churnTicksInWindow := measureWithChurnRounds(t, s)
 	// A preparation's attributable allocation settles downward as the
@@ -538,7 +573,7 @@ var sink []byte
 func BenchmarkPrepareModelRequestHistory(b *testing.B) {
 	for _, turns := range requestHistoryFixtureTurns {
 		b.Run(strconv.Itoa(turns), func(b *testing.B) {
-			s := newRequestHistoryPreparationSession(b, turns)
+			s := newRequestHistoryPreparationSession(b, turns, requestHistoryNoFoldLane)
 			var timings events.RoundTimings
 			b.ReportAllocs()
 			for b.Loop() {
@@ -550,43 +585,15 @@ func BenchmarkPrepareModelRequestHistory(b *testing.B) {
 	}
 }
 
-// newRequestHistoryFoldSession is newRequestHistoryPreparationSession with the
-// session's own context strategy left in place, so every preparation runs the
-// per-request fold pass. Pressure stays far below the checkpoint threshold, so
-// the fold folds nothing and makes no summarizer call: what remains is the pass
-// this fixture measures, the snapshot and publication every request pays for
-// whether or not a layer folds anything.
-func newRequestHistoryFoldSession(tb testing.TB, turns int) *Session {
-	tb.Helper()
-	s, err := NewSession(benchClient(), NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(tb.TempDir()), SessionConfig{
-		StateDir:         tb.TempDir(),
-		AgentsDocPath:    filepath.Join(tb.TempDir(), "no-personal-AGENTS.md"),
-		MaxSubagentDepth: 1,
-		testOnly:         testConfig{skipGitSnapshot: true},
-	})
-	if err != nil {
-		tb.Fatalf("NewSession: %v", err)
-	}
-	tb.Cleanup(s.Close)
-	if s.strategy == nil {
-		tb.Fatalf("NewSession built no context strategy: the fold lane would measure the no-fold path")
-	}
-	s.mu.Lock()
-	s.history = make([]schema.Turn, 0, turns)
-	for i := range turns {
-		s.history = append(s.history, schema.NewTurn(schema.TurnUserInput, llm.User(requestHistoryPayload(i))))
-	}
-	s.mu.Unlock()
-	prepareRequestHistoryRound(tb, s)
-	return s
-}
-
 // BenchmarkPrepareModelRequestHistoryFold measures one real preparation with
-// the fold pass enabled, the lane a configured strategy runs.
+// the fold pass enabled, the lane a configured strategy runs. Pressure stays far
+// below the checkpoint threshold, so the fold folds nothing and makes no
+// summarizer call: what remains is the pass this lane measures, the snapshot and
+// publication every request pays for whether or not a layer folds anything.
 func BenchmarkPrepareModelRequestHistoryFold(b *testing.B) {
 	for _, turns := range requestHistoryFixtureTurns {
 		b.Run(strconv.Itoa(turns), func(b *testing.B) {
-			s := newRequestHistoryFoldSession(b, turns)
+			s := newRequestHistoryPreparationSession(b, turns, requestHistoryFoldLane)
 			var timings events.RoundTimings
 			b.ReportAllocs()
 			for b.Loop() {
@@ -600,26 +607,17 @@ func BenchmarkPrepareModelRequestHistoryFold(b *testing.B) {
 
 // maxRequestFoldHistoryBytesPerPreparation* is the frozen ceiling for one
 // fold-lane preparation of the 1,024-turn fixture, the lane a session with a
-// configured context strategy runs. It must sit above the largest preparation
-// that hands the published history back by reference and below the smallest one
-// that defensively copies it, so reintroducing the copy fails here while a
-// healthy preparation passes (#6448).
-//
-// Measured on 2026-11-17 at 1,024 turns: copy-bearing preparations are 2,690,520
-// bytes plain and 2,691,962 under -race, copy-free ones are 1,846,744 plain and
-// 1,846,792 under -race. Each lane's gap is one 1,024 *
-// unsafe.Sizeof(schema.Turn{}) copy (843,776 bytes) plus reading noise, so the
-// race instrumentation does not move this lane the way it moves the no-fold
-// lane's. Both ceilings are the same 2,268,000: 421,256 and 421,208 above the two
-// copy-free readings, and 422,520 and 423,962 below the two copy-bearing ones, so
-// every margin clears a quarter copy. The literals stay separate so a future
-// change that moves one lane by itself cannot silently move the other. Both are
-// deliberate: do not derive them from the implementation under test.
+// configured context strategy runs. It must sit above the copy-free preparation
+// and below the copy-bearing one by at least a quarter of the copy itself, so
+// reintroducing the copy fails here while a healthy preparation passes. Its
+// teeth are pinned directly by
+// TestPrepareModelRequestHistoryFoldCeilingCatchesPublishedCopy; do not derive
+// the literal from the implementation under test.
 const maxRequestFoldHistoryBytesPerPreparationPlain int64 = 2_268_000
 
 // maxRequestFoldHistoryBytesPerPreparationRace is the same bound for the race
-// lane, whose instrumentation moves the whole distribution up. The literals are
-// separate so a change that moves one lane cannot silently move the other.
+// lane. The literals are separate so a change that moves one lane cannot
+// silently move the other.
 const maxRequestFoldHistoryBytesPerPreparationRace int64 = 2_268_000
 
 // maxRequestFoldHistoryBytesPerPreparation is this lane's ceiling; -race is
@@ -632,8 +630,7 @@ func maxRequestFoldHistoryBytesPerPreparation() int64 {
 }
 
 // measureRequestHistoryFoldBytesPerPreparation measures one fold-lane
-// preparation, the lane whose publish pass handed its caller a defensive copy of
-// the published history (#6448).
+// preparation: the lane whose publish pass copies the history it just published.
 func measureRequestHistoryFoldBytesPerPreparation(t *testing.T, s *Session) int64 {
 	t.Helper()
 	return measureRequestHistoryBytesAttributableToPreparation(t, func(int) {
@@ -645,14 +642,13 @@ func measureRequestHistoryFoldBytesPerPreparation(t *testing.T, s *Session) int6
 // the fold lane carries every fixture payload into the request in order, leaves
 // the complete source history unchanged, and stays under a ceiling placed
 // between the copy-free and copy-bearing implementations of the fold
-// publication's return. The copy is the one #6448 removed: the transaction
-// published s.history's own backing array to a caller that only ever read ok and
-// the refusal, so the copy was dead bytes on every request a session with a
-// configured strategy made.
+// publication's return. The fixture's warm-up asserts the lane actually
+// published a fold, so a refused publication cannot leave this test measuring a
+// pass that never ran.
 // Serial: it measures process-global TotalAlloc, and allocations from
 // concurrently running tests would land inside every window it measures.
 func TestPrepareModelRequestHistoryFoldAllocationBudget(t *testing.T) {
-	s := newRequestHistoryFoldSession(t, requestHistoryBudgetTurns)
+	s := newRequestHistoryPreparationSession(t, requestHistoryBudgetTurns, requestHistoryFoldLane)
 
 	// The session arrives settled; this is the assertion round: source stability
 	// across the settle and this round, and this round's outputs asserted, before
@@ -682,7 +678,7 @@ func TestPrepareModelRequestHistoryFoldAllocationBudget(t *testing.T) {
 // the ceiling is ever moved to where that copy would slip under it.
 // Serial: it measures process-global TotalAlloc, like its siblings.
 func TestPrepareModelRequestHistoryFoldCeilingCatchesPublishedCopy(t *testing.T) {
-	s := newRequestHistoryFoldSession(t, requestHistoryBudgetTurns)
+	s := newRequestHistoryPreparationSession(t, requestHistoryBudgetTurns, requestHistoryFoldLane)
 	deadCopyBytes := int64(requestHistoryBudgetTurns) * int64(unsafe.Sizeof(schema.Turn{}))
 
 	measure := func(copyBearing bool) int64 {
