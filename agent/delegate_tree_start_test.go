@@ -1093,3 +1093,90 @@ func stopStartBetweenAttachAndCommit(t *testing.T, c *delegateTreeController, st
 	defer c.mu.Unlock()
 	return c.durable[started.lease.delegateID].LatestObservation
 }
+
+// TestStoppedRestartNeverAttachedRecordsNoObservation is the medium: the
+// runtime must be sampled by GENERATION, not by delegate.
+//
+// A stop can land after a restart commits but before AttachRuntime succeeds. A
+// retained delegate still carries the PREVIOUS generation's runtime as its
+// resident child, so sampling the delegate's runtime during that window durably
+// records the old registry under the NEW generation — job_status and job_list
+// then report tools for a generation that never attached.
+//
+// The pair below is the whole finding: the first generation attaches and its
+// observation is recorded, and the second, which never attaches, records NONE.
+func TestStoppedRestartNeverAttachedRecordsNoObservation(t *testing.T) {
+	t.Parallel()
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerIdle(t, c, "dlg_target", "")
+
+	// Generation 1: attach a runtime that registered a tool, settle it, and let
+	// the runtime become RESIDENT.
+	first, firstRuntime := commitAttachedDelegateControllerStart(t, c, "dlg_target")
+	reg := tool.NewRegistry()
+	if err := reg.Register(regTool(llm.ToolDefinition{Name: "read_file", Description: "fixture"})); err != nil {
+		t.Fatalf("register: %v", err)
+	}
+	firstRuntime.reg = reg
+	if _, err := c.AdmitStartInput(first.lease, func() error { return nil }); err != nil {
+		t.Fatalf("AdmitStartInput first: %v", err)
+	}
+	if _, err := c.FinishGeneration(first.lease, delegateFinish{outcome: delegatestore.OutcomeCompleted, reason: "completed"}); err != nil {
+		t.Fatalf("FinishGeneration first: %v", err)
+	}
+	// The finalizer tail is what returns the delegate to idle so a restart is
+	// admissible; the runtime stays resident across it.
+	reportFinalizeTailDone(t, c, first.lease, firstRuntime)
+
+	c.mu.Lock()
+	resident := c.live["dlg_target"] != nil && c.live["dlg_target"].runtime == firstRuntime
+	c.mu.Unlock()
+	if !resident {
+		t.Fatal("the first generation's runtime did not stay resident, so this test cannot reach the window it exists for")
+	}
+
+	// Generation 2: commit a restart, attach NOTHING, then stop it.
+	reservation, err := c.ReserveStart(rootDelegateActor("root-session"), "dlg_target")
+	if err != nil {
+		t.Fatalf("ReserveStart restart: %v", err)
+	}
+	restarted, err := c.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart restart: %v", err)
+	}
+	if restarted.lease.generation == first.lease.generation {
+		t.Fatal("the restart did not advance the generation")
+	}
+	// The stop lands between the commit and the attach.
+	c.mu.Lock()
+	_, err = c.appendLocked(delegatestore.Event{
+		Kind:                 delegatestore.EventDelegateSubtreeStopRequested,
+		DelegateID:           "dlg_target",
+		SubtreeStopRequested: &delegatestore.SubtreeStopRequested{TargetDelegateID: "dlg_target"},
+	})
+	c.mu.Unlock()
+	if err != nil {
+		t.Fatalf("append stop request: %v", err)
+	}
+	plans, err := c.FinishGeneration(restarted.lease, delegateFinish{outcome: delegatestore.OutcomeStopped, reason: "stopped_by_parent"})
+	if err != nil {
+		t.Fatalf("FinishGeneration restart: %v", err)
+	}
+	if len(plans.updates) == 0 {
+		t.Fatal("the restart settlement produced no plan")
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	aggregate := c.durable["dlg_target"]
+	// No observation is the correct answer: the generation never attached, so
+	// there is nothing it can truthfully report. Recording the resident
+	// runtime's names here is the defect — and a stamp naming this generation
+	// would let a reader attribute them to it.
+	if aggregate.LatestObservation != nil {
+		t.Errorf("the restart recorded %v from the resident runtime of generation %d; it never attached, so it has no observation", *aggregate.LatestObservation, first.lease.generation)
+	}
+	if aggregate.LatestObservationGeneration == restarted.lease.generation {
+		t.Errorf("the restart stamped generation %d as observed, but it never attached", restarted.lease.generation)
+	}
+}

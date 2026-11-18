@@ -644,10 +644,13 @@ func (runtime delegateRuntime) stableSendFailureOutcomeAfterDispatch(ctx context
 func delegateFailedSendResult(started delegateStartCommit, plans delegateMutationPlans, cause error, nameMap ...map[string]string) sendMessageResult {
 	snapshot := latestDelegateMutationSnapshot(started.lease.delegateID, started.plan, plans)
 	resumable := snapshot.resumable
-	tools := append([]string(nil), started.descriptor.ToolNameCeiling...)
-	if len(nameMap) > 0 && nameMap[0] != nil {
-		tools = providerVisibleToolNames(tools, nameMap[0])
-	}
+	// The SAME resolution job_status reads. A stop that wins after the runtime
+	// attached has a recorded observation for this generation, and building the
+	// receipt from the descriptor ceiling instead advertises a tool the status
+	// read correctly omits for it. delegateAvailability prefers a live runtime,
+	// then this generation's settled record, and falls back to the ceiling only
+	// for a delegate no generation of which was ever observed.
+	tools := delegateAvailability(snapshot, nameMap...)
 	result := sendMessageResult{
 		Target:              started.lease.delegateID,
 		DelegateID:          started.lease.delegateID,

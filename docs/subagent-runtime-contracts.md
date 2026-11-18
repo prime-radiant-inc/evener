@@ -88,6 +88,32 @@ not by parallel policy checks:
   cannot call `delegate`; it retains `job_watch`, subject to tool policy and
   watch-source permissions. A positive allowance permits delegation, subject to
   tool policy, regardless of depth. See [delegation allowance](job-control.md#delegation-allowance-recursive-delegation).
+
+Two questions are answered from two different sources, and confusing them makes
+both wrong:
+
+- **Authorization** is the frozen descriptor's tool-name ceiling, computed at
+  spawn from the parent's composition. It bounds what a child MAY call, and
+  recovery replays it. Its MCP half comes from a startup snapshot of the
+  CLI-only servers a child — which clears the CLI layers — cannot reach, and it
+  holds only while the evidence behind it still describes the workspace: the
+  project, global and plugin MCP config layers, the git root they resolve under,
+  and each plugin manifest. A layer the snapshot could not read is **unknown**,
+  not absent, and unknown never excludes. The verdict is stored with its
+  evidence, so an environment swap clears the verdict and keeps the
+  classification.
+- **Availability** is an **observation**. After a successful spawn, create, send,
+  status and list report the names the child actually registered, read from its
+  own registry and carried on its terminal packet, tagged with the generation
+  that produced it so a cold restart cannot attribute the previous run's tools
+  to the new one. A runtime is sampled only through the binding for the
+  generation being reported: a retained child keeps its resident runtime across
+  a generation boundary, so sampling the delegate's runtime would report one
+  generation's registry against another. Absent (no observation) and empty
+  (registered nothing) stay distinct; only a generation no observation covers
+  falls back to the frozen ceiling. A name excluded only because the CLI
+  supplied it is re-admitted at cold resume once the child's own registry can
+  register it.
 - **Close/cancel denies new child work.** The stable delegate-tree controller
   admits starts and sends against one fenced lifecycle aggregate. Once a session
   or subtree is closing/stopping, new child/model/shell admission cannot commit

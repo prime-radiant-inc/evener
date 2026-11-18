@@ -737,3 +737,48 @@ func TestDelegateTools_SendReplyNumbersSeveralEarlierResults(t *testing.T) {
 	assertOrdered(t, "delegate_send text", value.(toolpkg.StateResult).Output,
 		"earlier result 1 of 2", "FIRST", "earlier result 2 of 2", "SECOND", "latest result:", "THIRD")
 }
+
+// TestStoppedSendReceiptAgreesWithJobStatus pins the receipt against the same
+// record the status read answers from.
+//
+// A stop that wins after the runtime attached records the child's tools for
+// that generation, and job_status reports them. The send receipt for the same
+// generation used to be built from the descriptor ceiling, so the two surfaces
+// disagreed about one settled generation: the receipt could name a tool the
+// child never registered.
+func TestStoppedSendReceiptAgreesWithJobStatus(t *testing.T) {
+	t.Parallel()
+	descriptor := delegatestore.Descriptor{
+		Task: "receipt from the settled record",
+		// The ceiling names a tool the child did NOT register.
+		ToolNameCeiling: []string{"read_file", "svc__echo"},
+	}
+	settled := []string{"read_file"}
+	row := delegateSnapshot{
+		id:                 "dlg_1",
+		descriptor:         descriptor,
+		generation:         2,
+		settledObservation: settled,
+		observedGeneration: 2,
+	}
+	plans := delegateMutationPlans{updates: []delegateUpdatePlan{{rows: []delegateSnapshot{row}}}}
+
+	receipt := delegateFailedSendResult(delegateStartCommit{
+		descriptor: descriptor,
+		lease:      delegateLease{delegateID: "dlg_1", generation: 2},
+	}, plans, nil)
+
+	if slices.Contains(receipt.Tools, "svc__echo") {
+		t.Errorf("the receipt advertises %q, which the child never registered: %v", "svc__echo", receipt.Tools)
+	}
+	if !slices.Contains(receipt.Tools, "read_file") {
+		t.Errorf("the receipt dropped %q, which the child did register: %v", "read_file", receipt.Tools)
+	}
+
+	// And it is the SAME answer job_status gives for that generation, which is
+	// the point: one settled record, two surfaces.
+	status := projectDelegateStatus(time.Now(), row)
+	if !slices.Equal(receipt.Tools, status.Tools) {
+		t.Errorf("receipt Tools = %v but status Tools = %v for one settled generation", receipt.Tools, status.Tools)
+	}
+}

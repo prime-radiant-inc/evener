@@ -597,13 +597,23 @@ func (c *delegateTreeController) finishStoppedStartLocked(lease delegateLease, l
 	decision := c.reduceStoppedGenerationFinishIntent(finishIntent{
 		lease: lease,
 		latch: finishLatchRecoveryOnly,
-		// The runtime this start attached before its initial input committed.
-		// Without it the synthetic settlement records no observation, and a
-		// generation that HAD attached carries an empty answer once the binding
-		// is released — readers then fall back to the ceiling and list tools the
-		// child never registered. A start that never attached passes nil, which
-		// the reducer reads as "no observation", keeping the two answers apart.
-		runtime: live.runtime,
+		// The runtime is sampled BY GENERATION, never by delegate.
+		//
+		// The synthetic settlement records the settled generation's observation.
+		// Without it a generation that HAD attached carries no answer once the
+		// binding is released, so readers fall back to the ceiling and list tools
+		// the child never registered.
+		//
+		// live.runtime is the RESIDENT child and outlives a settled generation: a
+		// stop landing after a restart commits but before AttachRuntime succeeds
+		// finds the previous generation's runtime still resident. Sampling it
+		// would durably record that registry under the NEW generation, reporting
+		// tools for a generation that never attached. boundRuntimeLocked refuses a
+		// binding whose lease names another generation, so this reads the runtime
+		// only when it provably belongs to the generation being settled; nil then
+		// means no observation, which the reducer keeps distinct from an observed
+		// empty registry.
+		runtime: c.boundRuntimeLocked(live, lease.generation),
 	})
 	// Latch the caller's authenticated live state on a failed append; the
 	// reduce step carries no controller state.

@@ -609,7 +609,17 @@ func (c *delegateTreeController) reduceGenerationFinishIntent(intent finishInten
 		events = []delegatestore.Event{finished}
 
 	case delegatestore.PhaseStopping:
-		decision := c.reduceStoppedGenerationFinishIntent(finishIntent{lease: lease, finish: finish, runtime: live.runtime, latch: finishLatchTriple})
+		// Sampled BY GENERATION, for the same reason finishStoppedStartLocked
+		// does: live.runtime is the resident child and outlives a settled
+		// generation, so a stop landing after a restart commits but before
+		// AttachRuntime succeeds would record the previous generation's registry
+		// under the new one.
+		decision := c.reduceStoppedGenerationFinishIntent(finishIntent{
+			lease:   lease,
+			finish:  finish,
+			runtime: c.boundRuntimeLocked(live, lease.generation),
+			latch:   finishLatchTriple,
+		})
 		// The generation finish latches its authenticated live state
 		// unconditionally on a failed append.
 		decision.latchLive = live
