@@ -3,9 +3,16 @@ package chatcompletions
 import (
 	"encoding/json"
 	"testing"
+
+	"github.com/santhosh-tekuri/jsonschema/v5"
 )
 
 const closeTag = "</parameter>"
+
+// The token tests exercise the repair of rejected fields independently of a tool schema.
+func rescueClaudeXMLArgs(raw string) string {
+	return (chatArgumentRepair{}).RepairToolArguments(raw, func(string, string) bool { return true })
+}
 
 func fieldsOf(t *testing.T, out string) map[string]json.RawMessage {
 	t.Helper()
@@ -246,7 +253,12 @@ func TestFromChatCompletionResponseRescuePreservesNonCanonicalJSON(t *testing.T)
 	if len(calls) != 1 {
 		t.Fatalf("got %d tool calls, want 1", len(calls))
 	}
-	fields := fieldsOf(t, string(calls[0].Arguments))
+	call := calls[0]
+	if string(call.Arguments) != args {
+		t.Fatalf("provider arguments = %q, want %q", call.Arguments, args)
+	}
+	schema := jsonschema.MustCompileString("tool.json", `{"type":"object","properties":{"action":{"enum":["update"]},"x":{"type":"integer"},"n":{"type":"number"}}}`)
+	fields := fieldsOf(t, string(call.RepairedArguments(schema)))
 	wantToken(t, fields, "n", `1.50`)
 	wantToken(t, fields, "action", `"update"`)
 	wantToken(t, fields, "x", `1`)

@@ -192,36 +192,28 @@ func TestRawArgs_NonStream_InvalidUTF8(t *testing.T) {
 	}
 }
 
-// When raw capture succeeds, the adapter must rescue the chosen argument
-// string once per tool call, not rescue the fallback and then rescue the raw
-// string again.
-func TestRawArgs_NonStream_RescuesOncePerToolCall(t *testing.T) {
-	// Not parallel: swaps the package's rescueClaudeXMLArgsHook seam.
-	calls := 0
-	rescueClaudeXMLArgsHook = func() { calls++ }
-	t.Cleanup(func() { rescueClaudeXMLArgsHook = nil })
-
-	body := rawArgsBody(t, `{"path":"x"}`)
-	decodeRawArgsComplete(t, body)
-	if calls != 1 {
-		t.Fatalf("rescueClaudeXMLArgs calls = %d, want 1 per tool call", calls)
-	}
-}
-
-// TestRawArgs_NonStream_NonCanonicalJSON asserts that non-canonical but
-// valid JSON (spacing/key-order) survives the decode byte-identical — not
-// re-marshaled to canonical form.
-//
-// RED until the adapter captures arguments as RawMessage from the body.
+// All four readers retain argument spelling and literal file contents for replay.
 func TestRawArgs_NonStream_NonCanonicalJSON(t *testing.T) {
 	t.Parallel()
-	// Non-canonical JSON: spaces after keys, keys in non-sorted order.
-	argsContent := `{ "b" : 2 , "a" : 1 }`
-	body := rawArgsBody(t, argsContent)
-	got := decodeRawArgsComplete(t, body)
-	want := []byte(argsContent)
-	if !bytes.Equal(got, want) {
-		t.Fatalf("non-stream Arguments = %q, want %q (non-canonical JSON should not be re-marshaled)", got, want)
+	for _, raw := range []string{
+		`{ "b" : 2 , "a" : 1 }`,
+		" \t" + `{ "file_path":"data.json", "content":"{ \"n\": 1.50 }\n" }` + "\r\n",
+		`{ "file_path":"config.xml", "content":"<parameter name='literal'>value</parameter>" }`,
+	} {
+		body, stream := rawArgsBody(t, raw), rawArgsStreamSSE(raw)
+		got := [][]byte{decodeRawArgsComplete(t, body), decodeRawArgsStream(t, stream)}
+		for _, recorded := range [][]byte{body, []byte(stream)} {
+			resp, err := ExtractRecordedResponse(recorded, "m-wire")
+			if err != nil {
+				t.Fatal(err)
+			}
+			got = append(got, resp.ToolCalls()[0].Arguments)
+		}
+		for i, args := range got {
+			if string(args) != raw {
+				t.Errorf("%s stored %q, want literal arguments %q", []string{"Complete", "Stream", "recorded JSON", "recorded SSE"}[i], args, raw)
+			}
+		}
 	}
 }
 

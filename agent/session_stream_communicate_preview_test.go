@@ -138,10 +138,9 @@ func TestCommunicatePreviewDecoderChunkInvariance(t *testing.T) {
 // TestCommunicatePreviewSurvivesArgumentReplacementAtToolCallEnd covers the one
 // place the accumulated argument text does not simply grow. A provider's end
 // event carries its final arguments and REPLACES the accumulated text, and those
-// final arguments need not extend what streamed before them: chatcompletions
-// rewrites them through rescueClaudeXMLArgs. An incremental decoder whose
-// offsets survived that replacement would resume mid-message against different
-// bytes and emit a corrupted preview, so the final text must decode correctly.
+// final arguments need not extend what streamed before them. An incremental
+// decoder that retained its offsets could resume mid-message against different
+// bytes, so the final text must decode correctly.
 func TestCommunicatePreviewSurvivesArgumentReplacementAtToolCallEnd(t *testing.T) {
 	t.Parallel()
 

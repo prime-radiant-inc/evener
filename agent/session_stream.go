@@ -490,10 +490,8 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 				b.Write(ev.ToolCall.Arguments)
 				toolArgs[ev.ToolCall.ID] = b
 				// The end event carries the provider's final arguments, which
-				// replace the accumulated text and need not be an extension of it
-				// (rescueClaudeXMLArgs rewrites them). The incremental decoder's
-				// offsets are only valid while the text it read is a prefix of the
-				// current text, so drop it and decode the final text from scratch.
+				// replace the accumulated text and need not extend it. The decoder's
+				// offsets depend on the prefix it read, so decode the final text afresh.
 				delete(communicatePreviewDecoders, ev.ToolCall.ID)
 				noteContent()
 			}

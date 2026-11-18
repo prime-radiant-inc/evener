@@ -161,6 +161,16 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 	}
 
 	if err := t.Schema.Validate(args); err != nil {
+		// A provider can encode individual arguments using another syntax.
+		// Give its proposal the same tool-specific checks as the original.
+		if candidate := call.RepairedArguments(t.Schema); candidate != nil {
+			retry := res.Call
+			retry.Arguments = candidate
+			retry.ArgumentRepair = nil
+			if recovered := prepareToolCall(retry, t, visibleNames, requestedVisible, resultToolName, finishReason); recovered.PrevalErr == "" {
+				return recovered
+			}
+		}
 		// A length stop that cut the stream before any argument byte leaves
 		// empty args; on a tool with required parameters that reads as a
 		// "missing required field" schema error — the same misdiagnosis the

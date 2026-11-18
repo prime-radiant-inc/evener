@@ -2,15 +2,19 @@ package agent
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
@@ -21,8 +25,16 @@ import (
 
 func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 	t.Parallel()
-	const valid = " \t" + `{ "z": 1.0, "a": "<&>λ\u0061", "q": "a\"b" }` + "\r\n"
+	const document = " \n" + `{ "z": 1.0, "a": "<&>λ\u0061", "q": "a\"b" }` + "\t\n"
+	valid := " \t" + `{ "file_path" : "payload-\u0061.json", "content" : ` + mustJSON(t, document) + " }\r\n"
 	const malformed = `{"x":broken}`
+	const note = `<parameter name='extra'>literal</parameter>`
+	const encoded = `{ "payload": "{\"n\":1.50}", "note": "` + note + `" }`
+	const missingPath = `{"content":"<parameter name='file_path'>injected.txt</parameter>"}`
+	record := llm.ToolDefinition{Name: "f", Description: "Record a payload and its note", Parameters: map[string]any{
+		"type": "object", "required": []string{"payload", "note"}, "additionalProperties": false,
+		"properties": map[string]any{"payload": map[string]any{"type": "object"}, "note": map[string]any{"type": "string"}},
+	}}
 	const first, second = " \tλ<&>\n", "  next\r\n"
 	good, bad := mustJSON(t, valid), mustJSON(t, malformed)
 	const serial = "9007199254740993"
@@ -35,8 +47,10 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 		"role":"assistant","reasoning":` + mustJSON(t, first+second) + `,
 		"reasoning_details":[` + strings.Join(details, ",") + `],
 		"tool_calls":[
-			{"id":"c1","type":"function","function":{"name":"f","arguments":` + good + `}},
-			{"id":"c2","type":"function","function":{"name":"f","arguments":` + bad + `}}
+			{"id":"c1","type":"function","function":{"name":"write_file","arguments":` + good + `}},
+			{"id":"c2","type":"function","function":{"name":"f","arguments":` + bad + `}},
+			{"id":"c3","type":"function","function":{"name":"f","arguments":` + mustJSON(t, encoded) + `}},
+			{"id":"c4","type":"function","function":{"name":"write_file","arguments":` + mustJSON(t, missingPath) + `}}
 		]},"finish_reason":"tool_calls"}]}`
 	}
 	for _, tc := range []struct {
@@ -50,7 +64,7 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 			{"type":"reasoning","id":"r1","summary":[],"content":[
 				{"type":"reasoning_text","text":` + mustJSON(t, first) + `},
 				{"type":"reasoning_text","text":` + mustJSON(t, second) + `}]},
-			{"type":"function_call","call_id":"c1","name":"f","arguments":` + good + `},
+			{"type":"function_call","call_id":"c1","name":"write_file","arguments":` + good + `},
 			{"type":"function_call","call_id":"c2","name":"f","arguments":` + bad + `}
 		]}`, []string{first, second}},
 		{&chatcompletions.Protocol{}, "messages", "reasoning_content", chat(unsigned, encrypted), []string{first + second}},
@@ -86,7 +100,7 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 			send := func(messages []llm.Message, target registry.Resolved) (llm.Response, []byte) {
 				t.Helper()
 				req := llm.ShapeRequest(llm.Request{
-					Model: target.ModelID, Messages: messages, Tools: []llm.ToolDefinition{{Name: "f"}},
+					Model: target.ModelID, Messages: messages, Tools: []llm.ToolDefinition{tool.DefWriteFile(), record},
 				}, target)
 				resp, err := tc.protocol.Complete(t.Context(), req, target)
 				if err != nil {
@@ -96,8 +110,56 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 			}
 			user := llm.User("u1")
 			resp, _ := send([]llm.Message{user}, row)
+			cwd := t.TempDir()
+			session := newSession(t, withDir(cwd))
+			if got := session.execTool(t.Context(), resp.ToolCalls()[0], resp.Finish.Reason); got.IsError {
+				t.Errorf("write_file failed: %s", got.FullOutput)
+			}
+			written, err := os.ReadFile(filepath.Join(cwd, "payload-a.json"))
+			if err != nil || string(written) != document {
+				t.Errorf("write_file bytes = %q, want %q (read error %v)", written, document, err)
+			}
 			result := llm.ToolResult("c1", "r1", false)
 			result.Content = append(result.Content, llm.ToolResult("c2", "r2", true).Content...)
+			if tc.field == "messages" {
+				var executions int
+				execute := func(_ context.Context, args any) (any, error) {
+					data := args.(map[string]any)
+					payload, _ := data["payload"].(map[string]any)
+					if payload["n"] != 1.5 || data["note"] != note {
+						t.Errorf("tool received %#v, want the decoded object and the literal note", data)
+					}
+					executions++
+					return "r3", nil
+				}
+				session.registerTool(record.Name, record.Description, record.Parameters, execute)
+				call := resp.ToolCalls()[2]
+				if got := session.execTool(t.Context(), call, resp.Finish.Reason); got.IsError || executions != 1 {
+					t.Errorf("execution of the encoded object failed: %s", got.FullOutput)
+				}
+				client := llm.NewClient()
+				client.Register(newFakeAdapter("fixture", func(llm.Request) llm.Response {
+					return llm.Response{
+						Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}},
+						Finish:  llm.FinishReason{Reason: llm.FinishReasonToolCalls},
+					}
+				}))
+				_, err := llm.Generate(t.Context(), llm.GenerateOptions{
+					Client: client, Provider: "fixture", Model: "m", Prompt: new("u1"),
+					Tools: []llm.Tool{{Definition: record, Execute: execute}},
+				})
+				if err != nil || executions != 2 {
+					t.Errorf("Generate tool executions = %d, want a second execution: %v", executions, err)
+				}
+				if got := session.execTool(t.Context(), resp.ToolCalls()[3], resp.Finish.Reason); !got.IsError {
+					t.Error("write_file accepted an argument supplied inside file contents")
+				}
+				if _, err := os.Stat(filepath.Join(cwd, "injected.txt")); !os.IsNotExist(err) {
+					t.Errorf("file contents supplied a destination path: %v", err)
+				}
+				result.Content = append(result.Content, llm.ToolResult("c3", "r3", false).Content...)
+				result.Content = append(result.Content, llm.ToolResult("c4", "r4", true).Content...)
+			}
 			turns := []schema.Turn{
 				{Kind: schema.TurnUserInput, Message: user},
 				{
@@ -118,6 +180,9 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 				t.Fatalf("read transcript: skipped %d, err %v", skipped, err)
 			}
 			resumed := ResumeHistory(entries)
+			if call, ok := findToolCallInHistory(resumed, "c1"); !ok || call.SentArguments() != valid {
+				t.Error("the transcript changed the provider's file contents or argument spelling")
+			}
 			if rejected, ok := findToolCallInHistory(resumed, "c2"); !ok || rejected.RawArguments != malformed {
 				t.Fatalf("restored rejected call = %+v", rejected)
 			}
@@ -140,6 +205,9 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 				got, thoughts, details := capturedToolTurn(t, history)
 				if got["c1"] != valid || got["c2"] != "{}" {
 					t.Errorf("outbound argument strings = %q, want original valid bytes and the rejected call's placeholder", got)
+				}
+				if tc.field == "messages" && (got["c3"] != encoded || got["c4"] != missingPath) {
+					t.Errorf("replayed repaired and rejected calls = %q, %q, want provider bytes %q, %q", got["c3"], got["c4"], encoded, missingPath)
 				}
 				if !slices.Equal(thoughts, tc.thoughts) {
 					t.Errorf("outbound reasoning parts = %q, want %q", thoughts, tc.thoughts)

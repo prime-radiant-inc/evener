@@ -34,7 +34,9 @@ var claudeXMLParamHintRE = regexp.MustCompile("(?i)<parameter[ \t\n]")
 // extracted parameter value. Models often omit the closing tag.
 const claudeXMLParamCloseTag = "</parameter>"
 
-// rescueClaudeXMLArgs attempts to recover tool call arguments when a model
+type chatArgumentRepair struct{}
+
+// RepairToolArguments attempts to recover tool call arguments when a model
 // mixes Claude-style XML tool call syntax into the JSON arguments field.
 //
 // Examples:
@@ -54,19 +56,8 @@ const claudeXMLParamCloseTag = "</parameter>"
 // If the input contains neither rescue shape, it is returned unchanged. If
 // rescue is not possible, the original input is returned so the usual
 // schema-validation error path can surface the problem.
-// One exception: when a top-level field's string value is itself a JSON
-// array or object (parsedAnyJSONString), that field is inlined and the
-// result is re-marshaled even without XML, since the parsed form differs
-// from the original string.
-//
-// rescueClaudeXMLArgsHook, when non-nil, runs at each call. Tests use it to
-// prove a decode path rescues once per tool call.
-var rescueClaudeXMLArgsHook func()
-
-func rescueClaudeXMLArgs(raw string) string {
-	if rescueClaudeXMLArgsHook != nil {
-		rescueClaudeXMLArgsHook()
-	}
+// Encoded arrays and objects also qualify when the field rejects the string.
+func (chatArgumentRepair) RepairToolArguments(raw string, rejected func(field, value string) bool) string {
 	if raw == "" {
 		return raw
 	}
@@ -90,6 +81,9 @@ func rescueClaudeXMLArgs(raw string) string {
 		if len(trimmed) == 0 || (trimmed[0] != '[' && trimmed[0] != '{') {
 			continue
 		}
+		if !rejected(k, string(content)) {
+			continue
+		}
 		var asJSON any
 		if err := json.Unmarshal(trimmed, &asJSON); err != nil {
 			continue
@@ -101,12 +95,11 @@ func rescueClaudeXMLArgs(raw string) string {
 		}
 	}
 
-	// Quick exit: if no string value contains an XML parameter hint, nothing
-	// more to rescue. Case-insensitive because models sometimes emit
-	// uppercase tag names.
+	// XML in a literal text field cannot supply sibling parameters or
+	// interfere with the recovery of another field.
 	hasXML := false
-	for _, v := range fields {
-		if content, ok := decodeJSONStringContent(v); ok && claudeXMLParamHintRE.Match(content) {
+	for k, v := range fields {
+		if content, ok := decodeJSONStringContent(v); ok && claudeXMLParamHintRE.Match(content) && rejected(k, string(content)) {
 			hasXML = true
 			break
 		}
@@ -131,7 +124,7 @@ func rescueClaudeXMLArgs(raw string) string {
 			continue
 		}
 		openMatch := claudeXMLParamOpenRE.FindIndex(content)
-		if openMatch == nil {
+		if openMatch == nil || !rejected(k, string(content)) {
 			continue
 		}
 		// Split at the first `">` before the parameter block. If there's no

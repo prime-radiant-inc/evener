@@ -81,15 +81,11 @@ func decodeStream(sctx context.Context, cancel context.CancelFunc, resp *http.Re
 				var completedToolCalls []llm.ToolCallData
 				for _, idx := range slices.Sorted(maps.Keys(toolCalls)) {
 					tc := toolCalls[idx]
-					// rescueClaudeXMLArgs returns the input unchanged when
-					// no XML is present, preserving raw bytes (incl. invalid
-					// UTF-8). It only re-marshals on actual Claude-XML
-					// rescue (rare, intentional).
-					rescuedArgs := rescueClaudeXMLArgs(tc.args.String())
 					tcd := llm.ToolCallData{
 						ID:               tc.id,
 						Name:             tc.name,
-						Arguments:        json.RawMessage(rescuedArgs),
+						Arguments:        json.RawMessage(tc.args.String()),
+						ArgumentRepair:   chatArgumentRepair{},
 						Type:             "function",
 						ThoughtSignature: tc.thoughtSignature,
 					}

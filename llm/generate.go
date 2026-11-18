@@ -454,6 +454,13 @@ func executeSingleToolCall(ctx context.Context, toolIndex map[string]Tool, call 
 
 	args, err := parseAndValidateArgs(t.schema, call.Arguments)
 	if err != nil {
+		if candidate := call.RepairedArguments(t.schema); candidate != nil {
+			if recovered, recoveryErr := parseAndValidateArgs(t.schema, candidate); recoveryErr == nil {
+				args, err = recovered, nil
+			}
+		}
+	}
+	if err != nil {
 		if repairFn != nil {
 			repaired, repairErr := repairFn(ctx, call, err)
 			if repairErr == nil {

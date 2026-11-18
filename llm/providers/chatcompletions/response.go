@@ -581,23 +581,18 @@ func fromChatCompletionResponse(raw map[string]any, finishMap map[string]string,
 		}
 		if tcIdx < len(rawArgs) && rawArgs[tcIdx] != nil {
 			// rawArgs is the RawMessage string token; unescape it to get
-			// byte-faithful content. rescueClaudeXMLArgs still applies on
-			// the unescaped content (it returns it unchanged when no XML is
-			// present, preserving raw bytes).
+			// byte-faithful content for history, validation and replay.
 			if content, cerr := protocolhttp.RawStringContent(rawArgs[tcIdx]); cerr == nil {
 				args = string(content)
 			}
 		}
-		// Pick the raw or fallback string first, then rescue once: rescuing
-		// both candidates parses large argument objects twice and throws the
-		// first result away.
-		args = rescueClaudeXMLArgs(args)
 		parts = append(parts, llm.ContentPart{
 			Kind: llm.ContentToolCall,
 			ToolCall: &llm.ToolCallData{
 				ID:               tc.ID,
 				Name:             tc.Function.Name,
 				Arguments:        json.RawMessage(args),
+				ArgumentRepair:   chatArgumentRepair{},
 				Type:             "function",
 				ThoughtSignature: thoughtSignatureFromExtraContent(tc.ExtraContent),
 			},

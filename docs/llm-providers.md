@@ -548,7 +548,9 @@ recover an encoded object, array or XML parameter. A string field such as
   constructs a text item from the available reasoning. A trailing
   signature can omit its index. Evener keeps it with
   its identified or uniquely matching text block. A signed detail on its own
-  supplies only that detail. When a Chat reply contains reasoning and no
+  supplies only that detail. A Chat fallback receives its own signed and
+  encrypted details on subsequent turns and cold resumes when the recorded
+  model and serving route still match. When a Chat reply contains reasoning and no
   visible answer or tool call, Evener retries within its empty-answer limit.
   It saves the reasoning that the answering row can replay for the next
   attempt and for a cold resume.

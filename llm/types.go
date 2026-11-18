@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/santhosh-tekuri/jsonschema/v5"
+
 	"primeradiant.com/evener/llm/effort"
 	"primeradiant.com/evener/llm/registry"
 )
@@ -188,9 +190,35 @@ type ToolCallData struct {
 	// form. It is a diagnostic record — the durable transcript keeps what the
 	// model actually sent — and never feeds provider requests.
 	RawArguments string `json:"raw_arguments,omitempty"`
+	// ArgumentRepair is a provider's execution-only recovery for a rejected
+	// string field. History and provider requests always use Arguments.
+	ArgumentRepair ToolArgumentRepairer `json:"-"`
 	// ThoughtSignature carries provider-specific thought-signature state (e.g., Gemini)
 	// required to continue tool-calling turns safely.
 	ThoughtSignature string `json:"thought_signature,omitempty"`
+}
+
+// ToolArgumentRepairer recovers a provider's alternate encoding only in
+// fields whose literal string the executing tool's schema rejects.
+type ToolArgumentRepairer interface {
+	RepairToolArguments(raw string, rejected func(field, value string) bool) string
+}
+
+// RepairedArguments returns a proposal for tool validation. Nil means the
+// provider supplied no recovery for this schema and argument combination.
+func (tc ToolCallData) RepairedArguments(schema *jsonschema.Schema) json.RawMessage {
+	if tc.ArgumentRepair == nil || schema == nil || len(tc.Arguments) == 0 || tc.RawArguments != "" {
+		return nil
+	}
+	raw := string(tc.Arguments)
+	repaired := tc.ArgumentRepair.RepairToolArguments(raw, func(field, value string) bool {
+		property := schema.Properties[field]
+		return property != nil && property.Validate(value) != nil
+	})
+	if repaired == raw {
+		return nil
+	}
+	return json.RawMessage(repaired)
 }
 
 // SentArguments returns the argument bytes the model actually sent: the
