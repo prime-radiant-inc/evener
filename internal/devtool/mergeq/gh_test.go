@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/execsupport/orphanpipe/orphanpipetest"
+	"primeradiant.com/evener/execsupport/shellquote"
 	"primeradiant.com/evener/internal/testwait"
 )
 
@@ -57,15 +58,19 @@ func TestGHCancellationKillsTheRealCLIAChildWrapperLeaves(t *testing.T) {
 	// The child ignores TERM, so only a group KILL reaches it, and it holds no
 	// pipe: this case must fail on the child's survival alone.
 	child := filepath.Join(dir, "child.sh")
+	// Both paths are quoted: t.TempDir() can sit under a TMPDIR with a space in
+	// it, and an unquoted one would make the redirect or the exec a syntax error,
+	// so no pid would be published and the case would time out before it could
+	// cancel anything.
 	writeExecutable(t, child, `#!/usr/bin/env bash
 trap '' TERM
-printf '%s\n' "$$" > `+pidFile+`
+printf '%s\n' "$$" > `+shellquote.Literal(pidFile)+`
 while :; do sleep 0.05; done
 `)
 	wrapper := filepath.Join(dir, "gh")
 	// No exec: the wrapper starts the child and exits, handing nothing on.
 	writeExecutable(t, wrapper, `#!/usr/bin/env bash
-`+child+` &
+`+shellquote.Literal(child)+` &
 sleep 0.2
 exit 0
 `)

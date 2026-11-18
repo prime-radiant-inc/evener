@@ -81,17 +81,21 @@ func runMergeEnqueue(args []string, c mergeq.Client, clock mergeq.Clock, stdout,
 // flag.Int is what makes "--wait 08" eight seconds instead of an octal parse
 // error (issue #5304).
 //
+// ParseUint rather than Atoi: a wait has no sign, and Atoi accepts "+1" and
+// "-0", so both would name a value the caller cannot have meant. ParseUint
+// refuses a sign and keeps "08" decimal.
+//
 // The upper bound is checked before multiplying: time.Duration is int64
 // nanoseconds, so a seconds value above the largest that fits wraps negative,
 // takes the no-wait branch, and reports success for a PR still in the queue.
 func parseWaitSeconds(s string) (time.Duration, error) {
-	n, err := strconv.Atoi(s)
-	if err != nil || n < 0 {
+	n, err := strconv.ParseUint(s, 10, 64)
+	if err != nil {
 		return 0, fmt.Errorf("takes whole seconds, got %q", s)
 	}
 	const maxSeconds = int64(math.MaxInt64 / time.Second)
-	if int64(n) > maxSeconds {
+	if n > uint64(maxSeconds) {
 		return 0, fmt.Errorf("takes at most %d seconds, got %q", maxSeconds, s)
 	}
-	return time.Duration(n) * time.Second, nil
+	return time.Duration(int64(n)) * time.Second, nil
 }

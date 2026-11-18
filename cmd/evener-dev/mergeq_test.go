@@ -155,6 +155,11 @@ func TestMergeEnqueueSubcommandRejectsBadArguments(t *testing.T) {
 		nil,
 		{"--wait", "5"},
 		{"--pr", "6499", "--wait", "-1"},
+		// A wait has no sign. These two are also pinned at the parser by
+		// TestMergeEnqueueRejectsASignedWait, because the stub's empty answer
+		// reaches exit 2 on its own and so cannot tell the two parsers apart.
+		{"--pr", "6499", "--wait", "+1"},
+		{"--pr", "6499", "--wait", "-0"},
 		{"--pr", "6499", "--wait", "nope"},
 		{"--pr", "6499", "stray"},
 	} {
@@ -164,6 +169,24 @@ func TestMergeEnqueueSubcommandRejectsBadArguments(t *testing.T) {
 		}
 		if stdout.Len() != 0 {
 			t.Fatalf("runMergeEnqueue(%v) wrote stdout %q on a usage error", args, stdout.String())
+		}
+	}
+}
+
+// TestMergeEnqueueRejectsASignedWait pins that a wait is an unsigned decimal
+// number. strconv.Atoi accepts a leading sign, so "--wait +1" read as one second
+// and "--wait -0" as no wait at all: both are values the caller cannot have
+// meant, and both must be usage errors instead.
+//
+// The oracle is the parser, not the subcommand's exit code. A run with no
+// status to report reaches exit 2 for its own reason, so a table entry in
+// TestMergeEnqueueSubcommandRejectsBadArguments would pass against either
+// parser.
+func TestMergeEnqueueRejectsASignedWait(t *testing.T) {
+	t.Parallel()
+	for _, signed := range []string{"+1", "-0", "-1"} {
+		if wait, err := parseWaitSeconds(signed); err == nil {
+			t.Fatalf("--wait %s = %v, want a usage error: a wait has no sign", signed, wait)
 		}
 	}
 }

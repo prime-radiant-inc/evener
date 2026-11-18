@@ -40,7 +40,8 @@
 # takes the interrupt and forwards cancellation as SIGTERM to the helper's PID,
 # which lets the helper's own context stop its GitHub call and report the
 # interrupt rather than a queue decision. A helper that does not act on SIGTERM
-# within a couple of seconds has its process tree stopped.
+# within a couple of seconds has its tree stopped, the `gh` call it was waiting
+# on included.
 #
 # The exit codes are the contract. 0 means merged or queued, 1 means the queue
 # ended the attempt (dropped or timed out), 2 means nothing was decided: bad
@@ -157,6 +158,12 @@ export TMPDIR
 # helper needs to cancel a `gh` call and return 130 (measured under 0.7s) and
 # short enough that an operator does not notice it.
 #
+# The forced stop names the helper's `gh` group as well as the helper's own:
+# the client puts `gh` in a group of its own (so one signal reaches the CLI and
+# anything a wrapper forked), which is exactly why a group signal at the helper
+# does not reach it. Without that, a helper that never ran its handler would let
+# the launcher report 130 while the enqueue call was still in flight.
+#
 # A signal that arrives during a launch is held, not acted on: `cmd &` and
 # `child=$!` are two commands, and Bash runs a pending trap between them. The
 # handler would then see an empty `child` and exit 130 with the just-started
@@ -169,7 +176,11 @@ child_is_helper=false
 helper_started=false
 launching=false
 cancel_requested=false
-helper_term_grace_seconds=2
+# How long a TERMed helper gets to act on the signal before its tree is stopped
+# by force. The override exists for the same reason gate-bounded.sh has one for
+# its own grace (EVENER_STOP_TREE_GRACE_SECONDS): a test that has to let the
+# grace expire can shrink it, instead of spending the whole ceiling on it.
+helper_term_grace_seconds=${EVENER_HELPER_TERM_GRACE_SECONDS:-2}
 # child_running reports whether pid is still running. A child this script has
 # not reaped yet is a zombie, and kill -0 still succeeds for one: counting that
 # as running would spend the whole grace on every interrupt and then hand a
@@ -183,6 +194,65 @@ child_running() {
   esac
   return 0
 }
+# helper_call_groups <pid> — print each process group a descendant of pid is in,
+# once, other than the helper's own and this script's. That is where the
+# helper's `gh` lives: internal/devtool/mergeq's client starts `gh` in a group of
+# its own, so one signal reaches the CLI and anything a wrapper forked. The same
+# choice is why a group signal at the helper does not reach the call, and a
+# forced stop has to name these groups itself.
+#
+# It is every such group, not just groups a descendant leads: a `gh` wrapper that
+# starts the CLI without `exec` then exits leaves the CLI in the wrapper's group
+# with no leader left in it, and that process is exactly the one still
+# submitting. The helper's own group and this script's are excluded because
+# stop_command already signals the first and must never signal the second.
+helper_call_groups() {
+  local pid="$1" own_group helper_group descendant group
+  own_group=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ')
+  helper_group=$(ps -o pgid= -p "$pid" 2>/dev/null | tr -d ' ')
+  for descendant in $(process_descendants "$pid"); do
+    group=$(ps -o pgid= -p "$descendant" 2>/dev/null | tr -d ' ')
+    case "$group" in
+      '' | *[!0-9]*) continue ;;
+    esac
+    [ "$group" -gt 1 ] || continue
+    [ "$group" = "$helper_group" ] && continue
+    [ "$group" = "$own_group" ] && continue
+    printf '%s\n' "$group"
+  done | sort -u
+}
+# stop_helper_tree <pid> — the forced stop for a helper that did not act on
+# TERM. stop_command alone stops the helper's own group, and the helper's `gh`
+# is not in it: a live enqueue call would outlive a launcher that already
+# reported 130. So the `gh` groups are collected first, while the helper still
+# holds them in its tree, TERMed with the helper, and KILLed after stop_command's
+# grace whether or not the helper died. A group id survives its leader's death,
+# so a call reparented mid-stop is still reachable.
+stop_helper_tree() {
+  local pid="$1" groups="" group deadline alive
+  groups=$(helper_call_groups "$pid") || :
+  for group in $groups; do
+    kill -TERM -"$group" 2>/dev/null || :
+  done
+  stop_command "$pid"
+  for group in $groups; do
+    kill -KILL -"$group" 2>/dev/null || :
+  done
+  # Nothing may still be submitting when this returns 130. KILL cannot be
+  # ignored, so this is bounded by how long the kernel takes to deliver it; a
+  # wait rather than a bare assumption is what makes the claim in the help true.
+  deadline=$((SECONDS + helper_term_grace_seconds + 1))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    alive=false
+    for group in $groups; do
+      if kill -0 -"$group" 2>/dev/null; then
+        alive=true
+      fi
+    done
+    [ "$alive" = false ] && break
+    sleep 0.05
+  done
+}
 reap_child() {
   [ -n "$child" ] || return 0
   if [ "$child_is_helper" = true ] && kill -TERM "$child" 2>/dev/null; then
@@ -190,10 +260,11 @@ reap_child() {
     while [ "$SECONDS" -lt "$deadline" ] && child_running "$child"; do
       sleep 0.1
     done
-    # Still there after the grace: it did not act on TERM, so stop its whole
-    # tree and never wait past that stopper's own grace.
+    # Still there after the grace: it did not act on TERM, so its GitHub call
+    # will not be cancelled by the context either. Stop its whole tree, and
+    # never wait past that stopper's own grace.
     if child_running "$child"; then
-      stop_command "$child"
+      stop_helper_tree "$child"
     fi
   else
     # The whole tree, not the PID: `go build` forks a compiler and a linker, and

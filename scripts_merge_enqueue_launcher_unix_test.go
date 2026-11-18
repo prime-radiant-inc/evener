@@ -180,7 +180,14 @@ type fixtureCheckout struct {
 // it and the build stays in flight until the case signals.
 func newFixtureCheckout(t *testing.T, tmp string) fixtureCheckout {
 	t.Helper()
-	root := filepath.Join(t.TempDir(), "checkout")
+	return newFixtureCheckoutNamed(t, tmp, "checkout")
+}
+
+// newFixtureCheckoutNamed is newFixtureCheckout with the copy's directory named
+// by the caller, so a case can put the checkout on a path with a space in it.
+func newFixtureCheckoutNamed(t *testing.T, tmp, name string) fixtureCheckout {
+	t.Helper()
+	root := filepath.Join(t.TempDir(), name)
 	c := fixtureCheckout{
 		root:     root,
 		script:   filepath.Join(root, "scripts", "ops", "merge-enqueue.sh"),
@@ -307,7 +314,10 @@ func newLauncherFixture(t *testing.T, script string) launcherFixture {
 	return f
 }
 
-// lines returns the fixture's handler log, one token per line.
+// lines returns the fixture's handler log, one line per entry. The fixture
+// writes values such as the directory it ran from, and a checkout path may hold
+// a space: splitting on whitespace would truncate that value at the first one
+// and fail a launcher that did the right thing.
 func (f launcherFixture) lines(t *testing.T) []string {
 	t.Helper()
 	body, err := os.ReadFile(f.log)
@@ -317,7 +327,11 @@ func (f launcherFixture) lines(t *testing.T) []string {
 		}
 		t.Fatalf("read fixture log: %v", err)
 	}
-	return strings.Fields(string(body))
+	text := strings.TrimSuffix(string(body), "\n")
+	if text == "" {
+		return nil
+	}
+	return strings.Split(text, "\n")
 }
 
 // output returns what the launcher wrote, for a failure message.
@@ -856,6 +870,118 @@ while :; do sleep 0.05; done
 	testwait.Until(t, fmt.Sprintf("helper pid %d to terminate", helperPID), func() bool {
 		return pidGone(helperPID)
 	})
+}
+
+// TestMergeEnqueueLauncherForcedStopTakesTheHelpersGHCallsWithIt pins the second
+// half of cancellation: a helper that does not act on the launcher's SIGTERM
+// must not leave its `gh` call running after the launcher has reported 130.
+//
+// The client starts `gh` in a process group of its own (gh.go, so one signal
+// reaches the CLI and anything a wrapper forked). That is what makes an
+// interrupted wait stop promptly, and it is also why a group signal at the
+// helper no longer reaches the call: the helper's group is the only one
+// stop_command signals. A helper that never runs its handler therefore leaves a
+// live enqueue call behind a launcher that has already returned 130.
+//
+// The fixture states that shape structurally. The helper ignores TERM, so the
+// grace period expires and the launcher's forced stop is the only thing that can
+// reach the call, and its `gh` leads a group of its own and ignores TERM as
+// well, so only the forced KILL ends it. The assertion is that the call is gone
+// after the launcher exits, which a TERM at the helper's group cannot satisfy.
+func TestMergeEnqueueLauncherForcedStopTakesTheHelpersGHCallsWithIt(t *testing.T) {
+	t.Parallel()
+	f := newLauncherFixture(t, `#!/usr/bin/env bash
+set -uo pipefail
+trap '' TERM
+set -m
+"$EVENER_FIXTURE_GH" &
+gh=$!
+set +m
+printf 'helper-pid=%s;pgid=%s\n' "$$" "$(ps -o pgid= -p "$$" | tr -d ' ')" >> "$EVENER_FIXTURE_LOG"
+printf 'gh-pid=%s;pgid=%s\n' "$gh" "$(ps -o pgid= -p "$gh" | tr -d ' ')" >> "$EVENER_FIXTURE_LOG"
+while :; do sleep 0.05; done
+`)
+	// The call stands in for one that has not acted on TERM: a real `gh` may
+	// exit on it, and this case is about the signal that reaches the group
+	// whether or not it does.
+	gh := filepath.Join(f.dir, "gh.sh")
+	writeTestFile(t, gh, []byte(`#!/usr/bin/env bash
+trap '' TERM
+while :; do sleep 0.05; done
+`), 0o755)
+	var helperPID, ghPID int
+	cmd := f.launcherCmd(t, "--pr", "6499", "--wait", "570", "--repo", "example.invalid/none")
+	cmd.Env = append(cmd.Env,
+		"EVENER_FIXTURE_GH="+gh,
+		// The grace has to expire for this case to reach the forced stop, and the
+		// stopper's own grace bounds it. Both are the launcher's own knobs, so the
+		// case shrinks them instead of spending its ceiling on them.
+		"EVENER_HELPER_TERM_GRACE_SECONDS=0",
+		"EVENER_STOP_TREE_GRACE_SECONDS=1",
+	)
+	runLauncher(t, cmd, f, &helperPID, &ghPID)
+	helperPID, helperGroup := logPIDAndGroup(t, f, "helper-pid=")
+	ghPID, ghGroup := logPIDAndGroup(t, f, "gh-pid=")
+	if ghGroup != ghPID {
+		t.Fatalf("the fixture's gh is in group %d, want a group of its own led by %d: the case has to reproduce the shape the client creates", ghGroup, ghPID)
+	}
+	if ghGroup == helperGroup {
+		t.Fatalf("the fixture's gh shares the helper's group %d, so this case would prove nothing about the group the forced stop has to name", helperGroup)
+	}
+	if pidGone(ghPID) {
+		t.Fatalf("the fixture's gh %d exited before the launcher was signalled", ghPID)
+	}
+	signalLauncher(t, cmd, syscall.SIGTERM)
+	mustExit(t, cmd, f, 130)
+	// The launcher reported the interrupt, so nothing it started may still be
+	// submitting: a call left in its own group would outlive this line.
+	testwait.Until(t, fmt.Sprintf("the helper's gh pid %d to be stopped before the launcher exits 130", ghPID), func() bool {
+		return pidGone(ghPID)
+	})
+}
+
+// TestMergeEnqueueLauncherRunsFromACheckoutPathWithSpaces pins that a checkout
+// directory with a space in it changes nothing.
+//
+// The launcher quotes every path it builds, so a space is ordinary to it. The
+// fixture log is what used to break: entries are values such as the directory the
+// helper ran from, and splitting the log on whitespace truncated such a value at
+// its first space, so a correct launcher failed a comparison against the path it
+// really used. Two things are pinned here: the launcher exits 0 from a spaced
+// path, and the value the fixture recorded comes back whole.
+func TestMergeEnqueueLauncherRunsFromACheckoutPathWithSpaces(t *testing.T) {
+	t.Parallel()
+	f := newLauncherFixture(t, `#!/usr/bin/env bash
+set -uo pipefail
+printf 'helper-ran=%s\n' "$PWD" >> "$EVENER_FIXTURE_LOG"
+exit 0
+`)
+	// The space is in the checkout path, which is what this case is about. TMPDIR
+	// stays free of one: a spaced scratch is a different question, and this case
+	// must fail only for its own reason.
+	c := newFixtureCheckoutNamed(t, filepath.Join(t.TempDir(), "tmp"), "checkout with spaces")
+	c.requireIsolated(t)
+	// The prebuilt path, so the helper that records its directory is the fixture
+	// and not the fixture checkout's stub: start_helper changes into the checkout
+	// root before launching, and the value it records is the one the log must
+	// carry whole.
+	cmd := f.launcherCmdAt(t, c.script, "--pr", "6499", "--repo", "example.invalid/none")
+	cmd.Env = envOverride(cmd.Env, "TMPDIR="+c.tmp, "GOWORK=off")
+	runLauncher(t, cmd, f)
+	mustExit(t, cmd, f, 0)
+	var ran string
+	testwait.Until(t, "the helper to record the directory it ran from", func() bool {
+		for _, line := range f.lines(t) {
+			if rest, ok := strings.CutPrefix(line, "helper-ran="); ok {
+				ran = rest
+				return true
+			}
+		}
+		return false
+	})
+	if ran != c.root {
+		t.Fatalf("helper ran from %q, want the checkout root %q", ran, c.root)
+	}
 }
 
 // TestMergeEnqueueLauncherResolvesItsRootUnderCDPATH pins that the root resolves
