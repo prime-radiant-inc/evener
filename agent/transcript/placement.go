@@ -122,6 +122,15 @@ func (state *turnPlacement) place(turn *schema.Turn, p Placement) (skip bool, er
 		if err := stampDelivery(turn); err != nil {
 			return false, err
 		}
+		// A delivery is a turn of its own, so it ends the prelude's span.
+		// Rejoining the prelude after one would stamp a single id onto two
+		// spans that another turn separates, and no reader can show that as
+		// one turn: its items would sit at positions on both sides of the
+		// delivery's, so any turn list either repeats the id (which a client
+		// keyed by turn id cannot hold) or emits positions out of order
+		// (which item paging rejects). A later pre-execution write therefore
+		// opens a gap turn of its own.
+		state.prelude = openTurn{}
 	case placeSession:
 		switch {
 		case state.running.id != "":

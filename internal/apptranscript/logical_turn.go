@@ -56,6 +56,15 @@ import (
 // needs to inherit the open group: the index likewise resets its legacy
 // grouping at every identity entry, so a legacy continuation after one starts
 // its own group here too.
+//
+// A shared stamp is not a shared event. Identity says WHICH turn an entry
+// belongs to and the file says in what order its items arrived; it does not
+// make two spans one span, nor two calls one call. Two consequences hold
+// throughout: a turn list never repeats an id (the index keeps one summary per
+// id, and a client keys turns by id), and a call id names an instance of a
+// call, which a later entry of the same id may only settle while it is still
+// awaiting its result. A provider reusing a call id across rounds therefore
+// leaves two calls, exactly as the index's per-announcement settlement does.
 
 // opensLogicalTurn distinguishes top-level goal input from ordinary steering.
 func opensLogicalTurn(kind schema.TurnKind, goalContinuation bool) bool {
@@ -79,6 +88,9 @@ type groupedTurn struct {
 	// turnID is the logical turn's id: the group's first entry's
 	// persistedTurnID.
 	turnID string
+	// stamped is true when the group was opened by an identity-format
+	// entry's own TurnID rather than by the legacy kind-and-owner rules.
+	stamped bool
 	// entries are the group's decoded entries in arrival order, including
 	// entries whose projector emitted no items (they still carry stamps).
 	entries []schema.Turn
@@ -159,7 +171,7 @@ func (g *TurnGrouper) Place(entry *schema.Turn, entryIndex int) (turnID string, 
 // group).
 func (a *logicalTurnAccumulator) appendEntry(entry schema.Turn, entryIndex int, items []appwire.ThreadItem) {
 	if turnID, newTurn := a.grouper.Place(&entry, entryIndex); newTurn {
-		a.turns = append(a.turns, groupedTurn{turnID: turnID})
+		a.turns = append(a.turns, groupedTurn{turnID: turnID, stamped: entry.Format == schema.TurnFormatIdentity && entry.TurnID != ""})
 	}
 	last := &a.turns[len(a.turns)-1]
 	last.entries = append(last.entries, entry)
@@ -208,9 +220,9 @@ func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, t
 // group consumes an ordinal even when it emits no visible turn, matching the
 // live snapshot's turn-start allocation.
 //
-// The header prelude and a group stamped with the same id are ONE turn. A
-// fresh transcript holds its pre-execution entries under the prelude id the
-// header prelude uses (agent/transcript/placement.go stamps them
+// The header prelude and a LEADING group stamped with the same id are ONE
+// turn. A fresh transcript holds its pre-execution entries under the prelude
+// id the header prelude uses (agent/transcript/placement.go stamps them
 // TurnSpanPrelude), and the bounded index coalesces the two by id: its
 // prelude items rank before the indexed items, no summary holds the id, and
 // the client reads one turn. Emitting them as two turns sharing one id would
@@ -218,6 +230,13 @@ func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, t
 // see one turn overwrite the other. So the header items lead the group's items
 // in a single turn, each keeping its own position: header items at entry 0,
 // the group's at its own ordinal.
+//
+// Only a LEADING group may merge. The header items hold entry position 0, so
+// merging them into a group that follows another turn would emit the prompt
+// after that turn's items — decreasing positions, which item paging rejects.
+// A transcript that places another turn before its prelude-stamped entries
+// (only an older file's shape: a delivery now ends the prelude at write time)
+// therefore keeps the two turns as they are.
 //
 // Items get their Position/TranscriptKey here — the full item read, the
 // bounded readers, and the item-window path must all agree on these keys (PR
@@ -240,7 +259,7 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 		group := &acc.turns[i]
 		groupOrdinal := entryOrdinal
 		entryOrdinal++
-		items := mergeGroupedItems(group.items)
+		items := mergeGroupedItems(group.items, group.stamped)
 		if len(items) == 0 {
 			continue
 		}
@@ -256,7 +275,12 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 		}
 		turn := appwire.Turn{ID: group.turnID, Items: positioned, ItemsView: "full", Status: appwire.TurnStatusCompleted}
 		StampGroupedTurn(&turn, group.entries)
-		if prelude != nil && !preludeMerged && group.turnID == appwire.SystemPreludeTurnID {
+		if prelude != nil && !preludeMerged && i == 0 && group.turnID == appwire.SystemPreludeTurnID {
+			// The header items hold entry position 0, so they must stay
+			// FIRST in the merged turn: a delivery recorded before the
+			// prelude's first stamped entry has a later position, and
+			// emitting it ahead of the prompt would flatten to decreasing
+			// positions, which item paging rejects.
 			merged := make([]appwire.ThreadItem, 0, len(prelude.Items)+len(turn.Items))
 			merged = append(merged, prelude.Items...)
 			turn.Items = append(merged, turn.Items...)
@@ -310,16 +334,36 @@ func MergesByCallID(item appwire.ThreadItem) bool {
 // earlier one (the file counterpart of the live snapshot's call/result
 // upsert). Ordinals are assigned AFTER merging, across the whole logical
 // turn; items that do not merge keep arrival order.
-func mergeGroupedItems(items []appwire.ThreadItem) []appwire.ThreadItem {
+//
+// stamped scopes the merge to a call that is still awaiting its result, which
+// is how the bounded index settles an identity turn's calls: its per-entry
+// loop records the item a call opened and the entry that settled it, so a
+// provider reusing one call id in a later round opens a SECOND call, with its
+// own arguments and result (#1166 review). Without that scope the second
+// round's announcement merges into the settled first item and its arguments
+// overwrite the first round's, losing that call as a distinct record.
+//
+// A legacy group keeps the merge it always had: it folds every later item of
+// a call id, because the legacy reader has no settlement record to consult.
+func mergeGroupedItems(items []appwire.ThreadItem, stamped bool) []appwire.ThreadItem {
 	merged := make([]appwire.ThreadItem, 0, len(items))
 	callIndex := map[string]int{}
 	for _, item := range items {
 		if MergesByCallID(item) {
 			if at, ok := callIndex[item.CallID]; ok {
 				merged[at] = MergeThreadItems(merged[at], item)
+				if stamped && item.Status != appwire.TurnStatusInProgress {
+					// The result settled the call, so a later item of this id
+					// announces a new one.
+					delete(callIndex, item.CallID)
+				}
 				continue
 			}
-			callIndex[item.CallID] = len(merged)
+			// A stray result whose announcement lies outside this group opens
+			// its own record too, so nothing is dropped.
+			if !stamped || item.Status == appwire.TurnStatusInProgress {
+				callIndex[item.CallID] = len(merged)
+			}
 		}
 		merged = append(merged, item)
 	}
