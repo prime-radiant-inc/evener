@@ -23,19 +23,36 @@ type responsesTerminalCall struct {
 	terminalArguments bool
 }
 
-// An item-only repeat can complete a call after the terminal has issued
-// its call ID. An item shared by different issued calls identifies neither.
-func terminalCallIDForItem(calls map[string]*responsesTerminalCall, itemID string) string {
-	var issued string
-	for callID, call := range calls {
-		if call.ItemID == itemID {
-			if issued != "" {
-				return ""
+func functionItemIDs(item map[string]any) (itemID, callID string) {
+	itemID, _ = item["id"].(string)
+	if itemID == "" {
+		itemID, _ = item["item_id"].(string)
+	}
+	callID, _ = item["call_id"].(string)
+	return itemID, callID
+}
+
+// Item-only fields can come from the stream or anywhere in the terminal
+// array. They belong to a call only if the entire array identifies one owner.
+func (acc *responsesOutputAccumulator) indexTerminalCalls(out []any) map[string]string {
+	owners := make(map[string]string)
+	for _, entry := range out {
+		item, _ := entry.(map[string]any)
+		if item["type"] != "function_call" {
+			continue
+		}
+		itemID, callID := functionItemIDs(item)
+		if itemID != "" && callID != "" {
+			if prior, seen := owners[itemID]; seen && prior != callID {
+				callID = ""
+				if acc != nil {
+					acc.byID[itemID] = nil
+				}
 			}
-			issued = callID
+			owners[itemID] = callID
 		}
 	}
-	return issued
+	return owners
 }
 
 // responseContentFromOutputItems converts a Responses API output-item array
@@ -46,6 +63,7 @@ func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawM
 	var rawBodyCaptured bool
 	var content []llm.ContentPart
 	var calls map[string]*responsesTerminalCall
+	var owners map[string]string
 	sparse := stream != nil
 	var placeholders []responsesTerminalItem
 	var terminalReasoning bool
@@ -74,10 +92,21 @@ func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawM
 		case "function_call":
 			name, _ := item["name"].(string)
 			args, _ := item["arguments"].(string)
-			callID, _ := item["call_id"].(string)
-			itemID, _ := item["id"].(string)
-			if itemID == "" {
-				itemID, _ = item["item_id"].(string)
+			itemID, callID := functionItemIDs(item)
+			if owners == nil && itemID != "" && (callID == "" || stream != nil && stream.byID[itemID].provisionalCall()) {
+				owners = stream.indexTerminalCalls(out)
+			}
+			if callID == "" && itemID != "" {
+				owner, declared := owners[itemID]
+				if declared && owner == "" {
+					continue
+				}
+				if stream != nil {
+					if prior, seen := stream.byID[itemID]; seen && (prior == nil || !prior.acceptsCallID(owner)) {
+						continue
+					}
+				}
+				callID = owner
 			}
 			// Decode the raw body once; index this item's token (rawItems
 			// entries win when present).
@@ -117,9 +146,6 @@ func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawM
 						args = prior.args.value()
 					}
 				}
-			}
-			if callID == "" && itemID != "" {
-				callID = terminalCallIDForItem(calls, itemID)
 			}
 			if callID == "" {
 				continue

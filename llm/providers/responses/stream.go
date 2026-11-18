@@ -278,7 +278,7 @@ func (p *responsesOutputText) merge(other *responsesOutputText) {
 type responsesOutputAccumulator struct {
 	byCallID         map[string]*responsesOutputItem
 	output           []*responsesOutputItem
-	byID             map[string]*responsesOutputItem
+	byID             map[string]*responsesOutputItem // A nil entry marks an item ID shared by distinct issued calls.
 	byIndex          map[int64]*responsesOutputItem
 	completed        int
 	order            int
@@ -548,7 +548,9 @@ func (acc *responsesOutputAccumulator) outputItem(index int64, kind, id string, 
 	if id != "" {
 		item.id = id
 		item.hasNativeID = item.hasNativeID || native
-		acc.byID[id] = item
+		if !acc.sharedCallItem(id) {
+			acc.byID[id] = item
+		}
 	}
 	if index >= 0 && (item.index < 0 || item.index == index) {
 		if prior := acc.byIndex[index]; prior == nil || prior == item || (native && prior.displayOnly) {
@@ -715,10 +717,19 @@ func (acc *responsesOutputAccumulator) callItem(callID string) *responsesOutputI
 	if item := acc.byCallID[callID]; item != nil {
 		return item
 	}
-	if item := acc.byID[callID]; item != nil && item.tool != nil && item.tool.callID == "" {
+	if item := acc.byID[callID]; item.provisionalCall() {
 		return item
 	}
 	return nil
+}
+
+func (item *responsesOutputItem) provisionalCall() bool {
+	return item != nil && item.tool != nil && item.tool.callID == ""
+}
+
+func (acc *responsesOutputAccumulator) sharedCallItem(id string) bool {
+	item, seen := acc.byID[id]
+	return seen && item == nil
 }
 
 // The issued call owns its first item ID across stream and terminal frames.
@@ -726,6 +737,10 @@ func (acc *responsesOutputAccumulator) callItem(callID string) *responsesOutputI
 func (acc *responsesOutputAccumulator) bindCallItem(issued *responsesOutputItem, itemID string) string {
 	if !issued.accepts("function_call", itemID, -1) {
 		return issued.id
+	}
+	if acc.sharedCallItem(itemID) {
+		issued.id, issued.tool.itemID = itemID, itemID
+		return itemID
 	}
 	named := acc.byID[itemID]
 	if named != nil && named != issued {
@@ -750,14 +765,16 @@ func (acc *responsesOutputAccumulator) toolOutput(payload map[string]any, callID
 	fallback := acc.callItem(callID)
 	if alias != "" {
 		called := acc.byCallID[alias]
-		fallback = acc.byID[alias]
-		if fallback == nil || fallback.tool == nil {
-			fallback = called
-		} else if called != nil && called != fallback {
-			// A bare ID can name both an issued call and a different item.
-			// Only an index owned by exactly one of them resolves the event.
+		named, claimed := acc.byID[alias]
+		fallback = called
+		if named != nil && named.tool != nil {
+			fallback = named
+		}
+		if (claimed && named == nil) || (called != nil && called != fallback) {
+			// A bare ID can name several calls or a different provisional
+			// item. Only a uniquely owned index resolves the event.
 			owner := acc.byIndex[index]
-			if (owner != fallback && owner != called) || owner.ambiguousCallIndex {
+			if owner == nil || owner.tool == nil || owner.ambiguousCallIndex || (owner != called && owner != named && owner.id != alias) {
 				return nil
 			}
 			fallback = owner
@@ -773,8 +790,13 @@ func (acc *responsesOutputAccumulator) toolOutput(payload map[string]any, callID
 	} else if alias != "" {
 		known = fallback
 	}
+	shared := acc.sharedCallItem(itemID)
+	if shared && callID == "" {
+		return nil
+	}
 	if owner := acc.byIndex[index]; owner != nil && owner.tool != nil {
-		if !owner.acceptsFunctionIdentity(itemID, callID, cmp.Or(acc.byID[itemID], fallback)) {
+		sameCall := !shared || owner.acceptsCallID(callID)
+		if !sameCall || !owner.acceptsFunctionIdentity(itemID, callID, cmp.Or(acc.byID[itemID], fallback)) {
 			owner.ambiguousCallIndex = true
 		}
 		if owner.ambiguousCallIndex {
@@ -804,6 +826,19 @@ func (acc *responsesOutputAccumulator) toolOutput(payload map[string]any, callID
 	return item
 }
 
+func (acc *responsesOutputAccumulator) functionItemOutput(payload, item map[string]any) *responsesOutputItem {
+	itemID, callID := functionItemIDs(item)
+	if prior := acc.byID[itemID]; prior != nil && prior.tool != nil && !prior.acceptsCallID(callID) {
+		// Native items issue calls. Distinct calls can share the spelling
+		// of their first item ID, but neither owns an item-only update.
+		if called := acc.byCallID[callID]; called == nil || called.accepts("function_call", itemID, -1) {
+			acc.byID[itemID] = nil
+		}
+	}
+	name, _ := item["name"].(string)
+	return acc.toolOutput(payload, callID, itemID, name, "")
+}
+
 // HandleOutputItemAdded retains item positions and message phases before
 // deltas arrive, and registers both identities of a function call.
 func (acc *responsesOutputAccumulator) HandleOutputItemAdded(payload, item map[string]any) {
@@ -824,9 +859,7 @@ func (acc *responsesOutputAccumulator) HandleOutputItemAdded(payload, item map[s
 		}
 		return
 	}
-	callID, _ := item["call_id"].(string)
-	name, _ := item["name"].(string)
-	acc.toolOutput(payload, callID, itemID, name, "")
+	acc.functionItemOutput(payload, item)
 }
 
 func (acc *responsesOutputAccumulator) argumentOutput(payload map[string]any) *responsesOutputItem {
@@ -948,15 +981,13 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 		acc.completed++
 		return item, nil, "", false
 	}
-	callID, _ := item["call_id"].(string)
-	name, _ := item["name"].(string)
 	argsStr, _ = item["arguments"].(string)
 	if rawArgs, rawOK := captureResponsesItemArgsRaw(rawItemToken); rawOK && rawArgs != nil {
 		if content, err := protocolhttp.RawStringContent(rawArgs); err == nil {
 			argsStr = string(content)
 		}
 	}
-	output := acc.toolOutput(payload, callID, itemID, name, "")
+	output := acc.functionItemOutput(payload, item)
 	if output == nil {
 		return item, nil, "", false
 	}

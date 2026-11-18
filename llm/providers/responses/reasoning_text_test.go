@@ -123,6 +123,8 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 	const secondItemAdded = `{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_2","name":"g"}}`
 	const secondItemFinal = `{"type":"response.function_call_arguments.done","item_id":"fc_2","name":"g","arguments":"{ \"k\": 2 }"}`
 	const secondLinked = `{"type":"function_call","id":"fc_2","call_id":"call_2"}`
+	const firstShared = `{"type":"function_call","id":"fc_1","call_id":"call_1","name":"f","arguments":"{}"}`
+	const secondShared = `{"type":"function_call","id":"fc_1","call_id":"call_2","name":"g","arguments":"{ \"k\": 2 }"}`
 	bindSharedID := done(strings.Replace(secondLinked, "fc_2", "call_1", 1))
 	sharedID := func(provisionalIndex int, events ...string) []string {
 		return append([]string{
@@ -273,6 +275,26 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 			[]string{linkedCall, answerItem, itemOnlyFinalCall}, []replayItem{finalTool, answer}},
 		{"repeated terminal item references keep their issued call without stream state", nil,
 			[]string{linkedCall, answerItem, itemOnlyFinalCall}, []replayItem{finalTool, answer}},
+		{"item-only terminal final precedes its unique issued call", nil,
+			[]string{itemOnlyFinalCall, answerItem, linkedCall}, []replayItem{finalTool, answer}},
+		{"item-only terminal final precedes the owner of a provisional stream item", []string{toolItemAdded, itemArguments},
+			[]string{itemOnlyFinalCall, answerItem, linkedCall}, []replayItem{finalTool, answer}},
+		{"item-only terminal final between two owners belongs to neither", nil,
+			[]string{linkedCall, itemOnlyFinalCall, secondShared, toolItem}, []replayItem{tool, secondTool}},
+		{"item-only terminal final cannot borrow the streamed owner of a shared item", []string{toolAdded, itemArguments},
+			[]string{linkedCall, itemOnlyFinalCall, secondShared}, []replayItem{tool, secondTool}},
+		{"two terminal owners cannot inherit fields from the same provisional item", []string{toolItemAdded, finalArguments}, []string{
+			`{"type":"function_call","id":"fc_1","call_id":"call_1","arguments":"{}"}`,
+			`{"type":"function_call","id":"fc_1","call_id":"call_2","arguments":"{}"}`,
+		}, []replayItem{{Type: "function_call", CallID: "call_1", Arguments: "{}"}, {Type: "function_call", CallID: "call_2", Arguments: "{}"}}},
+		{"issued item completions sharing an ID keep both calls", []string{done(firstShared), done(answerItem), done(secondShared)},
+			nil, []replayItem{tool, answer, secondTool}},
+		{"shared item updates after distinct completions belong to neither call", []string{at(0, done(firstShared)), at(0, done(secondShared)),
+			done(itemOnlyFinalCall), finalArguments, bareFinal("fc_1"), anonymousFinal}, nil, []replayItem{tool, secondTool}},
+		{"terminal cannot select an issued call by its shared item ID", []string{done(firstShared), done(secondShared)},
+			[]string{itemOnlyFinalCall}, nil},
+		{"call IDs select their own arguments after item ID reuse", []string{at(0, toolAdded), itemArguments, at(1, done(secondShared)),
+			at(1, callFinalArguments), done(secondShared)}, []string{secondCall, firstCall}, []replayItem{secondTool, finalTool}},
 		{"an item shared by two terminal calls cannot supply either call's missing name", nil, []string{
 			`{"type":"function_call","id":"fc_1","call_id":"call_1","arguments":"{}"}`,
 			`{"type":"function_call","id":"fc_1","call_id":"call_2","arguments":"{}"}`, itemOnlyFinalCall,
@@ -433,6 +455,16 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 				t.Fatalf("recorded input = %#v, live settled input = %#v", got, want)
 			} else if !reflect.DeepEqual(got, tc.want) {
 				t.Errorf("recorded input = %#v, want %#v", got, tc.want)
+			}
+			if len(tc.events) == 0 && slices.ContainsFunc(tc.want, func(it replayItem) bool { return it.Type == "function_call" }) {
+				body := []byte(`{"output":[` + strings.Join(tc.output, ",") + "]}")
+				complete, err := ExtractRecordedResponse(body, "glm-5.3")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got := replayInput(t, complete.Message, true); !reflect.DeepEqual(got, tc.want) {
+					t.Errorf("complete input = %#v, want %#v", got, tc.want)
+				}
 			}
 			for _, resp := range []*llm.Response{acc.Response(), &recorded} {
 				if slices.Contains(tc.output, displayItem) && !slices.ContainsFunc(resp.Message.Content, func(p llm.ContentPart) bool {
