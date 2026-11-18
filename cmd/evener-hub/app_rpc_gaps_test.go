@@ -244,12 +244,10 @@ func TestPastFallbackReadsOneRosterPublication(t *testing.T) {
 		if len(beforeRefresh.Confirmed) != 2 {
 			t.Fatalf("fixture does not carry both processes in Confirmed: %+v", beforeRefresh.Confirmed)
 		}
-		// The newer one replaced that owner with an unverified claim. The
-		// unconfirmed list is assigned onto the embedded value rather than nested
-		// in it: Go cannot elide the type of an embedded field inside a keyed
-		// literal, and repeating the type trips modernize's embedlit.
-		var afterRefresh hubcore.OwnershipSnapshot
-		afterRefresh.Unconfirmed = []rendezvous.Entry{{PID: 4242, ThreadID: sessionID}}
+		// The newer one replaced that owner with an unverified claim.
+		afterRefresh := hubcore.OwnershipSnapshot{
+			Unconfirmed: []rendezvous.Entry{{PID: 4242, ThreadID: sessionID}},
+		}
 		original := rosterOwnershipSnapshot
 		t.Cleanup(func() { rosterOwnershipSnapshot = original })
 		publications := []hubcore.OwnershipSnapshot{beforeRefresh, afterRefresh}
