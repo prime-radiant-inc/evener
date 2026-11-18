@@ -68,3 +68,56 @@ func TestAbandonedDriverIsCancellationReleasesTheBlockedSend(t *testing.T) {
 		}
 	})
 }
+
+// The watch-activity flush that follows an event is SYNCHRONOUS with the send
+// that caused it. A close drain's lost-result warning can take the last slot in a
+// full authoritative stream; the flush then runs on the drain's goroutine, and on
+// the ordinary path it waits out the whole close cascade -- spending the budget
+// the worktree removals need, immediately after the warning itself was correctly
+// bounded.
+//
+// The observation is the bound the invalidation's send runs on, which is the
+// policy decision. A send's own outcome is a select among ready cases and would
+// agree with a wrong policy part of the time.
+func TestCloseDrainWatchFlushRunsOnTheDrainBound(t *testing.T) {
+	s := newTestSessionForEnvctx(t)
+	if s.jobManager == nil {
+		t.Fatal("session has no job manager: nothing to flush watch activity through")
+	}
+
+	bound, cancelBound := context.WithCancel(t.Context())
+	cancelBound()
+
+	var parked atomic.Bool
+	s.testOnlyBlockedSendEntered = func() { parked.Store(true) }
+	t.Cleanup(func() { s.testOnlyBlockedSendEntered = nil })
+
+	// A full authoritative stream, so an unpublishable invalidation must be
+	// released by the bound rather than delivered.
+	s.events = make(chan events.SessionEvent, 1)
+	s.events <- events.New(events.HookStartData{Event: "occupies the only slot"})
+	s.authoritativeConsumer = true
+	t.Cleanup(func() { s.authoritativeConsumer = false })
+
+	// Something is pending for the flush to publish.
+	s.jobManager.noteWatchActivity(s.ID())
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		s.jobManager.publishWatchActivityContext(bound)
+	}()
+
+	// The flush reaches the blocked-send boundary and returns on the bound.
+	testwait.Until(t, "the bounded watch flush to return on the drain's bound", func() bool {
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	})
+	if !parked.Load() {
+		t.Fatal("the watch invalidation never reached the blocked-send boundary: the send was not the thing under test")
+	}
+}

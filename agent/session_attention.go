@@ -2362,7 +2362,9 @@ func (s *Session) resetDelegateAttentionArmRetryLocked() {
 }
 
 func (s *Session) scheduleDelegateAttentionRetry() {
-	s.scheduleDelegateAttentionRetryBounded(context.Background())
+	// nil, not context.Background(): see retryDelegateAttentionLater. An
+	// ordinary retry has no caller bound, and Background reads as one.
+	s.scheduleDelegateAttentionRetryBounded(nil)
 }
 
 // scheduleDelegateAttentionRetryBounded is scheduleDelegateAttentionRetry on a

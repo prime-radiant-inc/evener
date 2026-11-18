@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/hooks"
+	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/internal/testwait"
 )
 
@@ -39,11 +41,15 @@ func TestDelegateWakeWarningUsesTheDrainBound(t *testing.T) {
 			t.Fatal("session has no delegate controller: this test needs one to publish through")
 		}
 
-		// A bound the drain supplied, already spent. It is passed to the wake
+		// A bound the drain supplied, already spent. MARKED, because that mark is
+		// how a publication tells "a caller handed me a stall budget" from "a
+		// context merely exists" -- the drain marks it at its one assignment site
+		// (delegate_tree_stop.go's evidence.bound). It is passed to the wake
 		// rather than installed on the shared controller, so it cannot reach an
 		// unrelated delegate's publications.
-		bound, cancelBound := context.WithCancel(t.Context())
+		spentCtx, cancelBound := context.WithCancel(t.Context())
 		cancelBound()
+		bound := withPublicationBound(spentCtx)
 
 		var parked atomic.Bool
 		s.testOnlyBlockedSendEntered = func() { parked.Store(true) }
@@ -68,6 +74,61 @@ func TestDelegateWakeWarningUsesTheDrainBound(t *testing.T) {
 			t.Fatal("the wake warning never reached the blocked-send boundary: the send was not the thing under test")
 		}
 	})
+}
+
+// An ordinary delivery supplies NO publication bound, so its wake-failure
+// warning must publish on the session's ordinary path -- not on a bound, because
+// there is none to keep.
+//
+// The defect this pins (review 53025, low): delegate_delivery.go passed
+// context.Background() to the wake, and reportDelegateWakeError treated every
+// non-nil context as a bound. The ordinary path therefore took the BOUNDED
+// branch with a context that carries no deadline, and its Notification hook
+// marked that context as its publication bound. A hook overlapping close then
+// published on a lifetime close cancels, and the cancellation dropped its
+// lifecycle and user output off a full buffer even when the consumer resumed
+// inside the published close window.
+//
+// The observation is the route the hook's lifecycle took, which is the policy
+// decision. The send's own outcome is a select among ready cases and would agree
+// with a wrong policy part of the time.
+func TestOrdinaryDeliverySuppliesNoPublicationBound(t *testing.T) {
+	r := newWorktreeRepo(t)
+	root := r.s
+
+	runner := hooks.NewRunner(nil, "test-model")
+	runner.Add(plugin.HookNotification, plugin.RegisteredHook{
+		Matcher: "*",
+		Type:    "command",
+		Command: `true`,
+		Timeout: 30,
+	})
+	runner.SetEventCallbackContext(root.publishHookLifecycle)
+	root.hookRunner = runner
+	root.events = make(chan events.SessionEvent, 8)
+	root.authoritativeConsumer = true
+	t.Cleanup(func() { root.authoritativeConsumer = false })
+
+	var sawAny, sawBounded atomic.Bool
+	root.testOnlyPublicationRoute = func(bounded bool) {
+		sawAny.Store(true)
+		if bounded {
+			sawBounded.Store(true)
+		}
+	}
+	t.Cleanup(func() { root.testOnlyPublicationRoute = nil })
+
+	// The ordinary delivery path's own context, which is what
+	// delegate_delivery.go hands the wake. It carries no deadline and no mark.
+	root.delegateController.reportDelegateWakeError(context.Background(), errTestWakeFailed)
+
+	if !sawAny.Load() {
+		t.Fatal("the wake failure published no hook lifecycle: the warning was dropped")
+	}
+	if sawBounded.Load() {
+		t.Fatal("the ordinary wake failure published its hook on a BOUND: it supplied none, " +
+			"so a hook overlapping close would lose its lifecycle and output to the canceled session")
+	}
 }
 
 // errTestWakeFailed is the failure a wake reports in this test. It is a plain

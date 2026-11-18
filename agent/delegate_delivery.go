@@ -722,8 +722,19 @@ func deliverDelegatePacket(plan delegateDeliveryPlan, receiver delegateDeliveryR
 	if err != nil {
 		return plans, err
 	}
-	// This is the session's ordinary delivery path, which supplies no bound.
-	return plans, plan.controller.wakeDeliveryReceiver(context.Background(), receiver, []string{attentionID})
+	// This is the session's ordinary delivery path, which supplies NO bound, and
+	// it says so with nil rather than context.Background().
+	//
+	// A bare Background() reads as a bound to every consumer that tests for one
+	// by nil-ness, and "is this context non-nil" is not the question they mean to
+	// ask -- they mean "did a caller hand me a stall budget". With Background the
+	// answer came out yes: scheduleDelegateAttentionRetryBounded's lockWithin
+	// then polled on a Done channel that never closes, so an ordinary wake whose
+	// root held attentionMu behind a full authoritative stream waited out the
+	// whole close cascade instead of taking the plain lock this path has always
+	// taken. Nil is the honest answer, and lockWithin(nil) is exactly today's
+	// unconditioned Lock.
+	return plans, plan.controller.wakeDeliveryReceiver(nil, receiver, []string{attentionID})
 }
 
 // replanStaleDelivery re-plans a delivery whose claim is gone but whose durable

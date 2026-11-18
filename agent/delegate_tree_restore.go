@@ -764,9 +764,20 @@ func (c *delegateTreeController) reportDelegateWakeError(bound context.Context, 
 		// bounded warning publisher. On the drain's bound the warning still
 		// reaches a consumer that can accept it and releases the drain on one that
 		// cannot.
+		// A bound is a deadline a caller handed in because it has a stall budget
+		// to protect. "Non-nil context" is not that question, and answering it
+		// that way took the bounded branch for the ordinary delivery path, which
+		// passes context.Background() and has no bound at all: its warning's
+		// Notification hook was marked bounded on a context close cancels, so a
+		// hook overlapping close lost its lifecycle and user output off a full
+		// buffer even when the consumer resumed inside the close window.
+		//
+		// publicationBound is the marked-bound predicate the hook publisher
+		// already uses, and an unmarked context -- Background, a turn's, the
+		// session's -- reports false. Only the close drain marks one.
 		data := warningDataFromError("delegate delivery wake failed", err)
-		if bound != nil {
-			root.emitWithProvenanceContext(bound, data, root.activeCausalProvenance())
+		if scope, bounded := publicationBound(bound); bounded {
+			root.emitWithProvenanceContext(scope, data, root.activeCausalProvenance())
 			return
 		}
 		root.emit(data)

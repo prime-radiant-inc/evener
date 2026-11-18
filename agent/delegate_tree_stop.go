@@ -884,7 +884,13 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 		// The evidence carries this pass's publication bound, so the reconcile
 		// it drives publishes on that bound and Reconcile stays the single
 		// controller entry point the dormancy inventory tracks.
-		evidence.bound = ctx
+		//
+		// MARKED, because this drain is the caller supplying it. A bound is a
+		// deadline handed in by a caller with a stall budget to protect, and the
+		// only way a consumer can tell that from a context that merely exists is
+		// the mark. Assigning the bare ctx here made every publication on this
+		// pass's path read as unbounded -- the opposite of this drain's contract.
+		evidence.bound = withPublicationBound(ctx)
 		plans, err := c.Reconcile(evidence)
 		if plans.retirementRelease != nil {
 			retirementReleases = append(retirementReleases, plans.retirementRelease)

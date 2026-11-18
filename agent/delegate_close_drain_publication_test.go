@@ -266,3 +266,44 @@ func delegateEventsStopCompleted(events []delegatestore.Event, delegateID string
 	}
 	return false
 }
+
+// A close cascade mints ONE publication cutoff, and every pass in the cascade
+// inherits it. Reserved per pass, the cutoff is not one reservation: each
+// resident child's disposal pass derived its own from what was LEFT of the
+// cascade, so N children spent the removals' time in N serial waits. With the
+// default 30-second cascade, eight such waits left under 120 milliseconds before
+// any Git work ran, and the root's collectible lanes were left on disk for a
+// later prune.
+//
+// The test observes the cutoff on the context a descendant inherits, which is
+// what makes every pass share one: closeStopJoinContext derives its budget from
+// what remains, so a child that found no inherited cutoff reserved a fresh slice
+// of the parent's remainder.
+func TestCloseCascadeMintsOnePublicationCutoff(t *testing.T) {
+	cascade, cancel := ensureCloseBudget(t.Context())
+	defer cancel()
+
+	first, cancelFirst := closeCascadePublicationContext(cascade)
+	defer cancelFirst()
+	firstDeadline, ok := first.Deadline()
+	if !ok {
+		t.Fatal("closeCascadePublicationContext minted no deadline: nothing bounds a publication")
+	}
+
+	// A descendant's pass: it inherits the cascade context, exactly as a child
+	// session's disposal does, and must reuse that same cutoff.
+	childCascade, cancelChild := ensureCloseBudget(cascade)
+	defer cancelChild()
+	second, cancelSecond := closeCascadePublicationContext(childCascade)
+	defer cancelSecond()
+	secondDeadline, ok := second.Deadline()
+	if !ok {
+		t.Fatal("the descendant's publication context has no deadline")
+	}
+
+	if !secondDeadline.Equal(firstDeadline) {
+		t.Fatalf("a descendant pass minted its own publication cutoff: first=%s descendant=%s; "+
+			"each pass then reserves a fresh slice of what is left, so the number of children "+
+			"spends the time the lane removals need", firstDeadline, secondDeadline)
+	}
+}

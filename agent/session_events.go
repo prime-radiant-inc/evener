@@ -837,7 +837,10 @@ func (s *Session) emitCloseDrainWarnings(ctx context.Context, warnings []events.
 			continue
 		}
 		if s.jobManager != nil {
-			s.jobManager.onSessionEvent(ev)
+			// The bound, not the ordinary path: this flush runs on the drain's
+			// goroutine, synchronous with the warning that just filled the last
+			// slot, so on the ordinary path it would wait out the whole cascade.
+			s.jobManager.onSessionEventContext(ctx, ev)
 		}
 		s.fireNotificationHookBounded(ctx, warningHookMessage(data), warningHookTitle(data))
 	}
@@ -888,7 +891,7 @@ func (s *Session) retryCloseDrainWarnings(ctx context.Context) {
 			continue
 		}
 		if s.jobManager != nil {
-			s.jobManager.onSessionEvent(ev)
+			s.jobManager.onSessionEventContext(ctx, ev)
 		}
 	}
 }
@@ -1035,12 +1038,12 @@ func (s *Session) runNotificationHook(ctx context.Context, message, title string
 	// Close canceled the lifetime carried that cancellation into a buffer the
 	// consumer could still drain inside the published window, and the message was
 	// dropped with the window wide open.
-	output := ctx
-	if bounded, ok := publicationBound(ctx); ok {
-		output = bounded
-	} else {
-		output = nil
-	}
+	// One assignment, because publicationBound already answers both questions:
+	// it returns the bound when the dispatcher marked one, and nil -- the
+	// session's own publication path -- when none exists. The nil is the Medium 2
+	// fix and is load-bearing: an unmarked dispatch must not inherit a captured
+	// lifetime as its delivery deadline.
+	output, _ := publicationBound(ctx)
 	input := s.hookInput(plugin.HookNotification)
 	input.Message = message
 	input.Reason = message

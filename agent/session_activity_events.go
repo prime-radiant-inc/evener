@@ -11,6 +11,12 @@ import (
 // Activity invalidations travel through the existing bridge without becoming
 // model-facing watch observations. Publication happens outside domain locks.
 func (s *Session) emitSessionActivityChanged(owner string, resource appwire.SessionActivityResource) {
+	s.emitSessionActivityChangedBounded(nil, owner, resource)
+}
+
+// emitSessionActivityChangedBounded is emitSessionActivityChanged on the bound
+// of the caller whose event caused the change; see publishWatchActivityContext.
+func (s *Session) emitSessionActivityChangedBounded(ctx context.Context, owner string, resource appwire.SessionActivityResource) {
 	if s == nil || owner == "" {
 		return
 	}
@@ -20,7 +26,11 @@ func (s *Session) emitSessionActivityChanged(owner string, resource appwire.Sess
 		targets = controller.sessionAncestryLocked(owner)
 		controller.mu.Unlock()
 	}
-	s.publishSessionActivityChanged(owner, targets, resource)
+	if ctx == nil {
+		s.publishSessionActivityChanged(owner, targets, resource)
+		return
+	}
+	s.publishSessionActivityChangedContext(ctx, owner, targets, resource)
 }
 
 // publishSessionActivityChanged invalidates owner's activity on each target
@@ -92,6 +102,22 @@ func (jm *jobManager) noteWatchActivity(receiver string) {
 	jm.watchActivityMu.Unlock()
 }
 func (jm *jobManager) publishWatchActivity() {
+	jm.publishWatchActivityContext(nil)
+}
+
+// publishWatchActivityContext flushes the receivers whose watch activity moved,
+// on the bound of the caller that caused the move. A nil bound is the ordinary
+// path and keeps today's behavior exactly: the session's published close budget
+// when there is one, and no caller deadline otherwise.
+//
+// It exists because the flush is SYNCHRONOUS with the send that triggered it.
+// A close drain publishing a lost-result warning can take the last slot in a
+// full authoritative stream; the flush that follows then runs on the drain's
+// goroutine, and on the ordinary path it waits out the whole close cascade --
+// spending the budget the worktree removals need, after the warning itself was
+// already correctly bounded. Undelivered invalidations are simply not published;
+// the receiver's next ordinary event publishes them, exactly as before.
+func (jm *jobManager) publishWatchActivityContext(ctx context.Context) {
 	if jm == nil || jm.retirementOwner == nil {
 		return
 	}
@@ -100,7 +126,7 @@ func (jm *jobManager) publishWatchActivity() {
 	jm.watchActivityReceivers = nil
 	jm.watchActivityMu.Unlock()
 	for receiver := range receivers {
-		jm.retirementOwner.emitSessionActivityChanged(receiver, appwire.SessionActivityResourceWatches)
+		jm.retirementOwner.emitSessionActivityChangedBounded(ctx, receiver, appwire.SessionActivityResourceWatches)
 	}
 }
 func (jm *jobManager) noteAcceptedWatchEvents(batch []jobstore.Event) {

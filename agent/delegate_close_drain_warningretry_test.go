@@ -25,7 +25,14 @@ func TestLostResultWarningSurvivesABoundedSendThatExpires(t *testing.T) {
 	s.authoritativeConsumer = true
 	t.Cleanup(func() { s.authoritativeConsumer = false })
 
-	warning := events.WarningData{Message: "the inline delegate's result was lost"}
+	// A typed fixture: the code and delegate ID are the fields a reader acts
+	// on, and asserting them is checking the payload rather than comparing
+	// rendered copy to a phrase the test also defines.
+	warning := events.WarningData{
+		Message:    "the inline delegate's result was lost",
+		Code:       events.WarningCodeDelegateDeliveryResultLost,
+		DelegateID: "dlg_lost_result",
+	}
 	spent, cancelSpent := context.WithCancel(t.Context())
 	cancelSpent()
 
@@ -48,8 +55,9 @@ func TestLostResultWarningSurvivesABoundedSendThatExpires(t *testing.T) {
 	if !ok {
 		t.Fatalf("the retried event is not a warning: %T", delivered.Data)
 	}
-	if got.Message != warning.Message {
-		t.Fatalf("the retry delivered a different warning: %q", got.Message)
+	if got.Code != warning.Code || got.DelegateID != warning.DelegateID {
+		t.Fatalf("the retry delivered a different warning: code=%q delegate=%q, want code=%q delegate=%q",
+			got.Code, got.DelegateID, warning.Code, warning.DelegateID)
 	}
 	if held := s.closeDrainWarnings.Load(); held != nil && len(*held) != 0 {
 		t.Fatalf("the retry left %d warning(s) held after delivering", len(*held))

@@ -277,7 +277,32 @@ func ensureCloseBudget(ctx context.Context) (context.Context, context.CancelFunc
 	if closeBudgetMintHook != nil {
 		closeBudgetMintHook()
 	}
-	return context.WithTimeout(ctx, budget)
+	timed, cancelTimeout := context.WithTimeout(ctx, budget)
+	// The cascade's ONE publication cutoff is minted HERE, on the context every
+	// descendant of this close inherits, rather than by the first disposal pass
+	// that happens to need one. A cutoff minted by a pass lived only on that
+	// pass's own derived context, so the next pass -- a resident child, or the
+	// root after its children -- found no value, minted another, and reserved a
+	// fresh slice of what was left. N children therefore spent the removals'
+	// time in N serial waits even though each pass looked like one reservation.
+	if cutoff, ok := closeStopJoinCutoff(timed); ok {
+		timed = context.WithValue(timed, closeCascadePublicationKey{}, cutoff)
+	}
+	return timed, cancelTimeout
+}
+
+// closeStopJoinCutoff reports the absolute deadline closeStopJoinContext would
+// mint for ctx, without creating a context and without reporting an
+// ObserveCloseStopJoinBudget observation. ensureCloseBudget needs the deadline
+// alone to record the cascade's single publication cutoff, and the observer's
+// readers count the stop joins a close performs -- a cutoff recorded for
+// publication is not one of those joins.
+func closeStopJoinCutoff(ctx context.Context) (time.Time, bool) {
+	cascadeDeadline, bounded := ctx.Deadline()
+	if !bounded {
+		return time.Time{}, false
+	}
+	return time.Now().Add(closeStopJoinBudget(time.Until(cascadeDeadline), closePassBudget(ctx))), true
 }
 
 // laneCloseReleaseBudget bounds one session's close-time lock-release pass. It
@@ -317,8 +342,11 @@ func closeCascadePublicationContext(ctx context.Context) (context.Context, conte
 	}
 	deadline, minted := ctx.Value(closeCascadePublicationKey{}).(time.Time)
 	if !minted {
-		// First pass in this cascade: reserve the slice once and record it on
-		// the context every later pass inherits.
+		// No inherited cutoff: this pass is not running under a close cascade
+		// that minted one (a direct caller, or a context carrying a deadline of
+		// its own). Reserve a slice for this pass alone. The cascade's shared
+		// case is minted once by ensureCloseBudget, on the context every
+		// descendant inherits.
 		cutoff, cancel := closeStopJoinContext(ctx)
 		if d, ok := cutoff.Deadline(); ok {
 			cutoff = context.WithValue(cutoff, closeCascadePublicationKey{}, d)

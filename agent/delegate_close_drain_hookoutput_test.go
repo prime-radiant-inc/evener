@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"primeradiant.com/evener/agent/diagnostic"
@@ -131,6 +132,16 @@ func TestOrdinaryNotificationHookOutputOutlivesTheCanceledSessionLifetime(t *tes
 // The other half: a dispatcher that DID supply a bound keeps it. The drain marks
 // its dispatch context, and the hook's output publication must still narrow to
 // that deadline so an unresponsive consumer cannot park the drain.
+//
+// Two things make this test able to discriminate, and the earlier shape had
+// neither:
+//
+//   - The lifecycle publication is a NO-OP, so the hook's user message is the
+//     FIRST send to reach the full stream. With a real lifecycle publisher the
+//     HookStart send parked instead, the seam fired for that send, and an output
+//     publication that ignored its bound entirely still passed.
+//   - The bound is live until the park is observed. Cancelling it up front let
+//     the command be declined and no user message was ever produced.
 func TestBoundedNotificationHookOutputStillHonoursItsBound(t *testing.T) {
 	r := newWorktreeRepo(t)
 	root := r.s
@@ -142,30 +153,47 @@ func TestBoundedNotificationHookOutputStillHonoursItsBound(t *testing.T) {
 		Command: `printf '%s\n' '{"systemMessage":"hook output"}'`,
 		Timeout: 30,
 	})
-	runner.SetEventCallbackContext(root.publishHookLifecycle)
+	// No lifecycle publication: the OUTPUT send must be the one that parks, so
+	// the observation is about the send this test is named for.
+	runner.SetEventCallbackContext(func(_ context.Context, _ events.EventKind, _ events.EventData) {})
 	root.hookRunner = runner
 
+	// A full authoritative stream: the output cannot land until something
+	// releases it.
 	root.events = make(chan events.SessionEvent, 1)
 	root.events <- events.New(events.HookStartData{Event: "occupies the only slot"})
 	root.authoritativeConsumer = true
 	t.Cleanup(func() { root.authoritativeConsumer = false })
 
-	// A slurp that never frees a slot: only the bound can release the send.
-	hold := make(chan struct{})
-	t.Cleanup(func() { close(hold) })
-	go func() {
-		<-hold
-	}()
+	var parked atomic.Bool
+	root.testOnlyBlockedSendEntered = func() { parked.Store(true) }
+	t.Cleanup(func() { root.testOnlyBlockedSendEntered = nil })
 
 	bound, cancelBound := context.WithCancel(t.Context())
-	cancelBound()
+	t.Cleanup(cancelBound)
 
-	// Marked as a publication bound, so the output send narrows to it and
-	// returns instead of parking until the close deadline.
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		root.runNotificationHook(withPublicationBound(bound), "the warning's message", "the warning's title")
 	}()
-	<-done
+
+	// Precondition: the user message reaches the full stream and parks there. An
+	// output publication that ignores its bound parks here forever, which is the
+	// defect this test exists to catch.
+	testwait.Until(t, "the hook's user message to park on the full stream", func() bool {
+		return parked.Load()
+	})
+
+	// Only now does the bound expire.
+	cancelBound()
+
+	testwait.Until(t, "the bounded hook to return once its bound expires", func() bool {
+		select {
+		case <-done:
+			return true
+		default:
+			return false
+		}
+	})
 }
