@@ -186,6 +186,11 @@ func reconcileDelegateResourcesForBootstrap(controller *delegateTreeController) 
 			retirementRelease()
 		}
 	}()
+	// Bootstrap is not a close, so it publishes warnings through the root
+	// runtime as the stop driver does. The defer runs on every return, including
+	// the reconciliation errors below: a warning a pass noted belongs to the user
+	// whatever the pass then returned.
+	defer controller.publishPassWarnings(controller.rootRuntime)
 	for {
 		evidence, err := collectDelegateReconcileEvidence(controller.stateDir, controller.ReconcileRequirements())
 		if err != nil {
@@ -198,6 +203,9 @@ func reconcileDelegateResourcesForBootstrap(controller *delegateTreeController) 
 		if err != nil {
 			return nil, err
 		}
+		// Publish what this pass noted before its effects run, so a warning is
+		// never held behind a repair or cleanup that can fail.
+		controller.publishPassWarnings(controller.rootRuntime)
 		deliveries = append(deliveries, plans.deliveries...)
 		for _, plan := range plans.shellRepairs {
 			if err := executeDelegateShellRepair(plan, controller.now()); err != nil {
@@ -351,7 +359,17 @@ func (s *Session) closeOwnedDelegateStoreWithContext(ctx context.Context) error 
 	if s == nil || !s.ownsDelegateController || s.delegateController == nil || s.delegateController.store == nil {
 		return nil
 	}
-	return s.delegateController.closeStoreAfterStopReconcileDriver(ctx)
+	// This is the last point at which the close's delegate evidence can be
+	// published: every subtree's stop is durable, root jobs are stopped and the
+	// isolation lanes are disposed, and the event stream is still open because
+	// the store outlives all of it. Publishing earlier would let a stalled
+	// authoritative consumer spend the shared close deadline before those ran.
+	err := s.delegateController.closeStoreAfterStopReconcileDriver(ctx)
+	if observe := s.cfg.testOnly.delegateCloseEvidencePublishing; observe != nil {
+		observe()
+	}
+	s.delegateController.publishCloseEvidence()
+	return err
 }
 
 func (s *Session) closeOwnedDelegateRuntimeTree(ctx context.Context) error {

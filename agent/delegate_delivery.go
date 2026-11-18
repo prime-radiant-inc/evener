@@ -1093,9 +1093,6 @@ func (s *Session) executeDelegateMutationPlans(plans delegateMutationPlans) erro
 		return errDelegateDeliveryReceiverUnavailable
 	}
 	s.delegateController.emitDelegateUpdates(plans)
-	for _, warning := range plans.warnings {
-		s.emit(warning)
-	}
 	for _, attention := range plans.attention {
 		if err := s.delegateController.executeDelegateAttentionCleanup(attention); err != nil {
 			if plans.attentionFinalization != nil {

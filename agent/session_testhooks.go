@@ -536,6 +536,15 @@ type testConfig struct {
 	// and a seam between them would have to release it. Nil in production.
 	enterWorktreeAfterSwap func()
 
+	// delegateCloseEvidencePublishing observes the point in Close() at which the
+	// delegate close evidence — the warnings its drains deferred, and the final
+	// delegate snapshots — is published. A test uses it to assert positively
+	// that root jobs were already stopped and the isolation lanes already
+	// disposed when the publish happens: publishing earlier would let a stalled
+	// authoritative event consumer spend the shared close deadline before those
+	// ran, which is what the ordering requires. Nil in production.
+	delegateCloseEvidencePublishing func()
+
 	// metaFS, when non-nil, replaces the real OS filesystem for every
 	// session-meta read/write the Session performs directly (maybeAutoSave's
 	// schema.SaveSessionMeta, and the ownership-reload schema.LoadSessionMeta

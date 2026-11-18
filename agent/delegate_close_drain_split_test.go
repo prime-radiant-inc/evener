@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
@@ -45,6 +46,9 @@ func TestDelegateStopCloseDrainReportsLostResultBeforeCleanupEndsThePass(t *test
 	if !errors.Is(err, errInjectedAttentionCleanup) {
 		t.Fatalf("close drain error = %v, want the injected cleanup failure", err)
 	}
+	// The close publishes the sink after its stop loop, so a direct drain leaves
+	// the notice in the sink for this call to publish, exactly as the close does.
+	f.controller.publishPassWarnings(f.root)
 
 	found := false
 	for _, warning := range drainSessionWarnings(f.root) {
@@ -146,6 +150,9 @@ func TestDelegateStopCloseDrainLeavesOtherSubtreeReplayToItsOwnStop(t *testing.T
 	if err := c.closeRuntimeTree(context.Background()); err != nil {
 		t.Fatalf("close with two retryable top-level subtrees = %v, want both subtrees stopped", err)
 	}
+	// The session publishes this after root job shutdown and lane disposal, while
+	// the event stream is still open; a direct closeRuntimeTree leaves it here.
+	c.publishCloseEvidence()
 
 	stored, err := delegatestore.ReadEvents(storePath)
 	if err != nil {
@@ -208,21 +215,24 @@ func TestDelegateStopCloseDrainLeavesOtherSubtreeReplayToItsOwnStop(t *testing.T
 // proves the pass ended at that append rather than matching production copy.
 var errInjectedStopCompletionAppend = errors.New("injected stop completion append failure")
 
-// The lost-result warning for an abandoned receipt exists only in the pass that
-// abandons it: the abandon takes the receipt out of the admission map, so no
-// later pass can notice it again. Reconciliation can then fail on the stop's
-// own completion append, and it reports that failure to the drain. The warning
-// must survive that error rather than being thrown away with the plan, or the
-// user never learns the result was lost.
-func TestDelegateStopCloseDrainReportsLostResultWhenStopCompletionAppendFails(t *testing.T) {
+// The sink exists so that no return path decides whether a warning survives.
+// the very next thing that happens is an error return. The warning must still
+// publish, exactly once, because nothing in between had to carry it.
+//
+// Before the sink this was the shape that failed three reviews running: the
+// warning travelled in the returned plan, so each new error return between
+// noting it and publishing it silently dropped it. Here the note and the return
+// are adjacent with no plumbing, so there is no path for it to fall through.
+func TestDelegatePassWarningSurvivesTheErrorReturnThatFollowsIt(t *testing.T) {
 	f := newStrandedStopFixture(t, strandedStopOptions{updates: 1, inline: true, realRoot: true})
 	if f.root == nil {
 		t.Fatal("fixture did not create the root runtime")
 	}
 	f.root.events = make(chan events.SessionEvent, 8)
 
-	// The pass abandons the unowned inline receipt and then fails its own stop
-	// completion append, which is the step that returns an error to the drain.
+	// One real pass: it abandons the unowned inline receipt, noting the lost
+	// result, and then fails its own stop-completion append. Reconcile returns
+	// that error; the warning is not in the return value at all.
 	f.controller.appendFault = func(batch []delegatestore.Event) error {
 		for _, event := range batch {
 			if event.Kind == delegatestore.EventDelegateSubtreeStopCompleted {
@@ -231,20 +241,88 @@ func TestDelegateStopCloseDrainReportsLostResultWhenStopCompletionAppendFails(t 
 		}
 		return nil
 	}
-
-	err := f.controller.drainStopForClose(context.Background(), f.controller.stopForResult(f.stop))
-	if !errors.Is(err, errInjectedStopCompletionAppend) {
+	if err := f.controller.drainStopForClose(context.Background(), f.controller.stopForResult(f.stop)); !errors.Is(err, errInjectedStopCompletionAppend) {
 		t.Fatalf("close drain error = %v, want the injected stop-completion append failure", err)
 	}
 
-	found := false
+	// The sink still holds it after that error. Draining publishes once and
+	// empties the sink, so a second publish cannot duplicate it.
+	f.controller.publishPassWarnings(f.root)
+	published := 0
 	for _, warning := range drainSessionWarnings(f.root) {
-		if warning.Code == events.WarningCodeDelegateDeliveryResultLost && warning.DelegateID == "dlg_target" {
-			found = true
+		if warning.Code == events.WarningCodeDelegateDeliveryResultLost {
+			published++
 		}
 	}
-	if !found {
-		t.Fatal("the pass abandoned an inline receipt but failed its stop-completion append, and the lost result was never reported")
+	if published != 1 {
+		t.Fatalf("lost-result warnings published = %d, want exactly one", published)
+	}
+	f.controller.publishPassWarnings(f.root)
+	if got := len(drainSessionWarnings(f.root)); got != 0 {
+		t.Fatalf("the same warning was published again: %d after the second drain, want 0", got)
+	}
+}
+
+// The lost-result warning for an abandoned receipt exists only in the pass that
+// abandons it: the abandon takes the receipt out of the admission map, so no
+// later pass can notice it again. Every way that pass can then end in an error
+// must still publish the warning.
+//
+// The cases are the two error returns the review named, plus the happy path.
+// The warning lives in the controller's pass sink rather than in the returned
+// plan, so these cases share no carry-forward code: if the sink were still a
+// return value, each case would need its own fix, which is the fragility that
+// made this a design change rather than a third patch.
+func TestDelegateStopCloseDrainReportsLostResultOnEveryReturnPath(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		kind  delegatestore.EventKind
+		want  error
+		fault bool
+	}{
+		{name: "stop completion append fails", kind: delegatestore.EventDelegateSubtreeStopCompleted, want: errInjectedStopCompletionAppend, fault: true},
+		{name: "no error", fault: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newStrandedStopFixture(t, strandedStopOptions{updates: 1, inline: true, realRoot: true})
+			if f.root == nil {
+				t.Fatal("fixture did not create the root runtime")
+			}
+			f.root.events = make(chan events.SessionEvent, 8)
+
+			if tc.fault {
+				f.controller.appendFault = func(batch []delegatestore.Event) error {
+					for _, event := range batch {
+						if event.Kind == tc.kind {
+							return tc.want
+						}
+					}
+					return nil
+				}
+			}
+
+			err := f.controller.drainStopForClose(context.Background(), f.controller.stopForResult(f.stop))
+			if tc.want == nil {
+				if err != nil {
+					t.Fatalf("close drain error = %v, want it to settle", err)
+				}
+			} else if !errors.Is(err, tc.want) {
+				t.Fatalf("close drain error = %v, want the injected failure", err)
+			}
+			// The close publishes the sink after its stop loop; a direct drain
+			// leaves the notice for this call, exactly as production does.
+			f.controller.publishPassWarnings(f.root)
+
+			found := false
+			for _, warning := range drainSessionWarnings(f.root) {
+				if warning.Code == events.WarningCodeDelegateDeliveryResultLost && warning.DelegateID == "dlg_target" {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatal("the pass abandoned an inline receipt, and the lost result was never reported")
+			}
+		})
 	}
 }
 
@@ -263,4 +341,104 @@ func newRootRuntimeForClose(t *testing.T, c *delegateTreeController) *Session {
 	c.rootRuntime = root
 	c.mu.Unlock()
 	return root
+}
+
+// Publishing a warning can block: root.emit waits on the shared close deadline
+// when the authoritative event buffer is full, and its Notification hook runs
+// synchronously. A close that published inside its stop loop would therefore
+// spend the budget a later subtree needs to reach its own durable stop. So the
+// close must hold the warning across the whole loop and publish it once after
+// the loop, on every path.
+func TestDelegateCloseDefersWarningPublicationUntilAfterTheStopLoop(t *testing.T) {
+	f := newStrandedStopFixture(t, strandedStopOptions{updates: 1, inline: true, realRoot: true})
+	if f.root == nil {
+		t.Fatal("fixture did not create the root runtime")
+	}
+	f.root.events = make(chan events.SessionEvent, 8)
+
+	// The pass abandons the unowned inline receipt but fails its own
+	// completion append, so the close loop returns on an error path. That is
+	// the path most likely to publish nothing at all.
+	f.controller.appendFault = func(batch []delegatestore.Event) error {
+		for _, event := range batch {
+			if event.Kind == delegatestore.EventDelegateSubtreeStopCompleted {
+				return errInjectedStopCompletionAppend
+			}
+		}
+		return nil
+	}
+
+	// Drive the drain the close would run, on the same stop the fixture built.
+	// It must not publish: the warning belongs to the close, not the loop.
+	if err := f.controller.drainStopForClose(context.Background(), f.controller.stopForResult(f.stop)); !errors.Is(err, errInjectedStopCompletionAppend) {
+		t.Fatalf("close drain error = %v, want the injected stop-completion append failure", err)
+	}
+	if during := drainSessionWarnings(f.root); len(during) != 0 {
+		t.Fatalf("the close drain published %d warning(s) inside the stop loop, want 0 until the loop finishes: %#v", len(during), during)
+	}
+
+	// The close's own publication point, after every stop is admitted.
+	f.controller.publishCloseEvidence()
+	after := 0
+	for _, warning := range drainSessionWarnings(f.root) {
+		if warning.Code == events.WarningCodeDelegateDeliveryResultLost {
+			after++
+		}
+	}
+	if after != 1 {
+		t.Fatalf("warnings published after the close loop = %d, want exactly one", after)
+	}
+	// A second call must not publish it again.
+	f.controller.publishCloseEvidence()
+	if got := len(drainSessionWarnings(f.root)); got != 0 {
+		t.Fatalf("the close republished its evidence: %d warning(s) after a second call, want 0", got)
+	}
+}
+
+// The close publishes delegate warnings and final snapshots at one point, and
+// that point must come after root job shutdown and lane disposal. Publishing
+// earlier lets a stalled authoritative event consumer spend the shared close
+// deadline before the jobs are stopped and the collectible lanes are evaluated,
+// so a close can abandon jobs and leave lanes for prune. This asserts the
+// ordering positively at the publish seam rather than inferring it from the
+// close returning.
+func TestDelegateClosePublishesEvidenceAfterJobsAreStopped(t *testing.T) {
+	root := newMessagingRoot(t, newMessagingAdapter("WORKER-BRIEF"), nil)
+	if root.delegateController == nil {
+		t.Fatal("root has no delegate controller")
+	}
+	if root.jobManager == nil {
+		t.Fatal("root has no job manager, so this test cannot observe job shutdown")
+	}
+
+	var (
+		mu              sync.Mutex
+		observed        bool
+		jobsStoppedSeen bool
+	)
+	var first sync.Once
+	root.cfg.testOnly.delegateCloseEvidencePublishing = func() {
+		root.jobManager.mu.Lock()
+		closing := root.jobManager.closing
+		root.jobManager.mu.Unlock()
+		// Only the first publication is evidence: a later one necessarily sees
+		// jobs already stopped and would mask an early publish.
+		first.Do(func() {
+			mu.Lock()
+			observed, jobsStoppedSeen = true, closing
+			mu.Unlock()
+		})
+	}
+
+	root.Close()
+
+	mu.Lock()
+	seen, stopped := observed, jobsStoppedSeen
+	mu.Unlock()
+	if !seen {
+		t.Fatal("the close never reached the delegate evidence publication point")
+	}
+	if !stopped {
+		t.Fatal("the close published delegate evidence before stopping root jobs")
+	}
 }

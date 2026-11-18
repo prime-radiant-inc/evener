@@ -127,6 +127,16 @@ type delegateTreeController struct {
 	// production.
 	appendFault   func([]delegatestore.Event) error
 	attentionOpen delegateAttentionWriterOpener
+	// passWarnings collects warnings a reconciliation pass discovers before it
+	// knows how it will return. It is deliberately NOT part of
+	// delegateMutationPlans: a warning must survive every error return between
+	// discovering it and publishing it, and a return value can be dropped by
+	// any one of them. Append with noteDelegateWarningLocked (holds mu), drain
+	// with takePassWarnings after the pass returns, whatever it returned.
+	passWarnings []events.WarningData
+	// closeEvidencePublished marks that the close has emitted its deferred
+	// warnings and final delegate snapshots. Guarded by mu.
+	closeEvidencePublished bool
 }
 
 type delegateActor struct {
@@ -422,7 +432,30 @@ type delegateMutationPlans struct {
 	attention             []delegateAttentionCleanupPlan
 	attentionFinalization *delegateSettlementClaim
 	shellRepairs          []delegateShellRepairPlan
-	warnings              []events.WarningData
+}
+
+// noteDelegateWarningLocked records a warning a reconciliation pass discovered.
+// The caller holds c.mu, which is also what serializes Reconcile passes, so the
+// sink needs no lock of its own. A caller must publish it with takePassWarnings
+// whatever the pass returns: the whole point of the sink is that a warning does
+// not travel in a return value an error path can throw away.
+func (c *delegateTreeController) noteDelegateWarningLocked(warning events.WarningData) {
+	c.passWarnings = append(c.passWarnings, warning)
+}
+
+// takePassWarnings drains the sink. It is the one place a pass's warnings leave
+// the controller, so a pass that notes a warning and returns an error still has
+// it published, and a pass whose caller publishes as it goes cannot emit one
+// twice: the drain empties the sink.
+func (c *delegateTreeController) takePassWarnings() []events.WarningData {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	warnings := c.passWarnings
+	c.passWarnings = nil
+	c.mu.Unlock()
+	return warnings
 }
 
 func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTreeController, error) {

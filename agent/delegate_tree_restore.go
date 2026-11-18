@@ -362,7 +362,6 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 	}
 	plans.updates = append(plans.updates, deliveryPlans.updates...)
 	plans.deliveries = append(plans.deliveries, deliveryPlans.deliveries...)
-	plans.warnings = append(plans.warnings, deliveryPlans.warnings...)
 	if len(stop.deliveries) != 0 {
 		// A receipt still in flight will untrack itself when its executor
 		// commits or abandons it, waking this drain.
@@ -419,12 +418,7 @@ func (c *delegateTreeController) Reconcile(evidence delegateReconcileEvidence) (
 			RequestSeq: stop.requestSeq,
 		},
 	}); err != nil {
-		// Keep this pass's warnings. A receipt abandoned earlier in the pass is
-		// already dropped from the admission map, so no later pass can report
-		// its lost result: the caller must publish these before it acts on the
-		// error. Nothing else here is safe to act on, so only the warnings
-		// survive.
-		return delegateMutationPlans{warnings: plans.warnings}, err
+		return delegateMutationPlans{}, err
 	}
 	close(stop.done)
 	c.stop = nil
@@ -532,17 +526,14 @@ func (c *delegateTreeController) acknowledgeRetryableStopDeliveriesLocked(stop *
 	sort.Slice(tokens, func(i, j int) bool { return tokens[i].processID < tokens[j].processID })
 	updated := make(map[string]struct{})
 	owners := make(map[string]struct{})
-	var lost []events.WarningData
 	liveOrder := make([]*Session, 0)
 	liveIDs := make(map[*Session][]string)
 	cold := false
 	buildPlans := func() delegateMutationPlans {
-		plans := c.deliveryAckPlansLocked(
+		return c.deliveryAckPlansLocked(
 			slices.Sorted(maps.Keys(updated)),
 			slices.Sorted(maps.Keys(owners)),
 		)
-		plans.warnings = append(plans.warnings, lost...)
-		return plans
 	}
 	buildWakes := func() []delegateDeliveryWake {
 		wakes := make([]delegateDeliveryWake, 0, len(liveOrder)+1)
@@ -575,7 +566,10 @@ func (c *delegateTreeController) acknowledgeRetryableStopDeliveriesLocked(stop *
 				// No owner can complete the receipt: it was never answered by
 				// its tool round. Abandon it and record the lost result.
 				_, _ = c.completeDeliveryAckLocked(token, false)
-				lost = append(lost, events.WarningData{
+				// Noted on the controller, not carried in the returned plan:
+				// every error return below would otherwise be able to drop it,
+				// and the abandoned receipt has no second pass to notice it.
+				c.noteDelegateWarningLocked(events.WarningData{
 					Message:    fmt.Sprintf("delegate %s delivery %s result lost: its owning tool commit is gone", receipt.delegateID, token.deliveryID),
 					Source:     "delegate",
 					Code:       events.WarningCodeDelegateDeliveryResultLost,
