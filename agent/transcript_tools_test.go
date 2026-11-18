@@ -1221,6 +1221,148 @@ func TestFind_ProjectName_CrossBucketParentNeedsLaneEvidence(t *testing.T) {
 	}
 }
 
+// TestFind_ProjectName_CacheKeyedByEligibility covers the cache key. The
+// resolver is shared across result rows, and one bucket can answer differently
+// depending on the row: a session-owned lane with no project segment accepts any
+// sibling, while a managed lane whose path names a project excludes siblings
+// that identify a different one. Caching under the bucket alone lets the first
+// row's answer be served to the second, so the same managed lane gets a
+// different label depending on which rows came before it — and the wrong one.
+func TestFind_ProjectName_CacheKeyedByEligibility(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	// Bucket A, from the runtime layout helper, holding one sibling from another
+	// repository: the only thing the bucket can say about a lane is B's project.
+	repoA := newNamedCheckout(t, "repo-a")
+	projectA := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repoA))
+	bucket, err := RuntimeDirForProjectWithStateHome(projectA, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+	repoB := newNamedCheckout(t, "repo-b")
+	other := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	other.EnvInfo.GitOriginURL = "git@github.com:owner/repo-b.git"
+	other.EnvInfo.WorkingDir = repoB
+	if err := schema.SaveSessionMeta(bucket, other); err != nil {
+		t.Fatal(err)
+	}
+
+	// The managed lane names repo A, so only evidence about A may answer for it,
+	// and there is none. Alone it must be labelled empty.
+	managedLane := schema.SessionMeta{}
+	managedLane.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", projectA.ID, "dlg_managed")
+
+	// A session-owned lane in the same bucket has no project segment, so it
+	// accepts the sibling and reports repo B.
+	sessionLane := schema.SessionMeta{}
+	sessionLane.EnvInfo.WorkingDir = filepath.Join(bucket, "sessions", identifier.MustNewSessionID(), "worktrees", "dlg_session")
+
+	if got, want := newProjectNameResolver().projectName(managedLane, bucket), ""; got != want {
+		t.Fatalf("projectName(managed lane for repo A, alone) = %q, want empty", got)
+	}
+
+	// Now the ordering that used to leak: the permissive row answers first and
+	// caches repo B under the bucket. The managed lane must not read that.
+	r := newProjectNameResolver()
+	if got, want := r.projectName(sessionLane, bucket), "repo-b"; got != want {
+		t.Fatalf("projectName(session-owned lane, no project segment) = %q, want the sibling's %q", got, want)
+	}
+	if got := r.projectName(managedLane, bucket); got != "" {
+		t.Fatalf("projectName(managed lane for repo A after a session-owned row) = %q, want empty (it must get the same answer it gets alone)", got)
+	}
+
+	// The reverse order must also hold: a managed lane's answer is not served to
+	// the permissive row.
+	r2 := newProjectNameResolver()
+	if got := r2.projectName(managedLane, bucket); got != "" {
+		t.Fatalf("projectName(managed lane first) = %q, want empty", got)
+	}
+	if got, want := r2.projectName(sessionLane, bucket), "repo-b"; got != want {
+		t.Fatalf("projectName(session-owned lane after a managed row) = %q, want %q", got, want)
+	}
+}
+
+// TestFind_ProjectName_OrdinaryDirectoryIsItsOwnProject covers an ordinary
+// non-Git directory used as a sibling. It has no .git, so a check that treats
+// "no Git root" as unknown lets its basename stand in for a managed lane's
+// project — exactly what a session launched from such a directory with
+// --state-dir aimed at another repository's bucket would supply. The directory
+// does have a canonical project of its own, and it is not the lane's.
+func TestFind_ProjectName_OrdinaryDirectoryIsItsOwnProject(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	repoA := newNamedCheckout(t, "repo-a")
+	projectA := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repoA))
+	bucket, err := RuntimeDirForProjectWithStateHome(projectA, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	// A plain directory, no .git, named so its basename is unmistakable.
+	plain := filepath.Join(t.TempDir(), "unrelated-scratch-dir")
+	if err := os.MkdirAll(plain, 0o755); err != nil {
+		t.Fatalf("mkdir plain: %v", err)
+	}
+	plainSibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	plainSibling.EnvInfo.WorkingDir = plain
+	if err := schema.SaveSessionMeta(bucket, plainSibling); err != nil {
+		t.Fatal(err)
+	}
+
+	lane := schema.SessionMeta{}
+	lane.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", projectA.ID, "dlg_plain_sibling")
+	if got := projectName(lane, bucket); got != "" {
+		t.Fatalf("projectName(managed lane whose only sibling is an unrelated plain directory) = %q, want empty (that directory is its own project)", got)
+	}
+}
+
+// TestFind_ProjectName_SiblingOriginSurvivesDeletedLaneInsideCheckout covers the
+// state home living inside checkout A while a sibling belongs to repo B. When
+// the sibling's own lane is deleted, an unbounded walk from its recorded path
+// finds A's .git and rejects the sibling as conflicting evidence, so the label
+// is omitted — even though its saved origin is the only surviving evidence, and
+// it agrees with the row being labelled. The lane boundary applies to sibling
+// metadata too.
+func TestFind_ProjectName_SiblingOriginSurvivesDeletedLaneInsideCheckout(t *testing.T) {
+	checkoutA := newNamedCheckout(t, "checkout-a")
+	stateHome := filepath.Join(checkoutA, "nested-state")
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	// A project bucket under the configured root, which is now inside checkout A.
+	repoB := newNamedCheckout(t, "repo-b")
+	projectB := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repoB))
+	bucket := filepath.Join(stateHome, "evener", "projects", projectB.ID)
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	// The sibling's lane is a state-managed one whose checkout is gone: only its
+	// metadata and its saved origin remain.
+	siblingLane := filepath.Join(bucket, "sessions", identifier.MustNewSessionID(), "worktrees", "dlg_gone")
+	sibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	sibling.EnvInfo.GitOriginURL = "git@github.com:owner/repo-b.git"
+	sibling.EnvInfo.WorkingDir = siblingLane
+	if err := schema.SaveSessionMeta(bucket, sibling); err != nil {
+		t.Fatal(err)
+	}
+
+	// The row is a managed lane for the same repository B, so the sibling's
+	// origin is evidence that names the row's own project.
+	row := schema.SessionMeta{}
+	row.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", projectB.ID, "dlg_own")
+	if got, want := projectName(row, bucket), "repo-b"; got != want {
+		t.Fatalf("projectName(managed lane with a deleted-lane sibling inside checkout A) = %q, want the sibling's saved origin %q", got, want)
+	}
+}
+
 func TestFind_CatalogTrimmedAndOrdered(t *testing.T) {
 	t.Parallel()
 	dir := newBucket(t)

@@ -801,14 +801,25 @@ func projectName(m schema.SessionMeta, bucketDir ...string) string {
 
 type projectNameResolver struct {
 	mainRootCache      map[string]string
-	bucketProjectCache map[string]string
+	bucketProjectCache map[bucketCacheKey]string
 	stateRootCache     []string
+}
+
+// bucketCacheKey identifies a cached bucket answer together with the sibling
+// eligibility that produced it. A label is only reusable by a row that would
+// have allowed the same siblings to answer: the same bucket yields a different
+// answer for a row with no project requirements than for a managed lane whose
+// path names a repository. Keying by the bucket alone lets a differently
+// qualified lane read an answer it never earned.
+type bucketCacheKey struct {
+	dir  string
+	mode string
 }
 
 func newProjectNameResolver() *projectNameResolver {
 	return &projectNameResolver{
 		mainRootCache:      make(map[string]string),
-		bucketProjectCache: make(map[string]string),
+		bucketProjectCache: make(map[bucketCacheKey]string),
 	}
 }
 
@@ -935,13 +946,13 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 		tiedToLane := stateDir == bound || managedProjectID != "" || parentSessionID == ownerSessionID
 		if tiedToLane {
 			if parent, ok := r.loadOwnedSessionMeta(bound, parentSessionID); ok {
-				if canonical := r.canonicalProjectPath(parent); canonical != "" &&
+				if checkout, ok := r.siblingCheckout(parent, bound); ok &&
 					(managedProjectID == "" ||
-						identifier.ProjectFromCanonicalPath(identifier.ResolveClean(canonical)).ID == managedProjectID) {
+						identifier.ProjectFromCanonicalPath(identifier.ResolveClean(checkout)).ID == managedProjectID) {
 					if origin := strings.TrimSpace(parent.EnvInfo.GitOriginURL); origin != "" {
 						return repoBasename(origin), true
 					}
-					return filepath.Base(canonical), true
+					return filepath.Base(checkout), true
 				}
 			}
 		}
@@ -988,13 +999,55 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 	// or whose checkout no longer resolves, carries no project evidence either
 	// way and still answers.
 	excludeConflicting := managedProjectID != "" && !foreignProject
-	// The cache is keyed by bucket and the bucket holds one repository, so it is
-	// only reusable for a project-agnostic answer. A foreign project's answer
-	// describes that project alone and must not stand for the next row.
-	if !foreignProject {
-		if name, ok := r.bucketProjectCache[bound]; ok {
-			return name, true
+	// A sibling's own checkout is read through the same lane boundary the row
+	// itself is, because a sibling's recorded path can be a state lane whose
+	// checkout has been deleted. An unbounded walk from it climbs to whichever
+	// repository encloses the state home and calls that the sibling's project,
+	// which would reject the one surviving record — its saved origin — as
+	// conflicting evidence. Confining the walk to the lane root leaves the
+	// project unproven there, so the origin answers.
+	//
+	// A sibling that identifies a different project is about another repository.
+	// An ordinary non-Git directory identifies one too: it is its own project, so
+	// its basename must not stand in as a label for a lane from somewhere else.
+	conflictsWithLane := func(sm schema.SessionMeta) bool {
+		if managedProjectID == "" {
+			return false
 		}
+		checkout, ok := r.siblingCheckout(sm, bound)
+		if !ok {
+			return false
+		}
+		return identifier.ProjectFromCanonicalPath(identifier.ResolveClean(checkout)).ID != managedProjectID
+	}
+	// admissible reports whether a sibling may answer for this row. A foreign
+	// project needs positive evidence naming it; a bucket-matching managed lane
+	// needs the absence of evidence naming a different project.
+	admissible := func(sm schema.SessionMeta) bool {
+		switch {
+		case foreignProject:
+			return r.matchesProjectID(sm, managedProjectID, bound)
+		case excludeConflicting:
+			return !conflictsWithLane(sm)
+		default:
+			return true
+		}
+	}
+	// The cache carries the eligibility that produced its answer, so a row with
+	// different requirements cannot read it. A foreign project's answer also
+	// describes that project alone, and an empty answer for a bucket-matching
+	// lane may only have been empty because a conflicting sibling was excluded —
+	// a later row may have one that matches.
+	mode := "open"
+	switch {
+	case foreignProject:
+		mode = "foreign:" + managedProjectID
+	case excludeConflicting:
+		mode = "lane:" + managedProjectID
+	}
+	key := bucketCacheKey{dir: bound, mode: mode}
+	if name, ok := r.bucketProjectCache[key]; ok {
+		return name, true
 	}
 	// The sibling scan is bucket-wide, so apply discovery's own guard: a
 	// sessions/ dir that is a symlink would otherwise be followed.
@@ -1003,31 +1056,10 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 	}
 
 	cache := func(name string) {
-		// An answer chosen for a foreign project describes that project alone, so
-		// it never stands for the bucket. An empty answer for a bucket-matching
-		// lane is also not cached: it was reached by excluding a conflicting
-		// sibling, and a later row may have a sibling that does match.
-		if foreignProject {
+		if name == "" && (foreignProject || excludeConflicting) {
 			return
 		}
-		if name == "" && excludeConflicting {
-			return
-		}
-		r.bucketProjectCache[bound] = name
-	}
-	// admissible reports whether a sibling may answer for this row. A foreign
-	// project needs positive evidence naming it; a bucket-matching managed lane
-	// needs the absence of evidence naming a different project.
-	admissible := func(sm schema.SessionMeta) bool {
-		switch {
-		case foreignProject:
-			return r.matchesProjectID(sm, managedProjectID)
-		case excludeConflicting:
-			id := r.resolvedProjectID(sm)
-			return id == "" || id == managedProjectID
-		default:
-			return true
-		}
+		r.bucketProjectCache[key] = name
 	}
 
 	// Scan bucket sessions in two passes:
@@ -1044,9 +1076,18 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 				return p, true
 			}
 			if restore := strings.TrimSpace(sm.WorktreeRestoreRoot); restore != "" {
+				checkpoint, ok := r.siblingCheckout(sm, bound)
+				if !ok {
+					// A state lane whose checkout is gone names no project. Its
+					// recorded path ends in a lane name, which is not a project
+					// label, so keep looking rather than emit it.
+					if _, _, _, _, isLane := r.stateWorktreeOwner(filepath.Clean(restore), bound); isLane {
+						continue
+					}
+				}
 				p := filepath.Base(restore)
-				if root := r.resolveMainRoot(restore); root != "" {
-					p = filepath.Base(root)
+				if ok {
+					p = filepath.Base(checkpoint)
 				}
 				cache(p)
 				return p, true
@@ -1062,8 +1103,8 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 				home = strings.TrimSpace(sm.EnvInfo.WorkingDir)
 			}
 			if home != "" && !strings.Contains(home, "worktrees") {
-				if root := r.resolveMainRoot(home); root != "" {
-					p := filepath.Base(root)
+				if checkpoint, ok := r.siblingCheckout(sm, bound); ok {
+					p := filepath.Base(checkpoint)
 					cache(p)
 					return p, true
 				}
@@ -1082,42 +1123,57 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 // the project a managed worktree's path names. It is the evidence a bucket-wide
 // sibling scan needs when the worktree belongs to a different repository than
 // the bucket: without it, this bucket's sessions describe the wrong repository
-// and their label would be a cross-repository guess.
-func (r *projectNameResolver) matchesProjectID(m schema.SessionMeta, projectID string) bool {
-	canonical := r.canonicalProjectPath(m)
-	if canonical == "" {
+// and their label would be a cross-repository guess. bucketDir is where the
+// sibling's metadata was read from, so a recorded lane is resolved against the
+// same boundary as any other row in that bucket.
+func (r *projectNameResolver) matchesProjectID(m schema.SessionMeta, projectID, bucketDir string) bool {
+	checkout, ok := r.siblingCheckout(m, bucketDir)
+	if !ok {
 		return false
 	}
-	return identifier.ProjectFromCanonicalPath(identifier.ResolveClean(canonical)).ID == projectID
+	return identifier.ProjectFromCanonicalPath(identifier.ResolveClean(checkout)).ID == projectID
 }
 
-// resolvedProjectID reports the project a sibling session's own recorded
-// checkout identifies, or "" when it identifies none — a session that records
-// only an origin, or whose checkout has since been deleted. It is the negative
-// half of matchesProjectID: the caller excludes a sibling that POSITIVELY names
-// a different project, and an empty answer (no evidence either way) stays
-// admissible.
+// siblingCheckout resolves a session's own recorded checkout the way the row
+// being labelled is resolved: through the lane boundary when the recorded path
+// is a state-managed lane. A lane whose checkout is gone must not be walked
+// past, because the walk would answer with whichever repository encloses the
+// state directory — and that answer would then stand as evidence about the
+// sibling's project. With the walk confined, a deleted lane has no project
+// evidence rather than false evidence, so its saved origin stays authoritative.
 //
-// Only a checkout that resolves counts. A recorded path with nothing left at it
-// still hashes to some project ID, but that ID describes where the directory
-// used to be, not which repository the session belonged to: deriving evidence
-// from a path that no longer resolves is the same mistake as reading a label
-// from one.
-func (r *projectNameResolver) resolvedProjectID(m schema.SessionMeta) string {
-	if restore := strings.TrimSpace(m.WorktreeRestoreRoot); restore != "" {
-		if root := r.resolveMainRoot(restore); root != "" {
-			return identifier.ProjectFromCanonicalPath(identifier.ResolveClean(root)).ID
+// ok distinguishes "this checkout identifies a project" from "it identifies
+// none". An ordinary directory identifies its own project even without a .git:
+// it is where the session ran, so its canonical path is the project. A state
+// lane identifies none once its checkout is gone, which is exactly the case
+// where no evidence exists either way.
+//
+// The recorded restore root wins over the home directory, matching
+// canonicalProjectPath.
+func (r *projectNameResolver) siblingCheckout(m schema.SessionMeta, bucketDir string) (string, bool) {
+	recorded := strings.TrimSpace(m.WorktreeRestoreRoot)
+	if recorded == "" {
+		recorded = strings.TrimSpace(m.HomeDir())
+	}
+	if recorded == "" {
+		return "", false
+	}
+	clean := filepath.Clean(recorded)
+	if _, laneRoot, _, _, isLane := r.stateWorktreeOwner(clean, bucketDir); isLane {
+		if root := resolveMainRootWithin(clean, laneRoot); root != "" {
+			return root, true
 		}
-		return ""
+		return "", false
 	}
-	home := strings.TrimSpace(m.HomeDir())
-	if home == "" {
-		return ""
+	if root := r.resolveMainRoot(clean); root != "" {
+		return root, true
 	}
-	if root := r.resolveMainRoot(home); root != "" {
-		return identifier.ProjectFromCanonicalPath(identifier.ResolveClean(root)).ID
+	if exists, err := os.Stat(clean); err == nil && exists.IsDir() {
+		// No .git anywhere above it, but the directory is really there: it is its
+		// own project, and that project is what its canonical path names.
+		return identifier.ResolveClean(clean), true
 	}
-	return ""
+	return "", false
 }
 
 // stateWorktreeOwner classifies wd against the layouts an Evener state dir
@@ -1376,27 +1432,6 @@ func mainRootFromPointerFile(dir, gitPath string) string {
 		return identifier.ResolveClean(dir)
 	}
 	return ""
-}
-
-// canonicalProjectPath returns the canonical main-checkout path a session's
-// metadata records: the restore root it entered from, else its own home
-// directory, resolved to the main checkout so a subdirectory and a linked
-// worktree both name the project the session belongs to.
-func (r *projectNameResolver) canonicalProjectPath(m schema.SessionMeta) string {
-	if restore := strings.TrimSpace(m.WorktreeRestoreRoot); restore != "" {
-		if root := r.resolveMainRoot(restore); root != "" {
-			return root
-		}
-		return filepath.Clean(restore)
-	}
-	home := strings.TrimSpace(m.HomeDir())
-	if home == "" {
-		return ""
-	}
-	if root := r.resolveMainRoot(home); root != "" {
-		return root
-	}
-	return filepath.Clean(home)
 }
 
 // repoBasename returns the final path segment of a git origin URL, stripping a
