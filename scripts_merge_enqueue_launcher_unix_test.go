@@ -1587,8 +1587,7 @@ func waiterFor(cmd *exec.Cmd) *launcherWaiter {
 	go func() {
 		w.err = cmd.Wait()
 		if w.err != nil {
-			var exitErr *exec.ExitError
-			if errors.As(w.err, &exitErr) {
+			if exitErr, ok := errors.AsType[*exec.ExitError](w.err); ok {
 				w.code = exitErr.ExitCode()
 			}
 		}
@@ -1614,8 +1613,7 @@ func waitExit(t *testing.T, cmd *exec.Cmd, within time.Duration) (int, bool) {
 		if w.err == nil {
 			return 0, true
 		}
-		var exitErr *exec.ExitError
-		if !errors.As(w.err, &exitErr) {
+		if _, ok := errors.AsType[*exec.ExitError](w.err); !ok {
 			t.Fatalf("wait for the launcher: %v", w.err)
 		}
 		return w.code, true
