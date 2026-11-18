@@ -2779,7 +2779,7 @@ func (s *Session) initMCP() error {
 	// registration sanitizes the whole "server__tool" join, so comparing server
 	// names alone cannot see that a project "team" exposing "docs__lookup" and a
 	// CLI "team__docs" exposing "lookup" both register "team__docs__lookup".
-	s.setShadowedLayerNamespaces(otherLayerMCPNamespaces(configs, cliOnly))
+	s.setShadowedLayerNamespaces(otherLayerMCPNamespaces(configs, cliOnly, s.pluginMCPConfigs))
 	s.recordCLIMCPTools(mgr)
 	return nil
 }
@@ -2798,7 +2798,14 @@ func (s *Session) initMCP() error {
 // and a project server "team" exposing "docs__lookup" then lost
 // "team__docs__lookup" to a CLI "team__docs" that merely registered the same
 // name.
-func otherLayerMCPNamespaces(configs []mcpconfig.ServerConfig, cliOnly []mcpconfig.CLIOnlyServer) []string {
+//
+// pluginConfigs are added unconditionally, and they are the reason this
+// function cannot rely on CLIOnlyServer.Fallback alone. Discovery runs BEFORE
+// the plugin layers are merged, so a CLI entry that overrides a PLUGIN server
+// has no fallback recorded — yet the child clears the CLI layers and reloads
+// that plugin itself. The plugin namespace is therefore reachable whether or
+// not any CLI entry shadows it in this session.
+func otherLayerMCPNamespaces(configs []mcpconfig.ServerConfig, cliOnly []mcpconfig.CLIOnlyServer, pluginConfigs []mcpconfig.ServerConfig) []string {
 	if len(configs) == 0 {
 		return nil
 	}
@@ -2810,11 +2817,27 @@ func otherLayerMCPNamespaces(configs []mcpconfig.ServerConfig, cliOnly []mcpconf
 		cliNames[toolname.SanitizeMCPToolName(entry.Config.Name)] = true
 	}
 	namespaces := make([]string, 0, len(configs))
+	seen := make(map[string]bool, len(configs))
 	for _, cfg := range configs {
 		namespace := toolname.SanitizeMCPToolName(cfg.Name)
 		if cliNames[namespace] {
 			continue
 		}
+		if seen[namespace] {
+			continue
+		}
+		seen[namespace] = true
+		namespaces = append(namespaces, namespace)
+	}
+	// A plugin server the child reloads from disk is reachable even when this
+	// session's CLI layers replace it, so its namespace joins the set whatever
+	// the merge order made of the effective configs above.
+	for _, cfg := range pluginConfigs {
+		namespace := toolname.SanitizeMCPToolName(cfg.Name)
+		if namespace == "" || seen[namespace] {
+			continue
+		}
+		seen[namespace] = true
 		namespaces = append(namespaces, namespace)
 	}
 	return namespaces

@@ -62,9 +62,11 @@ func GitRootOrEmptyContext(ctx context.Context, env ExecutionEnvironment, cwd st
 	return root
 }
 
-// GitRootOrEmptyFresh is GitRootOrEmptyContext WITHOUT the per-environment
-// memo, for a caller asking whether a workspace has become a repository since
-// the session started.
+// GitRootOrEmptyFreshDefinitive is GitRootOrEmptyContext WITHOUT the
+// per-environment memo, for a caller asking whether a workspace has become a
+// repository since the session started. It keeps the resolver's definitive
+// flag, for a caller whose answer depends on the DIFFERENCE between
+// "this is not a repository" and "I could not find out".
 //
 // The memo exists to spare repeated forks at startup, and it is right for that:
 // a directory's answer does not change under a running session often. It is
@@ -72,14 +74,6 @@ func GitRootOrEmptyContext(ctx context.Context, env ExecutionEnvironment, cwd st
 // session launched before `git init` would otherwise read the cached "no
 // repository" for the rest of its life and never notice the repository, and the
 // project MCP layer, that appeared around it.
-func GitRootOrEmptyFresh(env ExecutionEnvironment, cwd string) string {
-	root, _ := GitRootOrEmptyFreshDefinitive(env, cwd)
-	return root
-}
-
-// GitRootOrEmptyFreshDefinitive is GitRootOrEmptyFresh keeping the resolver's
-// definitive flag, for a caller whose answer depends on the DIFFERENCE between
-// "this is not a repository" and "I could not find out".
 //
 // The flag is not decoration. A freshness check that reads a bare empty root as
 // "confirmed no repository" caches an absence nothing established: the

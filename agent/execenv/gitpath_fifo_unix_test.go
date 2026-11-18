@@ -62,12 +62,13 @@ func TestGitRootOrEmptyDoesNotBlockOnAFifoGitEntry(t *testing.T) {
 
 	done := make(chan string, 1)
 	go func() {
-		done <- GitRootOrEmptyFresh(env, dir)
+		root, _ := GitRootOrEmptyFreshDefinitive(env, dir)
+		done <- root
 	}()
 
 	select {
 	case <-done:
 	case <-time.After(60 * time.Second): // TRIPWIRE: the whole resolution, git fallback included
-		t.Fatal("GitRootOrEmptyFresh blocked on a FIFO .git entry")
+		t.Fatal("GitRootOrEmptyFreshDefinitive blocked on a FIFO .git entry")
 	}
 }
