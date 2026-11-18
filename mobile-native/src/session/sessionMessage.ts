@@ -15,6 +15,8 @@ import {
 import { reconcilePendingEntries } from "@evener/appwire-client/state/mutation";
 import { type ConversationClientLike, READ_ITEM_LIMIT } from "../conversation/services/conversation";
 import { type NativeMutationRuntime, nativeMutationTargetKey } from "../nativeMutationRuntime";
+import { outboxFlush } from "../outbox/nativeOutboxFlush";
+import type { OutboxFlush } from "../outbox/outboxFlush";
 import { type SendAction, sendAction } from "./sendAction";
 
 export interface SessionState {
@@ -191,6 +193,13 @@ export async function submitSessionMessage(
 	kind: SessionMessageKind,
 	text: string,
 	resumeFirst = false,
+	// The settle below can end without finishing - storage answered "retry", or
+	// a newer read superseded it - and the screen that sent this holds the
+	// target, so the flush's storage watcher leaves it alone. Handing those two
+	// to the flush is what keeps a saved review from waiting on a healthy
+	// connection for the reader's next visit. The next look re-asks the durable
+	// row, so a message withdrawn in the meantime still declines.
+	retryOwner: Pick<OutboxFlush, "retryTargetAfterScreenSettle"> = outboxFlush,
 ): Promise<void> {
 	await runtime.submit({
 		kind,
@@ -215,12 +224,14 @@ export async function submitSessionMessage(
 		// the connection's one slot or for its replacement handshake. Asking the
 		// message rather than answering "true" keeps the phone from restarting a
 		// session for work the reader discarded in the meantime.
-		await runtime
+		const answered = await runtime
 			.settleTarget(target.hubId, target.ref, client, {
 				mayResumeFenced: () => runtime.messageWaiting(target.hubId, target.ref),
 			})
 			.catch(() => undefined);
+		if (answered === "retry" || answered === "stale") retryOwner.retryTargetAfterScreenSettle();
 		return;
 	}
-	await runtime.settleTarget(target.hubId, target.ref, client).catch(() => "blocked" as const);
+	const answered = await runtime.settleTarget(target.hubId, target.ref, client).catch(() => "blocked" as const);
+	if (answered === "retry" || answered === "stale") retryOwner.retryTargetAfterScreenSettle();
 }

@@ -146,6 +146,7 @@ function fakeControls(calls: string[], over: Partial<ControlsState> = {}) {
 		catalog: CATALOG,
 		loadingModels: false,
 		modelError: null,
+		unreadModel: null,
 		...over,
 	};
 	return {
@@ -619,6 +620,44 @@ describe("the vision model (ruling 17)", () => {
 		const { calls } = provide(conversation({ visionModel: "off" }));
 		const tree = sheet("vision");
 		act(() => pressable(tree, "Off")?.props.onPress());
+		await settle();
+		expect(calls).toEqual(["goBack"]);
+	});
+	// The projection a row draws its selected mark from is one change behind
+	// when the set that changed it was acknowledged and its readback never
+	// landed. The reader sees Off still ticked and taps it to turn vision off -
+	// the value they meant - and a shortcut that trusts the tick closes the
+	// sheet without writing anything, leaving vision on.
+	it("writes the choice a stale projection already shows as selected", async () => {
+		const { calls } = provide(conversation({ visionModel: "off" }), {
+			unreadModel: { setting: "vision", value: "lunaroute/glm-5.3-vision" },
+		});
+		const tree = sheet("vision");
+		act(() => pressable(tree, "Off")?.props.onPress());
+		await settle();
+		expect(calls).toEqual(["setVisionModel:off", "goBack", expect.stringContaining("toast:")]);
+	});
+	// The record says which value the hub holds. A projection that already
+	// shows that value agrees with it, so the tick is trustworthy again and the
+	// shortcut holds - this is the state a later read leaves behind, and it
+	// must not turn every tap on a selected row into a redundant write.
+	it("keeps the shortcut when the projection shows the value the hub holds", async () => {
+		const { calls } = provide(conversation({ visionModel: "off" }), {
+			unreadModel: { setting: "vision", value: "off" },
+		});
+		const tree = sheet("vision");
+		act(() => pressable(tree, "Off")?.props.onPress());
+		await settle();
+		expect(calls).toEqual(["goBack"]);
+	});
+	// Vision and the session model are separate projections: a record about one
+	// says nothing about the other's tick.
+	it("keeps the shortcut for the other setting's row", async () => {
+		const { calls } = provide(conversation({ modelProvider: "anthropic/claude-sonnet-5" }), {
+			unreadModel: { setting: "vision", value: "off" },
+		});
+		const tree = sheet();
+		act(() => pressable(tree, "Claude Sonnet 5")?.props.onPress());
 		await settle();
 		expect(calls).toEqual(["goBack"]);
 	});

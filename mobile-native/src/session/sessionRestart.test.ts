@@ -484,3 +484,55 @@ describe("one step of a restart", () => {
 		reopened.unmount();
 	});
 });
+
+// A reopen during another hook's dispatch joins that attempt, and the join has
+// to end when the attempt does. The hook that waited has no pending state of
+// its own to clear and no record change it caused, so the obligation settling
+// is the only signal it gets - and a hook still reading "resuming" there keeps
+// its Restart disabled after a refusal the reader is being told about, which
+// leaves a stopped daemon and no way to ask again.
+describe("a hook that joined another's attempt", () => {
+	it("leaves its busy state when the attempt it joined settles", async () => {
+		let sent = 0;
+		let answer!: () => void;
+		const answered = new Promise<void>((resolve) => {
+			answer = resolve;
+		});
+		const made = new SessionControls(
+			{
+				forceStop: async () => {},
+				resume: async () => {
+					sent += 1;
+					await answered;
+				},
+			} as unknown as ConstructorParameters<typeof SessionControls>[0],
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		const first = renderHook(() => useSessionRestart("hub-e", "ref-e", made, "open"));
+		await act(async () => {
+			void first.result.current.restart();
+		});
+		await settle();
+		expect(sent).toBe(1);
+		// The reader reopens while the resume is still out. This hook joins the
+		// attempt instead of sending a second resume, and reports itself busy
+		// because the restore is unfinished.
+		first.unmount();
+		const reopened = renderHook(() => useSessionRestart("hub-e", "ref-e", made, "open"));
+		await settle();
+		expect(sent).toBe(1);
+		expect(reopened.result.current.busy).toBe(true);
+		// The hub refuses. The attempt is settled and nothing is owed, so the
+		// hook that was waiting for it has nothing left to wait for.
+		await act(async () => {
+			answer();
+		});
+		await settle();
+		expect(reopened.result.current.busy).toBe(false);
+		reopened.unmount();
+	});
+});

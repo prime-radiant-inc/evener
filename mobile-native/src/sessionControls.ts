@@ -27,6 +27,13 @@ export interface ControlsState {
 	catalog: ModelListResponse | null;
 	loadingModels: boolean;
 	modelError: string | null;
+	/** The model value a set this binding sent was acknowledged for, when the
+	 * read that would have put it on screen could not run or failed. The
+	 * session's projection still shows the value from before that set, and a
+	 * picker may not read a match against it as "already set": that matches the
+	 * stale value, not the one the hub took. Cleared by a read that lands, so
+	 * the comparison is trusted again as soon as the projection catches up. */
+	unreadModel: { setting: "model" | "vision"; value: string } | null;
 }
 
 /** Own actions for one conversation binding, independently of its sheet. */
@@ -39,6 +46,7 @@ export class SessionControls {
 		catalog: null,
 		loadingModels: false,
 		modelError: null,
+		unreadModel: null,
 	};
 	private listeners = new Set<() => void>();
 	private disposed = false;
@@ -138,7 +146,7 @@ export class SessionControls {
 		return this.run("setReasoningEffort", () => this.service.setReasoningEffort(effort));
 	}
 	setVisionModel(visionModel: string) {
-		return this.run("setVisionModel", () => this.service.setVisionModel(visionModel));
+		return this.run("setVisionModel", () => this.service.setVisionModel(visionModel), visionModel);
 	}
 	/** Reads the model catalog. The catalog it has stays until the new one
 	 * lands, so a model's name never falls back to its id mid-read; a failed
@@ -200,7 +208,7 @@ export class SessionControls {
 	changeModel(provider: string, model: string): Promise<boolean> {
 		if (!this.state.catalog?.data.some((entry) => entry.provider === provider && entry.model === model))
 			return Promise.resolve(false);
-		return this.run("changeModel", () => this.service.changeModel(provider, model));
+		return this.run("changeModel", () => this.service.changeModel(provider, model), `${provider}/${model}`);
 	}
 	changeVisionModel(provider: string, model: string): Promise<boolean> {
 		if (
@@ -209,9 +217,13 @@ export class SessionControls {
 			)
 		)
 			return Promise.resolve(false);
-		return this.run("setVisionModel", () => this.service.setVisionModel(`${provider}/${model}`));
+		return this.run(
+			"setVisionModel",
+			() => this.service.setVisionModel(`${provider}/${model}`),
+			`${provider}/${model}`,
+		);
 	}
-	private async run(kind: Operation, operation: () => Promise<void>): Promise<boolean> {
+	private async run(kind: Operation, operation: () => Promise<void>, value = ""): Promise<boolean> {
 		// A resume is the second half of a restart the reader already asked for,
 		// so it is admitted on its binding even when another screen covers the
 		// pane: refusing it there leaves the daemon stopped with nothing left to
@@ -237,6 +249,8 @@ export class SessionControls {
 			lastAction: kind,
 			error: null,
 			notice: null,
+			// The projection is still behind on whatever the last acknowledged set
+			// changed; only a read that lands, or the settle below, says otherwise.
 		});
 		try {
 			await operation();
@@ -262,12 +276,14 @@ export class SessionControls {
 				// reader returns, and a pick that never reattaches its relay applies
 				// with nothing on screen to say so. Visibility decides only whether
 				// the change is announced, which is the reader's question.
+				let readback = false;
 				if (this.isCurrent("destination")) {
 					// Readiness is a separate question from the reader's presence: a
 					// transport that is away reads nothing, and the session's own
 					// reconnect read catches the screen up afterwards.
 					try {
 						await this.refresh();
+						readback = true;
 					} catch {
 						// The screen's own read catches up; the pick applied regardless.
 					}
@@ -283,6 +299,12 @@ export class SessionControls {
 					this.publish({
 						pending: null,
 						error: null,
+						// The acknowledgement says the hub took the value; the read is
+						// what puts it on screen. Without one the projection still shows
+						// what the hub held before, so the value it answers with is
+						// recorded here and a picker stops reading a match against it as
+						// "already set".
+						unreadModel: readback ? null : { setting: kind === "changeModel" ? "model" : "vision", value },
 						notice: stayed ? (kind === "changeModel" ? "Model updated." : "Vision model updated.") : null,
 					});
 				}

@@ -58,6 +58,11 @@ function owe(key: string): void {
 
 /** Takes the owed resume for sending. One holder at a time: a second hook
  * joining the same dispatch gets nothing and waits for the first's outcome. */
+/** Whether this hook, rather than another, holds the session's claim. */
+function holdsClaim(key: string, claimToken: symbol | null): boolean {
+	return claimToken !== null && recordFor(key)?.claimed === claimToken;
+}
+
 function claim(key: string): symbol | null {
 	const record = recordFor(key);
 	if (!record?.owed || record.claimed !== null) return null;
@@ -137,11 +142,39 @@ export function useSessionRestart(
 	// and one that opens during a dispatch must join that attempt rather than
 	// start a second resume on the same socket.
 	const [phase, setPhase] = useState<Phase>(() => (isOwed(key) ? "resumeOwed" : "idle"));
+	// The claim this hook is currently sending under, so the record's changes
+	// can be told apart from its own attempt's.
+	const [claimed, setClaimed] = useState<symbol | null>(null);
+	// Bumped on every change to the session's obligation, so the dispatch below
+	// runs again when another hook's attempt ends. Its own state doesn't change
+	// then, and the released resume would otherwise wait for the reader to
+	// leave and come back.
+	const [recordRevision, setRecordRevision] = useState(0);
 	useEffect(() => {
-		const sync = () => setPhase((current) => (current === "idle" && isOwed(key) ? "resumeOwed" : current));
+		// Both directions matter for a hook that is waiting while another one
+		// holds the claim. Gaining an obligation moves an idle hook to
+		// "resumeOwed"; the record changing without this hook holding a claim
+		// means the attempt ended or its holder let go, so a hook stuck in
+		// "resuming" on someone else's behalf must come back and look - the
+		// obligation may have been settled, or released for it to send.
+		const sync = () => {
+			setPhase((current) => {
+				if (current === "idle") return isOwed(key) ? "resumeOwed" : current;
+				if (current === "resuming" || current === "resumeOwed") {
+					// A hook that still holds the claim keeps its own phase; the
+					// effect below drives its outcome.
+					if (key !== null && holdsClaim(key, claimed)) return current;
+					return isOwed(key) ? "resumeOwed" : "idle";
+				}
+				return current;
+			});
+		};
 		sync();
-		return subscribeOwed(sync);
-	}, [key]);
+		return subscribeOwed(() => {
+			sync();
+			setRecordRevision((revision) => revision + 1);
+		});
+	}, [key, claimed]);
 	const [error, setError] = useState<string | null>(null);
 	const pending = useControlsState(controls)?.pending ?? null;
 	// What a refused resume was refused under, so it isn't retried until
@@ -174,10 +207,14 @@ export function useSessionRestart(
 		} else {
 			const claimToken = claim(key);
 			if (claimToken === null) return;
+			// Published so the record's own changes can be told apart from this
+			// attempt's: another hook settling is what wakes a waiting hook.
+			setClaimed(claimToken);
 			setPhase("resuming");
 			void attemptControl(controls, "resume").then((outcome) => {
 				if (outcome === "refused") {
 					// Never sent: the step is still owed, for this hook or the next.
+					setClaimed(null);
 					settle(key, claimToken, true);
 					refused.current = { controls, settled };
 					setPhase("resumeOwed");
@@ -186,6 +223,7 @@ export function useSessionRestart(
 				// Done, or the hub refused it: either way the step is settled and
 				// no binding is still owed a resume. A failed attempt went out, so
 				// it settles too - replaying it could resume the session twice.
+				setClaimed(null);
 				settle(key, claimToken, false);
 				setPhase("idle");
 				if (outcome === "failed") setError(RESUME_FAILED);
@@ -196,6 +234,6 @@ export function useSessionRestart(
 			setPhase("idle");
 			if (outcome === "failed") setError(RESUME_FAILED);
 		});
-	}, [phase, controls, pending, settled, key]);
+	}, [phase, controls, pending, settled, key, recordRevision]);
 	return { busy: phase !== "idle", error, restart };
 }

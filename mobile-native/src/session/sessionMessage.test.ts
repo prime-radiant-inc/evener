@@ -233,6 +233,55 @@ describe("submitting a message to a session", () => {
 		await expect(submitSessionMessage(runtime, new FakeClient("ready"), target, "send", "hi")).resolves.toBeUndefined();
 	});
 
+	// A settle that could not finish is not a settle that found nothing to
+	// send. Storage answering "retry", or a newer read superseding this one,
+	// leaves the admitted review parked - and because this screen holds the
+	// target, the flush's storage watcher deliberately leaves it alone. Without
+	// handing those two to the flush, the review sits queued on a healthy
+	// connection until something else happens to wake it.
+	it.each(["retry", "stale"] as const)("hands a %s settle to the flush's retry", async (outcome) => {
+		const retryTargetAfterScreenSettle = vi.fn();
+		const runtime = {
+			submit: async () => ({ clientMutationId: "mutation-1" }),
+			messageWaiting: async () => true,
+			settleTarget: async () => outcome,
+		};
+		await submitSessionMessage(runtime, new FakeClient("ready"), target, "send", "hi", false, {
+			retryTargetAfterScreenSettle,
+		});
+		expect(retryTargetAfterScreenSettle).toHaveBeenCalledTimes(1);
+	});
+
+	// The resume path parks the row the same way and answers with the same two
+	// outcomes, so it owes the flush the same look.
+	it("hands a superseded resume settle to the flush's retry", async () => {
+		const retryTargetAfterScreenSettle = vi.fn();
+		const runtime = {
+			submit: async () => ({ clientMutationId: "mutation-1" }),
+			messageWaiting: async () => true,
+			settleTarget: async () => "stale" as const,
+		};
+		await submitSessionMessage(runtime, new FakeClient("ready"), target, "send", "hi", true, {
+			retryTargetAfterScreenSettle,
+		});
+		expect(retryTargetAfterScreenSettle).toHaveBeenCalledTimes(1);
+	});
+
+	// A settle that finished is not owed a second look, and asking for one on
+	// every message would re-read the target after each send.
+	it("leaves the flush alone when the settle finished", async () => {
+		const retryTargetAfterScreenSettle = vi.fn();
+		const runtime = {
+			submit: async () => ({ clientMutationId: "mutation-1" }),
+			messageWaiting: async () => true,
+			settleTarget: async () => "reconciled" as const,
+		};
+		await submitSessionMessage(runtime, new FakeClient("ready"), target, "send", "hi", false, {
+			retryTargetAfterScreenSettle,
+		});
+		expect(retryTargetAfterScreenSettle).not.toHaveBeenCalled();
+	});
+
 	it("releases nothing when the admission itself fails", async () => {
 		const settle = vi.fn();
 		const runtime = {

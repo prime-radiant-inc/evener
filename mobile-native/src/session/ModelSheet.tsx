@@ -101,6 +101,15 @@ function ModelSheetBody({
 	const levels = vision ? [] : sessionEffortLevels(session.reasoningEffortLevels, session.supportsReasoning);
 	const current = vision ? session.visionModel : session.modelProvider;
 	const canChange = vision ? session.capabilities.changeVisionModel : session.capabilities.changeModel;
+	// The rows below decide "already set" by comparing against the session's
+	// projection, and that is only the answer once a read has landed after the
+	// last set. A set the hub acknowledged whose readback could not run leaves
+	// the projection showing the value from before it, so a match there means
+	// "not written yet". The record of the value the hub did take is what says
+	// which of the two a match is.
+	const unread = state?.unreadModel ?? null;
+	const verified = (setting: "model" | "vision", value: string) =>
+		unread === null || unread.setting !== setting || unread.value === value;
 	const error =
 		undelivered ?? state?.modelError ?? (state?.lastAction && MODEL_ACTIONS.has(state.lastAction) ? state.error : null);
 	const revealError = () => {
@@ -135,7 +144,7 @@ function ModelSheetBody({
 	// is the one channel every vision choice shares.
 	const changedVision = () => host.toast({ text: "Vision model changed. Applies from the next turn." });
 	const choose = (model: ModelDescriptor) => {
-		if (`${model.provider}/${model.model}` === current) {
+		if (verified(vision ? "vision" : "model", current) && `${model.provider}/${model.model}` === current) {
 			finish();
 			return;
 		}
@@ -201,7 +210,7 @@ function ModelSheetBody({
 									// unchanged value, and announcing that as a change tells the
 									// reader something happened when nothing did.
 									onPress={() =>
-										session.visionModel === ""
+										verified("vision", session.visionModel) && session.visionModel === ""
 											? finish()
 											: controls && closeOn(controls, controls.setVisionModel(""), changedVision)
 									}
@@ -211,7 +220,7 @@ function ModelSheetBody({
 									selected={session.visionModel === "off"}
 									disabled={busy || !canChange}
 									onPress={() =>
-										session.visionModel === "off"
+										verified("vision", session.visionModel) && session.visionModel === "off"
 											? finish()
 											: controls && closeOn(controls, controls.setVisionModel("off"), changedVision)
 									}

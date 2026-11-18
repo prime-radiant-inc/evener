@@ -1069,6 +1069,47 @@ describe("conversation-owned session controls", () => {
 		expect(applied).toEqual([value]);
 		expect(controls.getSnapshot()).toMatchObject({ pending: null, error: null });
 	});
+	// A set the hub took whose readback never landed leaves the session's
+	// projection showing the value from before it. That projection is what a
+	// picker compares a choice against, so without a record of the value the
+	// hub did take, the next tap on the value it still shows reads as "already
+	// set" - and the sheet closes without writing the choice the reader made.
+	it("records the value an acknowledged set reached the hub with when its read did not", async () => {
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => ({ data: [{ provider: "two", model: "next" }] }),
+				model: async () => {},
+			}),
+			async () => {
+				throw new Error("The read lost its connection.");
+			},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		await controls.loadModels();
+		expect(await controls.changeModel("two", "next")).toBe(true);
+		expect(controls.getSnapshot().unreadModel).toEqual({ setting: "model", value: "two/next" });
+	});
+	// A read that landed puts the projection where the set left it, so there is
+	// nothing left for a picker to be misled by.
+	it("records nothing when the readback landed", async () => {
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => ({ data: [{ provider: "two", model: "next" }] }),
+				model: async () => {},
+			}),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		await controls.loadModels();
+		expect(await controls.changeModel("two", "next")).toBe(true);
+		expect(controls.getSnapshot().unreadModel).toBeNull();
+	});
 	// The hub's acknowledgement, not the read that follows it, is the record
 	// that the pick applied. A phone that reconnects while that read is still
 	// out has not left the session it is looking at, so the pick still reports
