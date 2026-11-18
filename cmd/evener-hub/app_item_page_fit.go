@@ -1355,38 +1355,42 @@ func packItemCandidates[T any](
 	// sub-limit call lists can add up past the soft limit, and costing the
 	// reader an item for metadata it does not need is worse than serving the
 	// page without the lists.
-	buildPage := func(items []appitempaging.TranscriptItemCandidate, stampLimit int) (T, int, error) {
+	buildPage := func(items []appitempaging.TranscriptItemCandidate, stampLimit int) (T, int, bool, error) {
 		page := append([]appitempaging.TranscriptItemCandidate(nil), items...)
 		for i := range page {
 			page[i].Item = boundTranscriptItemStamp(page[i].Item, stampLimit)
 		}
+		// Whether THIS built page kept any call list. The caller's candidates
+		// are not the answer: the per-item bound may already have removed a
+		// long list, in which case a stripped rebuild changes nothing.
+		retainedLists := pageCarriesCallLists(page)
 		older := hasOlder || selectedStart > 0
 		olderCursor, cursorErr := packedOlderCursor(result, page[0].Position, older)
 		if cursorErr != nil {
-			return zero, 0, cursorErr
+			return zero, 0, false, cursorErr
 		}
 		page = appitempaging.NormalizeProjectedItemCompleteness(page)
 		turns, regroupErr := appitempaging.RegroupTurnFragments(page)
 		if regroupErr != nil {
-			return zero, 0, fmt.Errorf("regroup transcript item fragments: %w", regroupErr)
+			return zero, 0, false, fmt.Errorf("regroup transcript item fragments: %w", regroupErr)
 		}
 		response := build(turns, olderCursor)
 		if enrich != nil {
 			var enrichErr error
 			response, enrichErr = enrich(response)
 			if enrichErr != nil {
-				return zero, 0, enrichErr
+				return zero, 0, false, enrichErr
 			}
 		}
 		encoded, marshalErr := json.Marshal(contentTurns(response))
 		if marshalErr != nil {
-			return zero, 0, fmt.Errorf("marshal transcript item turns: %w", marshalErr)
+			return zero, 0, false, fmt.Errorf("marshal transcript item turns: %w", marshalErr)
 		}
-		return response, len(encoded), nil
+		return response, len(encoded), retainedLists, nil
 	}
 	for {
 		window := candidates[selectedStart:]
-		response, size, buildErr := buildPage(window, transcriptReadStampLimitBytes)
+		response, size, retainedLists, buildErr := buildPage(window, transcriptReadStampLimitBytes)
 		if buildErr != nil {
 			return zero, buildErr
 		}
@@ -1398,11 +1402,13 @@ func packItemCandidates[T any](
 		// legacy counts are kept, so a window that fits unstamped costs the
 		// reader nothing.
 		//
-		// Skip the retry when this window has no call list left to remove: on a
-		// local page the enrichment can reread and hash file-backed thumbnails,
-		// and repeating it cannot change a page the bound already left alone.
-		if pageCarriesCallLists(window) {
-			omitted, omittedSize, omittedErr := buildPage(window, 0)
+		// Retry only when the page that was just built kept a call list. Asking
+		// the caller's candidates instead would rebuild an identical page when
+		// the per-item bound had already removed the lists, repeating the
+		// enrichment - which can reread and hash file-backed thumbnails on a
+		// local page - for no change at all.
+		if retainedLists {
+			omitted, omittedSize, _, omittedErr := buildPage(window, 0)
 			if omittedErr != nil {
 				return zero, omittedErr
 			}

@@ -485,7 +485,6 @@ func TestPackTranscriptItemPageOmitsOversizedResolvedAskStamp(t *testing.T) {
 	}
 }
 
-// TestFitManagerReadUnderCapDropsStampAtThePageCap covers the case the
 // TestPackTranscriptItemPageOmitsSmallStampsBeforeDroppingAnItem covers the
 // page the per-item bound cannot see either, one tier below the cap: several
 // replies each carry a call list UNDER the 8 KiB per-item limit, and together
@@ -555,6 +554,56 @@ func TestPackTranscriptItemPageOmitsSmallStampsBeforeDroppingAnItem(t *testing.T
 	// The canonical items keep their full stamps.
 	if got := len(candidates[0].Item.Observation.ResolvedAskCalls); got != len(calls) {
 		t.Fatalf("canonical candidate stamp = %d calls, want %d", got, len(calls))
+	}
+}
+
+// TestPackTranscriptItemPageKeepsCallListsUnderBudget is the other half of the
+// bound: a page that fits keeps its call pairs exactly. Every stripping rule
+// here is size-triggered, and the projection and cache tests bypass this packer,
+// so without this case an ordinary read that quietly dropped a small call list
+// would pass every test in the tree.
+func TestPackTranscriptItemPageKeepsCallListsUnderBudget(t *testing.T) {
+	calls := []appwire.PendingAskCall{
+		{TurnID: "1a2b3c4d-5e6f-4071-92a3-b4c5d6e7f809", CallID: "2b3c4d5e-6f70-4182-a3b4-000000000001"},
+		{TurnID: "1a2b3c4d-5e6f-4071-92a3-b4c5d6e7f809", CallID: "2b3c4d5e-6f70-4182-a3b4-000000000002"},
+	}
+	reply := appwire.ThreadItem{
+		Type: "userMessage",
+		ID:   "answer",
+		Text: "[answers]\nDeploy? = yes",
+		Observation: &appwire.SessionObservationMetadata{
+			Ref:                    "local:thread",
+			TurnID:                 "0f1c2b3a-4d5e-4f60-8a91-b2c3d4e5f607",
+			AnswerToTurnIDs:        []string{"1a2b3c4d-5e6f-4071-92a3-b4c5d6e7f809"},
+			ResolvedAskCalls:       calls,
+			ResolvedAskLegacyCount: 1,
+		},
+		Version: 1,
+	}
+	candidates := testWindowTurnCandidates("0f1c2b3a-4d5e-4f60-8a91-b2c3d4e5f607", []appwire.ThreadItem{reply})
+	read, err := packThreadReadItemCandidates(transcriptItemCandidateResult{
+		Candidates: appitempaging.TranscriptItemWindow{Candidates: candidates},
+		Identity:   appitempaging.CursorIdentity{ThreadRef: "local:thread", Incarnation: "under-budget", ProjectionVersion: 1},
+		Exhausted:  true,
+	}, func(response appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error) {
+		return response, nil
+	}, 1)
+	if err != nil {
+		t.Fatalf("pack under-budget item page: %v", err)
+	}
+	served := flattenTestItems(read.Thread.Turns)
+	if len(served) != 1 {
+		t.Fatalf("served item count = %d, want 1", len(served))
+	}
+	observation := served[0].Observation
+	if observation == nil {
+		t.Fatal("under-budget read dropped the whole observation")
+	}
+	if !reflect.DeepEqual(observation.ResolvedAskCalls, calls) {
+		t.Fatalf("under-budget read call pairs = %+v, want the exact captured pairs %+v", observation.ResolvedAskCalls, calls)
+	}
+	if observation.ResolvedAskLegacyCount != 1 {
+		t.Fatalf("under-budget read legacy count = %d, want 1", observation.ResolvedAskLegacyCount)
 	}
 }
 

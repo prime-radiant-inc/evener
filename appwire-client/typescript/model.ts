@@ -100,12 +100,13 @@ export interface ItemModel {
   // records none, so the captured calls never reach the wire. The reverse is
   // not a symmetric absence — the turn links EXCLUDE the active execution,
   // while a published call list can still contain calls captured there — so
-  // this list is never merely the turn links at call granularity. A consumer
-  // must fall back to the link and then to
-  // the composed "[answers]" text shape in every one of those cases, EXCEPT
-  // that an omitted list arriving with a positive resolvedAskLegacyCount is
-  // not the same absence: the count still says unnamed questions were
-  // captured, so a composed line cannot be proven to belong to a named call.
+  // this list is never merely the turn links at call granularity. Today's
+  // selector still chooses recaps from the turn link and the reply text, which
+  // is what an absent list leaves it with; choosing recaps from this list is
+  // the recap follow-up. An omitted list arriving with a positive
+  // resolvedAskLegacyCount is not the same absence as a reply that never had
+  // one: the count still says unnamed questions were captured, so a composed
+  // line cannot be proven to belong to a named call.
   resolvedAskCalls?: PendingAskCall[];
   // Wire ThreadItem.observation.resolvedAskLegacyCount: how many questions
   // admission's capture ALSO held WITHOUT being able to name them, restored
