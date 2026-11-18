@@ -101,6 +101,16 @@ export interface QuotaWait {
    * still reports the wait. Absent for a wait still ahead of its reset.
    */
   passedReset?: true;
+  /**
+   * The live announcement's model tag and the waiting call's elapsed time,
+   * present only when a stamped same-turn announcement matches the wait the
+   * line counts down: the announcement established both, so the quota line
+   * carries them the way the generic retry line would. A snapshot-only wait
+   * (a re-hydrated pane with no announcement) establishes neither, so
+   * neither renders.
+   */
+  modelTag?: string;
+  elapsedMs?: number;
 }
 
 /**
@@ -213,9 +223,17 @@ export function describeLiveness(
   // instant the wait is over, so it stops explaining anything and the ordinary
   // decision below applies until the next read settles the status.
   if (quotaWait) {
+    // The matching announcement's model tag and elapsed time ride the wait's
+    // own words, so a fallback chain walk is still visible while the call
+    // waits and the reader can tell a fresh wait from one hours in. A
+    // snapshot-only wait carries neither: the snapshot cannot establish them.
+    const suffix =
+      quotaWait.elapsedMs !== undefined
+        ? ` — ${formatExactGap(quotaWait.elapsedMs)} on this call${quotaWait.modelTag ? ` (${quotaWait.modelTag})` : ""}`
+        : "";
     return {
       level: "quota",
-      text: quotaWait.passedReset ? quotaWaitPassedResetText() : waitingForQuotaText(quotaWait.remainingMs),
+      text: (quotaWait.passedReset ? quotaWaitPassedResetText() : waitingForQuotaText(quotaWait.remainingMs)) + suffix,
     };
   }
   // See this function's own doc comment above (kata gw2c): a retry past its

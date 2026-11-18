@@ -5473,6 +5473,58 @@ it("replays a buffered wake for an ended stamp without reinstalling its retry ch
   expect(model?.quotaWaitEndedAt).toBe(waitStartedAt);
 });
 
+// An unstamped wake is an older daemon's: neither side can order the waits by
+// stamp, so same-turn ownership is the whole reconciliation. A supported
+// legacy root or fork read captures a wait's deadline, a steer wakes the same
+// turn before the reset, and the unstamped wake reaches the hydration buffer
+// before the read response does - the read then adopts the wait's own
+// deadline, and replay must clear the matching countdown by turn: discarding
+// the wake unconditionally keeps the pane counting down a wait the daemon
+// ended while the resumed request runs. A wake whose turn the model does not
+// run stays refused: an unstamped wake has no stamp to prove which wait it
+// ended, and a turn it does not own is no proof at all.
+it("replays an unstamped wake against the held legacy wait of the same turn", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  // The read is in flight on a legacy daemon whose wake carries no stamp;
+  // its snapshot carries the wait's deadline and names the waiting turn.
+  const response = read("row-1");
+  response.thread.status = { type: "active" };
+  response.thread.evener.activeTurnId = "turn_1";
+  const resumesAt = 4_102_400_000;
+  response.thread.evener.failure = { resumesAt };
+  expect(owner.acceptRead(response, { lifetime: 1, readId: "cut", boundary: "cut" })).toBe(true);
+  const model0 = owner.getSnapshot();
+  expect(model0?.quotaResumesAt).toBe(new Date(resumesAt).toISOString());
+  owner.acceptBeforeReadCut(
+    [
+      {
+        method: "evener/thread/modelRetry",
+        params: {
+          threadId,
+          ref,
+          turnId: "turn_1",
+          attempt: 1,
+          maxAttempts: 1,
+          delayMs: 0,
+          errorClass: "quota_exceeded",
+          groupElapsedMs: 5_000,
+          attemptCap: 1,
+        },
+      } as AnyNotification,
+    ],
+    { lifetime: 1 },
+  );
+  const model = owner.getSnapshot();
+  // The unstamped wake cleared the same turn's legacy countdown.
+  expect(model?.quotaResumesAt).toBeUndefined();
+  // And no retry chip: the snapshot already shows the resumed request's
+  // effects where it can, and a chip would claim motion the pane cannot
+  // attribute to this wait's wake.
+  expect(model?.modelRetry?.errorClass ?? "cleared").not.toBe("quota_exceeded");
+});
+
 // M3: a remote delegate's initial read captures turn A, and the relay delivers
 // turn B's active status and quota announcement before the read reaches the
 // browser. Hydration used to drop the STATUS frame and replay only the quota
@@ -5516,4 +5568,54 @@ it("replays a buffered active status that establishes the turn its quota announc
   expect(model?.runningTurnId).toBe("turn_2");
   expect(model?.quotaResumesAt).toBe(new Date(waitStartedAt + 7_200_000).toISOString());
   expect(model?.modelRetry?.errorClass).toBe("quota_exceeded");
+});
+
+// The pairing above is admissible only when the buffered cut genuinely leaves
+// the turn running: a Stop that lands BEHIND the announcement in the buffer,
+// with the read adopting an idle snapshot that already reflects it, makes the
+// active-status-plus-announcement pair a fact the later cut superseded. Stop
+// emits no zero-delay wake, so replaying the pair revives the stopped turn and
+// its countdown with nothing to correct it until another read or status frame
+// arrives. The terminal status is the later buffered evidence: the pair may
+// not replay past it, and the adopted idle snapshot stands.
+it("does not replay an active status and quota announcement past a buffered Stop the snapshot reflects", async () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const response = read("row-1");
+  response.thread.status = { type: "idle" };
+  expect(owner.acceptRead(response, { lifetime: 1, readId: "post-cut", boundary: "post-cut" })).toBe(true);
+  const waitStartedAt = 4_000_000_000;
+  owner.acceptBeforeReadCut(
+    [
+      {
+        method: "thread/status/changed",
+        params: { threadId, ref, status: { type: "active" }, activeTurnId: "turn_2" },
+      } as AnyNotification,
+      {
+        method: "evener/thread/modelRetry",
+        params: {
+          threadId,
+          ref,
+          turnId: "turn_2",
+          attempt: 1,
+          maxAttempts: 1,
+          delayMs: 7_200_000,
+          errorClass: "quota_exceeded",
+          groupElapsedMs: 5_000,
+          attemptCap: 1,
+          waitStartedAt,
+        },
+      } as AnyNotification,
+      {
+        method: "thread/status/changed",
+        params: { threadId, ref, status: { type: "idle" } },
+      } as AnyNotification,
+    ],
+    { lifetime: 1 },
+  );
+  const model = owner.getSnapshot();
+  expect(model?.runningTurnId).toBeUndefined();
+  expect(model?.quotaResumesAt).toBeUndefined();
+  expect(model?.modelRetry?.errorClass ?? "cleared").not.toBe("quota_exceeded");
 });

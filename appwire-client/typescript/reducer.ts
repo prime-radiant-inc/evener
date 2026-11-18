@@ -665,6 +665,26 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
       ) {
         return model;
       }
+      // The WAIT a quota frame names is as load-bearing as the turn: one
+      // turn can wait twice (a steer wakes the first, the retry hits the
+      // limit again), and the bridge can sample the second wait into the
+      // read envelope while the first's queued frame is still in flight -
+      // so a live frame can arrive for an older wait of the same turn the
+      // model already left. A wake for an older wait may not clear the
+      // newer wait's countdown, and a delayed start for an older wait may
+      // not overwrite the newer wait's deadline or stamp. The daemon stamp,
+      // not the turn id, is the ordering; an unstamped frame (an older
+      // daemon) keeps its turn-only meaning, and the model's held stamp
+      // absent means no wait to compare.
+      const heldWaitStamp = model.quotaWaitStartedAt ?? model.modelRetry?.waitStartedAt;
+      if (
+        params.errorClass === "quota_exceeded" &&
+        params.waitStartedAt !== undefined &&
+        heldWaitStamp !== undefined &&
+        params.waitStartedAt < heldWaitStamp
+      ) {
+        return model;
+      }
       // No lastFrameAt restamp on purpose — see ThreadModel.modelRetry. The
       // quiet/stall clock is measuring a real silence; this explains it rather
       // than resetting it.

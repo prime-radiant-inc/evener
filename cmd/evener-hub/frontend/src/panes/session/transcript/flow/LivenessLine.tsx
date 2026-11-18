@@ -184,9 +184,21 @@ export function LivenessLine({ lastFrameAt, now, active, sessionRef, turnId, ret
   // turn boundary, or an authoritative read; only then does ordinary liveness
   // take over.
   const waitStillRecorded = quotaResumesAt !== undefined || stampedQuotaWait;
+  // The matching announcement's model tag and the call's elapsed time ride
+  // the quota line only when a stamped same-turn announcement established
+  // them: the snapshot alone cannot attribute a model or a duration to the
+  // waiting call.
+  const matchingAnnouncement =
+    stampedQuotaWait && retry?.turnId !== undefined && retry.turnId === turnId ? retry : undefined;
   const quotaWait: QuotaWait | undefined =
     remaining !== null
-      ? { remainingMs: remaining }
+      ? {
+          remainingMs: remaining,
+          ...(matchingAnnouncement?.model && matchingAnnouncement.model !== primaryModel
+            ? { modelTag: matchingAnnouncement.model }
+            : {}),
+          ...(matchingAnnouncement ? { elapsedMs: matchingAnnouncement.groupElapsedMs } : {}),
+        }
       : waitStillRecorded
         ? { remainingMs: 0, passedReset: true }
         : undefined;

@@ -1215,7 +1215,33 @@ export class TranscriptRepository {
         // exercised.
         if (this.#replaysTurnStatus(notification, notifications, index)) this.accept(notification, context);
       } else if (isQuotaRetry(notification)) {
+        // A start whose turn a later buffered status ends (a Stop, which
+        // emits no zero-delay wake of its own) is a fact the adopted
+        // snapshot already superseded: the announcement may not re-arm a
+        // countdown for a turn the cut shows stopped.
+        if (
+          notification.params.delayMs > 0 &&
+          notification.params.turnId !== undefined &&
+          notifications
+            .slice(index + 1)
+            .some(
+              (frame) =>
+                frame.method === "thread/status/changed" &&
+                frame.params.status.type !== "active" &&
+                (frame.params.activeTurnId === undefined || frame.params.activeTurnId === notification.params.turnId),
+            )
+        ) {
+          continue;
+        }
         const verdict = this.#quotaReplayVerdict(notification);
+        if (verdict === "clear-legacy") {
+          // An unstamped wake owned the held legacy wait's turn: the
+          // countdown goes, and no chip and no stall restamp come with it -
+          // the frame is not folded, so the snapshot's own showing of the
+          // resumed request is all the pane carries.
+          this.#clearLegacyQuotaWait();
+          continue;
+        }
         if (verdict === "skip") continue;
         if (verdict === "record-ended") {
           // The model held no countdown for the wait this wake names, so the
@@ -1263,16 +1289,39 @@ export class TranscriptRepository {
     const turnId = notification.params.activeTurnId;
     if (notification.params.status.type !== "active" || turnId === undefined) return false;
     if (turnId === this.#model?.runningTurnId) return false;
-    return notifications.slice(index + 1).some((later) => isQuotaStart(later) && later.params.turnId === turnId);
+    // The buffered frames BEHIND the status speak for the later cut too: a
+    // terminal status for the same turn (a Stop, which emits no zero-delay
+    // wake of its own) is the cut already exercising the turn's end, and the
+    // adopted snapshot reflects it. Replaying the active status past its own
+    // turn's termination revives a stopped turn - and the quota announcement
+    // the pairing admits would then re-arm a countdown nothing later in the
+    // buffer corrects.
+    // The buffered frames BEHIND the status speak for the later cut too: a
+    // terminal status (a Stop, which emits no zero-delay wake of its own)
+    // is the cut already exercising the turn's end, and the adopted
+    // snapshot reflects it. Replaying the active status past its own
+    // turn's termination revives a stopped turn - and the quota
+    // announcement the pairing admits would then re-arm a countdown
+    // nothing later in the buffer corrects.
+    const later = notifications.slice(index + 1);
+    const turnEndedLater = later.some(
+      (frame) =>
+        frame.method === "thread/status/changed" &&
+        frame.params.status.type !== "active" &&
+        (frame.params.activeTurnId === undefined || frame.params.activeTurnId === turnId),
+    );
+    if (turnEndedLater) return false;
+    return later.some((frame) => isQuotaStart(frame) && frame.params.turnId === turnId);
   }
 
   /**
    * Which wait a buffered quota frame is about, and whether the adopted model
    * still needs it. The three answers are the whole rule: fold it, ignore it
    * as an earlier wait the model has left, or fold it only for the ended stamp
-   * it records because the countdown it would end is already gone.
+   * it records because the countdown it would end is already gone, or clear the
+   * unstamped legacy wait whose turn an unstamped wake now owns.
    */
-  #quotaReplayVerdict(notification: QuotaRetryNotification): "apply" | "record-ended" | "skip" {
+  #quotaReplayVerdict(notification: QuotaRetryNotification): "apply" | "record-ended" | "skip" | "clear-legacy" {
     const params = notification.params;
     const stamp = params.waitStartedAt;
     const held = this.#model?.quotaWaitStartedAt ?? this.#model?.modelRetry?.waitStartedAt;
@@ -1283,7 +1332,24 @@ export class TranscriptRepository {
       // countdown must go; it holds a DIFFERENT wait, so the wake speaks for
       // one already left and may not clear the wait on screen; it holds none,
       // so there is no countdown to end and only the stamp survives.
-      if (stamp === undefined) return "skip";
+      if (stamp === undefined) {
+        // An unstamped wake is an older daemon's, and neither side can be
+        // ordered by stamp - so same-turn ownership is the whole
+        // reconciliation. The model's held wait names the turn it belongs to
+        // (the chip's copy when the announcement installed it, the running
+        // turn when only a read carried the deadline), and a wake owning
+        // that turn is the daemon saying the wait ended, the same evidence a
+        // stamped wake's equality carries. A turn it does not own proves
+        // nothing about a wait it cannot name. The deadline clears without a
+        // chip: replaying the frame would install "in progress" motion over
+        // a resumed request whose effects the adopted snapshot already
+        // shows where it can.
+        const heldTurn =
+          this.#model?.modelRetry?.turnId ??
+          (this.#model?.quotaResumesAt !== undefined ? this.#model?.runningTurnId : undefined);
+        if (heldTurn !== undefined && params.turnId === heldTurn) return "clear-legacy";
+        return "skip";
+      }
       if (held === undefined) return "record-ended";
       return stamp === held ? "apply" : "skip";
     }
@@ -1306,6 +1372,24 @@ export class TranscriptRepository {
     if (this.#model === undefined) return;
     if ((this.#model.quotaWaitEndedAt ?? -Infinity) >= stamp) return;
     this.#model = { ...this.#model, quotaWaitEndedAt: stamp };
+    this.#publish();
+  }
+
+  /**
+   * Clear the held legacy wait an unstamped wake owned by turn: the deadline
+   * the read carried goes, and the chip goes with it if the wait's own
+   * announcement installed one (a wake folds no chip itself, and the
+   * announcement's chip belongs to a wait the daemon just said ended).
+   */
+  #clearLegacyQuotaWait(): void {
+    if (this.#model === undefined || this.#model.quotaResumesAt === undefined) return;
+    const chipBelongsToWait =
+      this.#model.modelRetry?.errorClass === "quota_exceeded" && this.#model.modelRetry.delayMs > 0;
+    this.#model = {
+      ...this.#model,
+      quotaResumesAt: undefined,
+      ...(chipBelongsToWait ? { modelRetry: undefined } : {}),
+    };
     this.#publish();
   }
 

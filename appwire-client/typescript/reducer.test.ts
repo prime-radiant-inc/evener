@@ -3461,6 +3461,79 @@ test("a turn boundary retires a turn whose quota announcement has not arrived ye
   expect(wokenEarly.modelRetry?.errorClass).toBe("quota_exceeded");
 });
 
+// One turn can wait twice: a steer wakes the first wait, the retried call
+// hits the limit again, and the bridge can sample the SECOND wait into the
+// read envelope while the FIRST wait's queued notification is still in
+// flight - so a pane that reads the second wait in that gap then receives
+// the first wait's wake as a live frame. The wake's turn matches, but its
+// WAIT does not: a wake for an older wait may not clear the newer wait's
+// countdown, and a delayed start for the older wait may not overwrite the
+// newer wait's deadline. The stamp, not the turn id, is the ordering.
+test("a quota frame for an older wait of the same turn neither wakes nor overwrites the newer wait", () => {
+  const frame = (turnId: string, waitStartedAt: number, delayMs: number) =>
+    ({
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId,
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs,
+        errorClass: "quota_exceeded",
+        waitStartedAt,
+        groupElapsedMs: 500,
+        attemptCap: 1,
+      },
+    }) as AnyNotification;
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "thread/status/changed",
+      params: { threadId: "thr_t", ref: "ref_t", status: { type: "active" }, activeTurnId: "turn_1" },
+    },
+    900_000,
+  );
+  // The model holds the SECOND wait (a read installed it): a newer stamp on
+  // the same turn than the queued frames that follow. The deadline is the
+  // daemon-issued ISO instant the read carries, not the pane's arithmetic.
+  model = {
+    ...model,
+    quotaResumesAt: isoInstant(2_000_000 + 45 * 60_000),
+    quotaWaitStartedAt: 2_000_000,
+    modelRetry: {
+      attempt: 1,
+      maxAttempts: 1,
+      delayMs: 45 * 60_000,
+      errorClass: "quota_exceeded",
+      turnId: "turn_1",
+      groupElapsedMs: 500,
+      attemptCap: 1,
+      waitStartedAt: 2_000_000,
+      receivedAt: 2_000_500,
+    },
+  };
+  // The FIRST wait's wake arrives late: same turn, older stamp. It may not
+  // clear the second wait's countdown.
+  const wokenOld = applyNotification(model, frame("turn_1", 1_000_000, 0), 2_100_000);
+  expect(wokenOld.quotaResumesAt).toBe(isoInstant(2_000_000 + 45 * 60_000));
+  expect(wokenOld.modelRetry?.errorClass).toBe("quota_exceeded");
+  // The FIRST wait's delayed start arrives late too: same turn, older
+  // stamp. It may not overwrite the second wait's deadline or stamp.
+  const startedOld = applyNotification(model, frame("turn_1", 1_000_000, 60 * 60_000), 2_200_000);
+  expect(startedOld.quotaResumesAt).toBe(isoInstant(2_000_000 + 45 * 60_000));
+  expect(startedOld.quotaWaitStartedAt).toBe(2_000_000);
+  // The matching wake and a newer start still apply: the second wait's own
+  // wake clears its countdown, and a THIRD wait's start installs its own
+  // deadline over the second's.
+  const wokenCurrent = applyNotification(model, frame("turn_1", 2_000_000, 0), 2_300_000);
+  expect(wokenCurrent.quotaResumesAt).toBeUndefined();
+  const startedNewer = applyNotification(model, frame("turn_1", 3_000_000, 30 * 60_000), 2_400_000);
+  expect(startedNewer.quotaResumesAt).toBe(isoInstant(3_000_000 + 30 * 60_000));
+  expect(startedNewer.quotaWaitStartedAt).toBe(3_000_000);
+});
+
 // A read can beat the bridge: the pane hydrates after a stopped wait's turn
 // ended on another client and the next turn is already running, so the model
 // knows the new running turn but no retired one - no stop boundary was ever

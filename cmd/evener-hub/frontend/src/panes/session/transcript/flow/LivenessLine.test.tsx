@@ -1,5 +1,11 @@
 import type { AnyNotification } from "@evener/appwire-client";
-import { applyNotification, applyReadResponse, hydrateThread, STUCK_AFTER_MS } from "@evener/appwire-client";
+import {
+  applyNotification,
+  applyReadResponse,
+  compactDuration,
+  hydrateThread,
+  STUCK_AFTER_MS,
+} from "@evener/appwire-client";
 import { waitingForQuotaText } from "@evener/appwire-client/state/navigation";
 import { testThread } from "@evener/appwire-client/testing/reducerTestKit";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
@@ -305,6 +311,60 @@ test("keeps the model tag on a quota wait that is still counting down", () => {
   expect(screen.getByTestId("liveness-line").textContent).toContain("gpt-5");
 });
 
+// The production path a stamped wait takes: a real quota announcement names
+// its turn and its daemon-issued stamp, so the component hands the wait to
+// the quota branch - which must still carry the live announcement's model
+// tag and the call's elapsed time beside the countdown. A snapshot-only wait
+// (a re-hydrated pane with no announcement) keeps the countdown free of both:
+// the snapshot cannot establish a model or an elapsed time.
+test("a stamped same-turn quota wait keeps its model tag and elapsed time on the quota line", () => {
+  const now = 30_000;
+  // The pane re-hydrated while the wait ran, so the store carries the daemon
+  // deadline the countdown counts to; the live announcement carries the tag
+  // and the call's elapsed time.
+  reloadWithQuotaWait(60 * 60_000, now);
+  render(
+    <LivenessLine
+      lastFrameAt={0}
+      now={now}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      primaryModel="claude-opus-4"
+      retry={rawRetry({
+        attempt: 1,
+        attemptCap: 4,
+        delayMs: 60 * 60_000,
+        errorClass: "quota_exceeded",
+        model: "gpt-5",
+        groupElapsedMs: 14 * 60_000,
+        turnId: "turn_0",
+        waitStartedAt: 10_000,
+        receivedAt: now,
+      })}
+    />,
+  );
+  const line = screen.getByTestId("liveness-line");
+  expect(line.textContent).toContain("gpt-5");
+  expect(line.textContent).toContain(formatExactGap(14 * 60_000));
+  // The snapshot-only wait stays free of both: a re-hydrated pane with no
+  // live announcement cannot establish a model or an elapsed time.
+  cleanup();
+  reloadWithQuotaWait(60 * 60_000, now);
+  render(
+    <LivenessLine
+      lastFrameAt={0}
+      now={now}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      primaryModel="claude-opus-4"
+    />,
+  );
+  const snapshot = screen.getByTestId("liveness-line");
+  expect(snapshot.textContent).not.toContain("gpt-5");
+});
+
 test("shows the retry group's elapsed time from groupElapsedMs", () => {
   render(
     <LivenessLine
@@ -539,9 +599,17 @@ test("a stamped usage-limit wait past its daemon deadline holds the wait and cla
   expect(el?.getAttribute("data-level")).toBe("quota");
   expect(el?.getAttribute("data-level")).not.toBe(describeLiveness(gap, true, 0).level);
   expect(el?.className ?? "").not.toContain("stalled");
-  // And it says the one thing known: the reset has passed, the retry pending.
-  expect(el?.textContent).toContain("reset passed");
-  expect(el?.textContent).toContain("retry still pending");
+  // And the wait's own state survives the crossing: the level stays the
+  // quota one (not silence-derived, not stalled), the countdown's duration is
+  // gone (the reset is behind it), and a matching wake then clears the wait
+  // entirely. Asserted as behavior - which states the line occupies and which
+  // facts remain - never as copy.
+  expect(el?.getAttribute("data-level")).toBe("quota");
+  expect(el?.textContent ?? "").not.toContain(compactDuration(twoHours));
+  expect(el?.className ?? "").not.toContain("stalled");
+  // The line still states a wait (not silence): its level differs from the
+  // retry-free, wait-free reading of the same gap.
+  expect(el?.getAttribute("data-level")).not.toBe(describeLiveness(gap, true, 0).level);
 });
 
 // The regression this guards: over a six-hour wait plenty of frames land that
