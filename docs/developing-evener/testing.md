@@ -35,6 +35,32 @@ When a test needs a model, name that as the behavior under test and keep it out
 of the default suite. When the model is only a way to drive Evener, replace it with
 a scripted `llm.ProviderAdapter` response and assert the Evener side effects.
 
+### Provider replay bytes
+
+Hold the provider, model, protocol, instructions, tools and request settings
+fixed. Capture the raw HTTP request body at a loopback provider. Exercise
+both the first replay and a cold resume through the real transcript writer
+and reader. Resending identical history must produce the same body bytes.
+After appending a turn, compare the existing serialized history items as an
+exact byte prefix of the extended history. For Chat Completions this is the
+`messages` array. For Responses full-history requests it is the `input` array.
+Compare the bytes before parsing or reserializing those items. Equivalent
+decoded JSON can conceal changes to the provider's cached prefix.
+
+Run the existing regressions from the repository root and extend the nearest
+case for the data your change touches.
+
+```sh
+go test ./agent -run '^TestToolCallHistoryWirePrefixSurvivesTranscriptResume$' -count=1
+go test ./llm/providers/responses -run '^(TestStreamEmitsReasoningTextDeltas|TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty)$' -count=1
+```
+
+The first test captures both protocols and checks the provider's original
+reasoning and tool-argument strings on the wire. The Responses tests compare
+complete output with the same data split across stream events and a partial
+terminal response. Keep these checks deterministic. Provider-reported cache
+hits measure cache service and cannot establish byte equality.
+
 ### Prompt Prose Is Not a Test Oracle
 
 Pin assembled/system prompts, prompt sections, model-facing tool and agent

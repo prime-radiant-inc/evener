@@ -58,6 +58,22 @@ to a settled run generation; independently refreshed views must agree on that
 generation before combining their evidence. Paging tests must cover refresh and
 reconnect after loading multiple pages, including a visible row on a later page.
 
+## Provider replay must preserve bytes
+
+**Provider replay must be byte-identical.** On the first replay, preserve the
+exact contents of the provider fields accepted back as input. On every later
+request to the same model and protocol with unchanged settings, appending a
+tool result or user turn must preserve the entire previously sent history
+prefix, including after a cold resume. Changing a single byte can invalidate
+the provider's prompt cache from that point forward.
+
+Carry the original bytes of every field the protocol replays through stream
+decoding, transcript storage and request construction. Preserve whitespace,
+JSON spelling inside tool arguments, opaque continuations, and the order,
+types and boundaries of messages and parts. When touching any of these paths,
+compare the actual outbound bytes on each affected protocol. Follow the
+[provider replay regression tests](docs/developing-evener/testing.md#provider-replay-bytes).
+
 ## Testing
 
 Before adding or changing tests, read `docs/developing-evener/testing.md`.
