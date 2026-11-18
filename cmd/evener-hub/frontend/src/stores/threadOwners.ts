@@ -13,6 +13,17 @@ const foregroundCounts = new Map<string, number>();
 // model out from under. A release drops a hold of its own kind, or nothing.
 const paneForegroundCounts = new Map<string, number>();
 const routingForegroundCounts = new Map<string, number>();
+// The individual hold each acquisition took, newest last, per kind. A count
+// answers "is this ref kept alive" and a kind answers "is the hold I am
+// releasing of my kind", but neither answers "is the hold I am releasing the one
+// THIS acquisition took". Two panes over one ref can share both their kind and
+// their ensure generation when a routing lease keeps the generation alive
+// between them, so a rollback for the first pane passed the generation check and
+// spent the second pane's hold - retiring the model and reader of a pane that
+// was still mounted. An acquisition releases the id it holds, or nothing.
+let nextAcquisitionId = 1;
+const paneAcquisitions = new Map<string, number[]>();
+const routingAcquisitions = new Map<string, number[]>();
 // A foreground holder that also owns the live transcript bodies - a mounted
 // pane. Its own count, not foregroundCounts: a routing holder keeps the model
 // alive without becoming the reader a later pane finds and defers to, and
@@ -48,9 +59,14 @@ export function foregroundHolds(ref: string): number {
   return foregroundCounts.get(ref) ?? 0;
 }
 
-export function holdForeground(ref: string, routing = false): void {
+export function holdForeground(ref: string, routing = false): number {
   hold(foregroundCounts, ref);
   hold(routing ? routingForegroundCounts : paneForegroundCounts, ref);
+  const id = nextAcquisitionId++;
+  const ids = (routing ? routingAcquisitions : paneAcquisitions).get(ref) ?? [];
+  ids.push(id);
+  (routing ? routingAcquisitions : paneAcquisitions).set(ref, ids);
+  return id;
 }
 
 /** Drops one foreground hold of this kind and returns how many remain. Nothing
@@ -60,6 +76,27 @@ export function releaseForeground(ref: string, routing = false): number {
   const counts = routing ? routingForegroundCounts : paneForegroundCounts;
   if ((counts.get(ref) ?? 0) <= 0) return foregroundHolds(ref);
   release(counts, ref);
+  const acquisitions = routing ? routingAcquisitions : paneAcquisitions;
+  const ids = acquisitions.get(ref);
+  if (ids && ids.length > 0) {
+    ids.pop();
+    if (ids.length === 0) acquisitions.delete(ref);
+  }
+  return release(foregroundCounts, ref);
+}
+
+/** Drops the hold this acquisition took, and returns how many remain. When the
+ * id is no longer outstanding the acquisition's hold is already gone - its pane
+ * released it on unmount - so there is nothing of its own to drop and the
+ * counts standing here belong to another lifecycle. */
+export function releaseForegroundAcquisition(ref: string, id: number, routing = false): number {
+  const acquisitions = routing ? routingAcquisitions : paneAcquisitions;
+  const ids = acquisitions.get(ref);
+  const at = ids ? ids.indexOf(id) : -1;
+  if (!ids || at < 0) return foregroundHolds(ref);
+  ids.splice(at, 1);
+  if (ids.length === 0) acquisitions.delete(ref);
+  release(routing ? routingForegroundCounts : paneForegroundCounts, ref);
   return release(foregroundCounts, ref);
 }
 
@@ -187,6 +224,8 @@ export function resetThreadOwnersForTests(): void {
   foregroundCounts.clear();
   paneForegroundCounts.clear();
   routingForegroundCounts.clear();
+  paneAcquisitions.clear();
+  routingAcquisitions.clear();
   bodyOwnerCounts.clear();
   backgroundCounts.clear();
   historyHoldCounts.clear();

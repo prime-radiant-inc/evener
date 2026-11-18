@@ -69,6 +69,7 @@ import {
   resendRecoveryMutation,
   resetThreadsStoreForTests,
   setMutationStorageForTests,
+  setReadinessBoundForTests,
   settleBackgroundTranscriptsForTests,
   settleEntryTranscriptForTests,
   subscribeCacheWrites,
@@ -2048,6 +2049,71 @@ it("a terminal failure after a reconnect settles the wait once", async () => {
     background.release();
   }
 }, 20_000);
+
+// A socket that drops during verification and never returns leaves the retry
+// pending, which is right: the reconnect owns convergence. But AppWire retries
+// indefinitely, so nothing would ever end the wait - no read, no retry and no
+// ready event - and the composer stays busy with no outbox row. The readiness
+// bound is the end the connection itself cannot report.
+it("a resend whose hub never returns settles on the readiness bound", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const outboxStorage = new MutationOutboxIndexedDB({ indexedDB: factory });
+  setMutationStorageForTests(outboxStorage);
+  const client = connect();
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  await settleEntryTranscriptForTests("local:a");
+  const route = entryTranscriptRoute("local:a");
+  if (!route) throw new Error("expected an entry route");
+  route.cachedUnverified = true;
+  const outbox = await outboxStorage.enqueueIntent({
+    targetRef: "local:a",
+    threadId: "thread-a",
+    method: "turn/start",
+    payload: { ref: "local:a", input: [{ type: "text", text: "retry me" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "retry me" }] },
+  });
+  const row = await outboxStorage.transferToRecovery(outbox.clientMutationId, "rejected");
+  if (!row) throw new Error("expected the recovery row to be durable");
+  client.on("thread/read", () => {
+    throw new Error("transport died");
+  });
+  let fireRetry: (() => void) | undefined;
+  const restoreScheduler = installHydrationRetrySchedulerForTests((_attempt, retry) => {
+    fireRetry = retry;
+    return () => undefined;
+  });
+  // The production bound is 15 s of wall clock; what the settlement does is the
+  // same at any value, and sitting through the clock would test the clock.
+  const restoreBound = setReadinessBoundForTests(30);
+  try {
+    const resent = withRecoveryDestinationClaim("local:a", () =>
+      resendRecoveryMutation(row.clientMutationId, "local:a", "send", "retry me", []),
+    );
+    await vi.waitFor(() => expect(fireRetry, "the failed read must schedule a retry").toBeDefined());
+    // The socket drops and the hub never answers again: not closed, not ready,
+    // just reconnecting forever.
+    client.emitStateChange("reconnecting");
+    fireRetry?.();
+    // The bound is the same one requireReadyClient gives this question, and it
+    // is the only thing that can end this wait.
+    const outcome = await resent.then(
+      () => ({ ok: true as const }),
+      () => ({ ok: false as const }),
+    );
+    expect(outcome.ok, "a hub that never returns must not hold the composer forever").toBe(false);
+    expect(foregroundHolds("local:a"), "the bounded end must release the routing hold").toBe(0);
+    expect(await outboxStorage.listOutbox("local:a"), "an unreachable hub writes no row").toEqual([]);
+    expect(await outboxStorage.getRecovery(row.clientMutationId), "the draft must survive").toBeDefined();
+  } finally {
+    restoreBound();
+    restoreScheduler();
+    background.release();
+  }
+}, 25_000);
 
 // A routing lease keeps a destination dispatchable, not resident: when the
 // last pane closes during a resend, its reader and the bodies behind it must

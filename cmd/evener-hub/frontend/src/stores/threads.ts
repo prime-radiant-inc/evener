@@ -186,6 +186,7 @@ import {
   releaseBackground,
   releaseBodyOwnership,
   releaseForeground,
+  releaseForegroundAcquisition,
   releaseHistory,
   resetThreadOwnersForTests,
   setFinalReleaseOwner,
@@ -417,6 +418,12 @@ export interface ThreadsStoreState {
   // routingOnly names a release whose acquisition was routing-only: it drops
   // the keep-alive hold without spending a body-ownership count it never took.
   releaseThread(ref: string, opts?: { routingOnly?: boolean }): void;
+  /** Releases exactly the foreground hold one acquisition took. Idempotent with
+   * that acquisition's own unmount release: a hold it no longer owns is already
+   * gone, so nothing of its own is dropped. */
+  releaseThreadAcquisition(ref: string, acquisition: number, opts?: { routingOnly?: boolean }): void;
+  /** The retirement work both release shapes run once a hold has been dropped. */
+  releaseThreadAfterHoldDrop(ref: string, count: number): void;
   releaseThreadAndWait(ref: string): Promise<TranscriptRetirementOutcome | undefined>;
   // Additive, leaner subscription to a child thread for a delegate card's
   // row's live view (see this file's own doc comment). opts.includeTurns
@@ -1431,7 +1438,34 @@ const clearReplacementWaits = new KeyedWaiters<string, () => void>();
 // replacement queues behind other hydrations first, so the registry is empty
 // for a window that a waiting claim can land in. Issuing and being joinable
 // are the same fact, so they are recorded together.
-const clearReplacementReads = new Map<string, Promise<ThreadModel | null>>();
+// Each entry carries the replacement's OUTCOME, not just its model. A
+// replacement that ends on the hub's history diagnostic answers the demand with
+// a terminal verdict, and a handoff that resolved it to null made the claim
+// issue yet another read for a destination the hub had already refused - the
+// composer stayed busy and the press never wrote. The terminal answer travels
+// with the read so the handoff can reject on it while every other failure stays
+// with the refresh's own paced retry.
+type ClearReplacementRead = Promise<{ model: ThreadModel | null; terminalError?: unknown }>;
+const clearReplacementReads = new Map<string, ClearReplacementRead>();
+// The last terminal history verdict a tracked read ended on, per ref, waiting to
+// be claimed by whoever is owed that answer. A refresh reports failures through
+// the lifecycle rather than by rejecting, so this is the one place the terminal
+// end survives to be read; a handoff takes it, so a stale verdict cannot fail a
+// later press that a successful read has since answered.
+const terminalHydrationErrors = new Map<string, unknown>();
+function takeTerminalHydrationError(ref: string): unknown {
+  const error = terminalHydrationErrors.get(ref);
+  terminalHydrationErrors.delete(ref);
+  return error;
+}
+/** Waits out a Clear replacement and hands back its model. A replacement that
+ * ended on the hub's history diagnostic throws it here, so every claim that
+ * joined this handoff releases instead of reading a history the hub refused. */
+async function adoptClearReplacement(read: ClearReplacementRead): Promise<ThreadModel | null> {
+  const outcome = await read;
+  if (outcome.terminalError !== undefined) throw outcome.terminalError;
+  return outcome.model;
+}
 
 function parkForClearReplacement(ref: string): { parked: Promise<void>; cancel: () => void } {
   let wake!: () => void;
@@ -1460,7 +1494,7 @@ function parkForClearReplacement(ref: string): { parked: Promise<void>; cancel: 
 async function awaitClearReplacement(
   ref: string,
 ): Promise<
-  { kind: "read"; read: Promise<ThreadModel | null> } | { kind: "deleted" } | { kind: "deferred" } | { kind: "none" }
+  { kind: "read"; read: ClearReplacementRead } | { kind: "deleted" } | { kind: "deferred" } | { kind: "none" }
 > {
   const issued = clearReplacementReads.get(ref);
   if (issued) return { kind: "read", read: issued };
@@ -1789,14 +1823,23 @@ type OwnedHydrationOutcome =
   | { kind: "published"; model: ThreadModel }
   // Why the generation is gone decides what a waiter may do next: a superseded
   // generation re-arms against the current one, while a deleted ref has none and
-  // must not read again.
-  | { kind: "retired"; cause: "superseded" | "deleted" }
+  // must not read again. A readiness timeout is its own cause for the same
+  // reason: re-arming is exactly wrong there, because the thing that would make
+  // it succeed is the connection that did not come back.
+  | { kind: "retired"; cause: "superseded" | "deleted" | "readinessTimeout" }
   | { kind: "terminal"; error: unknown };
 
 interface OwnedHydration {
   generation: number;
   retryAttempt: number;
   cancelRetry: (() => void) | null;
+  // Bounds the wait a NOT-READY client leaves parked. A retry scheduled while
+  // the client is not ready leaves the wait pending by design - the reconnect
+  // owns convergence - but AppWire can keep reconnecting indefinitely, so
+  // nothing else would ever end it: the composer stays busy and the press never
+  // writes. Same bound as requireReadyClient, because it answers the same
+  // question. Null while no such wait is outstanding.
+  readinessTimer: ReturnType<typeof setTimeout> | null;
   // The read that is currently answering THIS lifecycle's question. A waiter
   // parked on this lifecycle may adopt exactly this read and no other: the
   // question it must answer is "did the demand I gave up on retire into a read
@@ -1850,6 +1893,22 @@ export function installHydrationRetrySchedulerForTests(scheduler: RetryScheduler
   return () => {
     hydrationRetryScheduler = previous;
   };
+}
+
+// The readiness bound a parked wait is held to, injectable for the same reason
+// the retry scheduler is: the production value is 15 s of wall clock, and a test
+// that has to sit through it would be measuring the clock rather than the
+// settlement. Everything the bound does is reachable at any value.
+let readinessBoundMsForTests: number | null = null;
+export function setReadinessBoundForTests(ms: number | null): () => void {
+  const previous = readinessBoundMsForTests;
+  readinessBoundMsForTests = ms;
+  return () => {
+    readinessBoundMsForTests = previous;
+  };
+}
+function readinessBoundMs(): number {
+  return readinessBoundMsForTests ?? REQUIRE_READY_TIMEOUT_MS;
 }
 
 // #4342's paced re-drive for a mutation the hub refused in band as transient
@@ -4565,21 +4624,30 @@ async function readThreadHydration(
     // base model can render one, and applyHistoryReadFailure itself ignores a
     // superseded generation.
     if (isTranscriptHistoryFailedError(err)) {
+      // The currency checks come FIRST, before anything is published. A
+      // watched resync can overlap a newer one for the same ref: the newer
+      // read publishes, then the older one's diagnostic arrives. Writing the
+      // older read's captured model here regressed the watch to stale content
+      // and hung an obsolete diagnostic on it, because the checks below were
+      // only reached after publication had already happened.
+      //
+      // The pending map is the read's OWN kind, not tracked's: an already-open
+      // delegate watch answers from pendingWatchedHydrations, and a watched
+      // read that a newer same-connection resync superseded is no longer in
+      // that map. A diagnostic from the attempt that is still current in its
+      // own map still ends the wait, and still publishes.
+      const pendingHydrations = read.kind === "watched" ? pendingWatchedHydrations : pendingThreadHydrations;
+      if (pendingHydrations.get(ref) !== pending) throw err;
+      if (pending.client !== getWiredClient() || pending.epoch !== getReadyEpoch()) throw err;
       if (pending.baseModel) {
         const failedModel = applyHistoryReadFailure(pending.baseModel, errorText(err), pending.requestGeneration ?? 0);
         const entry = tracked ? existingEntryRoute(ref) : undefined;
         if (!tracked) {
           putWatchedThreadModel(ref, failedModel);
         } else if (entry?.repository) {
-          if (
-            pending.client === getWiredClient() &&
-            pending.epoch === getReadyEpoch() &&
-            pendingThreadHydrations.get(ref) === pending
-          ) {
-            entry.repository.acceptReadFailure(errorText(err), pending.requestGeneration ?? 0, {
-              lifetime: entry.lifetime,
-            });
-          }
+          entry.repository.acceptReadFailure(errorText(err), pending.requestGeneration ?? 0, {
+            lifetime: entry.lifetime,
+          });
         } else {
           putThreadModel(ref, failedModel);
         }
@@ -4588,24 +4656,11 @@ async function readThreadHydration(
       // shares has to settle with it. Left pending, the waiters hang with the
       // composer busy and the press never writes.
       //
-      // Only the attempt that is still the ref's current one, on the current
-      // connection generation, may settle that shared wait: a newer attempt
-      // owns its own outcome, and settling from a superseded one would end a
-      // wait on a verdict about routing state the replacement is about to
-      // publish. This is the same currency check the success path applies
-      // before it records a failure on the route.
-      //
-      // The pending map is the read's OWN kind, not tracked's: an already-open
-      // delegate watch answers from pendingWatchedHydrations, and a watched
-      // read that a newer same-connection resync superseded is no longer in
-      // that map. Checking only the tracked map let that obsolete response
-      // through to the settlement below, which retires the newer read's
-      // lifecycle and cancels the retry it armed - leaving the delegate
-      // transcript stale until some other refresh. A diagnostic from the
-      // attempt that is still current in its own map still ends the wait.
-      const pendingHydrations = read.kind === "watched" ? pendingWatchedHydrations : pendingThreadHydrations;
-      if (pendingHydrations.get(ref) !== pending) throw err;
-      if (pending.client !== getWiredClient() || pending.epoch !== getReadyEpoch()) throw err;
+      // It is also recorded for a handoff that is waiting on this read rather
+      // than on the lifecycle: a Clear replacement's refresh swallows the
+      // diagnostic, so without this the handoff reads its null as a miss and
+      // reads the ref again for a history the hub has already refused.
+      terminalHydrationErrors.set(ref, err);
       settleHydrationReadEnd(read.kind, ref, { kind: "historyFailed", error: err });
     } else {
       scheduleOwnedHydrationRetry(read.kind, ref, pending);
@@ -7405,6 +7460,7 @@ function openOwnedHydration(kind: HydrationOwnerKind, ref: string): OwnedHydrati
     generation,
     retryAttempt: 0,
     cancelRetry: null,
+    readinessTimer: null,
     successor: null,
     cancelClosedWatch: null,
     firstHydration,
@@ -7441,9 +7497,24 @@ function closeOwnedHydration(kind: HydrationOwnerKind, ref: string, outcome: Own
   lifecycles.delete(ref);
   owned.cancelRetry?.();
   owned.cancelRetry = null;
+  if (owned.readinessTimer !== null) clearTimeout(owned.readinessTimer);
+  owned.readinessTimer = null;
   owned.cancelClosedWatch?.();
   owned.cancelClosedWatch = null;
   owned.settle(outcome);
+}
+
+/** Bounds a wait left parked because the client is not ready. Armed only there:
+ * every other end of a read settles or arms its own retry, so a timer on all of
+ * them would end waits that are making progress. Idempotent - a second retry on
+ * the same lifecycle reuses the bound already running. */
+function armReadinessBound(kind: HydrationOwnerKind, ref: string, owned: OwnedHydration): void {
+  if (owned.readinessTimer !== null) return;
+  owned.readinessTimer = setTimeout(() => {
+    owned.readinessTimer = null;
+    if (ownedHydrationsFor(kind).get(ref) !== owned) return;
+    settleHydrationReadEnd(kind, ref, { kind: "readinessTimedOut" });
+  }, readinessBoundMs());
 }
 
 // A published authoritative model retires the lifecycle that was waiting for
@@ -7458,7 +7529,7 @@ function settleOwnedHydration(kind: HydrationOwnerKind, ref: string, model: Thre
 function retireOwnedHydration(
   kind: HydrationOwnerKind,
   ref: string,
-  cause: "superseded" | "deleted" = "superseded",
+  cause: "superseded" | "deleted" | "readinessTimeout" = "superseded",
 ): void {
   closeOwnedHydration(kind, ref, { kind: "retired", cause });
 }
@@ -7495,6 +7566,12 @@ function failOwnedHydration(kind: HydrationOwnerKind, ref: string, error: unknow
 //   clientClosed   - the client the read was issued on has closed for good and
 //                    no replacement is wired. Nothing can ever make it ready,
 //                    so the wait must settle rather than park on it.
+//   readinessTimedOut - the connection went down and did not come back inside
+//                    the readiness bound. AppWire retries indefinitely, so
+//                    without this the wait has no end at all: no read, no
+//                    retry, no ready event. Settles as superseded so the claim
+//                    re-arms when a client does return, and a caller that
+//                    cannot wait fails the press instead of hanging on it.
 //
 // One more end exists and is deliberately not in this union: an attempt aborted
 // by a release, a client swap, or a newer attempt. Whoever aborts it retires the
@@ -7508,7 +7585,8 @@ type HydrationReadEnd =
   | { kind: "reconnectSuperseded" }
   | { kind: "ownerReleased" }
   | { kind: "deleted" }
-  | { kind: "clientClosed" };
+  | { kind: "clientClosed" }
+  | { kind: "readinessTimedOut" };
 
 // settleHydrationReadEnd is the ONE place a read's end is turned into a
 // settlement of the shared wait. Callers classify the end; they do not decide
@@ -7532,6 +7610,13 @@ function settleHydrationReadEnd(kind: HydrationOwnerKind, ref: string, end: Hydr
     case "ownerReleased":
     case "clientClosed":
       retireOwnedHydration(kind, ref);
+      return "settled";
+    case "readinessTimedOut":
+      // Its own cause, not the generic superseded one: superseded means "a
+      // newer generation owns this, go rejoin it", and re-arming here would put
+      // the waiter straight back into the same unbounded wait on the same dead
+      // connection. The cause is what lets the waiter fail the press instead.
+      retireOwnedHydration(kind, ref, "readinessTimeout");
       return "settled";
     case "transportDropped":
       // The one end that does not settle: the wait stays pending for the retry
@@ -7645,6 +7730,13 @@ function scheduleOwnedHydrationRetry(kind: HydrationOwnerKind, ref: string, pend
       // Not ready is not this lifecycle's to pace: that client generation's
       // next ready trigger re-reads what it tracks and retires this record
       // either way, so this stays pending with no retry of its own.
+      //
+      // Pending is not the same as unbounded. AppWire reconnects indefinitely,
+      // so a hub that never returns would leave the wait parked with no read,
+      // no retry and no ready event to end it - the composer stays busy and the
+      // press never reaches the outbox. Arm the same bound requireReadyClient
+      // gives this question; a ready event retires this record and cancels it.
+      armReadinessBound(kind, ref, owned);
       return;
     } else {
       end = { kind: "transportDropped" };
@@ -7666,6 +7758,12 @@ function scheduleOwnedHydrationRetry(kind: HydrationOwnerKind, ref: string, pend
     if (pendingHydrations.has(ref)) return;
     const retried =
       kind === "watched" ? retryWatchedHydration(client, epoch, ref) : retryTrackedHydration(client, epoch, ref);
+    // The retry runs on whatever state the connection is in when it fires, and
+    // a not-ready client is the case with no other end: the read rejects, the
+    // classification keeps the wait pending, and AppWire reconnects forever.
+    // Arm the bound here, where the wait is left parked by a retry rather than
+    // by a settled read.
+    if (client.state !== "ready") armReadinessBound(kind, ref, owned);
     void retried.catch(() => {
       // A failed retry schedules the next one through this same path.
     });
@@ -7839,7 +7937,14 @@ async function refreshTrackedThreadNow(
     (!hasPublishedModel && (previous !== undefined || targetedResync)) ||
     (hasPublishedModel && !routingStateVerified(ref));
   if (trackForActiveLifecycle) {
-    inflightHydrates.start(ref, hydration, client, epoch);
+    // A registration made while no pane owns this ref's bodies belongs to a
+    // claim's verification, not to an opening: the retry a routing claim's
+    // failure arms is registered by exactly this path, and a pane that opens
+    // afterwards still owes its own bounded cached lookup. Registering it as
+    // pane-backed made that pane assume the lookup had run and stay blank
+    // through a slow or failing retry while the transcript sat on disk. A pane
+    // that adopts this read marks it pane-backed (markPaneBacked).
+    inflightHydrates.start(ref, hydration, client, epoch, false, bodyOwners(ref) === 0);
   }
   try {
     const model = await hydration;
@@ -8574,7 +8679,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     const generation = ensureGenerations.get(ref) ?? 0;
     // The kind this hold is taken as, so the rollback below releases this
     // acquisition's count and never one belonging to another lifecycle.
-    holdForeground(ref, routingOnly);
+    // The id is that lifecycle's identity for its own hold: two panes over one
+    // ref can share a kind AND an ensure generation when a routing lease keeps
+    // the generation alive between them, so the generation is not enough to
+    // say which hold a rollback owns. See releaseForegroundAcquisition.
+    const acquisition = holdForeground(ref, routingOnly);
     if (!routingOnly) holdBodyOwnership(ref);
     syncTranscriptResidencyOwners(ref);
     // Retention alone grants no write permission: only an explicit pane open
@@ -8769,7 +8878,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
               const handoff = await awaitClearReplacement(ref);
               if (handoff.kind === "deleted") return endDeletedDestination();
               if (handoff.kind === "read") {
-                inflight = handoff.read;
+                inflight = adoptClearReplacement(handoff.read);
                 continue;
               }
               // A Clear that deferred its replacement owns this ref's next
@@ -8885,7 +8994,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             const handoff = await awaitClearReplacement(ref);
             if (handoff.kind === "deleted") return endDeletedDestination();
             if (handoff.kind === "read") {
-              inflight = handoff.read;
+              inflight = adoptClearReplacement(handoff.read);
               continue;
             }
             // Deferred means Clear still owes this ref a read and the
@@ -8916,6 +9025,14 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           // carries the retirement cause instead of leaving every retired
           // generation to look the same.
           if (settled.kind === "retired" && settled.cause === "deleted") return endDeletedDestination();
+          // The connection did not come back inside the bound. Re-arming is
+          // what the superseded cause does below, and it is exactly wrong here:
+          // it would park the same claim on the same dead connection for another
+          // bound, which is the unbounded hang this end exists to prevent. Fail
+          // the press so the composer is usable and the recovery draft survives.
+          if (settled.kind === "retired" && settled.cause === "readinessTimeout") {
+            throw new Error("The connection did not return before the destination could be verified");
+          }
           // The wait can span a reconnect: the ready handler retires the old
           // retry and starts a fresh read, so this waiter wakes with the
           // generation it was waiting on already gone. Rejoining from the top
@@ -8981,7 +9098,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           const handoff = await awaitClearReplacement(ref);
           if (handoff.kind === "deleted") return endDeletedDestination();
           if (handoff.kind === "read") {
-            inflight = handoff.read;
+            inflight = adoptClearReplacement(handoff.read);
             continue;
           }
           if (foregroundHolds(ref) <= 0) return;
@@ -9023,7 +9140,14 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       // routing lease. Releasing against the total would spend that lease's hold
       // and retire the model under the press, which is how a resend came to
       // resolve with no verified routing state behind it.
-      if (ensureGenerations.get(ref) === generation) threadsStore.getState().releaseThread(ref, { routingOnly });
+      // Bound to the acquisition id, not the generation: a routing lease keeps
+      // the ensure generation alive across a pane close and reopen, so a pane
+      // that closed while waiting for a retry shared its generation with the
+      // pane that replaced it. The generation check passed, the rollback spent
+      // the new pane's count, and that pane lost its reader and model while
+      // still mounted. Releasing the acquisition's own id drops that hold or
+      // nothing, which is what makes this idempotent with an unmount release.
+      threadsStore.getState().releaseThreadAcquisition(ref, acquisition, { routingOnly });
       throw err;
     }
   },
@@ -9048,6 +9172,25 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // One release drops exactly what its own acquisition took: a routing hold
     // never took the bodies, so it must not spend a pane's body count.
     if (!routing) releaseBodyOwnership(ref);
+    return threadsStore.getState().releaseThreadAfterHoldDrop(ref, count);
+  },
+
+  releaseThreadAcquisition(ref, acquisition, opts) {
+    const routing = opts?.routingOnly === true;
+    // The acquisition-shaped release. A hold this acquisition no longer owns is
+    // already gone - the pane released it on unmount - so there is nothing of
+    // its own to drop and the counts standing here are another pane's. That
+    // makes the rollback idempotent with the unmount release instead of a
+    // second bookkeeping path that could double-drop.
+    const before = foregroundHolds(ref);
+    releaseForegroundAcquisition(ref, acquisition, routing);
+    const count = foregroundHolds(ref);
+    if (count === before) return; // this acquisition's hold was already gone
+    if (!routing) releaseBodyOwnership(ref);
+    return threadsStore.getState().releaseThreadAfterHoldDrop(ref, count);
+  },
+
+  releaseThreadAfterHoldDrop(ref, count) {
     syncTranscriptResidencyOwners(ref);
     if (count > 0) {
       // Another holder keeps the ref alive, so nothing below is this release's
@@ -10204,7 +10347,16 @@ function reconcileClearInput(): void {
       // the ordering the wake rests on - issuing and being joinable are the
       // same fact, so no wake can observe one without the other.
       if (kind === "thread") {
-        const registered = issued.then(() => null);
+        // The terminal verdict is read from the settled lifecycle rather than
+        // from the promise `issued` resolves with: the refresh swallows a
+        // history diagnostic by design (reportFailure is false), so a
+        // replacement that ended that way resolved to null and looked like an
+        // ordinary miss. `terminalHydrationErrors` is where that end is already
+        // recorded for the ref, so the handoff asks it once the read is over.
+        const registered = issued.then(() => ({
+          model: null as ThreadModel | null,
+          terminalError: takeTerminalHydrationError(ref),
+        }));
         clearReplacementReads.set(ref, registered);
         void registered.finally(() => {
           if (clearReplacementReads.get(ref) === registered) clearReplacementReads.delete(ref);
