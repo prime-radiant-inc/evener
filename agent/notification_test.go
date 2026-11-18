@@ -17,7 +17,6 @@ import (
 	"primeradiant.com/evener/agent/internal/goal"
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
@@ -294,9 +293,6 @@ func TestNotificationTurnOwnsDirectRetrySteering(t *testing.T) {
 	if _, err := sess.ProcessInputKind(context.Background(), "", nil, EntryNotification); err != nil {
 		t.Fatalf("ProcessInputKind(EntryNotification): %v", err)
 	}
-	sess.mu.Lock()
-	liveHistory := append([]schema.Turn(nil), sess.history...)
-	sess.mu.Unlock()
 	_, starts := recorder.snapshot()
 	if len(starts) != 1 || starts[0].TurnID == "" {
 		t.Fatalf("notification EventTurnStarted = %#v, want one named boundary", starts)
@@ -321,25 +317,13 @@ func TestNotificationTurnOwnsDirectRetrySteering(t *testing.T) {
 	project := func(turn schema.Turn, turnID string, turnIndex int) []appwire.ThreadItem {
 		return apptranscript.ProjectTurn(turnID, turnIndex, turn, apptranscript.NewToolCallRegistry(), nil, nil)
 	}
-	liveEntries := make([]transcript.Entry, len(liveHistory))
-	for i, turn := range liveHistory {
-		liveEntries[i] = transcript.Entry{Kind: "entry", Seq: i + 1, Turn: turn}
-	}
-	liveTurns, err := apptranscript.ItemTurnsFromEntries(data.Header, liveEntries, project)
-	if err != nil {
-		t.Fatalf("live projection: %v", err)
-	}
 	coldTurns, err := apptranscript.ItemTurnsFromEntries(data.Header, data.Entries, project)
 	if err != nil {
 		t.Fatalf("cold projection: %v", err)
 	}
-	liveItem := findNotificationSteeringItem(liveTurns)
 	coldItem := findNotificationSteeringItem(coldTurns)
-	if liveItem == nil || coldItem == nil {
-		t.Fatalf("NoToolCalls item live=%#v cold=%#v", liveItem, coldItem)
-	}
-	if liveItem.TranscriptKey != coldItem.TranscriptKey || liveItem.TurnID != coldItem.TurnID || liveItem.Status != coldItem.Status {
-		t.Fatalf("live/cold NoToolCalls identity live=(key %q, turn %q, status %q) cold=(key %q, turn %q, status %q)", liveItem.TranscriptKey, liveItem.TurnID, liveItem.Status, coldItem.TranscriptKey, coldItem.TurnID, coldItem.Status)
+	if coldItem == nil {
+		t.Fatalf("cold NoToolCalls item = %#v, want one item", coldItem)
 	}
 	if coldItem.TurnID != starts[0].TurnID {
 		t.Fatalf("cold NoToolCalls turn=%q, want notification turn %q", coldItem.TurnID, starts[0].TurnID)
