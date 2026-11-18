@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/llm"
@@ -108,7 +109,7 @@ func toResponsesInput(msgs []llm.Message, imageCap string) (instructions string,
 	}
 	instructions = strings.Join(instrParts, "\n\n")
 
-	for _, m := range msgs {
+	for _, m := range orderedReplayMessages(msgs, replaysEncryptedReasoning) {
 		switch m.Role {
 		case llm.RoleSystem, llm.RoleDeveloper:
 			continue
@@ -238,8 +239,7 @@ func toResponsesInput(msgs []llm.Message, imageCap string) (instructions string,
 				}
 			}
 			for _, p := range m.Content {
-				if p.Kind == llm.ContentThinking && p.Thinking != nil && p.Thinking.EncryptedContent != "" &&
-					!llm.IsOpenAICompatEncryptedReasoning(p.Thinking.EncryptedContent) {
+				if replaysEncryptedReasoning(p) {
 					// The guard skips OpenRouter-style encrypted reasoning_details
 					// riding a cross-provider transcript — those are not OpenAI
 					// Responses encrypted_content blobs and the API rejects them.
@@ -328,6 +328,43 @@ func toResponsesInput(msgs []llm.Message, imageCap string) (instructions string,
 		}
 	}
 	return instructions, items, nil
+}
+
+func replaysEncryptedReasoning(p llm.ContentPart) bool {
+	return p.Kind == llm.ContentThinking && p.Thinking != nil && p.Thinking.EncryptedContent != "" &&
+		!llm.IsOpenAICompatEncryptedReasoning(p.Thinking.EncryptedContent)
+}
+
+// The assembler groups a message's text before other output items. Feed it
+// runs of text and individual non-text items when replay must preserve order.
+func orderedReplayMessages(messages []llm.Message, replaysReasoning func(llm.ContentPart) bool) []llm.Message {
+	var ordered []llm.Message
+	for i, m := range messages {
+		if m.Role != llm.RoleAssistant || !slices.ContainsFunc(m.Content, replaysReasoning) {
+			if ordered != nil {
+				ordered = append(ordered, m)
+			}
+			continue
+		}
+		if ordered == nil {
+			ordered = make([]llm.Message, i, len(messages))
+			copy(ordered, messages[:i])
+		}
+		for start := 0; start < len(m.Content); {
+			end := start + 1
+			for end < len(m.Content) && m.Content[start].Kind == llm.ContentText && m.Content[end].Kind == llm.ContentText {
+				end++
+			}
+			item := m
+			item.Content = m.Content[start:end]
+			ordered = append(ordered, item)
+			start = end
+		}
+	}
+	if ordered == nil {
+		return messages
+	}
+	return ordered
 }
 
 func reasoningSummaryInput(summary []string) []any {

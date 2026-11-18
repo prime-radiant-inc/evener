@@ -92,6 +92,10 @@ final output is empty, recovery keeps streamed completions in order, including
 calls whose ID came from an item ID. Live decoding and API-log recomputation
 apply the same rule.
 
+When an assistant message replays encrypted reasoning, the Responses adapter
+keeps visible text, reasoning, and tool calls in transcript order. Consecutive
+assistant text in the same phase stays grouped.
+
 ## Image recovery
 
 The [Chat Completions adapter](../llm/providers/chatcompletions/image_recovery.go)

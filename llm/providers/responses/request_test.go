@@ -6,6 +6,7 @@ import (
 	"errors"
 	"image"
 	"image/png"
+	"slices"
 	"testing"
 
 	"primeradiant.com/evener/llm"
@@ -48,6 +49,51 @@ func userReq(text string) llm.Request {
 		{Role: llm.RoleSystem, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "be terse"}}},
 		{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: text}}},
 	}}
+}
+
+func TestBuildBodyPreservesEncryptedReasoningOrder(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		blob string
+		want []string
+	}{
+		{"encrypted", "opaque-fixture", []string{"message", "message", "reasoning", "function_call", "message", "function_call_output"}},
+		{"display only", "", []string{"message", "message", "function_call", "function_call_output"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := userReq("input")
+			req.Messages = append(req.Messages,
+				llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+					{Kind: llm.ContentText, Phase: "commentary", Text: "before"},
+					{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{ID: "rs_fixture", Text: "display", EncryptedContent: tc.blob}},
+					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "call_fixture", Name: "lookup"}},
+					{Kind: llm.ContentText, Phase: "commentary", Text: "after"},
+				}},
+				llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+					{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_fixture", Content: "result"}},
+				}},
+			)
+			items := build(t, req, resolved(openaiCaps))["input"].([]any)
+			var got, text []string
+			for _, item := range items {
+				m := item.(map[string]any)
+				got = append(got, m["type"].(string))
+				if m["role"] != "assistant" {
+					continue
+				}
+				for _, part := range m["content"].([]any) {
+					text = append(text, part.(map[string]any)["text"].(string))
+				}
+			}
+			if !slices.Equal(got, tc.want) {
+				t.Fatalf("input item order = %v, want %v", got, tc.want)
+			}
+			if !slices.Equal(text, []string{"before", "after"}) {
+				t.Fatalf("replayed assistant text = %v", text)
+			}
+		})
+	}
 }
 
 func build(t *testing.T, req llm.Request, res registry.Resolved) map[string]any {
