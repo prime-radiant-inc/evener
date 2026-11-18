@@ -397,6 +397,22 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			// projection the request does not send (#2340 review).
 			presentedTurns = filtered
 		}
+		// A DISCARDED watch row is not pending, so the unresolved filter above
+		// leaves it alone — but "not pending" is not "not in history". The live
+		// path removes the resident turn when it discards it; a restart rebuilds
+		// history from the transcript, where the turn is still recorded, so a
+		// superseded or stop-dropped watch row came back after every resume and
+		// the model read a fact that had been discarded (#2340 review). Filter
+		// it in the SAME one decision, for the same reason: the slice returned
+		// here is what this request expands AND what continuation planning sees.
+		if discarded := s.discardedWatchAttentionIDs(); len(discarded) > 0 {
+			filtered, droppedAt := dropDiscardedWatchAttentionTurns(historyTurns, discarded)
+			if len(droppedAt) > 0 {
+				scope.InFlightFrom = shiftReplayBoundaryForDrops(scope.InFlightFrom, droppedAt)
+				historyTurns = filtered
+				presentedTurns = filtered
+			}
+		}
 		history = expandHistory(historyTurns, scope)
 	}
 
@@ -2196,12 +2212,21 @@ type replayScope struct {
 // on makes the turn's own assistant response read as prior history, and prior
 // history loses the in-flight replay exemption that keeps its thinking blocks.
 func shiftReplayBoundaryForDrops(inFlightFrom int, droppedAt []int) int {
+	// droppedAt holds ORIGINAL indices, and inFlightFrom is decremented as the
+	// loop runs. Comparing an original index against the moving boundary
+	// undercounts: two rows immediately before the boundary each sit at
+	// boundary-2 and boundary-1 originally, but after the first drop the
+	// boundary equals the second row's index, so `at < inFlightFrom` is false
+	// and only one is subtracted. The boundary then stays one too far on and
+	// the turn's own first response reads as prior history, losing the
+	// in-flight replay exemption that keeps its thinking (#2340 review).
+	shifted := inFlightFrom
 	for _, at := range droppedAt {
 		if at < inFlightFrom {
-			inFlightFrom--
+			shifted--
 		}
 	}
-	return inFlightFrom
+	return shifted
 }
 
 // active reports whether the scope enforces the N4 replay-provenance rules. An
@@ -2658,4 +2683,31 @@ func (s *Session) canonicalModelID(instance, model string) string {
 		}
 	}
 	return id
+}
+
+// dropDiscardedWatchAttentionTurns removes the watch turns whose durable
+// disposition is DISCARDED: a row a newer notice superseded, or one a
+// stop-drain dropped. They are not pending, so the unresolved filter keeps
+// them, which is right for a row the model has still to read and wrong for one
+// that was discarded — the transcript keeps the turn after a restart, and
+// presenting it tells the model to act on a notice it was told to forget
+// (#2340 review).
+//
+// Only watch attention is filtered: other discarded attention is not this
+// projection's business, and a turn with no attention id is history.
+func dropDiscardedWatchAttentionTurns(turns []schema.Turn, discarded map[string]struct{}) (kept []schema.Turn, droppedAt []int) {
+	if len(discarded) == 0 {
+		return turns, nil
+	}
+	kept = make([]schema.Turn, 0, len(turns))
+	for i, turn := range turns {
+		if turn.AttentionID != "" && isStableWatchAttentionID(turn.AttentionID) {
+			if _, gone := discarded[turn.AttentionID]; gone {
+				droppedAt = append(droppedAt, i)
+				continue
+			}
+		}
+		kept = append(kept, turn)
+	}
+	return kept, droppedAt
 }
