@@ -638,6 +638,16 @@ func (item *responsesOutputItem) settleMessage(message map[string]any, order int
 		return
 	}
 	item.messageParts, item.messagePartsOrder = parts, order
+	// An explicit completed array owns the message's membership. A slot it
+	// removed no longer has a value to recover, so retire its cached text:
+	// otherwise a later terminal that selects the slot without supplying a
+	// value restores the withdrawn text. An unindexed slot is not a position
+	// the array removed: a single-part array still owns that draft.
+	for index := range item.text {
+		if index >= int64(len(parts)) {
+			delete(item.text, index)
+		}
+	}
 	for index, entry := range parts {
 		part, _ := entry.(map[string]any)
 		kind, _ := part["type"].(string)
@@ -671,6 +681,14 @@ func (acc *responsesOutputAccumulator) toolOutput(payload map[string]any, callID
 		if owner.ambiguousCallIndex {
 			index = -1 // Only the explicit identities can select a call at this position.
 		}
+	}
+	// An issued call ID identifies one operation. A repeated frame for it is
+	// reconciled into that record through the call-ID fallback, and its
+	// position is advisory: a different index cannot mint a second
+	// dispatchable call. A distinct call ID keeps its own record, so reusing
+	// an index still yields separate calls.
+	if callID != "" && acc.byCallID[callID] != nil {
+		index = -1
 	}
 	if callID == "" && itemID == "" && alias == "" && index < 0 {
 		return nil

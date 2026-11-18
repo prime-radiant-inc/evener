@@ -24,6 +24,21 @@ func isReasoningControlKey(k string) bool {
 	return false
 }
 
+// reasoningOnly reports whether content carries nothing but thinking parts.
+// Such a turn exists for a destination that accepts the reasoning; where
+// projection removes it, nothing else is left to send.
+func reasoningOnly(content []llm.ContentPart) bool {
+	if len(content) == 0 {
+		return false
+	}
+	for _, p := range content {
+		if p.Kind != llm.ContentThinking {
+			return false
+		}
+	}
+	return true
+}
+
 // toChatMessages converts messages to the Chat Completions wire array (spec
 // §8.4). Every per-model quirk it applies reads off caps.
 func toChatMessages(messages []llm.Message, caps registry.Caps, useReasoningDetails bool) ([]map[string]any, error) {
@@ -140,6 +155,17 @@ func toChatMessages(messages []llm.Message, caps registry.Caps, useReasoningDeta
 				}
 			} else {
 				msg["content"] = text
+			}
+			// A turn retained only for its reasoning becomes a blank
+			// assistant message at a destination that cannot receive that
+			// reasoning at all. A destination that replays reasoning keeps
+			// it, an explicit empty marker is a payload the destination
+			// asked for, and anything the turn carried itself still
+			// travels; only a projection that left the encoded turn with
+			// nothing but its role and content is dropped.
+			if text == "" && len(calls) == 0 && reasoningOnly(content) &&
+				!registry.BoolValue(caps.ReplayReasoningText) && len(msg) == 2 {
+				continue
 			}
 			out = append(out, msg)
 		case llm.RoleTool:
