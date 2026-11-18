@@ -391,6 +391,75 @@ test("a scroller that grows with the window unchanged clamps without closing the
   }
 });
 
+// A row that was fully hidden stays fully hidden however it grows. The reader
+// focused Overview, then scrolled down to the lower actions with focus still on
+// it: all 44px of Overview are above a scrollport starting at 100. A live
+// activity count then arrives and wraps its label onto a second line, so it is
+// 60px tall - still entirely above the scrollport. A comparison that only counts
+// hidden pixels calls that 44px hidden becoming 60px hidden, and scrolls back up
+// to a row that was never on screen while the reader was reading Archive.
+test("a label that wraps above a fully hidden focused row does not pull the reader back", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  let overviewHeight = 44;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, 300, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "UL") return 120;
+    if (this.tagName !== "LI" || !this.parentElement) return 0;
+    const index = Array.prototype.indexOf.call(this.parentElement.children, this);
+    return index === 0 ? overviewHeight : 44;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "UL" ? 160 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName !== "LI" || !this.parentElement) return 0;
+    const rows = Array.prototype.slice.call(this.parentElement.children) as HTMLElement[];
+    const index = rows.indexOf(this);
+    let top = 0;
+    for (let i = 0; i < index; i += 1) top += i === 0 ? overviewHeight : 44;
+    return top;
+  });
+  const { flush } = captureFrames();
+  const four: MenuItem[] = [
+    { id: "overview", label: "Overview", onSelect: vi.fn() },
+    { id: "archive", label: "Archive", onSelect: vi.fn() },
+    { id: "rename", label: "Rename", onSelect: vi.fn() },
+    { id: "delete", label: "Delete", onSelect: vi.fn() },
+  ];
+  try {
+    render(<Menu trigger="Actions" items={four} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    // Focus stays on Overview, at 0..44. The reader scrolls down to 100, which
+    // puts all of Overview above the scrollport.
+    const first = screen.getByRole("menuitem", { name: "Overview" });
+    expect(document.activeElement).toBe(first);
+    const popup = screen.getByRole("menu");
+    popup.scrollTop = 100;
+    expect(popup.scrollTop).toBe(100);
+
+    // The activity count arrives and wraps the Overview label. Overview is 60px
+    // now, so it spans -60..0 above the scrollport: still nothing visible.
+    overviewHeight = 60;
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 801 });
+    fireEvent(window, new Event("resize"));
+    flush();
+
+    // The reader stays where they were, reading the lower actions.
+    expect(popup.scrollTop).toBe(100);
+    expect(document.activeElement).toBe(first);
+  } finally {
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
 // A shrinking scrollport does not hide more of a row that was never visible in
 // the first place. The reader focused the last row (132..176), then scrolled to
 // the top and left it below: all 44px of it were already hidden. Shortening the

@@ -436,6 +436,14 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         const hiddenBelow = (obs: RowObservation) =>
           Math.min(obs.height, Math.max(0, obs.top + obs.height - (scrollTop + obs.portHeight)));
         const hiddenAbove = (obs: RowObservation) => Math.min(obs.height, Math.max(0, scrollTop - obs.top));
+        // A row with nothing visible in EITHER observation is a row the reader
+        // scrolled away from, and it stays that way however it grows: a label
+        // above it wrapping taller makes a hidden row more hidden, but no pixel
+        // of it was ever on screen to lose. Revealing there takes the reader off
+        // the actions they were reading. A row that had visible pixels and lost
+        // them is the case this reveal is for.
+        const wasVisible = (obs: RowObservation) => hiddenAbove(obs) < obs.height && hiddenBelow(obs) < obs.height;
+        if (!wasVisible(before) && !wasVisible(now)) return;
         const worseBelow = hiddenBelow(now) > hiddenBelow(before);
         const worseAbove = hiddenAbove(now) > hiddenAbove(before);
         if (!worseBelow && !worseAbove) return;
