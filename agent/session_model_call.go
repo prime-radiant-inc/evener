@@ -445,7 +445,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	s.stagePresentedAttentionCoverage(ctx, presentedTurns, deltaTurns)
 	s.stageConversationInputsWithCoverage(presentedTurns, historyCoverage)
 	s.setRoundFallbackSource(roundFallbackSource{
-		system: sys, scope: scope, modelHistorySnapshot: modelHistorySnapshot{turns: presentedTurns, revision: historyRevision},
+		system: sys, scope: scope, turns: presentedTurns, revision: historyRevision,
 	})
 	t.RequestBuild = time.Since(tPhaseStart)
 	return profile, sys, history, req, fullHistory, reasoningEffort, nil

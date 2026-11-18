@@ -208,8 +208,8 @@ func TestFallbacksWithoutRawReplayShareTheRoundsHistory(t *testing.T) {
 	}}
 	s := newSession(t, withProfile(primary), withAdapter(adapter), withConfig(SessionConfig{ModelFallbacks: []string{"fallback-b", "fallback-c"}}))
 	s.setRoundFallbackSource(roundFallbackSource{
-		modelHistorySnapshot: modelHistorySnapshot{turns: []schema.Turn{assistantWebSearchTurn("archive", "reasoner")}},
-		scope:                replayScope{Protocol: primary.Protocol(), InFlightFrom: 1, protocolOf: func(string) string { return producerProtocol }},
+		turns: []schema.Turn{assistantWebSearchTurn("archive", "reasoner")},
+		scope: replayScope{Protocol: primary.Protocol(), InFlightFrom: 1, protocolOf: func(string) string { return producerProtocol }},
 	})
 	req := llm.Request{Provider: primary.ID(), Model: primary.Model(), Messages: []llm.Message{llm.User("r08")}}
 	if _, _, _, _, err := s.callModelWithFallback(tripwireCtx(t), primary, req, nil, "", 0); err != nil {
@@ -259,7 +259,7 @@ func TestCompletedRoundLeavesNoFallbackSource(t *testing.T) {
 func TestRoundWithoutFallbackRecordsNoSource(t *testing.T) {
 	t.Parallel()
 	s, _ := newRequestBuildBenchSession(t)
-	s.setRoundFallbackSource(roundFallbackSource{system: "system prompt", modelHistorySnapshot: modelHistorySnapshot{turns: []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("first"))}}})
+	s.setRoundFallbackSource(roundFallbackSource{system: "system prompt", turns: []schema.Turn{schema.NewTurn(schema.TurnUserInput, llm.User("first"))}})
 	if source, ok := s.takeRoundFallbackSource(); !ok || source.system != "system prompt" || len(source.turns) != 1 {
 		t.Fatalf("round source did not hold the recorded input: %#v", source)
 	}

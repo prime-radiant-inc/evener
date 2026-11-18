@@ -325,12 +325,12 @@ func (item *responsesOutputItem) appendMessage(content []llm.ContentPart, messag
 	}
 	if !substantive && len(parts) <= 1 {
 		for _, index := range slices.Sorted(maps.Keys(observed)) {
-			if index < int64(len(parts)) && !(index == -1 && len(parts) == 0 && len(observed) == 1) {
-				continue
+			onlyUnindexed := index == -1 && len(parts) == 0 && len(observed) == 1
+			if index >= int64(len(parts)) || onlyUnindexed {
+				text := observed[index].value()
+				recovered = recovered || text != ""
+				appendText(text)
 			}
-			text := observed[index].value()
-			recovered = recovered || text != ""
-			appendText(text)
 		}
 	}
 	if recovered && !substantive && phase == "" {
