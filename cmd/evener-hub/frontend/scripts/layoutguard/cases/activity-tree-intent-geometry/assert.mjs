@@ -2,10 +2,12 @@
 // beside the ellipsis, independently of the meta's protected 60% cap.
 const EPS = 0.5;
 // Exact comparisons against the same row measured with the floor switched
-// off, in the same browser run: a row the floor did not have to rescue must
-// not move at all, so these are two-sided and tight. Both sides are live
-// measurements, so a font-metric update moves them together instead of
-// failing the gate on its own.
+// off, in the same browser run: a row that showed its WHOLE label in the
+// reference pass must not move at all, so those comparisons are two-sided and
+// tight. A row the reference pass measured below its full text was truncated
+// and the fix may give it more, so it is not held to its reference width.
+// Both sides are live measurements, so a font-metric update moves them
+// together instead of failing the gate on its own.
 const EXACT = 0.01;
 // The issue's own table plus the combinations the fix must not disturb. The
 // fix reserves the name a glyph-plus-ellipsis prefix, so the matrix carries
@@ -89,6 +91,19 @@ function deviation(actual, expected) {
   return Math.abs(actual - expected) <= EXACT ? null : `${actual.toFixed(2)}px, expected ${expected.toFixed(2)}px`;
 }
 
+/** The name's own readable floor: one measured glyph of THIS row's label plus
+ * its ellipsis, or the whole label where the label is shorter than that
+ * prefix. A label shorter than its own glyph-plus-ellipsis prefix cannot show
+ * that prefix inside its own text width; the most it can hold is the whole
+ * label, which is why the need is capped at the label's width - a box wider
+ * than the text it holds is padding, not a readable name.
+ *
+ * Shared by the per-row assertion below and by the rescue counter, so a width
+ * one of them calls readable is the same width the other does. */
+function readableNameNeed(row) {
+  return Math.min(row.prefixEllipsisWidth, row.nameFullWidth);
+}
+
 /** Every per-row contract except the name's own size decision, which the
  * caller makes from the live reference.
  *
@@ -98,11 +113,7 @@ function deviation(actual, expected) {
  * in the failure text, never used to excuse one: a guard that goes quiet
  * exactly where the layout is worst certifies the case that matters most. */
 function assertRow(row, where, expected, pane, failures, room) {
-  // A label shorter than its own glyph-plus-ellipsis prefix cannot show that
-  // prefix inside its own text width; the most it can hold is the whole label.
-  // That is why the need is capped at the label's width - a box wider
-  // than the text it holds is padding, not a readable name.
-  const need = Math.min(row.prefixEllipsisWidth, row.nameFullWidth);
+  const need = readableNameNeed(row);
   // The whole point: whatever the intent holds, the name keeps a box wide
   // enough for one glyph plus its ellipsis, or for the whole label when the
   // label is shorter than that. The comparison is against the measured first
@@ -180,6 +191,7 @@ export default function assert(fixtures) {
   const controls = [];
   let rowsChecked = 0;
   let rescued = 0;
+  let alreadyReadable = 0;
   let held = 0;
   let yielded = 0;
   let hitProbes = 0;
@@ -249,10 +261,15 @@ export default function assert(fixtures) {
       // target this row actually rendered.
       const room = row.contentWidth - (4 * row.gap + row.toggleWidth + row.kindWidth + row.button.width);
       assertRow(row, where, expected, fixture.pane, failures, room);
-      // The fix is the meta's cap, so `row.reference` is the SAME row with the
-      // pre-fix 60%-only cap, measured in this same run: a font-metric change
-      // moves both sides together, while any movement the CAP causes is still
-      // caught to the hundredth of a pixel.
+      // `row.reference` is the SAME row measured in this same run with the
+      // name-priority rule removed, so a reference width below this row's own
+      // readable prefix is a direct measurement that the intent had starved it -
+      // not an inference from the row's final width. That distinction is what
+      // the counters below have to respect: a row that ends up readable proves
+      // only that it ends up readable. It is evidence of a RESCUE only if it
+      // was also starved in the reference pass.
+      const need = readableNameNeed(row);
+      const reachesNeed = row.name.width >= need - EXACT;
       if (row.reference.name >= row.nameFullWidth - EXACT) {
         // The row showed its WHOLE label before this change, so it was never
         // under pressure: it must be exactly where it was. A row squeezed to a
@@ -262,10 +279,20 @@ export default function assert(fixtures) {
         if (nameDrift) failures.push(`${where}: name moved to ${nameDrift} from the same row without the fix`);
         const metaDrift = deviation(row.meta.width, row.reference.meta);
         if (metaDrift) failures.push(`${where}: meta moved to ${metaDrift} from the same row without the fix`);
-      } else if (row.name.width >= Math.min(row.prefixEllipsisWidth, row.nameFullWidth) - EXACT) {
-        // Rescued: the name now shows an identifying glyph beside its
-        // ellipsis where the intent had reduced it to a bare sliver.
+      } else if (row.reference.name < need - EXACT && reachesNeed) {
+        // Rescued: the reference pass measured this name below its own
+        // glyph-plus-ellipsis prefix and the final layout reaches it. This is
+        // the only shape the word "rescued" describes.
         rescued++;
+      } else if (reachesNeed) {
+        // Above its prefix in the reference pass, so the intent had not
+        // starved it and the fix cannot be credited with making it readable.
+        // Its label was still TRUNCATED in that pass - a row that showed the
+        // whole label went to `held` above - and the final layout may resolve
+        // it to the whole label, since this row is not held to its reference
+        // width. So "already readable" is the claim; "unchanged" would be
+        // false, and so would "still truncated at the end".
+        alreadyReadable++;
       } else {
         // The name did not reach its prefix. `assertRow` has already failed
         // this row, so there is nothing to excuse here: this branch only
@@ -304,10 +331,23 @@ export default function assert(fixtures) {
       controls.push(row.button.width);
     }
   }
+  // The counters above are a partition, not a set of overlapping tallies: each
+  // row that reached the counting falls into exactly one of them. Asserting
+  // the sum makes a future edit that drops a row from the accounting fail the
+  // case instead of quietly shrinking a reported number.
+  if (rescued + alreadyReadable + held + yielded !== rowsChecked) {
+    failures.push(
+      `rescue accounting covers ${rescued + alreadyReadable + held + yielded} rows, expected ${rowsChecked}`,
+    );
+  }
+  // The matrix carries one row that states no intent on purpose, so the
+  // measured total is not a total of intent rows. Derived from the matrix
+  // rather than restated, so the message cannot drift from what ran.
+  const noIntentRows = EXPECTED.reduce((sum, entry) => sum + (entry.noIntent ? entry.depth + 1 : 0), 0);
   return failures.length > 0
     ? { pass: false, reason: failures.join("; ") }
     : {
         pass: true,
-        reason: `${rowsChecked} near-limit intent rows at 320/360/390/430px depths 0-9 plus a 900px row, Latin, CJK, emoji and xl labels: every name >= its own measured glyph-plus-ellipsis prefix with no size exempt, Open >= ${Math.min(...controls).toFixed(2)}px and never past the pane edge, ${rescued} starved rows rescued, ${yielded} rows fell short, ${held} readable rows held exactly, ${hitProbes} hit probes and ${rowsChecked} DOM activations reach their own control, no pane horizontal scroll`,
+        reason: `${rowsChecked} measured rows at 320/360/390/430px depths 0-9 plus a 900px row, Latin, CJK, emoji and xl labels (${rowsChecked - noIntentRows} near-limit intent rows plus ${noIntentRows} no-intent control row): every name >= its own measured glyph-plus-ellipsis prefix with no size exempt, Open >= ${Math.min(...controls).toFixed(2)}px and never past the pane edge, ${rescued} starved rows rescued (measured below the prefix without the fix and at or above it with it), ${alreadyReadable} rows already at or above the prefix without the fix but with a truncated label, not counted as rescues, ${yielded} rows fell short, ${held} rows showed their whole label and held exactly, ${hitProbes} hit probes and ${rowsChecked} DOM activations reach their own control, no pane horizontal scroll`,
       };
 }

@@ -1,6 +1,6 @@
 {
   "name": "activity-tree-intent-geometry",
-  "description": "A 200-character intent cannot starve a short delegate name or hide its own Open control. Real phone Sheet insets at the issue's 320/360/390/430px viewports through nine nested groups, a wide 900px row whose full name and 60% meta cap must be untouched, and Latin, full-width CJK and emoji labels plus an `xl` font-scale row, because the name floor is a text-relative budget rather than a digit measurement. Every row is measured twice in the same run, with the floor on and off, so the rows the floor did not rescue are proved unmoved.",
+  "description": "A 200-character intent cannot starve a short delegate name or hide its own Open control. Real phone Sheet insets at the issue's 320/360/390/430px viewports through nine nested groups, a wide 900px row whose full name and 60% meta cap must be untouched, and Latin, full-width CJK and emoji labels plus an `xl` font-scale row, because the name floor is a text-relative budget rather than a digit measurement. Every row is measured twice in the same run, with the floor on and off, so the rows that showed their whole label before the change are proved unmoved, and a row is counted as rescued only where the floor-off pass measured its name below its own glyph-plus-ellipsis prefix.",
   "cssFiles": [
     "styles/global.css",
     "styles/tokens.css",
