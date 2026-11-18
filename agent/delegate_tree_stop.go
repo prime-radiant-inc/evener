@@ -792,7 +792,18 @@ func (c *delegateTreeController) stopForResult(result delegateStopResult) *deleg
 }
 
 func (c *delegateTreeController) drainStopForClose(ctx context.Context, stop *delegateStopState) error {
-	return c.drainStop(ctx, stop, nil)
+	// The close drain runs the same reconciliation as the stop driver, so it
+	// hands the pass to the same root runtime. A nil root dropped every plan
+	// the pass settled here, including the lost-result warning for an inline
+	// receipt whose owning commit is gone -- the notice a closing session most
+	// needs, since the result is gone and the session is about to stop being
+	// the place its owner would look (#6308). The root outlives this drain:
+	// bootstrap attaches it once, and Session.closeTerminal closes the root's
+	// event stream only after the delegate tree has closed.
+	c.mu.Lock()
+	root := c.rootRuntime
+	c.mu.Unlock()
+	return c.drainStop(ctx, stop, root)
 }
 
 func (c *delegateTreeController) drainStop(ctx context.Context, stop *delegateStopState, root *Session) error {
