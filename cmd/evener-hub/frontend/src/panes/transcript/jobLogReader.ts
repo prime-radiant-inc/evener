@@ -95,6 +95,14 @@ export class JobLogReader {
    * work due. Recurring reads may only be suppressed after an attempt to read
    * has actually finished. */
   private liveAttempted = false;
+  /** A LIVE tail attempt that failed and has not been superseded by a success.
+   * The byte range it was reading was never delivered, so the read is still
+   * owed: reconcile would otherwise park the deadline on the next metadata read
+   * and the pane would keep its old output and error with nothing scheduled to
+   * replace them. Paced by the slot's backoff, never by the recurring deadline.
+   * An unconfirmed row is the exception — no amount of retrying makes its
+   * journal able to state the status — so a failure there clears this. */
+  private liveRetryOwed = false;
   /** The metadata request whose reply a refresh is waiting for, as a sequence
    * number. A refresh asks to see the row afresh, and a request already in
    * flight when the person pressed it answers a question about the row BEFORE
@@ -111,7 +119,7 @@ export class JobLogReader {
    * settled yet. An unconfirmed row must never park owed work — that is what
    * would leave a reader waiting on evidence only that read could produce. */
   private tailOwed(): boolean {
-    return this.explicitTailOwed || !this.liveAttempted;
+    return this.explicitTailOwed || !this.liveAttempted || this.liveRetryOwed;
   }
 
   /** Ends the current generation, so a reply still in flight belongs to it and
@@ -236,6 +244,12 @@ export class JobLogReader {
    * two replies happened to arrive last. A pending drain still finishes,
    * because those bytes were already written. */
   private reconcileLiveDeadline(job: JobActivityJob | null, drainPending: boolean) {
+    // A retry is owed for bytes that were not delivered, and only while a retry
+    // could deliver them. An unconfirmed row's journal cannot state the status,
+    // so reading it again asks the same unanswerable question: the obligation is
+    // dropped here, where the confidence changes, rather than being remembered
+    // from a failure that happened before the row was known to be unconfirmed.
+    if (job !== null && !job.terminal && jobStatusUnconfirmed(job)) this.liveRetryOwed = false;
     // An owed one-shot read is a demand, not a poll. It keeps the slot due until
     // it is served, so unconfirmed metadata stops the RECURRING cadence without
     // cancelling the read a person asked for.
@@ -422,6 +436,9 @@ export class JobLogReader {
         let pendingDemand = this.snapshot.pendingDemand;
         let drainPending = this.snapshot.drainPending;
         if (kind === "live") {
+          // The bytes arrived: the range a previous attempt failed to deliver has
+          // now been read, so the obligation that carried it is discharged.
+          this.liveRetryOwed = false;
           this.historyServedSinceLive = false;
           if (
             drainPending &&
@@ -474,13 +491,32 @@ export class JobLogReader {
         // and an error forever, because unchanged terminal metadata creates no
         // new drain to ask again. Keep that read owed — the same drain a manual
         // refresh arms — until a terminal page actually arrives.
-        const automatic = selection === null && this.snapshot.pendingDemand === null && !this.snapshot.drainPending;
-        const job = this.snapshot.job;
-        const terminal = job?.terminal === true;
-        const stop = automatic && !terminal && job !== null && jobStatusUnconfirmed(job);
+        // Whether a failed tail is owed again does not depend on what else is
+        // queued:
+        //
+        //   - an UNCONFIRMED nonterminal row is never retried, because no
+        //     retry makes its journal able to state the status;
+        //   - every other failed tail was reading bytes that were never
+        //     delivered, so it stays owed until a live tail succeeds. That
+        //     obligation lives in liveRetryOwed rather than in the deadline, so
+        //     a metadata read that later reconciles the deadline cannot cancel
+        //     it.
+        //
+        // The recurring deadline ignores the queue for the same reason. A
+        // pending history demand is a different reader's work and does not turn
+        // a failing tail into a poll: left due, the failing tail keeps winning
+        // the slot while the page is suppressed as "history already served", so
+        // the work that could succeed never runs. Parking the deadline lets the
+        // demand take the slot once nextReadAt's backoff expires, so nothing is
+        // retried early and no newer request is cancelled.
+        if (kind === "live") {
+          const job = this.snapshot.job;
+          const unconfirmed = job !== null && !job.terminal && jobStatusUnconfirmed(job);
+          this.liveRetryOwed = !unconfirmed;
+          if (unconfirmed) this.liveDueAt = Number.POSITIVE_INFINITY;
+          else this.liveDueAt = Date.now();
+        }
         this.nextReadAt = Date.now() + READ_INTERVAL_MS;
-        if (stop) this.liveDueAt = Number.POSITIVE_INFINITY;
-        else if (terminal) this.liveDueAt = Date.now() + READ_INTERVAL_MS;
         const bounds = jobOutputPrunedBounds(error);
         let windows = this.snapshot.windows;
         let outputError = messageOf(error);

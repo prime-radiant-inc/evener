@@ -665,6 +665,12 @@ test("a failed reconnect tail on a settled terminal job is retried", async () =>
   peer.fail(await peer.request(OUTPUT, settled), "temporarily unavailable");
   await observed((state) => state.outputError !== null);
 
+  // Unchanged terminal metadata lands BEFORE the backoff expires. Reconciliation
+  // sees a settled row and parks the deadline, so the retry has to be owed
+  // independently of it or the failed read is lost.
+  peer.reply(await peer.request(META, 1), metadata(true));
+  await observed((state) => state.metadataError === null && state.job?.terminal === true);
+
   await vi.advanceTimersByTimeAsync(1000);
   expect(peer.requests(OUTPUT)).toHaveLength(settled + 2);
   const retry = peer.requests(OUTPUT)[settled + 1];

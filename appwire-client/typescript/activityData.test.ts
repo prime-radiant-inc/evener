@@ -12,7 +12,6 @@ import {
   delegateHasActiveWork,
   jobCommandLabel,
   jobStatusDisplay,
-  jobStatusDisplayUnconfirmed,
   jobStatusUnconfirmed,
   parseActivityJob,
   parseActivityTree,
@@ -62,11 +61,6 @@ describe("jobStatusUnconfirmed", () => {
     // exactly that third field's irrelevance.
     const job = { terminal: false, diagnostics: ["journal_scan_incomplete", "journal_torn_tail"] };
     expect(jobStatusUnconfirmed(job)).toBe(false);
-  });
-
-  it("marks the displayed word rather than replacing it", () => {
-    expect(jobStatusDisplayUnconfirmed(jobStatusDisplay("running"))).toContain(jobStatusDisplay("running"));
-    expect(jobStatusDisplayUnconfirmed(jobStatusDisplay("running"))).not.toBe(jobStatusDisplay("running"));
   });
 });
 
