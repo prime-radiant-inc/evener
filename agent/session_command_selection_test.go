@@ -107,7 +107,7 @@ func TestClientMutationCommandSelection(t *testing.T) {
 			case "queue":
 				_, err = s.AcceptClientMutationQueue(appwire.TurnQueueParams{ClientMutationID: "command-queue", Input: input})
 				if err == nil {
-					_, _, err = s.ProcessPendingUserInput(context.Background(), nil)
+					_, _, _, err = s.ProcessPendingUserInput(context.Background(), nil)
 				}
 			case "steer":
 				_, err = s.AcceptClientMutationSteer(appwire.TurnSteerParams{ClientMutationID: "command-steer", Input: input})
@@ -207,7 +207,7 @@ func TestClientMutationCommandSelectionQueueRestore(t *testing.T) {
 	}
 	_, stop := captureEvents(restored)
 	defer stop()
-	if _, ran, err := restored.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
+	if _, ran, _, err := restored.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
 		t.Fatalf("restored consumption: ran=%v err=%v", ran, err)
 	}
 	turn := findClientMutationTurn(restored, "restore-318", schema.TurnUserInput)
@@ -247,7 +247,7 @@ func TestClientMutationCommandPreparationAdmissionRetry(t *testing.T) {
 				fs.mu.Lock()
 				fs.writeFailure = failure
 				fs.mu.Unlock()
-				if _, _, err := s.ProcessPendingUserInput(context.Background(), nil); !errors.Is(err, failure) {
+				if _, _, _, err := s.ProcessPendingUserInput(context.Background(), nil); !errors.Is(err, failure) {
 					t.Fatalf("first attempt = %v, want %v", err, failure)
 				}
 				if invoked, err := os.ReadFile(filepath.Join(root, "invoked")); err != nil || string(invoked) != "x" || len(adapter.Requests()) != 0 {
@@ -291,7 +291,7 @@ func TestClientMutationCommandPreparationAdmissionRetry(t *testing.T) {
 					if _, err := s.ProcessInput(context.Background(), "CARRIER_RETRY_318", nil); err != nil {
 						t.Fatal(err)
 					}
-				} else if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
+				} else if _, ran, _, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
 					t.Fatalf("retry: ran=%v err=%v", ran, err)
 				}
 				if invoked, err := os.ReadFile(filepath.Join(root, "invoked")); err != nil || string(invoked) != "x" {

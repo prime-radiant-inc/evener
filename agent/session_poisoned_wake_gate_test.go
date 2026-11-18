@@ -192,7 +192,7 @@ func TestWakeDoesNotPublishWhenPoisonLandsAtTheClaimCommit(t *testing.T) {
 	armPoisonAtNextStoreCommit(t, sess)
 
 	var announced []string
-	result, ran, err := sess.ProcessPendingUserInput(t.Context(), func(turnID string) {
+	result, ran, _, err := sess.ProcessPendingUserInput(t.Context(), func(turnID string) {
 		announced = append(announced, turnID)
 	})
 	if !errors.Is(err, transcript.ErrWriterPoisoned) {
@@ -263,7 +263,7 @@ func TestCarrierAnnouncementPoisonedAtTheCommitReleasesTheSlot(t *testing.T) {
 	armPoisonAtStoreCommitAfter(t, sess, 1)
 
 	var announced []string
-	result, ran, err := sess.ProcessPendingUserInput(t.Context(), func(turnID string) {
+	result, ran, _, err := sess.ProcessPendingUserInput(t.Context(), func(turnID string) {
 		announced = append(announced, turnID)
 	})
 	if !errors.Is(err, transcript.ErrWriterPoisoned) {
@@ -390,7 +390,7 @@ func TestClosedTranscriptClaimIsRefusedBeforeItCommits(t *testing.T) {
 	before := sess.clientMutations.snapshot().QueueRevision
 
 	var announced []string
-	result, ran, err := sess.ProcessPendingUserInput(t.Context(), func(turnID string) {
+	result, ran, _, err := sess.ProcessPendingUserInput(t.Context(), func(turnID string) {
 		announced = append(announced, turnID)
 	})
 	if !errors.Is(err, transcript.ErrWriterClosed) {
@@ -567,7 +567,7 @@ func TestWakeRefusesTheSteeringCarrierWhenPoisonLandsBeforeTheClaim(t *testing.T
 	}
 
 	var announced []string
-	result, ran, err := sess.ProcessPendingUserInput(t.Context(), func(turnID string) {
+	result, ran, _, err := sess.ProcessPendingUserInput(t.Context(), func(turnID string) {
 		announced = append(announced, turnID)
 	})
 	if !errors.Is(err, transcript.ErrWriterPoisoned) {
@@ -607,11 +607,20 @@ func TestWakeStandsDownWhenAStopParksTheSteerBeforeTheClaim(t *testing.T) {
 	}
 
 	var announced []string
-	result, ran, err := sess.ProcessPendingUserInput(t.Context(), func(turnID string) {
+	result, ran, outcome, err := sess.ProcessPendingUserInput(t.Context(), func(turnID string) {
 		announced = append(announced, turnID)
 	})
 	if result != "" || ran || err != nil {
 		t.Fatalf("wake over a steer parked before the claim = (%q, %v, %v), want a quiet stand-down", result, ran, err)
+	}
+	// The stand-down is quiet in its error and its booleans, which is exactly
+	// why the reason has to travel separately: the steer is accepted, runnable,
+	// and a gate refused it (#6468).
+	if outcome != PendingInputCarrierUnaddressable {
+		t.Fatalf("outcome over a steer whose rail closed before the claim = %v, want carrier-unaddressable", outcome)
+	}
+	if !outcome.RefusedRunnableInput() {
+		t.Fatal("a steer a closed rail refused is not reported as runnable input a gate refused")
 	}
 	if len(announced) != 0 {
 		t.Fatalf("the stood-down wake announced turns %v, want none", announced)

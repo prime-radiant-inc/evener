@@ -108,12 +108,12 @@ func TestAskFenceAllResolvingFailureWritersKeepCapturedEvidence(t *testing.T) {
 				if mode == "steer_append_failure" {
 					refusal := refuseSteerAppends(s, id)
 					refusal.refuse.Store(true)
-					_, ran, err := s.ProcessPendingUserInput(ctx, nil)
+					_, ran, _, err := s.ProcessPendingUserInput(ctx, nil)
 					if err == nil || !ran || refusal.refusals.Load() != 1 {
 						t.Fatalf("ran=%v error=%v refusals=%d", ran, err, refusal.refusals.Load())
 					}
 				} else {
-					_, ran, err := s.ProcessPendingUserInput(ctx, nil)
+					_, ran, _, err := s.ProcessPendingUserInput(ctx, nil)
 					if err != nil || ran {
 						t.Fatalf("ran=%v error=%v", ran, err)
 					}

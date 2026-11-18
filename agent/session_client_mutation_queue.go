@@ -229,6 +229,83 @@ func (s *Session) hasPendingUserInputToRun() bool {
 	return runnable
 }
 
+// PendingInputOutcome names what a ProcessPendingUserInput wake did with the
+// work it found, so a caller can tell an ordinary idle wake from accepted input
+// a gate refused.
+//
+// Every stand-down below used to be the same ("", false, nil), which the serve
+// loop could only answer by dropping the runner and blocking: runnable work
+// refused by a gate and an empty wake were indistinguishable in the log, and
+// the first is accepted input left standing (#6468). A refusal that travels as
+// an error already reaches the caller as one; this covers the ones that
+// deliberately do not, because answering every idle wake with an error would
+// turn the wake channel into a logged failure for the session's life.
+type PendingInputOutcome int
+
+const (
+	// PendingInputNoOutcome is the zero value: the wake returned an error, so
+	// no stand-down was decided and this says nothing.
+	PendingInputNoOutcome PendingInputOutcome = iota
+	// PendingInputClaimed reports that the wake claimed work and spent it. A
+	// steering carrier that stood down still reports this: its claim was real
+	// and its steer is gone, so no gate refused it. The wake's own bool says
+	// whether a model turn actually ran.
+	PendingInputClaimed
+	// PendingInputNothingRunnable reports that the probe found no claimable
+	// work at all -- the routine wake that arrives after its work has run.
+	PendingInputNothingRunnable
+	// PendingInputSteeringParked reports user steering left parked by a failed
+	// attempt, waiting for the next wake sender to unpark it. The probe found
+	// the steer runnable and the claim refused it.
+	PendingInputSteeringParked
+	// PendingInputCarrierUnaddressable reports pending user steering with no
+	// carrier available: another mutation owns the active-turn slot, or an
+	// interrupt fence is ending one. The probe found the steer runnable and
+	// the claim refused it.
+	PendingInputCarrierUnaddressable
+	// PendingInputClaimTookNothing reports that the probe called work runnable
+	// and no claim took any of it: the queue gate closed between the two (a
+	// Stop's fence or its hold). A second probe cannot tell this from a wake
+	// that ran out of work -- the gate that closed is still closed to it -- so
+	// the answer comes from what the probe saw at the time it looked.
+	PendingInputClaimTookNothing
+)
+
+// String renders the outcome for the daemon log. It is diagnostic prose, not a
+// contract: nothing decides behaviour from it.
+func (o PendingInputOutcome) String() string {
+	switch o {
+	case PendingInputClaimed:
+		return "claimed the work"
+	case PendingInputNothingRunnable:
+		return "nothing runnable"
+	case PendingInputSteeringParked:
+		return "steering parked by a failed attempt"
+	case PendingInputCarrierUnaddressable:
+		return "steering carrier unaddressable: an active turn or an interrupt fence owns the slot"
+	case PendingInputClaimTookNothing:
+		return "probe called work runnable and no claim took it"
+	default:
+		return "no outcome"
+	}
+}
+
+// RefusedRunnableInput reports whether the wake found work the probe called
+// runnable and a gate refused it, so accepted input is standing still.
+//
+// This is the condition #6468 is about: it is not an error, it ends in the same
+// ("", false, nil) the routine idle wake returns, and the serve loop's response
+// -- drop the armed runner, block on a channel -- is identical. A caller that
+// only has the boolean cannot see it at all.
+func (o PendingInputOutcome) RefusedRunnableInput() bool {
+	switch o {
+	case PendingInputSteeringParked, PendingInputCarrierUnaddressable, PendingInputClaimTookNothing:
+		return true
+	default:
+		return false
+	}
+}
+
 // ProcessPendingUserInput runs input the user has already given but the session
 // has not delivered -- a queued message, or steering with no turn to land in --
 // and reports whether it ran a turn.
@@ -256,7 +333,13 @@ func (s *Session) hasPendingUserInputToRun() bool {
 // cancellation to it before the turn starts producing. For steering that id is
 // the pending steer's own reserved id, not a freshly minted one, so the id the
 // client was told in its Applied receipt is the id that actually runs.
-func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(string)) (string, bool, error) {
+//
+// The outcome names which of the quiet exits below the wake took, so a caller
+// can tell "there was nothing to run" from "there was runnable work and a gate
+// refused it" -- the difference between an ordinary idle wake and accepted
+// input left standing. It is reported for every return that does not carry an
+// error, including the successful one.
+func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(string)) (string, bool, PendingInputOutcome, error) {
 	// Wakes are unconditional and coalesce, so one can arrive after the work
 	// it was sent for has already run. A wake that finds nothing is not
 	// admitted work and must not take a retirement lease: beginning one
@@ -267,15 +350,15 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 	// themselves retirement evidence (retirementInputBlockers). Input that is
 	// present here is claimed under the lease below, which re-decides it.
 	if !s.hasPendingUserInputToRun() {
-		return "", false, nil
+		return "", false, PendingInputNothingRunnable, nil
 	}
 	release, admissionErr := s.beginRetirementMutation("turn")
 	if admissionErr != nil {
-		return "", false, admissionErr
+		return "", false, PendingInputNoOutcome, admissionErr
 	}
 	defer release()
 	if err := s.ensureClientMutationStore(); err != nil {
-		return "", false, err
+		return "", false, PendingInputNoOutcome, err
 	}
 	// Each claim below decides the poisoned-transcript refusal on the same
 	// generation it claims on, so nothing here has to read a claimability
@@ -287,19 +370,19 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 	// record.
 	queued, refusal := s.popQueueHeadRefusingPoison()
 	if refusal != nil {
-		return "", false, refusal
+		return "", false, PendingInputNoOutcome, refusal
 	}
 	if !inputHasContent(queued.Text, queued.Images, queued.SkillNames, queued.CommandNames) && s.steeringParkedNow() {
 		// A wake the daemon buffered before the last attempt failed -- the
 		// steer's own acceptance wake, held while the input that then ran the
 		// carrier inline was still running. That attempt spent it; the next
 		// wake sender unparks (Session.steeringParked).
-		return "", false, nil
+		return "", false, PendingInputSteeringParked, nil
 	}
 	if !inputHasContent(queued.Text, queued.Images, queued.SkillNames, queued.CommandNames) && s.hasPendingUserSteering() {
 		carrier, carrierRefusal := s.claimSteeringCarrierInput()
 		if carrierRefusal != nil {
-			return "", false, carrierRefusal
+			return "", false, PendingInputNoOutcome, carrierRefusal
 		}
 		if !carrier.SteeringCarrier {
 			// Another mutation already owns the active-turn slot, or an
@@ -307,7 +390,7 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 			// Stand down rather than run unaddressable -- the steering stays
 			// queued for whichever turn runs next, the same stand-down
 			// contract mintRunningTurnID's callers rely on.
-			return "", false, nil
+			return "", false, PendingInputCarrierUnaddressable, nil
 		}
 		queued = carrier
 		// The claim is handed back by the run itself, on every exit: the
@@ -333,7 +416,7 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 			}
 			return nil
 		}); err != nil {
-			return "", false, err
+			return "", false, PendingInputNoOutcome, err
 		}
 		if queued.SteeringCarrier {
 			// The stand-down set is per-carrier-run: clear anything a previous
@@ -370,9 +453,44 @@ func (s *Session) ProcessPendingUserInput(ctx context.Context, onRunnable func(s
 		if queued.SteeringCarrier && s.steeringCarrierStoodDown(queued.StableTurnID) {
 			ran = false
 		}
-		return result, ran, err
+		return result, ran, PendingInputClaimed, err
 	}
-	return "", false, nil
+	// The probe said runnable and the claim took nothing. The work is still
+	// standing exactly when it is still there; a probe that answered from a
+	// store it had not opened yet is an over-report, not runnable work, and
+	// calling that a refusal would put a standing-work line in the log for an
+	// idle session.
+	if !s.hasUnclaimedUserInput() {
+		return "", false, PendingInputNothingRunnable, nil
+	}
+	return "", false, PendingInputClaimTookNothing, nil
+}
+
+// hasUnclaimedUserInput reports whether the store holds any user input at all,
+// ignoring every gate: a queued message whatever the queue's gate would decide,
+// or user steering whatever state its rail is in.
+//
+// It is the second half of a stand-down's question. The probe answered
+// "runnable" through the gates and the claim then took nothing, so the gate
+// closed between the two; asking the gates again would just repeat the refusal.
+// This asks the gate-blind question instead, which is the one that separates
+// accepted input left standing from a wake that simply ran out of work.
+//
+// It reads the durable store rather than the in-memory steering mirror: after a
+// restart the mirror is rebuilt from the store, and a steer the store still
+// holds is standing work whether or not the mirror has caught up.
+func (s *Session) hasUnclaimedUserInput() bool {
+	s.clientMutationsInitMu.Lock()
+	store := s.clientMutations
+	s.clientMutationsInitMu.Unlock()
+	if store == nil {
+		return false
+	}
+	pending := false
+	store.read(func(snapshot *clientMutationSnapshot) {
+		pending = len(snapshot.InputQueue) != 0 || len(snapshot.SteeringOrder) != 0
+	})
+	return pending
 }
 
 // claimSteeringCarrierInput reserves the durable turn identity for a turn whose

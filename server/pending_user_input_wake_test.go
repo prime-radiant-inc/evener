@@ -172,7 +172,7 @@ func TestQueuedInputRunsAfterItsWakeIsDropped(t *testing.T) {
 		t.Fatalf("the queued message was durably accepted and its wake dropped; nothing ever came back for it, so %q runs never", queuedText)
 	}
 
-	_, ran, err := sess.ProcessPendingUserInput(context.Background(), nil)
+	_, ran, _, err := sess.ProcessPendingUserInput(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("ProcessPendingUserInput: %v", err)
 	}

@@ -83,7 +83,7 @@ func TestAskFenceScopedAnswerPreservesPostAdmissionAppend(t *testing.T) {
 				if !s.injectDrainedSteering() {
 					t.Fatal("steer not delivered")
 				}
-			} else if _, ran, err := s.ProcessPendingUserInput(ctx, nil); err != nil || !ran {
+			} else if _, ran, _, err := s.ProcessPendingUserInput(ctx, nil); err != nil || !ran {
 				t.Fatalf("ran=%v error=%v", ran, err)
 			}
 			assertFenceSurvivor(t, s, "ask-after-admission")

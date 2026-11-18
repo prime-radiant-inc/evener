@@ -29,7 +29,7 @@ func TestSystemSteeringDoesNotProvokeATurn(t *testing.T) {
 		t.Fatal("system steering did not queue; this test is not in the state it means to be")
 	}
 
-	if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil {
+	if _, ran, _, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil {
 		t.Fatalf("ProcessPendingUserInput: %v", err)
 	} else if ran {
 		t.Fatal("system steering provoked a user turn of its own; it is meant to ride the next real turn")
@@ -78,7 +78,7 @@ func TestUserSteeringStillProvokesATurn(t *testing.T) {
 		t.Fatalf("AcceptClientMutationSteer: %v", err)
 	}
 
-	if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
+	if _, ran, _, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
 		t.Fatalf("user steering did not run: ran=%v err=%v", ran, err)
 	}
 	if s.hasPendingSteering() {

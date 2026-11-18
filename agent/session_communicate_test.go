@@ -881,7 +881,7 @@ func TestCommunicate_TerminalClientSteeringRunsAfterTheTerminalResult(t *testing
 	case <-time.After(5 * time.Second):
 		t.Fatal("pending steering wake did not arrive")
 	}
-	if _, ran, err := sess.ProcessPendingUserInput(context.Background(), nil); err != nil {
+	if _, ran, _, err := sess.ProcessPendingUserInput(context.Background(), nil); err != nil {
 		t.Fatalf("ProcessPendingUserInput: %v", err)
 	} else if ran {
 		t.Fatal("the wake ran a second carrier for steering the input already carried")

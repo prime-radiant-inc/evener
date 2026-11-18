@@ -779,7 +779,7 @@ func TestReleaseRetryWakesTheSteerBehindAStaleSlot(t *testing.T) {
 	default:
 		t.Fatal("the release retry landed and woke nobody: the steer behind the stale slot waits for an unrelated client action")
 	}
-	if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
+	if _, ran, _, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
 		t.Fatalf("the wake's run: ran=%v err=%v, want the steer carried", ran, err)
 	}
 }
@@ -1000,7 +1000,7 @@ func runPendingInputOnEachWake(t *testing.T, s *Session, wakes <-chan struct{}, 
 			return runs
 		}
 		runs++
-		if _, _, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil && !strings.Contains(err.Error(), "stays queued") {
+		if _, _, _, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil && !strings.Contains(err.Error(), "stays queued") {
 			t.Fatalf("ProcessPendingUserInput on wake %d: %v", runs, err)
 		}
 	}
@@ -1297,7 +1297,7 @@ func TestCarrierProceedsWhenALaterSteerWasDeliveredBehindAFailedSelection(t *tes
 		}
 	}
 	drainWakes(wakes)
-	if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
+	if _, ran, _, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
 		t.Fatalf("the carrier: ran=%v err=%v", ran, err)
 	}
 
@@ -1342,7 +1342,7 @@ func TestRefusedCarrierClaimParksTheSteerForTheNextExternalWake(t *testing.T) {
 	s.clientMutations.faults.BeforeEffectSnapshotRename = func() error {
 		return errors.New("injected: claim write refused")
 	}
-	if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || ran {
+	if _, ran, _, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || ran {
 		t.Fatalf("the wake with the claim refused: ran=%v err=%v, want a stand-down", ran, err)
 	}
 	s.clientMutations.faults.BeforeEffectSnapshotRename = nil
@@ -1687,7 +1687,7 @@ func TestParkedSteeringRefusesADaemonNotificationTurn(t *testing.T) {
 	}
 	drainWakes(wakes)
 	refuseTheNextCarrierClaimWrite(s)
-	if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || ran {
+	if _, ran, _, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || ran {
 		t.Fatalf("the wake with the claim refused: ran=%v err=%v, want a stand-down", ran, err)
 	}
 	s.enqueueJobNotification(jobNotification{JobID: "job_X", JobType: "shell", Status: "completed", OutputBytes: 42})

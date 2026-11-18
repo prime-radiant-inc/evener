@@ -49,7 +49,7 @@ func TestSteeringOnlyCarrierDeliversAtMaxTurnsCeilingWithoutAnEmptyUserTurn(t *t
 	historyBefore := len(budgetHistory(sess))
 
 	var reportedTurnID string
-	_, ran, err := sess.ProcessPendingUserInput(context.Background(), func(turnID string) {
+	_, ran, _, err := sess.ProcessPendingUserInput(context.Background(), func(turnID string) {
 		reportedTurnID = turnID
 	})
 	if err != nil {
@@ -132,7 +132,7 @@ func TestSteeringOnlyCarrierInterruptCancelsTheModelRequestAndMatchesTurnAuthori
 	var reportedTurnID string
 	done := make(chan error, 1)
 	go func() {
-		_, _, procErr := sess.ProcessPendingUserInput(turnCtx, func(turnID string) {
+		_, _, _, procErr := sess.ProcessPendingUserInput(turnCtx, func(turnID string) {
 			reportedTurnID = turnID
 		})
 		done <- procErr
@@ -221,7 +221,7 @@ func TestSteeringOnlyCarrierHandsBackAClaimTheTurnNeverUsed(t *testing.T) {
 			}
 
 			ctx := tc.arrange(sess)
-			if _, _, err := sess.ProcessPendingUserInput(ctx, nil); err == nil {
+			if _, _, _, err := sess.ProcessPendingUserInput(ctx, nil); err == nil {
 				t.Fatal("the wake reported success; this case is meant to fail before the turn runs")
 			}
 
@@ -251,7 +251,7 @@ func TestSteeringOnlyCarrierStrandedClaimWouldRefuseTheNextTurnStart(t *testing.
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, _, err := sess.ProcessPendingUserInput(ctx, nil); !errors.Is(err, context.Canceled) {
+	if _, _, _, err := sess.ProcessPendingUserInput(ctx, nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("ProcessPendingUserInput on a cancelled context = %v, want context.Canceled", err)
 	}
 

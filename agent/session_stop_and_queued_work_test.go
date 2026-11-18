@@ -580,12 +580,59 @@ func TestStopParksTheQueueAgainstBothRestartRails(t *testing.T) {
 	}
 	// The SECOND return is "did a turn run"; the first is that turn's output
 	// text, which an adapter may legitimately leave empty.
-	if _, ranTurn, err := sess.ProcessPendingUserInput(context.Background(), nil); err != nil || ranTurn {
+	if _, ranTurn, _, err := sess.ProcessPendingUserInput(context.Background(), nil); err != nil || ranTurn {
 		t.Fatalf("ProcessPendingUserInput ran work after a Stop: ranTurn=%v err=%v", ranTurn, err)
 	}
 	// And the message is still the user's.
 	if got := sess.queueDepth(); got != 1 {
 		t.Fatalf("QueueDepth after the Stop = %d, want 1: parking must not cost the message", got)
+	}
+}
+
+// TestQueuedInputWakeReportsTheQueueGateClosingAfterTheProbe is the queue's
+// half of the stand-down the serve loop could not see.
+//
+// A wake's probe and its claim are two reads of the same store, and a Stop can
+// land between them. The wake then finds the work runnable, claims nothing, and
+// returns the same ("", false, nil) a wake that found nothing returns -- so the
+// serve loop drops the armed runner and blocks without a word. The message is
+// durably accepted and the user holds its Applied receipt, so nothing will
+// arrive to look again until the user speaks (#6468).
+//
+// The window is opened with the claim's own seam rather than by racing: the
+// Stop is applied at the moment the queue head has been sampled and before the
+// serializer reads the claimability it will refuse on, which is the exact
+// window production has.
+func TestQueuedInputWakeReportsTheQueueGateClosingAfterTheProbe(t *testing.T) {
+	t.Parallel()
+	sess := newQueuePersistTestSession(t, t.TempDir())
+	defer sess.Close()
+	queueOneMutation(t, sess, "queued-into-the-window", "run me unless the user stops me")
+	if !sess.hasPendingUserInputToRun() {
+		t.Fatal("the probe reports nothing runnable, so the refusal below would prove nothing")
+	}
+	sess.cfg.testOnly.queueHeadClaimSampled = func() {
+		sess.cfg.testOnly.queueHeadClaimSampled = nil
+		if err := sess.clientMutations.mutate(func(snapshot *clientMutationSnapshot) error {
+			snapshot.QueueHeld = true
+			return nil
+		}); err != nil {
+			t.Errorf("park the queue inside the wake's window: %v", err)
+		}
+	}
+
+	_, ran, outcome, err := sess.ProcessPendingUserInput(context.Background(), nil)
+	if err != nil || ran {
+		t.Fatalf("wake whose queue gate closed after the probe = ran %v, err %v; want a quiet stand-down", ran, err)
+	}
+	if outcome != PendingInputClaimTookNothing {
+		t.Fatalf("outcome = %v, want claim-took-nothing: the probe called this message runnable and the claim refused it", outcome)
+	}
+	if !outcome.RefusedRunnableInput() {
+		t.Fatal("accepted input a gate refused is not reported as runnable input a gate refused")
+	}
+	if got := sess.queueDepth(); got != 1 {
+		t.Fatalf("QueueDepth after the refused claim = %d, want 1: the message is still the user's", got)
 	}
 }
 

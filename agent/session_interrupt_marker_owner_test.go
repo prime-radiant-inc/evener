@@ -52,7 +52,7 @@ func TestInterruptMarkerOfMutationNamedTurnCarriesTheTurn(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		_, _, _ = sess.ProcessPendingUserInput(ctx, nil)
+		_, _, _, _ = sess.ProcessPendingUserInput(ctx, nil)
 	}()
 	select {
 	case <-entered:

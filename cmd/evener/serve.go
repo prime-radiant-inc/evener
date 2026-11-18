@@ -1002,7 +1002,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 					func() { bridge.setMutationRunner(cancelTurn, runnerDone) },
 					func() { srv.SetCancelFunc(cancelTurn) },
 				)
-				result, processed, processErr = sess.ProcessPendingUserInput(turnCtx, func(string) {
+				result, processed, _, processErr = sess.ProcessPendingUserInput(turnCtx, func(string) {
 					srv.SetProcessing(true)
 				})
 				if !processed {

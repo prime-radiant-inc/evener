@@ -265,7 +265,7 @@ func TestVoicePendingAsk_InternalFoldDuringHumanNote(t *testing.T) {
 	if _, err := s.SetHumanNote("note-73", "note-content-73"); err != nil {
 		t.Fatal(err)
 	}
-	if _, ran, err := s.ProcessPendingUserInput(tripwireCtx(t), nil); err != nil || !ran {
+	if _, ran, _, err := s.ProcessPendingUserInput(tripwireCtx(t), nil); err != nil || !ran {
 		t.Fatalf("note round ran=%v err=%v", ran, err)
 	}
 	folded := false

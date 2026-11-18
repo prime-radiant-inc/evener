@@ -407,7 +407,7 @@ func TestQueuedEnvironmentFailureReportsRollbackFailure(t *testing.T) {
 		return nil
 	}
 	attachEnvironmentSyncFailure(t, sess, environmentFailure, func() { failRollback.Store(true) })
-	_, ran, err := sess.ProcessPendingUserInput(t.Context(), nil)
+	_, ran, _, err := sess.ProcessPendingUserInput(t.Context(), nil)
 	if !ran || !errors.Is(err, environmentFailure) || !errors.Is(err, rollbackFailure) {
 		t.Fatalf("queued attempt ran=%v error=%v; want both environment and rollback failures", ran, err)
 	}
@@ -447,7 +447,7 @@ func TestQueuedEnvironmentFailureReturnsRunnableClaimAndWakesRetry(t *testing.T)
 	wakes.Store(0)
 	failure := errors.New("environment transcript durability failure")
 	attachEnvironmentSyncFailure(t, sess, failure, nil)
-	_, ran, err := sess.ProcessPendingUserInput(t.Context(), nil)
+	_, ran, _, err := sess.ProcessPendingUserInput(t.Context(), nil)
 	if !ran || !errors.Is(err, failure) {
 		t.Fatalf("queued attempt ran=%v error=%v, want environment durability failure", ran, err)
 	}
@@ -465,7 +465,7 @@ func TestQueuedEnvironmentFailureReturnsRunnableClaimAndWakesRetry(t *testing.T)
 		t.Fatal("restored queue did not wake its runner")
 	}
 	stableTurnID := snapshot.Journal[mutationID].StableTurnID
-	_, ran, err = sess.ProcessPendingUserInput(t.Context(), nil)
+	_, ran, _, err = sess.ProcessPendingUserInput(t.Context(), nil)
 	if !ran || err != nil {
 		t.Fatalf("queued retry ran=%v error=%v, want accepted retry", ran, err)
 	}
@@ -1040,7 +1040,7 @@ func TestPoisonedWriterDoesNotPopAQueuedMessage(t *testing.T) {
 	}
 	poisonSessionTranscript(t, sess)
 
-	_, _, err := sess.ProcessPendingUserInput(t.Context(), nil)
+	_, _, _, err := sess.ProcessPendingUserInput(t.Context(), nil)
 	if !errors.Is(err, transcript.ErrWriterPoisoned) {
 		t.Fatalf("queued message against a poisoned transcript = %v, want an error wrapping transcript.ErrWriterPoisoned", err)
 	}
@@ -1094,7 +1094,7 @@ func TestPoisonedWriterStandsDownOnAnIdleWake(t *testing.T) {
 		t.Fatalf("setup: queue depth = %d, want nothing queued", got)
 	}
 
-	result, ran, err := sess.ProcessPendingUserInput(t.Context(), nil)
+	result, ran, _, err := sess.ProcessPendingUserInput(t.Context(), nil)
 	if result != "" || ran || err != nil {
 		t.Fatalf("idle wake against a poisoned transcript = (%q, %v, %v), want a quiet stand-down", result, ran, err)
 	}
@@ -1114,7 +1114,7 @@ func TestPoisonedWriterRefusesAWakeCarryingSteering(t *testing.T) {
 	}
 
 	var announced []string
-	result, ran, err := sess.ProcessPendingUserInput(t.Context(), func(turnID string) {
+	result, ran, _, err := sess.ProcessPendingUserInput(t.Context(), func(turnID string) {
 		announced = append(announced, turnID)
 	})
 	if !errors.Is(err, transcript.ErrWriterPoisoned) {
@@ -1152,7 +1152,7 @@ func TestPoisonedWriterStandsDownOnParkedQueuedWork(t *testing.T) {
 	}
 	poisonSessionTranscript(t, sess)
 
-	result, ran, err := sess.ProcessPendingUserInput(t.Context(), nil)
+	result, ran, _, err := sess.ProcessPendingUserInput(t.Context(), nil)
 	if result != "" || ran || err != nil {
 		t.Fatalf("wake over parked queued work = (%q, %v, %v), want a quiet stand-down", result, ran, err)
 	}
@@ -1190,7 +1190,7 @@ func TestPoisonedWriterStandsDownOnParkedSteering(t *testing.T) {
 	}
 	poisonSessionTranscript(t, sess)
 
-	result, ran, err := sess.ProcessPendingUserInput(t.Context(), nil)
+	result, ran, _, err := sess.ProcessPendingUserInput(t.Context(), nil)
 	if result != "" || ran || err != nil {
 		t.Fatalf("wake over parked steering = (%q, %v, %v), want a quiet stand-down", result, ran, err)
 	}

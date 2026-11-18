@@ -667,7 +667,7 @@ func TestRetirementIdleStartProbeKeepsInterval(t *testing.T) {
 func TestRetirementIdleQueuedInputWakeKeepsInterval(t *testing.T) {
 	t.Parallel()
 	root, c, settled := newSettledRetirementRoot(t)
-	if _, processed, err := root.ProcessPendingUserInput(context.Background(), nil); err != nil || processed {
+	if _, processed, _, err := root.ProcessPendingUserInput(context.Background(), nil); err != nil || processed {
 		t.Fatalf("idle wake = processed %v, err %v; want nothing to run", processed, err)
 	}
 	if got := c.Snapshot().EligibleSince; !got.Equal(settled) {
@@ -709,8 +709,20 @@ func TestRetirementUncarriableSteeringWakeKeepsInterval(t *testing.T) {
 			tc.block(t, root)
 			// Accepting the steer was admitted work; settle again after it.
 			settled := settleRetirement(c)
-			if _, processed, err := root.ProcessPendingUserInput(context.Background(), nil); err != nil || processed {
+			_, processed, outcome, err := root.ProcessPendingUserInput(context.Background(), nil)
+			if err != nil || processed {
 				t.Fatalf("wake = processed %v, err %v; want the steer left for the user", processed, err)
+			}
+			// The block is already in place when the wake re-runs the probe, so
+			// the probe itself reports nothing runnable. That is the right
+			// reading and it must not be dressed up as a refusal: no gate
+			// opened and closed around this wake, so nothing is standing still
+			// that a gate could release (#6468).
+			if outcome != PendingInputNothingRunnable {
+				t.Fatalf("outcome for a steer blocked before the probe = %v, want nothing-runnable", outcome)
+			}
+			if outcome.RefusedRunnableInput() {
+				t.Fatal("a steer the probe never called runnable is reported as runnable input a gate refused")
 			}
 			if got := c.Snapshot().EligibleSince; !got.Equal(settled) {
 				t.Fatalf("wake moved the settled instant from %v to %v; it ran nothing", settled, got)

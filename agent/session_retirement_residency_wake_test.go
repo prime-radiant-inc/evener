@@ -126,7 +126,7 @@ func TestResidencyReturnWakesRunnableQueuedInput(t *testing.T) {
 	}
 
 	// The wake is what the serve loop answers.
-	if _, ran, err := rig.root.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
+	if _, ran, _, err := rig.root.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
 		t.Fatalf("ProcessPendingUserInput after the wake = ran %v, err %v; want the queued message to run", ran, err)
 	}
 }

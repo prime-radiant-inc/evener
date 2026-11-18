@@ -33,7 +33,7 @@ func TestQueuedInputRunsWhileAQuestionIsPending(t *testing.T) {
 	s.askPending = []askQuestion{{Header: "pick", Question: "which one?"}}
 	s.mu.Unlock()
 
-	if _, _, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil {
+	if _, _, _, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil {
 		t.Fatalf("ProcessPendingUserInput: %v", err)
 	}
 
@@ -58,12 +58,21 @@ func TestProcessPendingUserInputIsANoOpWithAnEmptyQueue(t *testing.T) {
 	s := newTestSessionForEnvctx(t)
 	serveSessionWithMutationStore(t, s)
 
-	_, ran, err := s.ProcessPendingUserInput(context.Background(), nil)
+	_, ran, outcome, err := s.ProcessPendingUserInput(context.Background(), nil)
 	if err != nil {
 		t.Fatalf("ProcessPendingUserInput on an empty queue: %v", err)
 	}
 	if ran {
 		t.Fatal("ProcessPendingUserInput reported a turn on an empty queue")
+	}
+	if outcome != PendingInputNothingRunnable {
+		t.Fatalf("outcome on an empty queue = %v, want nothing-runnable", outcome)
+	}
+	// The routine idle wake must never read as accepted work left standing, or
+	// every wake the daemon coalesces would be reported and the condition the
+	// report exists for would be noise (#6468).
+	if outcome.RefusedRunnableInput() {
+		t.Fatal("an empty wake is reported as runnable input a gate refused")
 	}
 }
 
@@ -78,13 +87,20 @@ func TestProcessPendingUserInputReportsTheTurnItClaims(t *testing.T) {
 	queueOneMutation(t, s, "cm-queued-reported", "run me")
 
 	var reported string
-	if _, ran, err := s.ProcessPendingUserInput(context.Background(), func(turnID string) {
+	_, ran, outcome, err := s.ProcessPendingUserInput(context.Background(), func(turnID string) {
 		reported = turnID
-	}); err != nil || !ran {
+	})
+	if err != nil || !ran {
 		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v", ran, err)
 	}
 	if reported == "" {
 		t.Fatal("ProcessPendingUserInput ran a turn without reporting its id; the daemon cannot publish or cancel it")
+	}
+	if outcome != PendingInputClaimed {
+		t.Fatalf("outcome for a wake that ran its work = %v, want claimed", outcome)
+	}
+	if outcome.RefusedRunnableInput() {
+		t.Fatal("a wake that claimed its work is reported as refused runnable input")
 	}
 	if got := s.clientMutations.snapshot().Journal["cm-queued-reported"].StableTurnID; got != reported {
 		t.Fatalf("reported turn %q, but the mutation's durable turn is %q", reported, got)
@@ -129,7 +145,7 @@ func TestSteeringIsDeliveredWhileAQuestionIsPending(t *testing.T) {
 	s.askPending = []askQuestion{{Header: "pick", Question: "which one?"}}
 	s.mu.Unlock()
 
-	if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
+	if _, ran, _, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
 		t.Fatalf("ProcessPendingUserInput with steering pending: ran=%v err=%v", ran, err)
 	}
 	if s.hasPendingSteering() {

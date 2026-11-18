@@ -224,7 +224,7 @@ func TestAskUser_AnswerLinkSteeringAdmission(t *testing.T) {
 				fs.writeFailure = errors.New("steering append failed")
 				fs.transferBeforeWriteFailure = 0
 				fs.mu.Unlock()
-				if _, _, err := sess.ProcessPendingUserInput(ctx, nil); err == nil {
+				if _, _, _, err := sess.ProcessPendingUserInput(ctx, nil); err == nil {
 					t.Fatal("carrier append failure was not reported")
 				}
 				for _, turn := range answerLinkRecords(t, sess) {
@@ -247,7 +247,7 @@ func TestAskUser_AnswerLinkSteeringAdmission(t *testing.T) {
 				if !sess.injectDrainedSteering() {
 					t.Fatal("accepted steer was not recorded")
 				}
-			} else if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); err != nil || !ran {
+			} else if _, ran, _, err := sess.ProcessPendingUserInput(ctx, nil); err != nil || !ran {
 				t.Fatalf("carrier ran=%v error=%v", ran, err)
 			}
 			count := 0

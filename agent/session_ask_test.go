@@ -1339,7 +1339,7 @@ func TestAskUser_AcceptSteeringCarrierInputTagsSteeringCarrierOnAppendFailureFor
 	}
 	refusal := refuseSteerAppends(sess, "carrier-tag-1")
 	refusal.refuse.Store(true)
-	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); err == nil || !ran {
+	if _, ran, _, err := sess.ProcessPendingUserInput(ctx, nil); err == nil || !ran {
 		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want the injected append failure", ran, err)
 	}
 	if got := refusal.refusals.Load(); got != 1 {
@@ -1380,7 +1380,7 @@ func TestProcessPendingUserInputReportsRanFalseWhenACarrierDrainsTwoFailedSteers
 			t.Fatalf("AcceptClientMutationSteer(%s): %v", id, err)
 		}
 	}
-	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); ran || err != nil {
+	if _, ran, _, err := sess.ProcessPendingUserInput(ctx, nil); ran || err != nil {
 		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want ran=false err=nil", ran, err)
 	}
 	failures := 0
@@ -1452,7 +1452,7 @@ func TestAskUser_RecordFailedSteeringSelectionTagsSteeringCarrierForAnAnsweringS
 	// dispatch -- a graceful stand-down, not a visible failure -- but the
 	// carrier ran no model turn, so ProcessPendingUserInput must report
 	// ran=false (issue #185 item 3).
-	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); ran || err != nil {
+	if _, ran, _, err := sess.ProcessPendingUserInput(ctx, nil); ran || err != nil {
 		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want ran=false err=nil", ran, err)
 	}
 
@@ -2009,7 +2009,7 @@ func TestAskUser_StreamedSalvageBeforeFailedInterruptMarkerPreservesBoundary(t *
 
 	fs = attachEnvironmentFailureFS(t, sess)
 
-	_, ran, processErr := sess.ProcessPendingUserInput(turnCtx, nil)
+	_, ran, _, processErr := sess.ProcessPendingUserInput(turnCtx, nil)
 	if !ran {
 		t.Fatalf("ProcessPendingUserInput ran=%v, want the human-note carrier to run", ran)
 	}
@@ -2330,7 +2330,7 @@ func TestAskUser_HumanNoteDuringPendingAskDoesNotResolveIt(t *testing.T) {
 	// shape TestAskUser_InjectPostToolSteeringClearsPendingAskForAnAcceptedUserSteer
 	// exercises for an ordinary steer); only the live pending count is
 	// asserted here.
-	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); err != nil || !ran {
+	if _, ran, _, err := sess.ProcessPendingUserInput(ctx, nil); err != nil || !ran {
 		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v", ran, err)
 	}
 	if got := sess.askPendingCount(); got != 1 {
@@ -2762,7 +2762,7 @@ func TestAskUser_RestoreDoesNotResolveAcrossASuccessfulHumanNoteCarrierCompletio
 	if _, err := sess.SetHumanNote("note-1", "watch the ingest path"); err != nil {
 		t.Fatalf("SetHumanNote: %v", err)
 	}
-	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); err != nil || !ran {
+	if _, ran, _, err := sess.ProcessPendingUserInput(ctx, nil); err != nil || !ran {
 		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v", ran, err)
 	}
 	if got := sess.askPendingCount(); got != 1 {
@@ -2827,7 +2827,7 @@ func TestAskUser_RestoreAccumulatesPendingQuestionsAcrossNonResolvingRounds(t *t
 	if _, err := sess.SetHumanNote("note-1", "watch the ingest path"); err != nil {
 		t.Fatalf("SetHumanNote: %v", err)
 	}
-	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); err != nil || !ran {
+	if _, ran, _, err := sess.ProcessPendingUserInput(ctx, nil); err != nil || !ran {
 		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v", ran, err)
 	}
 	if got := sess.askPendingCount(); got != 2 {
@@ -3214,7 +3214,7 @@ func TestAskUser_NotificationHeldWhilePendingAskSurvivesAHumanNoteCarrierRound(t
 	if _, err := sess.SetHumanNote("note-1", "watch the ingest path"); err != nil {
 		t.Fatalf("SetHumanNote: %v", err)
 	}
-	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); err != nil || !ran {
+	if _, ran, _, err := sess.ProcessPendingUserInput(ctx, nil); err != nil || !ran {
 		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v", ran, err)
 	}
 
@@ -3995,7 +3995,7 @@ func TestAskUser_MidRoundResolvingSteerClearingAFreshAskDoesNotForceAwaitingEarl
 	if _, err := sess.SetHumanNote("note-1", "watch the ingest path"); err != nil {
 		t.Fatalf("SetHumanNote: %v", err)
 	}
-	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); err != nil || !ran {
+	if _, ran, _, err := sess.ProcessPendingUserInput(ctx, nil); err != nil || !ran {
 		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v", ran, err)
 	}
 	if got := sess.askPendingCount(); got != 0 {
@@ -4045,7 +4045,7 @@ func TestAskUser_LiveStateAfterFailedHumanNoteCarrierAppendMatchesRestore(t *tes
 	refusal := refuseSteerAppends(sess, "note-1")
 	refusal.refuse.Store(true)
 
-	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); err == nil || !ran {
+	if _, ran, _, err := sess.ProcessPendingUserInput(ctx, nil); err == nil || !ran {
 		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want ran=true and the injected append failure", ran, err)
 	}
 	if got := sess.askPendingCount(); got != 1 {
@@ -4092,7 +4092,7 @@ func TestAskUser_LiveStateAfterPoisonedTranscriptRefusalMatchesRestore(t *testin
 		t.Fatalf("SetHumanNote: %v", err)
 	}
 	fs = attachEnvironmentFailureFS(t, sess)
-	_, ran, err := sess.ProcessPendingUserInput(ctx, nil)
+	_, ran, _, err := sess.ProcessPendingUserInput(ctx, nil)
 	if !ran || !errors.Is(err, transcript.ErrWriterPoisoned) {
 		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want a poisoned-transcript refusal after the carrier round", ran, err)
 	}
@@ -4136,7 +4136,7 @@ func TestAskUser_LiveStateAfterFailedHumanNoteCarrierProviderErrorMatchesRestore
 	if _, err := sess.SetHumanNote("note-provider-failure", "watch the ingest path"); err != nil {
 		t.Fatalf("SetHumanNote: %v", err)
 	}
-	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); err == nil || !ran {
+	if _, ran, _, err := sess.ProcessPendingUserInput(ctx, nil); err == nil || !ran {
 		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want a provider failure after the carrier ran", ran, err)
 	}
 	if got := sess.askPendingCount(); got != 1 {
@@ -4175,7 +4175,7 @@ func TestAskUser_LiveStateAfterExhaustedNoToolCarrierMatchesRestore(t *testing.T
 	if _, err := sess.SetHumanNote("note-no-tool-exhaustion", "watch the ingest path"); err != nil {
 		t.Fatalf("SetHumanNote: %v", err)
 	}
-	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); err == nil || !ran {
+	if _, ran, _, err := sess.ProcessPendingUserInput(ctx, nil); err == nil || !ran {
 		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want no-tool retry exhaustion after the carrier ran", ran, err)
 	}
 	if got := len(adapter.Requests()); got != maxBareTextRetries+2 {
@@ -4221,7 +4221,7 @@ func TestAskUser_LiveStateAfterToolRoundBudgetCarrierMatchesRestore(t *testing.T
 	if _, err := sess.SetHumanNote("note-tool-round-budget", "watch the ingest path"); err != nil {
 		t.Fatalf("SetHumanNote: %v", err)
 	}
-	_, ran, err := sess.ProcessPendingUserInput(ctx, nil)
+	_, ran, _, err := sess.ProcessPendingUserInput(ctx, nil)
 	if !ran {
 		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want tool-round budget exhaustion after the carrier ran", ran, err)
 	}
@@ -4267,7 +4267,7 @@ func TestAskUser_LiveStateAfterNotificationYieldMatchesRestore(t *testing.T) {
 		t.Fatalf("SetHumanNote: %v", err)
 	}
 	sess.enqueueJobNotification(jobNotification{JobID: "pending-notification", JobType: "shell", Status: "completed"})
-	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); err != nil || !ran {
+	if _, ran, _, err := sess.ProcessPendingUserInput(ctx, nil); err != nil || !ran {
 		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want the carrier round to yield for notification", ran, err)
 	}
 	if got := sess.askPendingCount(); got != 1 {
@@ -4322,7 +4322,7 @@ func TestAskUser_LiveStateAfterCommunicateWithPendingNotificationMatchesRestore(
 	if _, err := sess.SetHumanNote("note-communicate-notification", "watch the ingest path"); err != nil {
 		t.Fatalf("SetHumanNote: %v", err)
 	}
-	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); err != nil || !ran {
+	if _, ran, _, err := sess.ProcessPendingUserInput(ctx, nil); err != nil || !ran {
 		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want the carrier communication turn", ran, err)
 	}
 	if got := len(adapter.Requests()); got != 2 {
@@ -4412,7 +4412,7 @@ func TestAskUser_LiveStateAfterObserverYieldMatchesRestore(t *testing.T) {
 	if _, err := sess.SetHumanNote("note-observer-yield", "watch the ingest path"); err != nil {
 		t.Fatalf("SetHumanNote: %v", err)
 	}
-	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); err != nil || !ran {
+	if _, ran, _, err := sess.ProcessPendingUserInput(ctx, nil); err != nil || !ran {
 		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want the carrier round to yield for observer delivery", ran, err)
 	}
 	if got := sess.askPendingCount(); got != 1 {

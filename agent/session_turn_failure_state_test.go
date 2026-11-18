@@ -94,7 +94,7 @@ func failedCarrierWithPendingQuestion(t *testing.T, dir string, cfg SessionConfi
 	if _, err := sess.SetHumanNote("note-question-outranks-failure", "watch the ingest path"); err != nil {
 		t.Fatalf("SetHumanNote: %v", err)
 	}
-	if _, ran, err := sess.ProcessPendingUserInput(ctx, nil); err == nil || !ran {
+	if _, ran, _, err := sess.ProcessPendingUserInput(ctx, nil); err == nil || !ran {
 		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v, want a provider failure after the carrier ran", ran, err)
 	}
 	return sess

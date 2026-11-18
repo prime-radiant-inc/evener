@@ -96,7 +96,7 @@ func TestLiveSteeringOwnerIdentityReplays(t *testing.T) {
 				// runs as a carrier turn -- inside the input that accepted it
 				// (the drain ladder runs the carrier before the input ends,
 				// #1308). The acceptance-time wake then finds nothing to carry.
-				if _, ran, err := sess.ProcessPendingUserInput(context.Background(), nil); err != nil || ran {
+				if _, ran, _, err := sess.ProcessPendingUserInput(context.Background(), nil); err != nil || ran {
 					t.Fatalf("delayed carrier after the input: ran=%v err=%v, want nothing left to carry", ran, err)
 				}
 			}

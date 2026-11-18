@@ -110,7 +110,7 @@ func TestSteeringArrivingMidTurnIsDeliveredByTheWakeAfterABareTextEnd(t *testing
 	wakeMu.Unlock()
 
 	// The first turn: the durably queued message, claimed and run.
-	if _, _, err := sess.ProcessPendingUserInput(context.Background(), nil); steerErr != nil {
+	if _, _, _, err := sess.ProcessPendingUserInput(context.Background(), nil); steerErr != nil {
 		t.Fatalf("AcceptClientMutationSteer (from inside the model call): %v", steerErr)
 	} else if !errors.Is(err, errBareTextWithoutResultTool) {
 		t.Fatalf("first turn error = %v, want errBareTextWithoutResultTool -- this test only exercises the gap when the turn ends without a result-tool call", err)
@@ -138,7 +138,7 @@ func TestSteeringArrivingMidTurnIsDeliveredByTheWakeAfterABareTextEnd(t *testing
 	// wake's own delivery through the guaranteed 1-slot channel is proven
 	// independently by server/pending_user_input_wake_test.go; this call
 	// exercises the agent-side half of the same contract.
-	if _, ran, err := sess.ProcessPendingUserInput(context.Background(), nil); err != nil {
+	if _, ran, _, err := sess.ProcessPendingUserInput(context.Background(), nil); err != nil {
 		t.Fatalf("ProcessPendingUserInput: %v", err)
 	} else if !ran {
 		t.Fatal("the wake's redelivery named no runnable work; the steering that arrived mid-turn is stranded until the user speaks again")

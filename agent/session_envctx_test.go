@@ -357,7 +357,7 @@ func TestEnvironmentContextFailureRestoresPublicMutationClaimsForRetry(t *testin
 				if _, err := s.AcceptClientMutationQueue(appwire.TurnQueueParams{ClientMutationID: id, Input: []appwire.InputItem{{Type: "text", Text: "retry queue"}}}); err != nil {
 					t.Fatalf("AcceptClientMutationQueue: %v", err)
 				}
-				run = func() error { _, _, err := s.ProcessPendingUserInput(context.Background(), nil); return err }
+				run = func() error { _, _, _, err := s.ProcessPendingUserInput(context.Background(), nil); return err }
 			}
 			if err := run(); err == nil {
 				t.Fatal("first attempt unexpectedly succeeded")

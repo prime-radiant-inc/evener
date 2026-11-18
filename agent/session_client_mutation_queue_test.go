@@ -2458,7 +2458,7 @@ func TestClientMutation_SkillSelectionQueueConsumesCurrentDiskBytes(t *testing.T
 	if err := os.WriteFile(source, []byte("---\nname: probe\ndescription: fixture\n---\n"+secondBody), 0o644); err != nil {
 		t.Fatalf("rewrite skill source: %v", err)
 	}
-	if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
+	if _, ran, _, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
 		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v", ran, err)
 	}
 	requests := adapter.Requests()
@@ -2738,7 +2738,7 @@ func TestClientMutation_SkillSelectionDrainCombinesQueueAndExtraSelections(t *te
 	if !reflect.DeepEqual(pending.Input, want) {
 		t.Fatalf("drained pending input = %#v, want %#v", pending.Input, want)
 	}
-	if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
+	if _, ran, _, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
 		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v", ran, err)
 	}
 	requests := adapter.Requests()
@@ -2821,7 +2821,7 @@ func TestClientMutation_SkillSelectionCancelThenDrainUsesRemainingSelection(t *t
 	if !reflect.DeepEqual(pending.Input, want) {
 		t.Fatalf("drained pending input = %#v, want %#v", pending.Input, want)
 	}
-	if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
+	if _, ran, _, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
 		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v", ran, err)
 	}
 	envs := requestSkillEnvelopes(t, adapter.Requests()[0])
@@ -2860,7 +2860,7 @@ func TestClientMutation_SkillSelectionQueueReturnKeepsSelectionRunnable(t *testi
 	if !reflect.DeepEqual(snapshot.InputQueue[0].Input, input) {
 		t.Fatalf("returned queue input = %#v, want %#v", snapshot.InputQueue[0].Input, input)
 	}
-	if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
+	if _, ran, _, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
 		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v", ran, err)
 	}
 	requests := adapter.Requests()
@@ -2922,7 +2922,7 @@ func TestClientMutation_SkillSelectionSurvivesRestartBeforeClaim(t *testing.T) {
 
 	restored := restoreSkillSelectionDiskSession(t, dir, sess.ID(), adapter)
 	defer restored.Close()
-	if _, ran, err := restored.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
+	if _, ran, _, err := restored.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
 		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v", ran, err)
 	}
 	requireEnvelopeRequest(t, adapter.Requests(), "probe", body, filepath.Join(dir, "skills", "probe", "SKILL.md"))
@@ -2975,7 +2975,7 @@ func TestClientMutation_SkillSelectionRestartAfterClaimRequeuesSelection(t *test
 	if !reflect.DeepEqual(snapshot.InputQueue[0].Input, want) {
 		t.Fatalf("requeued input = %#v, want %#v", snapshot.InputQueue[0].Input, want)
 	}
-	if _, ran, err := restored.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
+	if _, ran, _, err := restored.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
 		t.Fatalf("ProcessPendingUserInput: ran=%v err=%v", ran, err)
 	}
 	requireEnvelopeRequest(t, adapter.Requests(), "probe", body, filepath.Join(dir, "skills", "probe", "SKILL.md"))

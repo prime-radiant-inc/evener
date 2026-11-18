@@ -156,7 +156,7 @@ func TestClientMutationCommandPreparationPartialRetry(t *testing.T) {
 	}
 	assertCommandEffect(t, root, "first-invoked", "x")
 	assertCommandEffect(t, root, "second-invoked", "x")
-	if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
+	if _, ran, _, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
 		t.Fatalf("consume prepared input: ran=%v err=%v", ran, err)
 	}
 	assertCommandEffect(t, root, "first-invoked", "x")
@@ -287,7 +287,7 @@ func TestClientMutationCommandPreparationInterruptedRestore(t *testing.T) {
 			t.Cleanup(restored.Close)
 			_, stop := captureEvents(restored)
 			defer stop()
-			if _, ran, err := restored.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
+			if _, ran, _, err := restored.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
 				t.Fatalf("restore consumption: ran=%v err=%v", ran, err)
 			}
 			assertCommandEffect(t, root, "first-invoked", "x")
@@ -370,7 +370,7 @@ func TestClientMutationCommandPreparationCanceledShell(t *testing.T) {
 		t.Fatal("shell did not reach its external effect before cancellation")
 	}
 	assertCommandEffect(t, root, "invoked", "x")
-	if _, ran, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
+	if _, ran, _, err := s.ProcessPendingUserInput(context.Background(), nil); err != nil || !ran {
 		t.Fatalf("uncertain retry: ran=%v err=%v", ran, err)
 	}
 	assertCommandEffect(t, root, "invoked", "x")
