@@ -21,8 +21,15 @@ a steer can trigger two waits in one turn with the same reset deadline and the
 client has no identity to tell whether a delayed wake or read belongs to the
 first wait or the second.
 
-- `waitStartedAt` (daemon epoch-ms) on `ThreadModelRetryParams` and on
-  `ThreadFailure`, produced by the daemon at the moment the wait begins.
+- `waitStartedAt` on `ThreadModelRetryParams` and on `ThreadFailure`:
+  **a strictly increasing identity the daemon issues per turn when a wait
+  begins** — not raw wall clock, which can repeat or move backward and would
+  let the first wait's wake clear the second, or the second's start read as
+  stale. The producer advances it monotonically (a session-local sequence:
+  last-issued + 1) so a later wait within a turn always compares greater,
+  even when epoch time collides or steps back. The deadline arithmetic
+  (`deadline = wall-clock wait start + delayMs`) is separate: the identity
+  orders waits; the wall clock times them.
 - **Older-daemon fallback:** a frame with no stamp (a daemon that predates the
   field) reconciles by turn ownership only, never by clock, and may not clear
   or overwrite a stamped wait's deadline (see Legacy below).
@@ -140,10 +147,20 @@ buffer and the post-cut tail, and the two sides are reconciled differently:
    once.
 
 The pre-cut pass folds the buffer into transitions first, then reconciles
-each transition against the adopted snapshot:
+each transition against the adopted snapshot. **The adopted snapshot is
+authoritative for pre-cut turn ownership and wait presence**: turn
+establishment and replacement are post-cut transitions delivered in order.
+The evidence question the rules below all turn on is *who supplies turn
+ownership*: a pre-cut terminal status names no turn, so it applies only when
+the snapshot itself names the running turn AND no buffered frame replaces
+it. A snapshot naming turn B after the buffer's Stop for turn A does not
+hand that Stop ownership of B — the snapshot's newer transition wins and
+the Stop retires nothing.
 
-- **Establishment** (active status): admissible only when the snapshot names
-  no running turn and a later buffered announcement needs the turn to exist.
+- **Establishment** (active status): never admissible pre-cut — an idle
+  snapshot already reflects every pre-cut Stop the pane could have buffered
+  against it, and a genuinely new turn arrives post-cut, in order, and
+  publishes by the ordinary reducer rules (scenario 18's start is post-cut).
 - **Wait start** (positive-delay announcement): fills the deadline and stamp
   when the model holds none; fills chip metadata only when the stamp is
   already held (equal); skipped when older than the held stamp, or when a
@@ -154,12 +171,15 @@ each transition against the adopted snapshot:
   ended stamp kept, nothing installed. A wake for a wait the model does not
   hold contributes only its ended stamp: no chip, no stall restamp.
 - **Replacement** (an active status naming a different turn, no idle
-  between): publishes the new turn and retires the old turn's wait as one
-  unit, never depending on whether the new turn has its own buffered
-  announcement.
-- **Termination** (a terminal status naming no turn): applies against a
-  snapshot still showing a running turn — news by construction — and only
-  ends the turn the snapshot itself names.
+  between): a post-cut transition — it publishes the new turn and retires
+  the old turn's wait as one unit, never depending on whether the new turn
+  has its own announcement. Pre-cut, the snapshot's own transition wins: a
+  snapshot naming C is not overwritten by a buffered A→B frame.
+- **Termination** (a terminal status naming no turn): applies pre-cut only
+  when the snapshot names the running turn AND nothing in the buffer
+  replaces that turn — that is the ownership evidence the frame itself
+  lacks. Otherwise it retires nothing; scenarios 10 and 19 differ exactly
+  by whether the snapshot names the turn the Stop ended.
 - **Legacy unstamped frames** reconcile by turn ownership: an unstamped wake
   owning the held legacy wait's turn clears that wait — deadline and chip
   together, including the chip-only case. An unstamped frame may never clear
@@ -249,12 +269,16 @@ all of them. Tests assert behavior (levels, computed values, class presence)
 Dependency order — each stage's acceptance gates the next:
 
 1. **Stage 0, wire:** daemon stamp on all three producers; AppWire fields;
-   older-daemon fallback. Verified with synthetic fixtures before Stage 2.
+   older-daemon fallback. Gated on producer behavior: the stamp is strictly
+   increasing per turn and present on start, wake, and read summary.
 2. **Stage 1, projection:** the delegate's wait materialized on its projected
-   thread; the elapsed sample produced real at wait start.
+   thread; the elapsed sample produced real at wait start. Gated on read
+   behavior: a delegate read restores the wait and clears it at retry.
 3. **Stage 2, client reconciliation:** shared reducer fields, both read
-   merges, the replay pass — against synthetic stamped fixtures Stage 0
-   makes possible.
+   merges, the replay pass — the stale-wake and equal-deadline
+   reconciliation acceptance lives here, against synthetic stamped fixtures
+   Stage 0 makes possible.
 4. **Stage 3, rendering:** pane liveness line, sidebar row, the evergreen
    docs (`docs/product/subsystems.md` S09 row + friction punchlist R05) in
-   the same change as the code they describe.
+   the same change as the code they describe. The pane-vs-sidebar agreement
+   acceptance lives here.
