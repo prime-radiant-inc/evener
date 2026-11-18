@@ -1847,6 +1847,54 @@ func TestMergeEnqueueLauncherDoesNotBuildUnderAReplaceableRoot(t *testing.T) {
 			t.Fatalf("/tmp (1777, owned by root) was reported replaceable: ordinary hosts must be unaffected")
 		}
 	})
+	t.Run("the root is a component like any other", func(t *testing.T) {
+		// The high: the walk began at the first NAMED component and asked nothing
+		// about `/`, which is the one directory every absolute path goes through and
+		// the one that cannot be skipped. On a root another user can modify -- a
+		// container, a chroot, a root-owned sticky directory replaced by its owner --
+		// a top-level entry can be replaced after it was validated and before it is
+		// used.
+		//
+		// `/` cannot be made writable here without root, so this case asks the
+		// question the fix changed rather than manufacturing the exploit: the
+		// predicate is replaced by a recorder, and the walk has to call it with `/`.
+		// That is the defect in one assertion -- a walk that never asks cannot
+		// refuse -- and it is honest about what it proves: the ordering, not the
+		// privilege escalation.
+		out := filepath.Join(resolvePath(t, fixtureScratchBase(t)), "root-walk-recorder")
+		if err := os.MkdirAll(out, 0o700); err != nil {
+			t.Fatalf("create %s: %v", out, err)
+		}
+		t.Cleanup(func() { _ = os.RemoveAll(out) })
+		probe := resolvePathAfterCreate(t, filepath.Join(out, "leaf"))
+		requirePrivateChain(t, out, probe)
+		// The stub replaces dir_entry_is_replaceable, so `eval` order matters: the
+		// stub is defined AFTER the real function is sourced, which is what makes it
+		// the one the walk calls.
+		//
+		// The recorder path goes through the environment, not a positional argument.
+		// A stub's `$2` is the STUB's second argument, which is empty, and the first
+		// version of this case wrote to the empty name and then read back nothing --
+		// "the walk asked about no component at all", which was the test's bug and
+		// not the walk's.
+		record := filepath.Join(out, "asked")
+		script := `eval "$(sed -n '/^scratch_path_is_trusted()/,/^}/p' "$1")"
+dir_entry_is_replaceable() { printf '%s\n' "$1" >> "$ROOT_WALK_RECORD"; return 1; }
+dir_is_owned_by_trusted() { return 0; }
+scratch_path_is_trusted "$2"`
+		cmd := exec.Command("bash", "-c", script, "bash", mergeEnqueueLauncher, probe)
+		cmd.Env = append(os.Environ(), "ROOT_WALK_RECORD="+record)
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("the walk refused a path whose components all passed (%v)", err)
+		}
+		asked, err := os.ReadFile(record)
+		if err != nil {
+			t.Fatalf("the walk asked about no component at all: %v", err)
+		}
+		if !strings.HasPrefix(string(asked), "/\n") {
+			t.Fatalf("the walk asked about %q, which does not begin with the root: every absolute path goes through `/`, so a walk that never asks about it leaves the one component that cannot be skipped unvalidated", strings.SplitN(string(asked), "\n", 2)[0])
+		}
+	})
 	t.Run("a component that is not there is not trusted", func(t *testing.T) {
 		// The high, as a rule rather than a race. The predicate answered "not
 		// replaceable" for a directory that was not there at all, and the walk
