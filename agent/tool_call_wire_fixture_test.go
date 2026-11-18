@@ -52,6 +52,7 @@ import (
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/internal/testfs"
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/chatcompletions"
 )
 
 // toolWireFixturePath is the committed corpus both clients read.
@@ -105,7 +106,19 @@ const toolWireForegroundWaitMS = 600_000
 
 // execute runs the call on the session, with its own foreground wait when it
 // names one.
-func (c toolWireCall) execute(session *Session, env execenv.ExecutionEnvironment, args json.RawMessage) tool.ExecResult {
+func (c toolWireCall) execute(t *testing.T, session *Session, env execenv.ExecutionEnvironment, args json.RawMessage) tool.ExecResult {
+	t.Helper()
+	if c.tool == "ask_user" {
+		// Chat can send the questions array as a string. Execute the decoded
+		// call so the fixture carries the same repaired result as a live session.
+		body := fmt.Sprintf(`{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":%s,"type":"function","function":{"name":"ask_user","arguments":%s}}]},"finish_reason":"tool_calls"}]}`,
+			mustJSON(t, c.id), mustJSON(t, string(args)))
+		reply, err := chatcompletions.ExtractRecordedResponse([]byte(body), "fixture")
+		if err != nil || len(reply.ToolCalls()) != 1 {
+			t.Fatalf("decode %s: calls=%v err=%v", c.id, reply.ToolCalls(), err)
+		}
+		return session.execTool(t.Context(), reply.ToolCalls()[0], reply.Finish.Reason)
+	}
 	if c.foregroundWaitMS > 0 {
 		setToolWireForegroundWait(session, c.foregroundWaitMS)
 		defer setToolWireForegroundWait(session, toolWireForegroundWaitMS)
@@ -670,15 +683,15 @@ func TestToolCallWireFixtures(t *testing.T) {
 		},
 		{
 			id: "call_ask_user", tool: "ask_user",
-			note: "A question put to the user, run for real: the tool posts it and answers with its fixed acknowledgement. toolWireAnswers, the user's reply, follows in the next turn.",
-			args: map[string]any{"questions": []map[string]any{{
+			note: "Chat supplied the questions array as a string. The call keeps the original arguments and its successful result carries the validated questions. The user's reply follows in the next turn.",
+			args: map[string]any{"questions": mustJSON(t, []map[string]any{{
 				"header":   "Deploy",
 				"question": "Ship the settle fix tonight, or wait for the race run?",
 				"options": []map[string]any{
 					{"label": "Ship tonight", "detail": "The fix is small and the drain test passes.", "recommended": true},
 					{"label": "Wait", "detail": "Let go test -race run overnight first."},
 				},
-			}}},
+			}})},
 		},
 		{
 			id: "call_web_fetch", tool: "web_fetch",
@@ -810,7 +823,7 @@ func TestToolCallWireFixtures(t *testing.T) {
 				// the one the call before it left.
 				session, env = repo.s, repo.s.currentEnv()
 			}
-			res := call.execute(session, env, args)
+			res := call.execute(t, session, env, args)
 			earlier[call.id] = res
 			// The result as a session records it, less its duration, which
 			// differs every run.

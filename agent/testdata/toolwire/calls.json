@@ -3,7 +3,7 @@
   "cwd": "/home/jesse/git/evener",
   "notes": {
     "call_apply_patch": "A v4a patch updating one file and adding another.",
-    "call_ask_user": "A question put to the user, run for real: the tool posts it and answers with its fixed acknowledgement. toolWireAnswers, the user's reply, follows in the next turn.",
+    "call_ask_user": "Chat supplied the questions array as a string. The call keeps the original arguments and its successful result carries the validated questions. The user's reply follows in the next turn.",
     "call_communicate": "A final report to the parent: end_turn ends the turn, and the step's words read it as done. The output envelope is required by the tool's schema.",
     "call_compact_context": "An empty note with no instructions and no reload_skills: the tool clears the note without asking for a compaction, and the first sentence of its output is what the step's words read.",
     "call_doctor_evener": "An earlier session's transcript rendered from the session's own state root: the command and selector are what the step's words name.",
@@ -478,7 +478,7 @@
       "turnId": "turn_1",
       "toolName": "ask_user",
       "callId": "call_ask_user",
-      "argumentsJson": "{\"questions\":[{\"header\":\"Deploy\",\"options\":[{\"detail\":\"The fix is small and the drain test passes.\",\"label\":\"Ship tonight\",\"recommended\":true},{\"detail\":\"Let go test -race run overnight first.\",\"label\":\"Wait\"}],\"question\":\"Ship the settle fix tonight, or wait for the race run?\"}]}",
+      "argumentsJson": "{\"questions\":\"[{\\\"header\\\":\\\"Deploy\\\",\\\"options\\\":[{\\\"detail\\\":\\\"The fix is small and the drain test passes.\\\",\\\"label\\\":\\\"Ship tonight\\\",\\\"recommended\\\":true},{\\\"detail\\\":\\\"Let go test -race run overnight first.\\\",\\\"label\\\":\\\"Wait\\\"}],\\\"question\\\":\\\"Ship the settle fix tonight, or wait for the race run?\\\"}]\"}",
       "status": "inProgress",
       "startedAt": 1790625600000
     },

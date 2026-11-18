@@ -2,7 +2,7 @@
 // amber left rule, each question in the reading serif, and your answer
 // beneath. While a question is still open the dock is the question, so the
 // transcript never shows the live one this way.
-import type { AskUserQuestion } from "@evener/appwire-client";
+import type { QuestionHistoryText } from "../projectedRows";
 import { Text, View } from "react-native";
 import { allowFontScaling, useColors, useTextScale } from "../ui";
 import { useReadingFace } from "../display/displayContext";
@@ -11,7 +11,7 @@ export function QuestionHistory({
 	questions,
 	answer,
 }: {
-	questions: readonly AskUserQuestion[];
+	questions: readonly QuestionHistoryText[];
 	answer: string | undefined;
 }) {
 	const { palette } = useColors();

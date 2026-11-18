@@ -465,6 +465,7 @@ describe("a step's evidence", () => {
 			summary: "Remind me in 5m",
 			words: { verb: "Remind me in 5m" },
 			arguments: '{"operation":"create"}',
+			questions: [{ header: "header-80", question: "question-46" }],
 			output: "[watching self · after 300s]",
 			error: "boom",
 			exitCode: 1,

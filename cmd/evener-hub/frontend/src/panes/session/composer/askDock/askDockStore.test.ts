@@ -3,6 +3,7 @@
 import type { AnyNotification, Thread, ThreadReadResponse } from "@evener/appwire-client";
 import { hydrateThread } from "@evener/appwire-client";
 import type { FakeClient } from "@evener/appwire-client/testing/fakeClient";
+import { toolWireItems } from "@evener/appwire-client/testing/toolWireFixtures";
 import { IDBFactory, IDBKeyRange } from "fake-indexeddb";
 import { beforeEach, describe, expect, test } from "vitest";
 import { appliedReceipt } from "../../../../mutationReceiptTestUtils";
@@ -164,17 +165,7 @@ describe("reconciliation from the live ThreadModel", () => {
             id: "turn_1",
             status: "completed",
             itemsView: "full",
-            items: [
-              {
-                type: "commandExecution",
-                id: "item_1",
-                turnId: "turn_1",
-                toolName: "ask_user",
-                callId: "call_1",
-                status: "completed",
-                argumentsJson: askArgs(ONE_QUESTION),
-              },
-            ],
+            items: toolWireItems().filter((item) => item.callId === "call_ask_user"),
           },
         ],
       },
@@ -184,7 +175,7 @@ describe("reconciliation from the live ThreadModel", () => {
 
     const refState = askDockStore.getState().byRef.get("ref_a");
     expect(refState?.batches).toHaveLength(1);
-    expect(refState?.batches[0]?.questions.map((q) => q.header)).toEqual(["Deploy?"]);
+    expect(refState?.batches[0]?.questions).toMatchObject([{ key: "call_ask_user:0", header: "Deploy" }]);
   });
 
   test("a live ask_user ack (item/started then item/completed) adds a fresh batch", async () => {

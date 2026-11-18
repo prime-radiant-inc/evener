@@ -1,28 +1,9 @@
-// Shared ask_user question/option parsing (wave-5 T4 extraction). Ground
-// truth: agent/internal/tool/definitions.go's DefAskUser gives the exact
-// argumentsJson shape - {questions:[{header?, question,
-// options:[{label,detail,recommended?}], multi_select?, why?,
-// if_unanswered?}]}, 1-4 questions - and the registry additionally accepts
-// the single-question shorthand {question, options, header?, multi_select?,
-// why?, if_unanswered?} at the top level (agent/internal/tool/registry.go's
-// normalizeAskUserArgs wraps it into the batch form at the dispatch
-// boundary). The transcript records a call's arguments as the model sent
-// them, so a recorded shorthand call carries no questions array and both
-// shapes must parse here. This used to live private to the web
-// transcript's askUser.tsx (the wave-4 read-only tool-call renderer);
-// wave 5's composer/askDock/** needed the identical shape check to build
-// its interactive answering dock, so it became a leaf module the two
-// could share. It is package API now: deriveAskQuestions sits on it and
-// both frontends import that. askUser.tsx imports these back and is
-// otherwise unchanged (its own rendering/tests stay byte-equivalent).
-//
-// Parsing is defensive throughout: a malformed argumentsJSON, a missing
-// `questions` array, or an individual malformed question/option all
-// degrade to a fallback rather than throwing, since this is untrusted wire
-// JSON, not a value this file controls the shape of.
+// The answering docks and transcript renderers share the questions the
+// ask_user executor posted. Older items carry only the model's arguments.
 
 import type { ItemModel, ThreadModel } from "./model";
 import { parseArgs } from "./toolCallText";
+import { isRecord } from "./transcriptValidators";
 
 export interface AskUserOption {
   label: string;
@@ -39,24 +20,26 @@ export interface AskUserQuestion {
   ifUnanswered?: string;
 }
 
-function parseOption(raw: unknown): AskUserOption | undefined {
-  if (typeof raw !== "object" || raw === null) return undefined;
-  const obj = raw as Record<string, unknown>;
-  if (typeof obj.label !== "string" || typeof obj.detail !== "string") return undefined;
-  return { label: obj.label, detail: obj.detail, recommended: obj.recommended === true };
+function parseOption(raw: unknown, fromState: boolean): AskUserOption | undefined {
+  if (!isRecord(raw) || typeof raw.label !== "string") return undefined;
+  // AskUserState omits an empty detail. The argument schema requires a string.
+  const detail = fromState && raw.detail === undefined ? "" : raw.detail;
+  if (typeof detail !== "string") return undefined;
+  return { label: raw.label, detail, recommended: raw.recommended === true };
 }
 
-function parseQuestion(raw: unknown, index: number): AskUserQuestion | undefined {
-  if (typeof raw !== "object" || raw === null) return undefined;
-  const obj = raw as Record<string, unknown>;
+function parseQuestion(obj: unknown, index: number, fromState: boolean): AskUserQuestion | undefined {
   if (
+    !isRecord(obj) ||
     (obj.header !== undefined && typeof obj.header !== "string") ||
     typeof obj.question !== "string" ||
     !Array.isArray(obj.options)
   ) {
     return undefined;
   }
-  const options = obj.options.map(parseOption).filter((o): o is AskUserOption => o !== undefined);
+  const options = obj.options
+    .map((option) => parseOption(option, fromState))
+    .filter((o): o is AskUserOption => o !== undefined);
   if (options.length === 0) return undefined;
   return {
     header: typeof obj.header === "string" ? obj.header : `Question ${index + 1}`,
@@ -68,18 +51,19 @@ function parseQuestion(raw: unknown, index: number): AskUserQuestion | undefined
   };
 }
 
-// parseAskUserQuestions returns undefined whenever there's nothing usable to
-// render - argumentsJSON absent entirely, a JSON syntax error, valid JSON
-// with no questions array, or every individual question in that array
-// failing its own shape check - without distinguishing WHY here. An empty
-// array can't legitimately occur (DefAskUser requires minItems:1) but is
-// treated the same as undefined defensively either way. The shorthand form
-// is wrapped into a one-element questions array before the per-question
-// shape check, mirroring normalizeAskUserArgs, so a call the tool accepted
-// never reads as unavailable data. Callers that need to draw their own
-// absent-vs-malformed distinction (e.g. AskUserBody's fallback wording) do
-// so with their own check alongside this one.
-export function parseAskUserQuestions(item: Pick<ItemModel, "argumentsJSON">): AskUserQuestion[] | undefined {
+function parseQuestions(raw: unknown, fromState: boolean): AskUserQuestion[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const questions = raw
+    .map((question, index) => parseQuestion(question, index, fromState))
+    .filter((q): q is AskUserQuestion => q !== undefined);
+  return questions.length > 0 ? questions : undefined;
+}
+
+export function parseAskUserQuestions(item: Pick<ItemModel, "raw" | "argumentsJSON">): AskUserQuestion[] | undefined {
+  if (isRecord(item.raw) && item.raw.version === 1) {
+    const questions = parseQuestions(item.raw.questions, true);
+    if (questions) return questions;
+  }
   const args = parseArgs(item.argumentsJSON);
   let raw: unknown = args.questions;
   if (!Array.isArray(raw) && typeof args.question === "string" && Array.isArray(args.options)) {
@@ -95,11 +79,7 @@ export function parseAskUserQuestions(item: Pick<ItemModel, "argumentsJSON">): A
     if (args.multi_select === true) wrapped.multi_select = true;
     raw = [wrapped];
   }
-  if (!Array.isArray(raw)) return undefined;
-  const questions = raw
-    .map((question, index) => parseQuestion(question, index))
-    .filter((q): q is AskUserQuestion => q !== undefined);
-  return questions.length > 0 ? questions : undefined;
+  return parseQuestions(raw, false);
 }
 
 // One line of a composed [answers] reply (appwire-client/typescript/askAnswers.ts's composeAskAnswers,

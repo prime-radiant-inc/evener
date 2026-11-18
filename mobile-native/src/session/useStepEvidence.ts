@@ -16,6 +16,7 @@ const DETAIL_FIELDS = [
 	"summary",
 	"words",
 	"arguments",
+	"questions",
 	"output",
 	"error",
 	"exitCode",

@@ -43,7 +43,7 @@ import {
 } from "./projectedRows";
 import type { MobileConversation, MobileTimelineItem } from "./projectedRows";
 import { readerKey } from "./readerPosition";
-import { runSummary, sessionRows } from "./session/transcriptRows";
+import { askRowQuestions, runSummary, sessionRows } from "./session/transcriptRows";
 import { stepEvidence } from "./session/evidence";
 import { groupTimeline, isCriticalNotice } from "./timeline";
 import { projectNativeTranscript } from "./transcriptPresentation";
@@ -739,6 +739,18 @@ describe("projectedRow — item entries", () => {
 	it("keeps an ask_user with no answerable ask as an ordinary tool activity", () => {
 		const row = projectedRow(itemEntry(item({ type: "commandExecution", toolName: "ask_user", callId: "call-1" })));
 		expect(row).toMatchObject({ kind: "activity", family: "tool" });
+
+		const recorded = toolWireStep("call_ask_user");
+		const settled = projectedRow(itemEntry(recorded));
+		if (settled?.kind !== "activity" || !recorded.argumentsJSON) throw new Error("expected the recorded question row");
+		const [question] = JSON.parse(JSON.parse(recorded.argumentsJSON).questions);
+		expect(settled.detail.arguments).toBe(recorded.argumentsJSON);
+		expect(askRowQuestions(settled)).toMatchObject([{ header: question.header, question: question.question }]);
+		const bounded = truncateItem(settled, (text) => text.slice(0, 8));
+		if (bounded.kind !== "activity") throw new Error("expected the bounded question row");
+		expect(askRowQuestions(bounded)).toMatchObject([
+			{ header: question.header.slice(0, 8), question: question.question.slice(0, 8) },
+		]);
 	});
 
 	it("carries the item's transcript identity onto every row it builds", () => {

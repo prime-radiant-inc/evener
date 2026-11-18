@@ -1,5 +1,6 @@
 import { expect, it, vi } from "vitest";
 import { hydrateThread } from "@evener/appwire-client";
+import { toolWireItems } from "@evener/appwire-client/testing/toolWireFixtures";
 import type {
 	AskQuestionRef,
 	EvenerThread,
@@ -148,28 +149,10 @@ it("offers the model's answerable asks", () => {
 					source: "",
 					turns: [
 						{
-							id: "t1",
+							id: "turn_1",
 							status: "completed",
 							itemsView: "default",
-							items: [
-								{
-									id: "ask-1",
-									turnId: "t1",
-									type: "commandExecution",
-									toolName: "ask_user",
-									status: "completed",
-									argumentsJson: JSON.stringify({
-										questions: [
-											{
-												header: "Choice",
-												question: "Choose",
-												options: [{ label: "A", detail: "" }],
-												multi_select: false,
-											},
-										],
-									}),
-								},
-							],
+							items: toolWireItems().filter((item) => item.callId === "call_ask_user"),
 						},
 					],
 					evener: { ref: "ref-1", askPending: true },
@@ -179,7 +162,7 @@ it("offers the model's answerable asks", () => {
 			0,
 		),
 	);
-	expect(pendingQuestions(conversation).map((ref) => ref.header)).toEqual(["Choice"]);
+	expect(pendingQuestions(conversation)).toMatchObject([{ key: "call_ask_user:0", header: "Deploy" }]);
 	expect(conversation.items.some((row) => row.kind === "question")).toBe(true);
 });
 

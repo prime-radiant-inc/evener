@@ -569,8 +569,9 @@ recover an encoded object, array or XML parameter. A string field such as
   parts in order. A final response that selects only a refusal or a provider-run
   file search withdraws earlier streamed tool calls. A message reference with
   omitted or null `content` inherits a refusal finalized at its content index,
-  even when the stream omits the completed message. An empty final output can
-  recover an issued call.
+  even when the stream omits the completed message. An explicit empty part
+  array clears that message's earlier text and refusal. An empty final
+  output can recover an issued call.
   When the final response repeats only part of a streamed item, Evener keeps
   the matching call's argument bytes, completed message phase, indexed
   answer and reasoning text, and ciphertext from the stream. A reasoning

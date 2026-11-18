@@ -47,6 +47,32 @@ test("parses a well-formed single question with two options", () => {
   ]);
 });
 
+test("the executed question takes precedence over the sent arguments and an omitted option detail means empty", () => {
+  const args = askUserArgs(ONE_QUESTION);
+  const question = {
+    question: "executed-91",
+    options: [{ label: "option-52" }, { label: "option-76", detail: "detail-83" }],
+    multi_select: true,
+    why: "why-63",
+    if_unanswered: "fallback-49",
+  };
+  expect(parseAskUserQuestions(item({ raw: { version: 1, questions: [question] }, argumentsJSON: args }))).toEqual([
+    expect.objectContaining({
+      question: question.question,
+      multiSelect: true,
+      why: question.why,
+      ifUnanswered: question.if_unanswered,
+      options: [
+        { label: "option-52", detail: "", recommended: false },
+        { label: "option-76", detail: "detail-83", recommended: false },
+      ],
+    }),
+  ]);
+  expect(parseAskUserQuestions(item({ raw: { version: 2, questions: [question] }, argumentsJSON: args }))).toEqual(
+    parseAskUserQuestions(item({ argumentsJSON: args })),
+  );
+});
+
 test("uses a stable Question N fallback when headers are omitted", () => {
   const questions = [
     { question: "First?", options: [{ label: "A", detail: "a" }] },

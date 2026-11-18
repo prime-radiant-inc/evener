@@ -19,7 +19,6 @@ import {
 	skillName,
 	taskListChanges,
 	toolFamily,
-	type AskUserQuestion,
 	type ItemModel,
 	type ThreadModel,
 	type ToolFamily,
@@ -28,6 +27,7 @@ import {
 	words,
 } from "@evener/appwire-client";
 import { hubTime } from "@evener/appwire-client/state/navigation";
+import type { QuestionHistoryText } from "../projectedRows";
 import { readerKey } from "../readerPosition";
 import type { SessionAccounting } from "../transcriptPresentation";
 import { type RunStep, rowTurnId, type TimelineRow, timelineGap } from "../timeline";
@@ -184,10 +184,12 @@ export function sessionListGap(row: SessionListRow, next: SessionListRow | undef
 	return timelineGap(row, isGhostRow(next) ? LANDED_GHOST : next);
 }
 
-/** The questions an earlier ask_user row shows (QuestionHistory), or
- * undefined when its arguments name none it can read. */
-export function askRowQuestions(row: Extract<TimelineRow, { kind: "activity" }>): AskUserQuestion[] | undefined {
-	return row.label === "ask_user" ? parseAskUserQuestions({ argumentsJSON: row.detail.arguments }) : undefined;
+/** The bounded question text an earlier ask_user row shows (QuestionHistory). */
+export function askRowQuestions(
+	row: Extract<TimelineRow, { kind: "activity" }>,
+): readonly QuestionHistoryText[] | undefined {
+	if (row.label !== "ask_user") return undefined;
+	return row.detail.questions ?? parseAskUserQuestions({ argumentsJSON: row.detail.arguments });
 }
 
 /** The transcript a hide produces, and where each row it dropped went. A
@@ -232,10 +234,7 @@ export function hideAnswerMessages(
 	// this window — the one to hide — and never one already gone.
 	for (const row of rows) {
 		if (row.kind !== "activity" || row.label !== "ask_user") continue;
-		// The row is what shows the recap, and it draws its questions from
-		// its own bounded copy of the arguments (askRowQuestions above): an
-		// unreadable row renders no recap, whatever the model still holds,
-		// so its reply must stay.
+		// Only a row that renders the question can stand in for its reply.
 		if (!askRowQuestions(row)) continue;
 		const item = itemById(model, row.id);
 		if (!item) continue;
@@ -577,8 +576,7 @@ export function runSummary(steps: readonly RunStep[]): RunSummary {
 			group.memoryMutations += 1;
 		}
 		// A call whose questions don't parse still asked one.
-		if (part.family === "ask")
-			group.questions += parseAskUserQuestions({ argumentsJSON: step.detail.arguments })?.length ?? 1;
+		if (part.family === "ask") group.questions += askRowQuestions(step)?.length ?? 1;
 		if (part.family === "shell" || part.family === "skill" || part.family === "mcp") {
 			const name = namedBy(part.family, step);
 			if (name) group.names.add(name);

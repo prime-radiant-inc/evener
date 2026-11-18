@@ -37,6 +37,7 @@
 import {
 	ACTION_SUMMARY_UNAVAILABLE,
 	type AskQuestionRef,
+	type AskUserQuestion,
 	attentionWarningNotice,
 	configFingerprint,
 	APPROVAL_DECISION_EVENT_KIND,
@@ -137,6 +138,9 @@ export interface ActivityDetail {
 	// can set what the step acted on in Menlo.
 	words?: StepWords;
 	arguments?: string;
+	// The settled question card shows these two fields. Copying the call
+	// still reads the model's original arguments above.
+	questions?: readonly QuestionHistoryText[];
 	output?: string;
 	error?: string;
 	exitCode?: number;
@@ -169,6 +173,8 @@ export interface ActivityDetail {
 	sendEarlierReplies?: readonly DelegateSendEarlierResponse[];
 	sendWaitIgnored?: string;
 }
+
+export type QuestionHistoryText = Pick<AskUserQuestion, "header" | "question">;
 
 // A task as a step's detail carries it: only what the checklist draws. The
 // rest of a task (its prompt, notes and times) would ride every retained
@@ -424,7 +430,12 @@ function intentRow(
 	// the whole step before its output goes.
 	const detail =
 		entry.rationale === ACTION_SUMMARY_UNAVAILABLE
-			? { arguments: row.detail.arguments, ...metadata, ...(summary !== undefined ? { summary } : {}) }
+			? {
+					arguments: row.detail.arguments,
+					...(row.detail.questions && { questions: row.detail.questions }),
+					...metadata,
+					...(summary !== undefined ? { summary } : {}),
+				}
 			: { description: entry.rationale, ...metadata };
 	return {
 		...row,
@@ -656,10 +667,8 @@ function activityState(it: ItemModel, turnStatus: string | undefined): ActivityS
 	return "completed";
 }
 
-function activityDescription(it: ItemModel): string | undefined {
-	if (it.description?.trim() || !isAskUser(it)) return it.description;
-	const questions = parseAskUserQuestions(it);
-	if (!questions) return it.description;
+function activityDescription(it: ItemModel, questions: readonly QuestionHistoryText[] | undefined): string | undefined {
+	if (it.description?.trim() || !questions) return it.description;
 	return `Questions: ${questions
 		.map((question, index) => question.header.trim() || `Question ${index + 1}`)
 		.join("; ")}`;
@@ -685,6 +694,9 @@ function stepWordsOf(it: ItemModel, cwd: string | undefined): Pick<ActivityDetai
 /** A tool or reasoning item's expandable detail, read once from the item. */
 export function activityDetail(it: ItemModel): ActivityDetail {
 	const { start, end } = parsedTimes(it.startedAt, it.completedAt);
+	const questions = isAskUser(it)
+		? parseAskUserQuestions(it)?.map(({ header, question }) => ({ header, question }))
+		: undefined;
 	const tasks =
 		it.toolName === "task_list"
 			? parseTaskListData(it.raw)?.map(({ id, status, description }) => ({ id, status, description }))
@@ -695,8 +707,9 @@ export function activityDetail(it: ItemModel): ActivityDetail {
 	const sendEarlierReplies = send ? delegateSendEarlierResponses(it) : [];
 	const sendWaitIgnored = send ? delegateSendWaitIgnoredReason(it) : undefined;
 	return {
-		description: activityDescription(it),
+		description: activityDescription(it, questions),
 		arguments: it.argumentsJSON,
+		...(questions && { questions }),
 		output: it.output,
 		error: it.error,
 		// The shared resolver: typed wire field first, the shell tool's own output
@@ -1495,6 +1508,13 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 	const summary = detail.summary ? bound(detail.summary) : detail.summary;
 	const words = detail.words ? boundWords(detail.words, bound) : detail.words;
 	const args = detail.arguments ? bound(detail.arguments) : detail.arguments;
+	const questions =
+		detail.questions &&
+		boundEach(detail.questions, (entry) => {
+			const header = bound(entry.header);
+			const question = bound(entry.question);
+			return header === entry.header && question === entry.question ? entry : { header, question };
+		});
 	const output = detail.output ? bound(detail.output) : detail.output;
 	const error = detail.error ? bound(detail.error) : detail.error;
 	const watchEvidence = detail.watchEvidence ? bound(detail.watchEvidence) : detail.watchEvidence;
@@ -1513,6 +1533,7 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 		summary === detail.summary &&
 		words === detail.words &&
 		args === detail.arguments &&
+		questions === detail.questions &&
 		output === detail.output &&
 		error === detail.error &&
 		watchEvidence === detail.watchEvidence &&
@@ -1528,6 +1549,7 @@ function truncateActivityDetail(detail: ActivityDetail, bound: BoundText): Activ
 		summary,
 		words,
 		arguments: args,
+		questions,
 		output,
 		error,
 		watchEvidence,

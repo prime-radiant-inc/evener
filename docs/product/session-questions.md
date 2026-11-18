@@ -27,6 +27,11 @@ arguments are evidence of what the model supplied, not what ran: argument repair
 or a pretool hook may replace them. Invalid or denied calls have no successful
 canonical question state.
 
+The web and phone answering docks and transcript cards read those validated
+questions on live updates and after reload. They read call arguments for older
+items that lack recognized question state. The transcript keeps the model's
+original arguments available for copying and provider replay.
+
 The item's `conversationProvenance` comes from the recorded originating assistant
 turn, including its request and frontier. Matching the result preserves this
 origin and assigns the final item ID as `sourceItemId`. Legacy records without
