@@ -1,4 +1,5 @@
 import {
+  type FocusEvent,
   type KeyboardEvent,
   type ReactNode,
   useCallback,
@@ -152,6 +153,22 @@ const CAP_ROUNDING = 1;
 
 function firstEnabledIndex(items: MenuEntry[]): number {
   return items.findIndex(isActionable);
+}
+
+/** Scroll `popup` the least that brings `row` back inside its scrollport, and
+ * nothing at all when the row is already visible.
+ *
+ * The popup's own scrollTop is the only thing touched. scrollIntoView would
+ * answer the same question through geometry, but on a pinch-zoomed page a row's
+ * position is measured against the VISUAL viewport, so it can pan the page -
+ * and this runs before the pass that writes the popup's new coordinates, so the
+ * pan would head for where the popup used to be. Arithmetic in the popup's own
+ * scroll space has no such reach. */
+function revealRow(popup: HTMLElement, row: HTMLElement): void {
+  const rowTop = row.offsetTop;
+  const rowBottom = rowTop + row.offsetHeight;
+  if (rowTop < popup.scrollTop) popup.scrollTop = rowTop;
+  else if (rowBottom > popup.scrollTop + popup.offsetHeight) popup.scrollTop = rowBottom - popup.offsetHeight;
 }
 
 function itemAt(items: MenuEntry[], i: number): MenuEntry {
@@ -397,12 +414,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
       (scrollportHeight < lastBox.height || scrollportWidth < lastBox.width || (capped && !lastBox.capped));
     if (refocused) {
       const focusedRow = itemRefs.current.find((node) => node !== null && node === ownerDocument.activeElement);
-      if (focusedRow) {
-        const rowTop = focusedRow.offsetTop;
-        const rowBottom = rowTop + focusedRow.offsetHeight;
-        if (rowTop < popupEl.scrollTop) popupEl.scrollTop = rowTop;
-        else if (rowBottom > popupEl.scrollTop + scrollportHeight) popupEl.scrollTop = rowBottom - scrollportHeight;
-      }
+      if (focusedRow) revealRow(popupEl, focusedRow);
     }
     // Only write when it actually moved: the observers below can report a
     // mutation that changes nothing about placement (a text node elsewhere in
@@ -489,18 +501,41 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   // caller that rebuilds its array every render must not re-run this.
   const itemIds = items.map((entry) => entry.id).join("\u0000");
   const resolvedActiveIndex = indexOfActive();
+  // The id of the row that last held DOM focus inside the popup, or null when
+  // no row has. An initial open has none, which is what makes it not a
+  // recovery: FocusScope owns that move and focuses with preventScroll, so
+  // taking the open over here would focus a row while the popup still sits at
+  // its provisional below-trigger position - and on a pinch-zoomed page a plain
+  // focus() pans the reader's view toward the coordinate the placement pass is
+  // about to leave. Only a row that was here and is now gone may move focus,
+  // and that is the one thing that may move the popup's own scroll.
+  const lastFocusedIdRef = useRef<string | null>(null);
   // biome-ignore lint/correctness/useExhaustiveDependencies: itemIds is the deliberate trigger-only dep - the id signature, not the array's identity, is what says the caller's list changed, and callers rebuild that array every render; indexOfActive is called at effect time, so the closure that runs is the current one
   useLayoutEffect(() => {
     // `isOpen` false means the popup is leaving: FocusScope has already handed
     // focus back to whatever opened the menu, and re-focusing an item here
     // would take it away again (the Escape-returns-focus test is the oracle).
     // This effect answers only a focus DROP while the menu is live.
-    if (!isOpen) return;
+    if (!isOpen) {
+      lastFocusedIdRef.current = null;
+      return;
+    }
     const popup = popupRef.current;
     const focused = ownerDocument.activeElement;
     // Focus in the popup: the entry the person was on survived the list change
-    // (React reuses it by key), so it is what they are looking at - leave it.
-    if (popup !== null && focused !== null && popup.contains(focused)) return;
+    // (React reuses it by key), so it is what they are looking at - but entries
+    // arriving ABOVE it may have pushed it out of the scrollport, which is the
+    // one thing a list change can do to a row whose identity survived. Enter
+    // would then invoke an action the reader cannot see.
+    if (popup !== null && focused !== null && popup.contains(focused)) {
+      revealRow(popup, focused as HTMLElement);
+      return;
+    }
+    // A row was focused and that row is still in the list: nothing was lost, so
+    // this is not a dropped focus and the popup's scroll is not ours to move.
+    const lost = lastFocusedIdRef.current;
+    if (lost === null || items.some((entry) => entry.id === lost)) return;
+    lastFocusedIdRef.current = null;
     // Focus anywhere else that is not the popup's own scope means focus was
     // dropped to <body> by the entry's removal, which is the case this
     // recovers. A focus that has moved to a real control (the person tabbed
@@ -513,15 +548,35 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // left, so a caller that brings that entry back re-points activeId at a
     // row the person is no longer on - and the id would then name the
     // action while focus names a different row.
-    focusIndex(index);
+    focusIndex(index, true);
   }, [isOpen, ownerDocument, itemIds]);
 
-  function focusIndex(index: number) {
+  // Record which row holds focus, so a list change can tell a row that LEFT
+  // from one that merely moved. Nothing writes this in the recovery effect:
+  // the id has to survive the change that removes the row, and by then the
+  // browser has already dropped focus to <body>.
+  function handlePopupFocus(event: FocusEvent<HTMLUListElement>) {
+    const target: EventTarget = event.target;
+    const index = itemRefs.current.findIndex((node) => node !== null && node === target);
+    if (index === -1) return;
+    lastFocusedIdRef.current = itemAt(items, index).id;
+  }
+
+  // `reveal` is for a replacement focused OUT of a keypress: a row the reader
+  // did not move to. It is revealed inside the popup's own scroll, and the
+  // focus itself carries preventScroll so the browser cannot pan the page to
+  // it. Arrow-key navigation keeps the plain focus(), whose native scroll
+  // already stays within the popup.
+  function focusIndex(index: number, reveal = false) {
     if (index === -1) return;
     const entry = itemAt(items, index);
     if (isSeparator(entry)) return;
     setActiveId(entry.id);
-    itemRefs.current[index]?.focus();
+    const node = itemRefs.current[index] ?? null;
+    if (node === null) return;
+    node.focus(reveal ? { preventScroll: true } : undefined);
+    const popup = popupRef.current;
+    if (reveal && popup !== null) revealRow(popup, node);
   }
 
   // The index of the item that actually holds DOM focus, or -1 when focus is
@@ -876,6 +931,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
               inert={phase === "closing"}
               style={{ top: position.top, left: position.left, transformOrigin: origin }}
               onKeyDown={handleMenuKeyDown}
+              onFocus={handlePopupFocus}
             >
               {items.map((item, index) =>
                 isSeparator(item) ? (

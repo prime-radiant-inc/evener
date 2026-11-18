@@ -1425,6 +1425,70 @@ test("a second narrowing still keeps the focused row in view when the popup is a
   }
 });
 
+// A list change can push a row that SURVIVED out of the scrollport: a turn
+// starting adds Stop and Steer above the inspection group, and the popup's own
+// box does not change at all (it is height-capped, so it stays capped at the
+// same size). No placement pass sees it, because nothing about the menu's
+// geometry moved - only what sits above the row holding focus.
+test("a row inserted above the focused row leaves it in view", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 400 });
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, 100, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  // Rows are 44px and the popup is a fixed 120px: three rows fit, and it stays
+  // exactly that size when two more arrive above them.
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "UL") return 120;
+    return this.tagName === "LI" ? 44 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "UL" ? 160 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName !== "LI" || !this.parentElement) return 0;
+    return Array.prototype.indexOf.call(this.parentElement.children, this) * 44;
+  });
+  const { flush } = captureFrames();
+  function GrowingMenu({ turning }: { turning: boolean }) {
+    const leading: MenuItem[] = turning
+      ? [
+          { id: "turn-stop", label: "Stop", onSelect: vi.fn() },
+          { id: "turn-steer", label: "Steer", onSelect: vi.fn() },
+        ]
+      : [];
+    return <Menu trigger="Actions" items={[...leading, ...items()]} />;
+  }
+  try {
+    const view = render(<GrowingMenu turning={false} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    // Delete is the third row (88..132) and the reader has scrolled it into a
+    // 120px scrollport: the least scroll that shows it is 132 - 120.
+    const last = screen.getByRole("menuitem", { name: "Delete" });
+    last.focus();
+    expect(document.activeElement).toBe(last);
+    const popup = screen.getByRole("menu");
+    popup.scrollTop = 12;
+    expect(popup.scrollTop).toBe(12);
+
+    // A turn starts. Stop and Steer arrive ABOVE Delete, so it moves to
+    // 176..220 while the popup stays 160x120 and its cap is unchanged.
+    view.rerender(<GrowingMenu turning />);
+    flush();
+
+    expect(screen.getByRole("menuitem", { name: "Stop" })).toBeTruthy();
+    // Delete survived by key and still holds focus - and is back in view.
+    expect(document.activeElement).toBe(last);
+    expect(popup.scrollTop).toBe(220 - 120);
+  } finally {
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
 // Revealing the focused row is only ever an answer to a scrollport that got
 // SHORTER. A reader who scrolls down to the lower actions has deliberately
 // moved away from the row that still holds focus, and every other placement
@@ -1686,6 +1750,35 @@ test("a row inserted above the trigger moves the open popup with it", async () =
 });
 
 // --- the menu follows its item set, not a snapshot -------------------------
+// Opening is not a recovery. Nothing was focused inside a popup that did not
+// exist yet, so no row was lost, and the menu must not move focus on the way
+// open: it would be focusing a row while the popup still sits at the
+// provisional below-trigger position, and a plain focus() pans a pinch-zoomed
+// page toward that coordinate before the flipped placement commits. The one
+// initial focus move is FocusScope's, and it carries preventScroll for this
+// reason. A trigger that takes no focus of its own (the rail's roving rows) and
+// a click that does not focus the button both leave <body> active, which is the
+// state this guards.
+test("opening the menu moves no focus itself, so a zoomed page is not panned to the provisional position", () => {
+  const focus = vi.spyOn(HTMLElement.prototype, "focus");
+  try {
+    render(<Menu trigger="Actions" items={items()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Actions" }));
+
+    const rowCalls = focus.mock.calls.filter((_, index) => {
+      const target = focus.mock.contexts[index] as HTMLElement;
+      return target.getAttribute("role") === "menuitem";
+    });
+    // FocusScope's single move is the only row focus an open makes, and it is
+    // the scrolling-suppressing form. A second call - or one without the
+    // option - is the menu's own recovery path running on an open that had no
+    // row to lose, which is what pans a pinch-zoomed page.
+    expect(rowCalls.map(([options]) => options)).toEqual([{ preventScroll: true }]);
+  } finally {
+    vi.restoreAllMocks();
+  }
+});
+
 // With the menu open and "Pin this session…" focused, a caller that drops an
 // EARLIER entry (SessionChrome drops "Find in session…" below 480px) left the
 // stored index pointing at "Archive". Enter then archived the session while

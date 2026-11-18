@@ -19,7 +19,6 @@ import {
 import userEvent from "@testing-library/user-event";
 import type { ComponentProps, ReactElement } from "react";
 import { lazy } from "react";
-import { createPortal } from "react-dom";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { MotionProvider } from "../../../motion";
 import { ActivitySidebar } from "../../../shell/activitybar/ActivitySidebar";
@@ -944,7 +943,7 @@ test("desktop Overview toggles closed only when the sidebar is scoped to this se
 // element because Dockview moves a panel's DOM into the popout without
 // re-rendering it - nothing observable from that element changes at the move,
 // so an effect keyed on the element stays bound to the opener.
-test("moving a pane into a short popout drops Find and restoring the tall window brings it back", async () => {
+test("moving a mounted pane into a short popout drops Find and moving it back brings it back", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_popout"));
   fake.on("evener/jobs/list", () => ({ data: emptyActivityTree() }));
@@ -954,33 +953,49 @@ test("moving a pane into a short popout drops Find and restoring the tall window
   const openerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
   Object.defineProperty(window, "innerHeight", { configurable: true, value: 520 });
 
-  const view = renderUI(
-    createPortal(
-      <ClientProvider client={fake}>
-        <PaneDocumentContext.Provider value={doc}>
-          <SessionChrome ref="ref_popout" />
-        </PaneDocumentContext.Provider>
-      </ClientProvider>,
-      doc.body,
-    ),
+  // The pane is MOUNTED in the opener and then moved, which is what Dockview
+  // does: it adopts the panel's DOM into the popout window and republishes
+  // PaneDocumentContext, without unmounting anything. Mounting straight into the
+  // popout would pass against an implementation that read the element's own
+  // window at mount and never rebound, because that window would already be the
+  // popout's.
+  const container = document.createElement("div");
+  document.body.append(container);
+  const pane = (paneDocument: Document) => (
+    <ClientProvider client={fake}>
+      <PaneDocumentContext.Provider value={paneDocument}>
+        <SessionChrome ref="ref_popout" />
+      </PaneDocumentContext.Provider>
+    </ClientProvider>
   );
+  const view = renderUI(pane(document), { container });
   try {
-    const trigger = within(doc.body).getByRole("button", { name: "Session actions" });
+    const trigger = within(container).getByRole("button", { name: "Session actions" });
     fireEvent.click(trigger);
-    // 520px is tall enough for the menu to carry Find.
-    const find = within(doc.body).getByRole("menuitem", { name: /^Find in session/ });
+    // 520px is tall enough for the menu to carry Find. The popup portals to the
+    // body of the document the menu lives in, so it is queried there and not in
+    // the container the pane's own markup sits in.
+    const find = within(document.body).getByRole("menuitem", { name: /^Find in session/ });
     // Focus Find itself, so the removal has to move focus rather than quietly
     // drop a row nobody was on.
-    fireEvent.keyDown(doc.activeElement ?? trigger, { key: "ArrowDown" });
-    expect(doc.activeElement).toBe(find);
+    fireEvent.keyDown(document.activeElement ?? trigger, { key: "ArrowDown" });
+    expect(document.activeElement).toBe(find);
 
-    // The pane is moved into a popout only 390px tall. Only that window
-    // reports it; the opener stays 520px.
+    // The pane is moved into a popout only 390px tall: the same mounted tree,
+    // its DOM adopted by the popout window, and the published document changed
+    // to that window's - the opener stays 520px and hears nothing.
     Object.defineProperty(win, "innerHeight", { configurable: true, value: 390 });
+    act(() => {
+      doc.body.append(container);
+    });
+    act(() => {
+      view.rerender(pane(doc));
+    });
     act(() => {
       win.dispatchEvent(new Event("resize"));
     });
 
+    // The adoption above moved the popup's portal to the popout's body too.
     const menu = within(doc.body).getByRole("menu");
     expect(within(menu).queryByRole("menuitem", { name: /^Find in session/ })).toBeNull();
     // Still open, and focus sits on a row that is still there.
@@ -989,14 +1004,19 @@ test("moving a pane into a short popout drops Find and restoring the tall window
     expect(menu.contains(focused)).toBe(true);
     expect(focused?.getAttribute("role")).toBe("menuitem");
 
-    // Docked back into a tall window: the row returns.
-    Object.defineProperty(win, "innerHeight", { configurable: true, value: 700 });
+    // Docked back into the tall opener: the row returns. The popout keeps its
+    // own 390px, so only the published document tells the pane where it is.
     act(() => {
-      win.dispatchEvent(new Event("resize"));
+      document.body.append(container);
     });
-    expect(within(within(doc.body).getByRole("menu")).getByRole("menuitem", { name: /^Find in session/ })).toBeTruthy();
+    act(() => {
+      view.rerender(pane(document));
+    });
+    expect(within(document.body).getByRole("menu")).toBeTruthy();
+    expect(within(document.body).getByRole("menuitem", { name: /^Find in session/ })).toBeTruthy();
   } finally {
     view.unmount();
+    container.remove();
     frame.remove();
     if (openerHeight) Object.defineProperty(window, "innerHeight", openerHeight);
   }
