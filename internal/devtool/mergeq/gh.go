@@ -102,12 +102,17 @@ func publishGHGroup(path string, pid int) {
 	}
 	temp := file.Name()
 	_, writeErr := file.WriteString(strconv.Itoa(pid) + "\n")
+	// The mode is applied through the descriptor, before the close, and never by
+	// name afterwards. `os.Chmod(temp, ...)` after the close is a second lookup of
+	// a name this function chose inside a directory it does not own: on a shared
+	// directory whose parent entries another user can replace, that lookup can
+	// resolve to a link they planted, and the chmod then changes the mode of a
+	// file the operator owns. The descriptor cannot be redirected -- it names the
+	// inode CreateTemp opened -- so the permission this function means to set is
+	// the one it sets.
+	chmodErr := file.Chmod(0o600)
 	closeErr := file.Close()
-	if writeErr != nil || closeErr != nil {
-		_ = os.Remove(temp)
-		return
-	}
-	if err := os.Chmod(temp, 0o600); err != nil {
+	if writeErr != nil || chmodErr != nil || closeErr != nil {
 		_ = os.Remove(temp)
 		return
 	}

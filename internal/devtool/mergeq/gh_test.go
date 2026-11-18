@@ -19,6 +19,41 @@ import (
 	"primeradiant.com/evener/internal/testwait"
 )
 
+// fixtureExecDir returns a private directory this test can execute a program
+// from.
+//
+// The fixtures here launch shell scripts, and t.TempDir() descends from the
+// ambient TMPDIR. On a host whose TMPDIR is mounted noexec -- a hardened CI
+// image, a container with a locked-down /tmp -- the script cannot run, the
+// fixture never publishes the PID the case waits for, and the case times out on
+// a failure that says nothing about the client. An executable GOTMPDIR does not
+// help: that is the go command's work directory, not where these fixtures write.
+//
+// The property is established instead of assumed, by running a trivial script in
+// the directory this returns. When the base cannot execute one, the case fails
+// by name rather than waiting out a deadline for a fixture that never ran.
+//
+// It stays inside the test's own temp space on purpose. Falling back to the
+// developer's $HOME or $XDG_RUNTIME_DIR would make the case depend on which
+// roots this machine happens to have, and would leave directories behind
+// outside the fixture.
+func fixtureExecDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	// 0700 whatever the runner's umask is. t.TempDir() is 0775 under umask 0002,
+	// and a fixture directory other users can write is not the private base the
+	// rest of this file assumes.
+	if err := os.Chmod(dir, 0o700); err != nil {
+		t.Fatalf("make the fixture directory private: %v", err)
+	}
+	probe := filepath.Join(dir, "exec-probe.sh")
+	writeExecutable(t, probe, "#!/usr/bin/env bash\nexit 0\n")
+	if err := exec.Command(probe).Run(); err != nil {
+		t.Fatalf("%s cannot execute a program (%v): these fixtures launch scripts, so this case needs an exec-capable TMPDIR; set TMPDIR to one rather than letting the case time out waiting for a fixture that never ran", dir, err)
+	}
+	return dir
+}
+
 // writeExecutable writes an executable script, holding syscall.ForkLock so a
 // concurrent fork in this test binary cannot inherit the write descriptor and
 // fail its own exec with ETXTBSY. execsupport/orphanpipe/orphanpipetest's
@@ -55,7 +90,7 @@ func pidGone(pid int) bool {
 // must be gone. A pipe bound alone cannot pass this: closing the pipe returns
 // from Run, it does not stop the child.
 func TestGHCancellationKillsTheRealCLIAChildWrapperLeaves(t *testing.T) {
-	dir := t.TempDir()
+	dir := fixtureExecDir(t)
 	pidFile := filepath.Join(dir, "child.pid")
 	// The child ignores TERM, so only a group KILL reaches it, and it holds no
 	// pipe: this case must fail on the child's survival alone.
@@ -81,7 +116,7 @@ exit 0
 	// An explicit handle. Empty reads EVENER_MERGEQ_GH_GROUP_FILE, and an
 	// inherited value would make this fixture publish over, and then clear, a
 	// live launcher's handle for the helper it is stopping.
-	groupFile := filepath.Join(t.TempDir(), "gh-group")
+	groupFile := filepath.Join(fixtureExecDir(t), "gh-group")
 	done := make(chan error, 1)
 	go func() {
 		_, err := (GHClient{GH: wrapper, GroupFile: groupFile}).run(ctx, "api", "graphql")
@@ -150,12 +185,12 @@ func TestGHDrainWithoutAReplyIsNotSuccess(t *testing.T) {
 	// writes nothing before it goes; the second writes a whole reply first and
 	// then leaves the same kind of descendant behind. Only the first is a
 	// missing answer, and the drain bound must tell them apart.
-	silent := filepath.Join(t.TempDir(), "gh-silent")
+	silent := filepath.Join(fixtureExecDir(t), "gh-silent")
 	writeExecutable(t, silent, "#!/usr/bin/env bash\n( sleep 30 ) &\nexit 0\n")
-	answered := filepath.Join(t.TempDir(), "gh-answered")
+	answered := filepath.Join(fixtureExecDir(t), "gh-answered")
 	writeExecutable(t, answered, "#!/usr/bin/env bash\nprintf '{\"data\":{\"repository\":{\"pullRequest\":{\"id\":\"PR_1\",\"state\":\"OPEN\"}}}}'\n( sleep 30 ) &\nexit 0\n")
 
-	c := GHClient{GH: silent, GroupFile: filepath.Join(t.TempDir(), "group")}
+	c := GHClient{GH: silent, GroupFile: filepath.Join(fixtureExecDir(t), "group")}
 	out, err := c.run(context.Background(), "api", "graphql")
 	if err == nil {
 		t.Fatalf("a wrapper that exited before answering was read as a successful call (out %q): an enqueue would be reported as landed on a reply nobody received", string(out))
@@ -166,7 +201,7 @@ func TestGHDrainWithoutAReplyIsNotSuccess(t *testing.T) {
 
 	// And the case the drain bound exists for still succeeds: a complete reply,
 	// with a descendant merely holding the pipe open.
-	c = GHClient{GH: answered, GroupFile: filepath.Join(t.TempDir(), "group")}
+	c = GHClient{GH: answered, GroupFile: filepath.Join(fixtureExecDir(t), "group")}
 	out, err = c.run(context.Background(), "api", "graphql")
 	if err != nil {
 		t.Fatalf("a complete reply with a descendant holding the pipe was refused: %v", err)
@@ -178,7 +213,7 @@ func TestGHDrainWithoutAReplyIsNotSuccess(t *testing.T) {
 
 func TestGHPublishRefusesAPlantedSymlink(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
+	dir := fixtureExecDir(t)
 	victim := filepath.Join(dir, "victim")
 	const original = "keep these bytes\n"
 	if err := os.WriteFile(victim, []byte(original), 0o600); err != nil {
@@ -227,7 +262,7 @@ func TestGHPublishRefusesAPlantedSymlink(t *testing.T) {
 // binary that has already exited -- a leak that hides the next regression.
 func TestGHPublishesItsLiveProcessGroup(t *testing.T) {
 	t.Parallel()
-	dir := t.TempDir()
+	dir := fixtureExecDir(t)
 	groupFile := filepath.Join(dir, "gh-group")
 	release := filepath.Join(dir, "release")
 	gh := filepath.Join(dir, "gh")

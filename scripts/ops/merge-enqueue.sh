@@ -330,8 +330,25 @@ dir_acl_grants_foreign_write() {
   # The mode is the first field; the marker sits at the end of it, not at the end
   # of the line. Matching the whole listing would look for a line that ends in
   # `+`, which no `ls -l` line does.
+  #
+  # The marker decides whether the ACL has to be read, and only where the marker
+  # is the whole story. On GNU `ls`, `+` means an access ACL and nothing else
+  # prints there, so an unmarked entry needs no read and a marked one does. On
+  # BSD `ls` -- macOS -- the suffix is one character chosen from the entry's
+  # extended state: `+` for an ACL, `@` for extended attributes, and `@` also
+  # when an entry carries BOTH, because only one character is printed. A
+  # directory with xattrs and an ACL therefore reads `@`, and a `+`-only check
+  # skips the very ACL this function exists to read: a 0755 ancestor with a
+  # trusted owner passes while its ACL lets another local user replace entries in
+  # the path the probe and the helper execute through.
+  #
+  # So on Darwin the ACL is read whenever the marker could be hiding one, which
+  # is `+` or `@`, and the answer still comes from the parsed entries: an ACL
+  # that grants only read stays accepted, which is what keeps an ordinary Mac's
+  # home directory usable.
   case "${listing%%[[:space:]]*}" in
     *+) ;;
+    *@) ;;
     *) return 1 ;;
   esac
   if command -v getfacl >/dev/null 2>&1; then
@@ -989,7 +1006,6 @@ start_helper() {
   fi
   local status=0
   wait "$child" || status=$?
-  child_is_helper=false
   # The child's exit is not the queue's answer. An EVENER_DEV_BIN wrapper is
   # allowed to start the real helper in the background and exit 0 at once, and
   # then `wait` returns before the helper has said anything about the PR: the
@@ -1028,6 +1044,18 @@ start_helper() {
   # reap_child through the trap, and reap_child reaches the helper through this
   # pid; clearing it first left the handler with nothing to stop and let it exit
   # 130 over a live helper.
+  #
+  # The helper flag switches with it, and for the same reason. reap_child reads
+  # it to choose between the build's tree and the helper's recorded groups, and
+  # clearing it as soon as `wait` returned handed an interrupt that landed
+  # anywhere in the scan below the build path: stop_command on a pid that has
+  # already been reaped, which names no group, so neither the recorded helper
+  # group nor the published GitHub-call group was stopped and this script exited
+  # 130 over a helper that was still polling or still submitting. The wrapper is
+  # gone either way; what the flag has to keep saying until the survivors are
+  # dealt with is that a helper was launched, because the groups it recorded are
+  # still the ones an interrupt has to stop.
+  child_is_helper=false
   child=""
   # 126 and 127 are the shell's "found but could not execute" and "not found".
   # A noexec mount produces the first after a successful build, and neither is
@@ -1138,7 +1166,23 @@ build_helper() {
     # belong in the scratch that was chosen and checked, not in a variable the
     # caller happens to have set. The caller's Go configuration is otherwise
     # left alone.
-    env GOFLAGS= GOOS= GOARCH= GOENV="$goenv" GOTMPDIR="$work" go build -o "$out" ./cmd/evener-dev/bin
+    #
+    # GOWORK is pinned to THIS checkout, and the rule is the checkout's own
+    # files rather than the caller's environment. An exported GOWORK names a
+    # workspace for whatever tree the caller was working in: pointed at another
+    # checkout it either fails to load or, worse, loads a workspace that does
+    # not use this directory, and the build resolves this module against
+    # dependencies that are not here. `off` is not the answer either -- this
+    # module requires its siblings at v0.0.0 and only go.work's replace
+    # directives name where they are, so standalone module mode cannot build
+    # the helper at all. A checkout with a go.work therefore builds in it, and
+    # one without builds standalone.
+    if [ -f "$root/go.work" ]; then
+      gowork="$root/go.work"
+    else
+      gowork=off
+    fi
+    env GOFLAGS= GOOS= GOARCH= GOENV="$goenv" GOTMPDIR="$work" GOWORK="$gowork" go build -o "$out" ./cmd/evener-dev/bin
   ) &
   set +m
   child=$!

@@ -215,7 +215,40 @@ func newFixtureCheckoutNamed(t *testing.T, tmp, name string) fixtureCheckout {
 // change its mode.
 func newFixtureCheckoutUnder(t *testing.T, chainRoot, tmp, name string) fixtureCheckout {
 	t.Helper()
-	root := filepath.Join(t.TempDir(), name)
+	// The checkout goes under a base whose whole ancestry the launcher's validator
+	// accepts, not under `t.TempDir()`.
+	//
+	// The copy of the launcher and the libraries it sources are files this case
+	// then EXECUTES (`bash <copy>`). `t.TempDir()` descends from the ambient TMPDIR,
+	// and on a shared TMPDIR without the sticky bit another local user can replace
+	// an ancestor of that path between the copy and the exec and have their own
+	// script run instead: the fixture would be the privilege escalation it exists to
+	// test for. Comparing the copies earlier does not help -- the files are read
+	// again by bash.
+	//
+	// The base is created the same way every other fixture directory is, so it is
+	// established rather than inherited: private, trusted and exec-capable, or the
+	// case fails by name. A case with a deliberately unusable TMPDIR still passes
+	// that TMPDIR as `tmp`; the checkout does not have to live on it, and must not.
+	base, why := createPrivateFixtureDir(t, fixtureScratchBase(t))
+	if base == "" {
+		t.Fatalf("no base to create the fixture checkout under: %s", fixtureRefusalDetail(why))
+	}
+	// The base is validated a second time here, on purpose, and it is the
+	// assertion this constructor exists for. The copy of the launcher below is a
+	// script this case EXECUTES, so everything above it must be a path another
+	// user cannot replace: bash reads the file again at exec, and a swap between
+	// the copy and the exec runs their script instead of the launcher -- in the
+	// privilege of whoever ran the tests. `t.TempDir()` descends from the ambient
+	// TMPDIR, so on a shared TMPDIR without the sticky bit that path was exactly
+	// the one this fixture used. Asking the question here means a future edit that
+	// reaches for t.TempDir() again fails by name rather than passing on a machine
+	// whose TMPDIR happens to be private.
+	if !launcherTrustsPath(t, base) {
+		t.Fatalf("the fixture checkout base %s is not a path the launcher's own rule trusts: this case executes a script from it, so another user being able to replace an ancestor of that path is code execution in the test run", base)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(base) })
+	root := filepath.Join(base, name)
 	c := fixtureCheckout{
 		root:     root,
 		script:   filepath.Join(root, "scripts", "ops", "merge-enqueue.sh"),
@@ -395,6 +428,44 @@ func requirePrivateChain(t *testing.T, root, dir string) {
 // can be a directory the operator owns, outside the fixture. A test that can do
 // that to the operator's filesystem is a defect. Lstat answers about the entry
 // itself rather than its target, which is exactly the question.
+// fixtureRefusal says why a fixture base was refused, as a value an assertion
+// can compare.
+//
+// The selectors below used to report a sentence, and a subtest compared it to a
+// literal copy of that sentence. That pins the wording of a message nothing in
+// production emits -- these are test helpers -- so a reworded message broke the
+// assertion while the behaviour it stands for was unchanged, and the literal is
+// the "asserts on copy" shape the testing guide bans. The code is the contract;
+// the sentence is for the failure message.
+type fixtureRefusal string
+
+const (
+	// refusalNone means the base was accepted.
+	refusalNone fixtureRefusal = ""
+	// refusalUntrusted means an ancestor or ACL lets another user replace entries.
+	refusalUntrusted fixtureRefusal = "untrusted"
+	// refusalNoexec means the base is trusted but cannot execute a program.
+	refusalNoexec fixtureRefusal = "noexec"
+	// refusalNotCreatable means the base accepted the checks and still failed to
+	// yield a private directory.
+	refusalNotCreatable fixtureRefusal = "not-creatable"
+)
+
+// fixtureRefusalDetail renders the operator-facing sentence for a refusal.
+func fixtureRefusalDetail(code fixtureRefusal) string {
+	switch code {
+	case refusalUntrusted:
+		return "an ancestor is replaceable by another user"
+	case refusalNoexec:
+		return "the filesystem cannot execute a program"
+	case refusalNotCreatable:
+		return "a private directory could not be created there"
+	case refusalNone:
+		return ""
+	}
+	return ""
+}
+
 func privateChainRefusal(path string) string {
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -413,12 +484,53 @@ func privateChainRefusal(path string) string {
 // path, ancestors included, by evaluating the script's functions. It is the
 // oracle for "would this fixture's scratch root be used", so a case never has to
 // reimplement the rule and drift from it.
+//
+// The functions come from ONE list, built below, and never from a list written at
+// the call site. dir_entry_is_replaceable called acl_getfacl_has_mask and
+// acl_getfacl_group_grants_write, and six call sites still sourced only the
+// functions they had needed before that change: the predicate then ran with those
+// two names undefined, the ACL branch was skipped, and on Linux -- where a
+// writable ACL mask with read-only group bits is exactly the shape the mode bits
+// misreport -- the fixture rejected a base the launcher accepts. A fixture that
+// loads a subset of the validator is not running the validator.
+const validatorFuncs = "/^acl_getfacl_grants_foreign_write()/,/^}/p;" +
+	"/^acl_getfacl_has_mask()/,/^}/p;" +
+	"/^acl_getfacl_group_grants_write()/,/^}/p;" +
+	"/^acl_ls_e_grants_foreign_write()/,/^}/p;" +
+	"/^dir_acl_grants_foreign_write()/,/^}/p;" +
+	"/^dir_entry_is_replaceable()/,/^}/p;" +
+	"/^dir_is_owned_by_trusted()/,/^}/p"
+
+// validatorFuncsWithWalk is validatorFuncs plus the walk itself, for the cases
+// that ask the whole question rather than one predicate.
+const validatorFuncsWithWalk = validatorFuncs + ";/^scratch_path_is_trusted()/,/^}/p"
+
+// runLauncherFunc sources the launcher's own functions into bash and runs expr.
+// Everything a fixture asks the launcher's rule goes through here, so there is
+// exactly one place where the set of loaded functions is decided.
+func runLauncherFunc(t *testing.T, funcs, expr string, args ...string) error {
+	t.Helper()
+	argv := append([]string{"bash", "-c",
+		`eval "$(sed -n '` + funcs + `' "$1")"; ` + expr,
+		"bash", mergeEnqueueLauncher}, args...)
+	return exec.Command(argv[0], argv[1:]...).Run()
+}
+
+// runLauncherFuncStdin is runLauncherFunc for a predicate that reads its input
+// from standard input, such as an ACL listing.
+func runLauncherFuncStdin(t *testing.T, funcs, expr, stdin string, args ...string) error {
+	t.Helper()
+	argv := append([]string{"bash", "-c",
+		`eval "$(sed -n '` + funcs + `' "$1")"; ` + expr,
+		"bash", mergeEnqueueLauncher}, args...)
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Stdin = strings.NewReader(stdin)
+	return cmd.Run()
+}
+
 func launcherTrustsPath(t *testing.T, path string) bool {
 	t.Helper()
-	err := exec.Command("bash", "-c",
-		`eval "$(sed -n '/^acl_getfacl_grants_foreign_write()/,/^}/p;/^acl_ls_e_grants_foreign_write()/,/^}/p;/^dir_acl_grants_foreign_write()/,/^}/p;/^dir_entry_is_replaceable()/,/^}/p;/^dir_is_owned_by_trusted()/,/^}/p;/^scratch_path_is_trusted()/,/^}/p' "$1")"; scratch_path_is_trusted "$2"`,
-		"bash", mergeEnqueueLauncher, path).Run()
-	return err == nil
+	return runLauncherFunc(t, validatorFuncsWithWalk, `scratch_path_is_trusted "$2"`, path) == nil
 }
 
 // launcherCanExecuteIn asks the repository's own probe whether a script written
@@ -610,30 +722,30 @@ func fixtureScratchBase(t *testing.T) string {
 // The base must also execute: it is the mount every fixture that launches a
 // script lives on, so a noexec base moves the failure to the script's start,
 // far from the cause.
-func createPrivateFixtureDir(t *testing.T, base string) (string, string) {
+func createPrivateFixtureDir(t *testing.T, base string) (string, fixtureRefusal) {
 	t.Helper()
 	if !launcherTrustsPath(t, base) {
-		return "", "an ancestor is replaceable by another user"
+		return "", refusalUntrusted
 	}
 	if !launcherCanExecuteIn(t, base) {
-		return "", "the filesystem cannot execute a program"
+		return "", refusalNoexec
 	}
 	dir, err := os.MkdirTemp(base, "merge-enqueue-fixture.")
 	if err != nil {
-		return "", "cannot create"
+		return "", refusalNotCreatable
 	}
 	// Lstat, not Stat: IsDir on an lstat result is false for a symlink, so this
 	// single condition rejects a created entry that is not the directory the
 	// chmod below expects.
 	if info, err := os.Lstat(dir); err != nil || !info.IsDir() {
 		_ = os.RemoveAll(dir)
-		return "", "the created entry is not a directory"
+		return "", refusalNotCreatable
 	}
 	if err := os.Chmod(dir, 0o700); err != nil {
 		_ = os.RemoveAll(dir)
 		t.Fatalf("make %s private: %v", dir, err)
 	}
-	return dir, ""
+	return dir, refusalNone
 }
 
 // A usable base is established on RESOLVED paths and holds all three of the
@@ -677,19 +789,19 @@ func firstTrustedScratchBase(t *testing.T, candidates []string) string {
 		// under a base whose entries another user can swap, and the chmod below
 		// then acts on an entry nobody else can move.
 		dir, reason := createPrivateFixtureDir(t, base)
-		if reason != "" {
-			rejected = append(rejected, candidate+" ("+reason+")")
+		if reason != refusalNone {
+			rejected = append(rejected, candidate+" ("+fixtureRefusalDetail(reason)+")")
 			continue
 		}
 		// No second resolution: `dir` descends from the resolved base, which has
 		// no symlinked component left by construction. A second EvalSymlinks here
 		// would be dead code, and dead code that looks load-bearing is how the
 		// resolve below went untested the first time.
-		if reason := unusableScratchBase(t, dir); reason == "" {
+		if reason := unusableScratchBase(t, dir); reason == refusalNone {
 			t.Cleanup(func() { _ = os.RemoveAll(dir) })
 			return dir
 		}
-		rejected = append(rejected, candidate+" ("+unusableScratchBase(t, dir)+")")
+		rejected = append(rejected, candidate+" ("+fixtureRefusalDetail(unusableScratchBase(t, dir))+")")
 		_ = os.RemoveAll(dir)
 	}
 	t.Fatalf("no scratch base this machine offers is usable: %s; point TMPDIR at an exec-capable directory whose whole ancestry only you (or root) can write, and rerun",
@@ -700,15 +812,15 @@ func firstTrustedScratchBase(t *testing.T, candidates []string) string {
 // unusableScratchBase reports why the launcher would refuse to build under path,
 // or "" when it would accept it. The three requirements are one answer because a
 // caller that reads them separately ends up checking two of them.
-func unusableScratchBase(t *testing.T, path string) string {
+func unusableScratchBase(t *testing.T, path string) fixtureRefusal {
 	t.Helper()
 	if !launcherTrustsPath(t, path) {
-		return "an ancestor is replaceable by another user"
+		return refusalUntrusted
 	}
 	if !launcherCanExecuteIn(t, path) {
-		return "the filesystem cannot execute a program"
+		return refusalNoexec
 	}
-	return ""
+	return refusalNone
 }
 
 // fixtureTmpDir is a fixture TMPDIR under a trusted base, named by the caller so
@@ -1809,9 +1921,7 @@ func TestMergeEnqueueLauncherDoesNotBuildUnderAReplaceableRoot(t *testing.T) {
 		// cannot be manufactured without root, and a case that pretended would be
 		// testing its own fixture.
 		probe := func(dir string) error {
-			return exec.Command("bash", "-c",
-				`eval "$(sed -n '/^acl_getfacl_grants_foreign_write()/,/^}/p;/^acl_ls_e_grants_foreign_write()/,/^}/p;/^dir_acl_grants_foreign_write()/,/^}/p;/^dir_entry_is_replaceable()/,/^}/p;/^dir_is_owned_by_trusted()/,/^}/p' "$1")"; dir_entry_is_replaceable "$2"`,
-				"bash", mergeEnqueueLauncher, dir).Run()
+			return runLauncherFunc(t, validatorFuncs, `dir_entry_is_replaceable "$2"`, dir)
 		}
 		own := filepath.Join(t.TempDir(), "owned-by-us")
 		if err := os.MkdirAll(own, 0o700); err != nil {
@@ -1909,14 +2019,10 @@ scratch_path_is_trusted "$2"`
 		// ask about a path that does not exist: no launcher run can be given a
 		// missing TMPDIR and reach the walk, because the walk is what is under test.
 		trusted := func(path string) error {
-			return exec.Command("bash", "-c",
-				`eval "$(sed -n '/^acl_getfacl_grants_foreign_write()/,/^}/p;/^acl_ls_e_grants_foreign_write()/,/^}/p;/^dir_acl_grants_foreign_write()/,/^}/p;/^dir_entry_is_replaceable()/,/^}/p;/^dir_is_owned_by_trusted()/,/^}/p;/^scratch_path_is_trusted()/,/^}/p' "$1")"; scratch_path_is_trusted "$2"`,
-				"bash", mergeEnqueueLauncher, path).Run()
+			return runLauncherFunc(t, validatorFuncsWithWalk, `scratch_path_is_trusted "$2"`, path)
 		}
 		replaceable := func(path string) error {
-			return exec.Command("bash", "-c",
-				`eval "$(sed -n '/^acl_getfacl_grants_foreign_write()/,/^}/p;/^acl_ls_e_grants_foreign_write()/,/^}/p;/^dir_acl_grants_foreign_write()/,/^}/p;/^dir_entry_is_replaceable()/,/^}/p;/^dir_is_owned_by_trusted()/,/^}/p' "$1")"; dir_entry_is_replaceable "$2"`,
-				"bash", mergeEnqueueLauncher, path).Run()
+			return runLauncherFunc(t, validatorFuncs, `dir_entry_is_replaceable "$2"`, path)
 		}
 		root := resolvePath(t, t.TempDir())
 		requirePrivateChain(t, root, root)
@@ -1981,9 +2087,7 @@ scratch_path_is_trusted "$2"`
 		// whether the ACL was read. On macOS the ACL is independent of the mode
 		// bits, which is the platform this rule exists for, so the reader is the
 		// piece that has to be right and the piece that gets its own assertion.
-		if err := exec.Command("bash", "-c",
-			`eval "$(sed -n '/^acl_getfacl_grants_foreign_write()/,/^}/p;/^acl_ls_e_grants_foreign_write()/,/^}/p;/^dir_acl_grants_foreign_write()/,/^}/p' "$1")"; dir_acl_grants_foreign_write "$2"`,
-			"bash", mergeEnqueueLauncher, probe).Run(); err != nil {
+		if err := runLauncherFunc(t, validatorFuncs, `dir_acl_grants_foreign_write "$2"`, probe); err != nil {
 			t.Fatalf("%s grants write to %s through an extended ACL; the reader reported no foreign write (%v)", probe, user, err)
 		}
 		// A read-only grant is not a replaceable directory: refusing it would turn
@@ -1995,9 +2099,7 @@ scratch_path_is_trusted "$2"`
 		if err := exec.Command(setfacl, "-m", "u:"+user+":r-x", probe).Run(); err != nil {
 			t.Fatalf("grant a read-only ACL: %v", err)
 		}
-		if err := exec.Command("bash", "-c",
-			`eval "$(sed -n '/^acl_getfacl_grants_foreign_write()/,/^}/p;/^acl_ls_e_grants_foreign_write()/,/^}/p;/^dir_acl_grants_foreign_write()/,/^}/p' "$1")"; dir_acl_grants_foreign_write "$2"`,
-			"bash", mergeEnqueueLauncher, probe).Run(); err == nil {
+		if err := runLauncherFunc(t, validatorFuncs, `dir_acl_grants_foreign_write "$2"`, probe); err == nil {
 			t.Fatalf("%s grants only read to %s, so its entries are not replaceable; the reader reported a foreign write", probe, user)
 		}
 		// And with no ACL at all the reader says no, which is what makes it usable
@@ -2005,9 +2107,7 @@ scratch_path_is_trusted "$2"`
 		if err := exec.Command(setfacl, "-b", probe).Run(); err != nil {
 			t.Fatalf("remove the ACL: %v", err)
 		}
-		if err := exec.Command("bash", "-c",
-			`eval "$(sed -n '/^acl_getfacl_grants_foreign_write()/,/^}/p;/^acl_ls_e_grants_foreign_write()/,/^}/p;/^dir_acl_grants_foreign_write()/,/^}/p' "$1")"; dir_acl_grants_foreign_write "$2"`,
-			"bash", mergeEnqueueLauncher, probe).Run(); err == nil {
+		if err := runLauncherFunc(t, validatorFuncs, `dir_acl_grants_foreign_write "$2"`, probe); err == nil {
 			t.Fatalf("%s carries no extended ACL; the reader reported a foreign write", probe)
 		}
 		// The permission that matters is the named entry's bits AND the mask. A
@@ -2032,11 +2132,12 @@ scratch_path_is_trusted "$2"`
 		}
 		// Asked of the reader with the ACL this host just produced: the mask caps
 		// the named entry, so the answer is "no foreign write".
-		cmd := exec.Command("bash", "-c",
-			`eval "$(sed -n '/^acl_getfacl_grants_foreign_write()/,/^}/p' "$1")"; acl_getfacl_grants_foreign_write`,
-			"bash", mergeEnqueueLauncher)
-		cmd.Stdin = bytes.NewReader(listing)
-		if err := cmd.Run(); err == nil {
+		//
+		// The predicate is loaded from the shared set, not from its own list of
+		// functions: a reader copied out alone is a reader whose helpers -- the
+		// mask reader and the group reader -- come from nowhere, and the case then
+		// fails on a missing function instead of on the ACL it is about.
+		if err := runLauncherFuncStdin(t, validatorFuncs, `acl_getfacl_grants_foreign_write`, string(listing)); err == nil {
 			t.Fatalf("%s grants %s rwx under the r-x mask in %q, which cannot replace entries; the reader reported a foreign write", probe, user, string(listing))
 		}
 		// The mode's group bits are not the owning group's permission when an
@@ -2088,9 +2189,7 @@ scratch_path_is_trusted "$2"`
 				t.Fatalf("the ACL was not set as this case claims: %q is missing from %q", line, string(aclOut))
 			}
 		}
-		if err := exec.Command("bash", "-c",
-			`eval "$(sed -n '/^acl_getfacl_grants_foreign_write()/,/^}/p;/^acl_getfacl_has_mask()/,/^}/p;/^acl_getfacl_group_grants_write()/,/^}/p;/^acl_ls_e_grants_foreign_write()/,/^}/p;/^dir_acl_grants_foreign_write()/,/^}/p;/^dir_entry_is_replaceable()/,/^}/p;/^dir_is_owned_by_trusted()/,/^}/p' "$1")"; dir_entry_is_replaceable "$2"`,
-			"bash", mergeEnqueueLauncher, probe).Run(); err == nil {
+		if err := runLauncherFunc(t, validatorFuncs, `dir_entry_is_replaceable "$2"`, probe); err == nil {
 			t.Fatalf("%s reads %q with owning group r-x, %s at r-x and a rwx mask: nobody can write, so the predicate must not call it replaceable -- the mode's group position is the mask, not the group", probe, mode, user)
 		}
 		// And the opposite, so the fix is not "ignore the group bits entirely": an
@@ -2098,9 +2197,7 @@ scratch_path_is_trusted "$2"`
 		if err := exec.Command(setfacl, "-m", "g::rwx", probe).Run(); err != nil {
 			t.Fatalf("grant the owning group write: %v", err)
 		}
-		if err := exec.Command("bash", "-c",
-			`eval "$(sed -n '/^acl_getfacl_grants_foreign_write()/,/^}/p;/^acl_getfacl_has_mask()/,/^}/p;/^acl_getfacl_group_grants_write()/,/^}/p;/^acl_ls_e_grants_foreign_write()/,/^}/p;/^dir_acl_grants_foreign_write()/,/^}/p;/^dir_entry_is_replaceable()/,/^}/p;/^dir_is_owned_by_trusted()/,/^}/p' "$1")"; dir_entry_is_replaceable "$2"`,
-			"bash", mergeEnqueueLauncher, probe).Run(); err != nil {
+		if err := runLauncherFunc(t, validatorFuncs, `dir_entry_is_replaceable "$2"`, probe); err != nil {
 			t.Fatalf("%s grants its owning group rwx through an access ACL, so another user in that group can replace entries; the predicate called it safe (%v)", probe, err)
 		}
 	})
@@ -2180,13 +2277,8 @@ scratch_path_is_trusted "$2"`
 		}
 		for _, c := range cases {
 			t.Run(c.name, func(t *testing.T) {
-				cmd := exec.Command("bash", "-c",
-					`eval "$(sed -n '/^acl_ls_e_grants_foreign_write()/,/^}/p' "$1")"; acl_ls_e_grants_foreign_write`,
-					"bash", mergeEnqueueLauncher)
-				cmd.Stdin = strings.NewReader(c.acl)
-				err := cmd.Run()
-				if got := err == nil; got != c.want {
-					t.Fatalf("reading %q gave foreign-write=%v, want %v", strings.TrimSpace(c.acl), got, c.want)
+				if err := runLauncherFuncStdin(t, validatorFuncs, `acl_ls_e_grants_foreign_write`, c.acl); (err == nil) != c.want {
+					t.Fatalf("reading %q gave foreign-write=%v, want %v", strings.TrimSpace(c.acl), err == nil, c.want)
 				}
 			})
 		}
@@ -2412,7 +2504,7 @@ func TestMergeEnqueueLauncherFixtureSkipsAnUntrustedScratchBase(t *testing.T) {
 		if !launcherTrustsPath(t, noexec) {
 			t.Fatalf("%s is not trusted, so this case cannot show that executability alone rejects it", noexec)
 		}
-		if reason := unusableScratchBase(t, noexec); reason == "" {
+		if reason := unusableScratchBase(t, noexec); reason == refusalNone {
 			t.Fatalf("%s cannot execute a program but the fixture predicate called it usable", noexec)
 		}
 	})
@@ -2598,6 +2690,84 @@ while :; do sleep 0.05; done
 	testwait.Until(t, fmt.Sprintf("the unpublished call pid %d to be stopped before the launcher exits 130", callPID), func() bool {
 		return pidGone(callPID)
 	})
+}
+
+// TestMergeEnqueueLauncherStopsTheHelperWhenInterruptedDuringTheSurvivorStop
+// pins where the interrupt handler gets its target from once the tracked child
+// is gone.
+//
+// A wrapper that starts the helper and exits leaves the launcher in a shape the
+// handler has to read correctly: the pid it tracked is reaped, and the only
+// route to the helper is the group recorded at launch. The handler used to
+// choose its stop from whether the tracked child was still a helper, and the
+// launcher cleared that flag as soon as `wait` returned -- before the survivor
+// scan that follows. An interrupt landing anywhere inside that scan took the
+// build path instead: stop_command on a pid already reaped, which names no
+// group, so neither the recorded helper group nor a published GitHub-call group
+// was stopped and the launcher exited 130 over a helper that was still running.
+//
+// The window is held open by the helper's own term grace, which the stop spends
+// waiting for a group that ignores TERM. The test sends the signal there -- not
+// on a sleep, on the launcher's own "still running" line, which is printed
+// immediately before that stop begins -- and asks whether the helper survived
+// the exit. A launcher that reports 130 while the helper is alive fails.
+func TestMergeEnqueueLauncherStopsTheHelperWhenInterruptedDuringTheSurvivorStop(t *testing.T) {
+	t.Parallel()
+	f := newLauncherFixture(t, `#!/usr/bin/env bash
+set -uo pipefail
+"$EVENER_FIXTURE_HELPER" &
+printf 'inner-pid=%s;pgid=%s\n' "$!" "$(ps -o pgid= -p "$!" | tr -d ' ')" >> "$EVENER_FIXTURE_LOG"
+# Exit at once, which is the shape the survivor scan exists for: the launcher's
+# wait returns while the helper it started is still going.
+exit 0
+`)
+	inner := filepath.Join(f.dir, "helper.sh")
+	writeTestFile(t, inner, []byte(`#!/usr/bin/env bash
+# TERM is ignored, so the graceful phase of the forced stop cannot finish the
+# job: only the group kill can, which is what makes the interrupt's target
+# matter.
+trap '' TERM
+while :; do sleep 0.05; done
+`), 0o755)
+	cmd := f.launcherCmd(t, "--pr", "6499", "--wait", "570", "--repo", "example.invalid/none")
+	cmd.Env = append(cmd.Env,
+		"EVENER_FIXTURE_HELPER="+inner,
+		// Long enough to hold the window open while the test reads the line and
+		// signals, short enough that a failed case does not sit in it.
+		"EVENER_HELPER_TERM_GRACE_SECONDS=3",
+	)
+	runLauncher(t, cmd, f)
+	innerPID, innerGroup := logPIDAndGroup(t, f, "inner-pid=")
+	t.Cleanup(func() { killGroups(innerPID) })
+	if innerGroup <= 1 {
+		t.Fatalf("the fixture helper published group %d, want the group the launcher recorded", innerGroup)
+	}
+	// The launcher prints this the moment it finds the group still populated,
+	// immediately before the stop that the interrupt below lands inside.
+	testwait.UntilSeen(t, "the launcher to start stopping the group its wrapper left", func() (bool, string) {
+		body, err := os.ReadFile(f.stderr)
+		if err != nil {
+			return false, ""
+		}
+		text := string(body)
+		return strings.Contains(text, "still running"), text
+	})
+	signalLauncher(t, cmd, syscall.SIGTERM)
+	code, exited := waitExit(t, cmd, launcherExitDeadline)
+	if !exited {
+		t.Fatalf("launcher still running after %s: the interrupt did not stop it; %s", launcherExitDeadline, f.output(t))
+	}
+	// Survival first. The defect this case exists for is a launcher that
+	// reports an interrupt while the helper keeps polling or submitting, and a
+	// status check ahead of this one would report whichever code the broken
+	// handler happened to produce and leave the part that matters untested.
+	if !pidGone(innerPID) {
+		t.Fatalf("the launcher exited %d while the helper its wrapper left (pid %d, group %d) was still running: an interrupt during the survivor stop has to stop the recorded helper group, not the pid it already reaped; %s",
+			code, innerPID, innerGroup, f.output(t))
+	}
+	if code != 130 {
+		t.Fatalf("launcher exit %d, want 130; %s", code, f.output(t))
+	}
 }
 
 // TestMergeEnqueueLauncherReportsAMissingLibraryAsALauncherFailure pins the exit
@@ -3101,6 +3271,73 @@ func TestMergeEnqueueLauncherBuildsDespiteASavedModfile(t *testing.T) {
 	})
 }
 
+// TestMergeEnqueueLauncherBuildsItsOwnWorkspaceDespiteAnExportedGOWORK pins
+// which files decide how the launcher's build resolves its dependencies.
+//
+// GOWORK was the one Go variable the build did not pin. The go command reads an
+// exported one in preference to the tree it is running in, so a developer with
+// GOWORK exported for another checkout -- an ordinary thing when several trees
+// are in play -- rewrote this build's module resolution. Two shapes, both real:
+// a workspace that does not exist fails to load, and one that belongs to another
+// tree does not use this directory, so the module resolves against dependencies
+// that are not there. Either way the launcher reports a build failure where the
+// caller should have had a queue answer.
+//
+// Switching it off is not the fix, which is why it is pinned to the checkout
+// rather than cleared: this module requires its siblings at v0.0.0 and only
+// go.work's replace directives name where they live. A fixture with a go.work of
+// its own therefore proves both halves at once, because its build needs the
+// replace to resolve the stub's import and fails without it.
+func TestMergeEnqueueLauncherBuildsItsOwnWorkspaceDespiteAnExportedGOWORK(t *testing.T) {
+	t.Parallel()
+	c := newFixtureCheckout(t, fixtureTmpDir(t, "tmp"))
+	c.requireIsolated(t)
+	if err := os.Remove(filepath.Join(c.root, "cmd", "evener-dev", "bin", "hold.go")); err != nil {
+		t.Fatalf("remove the blocking fifo: %v", err)
+	}
+	// A sibling module the fixture's go.work brings into the build. Its own
+	// go.mod is what makes it a module the workspace can use.
+	sibling := filepath.Join(c.root, "sibling")
+	if err := os.MkdirAll(filepath.Join(sibling, "marker"), 0o755); err != nil {
+		t.Fatalf("mkdir sibling module: %v", err)
+	}
+	writeTestFile(t, filepath.Join(sibling, "go.mod"), []byte("module example.invalid/fixture/sibling\n\ngo 1.21\n"), 0o644)
+	writeTestFile(t, filepath.Join(sibling, "marker", "marker.go"), []byte("package marker\n\nconst Name = \"sibling\"\n"), 0o644)
+	writeTestFile(t, filepath.Join(c.root, "go.work"), []byte("go 1.21\n\nuse (\n\t.\n\t./sibling\n)\n"), 0o644)
+	// The stub now needs the replace, so a launcher that builds standalone fails
+	// instead of passing by luck.
+	stub := "package main\n\nimport (\n\t\"os\"\n\n\t\"example.invalid/fixture/sibling/marker\"\n)\n\nfunc main() {\n\t_ = os.WriteFile(" +
+		strconv.Quote(c.sentinel) + ", []byte(marker.Name), 0o644)\n}\n"
+	writeTestFile(t, filepath.Join(c.root, "cmd", "evener-dev", "bin", "main.go"), []byte(stub), 0o644)
+	f := newLauncherFixture(t, "#!/usr/bin/env bash\nexit 0\n")
+	for _, m := range []string{c.root, c.tmp} {
+		marker := m
+		t.Cleanup(func() { assertNoSurvivors(t, marker) })
+	}
+	// A workspace belonging to a tree that is not this one, and that cannot even
+	// be loaded. The launcher has to ignore it entirely.
+	foreign := filepath.Join(f.dir, "other-checkout")
+	if err := os.MkdirAll(foreign, 0o755); err != nil {
+		t.Fatalf("mkdir foreign checkout: %v", err)
+	}
+	writeTestFile(t, filepath.Join(foreign, "go.work"), []byte("go 1.21\n\nuse ./not-here\n"), 0o644)
+	cmd := f.launcherCmdAt(t, c.script, "--pr", "6499", "--repo", "example.invalid/none")
+	cmd.Env = envOverride(cmd.Env,
+		"TMPDIR="+c.tmp,
+		"GOWORK="+filepath.Join(foreign, "go.work"),
+		"GOENV=off",
+	)
+	cmd.Env = slices.DeleteFunc(cmd.Env, func(kv string) bool {
+		return strings.HasPrefix(kv, "EVENER_DEV_BIN=")
+	})
+	runLauncher(t, cmd, f)
+	mustExit(t, cmd, f, 0)
+	testwait.Until(t, "the helper this build produced to run", func() bool {
+		body, err := os.ReadFile(c.sentinel)
+		return err == nil && string(body) == "sibling"
+	})
+}
+
 // TestMergeEnqueueLauncherRefusesANonNumericWaitBeforeBuilding pins that a bad
 // --wait is a usage error at once.
 //
@@ -3375,8 +3612,18 @@ func TestMergeEnqueueLauncherRefusalNamesExecutionWhenTrustWasNotTheProblem(t *t
 	noexec = resolvePath(t, noexec)
 	// All three candidates are the same trusted noexec directory, so the refusal
 	// cannot be about trust: every one of them passed the chain rule.
+	//
+	// The script under test is the fixture's copy, and the helper it could build
+	// is the fixture's stub. This case used to run the repository's own launcher
+	// with EVENER_DEV_BIN deleted, which is the one shape that can reach the real
+	// `go build ./cmd/evener-dev/bin` and then a live GitHub lookup: a regression
+	// that selected an executable fallback would have run the real helper from a
+	// test. Its assertion was vacuous in the same move -- it watched the override
+	// the case had just removed, so it could not have seen that helper either.
+	c := newFixtureCheckout(t, fixtureTmpDir(t, "tmp"))
+	c.requireIsolated(t)
 	f := newLauncherFixture(t, "#!/usr/bin/env bash\nprintf 'helper-ran\\n' >> \"$EVENER_FIXTURE_LOG\"\n")
-	cmd := f.launcherCmd(t, "--pr", "6499", "--repo", "example.invalid/none")
+	cmd := f.launcherCmdAt(t, c.script, "--pr", "6499", "--repo", "example.invalid/none")
 	cmd.Env = envOverride(cmd.Env,
 		"TMPDIR="+noexec,
 		"XDG_RUNTIME_DIR="+noexec,
@@ -3386,10 +3633,21 @@ func TestMergeEnqueueLauncherRefusalNamesExecutionWhenTrustWasNotTheProblem(t *t
 		return strings.HasPrefix(kv, "EVENER_DEV_BIN=")
 	})
 	t.Cleanup(func() { assertNoSurvivors(t, noexec) })
+	// Registered before the launcher starts: a regression that gets as far as the
+	// build leaves a FIFO-blocked `go build` in a process group of its own, and
+	// the checkout and its scratch are the two strings that argv can carry.
+	t.Cleanup(func() { assertNoSurvivors(t, c.root) })
+	t.Cleanup(func() { assertNoSurvivors(t, c.tmp) })
 	runLauncher(t, cmd, f)
 	mustExit(t, cmd, f, 2)
+	// The built helper writes this when it runs. It is the observable of the
+	// helper this checkout would actually produce, so the assertion covers the
+	// path the deleted override would have taken rather than the one it removed.
+	if _, err := os.Stat(c.sentinel); err == nil {
+		t.Fatalf("the launcher built and ran a helper although no candidate could execute a program: %s exists", c.sentinel)
+	}
 	if lines := f.lines(t); len(lines) > 0 {
-		t.Fatalf("the launcher ran the helper although no candidate could execute a program: %v", lines)
+		t.Fatalf("the launcher ran the fixture helper although no candidate could execute a program: %v", lines)
 	}
 	// The reason is asserted as a code, not as prose. The message around it is
 	// the operator's copy and will be reworded; `reason=no-executable-root` is the
@@ -3474,7 +3732,7 @@ func TestMergeEnqueueLauncherFixturesDoNotChmodThroughAReplaceableParent(t *test
 		t.Fatalf("restore the target: %v", err)
 	}
 	// And the selector still refuses the untrusted base itself.
-	if dir, reason := createPrivateFixtureDir(t, untrusted); reason == "" {
+	if dir, reason := createPrivateFixtureDir(t, untrusted); reason == refusalNone {
 		_ = os.RemoveAll(dir)
 		t.Fatalf("the selector accepted %s, but that base is replaceable by another user", untrusted)
 	}
@@ -3496,8 +3754,11 @@ func TestMergeEnqueueLauncherFixturesDoNotChmodThroughAReplaceableParent(t *test
 				_ = os.Chmod(probe, 0o700)
 				if launcherTrustsPath(t, probe) && !launcherCanExecuteIn(t, probe) {
 					dir, reason := createPrivateFixtureDir(t, probe)
-					if reason != "the filesystem cannot execute a program" {
-						t.Fatalf("a trusted noexec base was refused with %q, want the execution reason: a fixture that launches a script there fails at the script's start", reason)
+					// A code, not the sentence: the sentence is this file's own
+					// wording, and comparing it pinned a message nothing in
+					// production emits.
+					if reason != refusalNoexec {
+						t.Fatalf("a trusted noexec base was refused with %q, want %q: a fixture that launches a script there fails at the script's start", reason, refusalNoexec)
 					}
 					if dir != "" {
 						_ = os.RemoveAll(dir)
