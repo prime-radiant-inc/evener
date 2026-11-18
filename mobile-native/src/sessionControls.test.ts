@@ -122,6 +122,34 @@ describe("conversation-owned session controls", () => {
 		expect(controls.getSnapshot()).toMatchObject({ pending: null, error: null, notice: null });
 	});
 
+	it("settles an acknowledged shutdown after another screen covers the conversation", async () => {
+		let inFront = true;
+		let resolve!: () => void;
+		let stopped = 0;
+		const controls = new SessionControls(
+			await boundary({
+				shutdown: () =>
+					new Promise<void>((done) => {
+						resolve = done;
+					}),
+			}),
+			async () => {},
+			() => {
+				stopped += 1;
+			},
+			(scope) => (scope === "session" ? true : inFront),
+			() => null,
+			() => true,
+		);
+		const request = controls.shutdown();
+		// An outer screen covers the conversation while the hub's reply is out.
+		inFront = false;
+		resolve();
+		expect(await request).toBe(true);
+		expect(stopped).toBe(1);
+		expect(controls.getSnapshot()).toMatchObject({ pending: null, error: null });
+	});
+
 	it("does not claim force stop success when recovery fails", async () => {
 		let stopped = 0;
 		const controls = new SessionControls(

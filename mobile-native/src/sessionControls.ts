@@ -251,18 +251,27 @@ export class SessionControls {
 				}
 				return stayed;
 			}
-			if (this.ends()) return false;
 			if (kind === "shutdown" || kind === "forceStop") {
-				// A shutdown narrates nothing here: the session's own toast
-				// confirms it and the screen stays (ruling 19).
-				this.publish({
-					pending: null,
-					error: null,
-					notice: kind === "forceStop" ? "Runtime stopped. Saved history is available to resume." : null,
-				});
-				this.stopped();
+				// An accepted shutdown is a fact about the runtime, so it outranks
+				// this binding's visibility: another screen can open over the
+				// conversation while the reply is out, and an accepted stop
+				// reported as a failure is the wrong answer to something the hub
+				// already did. Only a binding that now belongs to another
+				// conversation has nothing to settle here. A shutdown narrates
+				// nothing itself: the session's own toast confirms it and the
+				// screen stays (ruling 19).
+				if (!this.isCurrent("session")) return false;
+				if (!this.disposed) {
+					this.publish({
+						pending: null,
+						error: null,
+						notice: kind === "forceStop" ? "Runtime stopped. Saved history is available to resume." : null,
+					});
+					this.stopped();
+				}
 				return true;
 			}
+			if (this.ends()) return false;
 			if (kind !== "resume") await this.refresh();
 			if (this.ends()) return false;
 			this.publish({

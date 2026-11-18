@@ -884,6 +884,32 @@ it("shuts the session down after a confirmation and stays on it (ruling 19)", as
 	await act(async () => tree.unmount());
 });
 
+it("still reports a refused shutdown after another screen covers the pane", async () => {
+	let refuse!: () => void;
+	const { tree } = mount(withCapabilities({ shutdown: true }), {
+		"thread/shutdown": () =>
+			new Promise<never>((_, fail) => {
+				refuse = () => fail(new Error("refused"));
+			}),
+	});
+	await settle();
+
+	act(() => menuAction("Shut down").onPress());
+	const [confirm] = alertRequests;
+	act(() => confirm?.buttons?.[1]?.onPress?.());
+	await settle();
+
+	stack.focused = false;
+	stack.state = { index: 1, routes: [session, { key: "covering", name: "Conversation" }] };
+	act(() => tree.update(screen()));
+	await settle();
+	refuse();
+	await settle();
+
+	expect(markers(tree, "toast")).toEqual(["shut-down:failed"]);
+	await act(async () => tree.unmount());
+});
+
 it("says so when a shut down can't be confirmed (coordinator ruling: silence reads as success)", async () => {
 	const { tree } = mount(withCapabilities({ shutdown: true }), { "thread/shutdown": new Error("refused") });
 	await settle();
@@ -894,6 +920,34 @@ it("says so when a shut down can't be confirmed (coordinator ruling: silence rea
 	await settle();
 
 	expect(markers(tree, "toast")).toEqual(["shut-down:failed"]);
+	await act(async () => tree.unmount());
+});
+
+it("reports an accepted shutdown after another screen covers the pane", async () => {
+	let accept!: () => void;
+	const { tree } = mount(withCapabilities({ shutdown: true }), {
+		"thread/shutdown": () =>
+			new Promise<void>((done) => {
+				accept = done;
+			}),
+	});
+	await settle();
+
+	act(() => menuAction("Shut down").onPress());
+	const [confirm] = alertRequests;
+	act(() => confirm?.buttons?.[1]?.onPress?.());
+	await settle();
+
+	// Another conversation opens over this pane while the hub's reply is out:
+	// the runtime change is still the one this person asked for.
+	stack.focused = false;
+	stack.state = { index: 1, routes: [session, { key: "covering", name: "Conversation" }] };
+	act(() => tree.update(screen()));
+	await settle();
+	accept();
+	await settle();
+
+	expect(markers(tree, "toast")).toEqual(["shut-down:stopped"]);
 	await act(async () => tree.unmount());
 });
 
