@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/internal/testwait"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -231,21 +232,63 @@ func testManagerWatchSharedRemoteSubscribersAndAliases(t *testing.T, malformed *
 			next(second, event, "root-thread")
 		}
 	}
+	// One more root-thread update, left unread on the first Manager's channel,
+	// puts a real update in flight when the watch is cancelled below. That is
+	// the state the original CI failure observed. Waiting for the value to
+	// reach the channel's buffer makes it deterministic instead of luck; a
+	// watch channel that stopped being buffered fails here rather than
+	// passing on a scenario it never set up.
+	entrySuffix = "-queued"
+	emit("root-thread", "communicate")
+	next(second, "communicate", "root-thread")
+	testwait.Until(t, "the first Manager's watch to buffer an in-flight update", func() bool {
+		return len(first) >= 1
+	})
 	clearFirst()
-	select {
-	case _, open := <-first:
-		if open {
-			t.Fatal("cleared watch stayed open")
-		}
-	case <-ctx.Done():
-		t.Fatal(ctx.Err())
-	}
-	if got := server.SubscriberCount(prefix + "root-thread"); got != 2 {
-		t.Fatalf("after clear subscribers=%d, want human plus second Manager", got)
-	}
+	// What a cancelled subscriber is guaranteed not to receive: an update
+	// produced AFTER the cancellation. Watch re-checks the watch context before
+	// turning a notification into an update, so a notification that arrives
+	// once the context is cancelled ends the stream instead of delivering.
+	// What may still be in flight: an update produced before the clear. Watch's
+	// update channel is buffered, and cancellation discards nothing already
+	// sent to it, so such an update stays readable afterwards; the send that
+	// hands one over races the context check and may win. So emit under a new
+	// entry identity, drain to the close, and require every delivered update to
+	// be the one buffered before the clear.
 	entrySuffix = "-after-clear"
 	emit("root-thread", "communicate")
 	next(second, "communicate", "root-thread")
+	sawQueued := false
+	for {
+		var u appwire.SessionWatchUpdate
+		var open bool
+		select {
+		case u, open = <-first:
+		case <-ctx.Done():
+			t.Fatal("cleared watch never closed")
+		}
+		if !open {
+			break
+		}
+		if u.Snapshot != nil || u.Notification != nil && u.Notification.Method == appwire.NotifyEvenerThreadResync {
+			continue
+		}
+		switch u.Metadata.EntryID {
+		case "root-thread-queued":
+			sawQueued = true
+		case "root-thread-after-clear":
+			t.Fatalf("cleared watch delivered an update produced after cancellation: entry=%s event=%s", u.Metadata.EntryID, u.Event)
+		}
+	}
+	if !sawQueued {
+		t.Fatal("cleared watch never delivered the update buffered before cancellation")
+	}
+	// The close is the await: Watch runs its cleanup before closing the
+	// channel, so by here the cancelled watch's connection has withdrawn its
+	// subscription. Sampling the count before the close races that teardown.
+	if got := server.SubscriberCount(prefix + "root-thread"); got != 2 {
+		t.Fatalf("after clear subscribers=%d, want human plus second Manager", got)
+	}
 	// The human's original connection remains subscribed throughout attachment
 	// and clear. Require a newly emitted event, not an earlier buffered one.
 	humanSawMalformed := false
