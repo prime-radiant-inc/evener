@@ -13,6 +13,10 @@ true. An omitted flag and an explicit `true` select the same view.
 | `includeSystemMessages` | System messages and non-human steering |
 | `includeDiagnostics` | The detailed `thread.evener.diagnostics` object |
 
+Live and reloaded tool items expose the argument string supplied by the
+model, including whitespace and escapes. The MCP **Copy arguments** action
+copies that string even when the visible code block pretty-prints it.
+
 With tool calls excluded and intents included, a described tool stays in its
 existing `commandExecution` slot with its identity, description and lifecycle
 metadata. It has no arguments, output, error, images or raw tool state. Tools

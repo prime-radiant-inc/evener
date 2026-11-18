@@ -516,8 +516,10 @@ information available in the transcript. Replayed reasoning counts toward
 context pressure. A saved input-token count covers the history actually sent
 to that target under its replay rules. Evener estimates later additions,
 including delegate reports received while the request was in flight. If that
-prefix changes during the call, or the saved count belongs to a different
-target on resume, Evener estimates the current history locally.
+prefix changes during the call, Evener estimates the current history locally.
+On resume it also checks the saved target and measured prefix against the
+transcript. A committed compaction can replace that prefix before the session
+metadata catches up.
 
 On Chat and Responses, Evener preserves the original string of a valid
 function-call argument object, including its whitespace, key order and
@@ -535,8 +537,12 @@ saved the original spelling can replay only the bytes still on disk.
   `reasoning_details`. An independent scalar retains its original bytes even
   when the gateway also sent display text in details. If the gateway sends
   identical bytes in a scalar and a signed detail, a scalar route replays
-  both fields. A signed detail on its own supplies only that detail.
-- On `openai-responses`, an encrypted reasoning item takes precedence. When
+  both fields. A trailing signature can omit its index. Evener keeps it with
+  its identified or uniquely matching text block. A signed detail on its own
+  supplies only that detail.
+- On `openai-responses`, an encrypted reasoning item takes precedence on
+  its originating deployment. A known change of serving endpoint omits that
+  ciphertext from the request and keeps it in the original transcript. When
   the row opts in and an item has raw `content`, Evener returns its
   `reasoning_text` parts in order with the item's ID when supplied. Evener
   saves the type and byte boundaries of each text part, including display-only
@@ -544,7 +550,9 @@ saved the original spelling can replay only the bytes still on disk.
   keeps separate assistant messages and their `output_text` parts in order.
   When the final response repeats only part of a streamed item, Evener keeps
   the matching call's argument bytes, indexed answer text, and ciphertext
-  from the stream. Reasoning shown only as deltas remains visible in the
+  from the stream. When later events link a stream index, item ID and tool
+  call ID, the pieces form one native item and a tool call executes once.
+  Reasoning shown only as deltas remains visible in the
   transcript and carries no native continuation.
   Older transcripts can contain an item ID and joined text without
   part types. On an opted-in route, Evener sends that text as one reasoning

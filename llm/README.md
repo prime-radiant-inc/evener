@@ -51,10 +51,10 @@ won't take, gate the prompt-cache fields.
 
 **Continuation planning** (`Client.PlanResponsesContinuation`) decides whether
 a Responses request may continue from a stored `previous_response_id`. The
-anchor must match the storage scope, request controls and effective raw
-reasoning replay setting. Changing that setting sends full history on the
-next exchange. Its stored response can anchor later requests with the same
-setting.
+anchor must match the effective wire model, serving endpoints, storage
+scope, request controls and raw reasoning replay setting. Changing any of
+these sends full history on the next exchange. Its stored response can
+anchor later requests to the same destination.
 
 Routing keys on the instance name, never on a model-string prefix or a
 base-URL guess — a gateway in front of the vendor makes URL sniffing wrong.
