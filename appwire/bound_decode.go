@@ -57,6 +57,9 @@ func decodeFrameBound(data []byte, bind frameBinder) (Message, any, error) {
 		if idToken, ok := responseFrameIDToken(data); ok {
 			if storage := bind(idToken); storage != nil {
 				if msg, ok := decodeResponseInto(data, idToken, storage); ok {
+					if err := validateBoundModelControlResponse(storage, data); err != nil {
+						return Message{}, nil, err
+					}
 					return msg, storage, nil
 				}
 			}
@@ -67,6 +70,77 @@ func decodeFrameBound(data []byte, bind frameBinder) (Message, any, error) {
 		return Message{}, nil, err
 	}
 	return msg, nil, nil
+}
+
+// validateBoundModelControlResponse applies the required-field check the
+// ordinary decode path runs, so a large response cannot skip it by taking the
+// bound path. Size decides which path a frame takes, and a contract that held
+// only below the bound's threshold would accept an incomplete model-control
+// envelope whenever the transcript happened to be big enough.
+//
+// The check reads the frame's result member because it is about which members
+// are present, and an omitted bool is indistinguishable from false once
+// decoded. It is one streaming walk that skips the members it does not need
+// and validates the result where it finds it, so a frame costs the same two
+// passes here as it does on the ordinary path; see #6758 for folding presence
+// detection into the single decode.
+func validateBoundModelControlResponse(storage any, data []byte) error {
+	var method string
+	switch storage.(type) {
+	case *ThreadReadResponse:
+		method = MethodThreadRead
+	case *ThreadModelSetResponse:
+		method = MethodThreadModelSet
+	default:
+		return nil
+	}
+	if err := validateResponseResultPresence(method, data); err != nil {
+		// Wrap the refusal the way the ordinary path does, so a frame refused
+		// here is refused indistinguishably from the same frame below the bound.
+		return responseDecodeError{method: method, err: err}
+	}
+	return nil
+}
+
+// validateResponseResultPresence runs validateRawModelControlResponse over a
+// frame's result member, which is the shape it validates. The result bytes are
+// read and validated before the walk reads anything else, because a jsontext
+// value aliases the decoder's buffer and is only defined until the next read.
+//
+// A frame that cannot be walked is an error rather than a pass: this is the
+// only presence check the bound path runs, and a frame whose members cannot be
+// read is exactly the frame whose omissions cannot be ruled out.
+func validateResponseResultPresence(method string, data []byte) error {
+	dec := jsontext.NewDecoder(bytes.NewReader(data))
+	tok, err := dec.ReadToken()
+	if err != nil {
+		return err
+	}
+	if tok.Kind() != jsontext.KindBeginObject {
+		// Not a response envelope, so there is no result member to check. The
+		// caller only reaches the walk for a frame that already decoded into a
+		// response struct, which is always an object.
+		return nil
+	}
+	for {
+		key, err := dec.ReadToken()
+		if err != nil {
+			return err
+		}
+		if key.Kind() == jsontext.KindEndObject {
+			return nil
+		}
+		if key.String() == "result" {
+			value, err := dec.ReadValue()
+			if err != nil {
+				return err
+			}
+			return validateRawModelControlResponse(method, value)
+		}
+		if err := dec.SkipValue(); err != nil {
+			return err
+		}
+	}
 }
 
 // decodeResponseInto decodes data into a response whose result already lives in

@@ -104,10 +104,25 @@ replacement read. An unsupported read leaves the session readable with model
 changes disabled, and every unsuccessful establishing read settles its waiting
 mutations.
 
+That readable-with-changes-disabled reading holds on the Go side too: a
+`modelControlVersion` a reader does not know is not decoded through the
+version-1 snapshot types, so a newer daemon's differently shaped snapshot
+cannot fail the whole `thread/read`. The reported version and every other
+thread member survive; only the snapshot the reader cannot interpret is left
+out.
+
 The clients atomically replace whole snapshots with matching authority and a
 newer revision. A stale-authority refusal is machine-readable. Response loss or
 a malformed response after dispatch retires the authority and starts one
 replacement read without replaying the mutation.
+
+The required-field check on a version-1 response holds at every response size:
+the bound decode path for large frames runs the same presence check as the
+ordinary one, so a transcript's size cannot decide whether the contract
+applies. A failed Manager model mutation carries the snapshot its own
+diagnostic read observed, and the `session_control` tool returns that
+observation as result text beside the typed refusal, so the caller does not read
+the daemon again for a fact the hub already held.
 
 The model-control revision does not own current reasoning effort or effective
 context status. Those projections keep their existing carriers because the

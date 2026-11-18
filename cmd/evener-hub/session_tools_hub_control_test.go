@@ -4,9 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,7 +17,9 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/rendezvous"
 )
 
 // Each case crosses the real human RPC owner and the Manager's typed owner in
@@ -570,6 +575,180 @@ func TestManagerSessionControlModelColdResumeAttachesRelay(t *testing.T) {
 	}
 	if relayReads == 0 {
 		t.Fatalf("no relay was attached for the resumed daemon (reads=%d), so a subscribed pane would keep the exited session's model", readCalls)
+	}
+}
+
+// TestManagerSessionControlModelResolvedAliasRetargetsAuthority pins the review
+// finding: a cold target named by an alias resumes onto a different session, and
+// the daemon that starts serves only that session. The authority read, the
+// model mutation and the diagnostic read therefore have to name the resolved
+// ref. Retrying the alias re-reads the old saved thread, finds no live daemon
+// behind it, and sends zero model mutations.
+func TestManagerSessionControlModelResolvedAliasRetargetsAuthority(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		// stale makes the mutation refuse with the authority-stale code, which
+		// is what sends the adapter to its post-failure diagnostic read.
+		stale bool
+	}{
+		{name: "accepted"},
+		{name: "stale authority diagnostic read", stale: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			testManagerSessionControlModelResolvedAlias(t, tc.stale)
+		})
+	}
+}
+
+func testManagerSessionControlModelResolvedAlias(t *testing.T, stale bool) {
+	t.Helper()
+	aliasID, targetID, _ := resumeThreeSessionIDs(t)
+	stateDir := hubtest.ProjectDir(t, filepath.Join(t.TempDir(), "projects"), "project-alias")
+	buildRPCSessionWithWorkingDir(t, stateDir, aliasID, t.TempDir())
+
+	var (
+		reads    []string
+		setRefs  []string
+		setBoot  []string
+		readLock sync.Mutex
+	)
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		readLock.Lock()
+		reads = append(reads, params.Ref)
+		readLock.Unlock()
+		// The alias's own daemon is gone; only the session the resume resolved
+		// onto is served here.
+		if params.Ref != appwire.LocalRef(targetID).String() {
+			return appwire.ThreadReadResponse{}, appwire.SessionUnavailable("thread not found: " + params.Ref)
+		}
+		snapshot := appwire.ModelControlSnapshot{
+			Authority: appwire.ModelControlAuthority{InstanceID: targetID, BootGeneration: "boot-manager"},
+			Revision:  1,
+			Active:    appwire.ModelControlActive{ModelProvider: "openai", Model: "gpt-5.5", ReasoningEffortLevels: []string{}},
+		}
+		return appwire.ThreadReadResponse{
+			Thread: appwire.Thread{ID: targetID, SessionID: targetID, Source: "local", Evener: appwire.EvenerThread{
+				Ref: params.Ref, InstanceID: targetID,
+				Capabilities: appwire.ThreadCapabilities{ChangeModel: true, ModelControlVersion: appwire.ModelControlVersion1},
+				ModelControl: &snapshot,
+			}},
+			BootGeneration: "boot-manager",
+		}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadModelSet, func(_ context.Context, params appwire.ThreadModelSetParams) (appwire.ThreadModelSetResponse, error) {
+		readLock.Lock()
+		setRefs = append(setRefs, params.Ref)
+		setBoot = append(setBoot, params.ExpectedInstanceID)
+		readLock.Unlock()
+		if stale {
+			return appwire.ThreadModelSetResponse{}, appwire.ModelControlAuthorityStale(params.ClientMutationID, "authority changed")
+		}
+		snapshot := appwire.ModelControlSnapshot{
+			Authority: appwire.ModelControlAuthority{InstanceID: targetID, BootGeneration: "boot-manager"},
+			Revision:  2,
+			Active:    appwire.ModelControlActive{ModelProvider: params.ModelProvider, Model: params.Model, ReasoningEffortLevels: []string{}},
+			Desired: &appwire.ModelControlDesired{
+				RequestSequence: 1, ClientMutationID: params.ClientMutationID,
+				ModelProvider: params.ModelProvider, Model: params.Model,
+				Lifecycle: appwire.ModelControlLifecycleApplied,
+			},
+		}
+		return appwire.ThreadModelSetResponse{
+			ModelControlVersion: appwire.ModelControlVersion1,
+			Disposition:         appwire.ModelControlDispositionAccepted,
+			ModelControl:        &snapshot,
+		}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	t.Cleanup(daemonHTTP.Close)
+
+	// The alias carries a completed redirect onto the target: resuming it lands
+	// on the target's session instead.
+	locks := hubcore.NewResumeLocks()
+	recordResumeRedirect(t, locks, aliasID, targetID)
+
+	runDir := t.TempDir()
+	cfg := hubcore.WebConfig{
+		RunDir:      runDir,
+		StateDir:    stateDir,
+		ResumeLocks: locks,
+		Past:        newRebuiltPastIndex(t, filepath.Join(filepath.Dir(stateDir), "*")),
+		Spawner: &fakeRPCSpawner{resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			if req.SessionID != targetID {
+				t.Errorf("resume target = %q, want the resolved session %q", req.SessionID, targetID)
+			}
+			entry := rendezvous.Entry{
+				PID:        os.Getpid(),
+				Protocol:   appwire.ProtocolVersion,
+				Endpoint:   "ws" + daemonHTTP.URL[len("http"):],
+				SourceID:   "local",
+				ThreadID:   targetID,
+				SessionID:  targetID,
+				InstanceID: targetID,
+				WorkingDir: req.WorkingDir,
+				StateDir:   req.StateDir,
+			}
+			writeRendezvous(t, runDir, entry)
+			return entry, nil
+		}},
+	}
+	server, web := newHubRPCTestServerWithWeb(t, cfg)
+	defer server.Close()
+	owner := &sessionOperations{cfg: web.cfg, sources: web.sources, navigation: web.navigation, resolve: web.resolveTopLevelSessionRef}
+
+	response, err := owner.Control(t.Context(), appwire.SessionControlRequest{
+		Action: "model",
+		Model: &appwire.SessionControlModelParams{
+			Ref: appwire.LocalRef(aliasID).String(), ModelProvider: "openai", Model: "gpt-5.6-sol",
+		},
+	})
+	readLock.Lock()
+	seenReads := append([]string(nil), reads...)
+	seenSets := append([]string(nil), setRefs...)
+	seenBoot := append([]string(nil), setBoot...)
+	readLock.Unlock()
+	if !stale && err != nil {
+		t.Fatalf("cold Manager model control through a resolved alias: %v (reads=%v sets=%v)", err, seenReads, seenSets)
+	}
+	if stale {
+		if _, ok := appwire.ModelControlObservedOf(err); !ok {
+			t.Fatalf("stale mutation carried no observed state, so no diagnostic read ran (err=%v reads=%v)", err, seenReads)
+		}
+	}
+	if len(seenSets) != 1 {
+		t.Fatalf("model mutations = %d, want exactly one for the resolved session (reads=%v)", len(seenSets), seenReads)
+	}
+	wantRef := appwire.LocalRef(targetID).String()
+	if seenSets[0] != wantRef {
+		t.Fatalf("model mutation ref = %q, want the resolved ref %q", seenSets[0], wantRef)
+	}
+	if seenBoot[0] != targetID {
+		t.Fatalf("model mutation authority instance = %q, want %q", seenBoot[0], targetID)
+	}
+	// The resume's own projection is one read; the authority read that follows
+	// the resume is the next. Requiring both pins that the retried read ran at
+	// all, rather than the control reaching the mutation on the resume's echo.
+	if len(seenReads) < 2 {
+		t.Fatalf("only %d daemon reads, want the resume projection and the authority read (reads=%v)", len(seenReads), seenReads)
+	}
+	// Only the resolved session's daemon serves this fixture, so any read that
+	// still named the alias would have been refused instead of answered.
+	for i, ref := range seenReads {
+		if ref != wantRef {
+			t.Fatalf("read %d named %q, want the resolved ref %q (reads=%v)", i, ref, wantRef, seenReads)
+		}
+	}
+	if stale {
+		// The diagnostic read follows the mutation, so the resolved ref has to
+		// appear again after it.
+		if len(seenReads) < 3 {
+			t.Fatalf("diagnostic read did not reach the daemon: reads=%v", seenReads)
+		}
+		return
+	}
+	if response.Model == nil || response.Model.ModelControl == nil || response.Model.ModelControl.Active.Model != "gpt-5.6-sol" {
+		t.Fatalf("cold Manager response = %+v", response.Model)
 	}
 }
 

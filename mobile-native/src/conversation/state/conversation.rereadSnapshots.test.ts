@@ -254,6 +254,104 @@ describe("ConversationStore", () => {
 			});
 			expect(client.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(0);
 		});
+
+		// Review finding: on an initial open, another client's switch can land
+		// after the subscribed read has committed its projection (the service's
+		// own quarantine is over) and while the host's durable mutation
+		// reconciliation is still awaited. The store has no live handler yet, so
+		// the frame used to be dropped and the older read published on screen
+		// until some later frame or refresh.
+		it("shows a newer model-control frame that lands while the read's reconciliation is pending", async () => {
+			const client = new FakeClient("ready");
+			const initial = modelControl(1, MODEL_AUTHORITY_A, "claude-sonnet-5");
+			const switched = modelControl(2, MODEL_AUTHORITY_A, "claude-opus-4-6");
+			client.on("thread/unsubscribe", () => ({}));
+			client.on("thread/read", () => modelControlReadResponse(initial));
+			let reconciliationStarted!: () => void;
+			const reconciling = new Promise<void>((resolve) => {
+				reconciliationStarted = resolve;
+			});
+			let releaseReconciliation!: () => void;
+			const heldReconciliation = new Promise<void>((resolve) => {
+				releaseReconciliation = resolve;
+			});
+			const service = createConversationService(client, {
+				// The host's durable mutation reconciliation: the read's own
+				// projection is committed inside the service before this runs, and
+				// the store has not adopted it yet.
+				onReadComplete: () => {
+					reconciliationStarted();
+					return heldReconciliation;
+				},
+			});
+			const store = createConversationStore();
+
+			const opening = store.getState().openProjected(service, "ref-1");
+			await reconciling;
+			client.emitNotification({
+				method: "thread/model/controlChanged",
+				params: { ref: "ref-1", threadId: "thread-1", modelControl: switched },
+			});
+			releaseReconciliation();
+			await opening;
+
+			const conversation = store.getState().conversation;
+			if (!conversation) throw new Error("expected the opened conversation");
+			expect(modelControlDisplay(conversation).model).toBe("claude-opus-4-6");
+			expect(conversation.modelControlState).toEqual({ kind: "ready", snapshot: switched });
+		});
+
+		it("recovers a model-control frame of another authority that lands while the read's reconciliation is pending", async () => {
+			const client = new FakeClient("ready");
+			const initial = modelControl(1, MODEL_AUTHORITY_A, "claude-sonnet-5");
+			const replacement = modelControl(1, MODEL_AUTHORITY_B, "claude-opus-4-6");
+			let reads = 0;
+			client.on("thread/unsubscribe", () => ({}));
+			client.on("thread/read", () => {
+				reads += 1;
+				return modelControlReadResponse(reads === 1 ? initial : replacement);
+			});
+			let reconciliationStarted!: () => void;
+			const reconciling = new Promise<void>((resolve) => {
+				reconciliationStarted = resolve;
+			});
+			let releaseReconciliation!: () => void;
+			const heldReconciliation = new Promise<void>((resolve) => {
+				releaseReconciliation = resolve;
+			});
+			let reconciliations = 0;
+			const service = createConversationService(client, {
+				onReadComplete: () => {
+					reconciliations += 1;
+					if (reconciliations > 1) return undefined;
+					reconciliationStarted();
+					return heldReconciliation;
+				},
+			});
+			const store = createConversationStore();
+
+			const opening = store.getState().openProjected(service, "ref-1");
+			await reconciling;
+			client.emitNotification({
+				method: "thread/model/controlChanged",
+				params: { ref: "ref-1", threadId: "thread-1", modelControl: replacement },
+			});
+			releaseReconciliation();
+			await opening;
+
+			// The frame named an authority the read did not: the store's own
+			// recovery effect must run, and the replacement read's snapshot wins.
+			await vi.waitFor(() => {
+				expect(reads).toBe(2);
+				expect(store.getState().conversation?.modelControlState).toEqual({
+					kind: "ready",
+					snapshot: replacement,
+				});
+			});
+			const conversation = store.getState().conversation;
+			if (!conversation) throw new Error("expected the recovered conversation");
+			expect(modelControlDisplay(conversation).model).toBe("claude-opus-4-6");
+		});
 	});
 
 	// --- Fix round 1: I1/I2/M1 rejection items ----------------------------------

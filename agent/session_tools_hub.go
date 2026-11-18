@@ -712,11 +712,25 @@ func (s *Session) composeHubInputTools() {
 		}
 		response, err := client.Invoke(ctx, appwire.SessionOperationRequest{Control: &request})
 		if err != nil {
+			// A failure reaches the model as its result text alone, so state the
+			// hub already observed inside the failure has to ride there too.
+			// The typed error still decides the outcome.
+			if observed, ok := appwire.ModelControlObservedOf(err); ok {
+				return managerControlFailure{ObservedModelControl: &observed}, err
+			}
 			return nil, err
 		}
 		return response, nil
 	}
 	_ = s.reg.Register(registered)
+}
+
+// managerControlFailure is what a failed session_control call shows the model
+// beside its error. A failed tool call reaches the model as its result text, so
+// the model-control state the hub's own diagnostic read already observed
+// travels here instead of costing a second read.
+type managerControlFailure struct {
+	ObservedModelControl *appwire.ModelControlSnapshot `json:"observed_model_control"`
 }
 
 func (s *Session) invokeHubInput(ctx context.Context, args map[string]any) (any, error) {

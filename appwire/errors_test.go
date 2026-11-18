@@ -375,3 +375,43 @@ func TestDecodedErrorDataReadsAndStampsEveryShape(t *testing.T) {
 		}
 	}
 }
+
+// A refusal that crossed the wire carries its data as the decoded map, not as
+// the typed struct the daemon sent. Attaching what a diagnostic read observed
+// must not cost the refusal what it already said: the stale classification,
+// the mutation it belongs to, and the blocked retry disposition are what a
+// caller decides from, and turning them into a bare unknown outcome would
+// report an uncertain mutation where the daemon was definite.
+func TestWithModelControlObservedKeepsAWireDecodedRefusal(t *testing.T) {
+	observed := ModelControlSnapshot{
+		Authority: ModelControlAuthority{InstanceID: "i1", BootGeneration: "b1"},
+		Revision:  4,
+		Active:    ModelControlActive{ModelProvider: "anthropic", Model: "claude-opus-4-6"},
+	}
+	wire := WireError{
+		Code:    CodeConflict,
+		Message: "stale authority",
+		Data: map[string]any{
+			"evenerErrorInfo":  string(ErrorModelControlAuthorityStale),
+			"clientMutationId": "m1",
+			"mutationOutcome":  string(MutationOutcomeNotAccepted),
+			"retryDisposition": string(RetryDispositionNone),
+		},
+	}
+	withEvidence := wire.WithModelControlObserved(observed)
+	data, ok := DecodedErrorData(withEvidence.Data)
+	if !ok {
+		t.Fatalf("observed evidence dropped the decoded data: %#v", withEvidence.Data)
+	}
+	if data.EvenerErrorInfo != ErrorModelControlAuthorityStale || data.ClientMutationID != "m1" ||
+		data.MutationOutcome != MutationOutcomeNotAccepted || data.RetryDisposition != RetryDispositionNone {
+		t.Fatalf("observed evidence rewrote the refusal: %+v", data)
+	}
+	got, ok := ModelControlObservedOf(withEvidence)
+	if !ok || got.Active.Model != "claude-opus-4-6" || got.Revision != 4 {
+		t.Fatalf("observed state = %+v, %v; want the model the read saw", got, ok)
+	}
+	if original, _ := DecodedErrorData(wire.Data); original.ClientMutationID != "m1" {
+		t.Fatalf("original data was modified: %+v", original)
+	}
+}

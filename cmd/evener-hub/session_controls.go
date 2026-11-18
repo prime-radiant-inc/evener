@@ -129,18 +129,29 @@ func setManagerThreadModel(ctx context.Context, cfg hubcore.WebConfig, sources *
 	// same shape setReasoningEffortControl uses. Without it the Manager's
 	// switch applies while every pane, browser or phone, keeps rendering the
 	// exited session's model until it reconnects.
+	//
+	// The resume can also settle on a different session than the one asked
+	// about: a saved alias resolves onto the session that now owns it, and only
+	// the resumed thread names that session. Every later step - the retried
+	// authority read, the mutation, and the post-failure diagnostic read - has
+	// to name the resolved ref. Retrying the requested ref would find the old
+	// saved thread again and send no model mutation at all.
+	authorityRef := params.Ref
 	afterResume := func(resumed appwire.ThreadResumeResponse) error {
+		if resolved, ok := resolvedModelControlRef(params.Ref, resumed.Thread); ok {
+			authorityRef = resolved
+		}
 		if relays == nil {
 			return nil
 		}
 		return relays.startRelayForThread(ctx, resumed.Thread)
 	}
 	read, err := withSessionResume(ctx, cfg, sources, params.Ref, "", afterResume, func() (appwire.ThreadReadResponse, error) {
-		source, err := sourceForThread(sources, params.Ref, "")
+		source, err := sourceForThread(sources, authorityRef, "")
 		if err != nil {
 			return appwire.ThreadReadResponse{}, err
 		}
-		read, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: params.Ref, IncludeTurns: false, Subscribe: false})
+		read, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: authorityRef, IncludeTurns: false, Subscribe: false})
 		if err != nil {
 			return appwire.ThreadReadResponse{}, err
 		}
@@ -159,7 +170,7 @@ func setManagerThreadModel(ctx context.Context, cfg hubcore.WebConfig, sources *
 		return appwire.ThreadModelSetResponse{}, err
 	}
 	mutation := appwire.ThreadModelSetParams{
-		Ref:                    params.Ref,
+		Ref:                    authorityRef,
 		ModelProvider:          params.ModelProvider,
 		Model:                  params.Model,
 		ClientMutationID:       uuid.NewString(),
@@ -167,17 +178,20 @@ func setManagerThreadModel(ctx context.Context, cfg hubcore.WebConfig, sources *
 		ExpectedBootGeneration: authority.BootGeneration,
 	}
 	// The authority was read before this dispatch, so a delete or force-stop
-	// landing in between has to be re-checked here rather than acted on.
-	response, err := withDeletionTargetOwnership(ctx, cfg, params.Ref, "", mutation.ClientMutationID, func() (appwire.ThreadModelSetResponse, error) {
-		source, err := sourceForThread(sources, params.Ref, "")
+	// landing in between has to be re-checked here rather than acted on. The
+	// check belongs to authorityRef, the target the mutation is about to name:
+	// a resume that settled on another session re-admits for that session, not
+	// for the alias the request asked about.
+	response, err := withDeletionTargetOwnership(ctx, cfg, authorityRef, "", mutation.ClientMutationID, func() (appwire.ThreadModelSetResponse, error) {
+		source, err := sourceForThread(sources, authorityRef, "")
 		if err != nil {
 			return appwire.ThreadModelSetResponse{}, err
 		}
 		return source.SetThreadModel(ctx, mutation)
 	})
 	if err != nil && managerModelMutationNeedsDiagnosticRead(err) {
-		if source, sourceErr := sourceForThread(sources, params.Ref, ""); sourceErr == nil {
-			if read, readErr := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: params.Ref, IncludeTurns: false, Subscribe: false}); readErr == nil {
+		if source, sourceErr := sourceForThread(sources, authorityRef, ""); sourceErr == nil {
+			if read, readErr := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: authorityRef, IncludeTurns: false, Subscribe: false}); readErr == nil {
 				// The read already answered "which model does the daemon run"
 				// for a caller whose mutation outcome is uncertain. Handing it
 				// back inside the failure saves a second round trip, and it
@@ -191,6 +205,24 @@ func setManagerThreadModel(ctx context.Context, cfg hubcore.WebConfig, sources *
 		}
 	}
 	return response, err
+}
+
+// resolvedModelControlRef is the ref a resume actually settled on. A saved
+// alias can resolve onto a different session, and the resumed thread is what
+// names it; anything the daemon does not name, or a ref that crosses to another
+// source, leaves the caller's own ref in place. The daemon fills the thread's
+// ref with its own session, so this is the resolved identity rather than an
+// echo of the request.
+func resolvedModelControlRef(requested string, thread appwire.Thread) (string, bool) {
+	requestedRef, err := appwire.ParseRef(requested)
+	if err != nil {
+		return "", false
+	}
+	resolved, err := appwire.ParseRef(thread.Evener.Ref)
+	if err != nil || resolved.SourceID != requestedRef.SourceID {
+		return "", false
+	}
+	return resolved.String(), true
 }
 
 func managerModelAuthority(read appwire.ThreadReadResponse) (appwire.ModelControlAuthority, error) {

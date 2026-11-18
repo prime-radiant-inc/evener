@@ -2,6 +2,7 @@ package appwire
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -123,6 +124,51 @@ func TestDecodeFrameBoundFallsBackOnAmbiguousEnvelope(t *testing.T) {
 	}
 	if planStorage.HostPlanPlanned != nil || planStorage.HostPlanNoToken != nil {
 		t.Fatalf("target = %+v, want it left alone", planStorage)
+	}
+}
+
+// Size must not decide whether a model-control contract holds. The bound path
+// decodes a large response without re-reading the frame, so before this check a
+// version-1 thread/read missing supportsReasoning was refused below the bound's
+// threshold and accepted above it, fabricating a false the daemon never sent.
+func TestDecodeFrameBoundRefusesIncompleteModelControlAtEverySize(t *testing.T) {
+	pad := strings.Repeat("x", boundFrameMinSize)
+	result := `{"thread":{"id":"t1","evener":{"capabilities":{"modelControlVersion":1},` +
+		`"modelControl":{"authority":{"instanceId":"i1","bootGeneration":"b1"},"revision":3,` +
+		`"active":{"modelProvider":"openai","model":"gpt-5.4","reasoningEffortLevels":["high"]}}}}}`
+
+	// The ordinary request path refuses the omission, so a larger frame that
+	// carries the same result must refuse it too.
+	var small ThreadReadResponse
+	ordinaryErr := decodeResponseResult(MethodThreadRead, json.RawMessage(result), &small)
+	if ordinaryErr == nil {
+		t.Fatal("ordinary decode accepted a version-1 envelope with no supportsReasoning")
+	}
+
+	frame := []byte(`{"id":1,"result":` + result + `,"pad":"` + pad + `"}`)
+	var storage ThreadReadResponse
+	_, bound, err := decodeFrameBound(frame, func([]byte) any { return &storage })
+	if err == nil {
+		t.Fatal("bound decode accepted a version-1 envelope with no supportsReasoning")
+	}
+	// Size picks the decode path, and the caller must not be able to tell which
+	// one refused: the same request reported by a different error class would
+	// make the refusal depend on the size of an unrelated transcript.
+	var boundRefusal, ordinaryRefusal responseDecodeError
+	if !errors.As(err, &boundRefusal) {
+		t.Fatalf("bound refusal = %T %v, want the response decode error class", err, err)
+	}
+	if !errors.As(ordinaryErr, &ordinaryRefusal) {
+		t.Fatalf("ordinary refusal = %T %v, want the response decode error class", ordinaryErr, ordinaryErr)
+	}
+	if boundRefusal.method != ordinaryRefusal.method {
+		t.Fatalf("bound refusal names method %q, ordinary refusal names %q",
+			boundRefusal.method, ordinaryRefusal.method)
+	}
+	// The caller only ever sees a bound value the read loop copies in, and it
+	// copies nothing when the frame is refused.
+	if bound != nil {
+		t.Fatalf("refused frame returned bound storage: %+v", bound)
 	}
 }
 

@@ -309,6 +309,49 @@ type EvenerThread struct {
 	Access *ThreadAccess `json:"access,omitempty"`
 }
 
+// UnmarshalJSON keeps a thread readable when its model-control snapshot is a
+// version this build does not know.
+//
+// The snapshot is decoded into version-1 fields, and a newer daemon is free to
+// change their shape. Decoding it anyway would fail the whole thread - the
+// transcript, status, capabilities and all - for one member the reader is not
+// going to interpret. The advertised version says whose shape the snapshot is,
+// so an unknown one is dropped here and the reported version is kept, which is
+// the same reading the shared client makes of an unsupported version. A
+// version-1 snapshot is decoded exactly as before.
+func (t *EvenerThread) UnmarshalJSON(data []byte) error {
+	type wire EvenerThread
+	var decoded wire
+	plainErr := json.Unmarshal(data, &decoded)
+	if plainErr != nil {
+		// Re-decode without the snapshot. When that succeeds and the version is
+		// not one this build knows, the snapshot's shape is the only thing that
+		// failed, and dropping it is the intended outcome. Every other failure
+		// keeps its original error, including a version-1 snapshot whose
+		// contract is this build's to enforce.
+		fields := map[string]json.RawMessage{}
+		if err := json.Unmarshal(data, &fields); err != nil {
+			return plainErr
+		}
+		_, hadSnapshot := fields["modelControl"]
+		delete(fields, "modelControl")
+		withoutSnapshot, err := json.Marshal(fields)
+		if err != nil {
+			return plainErr
+		}
+		var retried wire
+		if err := json.Unmarshal(withoutSnapshot, &retried); err != nil {
+			return plainErr
+		}
+		if !hadSnapshot || retried.Capabilities.ModelControlVersion == ModelControlVersion1 {
+			return plainErr
+		}
+		decoded = retried
+	}
+	*t = EvenerThread(decoded)
+	return nil
+}
+
 // ThreadAccess is a session's sandbox mode and network setting (spec 8.6,
 // S15). Sandbox is the mode name a session starts with ("off", "read-only",
 // "workspace-write" or "restricted"). Network is true when the session may use

@@ -54,6 +54,7 @@ import {
 	sameModelControlAuthority,
 	SHUT_DOWN_STATUSES,
 	validateThreadModelSetResponse,
+	WireError,
 } from "@evener/appwire-client";
 import type { MobileConversation } from "../../projectedRows";
 import { projectConversation } from "../../projectedRows";
@@ -1345,6 +1346,20 @@ export function createConversationService<ReadLease = unknown>(
 					modelControl: snapshot,
 				},
 			});
+			// The daemon answered with the pick that won, not this one: it
+			// reconciled the canonical snapshot above (the client converges on the
+			// winner's model), but this mutation did not change the model, so the
+			// caller must not confirm it as if it had. The disposition is the
+			// wire's own answer (appwire.ModelControlDispositionSuperseded), never
+			// a guess from the snapshot.
+			if (response.disposition === "superseded") {
+				// appwire's CodeConflict (-32013): another client's newer pick won,
+				// so this refusal is a conflict rather than a failed operation.
+				throw new WireError("The model was already changed in another client.", -32013, {
+					clientMutationId,
+					disposition: response.disposition,
+				});
+			}
 		},
 
 		async setVisionModel(visionModel) {

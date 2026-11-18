@@ -14,8 +14,8 @@
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
-import { beforeEach, describe, expect, it, vi } from "vitest";
-import { WireError } from "@evener/appwire-client";
+import { beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
+import { modelControlDisplay, WireError } from "@evener/appwire-client";
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import type {
 	AnyNotification,
@@ -36,6 +36,8 @@ import type {
 } from "@evener/appwire-client";
 import { PAST_CAPABILITIES as SHARED_PAST_CAPABILITIES } from "../../modelControlTestUtils";
 import * as projectModule from "../../projectedRows";
+import { SessionControls } from "../../sessionControls";
+import { createConversationStore } from "../state/conversation";
 import { createConversationService, type LiveConversationService } from "./conversation";
 
 // Script the same lifecycle-capable client surface used by native consumers.
@@ -1171,6 +1173,79 @@ describe("ConversationService", () => {
 					params: { ref: "ref-1", threadId: "thread-1", modelControl: accepted },
 				},
 			]);
+		});
+
+		// Review finding: when another client commits a newer pick first, the
+		// daemon answers this pick with the winner's snapshot and the
+		// `superseded` disposition. The service reconciles that snapshot, but it
+		// used to resolve as if the user's own choice had applied, so the sheet
+		// confirmed a model the daemon never ran.
+		it("rejects a superseded pick after adopting the canonical snapshot the daemon kept", async () => {
+			const { client, service } = setup({ thread: controlledThread(modelControl(1)) });
+			await service.open("ref-1");
+			const notifications: AnyNotification[] = [];
+			service.subscribeNotifications((notification) => {
+				if (notification.method === "thread/model/controlChanged") notifications.push(notification);
+			});
+			const canonical = modelControl(3, {
+				active: "claude-opus-4-6",
+				desired: "claude-opus-4-6",
+				lifecycle: "applied",
+			});
+			client.on("thread/model/set", () => ({
+				modelControlVersion: 1,
+				disposition: "superseded",
+				modelControl: canonical,
+			}));
+
+			await expect(service.changeModel("openai", "gpt-5.5")).rejects.toMatchObject({
+				// A superseded pick is a conflict with the client that won, not a
+				// failed operation: appwire's CodeConflict.
+				code: -32013,
+				data: { disposition: "superseded" },
+			});
+
+			// The canonical snapshot is still adopted: the client converges on the
+			// winner's model even though this pick lost.
+			expect(notifications).toEqual([
+				{
+					method: "thread/model/controlChanged",
+					params: { ref: "ref-1", threadId: "thread-1", modelControl: canonical },
+				},
+			]);
+		});
+
+		it("does not confirm a superseded pick to the sheet, and shows the model the daemon kept", async () => {
+			const { client, service } = setup({ thread: controlledThread(modelControl(1)) });
+			const store = createConversationStore();
+			await store.getState().openProjected(service, "ref-1");
+			const canonical = modelControl(3, { active: "claude-opus-4-6" });
+			client.on("thread/model/set", () => ({
+				modelControlVersion: 1,
+				disposition: "superseded",
+				modelControl: canonical,
+			}));
+			// The controls are the sheet's own gate: it closes and says the model
+			// changed only when this resolves true.
+			const controls = new SessionControls(
+				service,
+				async () => {},
+				() => {},
+				() => true,
+				() => null,
+				() => true,
+				{ data: [{ provider: "openai", model: "gpt-5.5" }] },
+			);
+			onTestFinished(() => {
+				controls.dispose();
+				service.close();
+			});
+
+			expect(await controls.changeModel("openai", "gpt-5.5")).toBe(false);
+			expect(controls.getSnapshot().notice).toBeNull();
+			const conversation = store.getState().conversation;
+			if (!conversation) throw new Error("expected the opened conversation");
+			expect(modelControlDisplay(conversation).model).toBe("claude-opus-4-6");
 		});
 
 		// cmd/evener-hub/app_threadread.go's pastThreadCapabilities: what the

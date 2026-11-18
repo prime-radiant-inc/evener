@@ -167,6 +167,44 @@ func TestValidateThreadModelSetResponseRequiresCompleteVersionOneSnapshot(t *tes
 	}
 }
 
+// An unknown model-control version must not make the thread unreadable. The
+// envelope carries the snapshot in typed version-1 fields, so a newer daemon
+// whose snapshot members changed shape would otherwise fail the whole decode
+// and take the transcript, status and capabilities with it. The version says
+// whose shape the snapshot is; a reader that does not know that version can
+// still show every other member of the thread and leaves the snapshot out,
+// which is what the shared client already does with an unsupported version.
+func TestThreadReadKeepsAnUnknownModelControlVersionThreadReadable(t *testing.T) {
+	// The version-1 struct reads `revision` as a number. A version-2 payload is
+	// free to make it a string, and that conflict is what fails the decode.
+	payload := `{"thread":{"id":"t_unknown","evener":{"capabilities":{"modelControlVersion":2},` +
+		`"modelControl":{"revision":"7","active":{"target":"openai/gpt-5"}}}}}`
+
+	var response ThreadReadResponse
+	if err := decodeResponseResult(MethodThreadRead, json.RawMessage(payload), &response); err != nil {
+		t.Fatalf("an unknown model-control version made the thread unreadable: %v", err)
+	}
+	if response.Thread.ID != "t_unknown" {
+		t.Fatalf("thread id = %q, want the read's own thread", response.Thread.ID)
+	}
+	if got := response.Thread.Evener.Capabilities.ModelControlVersion; got != 2 {
+		t.Fatalf("reported model-control version = %d, want the daemon's 2 preserved", got)
+	}
+	if response.Thread.Evener.ModelControl != nil {
+		t.Fatalf("snapshot = %+v, want an unknown version's snapshot left undecoded", response.Thread.Evener.ModelControl)
+	}
+
+	// A version-1 payload still has to satisfy the version-1 contract, whatever
+	// the thread around it looks like. This one carries every required member,
+	// so presence alone accepts it, and its snapshot then fails to decode.
+	versionOne := `{"thread":{"id":"t_v1","evener":{"capabilities":{"modelControlVersion":1},` +
+		`"modelControl":{"revision":"7","active":{"reasoningEffortLevels":["high"],"supportsReasoning":true}}}}}`
+	var malformed ThreadReadResponse
+	if err := decodeResponseResult(MethodThreadRead, json.RawMessage(versionOne), &malformed); err == nil {
+		t.Fatal("a version-1 read whose snapshot does not decode was accepted")
+	}
+}
+
 func TestModelControlWireErrorsCarryMachineReadableOutcome(t *testing.T) {
 	tests := []struct {
 		name        string

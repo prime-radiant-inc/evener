@@ -1604,6 +1604,22 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 				let active = true;
 				let unsubscribe: (() => void) | null = null;
 				let liveHandler: ((notification: AnyNotification) => void) | null = null;
+				// A model-control frame that lands after the read's projection
+				// commits inside the service but before this store adopts it has
+				// no live handler yet: the service ends its own quarantine with
+				// that read, and the host's read reconciliation still has to
+				// settle. Hold those frames (and the recovery effects the service
+				// reports the same way) and reconcile them once the projection is
+				// on screen, so a newer snapshot is not lost behind the older read.
+				const deferredModelControl: Array<
+					| { kind: "notification"; notification: AnyNotification }
+					| {
+							kind: "recovery";
+							threadRef: string;
+							expectedThreadId: string;
+							input: ConversationModelControlRecoveryInput;
+					  }
+				> = [];
 				try {
 					// Subscribe before the read so no frame after its response is missed;
 					// a frame before the response is already in the snapshot (the
@@ -1611,10 +1627,18 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 					unsubscribe = service.subscribeNotifications(
 						(notification) => {
 							if (!active || gen !== conversationGen) return;
+							if (liveHandler === null && notification.method === "thread/model/controlChanged") {
+								deferredModelControl.push({ kind: "notification", notification });
+								return;
+							}
 							liveHandler?.(notification);
 						},
 						(threadRef, expectedThreadId, input) => {
 							if (!active || gen !== conversationGen) return;
+							if (liveHandler === null) {
+								deferredModelControl.push({ kind: "recovery", threadRef, expectedThreadId, input });
+								return;
+							}
 							publishModelControlRecovery(threadRef, expectedThreadId, input);
 						},
 					);
@@ -1637,6 +1661,17 @@ export function createConversationStore(options: ConversationStoreOptions = {}) 
 						if (gen !== conversationGen) return;
 						routeLiveFrame(n, ref);
 					};
+					// The projection the read published predates every held frame
+					// (the read's snapshot was computed before them), so each one
+					// replays through the live path: the package reducer reconciles
+					// by authority and revision, and a frame that invalidates the
+					// held snapshot requests the recovery read exactly as it would
+					// have on arrival.
+					for (const deferred of deferredModelControl.splice(0)) {
+						if (gen !== conversationGen) return;
+						if (deferred.kind === "notification") routeLiveFrame(deferred.notification, ref);
+						else publishModelControlRecovery(deferred.threadRef, deferred.expectedThreadId, deferred.input);
+					}
 					if (
 						replacement &&
 						(conversation.modelControlState.kind === "uninitialized" ||

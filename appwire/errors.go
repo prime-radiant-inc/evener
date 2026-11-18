@@ -959,7 +959,19 @@ type ModelControlObservedErrorData struct {
 // the state a diagnostic read observed inside its Data. The hub's
 // router dispatch discards a result returned beside an error, so Data is the
 // only channel a failure has.
+//
+// Data keeps the shape it arrived in: the typed struct a local source returns,
+// or the decoded map a refusal that crossed the wire carries. Reading a map
+// through ErrorDataOf would fail and replace a definite stale refusal with an
+// unknown outcome, dropping the mutation it belongs to and the retry
+// disposition the caller decides from.
 func (e WireError) WithModelControlObserved(observed ModelControlSnapshot) WireError {
+	if fields, ok := e.Data.(map[string]any); ok {
+		updated := maps.Clone(fields)
+		updated["observed"] = observed
+		e.Data = updated
+		return e
+	}
 	if base, ok := ErrorDataOf(e.Data); ok {
 		e.Data = ModelControlObservedErrorData{ErrorData: base, Observed: observed}
 		return e
@@ -972,17 +984,38 @@ func (e WireError) WithModelControlObserved(observed ModelControlSnapshot) WireE
 }
 
 // ModelControlObservedOf is the state a failed model mutation's diagnostic
-// read observed, when the failure carried one.
+// read observed, when the failure carried one. It reads the typed struct and
+// the decoded map, so the evidence survives crossing the wire.
 func ModelControlObservedOf(err error) (ModelControlSnapshot, bool) {
 	var wire WireError
 	if !errors.As(err, &wire) {
 		return ModelControlSnapshot{}, false
 	}
-	data, ok := wire.Data.(ModelControlObservedErrorData)
-	if !ok {
-		return ModelControlSnapshot{}, false
+	switch data := wire.Data.(type) {
+	case ModelControlObservedErrorData:
+		return data.Observed, true
+	case map[string]any:
+		observed, ok := data["observed"]
+		if !ok {
+			return ModelControlSnapshot{}, false
+		}
+		if snapshot, ok := observed.(ModelControlSnapshot); ok {
+			return snapshot, true
+		}
+		// The observed state crossed the wire too, so it arrives as the map
+		// JSON decoded it into. Reading it back needs the same decode the
+		// snapshot's own response uses.
+		raw, err := json.Marshal(observed)
+		if err != nil {
+			return ModelControlSnapshot{}, false
+		}
+		var snapshot ModelControlSnapshot
+		if err := json.Unmarshal(raw, &snapshot); err != nil {
+			return ModelControlSnapshot{}, false
+		}
+		return snapshot, true
 	}
-	return data.Observed, true
+	return ModelControlSnapshot{}, false
 }
 
 // ModelControlAuthorityStale refuses a model mutation whose exact thread or
