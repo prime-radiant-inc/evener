@@ -441,6 +441,11 @@ func testResponsesEmptyAnswerReplay(t *testing.T, enrolled bool) {
 		flush, _ := w.(http.Flusher)
 		if attempt < len(outputs) {
 			item := outputs[attempt].item
+			if attempt == 0 {
+				completed := map[string]any{"type": "reasoning", "id": "rs_plain", "content": []any{part("reasoning_text", "λ-425"), part("reasoning_text", "withdrawn-39")}}
+				writeSSE(t, w, flush, "response.output_item.done", map[string]any{"type": "response.output_item.done", "output_index": 0, "item": completed})
+				item = map[string]any{"type": "reasoning", "id": "rs_plain", "content": []any{map[string]any{"type": "reasoning_text"}, part("reasoning_text", "")}}
+			}
 			if attempt == 1 {
 				call := map[string]any{"type": "function_call", "id": "fc-write", "call_id": "c-write", "name": "write_file",
 					"arguments": mustJSON(t, map[string]string{"file_path": withdrawnFile, "content": "withdrawn"})}

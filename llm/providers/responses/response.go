@@ -154,7 +154,7 @@ func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawM
 					sparse = false
 				}
 				if observed != nil {
-					thinking = observed.settleReasoning(item, thinking, native)
+					thinking = observed.settleReasoning(item, thinking)
 					observed.discardDisplayMirror(thinking)
 				}
 			}
@@ -257,7 +257,7 @@ func (acc *responsesOutputAccumulator) terminalItem(kind, id, callID string, ind
 
 // A terminal can omit native reasoning or supply a single placeholder. An
 // explicit empty array clears the content. Other typed slots own their indexes.
-func (item *responsesOutputItem) settleReasoning(terminalItem map[string]any, terminal *llm.ThinkingData, terminalNative reasoningContent) *llm.ThinkingData {
+func (item *responsesOutputItem) settleReasoning(terminalItem map[string]any, terminal *llm.ThinkingData) *llm.ThinkingData {
 	if item.done == nil && len(item.text) == 0 {
 		return terminal
 	}
@@ -265,12 +265,7 @@ func (item *responsesOutputItem) settleReasoning(terminalItem map[string]any, te
 		terminal = &llm.ThinkingData{ID: item.reasoningID(terminalItem), Summary: item.reasoningSummary(terminalItem["summary"])}
 	}
 	parts, supplied := terminalItem["content"].([]any)
-	var placeholder bool
-	if terminalNative == reasoningEmpty && len(parts) == 1 {
-		part, _ := parts[0].(map[string]any)
-		placeholder = part["text"] == ""
-	}
-	if !supplied || placeholder {
+	if !supplied || singleReasoningPlaceholder(parts) {
 		// The stream can supply several native slots even when their item
 		// repeats only the types and their text arrived in indexed finals.
 		prior, _ := responsesThinking(item.done, item)
@@ -493,6 +488,10 @@ const (
 	reasoningSubstantive
 )
 
+func singleReasoningPlaceholder(parts []any) bool {
+	return len(parts) == 1 && typedPartAt(parts, 0, "reasoning_text")["text"] == ""
+}
+
 // A completed item owns its supplied text. A reasoning_text.done frame can
 // supply the same typed slot when the item did not repeat its text.
 func (item *responsesOutputItem) settledReasoningText(index int, kind string) (text string, present bool) {
@@ -554,6 +553,7 @@ func responsesThinking(item map[string]any, prior *responsesOutputItem) (*llm.Th
 	encrypted, _ := item["encrypted_content"].(string)
 	native := reasoningAbsent
 	parts, supplied := item["content"].([]any)
+	placeholder := singleReasoningPlaceholder(parts)
 	var display strings.Builder
 	var textParts []llm.ResponsesTextPart
 	appendPart := func(kind, text string) {
@@ -580,7 +580,7 @@ func responsesThinking(item map[string]any, prior *responsesOutputItem) (*llm.Th
 				native = reasoningSubstantive
 			}
 		}
-		if text == "" && (ok || p["text"] == nil) {
+		if p["text"] == nil || placeholder {
 			if observed, present := prior.settledReasoningText(i, kind); present {
 				text, ok = observed, true
 			}

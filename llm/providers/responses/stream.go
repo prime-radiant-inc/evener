@@ -745,26 +745,33 @@ func (acc *responsesOutputAccumulator) bindCallItem(issued *responsesOutputItem,
 }
 
 func (acc *responsesOutputAccumulator) toolOutput(payload map[string]any, callID, itemID, name, alias string) *responsesOutputItem {
+	index := responsesEventIndex(payload, "output_index")
 	fallback := acc.callItem(callID)
 	if alias != "" {
 		called := acc.byCallID[alias]
 		fallback = acc.byID[alias]
 		if fallback == nil || fallback.tool == nil {
 			fallback = called
+		} else if called != nil && called != fallback {
+			// A bare ID can name both an issued call and a different item.
+			// Only an index owned by exactly one of them resolves the event.
+			owner := acc.byIndex[index]
+			if (owner != fallback && owner != called) || owner.ambiguousCallIndex {
+				return nil
+			}
+			fallback = owner
 		}
 		if fallback != nil {
-			callID = fallback.tool.callID
-			if callID != "" && called != nil && called != fallback {
-				return nil // This bare ID names two distinct issued calls.
-			}
+			itemID, callID = fallback.id, fallback.tool.callID
 		}
 	}
 	// A conflicting item ID cannot make another call's index a match.
-	issued := acc.byCallID[callID]
-	if issued != nil {
-		itemID = acc.bindCallItem(issued, itemID)
+	known := acc.byCallID[callID]
+	if known != nil {
+		itemID = acc.bindCallItem(known, itemID)
+	} else if alias != "" {
+		known = fallback
 	}
-	index := responsesEventIndex(payload, "output_index")
 	if owner := acc.byIndex[index]; owner != nil && owner.tool != nil {
 		if !owner.acceptsFunctionIdentity(itemID, callID, cmp.Or(acc.byID[itemID], fallback)) {
 			owner.ambiguousCallIndex = true
@@ -773,7 +780,7 @@ func (acc *responsesOutputAccumulator) toolOutput(payload map[string]any, callID
 			index = -1 // Only the explicit identities can select a call at this position.
 		}
 	}
-	if issued != nil && issued.index >= 0 && index != issued.index {
+	if known != nil && known.index >= 0 && index != known.index {
 		index = -1
 	}
 	if callID == "" && itemID == "" && alias == "" && index < 0 {

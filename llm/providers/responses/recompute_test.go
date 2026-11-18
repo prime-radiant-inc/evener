@@ -498,6 +498,7 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 		return fmt.Sprintf(`{"type":"response.reasoning_part.added",%s,"content_index":%d,"part":{"type":%s,"text":""}}`, identity, index, jsonOf(t, kind))
 	}
 	const twoParts = `{"type":"reasoning","id":"r","content":[{"type":"reasoning_text","text":" λ\t"},{"type":"reasoning_text","text":"\r\n<&>"}]}`
+	const phasedAnswer = `{"type":"message","id":"m","phase":"commentary","content":[{"type":"output_text","text":" A "}]}`
 	announcedSlots := []string{
 		"{" + display + "}", declaredItem, partAdded(`"item_id":"r"`, 0, "reasoning_text"), finalText(`"item_id":"r"`, 0, " λ\t"),
 		partAdded(`"item_id":"r"`, 1, "reasoning_text"), finalText(`"item_id":"r"`, 1, "\r\n<&>"),
@@ -526,7 +527,7 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 			finalText(`"item_id":"other","output_index":0`, 3, "foreign"),
 			`{"type":"response.reasoning_text.delta","item_id":"r","content_index":3,"delta":"interim"}`,
 			`{"type":"response.reasoning_summary_text.done","item_id":"r","summary_index":3,"text":"summary"}`,
-		}, answer + "," + reasoning(nil, "") + "," + tool, answer + "," + reasoning(new(" λ\t"), "\r\n<&>") + "," + tool},
+		}, answer + "," + reasoning(nil, "") + "," + tool, answer + "," + reasoning(new(" λ\t"), "") + "," + tool},
 		{"finalized part without a native item keeps answer and call positions", []string{
 			"{" + display + "}", finalText(`"item_id":"r","output_index":0`, 0, "unmatched"), answerDelta, toolDone,
 		}, "", answer + "," + tool},
@@ -536,6 +537,12 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 			`{"type":"response.output_item.done","item":` + reasoning(nil, "") + `}`,
 		}, placeholder + "," + answer, reasoning(new("\t"), "") + "," + answer},
 		{"single placeholder preserves both finalized completed slots", completedSlots, answer + "," + placeholder, answer + "," + twoParts},
+		{"single placeholder inherits its own indexed final without an announcement", []string{
+			"{" + display + "}", finalText(`"item_id":"r"`, 0, " λ\t"),
+		}, phasedAnswer + "," + placeholder, phasedAnswer + `,{"type":"reasoning","id":"r","content":[{"type":"reasoning_text","text":" λ\t"}]}`},
+		{"a multipart selection keeps its blank and inherits its null slot", completedSlots,
+			phasedAnswer + `,{"type":"reasoning","id":"r","content":[{"type":"reasoning_text","text":""},{"type":"reasoning_text","text":null}]}`,
+			phasedAnswer + `,{"type":"reasoning","id":"r","content":[{"type":"reasoning_text","text":""},{"type":"reasoning_text","text":"\r\n<&>"}]}`},
 		{"single placeholder preserves finalized announced slots without an item completion", announcedSlots, answer + "," + placeholder, answer + "," + twoParts},
 		{"placeholder recovers missing siblings along with completed slots", slices.Concat(completedSlots, []string{answerDelta, strings.Replace(toolDone, `"output_index":1`, `"output_index":2`, 1)}),
 			placeholder, answer + "," + twoParts + "," + tool},

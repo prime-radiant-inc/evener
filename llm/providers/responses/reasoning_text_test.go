@@ -122,6 +122,13 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 	const secondItemAdded = `{"type":"response.output_item.added","item":{"type":"function_call","id":"fc_2","name":"g"}}`
 	const secondItemFinal = `{"type":"response.function_call_arguments.done","item_id":"fc_2","name":"g","arguments":"{ \"k\": 2 }"}`
 	const secondLinked = `{"type":"function_call","id":"fc_2","call_id":"call_2"}`
+	bindSharedID := done(strings.Replace(secondLinked, "fc_2", "call_1", 1))
+	sharedID := func(provisionalIndex int, events ...string) []string {
+		return append([]string{
+			at(0, toolAdded), itemArguments, at(provisionalIndex, strings.Replace(secondItemAdded, "fc_2", "call_1", 1)),
+			strings.Replace(secondItemFinal, "fc_2", "call_1", 1),
+		}, events...)
+	}
 	anonymousFinal := at(0, `{"type":"response.function_call_arguments.done","arguments":"{\"k\":3}"}`)
 	provisionalAtOccupiedIndex := []string{at(0, toolAdded), finalArguments, at(0, secondItemAdded), anonymousFinal}
 	const indexedArguments = `{"type":"response.function_call_arguments.delta","delta":"{}"}`
@@ -163,6 +170,10 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 	finalTool := tool
 	finalTool.Arguments = " \t{ \"k\": 1 }\n"
 	secondTool := replayItem{Type: "function_call", CallID: "call_2", Name: "g", Arguments: `{ "k": 2 }`}
+	updatedSecond := secondTool
+	updatedSecond.Arguments = finalTool.Arguments
+	extendedFirst := tool
+	extendedFirst.Arguments += "\r\n"
 	linkedTool := tool
 	linkedTool.Arguments = `{ "k": 1 }`
 	linkedAnswer := replayItem{Type: "message", Phase: "commentary", Content: []replayText{{"output_text", "m1bm1"}}}
@@ -176,7 +187,7 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 	cryptoWithSummary := encrypted
 	cryptoWithSummary.Summary = []replayText{{"summary_text", " s_terminal "}}
 	partial := replayItem{Type: "message", Content: []replayText{{"output_text", "m_terminal"}, {"output_text", " m_part "}, {"output_text", "m_done"}, {"output_text", ""}}}
-	filledReasoning := replayItem{Type: "reasoning", ID: "rs_1", Content: []replayText{{"reasoning_text", "new"}, {"reasoning_text", " r_observed "}, {"reasoning_text", ""}}, Summary: []replayText{}}
+	selectedReasoning := replayItem{Type: "reasoning", ID: "rs_1", Content: []replayText{{"reasoning_text", "new"}, {"reasoning_text", ""}, {"reasoning_text", ""}}, Summary: []replayText{}}
 	recoveredFields := replayItem{Type: "reasoning", ID: "rs_1", Content: []replayText{{"reasoning_text", "new"}, {"reasoning_text", " r_observed "}, {"reasoning_text", "\t"}, {"reasoning_text", ""}}, Summary: []replayText{}}
 	otherRaw := replayItem{Type: "reasoning", ID: "rs_other", Content: []replayText{{"reasoning_text", "r_other"}}, Summary: []replayText{}}
 	for _, tc := range []struct {
@@ -230,6 +241,15 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 			at(0, toolAdded), itemArguments, at(0, done(strings.Replace(secondLinked, "fc_2", "call_1", 1))),
 			strings.Replace(secondItemFinal, `"item_id":"fc_2"`, `"call_id":"call_2"`, 1), at(2, bareFinal("call_1")),
 		}, []string{firstCall, secondCall}, []replayItem{tool, secondTool}},
+		{"shared bare ID with the issued call's index updates that call", sharedID(1, at(0, bareFinal("call_1")), bindSharedID), nil, []replayItem{finalTool, secondTool}},
+		{"shared bare argument delta follows the issued call's index", sharedID(1, at(0, `{"type":"response.function_call_arguments.delta","id":"call_1","delta":"\r\n"}`), bindSharedID), nil, []replayItem{extendedFirst, secondTool}},
+		{"shared bare ID with the provisional item's index updates that item", sharedID(1, at(1, bareFinal("call_1")), bindSharedID), nil, []replayItem{tool, updatedSecond}},
+		{"shared bare ID without an index updates neither owner", sharedID(1, bareFinal("call_1"), bindSharedID), nil, []replayItem{tool, secondTool}},
+		{"shared bare ID at an unrelated index updates neither owner", sharedID(1, at(2, bareFinal("call_1")), bindSharedID), nil, []replayItem{tool, secondTool}},
+		{"shared bare ID at a reused index updates neither owner", sharedID(0, at(0, bareFinal("call_1")), bindSharedID), []string{firstCall, secondCall}, []replayItem{tool, secondTool}},
+		{"shared bare ID with two issued calls still has one owner at its index", sharedID(1, bindSharedID, at(0, bareFinal("call_1"))), nil, []replayItem{finalTool, secondTool}},
+		{"a unique provisional item ID keeps its first position until the call is issued", []string{at(0, toolItemAdded), itemArguments, at(1, done(secondLinked)), secondItemFinal, at(2, bareFinal("fc_1")), done(linkedCall)}, nil, []replayItem{finalTool, secondTool}},
+		{"a unique bare ID keeps its first position until the item and call are linked", []string{at(0, idArguments), at(1, done(secondLinked)), secondItemFinal, at(2, bareFinal("fc_1")), done(linkedCall)}, nil, []replayItem{finalTool, secondTool}},
 		{"issued call gains its item ID at another index", []string{indexedCalls[0], at(1, done(linkedCall)), finalArguments}, nil, []replayItem{finalTool}},
 		{"issued call links a provisional named item at another index", []string{indexedCalls[0], at(1, toolItemAdded), at(1, namedFinalArguments)}, nil, []replayItem{finalTool}},
 		{"issued call repeated at another call's index keeps the other call", []string{indexedCalls[0], at(1, done(secondLinked)), secondItemFinal, at(1, namedFinalArguments)}, nil, []replayItem{finalTool, secondTool}},
@@ -278,7 +298,7 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 		{"terminal message links interleaved fragments", []string{at(0, answerDelta), noPartIndex, at(0, answerDelta)}, []string{emptyCommentary}, []replayItem{linkedAnswer}},
 		{"terminal plaintext keeps matching ciphertext", []string{done(encryptedItem)}, []string{answerItem, plainWithSummary}, []replayItem{answer, cryptoWithSummary}},
 		{"substantive message selects content membership", []string{laterPart, blankPart}, []string{shortMessage}, []replayItem{answer}},
-		{"terminal reasoning fills only matching raw slots", []string{done(longReasoning)}, []string{partialReasoning}, []replayItem{filledReasoning}},
+		{"terminal blanks clear earlier values in their selected raw slots", []string{done(longReasoning)}, []string{partialReasoning}, []replayItem{selectedReasoning}},
 		{"missing terminal reasoning fields take only their matching typed bytes", []string{done(longReasoning)}, []string{missingReasoningFields}, []replayItem{recoveredFields}},
 		{"an indexed terminal recovers missing reasoning fields without repeating the item ID", []string{at(0, done(longReasoning))}, []string{strings.Replace(missingReasoningFields, `"id":"rs_1",`, "", 1)}, []replayItem{recoveredFields}},
 		{"single missing reasoning field takes only its own index", []string{done(longReasoning), answerDelta}, []string{missingReasoningField}, []replayItem{{Type: "reasoning", ID: "rs_1", Summary: []replayText{}, Content: []replayText{{"reasoning_text", "old"}}}, answer}},
