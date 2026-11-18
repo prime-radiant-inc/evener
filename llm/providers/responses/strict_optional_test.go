@@ -585,3 +585,72 @@ func TestRefusedDraft7TupleStillTypesItsPositions(t *testing.T) {
 		t.Fatalf("required = %v, want the advertised set %v: stating a type must not force anything", got, want)
 	}
 }
+
+// A route configured strict_tools = false must say so on every tool. The native
+// endpoint normalizes an omitted flag into strict enforcement, so omitting it
+// here would run the tool strictly anyway and force the optional argument the
+// gate just refused to force — the #6200 harm reintroduced by configuration.
+//
+// The control is the same row with the capability unstated: a compatible
+// endpoint that does not implement the field must still receive no flag.
+func TestStrictToolsFalseRouteStatesTheFlagSoTheEndpointCannotNormalizeIt(t *testing.T) {
+	t.Parallel()
+	schema := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"action":    map[string]any{"type": "string"},
+			"tab_index": map[string]any{"type": "integer"},
+		},
+		"required": []string{"action"},
+	}
+	req := userReq("hi")
+	req.Tools = []llm.ToolDefinition{{Name: "use_browser", Parameters: schema}}
+
+	// The row an operator turned strict mode off on: the capability is stated,
+	// and it is false.
+	off := build(t, req, resolved(func(c *registry.Caps) { c.StrictTools = new(false) }))
+	tool := off["tools"].([]map[string]any)[0]
+	strict, has := tool["strict"]
+	if !has {
+		t.Fatal("strict is absent on a strict_tools = false route: the native endpoint normalizes an omitted flag into strict enforcement, which forces tab_index on every call")
+	}
+	if strict != false {
+		t.Fatalf("strict = %#v, want false", strict)
+	}
+	params := tool["parameters"].(map[string]any)
+	if got, want := requiredNames(t, params), []string{"action"}; !slices.Equal(got, want) {
+		t.Fatalf("required = %v, want the advertised set %v: turning strict mode off must not force the optional argument", got, want)
+	}
+	if _, has := params["additionalProperties"]; !has {
+		t.Fatal("additionalProperties is missing: the advertised root was explicitly closed and must survive")
+	}
+
+	// Control: a row that states no capability is a compatible endpoint that
+	// does not implement the field. It keeps receiving no flag.
+	unstated := build(t, req, resolved(nil))
+	if _, has := unstated["tools"].([]map[string]any)[0]["strict"]; has {
+		t.Fatalf("strict = %#v on a route that states no capability, want the field omitted", unstated["tools"].([]map[string]any)[0]["strict"])
+	}
+}
+
+// The same route with the capability stated and on still certifies a fully
+// expressible schema, so stating the flag does not become a refusal to enforce.
+func TestStrictToolsTrueRouteStillCertifiesFullyRequiredSchemas(t *testing.T) {
+	t.Parallel()
+	req := userReq("hi")
+	req.Tools = []llm.ToolDefinition{{Name: "write_file", Parameters: map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           map[string]any{"file_path": map[string]any{"type": "string"}},
+		"required":             []string{"file_path"},
+	}}}
+	body := build(t, req, resolved(strictCaps))
+	tool := body["tools"].([]map[string]any)[0]
+	if tool["strict"] != true {
+		t.Fatalf("strict = %#v, want true for a fully-required schema on a strict-capable row", tool["strict"])
+	}
+	if params := tool["parameters"].(map[string]any); params["additionalProperties"] != false {
+		t.Fatalf("additionalProperties = %#v, want false (strictified)", params["additionalProperties"])
+	}
+}

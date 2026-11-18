@@ -2963,3 +2963,47 @@ func TestRawSubschemaListsAreWalkedForDerivedTypes(t *testing.T) {
 		})
 	}
 }
+
+// A closed, fully-required schema must get the same strict decision whichever
+// Go spelling its caller chose for properties. map[string]map[string]any and
+// map[string]any serialize identically, and the projection normalizes the
+// typed one, so certifying only the second would make the wire depend on the
+// caller's Go type rather than on the schema.
+func TestFullyRequiredSchemaIsCertifiedInEitherPropertyMapSpelling(t *testing.T) {
+	t.Parallel()
+	declared := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"required":             []string{"file_path"},
+	}
+	decoded := map[string]any{"file_path": map[string]any{"type": "string"}}
+	typed := map[string]map[string]any{"file_path": {"type": "string"}}
+
+	for _, tc := range []struct {
+		name  string
+		props any
+	}{
+		{"decoded", decoded},
+		{"typed", typed},
+	} {
+		name, props := tc.name, tc.props
+		schema := make(map[string]any, len(declared)+1)
+		for k, v := range declared {
+			schema[k] = v
+		}
+		schema["properties"] = props
+		if !StrictExpressible(schema) {
+			t.Fatalf("%s spelling: StrictExpressible = false, want true: every property is declared and required, so the projection is lossless", name)
+		}
+		// The projection must agree, or certification would promise something
+		// the wire does not deliver.
+		projected := StrictifyJSONSchema(schema)
+		gotRequired, _ := projected["required"].([]string)
+		if len(gotRequired) != 1 || gotRequired[0] != "file_path" {
+			t.Fatalf("%s spelling: projected required = %#v, want [file_path]", name, projected["required"])
+		}
+		if projected["additionalProperties"] != false {
+			t.Fatalf("%s spelling: projected additionalProperties = %#v, want false", name, projected["additionalProperties"])
+		}
+	}
+}

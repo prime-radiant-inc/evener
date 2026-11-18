@@ -551,13 +551,34 @@ func schemaLiteralType(raw any) string {
 // rewrite and this walk can read. ok is false when properties is present but
 // unreadable, because the rewrite would replace such a value with an empty map
 // and drop every advertised argument.
+//
+// The two spellings a Go builder writes are read the same way here as in the
+// projection, which normalizes map[string]map[string]any to map[string]any
+// without changing what either serializes to. Certification answers a question
+// about the schema's JSON, so a schema that is fully required must get the same
+// answer whichever of the two spellings its caller chose.
 func inspectProperties(m map[string]any) (map[string]any, bool) {
 	raw, has := m["properties"]
 	if !has || raw == nil {
 		return nil, true
 	}
-	props, ok := raw.(map[string]any)
-	return props, ok
+	switch props := raw.(type) {
+	case map[string]any:
+		return props, true
+	case map[string]map[string]any:
+		// A nil typed map marshals as JSON null, which the projection keeps
+		// distinct from the empty object; read it as the nil it is.
+		if props == nil {
+			return nil, true
+		}
+		out := make(map[string]any, len(props))
+		for name, child := range props {
+			out[name] = child
+		}
+		return out, true
+	default:
+		return nil, false
+	}
 }
 
 // schemaTypeFlags reads a schema's type as either a string or a list of

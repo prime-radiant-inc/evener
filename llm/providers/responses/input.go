@@ -87,7 +87,18 @@ func toolSchema(t llm.ToolDefinition, strict bool) (params map[string]any, toolS
 	return openaichat.SupplyDerivedTypes(params), false
 }
 
-func toResponsesTools(tools []llm.ToolDefinition, strict bool) []map[string]any {
+// toResponsesTools writes the tools array. capsStrict is the row's strict_tools
+// capability and stated reports whether the row states one at all.
+//
+// The per-tool flag is written whenever the row states the capability, not only
+// when the capability is on. A native endpoint normalizes an omitted flag into
+// strict enforcement, so a route configured strict_tools = false that omitted
+// it would run the tool strictly anyway — and an argument the gate refused to
+// force on would be forced on by the endpoint. A row that states nothing gets
+// no flag: that is what a compatible endpoint which does not implement the
+// field receives today, and the capability's absence is not a decision to
+// announce.
+func toResponsesTools(tools []llm.ToolDefinition, capsStrict bool, stated bool) []map[string]any {
 	out := make([]map[string]any, 0, len(tools))
 	for _, t := range tools {
 		// The per-tool opt-out is read before the fallback is synthesized: a
@@ -96,14 +107,14 @@ func toResponsesTools(tools []llm.ToolDefinition, strict bool) []map[string]any 
 		// validator allows. Only a tool that will actually be sent in strict
 		// mode gets the closed empty object, because strict mode accepts that
 		// and only that.
-		params, toolStrict := toolSchema(t, strict)
+		params, toolStrict := toolSchema(t, capsStrict)
 		entry := map[string]any{
 			"type":        "function",
 			"name":        t.Name,
 			"description": t.Description,
 			"parameters":  params,
 		}
-		if strict {
+		if stated {
 			entry["strict"] = toolStrict
 		}
 		out = append(out, entry)

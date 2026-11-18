@@ -1236,3 +1236,128 @@ func TestNilClientMiddlewareSnapshotIsEmpty(t *testing.T) {
 		t.Fatalf("nil client middleware = %v, want nil", got)
 	}
 }
+
+// An override adapter marshals the definition it is handed, so a parameterless
+// tool has to carry the open empty schema the local validator compiled it
+// against. Preparation leaves the nil so a built-in adapter can choose between
+// the closed and open empty schemas itself; an override has no such decision,
+// and omitting the key would have the provider read "no schema" where the
+// validator reads "any object".
+func TestClient_OverrideReceivesOpenSchemaForParameterlessTools(t *testing.T) {
+	// Not parallel: Generate mutates package-level seams in other tests, and this
+	// drives the full preparation path.
+	c := NewClient()
+	a := &recordReqAdapter{name: "openai"}
+	c.Register(a)
+
+	if _, err := Generate(context.Background(), GenerateOptions{
+		Client: c,
+		Model:  "m",
+		Prompt: new("hi"),
+		Tools:  []Tool{{Definition: ToolDefinition{Name: "current_time"}}},
+	}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+
+	a.mu.Lock()
+	tools := a.lastReq.Tools
+	a.mu.Unlock()
+	if len(tools) != 1 {
+		t.Fatalf("tools = %d, want 1", len(tools))
+	}
+	params := tools[0].Parameters
+	if params == nil {
+		t.Fatal("parameters = nil: an override adapter marshals the definition directly, so the key must be present")
+	}
+	if params["type"] != "object" {
+		t.Fatalf("type = %#v, want object", params["type"])
+	}
+	if props, ok := params["properties"].(map[string]any); !ok || len(props) != 0 {
+		t.Fatalf("properties = %#v, want an empty object", params["properties"])
+	}
+	if _, has := params["additionalProperties"]; has {
+		t.Fatalf("additionalProperties = %#v, want it absent: this is the open schema", params["additionalProperties"])
+	}
+
+	// The stamp has to describe the list the override receives, not the list
+	// before the substitution: the count that omits these bytes would admit a
+	// request the budget priced as smaller than it is.
+	a.mu.Lock()
+	stamped := a.lastReq.ToolsJSONBytes
+	a.mu.Unlock()
+	if want := ToolsJSONBytes(tools); stamped != want {
+		t.Fatalf("ToolsJSONBytes = %d, want %d: the stamp must price the schema the override is handed", stamped, want)
+	}
+
+	// A tool that supplies its own schema keeps it untouched.
+	if _, err := Generate(context.Background(), GenerateOptions{
+		Client: c,
+		Model:  "m",
+		Prompt: new("hi"),
+		Tools: []Tool{{Definition: ToolDefinition{
+			Name:       "read_file",
+			Parameters: map[string]any{"type": "object", "properties": map[string]any{"file_path": map[string]any{"type": "string"}}},
+		}}},
+	}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	a.mu.Lock()
+	declared := a.lastReq.Tools[0].Parameters
+	a.mu.Unlock()
+	if _, has := declared["additionalProperties"]; has {
+		t.Fatalf("additionalProperties = %#v, want the supplied schema unchanged", declared["additionalProperties"])
+	}
+}
+
+// A direct Complete or Stream call never went through preparation, so its nil
+// Parameters is what the caller wrote. An adapter that reads nil as "this tool
+// declares no arguments" must still see nil: rewriting it to an open object
+// would hand the adapter a schema permitting arbitrary keys in its place.
+func TestClient_DirectCallKeepsNilParametersForOverrides(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		send func(*Client) error
+	}{
+		{"Complete", func(c *Client) error {
+			_, err := c.Complete(context.Background(), Request{
+				Model:    "m",
+				Messages: []Message{User("hi")},
+				Tools:    []ToolDefinition{{Name: "current_time"}},
+			})
+			return err
+		}},
+		{"Stream", func(c *Client) error {
+			st, err := c.Stream(context.Background(), Request{
+				Model:    "m",
+				Messages: []Message{User("hi")},
+				Tools:    []ToolDefinition{{Name: "current_time"}},
+			})
+			if err != nil {
+				return err
+			}
+			for range st.Events() {
+			}
+			return nil
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			c := NewClient()
+			a := &recordReqAdapter{name: "openai"}
+			c.Register(a)
+			if err := tc.send(c); err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+			a.mu.Lock()
+			tools := a.lastReq.Tools
+			a.mu.Unlock()
+			if len(tools) != 1 {
+				t.Fatalf("tools = %d, want 1", len(tools))
+			}
+			if tools[0].Parameters != nil {
+				t.Fatalf("parameters = %#v, want nil: a direct call did not go through preparation, so the caller's nil is the declaration the adapter reads", tools[0].Parameters)
+			}
+		})
+	}
+}

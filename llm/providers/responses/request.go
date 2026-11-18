@@ -54,7 +54,7 @@ func buildBody(req llm.Request, res registry.Resolved, stream bool) (out map[str
 				return nil, fmt.Errorf("%w: tool %q", openaichat.ErrCyclicSchema, t.Name)
 			}
 		}
-		tools = toResponsesTools(req.Tools, registry.BoolValue(caps.StrictTools))
+		tools = toResponsesTools(req.Tools, registry.BoolValue(caps.StrictTools), caps.StrictTools != nil)
 	}
 	if req.WebSearch && (caps.WebSearch == nil || *caps.WebSearch) {
 		tools = append(tools, map[string]any{"type": "web_search"})
