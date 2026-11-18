@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -198,6 +200,49 @@ func TestParseSSE_StreamReadTimeout_ZeroMeansNoTimeout(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("expected 1 event, got %d", len(events))
 	}
+}
+
+// TestParseSSEDeliversCRTerminalEventBeforeTheReadTimeout pins a CR-only body
+// that the provider then leaves open. The second CR completes the blank line
+// that ends the event, so the event has to reach the callback before the
+// stream-read timer fires; a scanner that waits for one more byte to tell that
+// CR from half of a CRLF drops the provider's terminal event instead.
+func TestParseSSEDeliversCRTerminalEventBeforeTheReadTimeout(t *testing.T) {
+	t.Parallel()
+	synctest.Test(t, func(t *testing.T) {
+		r, w := io.Pipe()
+		release := make(chan struct{})
+		done := make(chan struct{})
+		defer func() { r.Close(); close(release); <-done }()
+		go func() {
+			defer close(done)
+			defer w.Close()
+			if _, err := io.WriteString(w, "data: x\r\r"); err != nil {
+				return
+			}
+			// Then stall with the body still open: the provider has sent the
+			// whole event and writes nothing more.
+			<-release
+		}()
+
+		var got []string
+		start := time.Now()
+		err := ParseSSE(context.Background(), r, func(ev SSEEvent) error {
+			got = append(got, string(ev.Data))
+			return nil
+		}, WithStreamReadTimeout(time.Minute))
+
+		// The parse still ends on the idle timer, but only after the event.
+		if !errors.Is(err, ErrSSEReadTimeout) {
+			t.Errorf("error = %v, want the read timeout that ends a stalled stream", err)
+		}
+		if elapsed := time.Since(start); elapsed != time.Minute {
+			t.Errorf("parse ended after %v, want 1m", elapsed)
+		}
+		if len(got) != 1 || got[0] != "x" {
+			t.Fatalf("delivered %q before the timeout, want the CR-only event data \"x\"", got)
+		}
+	})
 }
 
 func TestParseSSE_NoOptions_PreservesExistingBehavior(t *testing.T) {
@@ -538,5 +583,39 @@ func BenchmarkParseSSELines(b *testing.B) {
 		if n == 0 {
 			b.Fatal("no data reached the callback")
 		}
+	}
+}
+
+// BenchmarkParseSSEShortLinesAfterALongLine measures many short LF-only lines
+// behind one line that forced the scan buffer to grow. Every short line is
+// served from the same buffer, so the terminator search must resume where the
+// last one stopped: a search restarted from the line's start walks the whole
+// remaining buffer once per line, which turns one refill into quadratic work.
+func BenchmarkParseSSEShortLinesAfterALongLine(b *testing.B) {
+	for _, lines := range []int{2000, 8000} {
+		var body bytes.Buffer
+		body.WriteString("data: " + strings.Repeat("x", 64<<10) + "\n\n")
+		for range lines {
+			body.WriteString("data: y\n\n")
+		}
+		raw := body.Bytes()
+
+		b.Run(strconv.Itoa(lines)+"-short-lines", func(b *testing.B) {
+			b.SetBytes(int64(len(raw)))
+			b.ReportAllocs()
+			b.ResetTimer()
+			for b.Loop() {
+				var n int
+				if err := ParseSSE(context.Background(), bytes.NewReader(raw), func(ev SSEEvent) error {
+					n += len(ev.Data)
+					return nil
+				}); err != nil {
+					b.Fatalf("parse: %v", err)
+				}
+				if n == 0 {
+					b.Fatal("no data reached the callback")
+				}
+			}
+		})
 	}
 }

@@ -116,12 +116,24 @@ const sseMaxEmptyReads = 100
 // through ReadSlice keeps a CR from having to trail a whole fragment before it
 // can end a line.
 type sseLineScanner struct {
-	r       io.Reader
-	buf     []byte // bytes read, from the current line's first byte onward
-	at      int    // index in buf of the current line's first byte
-	seen    int    // index in buf of the first byte not yet searched for a terminator
-	pending error  // error that ended the read, served once the buffered bytes are used up
-	empties int    // consecutive refills that returned neither bytes nor an error
+	r   io.Reader
+	buf []byte // bytes read, from the current line's first byte onward
+	at  int    // index in buf of the current line's first byte
+	// crFrom and lfFrom resume the search for each line terminator byte. Each
+	// is the index at which looking for its byte starts: the end of the buffer
+	// after a miss, or the byte itself after a hit, so the next line reuses
+	// that answer rather than searching the bytes after it again. A refill
+	// therefore costs one pass over the bytes it added, however many lines they
+	// hold.
+	crFrom int
+	lfFrom int
+	// skipLF is set when a CR ended a line exactly at the end of the buffered
+	// bytes. The next byte, if it is an LF, is the other half of that CRLF
+	// rather than a line of its own. The line is already delivered, so nothing
+	// waits on that byte arriving.
+	skipLF  bool
+	pending error // error that ended the read, served once the buffered bytes are used up
+	empties int   // consecutive refills that returned neither bytes nor an error
 }
 
 // next returns the next line with its terminator removed, plus the error that
@@ -134,9 +146,10 @@ func (s *sseLineScanner) next() ([]byte, error) {
 			return line, nil
 		}
 		if s.pending != nil {
+			s.skipLF = false
 			line := s.buf[s.at:]
 			s.at = len(s.buf)
-			s.seen = s.at
+			s.crFrom, s.lfFrom = s.at, s.at
 			return line, s.pending
 		}
 		// A read that returned bytes and an error leaves the error here: the
@@ -146,34 +159,78 @@ func (s *sseLineScanner) next() ([]byte, error) {
 }
 
 // line serves the next complete buffered line, advancing past it and its
-// terminator. A CR on the last buffered byte is left unscanned until the next
-// read can say whether it is a bare CR or half of a CRLF.
+// terminator.
 func (s *sseLineScanner) line() ([]byte, bool) {
-	// Two vectorized searches rather than one two-character scan: lines are
-	// the hot path, and each IndexByte runs at memchr speed.
-	rest := s.buf[s.seen:]
-	i := bytes.IndexByte(rest, '\n')
-	if cr := bytes.IndexByte(rest, '\r'); cr >= 0 && (i < 0 || cr < i) {
-		i = cr
-	}
-	if i < 0 {
-		s.seen = len(s.buf)
+	if !s.skipSplitLF() {
 		return nil, false
 	}
-	end := s.seen + i
-	term := 1
-	if s.buf[end] == '\r' {
-		if end+1 == len(s.buf) && s.pending == nil {
-			s.seen = end
-			return nil, false
-		}
-		if end+1 < len(s.buf) && s.buf[end+1] == '\n' {
+	// Two vectorized searches rather than one two-character scan: lines are the
+	// hot path, and each IndexByte runs at memchr speed.
+	cr, lf := s.find(&s.crFrom, '\r'), s.find(&s.lfFrom, '\n')
+	end, term := -1, 0
+	switch {
+	case cr >= 0 && (lf < 0 || cr < lf):
+		end, term = cr, 1
+		switch {
+		case cr+1 == len(s.buf) && s.pending == nil:
+			// The CR is the last byte there is. End the line here rather than
+			// wait for a byte that may never come: on a blank line that byte is
+			// what flushes the event.
+			s.skipLF = true
+		case cr+1 < len(s.buf) && s.buf[cr+1] == '\n':
 			term = 2
 		}
+	case lf >= 0:
+		end, term = lf, 1
+	default:
+		return nil, false
 	}
 	line := s.buf[s.at:end]
-	s.at, s.seen = end+term, end+term
+	s.advance(end + term)
 	return line, true
+}
+
+// find returns the index of the first want at or after the resume point, or -1.
+// It moves the resume point to that byte, or to the end of the buffer when
+// there is none, so no later line searches the same bytes again.
+func (s *sseLineScanner) find(from *int, want byte) int {
+	start := max(*from, s.at)
+	i := bytes.IndexByte(s.buf[start:], want)
+	if i < 0 {
+		*from = len(s.buf)
+		return -1
+	}
+	*from = start + i
+	return *from
+}
+
+// skipSplitLF consumes the LF of a CRLF whose CR ended the previous line at the
+// end of the buffered bytes. It reports false when that LF may still be on its
+// way, which is the one case where the next line cannot be served yet.
+func (s *sseLineScanner) skipSplitLF() bool {
+	if !s.skipLF {
+		return true
+	}
+	if s.at == len(s.buf) {
+		return false
+	}
+	if s.buf[s.at] == '\n' {
+		s.advance(s.at + 1)
+	}
+	s.skipLF = false
+	return true
+}
+
+// advance moves the current line's start to n and keeps both search resumes at
+// or past it.
+func (s *sseLineScanner) advance(n int) {
+	s.at = n
+	if s.crFrom < n {
+		s.crFrom = n
+	}
+	if s.lfFrom < n {
+		s.lfFrom = n
+	}
 }
 
 // fill reads more bytes behind the current line. It moves the line to the front
@@ -183,7 +240,8 @@ func (s *sseLineScanner) line() ([]byte, bool) {
 func (s *sseLineScanner) fill() error {
 	if s.at > 0 {
 		s.buf = s.buf[:copy(s.buf, s.buf[s.at:])]
-		s.seen -= s.at
+		s.crFrom = max(s.crFrom-s.at, 0)
+		s.lfFrom = max(s.lfFrom-s.at, 0)
 		s.at = 0
 	}
 	if len(s.buf) == cap(s.buf) {
