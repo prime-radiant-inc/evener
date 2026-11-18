@@ -122,7 +122,9 @@ before the call list existed.
 
 A bounded read may omit `resolvedAskCalls` as a unit while keeping
 `answerToTurnIds` and `resolvedAskLegacyCount`, so a large capture cannot
-displace the reply it belongs to. That is the only field a read drops.
+displace the reply it belongs to. Omitting the call list leaves the reply and
+the other observation fields intact; the usual preview and paging limits still
+apply to bodies, so a bounded read may shorten them for its own reasons.
 
 The projection emits both fields only when the answer has a recorded turn link.
 An inline steer answering only its own still-running execution and a fenced

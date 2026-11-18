@@ -1397,12 +1397,18 @@ func packItemCandidates[T any](
 		// list omitted before dropping the oldest item. Bodies, turn links and
 		// legacy counts are kept, so a window that fits unstamped costs the
 		// reader nothing.
-		omitted, omittedSize, omittedErr := buildPage(window, 0)
-		if omittedErr != nil {
-			return zero, omittedErr
-		}
-		if omittedSize <= transcriptRPCResultSoftLimit {
-			return omitted, nil
+		//
+		// Skip the retry when this window has no call list left to remove: on a
+		// local page the enrichment can reread and hash file-backed thumbnails,
+		// and repeating it cannot change a page the bound already left alone.
+		if pageCarriesCallLists(window) {
+			omitted, omittedSize, omittedErr := buildPage(window, 0)
+			if omittedErr != nil {
+				return zero, omittedErr
+			}
+			if omittedSize <= transcriptRPCResultSoftLimit {
+				return omitted, nil
+			}
 		}
 		// The nearest item is always retained, even alone over the target.
 		if len(window) == 1 {
@@ -1509,6 +1515,19 @@ func boundTranscriptItemStamp(item appwire.ThreadItem, limit int) appwire.Thread
 
 func transcriptWindowItemHasBody(item appwire.ThreadItem) bool {
 	return item.Text != "" || item.Delta != "" || len(item.Images) > 0 || item.ArgumentsJSON != "" || item.Description != "" || item.Output != "" || item.Error != "" || len(item.OutputImages) > 0 || len(item.Raw) > 0
+}
+
+// pageCarriesCallLists reports whether any item in the window still has a
+// per-call resolution stamp the bound would remove. A window with none cannot
+// shrink by omitting them, so the stripped retry is skipped (#6323).
+func pageCarriesCallLists(items []appitempaging.TranscriptItemCandidate) bool {
+	for i := range items {
+		observation := items[i].Item.Observation
+		if observation != nil && len(observation.ResolvedAskCalls) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 // transcriptWindowTurnOmitStamps returns the turn with every per-call
