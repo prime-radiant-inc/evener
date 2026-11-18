@@ -23,6 +23,7 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 	t.Parallel()
 	dir := t.TempDir()
 	const malformedArgs = `{"value": broken`
+	const fixedArgs = " \t" + `{ "value": "fixed" }` + "\n"
 
 	var mu sync.Mutex
 	var requestBodies [][]byte
@@ -52,8 +53,14 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 		case 1:
 			writeResponsesFunctionCall(t, w, flusher, "resp_bad", "call_bad", "my_strict_tool", malformedArgs)
 		case 2:
-			args := mustJSON(t, map[string]any{"value": "fixed"})
-			writeResponsesFunctionCall(t, w, flusher, "resp_fixed", "call_fixed", "my_strict_tool", args)
+			for index := range 2 {
+				final := map[string]any{"type": "response.function_call_arguments.done", "output_index": index, "call_id": "call_fixed", "name": "my_strict_tool", "arguments": fixedArgs}
+				if index == 1 {
+					final["item_id"] = "item_fixed"
+				}
+				writeSSE(t, w, flusher, "response.function_call_arguments.done", final)
+			}
+			writeSSE(t, w, flusher, "response.completed", map[string]any{"type": "response.completed", "response": map[string]any{"id": "resp_fixed", "status": "completed", "output": []any{}}})
 		case 3:
 			args := mustJSON(t, map[string]any{
 				"message":  "recovered",
@@ -102,7 +109,9 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 		},
 		"required": []string{"value"},
 	}, func(_ context.Context, input any) (any, error) {
+		mu.Lock()
 		toolInputs = append(toolInputs, input)
+		mu.Unlock()
 		return "corrected call ran", nil
 	})
 
@@ -123,10 +132,8 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 		t.Fatalf("ProcessInput output = %q, want recovered", got)
 	}
 	if len(toolInputs) != 1 {
-		t.Fatalf("strict tool executions = %d, want only the corrected call", len(toolInputs))
-	}
-	toolInput, ok := toolInputs[0].(map[string]any)
-	if !ok || toolInput["value"] != "fixed" {
+		t.Errorf("strict tool executions = %d, want only the corrected call", len(toolInputs))
+	} else if toolInput, ok := toolInputs[0].(map[string]any); !ok || toolInput["value"] != "fixed" {
 		t.Fatalf("strict tool input = %#v, want corrected value", toolInputs[0])
 	}
 
@@ -171,6 +178,9 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 		t.Fatalf("readTranscript skipped %d records, want 0", skipped)
 	}
 	durableHistory := ResumeHistory(entries)
+	if fixed, ok := findToolCallInHistory(durableHistory, "call_fixed"); !ok || fixed.ItemID != "item_fixed" || fixed.SentArguments() != fixedArgs {
+		t.Errorf("persisted corrected call = %+v", fixed)
+	}
 	durableCall, ok := findToolCallInHistory(durableHistory, "call_bad")
 	if !ok || string(durableCall.Arguments) != "{}" {
 		t.Fatalf("durable call_bad = %+v, want arguments {}", durableCall)
@@ -238,6 +248,27 @@ func TestSession_OpenAIResponsesMalformedToolCallRecoveryUsesSafeReplay(t *testi
 	mu.Unlock()
 	if len(bodies) != 4 {
 		t.Fatalf("OpenAI Responses request count = %d, want 4", len(bodies))
+	}
+	for i, body := range bodies[2:] {
+		calls, results := 0, 0
+		for _, raw := range responsesInputItems(t, decodeResponsesRequest(t, body)) {
+			item, _ := raw.(map[string]any)
+			if item["call_id"] != "call_fixed" {
+				continue
+			}
+			switch item["type"] {
+			case "function_call":
+				calls++
+				if item["arguments"] != fixedArgs {
+					t.Errorf("request %d sent corrected arguments %q", i+3, item["arguments"])
+				}
+			case "function_call_output":
+				results++
+			}
+		}
+		if calls != 1 || results != 1 {
+			t.Errorf("request %d replays %d corrected calls and %d corresponding results", i+3, calls, results)
+		}
 	}
 	// raw_arguments is a transcript diagnostic; it must never reach a provider.
 	for i, body := range bodies {

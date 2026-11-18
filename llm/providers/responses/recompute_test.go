@@ -208,6 +208,14 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 		const firstOnly = selectedPart + `,"text":""}]}`
 		const completedFirst = `{"type":"response.output_item.done","output_index":0,"item":` + firstOnly + `}`
 		const missingFirst = `{"type":"response.output_item.done","output_index":0,"item":` + selectedPart + `}]}}`
+		const completedAnswer = `{"type":"response.output_item.done","output_index":0,"item":` + selectedPart + `,"text":"withdrawn-73"}]}}`
+		const selectMissing = selectedPart + `}]}`
+		const selectRefusal = `{"type":"message","id":"m","content":[{"type":"refusal"}]}`
+		const missingRefusal = `{"type":"response.output_item.done","output_index":0,"item":` + selectRefusal + `}`
+		const freshDelta = `{"type":"response.output_text.delta","item_id":"m","output_index":0,"content_index":0,"delta":"fresh-42"}`
+		withoutIndex := func(frame string) string { return strings.Replace(frame, `"output_index":0,`, "", 1) }
+		indexedClear := strings.Replace(emptyMessage, `"id":"m",`, "", 1)
+		const link = `{"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"m"}}`
 		emptyText := []replayText{{"output_text", ""}}
 		draftText := []replayText{{"output_text", "draft"}}
 		for _, tc := range []struct {
@@ -217,6 +225,16 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 			parts    []replayText
 		}{
 			{"completed empty array clears its earlier draft", []string{draft, emptyMessage}, "", nil},
+			{"terminal reselect after a clear cannot recover the withdrawn answer", []string{draft, completedAnswer, emptyMessage}, selectMissing, nil},
+			{"an explicitly blank terminal slot stays blank after a clear", []string{draft, completedAnswer, emptyMessage}, firstOnly, emptyText},
+			{"fresh delta fills the terminal slot after a clear", []string{draft, completedAnswer, emptyMessage, freshDelta}, selectMissing, []replayText{{"output_text", "fresh-42"}}},
+			{"fresh part final fills the terminal slot after a clear", []string{draft, completedAnswer, emptyMessage, textFinal + `,"text":"fresh-43"}`}, selectMissing, []replayText{{"output_text", "fresh-43"}}},
+			{"a narrower completion retains only the selected slot", []string{draft, laterDraft, missingFirst}, `{"type":"message","id":"m","content":[{"type":"output_text"},{"type":"output_text"}]}`, draftText},
+			{"a refusal selection retires the prior answer at its index", []string{draft, completedAnswer, missingRefusal}, selectMissing, nil},
+			{"a reselected refusal cannot recover a withdrawn refusal", []string{draft, `{"type":"response.refusal.done","item_id":"m","content_index":0,"refusal":"withdrawn-91"}`, emptyMessage}, selectRefusal, []replayText{{"refusal", ""}}},
+			{"a late message identity links a named answer and indexed clear", []string{withoutIndex(draft), withoutIndex(completedAnswer), indexedClear, link}, selectMissing, nil},
+			{"a late message identity retains a fresh delta after the indexed clear", []string{withoutIndex(draft), withoutIndex(completedAnswer), indexedClear, withoutIndex(freshDelta), link}, selectMissing, []replayText{{"output_text", "fresh-42"}}},
+			{"an early unnamed draft stays withdrawn when it later joins a known message", []string{`{"type":"response.output_text.delta","delta":"unnamed-29"}`, textFinal + `,"output_index":0,"text":"final-13"}`, emptyMessage, link}, selectMissing, nil},
 			{"completed single blank slot selects only its own draft", []string{draft, laterDraft, completedFirst}, "", draftText},
 			{"terminal reference keeps completed slot membership", []string{draft, laterDraft, completedFirst, reference}, `{"type":"message","id":"m"}`, draftText},
 			{"explicit terminal slot selects only its own draft", []string{draft, laterDraft}, firstOnly, draftText},

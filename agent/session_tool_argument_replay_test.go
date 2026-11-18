@@ -70,7 +70,7 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 	}{
 		{&responses.Protocol{}, "input", "", `{"output":[
 			{"type":"reasoning","id":"r1"},
-			{"type":"message","id":"m1","role":"assistant"},
+			{"type":"message","id":"m1","role":"assistant","content":[{"type":"output_text"},{"type":"output_text"}]},
 			{"type":"function_call","call_id":"c1","name":"write_file","arguments":` + good + `},
 			{"type":"function_call","call_id":"c2","name":"f","arguments":` + bad + `}
 		]}`, []string{first, second}},

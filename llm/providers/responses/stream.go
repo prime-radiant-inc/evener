@@ -48,6 +48,7 @@ type responsesOutputItem struct {
 	phase              responsesMessagePhase
 	messageParts       []any // Most recently supplied message content array, including an explicit empty list.
 	messagePartsOrder  int
+	pendingMessage     []responsesMessageUpdate
 	index              int64
 	done               map[string]any
 	doneOrder          int
@@ -90,17 +91,17 @@ func (item *responsesOutputItem) completeReasoning(completed map[string]any, ord
 func (item *responsesOutputItem) discardUnselectedFinals(completed map[string]any, order int) {
 	if parts, ok := completed["content"].([]any); ok {
 		maps.DeleteFunc(item.text, func(index int64, part *responsesOutputText) bool {
-			return part.reasoningFinal && part.finalOrder <= order && reasoningPartAt(parts, index, "reasoning_text") == nil
+			return part.reasoningFinal && part.finalOrder <= order && typedPartAt(parts, index, "reasoning_text") == nil
 		})
 	}
 	if parts, ok := completed["summary"].([]any); ok {
 		maps.DeleteFunc(item.finalSummaries, func(index int64, final responsesSummaryFinal) bool {
-			return final.order <= order && reasoningPartAt(parts, index, "summary_text") == nil
+			return final.order <= order && typedPartAt(parts, index, "summary_text") == nil
 		})
 	}
 }
 
-func reasoningPartAt(parts []any, index int64, kind string) map[string]any {
+func typedPartAt(parts []any, index int64, kind string) map[string]any {
 	if index >= 0 && index < int64(len(parts)) && kind != "" {
 		part, _ := parts[index].(map[string]any)
 		if part["type"] == kind {
@@ -135,7 +136,7 @@ func completedReasoningParts(previous, selected []any) []any {
 	for i := range min(len(previous), len(selected)) {
 		part, _ := selected[i].(map[string]any)
 		kind, _ := part["type"].(string)
-		text, ok := reasoningPartAt(previous, int64(i), kind)["text"].(string)
+		text, ok := typedPartAt(previous, int64(i), kind)["text"].(string)
 		if part["text"] != nil || !ok {
 			continue
 		}
@@ -283,6 +284,7 @@ type responsesOutputAccumulator struct {
 	order            int
 	anonymousDisplay *responsesOutputItem
 	reasoningStarted bool
+	unlinkedMessage  bool
 }
 
 func (acc *responsesOutputAccumulator) reasoningDisplay(typ string, payload map[string]any) string {
@@ -441,6 +443,10 @@ func (acc *responsesOutputAccumulator) join(item, other *responsesOutputItem) *r
 	if other.messagePartsOrder > item.messagePartsOrder {
 		item.messageParts, item.messagePartsOrder = other.messageParts, other.messagePartsOrder
 	}
+	if len(other.pendingMessage) != 0 {
+		item.pendingMessage = append(item.pendingMessage, other.pendingMessage...)
+		slices.SortFunc(item.pendingMessage, func(a, b responsesMessageUpdate) int { return cmp.Compare(a.order, b.order) })
+	}
 	item.index = max(item.index, other.index)
 	item.ambiguousCallIndex = item.ambiguousCallIndex || other.ambiguousCallIndex
 	item.displayOnly = item.displayOnly && other.displayOnly
@@ -594,8 +600,19 @@ func (acc *responsesOutputAccumulator) handleOutputTextDelta(payload map[string]
 	}
 	if delta != "" {
 		if item := acc.textOutput(payload); item != nil {
-			p := item.textPart(responsesEventIndex(payload, "content_index"), true)
-			if p != nil && p.finalType == "" {
+			index := responsesEventIndex(payload, "content_index")
+			if acc.defersMessageUpdates(item) {
+				// Adjacent deltas for the same provisional slot share one buffer.
+				if n := len(item.pendingMessage); n > 0 {
+					last := &item.pendingMessage[n-1]
+					if last.data != nil && last.index == index && last.order == acc.order {
+						last.data = append(last.data, delta...)
+						return delta
+					}
+				}
+				acc.order++
+				item.pendingMessage = append(item.pendingMessage, responsesMessageUpdate{responsesFragment: responsesFragment{acc.order, []byte(delta)}, index: index})
+			} else if p := item.textPart(index, true); p != nil && p.finalType == "" {
 				acc.write(&p.deltas, delta)
 			}
 		}
@@ -622,27 +639,70 @@ func (acc *responsesOutputAccumulator) handleTextPartDone(payload map[string]any
 	if ok {
 		if item := acc.textOutput(payload); item != nil {
 			acc.order++
-			if p := item.textPart(index, true); p != nil {
-				p.settle(kind, text, false, acc.order)
-			}
+			acc.observeMessage(item, responsesMessageUpdate{responsesFragment: responsesFragment{order: acc.order}, index: index, kind: kind, text: text})
 		}
 	}
 	return typ != "response.content_part.done" || text != ""
 }
 
-// Completion can supply a different subset of parts from the deltas.
-func (item *responsesOutputItem) settleMessage(message map[string]any, order int) {
-	item.phase.observe(message, order, true)
-	parts, present := message["content"].([]any)
-	if !present {
+// Until an item ID and output index meet, another record can hold a clear
+// between this record's final and its next delta. Settle their observations
+// in arrival order once the message is selected.
+type responsesMessageUpdate struct {
+	responsesFragment
+	index int64
+	kind  string
+	text  string
+	parts []any
+}
+
+func (acc *responsesOutputAccumulator) defersMessageUpdates(item *responsesOutputItem) bool {
+	// A pending observation may later join an already named message. Keep
+	// subsequent observations ordered on both sides of that future join.
+	acc.unlinkedMessage = acc.unlinkedMessage || item.id == "" || item.index < 0
+	return acc.unlinkedMessage
+}
+
+func (acc *responsesOutputAccumulator) observeMessage(item *responsesOutputItem, update responsesMessageUpdate) {
+	if acc.defersMessageUpdates(item) {
+		item.pendingMessage = append(item.pendingMessage, update)
 		return
 	}
-	item.messageParts, item.messagePartsOrder = parts, order
+	item.applyMessageUpdate(update)
+}
+
+func (acc *responsesOutputAccumulator) settleMessage(item *responsesOutputItem, message map[string]any) {
+	item.phase.observe(message, acc.order, true)
+	if parts, ok := message["content"].([]any); ok {
+		acc.observeMessage(item, responsesMessageUpdate{responsesFragment: responsesFragment{order: acc.order}, parts: parts})
+	}
+}
+
+func (item *responsesOutputItem) applyMessageUpdate(update responsesMessageUpdate) {
+	parts := update.parts
+	if parts == nil {
+		if p := item.textPart(update.index, true); p != nil {
+			if update.kind != "" {
+				p.settle(update.kind, update.text, false, update.order)
+			} else if p.finalType == "" {
+				p.deltas = append(p.deltas, update.responsesFragment)
+			}
+		}
+		return
+	}
+	item.messageParts, item.messagePartsOrder = parts, update.order
+	single := len(parts) == 1 && len(item.text) == 1
+	maps.DeleteFunc(item.text, func(index int64, p *responsesOutputText) bool {
+		if index < 0 && single {
+			index = 0
+		}
+		return typedPartAt(parts, index, cmp.Or(p.finalType, "output_text")) == nil
+	})
 	for index, entry := range parts {
 		part, _ := entry.(map[string]any)
 		kind, _ := part["type"].(string)
 		if text, ok := responsesMessagePartText(kind, part); ok {
-			item.textPart(int64(index), len(parts) == 1).settle(kind, text, true, order)
+			item.textPart(int64(index), len(parts) == 1).settle(kind, text, true, update.order)
 		}
 	}
 }
@@ -658,6 +718,27 @@ func (acc *responsesOutputAccumulator) callItem(callID string) *responsesOutputI
 	return nil
 }
 
+// A provider can identify the same call and provisional item at different
+// positions. Their explicit link keeps the issued call's position and bytes.
+func (acc *responsesOutputAccumulator) bindCallItem(issued *responsesOutputItem, itemID string) bool {
+	if !issued.accepts("function_call", itemID, -1) {
+		return false
+	}
+	named := acc.byID[itemID]
+	if named == nil || named == issued {
+		return true
+	}
+	if !named.accepts("function_call", itemID, -1) || !named.acceptsCallID(issued.tool.callID) {
+		return false
+	}
+	if issued.index >= 0 && named.index >= 0 && issued.index != named.index {
+		delete(acc.byIndex, named.index)
+		named.index = -1
+	}
+	acc.join(issued, named)
+	return true
+}
+
 func (acc *responsesOutputAccumulator) toolOutput(payload map[string]any, callID, itemID, name, alias string) *responsesOutputItem {
 	fallback := acc.callItem(callID)
 	if alias != "" {
@@ -670,6 +751,14 @@ func (acc *responsesOutputAccumulator) toolOutput(payload map[string]any, callID
 		}
 		if owner.ambiguousCallIndex {
 			index = -1 // Only the explicit identities can select a call at this position.
+		}
+	}
+	if issued := acc.byCallID[callID]; issued != nil {
+		if !acc.bindCallItem(issued, itemID) {
+			return nil
+		}
+		if issued.index >= 0 && index != issued.index {
+			index = -1 // A shifted index cannot issue the same call twice.
 		}
 	}
 	if callID == "" && itemID == "" && alias == "" && index < 0 {
@@ -701,7 +790,7 @@ func (acc *responsesOutputAccumulator) HandleOutputItemAdded(payload, item map[s
 		var fallback *responsesOutputItem
 		if kind == "message" {
 			pending, _ := acc.uniqueMessage(itemID, index, true)
-			if pending != nil && pending.id == "" && pending.index < 0 && len(pending.text) != 0 {
+			if pending != nil && pending.id == "" && pending.index < 0 && len(pending.pendingMessage) != 0 {
 				fallback = pending
 			}
 		}
@@ -826,7 +915,7 @@ func (acc *responsesOutputAccumulator) HandleOutputItemDone(payload map[string]a
 		case "reasoning":
 			output.completeReasoning(item, acc.order)
 		case "message":
-			output.settleMessage(item, acc.order)
+			acc.settleMessage(output, item)
 			output.done = item
 		default:
 			output.done = item

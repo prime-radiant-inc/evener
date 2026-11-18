@@ -25,6 +25,7 @@ func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawM
 	var rawBodyItems []json.RawMessage
 	var rawBodyCaptured bool
 	var content []llm.ContentPart
+	var calls map[string]*llm.ToolCallData
 	sparse := stream != nil
 	var placeholders []responsesTerminalItem
 	var terminalReasoning bool
@@ -96,16 +97,23 @@ func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawM
 			if callID == "" {
 				continue
 			}
-			content = append(content, llm.ContentPart{
-				Kind: llm.ContentToolCall,
-				ToolCall: &llm.ToolCallData{
-					ID:        callID,
-					ItemID:    itemID,
-					Name:      name,
-					Arguments: json.RawMessage(args),
-					Type:      "function",
-				},
-			})
+			if prior := calls[callID]; prior != nil {
+				// Repeated references may complete one issued call at its first position.
+				if prior.ItemID == "" || itemID == "" || prior.ItemID == itemID {
+					prior.ItemID = cmp.Or(prior.ItemID, itemID)
+					prior.Name = cmp.Or(prior.Name, name)
+					if len(prior.Arguments) == 0 {
+						prior.Arguments = json.RawMessage(args)
+					}
+				}
+				continue
+			}
+			call := &llm.ToolCallData{ID: callID, ItemID: itemID, Name: name, Arguments: json.RawMessage(args), Type: "function"}
+			if calls == nil {
+				calls = make(map[string]*llm.ToolCallData)
+			}
+			calls[callID] = call
+			content = append(content, llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: call})
 		case "web_search_call":
 			query := ""
 			if action, _ := item["action"].(map[string]any); action != nil {
@@ -198,6 +206,9 @@ func (item *responsesOutputItem) appendDisplay(content []llm.ContentPart) []llm.
 func (acc *responsesOutputAccumulator) terminalItem(kind, id, callID string, index int, out []any) *responsesOutputItem {
 	compatible := func(item *responsesOutputItem) bool {
 		return item.accepts(kind, id, -1) && item.acceptsCallID(callID)
+	}
+	if issued := acc.byCallID[callID]; issued != nil && !acc.bindCallItem(issued, id) {
+		return nil
 	}
 	named := acc.namedItem(kind, id)
 	if !compatible(named) {
@@ -342,6 +353,12 @@ func responsesMessagePartText(kind string, part map[string]any) (string, bool) {
 // selected slot may inherit its own text. Only a finalized answer or a refusal
 // makes a message reference substantive enough to withdraw unselected calls.
 func (item *responsesOutputItem) appendMessage(content []llm.ContentPart, message map[string]any, streamOnly bool) ([]llm.ContentPart, bool) {
+	if item != nil {
+		for _, update := range item.pendingMessage {
+			item.applyMessageUpdate(update)
+		}
+		item.pendingMessage = nil
+	}
 	start := len(content)
 	parts, terminalParts := message["content"].([]any)
 	if !terminalParts && item != nil {
@@ -475,7 +492,7 @@ func (item *responsesOutputItem) settledReasoningText(index int, kind string) (t
 		return "", false
 	}
 	parts, _ := item.done["content"].([]any)
-	text, present = reasoningPartAt(parts, int64(index), kind)["text"].(string)
+	text, present = typedPartAt(parts, int64(index), kind)["text"].(string)
 	if final := item.text[int64(index)]; !present && kind == "reasoning_text" && final != nil && final.reasoningFinal {
 		return final.final, true
 	}

@@ -579,9 +579,10 @@ recover an encoded object, array or XML parameter. A string field such as
   A message reference with omitted or null `content` inherits its completed
   answer or refusal. An explicitly selected content array keeps only its own
   slots. An empty array clears earlier text and refusal, including when the
-  final output is empty. A finalized `output_text` part can clear its draft
-  with an empty string and keeps its place in the message. An empty final
-  output can recover an issued call.
+  final output is empty. A reselected slot can inherit only text received
+  for that slot after its removal. A finalized `output_text` part can clear
+  its draft with an empty string and keeps its place in the message. An
+  empty final output can recover an issued call.
   When the final response repeats only part of a streamed item, Evener keeps
   the matching call's argument bytes, completed message phase, indexed
   answer and reasoning text, and ciphertext from the stream. A reasoning
@@ -607,9 +608,10 @@ recover an encoded object, array or XML parameter. A string field such as
   Evener uses the stream index and item ID to collect a function's arguments.
   When two function items claim an index, each keeps its own arguments and
   further events need an item or call ID to identify it, even if a call ID
-  arrives later. The provider must
-  supply a `call_id` before Evener can dispatch the tool and return its
-  result under that ID. Reasoning shown only as deltas remains
+  arrives later. The provider must supply a `call_id` before Evener can
+  dispatch the tool and return its result under that ID. A response can
+  repeat the same call at another index or in its final output. Evener
+  executes it once. Reasoning shown only as deltas remains
   visible in the transcript, including when the response ends with an
   answer. A streamed summary that differs from the item's settled text stays
   visible in the transcript. Only native reasoning parts supply replay text.
