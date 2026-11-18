@@ -433,7 +433,7 @@ func (acc *responsesOutputAccumulator) join(item, other *responsesOutputItem) *r
 		} else if other.done != nil {
 			// Two distinct completed records can meet only while their item
 			// ID and index are still separate. Apply all fields in stream order.
-			updates := append(item.unlinkedReasoning, other.unlinkedReasoning...)
+			updates := slices.Concat(item.unlinkedReasoning, other.unlinkedReasoning)
 			slices.SortFunc(updates, func(a, b responsesReasoningCompletion) int { return cmp.Compare(a.order, b.order) })
 			item.done = nil
 			for _, update := range updates {
