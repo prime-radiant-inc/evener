@@ -201,12 +201,15 @@ If the launch branch is unknown and a Git probe is available, the first request
 samples it even when an idle goal starts before any user input. Branch updates
 name their working directory so a retained update still identifies its checkout
 after a fold.
-If a Git probe encounters an unborn HEAD or fails, the current request keeps
-the last confirmed branch for this checkout. A checkout with no confirmed
-observation reports its branch as unconfirmed. Evener recovers each checkout’s
-last observation from the launch facts and transcript even after compaction or
-a restart. Later requests retry, including autonomous tool rounds and job
-notifications. When Git confirms the directory is outside a worktree, the
+An unborn HEAD or a checkout Git refuses to inspect leaves the branch
+unconfirmed at launch. If a later probe fails, the request keeps the last
+confirmed branch for this checkout, including one observed during restore.
+A checkout with no confirmed observation reports its branch as unconfirmed.
+Evener recovers each checkout’s
+last observation from the launch facts and transcript, including a confirmed
+return to the launch branch after compaction. The next request retries an
+inconclusive probe, including when a tool round or job notification starts it.
+When Git confirms the directory is outside a worktree, the
 next request clears that branch even if
 compaction removed every prior environment update. A catalog
 correction to the current model’s knowledge cutoff also appears there on

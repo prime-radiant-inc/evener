@@ -225,15 +225,16 @@ func testRestoredNotificationWorkspace(t *testing.T) {
 	}{
 		{git: []string{"checkout", launchBranch}, actual: launchBranch, reported: launchBranch, blocks: 2},
 		{actual: launchBranch, reported: launchBranch, blocks: 2},
-		{git: []string{"checkout", observed}, afterRestore: []string{"checkout", "--orphan", unborn}, actual: unborn, reported: launchBranch, blocks: 3, legacy: true, wantProbes: []int{1, 1}},
-		{actual: unborn, reported: launchBranch, blocks: 3, sameSession: true, wantProbes: []int{1, 1}},
+		{git: []string{"checkout", observed}, afterRestore: []string{"checkout", "--orphan", unborn}, actual: unborn, reported: observed, blocks: 3, legacy: true, wantProbes: []int{1, 1}},
+		{actual: unborn, reported: observed, blocks: 3, sameSession: true, wantProbes: []int{1, 1}},
 		{git: []string{"commit", "--allow-empty", "-m", "first"}, actual: unborn, reported: unborn, blocks: 4, sameSession: true, wantProbes: []int{1, 0}},
 		{git: []string{"checkout", "-b", changed}, actual: changed, reported: changed, blocks: 5, timeout: true, wantProbes: []int{1, 1}},
 		{actual: changed, reported: changed, blocks: 5, sameSession: true, wantProbes: []int{0, 0}},
 		{git: []string{"checkout", observed}, actual: observed, reported: observed, blocks: 6, timeout: true, userInput: "continue", wantProbes: []int{1, 1}},
 		{git: []string{"checkout", changed}, actual: changed, reported: changed, blocks: 7, sameSession: true, timeout: true, userInput: "continue after external checkout", wantProbes: []int{1, 1}},
-		{actual: "outside", blocks: 8, removeRepo: true},
-		{actual: "outside", blocks: 8},
+		{git: []string{"checkout", observed}, afterRestore: []string{"checkout", launchBranch}, actual: launchBranch, reported: launchBranch, blocks: 8, wantProbes: []int{1, 0}},
+		{actual: "outside", blocks: 9, removeRepo: true},
+		{actual: "outside", blocks: 9},
 	} {
 		kind := EntryUserInput
 		jobID := fmt.Sprintf("job_checkout_%d", i)
@@ -299,7 +300,7 @@ func testRestoredNotificationWorkspace(t *testing.T) {
 				t.Fatalf("step %d changed the earlier native request prefix", i)
 			}
 			wantBranch, wantBlocks := tc.reported, tc.blocks
-			if tc.timeout && round == 0 {
+			if tc.timeout && tc.sameSession && round == 0 {
 				last, blocks := requestEnvironment(prior)
 				wantBranch, wantBlocks = last.GitBranch, blocks
 			}

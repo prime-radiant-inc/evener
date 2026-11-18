@@ -34,6 +34,7 @@ type Snapshot struct {
 	DetachedShell     string   `json:"detached_shell,omitempty"`
 	GitBranch         string   `json:"git_branch,omitempty"` // "" outside a git repo
 	gitBranchUnknown  bool     // Applies to an observation, never to the retained state.
+	recordGitBranch   bool     // The last durable value can differ from the model's retained baseline after a fold.
 	Pressure          Pressure `json:"pressure,omitzero"`
 	SessionID         string   `json:"session_id,omitempty"`
 	ParentSessionID   string   `json:"parent_session_id,omitempty"`
@@ -237,7 +238,8 @@ func (t *Tracker) RenderDiff(cur Snapshot) string {
 		cur.GitBranch = ""
 		cur.gitBranchUnknown = false
 	}
-	reportBranch := moved || cur.GitBranch != prev.GitBranch || unknown != t.st.GitBranchUnknown || (first && unknown && prev.Cwd != "")
+	reportBranch := cur.recordGitBranch || moved || cur.GitBranch != prev.GitBranch || unknown != t.st.GitBranchUnknown || (first && unknown && prev.Cwd != "")
+	cur.recordGitBranch = false
 	if !first && cur == prev && !reportBranch && !t.st.ScratchDirUnknown && !t.st.WritableRootsUnknown {
 		return ""
 	}

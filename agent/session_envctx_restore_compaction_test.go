@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -300,7 +301,7 @@ func testCompactedGitObservation(t *testing.T) {
 			}
 		})
 	}
-	for _, mode := range []string{"warm", "cold", "cleared then cold"} {
+	for _, mode := range []string{"warm", "cold", "cleared then cold", "return to launch then cold", "restore at launch then cold"} {
 		t.Run(mode, func(t *testing.T) {
 			cwd, stateDir := evalSyms(t, t.TempDir()), t.TempDir()
 			copyWorktreeBaseRepo(t, cwd)
@@ -331,8 +332,25 @@ func testCompactedGitObservation(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			gittest.Run(t, cwd, "checkout", "--orphan", recovery)
-			if mode != "warm" {
+			if mode == "return to launch then cold" {
+				want = launch
+				gittest.Run(t, cwd, "checkout", launch)
+				failure := errors.New("transcript sync unavailable")
+				attachEnvironmentSyncFailure(t, s, failure, nil)
+				if err := s.maybeAppendEnvironmentContext(); !errors.Is(err, failure) || countEnvironmentTurns(s) != 0 {
+					t.Fatalf("failed branch publication retained %d turns, err %v", countEnvironmentTurns(s), err)
+				}
+				for range 2 {
+					if err := s.maybeAppendEnvironmentContext(); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if count := countEnvironmentTurns(s); count != 1 {
+					t.Fatalf("two confirmations after rollback recorded %d environment turns, want one", count)
+				}
+			}
+			restore := func() {
+				t.Helper()
 				s.Close()
 				restored, err := RestoreSessionFromMetaWithConfig(s.client, s.profile, execenv.NewLocalExecutionEnvironment(cwd), loadMetaForTest(t, s), RestoreSessionConfig{StateDir: stateDir})
 				if err != nil {
@@ -341,14 +359,35 @@ func testCompactedGitObservation(t *testing.T) {
 				s = restored
 				t.Cleanup(s.Close)
 			}
+			adapter := &agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response { return agenttest.FinalResponse("ack") }}
+			s.client.Register(adapter)
+			notify := func(id string) llm.Request {
+				t.Helper()
+				before := len(adapter.Requests())
+				enqueueCompletedJobNotification(t, s, id)
+				if _, err := s.ProcessInputKind(t.Context(), "", nil, EntryNotification); err != nil {
+					t.Fatal(err)
+				}
+				return adapter.Requests()[before]
+			}
+			if mode == "restore at launch then cold" {
+				want = launch
+				gittest.Run(t, cwd, "checkout", launch)
+				restore()
+				req := notify("job_restored_launch")
+				if snapshot, turns := requestEnvironment(req); turns != 1 || snapshot.GitBranch != launch || req.Messages[0].Text() != prompt {
+					t.Errorf("first restore reported %d updates on %q, original prompt %t", turns, snapshot.GitBranch, req.Messages[0].Text() == prompt)
+				}
+			}
+			gittest.Run(t, cwd, "checkout", "--orphan", recovery)
+			if mode != "warm" {
+				restore()
+			}
 			for round, branch := range []string{want, recovery, recovery} {
 				if round == 1 {
 					gittest.Run(t, cwd, "commit", "--allow-empty", "-m", "first")
 				}
-				_, _, _, req, _, _, err := s.prepareModelRequestWithError(t.Context(), round, &events.RoundTimings{})
-				if err != nil {
-					t.Fatal(err)
-				}
+				req := notify(fmt.Sprintf("job_folded_checkout_%d", round))
 				model := envctx.NewTracker(envctx.State{Last: envctx.Snapshot{GitBranch: launch}})
 				for _, message := range req.Messages {
 					if message.Role == llm.RoleUser {

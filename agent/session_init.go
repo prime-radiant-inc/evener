@@ -1423,11 +1423,15 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		// The replacement prompt was rendered against the installed environment.
 		s.initEnvContext(s.envInfo.WorkingDir, s.history, nil)
 	} else {
-		// An autonomous request may be first to use this checkout. Recheck
-		// an inconclusive startup probe as well as an observed change.
+		// An autonomous request may be first to use this checkout. A fold
+		// can leave the visible and recorded branches at different values.
 		branch := observedGitBranch(s.envInfo)
+		var unrecorded bool
+		if !s.cfg.testOnly.skipGitSnapshot && branch != nil {
+			unrecorded = s.envCollector.ObserveGitBranch(s.envInfo.WorkingDir, *branch)
+		}
 		state := s.envTracker.State()
-		if state.GitBranchUnknown || (!s.cfg.testOnly.skipGitSnapshot && (branch == nil || *branch != state.Last.GitBranch)) {
+		if unrecorded || state.GitBranchUnknown || (!s.cfg.testOnly.skipGitSnapshot && (branch == nil || *branch != state.Last.GitBranch)) {
 			s.worktreeContextPending = true
 		}
 	}

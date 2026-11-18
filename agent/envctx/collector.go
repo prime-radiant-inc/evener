@@ -33,41 +33,64 @@ type cachedProbe struct {
 	hasRun bool
 }
 
+type gitBranchObservation struct {
+	confirmed string
+	recorded  string
+	hasRecord bool
+}
+
+func (b gitBranchObservation) needsRecord() bool {
+	return !b.hasRecord || b.confirmed != b.recorded
+}
+
 // Collector assembles Snapshots, rate-limiting the pressure probes.
 type Collector struct {
 	p               Probes
 	load, mem, disk cachedProbe
-	gitBranches     map[string]string
+	gitBranches     map[string]gitBranchObservation
 }
 
 func NewCollector(p Probes) *Collector {
 	if p.Now == nil {
 		p.Now = time.Now
 	}
-	return &Collector{p: p, gitBranches: make(map[string]string)}
+	return &Collector{p: p, gitBranches: make(map[string]gitBranchObservation)}
 }
 
-// RememberGitBranch records a confirmed observation for one checkout. An
-// empty branch records that the directory was outside a worktree.
+// RememberGitBranch restores or commits the checkout's durable branch. An
+// empty branch means the directory was confirmed outside a worktree.
 func (c *Collector) RememberGitBranch(cwd, branch string) {
 	if cwd != "" {
-		c.gitBranches[cwd] = branch
+		c.gitBranches[cwd] = gitBranchObservation{confirmed: branch, recorded: branch, hasRecord: true}
 	}
+}
+
+// ObserveGitBranch keeps a definitive probe across an inconclusive one.
+// It reports whether this checkout's durable branch still needs to be updated.
+func (c *Collector) ObserveGitBranch(cwd, branch string) bool {
+	if cwd == "" {
+		return false
+	}
+	observation := c.gitBranches[cwd]
+	observation.confirmed = branch
+	c.gitBranches[cwd] = observation
+	return observation.needsRecord()
 }
 
 // ReconcileGitBranch retains a definitive probe and supplies this checkout's
 // last confirmed value on an inconclusive one. It reports whether to probe again.
 // The caller serializes this step with workspace changes and publication.
 func (c *Collector) ReconcileGitBranch(snap *Snapshot) (retry bool) {
+	retry = snap.gitBranchUnknown && c.p.GitBranch != nil
 	if !snap.gitBranchUnknown {
-		c.RememberGitBranch(snap.Cwd, snap.GitBranch)
-		return false
+		c.ObserveGitBranch(snap.Cwd, snap.GitBranch)
 	}
-	if branch, known := c.gitBranches[snap.Cwd]; known {
-		snap.GitBranch = branch
+	if observation, known := c.gitBranches[snap.Cwd]; known {
+		snap.GitBranch = observation.confirmed
 		snap.gitBranchUnknown = false
+		snap.recordGitBranch = observation.needsRecord()
 	}
-	return c.p.GitBranch != nil
+	return retry
 }
 
 // refresh serves cp's cached value until its key changes or probeInterval

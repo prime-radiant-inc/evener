@@ -2841,6 +2841,9 @@ func (s *Session) projectEnvironmentContext(publishEvent bool, observation *work
 		// Persist tracker state so resume stays silent when nothing changed.
 		s.mu.Lock()
 		s.envContextState = &st
+		if !st.GitBranchUnknown {
+			s.envCollector.RememberGitBranch(st.Last.Cwd, st.Last.GitBranch)
+		}
 		s.mu.Unlock()
 	}
 	if committed && publishEvent {
