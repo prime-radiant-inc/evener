@@ -220,7 +220,18 @@ func withOpenParameterlessSchemas(req Request) Request {
 		return req
 	}
 	req.Tools = tools
-	req.ToolsJSONBytes = ToolsJSONBytes(tools)
+	// Preparation priced this same catalog once, with the same substitution
+	// (asSentToolDefs supplies the open empty schema for a nil Parameters) over
+	// the same definitions. Restoring that schema here reproduces bytes that
+	// were already measured, so re-measuring every dispatch — once per tool
+	// round and once per retry — would repeat a marshal the estimate was built
+	// to avoid. The stamped count is reused only when the list it described is
+	// this one: a caller who replaced the tools or cleared the stamp gets a
+	// fresh measurement, because a stamp over definitions that changed would
+	// price the wrong catalog.
+	if req.ToolsJSONBytes == 0 || !req.preparedToolBytes {
+		req.ToolsJSONBytes = ToolsJSONBytes(tools)
+	}
 	return req
 }
 

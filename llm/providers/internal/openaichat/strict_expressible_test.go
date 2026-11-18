@@ -2,6 +2,7 @@ package openaichat
 
 import (
 	"encoding/json"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -1281,7 +1282,7 @@ func TestOmittedAdditionalPropertiesIsNotCertified(t *testing.T) {
 	}
 	// An explicitly closed object is still certifiable: with additionalProperties
 	// false at both levels every key any object admits is declared.
-	closed := deepCopyAny(schema).(map[string]any)
+	closed := copySchema(schema).(map[string]any)
 	closed["additionalProperties"] = false
 	closed["properties"].(map[string]any)["metadata"].(map[string]any)["additionalProperties"] = false
 	if !StrictExpressible(closed) {
@@ -1733,13 +1734,13 @@ func TestItemsOnAnObjectNodeIsChecked(t *testing.T) {
 		t.Fatal("an items naming a readable type must not refuse the schema: it is strict-valid where it sits")
 	}
 	// An empty items constrains nothing, so it cannot be certified.
-	emptyItems := deepCopyAny(verifiable).(map[string]any)
+	emptyItems := copySchema(verifiable).(map[string]any)
 	emptyItems["items"] = map[string]any{}
 	if StrictExpressible(emptyItems) {
 		t.Fatal("an object carrying an empty items subschema must not be certified: the node is typeless and the rewrite never visits it")
 	}
 	// Neither can one whose subschema is a typeless node.
-	typelessItems := deepCopyAny(verifiable).(map[string]any)
+	typelessItems := copySchema(verifiable).(map[string]any)
 	typelessItems["items"] = map[string]any{"description": "free-form"}
 	if StrictExpressible(typelessItems) {
 		t.Fatal("an object carrying an annotation-only items subschema must not be certified")
@@ -1770,7 +1771,7 @@ func TestConstIsOnlyReadInADialectThatAssertsIt(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			schema := deepCopyAny(fixed).(map[string]any)
+			schema := copySchema(fixed).(map[string]any)
 			if tc.dialect != "" {
 				schema["$schema"] = tc.dialect
 			}
@@ -2354,7 +2355,7 @@ func TestSchemaValuedAdditionalPropertiesIsWalkedOnEveryNode(t *testing.T) {
 
 	// The control: the same node with a boolean additionalProperties certifies,
 	// so the refusal is about the unchecked subschema and not about the keyword.
-	checked := deepCopyAny(unchecked).(map[string]any)
+	checked := copySchema(unchecked).(map[string]any)
 	checked["properties"].(map[string]any)["payload"].(map[string]any)["additionalProperties"] = false
 	if !StrictExpressible(checked) {
 		t.Fatal("a boolean additionalProperties must still be certifiable")
@@ -2362,7 +2363,7 @@ func TestSchemaValuedAdditionalPropertiesIsWalkedOnEveryNode(t *testing.T) {
 
 	// And a schema value that is fully specified certifies too, because the walk
 	// read it rather than refusing the keyword outright.
-	closed := deepCopyAny(unchecked).(map[string]any)
+	closed := copySchema(unchecked).(map[string]any)
 	closed["properties"].(map[string]any)["payload"].(map[string]any)["additionalProperties"] = map[string]any{
 		"type":                 "object",
 		"additionalProperties": false,
@@ -2371,5 +2372,242 @@ func TestSchemaValuedAdditionalPropertiesIsWalkedOnEveryNode(t *testing.T) {
 	}
 	if !StrictExpressible(closed) {
 		t.Fatal("a schema-valued additionalProperties that is fully specified must be certifiable")
+	}
+}
+
+// A schema that contains itself has no wire form: the encoder refuses it with a
+// cycle error. Eligibility is decided over the caller's own tree, before the
+// copy that knows how to cut a looping edge, so following one here exhausts the
+// stack and takes the process rather than the request. The gate must answer
+// false instead of descending.
+//
+// The control is the shared-subtree case: the same schema value reachable from
+// two properties without a loop is legal Go and must still certify, which is
+// why the walk tracks the ancestor path rather than everything it has seen.
+func TestCyclicSchemasAreRefusedRatherThanFollowed(t *testing.T) {
+	t.Parallel()
+	cyclicMap := func() map[string]any {
+		root := map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties":           map[string]any{"child": nil},
+			"required":             []string{"child"},
+		}
+		root["properties"].(map[string]any)["child"] = root
+		return root
+	}
+	cyclicSlice := func() map[string]any {
+		// A self-referential slice inside a typed properties map: the shape that
+		// used to reach encoding/json, which answered with a cycle error.
+		branches := []any{nil}
+		root := map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]map[string]any{
+				"child": {
+					"anyOf": branches,
+				},
+			},
+			"required": []string{"child"},
+		}
+		branches[0] = root
+		return root
+	}
+	for _, tc := range []struct {
+		name   string
+		schema map[string]any
+	}{
+		{"self-referential map", cyclicMap()},
+		{"self-referential slice", cyclicSlice()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			// Called directly rather than through the request builder, because
+			// this is the exported entry point a caller can reach on its own.
+			if StrictExpressible(tc.schema) {
+				t.Fatal("a schema that contains itself must not be certified strict")
+			}
+			if !CyclicSchema(tc.schema) {
+				t.Fatal("the schema contains itself and must be reported as cyclic")
+			}
+		})
+	}
+
+	// Control: two properties pointing at one acyclic schema. Shared, not
+	// cyclic, and refusing it would drop a subtree the caller wrote.
+	shared := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           map[string]any{"label": map[string]any{"type": "string"}},
+		"required":             []string{"label"},
+	}
+	root := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           map[string]any{"a": shared, "b": shared},
+		"required":             []string{"a", "b"},
+	}
+	if CyclicSchema(root) {
+		t.Fatal("a schema value reachable twice without a loop is shared, not cyclic")
+	}
+	if !StrictExpressible(root) {
+		t.Fatal("a shared acyclic subtree must still be certifiable")
+	}
+}
+
+// A node whose type is a representation this file cannot read must not be
+// certified. The container checks only see an object or an array when the type
+// is spelled the way schemaTypeFlags reads it, so a json.RawMessage encoding
+// "object" slipped past both: the shape checks found no object, the presence of
+// the type key alone satisfied the constraint check, and the tool reached the
+// provider as an open object under strict enforcement.
+//
+// The fixture is a node that carries nothing but its type. That is the shape the
+// defect needs: a node with a properties map would be refused by the check that
+// keeps properties off a non-object node, and the test would then pass without
+// this rule doing any work.
+func TestATypeTheWalkCannotReadIsNotCertified(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name          string
+		child         map[string]any
+		wantCertified bool
+	}{
+		{
+			name:          "raw JSON object type",
+			child:         map[string]any{"type": json.RawMessage(`"object"`)},
+			wantCertified: false,
+		},
+		{
+			name:          "raw JSON type list",
+			child:         map[string]any{"type": json.RawMessage(`["object","null"]`)},
+			wantCertified: false,
+		},
+		{name: "a number", child: map[string]any{"type": 42}, wantCertified: false},
+		{
+			name:          "a list with a non-string member",
+			child:         map[string]any{"type": []any{"object", 7}},
+			wantCertified: false,
+		},
+		// The control: the same node with a type the walk does read. It has to
+		// be closed to be certifiable, so this one carries the object keywords —
+		// the refusal above is about the unreadable type, not about a node that
+		// constrains nothing.
+		{
+			name: "a decoded object type",
+			child: map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"required":             []string{},
+			},
+			wantCertified: true,
+		},
+		{
+			name: "a string type list",
+			child: map[string]any{
+				"type":                 []string{"object"},
+				"additionalProperties": false,
+				"required":             []string{},
+			},
+			wantCertified: true,
+		},
+		{
+			name: "a decoded type list",
+			child: map[string]any{
+				"type":                 []any{"object"},
+				"additionalProperties": false,
+				"required":             []string{},
+			},
+			wantCertified: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			// The child carries a type and nothing else where the type is
+			// unreadable, which is the shape the defect needs: a child that also
+			// carried a properties map would be refused by the rule keeping
+			// properties off a non-object node, and this test would then pass
+			// without the readability rule doing any work.
+			if got := StrictExpressible(tc.child); got != tc.wantCertified {
+				t.Fatalf("StrictExpressible(%#v) = %v, want %v", tc.child, got, tc.wantCertified)
+			}
+			root := map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties":           map[string]any{"payload": tc.child},
+				"required":             []string{"payload"},
+			}
+			if got := StrictExpressible(root); got != tc.wantCertified {
+				t.Fatalf("StrictExpressible(root holding %#v) = %v, want %v", tc.child, got, tc.wantCertified)
+			}
+		})
+	}
+}
+
+// A combinator list supplied as json.RawMessage was opaque to the copy, so the
+// type walk skipped every branch: a typeless scalar enum inside one reached the
+// provider without the explicit type its decoded twin is given, and the request
+// failed even with strict disabled. The branches must be decoded and supplied
+// like any other, with their values left as advertised.
+func TestRawSubschemaListsAreWalkedForDerivedTypes(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name   string
+		anyOf  any
+		assert func(t *testing.T, branches []any)
+	}{
+		{
+			name:  "raw anyOf list",
+			anyOf: json.RawMessage(`[{"enum":["a","b"]},{"type":"integer"}]`),
+			assert: func(t *testing.T, branches []any) {
+				t.Helper()
+				first, ok := branches[0].(map[string]any)
+				if !ok {
+					t.Fatalf("branch = %#v, want an object", branches[0])
+				}
+				if first["type"] != "string" {
+					t.Fatalf("branch type = %#v, want string: a raw branch must be walked like a decoded one", first["type"])
+				}
+				if got := first["enum"]; !reflect.DeepEqual(got, []any{"a", "b"}) {
+					t.Fatalf("enum = %#v, want the advertised members", got)
+				}
+				second, ok := branches[1].(map[string]any)
+				if !ok {
+					t.Fatalf("branch = %#v, want an object", branches[1])
+				}
+				if second["type"] != "integer" {
+					t.Fatalf("branch type = %#v, want integer: an already-typed branch keeps its type", second["type"])
+				}
+			},
+		},
+		{
+			name:  "decoded anyOf list",
+			anyOf: []any{map[string]any{"enum": []any{"a", "b"}}, map[string]any{"type": "integer"}},
+			assert: func(t *testing.T, branches []any) {
+				t.Helper()
+				first, ok := branches[0].(map[string]any)
+				if !ok {
+					t.Fatalf("branch = %#v, want an object", branches[0])
+				}
+				if first["type"] != "string" {
+					t.Fatalf("branch type = %#v, want string", first["type"])
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			schema := map[string]any{
+				"anyOf": tc.anyOf,
+			}
+			out := SupplyDerivedTypes(schema)
+			branches, ok := out["anyOf"].([]any)
+			if !ok {
+				t.Fatalf("anyOf = %#v, want a walkable list", out["anyOf"])
+			}
+			tc.assert(t, branches)
+		})
 	}
 }

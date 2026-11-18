@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding"
 	"encoding/json"
+	"errors"
 	"reflect"
 	"sort"
 	"strings"
@@ -87,7 +88,7 @@ func StrictifyJSONSchema(in map[string]any) map[string]any {
 	// apply repeatedly (idempotent for our shapes).
 	// A nil root is an absent schema rather than a JSON null to preserve: the
 	// projection of it is the empty schema, which is what this returns for it.
-	// Only a nil nested inside the schema is a value, and deepCopyAny keeps
+	// Only a nil nested inside the schema is a value, and the copy keeps
 	// those so a null enum member survives the copy. The copy reports a nil
 	// interface for either, so the root is read with a comma-ok assertion
 	// rather than an unchecked one.
@@ -237,7 +238,80 @@ func supplyDerivedTypes(m map[string]any, dialect schemaDialect) {
 // type-asserts the same way, so an unreadable properties map would be replaced
 // with an empty one, dropping every advertised argument.
 func StrictExpressible(schema map[string]any) bool {
+	// The walk follows property and items subschemas with no cycle tracking of
+	// its own, and it does so before any copy exists. A schema that contains
+	// itself is therefore refused here rather than followed: this is the
+	// exported entry point, so it is reachable without a request builder and
+	// cannot rely on one having checked first.
+	if CyclicSchema(schema) {
+		return false
+	}
 	return strictlyExpressibleNode(schema, true, dialectOf(schema))
+}
+
+// CyclicSchema reports whether schema contains itself.
+//
+// The walk follows the ancestor chain rather than a global visited set: the
+// same subschema value reachable from two positions is legitimate Go — a
+// caller may share one subtree between two branches — and only a value that
+// contains itself is a cycle. Tracking every visited container instead would
+// reject the shared one.
+//
+// This is a separate question from what the projection does with a cycle. The
+// copy cuts a looping edge and carries on, because the empty schema admits
+// everything the original did. Strict eligibility cannot: it recurses over the
+// caller's own tree before any copy exists, so a cyclic tree exhausts the stack
+// inside the walk. A request builder therefore asks this first and refuses the
+// request, which is the one answer that is both honest and finite.
+func CyclicSchema(schema map[string]any) bool {
+	if schema == nil {
+		return false
+	}
+	return containsCycle(schema, map[uintptr]bool{})
+}
+
+// ErrCyclicSchema reports a tool schema whose value contains itself. A request
+// builder refuses such a schema rather than projecting it.
+var ErrCyclicSchema = errors.New("tool schema contains a cycle")
+
+// containsCycle walks the containers of v, with path holding the identity of
+// every ancestor currently being walked.
+func containsCycle(v any, path map[uintptr]bool) bool {
+	key, tracked := containerIdentity(v)
+	if tracked {
+		if path[key] {
+			return true
+		}
+		path[key] = true
+		defer delete(path, key)
+	}
+	switch x := v.(type) {
+	case map[string]any:
+		for _, vv := range x {
+			if containsCycle(vv, path) {
+				return true
+			}
+		}
+	case map[string]map[string]any:
+		for _, vv := range x {
+			if containsCycle(vv, path) {
+				return true
+			}
+		}
+	case []any:
+		for _, vv := range x {
+			if containsCycle(vv, path) {
+				return true
+			}
+		}
+	case []map[string]any:
+		for i := range x {
+			if containsCycle(x[i], path) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // strictlyExpressibleNode walks one node of a schema already known to use only
@@ -262,6 +336,17 @@ func strictlyExpressibleNode(m map[string]any, visited bool, dialect schemaDiale
 	}
 	literal := schemaLiteralType(m["type"])
 	isObject, isArray := schemaTypeFlags(m["type"])
+	// A type is only readable in the spellings schemaTypeFlags and the rewrite
+	// both understand. A caller may supply it as json.RawMessage, and then
+	// neither reading sees an object or an array: the shape checks pass over it,
+	// the presence of the key alone satisfies constrainsSomething, and the
+	// rewrite — which matches a plain string — transforms nothing. The tool then
+	// reaches a strict-enforcing provider as an open object and the whole
+	// request is rejected. A representation this file cannot read must not be
+	// certified: the absence of a finding here is not a finding.
+	if !typeRepresentationReadable(m["type"]) {
+		return false
+	}
 	// Only a visited node whose type is the literal string the rewrite matches
 	// is transformed. Everything else keeps what it advertises.
 	transformed := visited && (literal == "object" || literal == "array")
@@ -454,6 +539,31 @@ func schemaTypeFlags(raw any) (isObject, isArray bool) {
 		return isObject, isArray
 	default:
 		return false, false
+	}
+}
+
+// typeRepresentationReadable reports whether a node's type value is in a
+// spelling this file can read. An absent type is readable: it means the node
+// names no type, and the rest of the walk already handles that. A present value
+// that is not a string or a list of strings is a representation nothing here
+// decoded, and certifying it would be certifying a shape no check examined.
+func typeRepresentationReadable(raw any) bool {
+	switch t := raw.(type) {
+	case nil:
+		return true
+	case string:
+		return true
+	case []string:
+		return true
+	case []any:
+		for _, v := range t {
+			if _, ok := v.(string); !ok {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
 	}
 }
 
@@ -985,9 +1095,14 @@ func copySchemaValue(v any, path map[uintptr]bool) any {
 }
 
 // containerIdentity returns a value that identifies the container v points at,
-// for cycle detection. Only maps are tracked: a self-referential slice is not a
-// shape a builder writes, and a slice header cannot be compared for identity
-// without relying on its backing array.
+// for cycle detection.
+//
+// Slices are tracked as well as maps. A cycle can close through either: a
+// properties map may hold a slice whose element is the map's own schema, which
+// is legal Go and was the case the map-only guard missed. Two distinct
+// containers never share a pointer, so the identity is enough; a zero-length
+// slice is skipped because its data pointer may be nil or shared between
+// unrelated empty slices, and it cannot be part of a cycle anyway.
 func containerIdentity(v any) (uintptr, bool) {
 	switch x := v.(type) {
 	case map[string]any:
@@ -1000,22 +1115,26 @@ func containerIdentity(v any) (uintptr, bool) {
 			return 0, false
 		}
 		return reflect.ValueOf(x).Pointer(), true
+	case []any:
+		if len(x) == 0 {
+			return 0, false
+		}
+		return reflect.ValueOf(x).Pointer(), true
+	case []map[string]any:
+		if len(x) == 0 {
+			return 0, false
+		}
+		return reflect.ValueOf(x).Pointer(), true
 	default:
 		return 0, false
 	}
 }
 
-// deepCopyAny copies a schema value, normalising the Go spellings a builder
+// deepCopyWith copies a schema value, normalising the Go spellings a builder
 // writes into the decoded spellings the walk reads.
 //
 // path carries the ancestor chain, so a looping edge is cut rather than
-// recursed into. It is nil at a root the caller reaches directly.
-func deepCopyAny(v any) any {
-	return deepCopyWith(v, nil)
-}
-
-// deepCopyWith is deepCopyAny carrying the ancestor chain, so a recursive value
-// is cut rather than followed forever.
+// recursed into.
 func deepCopyWith(v any, path map[uintptr]bool) any {
 	switch x := v.(type) {
 	case map[string]any:
@@ -1079,8 +1198,15 @@ func deepCopyWith(v any, path map[uintptr]bool) any {
 		// answer depend on the schema rather than on the Go type the caller
 		// happened to choose.
 		//
-		// A raw value that is not a JSON object is left untouched: it is a
-		// scalar or a list, and neither is a subschema this walk rewrites.
+		// A raw list is decoded for the same reason. A combinator list supplied
+		// this way was opaque at every list-valued keyword, so its branches were
+		// never walked: a typeless scalar enum inside one reached the provider
+		// without the explicit type its decoded twin is given. The branches are
+		// decoded and then re-encoded unchanged, so what the caller advertised
+		// is what the request carries.
+		//
+		// A raw scalar is left untouched: it is a value rather than a list of
+		// subschemas, and nothing here rewrites one.
 		if len(x) == 0 {
 			return v
 		}
@@ -1090,7 +1216,10 @@ func deepCopyWith(v any, path map[uintptr]bool) any {
 		if err := decoder.Decode(&decoded); err != nil {
 			return v
 		}
-		if _, isObject := decoded.(map[string]any); !isObject {
+		switch decoded.(type) {
+		case map[string]any, []any:
+
+		default:
 			return v
 		}
 		return copySchemaValue(decoded, path)

@@ -5,10 +5,22 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"primeradiant.com/evener/llm/registry"
 )
+
+// countedSchemaValue counts how often the encoder marshals it. A tool catalog
+// that contains one can be measured twice without the second measurement
+// changing the number, so a test that compares counts cannot tell reuse from
+// re-measurement. Counting the marshals themselves can.
+type countedSchemaValue struct{ calls *int32 }
+
+func (c countedSchemaValue) MarshalJSON() ([]byte, error) {
+	atomic.AddInt32(c.calls, 1)
+	return []byte(`"counted"`), nil
+}
 
 // preparedBudgetAdapter counts dispatches for the prepared-parameterless
 // budget test. It answers successfully so a request the budget should have
@@ -219,5 +231,72 @@ func TestPreparedParameterlessToolIsPricedIntoAdmission(t *testing.T) {
 					budgetErr.InputTokens, want, unrestoredInput+safety)
 			}
 		})
+	}
+}
+
+// TestRestoringTheOpenSchemaReusesThePreparedPricing pins that the override
+// boundary does not re-serialize the catalog it was handed.
+//
+// Preparation measures the tool list once, over the form the adapters send
+// (the open empty schema substituted for a parameterless definition), and
+// stamps that count on the request. Restoring the same substitution over the
+// same list reproduces exactly those bytes, so re-measuring repeats a marshal
+// the stamp exists to avoid — once per tool round and once per retry.
+//
+// The measurement is counted at the encoder rather than compared as a number:
+// a second marshal of the same list yields the same byte count, so an
+// assertion on the count cannot distinguish reuse from re-measurement. The
+// schema value below reports every marshal, and the expected number is one —
+// the stamp preparation already took, which this test takes itself so the
+// fixture's own measurement is not confused with the boundary's.
+//
+// The catalog holds a parameterless tool as well, because that is what makes
+// the boundary act at all: a list with no nil Parameters is returned untouched
+// and would pass this test without measuring anything.
+func TestRestoringTheOpenSchemaReusesThePreparedPricing(t *testing.T) {
+	t.Parallel()
+	var marshals int32
+	defs := []ToolDefinition{
+		{Name: "parameterless"},
+		{
+			Name: "probe",
+			Parameters: map[string]any{
+				"type":       "object",
+				"properties": map[string]any{"payload": countedSchemaValue{calls: &marshals}},
+			},
+		},
+	}
+	req := Request{Tools: defs, preparedTools: true}
+	// Preparation measures the substituted form, so this is the count it stamps.
+	req.ToolsJSONBytes = ToolsJSONBytes(asSentToolDefs(defs))
+	req = MarkPreparedToolBytes(req)
+	if got := atomic.LoadInt32(&marshals); got != 1 {
+		t.Fatalf("measurement marshals = %d, want 1: the fixture must be priced once before the boundary runs", got)
+	}
+
+	restored := withOpenParameterlessSchemas(req)
+	if got := atomic.LoadInt32(&marshals); got != 1 {
+		t.Fatalf("marshals after restoring the open schema = %d, want 1: "+
+			"the boundary re-measured a catalog preparation had already priced, and that count describes "+
+			"the same substituted list (%d bytes)", got, req.ToolsJSONBytes)
+	}
+	if got, want := restored.ToolsJSONBytes, req.ToolsJSONBytes; got != want {
+		t.Fatalf("restored count = %d, want %d: the reused count must be the one preparation stamped", got, want)
+	}
+	if restored.Tools[0].Parameters == nil {
+		t.Fatal("the boundary must still restore the open schema, or this test would pass without acting")
+	}
+
+	// A count that does not describe the substituted list is not reusable: it is
+	// replaced, because trusting it would price a list other than the one sent.
+	unpriced := Request{Tools: defs, preparedTools: true}
+	unpriced.ToolsJSONBytes = ToolsJSONBytes(defs)
+	restored = withOpenParameterlessSchemas(unpriced)
+	if got := atomic.LoadInt32(&marshals); got != 3 {
+		t.Fatalf("marshals after an unmarked count = %d, want 3: a count that was not measured over the "+
+			"substituted list must be replaced rather than trusted", got)
+	}
+	if want := ToolsJSONBytes(asSentToolDefs(defs)); restored.ToolsJSONBytes != want {
+		t.Fatalf("remeasured count = %d, want %d", restored.ToolsJSONBytes, want)
 	}
 }

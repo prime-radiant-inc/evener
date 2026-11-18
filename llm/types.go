@@ -492,6 +492,15 @@ type Request struct {
 	// preparation and must keep passing the nil through untouched.
 	preparedTools bool
 
+	// preparedToolBytes reports that ToolsJSONBytes was measured over the tool
+	// list as the adapters send it, with the open empty schema already
+	// substituted for a parameterless definition. Preparation measures that form
+	// so the estimate prices what is dispatched, and an override boundary that
+	// restores the same substitution over the same list reproduces bytes this
+	// count already describes. Without the marker a stamped count describes the
+	// list before substitution, and rebuilding the list invalidates it.
+	preparedToolBytes bool
+
 	AdapterTimeout *AdapterTimeout `json:"adapter_timeout,omitempty"`
 }
 
@@ -500,6 +509,16 @@ type Request struct {
 // through this call rather than through a field a caller could set by accident.
 func MarkPreparedTools(req Request) Request {
 	req.preparedTools = true
+	return req
+}
+
+// MarkPreparedToolBytes marks req's ToolsJSONBytes as measured over the tool
+// list the adapters send, with the open empty schema already substituted for a
+// parameterless definition. It is the only way to set the marker, so a stamped
+// count is described as substituted only where preparation measured it that
+// way.
+func MarkPreparedToolBytes(req Request) Request {
+	req.preparedToolBytes = true
 	return req
 }
 

@@ -1,10 +1,12 @@
 package chatcompletions
 
 import (
+	"errors"
 	"slices"
 	"testing"
 
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/internal/openaichat"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -233,5 +235,85 @@ func TestChatStrictToolsKeepParameterlessToolsClosed(t *testing.T) {
 	}
 	if got := requiredNames(t, params); len(got) != 0 {
 		t.Fatalf("required = %v, want empty", got)
+	}
+}
+
+// A tool schema that contains itself has no wire form: json.Marshal refuses it
+// with a cycle error. Eligibility is decided over the caller's own tree before
+// any copy exists, so following the loop here exhausts the stack and takes the
+// process rather than the request. The builder must refuse the request instead,
+// and it must do so for both shapes a Go caller can build — a map that holds
+// itself and a slice whose element refers back.
+func TestCyclicToolSchemaIsRefusedAtTheBuilder(t *testing.T) {
+	t.Parallel()
+	cyclicMap := func() map[string]any {
+		root := map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties":           map[string]any{"child": nil},
+			"required":             []string{"child"},
+		}
+		root["properties"].(map[string]any)["child"] = root
+		return root
+	}
+	cyclicSlice := func() map[string]any {
+		branches := []any{nil}
+		root := map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]map[string]any{
+				"child": {"anyOf": branches},
+			},
+			"required": []string{"child"},
+		}
+		branches[0] = root
+		return root
+	}
+	for _, tc := range []struct {
+		name   string
+		params map[string]any
+	}{
+		{"map cycle", cyclicMap()},
+		{"slice cycle", cyclicSlice()},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			req := userReq("hi")
+			req.Tools = []llm.ToolDefinition{{Name: "looping", Parameters: tc.params}}
+			res := resolved(func(c *registry.Caps) { c.StrictTools = new(true) })
+
+			_, err := (&Protocol{}).BuildBody(llm.ShapeRequest(req, res), res)
+			if !errors.Is(err, openaichat.ErrCyclicSchema) {
+				t.Fatalf("error = %v, want %v: a schema that contains itself has no wire form",
+					err, openaichat.ErrCyclicSchema)
+			}
+		})
+	}
+
+	// Control: a shared acyclic subtree is legal Go and must still build, so the
+	// refusal is about a loop rather than about reuse.
+	shared := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           map[string]any{"label": map[string]any{"type": "string"}},
+		"required":             []string{"label"},
+	}
+	req := userReq("hi")
+	req.Tools = []llm.ToolDefinition{{
+		Name: "shared",
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties":           map[string]any{"a": shared, "b": shared},
+			"required":             []string{"a", "b"},
+		},
+	}}
+	res := resolved(func(c *registry.Caps) { c.StrictTools = new(true) })
+	body, err := (&Protocol{}).BuildBody(llm.ShapeRequest(req, res), res)
+	if err != nil {
+		t.Fatalf("a shared acyclic subtree must build: %v", err)
+	}
+	if body["tools"] == nil {
+		t.Fatal("the shared-subtree tool must still reach the wire")
 	}
 }

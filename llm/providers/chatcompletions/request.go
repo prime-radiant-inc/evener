@@ -1,6 +1,7 @@
 package chatcompletions
 
 import (
+	"fmt"
 	"strings"
 
 	"primeradiant.com/evener/llm"
@@ -51,6 +52,16 @@ func buildBody(req llm.Request, res registry.Resolved, stream bool) (out map[str
 	}
 	body["messages"] = msgs
 	if len(req.Tools) > 0 {
+		// Eligibility is decided over the caller's own schema, before any copy
+		// exists, so a schema that contains itself would exhaust the stack
+		// inside the walk rather than in the copy that knows how to cut the
+		// edge. Refusing the request is the finite answer: the schema has no
+		// wire form to send.
+		for _, t := range req.Tools {
+			if openaichat.CyclicSchema(t.Parameters) {
+				return nil, fmt.Errorf("%w: tool %q", openaichat.ErrCyclicSchema, t.Name)
+			}
+		}
 		tools := openaichat.ToChatTools(req.Tools)
 		strictTools := registry.BoolValue(caps.StrictTools)
 		for i, t := range tools {
