@@ -9,6 +9,7 @@ package agent
 
 import (
 	"context"
+	"strings"
 	"testing"
 	"time"
 
@@ -48,8 +49,8 @@ func TestRequestMessagesLaysOutTheSystemPromptAndHistory(t *testing.T) {
 					t.Errorf("%s/%s: laid out %d messages, want %d: the folded prompt rides the first user message", tc.name, name, got, len(history))
 					continue
 				}
-				if got := laid[0].Text(); got != system+"\n\n"+history[0].Text() {
-					t.Errorf("%s/%s: first message does not lead with the system prompt", tc.name, name)
+				if input, ok := strings.CutPrefix(laid[0].Text(), system+"\n\n"); !ok || input != history[0].Text() {
+					t.Errorf("%s/%s: the folded message lost prompt or user input bytes", tc.name, name)
 				}
 				if laid[0].Role != llm.RoleUser {
 					t.Errorf("%s/%s: folded prompt landed on role %q, want user", tc.name, name, laid[0].Role)
