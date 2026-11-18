@@ -280,6 +280,21 @@ const plainCases: LandingCase[] = [
   },
   listing("an endpoint save is confirmed by the captured fingerprint", KEYED, TO_X, LANDED_X, true),
   listing(
+    "a declared Codex client version is confirmed by the landed value",
+    { ...KEYED, auth: "oauth-openai-codex" },
+    { ...SAVE, codexClientVersion: "0.166.0" },
+    { ...KEYED, auth: "oauth-openai-codex", codexClientVersion: "0.166.0" },
+    true,
+  ),
+  superseding(
+    "a different Codex client version is not this save's landing",
+    { ...KEYED, auth: "oauth-openai-codex" },
+    { ...SAVE, codexClientVersion: "0.166.0" },
+    { ...KEYED, auth: "oauth-openai-codex", codexClientVersion: "0.166.0" },
+    { ...KEYED, auth: "oauth-openai-codex", codexClientVersion: "0.999.0" },
+    false,
+  ),
+  listing(
     "a captured row with an empty fingerprint fails closed though the listing agrees",
     KEYED,
     TO_X,

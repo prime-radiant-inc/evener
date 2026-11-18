@@ -4,6 +4,7 @@ package execenv
 
 import (
 	"context"
+	"io/fs"
 	"os/exec"
 	"reflect"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/sandbox"
 	"primeradiant.com/evener/execsupport/procgroup"
 )
 
@@ -103,6 +105,48 @@ func TestSystemCommandRuntimeConfigurationDefaultsToManagedProcessGroup(t *testi
 	want := procgroup.SysProcAttr()
 	if !reflect.DeepEqual(configured.cmd.SysProcAttr, want) {
 		t.Fatalf("runtime default SysProcAttr = %#v, want %#v", configured.cmd.SysProcAttr, want)
+	}
+}
+
+// TestStartRefusalAppliesOnlyToTheUnwrappedArgvRoute pins the two routes whose
+// start failure must stay a plain error. The shell route is bash itself: a
+// failed exec there never reached a status of bash's own, so borrowing 126 or
+// 127 would invent an outcome. The sandbox-wrapped route execs bwrap (or
+// sandbox-exec) in place of the program, so its errno describes the wrapper —
+// reporting it as the program's refusal would name the wrong thing, which is the
+// defect the mapping removes.
+func TestStartRefusalAppliesOnlyToTheUnwrappedArgvRoute(t *testing.T) {
+	t.Parallel()
+	startErr := &fs.PathError{Op: "fork/exec", Path: "/fixture/tool", Err: syscall.EACCES}
+
+	shell := systemCommandRuntimeFactory{}.Shell("/fixture/tool")
+	shell.Configure(commandRuntimeConfig{})
+	if refusal := refusedStart(shell, startErr); refusal != nil {
+		t.Fatalf("shell route refusal = %+v, want the plain start error", refusal)
+	}
+
+	wrapped := systemCommandRuntimeFactory{}.Argv("/fixture/tool")
+	facts := sandbox.HostFacts{OS: "linux", Home: "/home/fixture", BwrapPath: "/usr/bin/bwrap", BwrapCapable: true}
+	policy, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite}, facts, "/work")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	wrapper, err := sandbox.NewWrapper(policy, "/usr/bin/bwrap", "/session/tmp")
+	if err != nil {
+		t.Fatalf("NewWrapper: %v", err)
+	}
+	wrapped.Configure(commandRuntimeConfig{Dir: "/work", Wrapper: wrapper})
+	if refusal := refusedStart(wrapped, startErr); refusal != nil {
+		t.Fatalf("wrapped argv refusal = %+v, want the wrapper's own start error", refusal)
+	}
+
+	// The same runtime without a wrapper reports the refusal, so the exclusion
+	// above is the wrapper and not something else about the route.
+	plain := systemCommandRuntimeFactory{}.Argv("/fixture/tool")
+	plain.Configure(commandRuntimeConfig{Dir: "/work"})
+	refusal := refusedStart(plain, startErr)
+	if refusal == nil || refusal.Status != shellStatusNoExec {
+		t.Fatalf("plain argv refusal = %+v, want status %d", refusal, shellStatusNoExec)
 	}
 }
 

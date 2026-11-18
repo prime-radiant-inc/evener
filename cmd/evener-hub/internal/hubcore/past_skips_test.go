@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -170,5 +171,154 @@ func fuzzScenarioPastIndex_RebuildSilentWhenNothingSkipped(t *testing.T) {
 	})
 	if out != "" {
 		t.Fatalf("a rebuild with nothing to skip must be silent, got:\n%s", out)
+	}
+}
+
+// A directory in the projects root whose name is not a project id is refused,
+// and rightly so — nothing under it can reach either index, and SessionTreeStamp
+// skips it for the same reason. Real projects roots hold hundreds of
+// pre-identifier directories. That refusal must not count against coverage:
+// no rescan could ever index it, so holding the sweep's digest gate open over
+// it would re-scan an idle tree every tick, which is the cost #6424 removed.
+func fuzzScenarioPastIndex_StrayProjectDirectoryDoesNotBlockCoverage(t *testing.T) {
+	root := t.TempDir()
+	projects := filepath.Join(root, "projects")
+	const stray = "legacy16hexname"
+	if err := os.MkdirAll(filepath.Join(projects, stray), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	proj := hubtest.ProjectDir(t, projects, "alpha")
+	id := hubtest.SessionID(t)
+	writeMeta(t, proj, schema.SessionMeta{ID: id, UpdatedAt: time.Now()})
+
+	idx := closeOnCleanup(t, NewPastIndex(filepath.Join(projects, "*")))
+	out := captureSkipReport(t, func() {
+		if _, err := idx.Rebuild(); err != nil {
+			t.Fatalf("Rebuild: %v", err)
+		}
+	})
+	if !idx.RebuildCoveredTree() {
+		t.Fatal("a stray pre-identifier directory held coverage false; the sweep gate would never close and every idle tick would rescan the whole tree")
+	}
+	// The refusal still has to be reported; leaving the stray out of coverage
+	// must not mean dropping it from the skip report.
+	if !strings.Contains(out, stray) {
+		t.Fatalf("the stray directory is not named in the skip report:\n%s", out)
+	}
+	if all := idx.All(); len(all) != 1 || all[0].ID != id {
+		t.Fatalf("index holds %d entries, want only the valid project's session", len(all))
+	}
+}
+
+// RebuildCoveredTree is what lets the hub's sweep gate its re-scan on a disk
+// digest: the digest only stands for the whole tree when the rebuild that
+// produced the index reached every project. A scan that swaps in with every
+// session listed covered the tree, and it has to say so, or the gate never
+// closes and every idle tick pays a full scan.
+func fuzzScenarioPastIndex_CompleteRebuildCoversTheTree(t *testing.T) {
+	root := t.TempDir()
+	projects := filepath.Join(root, "projects")
+	projA := hubtest.ProjectDir(t, projects, "alpha")
+	projB := hubtest.ProjectDir(t, projects, "bravo")
+	idA, idB := hubtest.SessionID(t), hubtest.SessionID(t)
+	writeMeta(t, projA, schema.SessionMeta{ID: idA, UpdatedAt: time.Now()})
+	writeMeta(t, projB, schema.SessionMeta{ID: idB, UpdatedAt: time.Now()})
+
+	idx := closeOnCleanup(t, NewPastIndex(filepath.Join(projects, "*")))
+	if idx.RebuildCoveredTree() {
+		t.Fatal("an index that has never rebuilt reports it covered the tree")
+	}
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+	if !idx.RebuildCoveredTree() {
+		t.Fatal("a rebuild that listed every project's sessions does not report the tree covered; the sweep gate can never close")
+	}
+	// Assert the size too: an empty index would satisfy a bare "no error"
+	// reading of the rebuild above while covering nothing.
+	if all := idx.All(); len(all) != 2 {
+		t.Fatalf("index holds %d entries after a complete rebuild, want 2", len(all))
+	}
+}
+
+// A rebuild superseded on every attempt swaps nothing in — the newer
+// in-memory snapshot is kept on purpose (#724) — so the index still lacks
+// whatever the scan that never landed would have brought it. It must not
+// report the tree covered, or the sweep records a digest for an index that is
+// short of the tree and never scans again.
+func fuzzScenarioPastIndex_SupersededRebuildDoesNotCoverTheTree(t *testing.T) {
+	root := t.TempDir()
+	projects := filepath.Join(root, "projects")
+	proj := hubtest.ProjectDir(t, projects, "alpha")
+	seededID := hubtest.SessionID(t)
+	writeMeta(t, proj, schema.SessionMeta{ID: seededID, UpdatedAt: time.Now()})
+
+	idx := closeOnCleanup(t, NewPastIndex(filepath.Join(projects, "*")))
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatalf("seed Rebuild: %v", err)
+	}
+	if !idx.RebuildCoveredTree() {
+		t.Fatal("the seed rebuild did not cover the tree, so the abort below proves nothing")
+	}
+
+	// Supersede every attempt's scan so Rebuild never swaps one in. The session
+	// that appears meanwhile is what the discarded scan would have indexed.
+	lateID := hubtest.SessionID(t)
+	writeMeta(t, proj, schema.SessionMeta{ID: lateID, UpdatedAt: time.Now().Add(time.Minute)})
+	idx.SetBeforeRebuildSwapForTest(func() {
+		idx.mu.Lock()
+		idx.gen++
+		idx.mu.Unlock()
+	})
+	defer idx.SetBeforeRebuildSwapForTest(nil)
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+	if idx.RebuildCoveredTree() {
+		t.Fatal("a rebuild superseded on every attempt reports the tree covered; the sweep would record a digest for an index it never updated")
+	}
+	if _, ok := idx.FindIndexed(lateID); ok {
+		t.Fatal("the superseded rebuild indexed the late session, so nothing was abandoned")
+	}
+}
+
+// A project whose sessions directory cannot be listed is recorded as a skip
+// and the rebuild carries on, so the swapped index is silently missing that
+// project's sessions. The directory's unreadability does move the digest
+// (foldSessionDirStamp folds an unreadable marker), but the index is short of
+// the tree until a scan manages to list it, so the rebuild that could not must
+// not report the tree covered.
+func fuzzScenarioPastIndex_UnlistableProjectDoesNotCoverTheTree(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("os.Chmod on a directory is a no-op on Windows; the permission gate cannot be exercised")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("running as root bypasses filesystem permission checks")
+	}
+	root := t.TempDir()
+	projects := filepath.Join(root, "projects")
+	readable := hubtest.ProjectDir(t, projects, "alpha")
+	unreadable := hubtest.ProjectDir(t, projects, "bravo")
+	readableID := hubtest.SessionID(t)
+	writeMeta(t, readable, schema.SessionMeta{ID: readableID, UpdatedAt: time.Now()})
+	writeMeta(t, unreadable, schema.SessionMeta{ID: hubtest.SessionID(t), UpdatedAt: time.Now()})
+
+	sessionsDir := schema.SessionsDir(unreadable)
+	if err := os.Chmod(sessionsDir, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(sessionsDir, 0o755) })
+
+	idx := closeOnCleanup(t, NewPastIndex(filepath.Join(projects, "*")))
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatalf("Rebuild: %v", err)
+	}
+	if idx.RebuildCoveredTree() {
+		t.Fatal("a rebuild that could not list one project's sessions reports the tree covered; the sweep would record a digest for a partial index")
+	}
+	// Pin that the scan really was partial rather than empty: the readable
+	// project is indexed and the unreadable one is not.
+	if all := idx.All(); len(all) != 1 || all[0].ID != readableID {
+		t.Fatalf("index holds %d entries (want only the readable project's session), so the unreadable project was not the reason coverage is false", len(all))
 	}
 }

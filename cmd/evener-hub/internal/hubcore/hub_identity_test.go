@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 // openLockDriverName registers a driver that fails its first N opens with the
@@ -62,6 +63,52 @@ func hubIdentityStoreWithFailingOpen(t *testing.T, dbPath string, n int, injectE
 	return store
 }
 
+// openWaitClock stands in for the wall clock in the identity open retry so a
+// test can charge each open the wait it spent — the abnormal-holder case, where
+// SQLite consults busy_timeout and the open blocks for seconds — without
+// spending those seconds. waited() is the total virtual wait the store spent,
+// which is what a bug in the retry arithmetic multiplies.
+type openWaitClock struct {
+	mu    sync.Mutex
+	now   time.Time
+	total time.Duration
+}
+
+func newOpenWaitClock() *openWaitClock {
+	return &openWaitClock{now: time.Unix(1_700_000_000, 0)}
+}
+
+func (c *openWaitClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *openWaitClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
+	c.total += d
+}
+
+func (c *openWaitClock) waited() time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.total
+}
+
+// chargeOpens makes every connection open cost d on the store's clock, which
+// models an open that spent d inside SQLite's busy handler before failing.
+func chargeOpens(t *testing.T, store *HubIdentityStore, clock *openWaitClock, d time.Duration) {
+	t.Helper()
+	inner := store.openDB
+	store.now = clock.Now
+	store.openDB = func(driverName, dataSourceName string) (*sql.DB, error) {
+		clock.advance(d)
+		return inner(driverName, dataSourceName)
+	}
+}
+
 // A lock conflict on open must be retried, not surfaced: the concurrent first
 // open the store documents hits it whenever two connections race the WAL
 // transition on a brand-new index.db, and the losing attempt comes back in
@@ -77,6 +124,68 @@ func TestHubIdentityRetriesLockConflictOnOpen(t *testing.T) {
 	}
 	if left := openLockFailures.Load(); left != 0 {
 		t.Fatalf("injected busy opens remaining = %d, want 0 (the retry did not reach a real open)", left)
+	}
+}
+
+// A lock conflict that clears in milliseconds keeps every attempt: the WAL
+// transition race the retry covers fails faster than busy_timeout, so it must
+// not be mistaken for a waited-out one. Cutting the retry short at the first
+// conflict would bring back the concurrent-first-open flake.
+func TestHubIdentityFastLockConflictKeepsFullRetryBudget(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.db")
+	store := hubIdentityStoreWithFailingOpen(t, path, hubIdentityOpenAttempts-1, realBusyError(t))
+	clock := newOpenWaitClock()
+	chargeOpens(t, store, clock, 0)
+	id, err := store.HubID()
+	if err != nil || id == "" {
+		t.Fatalf("HubID after %d fast busy opens = %q, %v", hubIdentityOpenAttempts-1, id, err)
+	}
+	if waited := clock.waited(); waited != 0 {
+		t.Fatalf("virtual wait on fast lock conflicts = %v, want 0", waited)
+	}
+	if left := openLockFailures.Load(); left != 0 {
+		t.Fatalf("injected busy opens remaining = %d, want 0: attempt %d was not reached", left, hubIdentityOpenAttempts)
+	}
+}
+
+// A lock conflict that already waited busy_timeout out is reported, not
+// retried. Retrying it spends the whole timeout again on every attempt, which
+// is what turned a ~5s startup failure under an abnormal exclusive holder into
+// a ~40s one: 8 attempts x busy_timeout(5000). A deadline on the ping cannot
+// catch this, because the wait happens inside SQLite's busy handler.
+func TestHubIdentityWaitedOutLockConflictIsNotRetried(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.db")
+	store := hubIdentityStoreWithFailingOpen(t, path, hubIdentityOpenAttempts, realBusyError(t))
+	clock := newOpenWaitClock()
+	chargeOpens(t, store, clock, hubIdentityOpenBudget)
+	if _, err := store.HubID(); err == nil {
+		t.Fatal("HubID succeeded while every open returned SQLITE_BUSY")
+	}
+	if waited := clock.waited(); waited > hubIdentityOpenBudget {
+		t.Fatalf("total wait on lock conflicts = %v, want at most one busy_timeout window (%v)", waited, hubIdentityOpenBudget)
+	}
+	if left := openLockFailures.Load(); left != hubIdentityOpenAttempts-1 {
+		t.Fatalf("injected busy opens remaining = %d, want %d: a waited-out conflict must end the retry on its own attempt", left, hubIdentityOpenAttempts-1)
+	}
+}
+
+// A conflict that waited more than half the window out is a busy_timeout
+// expiry even when it returns a little early: SQLite stops the wait once the
+// remaining share of the timeout cannot pay for another sleep, so a real
+// expiry measures 4.2-5.1s against a 5s setting. Charging 4.2s — what an
+// actual held-EXCLUSIVE lock produced — must stop the retry, because the
+// WAL-transition race returns in milliseconds and retrying an expiry is the
+// whole of #6650's 40s.
+func TestHubIdentityExpiryJustUnderTheWindowIsNotRetried(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.db")
+	store := hubIdentityStoreWithFailingOpen(t, path, hubIdentityOpenAttempts, realBusyError(t))
+	clock := newOpenWaitClock()
+	chargeOpens(t, store, clock, 4200*time.Millisecond)
+	if _, err := store.HubID(); err == nil {
+		t.Fatal("HubID succeeded while every open returned SQLITE_BUSY")
+	}
+	if left := openLockFailures.Load(); left != hubIdentityOpenAttempts-1 {
+		t.Fatalf("injected busy opens remaining = %d, want %d: 4.2s is an expiry, not the race", left, hubIdentityOpenAttempts-1)
 	}
 }
 

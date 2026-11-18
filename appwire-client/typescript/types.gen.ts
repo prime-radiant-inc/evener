@@ -1844,6 +1844,7 @@ export interface InstanceCreateParams {
   vars?: Record<string, string>;
   apiKeyEnv?: string;
   credentialHeader?: string;
+  codexClientVersion?: string;
   /**
    * OriginClientId is the client identity the hub echoes into the
    * evener/auth/updated broadcast this create triggers, so the originator
@@ -1868,6 +1869,8 @@ export interface InstanceEditParams {
   clearApiKeyEnv?: boolean;
   credentialHeader?: string;
   clearCredentialHeader?: boolean;
+  codexClientVersion?: string;
+  clearCodexClientVersion?: boolean;
   /**
    * ExpectedEndpointFingerprint is the endpoint this client showed the user
    * for Name (InstanceEntry.endpointFingerprint), checked the way
@@ -1919,6 +1922,11 @@ export interface InstanceEntry {
    */
   apiKeyEnv?: string;
   credentialHeader?: string;
+  /**
+   * CodexClientVersion is the authored codex_client_version override, empty
+   * when the provider inherits the registry's model-discovery default.
+   */
+  codexClientVersion?: string;
   /**
    * Implicit is true for an instance with no authored entry in
    * providers.toml: a curated provider that exists because the environment
@@ -5413,7 +5421,7 @@ export interface ThreadStatusChangedParams {
    * A CLOSE frame is the one status a daemon does not fill in: what a thread
    * can still be asked to do once its daemon is gone is the hub's answer, not
    * the departing daemon's. The hub stamps that frame as it relays it
-   * (cmd/evener-hub/app_relay.go's stampClosedThreadCapabilities), so a close
+   * (cmd/evener-hub/app_relay_types.go's stampStatusCapabilities), so a close
    * still arrives carrying a set — the same one the next thread/read returns.
    * A client that read the daemon's own all-false set there would lose the
    * follow-up composer for a session the hub would happily resume.

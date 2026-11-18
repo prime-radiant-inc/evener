@@ -55,7 +55,9 @@ func TestReportUnlistedMetasWithoutASessionsDir(t *testing.T) {
 		t.Fatal(err)
 	}
 	skipped := map[string]string{}
-	reportUnlistedMetas(fs, "/project", map[string]bool{}, skipped)
+	if dropped := reportUnlistedMetas(fs, "/project", map[string]bool{}, skipped); dropped {
+		t.Fatal("a project with no sessions directory reports a dropped meta")
+	}
 	if len(skipped) != 0 {
 		t.Fatalf("skipped = %v, want none for a project with no sessions directory", skipped)
 	}

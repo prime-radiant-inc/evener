@@ -364,23 +364,31 @@ func TrimThinkingForReplay(p ContentPart, dropPlain bool) (trimmed ContentPart, 
 	return p, false
 }
 
-// TrimThinkingForReplayMessage maps TrimThinkingForReplay over a message,
-// returning the input unchanged when nothing has to change.
-func TrimThinkingForReplayMessage(msg Message, dropPlain bool) Message {
+// TrimsThinkingForReplay reports whether TrimThinkingForReplayMessage would
+// change msg under the same dropPlain policy. It is the one test both the trim
+// and a caller deciding whether to work on a message list apply, so a caller
+// that skips unchanged messages and the trim that would rewrite them cannot
+// disagree: a rule added to the trim is a rule added here, because there is
+// only one scan.
+func TrimsThinkingForReplay(msg Message, dropPlain bool) bool {
 	if !dropPlain {
-		return msg
+		return false
 	}
-	needs := false
 	for _, p := range msg.Content {
 		if p.Kind != ContentThinking && p.Kind != ContentRedThinking {
 			continue
 		}
 		if np, dropped := TrimThinkingForReplay(p, true); dropped || np.Thinking != p.Thinking {
-			needs = true
-			break
+			return true
 		}
 	}
-	if !needs {
+	return false
+}
+
+// TrimThinkingForReplayMessage maps TrimThinkingForReplay over a message,
+// returning the input unchanged when nothing has to change.
+func TrimThinkingForReplayMessage(msg Message, dropPlain bool) Message {
+	if !TrimsThinkingForReplay(msg, dropPlain) {
 		return msg
 	}
 	out := make([]ContentPart, 0, len(msg.Content))

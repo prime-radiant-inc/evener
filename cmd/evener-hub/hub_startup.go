@@ -859,11 +859,13 @@ func (r *hubRuntime) startBackground(web *WebServer) (context.Context, func()) {
 	goBackground(func() { runNavigationPublisher(ctx, web.navigation, web.appRPC) })
 	goBackground(func() { watchHubRoster(ctx, roster) })
 
-	// Past index and message search share one tick, and a tick skips both when
-	// no session file moved since the last pass: their inputs are the same
-	// projects tree, and re-reading it unchanged was the hub's largest idle
-	// cost (#6424). The interval is unchanged, so a new session, message or
-	// index entry is still visible within the same bound.
+	// Past index and message search share one tick. A tick skips the past
+	// index's rebuild when no session meta moved since the last one, which was
+	// the hub's largest idle cost (#6424); the message-search refresh runs every
+	// tick regardless, because what it owes a retry to (a refused or contended
+	// transcript read) is not all visible on disk. The interval is unchanged,
+	// so a new session, message or index entry is still visible within the
+	// same bound.
 	goBackground(func() { newHubPastSweep(past, r.messageSearch).run(ctx, cfg.PastIndexRebuild) })
 
 	// Snapshot wake: derives each live session's attention level from the same

@@ -40,6 +40,14 @@ func (d *scriptedItemDaemon) nextPageCall() int {
 	return call
 }
 
+// pageCalls reports how many thread/turns/list calls the source has made, which
+// is the paging work a read performs beyond the page the daemon already returned.
+func (d *scriptedItemDaemon) pageCalls() int {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.pages
+}
+
 // unexpectedPageCall and unexpectedReadCall script the call a source must
 // never make, so a test that reaches one fails on the scripted refusal.
 func unexpectedPageCall(int, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {

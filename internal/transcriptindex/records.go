@@ -407,6 +407,7 @@ type recordFile interface {
 	WriteAt(p []byte, off int64) (int, error)
 	Stat() (os.FileInfo, error)
 	Truncate(size int64) error
+	Sync() error
 	Close() error
 }
 
@@ -512,7 +513,29 @@ func (t *table) buffer(slot uint64) error {
 		t.flushed = 0
 		return nil
 	}
-	t.buf = append(t.buf, make([]byte, end-int64(len(t.buf)))...)
+	// Writes arrive one record at a time, so the shortfall here is a single
+	// record: appending exactly that hands the growth factor to the runtime,
+	// which grows a large slice by about a quarter of itself, so the copies sum
+	// to several times the content and a cold rebuild pays them for every record
+	// it writes. Grow to twice the current capacity in one allocation instead
+	// (bounded by what the table may buffer, never short of end), which sums to
+	// under twice the content.
+	if end <= int64(cap(t.buf)) {
+		// The capacity is already there, but its bytes past len are not
+		// necessarily zeros: truncate shortens the buffer over records it
+		// dropped, so clear the region this growth exposes. Those bytes would
+		// otherwise reach the sidecar as records the rebuild never wrote.
+		clear(t.buf[len(t.buf):end])
+		t.buf = t.buf[:end]
+		return nil
+	}
+	grown := max(end, 2*int64(cap(t.buf)))
+	if t.file != nil {
+		grown = min(grown, recordBufferLimit)
+	}
+	buf := make([]byte, end, grown)
+	copy(buf, t.buf)
+	t.buf = buf
 	return nil
 }
 

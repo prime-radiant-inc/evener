@@ -592,7 +592,7 @@ Key mapping: `base`, `inherit_models`, `inherit_models_matching`, `api_key`,
 `api_key_env`, `headers`, `credential_headers`, `surface`, `family`,
 `default_model`, `cheap_model` →
 `Provider`; `transport`, `base_url`, `host_rule`, `auth`, `auth_header`,
-`endpoint`, `stream_endpoint`, `models_endpoint`, `count_tokens_endpoint`,
+`endpoint`, `stream_endpoint`, `models_endpoint`, `codex_client_version`, `count_tokens_endpoint`,
 `vars`, `vars_env`, `body` → `Provider.Transport`; `protocol` →
 `Provider.Protocol`; every `Caps` field by its snake_case name at the
 instance level → `Provider.Caps`, or inside
@@ -784,6 +784,12 @@ transport with behavior beyond authentication:
   <name>` after confirming that the record is no longer needed.
 - `openai/…` still means the platform API unless the user explicitly writes
   `[providers.openai] base = "openai-codex"`.
+- model discovery sends the required `client_version` query parameter, defaulting
+  to `0.888.0`. A Codex provider can override it with
+  `codex_client_version = "<version>"`; providers with `base = "openai-codex"`
+  inherit the default. In the provider editor, **Codex client version** in the
+  connection settings edits the authored override. Leaving it blank restores the
+  default. This setting changes model discovery only, not completion requests.
 - the backend enforces a model allowlist: an unknown id is a resolve error,
   not a synthesized row (the exception in [Unknown models](#unknown-models)
   above). Launch and resume resolve the reference again after applying the

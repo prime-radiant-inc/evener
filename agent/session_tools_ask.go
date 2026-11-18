@@ -113,7 +113,7 @@ func (s *Session) SetBootGeneration(generation string) {
 func (s *Session) setBootGenerationLocked(generation string) {
 	s.bootGeneration = generation
 	s.modelControlRequestSequence = 0
-	s.pendingModel = pendingModelSwitch{}
+	s.pendingModels = nil
 	s.modelControl = appwire.ModelControlSnapshot{
 		Authority: appwire.ModelControlAuthority{InstanceID: s.id, BootGeneration: generation},
 		Revision:  1,

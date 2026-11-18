@@ -26,14 +26,14 @@ func TestVoiceArmCapabilityFollowsTheHubAnswer(t *testing.T) {
 		}
 		return params.Capabilities
 	}
-	if caps := decode(stampVoiceArmCapability(frame(`{"send":true}`), true)); string(caps["voiceArm"]) != "true" || string(caps["send"]) != "true" {
+	if caps := decode(stampStatusCapabilities(frame(`{"send":true}`), relayCapabilityAnswers{voiceArm: true})); string(caps["voiceArm"]) != "true" || string(caps["send"]) != "true" {
 		t.Fatalf("stamped capabilities = %v, want voiceArm beside the daemon's send", caps)
 	}
-	if caps := decode(stampVoiceArmCapability(frame(`{"send":true,"voiceArm":true}`), false)); string(caps["voiceArm"]) != "false" {
+	if caps := decode(stampStatusCapabilities(frame(`{"send":true,"voiceArm":true}`), relayCapabilityAnswers{})); string(caps["voiceArm"]) != "false" {
 		t.Fatalf("stamped capabilities = %v, want a stale voiceArm replaced with false", caps)
 	}
 	other := appwire.Notification{Method: appwire.NotifyThreadNameChanged, Params: json.RawMessage(`{"threadId":"t1"}`)}
-	if got := stampVoiceArmCapability(other, true); string(got.Params) != string(other.Params) {
+	if got := stampStatusCapabilities(other, relayCapabilityAnswers{voiceArm: true}); string(got.Params) != string(other.Params) {
 		t.Fatalf("a non-status frame changed: %s", got.Params)
 	}
 }

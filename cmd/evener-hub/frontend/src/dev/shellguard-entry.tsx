@@ -932,7 +932,7 @@ target.activityRowFixture = (open) => {
           <WatchRow key={row.id} row={row} now={ROW_TIME_NOW} />
         ))}
       </div>
-      <div data-row-case="task">
+      <div data-row-case="task" className={activityStyles.taskList}>
         <TasksPanelBody
           sessionRef={ROW_PADDING_REF}
           model={hydrateThread(activityThread(ROW_PADDING_REF), ROW_PADDING_REF, 0)}

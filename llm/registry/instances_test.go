@@ -444,7 +444,6 @@ func TestCredential_GCPADCPrefersStoredJSON(t *testing.T) {
 	const stored = `{"type":"authorized_user","client_id":"a","client_secret":"b","refresh_token":"c"}`
 	r := fixtureLoad(t, noADCEnv(t), vertexUserInstanceToml, WithCredentials(fakeCreds{"vertex": stored}))
 	inst, ok := r.Instance("vertex")
-
 	if !ok || inst.CredentialSource != "store" || len(inst.Warnings) != 0 {
 		t.Fatalf("instance = %+v ok=%v; want source store with no warnings", inst, ok)
 	}

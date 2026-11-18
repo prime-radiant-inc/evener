@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -15,8 +16,23 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+// tick is one tick's work in the order a tick does it: the rebuild when the
+// digest moved, then the refresh. The two run on their own loops in production;
+// a test that is about what one tick reaches calls this instead of driving the
+// loops.
+func (s *hubPastSweep) tick(ctx context.Context) {
+	s.sweepRebuild(ctx)
+	s.sweepRefresh(ctx)
+}
+
 // sweepFixture is a projects root holding one indexed session, plus the two
 // indexes the sweeper drives.
+//
+// The root also holds a pre-identifier directory, because that is what a real
+// projects root looks like ("hundreds of pre-identifier directories",
+// past_skips_test.go) and because the digest gate must not be held open by one:
+// SessionTreeStamp ignores such a directory, so a rescan can never index it and
+// a coverage rule that counted it would re-scan an idle tree every tick.
 type sweepFixture struct {
 	stateDir  string
 	sessionID string
@@ -27,6 +43,9 @@ type sweepFixture struct {
 func newSweepFixture(t *testing.T) *sweepFixture {
 	t.Helper()
 	projectsRoot := filepath.Join(t.TempDir(), "projects")
+	if err := os.MkdirAll(filepath.Join(projectsRoot, "legacy16hexname"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	stateDir := hubtest.ProjectDir(t, projectsRoot, "alpha")
 	sessionID := hubtest.SessionID(t)
 	now := time.Now().UTC()
@@ -110,7 +129,7 @@ func TestSweepPicksUpATranscriptAppendOnTheNextTick(t *testing.T) {
 	sweep := newHubPastSweep(f.past, f.search)
 	ctx := context.Background()
 
-	sweep.sweep(ctx)
+	sweep.tick(ctx)
 	if !f.messageSearchable(t, "first") {
 		t.Fatal("the seeded message is not searchable after a sweep")
 	}
@@ -119,7 +138,7 @@ func TestSweepPicksUpATranscriptAppendOnTheNextTick(t *testing.T) {
 	}
 
 	f.appendUserTurn(t, "the second searchable line")
-	sweep.sweep(ctx)
+	sweep.tick(ctx)
 	if !f.messageSearchable(t, "second") {
 		t.Fatal("an appended message is not searchable after the next sweep")
 	}
@@ -143,7 +162,7 @@ func TestSweepReadsASessionARepairedSidecarMadeReadable(t *testing.T) {
 	sweep := newHubPastSweep(f.past, f.search)
 	ctx := context.Background()
 
-	sweep.sweep(ctx)
+	sweep.tick(ctx)
 	if f.messageSearchable(t, "first") {
 		t.Fatal("a session with no sidecar is already searchable; the refusing path was not exercised")
 	}
@@ -151,37 +170,151 @@ func TestSweepReadsASessionARepairedSidecarMadeReadable(t *testing.T) {
 	// The repair lane's effect, and the only write between the two sweeps.
 	indexPastTranscriptForTest(t, f.stateDir, f.sessionID)
 
-	sweep.sweep(ctx)
+	sweep.tick(ctx)
 	if !f.messageSearchable(t, "first") {
 		t.Fatal("a repaired session was not read on the next sweep; running the refresh only behind the digest strands it")
 	}
 }
 
 // TestSweepSkipsFullPassWhenNothingChanged is the change the issue asks for: an
-// idle sweep must not redo the full scan and refresh. It counts the work, not
-// the time.
+// idle sweep must not redo the past index's full scan. (The refresh still runs
+// every tick, by design.) It counts the work, not the time.
 func TestSweepSkipsFullPassWhenNothingChanged(t *testing.T) {
 	f := newSweepFixture(t)
 	sweep := newHubPastSweep(f.past, f.search)
 	ctx := context.Background()
 
-	sweep.sweep(ctx)
+	sweep.tick(ctx)
 	before := sweep.rebuildCount()
-	sweep.sweep(ctx)
-	sweep.sweep(ctx)
+	sweep.tick(ctx)
+	sweep.tick(ctx)
 	if got := sweep.rebuildCount() - before; got != 0 {
 		t.Fatalf("idle sweeps did full work %d times, want 0", got)
+	}
+	// The fixture's projects root holds a pre-identifier directory beside the
+	// real project. It is refused by the scan and named in the skip report, but
+	// it must not hold the gate open: nothing under it can reach the index, and
+	// re-scanning an idle tree every tick is the cost #6424 removed.
+	if !f.past.RebuildCoveredTree() {
+		t.Fatalf("a rebuild over a root that also holds %q does not report the tree covered, so every idle tick would rescan", "legacy16hexname")
 	}
 
 	// A rename still has to be seen by the very next sweep, so the gate cannot
 	// be a one-way latch.
 	f.renameSession(t, "Renamed by the client")
-	sweep.sweep(ctx)
+	sweep.tick(ctx)
 	if got := sweep.rebuildCount() - before; got != 1 {
 		t.Fatalf("a changed tree did %d full passes, want exactly 1", got)
 	}
 	entry, ok := f.past.Lookup(f.sessionID)
 	if !ok || entry.Meta.Name != "Renamed by the client" {
+		t.Fatalf("the rename is not in the index: name=%q found=%v", entry.Meta.Name, ok)
+	}
+
+	// The gate may only stay closed when the rebuild that closed it actually
+	// covered the tree. Rename on disk, then park Rebuild after each scan and
+	// fold the row it already holds with a newer stamp, which moves the index's
+	// generation and supersedes every attempt — the contended case Rebuild gives
+	// up on after pastRebuildAttempts. That is the aborted rebuild: the index is
+	// left holding the row it held, and the tree digest over the same files has
+	// not moved since it was taken.
+	f.renameSession(t, "Renamed while the rebuild was aborted")
+	idx := f.past
+	idx.SetBeforeRebuildSwapForTest(func() {
+		if entry, ok := idx.Lookup(f.sessionID); ok {
+			folded := entry.Meta
+			folded.UpdatedAt = folded.UpdatedAt.Add(time.Minute)
+			idx.UpdateMeta(f.sessionID, folded)
+		}
+	})
+	settled := sweep.rebuildCount()
+	sweep.tick(ctx)
+	if got := sweep.rebuildCount() - settled; got != 1 {
+		t.Fatalf("the aborted sweep ran %d rebuilds, want 1", got)
+	}
+	if entry, ok := f.past.Lookup(f.sessionID); !ok || entry.Meta.Name != "Renamed by the client" {
+		t.Fatalf("the aborted rebuild changed the index: name=%q found=%v", entry.Meta.Name, ok)
+	}
+
+	// The tick after an aborted rebuild owes it a re-scan even though nothing
+	// on disk has moved since the digest was taken. Recording the digest for
+	// the aborted rebuild is precisely the defect: the gate would decide the
+	// tree is unchanged and never pick the rename up.
+	settled = sweep.rebuildCount()
+	sweep.tick(ctx)
+	if got := sweep.rebuildCount() - settled; got != 1 {
+		t.Fatalf("the tick after an aborted rebuild ran %d rebuilds, want 1: the incomplete rebuild left the digest recorded, so the gate skipped the re-scan it owed", got)
+	}
+
+	// Once a rebuild covers the tree again the gate closes: a quiet tree stops
+	// paying for scans, and the rename the aborted rebuild missed is indexed.
+	idx.SetBeforeRebuildSwapForTest(nil)
+	sweep.tick(ctx)
+	if entry, ok := f.past.Lookup(f.sessionID); !ok || entry.Meta.Name != "Renamed while the rebuild was aborted" {
+		t.Fatalf("the rename the aborted rebuild missed is not in the index after a complete rebuild: name=%q found=%v", entry.Meta.Name, ok)
+	}
+	settled = sweep.rebuildCount()
+	sweep.tick(ctx)
+	if got := sweep.rebuildCount() - settled; got != 0 {
+		t.Fatalf("the gate stayed open after a complete rebuild: %d idle passes, want 0", got)
+	}
+}
+
+// TestSweepRebuildDoesNotWaitBehindASlowRefresh is #6652: one goroutine running
+// the rebuild and then the refresh let a refresh pass hold the past index, so a
+// hub that dropped its search.db stopped seeing new sessions for as long as the
+// fill took. The refresh here is held open and one tick then has to reach the
+// rebuild anyway.
+func TestSweepRebuildDoesNotWaitBehindASlowRefresh(t *testing.T) {
+	f := newSweepFixture(t)
+	sweep := newHubPastSweep(f.past, f.search)
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	sweep.refresh = func(context.Context) {
+		once.Do(func() { close(entered) })
+		<-release
+	}
+
+	ticks := make(chan time.Time, 1)
+	oldTicker := hubTicker
+	hubTicker = func(time.Duration) (<-chan time.Time, func()) { return ticks, func() {} }
+	t.Cleanup(func() { hubTicker = oldTicker })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		sweep.run(ctx, time.Hour)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		close(release)
+		<-done
+	})
+
+	<-entered
+	// The refresh's first pass must not start before the rebuild that gives it
+	// a session list: an empty list reads as "every indexed session is gone"
+	// and Refresh forgets all of them.
+	if sweep.rebuildCount() == 0 {
+		t.Fatal("the first refresh pass ran before any rebuild; an empty list forgets every indexed session")
+	}
+
+	f.renameSession(t, "Renamed while the refresh was stuck")
+	before := sweep.rebuildCount()
+	ticks <- time.Now()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for sweep.rebuildCount() == before {
+		if time.Now().After(deadline) {
+			t.Fatal("a tick's rebuild never ran while a refresh pass was held open; the refresh is blocking the past index")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	entry, ok := f.past.Lookup(f.sessionID)
+	if !ok || entry.Meta.Name != "Renamed while the refresh was stuck" {
 		t.Fatalf("the rename is not in the index: name=%q found=%v", entry.Meta.Name, ok)
 	}
 }

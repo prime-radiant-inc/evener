@@ -11,10 +11,12 @@ import { Skeleton } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { useActivityScrollProgress } from "./ActivityViewport";
 import styles from "./activitybar.module.css";
+import { activityPlaceholderLines } from "./activityPlaceholders";
 import type { ActivityTabBodyProps } from "./activityTabs";
 
 const CLASS = {
   stack: requireClass(styles.stack, "activitybar.module.css", "stack"),
+  taskList: requireClass(styles.taskList, "activitybar.module.css", "taskList"),
 };
 
 export function TasksTab({ scope, now }: ActivityTabBodyProps) {
@@ -26,10 +28,10 @@ export function TasksTab({ scope, now }: ActivityTabBodyProps) {
     !!entry && entry.rows !== null && !entry.loading && !entry.failure && !entry.daemonGone && !entry.unsupported,
   );
   if (!model) {
-    return <Skeleton lines={2} />;
+    return <Skeleton lines={activityPlaceholderLines(scope.counts.tasksTotal)} />;
   }
   return (
-    <div className={CLASS.stack}>
+    <div className={`${CLASS.stack} ${CLASS.taskList}`}>
       <TasksPanelBody
         sessionRef={ref}
         model={model}

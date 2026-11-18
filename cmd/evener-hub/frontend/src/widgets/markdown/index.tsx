@@ -203,22 +203,24 @@ const SANITIZE_CONFIG = {
 // the single-root path, but over a token array carved out by segments.ts (a
 // token array, never re-serialized source, so whole-document references stay
 // resolved). Memoized on the token array so a settling diagram elsewhere in
-// the message does not re-sanitize untouched prose. `window` (issue #3208) is
-// the still-streaming tail of a long settled run: it sanitizes into the SAME
-// div, so a split at a paragraph boundary keeps the spacing a single parse
-// would, while the settled `tokens` keep their identity and their memo hits.
+// the message does not re-sanitize untouched prose. `closedWindow` (issue
+// #3208) is the still-streaming tail of a long settled run: it sanitizes into
+// the SAME div, so a split at a paragraph boundary keeps the spacing a single
+// parse would, while the settled `tokens` keep their identity and their memo
+// hits. It is parsed as given - segments.ts closed it when it split, and
+// closing it here too walked the window's lines twice per frame (issue #6669).
 const MarkdownSlice = memo(function MarkdownSlice({
   segment,
 }: {
-  segment: { kind: "markdown"; tokens: Token[]; window?: string };
+  segment: { kind: "markdown"; tokens: Token[]; closedWindow?: string };
 }) {
   const html = useMemo(() => DOMPurify.sanitize(md.parser(segment.tokens), SANITIZE_CONFIG), [segment.tokens]);
   const windowHtml = useMemo(
     () =>
-      segment.window === undefined
+      segment.closedWindow === undefined
         ? ""
-        : DOMPurify.sanitize(md.parse(closeOpenMarkdown(segment.window), { async: false }), SANITIZE_CONFIG),
-    [segment.window],
+        : DOMPurify.sanitize(md.parse(segment.closedWindow, { async: false }), SANITIZE_CONFIG),
+    [segment.closedWindow],
   );
   // biome-ignore lint/security/noDangerouslySetInnerHtml: same sanitized pipeline as the single-root path, see above
   return <div className={CLASS.root} dangerouslySetInnerHTML={{ __html: html + windowHtml }} />;

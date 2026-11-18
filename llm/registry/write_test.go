@@ -25,7 +25,7 @@ func writerFixtureLayer() *Layer {
 				CredentialHeaders:     map[string]string{"Authorization": "Bearer $PORTKEY_KEY"},
 				APIKeyEnv:             []string{},
 				DefaultModel:          "glm-5.2-nvfp4",
-				Transport:             Transport{BaseURL: "https://gw.example.com/v1"},
+				Transport:             Transport{BaseURL: "https://gw.example.com/v1", CodexClientVersion: "0.166.0"},
 				Caps: Caps{
 					Fields: map[string]bool{"stream_options": false}, ContextWindow: new(131072),
 					ChatTemplateKwargs: map[string]any{"enable_thinking": true, "options": map[string]any{"mode": "fast"}},

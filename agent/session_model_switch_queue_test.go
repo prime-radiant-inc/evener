@@ -425,10 +425,203 @@ func TestConcurrentMidTurnPicksLastAcceptedChoiceWins(t *testing.T) {
 	}
 }
 
+// TestLateOlderPickAppliesWhenTheNewerPickFailsAtTheBoundary pins the queue's
+// ordering under the interleaving roborev found on #6683: pick A (older) has a
+// slow preflight, pick B (newer) stores first, then A's preflight finishes. An
+// implementation that lets the newer store stop the older pick from queueing
+// reproduces #6621 exactly - if B then fails the boundary's deferred history
+// check, neither pick applies.
+//
+// The queue must instead keep both and let the pop choose. B's target cannot
+// carry the content the turn adds before the boundary, so B is rejected there
+// and A, still queued, must be what the next turn runs on.
+func TestLateOlderPickAppliesWhenTheNewerPickFailsAtTheBoundary(t *testing.T) {
+	dir := t.TempDir()
+	openaiAdapter := &gatedListingAdapter{name: "openai"}
+	glmAdapter := &gatedListingAdapter{name: "glm"}
+	s := newSession(t,
+		withAdapter(openaiAdapter),
+		withAdapter(glmAdapter),
+		withDir(dir),
+		withConfig(SessionConfig{
+			StateDir:         dir,
+			MaxSubagentDepth: 1,
+			ResolveProfile:   testResolver,
+			testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+		}))
+	// B's target speaks the Chat protocol (unrepresentable for a non-user
+	// document); A's target is OpenAI Responses and can carry it. That
+	// asymmetry is what makes B fail at the boundary while A survives.
+	doc := documentTurn()
+	doc.Message.Role = llm.RoleAssistant
+	if len(unrepresentableHistoryKinds([]schema.Turn{doc}, registry.ProtocolOpenAIChat)) == 0 {
+		t.Fatal("pre-condition: a non-user document must be unrepresentable for B's target")
+	}
+	if got := len(unrepresentableHistoryKinds([]schema.Turn{doc}, NewOpenAIProfile("gpt-5.4").Protocol())); got != 0 {
+		t.Fatalf("pre-condition: A's target must carry the document, got %d offending kinds", got)
+	}
+
+	releaseA := make(chan struct{})
+	aListingCalled := make(chan struct{}, 1)
+	openaiAdapter.models = []func() ([]registry.Model, error){
+		// A's preflight: parked until B has stored, so A arrives last.
+		func() ([]registry.Model, error) {
+			aListingCalled <- struct{}{}
+			<-releaseA
+			return []registry.Model{{ID: "gpt-5.2"}, {ID: "gpt-5.4"}}, nil
+		},
+	}
+	glmAdapter.models = []func() ([]registry.Model, error){
+		// B's preflight: resolves and queues immediately.
+		func() ([]registry.Model, error) { return []registry.Model{{ID: "glm-test"}}, nil },
+	}
+
+	aDone, bDone := make(chan error, 1), make(chan error, 1)
+	openaiAdapter.setSteps([]func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			go func() { aDone <- s.SetModel("gpt-5.4") }()
+			// B enters its own preflight only once A has claimed its parked
+			// listing, so the two route deterministically.
+			go func() {
+				<-aListingCalled
+				bDone <- s.SetModel("glm/glm-test")
+			}()
+			return agenttest.CommunicateResponse(true, "first turn done")
+		},
+		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "queued turn done") },
+	})
+	serveSessionWithMutationStore(t, s)
+	queueOneMutation(t, s, "cm-late-older-pick", "the queued message")
+	// The boundary hook is the rendezvous: B has stored by now, so releasing
+	// A here makes A the late arrival. The content B cannot carry is added
+	// before A finishes, so it is settled history when the boundary runs.
+	hookOnce := make(chan struct{}, 1)
+	updateSessionTestConfig(s, func(cfg *testConfig) {
+		cfg.afterCommunicateBoundary = func(*Session) {
+			select {
+			case hookOnce <- struct{}{}:
+				if err := <-bDone; err != nil {
+					t.Errorf("newer pick: %v", err)
+				}
+				s.appendTurn(schema.TurnAssistant, doc.Message)
+				close(releaseA)
+				if err := <-aDone; err != nil {
+					t.Errorf("older pick: %v", err)
+				}
+			default:
+			}
+		}
+	})
+
+	if _, err := s.ProcessInput(context.Background(), "first message", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	requests := openaiAdapter.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("model requests = %d, want the first turn and the drained queued message (2)", len(requests))
+	}
+	if requests[1].Model != "gpt-5.4" {
+		t.Fatalf("the queued message ran on model %q; the newer pick fails its deferred history check, so the older still-queued pick must apply (%q)", requests[1].Model, "gpt-5.4")
+	}
+	if got := s.Profile().Model(); got != "gpt-5.4" {
+		t.Fatalf("selected model = %q; the older pick must be selected once the newer one is rejected (%q)", got, "gpt-5.4")
+	}
+}
+
+// TestBusyRequeueDoesNotCancelAnOlderPickItMightStillFail pins the re-queue's
+// acceptance rule: a pick that finds a turn in flight queues for that turn's
+// boundary, where the history check runs again against what the turn appended.
+// Queuing therefore must not mark the pick accepted, or it cancels an older
+// pick that would still have been valid.
+func TestBusyRequeueDoesNotCancelAnOlderPickItMightStillFail(t *testing.T) {
+	dir := t.TempDir()
+	openaiAdapter := &gatedListingAdapter{name: "openai"}
+	glmAdapter := &gatedListingAdapter{name: "glm"}
+	s := newSession(t,
+		withAdapter(openaiAdapter),
+		withAdapter(glmAdapter),
+		withDir(dir),
+		withConfig(SessionConfig{
+			StateDir:         dir,
+			MaxSubagentDepth: 1,
+			ResolveProfile:   testResolver,
+			testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+		}))
+	doc := documentTurn()
+	doc.Message.Role = llm.RoleAssistant
+	if len(unrepresentableHistoryKinds([]schema.Turn{doc}, registry.ProtocolOpenAIChat)) == 0 {
+		t.Fatal("pre-condition: a non-user document must be unrepresentable for B's target")
+	}
+
+	releaseB, releaseA := make(chan struct{}), make(chan struct{})
+	bListingCalled, aListingCalled := make(chan struct{}, 1), make(chan struct{}, 1)
+	glmAdapter.models = []func() ([]registry.Model, error){
+		func() ([]registry.Model, error) {
+			bListingCalled <- struct{}{}
+			<-releaseB
+			return []registry.Model{{ID: "glm-test"}}, nil
+		},
+	}
+	openaiAdapter.models = []func() ([]registry.Model, error){
+		func() ([]registry.Model, error) {
+			aListingCalled <- struct{}{}
+			<-releaseA
+			return []registry.Model{{ID: "gpt-5.2"}, {ID: "gpt-5.4"}}, nil
+		},
+	}
+
+	// Both picks are admitted at rest, before any turn runs, so each takes the
+	// at-rest path and reaches the busy re-queue once the turn starts. A is
+	// admitted first, so it owns the older issue; B is admitted second and
+	// finishes first, which is the interleaving the re-queue rule is about.
+	bDone, aDone := make(chan error, 1), make(chan error, 1)
+	go func() { aDone <- s.SetModel("gpt-5.4") }()
+	<-aListingCalled
+	go func() { bDone <- s.SetModel("glm/glm-test") }()
+	<-bListingCalled
+
+	openaiAdapter.setSteps([]func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			// The turn is in flight now: release B, which re-queues, adding
+			// history the boundary's check will reject.
+			close(releaseB)
+			if err := <-bDone; err != nil {
+				t.Errorf("newer pick: %v", err)
+			}
+			s.appendTurn(schema.TurnAssistant, doc.Message)
+			// Then release A: it finds a turn in flight and re-queues too.
+			close(releaseA)
+			if err := <-aDone; err != nil {
+				t.Errorf("older pick: %v", err)
+			}
+			return agenttest.CommunicateResponse(true, "first turn done")
+		},
+		func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "queued turn done") },
+	})
+	serveSessionWithMutationStore(t, s)
+	queueOneMutation(t, s, "cm-busy-requeue", "the queued message")
+
+	if _, err := s.ProcessInput(context.Background(), "first message", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	requests := openaiAdapter.Requests()
+	if len(requests) != 2 {
+		t.Fatalf("model requests = %d, want the first turn and the drained queued message (2)", len(requests))
+	}
+	if requests[1].Model != "gpt-5.4" {
+		t.Fatalf("the queued message ran on model %q; the re-queued newer pick fails its deferred history check, so the older re-queued pick must apply (%q)", requests[1].Model, "gpt-5.4")
+	}
+	if got := s.Profile().Model(); got != "gpt-5.4" {
+		t.Fatalf("selected model = %q; the older pick must be selected once the newer one is rejected (%q)", got, "gpt-5.4")
+	}
+}
+
 // TestRejectedPickDoesNotCancelAnEarlierQueuedPick pins the watermark's
 // acceptance rule: a pick that fails validation (here, an unresolvable ref)
-// must not advance the generation, or the queued switch accepted before it
-// would drop as superseded at the boundary.
+// must not advance it, or the switch queued before it would drop as superseded
+// at the boundary.
 func TestRejectedPickDoesNotCancelAnEarlierQueuedPick(t *testing.T) {
 	dir := t.TempDir()
 	listModels := attemptRecordingLiveModels("openai", "gpt-5.2", "gpt-5.4")
@@ -614,11 +807,15 @@ func TestCommittedSwitchPublicationsLandInCommitOrder(t *testing.T) {
 	}
 }
 
-// TestSlowerOlderPickDoesNotTemporarilyReconcileTools pins the request-sequence
-// fence through provider-specific tool state. Once a newer pick is admitted,
-// an older pick that finishes validation later is superseded without applying
-// its provider or temporarily removing the current provider's tools.
-func TestSlowerOlderPickDoesNotTemporarilyReconcileTools(t *testing.T) {
+// TestNewerPickReconcilesToolsAgainstTheProfileItActuallyReplaces pins the
+// commit path's transition facts: a pick classifies its switch against the
+// profile current when it validated, but commits later, and an older pick's
+// application can move the session through another provider while this one
+// sat parked in its live-listing preflight. The commit must reconcile the
+// provider-specific tools against the profile it actually replaces, so a
+// same-provider pick landing past an intervening cross-provider switch still
+// re-registers the tools that switch removed.
+func TestNewerPickReconcilesToolsAgainstTheProfileItActuallyReplaces(t *testing.T) {
 	dir := t.TempDir()
 	googleAdapter := &gatedListingAdapter{name: "google"}
 	openaiAdapter := &gatedListingAdapter{name: "openai"}
@@ -669,32 +866,33 @@ func TestSlowerOlderPickDoesNotTemporarilyReconcileTools(t *testing.T) {
 	olderDone := make(chan error, 1)
 	go func() { olderDone <- s.SetModel("openai/gpt-5.2") }()
 	<-olderCalled
-	// The newer pick (google) is admitted second and parks in its enumeration.
-	// Its request sequence supersedes the older pick before either can commit.
+	// The newer pick (google) is admitted second: it classifies itself
+	// same-provider against the still-google profile, then parks in its own
+	// enumeration. Its commit lands after the older pick's, which the
+	// acceptance watermark permits: neither application superseded the other.
 	newerDone := make(chan error, 1)
 	go func() { newerDone <- s.SetModel("gemini-2.5-pro") }()
 	<-newerCalled
 
-	// The older pick's enumeration returns while the newer pick is still parked.
-	// It must not cause a temporary google -> openai transition.
+	// The older pick's enumeration returns and its commit lands while the
+	// newer pick is still parked: google -> openai, web_search removed.
 	close(releaseOlder)
 	if err := <-olderDone; err != nil {
 		t.Fatalf("older pick: %v", err)
 	}
-	if s.reg.Get("web_search") == nil {
-		t.Fatal("superseded older pick removed web_search before the newer pick settled")
-	}
-	if got := s.Profile().Model(); got != "gemini-2.5-pro" {
-		t.Fatalf("profile model after superseded older pick = %q, want %q", got, "gemini-2.5-pro")
+	if s.reg.Get("web_search") != nil {
+		t.Fatal("pre-condition: the intervening openai switch must have removed web_search")
 	}
 
-	// The newer same-model pick then settles without changing provider tools.
+	// The newer pick's enumeration returns and its commit lands on the openai
+	// profile: the transition it actually replaces is openai -> google, and
+	// the provider-specific tools the intervening switch removed must return.
 	close(releaseNewer)
 	if err := <-newerDone; err != nil {
 		t.Fatalf("newer pick: %v", err)
 	}
 	if s.reg.Get("web_search") == nil {
-		t.Fatal("web_search is missing after the newer same-provider pick settled")
+		t.Fatal("web_search is missing after a same-provider pick landed past an intervening cross-provider switch; the commit must reconcile provider tools against the profile it actually replaces")
 	}
 	if got := s.Profile().Model(); got != "gemini-2.5-pro" {
 		t.Fatalf("profile model = %q; the newer pick must own the outcome (%q)", got, "gemini-2.5-pro")
@@ -702,8 +900,8 @@ func TestSlowerOlderPickDoesNotTemporarilyReconcileTools(t *testing.T) {
 }
 
 // TestACommittedSwitchPublishesEvenWhenANewerQueuedPickLaterFails pins the
-// publication contract behind the watermark: a queued pick's store advances
-// the acceptance watermark, but the queued pick can still fail its deferred
+// publication contract behind supersession: a newer pick can queue while an
+// older switch is committing, and that queued pick can still fail its deferred
 // validation at the boundary it was waiting for. Suppressing an already
 // committed switch's publication because a newer pick queued would then leave
 // the session running a model no marker or event ever named - subscribers
@@ -824,4 +1022,142 @@ func TestACommittedSwitchPublishesEvenWhenANewerQueuedPickLaterFails(t *testing.
 	if snapshot.Active.Model != "gpt-5.4" || snapshot.Desired == nil || snapshot.Desired.Model != "glm-test" || snapshot.Desired.Lifecycle != appwire.ModelControlLifecycleRejected {
 		t.Fatalf("model control after deferred failure = %+v, want gpt-5.4 active and glm-test rejected", snapshot)
 	}
+}
+
+// TestRejectedDeferredPickDoesNotCancelAnEarlierValidPick pins the ordering in
+// issue #6621: pick A is valid, pick B is later and fails only the boundary's
+// deferred history check. B's rejection must not take A's accepted choice with
+// it.
+//
+// The pair is the whole matrix the store and the commit check must agree on:
+//   - valid then invalid: A applies even though B was picked later.
+//   - invalid then valid: B's rejection leaves nothing queued, so A applies.
+//
+// The assertions are behavioral: the model each turn actually ran on and the
+// session's selected model. B's pick is shown to pass pick-time validation
+// (SetModel returns nil for it) while its target cannot carry the settled
+// history, so the only place it can fail is the boundary - which is the path
+// that used to cancel A.
+func TestRejectedDeferredPickDoesNotCancelAnEarlierValidPick(t *testing.T) {
+	t.Run("valid then invalid", func(t *testing.T) {
+		dir := t.TempDir()
+		listModels := attemptRecordingLiveModels("openai", "gpt-5.2", "gpt-5.4")
+		openaiAdapter := &fakeAdapter{
+			name:       "openai",
+			liveModels: func(ctx context.Context) ([]registry.Model, error) { return listModels(ctx) },
+		}
+		glmAdapter := &fakeAdapter{
+			name: "glm",
+			liveModels: func(context.Context) ([]registry.Model, error) {
+				return []registry.Model{{ID: "glm-test"}}, nil
+			},
+		}
+		s := newSession(t,
+			withAdapter(openaiAdapter),
+			withAdapter(glmAdapter),
+			withDir(dir),
+			withConfig(SessionConfig{
+				StateDir:         dir,
+				MaxSubagentDepth: 1,
+				ResolveProfile:   testResolver,
+				testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+			}))
+		// B's target speaks the Chat protocol, which cannot carry a non-user
+		// document, while A's target (OpenAI Responses) can. That asymmetry is
+		// what makes B fail at the boundary and A survive it.
+		doc := documentTurn()
+		doc.Message.Role = llm.RoleAssistant
+		if len(unrepresentableHistoryKinds([]schema.Turn{doc}, registry.ProtocolOpenAIChat)) == 0 {
+			t.Fatal("pre-condition: a non-user document must be unrepresentable for B's target")
+		}
+		if got := len(unrepresentableHistoryKinds([]schema.Turn{doc}, NewOpenAIProfile("gpt-5.4").Protocol())); got != 0 {
+			t.Fatalf("pre-condition: A's target must carry the document, got %d offending kinds", got)
+		}
+
+		openaiAdapter.setSteps([]func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response {
+				// A is valid: it resolves, passes membership, and queues.
+				if err := s.SetModel("gpt-5.4"); err != nil {
+					t.Errorf("valid pick: %v", err)
+				}
+				// The content B cannot carry arrives after A queued, so only
+				// B's deferred check sees it.
+				s.appendTurn(schema.TurnAssistant, doc.Message)
+				// B passes pick-time resolution and membership; only the
+				// boundary rejects it.
+				if err := s.SetModel("glm/glm-test"); err != nil {
+					t.Errorf("B must pass pick-time validation and fail only at the boundary, got: %v", err)
+				}
+				return agenttest.CommunicateResponse(true, "first turn done")
+			},
+			func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "queued turn done") },
+		})
+		serveSessionWithMutationStore(t, s)
+		queueOneMutation(t, s, "cm-valid-then-invalid", "the queued message")
+
+		if _, err := s.ProcessInput(context.Background(), "first message", nil); err != nil {
+			t.Fatalf("ProcessInput: %v", err)
+		}
+
+		requests := openaiAdapter.Requests()
+		if len(requests) != 2 {
+			t.Fatalf("model requests = %d, want the first turn and the drained queued message (2)", len(requests))
+		}
+		if requests[1].Model != "gpt-5.4" {
+			t.Fatalf("the queued message ran on model %q; the rejected later pick must not cancel the earlier valid pick (%q)", requests[1].Model, "gpt-5.4")
+		}
+		if got := s.Profile().Model(); got != "gpt-5.4" {
+			t.Fatalf("selected model = %q after the later pick's deferred rejection; the earlier valid pick must still be selected (%q)", got, "gpt-5.4")
+		}
+	})
+
+	t.Run("invalid then valid", func(t *testing.T) {
+		dir := t.TempDir()
+		listModels := attemptRecordingLiveModels("openai", "gpt-5.2", "gpt-5.4")
+		openaiAdapter := &fakeAdapter{
+			name:       "openai",
+			liveModels: func(ctx context.Context) ([]registry.Model, error) { return listModels(ctx) },
+		}
+		s := newSession(t,
+			withAdapter(openaiAdapter),
+			withDir(dir),
+			withConfig(SessionConfig{
+				StateDir:         dir,
+				MaxSubagentDepth: 1,
+				testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+			}))
+		openaiAdapter.setSteps([]func(llm.Request) llm.Response{
+			func(llm.Request) llm.Response {
+				if err := s.SetModel("bogus/no-such-model"); err == nil {
+					t.Error("the invalid pick was accepted; it must be rejected")
+				}
+				// The rejection must not change the selection on its own.
+				if got := s.Profile().Model(); got != "gpt-5.2" {
+					t.Fatalf("the rejected pick changed the selected model to %q; a rejection selects nothing (%q)", got, "gpt-5.2")
+				}
+				if err := s.SetModel("gpt-5.4"); err != nil {
+					t.Errorf("the valid pick after a rejection: %v", err)
+				}
+				return agenttest.CommunicateResponse(true, "first turn done")
+			},
+			func(llm.Request) llm.Response { return agenttest.CommunicateResponse(true, "queued turn done") },
+		})
+		serveSessionWithMutationStore(t, s)
+		queueOneMutation(t, s, "cm-invalid-then-valid", "the queued message")
+
+		if _, err := s.ProcessInput(context.Background(), "first message", nil); err != nil {
+			t.Fatalf("ProcessInput: %v", err)
+		}
+
+		requests := openaiAdapter.Requests()
+		if len(requests) != 2 {
+			t.Fatalf("model requests = %d, want the first turn and the drained queued message (2)", len(requests))
+		}
+		if requests[1].Model != "gpt-5.4" {
+			t.Fatalf("the queued message ran on model %q; the valid pick after a rejection must apply (%q)", requests[1].Model, "gpt-5.4")
+		}
+		if got := s.Profile().Model(); got != "gpt-5.4" {
+			t.Fatalf("selected model = %q, want the later valid pick (%q)", got, "gpt-5.4")
+		}
+	})
 }

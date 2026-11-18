@@ -113,6 +113,19 @@ func (s *Session) modelControlFenceAuthorityMatchesLocked(fence modelSwitchFence
 	return fence.authority.InstanceID == s.id && fence.authority.BootGeneration == s.bootGeneration
 }
 
+// modelControlPickSupersededLocked reports whether a switch must drop at its
+// commit because a newer pick already committed a swap.
+//
+// Only a committed swap supersedes a pick. A newer pick that has merely been
+// issued or queued does not: the boundary re-runs its own history check, and a
+// newer pick that fails there must not take an older choice down with it. This
+// is the same rule popNewestPendingModelLocked applies, so a slow older pick
+// still lands when the newer one is rejected. A fence with no issue stamp
+// carries no ordering and is never superseded. Callers hold s.mu.
+func (s *Session) modelControlPickSupersededLocked(fence modelSwitchFence) bool {
+	return fence.pickSeq != 0 && fence.pickSeq < s.modelPickAccepted
+}
+
 func (s *Session) settleModelControlValidationFailure(fence modelSwitchFence, validationErr error) (appwire.ThreadModelSetResponse, error) {
 	s.modelControlPublishMu.Lock()
 	defer s.modelControlPublishMu.Unlock()

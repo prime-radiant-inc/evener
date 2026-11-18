@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { render, screen } from "@testing-library/react";
 import DOMPurify from "dompurify";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { readModuleCss } from "../../styles/cssBlock";
 import codeblockStyles from "../codeblock/codeblock.module.css";
 import { requireClass } from "../internal/requireClass";
@@ -11,8 +11,35 @@ import { Markdown } from "./index";
 import { LIVE_TAIL_WINDOW, LIVE_WINDOWED_MIN_LENGTH } from "./segments";
 import { closeOpenMarkdown } from "./streaming";
 
+// Issue #6669: the windowed live path closed the same tail window twice per
+// frame - once inside splitLiveWindow (whose closedTail the segment dropped)
+// and again in the renderer over the same raw tail. The two orders produce the
+// same HTML, so no output assertion can see the duplicate: the count is the
+// fact. Record every argument closeOpenMarkdown is handed and assert the window
+// text is closed once per windowed frame, not twice. The factory delegates to
+// the real module, so every other test in this file keeps the production
+// behavior; a plain delegating function rather than a vi.fn keeps the file's
+// own vi.restoreAllMocks() from wiping the implementation.
+const closedTexts = vi.hoisted(() => [] as string[]);
+vi.mock("./streaming", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./streaming")>();
+  return {
+    ...actual,
+    closeOpenMarkdown: (source: string) => {
+      closedTexts.push(source);
+      return actual.closeOpenMarkdown(source);
+    },
+  };
+});
+
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+beforeEach(() => {
+  // Bounded bookkeeping: the delegating wrapper records for the whole file, so
+  // each test starts from empty instead of inheriting every earlier frame.
+  closedTexts.length = 0;
 });
 
 const CODEBLOCK_PRE_CLASS = requireClass(codeblockStyles.pre, "codeblock.module.css", "pre");
@@ -725,16 +752,31 @@ test("resolves a far-side link definition while live (def before use)", () => {
 // bounded window re-parses, but the settled+window pair must still render into
 // the same single markdown div as a full parse - a naive extra slice would drop
 // the paragraph gap (`.root p:last-child { margin-bottom: 0 }`).
+//
+// Issue #6669: this path closed the window twice per frame - once inside
+// splitLiveWindow, whose closedTail the segment used to drop, and again in the
+// renderer over the same raw tail. Both orders parse the same closed string, so
+// the HTML is identical and no output assertion can see the duplicate. The
+// count is the fact, so it is read here too.
 test("live matches settled on a closed-diagram head with a long streaming prose tail", () => {
   const sentence = "Lorem ipsum dolor sit amet, consectetur adipiscing elit. ";
   const paragraph = sentence.repeat(25).trim();
   const source = `intro\n\n\`\`\`mermaid\ngraph TD; A-->B\n\`\`\`\n\n${paragraph}\n\n${paragraph}\n\n${sentence.repeat(8).trim()}`;
   expect(source.length).toBeGreaterThan(2000);
+  // The split's tail is exactly this final paragraph (the marker-free frame
+  // below is the whole source, so the boundary lands at the last blank line at
+  // or past the window edge): that string is the frame's window.
+  const tailWindow = sentence.repeat(8).trim();
   // Engagement proof, not just output equality: the windowed path parses the
   // head, the settled tail prefix, and the window separately while the
   // full-parse fallback parses once, so the sanitize-call count separates them.
   const sanitizeSpy = vi.spyOn(DOMPurify, "sanitize");
+  closedTexts.length = 0;
   const live = render(<Markdown source={source} live />);
+  // Read the count before anything else can fail: one is the floor (the split
+  // must close the tail it returns, and the renderer must parse that result as
+  // given), zero means the window was dropped, two is issue #6669's defect.
+  expect(closedTexts.filter((text) => text === tailWindow)).toHaveLength(1);
   const settled = render(<Markdown source={source} />);
   expect(live.container.innerHTML).toBe(settled.container.innerHTML);
   // Live: intro slice + settled prefix + window = three sanitize calls; settled:

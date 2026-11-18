@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -17,15 +18,31 @@ import (
 type HubIdentityStore struct {
 	dbPath string
 	openDB func(driverName, dataSourceName string) (*sql.DB, error)
+	now    func() time.Time
 }
 
 func NewHubIdentityStore(dbPath string) *HubIdentityStore {
-	return &HubIdentityStore{dbPath: dbPath, openDB: sql.Open}
+	return &HubIdentityStore{dbPath: dbPath, openDB: sql.Open, now: time.Now}
 }
 
 // hubIdentityOpenAttempts bounds how many times the store retries a lock
 // conflict that fails the connection open. See connect.
 const hubIdentityOpenAttempts = 8
+
+// hubIdentityOpenBudget is how much wall time connect may spend on lock
+// conflicts in total: one busy_timeout window, which is also the most the
+// CREATE TABLE outside the retry can spend waiting once.
+const hubIdentityOpenBudget = sqliteBusyTimeoutMS * time.Millisecond
+
+// hubIdentityWaitedOutAttempt is the attempt duration at which a lock conflict
+// is a busy_timeout expiry rather than the WAL transition race the retry
+// covers. The race returns in milliseconds — 2-23ms measured on the runs
+// behind #6636 — while an expiry spends most of the window: 4.2-5.1s measured
+// against a held EXCLUSIVE lock, because SQLite stops once the remaining share
+// of the timeout cannot pay for another sleep. Half the window sits two orders
+// of magnitude above the race and below every expiry measured, so an attempt
+// past it is not the case the retry exists for.
+const hubIdentityWaitedOutAttempt = hubIdentityOpenBudget / 2
 
 func (s *HubIdentityStore) open() (*sql.DB, error) {
 	if s.dbPath == "" {
@@ -48,10 +65,14 @@ func (s *HubIdentityStore) open() (*sql.DB, error) {
 // connect opens a connection with the DSN every opener of index.db shares, and
 // retries a lock conflict while doing it.
 //
-// This store is not the first opener of index.db, so the file's journal mode
-// and its durability belong to whichever store opened it first; a hand-built
-// DSN would land on SQLite's FULL default and pay a per-commit fsync no other
-// opener of this file pays.
+// At hub startup this store is normally not the first opener of index.db: the
+// past index opens the file first, which fixes the file's journal mode, but
+// the durability setting is not inherited: synchronous is per connection, so
+// every opener sets it in its own DSN. A hand-built DSN would land on SQLite's
+// FULL default and pay a per-commit fsync no other opener of this file pays.
+// The store can still be the first opener — startup only logs a failed
+// past-index rebuild, which may leave the file to this store — so it must also
+// work on a brand-new index.db, as it does in this package's tests.
 //
 // That shared DSN enters WAL on every new connection, and the transition needs
 // the database's exclusive lock. Two connections opening a brand-new index.db
@@ -61,12 +82,30 @@ func (s *HubIdentityStore) open() (*sql.DB, error) {
 // winner's transition is already recorded in the database file — journal_mode
 // is persistent — so a tight retry converges.
 //
+// A conflict that is not that race — an abnormal holder such as a stuck
+// sibling hub or a stray sqlite3 shell keeping index.db locked past
+// busy_timeout — is reported, not retried. It surfaces only after an attempt
+// has waited the timeout out, and retrying it spends the timeout again per
+// attempt: 8 attempts x busy_timeout(5000) is the ~40s startup block of
+// #6650, for an error the first attempt already had. Two rules bound it: an
+// attempt that outlasted hubIdentityWaitedOutAttempt was that expiry, so it
+// ends the loop, and the elapsed time is checked against
+// hubIdentityOpenBudget in case several slower-than-the-race attempts
+// accumulate. The per-attempt rule runs first, so the abnormal-holder case
+// stops on the attempt that waited (4.2s measured), not one attempt later.
+//
+// A deadline on the ping cannot do this job: the wait happens inside SQLite's
+// busy handler, which does not observe the context — a ping with a 300ms
+// deadline still blocked 4.2s.
+//
 // Only the open is retried. The CREATE TABLE that follows is an ordinary
 // write, which busy_timeout does wait out, so retrying it as well would
 // multiply that timeout by the attempt count without covering anything new.
 func (s *HubIdentityStore) connect() (*sql.DB, error) {
 	var lastErr error
+	started := s.now()
 	for range hubIdentityOpenAttempts {
+		attemptStart := s.now()
 		db, err := s.openDB("sqlite", sqliteDSNImmediate(s.dbPath))
 		if err == nil {
 			// Ping forces the connection, so the DSN's pragmas — including the
@@ -83,6 +122,12 @@ func (s *HubIdentityStore) connect() (*sql.DB, error) {
 			return nil, err
 		}
 		lastErr = err
+		if s.now().Sub(attemptStart) >= hubIdentityWaitedOutAttempt {
+			return nil, lastErr
+		}
+		if s.now().Sub(started) >= hubIdentityOpenBudget {
+			return nil, lastErr
+		}
 	}
 	return nil, lastErr
 }

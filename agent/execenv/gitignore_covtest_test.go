@@ -418,8 +418,9 @@ func TestIgnoreMatcherCacheStillRefusesAHitWhenTheBudgetIsSpent(t *testing.T) {
 	}
 }
 
-// TestIgnoreMatcherCacheIsNilSafe covers the environments built as struct
-// literals, which have no cache to reach and must still read their rules.
+// TestIgnoreMatcherCacheIsNilSafe covers a nil environment, which answers a nil
+// cache, and a nil cache, which drops a store and misses a lookup, so a search
+// handed no cache still reads and compiles its rules.
 func TestIgnoreMatcherCacheIsNilSafe(t *testing.T) {
 	t.Parallel()
 	if cache := (*LocalExecutionEnvironment)(nil).ignoreMatcherCacheFor(); cache != nil {

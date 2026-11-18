@@ -2110,6 +2110,7 @@ Underlying Go kind: `struct` (no struct fields).
 | `vars` | map[string]string | yes |  |
 | `apiKeyEnv` | string | yes |  |
 | `credentialHeader` | string | yes |  |
+| `codexClientVersion` | string | yes |  |
 | `originClientId` | string | yes |  |
 
 
@@ -2130,6 +2131,8 @@ Underlying Go kind: `struct` (no struct fields).
 | `clearApiKeyEnv` | bool | yes |  |
 | `credentialHeader` | string | yes |  |
 | `clearCredentialHeader` | bool | yes |  |
+| `codexClientVersion` | string | yes |  |
+| `clearCodexClientVersion` | bool | yes |  |
 | `expectedEndpointFingerprint` | string | yes |  |
 | `originClientId` | string | yes |  |
 
@@ -2149,6 +2152,7 @@ Underlying Go kind: `struct` (no struct fields).
 | `vars` | map[string]string | yes |  |
 | `apiKeyEnv` | string | yes |  |
 | `credentialHeader` | string | yes |  |
+| `codexClientVersion` | string | yes |  |
 | `implicit` | bool |  |  |
 | `hidden` | bool | yes |  |
 | `isDefault` | bool |  |  |

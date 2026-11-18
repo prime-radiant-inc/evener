@@ -43,6 +43,7 @@ func TestHubRPCInstanceEditRefusesASetAndClearPair(t *testing.T) {
 		{"surface", appwire.InstanceEditParams{Name: "base", Surface: "generic", ClearSurface: true}},
 		{"apiKeyEnv", appwire.InstanceEditParams{Name: "base", APIKeyEnv: "PORTKEY_KEY", ClearAPIKeyEnv: true}},
 		{"credentialHeader", appwire.InstanceEditParams{Name: "base", CredentialHeader: "Authorization=Bearer $PORTKEY_KEY", ClearCredentialHeader: true}},
+		{"codexClientVersion", appwire.InstanceEditParams{Name: "base", CodexClientVersion: "0.166.0", ClearCodexClientVersion: true}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.field, func(t *testing.T) {

@@ -47,7 +47,7 @@ import {
 import type { FormError } from "./formError";
 import { draftFor, type InstanceDraft, varRows } from "./instanceEdit";
 import { DeviceCodeDialog, OAuthRedirectDialog } from "./oauthDialogs";
-import { type OAuthEditor, startOAuthFlow } from "./oauthFlow";
+import { CODEX_AUTH_SCHEME, type OAuthEditor, startOAuthFlow } from "./oauthFlow";
 import styles from "./ProviderConnection.module.css";
 import { appliedSelfRead, confirmListingState, refreshListingAfterMutation } from "./reconcileListing";
 import { useEditorLifetime } from "./useEditorLifetime";
@@ -189,6 +189,7 @@ function destination(row: InstanceEntry | undefined): string {
     row.vars,
     row.apiKeyEnv,
     row.credentialHeader,
+    row.codexClientVersion,
     row.hidden,
   ]);
 }
@@ -441,6 +442,7 @@ interface SettingsDraft {
   surface: string;
   apiKeyEnv: string;
   credentialHeader: string;
+  codexClientVersion: string;
 }
 
 const SETTINGS_FIELDS = [
@@ -448,6 +450,7 @@ const SETTINGS_FIELDS = [
   "surface",
   "apiKeyEnv",
   "credentialHeader",
+  "codexClientVersion",
 ] as const satisfies readonly (keyof SettingsDraft)[];
 
 const sameSetting = (a: string, b: string) => a.trim() === b.trim();
@@ -460,6 +463,7 @@ const EMPTY_VAR_DRAFT: InstanceDraft = {
   vars: {},
   apiKeyEnv: "",
   credentialHeader: "",
+  codexClientVersion: "",
 };
 
 function settingsOf(row: InstanceEntry | undefined): SettingsDraft {
@@ -468,6 +472,7 @@ function settingsOf(row: InstanceEntry | undefined): SettingsDraft {
     surface: row?.surface ?? "",
     apiKeyEnv: row?.apiKeyEnv ?? "",
     credentialHeader: row?.credentialHeader ?? "",
+    codexClientVersion: row?.codexClientVersion ?? "",
   };
 }
 
@@ -1458,6 +1463,7 @@ function SelectedConnection({
       surface: settingsDraft.surface || undefined,
       apiKeyEnv: settingsDraft.apiKeyEnv.trim() || undefined,
       credentialHeader: settingsDraft.credentialHeader.trim() || undefined,
+      codexClientVersion: settingsDraft.codexClientVersion.trim() || undefined,
     };
     const editVars: Record<string, string> = {};
     for (const { key } of settingsVarRows) {
@@ -1479,6 +1485,9 @@ function SelectedConnection({
           ...(changed("apiKeyEnv") ? { apiKeyEnv: values.apiKeyEnv, clearApiKeyEnv: !values.apiKeyEnv } : {}),
           ...(changed("credentialHeader")
             ? { credentialHeader: values.credentialHeader, clearCredentialHeader: !values.credentialHeader }
+            : {}),
+          ...(changed("codexClientVersion")
+            ? { codexClientVersion: values.codexClientVersion, clearCodexClientVersion: !values.codexClientVersion }
             : {}),
           ...(Object.keys(editVars).length > 0 ? { vars: editVars } : {}),
           expectedEndpointFingerprint: claim.fingerprint,
@@ -2104,7 +2113,12 @@ function SelectedConnection({
                 ? connectionSettingsFields({
                     idPrefix: "connection",
                     variableRows: settingsVarRows,
-                    values: { vars: settingsVars, ...settingsDraft },
+                    values: {
+                      vars: settingsVars,
+                      ...settingsDraft,
+                      codexClientVersion:
+                        row?.auth === CODEX_AUTH_SCHEME ? settingsDraft.codexClientVersion : undefined,
+                    },
                     disabled: instanceEditsBlocked,
                     copy: {
                       apiKeyEnvLabel: "API key env",

@@ -1171,17 +1171,31 @@ type Session struct {
 	// It also widens turnInFlightLocked to the whole input call, which is how
 	// SetModel decides a pick arrived mid-input and must queue for the boundary.
 	goalInTurn bool
-	// pendingModel holds a model switch requested while an input was in
-	// flight (SetModel's queue path), together with the live listing its
-	// pick-time preflight fetched, so the boundary application reuses it
-	// instead of enumerating again. The processing boundary applies it
-	// (applyPendingModelSwitch) so the next turn runs on it; guarded by s.mu.
-	// A zero value queues nothing.
-	pendingModel pendingModelSwitch
+	// pendingModels holds the model switches requested while an input was in
+	// flight (SetModelControl's queue path), together with the live listing
+	// each pick-time preflight fetched, so the boundary application reuses it
+	// instead of enumerating again. Insertion order means nothing: the applier
+	// takes the newest entry by issue (popNewestPendingModelLocked), and the
+	// processing boundary applies it (applyPendingModelSwitch) so the next turn
+	// runs on the newest one that survives its own deferred validation. An
+	// empty slice queues nothing. Guarded by s.mu.
+	pendingModels []pendingModelSwitch
+	// modelPickAccepted is the issue of the newest pick an acceptance point
+	// committed: a profile swap. Issues come from modelControlRequestSequence.
+	// A pick whose issue is older was superseded by a newer accepted choice and
+	// drops at its commit check, and a queued entry older than it is not
+	// applied. A store and a busy re-queue both leave it alone: neither has
+	// passed the boundary's deferred history check, so neither may cancel
+	// another pick. Validation failures never advance it, so a rejected pick
+	// cannot cancel an earlier accepted one. Guarded by s.mu.
+	modelPickAccepted uint64
 	// modelControl and modelControlRequestSequence are the complete model
-	// authority and its issue counter. Both are guarded by s.mu. The counter
-	// advances after authority validation and before model validation, so a
-	// slower older request cannot publish over a newer choice.
+	// authority and its issue counter. Both are guarded by s.mu. The sequence
+	// numbers issued requests and orders the canonical snapshot's desired
+	// record; a validation failure for an immediate application that a newer
+	// issued request has passed settles silently instead of publishing.
+	// Supersession of a commit is decided by modelPickAccepted alone, so an
+	// older pick still lands when the newer one is rejected.
 	modelControl                appwire.ModelControlSnapshot
 	modelControlRequestSequence uint64
 	// modelControlPublishMu serializes a canonical snapshot transition through
@@ -2080,7 +2094,11 @@ func (s *Session) queueModelSwitch(model string, fence modelSwitchFence) (appwir
 		s.modelControlPublishMu.Unlock()
 		return response, nil
 	}
-	if !s.modelControlFenceAuthorityMatchesLocked(fence) || fence.pickSeq != s.modelControlRequestSequence {
+	// A newer request that has merely been issued does not disqualify this
+	// one: the queue orders by issue at the pop, and a newer pick that fails
+	// its own deferred validation must not take this choice down with it. Only
+	// a pick a committed swap has already passed is superseded.
+	if !s.modelControlFenceAuthorityMatchesLocked(fence) || s.modelControlPickSupersededLocked(fence) {
 		response := s.modelControlResponseLocked(appwire.ModelControlDispositionSuperseded)
 		s.mu.Unlock()
 		s.modelControlPublishMu.Unlock()
@@ -2092,11 +2110,17 @@ func (s *Session) queueModelSwitch(model string, fence modelSwitchFence) (appwir
 		return s.applyModelSwitchControl(model, primedInstance, primedListing, fence)
 	}
 	fence.modelProvider, fence.model = normalizedModelControlTarget(nextProfile, ModelControlRequest{ModelProvider: fence.modelProvider, Model: fence.model})
-	s.pendingModel = pendingModelSwitch{
-		model: model, primedInstance: primedInstance, primedListing: primedListing,
-		authority: fence.authority,
-		seq:       fence.pickSeq, clientMutationID: fence.clientMutationID,
-		modelProvider: fence.modelProvider, targetModel: fence.model,
+	// Storing neither accepts the pick nor displaces an older queued one: the
+	// boundary's deferred history check still runs against settled history, so
+	// a store that advanced the acceptance watermark would let a pick that is
+	// about to be rejected cancel another. Ordering is the pop's job.
+	if fence.pickSeq > s.modelPickAccepted {
+		s.enqueuePendingModelLocked(pendingModelSwitch{
+			model: model, primedInstance: primedInstance, primedListing: primedListing,
+			authority: fence.authority,
+			seq:       fence.pickSeq, clientMutationID: fence.clientMutationID,
+			modelProvider: fence.modelProvider, targetModel: fence.model,
+		})
 	}
 	snapshot := s.advanceModelControlLocked(nil, fence, appwire.ModelControlLifecyclePending)
 	response := s.modelControlResponseLocked(appwire.ModelControlDispositionAccepted)
@@ -2107,6 +2131,44 @@ func (s *Session) queueModelSwitch(model string, fence modelSwitchFence) (appwir
 	s.emitModelControlChanged(snapshot)
 	s.modelControlPublishMu.Unlock()
 	return response, nil
+}
+
+// enqueuePendingModelLocked records a switch for the boundary applier. Order is
+// decided at the pop by issue, not by insertion: an older pick can reach this
+// point after a newer one queued (a slow preflight), and it must not become the
+// newest choice merely by arriving last. Callers hold s.mu.
+func (s *Session) enqueuePendingModelLocked(entry pendingModelSwitch) {
+	s.pendingModels = append(s.pendingModels, entry)
+}
+
+// popNewestPendingModelLocked removes and returns the newest queued switch, the
+// one whose choice the next turn should run on. Entries strictly older than the
+// newest committed pick are dropped: that newer pick already owns the outcome,
+// so an older one must not apply over it. Callers hold s.mu.
+func (s *Session) popNewestPendingModelLocked() (pendingModelSwitch, bool) {
+	live := s.pendingModels[:0]
+	for _, entry := range s.pendingModels {
+		// Strictly older than the newest committed pick, so that pick owns the
+		// outcome and this one must not apply over it.
+		if entry.seq < s.modelPickAccepted {
+			continue
+		}
+		live = append(live, entry)
+	}
+	s.pendingModels = live
+	newest := -1
+	for i, entry := range s.pendingModels {
+		if newest < 0 || entry.seq > s.pendingModels[newest].seq {
+			newest = i
+		}
+	}
+	if newest < 0 {
+		s.pendingModels = nil
+		return pendingModelSwitch{}, false
+	}
+	entry := s.pendingModels[newest]
+	s.pendingModels = append(s.pendingModels[:newest], s.pendingModels[newest+1:]...)
+	return entry, true
 }
 
 // applyPendingModelSwitch applies queued switches once no rounds remain. Its
@@ -2137,10 +2199,9 @@ func (s *Session) applyQueuedModelSwitches(inWaitingCall bool) {
 			s.mu.Unlock()
 			return
 		}
-		pending := s.pendingModel
-		s.pendingModel = pendingModelSwitch{}
+		pending, ok := s.popNewestPendingModelLocked()
 		s.mu.Unlock()
-		if pending.model == "" {
+		if !ok {
 			return
 		}
 		release, admissionErr := s.beginRetirementMutation("admission")
@@ -2230,12 +2291,11 @@ func (s *Session) applyModelSwitchControl(model, primedInstance string, primedLi
 	// second application cannot commit - and so cannot publish - inside this
 	// application's swap-to-publication window: publications land in the order
 	// their swaps committed, and a committed swap always tells its own story.
-	// Supersession is decided once, below, before the swap. An immediate
-	// application that is no longer the newest issued request drops. A deferred
-	// application that no longer owns the pending desired record drops. A newer
-	// pick that has merely queued must not suppress an already committed
-	// publication because it can still fail its deferred validation and leave
-	// nothing to correct subscribers with.
+	// Supersession is decided once, below, before the swap: an application the
+	// acceptance watermark has passed drops without committing, and a newer
+	// pick that has merely queued must not suppress a committed publication
+	// because that queued pick can still fail its own deferred validation and
+	// leave nothing to correct the subscribers with.
 	s.modelSwitchPublishMu.Lock()
 	defer s.modelSwitchPublishMu.Unlock()
 	s.modelControlPublishMu.Lock()
@@ -2252,13 +2312,12 @@ func (s *Session) applyModelSwitchControl(model, primedInstance string, primedLi
 		s.modelControlPublishMu.Unlock()
 		return response, nil
 	}
-	if !fence.deferred && fence.pickSeq != 0 && fence.pickSeq != s.modelControlRequestSequence {
-		response := s.modelControlResponseLocked(appwire.ModelControlDispositionSuperseded)
-		s.mu.Unlock()
-		s.modelControlPublishMu.Unlock()
-		return response, nil
-	}
-	if fence.deferred && !s.modelControlDesiredMatchesLocked(fence, appwire.ModelControlLifecyclePending) {
+	// A pick the watermark has already passed drops without committing: a
+	// newer choice committed a swap while this one validated and owns the
+	// outcome. A newer pick that has merely been issued or queued must not
+	// suppress this one, because it can still fail its own deferred
+	// validation and leave nothing applied at all.
+	if s.modelControlPickSupersededLocked(fence) {
 		response := s.modelControlResponseLocked(appwire.ModelControlDispositionSuperseded)
 		s.mu.Unlock()
 		s.modelControlPublishMu.Unlock()
@@ -2267,15 +2326,19 @@ func (s *Session) applyModelSwitchControl(model, primedInstance string, primedLi
 	if fence.queueWhenBusy && s.turnInFlightLocked() {
 		// A turn started while this at-rest pick was still validating. Queue
 		// for that turn's boundary instead of swapping the profile under it,
-		// carrying the listing this validation already fetched. Re-queueing
-		// accepts the pick by publishing its pending desired record.
+		// carrying the listing this validation already fetched. Queuing is not
+		// accepting: the boundary re-runs the history check against the history
+		// the in-flight turn appended, so this pick can still be rejected there
+		// and must not cancel an older one in the meantime. The pop orders
+		// entries by issue, so it still applies before any older queued pick
+		// that survives.
 		fence.modelProvider, fence.model = normalizedModelControlTarget(nextProfile, ModelControlRequest{ModelProvider: fence.modelProvider, Model: fence.model})
-		s.pendingModel = pendingModelSwitch{
+		s.enqueuePendingModelLocked(pendingModelSwitch{
 			model: model, primedInstance: listedInstance, primedListing: listing,
 			authority: fence.authority,
 			seq:       fence.pickSeq, clientMutationID: fence.clientMutationID,
 			modelProvider: fence.modelProvider, targetModel: fence.model,
-		}
+		})
 		snapshot := s.advanceModelControlLocked(nil, fence, appwire.ModelControlLifecyclePending)
 		response := s.modelControlResponseLocked(appwire.ModelControlDispositionAccepted)
 		s.wakeQuotaWaitLocked()
@@ -2352,6 +2415,11 @@ func (s *Session) applyModelSwitchControl(model, primedInstance string, primedLi
 	}
 	snapshot := s.advanceModelControlLocked(nextProfile, fence, appwire.ModelControlLifecycleApplied)
 	response := s.modelControlResponseLocked(appwire.ModelControlDispositionAccepted)
+	// A committed swap accepts the pick, so an older queued entry that a
+	// boundary has not reached yet must not apply over it.
+	if fence.pickSeq > s.modelPickAccepted {
+		s.modelPickAccepted = fence.pickSeq
+	}
 	// Snapshot the facts the marker needs and leave the lock before the
 	// history scan: the count walks every turn, and the lock is shared with
 	// turn processing.

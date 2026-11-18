@@ -83,6 +83,10 @@
   gap: var(--space-1);
 }
 
+.taskList ul {
+  gap: var(--space-1);
+}
+
 .rowContent {
   display: flex;
   align-items: flex-start;
@@ -144,10 +148,6 @@
   width: 13px;
   height: 13px;
   display: block;
-}
-
-.foldButton {
-  padding-top: var(--space-1);
 }
 
 .scope {

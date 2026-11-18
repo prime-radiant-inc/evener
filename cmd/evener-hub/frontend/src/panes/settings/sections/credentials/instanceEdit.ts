@@ -41,6 +41,7 @@ export interface InstanceDraft {
   vars: Record<string, string>;
   apiKeyEnv: string;
   credentialHeader: string;
+  codexClientVersion: string;
 }
 
 /** The form's initial values for an instance. Every template variable of the
@@ -58,6 +59,7 @@ export function draftFor(instance: InstanceEntry, template: ProviderDescriptor |
     vars,
     apiKeyEnv: instance.apiKeyEnv ?? "",
     credentialHeader: instance.credentialHeader ?? "",
+    codexClientVersion: instance.codexClientVersion ?? "",
   };
 }
 
@@ -139,6 +141,12 @@ export function instanceEditParams(initial: InstanceDraft, draft: InstanceDraft)
   if (credentialHeader !== initial.credentialHeader.trim()) {
     if (credentialHeader === "") params.clearCredentialHeader = true;
     else params.credentialHeader = credentialHeader;
+    changed = true;
+  }
+  const codexClientVersion = draft.codexClientVersion.trim();
+  if (codexClientVersion !== initial.codexClientVersion.trim()) {
+    if (codexClientVersion === "") params.clearCodexClientVersion = true;
+    else params.codexClientVersion = codexClientVersion;
     changed = true;
   }
   return changed ? params : null;

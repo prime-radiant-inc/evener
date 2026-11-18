@@ -94,6 +94,7 @@ type Transport struct {
 	Endpoint            string            `json:"endpoint,omitempty"`
 	StreamEndpoint      string            `json:"stream_endpoint,omitempty"`
 	ModelsEndpoint      string            `json:"models_endpoint,omitempty"`
+	CodexClientVersion  string            `json:"codex_client_version,omitempty"`
 	CountTokensEndpoint string            `json:"count_tokens_endpoint,omitempty"`
 	Vars                map[string]string `json:"vars,omitempty"`
 	VarsEnv             map[string]string `json:"vars_env,omitempty"`

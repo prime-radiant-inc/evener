@@ -472,28 +472,15 @@ func (s *sandboxFS) readFile(tool, abs string) ([]byte, error) {
 // read itself goes through readBounded, the single bounded-read constructor
 // that arms the byte cap, the stall deadline, and the ctx watcher together.
 func (s *sandboxFS) readFileCtx(ctx context.Context, tool, abs string) ([]byte, error) {
-	// A cancelled call answers before touching the filesystem, mirroring the
-	// off arm's pre-open fence.
-	if err := ctx.Err(); err != nil {
-		return nil, err
-	}
-	fd, err := s.openRead(tool, abs, unix.O_RDONLY|unix.O_NONBLOCK)
+	f, size, err := s.openAdmittedReadCtx(ctx, tool, abs)
 	if err != nil {
 		return nil, err
-	}
-	f, err := admitReadFD(fd, abs, false, isPseudoFsPath(abs))
-	if err != nil {
-		return nil, fmt.Errorf("read %q: %w", abs, err)
 	}
 	defer func() { _ = f.Close() }()
 	// Refuse at the stat size before reading a byte, matching the off arm's
 	// fstat refusal; readBounded still bounds the read for a file that grows
 	// past the cap after this check.
-	info, serr := f.Stat()
-	if serr != nil {
-		return nil, fmt.Errorf("read %q: %w", abs, serr)
-	}
-	if info.Size() > MaxWholeFileReadBytes {
+	if size > MaxWholeFileReadBytes {
 		return nil, &ReadLimitError{Limit: MaxWholeFileReadBytes}
 	}
 	data, over, rerr := readBounded(ctx, f, f, MaxWholeFileReadBytes)
@@ -511,6 +498,33 @@ func (s *sandboxFS) readFileCtx(ctx context.Context, tool, abs string) ([]byte, 
 		return nil, &ReadLimitError{Limit: MaxWholeFileReadBytes}
 	}
 	return data, nil
+}
+
+// openAdmittedReadCtx opens abs beneath the sandbox roots, admits the returned
+// descriptor, and reports the size it stats at. Every sandboxed read_file entry
+// shares it — the whole-file read and the offset/limit window — so a change to
+// the open, admission or stat sequence reaches both and cannot land in one copy
+// only. The caller owns the returned handle and must close it.
+func (s *sandboxFS) openAdmittedReadCtx(ctx context.Context, tool, abs string) (*os.File, int64, error) {
+	// A cancelled call answers before touching the filesystem, mirroring the
+	// off arm's pre-open fence.
+	if err := ctx.Err(); err != nil {
+		return nil, 0, err
+	}
+	fd, err := s.openRead(tool, abs, unix.O_RDONLY|unix.O_NONBLOCK)
+	if err != nil {
+		return nil, 0, err
+	}
+	f, err := admitReadFD(fd, abs, false, isPseudoFsPath(abs))
+	if err != nil {
+		return nil, 0, fmt.Errorf("read %q: %w", abs, err)
+	}
+	info, serr := f.Stat()
+	if serr != nil {
+		_ = f.Close()
+		return nil, 0, fmt.Errorf("read %q: %w", abs, serr)
+	}
+	return f, info.Size(), nil
 }
 
 // writeFile atomically writes data to abs: it resolves the parent beneath a

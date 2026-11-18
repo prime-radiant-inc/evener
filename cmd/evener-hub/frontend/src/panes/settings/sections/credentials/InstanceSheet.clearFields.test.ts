@@ -24,8 +24,11 @@ describe("changedFields maps each clear flag to its entry field", () => {
       clearSurface: true,
       clearApiKeyEnv: true,
       clearCredentialHeader: true,
+      clearCodexClientVersion: true,
     };
-    expect(changedFields(params)).toEqual(new Set(["baseUrl", "protocol", "surface", "apiKeyEnv", "credentialHeader"]));
+    expect(changedFields(params)).toEqual(
+      new Set(["baseUrl", "protocol", "surface", "apiKeyEnv", "credentialHeader", "codexClientVersion"]),
+    );
   });
 
   // The map is exhaustive over the params type, not a best-effort sample: every
@@ -39,6 +42,7 @@ describe("changedFields maps each clear flag to its entry field", () => {
       clearSurface: "surface",
       clearApiKeyEnv: "apiKeyEnv",
       clearCredentialHeader: "credentialHeader",
+      clearCodexClientVersion: "codexClientVersion",
     });
   });
 

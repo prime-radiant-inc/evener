@@ -49,21 +49,22 @@ var requestHistoryFixtureTurns = []int{256, requestHistoryBudgetTurns}
 // pass. The ceiling is PER LANE, because the race detector's instrumentation
 // adds real allocation to the same code path and moves the whole distribution
 // up: a single ceiling cannot hold a margin on both lanes at once. Measured
-// on 2026-11-17 with the minimum-of-rounds estimator, after #6406 hoisted the
-// tool-list serialization out of the estimate, copy-free preparations are
-// 1,074,776 on the plain lane and 1,074,808 under -race, and copy-bearing
-// preparations are 1,918,552 and 1,918,584 (the copy is 1,024 *
-// unsafe.Sizeof(schema.Turn{}) = 843,776 bytes in both). Both ceilings are
-// 1,580,000: 505,224 above the plain copy-free measurement and 505,192 above
-// the race one, and 338,552 and 338,584 below the two copy-bearing
-// measurements, so attribution noise and honest drift cannot mask the copy on
-// either side of the bound.
+// on 2026-11-17 with the minimum-of-rounds estimator, copy-free preparations
+// are 1,001,048 on the plain lane and 1,001,080 under -race, and copy-bearing
+// preparations are 1,844,824 and 1,844,856 (the copy is 1,024 *
+// unsafe.Sizeof(schema.Turn{}) = 843,776 bytes in both; each lane's
+// copy-bearing reading is its own copy-free reading plus exactly that). Both
+// ceilings are 1,425,000, near the midpoint of each lane's feasible band:
+// 423,952 and 423,920 above the two copy-free measurements, and 419,824 and
+// 419,856 below the two copy-bearing ones, so attribution noise and honest
+// drift cannot mask the copy on either side of the bound.
 //
-// The lanes needed different ceilings while the marshal #6406 removed was in
-// the path: it allocated several times more under -race than plain, which is
-// what split the distributions. They coincide now for that reason alone, and
-// the literals stay separate so the per-lane mechanism survives the next
-// change that moves one lane by itself.
+// Both lanes' figures moved together and stayed 32 bytes apart when #6448
+// stopped copying a message list the target projections do not change: their
+// numbers fall by 73,728 bytes (1,024 messages * 72 bytes) each, which is why
+// the ceilings drop from 1,580,000 rather than staying where a no-longer-true
+// margin had placed them. The literals stay separate so the per-lane
+// mechanism survives the next change that moves one lane by itself.
 //
 // The race margins are smaller than the copy's own size on purpose: the gap
 // between a copy-free preparation and its copy-bearing partner is 843,776
@@ -74,8 +75,8 @@ var requestHistoryFixtureTurns = []int{256, requestHistoryBudgetTurns}
 // Both literals are deliberate: do not derive them from the implementation
 // under test.
 const (
-	maxRequestHistoryBytesPerPreparationPlain int64 = 1_580_000
-	maxRequestHistoryBytesPerPreparationRace  int64 = 1_580_000
+	maxRequestHistoryBytesPerPreparationPlain int64 = 1_425_000
+	maxRequestHistoryBytesPerPreparationRace  int64 = 1_425_000
 )
 
 // maxRequestHistoryBytesPerPreparation is this lane's ceiling. -race is
@@ -420,11 +421,11 @@ func TestPrepareModelRequestHistoryAttributionIgnoresSparseBackground(t *testing
 }
 
 // churnBurstsPerPollutedRound is the background injected into one polluted
-// measurement round: 20 * 32KB = 640KB, a little under the ~950KB per window
+// measurement round: twenty 32KB bursts, a little under the ~950KB per window
 // the CI failure this file's budget was recalibrated from carried. It is large
-// on purpose: it puts an estimator that reports the polluted majority over the
-// 1,580,000 budget by a wide margin, so the failure is a structural reading and
-// not a few bytes of noise.
+// on purpose: it puts an estimator that reports the polluted majority over
+// maxRequestHistoryBytesPerPreparation by a wide margin, so the failure is a
+// structural reading and not a few bytes of noise.
 const churnBurstsPerPollutedRound = 20
 
 // churnCleanRounds is how many of the measurement rounds the churner stays
