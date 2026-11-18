@@ -520,8 +520,22 @@ func armStableWatchAttention(controller *delegateTreeController, receiver delega
 	return nil
 }
 
+// stableWatchAttentionPrefix identifies the durable attention row a stable
+// watch frame is written as. A frame's row carries this prefix and nothing
+// else in the subsystem does, so a reader can tell "this pending row is a
+// watch frame whose wake has not been admitted yet" from the row alone.
+const stableWatchAttentionPrefix = "watch:"
+
 func stableWatchAttentionID(state jobstore.WatchSendState) string {
-	return "watch:" + state.DeliveryID + ":" + strconv.FormatUint(state.UpdateSeq, 10)
+	return stableWatchAttentionPrefix + state.DeliveryID + ":" + strconv.FormatUint(state.UpdateSeq, 10)
+}
+
+// isStableWatchAttentionID reports whether attentionID names a stable watch
+// frame. Such a row is appended to a cold receiver's transcript by the watch
+// rail before its wake is admitted, so admission is what has to catch up with
+// it before the row can present.
+func isStableWatchAttentionID(attentionID string) bool {
+	return strings.HasPrefix(attentionID, stableWatchAttentionPrefix)
 }
 
 // renderWatchSendFrame is the frame text cfg's pending state delivers to a

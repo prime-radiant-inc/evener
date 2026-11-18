@@ -297,10 +297,13 @@ reclaim until a settled wake journals a release at or past the generation its
 own stop settled — that newer event, not the generation the delegate happens to
 be on, is what makes it eligible again, and presentation is where the decision
 is taken because a wake journals its release before it publishes anything. A
-daemon restart is the deliberate exception: bootstrap puts every pending row
-into the wake set by ID, so a restart can make a row eligible with the release
-floor still at zero, while an idle reclaim rebuilds the quiet from the settled
-stop. See [the delegate runtime contract](
+same-process idle reclaim is not a restart: the controller keeps its wake state
+and the in-memory release floor a wake admitted during an open run recorded, so
+a restored runtime's first presentation read can end a quiet with no durable
+release at all. A daemon restart is the deliberate exception: bootstrap puts
+every pending row into the wake set by ID, so a restart can make a row eligible
+with the release floor still at zero, while an idle reclaim rebuilds the quiet
+from the settled stop. See [the delegate runtime contract](
 ../subagent-runtime-contracts.md#read-a-delegate-result-correctly).
 
 S06 requires local `hub_state_root` storage with best-effort OS classification,

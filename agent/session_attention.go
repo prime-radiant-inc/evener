@@ -1386,13 +1386,77 @@ func (s *Session) moveHeldDelegateAttentionTurnsToTail(released []string) {
 // them, and the rows would wait for a generation that may never come. The
 // caller holds attentionMu.
 func (s *Session) retainPendingDelegateAttentionTurnsLocked(fold delegateAttentionFold) error {
+	return s.retainPendingDelegateAttentionTurnsExceptLocked(fold, nil)
+}
+
+// retainPendingDelegateAttentionTurnsExceptLocked is
+// retainPendingDelegateAttentionTurnsLocked without the rows named in skip.
+// A caller uses it for a row whose wake admission did not complete: publishing
+// that row's turn would make a frame visible before the gate that admits it,
+// and the successor that presented it would consume it while the wake still
+// owed a release. The row keeps its durable turn and its arm publishes it once
+// its own gate passes. The caller holds attentionMu.
+func (s *Session) retainPendingDelegateAttentionTurnsExceptLocked(fold delegateAttentionFold, skip []string) error {
 	pendingTurns := fold.pendingTurns("")
+	if len(skip) != 0 {
+		kept := make([]schema.Turn, 0, len(pendingTurns))
+		for _, durable := range pendingTurns {
+			if durable.AttentionID != "" && slices.Contains(skip, durable.AttentionID) {
+				continue
+			}
+			kept = append(kept, durable)
+		}
+		pendingTurns = kept
+	}
 	for i, durable := range pendingTurns {
 		if err := s.retainDelegateAttentionTurn(durable, pendingTurns[i+1:]...); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// admitPendingWatchFramesLocked admits the wake of every stable watch frame
+// the receiver's transcript already holds and no admission has reached, and
+// returns the rows it could not admit so the caller keeps their turns out of
+// the history it is about to publish.
+//
+// A stable watch frame is appended to a cold receiver's transcript by the
+// watch rail, which holds no controller: the row is durable before any arm of
+// its own runs. A restore that folded that transcript and published every
+// pending turn would therefore make the frame visible while its wake — and the
+// release that wake owes a settled stop — had not been journaled. An older
+// wake could then start a generation that presents and consumes the frame
+// while omitting the stopped report the frame's own wake releases, and the
+// delayed arm would find the frame resolved and skip its release.
+//
+// Admission here is what removes that window instead of classifying the rows
+// that fall in it: by the time anything is visible, the frame's wake has
+// passed its gate and its release is in the journal, so no reader has to tell
+// an unadmitted frame from an ordinary pending row. The caller holds
+// attentionMu.
+func (s *Session) admitPendingWatchFramesLocked(fold delegateAttentionFold) ([]string, []delegateUpdatePlan) {
+	controller := s.delegateController
+	admitted := controller.admittedAttentionRows(s.owningDelegateID)
+	var deferred []string
+	var plans []delegateUpdatePlan
+	for _, attentionID := range fold.pendingIDs() {
+		if !isStableWatchAttentionID(attentionID) {
+			continue
+		}
+		if _, known := admitted[attentionID]; known {
+			continue
+		}
+		_, blocker, plan, emit, _, err := controller.tryOpenDelegateAttention(s.owningDelegateID, attentionID)
+		if err != nil || blocker != nil {
+			deferred = append(deferred, attentionID)
+			continue
+		}
+		if emit {
+			plans = append(plans, plan)
+		}
+	}
+	return deferred, plans
 }
 
 // delegateQuietedRow is a pending reopened report together with the generation
@@ -1473,6 +1537,31 @@ func (s *Session) deriveHeldDelegateAttentionFromOutcome() {
 		return
 	}
 	controller := s.delegateController
+	// A stable watch frame is durable in this transcript before any arm of its
+	// own runs, so the fold can hold one whose wake nothing has admitted yet.
+	// Its wake is admitted here, before this pass reads the release floor and
+	// before any turn is published. Two orderings depend on that:
+	//
+	//   - The floor this pass derives from must already include the release the
+	//     frame's wake journals. Deriving first would rebuild the quiet for a
+	//     stop that admission just superseded, and the held report would stay
+	//     silent behind a frame that was admitted to release it.
+	//   - The frame's turn must not be visible before the gate that admits it.
+	//     A successor that presented it would consume it while the wake still
+	//     owed that release, and the delayed arm would find the row resolved and
+	//     skip it.
+	//
+	// Admission is therefore what removes this window rather than an
+	// investigation of which rows fell in it: nothing is visible that has not
+	// passed its gate. A row whose gate cannot pass yet keeps its turn out of
+	// the history and its own arm publishes it.
+	s.attentionMu.Lock()
+	fold, err := s.delegateAttentionFoldLocked()
+	if err != nil {
+		s.attentionMu.Unlock()
+		return
+	}
+	deferred, admissionPlans := s.admitPendingWatchFramesLocked(fold)
 	controller.mu.Lock()
 	generation := uint64(0)
 	released := uint64(0)
@@ -1489,7 +1578,6 @@ func (s *Session) deriveHeldDelegateAttentionFromOutcome() {
 		noted = maps.Clone(state.wakeIDs)
 	}
 	controller.mu.Unlock()
-
 	// The resumed history anchors on the last compaction marker, so a still
 	// pending row recorded before that marker has no turn in the history. Every
 	// pending row is restored here, before automatic selection can consume one:
@@ -1497,13 +1585,7 @@ func (s *Session) deriveHeldDelegateAttentionFromOutcome() {
 	// that never carried the report, and the user is left with a silent
 	// attention. The restore is ID-keyed and idempotent, so a turn the resumed
 	// history already holds is replaced in place rather than duplicated.
-	s.attentionMu.Lock()
-	fold, err := s.delegateAttentionFoldLocked()
-	if err != nil {
-		s.attentionMu.Unlock()
-		return
-	}
-	if err := s.retainPendingDelegateAttentionTurnsLocked(fold); err != nil {
+	if err := s.retainPendingDelegateAttentionTurnsExceptLocked(fold, deferred); err != nil {
 		s.emit(warningDataFromError("restore a pending delegate attention turn", err))
 	}
 	// Only a stop's own rows are in question here. Every other restored session
@@ -1511,6 +1593,9 @@ func (s *Session) deriveHeldDelegateAttentionFromOutcome() {
 	// quiet to re-impose or end.
 	if generation == 0 {
 		s.attentionMu.Unlock()
+		for _, plan := range admissionPlans {
+			controller.emitDelegateUpdate(plan)
+		}
 		return
 	}
 	quieted := s.stopQuietedDelegateAttentionRowsLocked(fold, generation, runStarts, runOutcomes, s.owningDelegateID)
@@ -1540,6 +1625,12 @@ func (s *Session) deriveHeldDelegateAttentionFromOutcome() {
 		s.moveHeldDelegateAttentionTurnsToTail(releasedRows)
 	}
 	s.attentionMu.Unlock()
+	// The admissions above published their wake rows under the hold that also
+	// ordered the retention of their turns, so the emit is delivered once that
+	// hold is released, as the resident arm delivers its own.
+	for _, plan := range admissionPlans {
+		controller.emitDelegateUpdate(plan)
+	}
 	// The stamp is each row's own generation — the one its stop settled and its
 	// reopen claims — so a wake admitted at a later generation ends that hold and
 	// one admitted before it never does.
