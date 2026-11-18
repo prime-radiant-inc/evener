@@ -1999,6 +1999,88 @@ describe("useThreadsStore.ensureThread", () => {
     threadsStore.getState().releaseWatchedThread(ref);
   });
 
+  test("the entry repository retires the outgoing source before folding the replacement's own wait", async () => {
+    // The repository half of the ordering finding, with a dedicated case rather
+    // than an assumed symmetry. After a BOOTLESS recovery resync the old sample
+    // is still the only one the model names, and the repository accepts the
+    // replacement's delegate hold LIVE before any history frame identifies its
+    // boot. The failed read's own identity then names that replacement. If the
+    // hand-off folds the live sample against the old owner first, it clears the
+    // replacement's wait together with the samples it actually replaced.
+    const fake = connectReadyFakeClient();
+    const ref = "ref_a";
+    const initial = versionedReadResponse(
+      ref,
+      {
+        status: { type: "active" },
+        evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+      },
+      0,
+    );
+    const refused: { reject: ((error: Error) => void) | null } = { reject: null };
+    let readCount = 0;
+    fake.on("thread/read", (params) => {
+      readCount += 1;
+      if (readCount === 1) return echoRead(initial, params.requestGeneration);
+      return new Promise<ThreadReadResponse>((_resolve, reject) => {
+        refused.reject = reject;
+      });
+    });
+    await threadsStore.getState().ensureThread(ref);
+    expect(existingEntryRoute(ref)?.repository).toBeDefined();
+
+    fake.emitNotification({
+      method: "evener/delegate/updated",
+      params: { threadId: "thr_ref_a", ref, delegate: heldDelegateRow() },
+    });
+    await flushUntil(() => threadsStore.getState().threads.get(ref)?.delegates?.[0]?.holdSequence === 900);
+
+    // BOOTLESS: retires nothing, so boot 1's 900 stands, and starts the read.
+    fake.emitNotification({
+      method: "evener/thread/resync",
+      params: { threadId: "thr_ref_a", ref, epoch: 2 },
+    });
+    await flushUntil(() => refused.reject !== null);
+    expect(existingEntryRoute(ref)?.repository?.getSnapshot()?.delegates?.[0]?.holdSequence).toBe(900);
+
+    // The replacement's wait arrives with NO identifying history frame. While
+    // the outgoing 900 still stands the live frame cannot win the hold order
+    // (mergeStableDelegate ranks samples by holdSequence within the source
+    // epoch), so it survives only in the pending read's buffer.
+    fake.emitNotification({
+      method: "evener/delegate/updated",
+      params: {
+        threadId: "thr_ref_a",
+        ref,
+        delegate: { ...heldDelegateRow(), holdSequence: 1, projectionRevision: 4 },
+      },
+    });
+    await Promise.resolve();
+    // Non-vacuous: the repository still shows the outgoing sample, so the
+    // replacement's own wait has no copy outside the buffer.
+    expect(existingEntryRoute(ref)?.repository?.getSnapshot()?.delegates?.[0]?.holdSequence).toBe(900);
+
+    refused.reject?.(
+      new WireError("thread history failed at entry 7", -32603, {
+        evenerErrorInfo: ErrorTranscriptHistoryFailed,
+        bootGeneration: "2",
+      }),
+    );
+    await flushUntil(() => threadsStore.getState().threads.get(ref)?.history?.failed !== undefined);
+    // The diagnostic stands, the retired 900 is gone, and the replacement's own
+    // wait survives because the retire ran before its frames folded in.
+    const diagnostic = threadsStore.getState().threads.get(ref)?.history?.failed;
+    expect(diagnostic).toBeDefined();
+    expect(existingEntryRoute(ref)?.repository?.getSnapshot()?.delegates?.[0]?.holdSequence).toBe(1);
+    expect(threadsStore.getState().threads.get(ref)?.delegates?.[0]?.holdSequence).toBe(1);
+    // Supplying the replacement's hold must not have cost the diagnostic: the
+    // same value captured above still stands once the hold has changed.
+    expect(threadsStore.getState().threads.get(ref)?.history?.failed).toBe(diagnostic);
+    expect(existingEntryRoute(ref)?.repository?.getSnapshot()?.history?.failed).toBe(diagnostic);
+
+    threadsStore.getState().releaseThread(ref);
+  });
+
   test("a tracked read that fails keeps the hold the entry repository already accepted", async () => {
     const fake = connectReadyFakeClient();
     const ref = "ref_a";

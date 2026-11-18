@@ -4498,7 +4498,7 @@ async function readThreadHydration(
           // hand-off puts the retire first and the replacement's frames after
           // it. The second hand-off is a no-op once the owner is recorded.
           const repositoryModel = entry.repository.getSnapshot();
-          if (repositoryModel)
+          if (repositoryModel) {
             replayEntryHydrationNotifications(
               entry.repository,
               entry.lifetime,
@@ -4507,6 +4507,16 @@ async function readThreadHydration(
               false,
               failureOwner,
             );
+            // The guard above still skips frames this repository accepted LIVE,
+            // which is right for recorded content but wrong for the hold: the
+            // hand-off cleared the hold facet, so the replacement's own sample
+            // must fold back or the wait it published disappears. Only the
+            // hold-bearing method is re-offered, and only after the retire.
+            for (const update of pending.notifications) {
+              if (update.notification.method !== "evener/delegate/updated") continue;
+              entry.repository.accept(update.notification, { lifetime: entry.lifetime });
+            }
+          }
         }
       } else {
         putThreadModel(ref, published);

@@ -129,10 +129,12 @@ export function holdOwnerOf(held: HistoryState): string {
 // samples, and a model that kept them would let the retired daemon's larger
 // sequence outrank the replacement's first unheld frame.
 //
-// The owning boot is read from `awaited` while the thread is invalid: a
-// replacement records itself there when it retires the old samples, while
-// history.bootGeneration keeps naming the retired boot until a read applies.
-// A bootless signal names no source and retires nothing.
+// Ownership is decided by holdOwnerOf, never by `awaited`: `awaited` is
+// history-ordering state that advances on every invalidating signal, and a
+// structured read failure drops it, while holdOwner records only a signature
+// that confirmed a replacement. history.bootGeneration keeps naming the retired
+// boot until a read applies. A bootless signal names no source and retires
+// nothing.
 //
 // Returns undefined when nothing was retired, so a caller can publish only a
 // real change.
@@ -162,9 +164,10 @@ export function retireReplacedSourceHoldOnModel<M extends ThreadModel>(
 // replacement, and clears a hold the new source has since published — which
 // emits no update of its own to restore.
 //
-// The record is the `awaited` identity, the field the rule reads ownership
-// from. Callers that already invalidate history through `invalidated()` record
-// it there and need this only where no invalidation fold runs.
+// The record is `holdOwner`, the field holdOwnerOf reads ownership from;
+// `awaited` stays history-ordering state and is never consulted here. Callers
+// that already invalidate history through `invalidated()` record it there and
+// need this only where no invalidation fold runs.
 export function recordSourceOwnerOnModel<M extends ThreadModel>(
   model: M,
   bootGeneration: string | undefined,
