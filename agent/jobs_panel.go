@@ -1015,15 +1015,30 @@ func LoadSessionJobOutputPage(stateDir, sessionID, jobID string, beforeBytes *in
 		return JobOutputPage{}, false, nil
 	}
 	rec := read.record
+	// The log lands beside the journal of the session that ran the job, which
+	// after owner-authoritative resolution need not be the session that was
+	// asked. The routing name comes from the validated identifier, never from
+	// what the record claims: a start claiming another session would otherwise
+	// send this read to that session's directory for a same-named log that
+	// belongs to a different job.
+	defaultOutPath := filepath.Join(jobsDir(stateDir, routingJobSession(jobID, read)), "jobs", jobID+".log")
+
+	// A record's explicit OutputPath is a LAUNCH FACT, and it is honored only
+	// when the record is a statement about this job. The same owner-claim rule
+	// that governs adopting that field governs trusting it on read: a start
+	// naming a session the job ID contradicts described some other session's
+	// launch, and its path reaches that job's bytes — or a stale file — while
+	// this job's own log sits under the validated owner. An agreeing claim and
+	// an empty one (the pre-owner legacy shape) both keep their explicit path,
+	// because those records do describe this job.
+	//
+	// This is the counterpart of preserveLaunchFields, not a second rule: that
+	// guard stops a contradiction from being COPIED into another record, and
+	// this one stops a contradictory record's own stored path from being
+	// HONORED. A record that never entered the merge needs both.
 	outPath := rec.OutputPath
-	if outPath == "" {
-		// The log lands beside the journal of the session that ran the job,
-		// which after owner-authoritative resolution need not be the session that
-		// was asked. The routing name comes from the validated identifier, never
-		// from what the record claims: a start claiming another session would
-		// otherwise send this read to that session's directory for a same-named
-		// log that belongs to a different job.
-		outPath = filepath.Join(jobsDir(stateDir, routingJobSession(jobID, read)), "jobs", jobID+".log")
+	if outPath == "" || ownerClaimContradicts(rec) {
+		outPath = defaultOutPath
 	}
 	page, err := readJobOutputPageForRecord(outPath, rec, beforeBytes, clampJobPageBytes(maxBytes))
 	// Recheck AFTER the read: a deletion can become durable between the check

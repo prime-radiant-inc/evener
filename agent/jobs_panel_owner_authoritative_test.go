@@ -1424,6 +1424,177 @@ func TestLoadSessionJobGetIgnoresLaunchFieldsFromContradictoryStart(t *testing.T
 	}
 }
 
+// TestLoadSessionJobOutputPageIgnoresContradictoryRecordsOutputPath pins the
+// READ side of the owner-claim rule. A damaged ancestor journal's decoded prefix
+// is all that survives for a job, and that prefix is a start naming an owner the
+// job ID contradicts — while the encoded owner's journal holds no usable record.
+// The prefix is served as flagged fallback, which is correct: it proved scope.
+// What it may not do is choose WHICH bytes the caller reads. Its explicit output
+// path belongs to the job that start described, so honoring it returns another
+// job's output or fails on a stale pointer, when the encoded owner's default log
+// is readable all along. The explicit path is trusted only from a record whose
+// claim agrees with the ID or states none.
+func TestLoadSessionJobOutputPageIgnoresContradictoryRecordsOutputPath(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	claimingSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 19, 7, 0, 0, 0, time.UTC)
+
+	// The other job's bytes, reachable through the contradictory start's path.
+	foreignPath := filepath.Join(t.TempDir(), "other-job.log")
+	if err := os.WriteFile(foreignPath, []byte("other job bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The ancestor's journal: a start claiming another owner, an explicit path,
+	// then a durably corrupt line so the prefix is all this read has.
+	writeJobJournalLines(t, jobsDir(stateDir, rootSession),
+		`{"kind":"job_started","seq":1,"ts":"`+started.Format(time.RFC3339)+
+			`","job_id":"`+jobID+`","type":"shell","status":"running","owner_session_id":"`+claimingSession+
+			`","visible_to_session_id":"`+rootSession+`","started_at":"`+started.Format(time.RFC3339)+
+			`","output_path":"`+foreignPath+`"}`+"\n",
+		"{this is not json}\n",
+	)
+
+	// The encoded owner's journal holds nothing usable, so the flagged fallback
+	// stands. Its DEFAULT log is still readable, under its own directory.
+	writeJobJournalLines(t, jobsDir(stateDir, ownerSession), "")
+	ownerLogPath := filepath.Join(jobsDir(stateDir, ownerSession), "jobs", jobID+".log")
+	if err := os.MkdirAll(filepath.Dir(ownerLogPath), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(ownerLogPath, []byte("owner log"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	page, found, err := LoadSessionJobOutputPage(stateDir, rootSession, jobID, nil, 64, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobOutputPage: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the encoded owner's default log")
+	}
+	if page.Data != "owner log" {
+		t.Fatalf("data = %q, want %q: a contradictory start's path is not this job's log",
+			page.Data, "owner log")
+	}
+
+	// The fallback flags that made this row servable at all still travel.
+	job, jobFound, err := LoadSessionJobGet(stateDir, rootSession, jobID, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if !jobFound {
+		t.Fatal("found = false, want the flagged fallback row")
+	}
+	for _, want := range []string{"forwarded_fallback", "owner_unavailable", "journal_scan_incomplete"} {
+		if !slices.Contains(job.Diagnostics, want) {
+			t.Fatalf("Diagnostics = %v, want %q preserved on the fallback row", job.Diagnostics, want)
+		}
+	}
+}
+
+// TestLoadSessionJobOutputPageHonorsAgreeingRecordsOutputPath is the other
+// direction of the owner-claim rule, and it is what keeps the guard from
+// becoming a blanket distrust of explicit paths. The scoped start names the same
+// owner the job ID encodes and carries an output path OUTSIDE the default job
+// log location — a launcher that wrote the log somewhere of its own choosing.
+// That start describes this job, so its path is the job's path: the page comes
+// from there, not from the default location.
+func TestLoadSessionJobOutputPageHonorsAgreeingRecordsOutputPath(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 19, 8, 0, 0, 0, time.UTC)
+	ended := started.Add(3 * time.Minute)
+	exit := 0
+
+	// The launcher's own log location, outside every session job directory.
+	chosenPath := filepath.Join(t.TempDir(), "launcher-chosen.log")
+	if err := os.WriteFile(chosenPath, []byte("chosen bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// The ancestor's copy names the CORRECT owner and the chosen path.
+	rootStore := openJobJournal(t, jobsDir(stateDir, rootSession))
+	appendJobEvent(t, rootStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: rootSession,
+		Command: "make chosen-build", OutputPath: chosenPath, StartedAt: &started,
+	})
+	closeJobJournal(t, rootStore)
+
+	// The owner's journal holds only the finish, so the path can only come from
+	// the agreeing start.
+	ownerStore := openJobJournal(t, jobsDir(stateDir, ownerSession))
+	appendJobEvent(t, ownerStore, jobstore.Event{
+		Kind: jobstore.EventJobFinished, TS: ended, JobID: jobID,
+		Status: jobstore.StatusCompleted, ExitCode: &exit, EndedAt: &ended, TerminalGen: "gen_owner",
+		OutputBytes: int64(len("chosen bytes")),
+	})
+	closeJobJournal(t, ownerStore)
+
+	read, err := loadSessionJobRecord(stateDir, rootSession, jobID, nil)
+	if err != nil {
+		t.Fatalf("loadSessionJobRecord: %v", err)
+	}
+	if read.record == nil || read.record.OutputPath != chosenPath {
+		t.Fatalf("outputPath = %v, want %q from the agreeing start", read.record, chosenPath)
+	}
+	page, found, err := LoadSessionJobOutputPage(stateDir, rootSession, jobID, nil, 64, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobOutputPage: %v", err)
+	}
+	if !found || page.Data != "chosen bytes" {
+		t.Fatalf("found = %v, data = %q: an agreeing start's explicit path is this job's path",
+			found, page.Data)
+	}
+}
+
+// TestLoadSessionJobOutputPageHonorsClaimlessRecordsOutputPath pins the third
+// claim case: a row that states NO owner at all. An empty OwnerSessionID is the
+// pre-owner legacy shape — it asserts nothing, so nothing about it can
+// contradict the job ID, and its explicit output path stays this job's path.
+// Treating silence as a contradiction would strand every record written before
+// owner-encoded IDs on a default location their launcher never used.
+func TestLoadSessionJobOutputPageHonorsClaimlessRecordsOutputPath(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 19, 9, 0, 0, 0, time.UTC)
+
+	chosenPath := filepath.Join(t.TempDir(), "claimless.log")
+	if err := os.WriteFile(chosenPath, []byte("claimless bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// A start with no owner field, and an explicit path. The encoded owner's
+	// journal is empty, so the prefix is served as flagged fallback.
+	writeJobJournalLines(t, jobsDir(stateDir, rootSession),
+		`{"kind":"job_started","seq":1,"ts":"`+started.Format(time.RFC3339)+
+			`","job_id":"`+jobID+`","type":"shell","status":"running","visible_to_session_id":"`+rootSession+
+			`","started_at":"`+started.Format(time.RFC3339)+
+			`","output_path":"`+chosenPath+`"}`+"\n",
+	)
+	writeJobJournalLines(t, jobsDir(stateDir, ownerSession), "")
+
+	page, found, err := LoadSessionJobOutputPage(stateDir, rootSession, jobID, nil, 64, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobOutputPage: %v", err)
+	}
+	if !found || page.Data != "claimless bytes" {
+		t.Fatalf("found = %v, data = %q: a row that names no owner still names this job's path",
+			found, page.Data)
+	}
+}
+
 // TestLoadSessionJobGetReportsCorruptOwnerJournalAsDamage: an encoded owner
 // journal that hits a malformed line before decoding any record for this job
 // must still hand its damage report back, so the caller serving the forwarded
