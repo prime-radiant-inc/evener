@@ -102,7 +102,8 @@ func TestToolCallDataKeepsStructuredArgumentsWithoutMatchingBytes(t *testing.T) 
 				Arguments    json.RawMessage `json:"arguments"`
 				Original     []byte          `json:"arguments_bytes,omitempty"`
 				RawArguments string          `json:"raw_arguments,omitempty"`
-			}{json.RawMessage(arguments), []byte(tc.original), tc.diagnostic})
+				Extra        bool            `json:"extra"`
+			}{json.RawMessage(arguments), []byte(tc.original), tc.diagnostic, true})
 			if err != nil {
 				t.Fatal(err)
 			}

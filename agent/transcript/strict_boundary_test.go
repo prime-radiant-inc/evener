@@ -33,6 +33,7 @@ func TestDecodeEntryRejectsUnknownFieldsAndTrailingValues(t *testing.T) {
 	}{
 		{name: "unknown entry field", line: `{"kind":"entry","seq":0,"turn":{"kind":"USER_INPUT"},"unknown":true}`},
 		{name: "unknown turn field", line: `{"kind":"entry","seq":0,"turn":{"kind":"USER_INPUT","unknown":true}}`},
+		{name: "unknown tool call field", line: `{"kind":"entry","seq":0,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"tool_call","tool_call":{"id":"c1","name":"read_file","argumnts":{"path":"a"}}}]}}}`},
 		{name: "trailing value", line: `{"kind":"entry","seq":0,"turn":{"kind":"USER_INPUT"}} {}`},
 	}
 	for _, tc := range tests {
@@ -41,6 +42,14 @@ func TestDecodeEntryRejectsUnknownFieldsAndTrailingValues(t *testing.T) {
 				t.Fatalf("DecodeEntry(%q) succeeded", tc.line)
 			}
 		})
+	}
+	valid := `{"kind":"entry","seq":0,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"tool_call","tool_call":{"id":"c1","name":"read_file","arguments":{"provider_specific":{"path":"a"}}}}]}}}`
+	entry, err := DecodeEntry([]byte(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := entry.Turn.Message.Content[0].ToolCall.SentArguments(); got != `{"provider_specific":{"path":"a"}}` {
+		t.Errorf("decoded tool arguments = %q", got)
 	}
 }
 
