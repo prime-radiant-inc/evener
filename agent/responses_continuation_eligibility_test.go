@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -87,6 +88,12 @@ func TestResponsesContinuationAnchorRefusesResponseWhoseRequestPredatesAFold(t *
 		t.Fatalf("a response produced from pre-fold history kept anchor metadata: marker %q endpoint %q fingerprint %q",
 			foldedAnchor.ResponseContextMarker, foldedAnchor.ResponseEndpoint, foldedAnchor.ResponseRequestFingerprint)
 	}
+	// Withholding the anchor must not cost the transcript its diagnostics: the
+	// endpoint is sanitized and exported whoever the protocol is, including one
+	// that cannot continue at all (#6493 review).
+	if foldedAnchor.ResponseEndpoint != "https://api.openai.com/v1/responses" {
+		t.Fatalf("a racing fold erased the turn's endpoint: %q", foldedAnchor.ResponseEndpoint)
+	}
 	if foldedDecision.HistoryMode != llm.HistoryModeFullHistory ||
 		foldedDecision.Reason != "continuation_anchor_metadata_missing" {
 		t.Fatalf("a response produced from pre-fold history anchored the next request: %+v", foldedDecision)
@@ -130,6 +137,68 @@ func TestResponsesContinuationAnchorRefusesResponseWhoseRequestPredatesAFold(t *
 	if racedDecision.HistoryMode != llm.HistoryModeFullHistory ||
 		racedDecision.Reason != "continuation_anchor_metadata_missing" {
 		t.Fatalf("a response built before a mid-build fold anchored the next request: %+v", racedDecision)
+	}
+
+	// The fold publishes AFTER the response is appended, which no revision check
+	// at either site can see: the append runs against the pre-fold revision and
+	// correctly keeps its metadata, and the publication carries the turn forward
+	// behind a checkpoint the fold built earlier. The checkpoint's timestamp is
+	// older than the turn, so the timestamp comparison cannot recover the
+	// mismatch either — the publication itself has to refuse the anchor
+	// (#6493 review).
+	parked := make(chan struct{})
+	release := make(chan struct{})
+	var parkedOnce sync.Once
+	published := newScriptedSummaryCompactSession(t, provider, func(req llm.Request) llm.Response {
+		// The summarizer runs with the session unlocked, which is the window a
+		// real /compact is in flight for. Park here so the append below lands
+		// strictly between this fold's snapshot and its publication.
+		parkedOnce.Do(func() {
+			close(parked)
+			<-release
+		})
+		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nsummary\n[END SUMMARY]")}
+	})
+	seedNumberedSessionHistory(t, published, 12) // > PreserveRecentTurns(6): forces a real fold
+	publishRequest := published.freezeConversationRequest()
+	foldErr := make(chan error, 1)
+	go func() { foldErr <- published.Compact(context.Background()) }()
+	<-parked
+	// The request was dispatched before the fold published, and the fold has not
+	// advanced the revision yet, so this append keeps its anchor metadata.
+	publishedAnchor, _ := appendRound(t, published, publishRequest)
+	if !turnHasResponsesContinuationMetadata(publishedAnchor) {
+		t.Fatalf("test premise: the append before publication was already refused an anchor: marker %q",
+			publishedAnchor.ResponseContextMarker)
+	}
+	close(release)
+	if err := <-foldErr; err != nil {
+		t.Fatalf("Compact: %v", err)
+	}
+	// The fold published behind that turn: its checkpoint is what the next
+	// request's context starts from, and the turn is now on the far side of it.
+	afterPublish := currentHistory(t, published)
+	if latestContextBoundaryIndex(afterPublish) < 0 {
+		t.Fatal("test premise: the fold published no context boundary, so it carried nothing forward")
+	}
+	var carried schema.Turn
+	var carriedSeen bool
+	for _, turn := range afterPublish[latestContextBoundaryIndex(afterPublish)+1:] {
+		if turn.Kind == schema.TurnAssistant && turn.ResponseID == "resp_in_flight" {
+			carried, carriedSeen = turn, true
+		}
+	}
+	if !carriedSeen {
+		t.Fatal("test premise: publication dropped the appended response instead of carrying it past the checkpoint")
+	}
+	if turnHasResponsesContinuationMetadata(carried) {
+		t.Fatalf("a response published behind a later checkpoint kept anchor metadata: marker %q endpoint %q fingerprint %q",
+			carried.ResponseContextMarker, carried.ResponseEndpoint, carried.ResponseRequestFingerprint)
+	}
+	next := append(afterPublish, schema.NewTurn(schema.TurnUserInput, llm.User("and then?")))
+	if _, decision := selectResponsesContinuationAnchorCandidate(published.cfg, next); decision.HistoryMode != llm.HistoryModeFullHistory ||
+		decision.Reason != "continuation_anchor_metadata_missing" {
+		t.Fatalf("a response published behind a later checkpoint anchored the next request: %+v", decision)
 	}
 }
 

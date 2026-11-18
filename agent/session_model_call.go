@@ -244,11 +244,10 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// work — it is what keeps the boundary paired with the history this round
 	// actually expands (see the G4 note there).
 	scope := replayScope{
-		Instance:          profile.ID(),
-		Model:             profile.Model(),
-		Protocol:          profile.Protocol(),
-		InFlightFrom:      inFlightFrom,
-		PromotesReasoning: promotesReasoningToText(profile),
+		Instance:     profile.ID(),
+		Model:        profile.Model(),
+		Protocol:     profile.Protocol(),
+		InFlightFrom: inFlightFrom,
 		dropsToolResult: func(tr *llm.ToolResultData) bool {
 			_, rejected := suppressedDocuments[tr.ToolCallID]
 			return rejected
@@ -327,7 +326,14 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// tool-result payload so the fallback chain can apply each target's own
 	// replay and media policy; the primary request is projected for the
 	// primary's wire before it is built and budgeted (#4563, #4217).
+	// The escape covers each target's dispatch copy, never the shared source:
+	// a promoting target rewrites reasoning text, and the fallback source is
+	// written from untrimmedHistory and may be handed to a target that signed
+	// the original bytes (#6493 review). expandHistory escaped the text parts
+	// for this target's boundaries already; this adds the reasoning a
+	// promoting target prepends to the body.
 	untrimmedHistory := history
+	history = escapeModelAuthoredFramesForTarget(history, profile.Protocol(), promotesReasoningToText(profile))
 	history = projectThinkingForTarget(profile, history)
 	history = projectToolResultMediaFor(profile, history)
 
@@ -2038,14 +2044,6 @@ type replayScope struct {
 	// for the policy and its exception; provenance rules only apply when this
 	// is false.
 	DropThinking bool
-	// PromotesReasoning marks a target that renders replayed reasoning as
-	// ordinary assistant text rather than as a protocol reasoning field
-	// (a thinking_as_text row). The reasoning is then part of the message
-	// body the model reads, so the frame escape has to cover it — otherwise a
-	// frame the model wrote in its reasoning reaches the next request
-	// verbatim while the same frame in its text would be escaped (#6493
-	// review).
-	PromotesReasoning bool
 	// dropsToolResult reports whether the outgoing request must omit this tool
 	// result's media payload — a document the provider already rejected this
 	// session (#4465). Nil keeps every payload.
@@ -2277,7 +2275,18 @@ func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Messa
 	// the assistant role is escaped: a user-role turn is the partner speaking,
 	// and their bytes are delivered as typed. The stored turn keeps every
 	// byte; this rewrites the projected copy alone.
-	t.Message = escapeModelAuthoredTurnFramesFor(t.Message, rs.Protocol, rs.PromotesReasoning)
+	//
+	// The reasoning is deliberately NOT escaped here even when this target
+	// promotes it. expandHistory's product is the round's shared source, which
+	// a fallback target also reads, and a promoting target's rewrite lands on
+	// the thinking text that a signed-thinking target must replay byte-exact:
+	// Anthropic carries the model's signature over that text and rejects a
+	// continuation whose thinking no longer matches it (#6493 review). Each
+	// target escapes its own dispatch copy instead — see
+	// escapeModelAuthoredFramesForTarget at the primary build and the fallback
+	// chain — so the rewrite lands on the copy that target sends, never on the
+	// source another target may sign.
+	t.Message = escapeModelAuthoredTurnFramesFor(t.Message, rs.Protocol, false)
 	if !rs.active() && !rs.DropThinking {
 		return t.Message
 	}

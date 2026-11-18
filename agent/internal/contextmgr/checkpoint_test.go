@@ -585,6 +585,17 @@ func TestEscapeWorkingNoteKeepsPartsConcatenated(t *testing.T) {
 	if !strings.Contains(note, "/tmp/prime-radiant") {
 		t.Fatalf("the note split the model's text across parts:\n%s", note)
 	}
+	// A part holding only a space never reaches the provider, but the note a
+	// summarizer reads is not the provider's message: Message.Text() kept those
+	// bytes, so dropping them would merge two words the model wrote apart.
+	spaced := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		{Kind: llm.ContentText, Text: "the API"},
+		{Kind: llm.ContentText, Text: " "},
+		{Kind: llm.ContentText, Text: "signature"},
+	}}
+	if got, want := escapeWorkingNote(spaced), "the API signature"; got != want {
+		t.Fatalf("the note merged words the model wrote apart:\n got %q\nwant %q", got, want)
+	}
 }
 
 func TestCheckpoint_ModelTextCannotForgeInputFrameInRollover(t *testing.T) {

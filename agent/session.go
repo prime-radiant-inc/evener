@@ -3300,6 +3300,24 @@ func assistantHistoryMessage(message llm.Message) llm.Message {
 
 // appendAssistantTurn appends an assistant turn that carries the full response
 // metadata (usage stats and response ID) alongside the message content.
+// withholdContinuationAnchor clears the continuation context marker that makes
+// a Responses turn an anchor candidate, and leaves every other response field
+// alone: the sanitized endpoint URL is read by the transcript and the ATIF
+// export whoever the protocol is, so erasing it would cost diagnostics to buy
+// an ineligibility this field already buys. turnHasResponsesContinuationMetadata
+// requires the marker to equal the marker version, so a turn without it is
+// refused on its own merits and the next request sends full history, where the
+// frame escape applies (#6493 review, #6734 path 4).
+//
+// Two callers need this and they are the two moments a response stops
+// describing the history it was generated from: the append, when a fold
+// published while the request was in flight, and a fold's publication, when a
+// response appended before it is carried forward behind a checkpoint that
+// predates it.
+func withholdContinuationAnchor(t *schema.Turn) {
+	t.ResponseContextMarker = ""
+}
+
 func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttemptMetadata) error {
 	t := schema.Turn{
 		Kind:                            schema.TurnAssistant,
@@ -3330,15 +3348,20 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 		//
 		// A fold that publishes while this attempt is in flight replaces the
 		// history the request was built from, but the provider's response comes
-		// from the context it actually saw — the pre-fold one. Stamping
+		// from the context it actually saw — the pre-fold one. Keeping
 		// continuation-anchor metadata on that turn would let the next request
 		// continue from a retained prefix that still holds the folded turns,
-		// including a frame the fold removed. Clearing the anchor fields makes
-		// the turn fail turnHasResponsesContinuationMetadata on its own merits,
-		// so the next request sends full history and the escape applies, rather
-		// than relying on a timestamp comparison that an append after the fold
-		// would satisfy. The response id and its hash stay for the transcript
-		// reader (#6734 path 4).
+		// including a frame the fold removed.
+		//
+		// Clearing the context marker alone makes the turn ineligible:
+		// turnHasResponsesContinuationMetadata requires it to equal the marker
+		// version, so an anchor without it is refused on its own merits and the
+		// next request sends full history, where the escape applies. The other
+		// response fields stay, because the sanitized endpoint URL is read by
+		// the transcript and the ATIF export whoever the protocol is —
+		// including protocols that cannot continue at all — and erasing it
+		// would cost diagnostics to buy an ineligibility the marker already
+		// buys (#6493 review, #6734 path 4).
 		//
 		// conversationRequestSurvivedHistory reads s.historyRevision under s.mu,
 		// which this door's holders take after it, so the answer cannot change
@@ -3346,10 +3369,7 @@ func (s *Session) appendAssistantTurn(resp llm.Response, finalAttempt ModelAttem
 		s.attentionMu.Lock()
 		defer s.attentionMu.Unlock()
 		if !s.conversationRequestSurvivedHistory(finalAttempt.conversation) {
-			t.ResponseEndpoint = ""
-			t.ResponseRequestFingerprint = ""
-			t.ResponseStorageScopeFingerprint = ""
-			t.ResponseContextMarker = ""
+			withholdContinuationAnchor(&t)
 		}
 		if request := finalAttempt.conversation; request != nil {
 			// Compaction may publish while the provider is running. Base the

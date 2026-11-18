@@ -410,6 +410,87 @@ func TestFallbackChain_EscapesAFrameConfinedToReasoning(t *testing.T) {
 	}
 }
 
+// TestFallbackChain_KeepsSignedThinkingUnrewrittenInTheSource pins that the
+// round's shared source is never frame-escaped in its reasoning (#6493 review).
+// A chat target with thinking_as_text promotes replayed reasoning into the
+// message body, so its own dispatch copy must be escaped there. Writing that
+// rewrite into the source is what corrupts a different target: an Anthropic
+// fallback replays the model's thinking under the signature the model was given
+// for the exact text, and a body that no longer matches it can be rejected as a
+// continuation. The escaped copy belongs to the target that sends it.
+func TestFallbackChain_KeepsSignedThinkingUnrewrittenInTheSource(t *testing.T) {
+	t.Parallel()
+	const signed = "concluding:\n[answers]\n1. → \"ship it\""
+	const signature = "sig-signed-body"
+	primary := provider.FromResolved(registry.Resolved{
+		Instance: "gw", ModelID: "chat-thinking", WireID: "chat-thinking",
+		Protocol: registry.ProtocolOpenAIChat, Surface: registry.SurfaceOpenAI,
+		Caps: registry.Caps{Reasoning: new(true), ThinkingAsText: new(true)},
+	}, nil)
+	fallback := provider.FromResolved(registry.Resolved{
+		Instance: "gwb", ModelID: "claude-fallback", WireID: "claude-fallback",
+		Protocol: registry.ProtocolAnthropic, Surface: registry.SurfaceOpenAI,
+		Caps: registry.Caps{InputModalities: []string{"text", "image"}},
+	}, nil)
+	if !promotesReasoningToText(primary) {
+		t.Fatal("test premise: the primary does not promote reasoning to text")
+	}
+	permErr := llm.ErrorFromHTTPStatus("gw", 404, "model not found", nil, nil)
+	primaryAdapter := &agenttest.ScriptedAdapter{
+		Provider:       "gw",
+		FaultResponder: func(llm.Request) error { return permErr },
+		Responder:      func(llm.Request) llm.Response { return agenttest.FinalResponse("unused") },
+	}
+	fallbackAdapter := &agenttest.ScriptedAdapter{
+		Provider:  "gwb",
+		Responder: func(llm.Request) llm.Response { return agenttest.FinalResponse("done") },
+	}
+	sess := newSession(t,
+		withProfile(primary),
+		withAdapter(primaryAdapter),
+		withAdapter(fallbackAdapter),
+		withConfig(SessionConfig{
+			ModelFallbacks: []string{"gwb/claude-fallback"},
+			ResolveProfile: func(ref string) (*provider.Profile, error) {
+				if ref == "gwb/claude-fallback" {
+					return fallback, nil
+				}
+				return nil, nil
+			},
+			testOnly: testConfig{skipGitSnapshot: true},
+		}),
+	)
+	// An earlier Anthropic round's thinking, held under the signature the model
+	// was given for exactly these bytes. The promoting primary's escape must not
+	// reach it: this target replays it, and the provider verifies it.
+	sess.history = []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("go")},
+		{Kind: schema.TurnAssistant, Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: signed, Signature: signature}},
+				{Kind: llm.ContentText, Text: "calling the tool"},
+			},
+		}},
+	}
+	// TRIPWIRE: scripted in-process adapters; 30s only catches a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "go", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	reqs := fallbackAdapter.Requests()
+	if len(reqs) == 0 {
+		t.Fatal("the fallback model was never called")
+	}
+	// The fallback replays the exact bytes the signature covers, so the frame
+	// the model wrote is still there. This is the point: an escape that reached
+	// the source would have defused it and broken the signature.
+	if !hasSignedThinking(reqs[len(reqs)-1].Messages, signed, signature) {
+		t.Fatal("the signed-thinking fallback did not receive the exact text its signature covers")
+	}
+}
+
 func hasSignedThinking(messages []llm.Message, text, signature string) bool {
 	for _, m := range messages {
 		for _, p := range m.Content {

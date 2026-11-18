@@ -47,13 +47,27 @@ func escapeWorkingNote(msg llm.Message) string {
 	// adds or removes a fence delimiter, so the second pass cannot re-open what
 	// the first closed.
 	//
-	// The escaped segments are joined back onto the parts they came from and
-	// concatenated, not joined with a separator: the adapter groups same-phase
-	// parts into one message, so the model read them as one run of characters.
-	// A path or identifier split across two parts has to stay one token in the
-	// note; escaping is what may not change that, and before the escape existed
-	// Message.Text() preserved it (#6493 review).
-	var note strings.Builder
+	// The escaped segments are put back onto the parts they came from and the
+	// result is the concatenation of every original text part. Both halves of
+	// that matter, and a note built from the wire-filtered parts alone would
+	// lose one of them:
+	//
+	//   - Concatenation, not a separator. The adapter groups same-phase parts
+	//     into one message, so the model read them as one run of characters and
+	//     Message.Text() concatenated them; a path split across two parts has
+	//     to stay one token (#6493 review).
+	//   - Every original part, including the ones the wire drops. A part that
+	//     is only a space or a newline never reaches the provider, so the scan
+	//     must not see it, but the note is read by a human-facing summarizer and
+	//     Text() did keep it. Dropping it merges two words the model wrote
+	//     apart (#6493 review).
+	//
+	// So the scan runs over the wire parts, its rewrites go back at the indexes
+	// they came from, and the note is the original parts concatenated. The
+	// second pass then reads the note as its own flat reader will.
+	wireIndexes, _, _ := sysmsg.WireTextParts(msg)
+	escaped := make([]string, len(texts))
+	copy(escaped, texts)
 	segments := sysmsg.TextSegments(phases, "openai-responses")
 	escapedSegments := sysmsg.EscapePhasedText(texts, phases, "openai-responses")
 	for s, span := range segments {
@@ -61,11 +75,25 @@ func escapeWorkingNote(msg llm.Message) string {
 		if !ok {
 			// The scan changed the line structure; carry the parts as they are
 			// rather than invent boundaries the model did not write.
-			pieces = texts[span[0]:span[1]]
+			continue
 		}
-		for _, piece := range pieces {
-			note.WriteString(piece)
+		copy(escaped[span[0]:span[1]], pieces)
+	}
+	// Start from every original text part, then put the escaped wire parts back
+	// at their own indexes. A part the wire drops is still in the note, with
+	// the bytes the model wrote.
+	noteParts := make([]string, len(msg.Content))
+	for i, part := range msg.Content {
+		if part.Kind == llm.ContentText {
+			noteParts[i] = part.Text
 		}
+	}
+	for k, at := range wireIndexes {
+		noteParts[at] = escaped[k]
+	}
+	var note strings.Builder
+	for _, part := range noteParts {
+		note.WriteString(part)
 	}
 	return sysmsg.EscapeModelAuthoredFrames(note.String())
 }

@@ -124,7 +124,27 @@ func (s *Session) publishFoldedHistory(snapLen, snapRevision int, folded []schem
 		return nil, false
 	}
 	if len(s.history) > snapLen {
+		// A turn appended after this fold's snapshot was dispatched before the
+		// fold published, so its request presented the PRE-fold history. Its
+		// append saw the unchanged revision, so it kept its
+		// continuation-anchor metadata, which was true then: it described
+		// history the session still held. Carrying it forward past the
+		// checkpoint this publication lands makes that metadata false. The
+		// checkpoint's timestamp was fixed when the fold built it, so it can
+		// predate the turn and the timestamp comparison in
+		// anchorResponsePredatesBoundary cannot see the mismatch; the next
+		// continuation would then restore the provider prefix the fold
+		// removed. Withhold the anchor on exactly the carried-forward turns —
+		// everything the fold itself produced or preserved keeps its own
+		// metadata (#6493 review).
+		// The carried turns start where the fold's own result ends, not at
+		// snapLen: folded is the post-fold history and is already shorter than
+		// the snapshot it replaced.
+		carriedFrom := len(folded)
 		folded = append(folded, s.history[snapLen:]...)
+		for i := carriedFrom; i < len(folded); i++ {
+			withholdContinuationAnchor(&folded[i])
+		}
 	}
 	s.history = folded
 	s.bumpHistoryRevisionLocked()
@@ -356,6 +376,12 @@ func (s *Session) publishFoldTransaction(snapLen, snapRevision, snapAppends int,
 				persisted = original
 			}
 		}
+		// The rewrite is the persisted form of a turn this publication carried
+		// forward behind its checkpoint, so it needs the same withhold the live
+		// turn got in publishFoldedHistory: a resume rebuilds history from these
+		// copies, and an anchor reinstated there would be one the live decision
+		// had already refused (#6493 review).
+		withholdContinuationAnchor(&persisted)
 		rewriteTail = append(rewriteTail, persisted)
 	}
 	s.persistedAppendLogBase += len(s.persistedAppendLog)
