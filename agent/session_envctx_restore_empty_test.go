@@ -4,15 +4,35 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/envctx"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
+
+type recordingCapabilityEnv struct {
+	agenttest.FakeEnv
+	git, tools atomic.Int32
+}
+
+func (e *recordingCapabilityEnv) ExecCommand(ctx context.Context, command string, timeout int, dir string, vars map[string]string) (execenv.ExecResult, error) {
+	switch command {
+	case gitProbeScript():
+		e.git.Add(1)
+		return execenv.ExecResult{Stdout: "git=ok\n"}, nil
+	case toolProbeScript():
+		e.tools.Add(1)
+		return execenv.ExecResult{Stdout: "go=no\nnode=no\nrg=yes\n"}, nil
+	default:
+		return e.FakeEnv.ExecCommand(ctx, command, timeout, dir, vars)
+	}
+}
 
 func TestRestoreEnvironmentWithNoRetainedEntriesReemitsFullBlock(t *testing.T) {
 	for _, transcriptState := range []string{"missing", "header-only", "empty saved prompt"} {
@@ -25,15 +45,16 @@ func TestRestoreEnvironmentWithNoRetainedEntriesReemitsFullBlock(t *testing.T) {
 			}
 			client := llm.NewClient()
 			client.Register(newFakeAdapter("openai", repeatFinalResponse(1, "ok")...))
-			sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+			launchEnv := &recordingCapabilityEnv{FakeEnv: agenttest.FakeEnv{WorkDir: dir}}
+			sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), launchEnv, SessionConfig{
 				StateDir: dir,
 				testOnly: testCfg,
 			})
 			if err != nil {
 				t.Fatal(err)
 			}
-			if !sess.capabilities.toolsProbed || !sess.capabilities.gitProbed {
-				t.Fatal("fresh launch did not measure the capabilities in its prompt")
+			if git, tools := launchEnv.git.Load(), launchEnv.tools.Load(); git != 1 || tools != 1 {
+				t.Fatalf("fresh launch ran %d Git and %d tool probes, want one each", git, tools)
 			}
 			if _, err := sess.ProcessInput(context.Background(), "hello", nil); err != nil {
 				t.Fatalf("ProcessInput setup: %v", err)
@@ -80,12 +101,7 @@ func TestRestoreEnvironmentWithNoRetainedEntriesReemitsFullBlock(t *testing.T) {
 
 			restoreClient := llm.NewClient()
 			restoreClient.Register(newFakeAdapter("openai", repeatFinalResponse(1, "restored")...))
-			local := execenv.NewLocalExecutionEnvironment(dir)
-			// Count shell probes while ordinary Git observations use direct argv.
-			restoreEnv := struct {
-				*execRecordingEnv
-				execenv.ArgvExecutor
-			}{&execRecordingEnv{ExecutionEnvironment: local}, local}
+			restoreEnv := &recordingCapabilityEnv{FakeEnv: agenttest.FakeEnv{WorkDir: dir}}
 			restored, err := RestoreSessionFromMetaWithConfig(
 				restoreClient,
 				NewOpenAIProfile("gpt-5.2"),
@@ -98,8 +114,12 @@ func TestRestoreEnvironmentWithNoRetainedEntriesReemitsFullBlock(t *testing.T) {
 			}
 			defer restored.Close()
 			needsPrompt := transcriptState == "missing"
-			if ran := restoreEnv.calls.Load(); (ran > 0) != needsPrompt || restored.capabilities.toolsProbed != needsPrompt || restored.capabilities.gitProbed != needsPrompt {
-				t.Errorf("restore ran %d shell commands and measured tools %t, Git %t; needs a new prompt %t", ran, restored.capabilities.toolsProbed, restored.capabilities.gitProbed, needsPrompt)
+			var wantProbes int32
+			if needsPrompt {
+				wantProbes = 1
+			}
+			if git, tools := restoreEnv.git.Load(), restoreEnv.tools.Load(); git != wantProbes || tools != wantProbes {
+				t.Errorf("restore ran %d Git and %d tool probes, want %d each", git, tools, wantProbes)
 			}
 			if !needsPrompt && restored.cachedSystemPrompt != header.SystemPrompt {
 				t.Error("restore changed the saved prompt bytes")
