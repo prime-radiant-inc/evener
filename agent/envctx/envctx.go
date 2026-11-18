@@ -238,7 +238,21 @@ func (t *Tracker) RenderDiff(cur Snapshot) string {
 		cur.GitBranch = ""
 		cur.gitBranchUnknown = false
 	}
-	reportBranch := cur.recordGitBranch || moved || cur.GitBranch != prev.GitBranch || unknown != t.st.GitBranchUnknown || (first && unknown && prev.Cwd != "")
+	// An inconclusive probe establishes nothing. When it is for the checkout the
+	// retained state already sits in, and that state carries no branch of its
+	// own, there is nothing here to correct: the saved prompt's branch still
+	// stands, and saying "unconfirmed" would supersede a real branch with a
+	// weaker claim about the very same directory. Stay silent and leave the next
+	// observation owed.
+	//
+	// Every other shape still speaks, because each one does have something to
+	// correct or to warn about: a moved checkout (the retained branch describes
+	// somewhere else), a retained branch that may belong to another checkout,
+	// and a probe that answered -- including "no branch", which must clear.
+	nothingToCorrect := unknown && !moved && prev.Cwd != "" && prev.GitBranch == ""
+	reportBranch := cur.recordGitBranch || moved || cur.GitBranch != prev.GitBranch ||
+		(!nothingToCorrect && unknown != t.st.GitBranchUnknown) ||
+		(first && unknown && prev.Cwd != "" && !nothingToCorrect)
 	cur.recordGitBranch = false
 	if !first && cur == prev && !reportBranch && !t.st.ScratchDirUnknown && !t.st.WritableRootsUnknown {
 		return ""
