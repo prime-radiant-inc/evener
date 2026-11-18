@@ -702,8 +702,8 @@ func TestHubJobsGetLiveDaemon(t *testing.T) {
 	}
 }
 
-// TestHubJobsGetFencesDurablyDeletedOwner is the round-4 medium-2 regression.
-// The ancestor holds a forwarded copy of a descendant's job, so the job IS in
+// TestHubJobsGetFencesDurablyDeletedOwner: the ancestor holds a forwarded copy
+// of a descendant's job, so the job IS in
 // the requested session's scope — but the hub has durably recorded the
 // DESCENDANT's deletion and its on-disk tombstone has not landed yet. The
 // configured deletion store is the only fence that knows, and it must be applied

@@ -56,9 +56,12 @@ describe("jobStatusUnconfirmed", () => {
   // The bug the split exists for: an intact owner record can inherit an
   // ancestor's scan damage. The diagnostic is true and the status is fine.
   it("ignores aggregate diagnostics, which describe every journal consulted", () => {
-    expect(
-      jobStatusUnconfirmed({ terminal: false, diagnostics: ["journal_scan_incomplete", "journal_torn_tail"] }),
-    ).toBe(false);
+    // Assigned rather than passed inline: jobStatusUnconfirmed accepts only the
+    // two fields it reads, and an object literal carrying a third is an excess
+    // property that TypeScript rejects even though the assertion is about
+    // exactly that third field's irrelevance.
+    const job = { terminal: false, diagnostics: ["journal_scan_incomplete", "journal_torn_tail"] };
+    expect(jobStatusUnconfirmed(job)).toBe(false);
   });
 
   it("marks the displayed word rather than replacing it", () => {

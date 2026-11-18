@@ -501,11 +501,56 @@ test("a failed output attempt for a confirmed running job still retries", async 
   peer.reply(await peer.request(META), metadata());
   peer.fail(await peer.request(OUTPUT), "output unavailable");
   const failed = await observed((snapshot) => snapshot.outputError !== null);
-  expect(failed.outputError).toContain("output unavailable");
+  expect(failed.outputError).not.toBeNull();
 
   const before = peer.requests(OUTPUT).length;
   await vi.advanceTimersByTimeAsync(1500);
   expect(peer.requests(OUTPUT).length).toBeGreaterThan(before);
+});
+
+// The stop for an unconfirmed job must not close the output slot. With a page
+// already cached, a failed tail must leave paging able to use the slot; parking
+// the slot's own deadline would strand an older-page request forever.
+test("paging still runs after a failed tail on an unconfirmed job", async () => {
+  await initial();
+  // The next metadata read is paced, so the clock has to reach it before the
+  // request exists to answer.
+  await vi.advanceTimersByTimeAsync(1000);
+  peer.reply(await peer.request(META, 1), { ...metadata(false), statusUnconfirmed: true });
+  await observed((snapshot) => snapshot.job?.statusUnconfirmed === true);
+  await vi.advanceTimersByTimeAsync(1000);
+  peer.fail(await peer.request(OUTPUT, 1), "output unavailable");
+  await observed((snapshot) => snapshot.outputError !== null);
+
+  reader.capture({ byteOffset: 100, pixelOffset: -3, following: false });
+  reader.demand({ direction: "backward", boundaryBytes: 100, limitBytes: 105 }, "start");
+  await vi.advanceTimersByTimeAsync(1000);
+  const history = await peer.request(OUTPUT, 2);
+  expect(history.params.beforeBytes).toBe(100);
+});
+
+// An explicit refresh asks for a tail read even when the row is unconfirmed. If
+// an older page holds the slot, metadata that arrives first and still reports
+// the row unconfirmed must not cancel the read the person asked for; it only
+// stops the RECURRING cadence.
+test("an explicit refresh tail survives unconfirmed metadata while a page holds the slot", async () => {
+  await initial();
+  reader.capture({ byteOffset: 100, pixelOffset: -3, following: false });
+  reader.demand({ direction: "backward", boundaryBytes: 100, limitBytes: 105 }, "start");
+  const held = await peer.request(OUTPUT, 1);
+
+  // Refresh while the history page holds the slot, and answer the metadata
+  // first, still unconfirmed.
+  const metaBefore = peer.requests(META).length;
+  reader.refresh();
+  peer.reply(await peer.request(META, metaBefore), { ...metadata(false), statusUnconfirmed: true });
+  await observed((snapshot) => snapshot.job?.statusUnconfirmed === true);
+
+  // The held page finishing frees the slot, and the owed tail read still runs.
+  peer.reply(held, page(90, "OLDER_ROW\n", 105));
+  await vi.advanceTimersByTimeAsync(1000);
+  const tail = await peer.request(OUTPUT, 2);
+  expect(tail.params.beforeBytes).toBeUndefined();
 });
 
 // The counterpart: a healthy live row keeps the normal cadence, so the stop

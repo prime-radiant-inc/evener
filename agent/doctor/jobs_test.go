@@ -463,8 +463,8 @@ func TestJobs_JobTreeRootSessionIDRedirect(t *testing.T) {
 
 // A delegates journal ending in a torn, unterminated batch still loads, and
 // the report carries a diagnostic for the ignored tail.
-// TestJobs_RenderReportsDiagnosticsWithNoRows is the round-4 low regression.
-// A journal whose only content is a torn trailing append folds to zero rows, so
+// TestJobs_RenderReportsDiagnosticsWithNoRows: a journal whose only content is
+// a torn trailing append folds to zero rows, so
 // the JSON carries a diagnostic while the default text output said "no jobs
 // recorded" — an ordinary empty history for a journal that is in fact damaged.
 // The text report must name the diagnosis, in the no-rows case too.

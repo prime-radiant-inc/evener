@@ -77,6 +77,12 @@ export class JobLogReader {
   private nextReadAt = 0;
   private liveDueAt = 0;
   private metadataDueAt = 0;
+  /** A tail read someone asked for explicitly — refresh(), a reconnect — that
+   * has not taken the output slot yet. Unconfirmed metadata stops RECURRING
+   * polls, but the one-shot read a person asked for still happens; without this
+   * flag an older-page request holding the slot would outlive the refresh, and
+   * the reconcile that follows the metadata would erase it. */
+  private explicitTailOwed = false;
   private timeout: ReturnType<typeof setTimeout> | undefined;
 
   constructor(
@@ -108,6 +114,7 @@ export class JobLogReader {
         // output schedule settled because it was unconfirmed reads again and
         // the next response decides afresh.
         this.nextReadAt = Date.now();
+        this.explicitTailOwed = true;
       }
       this.pump();
     });
@@ -169,6 +176,7 @@ export class JobLogReader {
     // on an unconfirmed row, so it clears the output deadline the failed or
     // unconfirmed attempt parked, not only the two above.
     this.nextReadAt = Date.now();
+    this.explicitTailOwed = true;
     if (this.snapshot.job?.terminal) {
       this.terminalObservation++;
       this.publish({ drainPending: true });
@@ -182,7 +190,10 @@ export class JobLogReader {
    * two replies happened to arrive last. A pending drain still finishes,
    * because those bytes were already written. */
   private reconcileLiveDeadline(job: JobActivityJob | null, drainPending: boolean) {
-    if (livePollingStopped(job) && !drainPending) {
+    // An owed one-shot read is a demand, not a poll. It keeps the slot due until
+    // it is served, so unconfirmed metadata stops the RECURRING cadence without
+    // cancelling the read a person asked for.
+    if (livePollingStopped(job) && !drainPending && !this.explicitTailOwed) {
       this.liveDueAt = Number.POSITIVE_INFINITY;
       return;
     }
@@ -247,7 +258,10 @@ export class JobLogReader {
     const now = Date.now();
     if (!this.metadataInFlight && now >= this.metadataDueAt) this.readMetadata();
     if (!this.outputInFlight && now >= this.nextReadAt) {
-      const liveDue = now >= this.liveDueAt || this.snapshot.drainPending;
+      // An owed tail read is a DEMAND, not a poll: it forces the slot regardless
+      // of the cadence, so unconfirmed metadata can stop recurring reads without
+      // cancelling the one a person asked for.
+      const liveDue = now >= this.liveDueAt || this.snapshot.drainPending || this.explicitTailOwed;
       const pending = this.snapshot.pendingDemand;
       const readHistory = pending !== null && !(liveDue && this.historyServedSinceLive);
       const selection = readHistory && pending !== null ? selectJobLogDemand(this.snapshot.windows, pending) : null;
@@ -319,6 +333,9 @@ export class JobLogReader {
     const observation = this.terminalObservation;
     const kind = selection === null ? "live" : "older";
     const keep = kind === "live" ? "end" : this.keep;
+    // Whatever a person asked for is being served now. A history page satisfies
+    // its own demand, so only the asked-for tail clears this flag.
+    if (kind === "live") this.explicitTailOwed = false;
     const current = () => this.readable() && this.generation === generation;
     this.outputInFlight = threadsStore
       .getState()
@@ -376,9 +393,17 @@ export class JobLogReader {
         // question the journal cannot answer, and shows the reader an error that
         // keeps re-firing. The error stays visible; refresh(), paging, reconnect
         // reads and every healthy live row keep their normal retry.
+        //
+        // The stop is expressed in liveDueAt and NOT in nextReadAt. nextReadAt is
+        // the slot's own backoff, and pump() consults it before anything else, so
+        // parking it at infinity would strand every other user of the slot: an
+        // older-page request queued by scrolling, or a terminal drain whose
+        // metadata arrived after this failure. "Do not poll again yet" and "do
+        // not read again at all" are different statements, and only the first is
+        // true here.
         const automatic = selection === null && this.snapshot.pendingDemand === null && !this.snapshot.drainPending;
         const stop = automatic && livePollingStopped(this.snapshot.job);
-        this.nextReadAt = stop ? Number.POSITIVE_INFINITY : Date.now() + READ_INTERVAL_MS;
+        this.nextReadAt = Date.now() + READ_INTERVAL_MS;
         if (stop) this.liveDueAt = Number.POSITIVE_INFINITY;
         const bounds = jobOutputPrunedBounds(error);
         let windows = this.snapshot.windows;

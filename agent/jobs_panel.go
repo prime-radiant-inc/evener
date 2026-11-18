@@ -713,7 +713,29 @@ func recordStatusUnconfirmed(rec *jobstore.JobRecord, scanErr error, d sessionJo
 	if scanErr != nil || d.TornTail {
 		return true
 	}
+	// The record's OWN owner claim can be the conflict. Checked before the
+	// lifecycle half: a row that names an owner its job ID contradicts was
+	// folded from a start that never described this job, so its "running" is a
+	// statement about some other session's launch.
+	if ownerClaimContradicts(rec) {
+		return true
+	}
 	return d.IncompleteLifecycle && rec.Type == ""
+}
+
+// ownerClaimContradicts reports whether a record's own OwnerSessionID names a
+// session the job ID does not encode.
+//
+// An EMPTY claim states nothing and is the pre-owner legacy shape, and a job ID
+// that encodes no owner (a synthetic or legacy bare ID) leaves nothing to
+// contradict. Both are therefore not conflicts — the same two exceptions
+// checkJobStart makes, for the same reason.
+func ownerClaimContradicts(rec *jobstore.JobRecord) bool {
+	if rec.OwnerSessionID == "" {
+		return false
+	}
+	encoded := encodedJobOwner(rec.JobID)
+	return encoded != "" && encoded != rec.OwnerSessionID
 }
 
 // routingJobSession names the session whose directory holds a record's own
@@ -794,6 +816,16 @@ func LoadSessionJobOutputPage(stateDir, sessionID, jobID string, beforeBytes *in
 		outPath = filepath.Join(jobsDir(stateDir, routingJobSession(jobID, read)), "jobs", jobID+".log")
 	}
 	page, err := readJobOutputPageForRecord(outPath, rec, beforeBytes, clampJobPageBytes(maxBytes))
+	// Recheck AFTER the read: a deletion can become durable between the check
+	// above and the bytes landing in this process, and the page would otherwise
+	// leave with data the hub has already committed to removing. A standing
+	// fence discards it; an abandoned deletion clears the record, so the next
+	// request serves the page normally.
+	if fenced, fenceErr := jobReadFenced(stateDir, fence, sessionID, routingJobSession(jobID, read)); fenceErr != nil {
+		return JobOutputPage{}, false, fenceErr
+	} else if fenced {
+		return JobOutputPage{}, false, nil
+	}
 	return jobOutputPageResult(page, true, err)
 }
 
@@ -840,6 +872,18 @@ func LoadSessionJobGet(stateDir, sessionID, jobID string, fence OwnerDeletionFen
 		return JobActivityJob{}, false, jobReadError(jobID, err)
 	}
 	if !read.found {
+		return JobActivityJob{}, false, nil
+	}
+	// The checks inside loadSessionJobRecord all precede the journal scans, so a
+	// deletion recorded DURING those scans is invisible to them and this read
+	// would return metadata the hub has already committed to deleting. Recheck a
+	// third time here, after the scan and before the answer: the requested
+	// session's record and the resolved owner's identity both leave this
+	// process. A standing fence withholds the row; an abandoned deletion clears
+	// the record, so a later read resumes rather than locking out.
+	if fenced, fenceErr := jobReadFenced(stateDir, fence, sessionID, routingJobSession(jobID, read)); fenceErr != nil {
+		return JobActivityJob{}, false, fenceErr
+	} else if fenced {
 		return JobActivityJob{}, false, nil
 	}
 	ownerRef := appwire.Ref{SourceID: "local", ThreadID: sessionID}.String()

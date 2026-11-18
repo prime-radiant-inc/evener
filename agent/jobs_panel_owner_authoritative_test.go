@@ -1704,3 +1704,82 @@ func TestLoadSessionJobGetRejectsMalformedOwnerHint(t *testing.T) {
 		}
 	}
 }
+
+// TestLoadSessionJobGetWithholdsMetadataFencedDuringScan pins the window between
+// the last check and the answer. Every fence check inside loadSessionJobRecord
+// precedes the journal scans, so a deletion that becomes durable DURING a scan
+// is invisible to them and the metadata leaves the process anyway. The recheck
+// immediately before returning closes it, and because an abandoned deletion
+// clears its record, the next read succeeds rather than locking out.
+func TestLoadSessionJobGetWithholdsMetadataFencedDuringScan(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	sessionID := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(sessionID)
+	started := time.Date(2026, 11, 19, 13, 0, 0, 0, time.UTC)
+
+	writeJobJournalLines(t, jobsDir(stateDir, sessionID),
+		jobStartedLine(jobID, sessionID, started)+"\n",
+	)
+
+	// Clean on the first consultation, fenced from the second onward: the
+	// deletion lands while the journal is being scanned.
+	consulted := 0
+	fence := func(string) (bool, error) {
+		consulted++
+		return consulted > 1, nil
+	}
+
+	job, found, err := LoadSessionJobGet(stateDir, sessionID, jobID, fence)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if found {
+		t.Fatalf("found = true (status %q): a deletion that became durable during the scan must withhold the row", job.Status)
+	}
+
+	abandoned := func(string) (bool, error) { return false, nil }
+	job, found, err = LoadSessionJobGet(stateDir, sessionID, jobID, abandoned)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet after abandonment: %v", err)
+	}
+	if !found || job.Status == "" {
+		t.Fatalf("found = %v, status = %q: an abandoned deletion must not lock the read out", found, job.Status)
+	}
+}
+
+// TestLoadSessionJobGetMarksContradictoryOwnerClaimUnconfirmed pins the record's
+// OWN claim as a confidence input. A saved running start that names an owner its
+// job ID contradicts was folded from a launch describing some other session, so
+// its "running" is not a statement about this job — yet the row has a type, so a
+// lifecycle-only rule calls it confirmed and the browser follows it. Reading the
+// job through the session its ID encodes is exactly the path that bypasses the
+// authority predicate, which is why the confidence signal has to catch it.
+func TestLoadSessionJobGetMarksContradictoryOwnerClaimUnconfirmed(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	ownerSession := identifier.MustNewSessionID()
+	claimant := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 19, 14, 0, 0, 0, time.UTC)
+
+	// Read through the encoded owner, whose journal holds a start naming another
+	// session as the owner.
+	writeJobJournalLines(t, jobsDir(stateDir, ownerSession),
+		jobStartedLine(jobID, claimant, started)+"\n",
+	)
+
+	job, found, err := LoadSessionJobGet(stateDir, ownerSession, jobID, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the contradictory row's readable history preserved")
+	}
+	if job.Status == "" {
+		t.Fatal("status empty, want the record's history still readable")
+	}
+	if !job.StatusUnconfirmed {
+		t.Fatal("StatusUnconfirmed = false: the record names an owner its job ID contradicts, so its running status is not established")
+	}
+}
