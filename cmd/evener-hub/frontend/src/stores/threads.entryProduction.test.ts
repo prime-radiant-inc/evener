@@ -26,6 +26,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useStore } from "zustand";
 import { appliedReceipt } from "../mutationReceiptTestUtils";
 import { settleProjectionWorkForTests } from "../panes/session/composer/queue/testing/flushPendingTurnsProjection";
+import { withRecoveryDestinationClaim } from "../panes/session/composer/submitProtocol";
 import { useTranscriptViewRegistration } from "../panes/session/transcript/flow/useTranscriptViewRegistration";
 import { installTranscriptGeometry } from "../panes/session/transcript/transcriptReadingGeometryTestUtils";
 import { deleteSession } from "../shell/rail/actions";
@@ -65,6 +66,7 @@ import {
   installHydrationRetrySchedulerForTests,
   markCacheSessionsDeleted,
   pendingThreadHydrationUpdatesForTests,
+  resendRecoveryMutation,
   resetThreadsStoreForTests,
   setMutationStorageForTests,
   settleBackgroundTranscriptsForTests,
@@ -1346,9 +1348,104 @@ it("a routing claim does not take a cached shell as verified routing state", asy
   background.release();
 }, 20_000);
 
+// A resend whose claim joins the verification read of a resident cached shell
+// must survive that read failing in transport. The hydration retry is already
+// scheduled and verifies the destination; a claim that fails on the way leaves
+// the press unordered, so the user has to send again.
+it("a resend survives a transient verification failure on a cached shell", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const outboxStorage = new MutationOutboxIndexedDB({ indexedDB: factory });
+  setMutationStorageForTests(outboxStorage);
+  const client = connect();
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  await settleEntryTranscriptForTests("local:a");
+  // The resident model is a shell: the load seam published it before any
+  // source read accepted it. This is the state the claim must verify.
+  const route = entryTranscriptRoute("local:a");
+  if (!route) throw new Error("expected an entry route");
+  route.cachedUnverified = true;
+  const outbox = await outboxStorage.enqueueIntent({
+    targetRef: "local:a",
+    threadId: "thread-a",
+    method: "turn/start",
+    payload: { ref: "local:a", input: [{ type: "text", text: "retry me" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "retry me" }] },
+  });
+  const row = await outboxStorage.transferToRecovery(outbox.clientMutationId, "rejected");
+  if (!row) throw new Error("expected the recovery row to be durable");
+  // The verification read fails in transport; every later read answers.
+  let attempts = 0;
+  client.on("thread/read", (params) => {
+    attempts += 1;
+    if (attempts === 1) throw new Error("transport died");
+    return { ...response(), requestGeneration: params.requestGeneration };
+  });
+  // The retry fires on the test's word, not on elapsed time.
+  let fireRetry: (() => void) | undefined;
+  const restoreScheduler = installHydrationRetrySchedulerForTests((_attempt, retry) => {
+    fireRetry = retry;
+    return () => undefined;
+  });
+  try {
+    const resent = withRecoveryDestinationClaim("local:a", () =>
+      resendRecoveryMutation(row.clientMutationId, "local:a", "send", "retry me", []),
+    );
+    await vi.waitFor(() => expect(fireRetry, "the failed read must schedule the hydration retry").toBeDefined());
+    // The retry verifies the destination, and the claim that was waiting on it
+    // proceeds. A claim that failed the press on the transient error has
+    // already rejected here, and nothing was written.
+    fireRetry?.();
+    const outcome = await resent.then(
+      (value) => ({ ok: true as const, value }),
+      () => ({ ok: false as const, value: undefined }),
+    );
+    const landed = outcome.ok && outcome.value.status === "sent" ? outcome.value.record.clientMutationId : undefined;
+    // A sent resend writes the fresh row to the outbox and deletes the
+    // recovery row it consumed. That row is the press landing.
+    const durable = await outboxStorage.listOutbox("local:a");
+    expect(
+      durable.map((record) => record.clientMutationId),
+      "the press must reach the outbox without a second Send",
+    ).toContain(landed);
+  } finally {
+    restoreScheduler();
+    background.release();
+  }
+}, 20_000);
+
 // A routing hold is not a pane: after a Clear, a pane opening on a destination
 // a routing hold already keeps alive still begins the fresh foreground
 // lifetime its read needs to resume cached writes.
+// A routing lease keeps a destination dispatchable, not resident: when the
+// last pane closes during a resend, its reader and the bodies behind it must
+// go while the model and subscription stay.
+it("the last pane closing during a resend releases its reader", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const client = connect();
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  await threadsStore.getState().ensureThread("local:a");
+  await settleEntryTranscriptForTests("local:a");
+  expect(bodyOwners("local:a")).toBe(1);
+  const lease = await acquireUnreadThreadClaim("local:a");
+  // The pane closes while the resend holds the destination. The lease counts
+  // as a foreground holder but never held the bodies, so it must not be what
+  // keeps the closed pane's reader alive.
+  await threadsStore.getState().releaseThreadAndWait("local:a");
+  expect(threadsStore.getState().threads.has("local:a"), "the routing lease must keep the model dispatchable").toBe(
+    true,
+  );
+  expect(
+    productionEntryTranscriptForTests("local:a")?.reader,
+    "the closed pane's reader must not outlive the last body owner",
+  ).toBeUndefined();
+  lease.release();
+}, 20_000);
+
 it("a pane opening after a routing hold still begins its fresh cache lifetime", async () => {
   const storage = cache();
   setProductionEntryCacheForTests(storage);

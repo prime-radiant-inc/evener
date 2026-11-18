@@ -8399,12 +8399,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             inflight = replacement;
             continue;
           }
-          if (lifecycleActive && threadsStore.getState().threads.has(ref)) {
-            // A routing hold cannot accept presence as verification: the model
-            // standing here may be the shell whose read just failed. Retrying
-            // is the pane's recovery; the resend gets the failure and stays
-            // available for another press.
-            if (routingOnly) throw err;
+          if (lifecycleActive && threadsStore.getState().threads.has(ref) && !routingOnly) {
             // The held model may be the shell a missed open published after
             // fencing its local read: a failed source read must not strand a
             // body-suppressed display on the next successful read. The
@@ -8413,6 +8408,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             scheduleEntryOpeningRecovery(ref);
             return;
           }
+          // A routing hold cannot accept presence as verification: the model
+          // standing here may be the shell whose read just failed. It also
+          // cannot fail the press here, which would lose the user's Send even
+          // though the retry below is about to verify the destination. So it
+          // falls through to join that existing retry and resolves only once
+          // verified routing state is published - no second retry of its own.
           // Release is terminal even when the failed read belongs to an old
           // connection. A reconnect cannot re-arm a pane that no longer exists.
           if (!lifecycleActive) return;

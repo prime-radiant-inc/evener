@@ -28,6 +28,7 @@ import {
   isFinalReleaseOwner,
   nextBackgroundLeaseSequence,
   setFinalReleaseOwner,
+  threadBodyOwned,
 } from "./threadOwners";
 import type { TranscriptReader, TranscriptRepository, TranscriptRetirementOutcome } from "./transcriptRepository";
 import { getReadyEpoch } from "./wiredClient";
@@ -649,7 +650,7 @@ export async function openEntryTranscript(
     // usable live tail — mirroring the backstop's held-pane swap ordering.
     if (recovery && fixture.reader) {
       const fenced = fixture.reader;
-      fixture.reader = heldCountsAtStore(ref) ? fixture.repository.attachReader() : undefined;
+      fixture.reader = threadBodyOwned(ref) ? fixture.repository.attachReader() : undefined;
       fenced.dispose();
     }
     fixture.reader ??= fixture.repository.attachReader();
@@ -701,7 +702,7 @@ export async function openEntryTranscript(
               // has none, and the next publication would then replace that
               // display with the body-suppressed model.
               if (fixture.reader === reader) {
-                fixture.reader = heldCountsAtStore(ref) ? repository.attachReader() : undefined;
+                fixture.reader = threadBodyOwned(ref) ? repository.attachReader() : undefined;
               }
               reader.dispose();
               resolve(undefined);
@@ -1302,7 +1303,10 @@ export function scheduleEntryRecordedReconciliation(ref: string): void {
 }
 
 export function releaseEntryTranscriptReader(ref: string, releaseDisplay = false): void {
-  if (heldCountsAtStore(ref)) return;
+  // Reader disposal is a body question: a routing lease keeps the model and
+  // the subscription alive for dispatch, but it never held the live bodies, so
+  // it must not keep a closed pane's reader and their residency standing.
+  if (threadBodyOwned(ref)) return;
   const fixture = entryTranscriptRoute(ref);
   if (!fixture || fixture.ref !== ref) return;
   clearEntryTranscriptLocalOpening(ref);
