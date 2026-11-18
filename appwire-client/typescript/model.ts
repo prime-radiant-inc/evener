@@ -92,8 +92,12 @@ export interface ItemModel {
   // guessing by header. Undefined for ordinary messages, for unfenced
   // whole-set answers (which record no call list), for any answer from a
   // daemon that predates the field, and on a BOUNDED read that omitted the
-  // list to fit its page — a consumer must fall back to the link and then to
-  // the composed "[answers]" text shape in every one of those cases.
+  // list to fit its page. A consumer must fall back to the link and then to
+  // the composed "[answers]" text shape in every one of those cases, EXCEPT
+  // that an omitted list arriving with a positive resolvedAskLegacyCount is
+  // not the same absence: the count still says unnamed questions were
+  // captured, so a composed line stays unattributable and the raw reply must
+  // be kept.
   resolvedAskCalls?: PendingAskCall[];
   // Wire ThreadItem.observation.resolvedAskLegacyCount: how many questions
   // admission's capture ALSO held WITHOUT being able to name them, restored

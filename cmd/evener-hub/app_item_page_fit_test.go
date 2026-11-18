@@ -729,6 +729,61 @@ func TestPackTranscriptWindowDropsStampBeforeTheReply(t *testing.T) {
 	}
 }
 
+// TestPackTranscriptWindowFitsBodiesAgainstTheStampFreeTurn covers the case
+// where dropping the stamp alone is not enough: a turn still over budget
+// without its call list. The body loop must then measure the stamp-free turn,
+// or it charges the reply for metadata that is no longer going to be served
+// and elides text that would otherwise fit beside the later message.
+func TestPackTranscriptWindowFitsBodiesAgainstTheStampFreeTurn(t *testing.T) {
+	const (
+		turnID     = "0f1c2b3a-4d5e-4f60-8a91-b2c3d4e5f607"
+		questionID = "1a2b3c4d-5e6f-4071-92a3-b4c5d6e7f809"
+	)
+	calls := make([]appwire.PendingAskCall, 80)
+	for i := range calls {
+		calls[i] = appwire.PendingAskCall{TurnID: questionID, CallID: fmt.Sprintf("2b3c4d5e-6f70-4182-a3b4-%012x", i)}
+	}
+	replyText := strings.Repeat("pasted ", 10<<10/7+1)[:10<<10]
+	laterText := strings.Repeat("later ", 7<<10/6+1)[:7<<10]
+	reply := appwire.ThreadItem{
+		Type: "userMessage",
+		ID:   "answer",
+		Text: replyText,
+		Observation: &appwire.SessionObservationMetadata{
+			Ref:                    "local:thread",
+			TurnID:                 turnID,
+			AnswerToTurnIDs:        []string{questionID},
+			ResolvedAskCalls:       calls,
+			ResolvedAskLegacyCount: 0,
+		},
+		Version: 1,
+	}
+	later := appwire.ThreadItem{Type: "agentMessage", ID: "later", Text: laterText, Version: 2}
+	options := testWindowPackOptions(appwire.ThreadWindowParams{
+		TurnWindow:        &appwire.ThreadTurnWindow{Turn: turnID},
+		WindowBudgetBytes: 16 << 10,
+		MessageBytes:      16 << 10,
+	})
+	got, err := packThreadTurnsWindowItemCandidates(testWindowCandidateResult(testWindowTurnCandidates(turnID, []appwire.ThreadItem{reply, later})), nil, options)
+	if err != nil {
+		t.Fatalf("pack turn-window read: %v", err)
+	}
+	items := flattenTestItems(got.Data)
+	if len(items) != 2 {
+		t.Fatalf("served item count = %d, want 2", len(items))
+	}
+	// The reply fits once the stamp is gone, so it must arrive whole.
+	if items[0].Text != replyText {
+		t.Fatalf("reply elided to %d of %d bytes: the body loop measured the stamped turn", len(items[0].Text), len(replyText))
+	}
+	if got := len(items[0].Observation.ResolvedAskCalls); got != 0 {
+		t.Fatalf("served %d stamp calls, want the call list dropped as a unit", got)
+	}
+	if got, want := items[0].Observation.AnswerToTurnIDs, []string{questionID}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("turn links = %v, want %v", got, want)
+	}
+}
+
 func TestPackTranscriptItemWindowCapsFiftyItemTurnInOrder(t *testing.T) {
 	items := make([]appwire.ThreadItem, 50)
 	for i := range items {

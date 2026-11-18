@@ -1059,17 +1059,19 @@ func packItemCandidates[T any](
 						break
 					}
 					// A stamp passes the per-item bound and still pushes the turn
-					// over its budget. Body trimming cannot shrink it, so trying
-					// the bodies first would elide the reply text and demand a
-					// fetch while keeping metadata the reader never asked for.
-					// Drop the call lists as a unit before touching a body.
+					// over its budget. Body trimming cannot shrink it, so a body
+					// elided while the stamp is present is charged for metadata
+					// the reader never asked for - and the reply text is what
+					// pays. Adopt the stamp-free turn whenever one exists, not
+					// only when it alone fits: the body loop must measure what
+					// the reader would actually receive.
 					if omitted, changed := transcriptWindowTurnOmitStamps(turn); changed {
-						omittedSize, omittedErr := transcriptWindowTurnEncodedSize(omitted)
+						turn = omitted
+						omittedSize, omittedErr := transcriptWindowTurnEncodedSize(turn)
 						if omittedErr != nil {
 							return zero, omittedErr
 						}
 						if omittedSize <= effectiveBudget {
-							turn = omitted
 							break
 						}
 					}
