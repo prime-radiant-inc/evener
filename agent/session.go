@@ -1491,6 +1491,24 @@ type Session struct {
 	systemPromptOverride string
 	cachedSystemPrompt   string
 	promptSourceLog      []promptSource
+	// appendSnapshot holds the last successfully loaded --system-prompt-append
+	// contents, so a prompt rebuild that is NOT about those files can reuse them
+	// instead of reading them again. A rebuild caused by a delegate-reachability
+	// change holds s.mu while it runs, and os.ReadFile does not observe
+	// cancellation: an append file that was readable at startup and whose mount
+	// has since stalled would block request preparation with the session lock
+	// held, where not even Stop can intervene. Nil means nothing has been loaded
+	// yet, and every ordinary rebuild loads and replaces it.
+	appendSnapshot *appendContentSnapshot
+}
+
+// appendContentSnapshot is the append files' contents as they were last read,
+// keyed by the exact path list they were read for. The key is part of the value
+// because a snapshot is only a valid substitute for the read it replaces: a
+// different list of paths asks a different question.
+type appendContentSnapshot struct {
+	paths    []string
+	contents []string
 }
 
 type sessionDetachedProcess struct {

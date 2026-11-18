@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
@@ -62,6 +63,16 @@ func TestModelRequestRefreshesTheExclusionCachesWithoutASpawn(t *testing.T) {
 	if before.exclusionVersion == 0 {
 		t.Fatal("the request path stamped no exclusion version, so the fixture cannot observe a rebuild")
 	}
+	// The WIRE is what this test is for. The tool must be absent from the
+	// request before the edit, in both places a model reads it: the role roster
+	// in the system prompt the request carries, and the delegate schema's
+	// agent_type description inside the request's tool list.
+	if strings.Contains(before.systemPrompt, cliTool) {
+		t.Fatalf("the startup request's system prompt already advertises %s, so the edit cannot change what the model sees", cliTool)
+	}
+	if strings.Contains(before.delegateRoster, cliTool) {
+		t.Fatalf("the startup request's delegate schema already advertises %s, so the edit cannot change what the model sees", cliTool)
+	}
 
 	// The branch switches in place: the project layer now declares the server
 	// the CLI entry replaces, which makes the tool reachable for a child. No
@@ -75,45 +86,60 @@ func TestModelRequestRefreshesTheExclusionCachesWithoutASpawn(t *testing.T) {
 	if after.exclusionVersion == before.exclusionVersion {
 		t.Fatalf("the model request still serves caches built from exclusion version %d after a config edit, so the refresh is not wired into the request path", before.exclusionVersion)
 	}
-	if after.roster == before.roster && after.delegateSchema == before.delegateSchema {
-		t.Error("the request path served an unchanged roster and delegate schema after the config edit")
+	// Both provider-facing surfaces must now carry the name, read from the
+	// RETURNED request. Recomputing the roster from live session state is what
+	// let an earlier version of this test pass while the request itself was
+	// stale: the session can be right and the wire wrong, and the wire is what
+	// the model acts on.
+	if !strings.Contains(after.systemPrompt, cliTool) {
+		t.Error("the next model request's system prompt still omits the newly reachable tool, so the prompt cache was not rebuilt from the new answer")
+	}
+	if !strings.Contains(after.delegateRoster, cliTool) {
+		t.Error("the next model request's delegate schema still omits the newly reachable tool, so the tool-definition cache was not rebuilt from the new answer")
 	}
 }
 
 // requestSnapshot is what one prepared model request would send, taken from the
-// session caches the round reads.
+// request prepareModelRequestWithError RETURNED, not from session state.
 type requestSnapshot struct {
 	systemPrompt   string
-	roster         string
-	delegateSchema string
+	delegateRoster string
 	// exclusionVersion is the version the tool-definition cache was built from,
 	// which is how a rebuild on the request path is observable.
 	exclusionVersion uint64
 }
 
-// prepareRequestSnapshot drives one real model request.
+// prepareRequestSnapshot drives one real model request and reads the request it
+// produced.
+//
+// The system prompt and the delegate schema both come from the returned
+// request. Reading session caches instead — or recomputing the roster from
+// current state — answers whether the SESSION knows the new capability, which
+// is not the question: a request built before the refresh carries the old
+// roster even though the state behind it has moved.
 func prepareRequestSnapshot(t *testing.T, s *Session) requestSnapshot {
 	t.Helper()
 	var timings events.RoundTimings
-	_, sys, _, _, _, _, err := s.prepareModelRequestWithError(context.Background(), 0, &timings)
+	_, sys, _, req, _, _, err := s.prepareModelRequestWithError(context.Background(), 0, &timings)
 	if err != nil {
 		t.Fatalf("prepareModelRequestWithError: %v", err)
 	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	snapshot := requestSnapshot{
-		systemPrompt:     sys,
-		roster:           s.delegateCapabilityRoster(),
-		exclusionVersion: s.cachedExclusionVersion,
-	}
-	for _, def := range s.cachedToolDefs {
-		if def.Name == "delegate" {
-			snapshot.delegateSchema = def.Description
+	snapshot := requestSnapshot{systemPrompt: sys}
+	for _, def := range req.Tools {
+		if def.Name != "delegate" {
+			continue
 		}
+		properties, _ := def.Parameters["properties"].(map[string]any)
+		agentType, _ := properties["agent_type"].(map[string]any)
+		description, _ := agentType["description"].(string)
+		snapshot.delegateRoster = description
 	}
-	if snapshot.delegateSchema == "" {
-		t.Fatal("the prepared session has no delegate tool definition, so the schema half cannot be observed")
+	if snapshot.delegateRoster == "" {
+		t.Fatal("the prepared request has no delegate tool definition with an agent_type description, so the schema half cannot be observed")
 	}
+	s.mu.Lock()
+	snapshot.exclusionVersion = s.cachedExclusionVersion
+	s.mu.Unlock()
 	return snapshot
 }
 

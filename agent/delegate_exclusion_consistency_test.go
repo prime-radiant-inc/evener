@@ -527,4 +527,22 @@ func TestPluginMCPSourceKeepsCLINamesEligible(t *testing.T) {
 	if slices.Contains(got, "session_control") {
 		t.Errorf("the Manager-only name survived a plugin source: %v", got)
 	}
+
+	// A configured plugin directory that supplied NO MCP entries at startup is
+	// the case a check on the merged configs alone misses. The child reloads the
+	// directory from disk, so it can gain a first .mcp.json during the session
+	// and register a name this session still believes is CLI-only. Empty
+	// pluginMCPConfigs says nothing about that, so the directory itself makes
+	// the source unverified — and the Manager half stays excluded regardless.
+	emptyPlugin := &Session{cfg: SessionConfig{PluginDirs: []string{"/plugins/quiet"}}}
+	emptyPlugin.setCLIMCPToolNames(map[string]bool{cliTool: true})
+	emptyPlugin.setManagerOnlyTools(map[string]bool{"session_control": true})
+	emptyPlugin.publishFreshnessForRevision(true, emptyPlugin.cliMCPEnvRevision)
+	got = emptyPlugin.removeChildUnreachableTools([]string{cliTool, "session_control"}, "")
+	if !slices.Contains(got, cliTool) {
+		t.Errorf("a plugin directory with no startup MCP entries did not keep the CLI-only name eligible: %v", got)
+	}
+	if slices.Contains(got, "session_control") {
+		t.Errorf("the Manager-only name survived a plugin directory that is merely unverifiable: %v", got)
+	}
 }

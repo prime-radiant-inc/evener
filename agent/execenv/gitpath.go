@@ -223,7 +223,22 @@ func structuralWorktreeRoot(cwd string) (string, bool) {
 			if info.IsDir() {
 				return identifier.ResolveClean(dir), true
 			}
-			content, err := os.ReadFile(gitPath)
+			// Read through the capped reader, not os.ReadFile. This runs from
+			// the FRESH resolution: child construction asks for the root
+			// uncached so a repository that appeared after the parent started
+			// is still found, and it does so synchronously, before any
+			// subprocess timeout applies. A ".git" entry that has become a FIFO
+			// — a shared workspace another process can write into — makes a
+			// plain read block forever, so the child's discovery would hold
+			// delegate creation open past Stop. The capped reader opens
+			// non-blocking and admits only a regular file, so a pointer that is
+			// not one answers "unreadable" here.
+			//
+			// An unreadable pointer returns unresolved rather than "no
+			// repository", which is the same distinction the caller already
+			// carries: unknown reachability stays open instead of being
+			// recorded as an absence.
+			content, err := ReadFileCapped(gitPath)
 			if err == nil {
 				if _, ok := identifier.ParseGitdirPointer(string(content)); ok {
 					return identifier.ResolveClean(dir), true

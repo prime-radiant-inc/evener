@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"slices"
 	"strings"
 
 	"primeradiant.com/evener/agent/events"
@@ -71,6 +72,33 @@ func prependSystemPromptToUserMessage(systemPrompt string, user llm.Message) llm
 // The empty warning means nothing was omitted or failed; failed reports whether
 // renderSystemPrompt returned its diagnostic text instead of a prompt.
 func (s *Session) refreshSystemPromptCache(env execenv.ExecutionEnvironment) (warning string, failed bool) {
+	return s.refreshSystemPromptCacheWithAppends(env, false)
+}
+
+// refreshSystemPromptCacheWithAppends is refreshSystemPromptCache with control
+// over whether the --system-prompt-append files are read again.
+//
+// reuseAppends is for a rebuild caused by something OTHER than those files —
+// the delegate-reachability refresh, which changes the roster and the tool
+// surface and nothing about operator-supplied prompt text. The caller holds
+// s.mu, and os.ReadFile neither observes cancellation nor returns early on a
+// stalled mount, so re-reading there is not merely wasteful: a file that was
+// readable at startup and whose mount has since stopped answering blocks
+// request preparation with the session lock held, and Stop cannot interrupt a
+// read that never checks. Reusing the snapshot already in hand keeps the
+// rebuild able to finish.
+//
+// The snapshot is only a substitute for the read it came from. When none is
+// held, or the configured path list has changed, the files are read as usual:
+// inventing append text that was never loaded would be worse than the stall.
+//
+// The cost is bounded and worth naming: an operator who edits an append file
+// mid-session is no longer observed by THIS refresh. Every other rebuild still
+// reads — an environment swap, a model switch, a tool registration, and an MCP
+// retry all call the reading form — so the edit lands on the next of those,
+// exactly as it did before. Nothing else noticed append edits on their own:
+// there is no watcher and no digest, so this path was never their detection.
+func (s *Session) refreshSystemPromptCacheWithAppends(env execenv.ExecutionEnvironment, reuseAppends bool) (warning string, failed bool) {
 	// Read the decision version BEFORE rendering and stamp it with the prompt. The
 	// stamp then names the decision this prompt was built from, not whatever the
 	// decision happens to be once the render returns: a flip landing mid-render
@@ -84,7 +112,7 @@ func (s *Session) refreshSystemPromptCache(env execenv.ExecutionEnvironment) (wa
 		s.cachedPromptExclusionVersion = builtFrom
 		return "", false
 	}
-	prompt, warning, failed := s.renderSystemPrompt(env)
+	prompt, warning, failed := s.renderSystemPromptWithAppends(env, reuseAppends)
 	// A failed render returns diagnostic prose, not a prompt. Keep the last
 	// prompt that rendered so dependent work does not run on "Template rendering
 	// failed: ..." text; only a session with no earlier prompt installs that
@@ -157,6 +185,14 @@ func (s *Session) commitProvenanceWarning() string {
 // re-fetched via s.currentEnv(), which would re-lock the non-reentrant s.mu
 // and deadlock.
 func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData, []promptSource) {
+	return s.buildPromptDataWithAppends(env, false)
+}
+
+// buildPromptDataWithAppends is buildPromptData with control over the append
+// read. reuseAppends replaces the read with the snapshot the last successful
+// load left, and only when that snapshot was taken for the same path list: a
+// different list asks a different question, so it is read afresh.
+func (s *Session) buildPromptDataWithAppends(env execenv.ExecutionEnvironment, reuseAppends bool) (promptData, []promptSource) {
 	agentName := s.cfg.AgentName
 	if agentName == "" {
 		agentName = defaultAgentName
@@ -260,14 +296,43 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) (promptData,
 	// prompt text and its PROMPT_LOADED source. An unreadable file is skipped,
 	// and its path is recorded so renderSystemPrompt can disclose the omission
 	// instead of leaving the operator's instructions silently missing.
-	for _, p := range s.cfg.SystemPromptAppend {
-		b, err := os.ReadFile(p)
-		if err != nil {
-			data.unreadableAppends = append(data.unreadableAppends, p)
-			continue
+	//
+	// A rebuild that is not about these files reuses the last successful load
+	// instead of reading again: this runs with s.mu held, and os.ReadFile does
+	// not observe cancellation, so a mount that stops answering would wedge the
+	// session rather than merely slow it. The snapshot is keyed by the path
+	// list, so only the same question is answered from it, and any mismatch
+	// falls through to a real read.
+	reused := false
+	if reuseAppends && s.appendSnapshot != nil && slices.Equal(s.appendSnapshot.paths, s.cfg.SystemPromptAppend) {
+		reused = true
+		for i, p := range s.cfg.SystemPromptAppend {
+			text := s.appendSnapshot.contents[i]
+			data.CLIAppends = append(data.CLIAppends, text)
+			sources = append(sources, promptSource{Label: "append:" + p, Size: len(strings.TrimRight(text, "\n"))})
 		}
-		data.CLIAppends = append(data.CLIAppends, string(b))
-		sources = append(sources, promptSource{Label: "append:" + p, Size: len(strings.TrimRight(string(b), "\n"))})
+	}
+	if !reused {
+		loaded := make([]string, 0, len(s.cfg.SystemPromptAppend))
+		for _, p := range s.cfg.SystemPromptAppend {
+			b, err := os.ReadFile(p)
+			if err != nil {
+				data.unreadableAppends = append(data.unreadableAppends, p)
+				continue
+			}
+			loaded = append(loaded, string(b))
+			data.CLIAppends = append(data.CLIAppends, string(b))
+			sources = append(sources, promptSource{Label: "append:" + p, Size: len(strings.TrimRight(string(b), "\n"))})
+		}
+		// Record the snapshot only when every file loaded: a partial load is not
+		// a durable answer, and substituting it later would turn a transient
+		// read error into permanently missing operator instructions.
+		if len(loaded) == len(s.cfg.SystemPromptAppend) {
+			s.appendSnapshot = &appendContentSnapshot{
+				paths:    append([]string(nil), s.cfg.SystemPromptAppend...),
+				contents: loaded,
+			}
+		}
 	}
 
 	return data, sources
@@ -345,7 +410,14 @@ func sandboxPromptBoundary(rp *sandbox.ResolvedPolicy) string {
 // see refreshSystemPromptCache for why the diagnostic is returned rather than
 // emitted here, and for the env-locking contract.
 func (s *Session) renderSystemPrompt(env execenv.ExecutionEnvironment) (string, string, bool) {
-	data, inputSources := s.buildPromptData(env)
+	return s.renderSystemPromptWithAppends(env, false)
+}
+
+// renderSystemPromptWithAppends is renderSystemPrompt with control over whether
+// the append files are read again. See refreshSystemPromptCacheWithAppends for
+// when reuse is valid and why a caller holding s.mu needs it.
+func (s *Session) renderSystemPromptWithAppends(env execenv.ExecutionEnvironment, reuseAppends bool) (string, string, bool) {
+	data, inputSources := s.buildPromptDataWithAppends(env, reuseAppends)
 	result, err := executeSystemPromptTemplate(data)
 	if err != nil {
 		// The template parsed at package initialization, so an execution error

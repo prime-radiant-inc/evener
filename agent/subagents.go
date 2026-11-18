@@ -760,6 +760,12 @@ func (s *Session) childExclusionDecision(isolationName string) (managerOnly, cli
 // server after startup therefore makes a CLI-only name reachable with nothing
 // able to notice.
 //
+// A plugin directory that declared NO MCP servers at startup is unverified too,
+// and it is the case a check on the merged configs alone misses: the directory
+// can gain its first .mcp.json mid-session, so the child reloads a source whose
+// contents this session has never seen. The test is therefore on the configured
+// directories, not on whether any server came from them.
+//
 // Reachability that cannot be established is not an exclusion, so with any such
 // source present the CLI half is not applied and its names stay eligible. The
 // MANAGER half is unaffected: no spawn path composes the hub whatever the
@@ -774,7 +780,24 @@ func (s *Session) pluginMCPSourcesUnverified() bool {
 	if s == nil {
 		return true
 	}
-	return len(s.pluginMCPConfigs) > 0
+	if len(s.pluginMCPConfigs) > 0 {
+		return true
+	}
+	// A configured plugin directory that supplied NO MCP entries at startup is
+	// unverified for the same reason, and this is the case that is easy to miss.
+	// The child reloads every plugin directory from disk, so a directory that
+	// gains its first .mcp.json after this session starts supplies a server the
+	// startup snapshot never saw — and an empty pluginMCPConfigs says nothing
+	// about it either way. "This plugin declared no servers" and "this plugin's
+	// servers cannot be fingerprinted" are both unknown reachability, so both
+	// leave the CLI names eligible.
+	//
+	// cfg.PluginDirs is read rather than s.plugins: a directory whose manifest
+	// failed to load is still one the child will scan, and it is exactly the kind
+	// of source whose contents this session cannot vouch for. cfg is never
+	// reassigned after construction, so this read needs no lock for the same
+	// reason pluginMCPConfigs does not.
+	return len(s.cfg.PluginDirs) > 0
 }
 
 // exclusionFreshnessRequestBudget bounds how long one model request waits for the
@@ -937,11 +960,28 @@ type exclusionFreshnessCheck struct {
 
 // sampleExclusionFreshness resolves the freshness verdict, bounded by ctx.
 //
-// At most ONE check is in flight at a time. A stalled workspace mount makes the
-// underlying read or git call block without observing cancellation, so a check
-// started per request would accumulate a goroutine per model round for as long
-// as the stall lasts. A request that finds a check already running waits on it
-// rather than starting another.
+// At most ONE check is in flight PER ENVIRONMENT REVISION: the slot holds the
+// newest, and a request whose revision matches it joins. A stalled workspace
+// mount makes the underlying read or git call block without observing
+// cancellation, so a check started per request would accumulate a goroutine per
+// model round for as long as the stall lasts. Two checks can therefore coexist
+// across a workspace swap — the abandoned one and the installed one — but each
+// revision starts at most one, so the growth is bounded by the number of swaps
+// rather than by the number of rounds.
+//
+// A check for a DIFFERENT revision is not joined, and the distinction is the
+// whole point. Coalescing across revisions made a session that moved to a
+// healthy workspace keep paying the old workspace's stall: the sampler would
+// take the occupied slot whatever it described, wait out the caller's full
+// budget, and only then discard the answer at the revision check. The new
+// workspace could therefore never establish its own verdict while the old read
+// remained stuck, even though nothing about the old read speaks to the new
+// workspace. Coalescing is a way to share work on ONE question, not a queue.
+//
+// The worker clears the slot only while it still owns it. Without that test a
+// worker finishing late would clear the slot a newer revision had installed,
+// and the next request on that revision would start a second concurrent check
+// for the same question — the accumulation this bound exists to prevent.
 //
 // That bounds the cost to one goroutine per stall, not one forever: a check whose
 // waiter gave up keeps blocking until the filesystem answers, and the next
@@ -958,7 +998,10 @@ type exclusionFreshnessCheck struct {
 func (s *Session) sampleExclusionFreshness(ctx context.Context, evidence cliMCPClassificationEvidence, env execenv.ExecutionEnvironment, revision uint64) (fresh, settled bool, answerRevision uint64) {
 	s.freshnessCheckMu.Lock()
 	check := s.freshnessCheck
-	if check == nil {
+	// Join only a check that asks this caller's question. A check for another
+	// revision describes a workspace the session has left, so waiting on it buys
+	// nothing this caller can use — and costs the caller its whole budget.
+	if check == nil || check.revision != revision {
 		// The result lives on the check, not on the session: a waiter that read
 		// session fields after done closed could race a newer check and report its
 		// unfinished answer as this one's.
@@ -972,7 +1015,12 @@ func (s *Session) sampleExclusionFreshness(ctx context.Context, evidence cliMCPC
 			s.freshnessCheckMu.Lock()
 			check.fresh = fresh
 			check.settled = true
-			s.freshnessCheck = nil
+			// Only the owner clears the slot: a newer revision may have replaced
+			// this check while it was running, and clearing that one would let the
+			// next caller start a duplicate probe for it.
+			if s.freshnessCheck == check {
+				s.freshnessCheck = nil
+			}
 			s.freshnessCheckMu.Unlock()
 			close(check.done)
 		}()
@@ -1098,6 +1146,23 @@ func (s *Session) refreshCachesForExclusionChangeContext(ctx context.Context) {
 	if s == nil {
 		return
 	}
+	// A session that will never offer a delegate has no ceiling, no roster and
+	// no delegate schema, so the verdict cannot change one byte it sends. The
+	// check is not free — it reads and hashes up to two config layers and forks
+	// git for the root — and a project or global config that stalls would charge
+	// that session the full budget on every round for an answer nothing reads.
+	//
+	// An APPLIED exclusion is still re-derived even here, because this is also
+	// the path that clears one: a session that lost its delegation grant after
+	// an exclusion was recorded must not stay stranded on it.
+	if !s.hasConfiguredDelegateCapability() {
+		s.delegateExclusionsMu.RLock()
+		applied := s.cliMCPExclusionKnown && s.cliMCPExclusionApplied
+		s.delegateExclusionsMu.RUnlock()
+		if !applied {
+			return
+		}
+	}
 	// Re-evaluate: this call is the invalidation, not a consumer of it. The
 	// verdict is resolved HERE, without s.mu, and stored; the ceiling build below
 	// reads the stored answer, so no filesystem read or git fork happens inside
@@ -1125,7 +1190,12 @@ func (s *Session) refreshCachesForExclusionChangeContext(ctx context.Context) {
 		s.rebuildToolDefsCache()
 	}
 	if promptStale {
-		promptWarning, _ = s.refreshSystemPromptCache(s.env) // already holding s.mu; currentEnv() would deadlock
+		// Reuse the append snapshot: this rebuild is about delegate reachability,
+		// and re-reading --system-prompt-append files here would put an
+		// unbounded os.ReadFile on the request path while s.mu is held. A mount
+		// that answered at startup and has since stalled would then wedge the
+		// session where not even Stop can reach it.
+		promptWarning, _ = s.refreshSystemPromptCacheWithAppends(s.env, true) // already holding s.mu; currentEnv() would deadlock
 	}
 	s.mu.Unlock()
 	if promptStale {

@@ -631,15 +631,26 @@ only the CLI layers declared at startup. The second kind is a fact about one
 workspace's configuration at one moment, so it is recorded rather than merely
 dropped.
 
-Cold restoration re-admits a recorded reachability exclusion when the child's
-own registry already registers that name at construction time, because
-registration is the test: a name in the registry exists, so the child can call
-it. An operator who adds the CLI-only server to the project or global config
-therefore gets the tool back on the next resume instead of a delegate that
-registered it and was still denied it. A role-forbidden name is never in the
-registry, so this path cannot widen authorization, and the frozen role policy
-continues to bound the ceiling exactly as before. A descriptor written before
-this field existed records no exclusions, and nothing is re-admitted for it.
+A recorded reachability exclusion is re-admitted when the child's own registry
+registers that name, because registration is the test: a name in the registry
+exists, so the child can call it. Registration is evaluated at two moments, and
+either one is enough. At construction the child applies the ceiling to the
+registry it built, so a name it registers there is kept. After construction an
+MCP server whose first connection failed is redialled on a later turn, and the
+tools that retry recovers are judged against the same effective ceiling, so a
+name the retry successfully registers is admitted then rather than staying
+excluded for the rest of the delegate's life. The second moment matters because
+a server that was briefly unreachable is indistinguishable, at commit time, from
+one an operator had not configured yet; treating the first failure as final
+would deny a tool the child subsequently registered.
+
+An operator who adds the CLI-only server to the project or global config
+therefore gets the tool back on the next resume, or on the retry that
+reconnects it, instead of a delegate that registered it and was still denied
+it. A role-forbidden name is never in the registry, so neither path can widen
+authorization, and the frozen role policy continues to bound the ceiling
+exactly as before. A descriptor written before this field existed records no
+exclusions, and nothing is re-admitted for it.
 
 When Config.ShareTasksWithChildren is enabled, the descriptor also records
 SharedTaskStoreOwnerSessionID. Live construction may attach the current shared
