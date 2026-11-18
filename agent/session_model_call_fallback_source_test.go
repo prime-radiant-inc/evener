@@ -155,9 +155,9 @@ func TestFallbackKeepsOpaqueAndWebSearchScopeAcrossProtocols(t *testing.T) {
 				t.Fatalf("fallback requests = %d, want the tool continuation and a follow-up", len(requests))
 			}
 			type part struct{ text, details string }
-			want := [][]part{{{text: "c13", details: signed}}, nil}
+			var want [2][]part
 			if tc.raw {
-				want[0] = slices.Insert(want[0], 0, part{text: "mirror-b52"})
+				want[0] = []part{{text: "mirror-b52"}}
 				want[1] = append(want[1], part{text: "mirror-b52"}, part{text: "b27", details: encrypted}, part{text: "signed-b49", details: signedAnswer})
 			} else {
 				want[1] = append(want[1], part{details: encrypted}, part{details: signedAnswer})
@@ -185,20 +185,20 @@ func TestFallbackKeepsOpaqueAndWebSearchScopeAcrossProtocols(t *testing.T) {
 				if strings.Contains(wire, "ws-a08") || strings.Contains(wire, "q-c13") {
 					t.Errorf("Chat request %d carried a native search or its query", i)
 				}
-				var legacySignature bool
+				var otherSignature bool
 				for _, message := range body["messages"].([]map[string]any) {
 					details, _ := message["reasoning_details"].([]map[string]any)
 					for _, d := range details {
 						if d["signature"] == "sig-c13" && d["text"] == "c13" {
-							legacySignature = true
+							otherSignature = true
 						}
 					}
 					if text, ok := message["reasoning"].(string); ok && i == len(requests)-1 {
 						scalars = append(scalars, text)
 					}
 				}
-				if legacySignature != (i == 0) {
-					t.Errorf("fallback request %d replayed the endpoint-free tool round's signature: %t", i, legacySignature)
+				if otherSignature {
+					t.Errorf("fallback request %d replayed another instance's signature", i)
 				}
 			}
 			followup := requests[1]
@@ -576,6 +576,41 @@ func testChatToolContinuation(t *testing.T, tc chatContinuationCase) {
 		if len(result) == 0 || !bytes.Equal(result, toolResult) {
 			t.Errorf("Chat request %d lost or changed the ordinary tool result", n+1)
 		}
+	}
+}
+
+func TestFallbackHistoryReuseFollowsTheDestination(t *testing.T) {
+	t.Parallel()
+	for _, protocol := range []string{registry.ProtocolGoogle, registry.ProtocolOpenAIChat, registry.ProtocolOpenAIResponses} {
+		t.Run(protocol, func(t *testing.T) {
+			row := registry.Resolved{
+				Instance: "work", ModelID: "model", WireID: "model", Protocol: protocol,
+				Transport: registry.Transport{BaseURL: "https://example.invalid", Endpoint: "/models/{model}"},
+			}
+			scope := func() replayScope {
+				return replayScope{Instance: "primary", Protocol: protocol, destination: &row, reasoningRoute: row.ReasoningReplayRoute()}
+			}
+			first := scope().fallbackHistoryKey()
+			row.ModelID = "alias"
+			if scope().fallbackHistoryKey() != first {
+				t.Fatal("the same wire model and instance lost its reusable projection")
+			}
+			row.Instance = "other"
+			if scope().fallbackHistoryKey() == first {
+				t.Error("distinct provider instances selected the same history projection")
+			}
+			if protocol == registry.ProtocolGoogle {
+				turn := schema.Turn{Message: llm.Message{Role: llm.RoleAssistant}, ResponseProvider: row.Instance, ResponseProtocol: protocol}
+				if !scope().thinkingReplayEligible(turn, false) {
+					t.Error("the completed turn from the selected Gemini fallback lost its eligibility")
+				}
+				row.Instance = "work"
+				row.Transport.Endpoint = "/models/model"
+				if scope().fallbackHistoryKey() == first {
+					t.Error("distinct Gemini operation templates selected the same history projection")
+				}
+			}
+		})
 	}
 }
 

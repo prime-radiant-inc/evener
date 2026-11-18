@@ -20,6 +20,7 @@ type responsesTerminalItem struct {
 
 type responsesTerminalCall struct {
 	llm.ToolCallData
+	terminalName      bool
 	terminalArguments bool
 }
 
@@ -132,7 +133,7 @@ func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawM
 					args = string(content)
 				}
 			}
-			terminalArguments := args != ""
+			terminalName, terminalArguments := name != "", args != ""
 			if stream != nil {
 				if issued := stream.byCallID[callID]; issued != nil {
 					itemID = stream.bindCallItem(issued, itemID)
@@ -153,7 +154,9 @@ func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawM
 			if prior := calls[callID]; prior != nil {
 				// Repeated references may complete one issued call at its first position.
 				prior.ItemID = cmp.Or(prior.ItemID, itemID)
-				prior.Name = cmp.Or(prior.Name, name)
+				if prior.Name == "" || (terminalName && !prior.terminalName) {
+					prior.Name, prior.terminalName = name, terminalName
+				}
 				if len(prior.Arguments) == 0 || (terminalArguments && !prior.terminalArguments) {
 					prior.Arguments = json.RawMessage(args)
 					prior.terminalArguments = terminalArguments
@@ -166,6 +169,7 @@ func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawM
 				Name:              name,
 				Arguments:         json.RawMessage(args),
 				Type:              "function",
+				terminalName:      terminalName,
 				terminalArguments: terminalArguments,
 			}
 			if calls == nil {

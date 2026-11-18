@@ -388,45 +388,50 @@ func (cm *Manager) estimateTokensFor(prof *provider.Profile, turns []schema.Turn
 	return estimateTokenPartsFor(prof, turns).Total()
 }
 
-// estimateTokenPartsFor is the estimator's additive decomposition over turns: it
-// projects the turns the way the request builder does and returns the chars and
-// fixed-price token counts the estimate is built from. Summing parts across
-// slices and calling Total once gives exactly the whole-slice answer, which is
-// what lets the memo keep a prefix's parts and walk only what was appended.
-//
-// The walk prices each turn in place against the resolved row its caller already
-// took from the round's profile snapshot, and it must not allocate per turn or
-// per reading: the request path reads this estimate several times per round. Its
-// answer must equal what pricing the projected []llm.Message list gives, since
-// that is the number the compaction thresholds were tuned against. The
-// per-message arithmetic and the single divide-by-four are
-// llm.TokenPartEstimator's.
+// estimateTokenPartsFor prices the largest conversation any single deployment
+// could receive. The memo appends to the same per-recipient parts across slices.
 func estimateTokenPartsFor(prof *provider.Profile, turns []schema.Turn) llm.TokenParts {
+	var parts llm.RecipientTokenParts
+	addTurnTokenParts(&parts, prof, turns)
+	return parts.Largest()
+}
+
+func addTurnTokenParts(parts *llm.RecipientTokenParts, prof *provider.Profile, turns []schema.Turn) {
 	res, route := resolvedTargetOf(prof)
 	dropPlainThinking := !llm.ReplaysAssistantThinking(res)
 	rawReplay := res.ReplaysRawReasoning()
 	estimator := llm.TokenPartEstimatorFor(res)
 	withoutPlain := estimator.WithoutPlainThinking()
 	withoutThinking := estimator.WithoutThinking()
-	var parts llm.TokenParts
+	var configured string
 	for _, t := range turns {
 		if t.Kind == schema.TurnAttentionResolution {
 			continue
 		}
 		pricer := estimator
 		if t.DropsReasoningForTarget(&res, route) {
-			pricer = withoutThinking
+			parts.Shared = parts.Shared.Add(withoutThinking.Parts(t.Message))
 			if t.ReplaysChatDisplayText(&res) {
 				for _, p := range t.Message.Content {
-					parts.Chars += len(p.UnsignedChatDisplayText())
+					parts.Shared.Chars += len(p.UnsignedChatDisplayText())
 				}
 			}
-		} else if dropPlainThinking || (rawReplay && t.Message.Role == llm.RoleAssistant && !t.MatchesReasoningTextTarget(&res, route)) {
+			continue
+		}
+		if dropPlainThinking || (rawReplay && t.Message.Role == llm.RoleAssistant && !t.MatchesReasoningTextTarget(&res, route)) {
 			pricer = withoutPlain
 		}
-		parts = parts.Add(pricer.Parts(t.Message))
+		if t.Kind == schema.TurnAssistant && t.Message.HasNativeReasoning() {
+			t.Message.ReasoningEndpoint = t.ReasoningEndpoint()
+			if t.Message.ReasoningEndpoint == "" && res.Transport.BaseURL != "" {
+				if configured == "" {
+					configured = llm.ConfiguredServingRecipient(res)
+				}
+				t.Message.ReasoningEndpoint = configured
+			}
+		}
+		parts.AddMessage(pricer, t.Message, &res)
 	}
-	return parts
 }
 
 func attentionTransparentTurnCount(history []schema.Turn) int {

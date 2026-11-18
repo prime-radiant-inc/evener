@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"net/url"
 	"reflect"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/llm/registry"
@@ -101,4 +102,70 @@ func TestRequestProjectsReasoningForEachServingOrigin(t *testing.T) {
 	if full[1].Content[2].ToolCall.ThoughtSignature != "one" || delta.PreviousResponseID != "anchor" {
 		t.Fatal("projection mutated the source")
 	}
+	t.Run("admission prices the largest single recipient and retains the source history", func(t *testing.T) {
+		row.Caps.ContextWindow = new(3_100)
+		origin := parseServingURL(row.Transport.BaseURL).origin
+		msgs := []Message{User("next")}
+		for _, issuer := range []struct {
+			proof string
+			chars int
+		}{
+			{row.RequestURL(row.Transport.Endpoint), 4_000},
+			{ConfiguredServingRecipient(row), 2_000},
+			{row.Transport.BaseURL + "/sibling", 5_000},
+			{origin, 2_000},
+			{"https://two.example.invalid/deployment", 7_200},
+			{UnknownServingOrigin, 9_000},
+		} {
+			msg := Assistant("seen")
+			msg.Content = append(msg.Content, ContentPart{Kind: ContentThinking, Thinking: &ThinkingData{EncryptedContent: strings.Repeat("x", issuer.chars)}})
+			msgs = append(msgs, msg.BindReasoningEndpoint(issuer.proof))
+		}
+		req := Request{Messages: msgs}
+		admitted, budget, err := ApplyTokenBudget(req, row)
+		if err != nil || budget.InputTokens-budget.SafetyTokens != 2_007 {
+			t.Errorf("budget = %+v, err = %v; want 2,007 input tokens before reserve", budget, err)
+		}
+		for _, tc := range []struct {
+			endpoint string
+			tokens   int
+		}{{row.RequestURL(row.Transport.StreamEndpoint), 2_007}, {row.Transport.BaseURL + "/sibling", 1_757}, {"https://two.example.invalid/deployment", 1_807}, {"https://elsewhere.example.invalid/", 7}} {
+			view, _ := admitted.ForReasoningEndpoint(tc.endpoint, row)
+			if got := EstimateInputTokensForResolved(row, view).Tokens; got != tc.tokens {
+				t.Errorf("admitted history for %s = %d tokens, want %d", tc.endpoint, got, tc.tokens)
+			}
+		}
+		row.Caps.MaxInputTokens = new(3_030)
+		if _, _, err := ApplyTokenBudget(req, row); Kind(err) != KindContextLength {
+			t.Errorf("largest eligible recipient exceeds 3,030 with reserve, got %v", err)
+		}
+	})
+	t.Run("Chat display remains shared while signed details belong to their issuer", func(t *testing.T) {
+		chat.Transport = row.Transport
+		req := Request{}
+		for _, source := range []string{chat.RequestURL(chat.Transport.Endpoint), chat.Transport.BaseURL + "/sibling", UnknownServingOrigin} {
+			msg := Assistant("seen")
+			msg.Content = append(msg.Content,
+				ContentPart{Kind: ContentThinking, Thinking: &ThinkingData{Text: strings.Repeat("d", 400)}},
+				ContentPart{Kind: ContentThinking, Thinking: &ThinkingData{Text: "signed", EncryptedContent: `[{"type":"reasoning.text","signature":"sig","text":"signed"}]`}},
+			)
+			req.Messages = append(req.Messages, msg.BindReasoningEndpoint(source))
+		}
+		estimator := TokenPartEstimatorFor(chat)
+		var largest int
+		for _, source := range []string{chat.RequestURL(chat.Transport.Endpoint), chat.Transport.BaseURL + "/sibling", "https://other.example.invalid/"} {
+			view, _ := req.ForReasoningEndpoint(source, chat)
+			var cost TokenParts
+			for _, msg := range view.Messages {
+				cost = cost.Add(estimator.Parts(msg))
+			}
+			if source == "https://other.example.invalid/" && cost.Total() != 303 {
+				t.Fatalf("unrelated deployment sees %d tokens, want all three visible answers and displays", cost.Total())
+			}
+			largest = max(largest, cost.Total())
+		}
+		if got := EstimateInputTokensForResolved(chat, req).Tokens; got != largest {
+			t.Errorf("Chat estimate = %d tokens, largest eligible projection = %d", got, largest)
+		}
+	})
 }

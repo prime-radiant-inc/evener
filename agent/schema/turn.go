@@ -616,15 +616,12 @@ func (t *Turn) DropsReasoningForTarget(res *registry.Resolved, route string) boo
 	switch res.Protocol {
 	case registry.ProtocolAnthropic:
 		return !t.matchesReasoningProtocol(res.Protocol) ||
-			(t.ResponseProvider != "" && t.ResponseProvider != res.Instance) ||
 			!t.MatchesRecordedModelRoute(res, route) ||
 			(t.HasRecordedEndpoint() && t.ResponseRequestModel != "" && t.ResponseRequestModel != res.ModelID)
 	case registry.ProtocolGoogle:
 		return !t.matchesReasoningProtocol(res.Protocol)
-	case registry.ProtocolOpenAIChat:
+	case registry.ProtocolOpenAIChat, registry.ProtocolOpenAIResponses:
 		return !t.matchesReasoningProtocol(res.Protocol) || !t.matchesReasoningRoute(res, route)
-	case registry.ProtocolOpenAIResponses:
-		return !t.matchesReasoningRoute(res, route) || (t.ResponseProvider != "" && t.ResponseProvider != res.Instance) || !t.matchesReasoningProtocol(res.Protocol)
 	default:
 		return false
 	}
@@ -642,6 +639,9 @@ func (t *Turn) ReasoningEndpoint() string {
 }
 
 func (t *Turn) matchesReasoningRoute(res *registry.Resolved, route string) bool {
+	if t.ResponseProvider != "" && t.ResponseProvider != res.Instance {
+		return false
+	}
 	if t.ResponseReasoningRoute != "" {
 		// The configured route selects candidate history. Each HTTP request
 		// then projects it for the origin that will actually receive the body.
@@ -660,8 +660,8 @@ func (t *Turn) matchesReasoningRoute(res *registry.Resolved, route string) bool 
 	return false
 }
 
-// MatchesRecordedModelRoute checks the serving route and outbound model when
-// the issuing request recorded them, independently of its configured alias.
+// MatchesRecordedModelRoute checks the recorded provider instance, serving
+// route and outbound model, independently of the model's configured alias.
 func (t *Turn) MatchesRecordedModelRoute(res *registry.Resolved, route string) bool {
 	return t.matchesReasoningRoute(res, route) &&
 		(t.ResponseWireModel == "" || t.ResponseWireModel == res.OutboundModelSelector())

@@ -172,6 +172,8 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 	tool := replayItem{Type: "function_call", CallID: "call_1", Name: "f", Arguments: "{}"}
 	finalTool := tool
 	finalTool.Arguments = " \t{ \"k\": 1 }\n"
+	streamNamedTool := finalTool
+	streamNamedTool.Name = "preview"
 	secondTool := replayItem{Type: "function_call", CallID: "call_2", Name: "g", Arguments: `{ "k": 2 }`}
 	updatedSecond := secondTool
 	updatedSecond.Arguments = finalTool.Arguments
@@ -273,6 +275,10 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 		}, []replayItem{tool}},
 		{"terminal issues a provisional item's call ID before its final arguments", []string{toolItemAdded, itemArguments},
 			[]string{linkedCall, answerItem, itemOnlyFinalCall}, []replayItem{finalTool, answer}},
+		{"terminal item supplies the final name after a call-only selection", []string{strings.Replace(toolAdded, `"name":"f"`, `"name":"preview"`, 1), itemArguments},
+			[]string{firstCall, answerItem, itemOnlyFinalCall}, []replayItem{finalTool, answer}},
+		{"an explicit terminal name remains selected while another item supplies the arguments", []string{toolAdded, itemArguments},
+			[]string{`{"type":"function_call","call_id":"call_1","name":"preview"}`, answerItem, itemOnlyFinalCall}, []replayItem{streamNamedTool, answer}},
 		{"repeated terminal item references keep their issued call without stream state", nil,
 			[]string{linkedCall, answerItem, itemOnlyFinalCall}, []replayItem{finalTool, answer}},
 		{"item-only terminal final precedes its unique issued call", nil,

@@ -124,6 +124,19 @@ func BenchmarkEstimateUsageFallback(b *testing.B) {
 // serial (no t.Parallel): AllocsPerRun reads the process-wide allocator
 // counters, so a concurrent test in this package would perturb the count.
 func TestEstimateTokenPartsForDoesNotAllocate(t *testing.T) {
+	t.Run("one serving deployment", func(t *testing.T) {
+		res := registry.Resolved{Instance: "gateway", ModelID: "current", Protocol: registry.ProtocolOpenAIResponses,
+			Transport: registry.Transport{BaseURL: "https://gateway.example.test", Endpoint: "/responses"}}
+		prof := provider.FromResolved(res, nil)
+		turn := schema.Turn{Kind: schema.TurnAssistant, ResponseProvider: res.Instance, ResponseProtocol: res.Protocol,
+			ResponseServingOrigin: llm.ConfiguredServingRecipient(res), ResponseReasoningRoute: prof.ReasoningReplayRoute(),
+			Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{EncryptedContent: "sealed-48"}}}},
+		}
+		history := []schema.Turn{turn, turn}
+		if allocs := testing.AllocsPerRun(20, func() { _ = estimateTokenPartsFor(prof, history) }); allocs != 0 {
+			t.Fatalf("pricing one serving deployment allocates %.0f times per reading", allocs)
+		}
+	})
 	for _, turns := range pressureBenchmarkTurns {
 		t.Run(strconv.Itoa(turns), func(t *testing.T) {
 			cm := pressureBenchmarkManager()

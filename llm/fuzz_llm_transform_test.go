@@ -314,11 +314,11 @@ func FuzzLmEstimateMessageInputParts(f *testing.F) {
 		}
 
 		// Whole-list estimate is non-negative and stable.
-		got := estimateMessagesInputTokens(target, []Message{msg})
+		got := estimateMessagesInputTokens(target, []Message{msg}, nil)
 		if got < 0 {
 			t.Fatalf("negative message estimate: %d", got)
 		}
-		if again := estimateMessagesInputTokens(target, []Message{msg}); again != got {
+		if again := estimateMessagesInputTokens(target, []Message{msg}, nil); again != got {
 			t.Fatalf("estimateMessagesInputTokens nondeterministic: %d vs %d", got, again)
 		}
 	})

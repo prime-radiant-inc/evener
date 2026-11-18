@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"image"
+	"maps"
 	"math"
 	"os"
 	"strings"
@@ -68,7 +69,7 @@ type InputTokenCounter interface {
 // name carries no marker, nor an instance alias, and both replay unsigned
 // thinking text.
 func EstimateInputTokens(req Request) InputTokenCount {
-	return estimateInputTokens(targetFromNames(req.Provider, req.Model), req)
+	return estimateInputTokens(targetFromNames(req.Provider, req.Model), req, nil)
 }
 
 // EstimateInputTokensForResolved returns the local estimate with the
@@ -83,11 +84,11 @@ func EstimateInputTokensForResolved(res registry.Resolved, req Request) InputTok
 			target.chatNativeDetails = res.Protocol == registry.ProtocolOpenAIChat && res.ReplaysRawReasoning()
 		}
 	}
-	return estimateInputTokens(target, req)
+	return estimateInputTokens(target, req, &res)
 }
 
-func estimateInputTokens(t targetInfo, req Request) InputTokenCount {
-	tokens := estimateMessagesInputTokens(t, req.Messages)
+func estimateInputTokens(t targetInfo, req Request, res *registry.Resolved) InputTokenCount {
+	tokens := estimateMessagesInputTokens(t, req.Messages, res)
 	if len(req.Tools) > 0 {
 		toolBytes := req.ToolsJSONBytes
 		if toolBytes <= 0 {
@@ -129,7 +130,7 @@ func ToolsJSONBytes(defs []ToolDefinition) int {
 // carries no target; callers that hold a resolved row should use
 // EstimateMessagesInputTokensForResolved.
 func EstimateMessagesInputTokens(messages []Message) InputTokenCount {
-	return estimateMessageList(targetFromNames("", ""), messages)
+	return estimateMessageList(targetFromNames("", ""), messages, nil)
 }
 
 // EstimateMessagesInputTokensForResolved estimates a message list for a
@@ -138,19 +139,16 @@ func EstimateMessagesInputTokens(messages []Message) InputTokenCount {
 // compaction pressure) uses it so the thinking text those adapters replay is
 // counted.
 func EstimateMessagesInputTokensForResolved(res registry.Resolved, messages []Message) InputTokenCount {
-	return estimateMessageList(targetFromResolved(res, "", ""), messages)
+	return estimateMessageList(targetFromResolved(res, "", ""), messages, &res)
 }
 
 // TokenPartEstimator prices messages one at a time for ONE resolved target, so a
 // caller that walks its own list — a session's turn history, say — prices the
 // turns it already holds without projecting them into a []Message.
 //
-// Summing Parts over a list and calling Total once is that list's estimate: the
-// chars are summed first and divided by four once (see
-// estimateMessagesInputTokens), so no prefix of the list can round differently
-// from the whole. See TestTokenPartEstimatorMatchesMessageList, which pins that
-// the per-message walk prices what EstimateMessagesInputTokensForResolved
-// prices.
+// For a single recipient's projection, sum Parts and call Total once so no
+// prefix rounds differently from the whole. Use RecipientTokenParts to group
+// messages by recipient while the HTTP destination is still unresolved.
 type TokenPartEstimator struct {
 	target targetInfo
 }
@@ -202,9 +200,9 @@ func (p TokenParts) Add(other TokenParts) TokenParts {
 	return TokenParts{Chars: p.Chars + other.Chars, Counted: p.Counted + other.Counted}
 }
 
-func estimateMessageList(t targetInfo, messages []Message) InputTokenCount {
+func estimateMessageList(t targetInfo, messages []Message, res *registry.Resolved) InputTokenCount {
 	return InputTokenCount{
-		Tokens: estimateMessagesInputTokens(t, messages),
+		Tokens: estimateMessagesInputTokens(t, messages, res),
 		Exact:  false,
 		Source: TokenCountSourceLocalEstimate,
 	}
@@ -282,27 +280,97 @@ func (c *Client) CountInputTokens(ctx context.Context, req Request) (InputTokenC
 	return out, nil
 }
 
-func estimateMessagesInputTokens(t targetInfo, messages []Message) int {
-	chars := 0
-	tokens := 0
-	for _, m := range messages {
-		c, counted := estimateMessageInputParts(t, m)
-		chars += c
-		tokens += counted
+// RecipientTokenParts prices one shared conversation with native reasoning
+// that can travel to one serving deployment at a time.
+type RecipientTokenParts struct {
+	Shared      TokenParts
+	sole        string
+	soleChars   int
+	byRecipient map[string]int
+}
+
+// Clone returns an independently appendable history prefix.
+func (p RecipientTokenParts) Clone() RecipientTokenParts {
+	p.byRecipient = maps.Clone(p.byRecipient)
+	return p
+}
+
+// Largest returns the largest eligible projection before HTTP selects a recipient.
+func (p RecipientTokenParts) Largest() TokenParts {
+	largest := max(0, p.soleChars)
+	for recipient, chars := range p.byRecipient {
+		if origin, _, exact := strings.Cut(recipient, "/"); exact {
+			// History stamped only with an origin accompanies each deployment there.
+			chars += p.byRecipient[origin]
+		}
+		largest = max(largest, chars)
 	}
-	return tokens + chars/4
+	parts := p.Shared
+	parts.Chars += largest
+	return parts
+}
+
+func (p *RecipientTokenParts) addNative(recipient string, chars int) {
+	// Most conversations stay on one deployment.
+	if p.byRecipient == nil {
+		if p.sole == "" || recipient == p.sole {
+			p.sole = recipient
+			p.soleChars += chars
+			return
+		}
+		p.byRecipient = map[string]int{p.sole: p.soleChars}
+		p.sole, p.soleChars = "", 0
+	}
+	p.byRecipient[recipient] += chars
+}
+
+// AddMessage bills visible content once and binds the remaining reasoning to its issuer.
+func (p *RecipientTokenParts) AddMessage(e TokenPartEstimator, m Message, res *registry.Resolved) {
+	parts, reasoning := messageTokenParts(e.target, m)
+	if source := m.ReasoningEndpoint; source != "" {
+		if e.target.protocol == registry.ProtocolOpenAIChat && e.target.thinkingAsText && e.target.unsignedThinking {
+			for _, part := range m.Content {
+				reasoning -= len(part.UnsignedChatDisplayText())
+			}
+		}
+		parts.Chars -= reasoning
+		if reasoning != 0 && source != UnknownServingOrigin {
+			if recipient := RecordedServingRecipient(source, *res); recipient != UnknownServingOrigin {
+				p.addNative(recipient, reasoning)
+			}
+		}
+	}
+	p.Shared = p.Shared.Add(parts)
+}
+
+func estimateMessagesInputTokens(t targetInfo, messages []Message, res *registry.Resolved) int {
+	if res == nil {
+		res = &registry.Resolved{}
+	}
+	var parts RecipientTokenParts
+	pricer := TokenPartEstimator{target: t}
+	for _, m := range messages {
+		parts.AddMessage(pricer, m, res)
+	}
+	return parts.Largest().Total()
 }
 
 func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
+	parts, _ := messageTokenParts(t, m)
+	return parts.Chars, parts.Counted
+}
+
+func messageTokenParts(t targetInfo, m Message) (TokenParts, int) {
 	chars := len(m.Name) + len(m.ToolCallID)
 	tokens := 0
+	reasoning := 0
 	if t.chatNativeDetails && t.unsignedThinking && !t.omitThinking && m.Role == RoleAssistant {
 		native := 0
 		for item := range ChatNativeReasoningDetails(m.Content) {
 			native += len(item) + 1
 		}
 		if native != 0 {
-			chars += native + 1 // array brackets and a comma between items
+			reasoning += native + 1 // array brackets and a comma between items
 			t.omitThinking = true
 		}
 	}
@@ -350,7 +418,7 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 				}
 			}
 		case ContentThinking, ContentRedThinking:
-			chars += thinkingReplayChars(t, m.Role, p)
+			reasoning += thinkingReplayChars(t, m.Role, p)
 		case ContentWebSearch:
 			if p.WebSearch != nil {
 				chars += len(p.WebSearch.Query)
@@ -361,7 +429,7 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 			chars += len(b)
 		}
 	}
-	return chars, tokens
+	return TokenParts{Chars: chars + reasoning, Counted: tokens}, reasoning
 }
 
 // thinkingReplayChars counts the characters a thinking part contributes to the

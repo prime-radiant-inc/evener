@@ -538,10 +538,12 @@ round without a recorded endpoint can continue on the session’s primary
 profile using thinking from the same instance. Reasoning recorded on Chat
 or Responses stays on its issuing protocol even when the fallback shares
 the same tools.
-Replayed reasoning counts toward
-context pressure. A saved input-token count covers the history actually sent
-to that target under its replay rules. Evener estimates later additions,
-including delegate reports received while the request was in flight. If that
+When a gateway can reach several deployments, token admission and context
+pressure count the visible conversation plus the largest amount of private
+reasoning any one deployment can receive. A saved input-token count covers
+the history actually sent to that target under its replay rules. Evener
+estimates later additions, including delegate reports received while the request
+was in flight. If that
 prefix changes during the call, Evener estimates the current history locally.
 When an HTTP redirect selects an unconfigured deployment, its token count
 still contributes to billing. Evener estimates context pressure locally until
@@ -575,9 +577,10 @@ call keeps its literal path and file contents, including XML.
   plain reasoning until its row opts in. The existing `thinking_as_text`
   setting takes precedence and merges Chat reasoning into assistant-visible text
   across Chat model and endpoint switches, including when a Responses
-  primary falls back to Chat. On a different endpoint, only
+  primary falls back to Chat. On a different provider instance or endpoint, only
   unsigned display text or a separately emitted scalar can enter assistant
-  content. Signed details and ciphertext stay with their issuer. A scalar
+  content. Signed details and ciphertext stay with the issuing instance and
+  serving deployment, even when two instances share a URL. A scalar
   replay field can travel alongside opaque `reasoning_details`.
   An independent scalar retains its original bytes even
   when the gateway also sent display text in details. If the gateway sends
@@ -673,9 +676,9 @@ call keeps its literal path and file contents, including XML.
   points to another tool. The `id` on an argument event can identify an
   issued call or a provisional item. When it names two different records,
   Evener applies the arguments only if the output index identifies exactly
-  one of them. Explicit terminal arguments take
-  precedence, and a terminal that omits them inherits the call's exact streamed
-  arguments. Reasoning shown only as deltas remains
+  one of them. Explicit terminal names and arguments take precedence
+  independently. Each omitted field inherits the call's streamed value,
+  including the exact argument bytes. Reasoning shown only as deltas remains
   visible in the transcript, including when the response ends with an
   answer. A streamed summary that differs from the item's settled text stays
   visible in the transcript. Only native reasoning parts supply replay text.

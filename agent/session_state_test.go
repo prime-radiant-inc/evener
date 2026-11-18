@@ -240,6 +240,31 @@ func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
 			}}
 			return registryClient(t, map[string]registry.Provider{"gw": inst}, newFakeAdapter("gw", steps...))
 		}
+		t.Run("server-side search keeps a prior measurement only at its owner", func(t *testing.T) {
+			for _, tc := range []struct {
+				recipient string
+				want      int
+			}{{original, 40_000}, {replacement, 0}} {
+				answer := agenttest.FinalResponse("answer-14")
+				answer.Usage.InputTokens = 40_000
+				answer.Message.Content = append(answer.Message.Content, llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{EncryptedContent: "opaque-55"}})
+				search := agenttest.FinalResponse("answer-21")
+				search.Message.Content = append(search.Message.Content, llm.ContentPart{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{Query: "marker"}})
+				client := clientFor("wire-a", original, true, fixedStep(answer), func(llm.Request) llm.Response { return search })
+				profile := resolveClientProfile(t, client, "gw/reasoner")
+				row := profile.Resolved()
+				llm.StampEndpointURL(&search, strings.Replace(row.RequestURL(row.Transport.Endpoint), original, tc.recipient, 1), llm.APILogCredentialMaterial{})
+				s := newSession(t, withClient(client), withStateDir(t.TempDir()), withProfile(profile))
+				for _, input := range []string{"turn-14", "turn-21"} {
+					if _, err := s.ProcessInput(tripwireCtx(t), input, nil); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if got := s.Meta().LastInputTokens; got != tc.want {
+					t.Errorf("after search at %s, retained input = %d, want %d", tc.recipient, got, tc.want)
+				}
+			}
+		})
 		for _, tc := range []struct {
 			name, wire, endpoint string
 			before, after        bool

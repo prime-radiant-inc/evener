@@ -75,11 +75,9 @@ func (cm *Manager) EstimateStatusForHistory(history []schema.Turn, historyLen, s
 // already walked, so a history that only grows costs one walk of the turns
 // appended since.
 //
-// It stores chars and fixed-price token counts rather than a finished token
-// total on purpose. The estimator divides the summed chars by four ONCE over the
-// whole list (llm.estimateMessagesInputTokens), so caching a per-prefix total and
-// adding suffixes would round differently and drift from the full answer.
-// Summing the same chars and dividing once at the end cannot drift.
+// It retains each deployment's native reasoning separately. An append can
+// change which one is largest, and the final divide by four applies once to
+// the shared conversation plus that deployment's reasoning.
 //
 // The key is all integers so a hit costs no allocation: reflect.DeepEqual on the
 // resolved target would defeat the purpose of the cache. profileGen is the
@@ -93,7 +91,7 @@ type estimateMemo struct {
 	// when an API measurement supplies the baseline.
 	base  int
 	turns int
-	parts llm.TokenParts
+	parts llm.RecipientTokenParts
 
 	profileGen  uint64
 	lastTokens  int
@@ -157,14 +155,16 @@ func (cm *Manager) estimateUsedTokensMemo(prof *provider.Profile, profileGen uin
 		return 0, false
 	}
 
-	parts := llm.TokenParts{}
+	parts := llm.RecipientTokenParts{}
 	walked := base
 	if reusable {
 		parts = memo.parts
 		walked = memo.turns
 	}
 	if history != nil && len(history) > walked-skip {
-		parts = parts.Add(estimateTokenPartsFor(prof, history[walked-skip:]))
+		// Published recipient totals remain immutable for concurrent readers.
+		parts = parts.Clone()
+		addTurnTokenParts(&parts, prof, history[walked-skip:])
 		walked = skip + len(history)
 	}
 	// A nil history can only answer for turns already walked. Reporting a prefix
@@ -191,7 +191,7 @@ func (cm *Manager) estimateUsedTokensMemo(prof *provider.Profile, profileGen uin
 	}
 
 	if measured {
-		return lastTokens + parts.Total(), true
+		return lastTokens + parts.Largest().Total(), true
 	}
-	return parts.Total() + sysPromptChars/4, true
+	return parts.Largest().Total() + sysPromptChars/4, true
 }

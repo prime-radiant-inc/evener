@@ -143,6 +143,29 @@ func TestEstimateTokens_WithThinking(t *testing.T) {
 		Transport: registry.Transport{BaseURL: "https://gateway.example.test", Endpoint: "/complete", StreamEndpoint: "/stream/a"},
 	}
 	const issuerStream = "/stream/a"
+	t.Run("context pressure follows the largest serving deployment as history grows", func(t *testing.T) {
+		res := row
+		res.Caps.ContextWindow = new(3_100)
+		cm := NewManager(provider.FromResolved(res, nil), nil, cheapmodel.New(nil))
+		var history []schema.Turn
+		for i, tc := range []struct {
+			path        string
+			chars, used int
+		}{{"/complete", 4_000, 1_001}, {"/other", 3_000, 1_002}, {"/other", 3_000, 1_503}} {
+			msg := llm.Assistant("seen")
+			msg.Content = append(msg.Content, llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{EncryptedContent: strings.Repeat("x", tc.chars)}})
+			history = append(history, schema.Turn{Kind: schema.TurnAssistant, Message: msg,
+				ResponseProvider: res.Instance, ResponseProtocol: res.Protocol, ResponseReasoningRoute: res.ReasoningReplayRoute(),
+				ResponseServingOrigin: llm.ServingRecipient(res.RequestURL(tc.path), res)})
+			if used := cm.EstimateUsage(history, 0).Used; used != tc.used {
+				t.Errorf("fresh pressure after turn %d = %d tokens, want %d", i, used, tc.used)
+			}
+			got, _, _, ok := cm.EstimateStatusForHistory(history[i:], len(history), 0, 1)
+			if !ok || got.Used != tc.used {
+				t.Errorf("incremental pressure after turn %d = %d tokens (ok %t), want %d", i, got.Used, ok, tc.used)
+			}
+		}
+	})
 	t.Run("Anthropic fallback only prices its own native thinking", func(t *testing.T) {
 		target := registry.Resolved{Instance: "claude", ModelID: "fallback", Protocol: registry.ProtocolAnthropic, Transport: row.Transport}
 		cm := NewManager(provider.FromResolved(target, nil), nil, cheapmodel.New(nil))

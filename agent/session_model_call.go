@@ -1324,9 +1324,10 @@ func (s *Session) recordResponseUsage(modelResp sessionModelResponse, req llm.Re
 		req.FullHistoryInputTokensEstimate,
 		responseHasServerWebSearch(resp.Message.Content),
 	)
-	if record {
+	endpoint := resp.ReasoningEndpoint()
+	if record || (endpoint != "" && s.contextMgr.LastInputTokens() > 0) {
 		matchesTarget := true
-		if endpoint := resp.ReasoningEndpoint(); endpoint != "" {
+		if endpoint != "" {
 			resolved := resolvedTargetOf(answeringProfile)
 			recipient := llm.ServingRecipient(endpoint, resolved)
 			matchesTarget = recipient != llm.UnknownServingOrigin && recipient == llm.ConfiguredServingRecipient(resolved)
@@ -1334,6 +1335,10 @@ func (s *Session) recordResponseUsage(modelResp sessionModelResponse, req llm.Re
 				_, changed := req.ForReasoningEndpoint(recipient, resolved)
 				matchesTarget = !changed
 			}
+		}
+		if !record && matchesTarget {
+			// The response supplied no usable count, but the same recipient still owns the baseline.
+			return
 		}
 		s.mu.Lock()
 		defer s.mu.Unlock()
@@ -1747,10 +1752,6 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		commonScope := fallbackSource.scope
 		commonScope.protocolOf = roundReplayLookup(commonScope.protocolOf)
 		commonScope.canonicalModel = roundReplayLookup(commonScope.canonicalModel)
-		type fallbackHistoryKey struct {
-			protocol, issuer, route string
-			thinkingAsText          bool
-		}
 		var sharedHistory []llm.Message
 		var sharedKey fallbackHistoryKey
 		historyForFallback := func(fb *provider.Profile) []llm.Message {
@@ -1759,19 +1760,10 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			}
 			scope := commonScope
 			scope.setDestination(fb)
-			target := scope.destination
-			key := fallbackHistoryKey{protocol: target.Protocol, route: scope.reasoningRoute}
-			switch target.Protocol {
-			case registry.ProtocolOpenAIResponses:
-				key.issuer = target.Instance
-			case registry.ProtocolOpenAIChat:
-				key.thinkingAsText = registry.BoolValue(target.Caps.ThinkingAsText)
-			}
-			// Strict Chat fallbacks on a Chat primary share opaque history by
-			// endpoint and text presentation. A cross-protocol Chat fallback
-			// also checks the model. Each Anthropic fallback projects signed
-			// history for its own instance and model.
-			shareable := !target.ReplaysRawReasoning() && (key.protocol == registry.ProtocolOpenAIResponses ||
+			key := scope.fallbackHistoryKey()
+			// A cross-protocol Chat fallback checks the originating model.
+			// Anthropic also projects signed history for each model separately.
+			shareable := !scope.destination.ReplaysRawReasoning() && (key.protocol == registry.ProtocolOpenAIResponses ||
 				(key.protocol == commonScope.Protocol && key.protocol != registry.ProtocolAnthropic))
 			if shareable && sharedHistory != nil && key == sharedKey {
 				return sharedHistory
@@ -2136,6 +2128,24 @@ func (rs *replayScope) setDestination(profile *provider.Profile) {
 	rs.reasoningRoute = profile.ReasoningReplayRoute()
 }
 
+type fallbackHistoryKey struct {
+	protocol, issuer, route string
+	thinkingAsText          bool
+}
+
+func (rs replayScope) fallbackHistoryKey() fallbackHistoryKey {
+	target := rs.destination
+	key := fallbackHistoryKey{protocol: target.Protocol, issuer: target.Instance, route: rs.reasoningRoute}
+	switch target.Protocol {
+	case registry.ProtocolGoogle:
+		// Models can share an expanded URL while using distinct operation templates.
+		key.issuer = cmp.Or(target.GoogleToolDeployment(), target.Instance)
+	case registry.ProtocolOpenAIChat:
+		key.thinkingAsText = registry.BoolValue(target.Caps.ThinkingAsText)
+	}
+	return key
+}
+
 // active reports whether the scope enforces the N4 replay-provenance rules. An
 // empty protocol means "expand without filtering".
 func (rs replayScope) active() bool { return strings.TrimSpace(rs.Protocol) != "" }
@@ -2276,7 +2286,7 @@ func (rs replayScope) thinkingReplayEligible(t schema.Turn, inFlight bool) bool 
 				return t.MatchesReasoningTextTarget(target, rs.reasoningRoute)
 			}
 		case registry.ProtocolGoogle:
-			if rs.Protocol != target.Protocol {
+			if rs.Protocol != target.Protocol || rs.Instance != target.Instance {
 				return t.ResponseProvider == target.Instance && !t.DropsReasoningForTarget(target, rs.reasoningRoute)
 			}
 		case registry.ProtocolOpenAIResponses:
