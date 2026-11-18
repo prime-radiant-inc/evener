@@ -297,49 +297,41 @@ func (s *Session) retryCloseFailClosed(ctx context.Context) {
 	// then lost the claim to the send that had parked it and was still running,
 	// and returned with the copy already gone. The publisher then released the
 	// claim, leaving the session announced with nothing pending and nothing
-	// sent. In this order a lost claim leaves the copy exactly where its owner
-	// put it.
+	// sent. In this order a lost claim never touches the copy.
 	//
-	// Losing the claim to an in-flight publisher is not a reason to give up: if
-	// that send fails, its own release will leave the copy behind, and this is
-	// the close's last chance to deliver it. So the wait is bounded by the
-	// caller's remaining budget and re-tried, rather than assumed settled.
-	for {
-		s.failedClosed.settleMu.Lock()
-		if !s.failedClosed.announced.CompareAndSwap(false, true) {
-			s.failedClosed.settleMu.Unlock()
-			if ctx.Err() != nil || s.failedClosed.pending.Load() == nil {
-				// Either the close has no time left, or there is nothing
-				// parked: an in-flight publisher that SUCCEEDS never stores a
-				// copy, and one that fails stores it before it releases, so a
-				// nil copy under an open claim means the announcement went out.
-				return
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(transcriptLockPollInterval):
-			}
-			continue
-		}
-		if held := s.failedClosed.pending.Swap(nil); held != nil {
-			s.failedClosed.settleMu.Unlock()
-			if _, _, delivered := s.sendEventContext(ctx, *held, s.activeCausalProvenance()); delivered {
-				return
-			}
-			// Undelivered: release the claim and hold the diagnostic again, so
-			// a later path can still announce it rather than the session going
-			// silent.
-			s.failedClosed.settleMu.Lock()
-			if s.failedClosed.announced.CompareAndSwap(true, false) {
-				s.failedClosed.pending.CompareAndSwap(nil, held)
-			}
-			s.failedClosed.settleMu.Unlock()
-			return
-		}
+	// A lost claim ends the retry. The winner either published -- in which case
+	// the parked copy is stale, and a delivered session never re-delivers it --
+	// or is still in flight, in which case its own release parks the copy and a
+	// later retry finds it. Waiting here cannot tell those apart: a delivered
+	// winner never clears the copy, so polling on "a copy is parked while the
+	// claim is held" spins for the rest of the close on the harmless case.
+	//
+	// settleMu is released ACROSS the send. It exists to keep the
+	// claim-and-copy pair one step; holding it across a blocking publication
+	// would put a second unbounded wait on the close path, which is the defect
+	// this whole change removes.
+	s.failedClosed.settleMu.Lock()
+	if !s.failedClosed.announced.CompareAndSwap(false, true) {
 		s.failedClosed.settleMu.Unlock()
 		return
 	}
+	held := s.failedClosed.pending.Swap(nil)
+	s.failedClosed.settleMu.Unlock()
+	if held == nil {
+		return
+	}
+	if _, _, delivered := s.sendEventContext(ctx, *held, s.activeCausalProvenance()); delivered {
+		return
+	}
+	// Undelivered: release the claim and hold the diagnostic again, so a later
+	// path can still announce it rather than the session going silent. The
+	// restore is a compare-and-swap so a concurrent publisher that parked its
+	// own copy first keeps the one it wrote, as it always has.
+	s.failedClosed.settleMu.Lock()
+	if s.failedClosed.announced.CompareAndSwap(true, false) {
+		s.failedClosed.pending.CompareAndSwap(nil, held)
+	}
+	s.failedClosed.settleMu.Unlock()
 }
 
 // claimFailClosedDiagnostic reports the one announcement a failed-closed session
