@@ -2799,28 +2799,15 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	}
 	if committed && publishEvent {
 		// The entry and the event announcing it are one publication, and the
-		// transcript door is the statement that says so: the entry is in
-		// history before the event exists, so no reader can observe the event
-		// ahead of the transcript that explains it.
+		// transcript door is the statement that says so: the entry is in history
+		// before the event exists, so no reader can observe the event ahead of
+		// the entry that explains it, and the door keeps a fold from
+		// committing its markers between those two steps.
 		//
-		// The door does NOT prevent a turn from being split. An earlier version
-		// of this comment claimed the projector read an environment event as a
-		// turn boundary; it no longer builds turns from events at all, and this
-		// event is a context facet (server/thread_envelope.go's facetsByEvent).
-		// Whether the event needs the door at all is #6513's open question, not
-		// something this comment settles.
-		//
-		// This is the one event published under the door, and the trade is
-		// real: emit is not a bounded send. It parks indefinitely against the
-		// authoritative consumer when the buffer is full (holding eventsMu for
-		// read), and it runs the job-watch fan-out synchronously, job-store
-		// persistence and cross-session notification delivery included. All of
-		// that now runs under attentionMu, so a slow daemon consumer stalls
-		// this session's transcript writes and fold publication rather than
-		// only the emitter. Accepted because a parked consumer already stalls
-		// the emitting turn and the door already spans an fsync; see
-		// publishFoldTransaction, whose deferred flush must NOT follow this
-		// example.
+		// The event is a trigger, not a snapshot: when the root session's bridge
+		// handles this event it samples current context
+		// (server/thread_envelope.go's facetsByEvent), so the sample can reflect
+		// state a later publication moved.
 		if hook := s.cfg.testOnly.beforeEnvironmentEventPublish; hook != nil {
 			hook()
 		}
