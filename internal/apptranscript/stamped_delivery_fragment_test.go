@@ -9,9 +9,44 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appitempaging"
 	"primeradiant.com/evener/internal/apptranscript"
 	"primeradiant.com/evener/llm"
 )
+
+// deliveryShellRound is the round the delivery fixture records on the entry
+// that ANNOUNCES its shell call. The entry that ANSWERS it records no round of
+// its own, exactly as a session records a tool round (agent/session.go sets
+// RoundID on assistant entries only, and the index's own "delivery inside an
+// execution" fixture does the same), so a settled row's round says whose
+// identity it carries.
+const deliveryShellRound = "round_shell"
+
+// recordedCall is what the fixture's own writes reported about one tool call:
+// the 1-based entry index and content part of the entry that announced the call
+// and of the entry that answered it, the round each recorded, and the result
+// payload the fixture wrote.
+type recordedCall struct {
+	openerEntry, openerPart int
+	openerRound             string
+	resultEntry, resultPart int
+	resultRound             string
+	output                  string
+}
+
+// openerItemID is the id the projector mints for the announcing entry's call
+// item, item_tool_<entry>_<part> (apptranscript's toolCallItem). It comes from
+// the fixture's recording, never from a reader's settled result.
+func (c recordedCall) openerItemID() string {
+	return fmt.Sprintf("item_tool_%d_%d", c.openerEntry, c.openerPart)
+}
+
+// resultItemID is the id the projector mints for the answering entry's own
+// item, item_tool_result_<entry>_<part>. A settled row must not carry it: that
+// id names the entry the result was recorded in.
+func (c recordedCall) resultItemID() string {
+	return fmt.Sprintf("item_tool_result_%d_%d", c.resultEntry, c.resultPart)
+}
 
 // deliveryInsideExecutionTranscript writes the shape a standalone steering
 // delivery produces when it lands INSIDE a running execution, through the real
@@ -22,38 +57,59 @@ import (
 // It is the fixture the transcript index already covers as "delivery inside an
 // execution" (internal/transcriptindex/fixture_test.go), written through the
 // writer so every entry carries the id the writer stamped at write time.
-func deliveryInsideExecutionTranscript(t *testing.T, withUsage bool) string {
+//
+// The announcing entry records deliveryShellRound and the answering entry
+// records none. The fixture returns what the writer reported for both, plus the
+// result payload it wrote, so a caller states the expected row from the
+// recording instead of from either reader's answer.
+func deliveryInsideExecutionTranscript(t *testing.T, withUsage bool) (path string, call recordedCall) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	path = filepath.Join(t.TempDir(), "session.transcript.jsonl")
 	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "delivery_fragment"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	record := func(turn schema.Turn, place transcript.Placement) {
+	record := func(turn schema.Turn, place transcript.Placement) transcript.Record {
 		t.Helper()
 		if withUsage && turn.Kind == schema.TurnAssistant {
 			turn.Usage = llm.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}
 		}
-		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: place}); err != nil {
+		rec, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: place})
+		if err != nil {
 			t.Fatalf("record %s: %v", turn.Kind, err)
 		}
+		if !rec.Recorded {
+			t.Fatalf("record %s: the writer recorded nothing", turn.Kind)
+		}
+		return rec
 	}
+	call.output = "listing"
 	w.BeginExecution("t_run", false)
 	record(schema.NewTurn(schema.TurnUserInput, llm.User("deliver")), transcript.PlaceSession)
-	record(schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+	opener := schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 		{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "d1", Name: "shell", Arguments: []byte(`{"cmd":"ls"}`)}},
-	}}), transcript.PlaceSession)
+	}})
+	opener.RoundID = deliveryShellRound
+	openerRecord := record(opener, transcript.PlaceSession)
 	// A standalone delivery, recorded the way a cold writer records one.
 	record(schema.NewTurn(schema.TurnSteering, llm.User("a delivered note")), transcript.PlaceDelivery)
-	record(schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
-		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "d1", Name: "shell", Content: "listing"}},
+	// The answering entry records no round: only assistant entries carry one.
+	resultRecord := record(schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "d1", Name: "shell", Content: call.output}},
 	}}}, transcript.PlaceSession)
 	record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("after the delivery")), transcript.PlaceSession)
 	record(schema.Turn{Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}}, transcript.PlaceCompletion)
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
-	return path
+	// The projector numbers entries from 1 (the header is not an entry), and
+	// each entry here holds its call or its result at content part 0.
+	call.openerEntry, call.openerPart = int(openerRecord.Ordinal)+1, 0
+	call.resultEntry, call.resultPart = int(resultRecord.Ordinal)+1, 0
+	// What the transcript actually holds, which is what a settled row must
+	// carry or must not inherit.
+	call.openerRound, call.resultRound = openerRecord.Turn.RoundID, resultRecord.Turn.RoundID
+	return path, call
 }
 
 func fullTurns(t *testing.T, path string) []appwire.Turn {
@@ -69,44 +125,124 @@ func fullTurns(t *testing.T, path string) []appwire.Turn {
 	return turns
 }
 
+// visibleItemsFromTurns flattens the whole-file read's visible items in the
+// order a client receives them: turn by turn, each turn's items in order.
+func visibleItemsFromTurns(turns []appwire.Turn) []appwire.ThreadItem {
+	var items []appwire.ThreadItem
+	for _, turn := range turns {
+		items = append(items, turn.Items...)
+	}
+	return items
+}
+
+// visibleItemsFromCandidates flattens the bounded index's items in arrival
+// order, which is the order the live client receives them in.
+func visibleItemsFromCandidates(candidates []appitempaging.TranscriptItemCandidate) []appwire.ThreadItem {
+	items := make([]appwire.ThreadItem, 0, len(candidates))
+	for _, candidate := range candidates {
+		items = append(items, candidate.Item)
+	}
+	return items
+}
+
+// assertSettledShellRow proves one reader kept ONE completed command row for
+// the fixture's call: at the position it was announced, before the standalone
+// delivery, carrying the ANNOUNCING entry's id, turn and round and the payload
+// the ANSWERING entry recorded.
+func assertSettledShellRow(t *testing.T, reader string, items []appwire.ThreadItem, call recordedCall) {
+	t.Helper()
+	var shell appwire.ThreadItem
+	shellAt, deliveryAt, shellRows := -1, -1, 0
+	for i, item := range items {
+		switch {
+		case item.Type == "commandExecution" && item.CallID == "d1":
+			shellRows++
+			shell, shellAt = item, i
+		case item.Type == "steering":
+			deliveryAt = i
+		}
+	}
+	if shellRows != 1 {
+		t.Fatalf("%s: call d1 kept %d command rows, want 1: one call is one row, at the entry that announced it", reader, shellRows)
+	}
+	if deliveryAt < 0 {
+		t.Fatalf("%s: no steering row for the fixture's delivery", reader)
+	}
+	if shellAt > deliveryAt {
+		t.Errorf("%s: settled row at item %d sits after the delivery at item %d: settling the call must not move its row behind the delivery", reader, shellAt, deliveryAt)
+	}
+	if want := call.openerItemID(); shell.ID != want {
+		t.Errorf("%s: settled row id = %q, want %q, the announcing entry's (entry %d, part %d); %q is the answering entry's own item", reader, shell.ID, want, call.openerEntry, call.openerPart, call.resultItemID())
+	}
+	if shell.TurnID != "t_run" {
+		t.Errorf("%s: settled row turn = %q, want t_run, the turn the call was announced in", reader, shell.TurnID)
+	}
+	if shell.RoundID != call.openerRound {
+		t.Errorf("%s: settled row round = %q, want the announcing entry's %q (the answering entry recorded %q): settling a call keeps the identity it was announced with", reader, shell.RoundID, call.openerRound, call.resultRound)
+	}
+	if shell.Status != appwire.TurnStatusCompleted {
+		t.Errorf("%s: settled row status = %q, want completed: the result must settle the call it announced", reader, shell.Status)
+	}
+	if shell.Output != call.output {
+		t.Errorf("%s: settled row output = %q, want the result's own payload %q", reader, shell.Output, call.output)
+	}
+}
+
+// assertIndexSettledRowPosition proves the index kept the settled row at the
+// ANNOUNCING entry's position, which differs from the ANSWERING entry's: the
+// answer was recorded at its own entry and part, and the row never moved there.
+func assertIndexSettledRowPosition(t *testing.T, candidates []appitempaging.TranscriptItemCandidate, call recordedCall) {
+	t.Helper()
+	want := appwire.ThreadItemPosition{Entry: uint64(call.openerEntry), Item: uint32(call.openerPart)}
+	answered := appwire.ThreadItemPosition{Entry: uint64(call.resultEntry), Item: uint32(call.resultPart)}
+	if want == answered {
+		t.Fatalf("the announcing and answering entries recorded the same position %+v", want)
+	}
+	rows := 0
+	for _, candidate := range candidates {
+		if candidate.Item.Type != "commandExecution" || candidate.Item.CallID != "d1" {
+			continue
+		}
+		rows++
+		if candidate.Position != want {
+			t.Errorf("index settled row position = %+v, want the announcing entry's %+v (the answering entry's is %+v): completing a call must not move its row", candidate.Position, want, answered)
+		}
+	}
+	if rows != 1 {
+		t.Fatalf("the index published %d rows for call d1, want its one settled row at %+v", rows, want)
+	}
+}
+
 // A delivery that lands between a call and its result does not split the call.
 // The whole-file read must settle the result onto the call the execution
 // announced, keeping ONE command row at the call's position, exactly as the
 // index does: two rows for one call id is a client holding an in-progress call
 // that never settles beside a second row that already completed.
+//
+// Settling must also keep the ANNOUNCING entry's identity. The announcing entry
+// records a round and the answering entry records none, so a row that took its
+// id or round from the answer names an entry the command was never recorded in,
+// which is what the index already refuses to do (#1166).
 func TestDeliveryInsideExecutionKeepsOneCommandRow(t *testing.T) {
-	path := deliveryInsideExecutionTranscript(t, false)
-	turns := fullTurns(t, path)
-
-	rows := 0
-	for _, turn := range turns {
-		for _, item := range turn.Items {
-			if item.Type == "commandExecution" && item.CallID == "d1" {
-				rows++
-				if item.Status != appwire.TurnStatusCompleted {
-					t.Errorf("command d1 status = %q in turn %q, want completed: the result must settle the call it announced", item.Status, turn.ID)
-				}
-				if item.Output == "" {
-					t.Errorf("command d1 in turn %q carries no output: the result did not settle into this row", turn.ID)
-				}
-			}
-		}
+	path, call := deliveryInsideExecutionTranscript(t, false)
+	if call.openerItemID() == call.resultItemID() {
+		t.Fatalf("the announcing and answering entries derive the same item id %q", call.openerItemID())
 	}
-	if rows != 1 {
-		t.Fatalf("command d1 appears in %d rows, want 1: the full read split one call across the delivery and emitted a second row for its result", rows)
+	if call.openerRound != deliveryShellRound {
+		t.Fatalf("announcing entry recorded round %q, want %q: the identity under test must be what the transcript records", call.openerRound, deliveryShellRound)
+	}
+	if call.resultRound != "" {
+		t.Fatalf("answering entry recorded round %q, want none: a row settled by its identity would keep the announcing entry's round", call.resultRound)
 	}
 
-	// The index is the oracle for the same transcript.
+	// The whole-file read.
+	assertSettledShellRow(t, "full read", visibleItemsFromTurns(fullTurns(t, path)), call)
+
+	// The index is the oracle for the same transcript, and keeps the row at the
+	// announcing entry's position.
 	candidates := indexCandidates(t, path)
-	indexRows := 0
-	for _, candidate := range candidates {
-		if candidate.Item.Type == "commandExecution" && candidate.Item.CallID == "d1" {
-			indexRows++
-		}
-	}
-	if indexRows != rows {
-		t.Fatalf("index kept %d command rows for d1 and the full read kept %d: the two readers disagree", indexRows, rows)
-	}
+	assertSettledShellRow(t, "bounded index", visibleItemsFromCandidates(candidates), call)
+	assertIndexSettledRowPosition(t, candidates, call)
 }
 
 // A delivery that lands between two runs of one execution does not halve the
@@ -114,7 +250,7 @@ func TestDeliveryInsideExecutionKeepsOneCommandRow(t *testing.T) {
 // is what the index reports, so a client that reconciles turn metadata by id
 // does not keep a later fragment's partial figure and underreport tokens.
 func TestDeliveryInsideExecutionReportsWholeTurnUsage(t *testing.T) {
-	path := deliveryInsideExecutionTranscript(t, true)
+	path, _ := deliveryInsideExecutionTranscript(t, true)
 	turns := fullTurns(t, path)
 
 	var fragments int
@@ -148,7 +284,7 @@ func TestDeliveryInsideExecutionReportsWholeTurnUsage(t *testing.T) {
 // The delivery keeps its own position among the fragments: it is neither
 // absorbed into the execution nor moved behind it.
 func TestDeliveryInsideExecutionKeepsItsOwnTurn(t *testing.T) {
-	path := deliveryInsideExecutionTranscript(t, false)
+	path, _ := deliveryInsideExecutionTranscript(t, false)
 	turns := fullTurns(t, path)
 
 	// Three turns, in file order: the execution's first fragment, the delivery
@@ -395,8 +531,9 @@ func TestHiddenCommunicateReusingACallIDKeepsTheShellRow(t *testing.T) {
 	}
 
 	// The index is the oracle: one shell row, one rejected communicate row.
+	candidates := indexCandidates(t, path)
 	var indexShell, indexRejected int
-	for _, candidate := range indexCandidates(t, path) {
+	for _, candidate := range candidates {
 		if candidate.Item.Type != "commandExecution" {
 			continue
 		}
@@ -409,5 +546,36 @@ func TestHiddenCommunicateReusingACallIDKeepsTheShellRow(t *testing.T) {
 	}
 	if indexShell != len(shell) || indexRejected != len(rejected) {
 		t.Fatalf("index kept %d shell and %d communicate rows and the full read kept %d and %d: the two readers disagree", indexShell, indexRejected, len(shell), len(rejected))
+	}
+
+	// The visible order is the recording's: the settled shell row, then the
+	// standalone delivery, then the rejection at its own entry. A rejection
+	// folded into the shell row would delete the command and leave the
+	// rejection ahead of the delivery, which is what this order distinguishes.
+	assertShellDeliveryRejectionOrder(t, "full read", visibleItemsFromTurns(turns))
+	assertShellDeliveryRejectionOrder(t, "bounded index", visibleItemsFromCandidates(candidates))
+}
+
+// assertShellDeliveryRejectionOrder proves one reader keeps the fixture's
+// three visible rows in the order it recorded them: the settled shell row,
+// the standalone delivery, then the rejected communicate.
+func assertShellDeliveryRejectionOrder(t *testing.T, reader string, items []appwire.ThreadItem) {
+	t.Helper()
+	shellAt, deliveryAt, rejectedAt := -1, -1, -1
+	for i, item := range items {
+		switch {
+		case item.Type == "commandExecution" && item.ToolName == "shell":
+			shellAt = i
+		case item.Type == "steering":
+			deliveryAt = i
+		case item.Type == "commandExecution" && item.ToolName == "communicate":
+			rejectedAt = i
+		}
+	}
+	if shellAt < 0 || deliveryAt < 0 || rejectedAt < 0 {
+		t.Fatalf("%s: visible rows at %d include shell=%v delivery=%v rejection=%v, want all three", reader, len(items), shellAt >= 0, deliveryAt >= 0, rejectedAt >= 0)
+	}
+	if !(shellAt < deliveryAt && deliveryAt < rejectedAt) {
+		t.Fatalf("%s: visible order puts shell at %d, the delivery at %d and the rejection at %d, want shell before delivery before rejection", reader, shellAt, deliveryAt, rejectedAt)
 	}
 }
