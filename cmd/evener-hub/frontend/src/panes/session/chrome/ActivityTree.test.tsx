@@ -697,6 +697,46 @@ describe("ActivityTree", () => {
     expect(row.querySelector("[data-state]")).toBeNull();
   });
 
+  // The name-priority rule is scoped to rows that DISPLAY a stated intent
+  // (activitypanel.module.css's `:has(.denseMeta[data-intent="true"])`). A
+  // delegate held open by its own running job shows a WAIT there instead -
+  // work it is waiting on, not work it stated - so the wait must not hand the
+  // name priority, or the wait and the timing are starved on exactly the
+  // narrow rows the rule exists to protect. Both directions are pinned here:
+  // a wait alone must not set the attribute, and a stated intent still must.
+  test("a wait on a running job does not grant the name priority a stated intent does", () => {
+    // Held open by its own shell job, with no intent of its own.
+    const waiting = intentDelegateTree(
+      {
+        delegateId: "dlg_waiting",
+        latestIntent: undefined,
+        drainHeldByJobs: true,
+        runningJobCount: 1,
+      },
+      { active: 1, failed: 0, completed: 0, complete: false },
+    );
+    const first = render(<ActivityTree tree={waiting} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
+    const waitingRow = screen.getByRole("treeitem", { name: "inspect" });
+    // The wait is displayed rather than starved, and it does not claim to be
+    // an intent the row stated. Compared by presence, not by production copy.
+    expect(metaText(waitingRow).trim()).not.toBe("");
+    expect(waitingRow.querySelector("[class*='denseMeta']")?.getAttribute("data-intent")).toBeNull();
+    first.unmount();
+
+    // The same row with nothing holding it: its stated intent is displayed,
+    // and that is what earns the name its priority.
+    const stated = intentDelegateTree(
+      { delegateId: "dlg_stated", latestIntent: "Reading the board." },
+      { active: 1, failed: 0, completed: 0, complete: false },
+    );
+    render(<ActivityTree tree={stated} expandedFoldIDs={[FOLD_ID]} onToggleFold={vi.fn()} />);
+    const statedRow = screen.getByRole("treeitem", { name: "inspect" });
+    // Asserted structurally, by the attribute the stylesheet keys on, not by
+    // the fixture's phrase: copy is not an oracle.
+    expect(metaText(statedRow).trim()).not.toBe("");
+    expect(statedRow.querySelector("[class*='denseMeta']")?.getAttribute("data-intent")).toBe("true");
+  });
+
   test("a terminal delegate row keeps its status word over a stale intent", () => {
     const tree = intentDelegateTree(
       {
@@ -907,11 +947,13 @@ describe("ActivityTree", () => {
   });
 
   test("dense rows never grow the name over the open control: meta owns the right edge", () => {
-    expect(activityPanelCss).toMatch(/\.denseName\s*\{[^}]*flex:\s*0 1 auto/);
     expect(activityPanelCss).toMatch(/\.denseMeta\s*\{[^}]*margin-left:\s*auto/);
     // A long stated intent must not collapse the name to nothing: the meta
-    // shrinks and ellipsizes like the sidebar's rowMeta, so the name keeps
-    // first claim on its own space (the review's 200-rune intent scenario).
+    // shrinks and ellipsizes like the sidebar's rowMeta, and the cap below
+    // holds it to a share the name can survive. The name's own sizing is NOT
+    // asserted here - a match on a declaration passes when a later rule
+    // overrides it, so the browser guard checks the name box against its
+    // measured label width instead (activity-tree-intent-geometry).
     expect(activityPanelCss).toMatch(/\.denseMeta\s*\{[^}]*flex:\s*0 1 auto/);
     expect(activityPanelCss).toMatch(/\.denseMeta\s*\{[^}]*min-width:\s*0/);
     // Proportional shrink alone distributes by content width, so a long
