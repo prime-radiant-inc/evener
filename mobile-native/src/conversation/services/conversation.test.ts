@@ -1758,6 +1758,35 @@ describe("ConversationService", () => {
 			expect(projection.conversation.modelControlState.kind).not.toBe("ready");
 		});
 
+		it("refuses a pick on a read older than the boot this service already adopted", async () => {
+			// No frame announced the move: this service adopted the newer boot
+			// itself on an earlier read. A later read answered by the boot it
+			// moved past must not hand that boot's authority back to a pick.
+			const { client, service } = setup({ thread: controlledThread(modelControl(1)) });
+			await service.open("ref-1");
+			const newer = controlledThread(modelControl(2, { authority: MODEL_AUTHORITY_B }));
+			client.on("thread/read", () => makeReadResponse(newer));
+			await service.readProjection("ref-1");
+
+			let resolveRead!: (response: ThreadReadResponse) => void;
+			client.on("thread/read", () => new Promise<ThreadReadResponse>((resolve) => (resolveRead = resolve)));
+			client.on("thread/model/set", () => ({
+				modelControlVersion: 1,
+				disposition: "accepted",
+				modelControl: modelControl(3, { authority: MODEL_AUTHORITY_A, desired: "gpt-5.5" }),
+			}));
+
+			const replacing = service.readProjection("ref-1");
+			await Promise.resolve();
+			const changing = service.changeModel("openai", "gpt-5.5");
+			resolveRead(makeReadResponse(controlledThread(modelControl(1), MODEL_AUTHORITY_A)));
+			const projection = await replacing;
+
+			await expect(changing).rejects.toThrow();
+			expect(client.calls.filter((call) => call.method === "thread/model/set")).toHaveLength(0);
+			expect(projection.conversation.modelControlState.kind).not.toBe("ready");
+		});
+
 		it("setReasoningEffort calls thread/reasoning-effort/set", async () => {
 			const { client, service } = setup();
 			client.on("thread/reasoning-effort/set", () => EMPTY_RESPONSE);

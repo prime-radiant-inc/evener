@@ -1023,6 +1023,7 @@ export function createConversationService<ReadLease = unknown>(
 					capabilities = caps;
 					acceptedModel = installed;
 					opening = null;
+					observeBootGeneration(modelControlAuthority(installed)?.bootGeneration);
 					settleModelControlReadFromModel(epoch, installed);
 				}
 				// Reconcile the host's durable dispatch gate only for a read whose
@@ -1104,6 +1105,7 @@ export function createConversationService<ReadLease = unknown>(
 					capabilities = caps;
 					acceptedModel = installed;
 					opening = null;
+					observeBootGeneration(modelControlAuthority(installed)?.bootGeneration);
 					settleModelControlReadFromModel(epoch, installed);
 				}
 				// Reconcile the host's durable dispatch gate only after the projection
