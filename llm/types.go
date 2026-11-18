@@ -428,17 +428,48 @@ type ToolDefinition struct {
 	// that declares no arguments can be sent in strict mode, which admits
 	// exactly the empty argument set. An open object accepts arbitrary keys and
 	// cannot be closed without changing what the caller declared.
+	//
+	// The field is not authoritative on its own: DeclaresNoParameters also
+	// requires Parameters to still be the schema preparation synthesized.
+	// Middleware can replace a tool's parameters after preparation, and a flag
+	// that outlived its value would have the builder discard the replacement and
+	// send an empty object schema in its place.
 	declaredNoParameters bool
 }
 
 // DeclaresNoParameters reports whether the caller declared this tool without a
-// parameter schema, as opposed to declaring an open one.
+// parameter schema, as opposed to declaring an open one, and whether that is
+// still what Parameters holds.
 //
 // An adapter reads this instead of testing Parameters for nil, because a
 // prepared definition carries the open schema there: the wire and the token
 // budget both need it present, and the declaration still has to be recoverable
 // for the strict decision.
-func (t ToolDefinition) DeclaresNoParameters() bool { return t.declaredNoParameters }
+//
+// The declaration only describes the value preparation put there. A replacement
+// schema arrives through request middleware, and it has an advertised meaning of
+// its own: discarding it for a synthesized empty object would send the provider a
+// schema the caller never wrote. Such a definition is therefore not a
+// no-parameters declaration any more, and goes through ordinary emission and
+// eligibility.
+func (t ToolDefinition) DeclaresNoParameters() bool {
+	return t.declaredNoParameters && isEmptyObjectSchema(t.Parameters)
+}
+
+// isEmptyObjectSchema reports whether schema is exactly the open empty object the
+// parameterless fallback synthesizes. It is spelled out rather than compared by
+// length so a schema that happens to be empty is not mistaken for it: a
+// replacement carrying no keys is still the caller's own value.
+func isEmptyObjectSchema(schema map[string]any) bool {
+	if len(schema) != 2 {
+		return false
+	}
+	if typ, _ := schema["type"].(string); typ != "object" {
+		return false
+	}
+	props, ok := schema["properties"].(map[string]any)
+	return ok && len(props) == 0
+}
 
 // WithNoParametersDeclared returns t marked as declaring no parameter schema,
 // with the open empty schema filled in the way preparation fills it. It is what

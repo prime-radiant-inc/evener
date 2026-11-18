@@ -315,3 +315,41 @@ func TestCyclicToolSchemaIsRefusedAtTheBuilder(t *testing.T) {
 		t.Fatal("the shared-subtree tool must still reach the wire")
 	}
 }
+
+// The chat builder reads the same marker, so the same rule applies: a schema
+// replaced after preparation is the caller's value and ships as written. On a
+// strict route, discarding it for the closed empty object would send a schema
+// nobody wrote and drop the replacement's properties from enforcement.
+func TestChatReplacedSchemaIsNotDiscardedForTheNoParametersFallback(t *testing.T) {
+	t.Parallel()
+	replacement := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           map[string]any{"path": map[string]any{"type": "string"}},
+		"required":             []string{"path"},
+	}
+	replaced := llm.ToolDefinition{Name: "read_file"}.WithNoParametersDeclared()
+	replaced.Parameters = replacement
+
+	for name, mutate := range map[string]func(c *registry.Caps){
+		"strict route":     func(c *registry.Caps) { c.StrictTools = new(true) },
+		"non-strict route": func(c *registry.Caps) { c.StrictTools = new(false) },
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			req := userReq("hi")
+			req.Tools = []llm.ToolDefinition{replaced}
+			fn := build(t, req, resolved(mutate))["tools"].([]map[string]any)[0]["function"].(map[string]any)
+			params, ok := fn["parameters"].(map[string]any)
+			if !ok {
+				t.Fatalf("parameters = %#v, want the replacement schema", fn["parameters"])
+			}
+			if got := requiredNames(t, params); len(got) != 1 || got[0] != "path" {
+				t.Fatalf("required = %v, want [path]: the replacement was discarded for a synthesized empty object", got)
+			}
+			if _, has := params["properties"].(map[string]any)["path"]; !has {
+				t.Fatal("the replacement's property is absent: an empty object schema was sent in its place")
+			}
+		})
+	}
+}

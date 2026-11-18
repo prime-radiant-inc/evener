@@ -1878,7 +1878,6 @@ func TestTypedEnumSlicesStillDeclineWhatTheyCannotName(t *testing.T) {
 	for name, argument := range map[string]map[string]any{
 		"mixed typed": {"enum": []any{"a", 1}},
 		"containers":  {"enum": []any{map[string]any{"a": "b"}}},
-		"nil members": {"enum": []any{nil}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -1894,6 +1893,28 @@ func TestTypedEnumSlicesStillDeclineWhatTheyCannotName(t *testing.T) {
 			}
 		})
 	}
+	// A set of nothing but null is different: it names one JSON value, so the
+	// type is statable rather than a guess. Leaving it typeless had a provider
+	// that requires an explicit type on every node reject the whole request.
+	t.Run("nil members name null", func(t *testing.T) {
+		t.Parallel()
+		emitted := SupplyDerivedTypes(map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties":           map[string]any{"mode": map[string]any{"enum": []any{nil}}},
+			"required":             []string{"mode"},
+		})
+		mode := emitted["properties"].(map[string]any)["mode"].(map[string]any)
+		if mode["type"] != "null" {
+			t.Fatalf("type = %#v, want \"null\": the set names exactly that value", mode["type"])
+		}
+		if !schemaAccepts(t, emitted, map[string]any{"mode": nil}) {
+			t.Fatal("the emitted schema rejects the null member the advertised one accepts")
+		}
+		if schemaAccepts(t, emitted, map[string]any{"mode": "fast"}) {
+			t.Fatal("the emitted schema accepts a value the advertised set excludes")
+		}
+	})
 }
 
 // items is legal on a node of any type, and a strict-enforcing provider rejects
@@ -2329,12 +2350,12 @@ func TestTypedNilPointerEncoderDoesNotPanicInInference(t *testing.T) {
 				"properties":           map[string]any{"mode": map[string]any{"enum": []any{member}}},
 				"required":             []string{"mode"},
 			})
-			// A set whose every member is null has no scalar type to state,
-			// so nothing may be added: stating one would reject the null the
-			// schema accepts.
+			// A set whose every member is null names exactly that value, so the
+			// type is statable: the accepted set is unchanged and the node is no
+			// longer typeless for a provider that demands one.
 			mode := emitted["properties"].(map[string]any)["mode"].(map[string]any)
-			if _, has := mode["type"]; has {
-				t.Fatalf("emitted type = %#v for an all-null set: a null member names no scalar", mode["type"])
+			if mode["type"] != "null" {
+				t.Fatalf("emitted type = %#v for an all-null set, want \"null\"", mode["type"])
 			}
 			if !schemaAccepts(t, emitted, map[string]any{"mode": nil}) {
 				t.Fatal("the emitted schema rejects the null member the advertised one accepts")
@@ -2385,8 +2406,11 @@ func TestTypedNilPointerEncoderDoesNotPanicInInference(t *testing.T) {
 				"required":             []string{"mode"},
 			})
 			mode := emitted["properties"].(map[string]any)["mode"].(map[string]any)
-			if _, has := mode["type"]; has {
-				t.Fatalf("emitted type = %#v for a null const: null names no scalar", mode["type"])
+			if mode["type"] != "null" {
+				t.Fatalf("emitted type = %#v for a null const, want \"null\"", mode["type"])
+			}
+			if !schemaAccepts(t, emitted, map[string]any{"mode": nil}) {
+				t.Fatal("the emitted schema rejects the null const the advertised one names")
 			}
 		})
 	}
@@ -3077,6 +3101,176 @@ func TestConstPointerAndStringAdmitTheSameArgument(t *testing.T) {
 			}
 			if schemaAccepts(t, emitted, map[string]any{"mode": "safe"}) {
 				t.Fatal("the emitted schema accepts a value the advertised const excludes")
+			}
+		})
+	}
+}
+
+// A required string field whose alternatives are typed string enums is a
+// supported shape: every branch names its own type, the projection leaves the
+// branches' constraints intact, and the union keeps the accepted set it
+// advertised. The gate refused every nested anyOf before reading it, which sent
+// the tool non-strict and cost enforcement the schema could carry — the one
+// direction this gate must not get wrong, because refusing a schema it can
+// certify makes the fix cost more than the bug.
+func TestNestedAnyOfOfTypedScalarBranchesIsCertified(t *testing.T) {
+	t.Parallel()
+	schema := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"mode": map[string]any{
+				"anyOf": []any{
+					map[string]any{"enum": []any{"fast", "safe"}},
+					map[string]any{"enum": []any{"careful"}},
+				},
+			},
+		},
+		"required": []string{"mode"},
+	}
+	if !StrictExpressible(schema) {
+		t.Fatal("a union of typed string-enum branches was refused: its accepted set survives the projection")
+	}
+	projected := StrictifyJSONSchema(schema)
+	// The accepted set is unchanged: a member of either branch still validates,
+	// and a value neither branch lists does not.
+	for _, accepted := range []string{"fast", "safe", "careful"} {
+		if !schemaAccepts(t, projected, map[string]any{"mode": accepted}) {
+			t.Fatalf("the projected schema rejects %q, a member its branches accept", accepted)
+		}
+	}
+	if schemaAccepts(t, projected, map[string]any{"mode": "reckless"}) {
+		t.Fatal("the projected schema accepts a value neither branch lists")
+	}
+}
+
+// The other direction: a union whose branch the projection would narrow must
+// still be refused. An object branch is closed against its own properties, and
+// that closure can contradict a constraint at the same node — here the parent
+// requires name while the branch forbids it — so certifying each branch alone
+// would certify a union that admits nothing.
+func TestNestedAnyOfWithAnObjectBranchIsStillRefused(t *testing.T) {
+	t.Parallel()
+	cases := map[string]map[string]any{
+		"object branch typed": {
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"id":   map[string]any{"type": "string"},
+				"name": map[string]any{"type": "string"},
+			},
+			"required": []string{"id", "name"},
+			"anyOf": []any{
+				map[string]any{
+					"type":                 "object",
+					"additionalProperties": false,
+					"properties":           map[string]any{"id": map[string]any{"type": "string"}},
+					"required":             []string{"id"},
+				},
+			},
+		},
+		"object branch by its properties alone": {
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"id":   map[string]any{"type": "string"},
+				"name": map[string]any{"type": "string"},
+			},
+			"required": []string{"id", "name"},
+			"anyOf": []any{
+				map[string]any{
+					"properties": map[string]any{"id": map[string]any{"type": "string"}},
+					"required":   []string{"id"},
+				},
+			},
+		},
+		"branch that is not a schema map": {
+			"type":       "object",
+			"properties": map[string]any{"a": map[string]any{"type": "string"}},
+			"required":   []string{"a"},
+			"anyOf":      []any{[]byte(`{"type":"object"}`)},
+		},
+		"oneOf is not read this way": {
+			"type":       "object",
+			"properties": map[string]any{"a": map[string]any{"type": "string"}},
+			"required":   []string{"a"},
+			"oneOf": []any{
+				map[string]any{"enum": []any{"fast"}},
+			},
+		},
+	}
+	for name, schema := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			if StrictExpressible(schema) {
+				t.Fatal("a union with a branch the projection would narrow was certified")
+			}
+		})
+	}
+}
+
+// The medium: a closed set of nothing but null names one JSON value, so the
+// node was typeless only because the check read the keyword by its value rather
+// than its presence. A delegate result schema can legitimately declare
+// {"const":null} or {"enum":[null]}, and a provider that requires an explicit
+// type on every node rejects the whole request over the missing one — even with
+// strict: false.
+func TestANullOnlyValueSetStatesItsType(t *testing.T) {
+	t.Parallel()
+	cases := map[string]map[string]any{
+		"const null":   {"const": nil},
+		"enum of null": {"enum": []any{nil}},
+		"const null beside a nullable object": {
+			"type":       []any{"object", "null"},
+			"properties": map[string]any{},
+		},
+	}
+	for name, argument := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			emitted := SupplyDerivedTypes(map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties":           map[string]any{"mode": argument},
+				"required":             []string{"mode"},
+			})
+			mode := emitted["properties"].(map[string]any)["mode"].(map[string]any)
+			if _, has := mode["type"]; !has {
+				t.Fatal("the value set left the node typeless: a provider demanding an explicit type rejects the request")
+			}
+			if !schemaAccepts(t, emitted, map[string]any{"mode": nil}) {
+				t.Fatal("the emitted schema rejects the null the advertised set names")
+			}
+		})
+	}
+}
+
+// A set mixing null with a scalar still names no single type, so it must keep
+// its refusal rather than acquiring one: stating either would reject a member
+// the advertised schema accepts.
+func TestAMixedNullAndScalarSetStaysTypeless(t *testing.T) {
+	t.Parallel()
+	for name, argument := range map[string]map[string]any{
+		"enum":                     {"enum": []any{nil, "fast"}},
+		"const beside a type list": {"const": nil, "type": []any{"string", "null"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			emitted := SupplyDerivedTypes(map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties":           map[string]any{"mode": argument},
+				"required":             []string{"mode"},
+			})
+			mode := emitted["properties"].(map[string]any)["mode"].(map[string]any)
+			if name == "enum" {
+				if _, has := mode["type"]; has {
+					t.Fatalf("type = %#v, want none: one type cannot name null and a string", mode["type"])
+				}
+			}
+			// Either spelling must keep accepting the null the caller listed.
+			if !schemaAccepts(t, emitted, map[string]any{"mode": nil}) {
+				t.Fatal("the emitted schema rejects the null the advertised set accepts")
 			}
 		})
 	}

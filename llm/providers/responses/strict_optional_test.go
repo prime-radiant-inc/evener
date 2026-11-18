@@ -654,3 +654,50 @@ func TestStrictToolsTrueRouteStillCertifiesFullyRequiredSchemas(t *testing.T) {
 		t.Fatalf("additionalProperties = %#v, want false (strictified)", params["additionalProperties"])
 	}
 }
+
+// A request middleware may replace a tool's parameters after preparation. The
+// no-parameters marker describes the value preparation put there, so once the
+// value is replaced the marker no longer describes anything: honoring it would
+// discard the replacement and send an empty object schema the caller never
+// wrote. The replacement goes through ordinary emission instead, while an
+// untouched definition still gets the synthesized fallback.
+func TestAReplacedSchemaIsNotDiscardedForTheNoParametersFallback(t *testing.T) {
+	t.Parallel()
+	replacement := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           map[string]any{"path": map[string]any{"type": "string"}},
+		"required":             []string{"path"},
+	}
+	replaced := llm.ToolDefinition{Name: "read_file"}.WithNoParametersDeclared()
+	replaced.Parameters = replacement
+
+	// Non-strict route: the replacement is what ships, not an empty object.
+	req := userReq("hi")
+	req.Tools = []llm.ToolDefinition{replaced}
+	body := build(t, req, resolved(nil))
+	tool := body["tools"].([]map[string]any)[0]
+	params, ok := tool["parameters"].(map[string]any)
+	if !ok {
+		t.Fatalf("parameters = %#v, want the replacement schema", tool["parameters"])
+	}
+	if got := requiredNames(t, params); len(got) != 1 || got[0] != "path" {
+		t.Fatalf("required = %v, want [path]: the replacement was discarded for the synthesized empty object", got)
+	}
+	if _, has := params["properties"].(map[string]any)["path"]; !has {
+		t.Fatal("the replacement's property is absent: an empty object schema was sent in its place")
+	}
+
+	// The marker still applies to an untouched prepared definition, which is the
+	// fallback the opposite case has to keep working.
+	untouchedReq := userReq("hi")
+	untouchedReq.Tools = []llm.ToolDefinition{llm.ToolDefinition{Name: "current_time"}.WithNoParametersDeclared()}
+	untouched := build(t, untouchedReq, resolved(nil))
+	untouchedParams, ok := untouched["tools"].([]map[string]any)[0]["parameters"].(map[string]any)
+	if !ok {
+		t.Fatalf("parameters = %#v, want the open empty object", untouched["tools"].([]map[string]any)[0]["parameters"])
+	}
+	if props, ok := untouchedParams["properties"].(map[string]any); !ok || len(props) != 0 {
+		t.Fatalf("properties = %#v, want an empty object", untouchedParams["properties"])
+	}
+}

@@ -113,6 +113,28 @@ func dialectURI(raw any) string {
 // cannot be projected into strict mode without making that argument
 // mandatory.
 //
+// # The one rule every check here answers
+//
+// A predicate in this file decides whether a value the projection will rewrite
+// still means the same thing afterwards, and every one of them asks that
+// question about the value rather than about a stand-in for it. Three review
+// rounds each found one check answering about the wrong thing, so the rule is
+// written down once here:
+//
+//   - Read the value, not its Go presence. A const is present when the key is
+//     present, and null is a value a closed set can name; reading `m["const"] !=
+//     nil` made null-only sets typeless.
+//   - Read the JSON, not the Go type. A *string and a string encode to the same
+//     scalar, so both name a type; a typed slice and a []any are the same list.
+//   - Read the branch, not the keyword. anyOf is certified when what it accepts
+//     survives, not refused because its keyword is outside the rewrite's tables.
+//   - Read the value a marker describes. A marker set by preparation says
+//     "the schema is still the synthesized one"; once a later step replaces it,
+//     the marker describes nothing and the replacement is what ships.
+//
+// Refusing a schema this file can certify is a failure too: it costs the tool
+// the enforcement the provider offers, which is what the gate exists to avoid.
+//
 // It matches a literal "object"/"array" string type only, and it resolves no
 // $ref and does not descend into $defs or definitions. A node in one of those
 // shapes keeps whatever it advertises, which StrictExpressible accounts for.
@@ -406,7 +428,18 @@ func strictlyExpressibleNode(m map[string]any, visited bool, dialect schemaDiale
 	// so a keyword it does not model is unsound at any position — not only on
 	// the objects it closes.
 	if !keywordsModeled(m) {
-		return false
+		// anyOf is the one unmodeled keyword whose effect this walk can read:
+		// its accepted set is the union of its branches, so the node is
+		// certifiable exactly when every branch is. Refusing it unexamined made
+		// the gate send a supported schema non-strict — a required string field
+		// whose alternatives are typed string enums — which costs enforcement
+		// the schema can carry. The branches are walked with visited false: the
+		// rewrite visits them from any node, but it only transforms the ones
+		// whose own type it matches, and a branch that is not transformed has to
+		// be strict-valid on its own terms.
+		if !anyOfExpressible(m, visited, dialect) {
+			return false
+		}
 	}
 	// A node that constrains nothing admits every JSON value. Strict mode
 	// cannot be established for it: the projection closes objects and rewrites
@@ -701,6 +734,14 @@ func constrainsSomething(m map[string]any, isObject, isArray bool, dialect schem
 		if _, has := m["type"]; has {
 			return true
 		}
+		// A certified anyOf is exactly such a constraint: the union of its
+		// branches narrows the node to what they accept between them, and the
+		// walk has already verified that every branch keeps its accepted set.
+		// Without this a union of typed scalar branches would have been certified
+		// by the keyword check and then refused here for carrying no type.
+		if _, has := m["anyOf"]; has {
+			return true
+		}
 		// A typeless node accepts values of every type, so only a keyword whose
 		// accepted set this file can read narrows it. That answer is read out of
 		// modeledKeywords rather than listed again here: a keyword the table
@@ -813,17 +854,26 @@ func enumMembers(raw any) ([]any, bool) {
 //     would reject values the advertised schema accepted, which is the one
 //     thing this function must never do.
 //
-// Anything else reports false rather than guessing. A mixed set, a container
-// value, or a set containing null cannot be named by one type without dropping
-// or widening a member, and a node typed from a guess is exactly the
-// certification this gate exists to withhold.
+// A set whose members are all null names "null": the keyword narrows the node to
+// that one JSON value, so stating it changes nothing. Anything else reports
+// false rather than guessing. A mixed set, a container value, or null beside a
+// scalar cannot be named by one type without dropping or widening a member, and
+// a node typed from a guess is exactly the certification this gate exists to
+// withhold.
 func derivedScalarType(m map[string]any, dialect schemaDialect) (string, bool) {
 	if _, has := m["type"]; has {
 		return "", false
 	}
 	var values []any
+	// Both keywords are read by presence, not by a non-nil value: null is a
+	// value a closed set can name, so {"const": null} and {"enum": [null]} are
+	// closed sets of one member rather than absent keywords. Reading the value
+	// as a presence test left those nodes typeless, and a provider that requires
+	// an explicit type on every node rejected the whole request over it.
+	constVal, hasConst := m["const"]
+	enumVal, hasEnum := m["enum"]
 	switch {
-	case m["const"] != nil:
+	case hasConst:
 		// const arrived in draft 6. Under an older dialect the keyword asserts
 		// nothing, so the node's accepted set is unconstrained and no type may
 		// be stated for it.
@@ -836,13 +886,13 @@ func derivedScalarType(m map[string]any, dialect schemaDialect) (string, bool) {
 		// for both; classifying the Go value would type one and not the other.
 		// Reading it through its encoding is the rule the enum path already
 		// applies to its members.
-		encoded, ok := encodedScalarValue(m["const"])
+		encoded, ok := encodedScalarValue(constVal)
 		if !ok {
 			return "", false
 		}
 		values = []any{encoded}
-	case m["enum"] != nil:
-		list, ok := enumMembers(m["enum"])
+	case hasEnum:
+		list, ok := enumMembers(enumVal)
 		if !ok {
 			return "", false
 		}
@@ -852,6 +902,19 @@ func derivedScalarType(m map[string]any, dialect schemaDialect) (string, bool) {
 	}
 	if len(values) == 0 {
 		return "", false
+	}
+	// A set whose every member is null names "null" and nothing else, so the
+	// type is statable rather than a guess. A set mixing null with a scalar
+	// still names no single type and keeps its existing refusal.
+	allNull := true
+	for _, value := range values {
+		if value != nil {
+			allNull = false
+			break
+		}
+	}
+	if allNull {
+		return "null", true
 	}
 	name := ""
 	for _, value := range values {
@@ -1105,6 +1168,87 @@ func keywordsModeled(m map[string]any) bool {
 		}
 	}
 	return true
+}
+
+// anyOfExpressible reports whether a node carrying anyOf can be certified: anyOf
+// must be its only unmodeled keyword, every branch must be strict-expressible on
+// its own terms, and no branch may be an object node.
+//
+// A union accepts a value when any branch accepts it, so a node whose branches
+// all keep their accepted sets under the projection keeps the union too. That is
+// the rule for a branch of any scalar or array type: the projection leaves it as
+// advertised, or rewrites only the array items its own subtree already covers,
+// and neither can interact with a constraint at the node above it.
+//
+// An object branch is different and is refused. Closing it against its own
+// properties is the one narrowing the projection performs on a branch, and that
+// closure can contradict a sibling constraint at the same node: a branch that
+// declares {id} while the parent requires name becomes unsatisfiable once closed,
+// so the union admits nothing the caller meant it to. Certifying each branch in
+// isolation cannot see that interaction, so the shape is left non-strict with the
+// schema it advertised. A oneOf or allOf stays refused for the same reason the
+// keyword table gives: their meaning depends on how many branches match, and the
+// projection neither reads nor rewrites that.
+func anyOfExpressible(m map[string]any, visited bool, dialect schemaDialect) bool {
+	for keyword := range m {
+		if modeledKeywords[keyword] != notCovered || keyword == "anyOf" {
+			continue
+		}
+		return false
+	}
+	raw, has := m["anyOf"]
+	if !has || raw == nil {
+		return false
+	}
+	branches, ok := schemaBranches(raw)
+	if !ok || len(branches) == 0 {
+		return false
+	}
+	for _, branch := range branches {
+		// An object branch is recognised by its type or by the keyword that only
+		// an object node can usefully carry: a branch written as
+		// {"properties": {...}, "required": [...]} with no type is closed by the
+		// rewrite exactly as a typed one is.
+		if _, isObject := schemaTypeFlags(branch["type"]); isObject {
+			return false
+		}
+		if _, hasProps := branch["properties"]; hasProps {
+			return false
+		}
+		if _, hasAdditional := branch["additionalProperties"]; hasAdditional {
+			return false
+		}
+		if !strictlyExpressibleNode(branch, false, dialect) {
+			return false
+		}
+	}
+	return true
+}
+
+// schemaBranches reads a combinator's list of subschemas. A Go builder writes
+// anyOf as []map[string]any and a decoder writes []any; both are the same list,
+// and reading only one spelling would refuse the other rather than examine it.
+func schemaBranches(raw any) ([]map[string]any, bool) {
+	switch list := raw.(type) {
+	case []any:
+		out := make([]map[string]any, 0, len(list))
+		for _, item := range list {
+			branch, ok := item.(map[string]any)
+			if !ok {
+				return nil, false
+			}
+			out = append(out, branch)
+		}
+		return out, true
+	case []map[string]any:
+		out := make([]map[string]any, 0, len(list))
+		for _, branch := range list {
+			out = append(out, branch)
+		}
+		return out, true
+	default:
+		return nil, false
+	}
 }
 
 func strictifyJSONSchemaInPlace(m map[string]any) {
