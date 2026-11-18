@@ -104,31 +104,54 @@ func responseContentFromOutputItemsRaw(out []any, body []byte, rawItems []json.R
 				},
 			})
 		case "reasoning":
-			id, _ := item["id"].(string)
-			encryptedContent, _ := item["encrypted_content"].(string)
-			// OpenAI returns reasoning as encrypted_content plus summaries;
-			// gateways that expose the raw thinking put reasoning_text parts
-			// in content instead. On this path the raw text feeds display and
-			// the transcript; toResponsesInput replays a reasoning item only
-			// when it has encrypted_content, so the text never returns to
-			// this API.
-			text := strings.Join(parseReasoningSummary(item["content"]), reasoningPartSeparator)
-			if encryptedContent != "" || text != "" {
-				content = append(content, llm.ContentPart{
-					Kind: llm.ContentThinking,
-					Thinking: &llm.ThinkingData{
-						ID:               id,
-						Text:             text,
-						EncryptedContent: encryptedContent,
-						Summary:          parseReasoningSummary(item["summary"]),
-					},
-				})
+			if thinking := responsesThinking(item); thinking != nil {
+				content = append(content, llm.ContentPart{Kind: llm.ContentThinking, Thinking: thinking})
 			}
 		default:
 			// ignore
 		}
 	}
 	return content
+}
+
+func responsesThinking(item map[string]any) *llm.ThinkingData {
+	id, _ := item["id"].(string)
+	encrypted, _ := item["encrypted_content"].(string)
+	parts, _ := item["content"].([]any)
+	var display strings.Builder
+	ranges := make([][2]int, 0)
+	havePart := false
+	for _, part := range parts {
+		p, _ := part.(map[string]any)
+		text, ok := p["text"].(string)
+		raw := p["type"] == "reasoning_text"
+		if !ok || (!raw && strings.TrimSpace(text) == "") {
+			continue
+		}
+		if havePart {
+			display.WriteString(reasoningPartSeparator)
+		}
+		havePart = true
+		start := display.Len()
+		display.WriteString(text)
+		if raw {
+			ranges = append(ranges, [2]int{start, display.Len()})
+		}
+	}
+	if !havePart && encrypted == "" {
+		return nil
+	}
+	wholeText := len(ranges) == 1 && ranges[0] == [2]int{0, display.Len()} && display.Len() > 0
+	if encrypted != "" || (wholeText && strings.TrimSpace(id) != "") {
+		ranges = nil
+	}
+	return &llm.ThinkingData{
+		ID:                  id,
+		Text:                display.String(),
+		EncryptedContent:    encrypted,
+		Summary:             parseReasoningSummary(item["summary"]),
+		ResponsesTextRanges: ranges,
+	}
 }
 
 // settleResponsesTerminalOutput decides the settled message content and

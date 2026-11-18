@@ -352,11 +352,8 @@ func TestReasoningObject_ExplicitOff(t *testing.T) {
 	if got := offBody["reasoning"]; jsonOf(t, got) != jsonOf(t, map[string]any{"effort": "none"}) {
 		t.Fatalf("reasoning = %s, want the explicit off on the wire", jsonOf(t, got))
 	}
-	// The encrypted-reasoning include rides the off object too, deliberately.
-	// It is inert when the model honors the off — there is no reasoning item
-	// to return — and it is the only thing that keeps replay working on a
-	// gateway that reasons anyway, which is not knowable in advance. A row
-	// that takes no include at all still drops it through Fields["include"].
+	// A gateway may still return encrypted reasoning on an off request.
+	// The include asks for the blob needed to continue that turn.
 	if got := jsonOf(t, offBody["include"]); got != jsonOf(t, []string{encryptedReasoning}) {
 		t.Fatalf("include = %s, want the encrypted-reasoning include kept on an off request", got)
 	}

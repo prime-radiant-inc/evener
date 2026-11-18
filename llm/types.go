@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"iter"
 	"slices"
 	"strings"
 	"time"
@@ -259,6 +260,36 @@ type ThinkingData struct {
 	Redacted         bool     `json:"redacted,omitempty"`
 	EncryptedContent string   `json:"encrypted_content,omitempty"`
 	Summary          []string `json:"summary,omitempty"`
+	// ResponsesTextRanges are the half-open byte ranges of reasoning_text
+	// parts within Text. An empty array marks display-only content. An absent
+	// array leaves the Responses item ID as the sole evidence of its origin.
+	ResponsesTextRanges [][2]int `json:"responses_text_ranges,omitzero"`
+}
+
+// ResponsesReasoningTextParts yields the original raw Responses content that
+// can be replayed. Only the Responses decoder assigns thinking item IDs, so a
+// saved item with an ID but no boundaries can supply one unsplit text part.
+func (t *ThinkingData) ResponsesReasoningTextParts() iter.Seq[string] {
+	return func(yield func(string) bool) {
+		if t == nil || t.Redacted || t.Signature != "" || t.EncryptedContent != "" {
+			return
+		}
+		if t.ResponsesTextRanges == nil {
+			if strings.TrimSpace(t.ID) != "" && t.Text != "" {
+				yield(t.Text)
+			}
+			return
+		}
+		for _, span := range t.ResponsesTextRanges {
+			start, end := span[0], span[1]
+			if start < 0 || start > end || end > len(t.Text) {
+				continue
+			}
+			if !yield(t.Text[start:end]) {
+				return
+			}
+		}
+	}
 }
 
 // openAICompatReasoningFields is the canonical ordered list of wire fields

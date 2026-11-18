@@ -318,7 +318,7 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 				}
 			}
 		case ContentThinking, ContentRedThinking:
-			chars += thinkingReplayChars(t, p)
+			chars += thinkingReplayChars(t, m.Role, p)
 		case ContentWebSearch:
 			if p.WebSearch != nil {
 				chars += len(p.WebSearch.Query)
@@ -344,15 +344,14 @@ func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 //     OpenAI-compatible wire field name) and a redacted_thinking block for
 //     ContentRedThinking; an encrypted blob never rides, and a part with no text
 //     is skipped;
-//   - responses/input.go replays one reasoning item carrying a non-compat
-//     encrypted blob with its trimmed id and non-blank summaries, and drops every
-//     other shape, the part's display text included;
+//   - responses/input.go replays an encrypted reasoning item, or its native
+//     reasoning_text parts on an opted-in row, with its id and summaries;
 //   - chatcompletions/messages.go replays the part's text (kept off the wire by a
 //     declared non-reasoning row that does not replay thinking as text) and the
 //     compat reasoning_details array (kept off the wire by any declared
 //     non-reasoning row), and drops a redacted part and an opaque Responses blob;
 //   - the Google adapter emits no thinking shape at all.
-func thinkingReplayChars(target targetInfo, p ContentPart) int {
+func thinkingReplayChars(target targetInfo, role Role, p ContentPart) int {
 	if p.Thinking == nil {
 		return 0
 	}
@@ -371,7 +370,7 @@ func thinkingReplayChars(target targetInfo, p ContentPart) int {
 				// summaries included.
 				return 0
 			}
-			return responsesReasoningChars(t)
+			return responsesReasoningChars(t, role == RoleAssistant && target.unsignedThinking)
 		case registry.ProtocolOpenAIChat:
 			return chatReasoningChars(target, p)
 		default:
@@ -426,15 +425,26 @@ func anthropicThinkingChars(t *ThinkingData) int {
 	return len(t.Text) + len(t.Signature)
 }
 
-// responsesReasoningChars is what responses/input.go emits: one reasoning item
-// for a thinking part carrying a non-compat encrypted blob, holding the blob, the
-// trimmed id when it is not blank, and the non-blank summaries. Every other
-// thinking shape is dropped.
-func responsesReasoningChars(t *ThinkingData) int {
-	if t.EncryptedContent == "" || IsOpenAICompatEncryptedReasoning(t.EncryptedContent) {
+// The item's ID and summaries ride with whichever payload the Responses
+// adapter selects. Encrypted content takes precedence over plain text.
+func responsesReasoningChars(t *ThinkingData, replayText bool) int {
+	if IsOpenAICompatEncryptedReasoning(t.EncryptedContent) {
 		return 0
 	}
 	chars := len(t.EncryptedContent)
+	if chars == 0 {
+		if !replayText {
+			return 0
+		}
+		hasContent := false
+		for text := range t.ResponsesReasoningTextParts() {
+			hasContent = true
+			chars += len(text)
+		}
+		if !hasContent {
+			return 0
+		}
+	}
 	if id := strings.TrimSpace(t.ID); id != "" {
 		chars += len(id)
 	}
@@ -817,12 +827,10 @@ func RowSeesToolResultMedia(res registry.Resolved, mediaType string) bool {
 //     {"type":"thinking","thinking":text} (anthropic/request.go);
 //   - the OpenAI-compatible chat adapter merges the text into assistant
 //     content when the row sets ThinkingAsText (chatcompletions/messages.go);
-//     Evener's request assembly strips the text for every other chat target
-//     (#4563), so that is the only chat shape this estimate bills;
-//   - the OpenAI Responses adapter re-sends a reasoning item only when it
-//     carries encrypted_content and keeps raw reasoning_text for display only
-//     (gateway-fronted GLM), and Google drops the part; neither replays this
-//     text.
+//     it otherwise serializes reasoning supplied in the request on a
+//     reasoning-enabled row. Session history is projected for that row first;
+//   - the OpenAI Responses adapter can replay native reasoning_text on a row
+//     that accepts it. Google omits unsigned thinking.
 //
 // A row with no resolved protocol falls back to names, because such a row still
 // knows what it was named. Those are the effective provider and model — the row's
@@ -833,6 +841,8 @@ func unsignedThinkingReplayed(res registry.Resolved, provider, model string) boo
 	switch res.Protocol {
 	case registry.ProtocolAnthropic:
 		return true
+	case registry.ProtocolOpenAIResponses:
+		return res.Caps.ReplaysReasoningText()
 	case registry.ProtocolOpenAIChat:
 		// The adapter replays the text for a reasoning-enabled row, and merges
 		// it into assistant content for a thinking_as_text row. A request-level
@@ -847,18 +857,15 @@ func unsignedThinkingReplayed(res registry.Resolved, provider, model string) boo
 	}
 }
 
-// ReplaysAssistantThinking reports whether the resolved row's adapter sends
-// assistant thinking back as model-visible request content. An openai-chat
-// target does not: reasoning_content is display output, not continuation
-// state, so Evener's request assembly drops it (#4563), with the deliberate
-// exception of a row that declares thinking_as_text — the adapter merges that
-// form into assistant content. Anthropic, Google and OpenAI Responses do
-// replay their thinking, under the session's per-turn provenance rules.
+// ReplaysAssistantThinking reports whether the session should retain thinking
+// for the target's adapter. Chat rows can request plain reasoning replay or
+// carry thinking as assistant text. Other protocols select their own native
+// content from the thinking parts, including encrypted Responses items.
 func ReplaysAssistantThinking(res registry.Resolved) bool {
 	if res.Protocol != registry.ProtocolOpenAIChat {
 		return true
 	}
-	return registry.BoolValue(res.Caps.ThinkingAsText)
+	return res.Caps.ReplaysReasoningText() || registry.BoolValue(res.Caps.ThinkingAsText)
 }
 
 // unsignedThinkingReplayedByName is the fallback for callers with no resolved
@@ -1002,6 +1009,13 @@ func EstimatorTargetsEquivalent(a, b registry.Resolved) bool {
 	}
 	if registry.BoolValue(a.Caps.ThinkingAsText) != registry.BoolValue(b.Caps.ThinkingAsText) {
 		return false
+	}
+	if a.Protocol == registry.ProtocolOpenAIChat || a.Protocol == registry.ProtocolOpenAIResponses {
+		// A turn can identify its issuer by the reported wire model.
+		replay := a.Caps.ReplaysReasoningText()
+		if replay != b.Caps.ReplaysReasoningText() || (replay && a.WireID != b.WireID) {
+			return false
+		}
 	}
 	if registry.StringValue(a.Caps.ImageDetail) != registry.StringValue(b.Caps.ImageDetail) {
 		return false

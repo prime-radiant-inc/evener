@@ -1031,6 +1031,9 @@ func TestEstimateMessagesInputTokensForResolved_BillsThinkingShapesByAdapter(t *
 
 	anthropic, responses := registry.ProtocolAnthropic, registry.ProtocolOpenAIResponses
 	chat, google := registry.ProtocolOpenAIChat, registry.ProtocolGoogle
+	replay := registry.Caps{ReplayReasoningText: new(true)}
+	userThinking := thinking(&ThinkingData{ID: id, Text: text})
+	userThinking[0].Role = RoleUser
 
 	cases := []struct {
 		name string
@@ -1045,6 +1048,11 @@ func TestEstimateMessagesInputTokensForResolved_BillsThinkingShapesByAdapter(t *
 		{"google drops a redacted part", row(google, registry.Caps{}), part(ContentRedThinking, &ThinkingData{Text: text}), 0},
 
 		{"responses bills the blob, id and summaries", row(responses, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob, ID: id, Summary: []string{summary}}), (blobChars + idChars + summaryChars) / 4},
+		{"responses bills replayed text, id and summaries", row(responses, replay), thinking(&ThinkingData{ID: id, Text: text, Summary: []string{summary}}), (idChars + textChars + summaryChars) / 4},
+		{"responses skips user-role reasoning text", row(responses, replay), userThinking, 0},
+		{"responses uses the blob when both forms are present", row(responses, replay), thinking(&ThinkingData{ID: id, Text: text, EncryptedContent: blob}), (idChars + blobChars) / 4},
+		{"responses skips display-only text on a replaying row", row(responses, replay), thinking(&ThinkingData{Text: text}), 0},
+		{"responses skips foreign reasoning details on a replaying row", row(responses, replay), thinking(&ThinkingData{ID: id, Text: text, EncryptedContent: compat}), 0},
 		{"responses drops the display text beside the blob", row(responses, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob, Text: text}), blobChars / 4},
 		{"responses drops an id and summaries that do not ride", row(responses, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob, ID: "  ", Summary: []string{" "}}), blobChars / 4},
 		{"chat drops the opaque blob and replays its text", row(chat, registry.Caps{}), thinking(&ThinkingData{EncryptedContent: blob, Text: text}), textChars / 4},

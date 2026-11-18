@@ -96,7 +96,7 @@ func toResponsesToolChoice(tc llm.ToolChoice) (any, error) {
 	}
 }
 
-func toResponsesInput(msgs []llm.Message, imageCap string) (instructions string, items []any, _ error) {
+func toResponsesInput(msgs []llm.Message, imageCap string, replayReasoningText bool) (instructions string, items []any, _ error) {
 	var instrParts []string
 	for _, m := range msgs {
 		switch m.Role {
@@ -114,40 +114,13 @@ func toResponsesInput(msgs []llm.Message, imageCap string) (instructions string,
 			continue
 		case llm.RoleUser, llm.RoleAssistant:
 			if m.Role == llm.RoleAssistant {
-				// Group text parts by phase, emitting one message item per group.
-				type textGroup struct {
-					phase   string
-					content []any
+				var err error
+				items, err = appendAssistantInput(items, m.Content, replayReasoningText)
+				if err != nil {
+					return "", nil, err
 				}
-				var groups []textGroup
-				for _, p := range m.Content {
-					switch p.Kind {
-					case llm.ContentText:
-						if strings.TrimSpace(p.Text) == "" && p.Phase == "" {
-							continue
-						}
-						entry := map[string]any{"type": "output_text", "text": p.Text}
-						if len(groups) > 0 && groups[len(groups)-1].phase == p.Phase {
-							groups[len(groups)-1].content = append(groups[len(groups)-1].content, entry)
-						} else {
-							groups = append(groups, textGroup{phase: p.Phase, content: []any{entry}})
-						}
-					case llm.ContentAudio, llm.ContentDocument:
-						return "", nil, &llm.ConfigurationError{Message: fmt.Sprintf("unsupported content kind for openai: %s", p.Kind)}
-					default:
-						// ignore (tool calls, images, web search handled separately)
-					}
-				}
-				for _, g := range groups {
-					item := map[string]any{
-						"type":    "message",
-						"role":    "assistant",
-						"content": g.content,
-					}
-					if g.phase != "" {
-						item["phase"] = g.phase
-					}
-					items = append(items, item)
+				if replayReasoningText {
+					continue
 				}
 			} else {
 				// User messages: no phase grouping needed.
@@ -237,39 +210,21 @@ func toResponsesInput(msgs []llm.Message, imageCap string) (instructions string,
 					})
 				}
 			}
+			// These wire shapes group message text first, then reasoning and
+			// function calls, then web searches.
+			var searches []any
 			for _, p := range m.Content {
-				if p.Kind == llm.ContentThinking && p.Thinking != nil && p.Thinking.EncryptedContent != "" &&
-					!llm.IsOpenAICompatEncryptedReasoning(p.Thinking.EncryptedContent) {
-					// The guard skips OpenRouter-style encrypted reasoning_details
-					// riding a cross-provider transcript — those are not OpenAI
-					// Responses encrypted_content blobs and the API rejects them.
-					item := map[string]any{
-						"type":              "reasoning",
-						"encrypted_content": p.Thinking.EncryptedContent,
-						"summary":           reasoningSummaryInput(p.Thinking.Summary),
-					}
-					if strings.TrimSpace(p.Thinking.ID) != "" {
-						item["id"] = strings.TrimSpace(p.Thinking.ID)
-					}
+				item := standaloneInputItem(p, false)
+				if item == nil {
+					continue
+				}
+				if p.Kind == llm.ContentWebSearch {
+					searches = append(searches, item)
+				} else {
 					items = append(items, item)
 				}
-				if p.Kind == llm.ContentToolCall && p.ToolCall != nil {
-					items = append(items, map[string]any{
-						"type":      "function_call",
-						"call_id":   p.ToolCall.ID,
-						"name":      p.ToolCall.Name,
-						"arguments": openaichat.ToolArgumentsString(p.ToolCall.Arguments),
-					})
-				}
 			}
-			for _, p := range m.Content {
-				if p.Kind == llm.ContentWebSearch && p.WebSearch != nil && len(p.WebSearch.Raw) > 0 {
-					var rawItem map[string]any
-					if err := json.Unmarshal(p.WebSearch.Raw, &rawItem); err == nil {
-						items = append(items, rawItem)
-					}
-				}
-			}
+			items = append(items, searches...)
 		case llm.RoleTool:
 			for _, p := range m.Content {
 				if p.Kind != llm.ContentToolResult || p.ToolResult == nil {
@@ -328,6 +283,87 @@ func toResponsesInput(msgs []llm.Message, imageCap string) (instructions string,
 		}
 	}
 	return instructions, items, nil
+}
+
+func appendAssistantInput(items []any, parts []llm.ContentPart, replayReasoningText bool) ([]any, error) {
+	var group map[string]any
+	var phase string
+	for _, p := range parts {
+		switch p.Kind {
+		case llm.ContentText:
+			if strings.TrimSpace(p.Text) == "" && p.Phase == "" {
+				continue
+			}
+			if group == nil || phase != p.Phase {
+				phase = p.Phase
+				group = map[string]any{"type": "message", "role": "assistant"}
+				if phase != "" {
+					group["phase"] = phase
+				}
+				items = append(items, group)
+			}
+			content, _ := group["content"].([]any)
+			group["content"] = append(content, map[string]any{"type": "output_text", "text": p.Text})
+		case llm.ContentAudio, llm.ContentDocument:
+			return nil, &llm.ConfigurationError{Message: fmt.Sprintf("unsupported content kind for openai: %s", p.Kind)}
+		default:
+			if replayReasoningText {
+				if item := standaloneInputItem(p, true); item != nil {
+					items = append(items, item)
+					group = nil // A top-level item separates adjacent text groups.
+				}
+			}
+		}
+	}
+	return items, nil
+}
+
+func standaloneInputItem(p llm.ContentPart, replayReasoningText bool) map[string]any {
+	switch p.Kind {
+	case llm.ContentThinking:
+		t := p.Thinking
+		if t == nil || llm.IsOpenAICompatEncryptedReasoning(t.EncryptedContent) {
+			return nil
+		}
+		var item map[string]any
+		switch {
+		case t.EncryptedContent != "":
+			item = map[string]any{"type": "reasoning", "encrypted_content": t.EncryptedContent}
+		case replayReasoningText:
+			var content []any
+			for text := range t.ResponsesReasoningTextParts() {
+				content = append(content, map[string]any{"type": "reasoning_text", "text": text})
+			}
+			if len(content) == 0 {
+				return nil
+			}
+			item = map[string]any{"type": "reasoning", "content": content}
+		default:
+			return nil
+		}
+		item["summary"] = reasoningSummaryInput(t.Summary)
+		if id := strings.TrimSpace(t.ID); id != "" {
+			item["id"] = id
+		}
+		return item
+	case llm.ContentToolCall:
+		if t := p.ToolCall; t != nil {
+			return map[string]any{
+				"type":      "function_call",
+				"call_id":   t.ID,
+				"name":      t.Name,
+				"arguments": openaichat.ToolArgumentsString(t.Arguments),
+			}
+		}
+	case llm.ContentWebSearch:
+		if p.WebSearch != nil {
+			var item map[string]any
+			if err := json.Unmarshal(p.WebSearch.Raw, &item); err == nil {
+				return item
+			}
+		}
+	}
+	return nil
 }
 
 func reasoningSummaryInput(summary []string) []any {

@@ -35,7 +35,7 @@ func TestToResponsesInput_DocumentURLUsesFileURL(t *testing.T) {
 			URL:      "https://example.com/report.pdf",
 			FileName: "report.pdf",
 		}},
-	}}}, "")
+	}}}, "", false)
 	if err != nil {
 		t.Fatalf("toResponsesInput: %v", err)
 	}
@@ -61,7 +61,7 @@ func TestToResponsesInput_DocumentBytesStillUseFileData(t *testing.T) {
 	t.Parallel()
 	_, items, err := toResponsesInput([]llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
 		{Kind: llm.ContentDocument, Document: &llm.DocumentData{Data: []byte("%PDF-1.7 stub")}},
-	}}}, "")
+	}}}, "", false)
 	if err != nil {
 		t.Fatalf("toResponsesInput: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestToResponsesInput_DocumentFilenameOnlyIsDropped(t *testing.T) {
 	t.Parallel()
 	_, items, err := toResponsesInput([]llm.Message{{Role: llm.RoleUser, Content: []llm.ContentPart{
 		{Kind: llm.ContentDocument, Document: &llm.DocumentData{FileName: "report.pdf"}},
-	}}}, "")
+	}}}, "", false)
 	if err != nil {
 		t.Fatalf("toResponsesInput: %v", err)
 	}

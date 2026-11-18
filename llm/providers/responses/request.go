@@ -24,7 +24,7 @@ func buildBody(req llm.Request, res registry.Resolved, stream bool) (out map[str
 	defer func() { err = llm.RewriteErrorProvider(err, res.Instance) }()
 	caps := res.Caps
 	lite := registry.BoolValue(caps.ResponsesLite)
-	instructions, inputItems, err := toResponsesInput(req.Messages, registry.StringValue(caps.ImageDetail))
+	instructions, inputItems, err := toResponsesInput(req.Messages, registry.StringValue(caps.ImageDetail), caps.ReplaysReasoningText())
 	if err != nil {
 		return nil, err
 	}
@@ -107,12 +107,9 @@ func buildBody(req llm.Request, res registry.Resolved, stream bool) (out map[str
 	if reasoning != nil {
 		body["reasoning"] = reasoning
 	}
-	// The include rides an {effort: none} object too. It is inert when the
-	// model honors the off, and it is the only thing that keeps replay
-	// working on a gateway that reasons anyway — which is not knowable in
-	// advance, so we send it rather than guess, as tool_choice does. It also
-	// rides a request whose effort the ladder cannot vouch for: no level is
-	// sent, but the model still reasons, so replay must keep working.
+	// Request encrypted continuation even when a gateway might honor
+	// {effort: none} or its ladder cannot vouch for the requested level.
+	// A model that still reasons can return its encrypted item for replay.
 	if reasoning != nil || reasoningRequested(req, caps) {
 		body["include"] = appendUnique(slices.Clone(req.Include), encryptedReasoning)
 	} else if len(req.Include) > 0 {
