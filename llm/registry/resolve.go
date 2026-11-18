@@ -431,6 +431,9 @@ func (r *Registry) resolveInstanceMode(name string, presence bool) (Resolved, er
 		// the model-less probe, keeps the provider shape: it signs its
 		// own request, not the launch's.
 		if row, ok := r.resolveDefaultRow(rec, resolveTransport); ok {
+			gateProviderReplay(&caps, prov, func() bool {
+				return row.Protocol == proto && sameRequestEndpoints(row.Transport, transport)
+			})
 			transport, hostDerived, warnings = row.Transport, row.HostDerivedByRule, row.Warnings
 			proto = row.Protocol
 		}
@@ -673,6 +676,15 @@ func (r *Registry) ResolveInstanceModelFacts(instance, model string) (Resolved, 
 func webSearchExplicit(prov map[string]string) bool {
 	tag := prov["WebSearch"]
 	return tag == LayerConfig+"/provider" || tag == LayerConfig+"/row"
+}
+
+// A provider-wide replay grant describes that connection's own protocol and
+// endpoints. Only build its comparison transport when that grant is in use.
+func gateProviderReplay(caps *Caps, prov map[string]string, sameRoute func() bool) {
+	if BoolValue(caps.ReplayReasoningText) && prov["ReplayReasoningText"] == LayerConfig+"/provider" && !sameRoute() {
+		caps.ReplayReasoningText = new(false)
+		prov["ReplayReasoningText"] = "gate/provider-endpoint"
+	}
 }
 
 // gateEndpointCaps limits curated reasoning replay to the endpoint and
@@ -953,6 +965,16 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 		// judgment) is what keeps that answer from drifting.
 		return Resolved{Instance: rec.name, Protocol: rowProto, Transport: transport, HostDerivedByRule: hostDerived, Model: row, Warnings: warnings}, nil
 	}
+	gateProviderReplay(&caps, prov, func() bool {
+		if crossProto {
+			return false
+		}
+		if row.Transport == nil {
+			return true
+		}
+		provider, _, _ := r.buildTransport(rec, Model{}, rec.head.Protocol)
+		return sameRequestEndpoints(transport, provider)
+	})
 	if w := r.gateEndpointCaps(&caps, prov, rec, transport, rowProto, canonicalRowID, ref.Model, altID); w != "" {
 		warnings = append(warnings, w)
 	}

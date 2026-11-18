@@ -535,9 +535,11 @@ use Anthropic thinking blocks. [DeepSeek](https://api-docs.deepseek.com/guides/t
 [Moonshot](https://platform.kimi.ai/docs/guide/use-thinking-models),
 [MiniMax](https://platform.minimax.io/docs/guides/text-m3-function-call).
 
-Changing the endpoint or protocol requires a replay declaration for that
-route. For example, DeepSeek also documents plain reasoning input on its
-Responses API for `deepseek-flash` and `deepseek-v4-pro`. An instance with
+An instance-wide replay setting covers models using that instance's
+endpoint and protocol. A model that changes either can opt in through its
+own exact or matching glob row. For example, DeepSeek also documents plain
+reasoning input on its Responses API for `deepseek-flash` and
+`deepseek-v4-pro`. An instance with
 `base = "deepseek"` and `protocol = "openai-responses"` can set
 `replay_reasoning_text = true` in each of those model rows.
 [DeepSeek Responses input items](https://api-docs.deepseek.com/guides/responses_api/#input-items).

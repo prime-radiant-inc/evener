@@ -1592,6 +1592,36 @@ base_url = "https://gateway.example/v1"
 [providers.gateway.models."kimi-k3"]
 alias_of = "moonshotai/kimi-k2.6"
 reasoning_field = "reasoning_content"
+
+[providers.configured]
+base = "openai-compatible"
+base_url = "https://gateway.example/v1"
+replay_reasoning_text = true
+default_model = "alias"
+[providers.configured.models.same]
+base_url = "https://gateway.example/v1/"
+[providers.configured.models.other]
+base_url = "https://other.example/v1"
+[providers.configured.models.alias]
+alias_of = "other"
+[providers.configured.models.responses]
+protocol = "openai-responses"
+[providers.configured.models.streamed]
+stream_endpoint = "/other/stream"
+[providers.configured.models."verified-*"]
+replay_reasoning_text = true
+[providers.configured.models."verified-responses"]
+protocol = "openai-responses"
+[providers.configured.models.verified]
+stream_endpoint = "/other/stream"
+replay_reasoning_text = true
+
+[providers.query]
+base = "openai-compatible"
+base_url = "https://gateway.example/api?route="
+replay_reasoning_text = true
+[providers.query.models.same]
+models_endpoint = "/catalog"
 `)
 	for _, tc := range []struct {
 		ref    string
@@ -1605,6 +1635,15 @@ reasoning_field = "reasoning_content"
 		{"moonshotai/kimi-k3", false},
 		{"moonshotai/kimi-k2.6", true},
 		{"gateway/kimi-k3", false},
+		{"configured/ordinary", true},
+		{"configured/same", true},
+		{"configured/other", false},
+		{"configured/alias", false},
+		{"configured/responses", false},
+		{"configured/streamed", false},
+		{"configured/verified-responses", true},
+		{"configured/verified", true},
+		{"query/same", true},
 	} {
 		res := mustResolve(t, r, tc.ref)
 		if got := res.Caps.ReplaysReasoningText(); got != tc.replay {
@@ -1613,6 +1652,9 @@ reasoning_field = "reasoning_content"
 	}
 	if res, err := r.ResolveInstance("proxy"); err != nil || res.Caps.ReplaysReasoningText() {
 		t.Errorf("proxy instance replay = %v, err = %v", res.Caps.ReplaysReasoningText(), err)
+	}
+	if res, err := r.ResolveInstancePresence("configured"); err != nil || res.Caps.ReplaysReasoningText() {
+		t.Errorf("redirected default model presence replay = %v, err = %v", res.Caps.ReplaysReasoningText(), err)
 	}
 }
 

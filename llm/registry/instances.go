@@ -245,11 +245,22 @@ func (r *Registry) firstPartyEndpoint(rec *record, transport Transport, proto, r
 		expanded, _ := expandTemplate(*field, lookup)
 		*field = expanded
 	}
-	matches = sameEndpointURL(transport.BaseURL, canonical.BaseURL) &&
-		transport.Endpoint == canonical.Endpoint &&
-		transport.StreamEndpoint == canonical.StreamEndpoint &&
-		transport.CountTokensEndpoint == canonical.CountTokensEndpoint
+	matches = sameEndpointURL(transport.BaseURL, canonical.BaseURL) && sameRequestPaths(transport, canonical)
 	return matches, cmp.Or(row.Protocol, base.head.Protocol)
+}
+
+// An explicitly configured gateway may route the appended endpoint through a
+// query. Its own identical base is valid even when it could never be canonical
+// for a bundled vendor.
+func sameRequestEndpoints(a, b Transport) bool {
+	equalBase := strings.TrimRight(a.BaseURL, "/") == strings.TrimRight(b.BaseURL, "/")
+	return (equalBase || sameEndpointURL(a.BaseURL, b.BaseURL)) && sameRequestPaths(a, b)
+}
+
+// Model listing is a bodyless GET and cannot receive reasoning history.
+func sameRequestPaths(a, b Transport) bool {
+	return a.Endpoint == b.Endpoint && a.StreamEndpoint == b.StreamEndpoint &&
+		a.CountTokensEndpoint == b.CountTokensEndpoint
 }
 
 // canonicalRow replays the provider's curated layers alone into the row the
