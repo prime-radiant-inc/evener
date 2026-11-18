@@ -62,7 +62,7 @@ type Message struct {
 	Content    []ContentPart `json:"content"`
 	Name       string        `json:"name,omitempty"`
 	ToolCallID string        `json:"tool_call_id,omitempty"`
-	// ReasoningEndpoint is the serving URL recorded for this assistant turn.
+	// ReasoningEndpoint binds native history to the recorded serving origin.
 	// The transcript owns its provenance. It is never a provider message field.
 	ReasoningEndpoint string `json:"-"`
 }
@@ -885,6 +885,9 @@ type Response struct {
 	Raw       map[string]any `json:"raw,omitempty"`
 	Warnings  []Warning      `json:"warnings,omitempty"`
 	RateLimit *RateLimitInfo `json:"rate_limit,omitempty"`
+	// ServingOrigin is transport-owned evidence for native history replay.
+	// It is separate from the provider's raw response and printable endpoint.
+	ServingOrigin string `json:"-"`
 	// ContentAuthoritative tells a stream accumulator to use Message.Content
 	// even when empty. Set it when the terminal explicitly selects the output.
 	// A metadata-only terminal leaves it false so streamed deltas can supply content.

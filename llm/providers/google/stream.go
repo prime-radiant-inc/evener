@@ -18,7 +18,7 @@ import (
 // the final accumulated Response when the model signals a finish reason. It
 // owns closing the response body and the ChanStream. provider stamps every
 // Response/error the decoder produces; endpointURL and material back
-// llm.StampEndpointURL's fallback and credential-sanitization inputs.
+// llm.StampHTTPResponseEndpoint's fallback and credential-sanitization inputs.
 func decodeGenerateContentStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, provider, endpointURL string, material llm.APILogCredentialMaterial, attempt *transport.APIAttemptCapture) {
 	defer func() {
 		_ = resp.Body.Close()
@@ -200,7 +200,7 @@ func decodeGenerateContentStream(sctx context.Context, cancel context.CancelFunc
 							Usage:    usage,
 							Raw:      raw,
 						}
-						llm.StampEndpointURL(&r, llm.FinalResponseEndpointURL(resp, endpointURL), material)
+						llm.StampHTTPResponseEndpoint(&r, resp, endpointURL, material)
 						if len(r.ToolCalls()) > 0 {
 							r.Finish = llm.FinishReason{Reason: "tool_calls", Raw: r.Finish.Raw}
 						}

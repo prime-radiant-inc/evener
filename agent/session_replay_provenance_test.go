@@ -564,4 +564,41 @@ func TestExpandHistory_StoredTranscriptUntouched(t *testing.T) {
 			}
 		}
 	})
+	t.Run("serving identity with scrubbed URL", func(t *testing.T) {
+		const configured, issuer = "https://configured.invalid", "https://serving.invalid"
+		row := registry.Resolved{Instance: "anthropic", ModelID: "claude-opus-4-6", Protocol: registry.ProtocolAnthropic}
+		row.Transport.BaseURL = configured
+		scope := replayScope{Instance: row.Instance, Model: row.ModelID, Protocol: row.Protocol, destination: &row, reasoningRoute: row.ReasoningReplayRoute()}
+		s := newSession(t, withStateDir(t.TempDir()))
+		for _, endpoint := range []string{issuer + "/fixture-31/messages", "invalid", ""} {
+			resp := llm.Response{Message: turns[0].Message, Model: row.ModelID, Provider: row.Instance}
+			if endpoint != "" {
+				llm.StampEndpointURL(&resp, endpoint, llm.NewAPILogCredentialMaterial(nil, nil, "fixture-31"))
+			}
+			if err := s.appendAssistantTurn(resp, completeAttemptMetadata(ModelAttemptMetadata{
+				RequestModel: row.ModelID, Protocol: row.Protocol, ReasoningRoute: scope.reasoningRoute,
+			}, resp)); err != nil {
+				t.Fatal(err)
+			}
+		}
+		live := sessionHistory(s)
+		s.Close()
+		for _, history := range [][]schema.Turn{live, transcriptTurns(t, s.TranscriptPath())} {
+			if len(history) != 3 || history[0].ResponseEndpoint != "" {
+				t.Fatalf("got %d assistant turns, expected a scrubbed endpoint on the first", len(history))
+			}
+			request := llm.Request{Messages: expandHistory(history, scope)}
+			for _, recipient := range []string{issuer, configured, "https://other.invalid"} {
+				projected, _ := request.ForReasoningEndpoint(recipient, row)
+				for i, message := range projected.Messages {
+					// The last turn has the legacy shape. Only it can use the
+					// configured endpoint as a best-effort issuer.
+					want := i == 0 && recipient == issuer || i == 2 && recipient == configured
+					if hasContentKind([]llm.Message{message}, llm.ContentThinking) != want || message.Text() != turns[0].Message.Text() {
+						t.Errorf("recipient %s selected the wrong conversation state for turn %d", recipient, i)
+					}
+				}
+			}
+		}
+	})
 }

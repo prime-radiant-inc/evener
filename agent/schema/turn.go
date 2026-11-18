@@ -523,6 +523,7 @@ type Turn struct {
 	ResponseReasoningRoute          string `json:"response_reasoning_route,omitempty"`
 	ResponseRequestFingerprint      string `json:"response_request_fingerprint,omitempty"`
 	ResponseRequestModel            string `json:"response_request_model,omitempty"`
+	ResponseServingOrigin           string `json:"response_serving_origin,omitempty"`
 	ResponseStorageScopeFingerprint string `json:"response_storage_scope_fingerprint,omitempty"`
 	// ResponseWireModel is the outbound model selector, including a model
 	// supplied by a request-body constant. The requested alias can differ.
@@ -621,7 +622,7 @@ func (t *Turn) DropsReasoningForTarget(res *registry.Resolved, route string) boo
 	case registry.ProtocolGoogle:
 		return !t.matchesReasoningProtocol(res.Protocol)
 	case registry.ProtocolOpenAIChat:
-		return !t.matchesReasoningRoute(res, route)
+		return !t.matchesReasoningProtocol(res.Protocol) || !t.matchesReasoningRoute(res, route)
 	case registry.ProtocolOpenAIResponses:
 		return !t.matchesReasoningRoute(res, route) || (t.ResponseProvider != "" && t.ResponseProvider != res.Instance) || !t.matchesReasoningProtocol(res.Protocol)
 	default:
@@ -632,6 +633,15 @@ func (t *Turn) DropsReasoningForTarget(res *registry.Resolved, route string) boo
 // HasRecordedEndpoint reports whether the turn identifies the serving route.
 func (t *Turn) HasRecordedEndpoint() bool {
 	return t.ResponseReasoningRoute != "" || t.ResponseEndpoint != ""
+}
+
+// ReasoningEndpoint returns the recorded issuer, including an explicitly
+// unverified HTTP origin. Older transcripts may carry only a serving URL.
+func (t *Turn) ReasoningEndpoint() string {
+	if t.ResponseServingOrigin != "" {
+		return t.ResponseServingOrigin
+	}
+	return t.ResponseEndpoint
 }
 
 func (t *Turn) matchesReasoningRoute(res *registry.Resolved, route string) bool {

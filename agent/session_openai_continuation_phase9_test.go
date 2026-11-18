@@ -95,13 +95,18 @@ func TestSession_OpenAIResponsesContinuationPhase9RetryThroughRealAnchorSelectio
 	t.Run("configured route retains full history for its serving origins", func(t *testing.T) {
 		anchor := phase9MatchingAnchor("resp_serving_origin")
 		anchor.ResponseReasoningRoute = sess.currentProfile().ReasoningReplayRoute()
-		anchor.ResponseEndpoint = "https://serving.example.invalid/v1/responses"
-		req := runPhase9GateSession(t, []schema.Turn{
+		const servingEndpoint = "https://serving.example.invalid/v1/responses"
+		var issuer llm.Response
+		llm.StampEndpointURL(&issuer, servingEndpoint, llm.APILogCredentialMaterial{})
+		anchor.ResponseServingOrigin = issuer.ServingOrigin
+		anchor.ResponseEndpoint = ""
+		history := []schema.Turn{
 			schema.NewTurn(schema.TurnUserInput, llm.User("question-31")),
 			anchor,
-		})
+		}
+		req := runPhase9GateSession(t, history)
 		target := sess.currentProfile().Resolved()
-		same, changed := req.ForReasoningEndpoint(anchor.ResponseEndpoint, target)
+		same, changed := req.ForReasoningEndpoint(servingEndpoint, target)
 		if changed || same.PreviousResponseID != anchor.ResponseID || requestMessagesContainText(same.Messages, "question-31") {
 			t.Fatal("issuing origin lost its delta")
 		}
@@ -110,6 +115,9 @@ func TestSession_OpenAIResponsesContinuationPhase9RetryThroughRealAnchorSelectio
 			!requestMessagesContainText(full.Messages, anchor.Message.Text()) {
 			t.Fatal("other serving origin lost the conversation represented by the anchor")
 		}
+		history[1].ResponseServingOrigin = llm.UnknownServingOrigin
+		history[1].ResponseEndpoint = target.RequestURL(target.Transport.Endpoint)
+		assertPhase9GateUsedFullHistory(t, runPhase9GateSession(t, history))
 	})
 }
 

@@ -35,6 +35,7 @@ func TestDelegateForkContext_OptInHistory(t *testing.T) {
 			completed.ResponseWireModel = "wire-parent-17"
 			completed.ResponseReasoningRoute = "route-parent-28"
 			completed.ResponseEndpoint = "https://parent.example.test/v1/responses"
+			completed.ResponseServingOrigin = llm.UnknownServingOrigin
 			completed.Usage = llm.Usage{TotalTokens: 999}
 			root.recordTurn(completed, completed)
 			root.appendTurn(schema.TurnTool, llm.ToolResult("completed", "parent-result-sentinel", true))
@@ -113,7 +114,7 @@ func TestDelegateForkContext_OptInHistory(t *testing.T) {
 					if entry.Turn.ResponseReasoningRoute != completed.ResponseReasoningRoute {
 						t.Error("forked history lost the parent model's request route")
 					}
-					if entry.Turn.ResponseEndpoint != completed.ResponseEndpoint {
+					if entry.Turn.ResponseEndpoint != completed.ResponseEndpoint || entry.Turn.ReasoningEndpoint() != completed.ReasoningEndpoint() {
 						t.Error("forked history lost the endpoint that issued the parent's reasoning")
 					}
 				}

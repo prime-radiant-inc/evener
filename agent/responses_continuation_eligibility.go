@@ -201,9 +201,10 @@ func latestContextBoundaryIndex(history []schema.Turn) int {
 }
 
 func turnHasResponsesContinuationMetadata(turn schema.Turn) bool {
+	endpoint := strings.TrimSpace(turn.ReasoningEndpoint())
 	return strings.TrimSpace(turn.ResponseID) != "" &&
 		strings.TrimSpace(turn.ResponseIDHash) != "" &&
-		strings.TrimSpace(turn.ResponseEndpoint) != "" &&
+		endpoint != "" && endpoint != llm.UnknownServingOrigin &&
 		strings.TrimSpace(turn.ResponseStorageScopeFingerprint) != "" &&
 		strings.TrimSpace(turn.ResponseRequestFingerprint) != "" &&
 		strings.TrimSpace(turn.ResponseContextMarker) == responseContextMarkerV1

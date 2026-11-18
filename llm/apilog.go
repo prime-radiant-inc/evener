@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"sync"
@@ -583,17 +584,32 @@ func (l *APILogger) Close() error {
 	return firstErr
 }
 
-// StampEndpointURL records a credential-free dialed endpoint on a response.
+// StampEndpointURL binds native response state to its HTTP origin even when
+// the endpoint URL contains credential evidence and cannot be logged.
 func StampEndpointURL(resp *Response, endpoint string, material APILogCredentialMaterial) {
-	if resp == nil || endpoint == "" {
+	if resp == nil {
 		return
+	}
+	resp.ServingOrigin = servingOriginDigest(endpoint)
+	if resp.ServingOrigin == "" {
+		resp.ServingOrigin = UnknownServingOrigin
 	}
 	endpoint = SanitizeEndpointURL(endpoint)
 	if endpoint == "" || containsCredentialEvidence(endpoint, material) {
+		delete(resp.Raw, "endpoint_url")
 		return
 	}
 	if resp.Raw == nil {
 		resp.Raw = map[string]any{}
 	}
 	resp.Raw["endpoint_url"] = endpoint
+}
+
+// StampHTTPResponseEndpoint requires final request evidence to identify the
+// issuer. The constructed URL remains useful for logging synthetic responses.
+func StampHTTPResponseEndpoint(out *Response, resp *http.Response, fallback string, material APILogCredentialMaterial) {
+	StampEndpointURL(out, FinalResponseEndpointURL(resp, fallback), material)
+	if out != nil && (resp == nil || resp.Request == nil || resp.Request.URL == nil) {
+		out.ServingOrigin = UnknownServingOrigin
+	}
 }

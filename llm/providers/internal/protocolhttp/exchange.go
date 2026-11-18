@@ -22,7 +22,8 @@ type Result struct {
 	Body []byte
 	// Raw is Body decoded as a JSON object, nil when it is not one.
 	Raw map[string]any
-	// EndpointURL is the final URL after redirects, for llm.StampEndpointURL.
+	// EndpointURL is the final URL after redirects, or the constructed URL
+	// when the response has no request evidence.
 	EndpointURL  string
 	Material     llm.APILogCredentialMaterial
 	PrunedFields []string
@@ -102,6 +103,7 @@ func Do(parentCtx context.Context, c *Call, finish func(r *Result) (*llm.Respons
 	}
 	if response != nil {
 		response.Provider = c.Res.Instance
+		llm.StampHTTPResponseEndpoint(response, resp, c.URL, p.material)
 	}
 	return nil
 }
@@ -121,7 +123,6 @@ func Complete(ctx context.Context, c *Call, decode func(r *Result) (llm.Response
 			return nil, err
 		}
 		out = resp
-		llm.StampEndpointURL(&out, r.EndpointURL, r.Material)
 		out.RateLimit = llm.ParseRateLimitHeaders(r.Header)
 		return &out, nil
 	})

@@ -57,6 +57,7 @@ func delegateContextEntries(parent []transcript.Entry) []transcript.Entry {
 			ResponseWireModel:      t.ResponseWireModel,
 			ResponseReasoningRoute: t.ResponseReasoningRoute,
 			ResponseEndpoint:       llm.SanitizeEndpointURL(t.ResponseEndpoint),
+			ResponseServingOrigin:  t.ResponseServingOrigin,
 			ResponseProtocol:       t.ResponseProtocol,
 		}
 		position[uint64(i)] = len(out)

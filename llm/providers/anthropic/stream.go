@@ -18,7 +18,7 @@ import (
 // goroutine: it translates each event into llm stream events and emits the
 // final accumulated Response on message_stop. It owns closing the response
 // body and the ChanStream. provider stamps every Response/error the decoder
-// produces; endpointURL and material back llm.StampEndpointURL's fallback
+// produces; endpointURL and material back llm.StampHTTPResponseEndpoint's fallback
 // and credential-sanitization inputs.
 func decodeMessagesStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, provider, endpointURL string, material llm.APILogCredentialMaterial, attempt *transport.APIAttemptCapture) {
 	defer func() {
@@ -400,7 +400,7 @@ func decodeMessagesStream(sctx context.Context, cancel context.CancelFunc, resp 
 				if refusalWarn != nil {
 					r.Warnings = append(r.Warnings, *refusalWarn)
 				}
-				llm.StampEndpointURL(&r, llm.FinalResponseEndpointURL(resp, endpointURL), material)
+				llm.StampHTTPResponseEndpoint(&r, resp, endpointURL, material)
 				// See the matching comment in fromAnthropicResponse (response.go):
 				// only fall back to "tool_calls" when message_delta's stop_reason
 				// was missing/empty, never when it already reported something more

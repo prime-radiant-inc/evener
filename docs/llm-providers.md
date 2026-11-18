@@ -516,8 +516,9 @@ transcript. A saved endpoint still identifies the serving host and path
 even when the turn predates route digests. Moving that route keeps its
 reasoning at the original endpoint. The visible conversation carries over.
 When a gateway redirects a request, each serving origin receives the native
-reasoning it issued. Returning to the same origin preserves those bytes
-through a cold resume. A Responses continuation handle also belongs to its
+reasoning it issued. Evener saves a digest of that origin independently of
+the display URL. Returning there preserves those bytes through a cold
+resume. A Responses continuation handle also belongs to its
 issuing origin. Another origin receives the full visible conversation.
 An Anthropic fallback keeps its own signed thinking through tool calls and
 cold resumes. If a tool continuation moves to a different instance, model,
@@ -559,7 +560,7 @@ call keeps its literal path and file contents, including XML.
   field. Without a declared field, the adapter uses the recognized incoming
   field or defaults to `reasoning_content`. An ordinary chat session omits
   plain reasoning until its row opts in. The existing `thinking_as_text`
-  setting takes precedence and merges reasoning into assistant-visible text
+  setting takes precedence and merges Chat reasoning into assistant-visible text
   across Chat model and endpoint switches, including when a Responses
   primary falls back to Chat. On a different endpoint, only
   unsigned display text or a separately emitted scalar can enter assistant

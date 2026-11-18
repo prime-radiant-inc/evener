@@ -300,6 +300,9 @@ func copyResponseMetadata(dst *Response, src *Response) {
 	if src.Raw != nil {
 		dst.Raw = src.Raw
 	}
+	if src.ServingOrigin != "" {
+		dst.ServingOrigin = src.ServingOrigin
+	}
 	if src.Finish.Reason != "" || src.Finish.Raw != "" {
 		dst.Finish = src.Finish
 	}

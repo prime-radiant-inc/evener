@@ -267,6 +267,7 @@ func TestCoreCompleteWithoutAPIAttemptPreservesRedirectClientBehavior(t *testing
 
 func TestCoreCompleteWireCaptureUsesActualBodyReadAfterBodyPreservingRedirect(t *testing.T) {
 	t.Run("issuer-bound history", testRedirectedReasoningHistory)
+	t.Run("scrubbed serving origin", testScrubbedServingOrigin)
 	// Not parallel: useWireHTTPClient swaps the default protocols' HTTP client seam.
 	for _, provider := range wireProviders() {
 		for _, status := range []int{http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
@@ -336,6 +337,68 @@ func TestCoreCompleteWireCaptureUsesActualBodyReadAfterBodyPreservingRedirect(t 
 				}
 				if !bytes.Equal(secondRequest.body, replacementBody) {
 					t.Fatalf("server redirect body = %q, want replacement %q", secondRequest.body, replacementBody)
+				}
+			})
+		}
+	}
+}
+
+func testScrubbedServingOrigin(t *testing.T) {
+	const serving = "https://serving.invalid"
+	var reference llm.Response
+	llm.StampEndpointURL(&reference, serving, llm.APILogCredentialMaterial{})
+	for _, provider := range wireProviders() {
+		for _, streamed := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/stream=%t", provider.name, streamed), func(t *testing.T) {
+				body, contentType := provider.completeBody, "application/json"
+				if streamed {
+					body, contentType = provider.streamBody, "text/event-stream"
+				}
+				for _, verified := range []bool{true, false} {
+					client := &http.Client{Transport: transporttest.RoundTripFunc(func(r *http.Request) (*http.Response, error) {
+						_ = r.Body.Close()
+						response := &http.Response{StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {contentType}}, Body: io.NopCloser(strings.NewReader(body))}
+						if verified {
+							response.Request = r
+						}
+						return response, nil
+					})}
+					// The wire fixture uses this public placeholder as its API key.
+					wire := provider.wireClient(t, serving+"/test-key", client, nil)
+					req := providerRequest(provider.name, "test-model")
+					var response llm.Response
+					if streamed {
+						stream, err := wire.Stream(t.Context(), req)
+						if err != nil {
+							t.Fatal(err)
+						}
+						acc := llm.NewStreamAccumulator()
+						for event := range stream.Events() {
+							if event.Err != nil {
+								t.Fatal(event.Err)
+							}
+							acc.Process(event)
+						}
+						_ = stream.Close()
+						final := acc.Response()
+						if final == nil {
+							t.Fatal("stream did not settle")
+						}
+						response = *final
+					} else {
+						var err error
+						response, err = wire.Complete(t.Context(), req)
+						if err != nil {
+							t.Fatal(err)
+						}
+					}
+					want := llm.UnknownServingOrigin
+					if verified {
+						want = reference.ServingOrigin
+					}
+					if _, logged := response.Raw["endpoint_url"]; logged || response.ServingOrigin == "" || response.ServingOrigin != want {
+						t.Errorf("verified=%t, mismatched serving or log evidence", verified)
+					}
 				}
 			})
 		}

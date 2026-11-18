@@ -1,6 +1,8 @@
 package llm
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"net/http"
 	"net/url"
 	"slices"
@@ -9,18 +11,30 @@ import (
 	"primeradiant.com/evener/llm/registry"
 )
 
+// UnknownServingOrigin marks an HTTP response whose serving origin could not
+// be verified. No HTTP recipient can claim its native history.
+const UnknownServingOrigin = "unknown"
+
+// ReasoningEndpoint returns transport evidence or the recorded legacy URL.
+func (r Response) ReasoningEndpoint() string {
+	if r.ServingOrigin != "" {
+		return r.ServingOrigin
+	}
+	endpoint, _ := r.Raw["endpoint_url"].(string)
+	return SanitizeEndpointURL(endpoint)
+}
+
 // HasReasoningEndpoints reports whether the HTTP recipient affects this request.
 func (r Request) HasReasoningEndpoints() bool {
 	return (r.Continuation != nil && r.Continuation.AnchorEndpoint != "") ||
 		slices.ContainsFunc(r.Messages, func(m Message) bool { return m.ReasoningEndpoint != "" })
 }
 
-type httpOrigin struct{ scheme, host, port string }
-
-func endpointOrigin(endpoint string) httpOrigin {
+// servingOriginDigest identifies an HTTP origin without retaining URL text.
+func servingOriginDigest(endpoint string) string {
 	u, err := url.Parse(endpoint)
 	if err != nil || u.Hostname() == "" {
-		return httpOrigin{}
+		return ""
 	}
 	port := u.Port()
 	switch u.Scheme {
@@ -33,16 +47,25 @@ func endpointOrigin(endpoint string) httpOrigin {
 			port = "80"
 		}
 	default:
-		return httpOrigin{}
+		return ""
 	}
-	return httpOrigin{u.Scheme, strings.ToLower(u.Hostname()), port}
+	sum := sha256.Sum256([]byte(u.Scheme + "\x00" + strings.ToLower(u.Hostname()) + "\x00" + port))
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
+
+// reasoningOrigin accepts either an opaque transport stamp or a URL.
+func reasoningOrigin(endpoint string) string {
+	if len(endpoint) == len("sha256:")+2*sha256.Size && strings.HasPrefix(endpoint, "sha256:") {
+		return endpoint
+	}
+	return servingOriginDigest(endpoint)
 }
 
 // HistoryModeForEndpoint describes the history a receiving origin can consume.
 func (r Request) HistoryModeForEndpoint(endpoint string) HistoryMode {
 	if r.Continuation != nil && r.Continuation.AnchorEndpoint != "" {
-		to := endpointOrigin(endpoint)
-		if to.host == "" || to != endpointOrigin(r.Continuation.AnchorEndpoint) {
+		to := reasoningOrigin(endpoint)
+		if to == "" || to != reasoningOrigin(r.Continuation.AnchorEndpoint) {
 			return HistoryModeFullHistoryFallback
 		}
 	}
@@ -51,15 +74,14 @@ func (r Request) HistoryModeForEndpoint(endpoint string) HistoryMode {
 
 // ForReasoningEndpoint projects the original request for one HTTP recipient.
 func (r Request) ForReasoningEndpoint(endpoint string, res registry.Resolved) (Request, bool) {
-	to := endpointOrigin(endpoint)
-	// Consecutive turns usually share a serving URL.
-	var last string
-	var origin httpOrigin
+	to := reasoningOrigin(endpoint)
+	// Consecutive turns usually share a serving origin.
+	var last, origin string
 	owns := func(source string) bool {
 		if last != source {
-			last, origin = source, endpointOrigin(source)
+			last, origin = source, reasoningOrigin(source)
 		}
-		return to.host != "" && to == origin
+		return to != "" && to == origin
 	}
 	changed := false
 	if mode := r.HistoryModeForEndpoint(endpoint); mode != r.HistoryMode {
@@ -94,7 +116,7 @@ func carriesNativeReasoning(p ContentPart) bool {
 		(p.Kind == ContentToolCall && p.ToolCall != nil && p.ToolCall.ThoughtSignature != "")
 }
 
-// BindReasoningEndpoint ties surviving native state to the URL that issued it.
+// BindReasoningEndpoint ties surviving native state to the origin that issued it.
 func (m Message) BindReasoningEndpoint(endpoint string) Message {
 	if endpoint != "" && slices.ContainsFunc(m.Content, carriesNativeReasoning) {
 		m.ReasoningEndpoint = endpoint

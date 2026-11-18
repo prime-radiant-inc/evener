@@ -69,10 +69,15 @@ func TestS2Cov_RecordResponseUsage(t *testing.T) {
 			for i, endpoint := range []string{
 				"https://issuer.example.invalid/another/path",
 				other,
+				other,
 				issuer,
 			} {
 				answer := llm.Response{Usage: llm.Usage{InputTokens: billed}}
 				llm.StampEndpointURL(&answer, endpoint, llm.APILogCredentialMaterial{})
+				if i == 2 {
+					// Serving provenance survives omission of the display URL.
+					delete(answer.Raw, "endpoint_url")
+				}
 				s.recordResponseUsage(sessionModelResponse{Response: answer, history: measured}, req, s.currentProfile())
 				wantTokens, wantPressure := billed, billed
 				if endpoint == other && !tc.foreignKeepsHistory {

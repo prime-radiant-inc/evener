@@ -816,6 +816,15 @@ func TestStampEndpointURL(t *testing.T) {
 	if _, ok := credentialBearing.Raw["endpoint_url"]; ok {
 		t.Fatalf("credential-bearing endpoint persisted in response metadata: %+v", credentialBearing.Raw)
 	}
+	if credentialBearing.ServingOrigin == "" || credentialBearing.ServingOrigin == UnknownServingOrigin ||
+		credentialBearing.ServingOrigin != resp.ServingOrigin {
+		t.Error("a scrubbed path lost the serving identity of the same HTTP origin")
+	}
+	other := &Response{}
+	StampEndpointURL(other, "https://other.invalid/responses", APILogCredentialMaterial{})
+	if other.ServingOrigin == credentialBearing.ServingOrigin || invalid.ServingOrigin != UnknownServingOrigin {
+		t.Error("distinct or unverifiable HTTP origins have indistinguishable provenance")
+	}
 }
 
 func TestWithAPILogContextAttributesSession(t *testing.T) {

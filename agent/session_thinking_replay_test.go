@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -893,6 +894,46 @@ func TestSessionScopesReasoningTextToTheIssuingModel(t *testing.T) {
 
 func TestChatThinkingAsTextAcrossModels(t *testing.T) {
 	t.Parallel()
+	t.Run("protocols sharing a gateway URL", func(t *testing.T) {
+		row := replayGateway("gw", registry.ProtocolOpenAIChat).Resolved()
+		row.Caps.ThinkingAsText = new(true)
+		row.Transport.BaseURL = "https://gateway.example.invalid"
+		row.Transport.Endpoint, row.Transport.StreamEndpoint = "/generate", "/generate"
+		scope := replayScope{Instance: row.Instance, Model: row.ModelID, Protocol: row.Protocol, InFlightFrom: 2}
+		scope.setDestination(provider.FromResolved(row, nil))
+		call := llm.ToolCallData{ID: "call_4", Name: "sum", Arguments: json.RawMessage(`{"a":2,"b":2}`)}
+		result := schema.NewTurn(schema.TurnTool, llm.ToolResult(call.ID, 4, false))
+		for _, tc := range []struct {
+			name, protocol string
+			thinking       llm.ThinkingData
+			wantDisplay    string
+		}{
+			{"Responses turn", registry.ProtocolOpenAIResponses, llm.ThinkingData{Text: "2 + 2"}, ""},
+			{"unstamped Responses item", "", llm.ThinkingData{ID: "rs_4", Text: "2 + 2"}, ""},
+			{"Chat turn", registry.ProtocolOpenAIChat, llm.ThinkingData{Text: "2 + 2"}, "2 + 2"},
+			{"unstamped Chat scalar", "", llm.ThinkingData{Signature: "reasoning_content", Text: "2 + 2"}, "2 + 2"},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				src := row
+				src.Protocol, src.ModelID = tc.protocol, "source-model"
+				turn := schema.NewTurn(schema.TurnAssistant, llm.Assistant("four"))
+				turn.ResponseProvider, turn.ResponseRequestModel, turn.ResponseProtocol = src.Instance, src.ModelID, tc.protocol
+				turn.ResponseReasoningRoute, turn.ResponseEndpoint = src.ReasoningReplayRoute(), src.RequestURL(src.Transport.Endpoint)
+				turn.Message.Content = append(turn.Message.Content, llm.ContentPart{Kind: llm.ContentThinking, Thinking: &tc.thinking}, llm.ContentPart{Kind: llm.ContentToolCall, ToolCall: &call})
+				history := expandHistory([]schema.Turn{turn, result}, scope)
+				if len(history) != 2 || !reflect.DeepEqual(history[1], result.Message) {
+					t.Fatal("the tool exchange lost its result")
+				}
+				prior := llm.Response{Message: history[0]}
+				if prior.Text() != turn.Message.Text() || !reflect.DeepEqual(prior.ToolCalls(), []llm.ToolCallData{call}) {
+					t.Fatal("the model switch changed the assistant answer or its tool call")
+				}
+				if got := prior.ReasoningText(); got != tc.wantDisplay {
+					t.Errorf("selected Chat display = %q, want %q", got, tc.wantDisplay)
+				}
+			})
+		}
+	})
 	t.Run("strict Chat rows", func(t *testing.T) { testChatToolContinuation(t, chatContinuationCase{asText: true}) })
 	t.Run("enrolled Chat rows", func(t *testing.T) { testChatToolContinuation(t, chatContinuationCase{raw: true, asText: true}) })
 	t.Run("scalar mirrors a signed detail", func(t *testing.T) {

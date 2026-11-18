@@ -700,7 +700,7 @@ func (s *Session) applyResponsesContinuationAnchorPlanning(ctx context.Context, 
 			return !llm.RowSeesToolResultMedia(profile.Resolved(), mediaType)
 		})
 		req.Continuation = &llm.ContinuationMetadata{
-			AnchorEndpoint:          candidate.Turn.ResponseEndpoint,
+			AnchorEndpoint:          candidate.Turn.ReasoningEndpoint(),
 			FullHistory:             fullHistory,
 			PreviousResponseIDHash:  candidate.Turn.ResponseIDHash,
 			AnchorTurnIndex:         candidate.TurnIndex,
@@ -1326,7 +1326,7 @@ func (s *Session) recordResponseUsage(modelResp sessionModelResponse, req llm.Re
 	)
 	if record {
 		projectionChanged := false
-		if endpoint, _ := resp.Raw["endpoint_url"].(string); endpoint != "" && req.HasReasoningEndpoints() {
+		if endpoint := resp.ReasoningEndpoint(); endpoint != "" && req.HasReasoningEndpoints() {
 			_, projectionChanged = req.ForReasoningEndpoint(endpoint, resolvedTargetOf(answeringProfile))
 		}
 		s.mu.Lock()
@@ -1868,7 +1868,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		return withPreviews(modelResp), req, attempt, usedProfile, err
 	}
 	attempt = completeAttemptMetadata(attempt, modelResp.Response)
-	if attempt.EndpointURL != "" && req.HistoryModeForEndpoint(attempt.EndpointURL) != req.HistoryMode {
+	if endpoint := modelResp.Response.ReasoningEndpoint(); endpoint != "" && req.HistoryModeForEndpoint(endpoint) != req.HistoryMode {
 		attempt.HistoryMode = llm.HistoryModeFullHistoryFallback
 		attempt.PreviousResponseIDHash, attempt.ConversationIDHash = "", ""
 	}
@@ -2496,7 +2496,7 @@ func (d *rejectedDocumentProjection) omit(tr *llm.ToolResultData) bool {
 // outgoing request while staying untouched in the stored transcript.
 func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message {
 	history := make([]llm.Message, 0, len(historyTurns))
-	// A transcript without serving provenance can replay to its configured origin.
+	// A legacy turn without serving provenance can replay to its configured origin.
 	var configuredEndpoint string
 	if scope.destination != nil {
 		configuredEndpoint = llm.SanitizeEndpointURL(scope.destination.Transport.BaseURL)
@@ -2574,7 +2574,7 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 		case schema.TurnAssistant:
 			endToolRound()
 			message := scope.projectTurnMessage(t, inFlight)
-			message = message.BindReasoningEndpoint(cmp.Or(t.ResponseEndpoint, configuredEndpoint))
+			message = message.BindReasoningEndpoint(cmp.Or(t.ReasoningEndpoint(), configuredEndpoint))
 			history = append(history, message)
 			startToolRound(message)
 		case schema.TurnCheckpoint, schema.TurnSummary:
