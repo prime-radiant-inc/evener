@@ -243,7 +243,7 @@ test("recovery activation keeps newer replacement text selections and attachment
       mentions: [{ kind: "skill", name: "draft", offset: 4 }],
     });
     replacement.attachments.setState({
-      items: [{ marker: 1, name: "new.png", mediaType: "image/png", data: "AQID", pending: false }],
+      items: [{ id: "new-image", marker: 1, name: "new.png", mediaType: "image/png", data: "AQID", pending: false }],
     });
     storage.releaseContinuation();
     await storage.continued;
@@ -255,7 +255,7 @@ test("recovery activation keeps newer replacement text selections and attachment
     expect(replacement.getSnapshot().skillNames).toEqual(["draft"]);
     expect(replacement.getSnapshot().mentions).toEqual([{ kind: "skill", name: "draft", offset: 4 }]);
     expect(replacement.attachments.getState().items).toEqual([
-      { marker: 1, name: "new.png", mediaType: "image/png", data: "AQID", pending: false },
+      { id: "new-image", marker: 1, name: "new.png", mediaType: "image/png", data: "AQID", pending: false },
     ]);
   } finally {
     storage.releaseContinuation();
@@ -343,7 +343,12 @@ test("image encoding survives a literal-marker recovery merge while storage is p
     storage.releaseContinuation();
     await storage.continued;
     await activation;
-    expect(source.attachments.getState().items).toEqual([
+    const pendingItems = source.attachments.getState().items;
+    expect(pendingItems).toHaveLength(1);
+    // The tile was ingested here, so its identity was minted here: asserted
+    // present rather than literal, with every other field exact.
+    expect(pendingItems[0]?.id).toEqual(expect.any(String));
+    expect(pendingItems.map(({ id: _id, ...item }) => item)).toEqual([
       { marker: 2, name: "new.png", mediaType: "image/png", pending: true },
     ]);
     expect(rejections).toEqual([]);
@@ -661,7 +666,9 @@ test.each([false, true])("queuedEditsPreserveDraftAndSendOnce, Stop=%s", async (
   });
   source.persistDraft(draftText);
   source.attachments.setState({
-    items: [{ marker: 1, name: "current.png", mediaType: "image/png", data: "BAUG", pending: false }],
+    items: [
+      { id: "current-image", marker: 1, name: "current.png", mediaType: "image/png", data: "BAUG", pending: false },
+    ],
   });
   mount(fake, source);
   await flushPendingTurnsProjectionForTests();
@@ -944,7 +951,9 @@ test("recorded literal survives Edit beside a current image and Send", async () 
   source.editor.write("current [image 1]", 17);
   source.persistDraft("current [image 1]");
   source.attachments.setState({
-    items: [{ marker: 1, name: "current.png", mediaType: "image/png", data: "AQID", pending: false }],
+    items: [
+      { id: "current-image", marker: 1, name: "current.png", mediaType: "image/png", data: "AQID", pending: false },
+    ],
   });
   mount(fake, source);
   await flushPendingTurnsProjectionForTests();

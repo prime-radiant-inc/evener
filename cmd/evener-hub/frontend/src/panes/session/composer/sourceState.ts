@@ -89,20 +89,21 @@ export interface ComposerSourceSnapshot {
    */
   unbackedImageMarkers: number[];
   /**
-   * Marker numbers of attachments this source was holding when it rebound to
-   * another draft. Their bytes belong to the composition that was replaced, so
-   * they are not sendable under the adopted text - even when that text happens
-   * to spell the same number. Marker numbers are not identity, and the number
-   * is all the surfaced text can offer.
+   * Attachment ids this source was holding when it rebound to another draft.
+   * Their bytes belong to the composition that was replaced, so they are not
+   * sendable under the adopted text. Keyed by attachment identity, never by
+   * marker: the number is a text reference that a merge renumbers, so a
+   * keyed-by-number flag would move to whichever image later took that number.
    */
-  foreignImageMarkers: number[];
+  foreignImageIds: string[];
   /**
-   * Marker numbers a recovery row restored from its own payload whose text
-   * does not spell them. The row carried real bytes and never recorded that
-   * their reference was dropped, so they stay sendable: the text-spelling rule
-   * exists to drop work whose reference is gone, not to second-guess a row.
+   * Attachment ids a recovery row restored from its own payload whose text
+   * does not spell their marker. The row carried real bytes and never recorded
+   * that their reference was dropped, so they stay sendable: the text-spelling
+   * rule exists to drop work whose reference is gone, not to second-guess a
+   * row.
    */
-  restoredImageMarkers: number[];
+  restoredImageIds: string[];
   activeRecoveryId: string | null;
   recoveryActivating: boolean;
   recoveryOperationBusy: boolean;
@@ -233,8 +234,8 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     commandNames: initial.commandNames ?? [],
     mentions: initial.mentions,
     unbackedImageMarkers: [],
-    foreignImageMarkers: [],
-    restoredImageMarkers: [],
+    foreignImageIds: [],
+    restoredImageIds: [],
     activeRecoveryId: null,
     recoveryActivating: false,
     recoveryOperationBusy: false,
@@ -507,26 +508,46 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
   // prose, so they are not adopted; numbers it named whose bytes did not
   // survive are anchors with nothing behind them.
   //
+  // The exemption is recorded against the SETTLED TILE, by id, and read from
+  // that same tile's marker. The merge renumbers a recovered image when the
+  // incoming row collides with the current draft's own numbering (marker 1
+  // becomes 2), so a marker recorded here would describe the row's original
+  // reference while the tile that carries the bytes answers to the new one -
+  // the exemption would miss its own image and a resend would consume the row
+  // after sending only its prose.
+  //
   // The local tags surviving the merge are kept: a reference this composer
   // adopted before the row arrived is still an anchor with no bytes, and
   // replacing the set is what cleared that refusal.
   function adoptRecoveredImageFacts(recovered: RecoveredComposerDraft): void {
-    const restored = new Set(recovered.attachments.map((item) => item.marker));
+    const restoredMarkers = new Set(recovered.attachments.map((item) => item.marker));
     const declared = new Set(recoveryDeclaredMarkers(recovered));
     const spoken = new Set(markerNumbersIn(recovered.text));
     adoptUnbackedImageMarkers([
       ...adoptedUnbackedMarkers,
       ...[...declared]
-        .filter((marker) => spoken.has(marker) && !restored.has(marker))
+        .filter((marker) => spoken.has(marker) && !restoredMarkers.has(marker))
         .sort((left, right) => left - right),
     ]);
     // Bytes the row restored that its own text does not name stay sendable:
     // the row carried them, and a resend consumes the row.
+    //
+    // The ids come from the RECORD's own attachment list, not from matching
+    // numbers against the settled tiles. The merge gives a recovered image a
+    // new number whenever it collides with the current draft's numbering, and
+    // it carries each attachment object through by spreading it, so the id
+    // minted when the record was decoded is the one the settled tile answers
+    // to. Looking up tiles by the row's original number would describe the
+    // draft's own image instead and leave the recovered bytes excluded from
+    // the very send that consumes the row.
     state.setState({
-      restoredImageMarkers: [...restored].filter((marker) => !spoken.has(marker)).sort((left, right) => left - right),
+      restoredImageIds: recovered.attachments
+        .filter((item) => !spoken.has(item.marker))
+        .map((item) => item.id)
+        .sort(),
       // The row owns this composition now, so nothing staged here is foreign
       // to it in the rebind sense.
-      foreignImageMarkers: [],
+      foreignImageIds: [],
     });
   }
 
@@ -998,6 +1019,16 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     // A settled item can back a marker number this source adopted, and a
     // removal can take that backing away again.
     refreshUnbackedImageMarkers();
+    // Both per-image flags belong to one tile for that tile's whole life, so
+    // they retire when it leaves the store. Numbering restarts when the store
+    // empties, and a new image must never inherit the eligibility of the tile
+    // whose number it now bears.
+    const live = new Set(operations.items.map((item) => item.id));
+    const snapshot = state.getState();
+    const foreign = snapshot.foreignImageIds.filter((id) => live.has(id));
+    const restored = snapshot.restoredImageIds.filter((id) => live.has(id));
+    if (foreign.length !== snapshot.foreignImageIds.length || restored.length !== snapshot.restoredImageIds.length)
+      state.setState({ foreignImageIds: foreign, restoredImageIds: restored });
   });
   const unsubscribeDraft = state.subscribe(persistDetachedRecovery);
 
@@ -1039,10 +1070,13 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
         // to adopt, so those bytes belong to a composition that is being
         // replaced. Recorded here because this is the only point that knows
         // it: afterwards a staged tile and an adopted marker look identical.
-        const stagedBeforeAdoption = operations.items.map((item) => item.marker);
+        // Recorded by ATTACHMENT ID: a number-keyed flag would stay behind
+        // when the merge renumbers, and would then apply to the tile that
+        // later took that number instead of the tile it was written for.
+        const stagedBeforeAdoption = operations.items.map((item) => item.id);
         state.setState({
-          foreignImageMarkers: [...new Set([...stagedBeforeAdoption])].sort((left, right) => left - right),
-          restoredImageMarkers: [],
+          foreignImageIds: [...new Set(stagedBeforeAdoption)].sort(),
+          restoredImageIds: [],
         });
         updateText(draft.text);
         updateSkillNames(restoredSkillNames(draft));
@@ -1098,20 +1132,27 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
       if (disposed) return;
       const markers = new Set(operations.items.filter((item) => items.includes(item)).map((item) => item.marker));
       operations.clearSubmitted(markers);
-      // Sent bytes belong to the request that carried them. Retiring the
-      // markers here keeps a later composition from inheriting either an
-      // unbacked tag or an exemption meant for the composition now gone.
-      if (markers.size > 0) {
-        const unbacked = new Set([...adoptedUnbackedMarkers].filter((marker) => !markers.has(marker)));
-        if (unbacked.size !== adoptedUnbackedMarkers.size) adoptedUnbackedMarkers = unbacked;
-        const snapshot = state.getState();
-        const restored = snapshot.restoredImageMarkers.filter((marker) => !markers.has(marker));
-        if (restored.length !== snapshot.restoredImageMarkers.length)
-          state.setState({
-            restoredImageMarkers: restored,
-            unbackedImageMarkers: [...adoptedUnbackedMarkers].sort((left, right) => left - right),
-          });
-      }
+      // Sent bytes belong to the request that carried them. Retiring both the
+      // adopted tags and the per-image exemptions here keeps a later
+      // composition from inheriting facts meant for the composition now gone.
+      // Exemptions retire by identity; the unbacked tags retire by marker
+      // because that is what they describe - a text reference with no bytes.
+      const sentIds = new Set(items.map((item) => item.id));
+      const unbacked = new Set([...adoptedUnbackedMarkers].filter((marker) => !markers.has(marker)));
+      if (unbacked.size !== adoptedUnbackedMarkers.size) adoptedUnbackedMarkers = unbacked;
+      const snapshot = state.getState();
+      const foreign = snapshot.foreignImageIds.filter((id) => !sentIds.has(id));
+      const restored = snapshot.restoredImageIds.filter((id) => !sentIds.has(id));
+      if (
+        foreign.length !== snapshot.foreignImageIds.length ||
+        restored.length !== snapshot.restoredImageIds.length ||
+        unbacked.size !== snapshot.unbackedImageMarkers.length
+      )
+        state.setState({
+          foreignImageIds: foreign,
+          restoredImageIds: restored,
+          unbackedImageMarkers: [...adoptedUnbackedMarkers].sort((left, right) => left - right),
+        });
     },
     dispose() {
       if (disposed) return;

@@ -17,10 +17,16 @@ import {
 import { type SetStateAction, useMemo, useState } from "react";
 import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
+import { createSecureUUID } from "../../../../stores/secureUUID";
 import type { InputAttachment } from "../../../../stores/threads";
 import { reencodeToPng } from "./encodePng";
 
 export interface PendingAttachment {
+  /** This image's identity, stable from the paste that creates it until the
+   * send that consumes it. A marker number is a text reference and the merge
+   * renumbers it, so every per-image fact (foreign, restored) keys on this and
+   * never on `marker`. */
+  id: string;
   marker: number;
   name: string;
   mediaType: string;
@@ -238,7 +244,7 @@ export function createAttachmentOperations(editor: TextEditor, store: Attachment
         const edit = insertMarker(text, start, end, markerText(marker));
         text = edit.value;
         start = end = edit.cursor;
-        const item = { marker, name: file.name, mediaType: "image/png", pending: true };
+        const item = { id: createSecureUUID(), marker, name: file.name, mediaType: "image/png", pending: true };
         operationTokens.set(item, token);
         return item;
       });

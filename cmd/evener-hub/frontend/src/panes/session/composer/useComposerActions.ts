@@ -1,4 +1,4 @@
-import { type ComposerMention, markerPattern, NO_ACTIVE_TURN, sessionActionError } from "@evener/appwire-client";
+import { type ComposerMention, NO_ACTIVE_TURN, sessionActionError } from "@evener/appwire-client";
 import { ownPendingSend } from "@evener/appwire-client/state/mutation";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { controlsFor, liveThreadModel, pressLocalRecoveryFenced, pressRefusal } from "../../../stores/liveControls";
@@ -46,6 +46,7 @@ import {
   pushRecoveryRefusal,
   pushSelectionRefusal,
   selectionRefusal,
+  sendableAttachments,
   submitDraftToStore,
   unbackedMarkersIn,
   withRecoveryDestinationClaim,
@@ -453,36 +454,17 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     const submittedRevision = draftEditRevisionRef.current;
     const submittedDraftRevision = readDraftRevision(ref);
     // ONE selection drives BOTH halves of the operation: what ships, and what
-    // cleanup may retire. Selecting twice is how an image gets excluded from
-    // the request and destroyed by the cleanup anyway - the model never sees
-    // it and the person loses it. So the sets below are computed once and the
-    // cleanup is handed exactly what the request carried.
-    //
-    // A staged image ships when the submitted text names its marker, because
-    // staging writes "[image N]" into that text. Two exceptions, and neither
-    // is a number match:
-    //
-    // - A marker this source was already holding when it adopted a foreign
-    //   draft is NOT sendable under that draft, even when the text spells the
-    //   same number. Marker numbers are not identity: that is a different
-    //   image, and shipping it would rewrite the adopted prose into an
-    //   attachment reference with somebody else's bytes. Those tiles stay in
-    //   the store for their own draft.
-    // - A marker a recovery row restored from its own payload stays sendable
-    //   even when the row's text does not spell it. The row carried real bytes
-    //   and never recorded that their reference was dropped; the spelling rule
-    //   exists to drop work whose reference is gone, not to second-guess a row.
+    // cleanup may retire. It comes from `sendableAttachments`, the same
+    // function the composer's own content check calls, so Send cannot be
+    // enabled for a draft whose only content is an excluded tile and a
+    // submission can never carry a different set than the cleanup retires.
     const snapshot = source.getSnapshot();
-    const foreign = new Set(snapshot.foreignImageMarkers);
-    const restored = new Set(snapshot.restoredImageMarkers);
-    const spelled = new Set(Array.from(submittedText.matchAll(markerPattern()), (match) => Number(match[1])));
-    const sendableMarkers = new Set(
-      attachments.items
-        .filter((item) => !foreign.has(item.marker) && (spelled.has(item.marker) || restored.has(item.marker)))
-        .map((item) => item.marker),
-    );
+    const submittedAttachments = sendableAttachments(attachments.items, submittedText, {
+      foreign: snapshot.foreignImageIds,
+      restored: snapshot.restoredImageIds,
+    });
+    const sendableMarkers = new Set(submittedAttachments.map((item) => item.marker));
     const payload = attachments.toInputAttachments().filter((item) => sendableMarkers.has(item.marker));
-    const submittedAttachments = attachments.items.filter((item) => sendableMarkers.has(item.marker));
     const submittedLease = recoveryOwnerLeaseRef.current;
     const submittedRecoveryId = submittedLease?.clientMutationId ?? null;
     let releaseRecoveryInFlight: (() => void) | null = null;

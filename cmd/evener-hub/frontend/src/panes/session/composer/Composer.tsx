@@ -101,7 +101,7 @@ import { SlashCompletionMenu } from "./SlashCompletionMenu";
 import { maskSkillAtoms, type SkillEditorValue } from "./skillDocument";
 import type { ComposerSourceState } from "./sourceState";
 import { recordStoplessComposer } from "./stoplessComposer";
-import { pushRecoveryRefusal, unbackedMarkersIn } from "./submitProtocol";
+import { pushRecoveryRefusal, sendableAttachments, unbackedMarkersIn } from "./submitProtocol";
 import { type ComposerSubmission, useBuiltinSubmission } from "./useBuiltinSubmission";
 import { useInlineStopReady } from "./useInlineStopReady";
 import { useSlashCompletion } from "./useSlashCompletion";
@@ -270,6 +270,8 @@ function ComposerWithSubmission({
     restoreEpoch,
     activeRecoveryId,
     unbackedImageMarkers: unbackedImageMarkersFromSource,
+    foreignImageIds,
+    restoredImageIds,
   } = useSyncExternalStore(source.subscribe, source.getSnapshot, source.getSnapshot);
   // Anchors this composer adopted from a persisted draft but holds no image
   // for. The send path refuses them (useComposerActions.submit) and the notice
@@ -926,8 +928,17 @@ function ComposerWithSubmission({
   useMountAutofocus(editorRef, focused && mountAutofocus);
 
   const hasText = text.trim() !== "";
+  // Sendable images, not staged ones. A tile the submission would exclude (an
+  // image retained from a replaced draft, or one whose marker the person
+  // deleted) cannot be the draft's only content: counting every staged tile
+  // enabled Send for a request whose attachment list was then empty. Same
+  // function the send path uses, so the two cannot disagree.
+  const sendable = sendableAttachments(attachments.items, text, {
+    foreign: foreignImageIds,
+    restored: restoredImageIds,
+  });
   const hasAttachments = attachments.items.length > 0;
-  const hasContent = hasText || hasAttachments || skillNames.length > 0 || selectionMeta.commandNames.length > 0;
+  const hasContent = hasText || sendable.length > 0 || skillNames.length > 0 || selectionMeta.commandNames.length > 0;
   const inlineStop = !!model && controlsFor(model).stop && !hasContent;
   const inlineStopReady = useInlineStopReady(ref, !model || askPending ? null : inlineStop ? "stop" : "send");
 

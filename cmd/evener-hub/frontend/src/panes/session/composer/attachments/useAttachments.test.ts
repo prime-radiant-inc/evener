@@ -176,6 +176,7 @@ test("replaceWithSettled hydrates recovery attachments without re-encoding", () 
   act(() => {
     result.current.replaceWithSettled([
       {
+        id: "proof-image",
         marker: 4,
         name: "proof.png",
         mediaType: "image/png",
@@ -187,6 +188,7 @@ test("replaceWithSettled hydrates recovery attachments without re-encoding", () 
 
   expect(result.current.items).toEqual([
     {
+      id: "proof-image",
       marker: 4,
       name: "proof.png",
       mediaType: "image/png",
@@ -206,6 +208,7 @@ test("a new attachment after recovery hydration uses the next marker", async () 
   act(() => {
     result.current.replaceWithSettled([
       {
+        id: "old-image",
         marker: 4,
         name: "old.png",
         mediaType: "image/png",
@@ -290,7 +293,7 @@ test("a rejected pending encode strips its remapped marker, not a literal marker
   act(() =>
     result.current.replaceWithSettled([
       { ...pending, marker: 2 },
-      { marker: 1, name: "recovered.png", mediaType: "image/png", data: "AQID", pending: false },
+      { id: "recovered-image", marker: 1, name: "recovered.png", mediaType: "image/png", data: "AQID", pending: false },
     ]),
   );
 
@@ -300,7 +303,7 @@ test("a rejected pending encode strips its remapped marker, not a literal marker
   });
 
   expect(editor.getText()).toBe("\n\n[image 1]");
-  expect(result.current.items).toEqual([
+  expect(result.current.items.map(({ id: _id, ...item }) => item)).toEqual([
     { marker: 1, name: "recovered.png", mediaType: "image/png", data: "AQID", pending: false },
   ]);
   expect(onRejected).toHaveBeenCalledTimes(1);
@@ -319,7 +322,7 @@ test("removing a remapped pending encode prevents its later completion from resu
   act(() =>
     result.current.replaceWithSettled([
       { ...pending, marker: 2 },
-      { marker: 1, name: "recovered.png", mediaType: "image/png", data: "AQID", pending: false },
+      { id: "recovered-image", marker: 1, name: "recovered.png", mediaType: "image/png", data: "AQID", pending: false },
     ]),
   );
 
@@ -330,7 +333,7 @@ test("removing a remapped pending encode prevents its later completion from resu
   });
 
   expect(editor.getText()).toBe("\n\n[image 1]");
-  expect(result.current.items).toEqual([
+  expect(result.current.items.map(({ id: _id, ...item }) => item)).toEqual([
     { marker: 1, name: "recovered.png", mediaType: "image/png", data: "AQID", pending: false },
   ]);
   expect(onRejected).not.toHaveBeenCalled();

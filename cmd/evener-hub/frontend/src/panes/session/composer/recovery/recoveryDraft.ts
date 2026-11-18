@@ -1,6 +1,7 @@
 import type { ComposerMention } from "@evener/appwire-client";
 import { mergeComposerCompositions, recoverMutationComposition } from "@evener/appwire-client";
 import type { MutationRecoveryRecord } from "../../../../stores/mutationOutbox";
+import { createSecureUUID } from "../../../../stores/secureUUID";
 import type { PendingAttachment } from "../attachments/useAttachments";
 import { parseSkillDocument, skillAtomMentions } from "../skillDocument";
 
@@ -40,6 +41,10 @@ export function recoveryComposerDraft(record: MutationRecoveryRecord): Recovered
     text: recovered.text,
     attachments: recovered.attachments.map((attachment) => ({
       ...attachment,
+      // A fresh tile in a fresh composer, so a fresh identity. The merge may
+      // renumber the marker, and the restored-image exemption is recorded
+      // against this id when the row is activated.
+      id: createSecureUUID(),
       name: attachment.name ?? "image",
       pending: false,
     })),

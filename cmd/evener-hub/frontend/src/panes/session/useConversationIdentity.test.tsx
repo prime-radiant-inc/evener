@@ -64,7 +64,9 @@ test("newer destination wins, old copy stays and staged images do not follow ide
   writeComposerDraft("A", { text: "older /alpha", skillNames: ["alpha"] });
   const source = createComposerSourceState("A", "old-owner");
   source.attachments.setState({
-    items: [{ marker: 1, name: "staged.png", mediaType: "image/png", data: "AQID", pending: false }],
+    items: [
+      { id: "staged-image", marker: 1, name: "staged.png", mediaType: "image/png", data: "AQID", pending: false },
+    ],
   });
   vi.mocked(Date.now).mockReturnValue(200);
   const newer = {

@@ -5,7 +5,50 @@ import {
   pushRecoveryRefusal,
   pushSelectionRefusal,
   selectionRefusal,
+  sendableAttachments,
 } from "./submitProtocol";
+
+describe("sendableAttachments", () => {
+  const image = (id: string, marker: number) => ({ id, marker, name: `${id}.png` });
+
+  it("ships a staged image the submitted text spells", () => {
+    expect(sendableAttachments([image("a", 1)], "look [image 1]", { foreign: [], restored: [] })).toEqual([
+      image("a", 1),
+    ]);
+  });
+
+  it("keeps a restored image sendable under the number the merge gave it", () => {
+    // The row's image arrived as 1, collided with this draft's own 1, and the
+    // merge renumbered it to 2. Its text never spells the new number.
+    expect(
+      sendableAttachments([image("local", 1), image("restored", 2)], "local [image 1]", {
+        foreign: [],
+        restored: ["restored"],
+      }),
+    ).toEqual([image("local", 1), image("restored", 2)]);
+  });
+
+  it("refuses an image this source was holding before it adopted a peer draft", () => {
+    // Same number, different identity: the peer's text is not this tile's.
+    expect(
+      sendableAttachments([image("foreign", 1)], "peer prose [image 1]", {
+        foreign: ["foreign"],
+        restored: [],
+      }),
+    ).toEqual([]);
+  });
+
+  it("gives a new image ordinary rules when it reuses a number", () => {
+    // The tile that once held "1" is gone, so nothing recorded against it can
+    // apply to the tile that now bears number 1.
+    expect(
+      sendableAttachments([image("reused", 1)], "typed [image 1]", {
+        foreign: [],
+        restored: [],
+      }),
+    ).toEqual([image("reused", 1)]);
+  });
+});
 
 describe("selectionRefusal", () => {
   it("refuses staged selections the target never advertised", () => {

@@ -34,6 +34,7 @@ function durableAttachment(marker: number, name: string): MutationAttachment {
 
 function settledAttachment(marker: number, name: string, data: string): PendingAttachment {
   return {
+    id: `test-${name}-${marker}`,
     marker,
     name,
     mediaType: "image/png",
@@ -70,28 +71,31 @@ test("accepted input restores exact locations without a local composer snapshot"
 });
 
 test("projects durable image input into settled Composer attachment state", () => {
-  expect(
-    recoveryComposerDraft(
-      recoveryRecord(
-        [
-          { type: "text", text: "look [image 3]" },
-          { type: "image", mediaType: "image/png", data: "AQID", name: "proof.png" },
-        ],
-        { composerText: "look [image 3]", attachments: [durableAttachment(3, "proof.png")] },
-      ),
+  const draft = recoveryComposerDraft(
+    recoveryRecord(
+      [
+        { type: "text", text: "look [image 3]" },
+        { type: "image", mediaType: "image/png", data: "AQID", name: "proof.png" },
+      ],
+      { composerText: "look [image 3]", attachments: [durableAttachment(3, "proof.png")] },
     ),
-  ).toEqual({
-    text: "look [image 3]",
-    attachments: [
-      {
-        marker: 3,
-        name: "proof.png",
-        mediaType: "image/png",
-        data: "AQID",
-        pending: false,
-      },
-    ],
-    skillNames: [],
+  );
+  expect(draft.text).toBe("look [image 3]");
+  expect(draft.skillNames).toEqual([]);
+  // Identity is freshly minted per record, so it is compared as "present and
+  // non-empty" rather than exact; every other field stays exact.
+  expect(draft.attachments).toHaveLength(1);
+  const attachment = draft.attachments[0];
+  if (!attachment) throw new Error("expected one recovered attachment");
+  const { id, ...fields } = attachment;
+  expect(typeof id).toBe("string");
+  expect(id.length).toBeGreaterThan(0);
+  expect(fields).toEqual({
+    marker: 3,
+    name: "proof.png",
+    mediaType: "image/png",
+    data: "AQID",
+    pending: false,
   });
 });
 
@@ -190,7 +194,7 @@ test("recovers canonical selections without converting them to prose", () => {
   );
   expect(draft.text).toBe("REQUEST_818 [image 3]");
   expect(draft.skillNames).toEqual(["pkg:probe"]);
-  expect(draft.attachments).toEqual([
+  expect(draft.attachments.map(({ id: _id, ...attachment }) => attachment)).toEqual([
     { marker: 3, name: "proof.png", mediaType: "image/png", data: "AQID", pending: false },
   ]);
 });

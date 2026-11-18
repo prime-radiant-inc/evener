@@ -21,6 +21,7 @@ import {
   writeComposerDraft,
 } from "./draft";
 import { resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
+import { sendableAttachments } from "./submitProtocol";
 
 beforeEach(() => {
   installLocalStorage(new MemoryStorage());
@@ -83,6 +84,7 @@ test("detached submitted markers preserve atoms between each exact splice", () =
   const operations = createAttachmentOperations(source.editor, source.attachments);
   operations.replaceWithSettled(
     [1, 2, 3].map((marker) => ({
+      id: `staged-${marker}`,
       marker,
       name: `${marker}.png`,
       mediaType: "image/png",
@@ -489,6 +491,113 @@ test("rebound legacy draft is merged without claiming a missing revision", async
 });
 
 // Equal prose/skills do not authorize clearing a different command snapshot.
+test("a recovered image renumbered by the merge stays sendable under its new number", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const input: InputItem[] = [
+    { type: "text", text: "row prose" },
+    { type: "image", mediaType: "image/png", data: "AQID", name: "recovered.png" },
+  ];
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    method: "turn/start",
+    payload: { ref: "root", input },
+    attachments: [
+      {
+        presentationId: "presentation-1",
+        marker: 1,
+        name: "recovered.png",
+        mediaType: "image/png",
+        blob: new Blob([Uint8Array.of(1, 2, 3)], { type: "image/png" }),
+      },
+    ],
+    optimisticDisplay: { method: "turn/start", input },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "rejected");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+
+  // This composer already holds its own image 1, so the row's image collides
+  // with it and the merge hands it the next free number.
+  const source = createTestComposerSource("root");
+  source.attachments.setState({
+    items: [{ id: "local-image", marker: 1, name: "local.png", mediaType: "image/png", data: "BAUG", pending: false }],
+  });
+  source.editor.write("[image 1] local", 9);
+
+  try {
+    await expect(source.activateRecovery(recovery)).resolves.toBe(true);
+    const staged = source.attachments.getState().items;
+    const recovered = staged.find((item) => item.name === "recovered.png");
+    if (!recovered) throw new Error("the merge dropped the recovered image");
+    expect(recovered.marker).not.toBe(1);
+    expect(source.getSnapshot().restoredImageIds).toEqual([recovered.id]);
+    // The row's text never spells the new number, so only the identity-keyed
+    // exemption can keep these bytes on the send that consumes the row.
+    expect(
+      sendableAttachments(staged, source.getSnapshot().text, {
+        foreign: source.getSnapshot().foreignImageIds,
+        restored: source.getSnapshot().restoredImageIds,
+      }).map((item) => item.name),
+    ).toContain("recovered.png");
+  } finally {
+    source.dispose();
+    storage.close();
+  }
+});
+
+test("a new image reusing a retired number gets ordinary submission rules", async () => {
+  const source = createTestComposerSource("root");
+  try {
+    // A recovery row restores image 1 whose text never spells it: that tile
+    // is exempt from the text-spelling rule.
+    const restoredTile = {
+      id: "first",
+      marker: 1,
+      name: "first.png",
+      mediaType: "image/png",
+      data: "AQID",
+      pending: false,
+    };
+    source.attachments.setState({ items: [restoredTile] });
+    source.editor.write("row prose", 9);
+    await act(async () => {
+      source.adoptRecoveredImageFacts({ text: "row prose", attachments: [restoredTile], skillNames: [] });
+    });
+    expect(source.getSnapshot().restoredImageIds).toEqual(["first"]);
+    expect(
+      sendableAttachments([restoredTile], "row prose", { foreign: [], restored: ["first"] }).map((item) => item.id),
+    ).toEqual(["first"]);
+
+    // The tile goes away and the numbering restarts. Nothing recorded for it
+    // may apply to the image that now bears number 1.
+    await act(async () => {
+      source.attachments.setState({ items: [] });
+    });
+    expect(source.getSnapshot().restoredImageIds).toEqual([]);
+    const replacement = {
+      id: "second",
+      marker: 1,
+      name: "second.png",
+      mediaType: "image/png",
+      data: "BAUG",
+      pending: false,
+    };
+    source.attachments.setState({ items: [replacement] });
+    const facts = source.getSnapshot();
+    // With no reference spelled and no inherited exemption, this tile is not
+    // sendable: it is ordinary content, not a restored anchor.
+    expect(
+      sendableAttachments([replacement], "row prose", {
+        foreign: facts.foreignImageIds,
+        restored: facts.restoredImageIds,
+      }),
+    ).toEqual([]);
+  } finally {
+    source.dispose();
+  }
+});
+
 test("source clearing compares the submitted command selection", () => {
   writeComposerDraft("root", {
     text: "/same",
@@ -550,7 +659,12 @@ test.each(["success", "failure"] as const)(
     await waitFor(() => expect(source.attachments.getState().items.some((item) => item.pending)).toBe(false));
     expect(readComposerDraft("child")).toEqual({ text: "child draft", skillNames: [] });
     if (outcome === "success") {
-      expect(source.attachments.getState().items).toEqual([
+      const settled = source.attachments.getState().items;
+      expect(settled).toHaveLength(1);
+      // Identity is minted per attachment, so it is asserted present rather
+      // than literal; every other field stays exact.
+      expect(settled[0]?.id).toEqual(expect.any(String));
+      expect(settled.map(({ id: _id, ...item }) => item)).toEqual([
         { marker: 1, name: "source.png", mediaType: "image/png", pending: false, data: "AQID", width: 8, height: 4 },
       ]);
       expect(readComposerDraft("root")).toEqual({ text: "original [image 1]", skillNames: [] });

@@ -66,6 +66,41 @@ export function unbackedMarkersIn(text: string, unbacked: readonly number[]): nu
   return unbacked.filter((marker) => spelled.has(marker));
 }
 
+/**
+ * The staged images a submission may carry, decided once.
+ *
+ * One selection drives BOTH halves of a send: the payload it builds and the
+ * cleanup that retires tiles afterwards. Selecting twice is how an image is
+ * excluded from the request and destroyed by the cleanup anyway - the model
+ * never sees it and the person loses it.
+ *
+ * A staged image ships when the submitted text names its marker, because
+ * staging writes "[image N]" into that text. Two exceptions, and both are
+ * properties of ONE attachment for its whole life, keyed by its id and never
+ * by its marker number:
+ *
+ * - `foreign`: an image this source was already holding when it adopted a
+ *   foreign draft is not sendable under that draft, even when the text spells
+ *   the same number. The merge renumbers, so a number-keyed flag would follow
+ *   the number to a different image, and shipping it would rewrite the adopted
+ *   prose into an attachment reference carrying somebody else's bytes.
+ * - `restored`: an image a recovery row restored from its own payload stays
+ *   sendable even when the row's text does not spell its marker. The row
+ *   carried real bytes and never recorded that their reference was dropped;
+ *   the spelling rule exists to drop work whose reference is gone, not to
+ *   second-guess a row. Keyed by id for the same renumbering reason.
+ */
+export function sendableAttachments<A extends { id: string; marker: number }>(
+  items: readonly A[],
+  text: string,
+  facts: { foreign: readonly string[]; restored: readonly string[] },
+): A[] {
+  const foreign = new Set(facts.foreign);
+  const restored = new Set(facts.restored);
+  const spelled = new Set(Array.from(text.matchAll(markerPattern()), (match) => Number(match[1])));
+  return items.filter((item) => !foreign.has(item.id) && (spelled.has(item.marker) || restored.has(item.id)));
+}
+
 export type DraftRoute = "send" | "queue" | "steer" | "drain";
 
 export type DraftPayload = {
