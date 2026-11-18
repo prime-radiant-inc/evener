@@ -1972,9 +1972,15 @@ func enrichThreadFileBackedOutputImages(thread appwire.Thread) appwire.Thread {
 			}
 			argsJSON := item.ArgumentsJSON
 			if argsJSON == "" && item.CallID != "" {
-				if argsJSON = fallbackArguments(argsByCallID, ambiguousCallIDs, item.CallID, item.ToolName); argsJSON == "" {
-					continue
-				}
+				// A missed fallback is not a reason to skip enrichment. shell
+				// and apply_patch name the paths they touched in their own
+				// OUTPUT, so their thumbnails come from the result text and
+				// need no arguments at all; the argument path is the narrower
+				// one, for a tool that only names its file in its arguments.
+				// Skipping on a miss removed the preview from every completed
+				// shell and apply_patch result whose call the page could not
+				// match (#1166 review).
+				argsJSON = fallbackArguments(argsByCallID, ambiguousCallIDs, item.CallID, item.ToolName)
 			}
 			fileBacked := outputImagesForToolCall(sessionID, cwd, item.ToolName, argsJSON, item.Output)
 			if len(fileBacked) == 0 {

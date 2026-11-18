@@ -723,3 +723,48 @@ func TestEnrichThreadFileBackedOutputImagesOmitsAnAmbiguousFallback(t *testing.T
 		t.Fatalf("standalone result descriptor=%q, want its own recorded %q", result.OutputImages[0].URL, recorded[0].URL)
 	}
 }
+
+// TestEnrichThreadFileBackedOutputImagesKeepsAnOutputDerivedPreview pins the
+// half of enrichment that does not need arguments at all.
+//
+// shell and apply_patch name the files they touched in their own OUTPUT, so a
+// completed result's thumbnail is derived from the result text. A saved page
+// whose result row records a call id but no matching announcement — the row is
+// standalone, or the announcement fell outside the page — still knows the
+// output. Falling back to the announcement's arguments and skipping on a miss
+// removed the preview from every such row even though nothing about the output
+// was in doubt (#1166 review).
+func TestEnrichThreadFileBackedOutputImagesKeepsAnOutputDerivedPreview(t *testing.T) {
+	cwd := t.TempDir()
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0xde, 0xad, 0xbe, 0xef}
+	if err := os.WriteFile(filepath.Join(cwd, "chart.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		tool string
+	}{
+		{"shell", "shell"},
+		{"apply_patch", "apply_patch"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			thread := appwire.Thread{
+				ID:        "01DOC",
+				SessionID: "01DOC",
+				CWD:       cwd,
+				Turns: []appwire.Turn{{Items: []appwire.ThreadItem{{
+					Type:     "commandExecution",
+					ToolName: tc.tool,
+					CallID:   "call_unannounced",
+					Output:   "wrote chart.png",
+					Status:   appwire.TurnStatusCompleted,
+				}}}},
+			}
+
+			got := enrichThreadFileBackedOutputImages(thread)
+			if imgs := got.Turns[0].Items[0].OutputImages; len(imgs) != 1 {
+				t.Fatalf("OutputImages=%+v, want the output-derived preview: %s names its path in its own output", imgs, tc.tool)
+			}
+		})
+	}
+}
