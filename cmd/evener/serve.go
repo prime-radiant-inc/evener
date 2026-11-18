@@ -961,6 +961,11 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			}
 			var result string
 			var processErr error
+			// pendingInput names what a queued-input wake did with the work
+			// it found. The success and stand-down paths both return a nil
+			// error, so this is the only thing that distinguishes accepted
+			// input a gate refused from a wake that found nothing (#6468).
+			pendingInput := agent.PendingInputNoOutcome
 			processed := true
 			if msg.ClientMutationStart {
 				result, processed, processErr = sess.ProcessClientMutationStart(turnCtx, func(turnID string, phase agent.ClientMutationStartPhase) {
@@ -1002,7 +1007,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 					func() { bridge.setMutationRunner(cancelTurn, runnerDone) },
 					func() { srv.SetCancelFunc(cancelTurn) },
 				)
-				result, processed, _, processErr = sess.ProcessPendingUserInput(turnCtx, func(string) {
+				result, processed, pendingInput, processErr = sess.ProcessPendingUserInput(turnCtx, func(string) {
 					srv.SetProcessing(true)
 				})
 				if !processed {
@@ -1011,6 +1016,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 					// that will never start.
 					bridge.clearMutationRunner(runnerDone)
 					srv.SetCancelFunc(nil)
+				}
+				if pendingInputStoodDown(processErr, pendingInput) {
+					serveLogf(logOut, sess.ID(), "queued input stood down: %s", pendingInput)
 				}
 			} else {
 				result, processErr = sess.ProcessInputKind(turnCtx, msg.Text, msg.Images, msg.Kind)
@@ -1166,6 +1174,21 @@ func closeSupersededSession(sess *agent.Session, shutdownClaimed bool) {
 	// session was already closed by CloseForShutdown, whose own reason
 	// (prompt_input_exit when idle, else other) belongs to that first close.
 	sess.CloseWithReason("clear")
+}
+
+// pendingInputStoodDown reports whether a queued-input wake found runnable work
+// and left it standing. That is accepted input the client already holds an
+// Applied receipt for, refused by a gate that the serve loop's next act --
+// block on the input channel -- will not look at again (#6468).
+//
+// It is silent on every other path: the wake returns no error, and !processed on
+// its own is the routine idle wake, which fires unconditionally on acceptance
+// and coalesces, so reporting that would fill the daemon log with noise and hide
+// the condition this exists for. Nothing here re-arms a wake. A refusal that
+// keeps refusing without progress must not become a spin; the recovery for the
+// carrier rail and the failed-attempt park is a design decision, not this log.
+func pendingInputStoodDown(processErr error, outcome agent.PendingInputOutcome) bool {
+	return processErr == nil && outcome.RefusedRunnableInput()
 }
 
 // processNextServeInput gives durable accepted work priority over the

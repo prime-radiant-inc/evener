@@ -385,6 +385,39 @@ func TestProcessNextServeInputRunsNoDurableWorkAfterCancel(t *testing.T) {
 	}
 }
 
+// TestQueuedInputStandDownIsReportedOnlyForRunnableWork pins the serve loop's
+// decision to say something about a wake, which is the whole of what the loop
+// can do with the condition (#6468).
+//
+// A queued-input wake that uses up its work and a wake that finds runnable work
+// a gate refuses are the same three values to this loop -- no result, no turn,
+// no error -- so it drops the armed runner and blocks either way. Only the
+// outcome tells them apart, and only the second is worth a line: the first is
+// the routine idle wake, which fires unconditionally on acceptance and
+// coalesces, so reporting it would bury the condition in noise.
+func TestQueuedInputStandDownIsReportedOnlyForRunnableWork(t *testing.T) {
+	cases := []struct {
+		name    string
+		err     error
+		outcome agent.PendingInputOutcome
+		want    bool
+	}{
+		{"claimed its work", nil, agent.PendingInputClaimed, false},
+		{"found nothing to run", nil, agent.PendingInputNothingRunnable, false},
+		{"steering parked", nil, agent.PendingInputSteeringParked, true},
+		{"carrier unaddressable", nil, agent.PendingInputCarrierUnaddressable, true},
+		{"claim took nothing", nil, agent.PendingInputClaimTookNothing, true},
+		{"returned an error", errors.New("opaque-error"), agent.PendingInputSteeringParked, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := pendingInputStoodDown(tc.err, tc.outcome); got != tc.want {
+				t.Fatalf("pendingInputStoodDown(err=%v, %v) = %v, want %v", tc.err, tc.outcome, got, tc.want)
+			}
+		})
+	}
+}
+
 // serveTestClient is a client on a hermetic registry carrying one custom
 // instance, "work", behind openai.
 func serveTestClient(t *testing.T) *llm.Client {
