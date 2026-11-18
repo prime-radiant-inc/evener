@@ -2868,4 +2868,79 @@ describe("useThreadsStore.ensureThread", () => {
 
     threadsStore.getState().releaseWatchedThread(ref);
   });
+
+  test("an overlay buffered before a confirmed-absence failure is not replayed back", async () => {
+    // RoboRev 53574 (Medium 4): the CONFIRMED-ABSENCE sibling of the test
+    // above. A named replacement already drops the outgoing overlay. A
+    // `daemonless` failure is the other way a source stops existing: the hub
+    // established that no daemon runs the thread, so nothing is streaming.
+    // Replay stripped the buffered hold but still folded the buffered overlay,
+    // so the transcript displayed unfinished output from a daemon the hub had
+    // confirmed was gone.
+    const fake = connectReadyFakeClient();
+    const ref = "local:watched";
+    const threadId = `thr_${ref}`;
+    const initial = versionedReadResponse(
+      ref,
+      {
+        status: { type: "active" },
+        evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+      },
+      0,
+    );
+    const refused: Array<(error: Error) => void> = [];
+    let readCount = 0;
+    fake.on("thread/read", (params) => {
+      readCount += 1;
+      if (readCount === 1) return echoRead(initial, params.requestGeneration);
+      return new Promise<ThreadReadResponse>((_resolve, reject) => {
+        refused.push(reject);
+      });
+    });
+
+    await threadsStore.getState().watchThread(ref, { includeTurns: true });
+
+    // The daemon exits: a BOOTLESS resync retires nothing and starts the read.
+    fake.emitNotification({
+      method: "evener/thread/resync",
+      params: { threadId, ref, epoch: 2 },
+    });
+    await flushUntil(() => refused.length === 1);
+
+    fake.emitNotification({
+      method: "overlay/upserted",
+      params: {
+        ref,
+        threadId,
+        item: {
+          key: "stream:outgoing",
+          kind: "stream",
+          streamId: "outgoing-stream",
+          roundId: "round-outgoing",
+          turnId: "turn_outgoing",
+          item: { id: "outgoing-item", turnId: "turn_outgoing", type: "agentMessage", text: "never published" },
+        },
+      },
+    });
+    await Promise.resolve();
+    // Non-vacuous: the outgoing overlay is not on the published model, so the
+    // buffer is the only copy that replay could resurrect.
+    expect(threadsStore.getState().watchedThreads.get(ref)?.overlay?.["stream:outgoing"]).toBeUndefined();
+
+    refused[0]?.(
+      new WireError("thread history failed at entry 7", -32603, {
+        evenerErrorInfo: ErrorTranscriptHistoryFailed,
+        bootGeneration: DAEMONLESS_BOOT_GENERATION,
+      }),
+    );
+    await flushUntil(() => threadsStore.getState().watchedThreads.get(ref)?.history?.failed !== undefined);
+    const published = threadsStore.getState().watchedThreads.get(ref);
+    // The diagnostic still publishes: only the departed source's frames go.
+    expect(published?.history?.failed).toBeDefined();
+    // ...and its stream text is gone with its producer.
+    expect(published?.overlay?.["stream:outgoing"]).toBeUndefined();
+    expect(published?.turns.flatMap((turn) => turn.items).some((item) => item.id === "outgoing-item")).toBe(false);
+
+    threadsStore.getState().releaseWatchedThread(ref);
+  });
 });

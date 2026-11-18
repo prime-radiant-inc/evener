@@ -6347,6 +6347,16 @@ function withoutRetiredSourceToken(notification: AnyNotification, retiredBy: str
   if (notification.method !== "history/updated") return notification;
   const boot = notification.params.bootGeneration;
   if (!boot || !confirmedBootReplacement(boot, retiredBy, "authoritative")) return notification;
+  // A failure may blank a token only from the source it actually RETIRED.
+  // Cross-owner tokens compare as replacements in both directions - two
+  // qualified owners always do - so `confirmedBootReplacement` alone cannot
+  // tell "the frame's source is what this failure replaced" from "the frame's
+  // source replaced the failure's". A watched read from a parent daemon at
+  // `5@root` can buffer the child's own new daemon at `1` and then fail under
+  // `5@root`; blanking `1` let the parent's high sequence survive replay and
+  // beat the child's first sample, which is the inversion this PR removes.
+  // The buffered frame is later evidence of a cross-owner hand-off the failure
+  // knows nothing about, so it keeps its identity.
   return {
     ...notification,
     params: { ...notification.params, bootGeneration: "" },
@@ -6373,15 +6383,27 @@ function replayHydrationNotifications(
   //
   // `unknown-owner` does NOT qualify: it names no owner, which is not a claim
   // that the owner is gone, and retiring a hold on it would be the same
-  // inversion one token over. Only the frame's own kind decides what is
-  // stripped: a delegate update is a hold sample, a history frame is content
-  // and folds normally.
+  // inversion one token over.
+  //
+  // What survives a departed source is `carriedAcrossReplacement`'s question,
+  // and it is the same answer here: a delegate update keeps its row, lifecycle
+  // and terminal outcome and loses only the hold the departed daemon numbered,
+  // and an overlay frame goes with the producer that was streaming it. Asking
+  // that helper instead of restating the field list is what keeps the two
+  // confirmations - a named replacement and a confirmed absence - from drifting
+  // into two different opinions about the same frame.
   const absent = isConfirmedAbsence(retiredBy);
   for (const update of notifications) {
     const notification = retiredBy ? withoutRetiredSourceToken(update.notification, retiredBy) : update.notification;
-    if (absent && notification.method === "evener/delegate/updated") {
-      const stripped = stripDelegateHold({ ...update, notification });
-      const folded = foldCanonicalNotification(hydrated, stripped.notification, update.now);
+    if (absent) {
+      // What survives a departed source is `carriedAcrossReplacement`'s
+      // question, answered once above for a named replacement and the same
+      // answer here: a delegate update keeps its durable fields and loses only
+      // the hold, and an overlay frame goes with the producer that was
+      // streaming it. A dropped frame folds nothing at all.
+      const [surviving] = carriedAcrossReplacement([{ ...update, notification }]);
+      if (surviving === undefined) continue;
+      const folded = foldCanonicalNotification(hydrated, surviving.notification, update.now);
       hydrated = folded.model;
       appliedAt.push(update.now);
       continue;
