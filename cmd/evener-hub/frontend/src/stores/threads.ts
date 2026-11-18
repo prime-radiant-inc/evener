@@ -6227,16 +6227,7 @@ function carriedHydrationUpdates(
       const boot = update.notification.params.bootGeneration;
       if (boot && confirmedBootReplacement(owner, boot, "authoritative")) {
         owner = boot;
-        // Samples buffered before this frame were numbered by the source it
-        // replaced, so their HOLD loses to the incoming source's first sample.
-        // Their durable fields are not indexed by that sequence and do not: a
-        // terminal outcome buffered before this frame is the only copy of the
-        // completed row, and dropping the whole update left the model showing
-        // "running" for a delegate that had already finished. Strip the hold
-        // fields and keep everything the projection still needs.
-        carried = carried.map((buffered) =>
-          buffered.notification.method === "evener/delegate/updated" ? stripDelegateHold(buffered) : buffered,
-        );
+        carried = carriedAcrossReplacement(carried);
       }
     }
     carried.push(update);
@@ -6257,9 +6248,41 @@ function carriedHydrationUpdates(
   // row showing "running" for the rest of the wait when the successor read
   // then failed; the same field list the history-frame branch uses is what
   // makes the strip and the discard agree.
-  return carried.map((buffered) =>
-    buffered.notification.method === "evener/delegate/updated" ? stripDelegateHold(buffered) : buffered,
-  );
+  return carriedAcrossReplacement(carried);
+}
+
+// carriedAcrossReplacement is ONE answer to "what of the outgoing source's
+// buffer survives its replacement", used by both places this walk confirms one
+// (a versioned history frame inside the buffer, and the superseding resync's
+// own token). Two field lists that agree by inspection drift; one function
+// cannot.
+//
+// A delegate update is DURABLE: its row, lifecycle and terminal outcome are not
+// indexed by the replaced source's sequence, and a terminal update buffered
+// before the replacement is the only copy that the delegate finished. Only its
+// HOLD belongs to the departed daemon's numbering, so only the hold is
+// stripped.
+//
+// An overlay frame is SOURCE-LOCAL by contrast: it describes a stream the
+// outgoing daemon was producing (an unfinished assistant message, a running
+// tool's output). Nothing about it outlives its producer, and replaying it onto
+// the replacement's failed model displays work from a daemon that is no longer
+// serving the thread - output that was never published before the hand-off and
+// that the incoming source will not confirm. It goes with the source.
+//
+// Everything else (history/updated, status, metadata) is a statement about the
+// thread that the incoming source's own frames supersede, and replaying it
+// boots the fold on the new source's terms.
+function carriedAcrossReplacement(
+  carried: PendingThreadHydration["notifications"],
+): PendingThreadHydration["notifications"] {
+  const kept: PendingThreadHydration["notifications"] = [];
+  for (const buffered of carried) {
+    const { method } = buffered.notification;
+    if (method.startsWith("overlay/")) continue;
+    kept.push(method === "evener/delegate/updated" ? stripDelegateHold(buffered) : buffered);
+  }
+  return kept;
 }
 
 function bufferPendingNotification(

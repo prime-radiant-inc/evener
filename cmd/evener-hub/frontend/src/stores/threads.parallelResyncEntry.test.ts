@@ -2778,4 +2778,94 @@ describe("useThreadsStore.ensureThread", () => {
 
     threadsStore.getState().releaseWatchedThread(ref);
   });
+
+  test("a confirmed replacement drops the outgoing source's buffered overlay, keeping the delegate row", async () => {
+    // RoboRev 53429 (Medium 4): the OTHER half of what a supersession carries.
+    // A boot-changing resync keeps every non-delegate frame from the superseded
+    // read, so an overlay upsert the outgoing daemon buffered before its
+    // replacement is replayed onto the replacement's model. If the successor
+    // read then fails, that stream text - an unfinished message from the
+    // departed daemon, never published before the hand-off - appears in the
+    // replacement's transcript.
+    //
+    // An overlay frame is SOURCE-LOCAL: it describes a stream its producer was
+    // writing and nothing about it outlives that producer. A delegate update is
+    // DURABLE: only its HOLD is numbered by the departed source, so the row and
+    // its terminal outcome stay. That is the split the carry rule makes.
+    const fake = connectReadyFakeClient();
+    const ref = "local:watched";
+    const threadId = `thr_${ref}`;
+    const initial = versionedReadResponse(
+      ref,
+      {
+        status: { type: "active" },
+        evener: { ref, capabilities: CAPABILITIES, queue: { revision: 0 } },
+      },
+      0,
+    );
+    const refused: Array<(error: Error) => void> = [];
+    let readCount = 0;
+    fake.on("thread/read", (params) => {
+      readCount += 1;
+      if (readCount === 1) return echoRead(initial, params.requestGeneration);
+      return new Promise<ThreadReadResponse>((_resolve, reject) => {
+        refused.push(reject);
+      });
+    });
+
+    await threadsStore.getState().watchThread(ref, { includeTurns: true });
+
+    // Boot 1's resync starts the read that will buffer boot 1's overlay.
+    fake.emitNotification({
+      method: "evener/thread/resync",
+      params: { threadId, ref, bootGeneration: "1", epoch: 2 },
+    });
+    await flushUntil(() => refused.length === 1);
+
+    fake.emitNotification({
+      method: "overlay/upserted",
+      params: {
+        ref,
+        threadId,
+        item: {
+          key: "stream:outgoing",
+          kind: "stream",
+          streamId: "outgoing-stream",
+          roundId: "round-outgoing",
+          turnId: "turn_outgoing",
+          item: { id: "outgoing-item", turnId: "turn_outgoing", type: "agentMessage", text: "never published" },
+        },
+      },
+    });
+    await Promise.resolve();
+    // Non-vacuous: the outgoing overlay is not on the published model, so the
+    // buffer is the only place it exists.
+    expect(threadsStore.getState().watchedThreads.get(ref)?.overlay?.["stream:outgoing"]).toBeUndefined();
+
+    // Boot 2's resync CONFIRMS a replacement and supersedes the read.
+    fake.emitNotification({
+      method: "evener/thread/resync",
+      params: { threadId, ref, bootGeneration: "2", epoch: 1 },
+    });
+    await flushUntil(() => refused.length === 2);
+    const carried = threadsStore.getState().watchedThreads.get(ref);
+    // Retiring the superseded read must not have published it either.
+    expect(carried?.overlay?.["stream:outgoing"]).toBeUndefined();
+
+    // The successor read fails structurally; replay must not resurrect it.
+    refused[1]?.(
+      new WireError("thread history failed at entry 7", -32603, {
+        evenerErrorInfo: ErrorTranscriptHistoryFailed,
+        bootGeneration: "2",
+      }),
+    );
+    await flushUntil(() => threadsStore.getState().watchedThreads.get(ref)?.history?.failed !== undefined);
+    const published = threadsStore.getState().watchedThreads.get(ref);
+    expect(published?.history?.failed).toBeDefined();
+    // The departed source's stream text is gone with its producer...
+    expect(published?.overlay?.["stream:outgoing"]).toBeUndefined();
+    expect(published?.turns.flatMap((turn) => turn.items).some((item) => item.id === "outgoing-item")).toBe(false);
+
+    threadsStore.getState().releaseWatchedThread(ref);
+  });
 });
