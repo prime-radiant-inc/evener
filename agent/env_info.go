@@ -68,5 +68,16 @@ func (s *Session) snapshotEnvironmentInfo(env execenv.ExecutionEnvironment) sche
 	if snapshot := s.cfg.testOnly.environmentInfo; snapshot != nil {
 		return snapshot(env, s.sclock())
 	}
-	return envInfoFromEnv(env, s.sclock())
+	info := envInfoFromEnv(env, s.sclock())
+	// A resume rebuilt this snapshot from the canonical root, which has no alias of
+	// its own. The session it resumed recorded one, and it is kept when it still
+	// resolves to the directory being resumed into: the archived transcript's file
+	// references were written through it. A repointed or removed symlink no longer
+	// names this checkout, so it is dropped rather than carried forward.
+	if info.LaunchDir == "" && s.restoredLaunchAlias != "" {
+		if resolved, err := filepath.EvalSymlinks(s.restoredLaunchAlias); err == nil && filepath.Clean(resolved) == info.WorkingDir {
+			info.LaunchDir = s.restoredLaunchAlias
+		}
+	}
+	return info
 }

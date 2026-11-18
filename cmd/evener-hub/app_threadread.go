@@ -1371,11 +1371,17 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 	if name == "" || name == strings.TrimSpace(entry.Meta.ID) {
 		name = hubcore.ShortID(strings.TrimSpace(entry.Meta.ID))
 	}
-	// CWD is what the client binds a file reference to, so it is the spelling the
-	// session was launched with; Path stays the canonical directory's name, because
-	// it labels the row rather than locating anything. See
-	// schema.EnvironmentInfo.BindingDir for why those are two fields.
-	cwd := entry.Meta.EnvInfo.BindingDir()
+	// CWD is the canonical working directory: it is also the root some consumers
+	// open files through, so it never carries a spelling that may have moved. The
+	// launch alias rides beside it in CWDAlias, because the client binds an
+	// absolute reference by lexical prefix and a document written through the
+	// alias only matches that spelling. Path names the canonical directory, which
+	// is what labels the row.
+	cwd := entry.Meta.EnvInfo.WorkingDir
+	cwdAlias := ""
+	if binding := entry.Meta.EnvInfo.BindingDir(); binding != cwd {
+		cwdAlias = binding
+	}
 	ref := appwire.Ref{SourceID: appwire.LocalSourceID, ThreadID: entry.Meta.ID}.String()
 	parentRef := ""
 	if entry.Meta.ParentSessionID != "" {
@@ -1434,6 +1440,7 @@ func pastEntryThreadForList(ctx context.Context, cfg hubcore.WebConfig, entry hu
 		Status:        appwire.ThreadStatus{Type: status},
 		Path:          filepath.Base(cwd),
 		CWD:           cwd,
+		CWDAlias:      cwdAlias,
 		Source:        "local",
 		// A past session has no live daemon, so it has no instance id of its own;
 		// InstanceID falls back to the thread id, the same rule the daemon-backed
@@ -1806,7 +1813,12 @@ func stampPastTurnCosts(cost *registry.Cost, turns []appwire.Turn) {
 }
 
 func reconcileAndEnrichPastThread(entry hubcore.PastEntry, thread appwire.Thread) appwire.Thread {
-	return enrichThreadFileBackedOutputImages(thread)
+	// Enrichment OPENS files, so its root is the canonical working directory. The
+	// thread's CWD is the launch alias, which the client binds references against;
+	// resolving a directory from that alias would follow a symlink that may have
+	// been removed or repointed, and a relative image path would then miss a file
+	// that still exists under WorkingDir.
+	return enrichThreadFileBackedOutputImagesIn(thread, entry.Meta.EnvInfo.WorkingDir)
 }
 
 func appItemsFromReplayTurn(turnID string, turnIndex int, turn schema.Turn, reg *apptranscript.ToolCallRegistry) []appwire.ThreadItem {
@@ -1814,11 +1826,19 @@ func appItemsFromReplayTurn(turnID string, turnIndex int, turn schema.Turn, reg 
 }
 
 func enrichThreadFileBackedOutputImages(thread appwire.Thread) appwire.Thread {
+	return enrichThreadFileBackedOutputImagesIn(thread, thread.CWD)
+}
+
+// enrichThreadFileBackedOutputImagesIn is the enrichment pass rooted at root
+// rather than at the thread's CWD. The two differ for an archived session that
+// was launched through a symlink: CWD is the spelling the client binds, root is
+// the directory the bytes are in.
+func enrichThreadFileBackedOutputImagesIn(thread appwire.Thread, root string) appwire.Thread {
 	sessionID := strings.TrimSpace(thread.SessionID)
 	if sessionID == "" {
 		sessionID = strings.TrimSpace(thread.ID)
 	}
-	cwd := strings.TrimSpace(thread.CWD)
+	cwd := strings.TrimSpace(root)
 	if sessionID == "" || cwd == "" || len(thread.Turns) == 0 {
 		return thread
 	}

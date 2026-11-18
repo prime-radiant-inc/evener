@@ -524,6 +524,10 @@ export function threadFields(resp: ThreadReadResponse, ref: string, now: number)
     // without a root keeps the shape it had before this field existed.
     artifactsDir: thread.evener.artifactsDir || undefined,
     scratchDir: thread.evener.scratchDir || undefined,
+    // cwdAlias is the launch spelling when it differs from cwd. Present and
+    // undefined clears it, like the served roots above: a read taken through a
+    // repointed link must not leave the old spelling binding references.
+    cwdAlias: thread.cwdAlias || undefined,
     modelProvider: thread.modelProvider,
     // Thread has no separate "model id" field on the wire snapshot — only
     // ModelProvider, which appwire/types_thread.go documents as overloaded to

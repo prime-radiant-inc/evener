@@ -25,6 +25,7 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
   const { thread, sourcePaneId } = useTranscriptRenderContext();
   const sessionRef = thread?.ref;
   const cwd = thread?.cwd;
+  const cwdAlias = thread?.cwdAlias;
   const artifactsDir = thread?.artifactsDir;
   const scratchDir = thread?.scratchDir;
   const root = useRef<HTMLDivElement>(null);
@@ -76,7 +77,7 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
     const paneID = ownerRef === undefined ? undefined : sourcePaneId;
     const context =
       ownerRef && paneID && cwd
-        ? { sessionRef: ownerRef, cwd, sourcePaneId: paneID, artifactsDir, scratchDir }
+        ? { sessionRef: ownerRef, cwd, cwdAlias, sourcePaneId: paneID, artifactsDir, scratchDir }
         : undefined;
     let removeClickHold = () => {};
     if (!context && ownerRef && paneID) {
@@ -105,7 +106,11 @@ export function AgentMarkdown({ source, live = false }: { source: string; live?:
     if (context) {
       const held = pendingFileClick.current;
       pendingFileClick.current = null;
-      const refOptions = { artifactsDir: context.artifactsDir, scratchDir: context.scratchDir };
+      const refOptions = {
+        artifactsDir: context.artifactsDir,
+        scratchDir: context.scratchDir,
+        cwdAlias: context.cwdAlias,
+      };
       if (held) {
         const reference = resolveAnchorReference(held.href, context.cwd, refOptions);
         if (reference) {

@@ -32,6 +32,14 @@ export interface FileReferenceSpan {
 export interface ServedRoots {
   readonly artifactsDir?: string;
   readonly scratchDir?: string;
+  /** cwdAlias is the spelling the session was launched with, when it differs
+   * from the working directory: a launch through an absolute symlink. An
+   * absolute reference written by the user names that spelling, and binding is
+   * lexical, so it matches only when tried against it. The bytes are the same —
+   * the hub resolves either spelling — so a reference bound this way keeps the
+   * working directory as its `cwd`, and only the match is tried against the
+   * alias. */
+  readonly cwdAlias?: string;
 }
 
 const WHITESPACE = /\s/u;
@@ -148,9 +156,22 @@ export function bindScratchPath(path: string, scratchDir: string): FileReference
 export function bindServedPath(path: string, cwd: string, served?: ServedRoots): FileReference | undefined {
   return (
     bindFilePath(path, cwd) ??
+    bindAliasedPath(path, cwd, served?.cwdAlias ?? "") ??
     bindArtifactPath(path, served?.artifactsDir ?? "") ??
     bindScratchPath(path, served?.scratchDir ?? "")
   );
+}
+
+/** bindAliasedPath binds an absolute reference written through the session's
+ * launch alias. The alias is a second spelling of the working directory, not a
+ * different root: the hub resolves both to the same bytes, so the returned
+ * reference names the working directory and only the lexical match uses the
+ * alias. */
+function bindAliasedPath(path: string, cwd: string, alias: string): FileReference | undefined {
+  if (alias === "" || cwd === "") return undefined;
+  const bound = bindFilePath(path, alias);
+  if (bound === undefined || bound.provenance !== "absolute") return undefined;
+  return { ...bound, cwd };
 }
 
 interface LiteralSurface {

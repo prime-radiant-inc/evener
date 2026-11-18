@@ -52,6 +52,20 @@ test("the same text under different served roots is a different answer", () => {
   expect(analysis.fileSpans(absolute, CWD, withArtifacts)).toEqual(findFileReferences(absolute, CWD, withArtifacts));
 });
 
+test("an alias that admits a reference is part of the key", () => {
+  const analysis = createAnalysisCache();
+  const aliased = "Read /workspace/link/docs/report.md now.";
+  const withAlias = { cwdAlias: "/workspace/link" };
+  // The alias decides whether this absolute path names a document at all, so a
+  // pass run with it and a pass run without it answer differently for
+  // identical text and served roots.
+  expect(analysis.fileSpans(aliased, CWD, withAlias)).toEqual(findFileReferences(aliased, CWD, withAlias));
+  expect(analysis.fileSpans(aliased, CWD, withAlias)).toHaveLength(1);
+  expect(analysis.fileSpans(aliased, CWD, undefined)).toEqual(findFileReferences(aliased, CWD, undefined));
+  expect(analysis.fileSpans(aliased, CWD, undefined)).toHaveLength(0);
+  expect(analysis.fileSpans(aliased, CWD, withAlias)).toHaveLength(1);
+});
+
 test("a text that splits a reference analyses as its own text, never a prefix's answer", () => {
   const analysis = createAnalysisCache();
   const complete = "see docs/report.md";

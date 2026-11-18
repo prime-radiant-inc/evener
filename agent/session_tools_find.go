@@ -872,9 +872,9 @@ const (
 	// as the filter that admits or refuses the other candidates.
 	evidenceRankRecorded = 10
 	// The worktree owner's own metadata: the session this worktree was made for.
-	// Its saved origin is authoritative, its restore root next, and a bare home
-	// directory the weakest thing it can say.
-	evidenceRankOwnerOrigin    = 20
+	// Its saved origin is authoritative and is returned before ranking, so it has
+	// no rank here; its restore root is next and a bare home directory the weakest
+	// thing it can say.
 	evidenceRankOwnerRestore   = 21
 	evidenceRankOwnerHome      = 22
 	evidenceRankParentOrigin   = 30
@@ -1173,10 +1173,11 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 			//
 			// Nothing admissible can outrank it. Every other owner-derived candidate
 			// ranks below the origin (the restore root and the home directory), and a
-			// parent or sibling ranks below the owner outright. The one rank above it
-			// — the project ID in a managed lane's own path — carries no display name
-			// and never coexists with an owner, because a managed lane records no
-			// owner session.
+			// parent or sibling ranks below the owner outright. The one source stronger
+			// than a display name — the project ID in a managed lane's own path — is a
+			// filter rather than a name, and never coexists with an owner, because a
+			// managed lane records no owner session. So this is rank 0 by another
+			// name: it wins, and it carries no entry in the rank table.
 			//
 			// An inadmissible origin does not license the shortcut, so the record is
 			// still read for it: it may hold the only evidence this row accepts.
@@ -1209,7 +1210,9 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 			default:
 				// An ordinary recorded directory that no longer resolves: its basename
 				// is the recorded-path fallback, and it is not a claim about projects.
-				if display := strings.TrimSpace(meta.HomeDir()); display != "" {
+				// It has to be absolute for the reason every other recorded path does:
+				// a relative one names no checkout, and "." would label the row.
+				if display := strings.TrimSpace(meta.HomeDir()); display != "" && filepath.IsAbs(display) {
 					found = append(found, projectEvidence{name: filepath.Base(display), rank: evidenceRankOwnerHome})
 				}
 			}
@@ -1234,6 +1237,16 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 		if tiedToLane {
 			if parent, ok := r.loadOwnedSessionMeta(bound, parentSessionID); ok {
 				checkout, recorded, resolved, _ := r.recordedProject(parent, bound)
+				// A parent whose checkout has moved names nothing on disk, but its
+				// recorded absolute path still hashes to the project ID a lane under it
+				// would carry. Offer that as the parent's project so the admissibility
+				// test judges it like any other evidence: a recording that matches the
+				// lane identifies it, and one that names another project is refused.
+				if recorded == "" {
+					if _, projectID := recordedOrdinaryProject(parent); projectID != "" {
+						recorded = projectID
+					}
+				}
 				// A managed lane records its project in its path, so a parent must
 				// positively identify that same project before it can name the
 				// lane. A session-owned lane records no project, so there the
@@ -1244,6 +1257,18 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 					}
 					if resolved && checkout != "" {
 						found = append(found, projectEvidence{name: filepath.Base(checkout), projectID: recorded, rank: evidenceRankParentCheckout})
+					}
+					// The parent's checkout may have moved with the record still naming
+					// where it was. The recording is evidence even then: an absolute path
+					// hashes to the project ID a lane under it would carry, so offering
+					// that ID lets the row's own admissibility decide whether this parent
+					// names the lane. Without it a pruned lane in a flat --state-dir
+					// loses the label its parent's recording still supplies, because the
+					// recorded-path fallback lived only in the sibling scan.
+					if !resolved || checkout == "" {
+						if gone, projectID := recordedOrdinaryProject(parent); projectID != "" {
+							found = append(found, projectEvidence{name: filepath.Base(gone), projectID: projectID, rank: evidenceRankParentCheckout})
+						}
 					}
 				}
 			}
@@ -1438,7 +1463,13 @@ func (r *projectNameResolver) siblingEvidenceFor(bucketDir string) []projectEvid
 				evidence = append(evidence, projectEvidence{name: filepath.Base(checkout), projectID: recorded, rank: evidenceRankSiblingRestore})
 			case isLane:
 			default:
-				evidence = append(evidence, projectEvidence{name: filepath.Base(restore), projectID: recorded, rank: evidenceRankSiblingRestore})
+				// A relative restore root names no directory: it would be read against
+				// this process's directory, and "." is a label every such record
+				// shares. The structural lookup already refuses it; the basename
+				// fallback must not reintroduce it.
+				if filepath.IsAbs(restore) {
+					evidence = append(evidence, projectEvidence{name: filepath.Base(restore), projectID: recorded, rank: evidenceRankSiblingRestore})
+				}
 			}
 			continue
 		}

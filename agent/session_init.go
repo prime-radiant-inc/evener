@@ -1378,6 +1378,13 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// The spawn parent travels with the flag: Meta() rewrites both on every
 	// autosave, and the hub reads them as a pair.
 	s.restoredMetaParentSessionID = meta.ParentSessionID
+	// The launch spelling travels with the record for the same reason: a resume
+	// rebuilds the snapshot from the canonical root, which would silently discard
+	// an alias the checkout still has and leave the archived transcript's file
+	// references unbound. It is kept only when it still resolves to the directory
+	// the session is resuming into, so a repointed or removed symlink is never
+	// carried forward as if it still named this checkout.
+	s.restoredLaunchAlias = meta.EnvInfo.LaunchDir
 	// A delegate resumed on its own keeps its scratch in its root's tree, and
 	// Meta() keeps recording that root for the next resume.
 	if restoreCfg.spawn.parentSessionID == "" {

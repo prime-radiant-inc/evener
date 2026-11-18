@@ -173,6 +173,42 @@ func TestDefaultProjectStateDir_ClonesWithSameOriginDiffer(t *testing.T) {
 }
 
 // TestDefaultProjectStateDir_NotInRepo_FallsBackToWorkDir covers the
+// TestDefaultProjectStateDir_FollowsTheResolvedLaunchDir covers the launch path
+// written as `link/..`, where link points at a nested checkout. The kernel
+// resolves that to the checkout; a lexical clean calls it the link's own parent.
+// The local execution environment roots execution at the resolved directory, so
+// routing must land in the same project's bucket. Otherwise the session is filed
+// under one project while its tools run in another checkout, and a later search
+// launched from the checkout does not find it in its own default project scope.
+func TestDefaultProjectStateDir_FollowsTheResolvedLaunchDir(t *testing.T) {
+	root := t.TempDir()
+	checkout := filepath.Join(root, "checkout")
+	subdir := filepath.Join(checkout, "subdir")
+	launch := filepath.Join(root, "launch")
+	for _, dir := range []string{subdir, launch} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	link := filepath.Join(launch, "link")
+	if err := os.Symlink(subdir, link); err != nil {
+		t.Skipf("filesystem does not support symlinks: %v", err)
+	}
+
+	_, wantDir, err := DefaultProjectStateDir(checkout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, gotDir, err := DefaultProjectStateDir(link + string(filepath.Separator) + "..")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gotDir != wantDir {
+		t.Fatalf("state dir for --dir %s/.. = %q, want the bucket a search from the resolved checkout uses, %q", link, gotDir, wantDir)
+	}
+}
+
+// TestDefaultProjectStateDir_NotInRepo_FallsBackToWorkDir covers the
 // not-in-a-repo case: ResolveMainRepoRootLocal returns "" and the state dir
 // must key off workDir unchanged, matching pre-existing behavior for
 // non-git directories.

@@ -22,6 +22,13 @@ type Thread struct {
 	Status        ThreadStatus `json:"status"`
 	Path          string       `json:"path,omitempty"`
 	CWD           string       `json:"cwd"`
+	// CWDAlias is the spelling the session was launched with, when it differs from
+	// CWD — a launch through an absolute symlink. CWD stays canonical because it is
+	// also the filesystem root some consumers open files through. The transcript
+	// client binds an absolute file reference to a session directory by LEXICAL
+	// prefix, so a document the user wrote as <alias>/notes.md binds only against
+	// this field; the hub resolves either spelling to the same bytes.
+	CWDAlias      string       `json:"cwdAlias,omitempty"`
 	CLIVersion    string       `json:"cliVersion"`
 	Source        string       `json:"source"`
 	ThreadSource  string       `json:"threadSource,omitempty"`

@@ -71,15 +71,24 @@ func TestDocFile_AbsoluteReferenceThroughLaunchAliasStillOpens(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if thread.CWD != alias {
-		t.Fatalf("archived thread CWD = %q, want the launch alias %q", thread.CWD, alias)
+	// CWD is the canonical directory, because consumers open files through it.
+	// The alias is its own field, because binding is lexical.
+	canonicalCWD, err := filepath.EvalSymlinks(cwd)
+	if err != nil {
+		t.Fatalf("resolve fixture cwd: %v", err)
+	}
+	if thread.CWD != canonicalCWD {
+		t.Fatalf("archived thread CWD = %q, want the canonical %q", thread.CWD, cwd)
+	}
+	if thread.CWDAlias != alias {
+		t.Fatalf("archived thread CWDAlias = %q, want the launch alias %q", thread.CWDAlias, alias)
 	}
 
-	// The reference as the user typed it, bound by lexical prefix against the
-	// served CWD. If the alias is not the CWD, the client cannot bind it at all.
+	// The reference as the user typed it. It lexically prefixes the alias and not
+	// the canonical path, which is why the alias has to travel separately.
 	reference := filepath.Join(alias, "plan.md")
-	if !strings.HasPrefix(reference, thread.CWD+string(filepath.Separator)) {
-		t.Fatalf("reference %q does not lexically prefix the served CWD %q", reference, thread.CWD)
+	if !strings.HasPrefix(reference, thread.CWDAlias+string(filepath.Separator)) {
+		t.Fatalf("reference %q does not lexically prefix the served alias %q", reference, thread.CWDAlias)
 	}
 	response := docRawRequest(t, web, sessionID, reference)
 	if response.Code != http.StatusOK || response.Body.String() != "launch alias body" {

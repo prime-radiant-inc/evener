@@ -113,6 +113,7 @@ func (s *Server) appThreadWithDiagnosticsLocked(diagnostics func(DetailedStatus)
 		ModelProvider: status.Model,
 		Status:        appwire.ThreadStatus{Type: statusType},
 		CWD:           workingDir,
+		CWDAlias:      envelope.WorkingDirAlias,
 		Path:          filepath.Base(workingDir),
 		Source:        sourceID,
 		Evener: appwire.EvenerThread{

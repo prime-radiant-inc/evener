@@ -4577,6 +4577,15 @@ export interface Thread {
   status: ThreadStatus;
   path?: string;
   cwd: string;
+  /**
+   * CWDAlias is the spelling the session was launched with, when it differs from
+   * CWD — a launch through an absolute symlink. CWD stays canonical because it is
+   * also the filesystem root some consumers open files through. The transcript
+   * client binds an absolute file reference to a session directory by LEXICAL
+   * prefix, so a document the user wrote as <alias>/notes.md binds only against
+   * this field; the hub resolves either spelling to the same bytes.
+   */
+  cwdAlias?: string;
   cliVersion: string;
   source: string;
   threadSource?: string;

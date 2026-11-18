@@ -575,6 +575,17 @@ describe("bindServedPath", () => {
     expect(bindServedPath(`${artifactsDir}/report.md`, cwd)).toBeUndefined();
     expect(bindServedPath(`${scratchDir}/shot.png`, cwd, { artifactsDir })).toBeUndefined();
   });
+
+  it("binds an absolute reference written in the launch alias to the working directory", () => {
+    const cwdAlias = "/work/link";
+    expect(bindServedPath(`${cwdAlias}/docs/plan.md`, cwd, { cwdAlias })).toMatchObject({
+      path: "docs/plan.md",
+      cwd,
+    });
+    // The alias is a second spelling of the working directory, never a root of
+    // its own: without it the same reference names no served document.
+    expect(bindServedPath(`${cwdAlias}/docs/plan.md`, cwd, {})).toBeUndefined();
+  });
 });
 
 describe("scratch-rooted references", () => {

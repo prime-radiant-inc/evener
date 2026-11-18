@@ -585,6 +585,12 @@ export interface ThreadModel {
   // location cluster and doc-pane cwd-relativization. Snapshot-only - a
   // reconnect re-hydrates them; nothing pushes them live.
   cwd: string;
+  // The spelling the session was launched with when it differs from cwd (wire
+  // Thread.cwdAlias), a launch through an absolute symlink. cwd stays the
+  // filesystem root every served path is resolved against; this is only the
+  // second spelling an absolute reference may have been written in, and the
+  // binder tries it as a lexical prefix so the reference still opens.
+  cwdAlias?: string;
   // The session's retained artifacts directory on the hub that serves it
   // (wire Thread.evener.artifactsDir), absent when no local path names one. A
   // file: link is openable through the doc pane only when it resolves inside

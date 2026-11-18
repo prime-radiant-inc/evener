@@ -11,7 +11,9 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
 func TestShellOutputImageCandidatesConservative(t *testing.T) {
@@ -522,5 +524,64 @@ func TestOutputImagesForToolCallRepairableMalformedReadFile(t *testing.T) {
 	imgs := outputImagesForToolCall("01DOC", cwd, "read_file", `{file_path: "shot.png"}`, "[image: png, 12 bytes, base64 data follows]")
 	if len(imgs) != 1 || imgs[0].Source != "read-file" || imgs[0].Path != "shot.png" || imgs[0].URL == "" {
 		t.Fatalf("repairable-malformed read_file should recover thumbnail, got %+v", imgs)
+	}
+}
+
+// TestArchivedImageEnrichmentReadsTheCanonicalRoot covers an archived session
+// launched through a symlink whose link is later removed. The thread's CWD is
+// the launch alias — the spelling the client binds references against — but
+// enrichment OPENS files, so it must root at the canonical working directory. A
+// relative image path under a removed alias would otherwise produce no thumbnail
+// even though the image is still on disk, and a repointed alias would produce a
+// descriptor for a different checkout than the document route serves.
+func TestArchivedImageEnrichmentReadsTheCanonicalRoot(t *testing.T) {
+	root := t.TempDir()
+	physical := filepath.Join(root, "physical-checkout")
+	if err := os.MkdirAll(physical, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	png := []byte{0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0}
+	if err := os.WriteFile(filepath.Join(physical, "shot.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "checkout-alias")
+	if err := os.Symlink(physical, alias); err != nil {
+		t.Skipf("filesystem does not support symlinks: %v", err)
+	}
+	// The link is gone by the time the session is read back, which is the case the
+	// alias-rooted read cannot survive.
+	if err := os.Remove(alias); err != nil {
+		t.Fatal(err)
+	}
+
+	thread := appwire.Thread{
+		ID:        "01DOC",
+		SessionID: "01DOC",
+		CWD:       alias,
+		CWDAlias:  alias,
+		Turns: []appwire.Turn{{Items: []appwire.ThreadItem{{
+			Type:     "commandExecution",
+			ToolName: "shell",
+			Output:   "created shot.png",
+			Status:   appwire.TurnStatusCompleted,
+		}}}},
+	}
+	entry := hubcore.PastEntry{Meta: schema.SessionMeta{
+		ID:      "01DOC",
+		EnvInfo: schema.EnvironmentInfo{WorkingDir: physical, LaunchDir: alias},
+	}}
+
+	got := reconcileAndEnrichPastThread(entry, thread)
+	imgs := got.Turns[0].Items[0].OutputImages
+	if len(imgs) != 1 || imgs[0].Path != "shot.png" {
+		t.Fatalf("OutputImages=%+v, want one shot.png descriptor read from the canonical root", imgs)
+	}
+	// Enrichment must not rewrite the wire's CWD: that field is the spelling the
+	// client binds against, and this pass only chooses where it reads bytes.
+	if got.CWD != thread.CWD {
+		t.Fatalf("thread CWD after enrichment = %q, want it left as %q", got.CWD, thread.CWD)
+	}
+	if got.CWDAlias != alias {
+		t.Fatalf("thread CWDAlias after enrichment = %q, want the launch alias %q kept for binding", got.CWDAlias, alias)
 	}
 }

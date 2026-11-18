@@ -66,7 +66,12 @@ type threadEnvelope struct {
 	// environment carrier and SessionMeta checkpoints share this field; the
 	// generation prevents an older in-flight checkpoint from replacing a newer
 	// carrier commit.
-	WorkingDir           string
+	WorkingDir string
+	// WorkingDirAlias is the spelling the session was launched with, when it
+	// differs from WorkingDir. WorkingDir is canonical because consumers open
+	// files through it; the alias exists only so a client that binds references
+	// lexically can still match a document the user wrote through the symlink.
+	WorkingDirAlias      string
 	cwdCarrierGeneration uint64
 	// Carrier generations are internal per-identity fences. A sampled checkpoint
 	// captures them before leaving s.mu and cannot overwrite a newer direct patch.
@@ -466,6 +471,10 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 		meta := src.SessionMeta()
 		if facets&facetMeta != 0 {
 			next.WorkingDir = meta.EnvInfo.WorkingDir
+			next.WorkingDirAlias = ""
+			if binding := meta.EnvInfo.BindingDir(); binding != meta.EnvInfo.WorkingDir {
+				next.WorkingDirAlias = binding
+			}
 			next.Name = strings.TrimSpace(meta.Name)
 			next.Preview = strings.TrimSpace(schema.SessionDisplayName(meta))
 			if !meta.LastTurnEndedAt.IsZero() {

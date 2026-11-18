@@ -34,7 +34,15 @@ interface TextOffset {
  * what the scan would have (see analysisCache.ts). */
 export function enhanceFileReferences(
   root: HTMLElement,
-  context: { sessionRef: string; cwd: string; sourcePaneId: string; artifactsDir?: string; scratchDir?: string },
+  context: {
+    sessionRef: string;
+    cwd: string;
+    /** The launch spelling when it differs from cwd; see ServedRoots.cwdAlias. */
+    cwdAlias?: string;
+    sourcePaneId: string;
+    artifactsDir?: string;
+    scratchDir?: string;
+  },
   analysis?: AnalysisCache,
 ): () => void {
   const epoch = {};
@@ -44,7 +52,11 @@ export function enhanceFileReferences(
   const owns = (node: Node) => epochs.get(root) === epoch && root.contains(node);
   const qualifiedRef = context.sessionRef.includes(":") ? context.sessionRef : `local:${context.sessionRef}`;
   if (!isValidTranscriptRef(qualifiedRef) || !context.cwd || !context.sourcePaneId) return () => {};
-  const served: ServedRoots = { artifactsDir: context.artifactsDir, scratchDir: context.scratchDir };
+  const served: ServedRoots = {
+    artifactsDir: context.artifactsDir,
+    scratchDir: context.scratchDir,
+    cwdAlias: context.cwdAlias,
+  };
 
   function activate(link: HTMLAnchorElement, request: DocumentOpenRequest) {
     const href = link.getAttribute("href");

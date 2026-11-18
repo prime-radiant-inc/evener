@@ -29,7 +29,16 @@ func RuntimeDirWithStateHome(workDir, overrideDir, stateHome string) (identifier
 	if overrideDir != "" {
 		return identifier.Project{}, overrideDir, nil
 	}
-	project, err := identifier.ResolveProject(workDir)
+	// The work dir is resolved with the same walk a local execution environment
+	// uses for its root, and for the same reason: `identifier.ResolveProject`
+	// cleans the path LEXICALLY before it resolves symlinks, so `/launch/link/..`
+	// becomes `/launch` there, while the kernel — and therefore every file
+	// operation the session performs — uses `/checkout`, the physical parent of
+	// what link points at. Routing on the lexical answer would file the session
+	// under one project's bucket while its tools ran in another checkout, and a
+	// later search from the checkout would not find it. One resolver, called from
+	// both paths, is the only way the two cannot disagree.
+	project, err := identifier.ResolveProject(canonicalStateDir(workDir))
 	if err != nil {
 		return identifier.Project{}, "", err
 	}

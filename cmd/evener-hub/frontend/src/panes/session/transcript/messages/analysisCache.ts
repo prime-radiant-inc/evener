@@ -71,17 +71,28 @@ export function createAnalysisCache(): AnalysisCache {
   // A pass runs block by block under one context, so the last one is memoized
   // and the composite key is built only when the context actually changes.
   let lastCwd: string | undefined;
+  let lastCwdAlias: string | undefined;
   let lastArtifacts: string | undefined;
   let lastScratch: string | undefined;
   let lastSpans: RecentEntries<FileReferenceSpan[]> | undefined;
 
   function spansFor(cwd: string, served: ServedRoots | undefined): RecentEntries<FileReferenceSpan[]> {
+    // Every root that decides a span is in the key: the alias admits an
+    // absolute reference written in the launch spelling, so a pass run with it
+    // and a pass run without it answer differently for the same text.
+    const cwdAlias = served?.cwdAlias ?? "";
     const artifacts = served?.artifactsDir ?? "";
     const scratch = served?.scratchDir ?? "";
-    if (lastSpans !== undefined && cwd === lastCwd && artifacts === lastArtifacts && scratch === lastScratch) {
+    if (
+      lastSpans !== undefined &&
+      cwd === lastCwd &&
+      cwdAlias === lastCwdAlias &&
+      artifacts === lastArtifacts &&
+      scratch === lastScratch
+    ) {
       return lastSpans;
     }
-    const context = JSON.stringify([cwd, artifacts, scratch]);
+    const context = JSON.stringify([cwd, cwdAlias, artifacts, scratch]);
     let entries = byContext.get(context);
     if (entries === undefined) {
       entries = new RecentEntries<FileReferenceSpan[]>();
@@ -92,6 +103,7 @@ export function createAnalysisCache(): AnalysisCache {
       }
     }
     lastCwd = cwd;
+    lastCwdAlias = cwdAlias;
     lastArtifacts = artifacts;
     lastScratch = scratch;
     lastSpans = entries;

@@ -195,7 +195,12 @@ func TestFind_ProjectName_LegacyRelativeRecordIsNoEvidence(t *testing.T) {
 // Both facts have to be recorded: identity canonical, binding from the spelling
 // the user typed.
 func TestEnvInfoKeepsLaunchAliasForClientBinding(t *testing.T) {
-	root := t.TempDir()
+	// A canonical root, so the checkout alias built below is the ONLY symlink in
+	// the fixture. On a host whose temp prefix is itself a symlink (/var on
+	// macOS) a raw t.TempDir() makes even the "direct launch" go through a link,
+	// the snapshot correctly records a LaunchDir for it, and the empty-alias
+	// assertion fails on the fixture rather than on the behavior it names.
+	root := testfs.CanonicalTempDir(t)
 	physical := filepath.Join(root, "physical-checkout")
 	if err := os.MkdirAll(physical, 0o755); err != nil {
 		t.Fatalf("mkdir physical: %v", err)
@@ -232,5 +237,45 @@ func TestEnvInfoKeepsLaunchAliasForClientBinding(t *testing.T) {
 	}
 	if plain.BindingDir() != plain.WorkingDir {
 		t.Fatalf("BindingDir for a direct launch = %q, want the working directory %q", plain.BindingDir(), plain.WorkingDir)
+	}
+}
+
+// TestSessionSnapshotKeepsResumedLaunchAlias covers a resume. The snapshot is
+// rebuilt from the canonical root, which carries no alias, so a session that
+// launched through a symlink would lose the spelling its transcript's file
+// references were written with and come back with them unbound. The saved alias
+// is kept only while it still resolves to the checkout being resumed into: a
+// repointed link names a different directory, so carrying it forward would bind
+// references to bytes the session no longer runs in.
+func TestSessionSnapshotKeepsResumedLaunchAlias(t *testing.T) {
+	root := testfs.CanonicalTempDir(t)
+	physical := filepath.Join(root, "physical-checkout")
+	other := filepath.Join(root, "other-checkout")
+	for _, dir := range []string{physical, other} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	alias := filepath.Join(root, "checkout-alias")
+	if err := os.Symlink(physical, alias); err != nil {
+		t.Skipf("filesystem does not support symlinks: %v", err)
+	}
+
+	s := &Session{restoredLaunchAlias: alias}
+	s.envInfo = schema.EnvironmentInfo{WorkingDir: canonicalStateDir(physical), LaunchDir: alias}
+	if got := s.snapshotEnvironmentInfo(execenv.NewLocalExecutionEnvironment(physical)).LaunchDir; got != alias {
+		t.Fatalf("resumed snapshot LaunchDir = %q, want the saved alias %q", got, alias)
+	}
+
+	// Repointed: the alias now names a different checkout, so it is not this
+	// session's launch spelling and must not be restored.
+	if err := os.Remove(alias); err != nil {
+		t.Fatalf("remove alias: %v", err)
+	}
+	if err := os.Symlink(other, alias); err != nil {
+		t.Fatalf("relink alias: %v", err)
+	}
+	if got := s.snapshotEnvironmentInfo(execenv.NewLocalExecutionEnvironment(physical)).LaunchDir; got != "" {
+		t.Fatalf("resumed snapshot LaunchDir = %q, want empty for an alias that no longer names this checkout", got)
 	}
 }

@@ -3825,3 +3825,86 @@ func TestFind_ProjectName_RelativeRecordNeverUsesTheSearchersCheckout(t *testing
 		t.Fatalf("projectName(legacy row whose only record is a relative --dir, searched from %q) = %q, want empty", "searchers-own-repo", got)
 	}
 }
+
+// TestFind_ProjectName_MovedParentCheckoutStillNamesItsLane covers a pruned
+// managed lane in a flat --state-dir whose only surviving evidence is its
+// parent's record. The parent is originless and its checkout has moved, so
+// nothing on disk resolves, but the recorded absolute path hashes to the same
+// project ID the lane's own path stores. That recording is evidence even after
+// the directory it names is gone: the row's own admissibility decides whether
+// the parent names the lane, so a parent from another project is still refused.
+//
+// Bucket-wide inference is disabled here, which is what makes the parent the
+// only source that can answer: a flat override is not a per-project bucket.
+func TestFind_ProjectName_MovedParentCheckoutStillNamesItsLane(t *testing.T) {
+	moved := newNamedCheckout(t, "moved-repo")
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(moved))
+	flat := canonicalStateDir(t.TempDir())
+	if err := os.MkdirAll(filepath.Join(flat, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir flat state dir: %v", err)
+	}
+	if err := os.RemoveAll(moved); err != nil {
+		t.Fatalf("move the parent checkout away: %v", err)
+	}
+
+	parentID := identifier.MustNewSessionID()
+	parent := schema.SessionMeta{ID: parentID}
+	parent.EnvInfo.WorkingDir = moved
+	if err := schema.SaveSessionMeta(flat, parent); err != nil {
+		t.Fatal(err)
+	}
+
+	row := schema.SessionMeta{ParentSessionID: parentID}
+	row.EnvInfo.WorkingDir = filepath.Join(flat, "worktrees", project.ID, "dlg_moved_parent")
+	if got, want := projectName(row, flat), "moved-repo"; got != want {
+		t.Fatalf("projectName(pruned lane whose originless parent checkout moved) = %q, want the parent's recorded project %q", got, want)
+	}
+}
+
+// TestFind_ProjectName_RelativeFallbacksNeverLabelADot covers the two basename
+// fallbacks a legacy record can reach: a sibling's restore root and an owner's
+// home directory. Both answer from a recorded path's last segment, which is only
+// meaningful for a path that named a directory. A relative record names none —
+// it would be read against whatever directory this process happens to run in —
+// and "." is a label every such record shares, so neither fallback may produce
+// it.
+func TestFind_ProjectName_RelativeFallbacksNeverLabelADot(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(newNamedCheckout(t, "dot-repo")))
+	bucket, err := RuntimeDirForProjectWithStateHome(project, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	// A sibling that records only a relative restore root and no origin.
+	sibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	sibling.WorktreeRestoreRoot = "."
+	sibling.WorktreePath = filepath.Join(bucket, "worktrees", project.ID, "dlg_dot_sibling")
+
+	resolver := newProjectNameResolver(map[string][]schema.SessionMeta{
+		bucket: {sibling},
+	})
+	ownerless := schema.SessionMeta{}
+	ownerless.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", project.ID, "dlg_dot_lane")
+	if got, want := resolver.projectName(ownerless, bucket), ""; got != want {
+		t.Fatalf("projectName(ownerless lane whose only sibling records a relative restore root) = %q, want %q", got, want)
+	}
+
+	// An owner that records an origin-less relative home directory.
+	ownerID := identifier.MustNewSessionID()
+	owner := schema.SessionMeta{ID: ownerID}
+	owner.EnvInfo.WorkingDir = "."
+	if err := schema.SaveSessionMeta(bucket, owner); err != nil {
+		t.Fatal(err)
+	}
+	owned := schema.SessionMeta{}
+	owned.EnvInfo.WorkingDir = filepath.Join(bucket, "sessions", ownerID, "worktrees", "dlg_dot_owner")
+	if got, want := resolver.projectName(owned, bucket), ""; got != want {
+		t.Fatalf("projectName(lane whose owner records a relative home directory) = %q, want %q", got, want)
+	}
+}

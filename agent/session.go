@@ -987,6 +987,11 @@ type Session struct {
 	// in s.fork. Empty on the fresh-session path. Read without a lock, like cfg —
 	// it is set once before the session goes live and never mutated after.
 	restoredMetaParentSessionID string
+	// restoredLaunchAlias is the launch spelling recorded by the session this one
+	// resumed. It is carried to the rebuilt snapshot so a resume through the same
+	// checkout keeps the alias its transcript's file references were written
+	// with. Cleared when it no longer resolves to that checkout.
+	restoredLaunchAlias string
 	// restoredScratchTreeRoot is the root whose scratch tree a delegate resumed
 	// on its own keeps its scratch in (SessionMeta.RestoredScratchTreeRoot in
 	// schema). Set once during restore and read like cfg; empty otherwise.

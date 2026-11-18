@@ -1007,6 +1007,9 @@ export function applyReadResponse<M extends ThreadModel>(
   // one, or link actions stay aimed at a directory the hub no longer serves.
   const clearedArtifacts = fields.artifactsDir === undefined ? { artifactsDir: undefined } : {};
   const clearedScratch = fields.scratchDir === undefined ? { scratchDir: undefined } : {};
+  // A repointed or removed launch link leaves no alias behind either, so a
+  // read that names none clears the previous spelling for the same reason.
+  const clearedCwdAlias = fields.cwdAlias === undefined ? { cwdAlias: undefined } : {};
   // A read is the authority on whether a wait is still running, and it omits
   // what has ended: the spread below keeps any field a read does not name, so a
   // quota retry retained through a disconnect would survive a read that shows
@@ -1026,6 +1029,7 @@ export function applyReadResponse<M extends ThreadModel>(
       ...fields,
       ...clearedArtifacts,
       ...clearedScratch,
+      ...clearedCwdAlias,
       ...runningTurn(resp.thread),
       olderCursor,
       olderFrontier,
@@ -1195,12 +1199,14 @@ export function applyReadModel<M extends ThreadModel>(
     fresh.artifactsDir === undefined && model.artifactsDir !== undefined ? { artifactsDir: undefined } : {};
   const clearedScratch =
     fresh.scratchDir === undefined && model.scratchDir !== undefined ? { scratchDir: undefined } : {};
+  const clearedCwdAlias = fresh.cwdAlias === undefined && model.cwdAlias !== undefined ? { cwdAlias: undefined } : {};
   let next = withDisplay(
     {
       ...base,
       ...fields,
       ...clearedArtifacts,
       ...clearedScratch,
+      ...clearedCwdAlias,
       ...(freshRunningTurnId ? { runningTurnId: freshRunningTurnId } : {}),
       olderCursor,
       olderFrontier,
