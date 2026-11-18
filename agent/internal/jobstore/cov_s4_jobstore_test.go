@@ -575,19 +575,26 @@ func TestStoreOpenTrailingRecoveryFaults(t *testing.T) {
 	// event1 terminated; event2 complete but WITHOUT a trailing newline.
 	content := `{"kind":"job_started","seq":1,"job_id":"job_A"}` + "\n" +
 		`{"kind":"job_started","seq":2,"job_id":"job_B"}`
+	// Recovery inspects and repairs the HELD HANDLE, so every index below is the
+	// handle operation the current path performs at that point: identity against
+	// the name, the handle's own stat, its seek and read of the trailing byte,
+	// the whole-tail read through the handle, and the finish seek/terminate/
+	// sync. They were measured against this path rather than carried over from
+	// the one that opened the path for inspection — a table whose indices drift
+	// injects at a different operation than the name it reports, which is how it
+	// stops testing error propagation while still passing.
 	for _, tc := range []struct {
 		name string
 		op   int
 		want string
 	}{
 		{name: "inspect_stat", op: 1, want: "stat /jobs.jsonl"},
-		{name: "inspect_open", op: 2, want: "inspect /jobs.jsonl"},
-		{name: "inspect_seek", op: 3, want: "inspect trailing byte"},
-		{name: "inspect_read", op: 4, want: "read trailing byte"},
-		{name: "read_whole", op: 5, want: "read /jobs.jsonl"},
-		{name: "finish_seek", op: 8, want: "seek after trailing recovery"},
-		{name: "finish_terminate", op: 9, want: "terminate trailing event"},
-		{name: "finish_sync", op: 10, want: "sync trailing recovery"},
+		{name: "inspect_seek", op: 2, want: "inspect trailing byte"},
+		{name: "inspect_read", op: 3, want: "read trailing byte"},
+		{name: "read_whole", op: 4, want: "inspect /jobs.jsonl"},
+		{name: "finish_seek", op: 7, want: "seek after trailing recovery"},
+		{name: "finish_terminate", op: 8, want: "terminate trailing event"},
+		{name: "finish_sync", op: 9, want: "sync trailing recovery"},
 		{name: "readall_stat", op: 11, want: "stat /jobs.jsonl"},
 		{name: "readall_open", op: 12, want: "read /jobs.jsonl"},
 		{name: "readall_scan", op: 13, want: "scan /jobs.jsonl"},

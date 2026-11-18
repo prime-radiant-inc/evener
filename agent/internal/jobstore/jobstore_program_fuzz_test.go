@@ -938,7 +938,12 @@ func jcpStoreErrorPaths(t *testing.T, root string, r *jcpReader) {
 			t.Fatalf("seed %s: %v", operation.label, err)
 		}
 		raw := jcpOpenAferoFile(t, base, "/partial.jsonl")
-		s := &Store{path: "/partial.jsonl", fs: &jcpHookFS{Fs: base, wrap: operation.wrap}, f: raw}
+		// Recovery inspects the HELD handle — it seeks and reads through the file
+		// this store appends with, never through a fresh open of the path. A hook
+		// installed on the filesystem's Open therefore never fires here, and the
+		// seed would assert nothing about the failures it names. The handle is
+		// what has to be wrapped.
+		s := &Store{path: "/partial.jsonl", fs: base, f: operation.wrap(raw)}
 		jcpRequireError(t, operation.label, s.recoverTrailingPartialLineLocked())
 		_ = raw.Close()
 	}
