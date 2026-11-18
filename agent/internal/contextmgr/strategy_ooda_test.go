@@ -301,13 +301,16 @@ func TestOODAStrategy_ManageContext_AppliesCompactionLayers(t *testing.T) {
 		t.Errorf("expected first layer to be session_log_checkpoint, got %q", emittedLayers[0])
 	}
 
-	// Should also have injected orient message at the end.
+	// Should also have injected orient message at the end, carrying the
+	// fixture's own session-log entry. The banner is production copy; the log
+	// summary is data this test supplied, so that is what the tail turn is
+	// checked for.
 	lastTurn := history[len(history)-1]
 	if lastTurn.Kind != schema.TurnSteering {
 		t.Errorf("expected last turn to be TurnSteering, got %v", lastTurn.Kind)
 	}
-	if !strings.Contains(lastTurn.Message.Text(), "[SESSION ORIENTATION]") {
-		t.Errorf("expected orient message at end after compaction")
+	if !strings.Contains(lastTurn.Message.Text(), "Did something") {
+		t.Errorf("expected the orient message at the end after compaction to carry the fixture's session-log entry")
 	}
 }
 
@@ -433,8 +436,14 @@ func TestSummarizeRefusalKeepsFreeLayers(t *testing.T) {
 	if summarized(t, *history) {
 		t.Fatal("a refused context still summarized")
 	}
+	// The free orientation layer is identified by the fixture's OWN session-log
+	// entry reaching the tail turn, which is data this test supplied. Asserting
+	// the production banner instead would only prove the copy is unchanged.
 	last := (*history)[len(*history)-1]
-	if last.Kind != schema.TurnSteering || !strings.Contains(last.Message.Text(), "[SESSION ORIENTATION]") {
-		t.Fatal("the refusal also dropped the zero-call orientation layer: only the summarizer may be refused")
+	if last.Kind != schema.TurnSteering {
+		t.Fatalf("the refusal also dropped the zero-call orientation layer: rather than only the summarizer, the tail turn is %v", last.Kind)
+	}
+	if !strings.Contains(last.Message.Text(), "Ran git status to check repo state") {
+		t.Fatal("the refusal also dropped the zero-call orientation layer: the tail turn does not carry the fixture's session-log entry")
 	}
 }
