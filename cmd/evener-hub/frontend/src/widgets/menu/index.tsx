@@ -164,13 +164,17 @@ function stepEnabledIndex(items: MenuEntry[], from: number, delta: 1 | -1): numb
  * scrollable list, a status row hard against the viewport's edge) otherwise
  * gets cut off, at its container's edge or the viewport's, with no way for
  * a descendant to escape either via CSS alone. Reopening always re-measures
- * rather than trusting a stale position. A resize, a document scroll, or a
- * scroll INSIDE a container that holds the trigger closes the menu rather
- * than continuously repositioning it (the trigger's rect moves out from
- * under the fixed popup in all three). A scroll anywhere else - the session
- * transcript scrolling beside its own chrome's "..." menu, an unrelated
- * pane - leaves the trigger's rect exactly where it was, so the menu stays
- * open (kata: the session's "..." menu must survive transcript scrolling).
+ * rather than trusting a stale position. A document scroll, or a scroll
+ * INSIDE a container that holds the trigger, closes the menu (the trigger's
+ * rect moves out from under the fixed popup). A viewport resize re-anchors
+ * it to the trigger's new rect instead of closing: the resize that matters
+ * most is the software keyboard leaving when this menu's own FocusScope
+ * takes focus out of the editor that opened it, and closing there would
+ * swallow the tap that opened the menu (#6337 - see the resize handler
+ * below). A scroll anywhere else - the session transcript scrolling beside
+ * its own chrome's "..." menu, an unrelated pane - leaves the trigger's rect
+ * exactly where it was, so the menu stays open (kata: the session's "..."
+ * menu must survive transcript scrolling).
  */
 export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "default" }: MenuProps) {
   const [isOpen, setIsOpen] = useState(false);
@@ -215,21 +219,12 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   }, []);
 
   // Measures the trigger and the popup's own natural (unclamped) size and
-  // corrects the naive position openMenu set to the actual flipped/clamped
-  // one - see computeMenuPosition above. This is a layout effect, so it -
-  // and the re-render its setPosition call causes - both complete before
-  // the browser's next paint, in the same commit as the mount itself: nothing
-  // ever visibly jumps, even though the popup is visible (never
-  // visibility: hidden) for the brief moment between the two. Hiding it for
-  // that moment was tried and reverted - see this task's report: it made
-  // the popup unreachable to FocusScope's own tabbable() scan (an ancestor
-  // walk that treats a hidden ancestor as making every descendant
-  // untabbable, correctly, since that's the general case a widget nested
-  // inside e.g. a collapsed accordion needs) for however long the popup
-  // stayed hidden, which could lose the race against FocusScope's own
-  // mount effect - moving focus nowhere instead of the first item.
-  useLayoutEffect(() => {
-    if (!isOpen) return;
+  // moves the popup to the flipped/clamped position - see computeMenuPosition
+  // above. Runs in the commit that mounts the popup, and again on every
+  // viewport resize while it is open (the resize handler below), so the popup
+  // follows its trigger rather than closing when the viewport changes under
+  // it.
+  const placeMenu = useCallback(() => {
     const triggerEl = triggerRef.current;
     const popupEl = popupRef.current;
     if (!triggerEl || !popupEl) return;
@@ -248,7 +243,24 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     );
     setPosition(placed);
     setOrigin(transformOriginFor(triggerRect, placed));
-  }, [isOpen, ownerDocument]);
+  }, [ownerDocument]);
+
+  // The measuring pass above is a layout effect, so it - and the re-render
+  // its setPosition call causes - both complete before the browser's next
+  // paint, in the same commit as the mount itself: nothing ever visibly
+  // jumps, even though the popup is visible (never visibility: hidden) for
+  // the brief moment between the naive position openMenu set and this one.
+  // Hiding it for that moment was tried and reverted - see this task's
+  // report: it made the popup unreachable to FocusScope's own tabbable() scan
+  // (an ancestor walk that treats a hidden ancestor as making every
+  // descendant untabbable, correctly, since that's the general case a widget
+  // nested inside e.g. a collapsed accordion needs) for however long the
+  // popup stayed hidden, which could lose the race against FocusScope's own
+  // mount effect - moving focus nowhere instead of the first item.
+  useLayoutEffect(() => {
+    if (!isOpen) return;
+    placeMenu();
+  }, [isOpen, placeMenu]);
 
   function focusIndex(index: number) {
     if (index === -1) return;
@@ -380,8 +392,19 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         closeMenu();
       }
     }
-    return watchViewport(rootRef.current, onScrollCapture, closeMenu);
-  }, [isOpen, closeMenu, ownerDocument]);
+    // A resize re-anchors, it never dismisses. The resize this menu actually
+    // sees on a phone is its own doing: opening moved focus out of the
+    // composer's editor (FocusScope above), the software keyboard closed, and
+    // index.html's `interactive-widget=resizes-content` grew the layout
+    // viewport back by the keyboard's height - a window `resize` with no
+    // pointer behind it. Closing on that swallowed the very tap that opened
+    // the menu (#6337). A reader's dismissal is a press, and a press outside
+    // the menu still closes it at the press (useDismissOnOutsidePress above);
+    // it does not arrive as a resize. A real layout change (a window drag, a
+    // rotation) therefore keeps the menu open and correctly attached instead
+    // of making it vanish.
+    return watchViewport(rootRef.current, onScrollCapture, placeMenu);
+  }, [isOpen, closeMenu, ownerDocument, placeMenu]);
 
   const iconOnly = label !== undefined;
   const triggerClassName = [

@@ -3,13 +3,16 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { act, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { createPortal } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { expect, test, vi } from "vitest";
 import { MOBILE_QUERY } from "../../shell/useIsMobile";
 import { escapeRegExp } from "../../styles/cssBlock";
+import { Button } from "../button";
 import { Dialog } from "../dialog";
 import { appendPopout } from "../internal/popoutTestUtils";
+import { Textarea } from "../textarea";
 import { Menu, type MenuItem } from "./index";
 
 function items(overrides?: Partial<Record<string, Partial<MenuItem>>>): MenuItem[] {
@@ -20,6 +23,19 @@ function items(overrides?: Partial<Record<string, Partial<MenuItem>>>): MenuItem
   ];
   if (!overrides) return base;
   return base.map((item) => (overrides[item.id] ? { ...item, ...overrides[item.id] } : item));
+}
+
+// The composer's own shape, reduced to what #6337 needs: a text field the
+// person is typing into (so the software keyboard is up) beside a Menu
+// trigger in the same control row.
+function ComposerLikeSurface() {
+  const [draft, setDraft] = useState("");
+  return (
+    <div>
+      <Textarea aria-label="Message" value={draft} onChange={(event) => setDraft(event.target.value)} />
+      <Menu trigger="Actions" items={items()} />
+    </div>
+  );
 }
 
 test("renders only the trigger when closed", () => {
@@ -233,14 +249,121 @@ test("a document scroll closes the menu", async () => {
   expect(screen.queryByRole("menu")).toBeNull();
 });
 
-test("a viewport resize still closes the menu regardless of scroll semantics", async () => {
+// A viewport resize re-anchors the menu to the trigger's new rect. It used to
+// close: on Android the resize that matters is the software keyboard leaving
+// when the menu's own FocusScope takes focus out of the composer's editor,
+// and closing on it swallowed the tap that opened the menu (#6337). A reader's
+// dismissal is a press (the test below), never a resize. See the two tests in
+// the #6337 block for the full chain.
+test("a viewport resize re-anchors the menu instead of closing it", async () => {
   const user = userEvent.setup();
-  render(<Menu trigger="Actions" items={items()} />);
+  let triggerTop = 400;
+  const box = (left: number, top: number, width: number, height: number) =>
+    ({
+      left,
+      top,
+      right: left + width,
+      bottom: top + height,
+      width,
+      height,
+      x: left,
+      y: top,
+      toJSON: () => ({}),
+    }) as DOMRect;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  try {
+    render(<Menu trigger="Actions" items={items()} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu").style.top).toBe("432px"); // 400 + 28 + TRIGGER_GAP
+
+    triggerTop = 200;
+    fireEvent(window, new Event("resize"));
+
+    expect(screen.getByRole("menu").style.top).toBe("232px"); // 200 + 28 + TRIGGER_GAP
+  } finally {
+    vi.restoreAllMocks();
+  }
+});
+
+// --- the software keyboard is not a dismiss gesture (#6337) ----------------
+// index.html sets `interactive-widget=resizes-content`, so on Android Chrome
+// the layout viewport grows back when the keyboard closes, and the window
+// fires `resize` for it. Opening this menu from the composer's control row is
+// what closes the keyboard: FocusScope moves focus out of the editor. That
+// resize carries no pointer press, so it is not the reader dismissing
+// anything. The menu must stay open AND follow the trigger (a fix that merely
+// stopped closing could leave it detached).
+test("a keyboard-dismissal resize leaves the composer's menu open and re-anchored", async () => {
+  const user = userEvent.setup();
+  let triggerTop = 400;
+  const box = (left: number, top: number, width: number, height: number) =>
+    ({
+      left,
+      top,
+      right: left + width,
+      bottom: top + height,
+      width,
+      height,
+      x: left,
+      y: top,
+      toJSON: () => ({}),
+    }) as DOMRect;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  try {
+    render(<ComposerLikeSurface />);
+
+    const editor = screen.getByRole("textbox", { name: "Message" });
+    await user.click(editor);
+    expect(document.activeElement).toBe(editor);
+
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu")).toBeTruthy();
+    // The focus move that dismisses the Android keyboard: the editor the
+    // person was typing in no longer has focus.
+    expect(document.activeElement).not.toBe(editor);
+    expect(screen.getByRole("menu").style.top).toBe("432px");
+
+    // The keyboard is gone, the composer sits lower, and the browser reports
+    // the layout viewport change the menu's own focus move caused.
+    triggerTop = 200;
+    fireEvent(window, new Event("resize"));
+
+    expect(screen.getByRole("menu")).toBeTruthy();
+    expect(screen.getByRole("menu").style.top).toBe("232px");
+  } finally {
+    vi.restoreAllMocks();
+  }
+});
+
+// The negative direction: the menu is still live after that resize, and a
+// genuine press outside still dismisses it. Without this, a fix that simply
+// stopped closing the menu would pass the test above.
+test("an outside press still closes the menu after a keyboard-dismissal resize", async () => {
+  const user = userEvent.setup();
+  render(
+    <>
+      <ComposerLikeSurface />
+      <Button type="button">Elsewhere</Button>
+    </>,
+  );
+  await user.click(screen.getByRole("textbox", { name: "Message" }));
   await user.click(screen.getByRole("button", { name: "Actions" }));
   expect(screen.getByRole("menu")).toBeTruthy();
 
   fireEvent(window, new Event("resize"));
+  expect(screen.getByRole("menu")).toBeTruthy();
 
+  await user.click(screen.getByRole("button", { name: "Elsewhere" }));
   expect(screen.queryByRole("menu")).toBeNull();
 });
 
