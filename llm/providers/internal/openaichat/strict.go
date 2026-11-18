@@ -629,9 +629,34 @@ func derivedScalarType(m map[string]any, dialect schemaDialect) (string, bool) {
 // package can receive: the Go scalars a builder writes, the types a
 // json.Number-carrying decode yields, and the concrete aliases of them.
 //
+// A value with its own JSON representation is classified by what it encodes to,
+// which is what the request carries. A named integer type with a string
+// marshaler has a Go kind of int and a wire value of "fast"; classifying it by
+// kind states "number" beside a set of strings and rejects every advertised
+// member. This is the same rule enumMembers applies to a whole enum, applied to
+// one member, so members and the type cannot disagree.
+//
 // A container, a nil, or a numeric type that does not marshal as a JSON number
 // reports false, because the caller cannot name it without changing the set.
 func scalarJSONType(value any) (string, bool) {
+	if _, isNumber := value.(json.Number); !isNumber {
+		if marshaler, ok := value.(json.Marshaler); ok {
+			encoded, err := marshaler.MarshalJSON()
+			if err != nil {
+				return "", false
+			}
+			var decoded any
+			decoder := json.NewDecoder(strings.NewReader(string(encoded)))
+			decoder.UseNumber()
+			if err := decoder.Decode(&decoded); err != nil {
+				return "", false
+			}
+			// The decoded value is a plain scalar in the same spellings the
+			// rest of this function already reads, so classify that rather
+			// than the original.
+			return scalarJSONType(decoded)
+		}
+	}
 	switch v := value.(type) {
 	case string:
 		return "string", true
@@ -878,6 +903,20 @@ func deepCopyAny(v any) any {
 		out := make(map[string]any, len(x))
 		for k, vv := range x {
 			out[k] = deepCopyAny(vv)
+		}
+		return out
+	case []map[string]any:
+		// The slice sibling of the arm above: a Go builder writes anyOf,
+		// oneOf and allOf as []map[string]any, and the default arm would return
+		// the caller's slice. The walk only reads []any, so every branch was
+		// skipped and a typeless node inside one reached the provider
+		// unchanged.
+		if x == nil {
+			return nil
+		}
+		out := make([]any, len(x))
+		for i := range x {
+			out[i] = deepCopyAny(x[i])
 		}
 		return out
 	case []any:

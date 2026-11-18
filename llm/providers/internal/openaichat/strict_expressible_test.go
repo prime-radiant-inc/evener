@@ -1926,3 +1926,109 @@ func TestSupplyDerivedTypesReadsAnEmbeddedDialect(t *testing.T) {
 		t.Fatalf("emitted const = %#v, want it preserved", payload["const"])
 	}
 }
+
+// stringlyInt is a named integer type whose encoder emits a JSON string, the
+// shape a builder reaches for when it wants a readable name on the wire. Its Go
+// kind says number and its encoder says string, so a classification by kind
+// states "number" beside a set of string members and no advertised member
+// survives the projection.
+type stringlyInt int
+
+const (
+	stringlyFast stringlyInt = iota
+	stringlySafe
+)
+
+func (s stringlyInt) MarshalJSON() ([]byte, error) {
+	if s == stringlyFast {
+		return []byte(`"fast"`), nil
+	}
+	return []byte(`"safe"`), nil
+}
+
+// A named integer type that encodes as a string is still a string on the wire,
+// and the type stated beside an enum has to describe the members the encoder
+// sends. Classifying by Go kind states "number" for an enum of strings, so the
+// emitted schema rejects every member the advertised one lists.
+func TestSupplyDerivedTypesReadsANamedTypeThroughItsEncoder(t *testing.T) {
+	t.Parallel()
+	t.Run("enum of a string-encoding named int", func(t *testing.T) {
+		t.Parallel()
+		emitted := SupplyDerivedTypes(map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"mode": map[string]any{"enum": []stringlyInt{stringlyFast, stringlySafe}},
+			},
+			"required": []string{"mode"},
+		})
+		mode := emitted["properties"].(map[string]any)["mode"].(map[string]any)
+		if mode["type"] != "string" {
+			t.Fatalf("emitted type = %#v, want \"string\": the type must describe the JSON the encoder sends, not the Go kind", mode["type"])
+		}
+		if !schemaAccepts(t, emitted, map[string]any{"mode": "fast"}) {
+			t.Fatal("the emitted schema rejects a member the advertised enum lists")
+		}
+		if !schemaAccepts(t, emitted, map[string]any{"mode": "safe"}) {
+			t.Fatal("the emitted schema rejects a member the advertised enum lists")
+		}
+	})
+	t.Run("const of a string-encoding named int", func(t *testing.T) {
+		t.Parallel()
+		emitted := SupplyDerivedTypes(map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"payload": map[string]any{"const": stringlyFast},
+			},
+			"required": []string{"payload"},
+		})
+		payload := emitted["properties"].(map[string]any)["payload"].(map[string]any)
+		if payload["type"] != "string" {
+			t.Fatalf("emitted type = %#v, want \"string\": the same rule decides const and enum", payload["type"])
+		}
+		if !schemaAccepts(t, emitted, map[string]any{"payload": "fast"}) {
+			t.Fatal("the emitted schema rejects the value the advertised const names")
+		}
+	})
+}
+
+// A Go builder writes a subschema list as []map[string]any, and the walk only
+// accepted []any, so every branch of such a list was skipped: a typeless const
+// inside it reached the provider unchanged and cost the whole request.
+func TestSupplyDerivedTypesWalksTypedSubschemaLists(t *testing.T) {
+	t.Parallel()
+	typed := []map[string]any{
+		{"const": "fast"},
+		{"const": "safe"},
+	}
+	emitted := SupplyDerivedTypes(map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties":           map[string]any{"mode": map[string]any{"anyOf": typed}},
+		"required":             []string{"mode"},
+	})
+	mode := emitted["properties"].(map[string]any)["mode"].(map[string]any)
+	branches, ok := mode["anyOf"].([]any)
+	if !ok {
+		t.Fatalf("emitted anyOf = %T, want the branches preserved as a walkable list", mode["anyOf"])
+	}
+	if len(branches) != 2 {
+		t.Fatalf("emitted anyOf has %d branches, want 2: the walk must not drop a branch", len(branches))
+	}
+	for i, want := range []string{"fast", "safe"} {
+		branch := branches[i].(map[string]any)
+		if branch["type"] != "string" {
+			t.Fatalf("branch %d type = %#v, want \"string\": a typed subschema list must be walked like a decoded one", i, branch["type"])
+		}
+		if branch["const"] != want {
+			t.Fatalf("branch %d const = %#v, want %q: the accepted values must be preserved", i, branch["const"], want)
+		}
+	}
+	if _, mutated := typed[0]["type"]; mutated {
+		t.Fatal("the supply wrote through the caller's slice instead of copying the branch first")
+	}
+	if !schemaAccepts(t, emitted, map[string]any{"mode": "fast"}) {
+		t.Fatal("the emitted schema rejects a branch value the advertised schema accepts")
+	}
+}

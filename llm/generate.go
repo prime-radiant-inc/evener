@@ -223,7 +223,14 @@ func prepareGeneration(opts GenerateOptions) (*generationState, error) {
 	// every estimate: the list is immutable for the generation's life, and one
 	// marshal of an advertised catalog costs far more than the history walk the
 	// estimate is for (#6437).
-	toolDefsJSONBytes := ToolsJSONBytes(toolDefs)
+	//
+	// A definition that declares no parameters keeps its nil (see prepareTools),
+	// and every built-in adapter substitutes the open empty schema when it
+	// builds the wire body. Measuring the definitions as they stand would omit
+	// those bytes, and near the input limit that difference admits a request the
+	// budget would have rejected. The substitution is priced here, on a copy, so
+	// the nil the adapters read is untouched.
+	toolDefsJSONBytes := ToolsJSONBytes(asSentToolDefs(toolDefs))
 	hasActiveTool := false
 	for _, t := range opts.Tools {
 		if t.Execute != nil {
@@ -386,6 +393,27 @@ func Generate(ctx context.Context, opts GenerateOptions) (*GenerateResult, error
 			return newResult(step, totalUsage, steps, resp), nil
 		}
 	}
+}
+
+// asSentToolDefs returns defs as a built-in adapter emits them, for measuring
+// the bytes a request actually carries.
+//
+// A parameterless definition keeps a nil Parameters through preparation so an
+// adapter can tell "this tool takes no arguments" from "this tool advertises an
+// open object", and an adapter that needs a schema substitutes one. Pricing the
+// definitions as they stand therefore omits whatever the adapter substitutes.
+// This returns the substituted form and leaves the input untouched: the caller
+// keeps the nil, because the strict path reads it to choose between the closed
+// and open empty schemas.
+func asSentToolDefs(defs []ToolDefinition) []ToolDefinition {
+	sent := make([]ToolDefinition, len(defs))
+	copy(sent, defs)
+	for i := range sent {
+		if sent[i].Parameters == nil {
+			sent[i].Parameters = defaultToolParameters()
+		}
+	}
+	return sent
 }
 
 func prepareTools(tools []Tool) (map[string]Tool, []ToolDefinition, error) {
