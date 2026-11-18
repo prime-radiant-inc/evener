@@ -25,7 +25,29 @@ import { sheetKey } from "../sheet/sheetHosts";
 import type { ToastMessage } from "../Toast";
 import { type SessionInfoAction, type SessionInfoHost, SessionInfoSheet, sessionInfoHosts } from "./SessionInfoSheet";
 
-const navigation = vi.hoisted(() => ({ goBack: vi.fn(), navigate: vi.fn(), dispatch: vi.fn() }));
+const navigation = vi.hoisted(() => {
+	/** Whether another screen sits over the sheet: the one test that covers it
+	 * sets this, which is what a covering route does. */
+	const covered = { value: false };
+	return {
+		goBack: vi.fn(),
+		navigate: vi.fn(),
+		dispatch: vi.fn(),
+		covered,
+		getState: () => ({
+			index: covered.value ? 2 : 1,
+			routes: [
+				{ key: "conversation", name: "Conversation" },
+				...(covered.value
+					? [
+							{ key: "session-info", name: "SessionInfoSheet" },
+							{ key: "conversation-elsewhere", name: "Conversation" },
+						]
+					: [{ key: "session-info", name: "SessionInfoSheet" }]),
+			],
+		}),
+	};
+});
 const guard = vi.hoisted(() => ({
 	prevented: false,
 	onPrevent: null as null | ((options: { data: { action: unknown } }) => void),
@@ -544,6 +566,23 @@ describe("renaming", () => {
 		const tree = sheet();
 		expect(pressable(tree, "Fix the settle race, rename")).toBeUndefined();
 		expect(tree.root.findAll((node) => String(node.type) === "TextInput")).toEqual([]);
+	});
+	it("settles a rename the hub took while another screen covers the sheet, and says nothing there", async () => {
+		const { controls } = provide(conversation({ capabilities: { ...NONE, rename: true } }));
+		const tree = sheet();
+		press(tree, "Fix the settle race, rename");
+		const field = tree.root.find((node) => String(node.type) === "TextInput");
+		act(() => field.props.onChangeText("Settle race"));
+		// Another conversation opens over this sheet while the hub's reply is out.
+		navigation.covered.value = true;
+		await act(async () => field.props.onSubmitEditing());
+		navigation.covered.value = false;
+		// The hub took the name, so the sheet settles; the toast belongs to a
+		// reader still looking at this sheet, and there is none to tell.
+		expect(controls.rename).toHaveBeenCalledWith("Settle race");
+		expect(markers(tree, "toast")).toEqual([]);
+		const stillEditing = tree.root.findAll((node) => String(node.type) === "TextInput");
+		expect(stillEditing).toEqual([]);
 	});
 });
 

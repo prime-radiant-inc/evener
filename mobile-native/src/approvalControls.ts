@@ -22,6 +22,11 @@ export class ApprovalControls {
 		private approvals: () => SandboxEscalationRequested[],
 		private current: () => boolean,
 		private refreshSession: () => Promise<void>,
+		// Admission's question, which is not settlement's: is the pane that shows
+		// this decision the one in front? A decision already sent settles on its
+		// binding and never asks. A decision not yet sent must not reach the hub
+		// from a screen the reader cannot see.
+		private admitted: () => boolean,
 	) {}
 	getSnapshot = () => this.state;
 	subscribe = (listener: () => void) => {
@@ -72,6 +77,10 @@ export class ApprovalControls {
 	 * since the pane that asked may have been covered by then. False means the
 	 * hub refused it, or nothing came back to say what it did. */
 	async resolve(displayed: SandboxEscalationRequested, approve: boolean): Promise<boolean> {
+		// A press the reader cannot see is not a press. This refuses before
+		// anything is dispatched, so the dock still holds the decision when they
+		// come back.
+		if (!this.admitted()) return false;
 		if (this.disposed || !this.current() || this.state.pending || this.state.refreshing) return false;
 		const pending = this.approvals().find((value) => value.escalationId === displayed.escalationId);
 		if (!pending || JSON.stringify(pending) !== JSON.stringify(displayed)) return false;

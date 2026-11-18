@@ -1,3 +1,35 @@
+// The hub's receipt is the acknowledgement; the read that follows is
+// catch-up. A read that fails must not turn an accepted action into an
+// unconfirmed one, or the reader is told to retry something already done.
+it.each(["rename", "compact", "setReasoningEffort"] as const)(
+	"settles an acknowledged %s whose readback fails",
+	async (kind) => {
+		const controls = new SessionControls(
+			await boundary({
+				rename: async () => {},
+				compact: async () => {},
+				reasoning: async () => {},
+			}),
+			async () => {
+				throw new Error("The session read failed.");
+			},
+			() => {},
+			(scope) => (scope === "route" ? true : true),
+			() => ({ supportsReasoning: true, reasoningEffortLevels: ["low", "high"], reasoningEffort: "low" }),
+			() => true,
+		);
+		const settled =
+			kind === "rename"
+				? controls.rename("New name")
+				: kind === "compact"
+					? controls.compact()
+					: controls.setReasoningEffort("high");
+		// The hub took it, so the caller learns that and no error is left
+		// claiming the action is unconfirmed.
+		expect(await settled).toBe(true);
+		expect(controls.getSnapshot()).toMatchObject({ pending: null, error: null });
+	},
+);
 import { FakeClient } from "@evener/appwire-client/testing/fakeClient";
 import { describe, expect, it, vi } from "vitest";
 import { WireError } from "@evener/appwire-client";
@@ -190,6 +222,36 @@ describe("conversation-owned session controls", () => {
 		expect(await controls.resume()).toBe(false);
 		expect(refreshes).toBe(0);
 		expect(controls.getSnapshot().notice).toBeNull();
+	});
+	// The session's ref survives a reconnect, but no thread is open on the
+	// service yet. An owed resume sent into that gap reaches nobody, and the
+	// restart records it as failed and stops retrying, leaving the daemon
+	// stopped. It has to be refused before dispatch so the retry stays alive.
+	it("refuses an owed resume before dispatch while its binding cannot send", async () => {
+		let sent = 0;
+		let ready = true;
+		const controls = new SessionControls(
+			await boundary({
+				resume: async () => {
+					sent += 1;
+				},
+			}),
+			async () => {},
+			() => {},
+			// The binding answers: the session is this one, and the transport is
+			// what decides whether a write can go out.
+			(scope) => (scope === "session" ? true : ready),
+			() => null,
+			() => true,
+		);
+		ready = false;
+		expect(await controls.resume()).toBe(false);
+		expect(sent).toBe(0);
+		// Nothing was left pending, so the restart's next attempt is free to go.
+		expect(controls.getSnapshot().pending).toBeNull();
+		ready = true;
+		expect(await controls.resume()).toBe(true);
+		expect(sent).toBe(1);
 	});
 
 	it("does not publish resume success when the fresh projection fails", async () => {

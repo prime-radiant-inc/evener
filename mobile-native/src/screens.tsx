@@ -977,6 +977,11 @@ function ConversationScreenView({
 							await store.getState().rehydrate(service);
 							if (store.getState().error) throw new Error("Could not read the session.");
 						},
+						// Admitting a decision is the reader's question, and it is a
+						// different one from settling a decision already sent: a
+						// decision the reader cannot see must not reach the hub merely
+						// because this pane kept its binding.
+						() => screenInFront(navigation, route.key),
 					)
 				: null,
 		[client, service, connected, focused, route.params.ref, store, navigation, bindingGeneration, bindingInstance],

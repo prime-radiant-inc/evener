@@ -534,7 +534,9 @@ describe("the vision model (ruling 17)", () => {
 		const tree = sheet("vision");
 		act(() => pressable(tree, "Claude Sonnet 5")?.props.onPress());
 		await settle();
-		expect(calls).toEqual(["changeVisionModel:anthropic/claude-sonnet-5", "goBack"]);
+		// A vision pick is a model change: the hub acknowledged it, so the reader
+		// is told, on the same completion path an ordinary model pick uses.
+		expect(calls).toEqual(["changeVisionModel:anthropic/claude-sonnet-5", "goBack", expect.stringContaining("toast:")]);
 	});
 
 	it("uses the session model or turns vision off", async () => {
@@ -542,7 +544,16 @@ describe("the vision model (ruling 17)", () => {
 		const tree = sheet("vision");
 		act(() => pressable(tree, "Off")?.props.onPress());
 		await settle();
-		expect(calls).toEqual(["setVisionModel:off", "goBack"]);
+		// Off and Session model are vision choices too, and they get the same
+		// announcement named models do.
+		expect(calls).toEqual(["setVisionModel:off", "goBack", expect.stringContaining("toast:")]);
+	});
+	it("says a vision pick changed, whether or not a model was named", async () => {
+		const { calls } = provide(conversation({ visionModel: "lunaroute/glm-5.3-vision" }));
+		const tree = sheet("vision");
+		act(() => pressable(tree, "Session model")?.props.onPress());
+		await settle();
+		expect(calls.filter((call) => call.startsWith("toast:"))).toHaveLength(1);
 	});
 });
 

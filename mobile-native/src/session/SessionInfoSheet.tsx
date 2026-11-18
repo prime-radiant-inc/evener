@@ -18,6 +18,7 @@ import type { Routes } from "../screens";
 import { type SessionControls, useControlsState } from "../sessionControls";
 import { Group, GroupFooter, GroupedPage, Row } from "../sheet/Grouped";
 import { Sheet } from "../sheet/Sheet";
+import { onTop, type StackState } from "../sheet/sheetRoutes";
 import { useSheet } from "../sheet/useSheet";
 import { sheetHosts, sheetKey, useSheetHost } from "../sheet/sheetHosts";
 import { Toast, type ToastController, type ToastMessage, useToast } from "../Toast";
@@ -84,6 +85,7 @@ export function SessionInfoSheet({ route }: NativeStackScreenProps<Routes, "Sess
 				host={host}
 				hubId={hubId}
 				sessionRef={ref}
+				routeKey={route.key}
 				editing={editing}
 				setEditing={setEditing}
 				finish={sheet.finish}
@@ -97,6 +99,7 @@ function SessionInfoBody({
 	host,
 	hubId,
 	sessionRef,
+	routeKey,
 	editing,
 	setEditing,
 	finish,
@@ -105,6 +108,9 @@ function SessionInfoBody({
 	host: SessionInfoHost;
 	hubId: string;
 	sessionRef: string;
+	/** This sheet's own route, for asking whether it is still the one attached
+	 * to the reader when a result comes back. */
+	routeKey: string;
 	editing: { text: string; from: string } | null;
 	setEditing(editing: { text: string; from: string } | null): void;
 	finish(then?: () => void): void;
@@ -139,7 +145,12 @@ function SessionInfoBody({
 		if (!host.controls || !ready) return;
 		if ((await host.controls.rename(editing.text)) === true) {
 			setEditing(null);
-			toast.show({ kind: "rename:done", text: "Session renamed" });
+			// The hub took the name, so the editor clears whichever screen is in
+			// front. The toast is the reader's question: another conversation may
+			// have opened over this sheet while the reply was out, and announcing
+			// there speaks to someone reading something else.
+			if (onTop(navigation.getState() as unknown as StackState, routeKey))
+				toast.show({ kind: "rename:done", text: "Session renamed" });
 		}
 	};
 	const error = state?.error && !(state.lastAction && MODEL_ACTIONS.has(state.lastAction)) ? state.error : null;
@@ -326,7 +337,14 @@ function SessionInfoBody({
 						label="Compact context"
 						tone="accent"
 						disabled={!ready}
-						onPress={() => void host.act("compact").then((message) => message && toast.show(message))}
+						onPress={() =>
+							void host.act("compact").then((message) => {
+								// The same rule as the rename: the action settles
+								// wherever it was asked from, and its toast belongs to
+								// whoever is still looking at this sheet.
+								if (message && onTop(navigation.getState() as unknown as StackState, routeKey)) toast.show(message);
+							})
+						}
 					/>
 				) : null}
 				<Row label="Pin to category…" tone="accent" onPress={() => leaveFor("pin")} />

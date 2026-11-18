@@ -1,9 +1,11 @@
 // How one step of a restart went, read off a real SessionControls whose
 // service is a fake: whether the request went out at all is what decides
 // whether a resume is owed.
+import { act } from "react-test-renderer";
 import { describe, expect, it } from "vitest";
+import { renderHook, settle } from "../renderNative.testkit";
 import { SessionControls } from "../sessionControls";
-import { attemptControl } from "./sessionRestart";
+import { attemptControl, useSessionRestart } from "./sessionRestart";
 
 function controls({
 	current = true,
@@ -78,14 +80,53 @@ describe("one step of a restart", () => {
 			} as unknown as ConstructorParameters<typeof SessionControls>[0],
 			async () => {},
 			() => {},
-			// Another screen is in front; the session and its binding are live.
-			(scope) => (scope === "session" ? true : inFront),
+			// Another screen is in front; the session, its transport and its
+			// binding are live, which is what the owed resume needs to send on.
+			(scope) => (scope === "session" || scope === "destination" ? true : inFront),
 			() => null,
 			() => true,
 		);
 		expect(await attemptControl(made, "forceStop")).toBe("done");
 		inFront = false;
 		expect(await attemptControl(made, "resume")).toBe("done");
+		expect(sent).toBe(1);
+	});
+	it("sends the resume the covering screen took the controls away from", async () => {
+		let sent = 0;
+		let forceStops = 0;
+		const made = new SessionControls(
+			{
+				forceStop: async () => {
+					forceStops += 1;
+				},
+				resume: async () => {
+					sent += 1;
+				},
+			} as unknown as ConstructorParameters<typeof SessionControls>[0],
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		// Another conversation opens over the pane: the screen drops the controls
+		// it had, which is what a covering route does.
+		let live: SessionControls | null = made;
+		const hook = renderHook(() => useSessionRestart(live, "open"));
+		await act(async () => {
+			await hook.result.current.restart();
+		});
+		await settle();
+		expect(forceStops).toBe(1);
+		// Covered before the resume could go out. Coming back brings fresh
+		// controls; the resume is still owed, and the daemon is stopped until it
+		// goes.
+		live = null;
+		hook.rerender();
+		await settle();
+		live = made;
+		hook.rerender();
+		await settle();
 		expect(sent).toBe(1);
 	});
 });

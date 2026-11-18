@@ -112,13 +112,18 @@ function ModelSheetBody({
 			if (onTop(stack(), routeKey)) finish();
 			then?.();
 		});
+	// A vision pick is a model change like any other: the hub acknowledged it, so
+	// the reader hears about it from whichever screen is still in front, with or
+	// without a named model. The sheet's own notice is not rendered, so the toast
+	// is the one channel every vision choice shares.
+	const changedVision = () => host.toast({ text: "Vision model changed. Applies from the next turn." });
 	const choose = (model: ModelDescriptor) => {
 		if (`${model.provider}/${model.model}` === current) {
 			finish();
 			return;
 		}
 		if (!controls) return;
-		if (vision) closeOn(controls.changeVisionModel(model.provider, model.model));
+		if (vision) closeOn(controls.changeVisionModel(model.provider, model.model), changedVision);
 		else
 			closeOn(controls.changeModel(model.provider, model.model), () =>
 				host.toast({ text: "Model changed. Applies from the next turn." }),
@@ -173,13 +178,13 @@ function ModelSheetBody({
 									title="Session model"
 									selected={session.visionModel === ""}
 									disabled={busy || !canChange}
-									onPress={() => controls && closeOn(controls.setVisionModel(""))}
+									onPress={() => controls && closeOn(controls.setVisionModel(""), changedVision)}
 								/>
 								<ChoiceRow
 									title="Off"
 									selected={session.visionModel === "off"}
 									disabled={busy || !canChange}
-									onPress={() => controls && closeOn(controls.setVisionModel("off"))}
+									onPress={() => controls && closeOn(controls.setVisionModel("off"), changedVision)}
 								/>
 							</>
 						) : null}

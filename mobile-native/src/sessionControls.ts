@@ -209,7 +209,14 @@ export class SessionControls {
 		// Refusing it there would leave the daemon stopped with the restart
 		// unfinished and nothing left to retry it. Every other action is the
 		// reader's to start, so it keeps the route fence.
-		const owed = kind === "resume" ? this.isCurrent("session") : this.isCurrent();
+		// Admission is the reader's question everywhere else, but the owed resume
+		// has already been asked for: refusing it under a covering route strands
+		// the daemon stopped with nothing left to retry it. What it does need is a
+		// binding that can actually send: the same session and a ready transport,
+		// not merely a store that still remembers the ref. A refusal here goes out
+		// as a pre-dispatch refusal, which the restart retries once the binding
+		// settles.
+		const owed = kind === "resume" ? this.isCurrent("destination") : this.isCurrent();
 		if (
 			this.disposed ||
 			!owed ||
@@ -293,8 +300,26 @@ export class SessionControls {
 				}
 				return true;
 			}
+			// The hub acknowledged the action. A controller that lost its binding
+			// while the reply was out has nothing left to publish, but the caller
+			// still learns the action was taken: settlement follows the
+			// acknowledgement, not this instance's survival.
+			if (this.disposed) return true;
 			if (this.ends()) return false;
-			if (kind !== "resume") await this.refresh();
+			// The hub's receipt is the acknowledgement, and it is what settles
+			// this action. The read that follows is catch-up: it brings the
+			// session's new state on screen, and a read that fails leaves the
+			// acknowledgement standing rather than turning an accepted rename,
+			// compaction or effort change into an unconfirmed one. The session's
+			// own read recovery surfaces anything the read would have said. A
+			// refusal arrives as a rejection below, where it stays visible.
+			if (kind !== "resume") {
+				try {
+					await this.refresh();
+				} catch {
+					// The action was acknowledged; the read is catch-up.
+				}
+			}
 			if (this.ends()) return false;
 			// The hub took the action, so this binding settles it here whichever
 			// screen is in front: a covered pane's editor must not stay dirty over
@@ -321,7 +346,15 @@ export class SessionControls {
 					? `Could not confirm the action: ${cause.message}`
 					: "Could not confirm the action. Check the session before trying again; it may have been applied.";
 			if (this.ends(failure)) return false;
-			if (cause instanceof WireError && cause.evenerErrorInfo === "actionUnavailable") {
+			// A refused action leaves the picker offering it again only if nothing
+			// reads the session back. The read follows the binding that can still
+			// read, not the pane that happens to be in front, and it sends no
+			// second mutation: the original refusal is what the reader sees.
+			if (
+				cause instanceof WireError &&
+				cause.evenerErrorInfo === "actionUnavailable" &&
+				this.isCurrent("destination")
+			) {
 				try {
 					await this.refresh();
 				} catch {

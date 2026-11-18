@@ -83,6 +83,36 @@ describe("native approval projection", () => {
 });
 
 describe("approval decisions", () => {
+	// Admitting a decision is the reader's question. A press from a pane another
+	// conversation now covers reaches nobody the reader can see, so it must not
+	// reach the hub either; the decision is still there when they come back.
+	it("admits no decision from a covered pane, and dispatches nothing", async () => {
+		const sent: unknown[] = [];
+		const client = {
+			request: async (method: string, params: unknown) => {
+				sent.push({ method, params });
+				return {};
+			},
+		} as unknown as ConversationClientLike;
+		let inFront = false;
+		const controls = new ApprovalControls(
+			client,
+			"local:s",
+			() => [pending],
+			() => true,
+			async () => {},
+			// Nothing is in front of this pane: another conversation is.
+			() => inFront,
+		);
+		const covered = controls.resolve(pending, true);
+		await expect(covered).resolves.toBe(false);
+		expect(sent).toEqual([]);
+		expect(controls.getSnapshot().pending).toBeNull();
+		// Back in front, the same decision is admitted and sent once.
+		inFront = true;
+		await expect(controls.resolve(pending, true)).resolves.toBe(true);
+		expect(sent).toHaveLength(1);
+	});
 	it("sends the displayed current approval once and refreshes after acknowledgement", async () => {
 		let finish!: () => void;
 		const sent: unknown[] = [];
@@ -104,6 +134,7 @@ describe("approval decisions", () => {
 			async () => {
 				refreshed++;
 			},
+			() => true,
 		);
 		const request = controls.resolve(pending, true);
 		await controls.resolve(pending, false);
@@ -137,6 +168,7 @@ describe("approval decisions", () => {
 			() => values,
 			() => current,
 			async () => {},
+			() => true,
 		);
 		values = [{ ...displayed, deniedPath: "/different" }];
 		await controls.resolve(displayed, true);
@@ -168,6 +200,7 @@ describe("approval decisions", () => {
 			() => [pending],
 			() => true,
 			async () => {},
+			() => true,
 		);
 		await controls.resolve(pending, false);
 		expect(calls).toBe(1);
@@ -198,6 +231,7 @@ describe("approval decisions", () => {
 				async () => {
 					refreshed++;
 				},
+				() => true,
 			);
 			await controls.resolve(pending, true);
 			expect(refreshed).toBe(0);
@@ -224,6 +258,7 @@ describe("approval decisions", () => {
 				// failing leaves the decision settled rather than unconfirmed.
 				throw new Error("The read lost its connection.");
 			},
+			() => true,
 		);
 		expect(await controls.resolve(pending, true)).toBe(true);
 		expect(calls).toBe(1);
@@ -247,6 +282,7 @@ describe("approval decisions", () => {
 			async () => {
 				if (refreshFails) throw new Error("offline");
 			},
+			() => true,
 		);
 		// Nothing came back for this decision, so it stays unconfirmed and a
 		// press tries again.
@@ -280,6 +316,7 @@ describe("approval decisions", () => {
 			async () => {
 				values = [];
 			},
+			() => true,
 		);
 		await controls.resolve(pending, true);
 		await controls.refresh();
@@ -308,6 +345,7 @@ describe("approval decisions", () => {
 					release = resolve;
 				});
 			},
+			() => true,
 		);
 		const reading = controls.refresh();
 		expect(controls.getSnapshot().refreshing).toBe(true);
@@ -346,6 +384,7 @@ describe("approval decisions", () => {
 			async () => {
 				reads++;
 			},
+			() => true,
 		);
 		const request = controls.resolve(pending, true);
 		const before = controls.getSnapshot();
