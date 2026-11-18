@@ -205,6 +205,9 @@ An unborn HEAD or a checkout Git refuses to inspect leaves the branch
 unconfirmed at launch. If a later probe fails, the request keeps the last
 confirmed branch for this checkout, including one observed during restore or
 when entering or leaving a worktree.
+A saved prompt can name a branch without a separate launch record. An
+inconclusive probe in that same checkout leaves the saved guidance in effect
+until Git confirms a branch or confirms the directory is outside a worktree.
 A checkout with no confirmed observation reports its branch as unconfirmed.
 Evener recovers each checkout’s
 last observation from the launch facts and transcript, including a confirmed

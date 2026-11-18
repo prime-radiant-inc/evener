@@ -144,29 +144,32 @@ func sessionMetaWriteLock(sessionID string) *sync.Mutex {
 type PromptLaunchFacts struct {
 	KnowledgeCutoff *string `json:"knowledge_cutoff,omitempty"`
 	GitBranch       *string `json:"git_branch,omitempty"`
-	ScratchDir      *string `json:"scratch_dir,omitempty"`
-	WritableRoots   *string `json:"writable_roots,omitempty"`
-	FileToolWrites  string  `json:"file_tool_writes,omitempty"` // empty when the boundary is unknown
-	ShellNetwork    string  `json:"shell_network,omitempty"`
-	DetachedShell   string  `json:"detached_shell,omitempty"`
-	TurnEndsProcess *bool   `json:"turn_ends_process,omitempty"`
-	HasAskUser      *bool   `json:"has_ask_user,omitempty"`
-	HasEndReason    *bool   `json:"has_end_reason,omitempty"`
+	// An inconclusive launch probe is distinct from a prompt with no recorded Git facts.
+	GitBranchUnconfirmed bool    `json:"git_branch_unconfirmed,omitempty"`
+	ScratchDir           *string `json:"scratch_dir,omitempty"`
+	WritableRoots        *string `json:"writable_roots,omitempty"`
+	FileToolWrites       string  `json:"file_tool_writes,omitempty"` // empty when the boundary is unknown
+	ShellNetwork         string  `json:"shell_network,omitempty"`
+	DetachedShell        string  `json:"detached_shell,omitempty"`
+	TurnEndsProcess      *bool   `json:"turn_ends_process,omitempty"`
+	HasAskUser           *bool   `json:"has_ask_user,omitempty"`
+	HasEndReason         *bool   `json:"has_end_reason,omitempty"`
 }
 
 // Clone keeps a metadata snapshot independent of the session's launch facts.
 func (p PromptLaunchFacts) Clone() PromptLaunchFacts {
 	return PromptLaunchFacts{
-		KnowledgeCutoff: appwire.ClonePointer(p.KnowledgeCutoff),
-		GitBranch:       appwire.ClonePointer(p.GitBranch),
-		ScratchDir:      appwire.ClonePointer(p.ScratchDir),
-		WritableRoots:   appwire.ClonePointer(p.WritableRoots),
-		FileToolWrites:  p.FileToolWrites,
-		ShellNetwork:    p.ShellNetwork,
-		DetachedShell:   p.DetachedShell,
-		TurnEndsProcess: appwire.ClonePointer(p.TurnEndsProcess),
-		HasAskUser:      appwire.ClonePointer(p.HasAskUser),
-		HasEndReason:    appwire.ClonePointer(p.HasEndReason),
+		KnowledgeCutoff:      appwire.ClonePointer(p.KnowledgeCutoff),
+		GitBranch:            appwire.ClonePointer(p.GitBranch),
+		GitBranchUnconfirmed: p.GitBranchUnconfirmed,
+		ScratchDir:           appwire.ClonePointer(p.ScratchDir),
+		WritableRoots:        appwire.ClonePointer(p.WritableRoots),
+		FileToolWrites:       p.FileToolWrites,
+		ShellNetwork:         p.ShellNetwork,
+		DetachedShell:        p.DetachedShell,
+		TurnEndsProcess:      appwire.ClonePointer(p.TurnEndsProcess),
+		HasAskUser:           appwire.ClonePointer(p.HasAskUser),
+		HasEndReason:         appwire.ClonePointer(p.HasEndReason),
 	}
 }
 
@@ -721,7 +724,10 @@ func writeSessionMetaLocked(fs afero.Fs, dir string, meta SessionMeta, newPrompt
 			// The saved prompt owns its first recorded facts across checkpoints.
 			launch := &meta.PromptLaunch
 			launch.KnowledgeCutoff = cmp.Or(previous.PromptLaunch.KnowledgeCutoff, launch.KnowledgeCutoff)
-			launch.GitBranch = cmp.Or(previous.PromptLaunch.GitBranch, launch.GitBranch)
+			if previous.PromptLaunch.GitBranch != nil || previous.PromptLaunch.GitBranchUnconfirmed {
+				launch.GitBranch = previous.PromptLaunch.GitBranch
+				launch.GitBranchUnconfirmed = previous.PromptLaunch.GitBranchUnconfirmed
+			}
 			launch.ScratchDir = cmp.Or(previous.PromptLaunch.ScratchDir, launch.ScratchDir)
 			launch.WritableRoots = cmp.Or(previous.PromptLaunch.WritableRoots, launch.WritableRoots)
 			launch.FileToolWrites = cmp.Or(previous.PromptLaunch.FileToolWrites, launch.FileToolWrites)

@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/gittest"
 	"primeradiant.com/evener/llm"
 )
@@ -132,10 +133,25 @@ func TestSwapEnvAndRefresh_AppendsCurrentEnvironmentToStartupPromptHistory(t *te
 		}
 		s = newSession(t, withEnv(base.WithWorkingDirectory(unborn)), withEnvironmentSnapshot(), withConfig(cfg), withAdapter(adapter))
 		startup = s.transcript.Header().SystemPrompt
-		visit(unborn, "", true)
-		if branch := loadMetaForTest(t, s).PromptLaunch.GitBranch; branch != nil {
-			t.Errorf("an unborn checkout persisted a confirmed launch branch %q", *branch)
+		s.Close()
+		meta := loadMetaForTest(t, s)
+		if meta.PromptLaunch.GitBranch != nil || !meta.PromptLaunch.GitBranchUnconfirmed {
+			t.Fatalf("unborn checkout recorded launch facts %+v", meta.PromptLaunch)
 		}
+		// A partial checkpointer cannot replace the inconclusive launch observation.
+		meta.PromptLaunch.GitBranch, meta.PromptLaunch.GitBranchUnconfirmed = new("later-branch"), false
+		if err := schema.SaveSessionMeta(cfg.StateDir, meta); err != nil {
+			t.Fatal(err)
+		}
+		resumed, err := RestoreSessionFromMetaWithConfig(s.client, s.profile, base.WithWorkingDirectory(unborn), loadMetaForTest(t, s), RestoreSessionConfig{
+			StateDir: cfg.StateDir, testOnly: sharingHostProbe(testConfig{envProbes: probes}),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(resumed.Close)
+		s = resumed
+		request(unborn, "", true)
 	})
 	base := execenv.NewLocalExecutionEnvironment(t.TempDir())
 	parked, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})

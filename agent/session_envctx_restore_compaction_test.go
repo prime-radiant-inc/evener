@@ -406,16 +406,36 @@ func testCompactedGitObservation(t *testing.T) {
 }
 
 func testCompactedLaunchBranch(t *testing.T) {
-	for _, mode := range []string{"warm", "cold", "cold unrecorded", "cold unborn"} {
-		t.Run(mode, func(t *testing.T) {
-			const branch = "launch-branch-19"
+	const branch = "launch-branch-19"
+	type notification struct {
+		restore, leaveRepo bool
+		wantBranch         string
+		wantTurns          int
+	}
+	coldOutside := notification{restore: true, wantTurns: 1}
+	for _, tc := range []struct {
+		name               string
+		unborn, unrecorded bool
+		notifications      []notification
+	}{
+		{"warm", false, false, []notification{{wantTurns: 1}, coldOutside}},
+		{"cold", false, false, []notification{coldOutside, coldOutside}},
+		{"cold unrecorded", false, true, []notification{coldOutside, coldOutside}},
+		{"cold unborn", true, false, []notification{{restore: true, leaveRepo: true, wantTurns: 1}, coldOutside}},
+		{"cold unrecorded unborn", true, true, []notification{
+			{restore: true, wantBranch: branch, wantTurns: 1},
+			{wantBranch: branch, wantTurns: 1},
+			{leaveRepo: true, wantTurns: 2},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
 			cwd, stateDir := evalSyms(t, t.TempDir()), t.TempDir()
 			copyWorktreeBaseRepo(t, cwd)
 			gittest.Run(t, cwd, "checkout", "-b", branch)
 			s := newScriptedSummaryCompactSession(t, "env-fold-git", func(llm.Request) llm.Response {
 				return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nSaved work summary\n[END SUMMARY]")}
 			}, withDir(cwd), withStateDir(stateDir), withEnvironmentSnapshot())
-			prompt := s.cachedSystemPrompt
+			prompt := s.transcript.Header().SystemPrompt
 			if !strings.Contains(prompt, branch) {
 				t.Fatal("launch branch missing from provider prompt")
 			}
@@ -436,16 +456,18 @@ func testCompactedLaunchBranch(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			if mode == "cold unborn" {
+			if tc.unborn {
 				gittest.Run(t, cwd, "checkout", "--orphan", "unborn")
 			} else {
 				leaveRepo()
 			}
-			for round := range 2 {
-				if mode != "warm" || round > 0 {
+			adapter := &agenttest.ScriptedAdapter{Provider: "openai", Responder: func(llm.Request) llm.Response { return agenttest.FinalResponse("ack") }}
+			s.client.Register(adapter)
+			for round, wake := range tc.notifications {
+				if wake.restore {
 					s.Close()
 					meta := loadMetaForTest(t, s)
-					if mode == "cold unrecorded" && round == 0 {
+					if tc.unrecorded && round == 0 {
 						meta.PromptLaunch.GitBranch = nil
 						if err := schema.SaveSessionMetaForNewPrompt(nil, stateDir, meta); err != nil {
 							t.Fatal(err)
@@ -458,21 +480,23 @@ func testCompactedLaunchBranch(t *testing.T) {
 					s = restored
 					t.Cleanup(s.Close)
 				}
-				if mode == "cold unborn" && round == 0 {
+				if wake.leaveRepo {
 					leaveRepo()
 				}
-				_, _, _, req, _, _, err := s.prepareModelRequestWithError(t.Context(), 1, &events.RoundTimings{})
-				if err != nil {
+				enqueueCompletedJobNotification(t, s, fmt.Sprintf("job_launch_branch_%d", round))
+				if _, err := s.ProcessInputKind(t.Context(), "", nil, EntryNotification); err != nil {
 					t.Fatal(err)
 				}
-				model := envctx.NewTracker(envctx.State{Last: envctx.Snapshot{GitBranch: branch}})
+				req := adapter.Requests()[round]
+				model := envctx.NewTracker(envctx.State{Last: envctx.Snapshot{Cwd: cwd, GitBranch: branch}})
 				for _, msg := range req.Messages {
 					if msg.Role == llm.RoleUser {
 						model.ReplayBlock(msg.Text())
 					}
 				}
-				if req.Messages[0].Text() != prompt || model.State().Last.GitBranch != "" || countEnvironmentTurns(s) != 1 {
-					t.Errorf("round %d retained branch %q after leaving the worktree, environment turns %d, prompt identical %t", round, model.State().Last.GitBranch, countEnvironmentTurns(s), req.Messages[0].Text() == prompt)
+				state := model.State()
+				if req.Messages[0].Text() != prompt || state.Last.GitBranch != wake.wantBranch || state.GitBranchUnknown || countEnvironmentTurns(s) != wake.wantTurns {
+					t.Errorf("round %d presents branch %q (unknown %t), want %q, environment turns %d, want %d, prompt identical %t", round, state.Last.GitBranch, state.GitBranchUnknown, wake.wantBranch, countEnvironmentTurns(s), wake.wantTurns, req.Messages[0].Text() == prompt)
 				}
 			}
 		})

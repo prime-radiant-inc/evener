@@ -1907,17 +1907,19 @@ func (s *Session) initSessionState(runSessionStartHooks bool, savedHeader *trans
 	} else {
 		warning, failed := s.initializeSystemPrompt(env)
 		network, detached := s.shellCapabilities()
+		branch := observedGitBranch(s.envInfo)
 		s.promptLaunch = schema.PromptLaunchFacts{
-			KnowledgeCutoff: new(s.profile.KnowledgeCutoff()),
-			GitBranch:       observedGitBranch(s.envInfo),
-			ScratchDir:      new(installedScratchDir(env)),
-			WritableRoots:   new(s.workspaceWritableRoots),
-			FileToolWrites:  installedFileToolWrites(env),
-			ShellNetwork:    network,
-			DetachedShell:   detached,
-			TurnEndsProcess: new(s.cfg.TurnEndsProcess),
-			HasAskUser:      new(s.canInstructTool(askUserToolName)),
-			HasEndReason:    new(s.resultAcceptsEndReason()),
+			KnowledgeCutoff:      new(s.profile.KnowledgeCutoff()),
+			GitBranch:            branch,
+			GitBranchUnconfirmed: branch == nil,
+			ScratchDir:           new(installedScratchDir(env)),
+			WritableRoots:        new(s.workspaceWritableRoots),
+			FileToolWrites:       installedFileToolWrites(env),
+			ShellNetwork:         network,
+			DetachedShell:        detached,
+			TurnEndsProcess:      new(s.cfg.TurnEndsProcess),
+			HasAskUser:           new(s.canInstructTool(askUserToolName)),
+			HasEndReason:         new(s.resultAcceptsEndReason()),
 		}
 		if warning != "" {
 			s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{Message: warning})

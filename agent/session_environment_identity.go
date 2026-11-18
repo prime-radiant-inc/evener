@@ -63,10 +63,11 @@ func (s *Session) rehydrateEnvironmentContext(history []schema.Turn) {
 	// The startup prompt survives every fold. Retained environment updates
 	// supersede its facts, including an explicitly cleared path or branch.
 	baseline := envctx.State{
-		Last:                 envctx.Snapshot{Cwd: s.promptWorkingDir},
-		GitBranchUnknown:     s.cachedSystemPrompt != "" && s.promptLaunch.GitBranch == nil,
-		ScratchDirUnknown:    s.cachedSystemPrompt != "" && s.promptLaunch.ScratchDir == nil,
-		WritableRootsUnknown: s.cachedSystemPrompt != "" && s.promptLaunch.WritableRoots == nil,
+		Last:                          envctx.Snapshot{Cwd: s.promptWorkingDir},
+		GitBranchUnknown:              s.cachedSystemPrompt != "" && s.promptLaunch.GitBranch == nil,
+		ReportUnconfirmedLaunchBranch: s.promptLaunch.GitBranchUnconfirmed,
+		ScratchDirUnknown:             s.cachedSystemPrompt != "" && s.promptLaunch.ScratchDir == nil,
+		WritableRootsUnknown:          s.cachedSystemPrompt != "" && s.promptLaunch.WritableRoots == nil,
 	}
 	if branch := s.promptLaunch.GitBranch; branch != nil {
 		baseline.Last.GitBranch = *branch

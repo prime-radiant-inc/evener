@@ -196,10 +196,10 @@ func TestReplayBlockFollowsRenderedChanges(t *testing.T) {
 	})
 
 	t.Run("unrecorded launch branch survives an inconclusive probe", func(t *testing.T) {
-		writer := NewTracker(State{GitBranchUnknown: true})
-		reader := NewTracker(writer.State())
-		model := NewTracker(State{Last: Snapshot{GitBranch: "launch"}})
 		observed := fullSnap()
+		writer := NewTracker(State{Last: Snapshot{Cwd: observed.Cwd}, GitBranchUnknown: true})
+		reader := NewTracker(writer.State())
+		model := NewTracker(State{Last: Snapshot{Cwd: observed.Cwd, GitBranch: "launch"}})
 		observed.GitBranch, observed.gitBranchUnknown = "", true
 		block := writer.RenderDiff(observed)
 		if !reader.ReplayBlock(block) || !reader.State().GitBranchUnknown || !model.ReplayBlock(block) || model.State().Last.GitBranch != "launch" {

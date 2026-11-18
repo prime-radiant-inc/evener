@@ -56,10 +56,13 @@ type State struct {
 	Last    Snapshot `json:"last"`
 	HasSent bool     `json:"has_sent"`
 	// Unrecorded launch facts may still be named in the saved prompt.
-	// The next observation, including an empty one, must supersede them.
+	// A definitive observation, including a confirmed absence, supersedes them.
 	GitBranchUnknown     bool `json:"git_branch_unknown,omitempty"`
 	ScratchDirUnknown    bool `json:"scratch_dir_unknown,omitempty"`
 	WritableRootsUnknown bool `json:"writable_roots_unknown,omitempty"`
+	// The launch probe was inconclusive. Report that on the first observation
+	// if it is still true. Older prompts can already name a branch for this cwd.
+	ReportUnconfirmedLaunchBranch bool `json:"-"`
 }
 
 // Tracker diffs successive Snapshots into rendered context blocks.
@@ -211,6 +214,9 @@ func (t *Tracker) ReplayBlock(block string) bool {
 	// Compaction may retain a changed-field block while removing its full
 	// baseline. Such a tail still needs a full emission before the next input.
 	t.st.HasSent = t.st.HasSent || (cwd && date && sandbox)
+	if branch || t.st.HasSent {
+		t.st.ReportUnconfirmedLaunchBranch = false
+	}
 	return true
 }
 
@@ -238,7 +244,7 @@ func (t *Tracker) RenderDiff(cur Snapshot) string {
 		cur.GitBranch = ""
 		cur.gitBranchUnknown = false
 	}
-	reportBranch := cur.recordGitBranch || moved || cur.GitBranch != prev.GitBranch || unknown != t.st.GitBranchUnknown || (first && unknown && prev.Cwd != "")
+	reportBranch := cur.recordGitBranch || moved || cur.GitBranch != prev.GitBranch || unknown != t.st.GitBranchUnknown || (first && unknown && t.st.ReportUnconfirmedLaunchBranch)
 	cur.recordGitBranch = false
 	if !first && cur == prev && !reportBranch && !t.st.ScratchDirUnknown && !t.st.WritableRootsUnknown {
 		return ""
