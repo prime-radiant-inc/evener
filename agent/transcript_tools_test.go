@@ -1041,17 +1041,16 @@ func TestFind_ProjectName_SameProjectManagedLaneKeepsSiblingOrigin(t *testing.T)
 		t.Fatalf("projectName(managed lane in its own project bucket) = %q, want the sibling's %q (the bucket basename is its project ID)", got, want)
 	}
 
-	// That answer is reusable for the bucket, and it must actually have been
-	// cached: the resolver is shared across result rows, and a foreign-project
-	// read deliberately does not cache. Removing the only record of the origin
-	// leaves the cache as the sole source for the next row.
-	if err := os.Remove(schema.SessionMetaPath(bucket, sibling.ID)); err != nil {
-		t.Fatalf("remove sibling meta: %v", err)
-	}
+	// The next row in the same bucket gets the same answer. The resolver is
+	// shared across result rows (find sorts newest first), so this pins that one
+	// row's answer does not depend on which rows preceded it. It does NOT pin a
+	// cache: the sibling-label cache was removed because a bucket-wide key could
+	// serve one row's row-specific answer to another row, which was worse than the
+	// reread it saved.
 	nextLane := schema.SessionMeta{}
 	nextLane.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", project.ID, "dlg_same_project_next")
 	if got := r.projectName(nextLane, bucket); got != want {
-		t.Fatalf("projectName(second lane in the same bucket) = %q, want the cached %q", got, want)
+		t.Fatalf("projectName(second lane in the same bucket) = %q, want %q from the same sibling evidence", got, want)
 	}
 }
 
@@ -1693,7 +1692,7 @@ func TestFind_ProjectName_BucketDecodedOnceAcrossRows(t *testing.T) {
 	}
 
 	rows := []findCandidate{}
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		row := schema.SessionMeta{}
 		row.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", project.ID, fmt.Sprintf("dlg_row_%d", i))
 		rows = append(rows, findCandidate{meta: row, bucketDir: bucket})
@@ -2656,5 +2655,221 @@ func TestFind_ChildrenOf_BareIDResolvesCrossBucket(t *testing.T) {
 	}
 	if title, _ := matches[0]["title"].(string); title != "legacy child" {
 		t.Errorf("child title = %q, want %q", title, "legacy child")
+	}
+}
+
+// TestFind_ProjectName_ManagedLaneNeedsParentNamingItsProject pins the
+// admissibility rule for row-specific evidence in the direction that must NOT
+// tighten: a parent row that positively identifies a managed lane's project
+// still names it.
+//
+// The rule itself — a parent that records no project is not a match for a lane
+// that records one — is refuted as a defect for the reviewer's construction: a
+// row in bucket A recording a managed lane of project B already fails
+// admissible() there, because B differs from A's own project ID and a foreign
+// project requires positive evidence naming it. The strict form is kept anyway,
+// because it states the rule where the parent is read rather than relying on a
+// different guard to cover it.
+func TestFind_ProjectName_ManagedLaneNeedsParentNamingItsProject(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	repoA := newNamedCheckout(t, "repo-a")
+	projectA := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repoA))
+	bucket, err := RuntimeDirForProjectWithStateHome(projectA, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+	if want := projectA.ID; filepath.Base(bucket) != want {
+		t.Fatalf("fixture bucket %q does not encode project %q", filepath.Base(bucket), want)
+	}
+
+	// The parent's own live checkout canonicalises to the bucket's project, so it
+	// identifies the lane and names it.
+	parentID := identifier.MustNewSessionID()
+	parent := schema.SessionMeta{ID: parentID}
+	parent.EnvInfo.GitOriginURL = "git@github.com:owner/repo-a.git"
+	parent.EnvInfo.WorkingDir = repoA
+	if err := schema.SaveSessionMeta(bucket, parent); err != nil {
+		t.Fatal(err)
+	}
+	row := schema.SessionMeta{ParentSessionID: parentID}
+	row.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", projectA.ID, "dlg_named")
+	if got, want := projectName(row, bucket), "repo-a"; got != want {
+		t.Fatalf("projectName(managed lane of A with a parent that names A) = %q, want %q", got, want)
+	}
+}
+
+// TestFind_ProjectName_SiblingRestoreRootBasenameFallback covers an eligible
+// sibling whose only surviving record is a WorktreeRestoreRoot naming an
+// ordinary directory that has since moved. The recording is the evidence, so the
+// recorded basename answers: dropping it leaves an otherwise unlabeled lane with
+// nothing, which is the fallback the resolver promises to preserve. A state
+// lane's leaf is excluded — it is a lane name, never a repository name.
+func TestFind_ProjectName_SiblingRestoreRootBasenameFallback(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	repoA := newNamedCheckout(t, "repo-a")
+	projectA := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repoA))
+	bucket, err := RuntimeDirForProjectWithStateHome(projectA, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	// The sibling records nothing but a restore root in an ordinary directory
+	// under the same project, and that directory is removed before the search.
+	ordinary := filepath.Join(t.TempDir(), "moved-ordinary-repo")
+	if err := os.MkdirAll(ordinary, 0o755); err != nil {
+		t.Fatalf("mkdir ordinary: %v", err)
+	}
+	sibling := schema.SessionMeta{ID: identifier.MustNewSessionID(), WorktreeRestoreRoot: ordinary}
+	sibling.EnvInfo.WorkingDir = ordinary
+	if err := schema.SaveSessionMeta(bucket, sibling); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(ordinary); err != nil {
+		t.Fatalf("remove ordinary: %v", err)
+	}
+
+	lane := schema.SessionMeta{}
+	lane.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", projectA.ID, "dlg_restore_only")
+	if got, want := projectName(lane, bucket), "moved-ordinary-repo"; got != want {
+		t.Fatalf("projectName(lane whose only sibling records a moved ordinary restore root) = %q, want the recorded basename %q", got, want)
+	}
+
+	// A sibling whose restore root is a deleted STATE lane must stay silent: its
+	// leaf is a lane name. A second project gives this half its own bucket, so
+	// the ordinary sibling above is not an alternative answer.
+	repoC := newNamedCheckout(t, "repo-c")
+	projectC := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repoC))
+	bucket2, err := RuntimeDirForProjectWithStateHome(projectC, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if bucket2 == bucket {
+		t.Fatalf("fixture buckets collided at %q", bucket)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket2, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+	laneSibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	laneSibling.WorktreeRestoreRoot = filepath.Join(bucket2, "worktrees", projectC.ID, "dlg_deleted_restore")
+	laneSibling.EnvInfo.WorkingDir = laneSibling.WorktreeRestoreRoot
+	if err := schema.SaveSessionMeta(bucket2, laneSibling); err != nil {
+		t.Fatal(err)
+	}
+	lane2 := schema.SessionMeta{}
+	lane2.EnvInfo.WorkingDir = filepath.Join(bucket2, "worktrees", projectC.ID, "dlg_only_lane_sibling")
+	if got := projectName(lane2, bucket2); got != "" {
+		t.Fatalf("projectName(lane whose only sibling records a deleted state lane) = %q, want empty (a lane leaf is not a project)", got)
+	}
+}
+
+// TestFind_ProjectName_RowAnswersIndependentOfOrder covers the property the
+// removed sibling cache used to break. The resolver is shared across result
+// rows, so a bucket-wide cached label could be served to a later row that had a
+// different answer of its own. With no cache, every row's label is decided only
+// by its own evidence and the bucket's, never by which rows preceded it.
+func TestFind_ProjectName_RowAnswersIndependentOfOrder(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	repoA := newNamedCheckout(t, "repo-a")
+	projectA := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repoA))
+	bucket, err := RuntimeDirForProjectWithStateHome(projectA, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	// One sibling from another repository: it labels a session-owned row, and it
+	// must not label a managed lane of this bucket's project.
+	other := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	other.EnvInfo.GitOriginURL = "git@github.com:owner/other-repo.git"
+	other.EnvInfo.WorkingDir = newNamedCheckout(t, "other-repo")
+	if err := schema.SaveSessionMeta(bucket, other); err != nil {
+		t.Fatal(err)
+	}
+
+	managed := schema.SessionMeta{}
+	managed.EnvInfo.WorkingDir = filepath.Join(bucket, "worktrees", projectA.ID, "dlg_managed")
+	session := schema.SessionMeta{}
+	session.EnvInfo.WorkingDir = filepath.Join(bucket, "sessions", identifier.MustNewSessionID(), "worktrees", "dlg_session")
+
+	// Alone first, then after the other row, then the reverse. Every row must
+	// return exactly what it returns alone.
+	const wantSession = "other-repo"
+	forward := newProjectNameResolver()
+	if got, want := forward.projectName(session, bucket), wantSession; got != want {
+		t.Fatalf("projectName(session-owned row, first) = %q, want %q", got, want)
+	}
+	if got := forward.projectName(managed, bucket); got != "" {
+		t.Fatalf("projectName(managed lane after a session-owned row) = %q, want empty (the sibling names another project)", got)
+	}
+	backward := newProjectNameResolver()
+	if got := backward.projectName(managed, bucket); got != "" {
+		t.Fatalf("projectName(managed lane, first) = %q, want empty", got)
+	}
+	if got, want := backward.projectName(session, bucket), wantSession; got != want {
+		t.Fatalf("projectName(session-owned row after a managed row) = %q, want %q", got, want)
+	}
+}
+
+// TestFind_ProjectName_SavedOriginOutranksCheckoutName covers the sibling
+// precedence the two-pass scan established: a saved Git origin and an explicit
+// restore root record the repository, while a checkout name is a directory that
+// merely happens to resolve to one. When both answer for the same bucket they can
+// disagree — a second checkout of the repository under another directory name —
+// and the record must win regardless of which row the scan reaches first.
+// Ranking them equally lets scan order decide the label.
+//
+// The row is session-owned rather than a managed lane, which is what makes the
+// two candidates competitors at all: a managed lane's recorded project ID filters
+// out any checkout that resolves to a different project, so only an unfiltered
+// row can be answered by a checkout name that disagrees with an origin.
+func TestFind_ProjectName_SavedOriginOutranksCheckoutName(t *testing.T) {
+	stateHome := t.TempDir()
+	t.Setenv("XDG_STATE_HOME", stateHome)
+
+	repo := newNamedCheckout(t, "recorded-repo")
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repo))
+	bucket, err := RuntimeDirForProjectWithStateHome(project, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	// A real checkout under a different directory name. It has no restore root of
+	// its own, so the only thing it can supply is the main root its .git layout
+	// resolves to — which is itself, under that other name.
+	copyCheckout := newNamedCheckout(t, "checkout-copy")
+	checkoutSibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	checkoutSibling.EnvInfo.WorkingDir = copyCheckout
+
+	originSibling := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	originSibling.EnvInfo.GitOriginURL = "git@github.com:owner/recorded-repo.git"
+	originSibling.EnvInfo.WorkingDir = filepath.Join(t.TempDir(), "deleted-checkout")
+
+	// The checkout sibling is presented FIRST, which is the order that makes an
+	// equal rank answer with the directory name.
+	resolver := newProjectNameResolver(map[string][]schema.SessionMeta{
+		bucket: {checkoutSibling, originSibling},
+	})
+
+	row := schema.SessionMeta{}
+	row.EnvInfo.WorkingDir = filepath.Join(bucket, "sessions", identifier.MustNewSessionID(), "worktrees", "dlg_precedence")
+	if got, want := resolver.projectName(row, bucket), "recorded-repo"; got != want {
+		t.Fatalf("projectName(session-owned lane with a resolving checkout sibling and an origin sibling) = %q, want the recorded origin's %q", got, want)
 	}
 }
