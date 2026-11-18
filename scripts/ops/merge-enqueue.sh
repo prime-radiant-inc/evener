@@ -149,9 +149,19 @@ export TMPDIR
 # gets a short grace and then the tree stopper. Two seconds is longer than the
 # helper needs to cancel a `gh` call and return 130 (measured under 0.7s) and
 # short enough that an operator does not notice it.
+#
+# A signal that arrives during a launch is held, not acted on: `cmd &` and
+# `child=$!` are two commands, and Bash runs a pending trap between them. The
+# handler would then see an empty `child` and exit 130 with the just-started
+# helper still polling -- or, worse, still enqueueing -- after the caller was
+# told the attempt was interrupted. Both launch functions bracket their whole
+# fork-record sequence in `launching=true`, and the handler sets
+# cancel_requested and returns while that is set.
 child=""
 child_is_helper=false
 helper_started=false
+launching=false
+cancel_requested=false
 helper_term_grace_seconds=2
 # child_running reports whether pid is still running. A child this script has
 # not reaped yet is a zombie, and kill -0 still succeeds for one: counting that
@@ -189,6 +199,10 @@ reap_child() {
   wait "$child" 2>/dev/null || true
 }
 interrupted() {
+  if [ "$launching" = true ]; then
+    cancel_requested=true
+    return 0
+  fi
   reap_child
   exit 130
 }
@@ -220,11 +234,35 @@ finish() {
 # contract's whenever the helper started.
 start_helper() {
   cd "$root" || return 2
+  # Monitor mode gives the helper its own process group, following run_bounded
+  # in scripts/lib/gate-bounded.sh. Two reasons, both #6730's review:
+  #
+  #   - A terminal Ctrl-C reaches the foreground process group, which used to
+  #     include the helper's `gh`. `gh` would then die before the helper's own
+  #     handler cancelled the context, and the helper would read the interrupted
+  #     call as an ordinary GitHub failure and print a drop verdict with
+  #     re-enqueue advice. In its own group the helper is signalled only by this
+  #     script, so its cancelled context is what stops `gh`.
+  #   - `kill -TERM` on the helper's PID reaches the helper and nothing else,
+  #     which is what makes "let the helper decide a cancellation" enforceable.
+  #
+  # The launch is bracketed: `cmd &` and `child=$!` are two commands, and a
+  # trap can run between them. A signal there is recorded instead of acted on,
+  # because acting would exit 130 with the helper unsignalled.
+  launching=true
+  set -m
   env GOFLAGS= "$1" dev merge-enqueue \
     --repo "$repo" --pr "$pr" --wait "$wait" ${jump[@]+"${jump[@]}"} &
+  set +m
   child=$!
   child_is_helper=true
   helper_started=true
+  launching=false
+  # A signal that arrived between the fork and the PID record was held by the
+  # handler; the launch is now interruptible and complete, so act on it.
+  if [ "$cancel_requested" = true ]; then
+    interrupted
+  fi
   local status=0
   wait "$child" || status=$?
   child=""
@@ -246,20 +284,31 @@ start_helper() {
 # signal interrupts the build instead of waiting for it. Returns the build's
 # own status.
 #
-# The build runs under setsid so it leads its own process group: `go build`
-# forks the compiler and linker, and stop_command can then signal the group
-# rather than one PID. setsid is Linux and macOS both; when it is missing the
-# build still runs in this script's group, which stop_command's tree walk
-# handles instead.
+# Monitor mode is what makes the tracked PID the group leader, following
+# run_bounded in scripts/lib/gate-bounded.sh rather than inventing a second
+# pattern for the same problem. The previous form ran `setsid` *inside* a
+# background subshell, so `$!` named the wrapper while the build led a group of
+# its own: stop_command walked PIDs from the wrapper, and a compiler spawned
+# after that walk's snapshot was reparented when `go build` exited, keeping the
+# caller's output pipes open after the launcher returned 130.
+#
+# set -m is what puts the job in its own group; the subshell that leads it is
+# the one that runs the build, so the group holds the build's whole tree and one
+# TERM reaches all of it. `wait` then reaps the tracked child.
 build_helper() {
-  local runner=()
-  command -v setsid >/dev/null 2>&1 && runner=(setsid)
+  launching=true
+  set -m
   (
     cd "$root" || exit 1
-    "${runner[@]+"${runner[@]}"}" env GOFLAGS= go build -o "$1" ./cmd/evener-dev/bin
+    env GOFLAGS= go build -o "$1" ./cmd/evener-dev/bin
   ) &
+  set +m
   child=$!
   child_is_helper=false
+  launching=false
+  if [ "$cancel_requested" = true ]; then
+    interrupted
+  fi
   local status=0
   wait "$child" || status=$?
   child=""

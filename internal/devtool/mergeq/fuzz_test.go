@@ -38,6 +38,14 @@ func FuzzParseGitHubAnswers(f *testing.F) {
 		`[]`,
 		`[{"databaseId":42,"url":"https://example.invalid/42","conclusion":"failure","headBranch":"gh-readonly-queue/main/pr-1-deadbeef"}]`,
 		`[{"databaseId":null,"headBranch":""}]`,
+		// The removal event in the shape the query asks for and GitHub answers:
+		// nested under the timeline. A seed with these fields at the top level
+		// decodes to an empty timeline and never reaches the timestamp parse or
+		// the reason assertion, so it exercises nothing the drop path uses.
+		`{"data":{"repository":{"pullRequest":{"timelineItems":{"nodes":[{"createdAt":"2026-11-17T12:00:00Z","reason":"failed_checks"}]}}}}}`,
+		`{"data":{"repository":{"pullRequest":{"timelineItems":{"nodes":[{"createdAt":"not a time","reason":""}]}}}}}`,
+		`{"data":{"repository":{"pullRequest":{"timelineItems":{"nodes":[]}}}}}`,
+		`{"data":{"repository":{"pullRequest":{"timelineItems":{"nodes":[{"createdAt":"2026-11-17T12:00:00Z"}]}}}}}`,
 		`{"createdAt":"2026-11-17T12:00:00Z","reason":"failed_checks"}`,
 		`{"createdAt":"not a time","reason":""}`,
 		`{"event":"removed_from_merge_queue"}`,
