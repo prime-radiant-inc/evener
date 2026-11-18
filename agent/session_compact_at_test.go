@@ -505,9 +505,7 @@ func TestRequestNearTheWindowRaisesNoContextBudgetWarning(t *testing.T) {
 	standing := standingRequestTokens(t, dir, base, SessionConfig{StateDir: t.TempDir()}, "hi")
 	profile := withContextWindow(base, standing*100/90)
 
-	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("done") },
-	}})
+	c.Register(newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("done") }))
 	sess := newSession(t, withClient(c), withProfile(profile), withDir(dir), withConfig(SessionConfig{StateDir: t.TempDir()}))
 	captured := captureSessionEvents(sess)
 	if _, err := sess.ProcessInput(context.Background(), "hi", nil); err != nil {

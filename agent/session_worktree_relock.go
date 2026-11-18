@@ -418,6 +418,24 @@ func (s *Session) managedJobFinished() {
 		stop()
 	}
 	s.laneEvidenceMu.Unlock()
+	s.publishHoldAfterJobLeftRunning()
+}
+
+// publishHoldAfterJobLeftRunning republishes this delegate's row hold after one
+// of its owned shells left the running map.
+//
+// A job leaving the map changes the hold's phrasing (the count and the oldest
+// start) and can end the shell wait entirely when only descendant work keeps
+// the drain parked — but it changes no durable delegate field and it does not
+// move drainHeld, so no other publication covers it. Without this an already
+// loaded row keeps showing the count it last saw until some unrelated frame
+// happens to correct it. The hold itself is untouched: this only re-samples and
+// publishes what the drain is waiting on.
+func (s *Session) publishHoldAfterJobLeftRunning() {
+	if s == nil || s.delegateController == nil || s.owningDelegateID == "" {
+		return
+	}
+	s.delegateController.publishDelegateHold(s.ID(), s.owningDelegateID)
 }
 
 // retryPendingReLocks re-attempts the resume re-lock for lanes whose first

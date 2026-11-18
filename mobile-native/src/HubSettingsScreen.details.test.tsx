@@ -4,7 +4,7 @@ import type { ComponentProps } from "react";
 import { act } from "react-test-renderer";
 import { expect, it, vi } from "vitest";
 import { HubSettingsScreen } from "./HubSettingsScreen";
-import { pressable, render, screenConnection, textOf } from "./renderNative.testkit";
+import { pressable, render, screenConnection, testIDSuffixes, textOf } from "./renderNative.testkit";
 
 const harness = vi.hoisted(() => ({ connection: {} as Record<string, unknown> }));
 vi.mock("react-native", async () => (await import("./renderNative.testkit")).nativeModuleMock());
@@ -147,4 +147,57 @@ it("supplies the zero defaults for a past index that omits its counters", async 
 		const texts = row.findAll((node) => String(node.type) === "Text").map((node) => textOf(node));
 		expect(texts.at(-1)).toBe("0");
 	}
+});
+
+it("reports the operation store's quarantine signal when the hub carries one", async () => {
+	const hub = new FakeClient("ready");
+	hub.on("evener/settings/overview", () => ({
+		...overview,
+		hub: {
+			...overview.hub,
+			operationStoreQuarantine: {
+				quarantinedFile: "/fixture/state/hub-ops.json",
+				asideFile: "/fixture/state/hub-ops.json.quarantined-20260101T000000.000000000Z",
+				custodyFile: "/fixture/state/hub-ops.json.custody-20260101T000000.000000000Z.json",
+				quarantineEpoch: 3,
+			},
+		},
+	}));
+	harness.connection = screenConnection(hub, "ready");
+	const tree = render(<HubSettingsScreen {...props} />);
+	await act(async () => {});
+
+	// The oracle is the notice's presence, by its testID, not its wording.
+	expect(testIDSuffixes(tree, "operation-store-quarantine")).toEqual([""]);
+	// The notice must name the file that holds the quarantined bytes. Its store
+	// path is where the healthy replacement now lives, so naming that would send
+	// an operator to the wrong file.
+	const notice = tree.root.findAll(
+		(node) => typeof node.props.testID === "string" && node.props.testID.endsWith("operation-store-quarantine"),
+	);
+	const shown = notice.map(textOf).join("\n");
+	expect(shown).toContain("/fixture/state/hub-ops.json.quarantined-20260101T000000.000000000Z");
+	// An operator copies these into a terminal, so the paths are the screen's
+	// ordinary detail rows: selectable Text, not a wall of prose inside one
+	// non-selectable line.
+	for (const path of [
+		"/fixture/state/hub-ops.json.quarantined-20260101T000000.000000000Z",
+		"/fixture/state/hub-ops.json.custody-20260101T000000.000000000Z.json",
+		"/fixture/state/hub-ops.json",
+	]) {
+		const text = tree.root.find((node) => String(node.type) === "Text" && textOf(node) === path);
+		expect(text.props.selectable).toBe(true);
+	}
+	act(() => tree.unmount());
+});
+
+it("shows no quarantine notice for a hub whose store carries no signal", async () => {
+	const hub = new FakeClient("ready");
+	hub.on("evener/settings/overview", () => overview);
+	harness.connection = screenConnection(hub, "ready");
+	const tree = render(<HubSettingsScreen {...props} />);
+	await act(async () => {});
+
+	expect(testIDSuffixes(tree, "operation-store-quarantine")).toEqual([]);
+	act(() => tree.unmount());
 });

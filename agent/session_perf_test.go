@@ -29,14 +29,9 @@ func TestCachedToolDefs_MatchUncached(t *testing.T) {
 	// rebuildToolDefsCache would cause names to go missing here.
 	dir := t.TempDir()
 	c := llm.NewClient()
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("ok")
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("ok")
+	})
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
@@ -312,28 +307,22 @@ func TestHistoryCopyReduction_ContextAndExpansionShareCopy(t *testing.T) {
 	}
 
 	comm := communicateCall("c1", "done after tools")
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(shellCall("s1"))
-			},
-			func(req llm.Request) llm.Response {
-				// Verify history has the tool result from round 0.
-				hasToolResult := false
-				for _, msg := range req.Messages {
-					if msg.Role == llm.RoleTool {
-						hasToolResult = true
-						break
-					}
-				}
-				if !hasToolResult {
-					t.Error("round 1 should see tool result from round 0")
-				}
-				return agenttest.ToolCallResponse(comm)
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(shellCall("s1"))
+	}, func(req llm.Request) llm.Response {
+		// Verify history has the tool result from round 0.
+		hasToolResult := false
+		for _, msg := range req.Messages {
+			if msg.Role == llm.RoleTool {
+				hasToolResult = true
+				break
+			}
+		}
+		if !hasToolResult {
+			t.Error("round 1 should see tool result from round 0")
+		}
+		return agenttest.ToolCallResponse(comm)
+	})
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
@@ -380,17 +369,11 @@ func TestAfterAction_ReceivesCurrentHistory(t *testing.T) {
 		},
 	}
 
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(shellCall("s1"))
-			},
-			func(req llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(comm)
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(shellCall("s1"))
+	}, func(req llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(comm)
+	})
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -537,18 +520,13 @@ func TestSystemPromptConsistency_WithAndWithoutCache(t *testing.T) {
 	c := llm.NewClient()
 
 	var capturedSysPrompt string
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				// Capture the system prompt from the first round.
-				if len(req.Messages) > 0 && req.Messages[0].Role == llm.RoleSystem {
-					capturedSysPrompt = req.Messages[0].Text()
-				}
-				return agenttest.FinalResponse("ok")
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		// Capture the system prompt from the first round.
+		if len(req.Messages) > 0 && req.Messages[0].Role == llm.RoleSystem {
+			capturedSysPrompt = req.Messages[0].Text()
+		}
+		return agenttest.FinalResponse("ok")
+	})
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{

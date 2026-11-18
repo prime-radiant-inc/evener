@@ -409,8 +409,10 @@ supplemental section naming its real Turn number.
   `read` consumes one session, shell-job, or artifact ref.
 - **One turn numbering.** What the outline and markdown show is what `range` and `expand_turn`
   take. No second index is ever exposed. `doctor_evener` / `evener doctor transcript` rows
-  carry the same turn numbers (`turn`), and its `range` takes them with the same grammar;
-  entries `read_transcript` omits appear there without a number.
+  carry the same turn numbers (`turn`), and its `range` takes them with the same grammar.
+  Entry kinds `read_transcript` omits appear there without a number; a compaction fold copy
+  is omitted entirely, so it neither appears nor takes a number. One predicate decides this
+  everywhere — `schema.Turn.InPublicTranscript` — so no surface can count its own.
 - **The registry never truncates.** Each format bounds its own output, always rune-safe and
   reported in `meta`.
 - **Honest counts and windows.** `turns_rendered + elided_turns == turns_total`; a default

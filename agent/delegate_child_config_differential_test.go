@@ -48,9 +48,7 @@ func TestRestoredDelegateChildConfigMatchesFreshChild(t *testing.T) {
 			}
 			memoryRoot := t.TempDir()
 			project := identifier.Project{ID: "proj-differential", CanonicalPath: workspace}
-			adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-				func(llm.Request) llm.Response { return agenttest.FinalResponse("child done") },
-			}}
+			adapter := newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("child done") })
 			client := llm.NewClient()
 			client.Register(adapter)
 			profile := withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2"))

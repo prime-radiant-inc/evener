@@ -209,15 +209,19 @@ func (s *Session) toolResultsMadeProgress(results []tool.ExecResult) bool {
 // guaranteed to deliver a future wake: a delegate in a non-terminal phase
 // (running/settling/stopping — a report or terminal notification is coming,
 // turn/drive budgets bound the run, and the quiet watchdog covers a silent
-// runner) or a supervised running job (progress-interval watch: periodic
-// ticks even if the job never exits). Dependents that can never wake the
-// session on their own do NOT count: idle delegates awaiting delegate_send,
-// closed delegates, detached processes (kept out of the job manager), and
-// unwatched running jobs (no job watchdog — holding on one would park the
-// goal forever with the breaker unreachable). The goal gate's no-progress
-// hold keys on this: waiting on a guaranteed wake is not stalling, but
-// holding on a dependent that will never deliver would strand the goal the
-// other way.
+// runner) or a supervised running job whose progress-interval watch is still
+// certain to deliver a tick (see watchGuaranteesFutureWakeLocked: an
+// undelivered first tick, output the watch has not delivered yet, or a target
+// in transition — a watch that already delivered over a target that has
+// written nothing since has no tick left to wake the session with).
+// Dependents that can never wake the session on their own do
+// NOT count: idle delegates awaiting delegate_send, closed delegates, detached
+// processes (kept out of the job manager), unwatched running jobs (no job
+// watchdog), and quiet progress watches that already delivered — holding on
+// any of them would park the goal with the no-progress breaker unreachable.
+// The goal gate's no-progress hold keys on this: waiting on a guaranteed wake
+// is not stalling, but holding on a dependent that will never deliver would
+// strand the goal the other way.
 //
 // Known residual windows, accepted and documented rather than closed: a
 // dependent that terminates between this read and the gate's fold (or the

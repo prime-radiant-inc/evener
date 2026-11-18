@@ -984,7 +984,9 @@ func TestPublicTranscriptLine(t *testing.T) {
 			},
 		}
 		line, _ := json.Marshal(entry)
-		out, include, err := publicTranscriptLine(line, 3)
+		// The caller's strict decode supplies the turn; this subtest is about
+		// the projection, so it supplies the public turn the decode yields.
+		out, include, err := publicTranscriptLine(line, 3, schema.Turn{Kind: schema.TurnUserInput})
 		if err != nil || !include {
 			t.Fatalf("err=%v include=%v", err, include)
 		}
@@ -1008,7 +1010,7 @@ func TestPublicTranscriptLine(t *testing.T) {
 			"turn": map[string]any{"kind": "ATTENTION_RESOLUTION"},
 		}
 		line, _ := json.Marshal(entry)
-		_, include, err := publicTranscriptLine(line, 0)
+		_, include, err := publicTranscriptLine(line, 0, schema.Turn{Kind: schema.TurnAttentionResolution})
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
@@ -1017,7 +1019,7 @@ func TestPublicTranscriptLine(t *testing.T) {
 		}
 	})
 	t.Run("invalid json line", func(t *testing.T) {
-		_, _, err := publicTranscriptLine([]byte("not json"), 0)
+		_, _, err := publicTranscriptLine([]byte("not json"), 0, schema.Turn{})
 		if err == nil || !strings.Contains(err.Error(), "decode public transcript entry") {
 			t.Fatalf("expected decode error, got %v", err)
 		}
@@ -1025,7 +1027,7 @@ func TestPublicTranscriptLine(t *testing.T) {
 	t.Run("invalid turn json", func(t *testing.T) {
 		entry := map[string]any{"turn": "not an object"}
 		line, _ := json.Marshal(entry)
-		_, _, err := publicTranscriptLine(line, 0)
+		_, _, err := publicTranscriptLine(line, 0, schema.Turn{})
 		if err == nil || !strings.Contains(err.Error(), "decode public transcript turn") {
 			t.Fatalf("expected decode turn error, got %v", err)
 		}

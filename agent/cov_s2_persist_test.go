@@ -18,14 +18,7 @@ import (
 func TestS2Cov_PersistToolResults_VisionSteering(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("a red square")} },
-			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("a signed invoice")} },
-			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("   ")} },
-		},
-	}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("a red square")} }, func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("a signed invoice")} }, func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("   ")} })
 	c := llm.NewClient()
 	c.Register(adapter)
 	// The fixture is the text-only gpt-5.2-codex row: a session model that

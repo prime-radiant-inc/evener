@@ -181,14 +181,9 @@ Use the echo tool.
 
 	const wantMCP = "plugin_mcp_plug_svc__echo"
 	client := llm.NewClient()
-	client.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("done")}
-			},
-		},
-	})
+	client.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("done")}
+	}))
 
 	workDir := t.TempDir()
 	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{

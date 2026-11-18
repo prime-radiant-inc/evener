@@ -43,7 +43,7 @@ func newParitySessionWithConfig(t *testing.T, pc providerCase, steps []func(llm.
 	t.Helper()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	f := &fakeAdapter{name: pc.adapterName, steps: steps}
+	f := newFakeAdapter(pc.adapterName, steps...)
 	c.Register(f)
 	cfg.testOnly = sharingHostProbe(cfg.testOnly)
 	sess, err := NewSession(c, pc.profile("test-model"), execenv.NewLocalExecutionEnvironment(dir), cfg)

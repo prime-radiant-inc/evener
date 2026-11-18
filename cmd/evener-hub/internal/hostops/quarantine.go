@@ -65,9 +65,17 @@ type quarantineEpochFile struct {
 // QuarantineSignal is the operator-visible health signal §4 requires a
 // quarantined store to boot with: it names the quarantined file, the custody
 // file that snapshot it, and the epoch the quarantine advanced to.
+//
+// QuarantinedFile is the store path the quarantine replaced — the custody
+// schema pins it to that path (readCustodyFile) — and AsideFile is where the
+// corrupt bytes were renamed to beside it, so only AsideFile holds what was
+// quarantined. A signal re-derived from custody files whose aside file the
+// cleanup removed keeps the store path here and leaves AsideFile empty rather
+// than naming a file that is gone.
 type QuarantineSignal struct {
 	QuarantinedFile string
 	CustodyFile     string
+	AsideFile       string
 	QuarantineEpoch uint64
 }
 
@@ -189,9 +197,18 @@ func scanQuarantineArtifacts(fs afero.Fs, storePath string) (quarantineArtifacts
 			}
 			if artifacts.signal == nil || custody.QuarantineEpoch > artifacts.signal.QuarantineEpoch ||
 				(custody.QuarantineEpoch == artifacts.signal.QuarantineEpoch && stamp > stampOf(artifacts.signal.CustodyFile, base)) {
+				// The aside file is the custody file's stamp-named sibling. An
+				// orphan custody (a pending intent's, or one whose store still
+				// loads) has none, and naming the path anyway would assert a file
+				// the operator cannot open.
+				asideFile := ""
+				if _, err := lstat(fs, quarantineAsidePath(storePath, stamp)); err == nil {
+					asideFile = quarantineAsidePath(storePath, stamp)
+				}
 				artifacts.signal = &QuarantineSignal{
 					QuarantinedFile: custody.QuarantinedFile,
 					CustodyFile:     custodyPath,
+					AsideFile:       asideFile,
 					QuarantineEpoch: custody.QuarantineEpoch,
 				}
 			}
@@ -327,9 +344,17 @@ func (a quarantineArtifacts) signalAfterRemoving(storePath string, removed ...st
 	if best == "" {
 		return nil
 	}
+	// asides is every aside file this scan found, so the survivor's is named
+	// only when it is really there: a cleanup that removed it leaves the field
+	// empty rather than pointing at a path that no longer exists.
+	asideFile := ""
+	if candidate := quarantineAsidePath(storePath, best); slices.Contains(a.asides, candidate) {
+		asideFile = candidate
+	}
 	return &QuarantineSignal{
 		QuarantinedFile: storePath,
 		CustodyFile:     quarantineCustodyPath(storePath, best),
+		AsideFile:       asideFile,
 		QuarantineEpoch: a.custodyEpochs[best],
 	}
 }
@@ -427,9 +452,14 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 			epoch = custody.QuarantineEpoch
 		}
 		if signal == nil || signal.QuarantineEpoch < custody.QuarantineEpoch {
+			asideFile := ""
+			if asideExists {
+				asideFile = intent.AsideFile
+			}
 			signal = &QuarantineSignal{
 				QuarantinedFile: custody.QuarantinedFile,
 				CustodyFile:     intent.CustodyFile,
+				AsideFile:       asideFile,
 				QuarantineEpoch: custody.QuarantineEpoch,
 			}
 		}
@@ -482,6 +512,13 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 					if err := renameStoreAside(fs, path, intent.AsideFile, faults); err != nil {
 						return snapshot{}, 0, nil, err
 					}
+					// The rename just put the corrupt bytes at the intent's aside
+					// path, so the signal this boot returns must name it: it was
+					// built while that file did not exist, and leaving it empty
+					// would omit the path for the rest of this boot.
+					if signal != nil && signal.CustodyFile == intent.CustodyFile {
+						signal.AsideFile = intent.AsideFile
+					}
 					return replacementFromCustody(fs, path, intent.CustodyFile, custody, artifacts.allocatorFloor, epoch, signal, faults)
 				}
 				// The intent's own rename already landed and a different
@@ -509,9 +546,14 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 			epoch = custody.QuarantineEpoch
 		}
 		if signal == nil {
+			asideFile := ""
+			if _, err := lstat(fs, quarantineAsidePath(path, artifacts.rebuildStamp)); err == nil {
+				asideFile = quarantineAsidePath(path, artifacts.rebuildStamp)
+			}
 			signal = &QuarantineSignal{
 				QuarantinedFile: custody.QuarantinedFile,
 				CustodyFile:     custodyPath,
+				AsideFile:       asideFile,
 				QuarantineEpoch: custody.QuarantineEpoch,
 			}
 		}
@@ -612,6 +654,7 @@ func resolveStoreFS(fs afero.Fs, path string, faults storeFaults) (snapshot, uin
 	signal = &QuarantineSignal{
 		QuarantinedFile: custody.QuarantinedFile,
 		CustodyFile:     custodyPath,
+		AsideFile:       asidePath,
 		QuarantineEpoch: custody.QuarantineEpoch,
 	}
 	return replacement, custody.QuarantineEpoch, signal, nil

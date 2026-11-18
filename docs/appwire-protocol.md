@@ -1118,6 +1118,10 @@ Underlying Go kind: `string` (no struct fields).
 | `runStartedAt` | string | yes |  |
 | `runEndedAt` | string | yes |  |
 | `latestActivityAt` | string | yes |  |
+| `drainHeldByJobs` | bool | yes |  |
+| `runningJobCount` | int | yes |  |
+| `oldestRunningJobStartedAt` | string | yes |  |
+| `holdSequence` | uint64 | yes |  |
 | `latestIntent` | string | yes |  |
 | `runningForMs` | \*int64 | yes |  |
 | `quietForMs` | \*int64 | yes |  |
@@ -3948,6 +3952,10 @@ Underlying Go kind: `string` (no struct fields).
 | `runEndedAt` | string | yes |  |
 | `latestActivityAt` | string | yes |  |
 | `latestIntent` | string | yes |  |
+| `drainHeldByJobs` | bool | yes |  |
+| `runningJobCount` | int | yes |  |
+| `oldestRunningJobStartedAt` | string | yes |  |
+| `holdSequence` | uint64 | yes |  |
 | `usage` | \*[appwire.EvenerUsage](#evenerusage) | yes |  |
 | `worktree` | \*[appwire.JobActivityWorktree](#jobactivityworktree) | yes |  |
 
@@ -4449,6 +4457,7 @@ Underlying Go kind: `string` (no struct fields).
 | `spawnTimeout` | string | yes |  |
 | `bearerTokenAge` | string | yes |  |
 | `pastIndex` | \*[appwire.SettingsPastIndexOverview](#settingspastindexoverview) | yes |  |
+| `operationStoreQuarantine` | \*[appwire.SettingsOperationStoreQuarantine](#settingsoperationstorequarantine) | yes |  |
 | `daemonIdleTimeoutMillis` | int64 |  |  |
 
 
@@ -4468,6 +4477,16 @@ Underlying Go kind: `string` (no struct fields).
 | `transport` | string | yes |  |
 | `status` | string | yes |  |
 | `error` | string | yes |  |
+
+
+### `SettingsOperationStoreQuarantine`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `quarantinedFile` | string | yes |  |
+| `asideFile` | string | yes |  |
+| `custodyFile` | string | yes |  |
+| `quarantineEpoch` | uint64 | yes |  |
 
 
 ### `SettingsOverviewResponse`
