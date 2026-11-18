@@ -1445,3 +1445,90 @@ func compileSchema(t *testing.T, schema map[string]any) *jsonschema.Schema {
 	}
 	return compiled
 }
+
+// A closed value set reaches this package in two concrete shapes for the same
+// JSON: a Go builder writes []string, and a decoded provider schema yields
+// []any. Both describe the same enum, so the supplied type has to be the same
+// one. Recognising only the decoded shape would leave a Go-authored tool
+// typeless on the wire and cost the whole request.
+func TestSupplyDerivedTypesReadsEveryConcreteEnumShape(t *testing.T) {
+	t.Parallel()
+	schemas := map[string]map[string]any{
+		"[]any":    {"enum": []any{"fast", "safe"}},
+		"[]string": {"enum": []string{"fast", "safe"}},
+	}
+	for name, argument := range schemas {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			emitted := SupplyDerivedTypes(map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties":           map[string]any{"mode": argument},
+				"required":             []string{"mode"},
+			})
+			mode := emitted["properties"].(map[string]any)["mode"].(map[string]any)
+			if mode["type"] != "string" {
+				t.Fatalf("emitted argument type = %#v, want \"string\": a provider enforcing the strict subset rejects a typeless node, and both shapes describe the same enum", mode["type"])
+			}
+			// Stating the type must leave the accepted set alone.
+			if !schemaAccepts(t, emitted, map[string]any{"mode": "fast"}) {
+				t.Fatal("the emitted schema rejects a member of the advertised set")
+			}
+			if schemaAccepts(t, emitted, map[string]any{"mode": "slow"}) {
+				t.Fatal("the emitted schema accepts a value outside the advertised set")
+			}
+		})
+	}
+}
+
+// A schema can sit under a key that is not properties, items or a combinator:
+// additionalProperties and patternProperties both hold subschemas, and a
+// provider requiring an explicit type rejects a typeless node there. A tool
+// carrying either keyword is refused strict mode, so the whole schema reaches
+// the provider as advertised and the fallback walk is the only thing that can
+// state the type. Leaving these unvisited leaves the whole request rejected
+// even though the tool was correctly refused strict mode.
+func TestSupplyDerivedTypesReachesEverySchemaValuedContainer(t *testing.T) {
+	t.Parallel()
+	containers := map[string]func(inner map[string]any) map[string]any{
+		"additionalProperties": func(inner map[string]any) map[string]any {
+			return map[string]any{"type": "object", "additionalProperties": inner}
+		},
+		"patternProperties": func(inner map[string]any) map[string]any {
+			return map[string]any{"type": "object", "patternProperties": map[string]any{"^x-": inner}}
+		},
+	}
+	for name, wrap := range containers {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			emitted := SupplyDerivedTypes(map[string]any{
+				"type":                 "object",
+				"additionalProperties": false,
+				"properties":           map[string]any{"headers": wrap(map[string]any{"enum": []any{"a", "b"}})},
+				"required":             []string{"headers"},
+			})
+			headers := emitted["properties"].(map[string]any)["headers"].(map[string]any)
+			var values map[string]any
+			switch {
+			case headers["additionalProperties"] != nil:
+				values, _ = headers["additionalProperties"].(map[string]any)
+			default:
+				pp, _ := headers["patternProperties"].(map[string]any)
+				values, _ = pp["^x-"].(map[string]any)
+			}
+			if values == nil {
+				t.Fatalf("the advertised subschema is gone: %#v", headers)
+			}
+			if values["type"] != "string" {
+				t.Fatalf("the subschema under %s has type %#v, want \"string\": an unvisited node stays typeless and the provider rejects the request", name, values["type"])
+			}
+			// The members and the allowed keys are untouched.
+			if !schemaAccepts(t, emitted, map[string]any{"headers": map[string]any{"x-a": "a"}}) {
+				t.Fatal("the emitted schema rejects a member the advertised enum accepts")
+			}
+			if schemaAccepts(t, emitted, map[string]any{"headers": map[string]any{"x-a": "c"}}) {
+				t.Fatal("the emitted schema accepts a value the advertised enum rejects")
+			}
+		})
+	}
+}

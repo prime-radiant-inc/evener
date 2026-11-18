@@ -484,3 +484,42 @@ func TestRefusedToolStillStatesTheTypeAClosedValueSetImplies(t *testing.T) {
 		t.Fatal("additionalProperties is missing: the advertised root was explicitly closed")
 	}
 }
+
+// The explicit-type requirement belongs to the schema dialect, not to the
+// strict-tools capability. A route that never offers strict_tools still sends
+// this tool to the same endpoint, so a typeless const node costs the whole
+// request there too. The type is stated either way, and the route's own flag
+// behaviour is untouched: no strict key, no required change.
+func TestTypeIsStatedOnARouteWithoutStrictTools(t *testing.T) {
+	t.Parallel()
+	schema := map[string]any{
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"payload": map[string]any{"const": "fixed"},
+			"note":    map[string]any{"type": "string"},
+		},
+		"required": []string{"payload"},
+	}
+	req := userReq("hi")
+	req.Tools = []llm.ToolDefinition{{Name: "job_status", Parameters: schema}}
+
+	// A route whose catalog row does not carry the capability: strict_tools is
+	// absent, so the builder never enters the strict branch.
+	body := build(t, req, resolved(nil))
+	tool := body["tools"].([]map[string]any)[0]
+	if _, has := tool["strict"]; has {
+		t.Fatalf("strict = %#v on a route without the capability, want the field omitted", tool["strict"])
+	}
+	params := tool["parameters"].(map[string]any)
+	payload := params["properties"].(map[string]any)["payload"].(map[string]any)
+	if payload["type"] != "string" {
+		t.Fatalf("the emitted argument has type %#v, want \"string\": the endpoint checks explicit types even when strict enforcement is off", payload["type"])
+	}
+	if payload["const"] != "fixed" {
+		t.Fatalf("const = %#v, want the advertised single value", payload["const"])
+	}
+	if got, want := requiredNames(t, params), []string{"payload"}; !slices.Equal(got, want) {
+		t.Fatalf("required = %v, want the advertised set %v: stating a type must not force the optional argument", got, want)
+	}
+}

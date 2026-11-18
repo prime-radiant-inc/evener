@@ -82,8 +82,10 @@ func toResponsesTools(tools []llm.ToolDefinition, strict bool) []map[string]any 
 				}
 			}
 			if toolStrict {
+				// StrictifyJSONSchema states the derived type itself at the end of
+				// its walk, so the strict and refused paths agree on the emitted
+				// schema without a second pass here.
 				params = openaichat.StrictifyJSONSchema(params)
-				entry["parameters"] = params
 			} else {
 				// A refused tool keeps the schema it advertised, because the
 				// projection would change which arguments it accepts. The
@@ -95,9 +97,19 @@ func toResponsesTools(tools []llm.ToolDefinition, strict bool) []map[string]any 
 				// because the requirement is the schema dialect's, not strict
 				// mode's — additional_tools on this route carries strict:false
 				// and is still rejected for a typeless node.
-				entry["parameters"] = openaichat.SupplyDerivedTypes(params)
+				params = openaichat.SupplyDerivedTypes(params)
 			}
+			entry["parameters"] = params
 			entry["strict"] = toolStrict
+		} else {
+			// The explicit-type requirement belongs to the schema dialect, not to
+			// this route's strict-tools capability: a row without the capability
+			// still sends this tool to the same endpoint, which checks explicit
+			// types even when strict enforcement is off. Supplying the type here
+			// states what the closed value set already implies, so the accepted
+			// set is unchanged and only the rejection is avoided. The tool's
+			// required list and the absence of a strict key are untouched.
+			entry["parameters"] = openaichat.SupplyDerivedTypes(params)
 		}
 		out = append(out, entry)
 	}

@@ -82,6 +82,21 @@ func supplyDerivedTypes(m map[string]any) {
 	if items, ok := m["items"].(map[string]any); ok {
 		supplyDerivedTypes(items)
 	}
+	// A schema-valued additionalProperties holds a schema. The rewrite never
+	// descends into it — closing an object replaces it outright — so a tool that
+	// was refused strict mode keeps this node exactly as advertised, and a
+	// typeless node there still fails a provider that requires explicit types.
+	// A boolean additionalProperties is not a schema and is left alone.
+	if ap, ok := m["additionalProperties"].(map[string]any); ok {
+		supplyDerivedTypes(ap)
+	}
+	if pp, ok := m["patternProperties"].(map[string]any); ok {
+		for _, child := range pp {
+			if childMap, ok := child.(map[string]any); ok {
+				supplyDerivedTypes(childMap)
+			}
+		}
+	}
 	for _, comb := range []string{"anyOf", "oneOf", "allOf"} {
 		arr, ok := m[comb].([]any)
 		if !ok {
@@ -395,6 +410,27 @@ func certifiedByReadableKeyword(m map[string]any) bool {
 	return false
 }
 
+// enumMembers reads an enum's members as a slice of values.
+//
+// The same JSON enum reaches this package in two concrete shapes: a Go builder
+// writes []string, and a decoded provider or MCP schema yields []any. They
+// describe the same set, so they must reach the inference the same way. A shape
+// that is neither is unreadable and infers nothing.
+func enumMembers(raw any) ([]any, bool) {
+	switch list := raw.(type) {
+	case []any:
+		return list, true
+	case []string:
+		values := make([]any, len(list))
+		for i, member := range list {
+			values[i] = member
+		}
+		return values, true
+	default:
+		return nil, false
+	}
+}
+
 // derivedScalarType returns the JSON type implied by a node's closed value set
 // when every member is a non-null scalar of one type: {"const": "fixed"} and
 // {"enum": ["a", "b"]} both imply "string". The projection states that type,
@@ -414,7 +450,7 @@ func derivedScalarType(m map[string]any) (string, bool) {
 	case m["const"] != nil:
 		values = []any{m["const"]}
 	case m["enum"] != nil:
-		list, ok := m["enum"].([]any)
+		list, ok := enumMembers(m["enum"])
 		if !ok {
 			return "", false
 		}
