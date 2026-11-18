@@ -473,8 +473,13 @@ export class AppwireClient {
       // that names no authority and cannot be recovered from. Keyed by the
       // mutation this request sent, so the refusal names the caller's intent.
       const sent = params as MethodTypes["thread/model/set"]["params"];
+      // Read the id now, not in the callback. A caller that reuses one params
+      // object for a second switch while this one is pending would otherwise
+      // have the first reply's refusal attributed to the second switch, so a
+      // caller believes a switch it never made is outcome-unknown.
+      const clientMutationId = sent.clientMutationId;
       return this.requestWire(method, params, opts).then((result) =>
-        validateThreadModelSetResponse(result, sent.clientMutationId),
+        validateThreadModelSetResponse(result, clientMutationId),
       );
     }
     return this.requestWire(method, params, opts);

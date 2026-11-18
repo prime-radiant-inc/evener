@@ -1168,6 +1168,18 @@ export class TranscriptRepository {
     for (const notification of notifications) {
       if (notification.method === "history/updated") {
         this.accept(notification, context);
+      } else if (notification.method === "thread/model/changed") {
+        // The snapshot frame below advances the active model, and this legacy
+        // frame is the only place a switch announces the new model's default
+        // reasoning tier. A pre-cut frame the read already represents must
+        // still reach the reducer for that field, exactly as the store-level
+        // replay does, or the effort control shows the outgoing model's
+        // default under the incoming one.
+        const held =
+          this.#model?.modelControlState.kind === "ready" ? this.#model.modelControlState.snapshot : undefined;
+        if (held && notification.params.modelProvider === held.active.modelProvider) {
+          this.accept(notification, context);
+        }
       } else if (notification.method === "thread/model/controlChanged") {
         const held =
           this.#model?.modelControlState.kind === "ready" ? this.#model.modelControlState.snapshot : undefined;

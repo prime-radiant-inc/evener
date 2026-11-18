@@ -11,6 +11,7 @@ import {
   modelControlDisplay,
   type NotesHumanSetResponse,
   RequestTimeoutError,
+  type ThreadModelSetResponse,
   type ThreadReadResponse,
   WireError,
 } from "@evener/appwire-client";
@@ -1368,6 +1369,86 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
       kind: "ready",
       snapshot: winner,
     });
+  });
+
+  test("a superseded pick still rejects after a refresh advances the read generation", async () => {
+    const fake = connectFakeClient();
+    const initial = modelControlSnapshot(2);
+    fake.on("thread/read", () => capableModelRead("ref_a", initial));
+    await threadsStore.getState().ensureThread("ref_a");
+
+    // Hold the pick's reply open, then start a same-session refresh so the
+    // read generation moves past the fence this request captured. The fence
+    // then forbids this reply from publishing a snapshot - which is correct -
+    // but the caller still must not be told its losing pick succeeded.
+    const reply = deferred<ThreadModelSetResponse>();
+    fake.on("thread/model/set", () => reply.promise);
+    const pick = threadsStore.getState().setModel("ref_a", "openai", "gpt-5.5");
+    await flushUntil(() => fake.calls.some((call) => call.method === "thread/model/set"));
+    // A same-session refresh, exactly as the reviewer described: the store's
+    // ready handler re-reads every tracked ref, and that read advances the
+    // generation the pick captured.
+    const refreshed = modelControlSnapshot(3, { activeProvider: "google", activeModel: "gemini-3-pro" });
+    fake.on("thread/read", () => capableModelRead("ref_a", refreshed));
+    // A real reconnect is a transition into "ready", not a repeat of it: the
+    // fake ignores emitReady when the client is already ready, so leave and
+    // come back the way the connection does.
+    fake.emitStateChange("reconnecting");
+    fake.emitReady();
+    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.modelControlState.kind === "ready");
+
+    reply.resolve({ modelControlVersion: 1, disposition: "superseded", modelControl: refreshed });
+
+    await expect(pick).rejects.toBeInstanceOf(ConflictError);
+    // The refresh's own read owns publication, and its snapshot stands. The
+    // point is that the fence did not turn the refusal into a success.
+    expect(threadsStore.getState().threads.get("ref_a")?.modelControlState).toEqual({
+      kind: "ready",
+      snapshot: refreshed,
+    });
+  });
+
+  test("a replayed switch frame gives the model it advanced to its own default tier", async () => {
+    const fake = connectFakeClient();
+    const initial = modelControlSnapshot(2);
+    const reading = deferred<ThreadReadResponse>();
+    let reads = 0;
+    fake.on("thread/read", () => {
+      reads += 1;
+      return reads === 1 ? reading.promise : Promise.resolve(capableModelRead("ref_a", initial));
+    });
+    const opening = threadsStore.getState().ensureThread("ref_a");
+    await flushUntil(() => reads === 1);
+
+    // The frames a switch to B publishes while this read is in flight. The
+    // snapshot frame advances the active model, and the legacy frame carries
+    // the one profile fact the snapshot does not: B's default tier. The read
+    // that eventually publishes must not leave the effort control showing A's
+    // default under B.
+    const advanced = modelControlSnapshot(3, { activeProvider: "google", activeModel: "gemini-3-pro" });
+    fake.emitNotification({
+      method: "thread/model/controlChanged",
+      params: { ref: "ref_a", threadId: "thr_ref_a", modelControl: advanced },
+    });
+    fake.emitNotification({
+      method: "thread/model/changed",
+      params: {
+        ref: "ref_a",
+        threadId: "thr_ref_a",
+        modelProvider: "google",
+        model: "gemini-3-pro",
+        reasoningEffortLevels: ["low", "high"],
+        supportsReasoning: true,
+        defaultReasoningEffort: "high",
+      },
+    } as never);
+    reading.resolve(capableModelRead("ref_a", advanced));
+
+    await opening;
+    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.modelControlState.kind === "ready");
+    const model = threadsStore.getState().threads.get("ref_a");
+    expect(model?.model).toBe("gemini-3-pro");
+    expect(model?.defaultReasoningEffort, "the replayed frame's tier for the model replay advanced to").toBe("high");
   });
 
   test("a tracked thread owns model-control recovery shared with a rich watcher", async () => {

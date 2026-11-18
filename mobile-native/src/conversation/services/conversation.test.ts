@@ -1215,6 +1215,43 @@ describe("ConversationService", () => {
 			]);
 		});
 
+		// Review finding: a reread that advances the generation while a pick is
+		// in flight takes publication away from this request. That is the fence's
+		// call and correct - but resolving the promise there told the sheet the
+		// losing pick had been applied, so it confirmed a model the daemon never
+		// ran. The disposition, not the fence, decides what the caller is told.
+		it("rejects a superseded pick even after a reread advanced the generation", async () => {
+			const { client, service } = setup({ thread: controlledThread(modelControl(1)) });
+			await service.open("ref-1");
+			const canonical = modelControl(3, {
+				active: "claude-opus-4-6",
+				desired: "claude-opus-4-6",
+				lifecycle: "applied",
+			});
+			let releaseReply!: () => void;
+			const held = new Promise<void>((resolve) => {
+				releaseReply = resolve;
+			});
+			let dispatched!: () => void;
+			const sent = new Promise<void>((resolve) => {
+				dispatched = resolve;
+			});
+			client.on("thread/model/set", async () => {
+				dispatched();
+				await held;
+				return { modelControlVersion: 1, disposition: "superseded", modelControl: canonical };
+			});
+			const pick = service.changeModel("openai", "gpt-5.5");
+			await sent;
+
+			// A second open - the sheet rereading the conversation - advances the
+			// epoch the pick captured its read generation from.
+			await service.open("ref-1");
+			releaseReply();
+
+			await expect(pick).rejects.toMatchObject({ code: -32013, data: { disposition: "superseded" } });
+		});
+
 		it("does not confirm a superseded pick to the sheet, and shows the model the daemon kept", async () => {
 			const { client, service } = setup({ thread: controlledThread(modelControl(1)) });
 			const store = createConversationStore();

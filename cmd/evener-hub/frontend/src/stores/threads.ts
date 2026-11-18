@@ -4446,6 +4446,20 @@ function replayQuarantinedModelControl(
     replayed = result.model;
     replacementReadRequired ||= result.replacementReadRequired;
   }
+  // A switch announces its default tier on the legacy frame, because the
+  // snapshot does not carry that field. When replay advances the active model
+  // to B, dropping B's sibling frame leaves the effort control showing A's
+  // default. Resolve the tier against the model replay ended on, from the last
+  // frame that names it, so a stale frame naming another model cannot mislabel
+  // the one running and the frame's position relative to the snapshot frame
+  // does not decide the answer.
+  for (const update of notifications) {
+    const notification = update.notification;
+    if (notification.method !== "thread/model/changed") continue;
+    if (notification.params.modelProvider !== replayed.modelProvider) continue;
+    if (notification.params.model !== replayed.model) continue;
+    replayed = { ...replayed, defaultReasoningEffort: notification.params.defaultReasoningEffort };
+  }
   return { model: replayed, replacementReadRequired };
 }
 
@@ -4779,6 +4793,15 @@ function modelControlFenceCurrent(ref: string, client: AppwireClientLike, fence:
     current !== undefined &&
     sameModelControlAuthority(modelControlAuthority(current), fence.authority)
   );
+}
+
+// A superseded disposition is the daemon saying another pick won. The caller
+// asked for this model and did not get it, so the operation fails whether or
+// not this request still owns publication.
+function supersededModelSetError(response: MethodTypes["thread/model/set"]["result"]): ConflictError {
+  const winner = response.modelControl;
+  const target = winner ? `${winner.active.modelProvider}/${winner.active.model}` : "another model";
+  return new ConflictError(`Model was already changed in another client; this session is on ${target}.`);
 }
 
 function applyModelControlTransition(
@@ -9585,7 +9608,16 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
       startModelControlRecovery(targetRef, { kind: "postDispatchFailure" }, client, fence);
       throw error;
     }
-    if (!modelControlFenceCurrent(targetRef, client, fence)) return;
+    // A newer read owning publication is not permission to resolve this
+    // operation: the fence decides who may write the displayed snapshot, and
+    // the validated disposition decides what this caller is told. Returning
+    // here made a superseded pick resolve success (the palette then confirmed
+    // the losing model) whenever a same-session refresh advanced the read
+    // generation while the mutation was in flight.
+    if (!modelControlFenceCurrent(targetRef, client, fence)) {
+      if (response.disposition === "superseded") throw supersededModelSetError(response);
+      return;
+    }
     const snapshot = response.modelControl;
     if (!snapshot || !sameModelControlAuthority(snapshot.authority, fence.authority)) {
       startModelControlRecovery(targetRef, { kind: "postDispatchFailure" }, client, fence);
@@ -9606,9 +9638,7 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     // the palette would otherwise toast success naming the losing pick. The
     // disposition is the wire's own answer, never a guess from the snapshot.
     if (response.disposition === "superseded") {
-      throw new ConflictError(
-        `Model was already changed in another client; this session is on ${snapshot.active.modelProvider}/${snapshot.active.model}.`,
-      );
+      throw supersededModelSetError(response);
     }
   },
 

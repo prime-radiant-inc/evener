@@ -655,6 +655,37 @@ describe("AppwireClient", () => {
     await expect(stale).resolves.toEqual(superseded);
   });
 
+  test("thread/model/set attributes a malformed reply to the mutation that sent it", async () => {
+    // A caller may reuse one params object for a second switch while the first
+    // is pending. The first request serialized cm_first, so its malformed reply
+    // must be reported against cm_first; reading the id out of the object after
+    // the fact would name cm_second and report a switch the caller never sent
+    // as outcome-unknown.
+    const fake = new FakeSocket({ autoInitialize: true });
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
+    await connectReady(fake, client);
+    const params: ThreadModelSetParams = {
+      ref: "local:th_1",
+      modelProvider: "work",
+      model: "gpt-5.5",
+      clientMutationId: "cm_first",
+      expectedInstanceId: "instance_1",
+      expectedBootGeneration: "7",
+    };
+
+    const first = client.request("thread/model/set", params);
+    const firstFrame = lastSentFrame(fake);
+    // Mutate the object exactly as a caller starting a second switch would.
+    params.clientMutationId = "cm_second";
+    params.model = "gpt-5.6";
+
+    fake.receive({ id: firstFrame.id, result: {} });
+    const error = await first.catch((caught: unknown) => caught);
+    expect(error).toBeInstanceOf(WireError);
+    expect(mutationErrorData(error)).toMatchObject({ mutationOutcome: "unknown", retryDisposition: "blocked" });
+    expect(mutationErrorData(error)?.clientMutationId).toBe("cm_first");
+  });
+
   test("question fields survive response and notification decoding with their page request", async () => {
     const fake = new FakeSocket({ autoInitialize: true });
     const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });

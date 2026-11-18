@@ -799,6 +799,21 @@ export function createConversationService<ReadLease = unknown>(
 		);
 	}
 
+	// A superseded disposition is the daemon saying another pick won, so this
+	// caller did not get the model it asked for and its operation fails whether
+	// or not this request still owns publication. appwire's CodeConflict
+	// (-32013): another client's newer pick won, so it is a conflict rather
+	// than a failed operation.
+	function modelSetSupersededError(
+		clientMutationId: string,
+		response: MethodTypes["thread/model/set"]["result"],
+	): WireError {
+		return new WireError("The model was already changed in another client.", -32013, {
+			clientMutationId,
+			disposition: response.disposition,
+		});
+	}
+
 	let startReplacementRead: ((threadRef: string) => void) | null = null;
 
 	// A cold session cannot carry a model change on the authority a previous
@@ -1318,7 +1333,14 @@ export function createConversationService<ReadLease = unknown>(
 				recoverModelControl(threadRef, expectedThreadId, fence, { kind: "postDispatchFailure" });
 				throw error;
 			}
-			if (!modelControlFenceCurrent(threadRef, expectedThreadId, fence)) return;
+			// The fence decides who may publish the snapshot, not what this
+			// caller is told. Resolving here let a superseded pick look like a
+			// success whenever a reread had advanced the generation while the
+			// mutation was in flight, so the sheet confirmed the losing model.
+			if (!modelControlFenceCurrent(threadRef, expectedThreadId, fence)) {
+				if (response.disposition === "superseded") throw modelSetSupersededError(clientMutationId, response);
+				return;
+			}
 			const snapshot = response.modelControl;
 			if (!snapshot || !sameAuthority(fence.authority, snapshot.authority)) {
 				recoverModelControl(threadRef, expectedThreadId, fence, { kind: "postDispatchFailure" });
@@ -1353,12 +1375,7 @@ export function createConversationService<ReadLease = unknown>(
 			// wire's own answer (appwire.ModelControlDispositionSuperseded), never
 			// a guess from the snapshot.
 			if (response.disposition === "superseded") {
-				// appwire's CodeConflict (-32013): another client's newer pick won,
-				// so this refusal is a conflict rather than a failed operation.
-				throw new WireError("The model was already changed in another client.", -32013, {
-					clientMutationId,
-					disposition: response.disposition,
-				});
+				throw modelSetSupersededError(clientMutationId, response);
 			}
 		},
 
