@@ -24,27 +24,38 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 	const malformed = `{"x":broken}`
 	const first, second = " \tλ<&>\n", "  next\r\n"
 	good, bad := mustJSON(t, valid), mustJSON(t, malformed)
+	const serial = "9007199254740993"
+	chat := `{"choices":[{"message":{
+		"role":"assistant","reasoning":` + mustJSON(t, first+second) + `,
+		"reasoning_details":[
+			{"type":"reasoning.text","id":"part-a","format":"fmt-a","index":7,"text":` + mustJSON(t, first) + `,"serial":` + serial + `},
+			{"type":"reasoning.text","format":"fmt-b","index":2,"text":` + mustJSON(t, second) + `}],
+		"tool_calls":[
+			{"id":"c1","type":"function","function":{"name":"f","arguments":` + good + `}},
+			{"id":"c2","type":"function","function":{"name":"f","arguments":` + bad + `}}
+		]},"finish_reason":"tool_calls"}]}`
 	for _, tc := range []struct {
-		protocol llm.Protocol
-		field    string
-		response string
-		thoughts []string
+		protocol    llm.Protocol
+		field       string
+		replayField string
+		response    string
+		thoughts    []string
 	}{
-		{&responses.Protocol{}, "input", `{"output":[
+		{&responses.Protocol{}, "input", "", `{"output":[
 			{"type":"reasoning","id":"r1","summary":[],"content":[
 				{"type":"reasoning_text","text":` + mustJSON(t, first) + `},
 				{"type":"reasoning_text","text":` + mustJSON(t, second) + `}]},
 			{"type":"function_call","call_id":"c1","name":"f","arguments":` + good + `},
 			{"type":"function_call","call_id":"c2","name":"f","arguments":` + bad + `}
 		]}`, []string{first, second}},
-		{&chatcompletions.Protocol{}, "messages", `{"choices":[{"message":{
-			"role":"assistant","reasoning":` + mustJSON(t, first+second) + `,
-			"tool_calls":[
-				{"id":"c1","type":"function","function":{"name":"f","arguments":` + good + `}},
-				{"id":"c2","type":"function","function":{"name":"f","arguments":` + bad + `}}
-			]},"finish_reason":"tool_calls"}]}`, []string{first + second}},
+		{&chatcompletions.Protocol{}, "messages", "reasoning_content", chat, []string{first + second}},
+		{&chatcompletions.Protocol{}, "messages", "reasoning_details", chat, []string{first, second}},
 	} {
-		t.Run(tc.protocol.ID(), func(t *testing.T) {
+		name := tc.protocol.ID()
+		if tc.replayField != "" {
+			name += "/" + tc.replayField
+		}
+		t.Run(name, func(t *testing.T) {
 			requests := make(chan []byte, 1)
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				body, err := io.ReadAll(r.Body)
@@ -62,24 +73,24 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 				Instance: "fixture", ModelID: "m", WireID: "m", Protocol: tc.protocol.ID(),
 				Caps: registry.Caps{
 					Fields: registry.Baseline(tc.protocol.ID()), ReplayReasoningText: new(true),
-					ReasoningField: new("reasoning_content"),
+					ReasoningField: new(tc.replayField),
 				},
 				Transport:  registry.Transport{BaseURL: srv.URL, Endpoint: "/completion", Auth: registry.AuthBearer},
 				Credential: registry.Credential{Value: "test"},
 			}
-			send := func(messages []llm.Message) (llm.Response, []byte) {
+			send := func(messages []llm.Message, target registry.Resolved) (llm.Response, []byte) {
 				t.Helper()
 				req := llm.ShapeRequest(llm.Request{
-					Model: row.ModelID, Messages: messages, Tools: []llm.ToolDefinition{{Name: "f"}},
-				}, row)
-				resp, err := tc.protocol.Complete(t.Context(), req, row)
+					Model: target.ModelID, Messages: messages, Tools: []llm.ToolDefinition{{Name: "f"}},
+				}, target)
+				resp, err := tc.protocol.Complete(t.Context(), req, target)
 				if err != nil {
 					t.Fatal(err)
 				}
 				return resp, <-requests
 			}
 			user := llm.User("u1")
-			resp, _ := send([]llm.Message{user})
+			resp, _ := send([]llm.Message{user}, row)
 			result := llm.ToolResult("c1", "r1", false)
 			result.Content = append(result.Content, llm.ToolResult("c2", "r2", true).Content...)
 			turns := []schema.Turn{
@@ -94,7 +105,7 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 			}
 			scope := replayScope{Instance: row.Instance, Model: row.ModelID, Protocol: row.Protocol}
 			scope.setReasoningTextTarget(provider.FromResolved(row, nil))
-			_, warmBody := send(expandHistory(turns, scope))
+			_, warmBody := send(expandHistory(turns, scope), row)
 			dir := t.TempDir()
 			writeFindTranscript(t, dir, "argument-replay", time.Unix(1, 0), turns...)
 			_, entries, skipped, err := readTranscript(t.Context(), transcriptPath(dir, "argument-replay"), "")
@@ -106,11 +117,11 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 				t.Fatalf("restored rejected call = %+v", rejected)
 			}
 			coldHistory := expandHistory(resumed, scope)
-			_, sameBody := send(coldHistory)
+			_, sameBody := send(coldHistory, row)
 			if !bytes.Equal(warmBody, sameBody) {
 				t.Errorf("resending unchanged history produced a different HTTP body after resume")
 			}
-			_, coldBody := send(append(coldHistory, llm.User("u2")))
+			_, coldBody := send(append(coldHistory, llm.User("u2")), row)
 			historyField := func(b []byte) json.RawMessage {
 				t.Helper()
 				var body map[string]json.RawMessage
@@ -121,31 +132,64 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 			}
 			warm, cold := historyField(warmBody), historyField(coldBody)
 			for _, history := range []json.RawMessage{warm, cold} {
-				got, thoughts := capturedToolTurn(t, history)
+				got, thoughts, details := capturedToolTurn(t, history)
 				if got["c1"] != valid || got["c2"] != "{}" {
 					t.Errorf("outbound argument strings = %q, want original valid bytes and the rejected call's placeholder", got)
 				}
 				if !slices.Equal(thoughts, tc.thoughts) {
 					t.Errorf("outbound reasoning parts = %q, want %q", thoughts, tc.thoughts)
 				}
+				if tc.replayField == "reasoning_details" {
+					want := []capturedChatDetail{
+						{Type: "reasoning.text", ID: "part-a", Format: "fmt-a", Index: 7, Text: first, Serial: json.Number(serial)},
+						{Type: "reasoning.text", Format: "fmt-b", Index: 2, Text: second},
+					}
+					if !slices.Equal(details, want) {
+						t.Errorf("outbound native details = %#v, want %#v", details, want)
+					}
+				}
 			}
 			prefix := bytes.TrimSuffix(warm, []byte("]"))
 			if len(prefix) == 0 || !bytes.HasPrefix(cold, append(bytes.Clone(prefix), ',')) {
 				t.Errorf("warm history %s is not a byte-identical prefix of resumed history %s", warm, cold)
 			}
+			if tc.replayField == "reasoning_details" {
+				for _, enrolled := range []bool{false, true} {
+					target := row
+					target.Caps.ReplayReasoningText = new(enrolled)
+					if enrolled {
+						target.ModelID = "other-model"
+					}
+					profile := provider.FromResolved(target, nil)
+					dst := replayScope{Instance: target.Instance, Model: target.ModelID, Protocol: target.Protocol, InFlightFrom: len(resumed), DropThinking: dropsReplayedThinking(profile)}
+					dst.setReasoningTextTarget(profile)
+					_, sent := send(expandHistory(resumed, dst), target)
+					calls, thoughts, details := capturedToolTurn(t, historyField(sent))
+					if len(thoughts) != 0 || len(details) != 0 || calls["c1"] != valid {
+						t.Errorf("ineligible target %s replayed reasoning %v or lost tool history", target.ModelID, thoughts)
+					}
+				}
+			}
 		})
 	}
 }
 
-func capturedToolTurn(t *testing.T, history json.RawMessage) (map[string]string, []string) {
+type capturedChatDetail struct {
+	Type, ID, Format, Text string
+	Index                  int
+	Serial                 json.Number
+}
+
+func capturedToolTurn(t *testing.T, history json.RawMessage) (map[string]string, []string, []capturedChatDetail) {
 	t.Helper()
 	var items []struct {
-		CallID    string `json:"call_id"`
-		Type      string
-		Arguments string
-		Reasoning string          `json:"reasoning_content"`
-		Content   json.RawMessage `json:"content"`
-		ToolCalls []struct {
+		CallID           string `json:"call_id"`
+		Type             string
+		Arguments        string
+		Reasoning        string               `json:"reasoning_content"`
+		ReasoningDetails []capturedChatDetail `json:"reasoning_details"`
+		Content          json.RawMessage      `json:"content"`
+		ToolCalls        []struct {
 			ID       string
 			Function struct{ Arguments string }
 		} `json:"tool_calls"`
@@ -155,10 +199,15 @@ func capturedToolTurn(t *testing.T, history json.RawMessage) (map[string]string,
 	}
 	args := make(map[string]string)
 	var reasoning []string
+	var details []capturedChatDetail
 	for _, item := range items {
 		if item.Reasoning != "" {
 			reasoning = append(reasoning, item.Reasoning)
 		}
+		for _, detail := range item.ReasoningDetails {
+			reasoning = append(reasoning, detail.Text)
+		}
+		details = append(details, item.ReasoningDetails...)
 		if item.Type == "reasoning" {
 			var parts []struct{ Type, Text string }
 			if err := json.Unmarshal(item.Content, &parts); err != nil {
@@ -177,5 +226,5 @@ func capturedToolTurn(t *testing.T, history json.RawMessage) (map[string]string,
 			args[call.ID] = call.Function.Arguments
 		}
 	}
-	return args, reasoning
+	return args, reasoning, details
 }

@@ -204,14 +204,21 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 			name:        "details win over scalar reasoning and join multiple pieces",
 			scalarField: "reasoning", scalar: " scalar-17\n\t", display: "step one\nstep two",
 			details: []any{
-				map[string]any{"type": "reasoning.text", "text": "step one"},
-				map[string]any{"type": "thinking", "thinking": "step two"},
+				map[string]any{"type": "reasoning.text", "text": "step one", "index": 7, "format": "fmt-a", "id": "a"},
+				map[string]any{"type": "thinking", "thinking": "step two", "index": 2, "format": "fmt-b", "metadata": map[string]any{"serial": json.Number("9007199254740993")}},
 			},
 		},
 		{
 			name:        "mirrored unsigned text",
 			scalarField: "reasoning_text", scalar: "mirror-29", display: "mirror-29",
 			details: []any{map[string]any{"type": "reasoning.text", "text": "mirror-29"}},
+		},
+		{
+			name: "explicit index overlaps a sibling's array position", scalarField: "reasoning", scalar: "scalar", display: "left\nright",
+			details: []any{
+				map[string]any{"type": "reasoning.text", "index": 1, "text": "left"},
+				map[string]any{"type": "reasoning.text", "text": "right"},
+			},
 		},
 	}
 	for _, tt := range tests {
@@ -252,8 +259,8 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 						msg := build(t, req, res)["messages"].([]map[string]any)[0]
 						if route.field == "reasoning_details" {
 							details, _ := msg[route.field].([]map[string]any)
-							if len(details) != 1 || details[0]["text"] != route.want {
-								t.Errorf("unified replay = %#v", msg)
+							if jsonOf(t, details) != jsonOf(t, tt.details) {
+								t.Errorf("native array = %s, want %s", jsonOf(t, details), jsonOf(t, tt.details))
 							}
 						} else if msg[route.field] != route.want || msg["reasoning_details"] != nil {
 							t.Errorf("%s replay = %#v, want %q", route.field, msg, route.want)
@@ -264,6 +271,89 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 			}
 		})
 	}
+	t.Run("array conversion when no native detail array was recorded", func(t *testing.T) {
+		res := resolved(nil)
+		res.Caps.ReplayReasoningText, res.Caps.ReasoningField = new(true), new("reasoning_details")
+		scalarOnly, err := ExtractRecordedResponse([]byte(`{"choices":[{"message":{"reasoning":"scalar-only"}}]}`), "m")
+		if err != nil {
+			t.Fatal(err)
+		}
+		const signed = `[{"type":"reasoning.text","text":"signed","signature":"sig","index":4}]`
+		old := llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "old-scalar", Signature: "reasoning"}},
+			{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "signed", EncryptedContent: signed}},
+		}}
+		for _, tc := range []struct {
+			msg  llm.Message
+			want []map[string]any
+		}{
+			{scalarOnly.Message, []map[string]any{{"type": "reasoning.text", "format": "unknown", "index": 0, "text": "scalar-only"}}},
+			{old, []map[string]any{{"type": "reasoning.text", "format": "unknown", "index": 0, "text": "old-scalar"}, {"type": "reasoning.text", "index": 4, "text": "signed", "signature": "sig"}}},
+		} {
+			msg := build(t, llm.Request{Model: "m", Messages: []llm.Message{tc.msg}}, res)["messages"].([]map[string]any)[0]
+			if got := jsonOf(t, msg["reasoning_details"]); got != jsonOf(t, tc.want) {
+				t.Errorf("array conversion = %s, want %s", got, jsonOf(t, tc.want))
+			}
+		}
+	})
+	t.Run("interleaved unsigned and opaque details", func(t *testing.T) {
+		for _, signed := range []bool{false, true} {
+			middle := map[string]any{"type": "reasoning.encrypted", "id": "opaque", "data": "sealed"}
+			tail := map[string]any{"type": "reasoning.text", "index": 3, "text": "tail", "format": "fmt-end"}
+			if signed {
+				tail["signature"] = "sig-tail"
+			}
+			want := []map[string]any{
+				{"type": "reasoning.text", "id": "a", "format": "fmt-a", "index": 9, "text": "a-complete"},
+				middle, tail,
+			}
+			body := chatResponseRaw(map[string]any{"reasoning": "independent", "reasoning_details": want}, "stop")
+			chunks := []map[string]any{
+				{"reasoning": "independent", "reasoning_details": []any{map[string]any{"type": "reasoning.text", "id": "a", "format": "fmt-a", "index": 9, "text": "a-"}}},
+				{"reasoning_details": []any{middle, tail}},
+				{"reasoning_details": []any{map[string]any{"index": 9, "text": "complete"}}},
+			}
+			var stream strings.Builder
+			for _, chunk := range chunks {
+				stream.WriteString("data: " + jsonOf(t, map[string]any{"choices": []any{map[string]any{"delta": chunk}}}) + "\n\n")
+			}
+			stream.WriteString("data: [DONE]\n\n")
+			responses, _ := decode(t, jsonOf(t, body), stream.String())
+			for source, resp := range responses {
+				var cold llm.Message
+				if err := json.Unmarshal([]byte(jsonOf(t, resp.Message)), &cold); err != nil {
+					t.Fatal(err)
+				}
+				for _, input := range []llm.Message{resp.Message, cold} {
+					res := resolved(nil)
+					res.Caps.ReplayReasoningText, res.Caps.ReasoningField = new(true), new("reasoning_details")
+					emit := func(m llm.Message) map[string]any {
+						return build(t, llm.Request{Model: "m", Messages: []llm.Message{m}}, res)["messages"].([]map[string]any)[0]
+					}
+					msg := emit(input)
+					if got := jsonOf(t, msg["reasoning_details"]); got != jsonOf(t, want) {
+						t.Errorf("%s signed=%v native array = %s, want %s", source, signed, got, jsonOf(t, want))
+					}
+					checkScalar(t, msg, "", "")
+					res.Caps.ReasoningField = nil
+					msg = emit(input)
+					checkScalar(t, msg, "reasoning", "independent")
+					opaque := []map[string]any{middle}
+					if signed {
+						opaque = append(opaque, tail)
+					}
+					if got := jsonOf(t, msg["reasoning_details"]); got != jsonOf(t, opaque) {
+						t.Errorf("%s scalar-route continuation = %s, want %s", source, got, jsonOf(t, opaque))
+					}
+					res.Caps.ReasoningField = new("reasoning_details")
+					msg = emit(llm.TrimThinkingForReplayMessage(input, true))
+					if got := jsonOf(t, msg["reasoning_details"]); got != jsonOf(t, opaque) {
+						t.Errorf("%s raw-ineligible continuation = %s, want %s", source, got, jsonOf(t, opaque))
+					}
+				}
+			}
+		}
+	})
 	t.Run("unsigned and signed details alongside a scalar", func(t *testing.T) {
 		for _, scalar := range []string{"scalar-31", "unsigned-54", "signed-68"} {
 			resp, err := fromChatCompletionResponse(chatResponseRaw(map[string]any{
@@ -305,6 +395,7 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 			if tc.detail != "" {
 				signed["text"] = tc.detail
 			}
+			wantSigned := jsonOf(t, []any{signed})
 			fields := map[string]any{"reasoning_details": []any{signed}}
 			var chunks []map[string]any
 			if tc.scalar != "" {
@@ -369,22 +460,8 @@ func TestFromChatCompletionResponse_ReplayReasoningDetailsDelta(t *testing.T) {
 						msg := out["messages"].([]map[string]any)[0]
 						checkScalar(t, msg, route.scalarField, tc.scalar)
 						details, _ := msg["reasoning_details"].([]map[string]any)
-						if route.scalarField == "" && tc.independent != "" {
-							if len(details) != 2 || details[0]["text"] != tc.independent || details[0]["signature"] != nil {
-								t.Errorf("unified independent text = %#v", msg)
-								continue
-							}
-							echo, err := fromChatCompletionResponse(chatResponseRaw(msg, "stop"), nil, nil)
-							if err != nil {
-								t.Fatal(err)
-							}
-							if got, n := echo.ReasoningText(), len(echo.Message.Content); got != resp.ReasoningText() || n != len(resp.Message.Content) {
-								t.Errorf("unified details decode to %q in %d parts, want %q in %d", got, n, resp.ReasoningText(), len(resp.Message.Content))
-							}
-							details = details[1:]
-						}
-						if len(details) != 1 || details[0]["signature"] != "sig-37" || details[0]["format"] != "wire-1" || details[0]["index"] != float64(7) {
-							t.Fatalf("signed detail = %#v", details)
+						if jsonOf(t, details) != wantSigned {
+							t.Fatalf("signed detail = %s, want %s", jsonOf(t, details), wantSigned)
 						}
 						if got, _ := details[0]["text"].(string); got != tc.detail {
 							t.Errorf("signed text = %q, want %q", got, tc.detail)

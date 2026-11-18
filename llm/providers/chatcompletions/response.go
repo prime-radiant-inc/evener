@@ -1,6 +1,7 @@
 package chatcompletions
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -108,12 +109,18 @@ func encodeEncryptedDetails(items []map[string]any) string {
 // wireItem preserves provider-specific continuation metadata, including
 // fields not represented by reasoningDetailItem.
 func (d reasoningDetailItem) wireItem() map[string]any {
-	var wire map[string]any
-	if len(d.Raw) > 0 && json.Unmarshal(d.Raw, &wire) == nil {
+	if wire := decodeDetailObject(d.Raw); wire != nil {
 		return wire
 	}
 	b, _ := json.Marshal(d)
-	_ = json.Unmarshal(b, &wire)
+	return decodeDetailObject(b)
+}
+
+func decodeDetailObject(b []byte) map[string]any {
+	decoder := json.NewDecoder(bytes.NewReader(b))
+	decoder.UseNumber()
+	var wire map[string]any
+	_ = decoder.Decode(&wire)
 	return wire
 }
 
@@ -254,10 +261,12 @@ func (f chatReasoningFields) scalar() (string, string) {
 
 type reasoningDetailBlock struct {
 	text         strings.Builder
+	textField    string
 	wire         map[string]any
 	continuation bool
 	position     int
-	indexed      bool
+	index        *int
+	batch        int
 }
 
 // chatReasoning assembles one completion. A trailing signature authenticates
@@ -273,11 +282,13 @@ type chatReasoning struct {
 	open         []*reasoningDetailBlock
 	blocks       []*reasoningDetailBlock // native detail order, reserved when a block first appears
 	hasSignature bool
+	batch        int
 }
 
 func (r *chatReasoning) add(f chatReasoningFields) string {
 	scalar, field := f.scalar()
 	var detailDelta strings.Builder
+	r.batch++
 	for pos, item := range f.ReasoningDetails {
 		piece := item.Text
 		if piece == "" {
@@ -323,6 +334,11 @@ func (r *chatReasoning) openDetail(pos int, item reasoningDetailItem, single boo
 	)
 	match, best := -1, 0
 	for i, block := range r.open {
+		// An array's siblings are separate items. Later deltas can extend
+		// each one by its wire index, ID, or position in a subsequent array.
+		if block.batch == r.batch {
+			continue
+		}
 		id, _ := block.wire["id"].(string)
 		if id != "" && item.ID != "" && id != item.ID {
 			continue
@@ -335,8 +351,8 @@ func (r *chatReasoning) openDetail(pos int, item reasoningDetailItem, single boo
 		}
 		rank := byPosition
 		switch {
-		case item.Index != nil && block.indexed:
-			if *item.Index != block.position {
+		case item.Index != nil && block.index != nil:
+			if *item.Index != *block.index {
 				continue
 			}
 			rank = byIndex
@@ -397,7 +413,14 @@ func (r *chatReasoning) addDetail(pos int, item reasoningDetailItem, piece strin
 		}
 	}
 	if item.Index != nil {
-		block.position, block.indexed = *item.Index, true
+		block.index = item.Index
+	}
+	block.batch = r.batch
+	if block.textField == "" && piece != "" {
+		block.textField = "text"
+		if item.Text == "" {
+			block.textField = "thinking"
+		}
 	}
 	block.text.WriteString(piece)
 	if signed {
@@ -410,6 +433,26 @@ func (r *chatReasoning) addDetail(pos int, item reasoningDetailItem, piece strin
 			r.open = slices.Delete(r.open, index, index+1)
 		}
 	}
+}
+
+// The native array and the displayed text have different boundaries. Keep
+// the array's order without duplicating its separately scoped continuations.
+func captureChatDetails(t *llm.ThinkingData, blocks []*reasoningDetailBlock) {
+	var opaque []map[string]any
+	for _, block := range blocks {
+		var item json.RawMessage
+		switch {
+		case block.continuation:
+			opaque = append(opaque, block.wire)
+		case block.textField != "":
+			block.wire[block.textField] = block.text.String()
+			item, _ = json.Marshal(block.wire)
+		default:
+			continue
+		}
+		t.ChatDetails = append(t.ChatDetails, item)
+	}
+	t.EncryptedContent = encodeEncryptedDetails(opaque)
 }
 
 func (r *chatReasoning) parts() []llm.ContentPart {
@@ -428,13 +471,7 @@ func (r *chatReasoning) parts() []llm.ContentPart {
 				setChatReplayScalar(&thinking, r.scalarField, scalar)
 			}
 		}
-		var opaque []map[string]any
-		for _, block := range r.blocks {
-			if block.continuation {
-				opaque = append(opaque, block.wire)
-			}
-		}
-		thinking.EncryptedContent = encodeEncryptedDetails(opaque)
+		captureChatDetails(&thinking, r.blocks)
 		appendPart(thinking)
 		return parts
 	}
@@ -442,11 +479,9 @@ func (r *chatReasoning) parts() []llm.ContentPart {
 	if scalar != "" && mirror == nil {
 		appendPart(llm.ThinkingData{Text: scalar, Signature: r.scalarField})
 	}
-	for _, block := range r.blocks {
+	for i, block := range r.blocks {
 		thinking := llm.ThinkingData{Text: block.text.String()}
-		if block.continuation {
-			thinking.EncryptedContent = encodeEncryptedDetails([]map[string]any{block.wire})
-		}
+		captureChatDetails(&thinking, r.blocks[i:i+1])
 		if block == mirror {
 			setChatReplayScalar(&thinking, r.scalarField, scalar)
 		} else if !block.continuation && scalar != "" {
@@ -506,16 +541,17 @@ func (r *chatReasoning) scalarMirror(scalar string) *reasoningDetailBlock {
 // Caps.FinishReasonMap before normalization; the caller (Complete) stamps
 // Response.Provider from res.Instance after this returns.
 //
-// body is the raw response body bytes; when non-nil, a focused decode
-// captures tool-call arguments as json.RawMessage so rawStringContent can
-// unescape them preserving bytes (invalid UTF-8, non-canonical JSON) that
-// the map[string]any decode coerces. When nil, the existing string-form
-// path is used (args come from the lossy map, already U+FFFD-coerced for
-// invalid UTF-8).
+// The response body preserves native detail metadata and tool arguments that
+// a generic map can coerce, including integers larger than a float64 can
+// represent exactly. A caller with only a decoded response supplies raw.
 func fromChatCompletionResponse(raw map[string]any, finishMap map[string]string, body []byte) (llm.Response, error) {
-	b, err := json.Marshal(raw)
-	if err != nil {
-		return llm.Response{}, err
+	b := body
+	if b == nil {
+		var err error
+		b, err = json.Marshal(raw)
+		if err != nil {
+			return llm.Response{}, err
+		}
 	}
 	var parsed chatCompletionResponse
 	if err := json.Unmarshal(b, &parsed); err != nil {

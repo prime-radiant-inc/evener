@@ -617,7 +617,7 @@ func (t *Turn) MatchesReasoningTextTarget(res *registry.Resolved, route string) 
 				continue
 			}
 			switch {
-			case llm.IsOpenAICompatReasoningField(d.Signature), llm.IsOpenAICompatEncryptedReasoning(d.EncryptedContent):
+			case len(d.ChatDetails) != 0, llm.IsOpenAICompatReasoningField(d.Signature), llm.IsOpenAICompatEncryptedReasoning(d.EncryptedContent):
 				if res.Protocol != registry.ProtocolOpenAIChat {
 					return false
 				}

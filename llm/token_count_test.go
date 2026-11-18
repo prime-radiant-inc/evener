@@ -1040,6 +1040,9 @@ func TestEstimateMessagesInputTokensForResolved_BillsThinkingShapesByAdapter(t *
 	signedAndScalar[0].Content = append(signedAndScalar[0].Content, ContentPart{
 		Kind: ContentThinking, Thinking: &ThinkingData{Text: summary, Signature: "reasoning"},
 	})
+	const nativeItem = `{"format":"provider-metadata","index":4,"text":"abcd","type":"reasoning.text"}`
+	nativeArray := thinking(&ThinkingData{Text: "abcd", EncryptedContent: signed, ChatDetails: []json.RawMessage{json.RawMessage(nativeItem), nil}})
+	nativeArray[0].Content = append(nativeArray[0].Content, ContentPart{Kind: ContentThinking, Thinking: &ThinkingData{Text: summary, Signature: "reasoning"}})
 	userThinking := thinking(&ThinkingData{ID: id, Text: text})
 	userThinking[0].Role = RoleUser
 	mixed := thinking(&ThinkingData{Text: text + summary, ResponsesTextParts: []ResponsesTextPart{
@@ -1078,6 +1081,7 @@ func TestEstimateMessagesInputTokensForResolved_BillsThinkingShapesByAdapter(t *
 		{"chat bills text already in its signed detail once", row(chat, replay), thinking(&ThinkingData{EncryptedContent: signed, Text: text}), len(signed) / 4},
 		{"enrolled chat bills an observed scalar and its signed mirror", row(chat, replay), signedMirror, (len(signed) + textChars) / 4},
 		{"unified chat bills a signed scalar mirror once", row(chat, unified), signedMirror, len(signed) / 4},
+		{"unified chat bills the native array without an independent scalar", row(chat, unified), nativeArray, (len(nativeItem) + 1 + len(signed)) / 4},
 		{"unenrolled chat bills a signed scalar mirror once", row(chat, registry.Caps{}), signedMirror, len(signed) / 4},
 		{"chat bills the signed text fallback alongside an observed scalar", row(chat, replay), thinking(&ThinkingData{EncryptedContent: compat, Text: text, ChatScalar: &ChatReasoningScalar{Field: "reasoning", Text: "r123"}}), (len(compat) + textChars + 4) / 4},
 		{"chat bills independent scalar text beside its signed detail", row(chat, replay), signedAndScalar, (len(signed) + summaryChars) / 4},

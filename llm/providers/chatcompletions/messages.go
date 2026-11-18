@@ -90,7 +90,16 @@ func toChatMessages(messages []llm.Message, caps registry.Caps, useReasoningDeta
 			calls := toolCallsFromParts(content)
 			asText := registry.BoolValue(caps.ThinkingAsText)
 			scalarReplay := caps.ReplaysReasoningText() && !useReasoningDetails && !asText
-			reasoning, sourceField, details := reasoningFromParts(content, !reasoningOff, asText, scalarReplay)
+			var reasoning, sourceField string
+			var details []map[string]any
+			if useReasoningDetails && caps.ReplaysReasoningText() && !asText {
+				for item := range llm.ChatNativeReasoningDetails(content) {
+					details = append(details, decodeDetailObject(item))
+				}
+			}
+			if len(details) == 0 {
+				reasoning, sourceField, details = reasoningFromParts(content, !reasoningOff, asText, scalarReplay)
+			}
 			if reasoningOff && !asText {
 				// A declared non-reasoning model accepts no reasoning fields —
 				// prior-turn thinking (a fallback or model switch can carry it)

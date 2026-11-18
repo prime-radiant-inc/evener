@@ -80,6 +80,7 @@ func EstimateInputTokensForResolved(res registry.Resolved, req Request) InputTok
 	if opts, _ := req.ProviderOptions[registry.ProtocolOpenAIChat].(map[string]any); opts != nil {
 		if _, useDetails := opts["reasoning"]; useDetails {
 			target.chatScalarReplay = false
+			target.chatNativeDetails = res.Protocol == registry.ProtocolOpenAIChat && res.ReplaysRawReasoning()
 		}
 	}
 	return estimateInputTokens(target, req)
@@ -295,6 +296,16 @@ func estimateMessagesInputTokens(t targetInfo, messages []Message) int {
 func estimateMessageInputParts(t targetInfo, m Message) (int, int) {
 	chars := len(m.Name) + len(m.ToolCallID)
 	tokens := 0
+	if t.chatNativeDetails && t.unsignedThinking && !t.omitThinking && m.Role == RoleAssistant {
+		native := 0
+		for item := range ChatNativeReasoningDetails(m.Content) {
+			native += len(item) + 1
+		}
+		if native != 0 {
+			chars += native + 1 // array brackets and a comma between items
+			t.omitThinking = true
+		}
+	}
 	for _, p := range m.Content {
 		switch p.Kind {
 		case ContentText:
@@ -528,8 +539,9 @@ type targetInfo struct {
 	// (chatcompletions/messages.go).
 	reasoningOff bool
 	// thinkingAsText emits the display text again in ordinary assistant content.
-	thinkingAsText   bool
-	chatScalarReplay bool
+	thinkingAsText    bool
+	chatScalarReplay  bool
+	chatNativeDetails bool
 	// dropsToolResultImages marks a resolved row whose adapter leaves a
 	// tool-result image off the wire entirely (dropsToolResultImages).
 	dropsToolResultImages bool
@@ -675,6 +687,7 @@ func targetFromResolved(res registry.Resolved, provider, model string) targetInf
 		reasoningOff:          res.Caps.ReasoningDisabled(),
 		thinkingAsText:        registry.BoolValue(res.Caps.ThinkingAsText),
 		chatScalarReplay:      replaysChatScalar(res),
+		chatNativeDetails:     res.Protocol == registry.ProtocolOpenAIChat && res.ReplaysRawReasoning() && registry.StringValue(res.Caps.ReasoningField) == "reasoning_details",
 		dropsToolResultImages: dropsToolResultImages(res),
 		seenToolResultDocuments: !res.Synthesized && res.Caps.AcceptsModality("pdf") &&
 			deliversToolResultDocuments(res.Protocol),

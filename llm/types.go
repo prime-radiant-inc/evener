@@ -266,6 +266,37 @@ type ThinkingData struct {
 	Summary            []string             `json:"summary,omitempty"`
 	ResponsesTextParts []ResponsesTextPart  `json:"responses_text_parts,omitempty"`
 	ChatScalar         *ChatReasoningScalar `json:"chat_scalar,omitempty"`
+	// ChatDetails records native reasoning_details in wire order. A null slot
+	// refers to the next authenticated or encrypted item in EncryptedContent.
+	ChatDetails []json.RawMessage `json:"chat_details,omitempty"`
+}
+
+// ChatNativeReasoningDetails yields the captured array, using only the
+// continuation items that survived projection for this target.
+func ChatNativeReasoningDetails(parts []ContentPart) iter.Seq[json.RawMessage] {
+	return func(yield func(json.RawMessage) bool) {
+		for _, p := range parts {
+			t := p.Thinking
+			if p.Kind != ContentThinking || t == nil || len(t.ChatDetails) == 0 {
+				continue
+			}
+			var opaque []json.RawMessage
+			if t.EncryptedContent != "" {
+				_ = json.Unmarshal([]byte(t.EncryptedContent), &opaque)
+			}
+			for _, item := range t.ChatDetails {
+				if len(item) == 0 || string(item) == "null" {
+					if len(opaque) == 0 {
+						continue
+					}
+					item, opaque = opaque[0], opaque[1:]
+				}
+				if len(item) > 0 && item[0] == '{' && !yield(item) {
+					return
+				}
+			}
+		}
+	}
 }
 
 // ChatReasoningScalar records the scalar source when Chat's preferred display
@@ -421,7 +452,7 @@ func TrimThinkingForReplay(p ContentPart, dropPlain bool) (trimmed ContentPart, 
 		return p, true
 	}
 	keepText := OpenAICompatSignatureReasoningNeedsText(p.Thinking.EncryptedContent)
-	if p.Thinking.ChatScalar == nil && (p.Thinking.Text == "" || keepText) {
+	if p.Thinking.ChatScalar == nil && len(p.Thinking.ChatDetails) == 0 && (p.Thinking.Text == "" || keepText) {
 		return p, false
 	}
 	display := *p.Thinking
@@ -429,6 +460,7 @@ func TrimThinkingForReplay(p ContentPart, dropPlain bool) (trimmed ContentPart, 
 		display.Text = ""
 	}
 	display.ChatScalar = nil
+	display.ChatDetails = nil
 	p.Thinking = &display
 	return p, false
 }
