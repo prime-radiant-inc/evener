@@ -1127,7 +1127,17 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
       // replaced would leave the replacement with no anchors and no per-tile
       // eligibility, so a reload of the preserved composition would send a
       // missing image as prose and re-admit a released tile.
-      if (preserved !== undefined) {
+      //
+      // ...but only when it minted one. Storage returns the EXISTING row when
+      // the composition it was asked to preserve is identical to what that row
+      // already holds - and that row may be the peer's, whose facts describe
+      // the peer's composition. Writing this pane's tags over them is how a
+      // stale tag came to block a peer draft the person had already fixed:
+      // text and tiles matched, so the row was reused, and the tags - the one
+      // part of the composition that did NOT match - were then overwritten
+      // anyway. Identical composition means identical facts, so leaving them is
+      // correct in the only case this branch can fire.
+      if (preserved !== undefined && preserved.clientMutationId !== clientMutationId) {
         writeCompositionImageRecord(
           preserved.clientMutationId,
           compositionImageRecord(preservedText, operations.items, priorAnchors),

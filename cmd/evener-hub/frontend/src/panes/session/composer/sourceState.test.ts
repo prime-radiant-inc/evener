@@ -432,6 +432,70 @@ test("failed source draft write cannot acquire another source's revision token",
   }
 });
 
+// Identical text and identical tiles are not identical compositions when the
+// FACTS differ. One pane deletes a missing reference and saves the same
+// spelling as literal prose; a stale pane still holds the old tag against
+// otherwise identical content. Storage reuses the peer's row - the comparison
+// covers text, mentions and tiles, not tags - and this continuation then
+// overwrote that row's facts with the stale pane's, so reopening the peer's
+// draft blocked a Send the peer had already fixed.
+test("reusing a peer's row does not overwrite its image facts with a stale pane's", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    threadId: "thread-a",
+    method: "turn/queue",
+    payload: { ref: "root", input: [{ type: "text", text: "same [image 1]" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: "same [image 1]" }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "editing");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  // This pane's composition carries a missing reference on marker 1.
+  writeCompositionImageRecord(original.clientMutationId, { anchors: [1], tiles: [] });
+  const source = createTestComposerSource("root");
+  const peer = new MutationOutboxIndexedDB();
+  try {
+    await source.activateRecovery(recovery);
+    expect(source.getSnapshot().unbackedImageMarkers).toEqual([1]);
+    // The peer makes the SAME text durable - the compositions match - and
+    // retires the tag, because for it the spelling is ordinary prose.
+    const activated = await peer.getRecovery(original.clientMutationId);
+    if (!activated) throw new Error("peer cannot see the row");
+    const advanced = await peer.updateRecoveryInput(
+      original.clientMutationId,
+      [{ type: "text", text: "same [image 1]" }],
+      undefined,
+      "same [image 1]",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        [original.clientMutationId]:
+          (activated as MutationRecoveryRecord & { compositionRevision?: number }).compositionRevision ?? 0,
+      },
+    );
+    expect(advanced).toBeDefined();
+    writeCompositionImageRecord(original.clientMutationId, { anchors: [], tiles: [] });
+
+    // This pane's save now loses the lease and preserves its own work, and
+    // storage reuses the peer's row because the composition is identical.
+    await source.queueRecoveryPersistence(original.clientMutationId, "same [image 1]", [], []);
+    await source.flushRecoveryWrites();
+
+    // The reused row keeps its own facts: the peer's delete is a decision, not
+    // a stale opinion this pane may overwrite.
+    expect(readCompositionImageRecord(original.clientMutationId)?.anchors).toEqual([]);
+  } finally {
+    source.dispose();
+    peer.close();
+    storage.close();
+  }
+});
+
 test("rebound composer adopts and consumes the exact persisted draft revision once", async () => {
   const storage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(storage);
