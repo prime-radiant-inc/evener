@@ -1104,6 +1104,36 @@ func delegateAttentionHoldStands(held, admitted uint64) bool {
 	return held > admitted
 }
 
+// reconcileAutomaticDriveHoldsLocked drops every hold the delegate journal's
+// release floor already superseded. Presentation is the one point that cannot
+// lose the race against a release: a wake journals its release before it
+// publishes anything, so a release that matters has always landed by the time
+// a row is selected or projected, while an install or a clear has to predict a
+// release that may still be in flight. The reads therefore reconcile instead
+// of trusting what the settles and wakes left in the map. A hold this keeps is
+// one no admitted wake outranked, so the stop that installed it is still the
+// newest evidence and its row stays quiet. Callers must hold attentionMu.
+func (s *Session) reconcileAutomaticDriveHoldsLocked() {
+	if len(s.attentionAutomaticDriveHolds) == 0 {
+		return
+	}
+	controller := s.delegateController
+	if controller == nil || s.owningDelegateID == "" {
+		return
+	}
+	controller.mu.Lock()
+	released := uint64(0)
+	if aggregate := controller.durable[s.owningDelegateID]; aggregate != nil {
+		released = aggregate.AttentionHoldReleasedGeneration
+	}
+	controller.mu.Unlock()
+	for id, held := range s.attentionAutomaticDriveHolds {
+		if !delegateAttentionHoldStands(held, released) {
+			delete(s.attentionAutomaticDriveHolds, id)
+		}
+	}
+}
+
 // holdDelegateAttentionFromAutomaticDriveAt quiets a reopened row a user's
 // stop owns: the stopped generation's commit replaced the controller's wake
 // with the pending rows it excluded, so the stale armed wake still drives
@@ -1112,30 +1142,12 @@ func delegateAttentionHoldStands(held, admitted uint64) bool {
 // generation that wake starts, the immediate restart the stop exists to
 // prevent. The hold carries the settled generation whose quiet it stands for,
 // because that stamp is what decides whether a later wake supersedes it.
-//
-// The install consults the delegate journal's release floor, so a hold can
-// never appear after a wake that already superseded its generation: the
-// release is recorded before any runtime clears holds for it, and this read
-// and the clear both happen under attentionMu, so the two orders cannot
-// interleave. A hold refused here is one whose quiet an admitted wake already
-// ended, and the row it would have held is presentable to that wake.
 func (s *Session) holdDelegateAttentionFromAutomaticDriveAt(attentionID string, generation uint64) {
 	if s == nil || attentionID == "" {
 		return
 	}
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
-	if controller := s.delegateController; controller != nil && s.owningDelegateID != "" {
-		controller.mu.Lock()
-		released := uint64(0)
-		if aggregate := controller.durable[s.owningDelegateID]; aggregate != nil {
-			released = aggregate.AttentionHoldReleasedGeneration
-		}
-		controller.mu.Unlock()
-		if !delegateAttentionHoldStands(generation, released) {
-			return
-		}
-	}
 	if s.attentionAutomaticDriveHolds == nil {
 		s.attentionAutomaticDriveHolds = make(map[string]uint64)
 	}
@@ -1168,6 +1180,12 @@ const (
 // evidence than, so it ends, and its row becomes presentable. The rows the
 // stop never touched keep their presentation either way, and a failed arm or
 // an uncommitted delivery woke nothing, so the holds stand.
+//
+// This filter is not the reconcile's duplicate: the release is the only place
+// that can act on a wake younger than a hold, and dropping is destructive. A
+// presentation read prunes holds the journal already outranked, but it cannot
+// restore one this filter wrongly deleted, so the filter must still refuse to
+// delete a hold the wake did not supersede.
 //
 // The release is durable before it is in-memory: the record names the settled
 // generation whose quiet this event superseded, so a runtime the idle release
@@ -1358,6 +1376,7 @@ func (s *Session) automaticDelegateAttentionIDs() ([]string, error) {
 	}
 	s.attentionMu.Lock()
 	defer s.attentionMu.Unlock()
+	s.reconcileAutomaticDriveHoldsLocked()
 	if len(s.attentionAutomaticDriveHolds) == 0 {
 		return pending, nil
 	}
@@ -1386,6 +1405,7 @@ func (s *Session) dropHeldDelegateAttentionTurns(turns []schema.Turn) (kept []sc
 	// The holds map can be written on a live runtime while this projection
 	// iterates outside the lock, so the iteration walks a clone taken under
 	// the lock: the snapshot is race-free by construction.
+	s.reconcileAutomaticDriveHoldsLocked()
 	holds := maps.Clone(s.attentionAutomaticDriveHolds)
 	s.attentionMu.Unlock()
 	if len(holds) == 0 {

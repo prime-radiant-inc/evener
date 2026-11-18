@@ -572,6 +572,27 @@ func settledGeneration(t *testing.T, sess *Session) uint64 {
 	return controller.attentionWakeGenerationLocked(owningDelegateID)
 }
 
+// A wake admitted while a run is still open supersedes only the generation
+// before that run: the run has not settled, so its own generation names no
+// quiet yet, and the stop its settle records afterwards must keep standing.
+// Sampling the open run's own generation instead would let the arm admit a
+// release for a quiet the settle had not yet installed.
+func TestAttentionWakeGenerationDuringOpenRun(t *testing.T) {
+	t.Parallel()
+	controller, _ := newDelegateControllerTestHarness(t, 1, 0)
+	seedDelegateControllerRunning(t, controller, "dlg_open", "")
+	controller.mu.Lock()
+	open := controller.attentionWakeGenerationLocked("dlg_open")
+	settled := controller.durable["dlg_open"].Generation
+	controller.mu.Unlock()
+	if settled != 1 {
+		t.Fatalf("fixture run started at generation %d, want 1", settled)
+	}
+	if open != 0 {
+		t.Fatalf("a wake admitted during an open generation superseded %d, want 0: the run has settled no quiet yet", open)
+	}
+}
+
 // deriveHeldFixtureWithJournal is deriveHeldFixture plus the fixture's journal
 // path, for a case that restores a controller from it.
 func deriveHeldFixtureWithJournal(t *testing.T, outcome delegatestore.OutcomeStatus, reason string) (*Session, string, string) {
@@ -902,9 +923,10 @@ func TestDeriveHeldDelegateAttentionFromOutcome(t *testing.T) {
 
 	// Window 1: the release runs before the settle tail installs its hold. A
 	// fresh watch arm journals the release once the stop has settled, and the
-	// settle tail reaches the setter afterwards. An install that ignores what
-	// the journal already records quiets the reopened row again, and the drive
-	// then presents the fresh row without it.
+	// settle tail reaches the setter afterwards. The install is allowed — the
+	// journal is the authority, and the presentation read reconciles against
+	// it, so the drive presents the reopened row with the fresh one instead of
+	// withholding a report the wake released.
 	t.Run("an install after a newer release does not re-impose the quiet", func(t *testing.T) {
 		t.Parallel()
 		sess, reopenedID, _ := deriveHeldFixtureWithJournal(t, delegatestore.OutcomeCancelled, "cancelled")
@@ -915,12 +937,6 @@ func TestDeriveHeldDelegateAttentionFromOutcome(t *testing.T) {
 		sess.releaseAutomaticDriveHolds(delegateHoldReleaseArm, stoppedGeneration)
 		// The settle tail's own install, arriving after both.
 		sess.holdDelegateAttentionFromAutomaticDriveAt(reopenedID, stoppedGeneration)
-		sess.attentionMu.Lock()
-		held := sess.delegateAttentionHeldFromAutomaticDriveLocked(reopenedID)
-		sess.attentionMu.Unlock()
-		if held {
-			t.Fatal("a hold installed after the wake released its generation quieted the row again")
-		}
 		ids, err := sess.automaticDelegateAttentionIDs()
 		if err != nil {
 			t.Fatalf("read the drive-side rows: %v", err)
@@ -928,12 +944,18 @@ func TestDeriveHeldDelegateAttentionFromOutcome(t *testing.T) {
 		if !slices.Contains(ids, reopenedID) {
 			t.Fatalf("the drive-side read withheld the row a newer wake released: %v", ids)
 		}
+		sess.attentionMu.Lock()
+		held := sess.delegateAttentionHeldFromAutomaticDriveLocked(reopenedID)
+		sess.attentionMu.Unlock()
+		if held {
+			t.Fatal("the presentation read offered the row but kept the hold, so the projection would still drop the report")
+		}
 	})
 
 	// Window 2: the same order across an idle reclaim. The derivation
 	// snapshots the outcome, then a wake journals the release, then the
-	// candidate attaches. The derivation's install must not outrun the release
-	// it can already see.
+	// candidate attaches. The derivation cannot see that release, so the
+	// restore's first presentation read is what orders the two.
 	t.Run("a derived install after a newer release does not re-impose the quiet", func(t *testing.T) {
 		t.Parallel()
 		sess, reopenedID, journalPath := deriveHeldFixtureWithJournal(t, delegatestore.OutcomeCancelled, "cancelled")
@@ -941,26 +963,26 @@ func TestDeriveHeldDelegateAttentionFromOutcome(t *testing.T) {
 		restored := coldRestoredDeriveSession(t, sess, journalPath)
 		// The cold arm's release lands after the derivation has snapshotted the
 		// outcome and before it installs, which is the window the idle restore
-		// opens: the snapshot sees no release, so only the install can order
-		// the two.
+		// opens: the snapshot sees no release, so only the presentation read
+		// can order the two.
 		updateSessionTestConfig(restored, func(cfg *testConfig) {
 			cfg.delegateAttentionBeforeDerivedHoldInstall = func() {
 				journalDeriveHeldRelease(t, restored, stoppedGeneration)
 			}
 		})
 		restored.deriveHeldDelegateAttentionFromOutcome()
-		restored.attentionMu.Lock()
-		held := restored.delegateAttentionHeldFromAutomaticDriveLocked(reopenedID)
-		restored.attentionMu.Unlock()
-		if held {
-			t.Fatal("the derivation reinstated a quiet a cold wake already released")
-		}
 		ids, err := restored.automaticDelegateAttentionIDs()
 		if err != nil {
 			t.Fatalf("read the drive-side rows: %v", err)
 		}
 		if !slices.Contains(ids, reopenedID) {
 			t.Fatalf("the drive-side read withheld the row a cold wake released: %v", ids)
+		}
+		restored.attentionMu.Lock()
+		held := restored.delegateAttentionHeldFromAutomaticDriveLocked(reopenedID)
+		restored.attentionMu.Unlock()
+		if held {
+			t.Fatal("the presentation read offered the row but kept the hold, so the projection would still drop the report")
 		}
 	})
 
@@ -975,11 +997,20 @@ func TestDeriveHeldDelegateAttentionFromOutcome(t *testing.T) {
 		// settles a later one, and that stop's quiet is newer evidence.
 		journalDeriveHeldRelease(t, sess, stoppedGeneration)
 		sess.holdDelegateAttentionFromAutomaticDriveAt(reopenedID, stoppedGeneration+1)
-		sess.attentionMu.Lock()
-		held := sess.delegateAttentionHeldFromAutomaticDriveLocked(reopenedID)
-		sess.attentionMu.Unlock()
-		if !held {
-			t.Fatal("a release older than the stop cleared the quiet that stop installed")
+		// Both presentation reads must keep it: the drive's selection and the
+		// projection that drops held turns.
+		ids, err := sess.automaticDelegateAttentionIDs()
+		if err != nil {
+			t.Fatalf("read the drive-side rows: %v", err)
+		}
+		if slices.Contains(ids, reopenedID) {
+			t.Fatalf("the drive-side read offered a row a newer stop still quiets: %v", ids)
+		}
+		heldTurn := schema.NewTurn(schema.TurnSteering, llm.User("held report"))
+		heldTurn.AttentionID = reopenedID
+		_, droppedAt := sess.dropHeldDelegateAttentionTurns([]schema.Turn{heldTurn})
+		if len(droppedAt) != 1 {
+			t.Fatalf("the projection kept a row a newer stop still quiets: droppedAt=%v", droppedAt)
 		}
 	})
 }
