@@ -32,6 +32,8 @@ func refusalLine(err *ExitError) string {
 	case JumpRefused:
 		return "MERGEQ jump refused: PR is already queued at position " +
 			strconv.FormatInt(err.Position, 10) + "; remove it from the queue first"
+	case Interrupted:
+		return "MERGEQ interrupted: the wait was cancelled before the queue finished"
 	case LookupFailed, EnqueueFailed:
 		return "MERGEQ " + err.Kind.String() + ": " + err.Detail
 	}

@@ -43,6 +43,11 @@ const (
 	// genericRun names the merge-group run when the status read supplied no
 	// base branch to build the queue branch prefix from.
 	genericRun = "the merge-group run for this PR"
+	// InterruptedExit is the status a cancelled wait ends the run with:
+	// 128+SIGINT, which is what a shell reports for an interrupted command. An
+	// interrupt is never the timeout verdict, whose exit code means "still
+	// queued, repeat the command".
+	InterruptedExit = 130
 )
 
 // Options is one run's request.
@@ -63,12 +68,28 @@ type Options struct {
 // Clock is the wait's notion of time, so a test can advance it instead of
 // sleeping. Production passes SystemClock.
 type Clock struct {
-	Now   func() time.Time
-	Sleep func(time.Duration)
+	Now func() time.Time
+	// Sleep waits for d, or until ctx ends, and reports false when the context
+	// ended first. A cancelled wait abandons its poll instead of finishing the
+	// interval: an operator's signal must land at once, not up to a poll
+	// interval later.
+	Sleep func(ctx context.Context, d time.Duration) bool
 }
 
 // SystemClock is the real clock.
-var SystemClock = Clock{Now: time.Now, Sleep: time.Sleep}
+var SystemClock = Clock{Now: time.Now, Sleep: sleepContext}
+
+// sleepContext is SystemClock's Sleep: a timer a cancelled context cuts short.
+func sleepContext(ctx context.Context, d time.Duration) bool {
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
+}
 
 // Status is the pull request's own state, its queue entry and its base branch,
 // read at one instant. Base is empty when the read did not supply one, and
@@ -186,6 +207,9 @@ const (
 	EnqueueLeftNoEntry
 	// JumpRefused: --jump was asked for a PR that is already queued.
 	JumpRefused
+	// Interrupted: the wait's context ended before the PR merged or left the
+	// queue.
+	Interrupted
 )
 
 // String names the refusal for a diagnostic.
@@ -199,6 +223,8 @@ func (k ErrorKind) String() string {
 		return "no queue entry after enqueueing"
 	case JumpRefused:
 		return "jump refused"
+	case Interrupted:
+		return "interrupted"
 	}
 	return "unknown failure"
 }
@@ -217,6 +243,10 @@ func (e *ExitError) Error() string {
 // always written them to (AGENTS.md tells an operator to repeat the command
 // while it prints the timeout line). Only a refusal is diagnostic, and that
 // goes to stderr.
+//
+// An interrupted wait is neither: it exits InterruptedExit with a diagnostic on
+// stderr, because 1 means "still queued, repeat the command" and 2 means the
+// queue refused. A signal must not be read as either.
 func Run(ctx context.Context, opts Options, c Client, clock Clock, stdout, stderr io.Writer) int {
 	opts.Progress = func(out Outcome) {
 		line, _ := outcomeLine(out)
@@ -225,6 +255,9 @@ func Run(ctx context.Context, opts Options, c Client, clock Clock, stdout, stder
 	out, err := Execute(ctx, opts, c, clock)
 	if err != nil {
 		_, _ = fmt.Fprintln(stderr, refusalLine(err))
+		if err.Kind == Interrupted {
+			return InterruptedExit
+		}
 		return 2
 	}
 	line, code := outcomeLine(out)
@@ -234,6 +267,11 @@ func Run(ctx context.Context, opts Options, c Client, clock Clock, stdout, stder
 
 // Execute runs one invocation to an outcome, or to the refusal that ended it.
 func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome, *ExitError) {
+	// A wait the operator already stopped does not start: no request goes out
+	// and no queue is touched.
+	if err := ctx.Err(); err != nil {
+		return Outcome{}, &ExitError{Kind: Interrupted, Detail: err.Error()}
+	}
 	st, exitErr := readStatus(ctx, opts, c)
 	if exitErr != nil {
 		return Outcome{}, exitErr
@@ -273,11 +311,18 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 
 	deadline := clock.Now().Add(opts.Wait)
 	for {
+		if err := ctx.Err(); err != nil {
+			return Outcome{}, &ExitError{Kind: Interrupted, Detail: err.Error()}
+		}
 		left := deadline.Sub(clock.Now())
 		if left <= 0 {
 			break
 		}
-		clock.Sleep(min(left, pollInterval))
+		// A cancelled poll is not a timeout: the operator stopped the wait, so
+		// the run says so instead of reporting where the PR still is.
+		if !clock.Sleep(ctx, min(left, pollInterval)) {
+			return Outcome{}, &ExitError{Kind: Interrupted, Detail: ctx.Err().Error()}
+		}
 		if out, merged := mergedOutcome(ctx, opts, c); merged {
 			return out, nil
 		}

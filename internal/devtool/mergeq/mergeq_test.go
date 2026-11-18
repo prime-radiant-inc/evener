@@ -17,7 +17,7 @@ type fakeClock struct {
 func (c *fakeClock) clock() Clock {
 	return Clock{
 		Now:   func() time.Time { return c.now },
-		Sleep: func(d time.Duration) { c.now = c.now.Add(d) },
+		Sleep: func(_ context.Context, d time.Duration) bool { c.now = c.now.Add(d); return true },
 	}
 }
 
@@ -35,6 +35,11 @@ type fakeClient struct {
 	mergedSHA string
 	merged    bool
 	mergedErr error
+	// mergedFromCall makes the merge visible only from the Nth merge lookup on
+	// (1-based), so a test can place the merge after the last poll. mergedCalls
+	// counts the lookups either way.
+	mergedFromCall int
+	mergedCalls    int
 	// enqueueErr makes the enqueue call fail. enqueued records the pulls it
 	// was asked to enqueue, in order.
 	enqueueErr error
@@ -70,7 +75,14 @@ func (f *fakeClient) Status(_ context.Context, _, _ string) (Status, error) {
 }
 
 func (f *fakeClient) MergedCommit(context.Context, string, string) (string, bool, error) {
-	return f.mergedSHA, f.merged, f.mergedErr
+	f.mergedCalls++
+	if f.mergedErr != nil {
+		return "", false, f.mergedErr
+	}
+	if f.mergedFromCall > 0 {
+		return f.mergedSHA, f.mergedCalls >= f.mergedFromCall, nil
+	}
+	return f.mergedSHA, f.merged, nil
 }
 
 func (f *fakeClient) Enqueue(_ context.Context, _ string, prID string, jump bool) error {
@@ -457,26 +469,38 @@ func TestMergedStateEndsTheRunWithoutAnEnqueue(t *testing.T) {
 }
 
 // TestMergedCommitWinsOverAStaleQueueSnapshot pins #6480's finding: the queue
-// snapshot can lag a merge, so a timeout verdict read from it alone reports a
-// PR that already merged. The PR's own state decides.
+// snapshot can lag a merge, so a verdict read from it alone reports a PR that
+// already merged. The PR's own state decides.
+//
+// The merge becomes visible only on the final observation, after the last
+// scheduled poll: the status reads stay OPEN with a queue entry for the whole
+// wait, and the merge lookup answers merged only once the deadline has passed.
+// That is the case a first-read merge cannot stand in for -- with the merge
+// visible up front the run exits before polling, and deleting the final
+// observation would still pass.
 func TestMergedCommitWinsOverAStaleQueueSnapshot(t *testing.T) {
 	t.Parallel()
 	const sha = "abcdef0123456789abcdef0123456789abcdef01"
 	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
 	c := &fakeClient{
-		statuses: []Status{
-			{ID: "PR_6499", State: "OPEN", Entry: queueEntry(1)},
-			{ID: "PR_6499", State: "OPEN", Entry: queueEntry(1)},
-		},
-		merged:    true,
-		mergedSHA: sha,
+		// Every read keeps the PR queued, so the run only ends by the merge
+		// lookup: the queue snapshot never reports it.
+		statuses: []Status{{ID: "PR_6499", State: "OPEN", Entry: queueEntry(1)}},
+		// A 90s wait makes one merge lookup before enqueueing, one after each
+		// of three 30s polls, and one more on the deadline, so the fifth is the
+		// final observation.
+		mergedFromCall: 5,
+		mergedSHA:      sha,
 	}
-	out, exitErr := Execute(context.Background(), opts(time.Minute), c, (&fakeClock{now: now}).clock())
+	out, exitErr := Execute(context.Background(), opts(90*time.Second), c, (&fakeClock{now: now}).clock())
 	if exitErr != nil {
 		t.Fatalf("Execute: %v", exitErr)
 	}
 	if out.Kind != Merged || out.SHA != sha {
-		t.Fatalf("outcome = %+v, want Merged with sha %s", out, sha)
+		t.Fatalf("outcome = %+v, want Merged with sha %s (a merge first visible after the last poll is not a timeout)", out, sha)
+	}
+	if c.mergedCalls != 5 {
+		t.Fatalf("merge lookup ran %d time(s), want five (one up front, three polls, one final observation)", c.mergedCalls)
 	}
 }
 
@@ -527,15 +551,52 @@ func TestTimeoutReportsThePositionAndState(t *testing.T) {
 // TestWaitSleepsAtMostThePollInterval pins the poll's pacing: a long wait is
 // bounded to one poll interval per sleep, so the last sleep is the remaining
 // time rather than a full interval past the deadline.
+//
+// It also pins what a cancellation must do to that sleep: the wait wakes on the
+// context, reports an interrupt, and never takes the timeout branch. That is
+// the difference between an interrupted operator and one whose wait expired,
+// and the two are both exit codes a caller acts on differently.
+func TestCancelledWaitStopsPollingAndReportsAnInterrupt(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var slept []time.Duration
+	clock := Clock{
+		// The fake ends the context when a poll would sleep, standing in for a
+		// signal arriving while the helper waits.
+		Sleep: func(_ context.Context, d time.Duration) bool {
+			slept = append(slept, d)
+			cancel()
+			return false
+		},
+		Now: func() time.Time { return time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC) },
+	}
+	c := &fakeClient{statuses: []Status{{ID: "PR_6499", State: "OPEN", Entry: queueEntry(1)}}}
+	var stdout, stderr strings.Builder
+	if code := Run(ctx, opts(time.Minute), c, clock, &stdout, &stderr); code != InterruptedExit {
+		t.Fatalf("Run = exit %d, want %d (stdout %q, stderr %q)", code, InterruptedExit, stdout.String(), stderr.String())
+	}
+	if len(slept) != 1 {
+		t.Fatalf("polls = %v, want the wait to stop at the first cancelled sleep", slept)
+	}
+	if strings.Contains(stdout.String(), "MERGEQ timeout") {
+		t.Fatalf("an interrupted wait printed the timeout verdict: %q", stdout.String())
+	}
+	if stderr.Len() == 0 {
+		t.Fatal("an interrupted wait wrote no diagnostic")
+	}
+}
+
 func TestWaitSleepsAtMostThePollInterval(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 11, 17, 12, 0, 0, 0, time.UTC)
 	var sleeps []time.Duration
 	clock := Clock{
 		Now: func() time.Time { return now },
-		Sleep: func(d time.Duration) {
+		Sleep: func(_ context.Context, d time.Duration) bool {
 			sleeps = append(sleeps, d)
 			now = now.Add(d)
+			return true
 		},
 	}
 	c := &fakeClient{statuses: []Status{{ID: "PR_6499", State: "OPEN", Entry: queueEntry(1)}}}
@@ -561,6 +622,12 @@ func TestRunExitCodes(t *testing.T) {
 		c    Client
 		wait time.Duration
 		code int
+		// marker is the documented outcome marker this ending prints, and
+		// fields are the machine-readable values that must appear on the same
+		// line. They are the contract a caller parses; the prose around them is
+		// not asserted.
+		marker string
+		fields []string
 	}{
 		{
 			name: "queued",
@@ -568,30 +635,44 @@ func TestRunExitCodes(t *testing.T) {
 				{ID: "PR_6499", State: "OPEN"},
 				{ID: "PR_6499", State: "OPEN", Entry: queueEntry(1)},
 			}},
-			code: 0,
+			code:   0,
+			marker: "MERGEQ queued",
+			fields: []string{"position=1"},
 		},
 		{
-			name: "merged",
-			c:    &fakeClient{statuses: []Status{{ID: "PR_6499", State: "MERGED", MergeCommit: &sha}}},
-			code: 0,
+			name:   "merged",
+			c:      &fakeClient{statuses: []Status{{ID: "PR_6499", State: "MERGED", MergeCommit: &sha}}},
+			code:   0,
+			marker: "MERGEQ merged",
+			fields: []string{"sha=" + sha},
 		},
 		{
 			name: "dropped",
 			c: &fakeClient{
 				statuses: []Status{
 					{ID: "PR_6499", State: "OPEN", Entry: queueEntry(1)},
-					{ID: "PR_6499", State: "OPEN"},
+					{ID: "PR_6499", State: "OPEN", Base: "main"},
 				},
 				drop: &DropEvent{CreatedAt: now.Add(-time.Minute), Reason: "failed_checks"},
+				runs: []GroupRun{{
+					DatabaseID: 987654321,
+					URL:        "https://example.invalid/runs/987654321",
+					Conclusion: "failure",
+					HeadBranch: "gh-readonly-queue/main/pr-6499-deadbeef",
+				}},
 			},
-			wait: time.Minute,
-			code: 1,
+			wait:   time.Minute,
+			code:   1,
+			marker: "MERGEQ dropped",
+			fields: []string{"state=OPEN", "987654321", "https://example.invalid/runs/987654321"},
 		},
 		{
-			name: "timed out",
-			c:    &fakeClient{statuses: []Status{{ID: "PR_6499", State: "OPEN", Entry: queueEntry(1)}}},
-			wait: time.Minute,
-			code: 1,
+			name:   "timed out",
+			c:      &fakeClient{statuses: []Status{{ID: "PR_6499", State: "OPEN", Entry: queueEntry(1)}}},
+			wait:   time.Minute,
+			code:   1,
+			marker: "MERGEQ timeout",
+			fields: []string{"position=1", "state=QUEUED"},
 		},
 		{
 			name: "refused",
@@ -613,19 +694,23 @@ func TestRunExitCodes(t *testing.T) {
 				}
 				return
 			}
-			// The outcome line carries the outcome's own fields, which is the
-			// machine contract whatever the surrounding prose says. It goes to
-			// stdout even when the run exits 1: a caller repeats the command
-			// while it prints the timeout line, and reads it from that stream.
-			if !strings.Contains(stdout.String(), "MERGEQ ") || stderr.Len() != 0 {
-				t.Fatalf("stdout lacks the outcome marker: %q", stdout.String())
+			if stderr.Len() != 0 {
+				t.Fatalf("an outcome run wrote stderr %q", stderr.String())
 			}
-			// The last line is always the outcome: a waiting run prints the
-			// queued position first, and a caller reads the verdict from the
-			// final line.
+			// The last line is always the outcome, and it carries this ending's
+			// own marker and fields: a waiting run prints the queued position
+			// first, and a caller reads the verdict from the final line. A
+			// renderer that printed the wrong marker, or dropped a field, must
+			// fail here even when the exit code is right.
 			lines := strings.Split(strings.TrimSpace(stdout.String()), "\n")
-			if last := lines[len(lines)-1]; !strings.HasPrefix(last, "MERGEQ ") {
-				t.Fatalf("last line = %q, want the outcome line", last)
+			last := lines[len(lines)-1]
+			if !strings.HasPrefix(last, tc.marker) {
+				t.Fatalf("last line = %q, want the %q outcome line", last, tc.marker)
+			}
+			for _, field := range tc.fields {
+				if !strings.Contains(last, field) {
+					t.Fatalf("last line = %q, want it to carry %q", last, field)
+				}
 			}
 		})
 	}

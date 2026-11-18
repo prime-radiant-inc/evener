@@ -22,6 +22,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"os/signal"
 	"strconv"
@@ -52,9 +53,9 @@ func runMergeEnqueue(args []string, c mergeq.Client, clock mergeq.Clock, stdout,
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	wait, err := strconv.Atoi(*waitSeconds)
-	if err != nil || wait < 0 {
-		_, _ = fmt.Fprintf(stderr, "evener dev merge-enqueue: --wait takes whole seconds, got %q\n", *waitSeconds)
+	wait, err := parseWaitSeconds(*waitSeconds)
+	if err != nil {
+		_, _ = fmt.Fprintf(stderr, "evener dev merge-enqueue: --wait %v\n", err)
 		fs.Usage()
 		return 2
 	}
@@ -65,12 +66,32 @@ func runMergeEnqueue(args []string, c mergeq.Client, clock mergeq.Clock, stdout,
 	opts := mergeq.Options{
 		Repo: *repo,
 		PR:   *pr,
-		Wait: time.Duration(wait) * time.Second,
+		Wait: wait,
 		Jump: *jump,
 	}
 	// A wait must end when the operator interrupts it, not leave a poll
-	// running behind a gone parent.
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	// running behind a gone parent. HUP is here because the launcher forwards
+	// it: a hangup on the script must reach the helper too.
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
 	defer stop()
 	return mergeq.Run(ctx, opts, c, clock, stdout, stderr)
+}
+
+// parseWaitSeconds reads --wait as whole decimal seconds. A string rather than a
+// flag.Int is what makes "--wait 08" eight seconds instead of an octal parse
+// error (issue #5304).
+//
+// The upper bound is checked before multiplying: time.Duration is int64
+// nanoseconds, so a seconds value above the largest that fits wraps negative,
+// takes the no-wait branch, and reports success for a PR still in the queue.
+func parseWaitSeconds(s string) (time.Duration, error) {
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 0 {
+		return 0, fmt.Errorf("takes whole seconds, got %q", s)
+	}
+	const maxSeconds = int64(math.MaxInt64 / time.Second)
+	if int64(n) > maxSeconds {
+		return 0, fmt.Errorf("takes at most %d seconds, got %q", maxSeconds, s)
+	}
+	return time.Duration(n) * time.Second, nil
 }

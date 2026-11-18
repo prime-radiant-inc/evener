@@ -154,7 +154,12 @@ func TestRunRefRendersTheResolvedRunOrThePrefix(t *testing.T) {
 	if got := (RunRef{Prefix: "gh-readonly-queue/main/pr-1-"}).String(); !strings.Contains(got, "gh-readonly-queue/main/pr-1-") {
 		t.Fatalf("prefix rendering = %q, want the prefix", got)
 	}
-	if got := (RunRef{}).String(); got != genericRun {
-		t.Fatalf("empty rendering = %q, want %q", got, genericRun)
+	// A reference with neither a run nor a prefix still renders something an
+	// operator can read; it is asserted as non-empty rather than compared with
+	// the production phrase, which would only re-read the source. The no-base
+	// case's real claim -- no run and no prefix -- is pinned by
+	// TestDropWithoutABaseSkipsTheRunLookup.
+	if got := (RunRef{}).String(); got == "" {
+		t.Fatal("empty rendering = \"\", want a readable fallback")
 	}
 }

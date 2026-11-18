@@ -3,6 +3,7 @@ package dev
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -60,7 +61,7 @@ func pausedClock() mergeq.Clock {
 	var now time.Time
 	return mergeq.Clock{
 		Now:   func() time.Time { return now },
-		Sleep: func(d time.Duration) { now = now.Add(d) },
+		Sleep: func(_ context.Context, d time.Duration) bool { now = now.Add(d); return true },
 	}
 }
 
@@ -177,5 +178,28 @@ func TestMergeEnqueueReadsWaitAsDecimal(t *testing.T) {
 	var stdout, stderr strings.Builder
 	if code := runMergeEnqueue([]string{"--pr", "6499", "--wait", "08"}, q, pausedClock(), &stdout, &stderr); code != 0 {
 		t.Fatalf("--wait 08 = exit %d, want 0 (stderr %q)", code, stderr.String())
+	}
+}
+
+// TestMergeEnqueueRejectsWaitBeyondTheLargestDuration pins the bound at the
+// edge: one second past the largest duration a wait fits is a usage error, and
+// the largest that fits is not. Without the bound the conversion wraps
+// negative, the no-wait branch runs, and a queued PR reports success it does
+// not have.
+//
+// The accepted case is checked by the duration it produces rather than by
+// running the wait: 9.2 billion seconds is a real wait, and a clock that
+// advanced it would only prove the fake advanced.
+func TestMergeEnqueueRejectsWaitBeyondTheLargestDuration(t *testing.T) {
+	t.Parallel()
+	if _, err := parseWaitSeconds("9223372037"); err == nil {
+		t.Fatal("--wait 9223372037 was accepted; it overflows a duration")
+	}
+	wait, err := parseWaitSeconds("9223372036")
+	if err != nil {
+		t.Fatalf("--wait 9223372036 = %v, want the largest whole-second wait", err)
+	}
+	if wait != time.Duration(math.MaxInt64/time.Second)*time.Second {
+		t.Fatalf("--wait 9223372036 = %v, want %v", wait, time.Duration(math.MaxInt64/time.Second)*time.Second)
 	}
 }
