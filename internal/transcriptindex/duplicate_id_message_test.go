@@ -126,6 +126,64 @@ func assertSettledOutcome(t *testing.T, reader string, items []appwire.ThreadIte
 	}
 }
 
+// TestTheIndexSettlesTheReservedCommandUnderADuplicateId covers the index's own
+// answer for a duplicated id: an inherited entry announces a visible command
+// and then a communicate under ONE id, and the result names no tool. The
+// reservation makes the command the call that result belongs to, and the
+// builder resolves that name when it builds the item. The projection must use
+// the builder's answer rather than its pending-communicate state, or the
+// command stays unanswered and the result opens a standalone row — and a later
+// result for the deferred communicate must still render its message, which a
+// fix that simply preferred the command everywhere would break (#1166 review).
+func TestTheIndexSettlesTheReservedCommandUnderADuplicateId(t *testing.T) {
+	fx := fixture{
+		name:   "index settles the reserved command",
+		header: transcript.Header{SessionID: "reserved_cmd", CreatedAt: fixtureClock, ProfileID: "p", Model: "m"},
+		lines: []fixtureLine{
+			entryLine(opens("turn_cmd", schema.TurnSpanExecution, user("go"))),
+			entryLine(inTurn("turn_cmd", inheritedAuthorship(assistant(
+				call("call_pair", "read_file", `{"path":"a"}`),
+				call("call_pair", "communicate", `{"message":"kept"}`),
+			)))),
+			// The command's result, unnamed: it belongs to the reserved part.
+			entryLine(inTurn("turn_cmd", results(result("call_pair", "", "the bytes")))),
+			// The deferred communicate's own result, which must still deliver.
+			entryLine(inTurn("turn_cmd", results(result("call_pair", "communicate", "ok")))),
+			entryLine(completion("turn_cmd", schema.TurnCompleted, 96, 10)),
+		},
+	}
+	path := writeFixture(t, fx)
+	items := turnItemsOf(t, allCandidates(t, openIndex(t, path, t.TempDir())), "turn_cmd")
+
+	var command, message *appwire.ThreadItem
+	for i := range items {
+		switch {
+		case items[i].Type == "commandExecution" && items[i].CallID == "call_pair":
+			command = &items[i]
+		case items[i].Type == "agentMessage" && items[i].CallID == "call_pair":
+			message = &items[i]
+		}
+	}
+	if command == nil {
+		t.Fatalf("the reserved command is missing from %v", itemShapes(items))
+	}
+	if command.Status != appwire.TurnStatusCompleted {
+		t.Errorf("reserved command status = %q, want completed: its result settled it at its own position",
+			command.Status)
+	}
+	if command.ToolName != "read_file" {
+		t.Errorf("reserved command tool = %q, want read_file: the entry reserved its FIRST part", command.ToolName)
+	}
+	if command.Position.Entry != 2 || command.Position.Item != 0 {
+		t.Errorf("reserved command position = %+v, want entry 2 item 0: a settled call keeps its announcement's place",
+			command.Position)
+	}
+	if message == nil {
+		t.Fatalf("the deferred communicate's message is missing from %v: preferring the command everywhere would drop it",
+			itemShapes(items))
+	}
+}
+
 // TestAnUnrelatedResultDoesNotConsumeTheDeferredDelivery covers the other side
 // of a reused provider call id: consumption. An inherited entry defers a
 // communicate under an id a command already used, and a result for that id

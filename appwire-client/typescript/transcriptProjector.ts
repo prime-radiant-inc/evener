@@ -5,7 +5,7 @@ import {
   isActiveItem,
   isInProgressStatus,
   isNonZeroExit,
-  isTurnError,
+  turnFailurePresent,
 } from "./itemFailure";
 import { MEMORY_CONTEXT_EVENT_KIND } from "./memoryContext";
 import type { ItemModel, ThreadModel, TurnModel } from "./model";
@@ -468,13 +468,17 @@ function terminalFallbackEntry(
   // must not resurrect an informational notice decisionFor just hid (a
   // failed turn whose only item is a context-budget warning or a
   // tool-repair notice). The trade holds only where a failure end cap will
-  // actually render, which both this gate and the renderer decide by
-  // isTurnError (the web's TurnFailureEndCap renders from asTurnError, the
-  // same narrowing). An errorless or malformed-error terminal turn renders
-  // no end cap, so its fallback keeps the never-empty guarantee.
+  // actually render, and that is the turn's FAILURE, not the presence of a
+  // diagnostic: the web derives its end cap from failureOf, which answers a
+  // status "failed" turn even when its current attempt recorded no
+  // diagnostic (the readers refuse to borrow a previous attempt's message).
+  // Asking for the error object alone would let the fallback resurrect a
+  // notice the person's setting hid, on exactly the turn that still shows
+  // Retry. An interrupted turn has no failure row, so it keeps the
+  // never-empty guarantee its fallback provides (#1166 review).
   const hiddenInformationalNotice =
     (isInformationalWarning(sourceItem) || isToolRepairNotice(sourceItem)) && !informationalNoticesVisible(vector);
-  if (hiddenInformationalNotice && isTurnError(turn.error)) {
+  if (hiddenInformationalNotice && turnFailurePresent(turn)) {
     return undefined;
   }
   // A daemon steer the chat preset hid never comes back, not even as the

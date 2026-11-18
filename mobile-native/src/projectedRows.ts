@@ -1139,23 +1139,23 @@ function rowsForProjectedTurn(
 	const entries: Ordered[] = [];
 	const askState: Array<[string, boolean]> = [];
 	const keyed = new Set<string>();
-	// The failure row is the turn's failure, not the error object's: a failed
-	// attempt whose diagnostic never reached the transcript still gets its row
-	// and its Retry, which is what the canonical status says. With no
-	// diagnostic the row speaks the same words a wordless one renders, so the
-	// phone names the failure as the browser does.
-	const turnError = turn.error
-		? (turn.error as NonNullable<Turn["error"]>)
-		: turnFailurePresent(turn)
-			? { message: FAILED_TURN_FALLBACK }
-			: undefined;
+	// Two questions, two answers. RENDERING asks "what does this turn's failure
+	// row say", and a failed attempt whose diagnostic never reached the
+	// transcript still gets a row and its Retry from the canonical status, so
+	// it speaks the shared fallback text. ECHO SUPPRESSION asks "is this
+	// historical item a duplicate of that row", and that must compare against
+	// what the failed attempt RECORDED — with the synthetic fallback, a
+	// previous attempt's message-less failure item reads as a duplicate and is
+	// hidden, losing real history (#1166 review).
+	const recordedError = turn.error ? (turn.error as NonNullable<Turn["error"]>) : undefined;
+	const turnError = recordedError ?? (turnFailurePresent(turn) ? { message: FAILED_TURN_FALLBACK } : undefined);
 	for (const entry of projected.entries) {
 		// A failed turn's error shows once, as the failure row at its end, which
 		// carries the one action (spec 8.2 "Error"). A reload also carries the
 		// failure as an error systemMessage (apptranscript's TurnFailure item),
 		// which would say it a second time. Only that echo goes: another error
 		// in the same turn is news of its own.
-		if (echoesTurnError(entry.item, turnError)) continue;
+		if (echoesTurnError(entry.item, recordedError)) continue;
 		if (isAskUser(entry.item)) {
 			const callId = entry.item.callId ?? entry.item.id;
 			askState.push([callId, asks.has(callId)]);

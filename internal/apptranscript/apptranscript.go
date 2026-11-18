@@ -50,6 +50,19 @@ type ToolCallRegistry struct {
 	// result, and the reason resolveUnnamedResult consults this before the
 	// pending-communicate state.
 	awaitingNames map[string]string
+	// ResolvedNames is a name the CALLER already resolved for a call id, before
+	// the projection began — the transcript index's builder seeds an unnamed
+	// result from the reserved part of the turn's awaiting entry
+	// (build.go's applyResults), and that answer is the index's own. It
+	// precedes the pending-communicate state because a caller that resolved the
+	// id has already decided which call an unnamed result belongs to: the
+	// builder resolved read_file for a duplicate id an inherited entry
+	// announced as a command and then a communicate, and letting the pending
+	// communicate win instead left the command unanswered while the result
+	// opened a standalone row (#1166 review). Empty on every path that has no
+	// such answer, including whole-file replay, which resolves from its own
+	// awaiting batch.
+	ResolvedNames map[string]string
 	// LastAssistantTurnID is the logical turn ID of the ASSISTANT record that
 	// set LastAssistantText. The healed-communicate echo check scopes by turn
 	// to mirror the live projector's matchesLastAssistantMessage: an echo
@@ -460,6 +473,9 @@ func appendAwaiting(batch map[string]string, callID, name string) map[string]str
 // holds exactly the ids the latest such entry announced.
 func resolveUnnamedResult(reg *ToolCallRegistry, callID string) string {
 	if name, ok := reg.awaitingNames[callID]; ok {
+		return name
+	}
+	if name, ok := reg.ResolvedNames[callID]; ok {
 		return name
 	}
 	if _, pending := reg.CommRawArgs[callID]; pending {

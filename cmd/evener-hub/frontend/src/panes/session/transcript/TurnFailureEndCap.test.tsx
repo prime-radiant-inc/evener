@@ -380,7 +380,11 @@ test("a repeated press creates no second continuation", async () => {
   await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
 });
 
-test("a captured Retry callback submits nothing when the same latest turn loses its error", async () => {
+// The captured activation refuses a turn that STOPPED being a failure. A
+// refresh can keep the same canonical latest turn id and settle it any way but
+// failed; identity alone is not a failure, and neither is a diagnostic on a
+// turn the status no longer calls failed.
+test("a captured Retry callback submits nothing when the same latest turn stops failing", async () => {
   const { fake, storage } = await connectedThread();
   act(() => seedModel([failedTurn()]));
   render(<TurnFailureEndCap error={{ message: "boom" }} turnId="turn_1" sessionRef="ref_a" />);
@@ -388,10 +392,11 @@ test("a captured Retry callback submits nothing when the same latest turn loses 
   expect(threadsStore.getState().pendingProjectionLoadedRefs.has("ref_a")).toBe(true);
   expect(retryButton()?.disabled).toBe(false);
 
-  // An authoritative refresh keeps the same canonical latest turn ID but
-  // removes its error. The activation captured with turn_1 must submit
-  // nothing: identity alone is not a failure.
-  act(() => seedModel([failedTurn({ error: undefined })]));
+  // The same turn, now completed with no diagnostic. The activation captured
+  // with turn_1 must submit nothing.
+  await act(async () => {
+    seedModel([failedTurn({ status: "completed", error: undefined })]);
+  });
   await flushPendingTurnsProjectionForTests();
   const turns = threadsStore.getState().threads.get("ref_a")?.turns ?? [];
   expect(turns[turns.length - 1]?.id).toBe("turn_1");
@@ -401,6 +406,31 @@ test("a captured Retry callback submits nothing when the same latest turn loses 
   });
   expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(0);
   expect(await storage.listOutbox("ref_a")).toHaveLength(0);
+});
+
+// The other half, and the reason the predicate exists: a turn the canonical
+// status still calls failed submits even though its current attempt recorded no
+// diagnostic. Checking only the error object would refuse this one.
+test("a captured Retry callback submits when the latest failed turn has no diagnostic", async () => {
+  const { fake } = await connectedThread();
+  act(() => seedModel([failedTurn()]));
+  render(<TurnFailureEndCap error={{ message: "boom" }} turnId="turn_1" sessionRef="ref_a" />);
+  await flushPendingTurnsProjectionForTests();
+  expect(retryButton()?.disabled).toBe(false);
+
+  // Still failed, now with no diagnostic: the retry's own diagnostic write
+  // failed, which is exactly the shape the readers stamp.
+  await act(async () => {
+    seedModel([failedTurn({ error: undefined })]);
+  });
+  await flushPendingTurnsProjectionForTests();
+  const turns = threadsStore.getState().threads.get("ref_a")?.turns ?? [];
+  expect(turns[turns.length - 1]?.status).toBe("failed");
+
+  await act(async () => {
+    await threadsStore.getState().continueTurn("ref_a", "turn_1");
+  });
+  await waitFor(() => expect(fake.calls.filter((call) => call.method === "turn/start")).toHaveLength(1));
 });
 
 test("a captured Retry callback still submits when the same latest turn's error changed", async () => {

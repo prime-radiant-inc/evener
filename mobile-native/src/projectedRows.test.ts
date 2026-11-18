@@ -1282,6 +1282,34 @@ describe("projectedRow: turn id, origin, and step timing", () => {
 		const failure = rows.find((row) => row.kind === "failure");
 		expect(failure).toMatchObject({ turnId: "turn_9" });
 	});
+
+	// Echo suppression asks "is this historical item a duplicate of the turn's
+	// failure row", and that compares against what the failed attempt RECORDED.
+	// A retry that fails without its own diagnostic renders the shared fallback
+	// text, but it recorded no message. The previous attempt's failure item,
+	// whose text IS that fallback (a diagnostic that recorded no message), is
+	// real history and must stay; comparing against the synthesized fallback
+	// made it look like a duplicate of the retry's row (#1166 review).
+	it("keeps an earlier attempt's message-less failure item when the retry records no diagnostic", () => {
+		const earlierFailure = item({
+			id: "earlier_failure",
+			turnId: "turn_9",
+			type: "systemMessage",
+			eventKind: "error",
+			text: "The turn failed.",
+		});
+		const turn = {
+			id: "turn_9",
+			status: "failed",
+			items: [earlierFailure],
+		} as unknown as TurnModel;
+		const rows = projectTimeline({ turns: [turn] } as unknown as ThreadModel, new Map());
+		// The history item survives (an error systemMessage draws as a notice
+		// row), and the turn's own failure row is the only failure row.
+		const ids = rows.map((row) => row.id);
+		expect(ids).toContain("earlier_failure");
+		expect(rows.filter((row) => row.kind === "failure")).toHaveLength(1);
+	});
 });
 
 // --- the re-homed pipeline coverage (D24-6) ------------------------------------

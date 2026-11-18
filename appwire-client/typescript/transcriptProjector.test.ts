@@ -527,12 +527,13 @@ describe("transcript projector", () => {
         expect.objectContaining({ kind: "critical", id: "budget" }),
       ]);
 
-      // The suppression trades on the end cap, and the renderer gates the
-      // end cap on the error being a real TurnError (a { message: string }
-      // object - asTurnError). A malformed error (a scalar, an object with
-      // no string message) renders no end cap, so its fallback must also
-      // keep the never-empty guarantee.
-      for (const malformedError of ["boom", {}, { message: 7 }]) {
+      // The suppression trades on the end cap, and the renderer now derives
+      // the end cap from failureOf, which answers from the canonical status:
+      // a status "failed" turn renders one whatever its diagnostic looks like
+      // (that is how Retry survives a retry whose diagnostic write failed).
+      // Suppression therefore follows the status, not the error's shape, for
+      // any malformed diagnostic and for none at all.
+      for (const malformedError of ["boom", {}, { message: 7 }, undefined]) {
         const malformedTurn = {
           ...BASE_THREAD,
           turns: [
@@ -549,9 +550,7 @@ describe("transcript projector", () => {
             },
           ],
         } as unknown as ThreadModel;
-        expect(entriesFor(malformedTurn, preset("tools"))).toEqual([
-          expect.objectContaining({ kind: "critical", id: "budget" }),
-        ]);
+        expect(entriesFor(malformedTurn, preset("tools"))).toEqual([]);
       }
 
       // An uncoded actionable warning keeps the fallback: a failed turn

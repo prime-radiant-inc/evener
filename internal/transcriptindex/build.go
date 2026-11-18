@@ -706,6 +706,11 @@ func (b *builder) interruptAwaitedCalls(summary turnRecord, completion contribut
 func (b *builder) appendItems(slot uint64, entry *schema.Turn, c contributor, seed map[string]string, absorb func(appwire.ThreadItem) (bool, error)) error {
 	reg := &apptranscript.ToolCallRegistry{
 		Names: b.registryNames(seed), CommRawArgs: b.registryCommArgs(),
+		// The seed is this builder's own resolution of an unnamed result's call,
+		// so it outranks the pending-communicate fallback: an inherited entry
+		// can announce a command and a communicate under one id, and the
+		// reservation names the command.
+		ResolvedNames:     seed,
 		LastAssistantText: b.lastAssistantText, LastAssistantTurnID: b.lastAssistantTurnID,
 	}
 	items, parts := apptranscript.ProjectEntryParts(entry.TurnID, int(c.Ordinal)+1, *entry, reg, apptranscript.AddressedImageProjector, apptranscript.ToolResultOutputImages)
