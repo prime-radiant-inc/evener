@@ -243,10 +243,10 @@ func TestMergeAppwireDelegateInfoForwardsANewerHoldSequenceWithIdenticalFields(t
 		LatestActivityAt:   "2024-01-01T00:00:00Z",
 	}
 	// The web row learned of the wait from a read, not from this projector.
-	clear := unheld
-	clear.HoldSequence = 20
+	clearedHold := unheld
+	clearedHold.HoldSequence = 20
 
-	merged, changed := mergeAppwireDelegateInfo(unheld, clear)
+	merged, changed := mergeAppwireDelegateInfo(unheld, clearedHold)
 	if !changed {
 		t.Fatal("a newer hold sequence with identical displayed fields was dropped; a client that saw the wait could never clear it")
 	}
@@ -258,7 +258,7 @@ func TestMergeAppwireDelegateInfoForwardsANewerHoldSequenceWithIdenticalFields(t
 	}
 
 	// An exact duplicate is still suppressed: nothing changed, nothing to send.
-	if _, changed := mergeAppwireDelegateInfo(merged, clear); changed {
+	if _, changed := mergeAppwireDelegateInfo(merged, clearedHold); changed {
 		t.Fatal("an exact duplicate hold frame published an update")
 	}
 }
