@@ -117,33 +117,9 @@ type TurnGrouper struct {
 // logical turn. entryIndex is the entry's 1-based index (its ordinal + 1).
 func (g *TurnGrouper) Place(entry *schema.Turn, entryIndex int) (turnID string, newTurn bool) {
 	if entry.Format == schema.TurnFormatIdentity && entry.TurnID != "" {
-		// A stamped entry joins the turn the writer named, and the id is the
-		// whole join key — matching the index, whose summaries are keyed by id
-		// across both formats.
-		//
-		// Two different things follow from that key. An entry whose id is the
-		// CURRENT group's EXTENDS that run: it is buffered into the group the
-		// previous entry opened, so the run continues. An entry whose id names
-		// an earlier turn is associated with it LATER, by id: another turn's
-		// entries (a standalone delivery) can sit between two runs of one turn,
-		// so a stamped entry with a different id opens a group of its own, and
-		// groupedAppTurnProjection folds every group carrying one id back into
-		// one turn. That is why a repeated id does not have to be adjacent.
-		//
-		// A TURN_REOPEN marker never reaches this rule in the whole-file
-		// scanner: appendProjectedEntry skips transcript-only kinds, and a
-		// reopen is one, so it joins no group and closes none here. The index
-		// build does read it, to reopen the turn's status (build.go's
-		// turnKindExecution case); that is a status stamp, not a grouping
-		// decision, and the two readers still agree on the turn boundaries.
-		//
-		// Without this branch a stamped entry fell through to the kind rules
-		// below, which invent a turn id from the entry's ordinal instead of
-		// using the owner the writer recorded. A session-start hook
-		// completing before any turn is named then opened a group of its own
-		// while the index kept it in the turn its stamp names, so the two
-		// readers disagreed about a turn boundary on the same transcript
-		// (#1166).
+		// A stamp extends the current run only if the run is stamped with
+		// the same turn ID. Projection associates separate runs by turn ID.
+		// The whole-file scanner skips TURN_REOPEN before grouping.
 		if g.TurnID == entry.TurnID && g.Stamped {
 			g.Open = false
 			return g.TurnID, false
@@ -516,14 +492,9 @@ func executionItems(runs []int, groups []groupedTurn) map[int][]appwire.ThreadIt
 				continue // that entry opened no row for this call: keep the position
 			}
 			target := calls[at-1]
-			// The settled row keeps the ANNOUNCING entry's identity. The
-			// result's own item id names the entry the answer was recorded in,
-			// and MergeThreadItems takes a non-empty incoming ID and RoundID
-			// (it has no fallback for either), re-sourcing
-			// ConversationProvenance from that ID. So the opener's identity
-			// rides the incoming value into the merge, exactly as the index
-			// pins it (window.go's `item.ID, item.RoundID = openerID,
-			// openerRoundID`). Output and status still come from the result.
+			// Keep the opener's item and round identity while merging the
+			// result's payload and status. The merge derives conversation
+			// provenance from the incoming item ID.
 			opener := out[target.run][target.at]
 			item.ID, item.RoundID = opener.ID, opener.RoundID
 			merged := MergeThreadItems(opener, item)
