@@ -376,3 +376,168 @@ func TestSplitPreludeRunsAgreeOnCompleteness(t *testing.T) {
 		}
 	}
 }
+
+// TestResultSettlesAnnouncementAcrossDeliverySplit covers a cold writer that
+// appends a delivery between a running execution's announcement and its
+// result. The execution's entries land on two runs of one stamped id; the
+// index holds one summary for them and attaches the result to the
+// announcement. The full read must settle the same call rather than emit the
+// result as an item without the call's arguments, while the delivery keeps a
+// turn of its own (#1166 review).
+func TestResultSettlesAnnouncementAcrossDeliverySplit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "mid_execution_delivery"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := func() schema.Turn {
+		tc := llm.ToolCallData{ID: "call_x", Name: "read_file", Arguments: json.RawMessage(`{"path":"a"}`)}
+		return schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &tc}}}}
+	}
+	stamp := func(turn schema.Turn, id string, span schema.TurnSpanKind) schema.Turn {
+		turn.Format = schema.TurnFormatIdentity
+		turn.TurnID = id
+		turn.TurnKind = span
+		return turn
+	}
+	record := func(turn schema.Turn) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceVerbatim}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	record(stamp(schema.NewTurn(schema.TurnUserInput, llm.User("go")), "t_exec", schema.TurnSpanExecution))
+	record(stamp(call(), "t_exec", ""))
+	// A cold writer's delivery, between the announcement and its result.
+	record(stamp(schema.NewTurn(schema.TurnSteering, llm.User("cold")), "turn_delivery_1", schema.TurnSpanDelivery))
+	record(stamp(schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed("call_x", "read_file", "out", false)), "t_exec", ""))
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	// The result settled the announcement: one item carries both the
+	// arguments and the output, and no second item lacks the arguments.
+	var calls []appwire.ThreadItem
+	for _, turn := range turns {
+		for _, item := range turn.Items {
+			if item.CallID == "call_x" && item.Type == "commandExecution" {
+				calls = append(calls, item)
+			}
+		}
+	}
+	if len(calls) != 1 {
+		t.Fatalf("full read call items = %d (%+v), want 1 settled call", len(calls), calls)
+	}
+	if calls[0].ArgumentsJSON != `{"path":"a"}` || calls[0].Output != "out" {
+		t.Errorf("settled call arguments=%q output=%q, want the announcement's arguments and the result's output", calls[0].ArgumentsJSON, calls[0].Output)
+	}
+	// The delivery keeps a turn of its own.
+	var delivery appwire.Turn
+	for _, turn := range turns {
+		if turn.ID == "turn_delivery_1" {
+			delivery = turn
+		}
+	}
+	if delivery.ID == "" || len(delivery.Items) != 1 || delivery.Items[0].Type != "steering" {
+		t.Errorf("delivery turn = %+v, want one steering item of its own", delivery)
+	}
+}
+
+// TestDuplicateAnnouncementInOneEntrySettlesFirst covers one assistant entry
+// that announces the same provider call id twice. The index projects an item
+// per announcing part, so both announcements stay, and it attaches results to
+// the FIRST matching part of the awaiting entry, so the first item carries
+// both results. The full read must make the same choice: the second
+// announcement keeps its own arguments instead of receiving the first's
+// result, and the first keeps the arguments the result settled (#1166
+// review).
+func TestDuplicateAnnouncementInOneEntrySettlesFirst(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "duplicate_announcement"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := llm.ToolCallData{ID: "call_dup", Name: "read_file", Arguments: json.RawMessage(`{"which":"first"}`)}
+	second := llm.ToolCallData{ID: "call_dup", Name: "read_file", Arguments: json.RawMessage(`{"which":"second"}`)}
+	assistant := schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		{Kind: llm.ContentToolCall, ToolCall: &first},
+		{Kind: llm.ContentToolCall, ToolCall: &second},
+	}}}
+	results := schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
+		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_dup", Name: "read_file", Content: "first-out"}},
+		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "call_dup", Name: "read_file", Content: "second-out"}},
+	}}}
+	record := func(turn schema.Turn) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceVerbatim}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	for _, turn := range []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("go")},
+		assistant,
+		results,
+	} {
+		turn.Format = schema.TurnFormatIdentity
+		turn.TurnID = "t_exec"
+		record(turn)
+	}
+	// The first entry of the turn records its kind.
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	var calls []appwire.ThreadItem
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	for _, turn := range turns {
+		for _, item := range turn.Items {
+			if item.CallID == "call_dup" && item.Type == "commandExecution" {
+				calls = append(calls, item)
+			}
+		}
+	}
+	// The index's shape is the expectation: one item per announcing part, both
+	// result parts contributed to the first.
+	var wantArgs, wantOutputs []string
+	for _, candidate := range indexCandidates(t, path) {
+		if candidate.Item.CallID != "call_dup" || candidate.Item.Type != "commandExecution" {
+			continue
+		}
+		if candidate.Item.ArgumentsJSON != "" {
+			wantArgs = append(wantArgs, candidate.Item.ArgumentsJSON)
+		}
+		if candidate.Item.Output != "" {
+			wantOutputs = append(wantOutputs, candidate.Item.Output)
+		}
+	}
+	var gotArgs, gotOutputs []string
+	for _, call := range calls {
+		if call.ArgumentsJSON != "" {
+			gotArgs = append(gotArgs, call.ArgumentsJSON)
+		}
+		if call.Output != "" {
+			gotOutputs = append(gotOutputs, call.Output)
+		}
+	}
+	if !reflect.DeepEqual(gotArgs, wantArgs) {
+		t.Errorf("full read call arguments = %v, want the index's %v", gotArgs, wantArgs)
+	}
+	if !reflect.DeepEqual(gotOutputs, wantOutputs) {
+		t.Errorf("full read call outputs = %v, want the index's %v", gotOutputs, wantOutputs)
+	}
+}
