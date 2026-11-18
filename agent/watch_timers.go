@@ -218,6 +218,11 @@ func (jm *jobManager) fireProgressTick(key watchKey, cfg *watchConfig) bool {
 		n := jm.watchNotificationFromWatch(cfg, dec.notifyJobID, reason, root.Provenance)
 		if cfg.timer {
 			n.WatchID, n.Fires, n.IntervalSeconds, n.Terminal = cfg.watchID, 1, cfg.timerSeconds, cfg.oneShot
+			// The identity of this fire, taken before countWatchDeliveryLocked
+			// below counts it: two fires of one repeating timer differ here and
+			// nowhere else, and a coalesced batch keeps the first fire's value
+			// because the queue entry is the survivor (appendOrFoldJobNotificationLocked).
+			n.DeliveryOrdinal = cfg.deliveries
 		}
 		notifications = append(notifications, n)
 		// A periodic tick is a clock, not a condition fire.

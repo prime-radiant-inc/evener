@@ -616,8 +616,16 @@ type jobNotification struct {
 	// Note is the watch's own prose payload and rides every fire, timer or not.
 	// Only the timer fire path stamps WatchID, and the session drops a
 	// non-terminal entry whose watch key no longer resolves (an orphaned tick).
-	WatchID         string
-	Fires           int
+	WatchID string
+	Fires   int
+	// DeliveryOrdinal is this watch's own model-facing delivery count at the
+	// instant this fire was built, and it is the identity of THIS fire: the
+	// next fire of the same watch carries a larger one. It exists because a
+	// repeating timer delivers the same watch, job and reason again and again,
+	// so those three cannot name a delivery -- while a durable attention row
+	// is keyed by delivery (LIFE-01, #2340). Zero means the notice carries no
+	// per-fire ordinal: a diagnostic, a send token, a non-watch notice.
+	DeliveryOrdinal int
 	Note            string
 	IntervalSeconds int
 	Terminal        bool

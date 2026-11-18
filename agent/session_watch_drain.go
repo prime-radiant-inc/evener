@@ -256,13 +256,30 @@ func (s *Session) deferQueuedWatchNoticesToAttention() int {
 	s.pendingJobNotifsMu.Unlock()
 	deferred := 0
 	for _, n := range moved {
-		if err := s.persistDeferredWatchNotice(n); err != nil {
-			// The persist failed, so this notice is NOT durable. Putting it back
-			// keeps it owed rather than losing a failure report; the drain's
-			// liveness accounting then still sees it, which is honest.
-			s.emit(warningDataFromError("persist queued watch notice", err))
-			s.requeueJobNotifications([]jobNotification{n})
+		// A tick is not a fire on its own (LIFE-01, #2340). A repeating timer can
+		// be cleared -- by the operator, by its own teardown -- after this tick was
+		// built but before the conversion below, and promoting it would persist
+		// and arm a notice for a watch that no longer exists. filterDeliverable-
+		// JobNotifications makes this same drop on the accept path; the conversion
+		// must not be the one writer that skips it, or a cleared timer could still
+		// start a delegate generation. A non-terminal one-shot keeps its tick: the
+		// timer retires BECAUSE it fired, so a dead key is its normal state.
+		if n.WatchID != "" && !n.Terminal && !s.timerWatchIsLive(n.WatchID) {
 			continue
+		}
+		appended, err := s.persistDeferredWatchNotice(n)
+		if err != nil {
+			s.emit(warningDataFromError("persist queued watch notice", err))
+			if !appended {
+				// The APPEND failed, so this notice is NOT durable. Putting it
+				// back keeps it owed rather than losing a failure report; the
+				// drain's liveness accounting then still sees it, which is
+				// honest. A notice whose append succeeded is durable already and
+				// is NOT put back: see persistDeferredWatchNotice on why
+				// re-offering it presents it twice.
+				s.requeueJobNotifications([]jobNotification{n})
+				continue
+			}
 		}
 		deferred++
 	}

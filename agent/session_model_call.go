@@ -149,14 +149,39 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		if err := s.delegateController.admitModelRequestLease(lease); err != nil {
 			return nil, "", nil, llm.Request{}, nil, "", err
 		}
-	} else if s.stableChildTurnNeedsLease(ctx) && s.hasPendingWatchNotification() {
+	} else if s.stableChildTurnNeedsLease(ctx) {
 		// Several legitimate paths run a stable child's turn with no lease in
 		// context -- a restored delegate's first task, an unserved session's
 		// framed entry, a completion drive -- and refusing those would break
 		// work the product permits. The watch notice is the one payload that
 		// must never arrive this way, because its ingress made it durable
 		// attention whose whole point is a governed generation.
-		return nil, "", nil, llm.Request{}, nil, "", errDelegateStableModelTurnUnleased
+		//
+		// Admission asks what THIS REQUEST WILL PRESENT, not what the queue
+		// happens to hold (LIFE-01, #2340). The queue is the wrong surface for
+		// two opposite reasons, and both are findings against the first cut of
+		// this gate:
+		//
+		//   - A watch notice can land after the round-boundary drain and before
+		//     here. Refusing on sight killed an ordinary completion turn whose
+		//     request would never have carried that notice -- and the parent
+		//     treats this error as fatal, so it gated the delegate and stopped
+		//     the work the turn legitimately owned.
+		//   - Deferring a notice appends it to resident history, so the queue
+		//     reads EMPTY while the history the request expands holds it. A
+		//     queue check is blind to exactly the presentation it was added to
+		//     prevent.
+		//
+		// So the notices still on the queue are moved to durable attention
+		// first, and the refusal is what remains: a watch notice that could NOT
+		// be made durable. That one must not run unleased, because accepting it
+		// would write it straight into an unleased reminder.
+		if s.hasPendingWatchNotification() {
+			s.deferQueuedWatchNoticesToAttention()
+			if s.hasPendingWatchNotification() {
+				return nil, "", nil, llm.Request{}, nil, "", errDelegateStableModelTurnUnleased
+			}
+		}
 	}
 	if err := s.flushPendingDelegateDeliveries(); err != nil {
 		return nil, "", nil, llm.Request{}, nil, "", err
@@ -360,6 +385,38 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			return nil, "", nil, llm.Request{}, nil, "", claimErr
 		}
 	} else {
+		// THE RULE's other reach (LIFE-01, #2340): an unleased turn expands the
+		// resident history, and that history is where a deferred watch notice
+		// lives -- deferral IS an append. Holding the still-pending rows out by
+		// durable identity is what keeps the notice out of an unleased request
+		// AND out of its compaction input; a leased turn is the presentation the
+		// notice waits for and drops nothing here.
+		filtered, droppedAt := s.dropUnleasedWatchAttentionTurns(ctx, historyTurns)
+		if len(droppedAt) > 0 {
+			// presentedBoundary is NOT adjusted here, and that is load-bearing.
+			// It indexes the UNFILTERED resident history, which the skill-rebuild
+			// path windows off with `s.history[presentedBoundary:]` to find turns
+			// appended since this snapshot. Moving it down would make every
+			// dropped row look like a freshly appended turn, and the rebuild would
+			// re-append exactly the notice this drop just removed.
+			//
+			// scope.InFlightFrom is different: it indexes the projection this
+			// request expands, so a drop before it must shift it, the same rule
+			// the held-attention drop applies.
+			for _, at := range droppedAt {
+				if at < inFlightFrom {
+					scope.InFlightFrom--
+				}
+			}
+			historyTurns = filtered
+			// Continuation planning rebuilds the request from the turns it is
+			// given, so it must see the same filtered projection this request
+			// expands -- otherwise the delta re-introduces the dropped row.
+			presentedTurns = filtered
+			// A projection that does not hold the whole resident history must not
+			// seed or continue from a stored anchor.
+			heldDropped = true
+		}
 		history = expandHistory(historyTurns, scope)
 	}
 
@@ -551,6 +608,16 @@ func (s *Session) foldHistoryBeforeRequest(ctx context.Context, round, sysLen in
 			snapAppends := s.persistedAppendLogBase + len(s.persistedAppendLog)
 			s.mu.Unlock()
 
+			// Compaction is an auxiliary provider call made on an UNLEASED
+			// turn too, so its input obeys THE RULE as well (LIFE-01, #2340):
+			// a still-pending watch row must not ride into a summary any more
+			// than into the request, because the summary is what later
+			// requests expand. Identity, not content, decides.
+			if filtered, _ := s.dropUnleasedWatchAttentionTurns(ctx, historyTurns); len(filtered) != len(historyTurns) {
+				historyTurns = filtered
+				preManageLen = len(historyTurns)
+			}
+
 			// Auxiliary-call admission (LIFE-01, #2340). The lease was validated
 			// once at the top of preparation, but preparation is long: the
 			// elicitation below and the fold's summarizer are BOTH provider
@@ -574,6 +641,17 @@ func (s *Session) foldHistoryBeforeRequest(ctx context.Context, round, sysLen in
 			// erosion-prone facts are re-stamped verbatim rather than
 			// decaying through successive summaries.
 			s.maybeElicitNoteBeforeCompaction(ctx, historyTurns, sysLen)
+
+			// The elicitation above is itself a provider call, and it can take
+			// a while. A Stop that records its durable fence DURING it would
+			// otherwise let the summarizer below dispatch anyway: the check at
+			// the top of this attempt has already run, and BeginModelRequest
+			// only guards the round's main request. Re-asking here, at the
+			// summarizer's own dispatch boundary, is what makes that Stop count
+			// (LIFE-01, #2340).
+			if err := s.admitCompactionAuxiliaryCall(ctx); err != nil {
+				return false
+			}
 
 			// This per-request fold is the REQUESTING caller of the pending
 			// AUTOMATIC operation (the one this round's elicitation just

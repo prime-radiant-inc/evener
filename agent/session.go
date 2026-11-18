@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1705,26 +1706,45 @@ func (s *Session) deferUnleasedWatchNotices(ctx context.Context, jobNotifs []del
 			kept = append(kept, d)
 			continue
 		}
-		if err := s.persistDeferredWatchNotice(d.notification); err != nil {
+		appended, err := s.persistDeferredWatchNotice(d.notification)
+		if err != nil {
 			s.emit(warningDataFromError("persist deferred watch notice", err))
-			kept = append(kept, d)
-			continue
+			if !appended {
+				// Not durable, so the turn keeps it owed. A notice that IS durable
+				// is not re-offered here: that would present it unleased as well as
+				// to the leased run that row already waits for.
+				kept = append(kept, d)
+				continue
+			}
 		}
 		deferred = true
 	}
 	return kept, deferred
 }
 
+// deferredWatchAttentionPrefix marks the durable attention rows this half
+// creates. An unleased projection reads it to hold exactly its own unresolved
+// watch rows out of a request (dropUnleasedWatchAttentionTurns).
+const deferredWatchAttentionPrefix = "watchdefer:"
+
 // deferredWatchAttentionID is the durable attention identity of a watch notice
 // this half defers (LIFE-01, #2340).
 //
-// It is derived from the notice's own durable facts so a replay of the same
-// notice derives the SAME id: appendDelegateNotificationDurably treats an
+// It is derived from the notice's own durable facts so a retry of the SAME
+// delivery derives the SAME id: appendDelegateNotificationDurably treats an
 // identical identity and content as a no-op and a reused identity with different
-// content as corruption. A watch-send diagnostic has no delivery lineage of its
-// own (OriginWatchID is display-only), so the identity is the watch, the job and
-// the reason: one repeated failure is one item, a distinct failure is a distinct
-// item.
+// content as corruption.
+//
+// The watch, the job and the reason are NOT enough to name a delivery. A
+// repeating timer fires the same watch, for the same job, for the same reason,
+// every interval; keyed on those three alone the second fire reuses the first
+// fire's resolved row, arms no wake, and the notice is silently dropped, while a
+// fire whose rendered body changed ('2 times since your last turn') instead
+// collides as conflicting content. So the identity carries the delivery: the
+// fire's own ordinal for a timer tick, or the delivery id on the notice's
+// lineage for a condition fire. A notice with neither -- a send-rail diagnostic
+// -- keeps the coarser identity, because one repeated failure really is one item
+// and it has no delivery of its own to tell apart.
 func deferredWatchAttentionID(n jobNotification) string {
 	scope := n.WatchID
 	if scope == "" {
@@ -1734,13 +1754,29 @@ func deferredWatchAttentionID(n jobNotification) string {
 		scope = n.JobID
 	}
 	sum := sha256.Sum256([]byte(n.Reason))
-	return "watchdefer:" + scope + ":" + n.JobID + ":" + hex.EncodeToString(sum[:8])
+	id := deferredWatchAttentionPrefix + scope + ":" + n.JobID + ":" + hex.EncodeToString(sum[:8])
+	if n.DeliveryOrdinal > 0 {
+		return id + ":" + strconv.Itoa(n.DeliveryOrdinal)
+	}
+	if deliveryID := provenance.LatestDeliveryID(n.Provenance); deliveryID != "" {
+		return id + ":" + deliveryID
+	}
+	return id
 }
 
 // persistDeferredWatchNotice makes one watch notice durable delegate attention
 // and arms its wake, so a leased generation presents it after this turn declines
 // to carry it. It is the deferral half of THE RULE above.
-func (s *Session) persistDeferredWatchNotice(n jobNotification) error {
+//
+// The two steps are reported separately because they fail differently. A failed
+// APPEND means the notice is not durable, so the caller must keep it owed. A
+// failed ARM means the notice IS already durable -- the row exists and a leased
+// generation will present it when something arms it -- and returning it to the
+// deliverable set would be worse than useless: the next writer would put the
+// same notice into an unleased reminder while its durable row stayed pending, so
+// it would be presented unleased AND presented again by the leased run. The arm
+// retry owns that recovery; the caller must not re-offer the notice.
+func (s *Session) persistDeferredWatchNotice(n jobNotification) (appended bool, err error) {
 	attentionID := deferredWatchAttentionID(n)
 	content := s.formatJobNotificationReminder([]deliverableJobNotification{{notification: n}})
 	if s.delegateController != nil {
@@ -1755,13 +1791,14 @@ func (s *Session) persistDeferredWatchNotice(n jobNotification) error {
 	} else {
 		s.jobStatusPolls.forget(n.JobID)
 	}
-	if _, err := s.appendDelegateNotificationDurably(attentionID, content); err != nil {
+	appended, err = s.appendDelegateNotificationDurably(attentionID, content)
+	if err != nil {
 		if s.delegateController != nil {
 			s.delegateController.attentionCauses.forget(attentionID)
 		}
-		return err
+		return false, err
 	}
-	return s.armDelegateAttention(attentionID)
+	return true, s.armDelegateAttention(attentionID)
 }
 
 // peekNotifications reports how many notifications are still owed to the model

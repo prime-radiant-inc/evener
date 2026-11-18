@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -431,7 +432,6 @@ func TestDelegateResourceSupervision_StableChildRefusesOnlyUnleasedModelWork(t *
 	// whole finding.
 	seedSessionHistory(t, sub.sess, 10)
 	forcePressureAbove(t, sub.sess, sub.sess.contextMgr.CheckpointThreshold)
-	warmRequests := supervisionRequestCount(fixture.adapter)
 	elicited := 0
 	sub.sess.elicitNoteFn = func(context.Context, []schema.Turn) (string, error) {
 		elicited++
@@ -445,38 +445,93 @@ func TestDelegateResourceSupervision_StableChildRefusesOnlyUnleasedModelWork(t *
 		return resp.Text(), nil
 	}
 
-	// DIRECTION ONE -- the refusal. The case is the issue's own: a watch notice
-	// sitting on the child's ordinary queue. Production ingress turns a stable
-	// child's watch notice into durable attention, so a queued one is the legacy
-	// rail this gate defends against. Asserted structurally -- the typed sentinel
-	// and the absent provider call -- never by message text.
-	sub.sess.enqueueJobNotification(jobNotification{
+	// DIRECTION ONE -- the notice never reaches an unleased request. The case is
+	// the issue's own: a watch notice on the child's queue while an unleased turn
+	// prepares. Asserted structurally -- the notice is ABSENT from the request
+	// history and PRESENT as pending durable attention -- never by message text.
+	//
+	// Both halves matter and pin different bugs. Asking only for a refusal pins
+	// the queue, and the queue is the wrong surface: a deferred notice has been
+	// APPENDED to resident history, so the queue reads empty while the request
+	// expands exactly the turn the gate exists to withhold. Asking only for the
+	// durable row pins the write and misses the presentation.
+	// The notice is made durable attention WITHOUT arming its wake, so this proof
+	// cannot race the leased generation the arm would start: the row is still
+	// pending when the unleased request is prepared, which is precisely the
+	// window the finding names.
+	queued := jobNotification{
 		Kind:   jobNotificationKindWatch,
 		JobID:  "job:unleased-admission",
 		Status: jobNotificationEventWatch,
 		Reason: "watch send failed",
+	}
+	wantID := deferredWatchAttentionID(queued)
+	notice := sub.sess.formatJobNotificationReminder([]deliverableJobNotification{{notification: queued}})
+	if _, err := sub.sess.appendDelegateNotificationDurably(wantID, notice); err != nil {
+		t.Fatalf("append the deferred watch notice: %v", err)
+	}
+	fold, foldErr := readDelegateAttentionFold(transcriptPath(sub.sess.stateDir, sub.sess.id), sub.sess.id)
+	if foldErr != nil {
+		t.Fatalf("read the child's attention fold: %v", foldErr)
+	}
+	if !slices.Contains(fold.pendingIDs(), wantID) {
+		t.Fatalf("pending attention rows = %v, want %q: the notice is not the pending item this proof needs", fold.pendingIDs(), wantID)
+	}
+	_, _, history, _, _, _, err := sub.sess.prepareModelRequestWithError(context.Background(), 0, new(events.RoundTimings))
+	if err != nil {
+		t.Fatalf("unleased model request on the stable child = %v, want it to carry its ordinary work", err)
+	}
+	for _, msg := range history {
+		if strings.Contains(msg.Text(), "job:unleased-admission") {
+			t.Fatal("the unleased request presents the watch notice: the durable row was appended to history and then expanded into the request")
+		}
+	}
+	// Settled history is PRESERVED: a row a leased generation already presented
+	// is conversation, not withheld work, and holding it back would rewrite the
+	// child's own history.
+	if kept, dropped := sub.sess.dropUnleasedWatchAttentionTurns(context.Background(), []schema.Turn{
+		{Kind: schema.TurnSteering, AttentionID: "delegate:already-presented"},
+	}); len(dropped) != 0 || len(kept) != 1 {
+		t.Fatalf("the unleased projection dropped %d settled row(s), want it to preserve conversation the child already holds", len(dropped))
+	}
+	// DIRECTION TWO -- the hard refusal. When the notice CANNOT be made durable
+	// (a session with no attached transcript writer), deferring is not an option
+	// and the unleased turn must not run: accepting it would write the notice
+	// into an unleased reminder. This is the typed sentinel, and no provider call
+	// may be spent getting to it.
+	sub.sess.drainJobNotifications()
+	// Direction one ran a real preparation, and this child is under enough
+	// pressure that preparation compacts -- a provider call. The refusal's
+	// baseline is taken AFTER that, so the count below measures only the refused
+	// round.
+	refusedBase := supervisionRequestCount(fixture.adapter)
+	elicited = 0
+	sub.sess.mu.Lock()
+	ready := sub.sess.transcriptReady
+	sub.sess.transcriptReady = false
+	sub.sess.mu.Unlock()
+	sub.sess.enqueueJobNotification(jobNotification{
+		Kind:   jobNotificationKindWatch,
+		JobID:  "job:unpersistable",
+		Status: jobNotificationEventWatch,
+		Reason: "watch send failed",
 	})
-	if !sub.sess.hasPendingWatchNotification() {
-		t.Fatal("the queued watch notice is not visible to admission")
-	}
-	_, _, _, _, _, _, err := sub.sess.prepareModelRequestWithError(context.Background(), 0, new(events.RoundTimings))
+	_, _, _, _, _, _, err = sub.sess.prepareModelRequestWithError(context.Background(), 0, new(events.RoundTimings))
 	if !errors.Is(err, errDelegateStableModelTurnUnleased) {
-		t.Fatalf("unleased model request on the stable child = %v, want the unleased-turn refusal", err)
+		t.Fatalf("unleased request with an unpersistable watch notice = %v, want the unleased-turn refusal", err)
 	}
-	if got := supervisionRequestCount(fixture.adapter); got != warmRequests {
-		t.Fatalf("provider requests after an unleased round = %d, want %d: the refusal came after a provider call", got, warmRequests)
+	if got := supervisionRequestCount(fixture.adapter); got != refusedBase {
+		t.Fatalf("provider requests after the refused round = %d, want %d: the refusal came after a provider call", got, refusedBase)
 	}
 	if elicited != 0 {
-		t.Fatalf("note elicitation ran %d time(s) for an unleased round, want 0: the refusal came after request preparation", elicited)
+		t.Fatalf("note elicitation ran %d time(s) for a refused round, want 0: the refusal came after request preparation", elicited)
 	}
-	// The notice is still owed: a refusal must not settle the very reminder it
-	// declined to carry, or the watch result is lost instead of deferred.
-	if pending := sub.sess.peekNotifications(); pending == 0 {
-		t.Fatal("the refused watch notice was settled, want it left owed to a leased turn")
-	}
+	sub.sess.mu.Lock()
+	sub.sess.transcriptReady = ready
+	sub.sess.mu.Unlock()
 	sub.sess.drainJobNotifications()
 
-	// DIRECTION TWO -- unleased work that is NOT watch work still runs. This is
+	// DIRECTION THREE -- unleased work that is NOT watch work still runs. This is
 	// the assertion a "refuse everything without a lease" guard fails, and that
 	// guard is worse than the bug: it strands every legitimate unleased path the
 	// audit says to preserve (a restored delegate's first task, a completion

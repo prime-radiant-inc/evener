@@ -2912,3 +2912,58 @@ func attentionTransparentRecentCutoff(history []schema.Turn, preserveRecent int)
 	}
 	return 0, false
 }
+
+// dropUnleasedWatchAttentionTurns keeps unresolved WATCH attention out of an
+// UNLEASED turn's projection, by durable identity (LIFE-01, #2340).
+//
+// Deferring a watch notice to durable attention appends it to resident history,
+// because a durable attention item IS a model-visible turn. On a turn with no
+// lease that defeats the gate from the other side: the queue is empty (the
+// notice was moved off it), so queue-based admission has nothing to refuse, and
+// the request then expands the very history that holds the notice. The turn also
+// cannot CREDIT the presentation -- only a leased generation commits one -- so a
+// later leased run would present it a second time.
+//
+// Identity, not content, is the test. This half appends under
+// deferredWatchAttentionPrefix, and the fold's resolutions say which of those
+// rows are still pending. Settled history -- including an item a leased
+// generation already presented -- is preserved untouched.
+//
+// A leased turn drops nothing: it IS the presentation the notice waits for.
+func (s *Session) dropUnleasedWatchAttentionTurns(ctx context.Context, turns []schema.Turn) (kept []schema.Turn, droppedAt []int) {
+	if !s.stableChildTurnNeedsLease(ctx) {
+		return turns, nil
+	}
+	pending := s.pendingDeferredWatchAttention()
+	if len(pending) == 0 {
+		return turns, nil
+	}
+	kept = make([]schema.Turn, 0, len(turns))
+	for i, turn := range turns {
+		if turn.AttentionID != "" && pending[turn.AttentionID] {
+			droppedAt = append(droppedAt, i)
+			continue
+		}
+		kept = append(kept, turn)
+	}
+	return kept, droppedAt
+}
+
+// pendingDeferredWatchAttention reports which deferred watch rows are still
+// unresolved, so an unleased projection holds exactly those back.
+func (s *Session) pendingDeferredWatchAttention() map[string]bool {
+	pending := make(map[string]bool)
+	if s == nil || s.delegateController == nil {
+		return pending
+	}
+	fold, err := s.delegateAttentionFoldLocked()
+	if err != nil {
+		return pending
+	}
+	for _, id := range fold.pendingIDs() {
+		if strings.HasPrefix(id, deferredWatchAttentionPrefix) {
+			pending[id] = true
+		}
+	}
+	return pending
+}
