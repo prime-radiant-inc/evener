@@ -1753,7 +1753,8 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			if fb.Protocol() == registry.ProtocolOpenAIResponses {
 				issuer = fb.ID()
 			}
-			shareable := scope.reasoningTextTarget == nil || !scope.reasoningTextTarget.ReplaysRawReasoning()
+			target := scope.reasoningTextTarget
+			shareable := target == nil || (target.Protocol == registry.ProtocolOpenAIResponses && !target.ReplaysRawReasoning())
 			if shareable && sharedHistory != nil && issuer == sharedIssuer && scope.reasoningRoute == sharedRoute {
 				return sharedHistory
 			}
@@ -2075,8 +2076,8 @@ type replayScope struct {
 	// canonicalModel canonicalizes a model id for the ResponseModel fallback
 	// comparison. Nil ⇒ raw (trimmed) string comparison.
 	canonicalModel func(string) string
-	// reasoningTextTarget scopes raw text to its issuing model and Responses
-	// ciphertext to its deployment, including earlier rounds of this turn.
+	// reasoningTextTarget identifies the actual destination for raw text
+	// and for native continuations returned to their issuer on a fallback.
 	reasoningTextTarget *registry.Resolved
 	reasoningRoute      string
 	// notesSelfEchoFiltered marks a delta slice whose self-echo TurnNotesContext
@@ -2108,9 +2109,13 @@ func (rs *replayScope) setReasoningTextTarget(profile *provider.Profile) {
 	rs.reasoningTextTarget = nil
 	rs.reasoningRoute = ""
 	res := profile.Resolved()
-	if res.ReplaysRawReasoning() || res.Protocol == registry.ProtocolOpenAIResponses {
+	route := profile.ReasoningReplayRoute()
+	// A cross-protocol Chat fallback can receive its own opaque details
+	// even when the row omits raw text.
+	if res.ReplaysRawReasoning() || res.Protocol == registry.ProtocolOpenAIResponses ||
+		(res.Protocol == registry.ProtocolOpenAIChat && rs.Protocol != res.Protocol && route != "") {
 		rs.reasoningTextTarget = &res
-		rs.reasoningRoute = profile.ReasoningReplayRoute()
+		rs.reasoningRoute = route
 	}
 }
 
@@ -2231,10 +2236,17 @@ func (rs replayScope) thinkingReplayEligible(t schema.Turn) bool {
 	if strings.TrimSpace(t.ResponseProvider) == "" {
 		return true
 	}
-	if target := rs.reasoningTextTarget; target != nil && target.Protocol == registry.ProtocolOpenAIResponses {
-		// The answering deployment owns its ciphertext across tool rounds,
-		// subsequent inputs and restores, including when it is a fallback.
-		return !t.DropsResponsesReasoning(target, rs.reasoningRoute)
+	if target := rs.reasoningTextTarget; target != nil {
+		switch target.Protocol {
+		case registry.ProtocolOpenAIResponses:
+			return !t.DropsResponsesReasoning(target, rs.reasoningRoute)
+		case registry.ProtocolOpenAIChat:
+			// The issuing Chat fallback received these details with its
+			// tool result. Finishing the turn cannot change that message.
+			if rs.Protocol != target.Protocol && t.ResponseReasoningRoute != "" && t.MatchesReasoningTextTarget(target, rs.reasoningRoute) {
+				return true
+			}
+		}
 	}
 	producer := rs.producerProtocol(t)
 	switch rs.Protocol {

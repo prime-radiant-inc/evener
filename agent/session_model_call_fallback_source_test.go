@@ -1,9 +1,14 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -80,6 +85,7 @@ func TestRequestMessagesLaysOutTheSystemPromptAndHistory(t *testing.T) {
 func TestFallbackKeepsOpaqueAndWebSearchScopeAcrossProtocols(t *testing.T) {
 	const signed = `[{"type":"reasoning.text","signature":"sig-c13"}]`
 	const encrypted = `[{"type":"reasoning.encrypted","id":"id-b27","data":"enc-b27"}]`
+	const signedAnswer = `[{"type":"reasoning.text","text":"signed-b49","signature":"sig-b49"}]`
 	for _, tc := range []struct {
 		name string
 		raw  bool
@@ -89,6 +95,7 @@ func TestFallbackKeepsOpaqueAndWebSearchScopeAcrossProtocols(t *testing.T) {
 			primary := replayGateway("primary", registry.ProtocolOpenAIResponses)
 			third := replayGateway("third", registry.ProtocolOpenAIChat)
 			row := replayGateway("fallback", registry.ProtocolOpenAIChat).Resolved()
+			row.Transport.BaseURL = "https://fallback.example.invalid"
 			row.Caps.ReplayReasoningText = &tc.raw
 			fallback := provider.FromResolved(row, nil)
 			unavailable := func(req llm.Request) error { return llm.ErrorFromHTTPStatus(req.Provider, 404, "", nil, nil) }
@@ -114,7 +121,7 @@ func TestFallbackKeepsOpaqueAndWebSearchScopeAcrossProtocols(t *testing.T) {
 			answer.Message.Content[0].Thinking.EncryptedContent = encrypted
 			answer.Message.Content[0].Thinking.ChatScalar = &llm.ChatReasoningScalar{Field: "reasoning", Text: "native-b27"}
 			answer.Message.Content = append(answer.Message.Content, llm.ContentPart{Kind: llm.ContentThinking,
-				Thinking: &llm.ThinkingData{Text: "signed-b49", EncryptedContent: `[{"type":"reasoning.text","text":"signed-b49","signature":"sig-b49"}]`},
+				Thinking: &llm.ThinkingData{Text: "signed-b49", EncryptedContent: signedAnswer},
 			})
 			fallbackAdapter := newFakeAdapter(row.Instance, fixedStep(answer), fixedStep(agenttest.FinalResponse("done")))
 			profiles := map[string]*provider.Profile{"third/reasoner": third, "fallback/reasoner": fallback}
@@ -153,7 +160,9 @@ func TestFallbackKeepsOpaqueAndWebSearchScopeAcrossProtocols(t *testing.T) {
 			}
 			if tc.raw {
 				want[0] = slices.Insert(want[0], 1, part{text: "mirror-b52"})
-				want[1] = append(want[1], part{text: "mirror-b52"}, part{text: "b27"})
+				want[1] = append(want[1], part{text: "mirror-b52"}, part{text: "b27", details: encrypted}, part{text: "signed-b49", details: signedAnswer})
+			} else {
+				want[1] = append(want[1], part{details: encrypted}, part{details: signedAnswer})
 			}
 			for i, req := range requests {
 				var got []part
@@ -188,7 +197,115 @@ func TestFallbackKeepsOpaqueAndWebSearchScopeAcrossProtocols(t *testing.T) {
 			if (tc.raw && !slices.Equal(scalars, []string{"mirror-b52", "native-b27"})) || (!tc.raw && len(scalars) != 0) {
 				t.Errorf("fallback wire scalars = %q", scalars)
 			}
+			t.Run("own tool continuation", func(t *testing.T) { testChatFallbackToolContinuation(t, tc.raw) })
 		})
+	}
+}
+
+func testChatFallbackToolContinuation(t *testing.T, raw bool) {
+	const scalar = " \tλ-83\n"
+	details := []any{
+		map[string]any{"type": "reasoning.text", "index": 7, "signature": "sig-17", "text": " signed-17 "},
+		map[string]any{"type": "reasoning.encrypted", "id": "r-23", "data": "cipher-29"},
+	}
+	call := map[string]any{"id": "call-9", "type": "function", "function": map[string]any{"name": "missing_tool", "arguments": " { } "}}
+	history := make(chan []json.RawMessage, 6)
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/chat/completions") {
+			http.NotFound(w, r)
+			return
+		}
+		var req struct{ Messages []json.RawMessage }
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Error(err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		select {
+		case history <- req.Messages:
+		case <-r.Context().Done():
+			return
+		}
+		delta := map[string]any{}
+		n := int(calls.Add(1))
+		if n == 1 {
+			delta["tool_calls"] = []any{call}
+			delta["reasoning"] = scalar
+			delta["reasoning_details"] = details
+		} else {
+			done := agenttest.CommunicateCall("done", "recovered")
+			delta["tool_calls"] = []any{map[string]any{"id": done.ID, "type": "function", "function": map[string]any{"name": done.Name, "arguments": string(done.Arguments)}}}
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		writeSSE(t, w, nil, "message", map[string]any{"choices": []any{map[string]any{"index": 0, "delta": delta, "finish_reason": "tool_calls"}}})
+		_, _ = w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	t.Cleanup(srv.Close)
+	dir := t.TempDir()
+	clientAt := func(base string) *llm.Client {
+		model := registry.Model{Caps: registry.Caps{Reasoning: new(true), ReplayReasoningText: new(raw)}}
+		inst := registry.Provider{Base: "openai-compatible", Surface: registry.SurfaceOpenAI, APIKey: "test", Transport: registry.Transport{BaseURL: base},
+			Models: map[string]registry.Model{"reasoner": model, "other": model}}
+		return registryClientAt(t, dir, map[string]registry.Provider{"work": openaiInstance(srv.URL), "gw": inst}, []string{"work", "gw"})
+	}
+	client := clientAt(srv.URL)
+	profile := resolveClientProfile(t, client, "work/gpt-5.2")
+	fallbacks := []string{"gw/reasoner"}
+	resolve := func(ref string) (*provider.Profile, error) { return provider.Resolve(client.Registry(), ref) }
+	s := newSession(t, withClient(client), withProfile(profile), withConfig(SessionConfig{
+		StateDir: dir, ModelFallbacks: fallbacks, ResolveProfile: resolve, OpenAIResponsesContinuation: "off",
+	}))
+	for _, input := range []string{"begin", "another turn"} {
+		sendOneUserInput(t, s, input)
+	}
+	for _, dest := range []struct{ base, model string }{{srv.URL, "reasoner"}, {srv.URL, "other"}, {srv.URL + "/other", "reasoner"}} {
+		s.Close()
+		client = clientAt(dest.base)
+		var err error
+		s, err = RestoreSessionFromMetaWithConfig(client, resolveClientProfile(t, client, "work/gpt-5.2"), s.currentEnv(), loadMetaForTest(t, s), RestoreSessionConfig{
+			StateDir: dir, ModelFallbacks: []string{"gw/" + dest.model}, ResolveProfile: resolve, testOnly: sharingHostProbe(testConfig{skipGitSnapshot: true}),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(s.Close)
+		sendOneUserInput(t, s, "after restart")
+	}
+	if n := calls.Load(); n != 6 {
+		t.Fatalf("got %d Chat requests, want the initial call, tool continuation, follow-up, and three restores", n)
+	}
+	<-history // the first request predates the tool call
+	want := map[string]any{"role": "assistant", "tool_calls": []any{call}, "reasoning_details": details}
+	if raw {
+		want["reasoning"] = scalar
+	}
+	var warm []byte
+	for n := 1; n < 6; n++ {
+		var got json.RawMessage
+		for _, item := range <-history {
+			var msg struct {
+				ToolCalls []struct{ ID string } `json:"tool_calls"`
+			}
+			if err := json.Unmarshal(item, &msg); err != nil {
+				t.Fatal(err)
+			}
+			if len(msg.ToolCalls) > 0 && msg.ToolCalls[0].ID == "call-9" {
+				got = item
+			}
+		}
+		if n == 4 {
+			delete(want, "reasoning_details")
+			delete(want, "reasoning")
+		}
+		if string(got) != mustJSON(t, want) {
+			t.Errorf("Chat request %d replayed %s, want %s", n+1, got, mustJSON(t, want))
+		}
+		if n == 1 {
+			warm = got
+		} else if n < 4 && !bytes.Equal(got, warm) {
+			t.Errorf("Chat request %d rewrote the assistant message sent with its tool result", n+1)
+		}
 	}
 }
 
