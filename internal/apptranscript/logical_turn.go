@@ -37,6 +37,26 @@ import (
 // StableTurnID or its entry-index fallback) and stable-but-not-live-identical
 // for other daemon-minted turns.
 
+// Identity-format entries name their own turn.
+//
+// Every entry a writer records through a transcript.Placement carries the
+// identity format marker and the TurnID the writer resolved under its append
+// lock (see agent/transcript/placement.go): the running execution, the fresh
+// transcript's prelude, or a delivery turn of its own. That stamp is the
+// authority on which turn an entry belongs to, and the bounded index already
+// reads it that way (transcriptindex's applyIdentity places an entry by
+// entry.TurnID). This grouper must use the same rule, or the same transcript
+// answers with two different turn boundaries: the cold index under the stamped
+// id, and this full read under an invented "turn_%d". A client that reconciles
+// live items against a cold read then shows a phantom split or merge (#1166).
+//
+// An identity entry therefore always joins its stamped turn, and only a
+// legacy entry (Format 0, no stamp) falls back to the kind-and-owner rules
+// above. The identity branch leaves Open false because a stamped entry never
+// needs to inherit the open group: the index likewise resets its legacy
+// grouping at every identity entry, so a legacy continuation after one starts
+// its own group here too.
+
 // opensLogicalTurn distinguishes top-level goal input from ordinary steering.
 func opensLogicalTurn(kind schema.TurnKind, goalContinuation bool) bool {
 	return kind == schema.TurnUserInput || kind == schema.TurnSteering && goalContinuation
@@ -90,6 +110,28 @@ type TurnGrouper struct {
 // Place reports the turn the entry belongs to and whether it starts a new
 // logical turn. entryIndex is the entry's 1-based index (its ordinal + 1).
 func (g *TurnGrouper) Place(entry *schema.Turn, entryIndex int) (turnID string, newTurn bool) {
+	if entry.Format == schema.TurnFormatIdentity && entry.TurnID != "" {
+		// A stamped entry joins the turn the writer named, and the id is the
+		// whole join key — matching the index, whose summaries are keyed by
+		// id across both formats. Entries of one turn are contiguous in the
+		// file: the writer closes a turn with a completion entry, so the
+		// next stamped entry carries a different id and opens the next
+		// group. Both closing kinds (TURN_COMPLETION, TURN_REOPEN) are
+		// transcript-only, so they never reach here and never need to; they
+		// still consume their entry index in the scan above.
+		//
+		// The one shape this linear grouper cannot render as the index does
+		// is a turn reopened after OTHER turns have run: its entries carry
+		// its old id again, so they open a second group here, while the
+		// index appends them to the summary it already holds. That shape is
+		// left as it was, and this change does not claim it.
+		if g.TurnID == entry.TurnID {
+			g.Open = false
+			return g.TurnID, false
+		}
+		g.TurnID, g.Open = entry.TurnID, false
+		return g.TurnID, true
+	}
 	kind, owner := entry.Kind, entry.OwningTurnID
 	switch {
 	case opensLogicalTurn(kind, entry.GoalContinuation != nil):
@@ -166,21 +208,34 @@ func appendProjectedEntry(acc *logicalTurnAccumulator, project EntryProjector, t
 // group consumes an ordinal even when it emits no visible turn, matching the
 // live snapshot's turn-start allocation.
 //
+// The header prelude and a group stamped with the same id are ONE turn. A
+// fresh transcript holds its pre-execution entries under the prelude id the
+// header prelude uses (agent/transcript/placement.go stamps them
+// TurnSpanPrelude), and the bounded index coalesces the two by id: its
+// prelude items rank before the indexed items, no summary holds the id, and
+// the client reads one turn. Emitting them as two turns sharing one id would
+// be worse than either boundary alone — a client reconciling by turn id would
+// see one turn overwrite the other. So the header items lead the group's items
+// in a single turn, each keeping its own position: header items at entry 0,
+// the group's at its own ordinal.
+//
 // Items get their Position/TranscriptKey here — the full item read, the
 // bounded readers, and the item-window path must all agree on these keys (PR
 // #822 F3).
 func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Header) (ItemTurnProjection, error) {
 	turns := []appwire.Turn{}
 	entryOrdinal := uint64(0)
-	if prelude := PreludeTurn(header); prelude != nil {
-		positioned, err := positionPreludeItems(prelude.Items)
+	var prelude *appwire.Turn
+	if p := PreludeTurn(header); p != nil {
+		positioned, err := positionPreludeItems(p.Items)
 		if err != nil {
 			return ItemTurnProjection{}, err
 		}
-		prelude.Items = positioned
-		turns = append(turns, *prelude)
+		p.Items = positioned
+		prelude = p
 		entryOrdinal = 1
 	}
+	preludeMerged := false
 	for i := range acc.turns {
 		group := &acc.turns[i]
 		groupOrdinal := entryOrdinal
@@ -201,7 +256,17 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 		}
 		turn := appwire.Turn{ID: group.turnID, Items: positioned, ItemsView: "full", Status: appwire.TurnStatusCompleted}
 		StampGroupedTurn(&turn, group.entries)
+		if prelude != nil && !preludeMerged && group.turnID == appwire.SystemPreludeTurnID {
+			merged := make([]appwire.ThreadItem, 0, len(prelude.Items)+len(turn.Items))
+			merged = append(merged, prelude.Items...)
+			turn.Items = append(merged, turn.Items...)
+			preludeMerged = true
+		}
 		turns = append(turns, turn)
+	}
+	if prelude != nil && !preludeMerged {
+		// No group claimed the prelude id: the header items are the turn.
+		turns = append([]appwire.Turn{*prelude}, turns...)
 	}
 	return ItemTurnProjection{Turns: turns, NextEntry: entryOrdinal}, nil
 }
