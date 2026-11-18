@@ -57,7 +57,9 @@ func TestCreateDelegate_DefaultGrantIsOneBelowTheGranter(t *testing.T) {
 		{"explicit grant", 2, delegateArgs{Task: "brief", AgentType: "subagent", DelegationAllowance: new(1)}, 1, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			root, _, _ := newDelegateResourceBootstrapSession(t)
+			root, client, _ := newDelegateResourceBootstrapSession(t)
+			adapter := newFakeAdapter("openai")
+			client.Register(adapter)
 			root.mu.Lock()
 			root.delegationAllowance = tc.rootAllowance
 			root.mu.Unlock()
@@ -65,23 +67,24 @@ func TestCreateDelegate_DefaultGrantIsOneBelowTheGranter(t *testing.T) {
 			if result.Err != nil {
 				t.Fatalf("createDelegate: %v", result.Err)
 			}
-			root.delegateController.mu.Lock()
-			durable := root.delegateController.durable[result.DelegateID]
-			live := root.delegateController.live[result.DelegateID]
-			root.delegateController.mu.Unlock()
-			if durable == nil || durable.Descriptor.DelegationAllowance != tc.wantAllowance {
-				t.Fatalf("descriptor allowance = %+v, want %d", durable, tc.wantAllowance)
+			// The generation releases its binding on completion. Its recorded
+			// request still identifies the tools the child was offered.
+			root.sendersWG.Wait()
+			descriptor := delegateAggregateSnapshot(t, root.delegateController, result.DelegateID).Descriptor
+			if descriptor.DelegationAllowance != tc.wantAllowance {
+				t.Fatalf("descriptor allowance = %d, want %d", descriptor.DelegationAllowance, tc.wantAllowance)
 			}
-			if live == nil || live.binding == nil || live.binding.runtime == nil {
-				t.Fatal("no live child session")
+			requests := adapter.Requests()
+			if len(requests) == 0 || requests[0].SessionID != descriptor.ChildSessionID {
+				t.Fatalf("missing provider request from child %q", descriptor.ChildSessionID)
 			}
-			names := live.binding.runtime.reg.RegisteredNames()
-			if names["delegate"] != tc.wantDelegate {
-				t.Errorf("child delegate=%v, want %v", names["delegate"], tc.wantDelegate)
+			tools := requests[0].Tools
+			if got := hasToolDef(tools, "delegate"); got != tc.wantDelegate {
+				t.Errorf("child delegate=%v, want %v", got, tc.wantDelegate)
 			}
 			// job_watch is not delegation: a leaf keeps it so it can wait on
 			// its own promoted background jobs (#2645).
-			if !names["job_watch"] {
+			if !hasToolDef(tools, "job_watch") {
 				t.Error("child has no job_watch: a session that can run jobs watches its own jobs at any depth")
 			}
 		})
