@@ -41,7 +41,7 @@ func TestOlderAndNewerProtocolVersion(t *testing.T) {
 	}{
 		{"evener-appwire-v5", true, false},
 		{ProtocolVersion, false, false},
-		{"evener-appwire-v8", false, true},
+		{"evener-appwire-v9", false, true},
 		{"old-protocol", false, false},
 		{"evener-appwire-v05", false, false},
 	} {

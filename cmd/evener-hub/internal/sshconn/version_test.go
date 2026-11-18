@@ -109,7 +109,7 @@ func TestEnsureVersionMatchesAttachesWithoutDeploy(t *testing.T) {
 	// "dev" case is covered by TestEnsureDevBuildDeploysOncePerManager.
 	fr := &fakeRunner{
 		runFn: cannedRun(map[remoteOp][]byte{
-			opLaunchCheck: []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`),
+			opLaunchCheck: []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"newsha","launch_flags":["api-log"]}`),
 			opHealth:      []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`),
 		}),
 		startFn: goodStartFn(t),
@@ -164,9 +164,9 @@ func TestEnsureProtocolUpgradeDeploysRestartsThenAttaches(t *testing.T) {
 				// the deploy reads the controller's freshly installed build.
 				launchChecks++
 				if launchChecks == 1 {
-					return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
+					return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"oldsha","launch_flags":["api-log"]}`), nil
 				}
-				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"newsha","launch_flags":["api-log"]}`), nil
 			case opInstallDirProbe:
 				return nil, nil
 			case opSystemdUnits:
@@ -296,9 +296,9 @@ func TestEnsureDeploysBeforeEnforcingLaunchContract(t *testing.T) {
 				launchChecks++
 				if launchChecks == 1 {
 					// The on-disk 04a-era binary: old version, no api-log flag.
-					return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":[]}`), nil
+					return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"oldsha","launch_flags":[]}`), nil
 				}
-				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"newsha","launch_flags":["api-log"]}`), nil
 			case opInstallDirProbe:
 				return nil, nil
 			case opResolveExec:
@@ -829,7 +829,7 @@ func TestEnsurePreservesRunningHubWhenBuildDiffers(t *testing.T) {
 				return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 			case opLaunchCheck:
 				// The on-disk binary already matches the controller.
-				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"newsha","launch_flags":["api-log"]}`), nil
 			case opSystemdUnits:
 				return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
 			case opSystemdRestart:
@@ -910,7 +910,7 @@ func TestFirstAttachBootstrapsStoppedHost(t *testing.T) {
 		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case opLaunchCheck:
-			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"newsha","launch_flags":["api-log"]}`), nil
 		case opHealth:
 			if !started {
 				return nil, errors.New("curl: (7) Failed to connect")
@@ -998,7 +998,7 @@ func TestFirstAttachBootstrapsStoppedHostOnAnotherBuild(t *testing.T) {
 		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case opLaunchCheck:
-			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"oldsha","launch_flags":["api-log"]}`), nil
 		case opHealth:
 			if !started {
 				return nil, errors.New("curl: (7) Failed to connect")
@@ -1058,7 +1058,7 @@ func TestPendingStartRecoveryAcceptsTheHostsOwnBuild(t *testing.T) {
 		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case opLaunchCheck:
-			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"oldsha","launch_flags":["api-log"]}`), nil
 		case opHealth:
 			if !started {
 				return nil, errors.New("curl: (7) Failed to connect")
@@ -1116,7 +1116,7 @@ func TestRestartOnlyMismatchOnAnotherBuildAttaches(t *testing.T) {
 		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case opLaunchCheck:
-			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"oldsha","launch_flags":["api-log"]}`), nil
 		case opSystemdUnits:
 			return []byte("evener-hub.service loaded active running Evener Hub\n"), nil
 		case opHealth:
@@ -1172,7 +1172,7 @@ func TestPendingStartOnHealthySupervisorlessHostAttaches(t *testing.T) {
 		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case opLaunchCheck:
-			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"newsha","launch_flags":["api-log"]}`), nil
 		case opSystemdUnits:
 			return nil, nil // no supervisor: a supervisorless host
 		case opHealth:
@@ -1220,7 +1220,7 @@ func TestPendingStartOnHealthyHostKeepingItsOwnBuildAttaches(t *testing.T) {
 		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case opLaunchCheck:
-			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"oldsha","launch_flags":["api-log"]}`), nil
 		case opSystemdUnits:
 			return nil, nil // no supervisor
 		case opHealth:
@@ -1269,7 +1269,7 @@ func TestPendingStartNotSettledForWrongSnapshotCommit(t *testing.T) {
 		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case opLaunchCheck:
-			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"newsha","launch_flags":["api-log"]}`), nil
 		case opSystemdUnits:
 			return nil, nil // no supervisor
 		case opHealth:
@@ -1313,7 +1313,7 @@ func TestFirstAttachBootstrapAdHocLaunch(t *testing.T) {
 		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case opLaunchCheck:
-			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"newsha","launch_flags":["api-log"]}`), nil
 		case opHealth:
 			if !launched {
 				return nil, errors.New("curl: (7) Failed to connect")
@@ -1365,7 +1365,7 @@ func TestBootstrapUnhealthyIsErrRestart(t *testing.T) {
 		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case opLaunchCheck:
-			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"newsha","launch_flags":["api-log"]}`), nil
 		case opHealth:
 			healthProbes++
 			if healthProbes == 1 {
@@ -1423,9 +1423,9 @@ func TestFirstAttachAfterDeployBootstrapsStoppedHost(t *testing.T) {
 		case opLaunchCheck:
 			launchCalls++
 			if launchCalls == 1 {
-				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":[]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"oldsha","launch_flags":[]}`), nil
 			}
-			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"newsha","launch_flags":["api-log"]}`), nil
 		case opInstallDirProbe:
 			return nil, nil
 		case opSystemdUnits:
@@ -1506,9 +1506,9 @@ func TestDeployThenExplicitAttachStartsDormantUnit(t *testing.T) {
 		case opLaunchCheck:
 			launchCalls++
 			if launchCalls == 1 {
-				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":[]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"oldsha","launch_flags":[]}`), nil
 			}
-			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"newsha","launch_flags":["api-log"]}`), nil
 		case opInstallDirProbe:
 			return nil, nil
 		case opSystemdUnits:
@@ -1585,9 +1585,9 @@ func TestReconnectDeployDoesNotStartAStoppedHub(t *testing.T) {
 		case opLaunchCheck:
 			launchCalls++
 			if launchCalls == 1 {
-				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":[]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"oldsha","launch_flags":[]}`), nil
 			}
-			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"newsha","launch_flags":["api-log"]}`), nil
 		case opInstallDirProbe:
 			return nil, nil
 		case opSystemdUnits:
@@ -1630,7 +1630,7 @@ func TestEnsureDevBuildSurvivesReconnectWithoutDeployment(t *testing.T) {
 	builds := 0
 	fr := deployRunner(t,
 		func(int) ([]byte, error) {
-			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"dev","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"dev","launch_flags":["api-log"]}`), nil
 		},
 		func(call int) ([]byte, error) {
 			// A real hub always reports started_at (cmd/evener-hub/web_api.go
@@ -1694,9 +1694,9 @@ func TestEnsureRestartRecoveryRetriesRelaunch(t *testing.T) {
 		case opLaunchCheck:
 			launchCalls++
 			if launchCalls == 1 {
-				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"oldsha","launch_flags":["api-log"]}`), nil
 			}
-			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"newsha","launch_flags":["api-log"]}`), nil
 		case opInstallDirProbe:
 			return nil, nil
 		case opResolveExec:
@@ -1822,9 +1822,9 @@ func TestEnsureDeployPhaseHasItsOwnBudget(t *testing.T) {
 	fr := deployRunner(t,
 		func(call int) ([]byte, error) {
 			if call == 0 {
-				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"oldsha","launch_flags":["api-log"]}`), nil
 			}
-			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"newsha","launch_flags":["api-log"]}`), nil
 		},
 		func(int) ([]byte, error) {
 			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
@@ -1875,9 +1875,9 @@ func TestEnsureSupervisorRestartRecoveryRetriesRestart(t *testing.T) {
 		case opLaunchCheck:
 			launchCalls++
 			if launchCalls == 1 {
-				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"oldsha","launch_flags":["api-log"]}`), nil
 			}
-			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"newsha","launch_flags":["api-log"]}`), nil
 		case opInstallDirProbe:
 			return nil, nil
 		case opResolveExec:
@@ -1945,7 +1945,7 @@ func TestEnsureSupervisorRestartRecoveryRetriesRestart(t *testing.T) {
 func TestRefreshAfterRestartReportsTheReprobedVersion(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	fr := &fakeRunner{runFn: cannedRun(map[remoteOp][]byte{
-		opLaunchCheck: []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"probedsha","launch_flags":["api-log"]}`),
+		opLaunchCheck: []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"probedsha","launch_flags":["api-log"]}`),
 	})}
 	m := newTestManager(t, testRegistry(t, host), fr, Options{controllerVersionOverride: "expectedsha"})
 
@@ -1981,7 +1981,7 @@ func TestEnsureKeepsPendingRestartWhenOldProcessStillServes(t *testing.T) {
 		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case opLaunchCheck:
-			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"dev","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"dev","launch_flags":["api-log"]}`), nil
 		case opInstallDirProbe:
 			return nil, nil
 		case opResolveExec:
@@ -2062,7 +2062,7 @@ func TestEnsureCorruptLaunchCheckReachesTheDeployPath(t *testing.T) {
 			if call == 0 {
 				return []byte("not json"), nil
 			}
-			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"newsha","launch_flags":["api-log"]}`), nil
 		},
 		func(int) ([]byte, error) {
 			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
@@ -2310,7 +2310,7 @@ func TestEnsureAttachesToAnotherBuildWhenProtocolMatches(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example"}
 	fr := &fakeRunner{
 		runFn: cannedRun(map[remoteOp][]byte{
-			opLaunchCheck: []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`),
+			opLaunchCheck: []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"oldsha","launch_flags":["api-log"]}`),
 		}),
 		startFn: goodStartFn(t),
 	}

@@ -70,7 +70,7 @@ func TestInstallerFallbackStreamsTheEmbeddedScript(t *testing.T) {
 		case strings.Contains(joined, "command -v evener"):
 			return []byte(evenerPathMissingMarker + "\n"), nil
 		case strings.Contains(joined, resolved+" launch-check"):
-			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"newsha","launch_flags":["api-log"]}`), nil
 		default:
 			return nil, fmt.Errorf("unexpected remote command: %v", argv)
 		}
@@ -121,7 +121,7 @@ func TestPreflightDiscoveredTargetReachesTheAttachArgv(t *testing.T) {
 			case strings.HasSuffix(joined, "id -u"):
 				return []byte("1000\n"), nil
 			case strings.Contains(joined, resolved+" launch-check"):
-				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"newsha","launch_flags":["api-log"]}`), nil
 			case strings.Contains(joined, " evener launch-check"):
 				// The host's non-interactive PATH does not carry the binary.
 				return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
@@ -199,7 +199,7 @@ func TestFreshHostWithoutLsofIsProvisioned(t *testing.T) {
 				if strings.Contains(joined, " evener launch-check") || !pushed {
 					return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
 				}
-				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"newsha","launch_flags":["api-log"]}`), nil
 			case strings.Contains(joined, "evener_resolve"):
 				// The deploy-target resolver runs before the push (nothing
 				// installed yet, so it fails and the create-target fallback takes

@@ -12,6 +12,15 @@ import (
 // mutation state: a client cannot safely release uncertain sends from a peer
 // that does not supply that evidence.
 //
+// v8 makes thread/model/set carry a required client mutation id and an exact
+// authority (expectedInstanceId, expectedBootGeneration). A v7 daemon accepts
+// the same method with none of them: it applies whatever model it is handed,
+// answers an empty success, and the hub only discovers the mismatch when it
+// validates that reply -- after a pick whose authority was never checked has
+// already been applied. Daemons outlive the hub that spawned them (see the v2
+// note below), so an operator rebuilding the hub meets a v7 daemon in ordinary
+// operation. The exact handshake comparison refuses that pair at initialize
+// instead of at the mutation it cannot fence.
 // v7 serves job output as lossless byte pages, with explicit retention bounds
 // and an optional exclusive end selector that preserves zero.
 // v6 serves history only as history/updated from recorded entries and live
@@ -26,7 +35,7 @@ import (
 // "Steer and Stop are broken again" instead of as a version skew. The pair is
 // reachable in ordinary operation because daemons outlive the hub that spawned
 // them, so an operator who rebuilds and restarts the hub has one.
-const ProtocolVersion = "evener-appwire-v7"
+const ProtocolVersion = "evener-appwire-v8"
 
 // ProtocolVersionNumber returns the N in "evener-appwire-vN". Only the
 // canonical decimal spelling is a protocol version, so "v05" and "v5-rc1" are

@@ -128,7 +128,7 @@ func TestDarwinUnavailableRootEvidence(t *testing.T) {
 				if remote == "lsof -a -p 4242 -d txt -F Di" {
 					return []byte("p4242\nftxt\nD0x1000012\ni12345\n"), nil
 				}
-				if remote == "/opt/evener launch-check --json" || remote == "/opt/evener launch-check --protocol evener-appwire-v7 --json" {
+				if remote == "/opt/evener launch-check --json" || remote == "/opt/evener launch-check --protocol evener-appwire-v8 --json" {
 					return []byte(goodLaunchCheck), nil
 				}
 				if remote == "if kill -s 0 -- 4242 2>/dev/null; then echo __sshconn_pid_alive__; else echo __sshconn_pid_gone__; fi" {

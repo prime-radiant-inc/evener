@@ -84,7 +84,7 @@ func TestHubSpawnerSpawnAPILog(t *testing.T) {
 			bin := filepath.Join(dir, "fake-evener")
 			script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-	  printf '{"protocol":"evener-appwire-v7","launch_flags":["api-log"]}\n'
+	  printf '{"protocol":"evener-appwire-v8","launch_flags":["api-log"]}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
@@ -153,7 +153,7 @@ func TestHubSpawnerResumeAPILog(t *testing.T) {
 			bin := filepath.Join(dir, "fake-evener")
 			script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-	  printf '{"protocol":"evener-appwire-v7","launch_flags":["api-log"]}\n'
+	  printf '{"protocol":"evener-appwire-v8","launch_flags":["api-log"]}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
@@ -209,7 +209,7 @@ func TestHubSpawnerSpawnRejectsChildWithoutAPILogFlag(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-	  printf '{"protocol":"evener-appwire-v7"}\n'
+	  printf '{"protocol":"evener-appwire-v8"}\n'
   exit 0
 fi
 exit 2

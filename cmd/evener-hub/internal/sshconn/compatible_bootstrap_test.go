@@ -355,7 +355,7 @@ func TestEnsureRecoversDeploymentBeforeRestartMarker(t *testing.T) {
 }
 
 func TestEnsureStoppedMalformedContractDoesNotDeploy(t *testing.T) {
-	for _, body := range []string{`{`, `{"protocol":"evener-appwire-v7"}`, `{"version":"remote-build"}`} {
+	for _, body := range []string{`{`, `{"protocol":"evener-appwire-v8"}`, `{"version":"remote-build"}`} {
 		t.Run(body, func(t *testing.T) {
 			s := &stoppedInstallation{version: "remote-build", flags: []string{"api-log"}}
 			builds := 0

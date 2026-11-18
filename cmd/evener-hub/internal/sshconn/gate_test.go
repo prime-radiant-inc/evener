@@ -324,7 +324,7 @@ func ensureDeployTestHarnessInstalling(t *testing.T, restartErr error, installed
 			if call == 0 {
 				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v4","version":"oldsha","launch_flags":["api-log"]}`), nil
 			}
-			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"` + installedVersion + `","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"` + installedVersion + `","launch_flags":["api-log"]}`), nil
 		},
 		func(int) ([]byte, error) {
 			return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil

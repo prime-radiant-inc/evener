@@ -196,7 +196,7 @@ func TestPendingRestartSurvivesAnUnknownIdentity(t *testing.T) {
 		case opEnvironment:
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case opLaunchCheck:
-			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"dev","launch_flags":["api-log"]}`), nil
+			return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"dev","launch_flags":["api-log"]}`), nil
 		case opInstallDirProbe:
 			return nil, nil
 		case opResolveExec:

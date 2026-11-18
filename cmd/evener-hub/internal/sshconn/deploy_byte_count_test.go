@@ -113,7 +113,7 @@ func TestPreflightDiscoversInstallerDefault(t *testing.T) {
 		case opLaunchCheck:
 			switch launchCheckTarget(argv) {
 			case resolved:
-				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"newsha","launch_flags":["api-log"]}`), nil
 			case "evener":
 				// No evener on the non-interactive PATH.
 				return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
@@ -170,7 +170,7 @@ func TestResolvedTargetAvoidsRedeploy(t *testing.T) {
 				if !installed {
 					return nil, exitStatus(t, 127)
 				}
-				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"newsha","launch_flags":["api-log"]}`), nil
 			case "evener":
 				return []byte("sh: 1: evener: not found\n"), exitStatus(t, 127)
 			}

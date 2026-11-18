@@ -18,7 +18,7 @@ func TestIncompatibleDeployRequiresRealEndpointEvidence(t *testing.T) {
 				if call == 0 {
 					return []byte("not json"), nil
 				}
-				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"newsha","launch_flags":["api-log"]}`), nil
 			}, func(int) ([]byte, error) {
 				return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
 			})

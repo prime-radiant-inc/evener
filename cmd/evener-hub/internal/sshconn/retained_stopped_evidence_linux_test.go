@@ -161,7 +161,7 @@ func TestCrashedRetainedRepairStartsWithoutHealth(t *testing.T) {
 	fr.runFn = func(ctx context.Context, argv []string, in io.Reader) ([]byte, error) {
 		remote := strings.Join(argv[12:], " ")
 		switch {
-		case repair && selected.executableAbsent && remote == host.EvenerPath+" launch-check --protocol evener-appwire-v7 --json":
+		case repair && selected.executableAbsent && remote == host.EvenerPath+" launch-check --protocol evener-appwire-v8 --json":
 			return nil, exitStatus(t, 127)
 		case repair && remote == selectedLockRemote("/home/dev/.local/state/evener"):
 			lockReads++

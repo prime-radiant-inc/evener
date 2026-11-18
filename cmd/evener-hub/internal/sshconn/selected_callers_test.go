@@ -65,7 +65,7 @@ func TestEnsureSelectedDeployPreservesRunTarget(t *testing.T) {
 			return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 		case "id -u":
 			return []byte("1000\n"), nil
-		case link + " launch-check --json", link + " launch-check --protocol evener-appwire-v7 --json", target + " launch-check --json", target + " launch-check --protocol evener-appwire-v7 --json":
+		case link + " launch-check --json", link + " launch-check --protocol evener-appwire-v8 --json", target + " launch-check --json", target + " launch-check --protocol evener-appwire-v8 --json":
 			version := "oldsha"
 			if launchCalls > 0 {
 				version = "newsha"

@@ -439,7 +439,7 @@ func TestEnsureProtocolMismatchReachesTheDeployPath(t *testing.T) {
 				if call == 0 {
 					return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v4","version":"oldsha","launch_flags":["api-log"]}`), nil
 				}
-				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"newsha","launch_flags":["api-log"]}`), nil
 			},
 			func(int) ([]byte, error) {
 				return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
@@ -501,7 +501,7 @@ func TestEnsureUnfilteredOlderProtocolReachesDeployPath(t *testing.T) {
 				if call == 0 {
 					return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v4","version":"oldsha","launch_flags":["api-log"]}`), nil
 				}
-				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"newsha","launch_flags":["api-log"]}`), nil
 			},
 			func(int) ([]byte, error) {
 				return []byte(`{"version":"newsha","mobile_api_version":1,"hub_addr":"127.0.0.1:9180"}`), nil
@@ -535,7 +535,7 @@ func TestEnsureMissingAPILogFlagIsDeployable(t *testing.T) {
 		built := false
 		fr := deployRunner(t,
 			func(int) ([]byte, error) {
-				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"dev","launch_flags":[]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"dev","launch_flags":[]}`), nil
 			},
 			func(call int) ([]byte, error) {
 				// A real hub always reports started_at (cmd/evener-hub/web_api.go
@@ -574,9 +574,9 @@ func TestEnsureMissingAPILogFlagIsDeployable(t *testing.T) {
 		fr := deployRunner(t,
 			func(call int) ([]byte, error) {
 				if call == 0 {
-					return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"dev","launch_flags":[]}`), nil
+					return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"dev","launch_flags":[]}`), nil
 				}
-				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"dev","launch_flags":["api-log"]}`), nil
+				return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"dev","launch_flags":["api-log"]}`), nil
 			},
 			func(call int) ([]byte, error) {
 				// As above: the hub reports a start time, and the restarted process
@@ -1984,7 +1984,7 @@ func TestEnsureBoundsSelectedEndpoint(t *testing.T) {
 	host := hostreg.Host{Name: "alpha", SSH: "alpha.example", EvenerPath: "/opt/evener/bin/evener"}
 	probing := make(chan struct{}, 4)
 	canned := cannedRun(map[remoteOp][]byte{
-		opLaunchCheck: []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"oldsha","launch_flags":["api-log"]}`),
+		opLaunchCheck: []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"oldsha","launch_flags":["api-log"]}`),
 	})
 	fr := &fakeRunner{runFn: func(ctx context.Context, argv []string, stdin io.Reader) ([]byte, error) {
 		if classifyRemote(argv) != opHubEndpoint {

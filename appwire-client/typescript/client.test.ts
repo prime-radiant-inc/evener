@@ -269,24 +269,24 @@ describe("AppwireClient", () => {
     expect(frames[1]).toEqual({ method: "initialized", params: {} });
   });
 
-  test("connect advertises v7 and rejects a v6 daemon", async () => {
+  test("connect advertises v8 and rejects a v7 daemon", async () => {
     // Keep this assertion first so the pre-cutover client fails immediately,
     // rather than waiting on a handshake that it still considers compatible.
-    expect(APPWIRE_PROTOCOL_VERSION).toBe("evener-appwire-v7");
+    expect(APPWIRE_PROTOCOL_VERSION).toBe("evener-appwire-v8");
 
     const fake = new FakeSocket();
     const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: () => fake });
     const connecting = connectReady(fake, client);
     await flushUntil(() => fake.sent.length > 0);
     const frame = lastSentFrame(fake);
-    expect(frame.params).toMatchObject({ protocolVersion: "evener-appwire-v7" });
+    expect(frame.params).toMatchObject({ protocolVersion: "evener-appwire-v8" });
     fake.receive({
       id: frame.id,
-      result: { ...FAKE_INITIALIZE_RESULT, protocolVersion: "evener-appwire-v6" },
+      result: { ...FAKE_INITIALIZE_RESULT, protocolVersion: "evener-appwire-v7" },
     });
 
     await expect(connecting).rejects.toThrow(
-      "AppwireClient: expected protocol evener-appwire-v7, received evener-appwire-v6",
+      "AppwireClient: expected protocol evener-appwire-v8, received evener-appwire-v7",
     );
     expect(client.terminalReason).toBe("protocol");
   });

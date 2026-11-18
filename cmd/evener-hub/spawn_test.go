@@ -158,7 +158,7 @@ func TestHubSpawnerResumeLaunchCheckOmitsAmbientModel(t *testing.T) {
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
   printf '%s\n' "$@" > "$ARGS_OUT"
-	  printf '{"protocol":"evener-appwire-v7","launch_flags":["api-log"]}\n'
+	  printf '{"protocol":"evener-appwire-v8","launch_flags":["api-log"]}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
@@ -204,7 +204,7 @@ func writeResumeFakeEvener(t *testing.T, path, serveScript string) {
 	t.Helper()
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-  printf '{"protocol":"evener-appwire-v7","launch_flags":["api-log"]}\n'
+  printf '{"protocol":"evener-appwire-v8","launch_flags":["api-log"]}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
@@ -732,7 +732,7 @@ func TestHubSpawnerSpawnPassesHubTokenToDaemon(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-	  printf '{"protocol":"evener-appwire-v7","launch_flags":["api-log"]}\n'
+	  printf '{"protocol":"evener-appwire-v8","launch_flags":["api-log"]}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
@@ -787,7 +787,7 @@ func TestHubSpawnerSpawnUsesConfiguredXDGStateHomeForStateDir(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-	  printf '{"protocol":"evener-appwire-v7","launch_flags":["api-log"]}\n'
+	  printf '{"protocol":"evener-appwire-v8","launch_flags":["api-log"]}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
@@ -857,7 +857,7 @@ func TestHubSpawnerListsModelsFromEvenerLaunchContract(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-	  printf '{"protocol":"evener-appwire-v7","models":[{"provider":"openai","model":"gpt-5.5"}]}\n'
+	  printf '{"protocol":"evener-appwire-v8","models":[{"provider":"openai","model":"gpt-5.5"}]}\n'
   exit 0
 fi
 exit 2
@@ -885,7 +885,7 @@ func TestListEvenerLaunchModelContractCarriesWarnings(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-	  printf '{"protocol":"evener-appwire-v7","models":[{"provider":"vertex","model":"gemini-3.5-flash","warnings":["regional Vertex location \\"us-central1\\" does not serve Gemini 3 or later; use global, us, or eu for gemini-3.5-flash"]}]}\n'
+	  printf '{"protocol":"evener-appwire-v8","models":[{"provider":"vertex","model":"gemini-3.5-flash","warnings":["regional Vertex location \\"us-central1\\" does not serve Gemini 3 or later; use global, us, or eu for gemini-3.5-flash"]}]}\n'
   exit 0
 fi
 exit 2
@@ -920,7 +920,7 @@ func TestListEvenerLaunchModelContractCarriesInstanceDefault(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-	  printf '{"protocol":"evener-appwire-v7","models":[{"provider":"team","model":"chosen","instanceDefault":true},{"provider":"team","model":"first"}]}\n'
+	  printf '{"protocol":"evener-appwire-v8","models":[{"provider":"team","model":"chosen","instanceDefault":true},{"provider":"team","model":"first"}]}\n'
   exit 0
 fi
 exit 2
@@ -954,7 +954,7 @@ func TestListEvenerLaunchModelContractCarriesEveryDescriptorCapability(t *testin
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-	  printf '{"protocol":"evener-appwire-v7","models":[{"provider":"team","model":"glm-5.3","contextWindow":200000,"maxInputTokens":190000,"maxOutputTokens":32000,"supportsTools":true,"supportsVision":true,"inputCostPerMillion":3,"outputCostPerMillion":15}]}\n'
+	  printf '{"protocol":"evener-appwire-v8","models":[{"provider":"team","model":"glm-5.3","contextWindow":200000,"maxInputTokens":190000,"maxOutputTokens":32000,"supportsTools":true,"supportsVision":true,"inputCostPerMillion":3,"outputCostPerMillion":15}]}\n'
 	  exit 0
 fi
 exit 2
@@ -1004,7 +1004,7 @@ func TestListEvenerLaunchModelContractCarriesEffortLevels(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-	  printf '{"protocol":"evener-appwire-v7","models":[{"provider":"lunaroute","model":"glm-5.3","reasoningEffortLevels":["low","high","max"],"supportsReasoning":true},{"provider":"lunaroute","model":"plain"}]}\n'
+	  printf '{"protocol":"evener-appwire-v8","models":[{"provider":"lunaroute","model":"glm-5.3","reasoningEffortLevels":["low","high","max"],"supportsReasoning":true},{"provider":"lunaroute","model":"plain"}]}\n'
   exit 0
 fi
 exit 2
@@ -1038,7 +1038,7 @@ func TestValidateEvenerLaunchContractRejectsIncompatibleProtocolBinary(t *testin
 	evenerBinary := filepath.Join(t.TempDir(), "old-evener")
 	writeFakeEvener(t, evenerBinary, `#!/bin/sh
 case " $* " in
-	  *" --protocol evener-appwire-v7 "*)
+	  *" --protocol evener-appwire-v8 "*)
     printf '{"protocol":"evener-appwire-v2"}\n'
     exit 0
     ;;
@@ -1553,7 +1553,7 @@ func TestHubSpawnerResumeAcceptsCredentiallessOllamaConfig(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-	  printf '{"protocol":"evener-appwire-v7","launch_flags":["api-log"]}\n'
+	  printf '{"protocol":"evener-appwire-v8","launch_flags":["api-log"]}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
@@ -1601,7 +1601,7 @@ func TestHubSpawnerResumeJudgesThePersistedModel(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-  printf '{"protocol":"evener-appwire-v7","launch_flags":["api-log"]}\n'
+  printf '{"protocol":"evener-appwire-v8","launch_flags":["api-log"]}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then

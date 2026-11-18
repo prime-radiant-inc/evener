@@ -164,7 +164,7 @@ func TestParseLaunchCheck(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseLaunchCheck: %v", err)
 	}
-	if lc.Protocol != "evener-appwire-v7" || lc.Version != "dev" || len(lc.LaunchFlags) != 1 || lc.LaunchFlags[0] != "api-log" {
+	if lc.Protocol != "evener-appwire-v8" || lc.Version != "dev" || len(lc.LaunchFlags) != 1 || lc.LaunchFlags[0] != "api-log" {
 		t.Fatalf("launchCheck = %+v", lc)
 	}
 
@@ -179,9 +179,9 @@ func TestParseLaunchCheck(t *testing.T) {
 	// reading it as a mismatch would send the host into a deploy whose identity was
 	// never established.
 	for _, out := range []string{
-		`{"protocol":"evener-appwire-v7"}`,
-		`{"protocol":"evener-appwire-v7","version":""}`,
-		`{"protocol":"evener-appwire-v7","version":"   "}`,
+		`{"protocol":"evener-appwire-v8"}`,
+		`{"protocol":"evener-appwire-v8","version":""}`,
+		`{"protocol":"evener-appwire-v8","version":"   "}`,
 	} {
 		if _, err := parseLaunchCheck([]byte(out)); !errors.Is(err, ErrPreflightDecode) {
 			t.Fatalf("parseLaunchCheck(%s) err = %v, want ErrPreflightDecode", out, err)

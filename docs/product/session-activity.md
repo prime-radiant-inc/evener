@@ -731,7 +731,7 @@ observation, even when an earlier read already saw EOF. Disconnecting during
 that drain preserves it for recovery. Finished jobs remain history-pageable.
 Refresh requests current output without discarding older reading or its anchor.
 
-Protocol `evener-appwire-v7` requires the same contract in the hub, daemon and
+Protocol `evener-appwire-v8` requires the same contract in the hub, daemon and
 clients. Older running daemons keep their work and require an explicit restart
 for current live reads. There is no tail-parser compatibility path. The phone
 uses the same portable decoder for its existing latest-output view, retaining
@@ -1185,7 +1185,7 @@ qualification gates; these contracts do not establish a device or provider run.
 ## Navigation boundary
 
 Navigation uses representation version 3 independently of connection protocol
-`evener-appwire-v7`. Clients request version 3 and the hub advertises that
+`evener-appwire-v8`. Clients request version 3 and the hub advertises that
 representation. There is no version 2 emission or fallback path.
 
 Navigation carries own-session running-job and watch counts plus bounded running

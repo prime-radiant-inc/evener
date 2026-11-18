@@ -202,7 +202,7 @@ func TestRestartForOperationRefusesNewerDisk(t *testing.T) {
 				if strings.Contains(joined, "launch-check") && strings.Contains(joined, "--protocol") {
 					// The newer binary refuses the imposed controller protocol
 					// before emitting JSON, then describes its own contract.
-					return []byte(`unsupported appwire protocol "evener-appwire-v7" (supported "evener-appwire-v99")`), refused
+					return []byte(`unsupported appwire protocol "evener-appwire-v8" (supported "evener-appwire-v99")`), refused
 				}
 				return run(ctx, argv, stdin)
 			}

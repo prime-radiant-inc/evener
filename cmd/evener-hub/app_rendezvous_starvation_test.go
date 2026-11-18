@@ -139,13 +139,13 @@ func TestResumeRendezvousSurvivesAReadStorm(t *testing.T) {
 	// storm's strict roster reads would decode a torn file under a plain redirect.
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-  printf '{"protocol":"evener-appwire-v7","launch_flags":["api-log"]}\n'
+  printf '{"protocol":"evener-appwire-v8","launch_flags":["api-log"]}\n'
   exit 0
 fi
 if [ "$1" = "serve" ]; then
   mkdir -p "$EVENER_RUN_DIR"
   cat > "$EVENER_RUN_DIR/$$.json.tmp" <<EOF
-{"pid":$$,"address":"` + daemonAddress + `","protocol":"evener-appwire-v7","source_id":"local","endpoint":"` + daemonEndpoint + `","session_id":"` + resumeID + `","thread_id":"` + resumeID + `","started_at":"2999-01-01T00:00:00Z"}
+{"pid":$$,"address":"` + daemonAddress + `","protocol":"evener-appwire-v8","source_id":"local","endpoint":"` + daemonEndpoint + `","session_id":"` + resumeID + `","thread_id":"` + resumeID + `","started_at":"2999-01-01T00:00:00Z"}
 EOF
   mv "$EVENER_RUN_DIR/$$.json.tmp" "$EVENER_RUN_DIR/$$.json"
   sleep 1

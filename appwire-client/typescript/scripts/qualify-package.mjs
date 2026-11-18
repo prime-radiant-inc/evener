@@ -1190,7 +1190,7 @@ ${presenceLoop}${surface.smoke ?? ""}`,
     ["-p", "require('@evener/appwire-client').APPWIRE_PROTOCOL_VERSION"],
     consumerDir,
   ).trim();
-  assert.equal(serverProtocolVersion, "evener-appwire-v7");
+  assert.equal(serverProtocolVersion, "evener-appwire-v8");
   const fixtureCwd = "/fixture/project";
   const responses = new Map([
     ["model/list", { params: { cwd: fixtureCwd }, result: { data: [] } }],

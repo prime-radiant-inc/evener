@@ -66,7 +66,7 @@ func TestJobsOutputRawPageJSON(t *testing.T) {
 
 func TestJobOutputProtocolVersion(t *testing.T) {
 	t.Parallel()
-	if ProtocolVersion != "evener-appwire-v7" {
-		t.Fatalf("protocol = %q, want coordinated page version evener-appwire-v7", ProtocolVersion)
+	if ProtocolVersion != "evener-appwire-v8" {
+		t.Fatalf("protocol = %q, want coordinated page version evener-appwire-v8", ProtocolVersion)
 	}
 }

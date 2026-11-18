@@ -123,9 +123,9 @@ func TestFirstAttachBootstrapPinsSnapshotBuild(t *testing.T) {
 					return []byte("HOME=/home/dev\nXDG_STATE_HOME=\nXDG_CONFIG_HOME=\n"), nil
 				case strings.Contains(joined, "launch-check"):
 					if !deployed {
-						return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":[]}`), nil
+						return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"newsha","launch_flags":[]}`), nil
 					}
-					return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v7","version":"newsha","launch_flags":["api-log"]}`), nil
+					return []byte(`{"hub_endpoint_schema":1,"protocol":"evener-appwire-v8","version":"newsha","launch_flags":["api-log"]}`), nil
 				case strings.Contains(joined, "cat >"):
 					_, _ = io.Copy(io.Discard, stdin)
 					deployed = true

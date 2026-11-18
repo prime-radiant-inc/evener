@@ -148,7 +148,7 @@ func TestRetainedDarwinStartupRecordRecovery(t *testing.T) {
 				case pushBinaryRemote(target, int64(len("staged-binary"))):
 					writes++
 					return run()
-				case shellquote.RemoteWord(target) + " launch-check --protocol evener-appwire-v7 --json":
+				case shellquote.RemoteWord(target) + " launch-check --protocol evener-appwire-v8 --json":
 					return launchContract("newsha"), nil
 				case post:
 					postReads++

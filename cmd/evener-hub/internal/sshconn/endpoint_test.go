@@ -368,7 +368,7 @@ func TestEndpointCapabilityRefresh(t *testing.T) {
 	for _, schema := range []int{0, 1, 2} {
 		t.Run(strconv.Itoa(schema), func(t *testing.T) {
 			fr := &fakeRunner{runFn: func(context.Context, []string, io.Reader) ([]byte, error) {
-				return []byte(fmt.Sprintf(`{"protocol":"evener-appwire-v7","version":"new","launch_flags":["api-log"],"hub_endpoint_schema":%d}`, schema)), nil
+				return []byte(fmt.Sprintf(`{"protocol":"evener-appwire-v8","version":"new","launch_flags":["api-log"],"hub_endpoint_schema":%d}`, schema)), nil
 			}}
 			m := newTestManager(t, testRegistry(t, host), fr, Options{})
 			got, err := m.refreshLaunchContract(t.Context(), host, Preflight{LaunchCheckKnown: true, HubEndpointSchema: 1, Version: "old"})

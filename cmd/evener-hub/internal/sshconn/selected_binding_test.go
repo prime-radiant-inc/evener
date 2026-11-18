@@ -18,7 +18,7 @@ func TestRemoteRestartDrainFailure(t *testing.T) {
 			killed, probes := 0, 0
 			fr := &fakeRunner{runFn: func(_ context.Context, argv []string, _ io.Reader) ([]byte, error) {
 				switch remote := strings.Join(argv[12:], " "); remote {
-				case "/opt/evener launch-check --protocol evener-appwire-v7 --json":
+				case "/opt/evener launch-check --protocol evener-appwire-v8 --json":
 					return launchContract("release-selected"), nil
 				case "lsof -p 4242 -a -d 1,2":
 					return nil, nil
