@@ -118,11 +118,20 @@ func estimateInputTokens(t targetInfo, req Request) InputTokenCount {
 // cached count exists to avoid.
 //
 // The deriver is handed the definitions the builder is handed, nil Parameters
-// included, and answers with the list the wire carries. What the count covered
-// decides only how the answer is applied: a count measured over the substituted
-// form is adjusted by the difference between the two emitted lists, since the
-// substitute is already in it, and any other count is replaced by the emitted
-// price outright, since the schema was never in it.
+// included, and answers with the list the wire carries. That answer is the
+// price: the emitted list is measured and the measurement is assigned, whatever
+// the incoming count described.
+//
+// Assigning the measurement rather than adjusting the incoming count is what
+// makes this idempotent. A count measured over the substituted form is already
+// close to the emitted one, so adjusting it by the difference between the two
+// lists looks like it reuses work — but the adjustment describes the count it
+// started from, and a second call over the result starts from the emitted count
+// and adds the same difference again. Middleware may price a prepared request
+// and forward it, and admission then prices it once more; a second application
+// of a difference is a count larger than the list either of them sends, and an
+// input cap between the two refuses a request that fits. Measuring once and
+// assigning cannot compound.
 func priceEmittedToolSchemas(req Request, res registry.Resolved) Request {
 	if len(req.Tools) == 0 {
 		return req
@@ -135,22 +144,16 @@ func priceEmittedToolSchemas(req Request, res registry.Resolved) Request {
 	if !ok {
 		return req
 	}
-	// The deriver is handed the definitions the builder is handed, nil
-	// Parameters included: a parameterless tool and an explicitly open one are
-	// different inputs, and only the first gains the closed schema. A count
-	// measured over the substituted form is a different baseline again, so it is
-	// adjusted by the difference between the two emitted lists rather than
-	// replaced by one of them.
 	emitted, changed := deriver.EmitToolSchemas(req.Tools, res, req.PreparedTools())
 	if !changed {
 		return req
 	}
-	emittedBytes := ToolsJSONBytes(emitted)
-	if req.ToolsJSONBytes > 0 && req.preparedToolList == identifyToolList(req.Tools) {
-		req.ToolsJSONBytes += emittedBytes - ToolsJSONBytes(asSentToolDefs(req.Tools))
-		return req
-	}
-	req.ToolsJSONBytes = emittedBytes
+	req.ToolsJSONBytes = ToolsJSONBytes(emitted)
+	// The count now describes the emitted list, not the substituted form
+	// preparation measured, so the stamp that says "this count is the open-schema
+	// one" no longer holds and is cleared rather than left to authorize a reuse
+	// that would reprice from the wrong baseline.
+	req.preparedToolList = toolListIdentity{}
 	return req
 }
 
@@ -282,7 +285,20 @@ func (c *Client) CountInputTokens(ctx context.Context, req Request) (InputTokenC
 		req = ShapeRequest(req, t.res)
 	}
 	localEstimate := func() InputTokenCount {
-		return localInputEstimate(req, callerProvider, t)
+		// The local reading is the fallback for a route with no exact counter,
+		// which is exactly the caller who sizes a request from it and then
+		// dispatches. A protocol's builder rewrites the tool list before sending
+		// it, so measuring the advertised list here would answer with a number
+		// smaller than the request that dispatches, and a caller who fits its
+		// request to that number meets the shortfall as a context-budget
+		// rejection from Complete. The emitted list is the one to price, and
+		// only a protocol route has one: an override marshals the definition it
+		// was handed, so its received list is its wire list.
+		priced := req
+		if t.override == nil && t.resolved {
+			priced = priceEmittedToolSchemas(priced, t.res)
+		}
+		return localInputEstimate(priced, callerProvider, t)
 	}
 
 	// countExactly is the exact-count call of whichever half of the target

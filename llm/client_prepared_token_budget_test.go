@@ -811,6 +811,198 @@ func assertChatWireMatchesPrice(t *testing.T, req Request, res registry.Resolved
 	}
 }
 
+// A prepared request's opt-out is a statement about enforcement, not about which
+// schema the validator saw.
+//
+// Preparation compiles a parameterless tool against the open empty object, so a
+// prepared opt-out still has to carry that schema on the wire. The opt-out
+// decides only that it does not ride strict enforcement. Resolving the opt-out
+// before choosing the parameterless fallback reads it the other way: the
+// builder omits the key, the validator keeps compiling against the open object,
+// and when the opted-out tool is the whole catalog, admission bills a cached
+// open-schema charge for bytes the builder never sends.
+func TestAPreparedOptOutStillCarriesTheValidatedSchema(t *testing.T) {
+	t.Parallel()
+	defs := []ToolDefinition{{Name: "parameterless", Strict: new(false)}}
+	req := Request{
+		Provider:       "prepared-budget",
+		Model:          "model",
+		Messages:       []Message{User("x")},
+		Tools:          defs,
+		ToolsJSONBytes: ToolsJSONBytes(defs),
+	}
+	req = MarkPreparedTools(req)
+	req = MarkPreparedToolBytes(req)
+
+	_, res := budgetClientOnRoute(t, &preparedBudgetAdapter{}, 1_000_000, registry.ProtocolOpenAIChat,
+		registry.Caps{StrictTools: new(true)})
+	openBytes := ToolsJSONBytes(asSentToolDefs(defs))
+
+	// The wire is the oracle: the builder has to send the schema the validator
+	// compiled against, and the price has to describe that same schema.
+	assertChatWireMatchesPrice(t, req, res)
+	wire := chatWireToolParams(t, req, res)
+	if len(wire) != 1 {
+		t.Fatalf("wire carries %d tools, want 1", len(wire))
+	}
+	if wire[0] == nil {
+		t.Fatalf("builder omitted the parameters key for a prepared opt-out: the validator compiled this tool " +
+			"against the open empty object, so the wire has to carry it")
+	}
+	if got := priceEmittedToolSchemas(req, res); got.ToolsJSONBytes != openBytes {
+		t.Fatalf("priced count = %d, want %d, the open object the builder sends: a count that kept the "+
+			"advertised price would bill bytes the wire does not carry", got.ToolsJSONBytes, openBytes)
+	}
+}
+
+// Pricing a prepared request is an admission decision a caller may take early
+// and forward, so it has to be idempotent: admission prices the request it is
+// handed, and a second application of the same rule must not move the count.
+//
+// The count this replaces described the substituted form, so the emitted price
+// differs from it by the difference between the two lists. Carrying that
+// difference across a call — adjusting the incoming count instead of assigning
+// the measurement — makes the result depend on how many times it was applied:
+// middleware that prepriced and forwarded, followed by admission, bills the
+// emitted list twice over. A cap between the two counts then refuses a request
+// that fits.
+func TestPrePricingAPreparedRequestIsIdempotent(t *testing.T) {
+	t.Parallel()
+	parameterless, _ := preparedToolLists(6)
+	prepared := preparedRequest(parameterless)
+	// Preparation stamps the count it measured and the list it measured it over,
+	// and that stamp is what authorizes the differential path: without it a
+	// count is simply replaced, so a test that skipped it would pass against a
+	// rule that accumulates. Stamp it here for the same reason preparation does.
+	prepared = MarkPreparedToolBytes(prepared)
+
+	_, res := preparedBudgetClient(t, &preparedBudgetAdapter{}, 1_000_000)
+
+	once := priceEmittedToolSchemas(prepared, res)
+	twice := priceEmittedToolSchemas(once, res)
+	if twice.ToolsJSONBytes != once.ToolsJSONBytes {
+		t.Fatalf("pricing twice = %d bytes, once = %d: the price must describe the emitted list, not "+
+			"accumulate a difference from the count it started with",
+			twice.ToolsJSONBytes, once.ToolsJSONBytes)
+	}
+	// The reading admission takes has to be the same on both paths.
+	if a, b := EstimateInputTokensForResolved(res, once).Tokens, EstimateInputTokensForResolved(res, twice).Tokens; a != b {
+		t.Fatalf("admission reading after one price = %d, after two = %d: the two must agree",
+			a, b)
+	}
+	// The rule has to have done something, or the agreement above is the
+	// agreement of two unchanged counts rather than evidence that applying it
+	// twice is safe.
+	if once.ToolsJSONBytes == prepared.ToolsJSONBytes {
+		t.Fatalf("prepriced count = %d, unchanged from the advertised count: this route's builder rewrites "+
+			"the catalog, so pricing it must move the count", once.ToolsJSONBytes)
+	}
+}
+
+// A Chat catalog whose only difference from its projection is the order of a
+// required list emits the same bytes, so it must not be reported as a change.
+//
+// Reporting it would re-marshal the whole catalog on every dispatch against the
+// cached count that exists to avoid exactly that marshal, and admission would
+// pay the cost of the comparison plus a full measurement for a schema whose
+// serialized form it already holds.
+func TestAByteNeutralChatProjectionReusesTheCount(t *testing.T) {
+	t.Parallel()
+	// `required` out of sorted order: the projection sorts it, so the two schemas
+	// differ structurally while serializing to the same bytes.
+	defs := []ToolDefinition{{
+		Name: "write_file",
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"path":    map[string]any{"type": "string"},
+				"content": map[string]any{"type": "string"},
+			},
+			"required": []string{"path", "content"},
+		},
+		Strict: new(true),
+	}}
+	_, res := budgetClientOnRoute(t, &preparedBudgetAdapter{}, 1_000_000, registry.ProtocolOpenAIChat,
+		registry.Caps{StrictTools: new(true)})
+
+	p, ok := ProtocolFor(res.Protocol)
+	if !ok {
+		t.Fatalf("no protocol for %q", res.Protocol)
+	}
+	deriver, ok := p.(ToolSchemaDeriver)
+	if !ok {
+		t.Fatalf("%q does not derive tool schemas", res.Protocol)
+	}
+	emitted, changed := deriver.EmitToolSchemas(defs, res, false)
+	if changed {
+		t.Fatalf("deriver reported a change for a schema whose projection only reorders its required list: "+
+			"the count it already holds is exact, and reporting a change re-measures the catalog every dispatch "+
+			"(emitted %v)", emitted)
+	}
+}
+
+// A caller sizes a request from CountInputTokens and then dispatches it, so the
+// local reading has to describe the body that dispatches.
+//
+// A strict-capable Chat route's builder closes a parameterless tool's schema, and
+// that schema is larger than the nil the caller declared. A reading over the
+// advertised list is smaller than the request that goes out, so a caller that
+// fits its request to the reading meets the shortfall as a context-budget
+// rejection from Complete. A route with an exact provider counter is unaffected:
+// that answer is the provider's own and needs no local correction.
+func TestCountInputTokensPricesWhatTheRouteEmits(t *testing.T) {
+	t.Parallel()
+	defs := []ToolDefinition{{Name: "parameterless"}}
+	req := Request{
+		Provider: "prepared-budget",
+		Model:    "model",
+		Messages: []Message{User("x")},
+		Tools:    defs,
+	}
+	// No override is registered: an override supplies its own exact counter or
+	// none at all, and the route under test is a built-in one with no counter,
+	// which is the case the local reading is the answer for.
+	r, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+		registry.WithInstances(map[string]registry.Provider{
+			"prepared-budget": {Base: "openai", Protocol: registry.ProtocolOpenAIChat, APIKey: "unused",
+				Caps: registry.Caps{
+					ContextWindow:   new(1_000_000),
+					MaxInputTokens:  new(1_000_000),
+					MaxOutputTokens: new(4_096),
+					StrictTools:     new(true),
+				}},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("registry.Load: %v", err)
+	}
+	c := NewClient(WithRegistry(r))
+	res, err := c.Resolve("prepared-budget/model")
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+
+	got, err := c.CountInputTokens(context.Background(), req)
+	if err != nil {
+		t.Fatalf("CountInputTokens: %v", err)
+	}
+	advertised := EstimateInputTokensForResolved(res, req).Tokens
+	emitted := EstimateInputTokensForResolved(res, priceEmittedToolSchemas(req, res)).Tokens
+	if emitted <= advertised {
+		t.Fatalf("fixture does not distinguish the two readings: advertised=%d emitted=%d",
+			advertised, emitted)
+	}
+	if got.Tokens != emitted {
+		t.Fatalf("CountInputTokens = %d, want %d: a caller sizing a request from this count would fit "+
+			"it to %d and then meet the shortfall as a budget rejection from Complete",
+			got.Tokens, emitted, advertised)
+	}
+}
+
 // pricedChatDefs returns the definitions the deriver prices for req's route.
 func pricedChatDefs(t *testing.T, req Request, res registry.Resolved) []ToolDefinition {
 	t.Helper()

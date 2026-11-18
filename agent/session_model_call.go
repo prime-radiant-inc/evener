@@ -739,11 +739,22 @@ func (s *Session) applyResponsesContinuationShadowEstimate(profile *provider.Pro
 	shadowReq.ConversationID = ""
 	shadowReq.Continuation = nil
 	// The shadow bills the whole conversation, so it has to bill the tool list
-	// the route will send with it. This runs before the delta is built, and the
-	// estimate it produces is carried past that build: pricing the advertised
-	// catalog here would leave the full-history figure describing schemas the
-	// builder has already replaced, and admission takes the larger of the two.
-	shadowReq = llm.PriceToolSchemas(shadowReq, resolvedTargetOf(profile))
+	// the serving adapter will send with it. This runs before the delta is built,
+	// and the estimate it produces is carried past that build: pricing the
+	// advertised catalog here would leave the full-history figure describing
+	// schemas the builder has already replaced, and admission takes the larger of
+	// the two.
+	//
+	// Only a built-in route has a builder that rewrites schemas. An override
+	// marshals the definition it was handed, so pricing it through a protocol's
+	// deriver would bill an emitted list the override never sends, and an input
+	// cap between that figure and the override's own estimate would reject a
+	// request the override could dispatch. The inflated reading would also
+	// outlive the case that produced it: it is recorded on a request that falls
+	// back to full history when the override has no continuation planner.
+	if !s.servesAnOverride(profile) {
+		shadowReq = llm.PriceToolSchemas(shadowReq, resolvedTargetOf(profile))
+	}
 	tokens, ok := s.estimateResponsesContinuationShadow(profile, shadowReq)
 	if !ok {
 		req.HistoryMode = llm.HistoryModeFullHistory
@@ -762,6 +773,16 @@ func (s *Session) estimateResponsesContinuationShadow(profile *provider.Profile,
 	}
 	count := llm.EstimateInputTokensForResolved(resolvedTargetOf(profile), req)
 	return count.Tokens, count.Tokens > 0
+}
+
+// servesAnOverride reports whether an adapter override, rather than a built-in
+// protocol, serves this profile's requests. Such a route has no builder to price
+// through, and its own definition is what it sends.
+func (s *Session) servesAnOverride(profile *provider.Profile) bool {
+	if s.client == nil || profile == nil {
+		return false
+	}
+	return s.client.ServesOverride(profile.ID())
 }
 
 // resolvedTargetOf returns a profile's resolved registry row, or the zero row
