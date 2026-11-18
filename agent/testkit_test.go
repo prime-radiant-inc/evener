@@ -133,7 +133,7 @@ func newSession(t *testing.T, opts ...sessionOpt) *Session {
 			// The default fixture needs no registry: openai is a curated
 			// implicit id, so a bare client resolves it on the embedded one.
 			o.client = llm.NewClient()
-			o.client.Register(&fakeAdapter{name: "openai", steps: o.steps})
+			o.client.Register(newFakeAdapter("openai", o.steps...))
 		} else {
 			o.client = registryClient(t, nil, o.adapters...)
 		}

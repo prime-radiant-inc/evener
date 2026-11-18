@@ -80,14 +80,9 @@ func TestCommunicate_ToolChoiceNotForced_OnEveryRequest(t *testing.T) {
 	c := llm.NewClient()
 
 	comm := communicateCall("c1", "done")
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(comm)
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(comm)
+	})
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
@@ -119,19 +114,12 @@ func TestCommunicate_ResultExitsLoop(t *testing.T) {
 	c := llm.NewClient()
 
 	comm := communicateCall("c1", "Here is your answer.")
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(comm)
-			},
-			// If the loop doesn't exit, this step would be reached.
-			func(req llm.Request) llm.Response {
-				t.Fatalf("should not reach second LLM call after communicate")
-				return llm.Response{}
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(comm)
+	}, func(req llm.Request) llm.Response {
+		t.Fatalf("should not reach second LLM call after communicate")
+		return llm.Response{}
+	})
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
@@ -165,17 +153,11 @@ func TestCommunicate_StatusMessageContinuesTurn(t *testing.T) {
 		"end_turn": false,
 	})
 	final := communicateCall("c2", "Finished the work.")
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(status)
-			},
-			func(req llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(final)
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(status)
+	}, func(req llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(final)
+	})
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
@@ -241,18 +223,12 @@ func TestCommunicate_StructuredOutputExitsLoop(t *testing.T) {
 			},
 		},
 	})
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(comm)
-			},
-			func(req llm.Request) llm.Response {
-				t.Fatalf("should not reach second LLM call after communicate")
-				return llm.Response{}
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(comm)
+	}, func(req llm.Request) llm.Response {
+		t.Fatalf("should not reach second LLM call after communicate")
+		return llm.Response{}
+	})
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
@@ -299,18 +275,12 @@ func TestCommunicate_FirstTerminalResultWins(t *testing.T) {
 			},
 		},
 	})
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(first, second)
-			},
-			func(req llm.Request) llm.Response {
-				t.Fatalf("should not reach second LLM call after terminal communicate")
-				return llm.Response{}
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(first, second)
+	}, func(req llm.Request) llm.Response {
+		t.Fatalf("should not reach second LLM call after terminal communicate")
+		return llm.Response{}
+	})
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
@@ -675,15 +645,7 @@ func TestCommunicate_BareTextFallback(t *testing.T) {
 
 	// Model keeps returning bare text (no tool calls) — simulating a provider
 	// that doesn't honor tool_choice=required.
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("bare text response")} },
-			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("bare text response")} },
-			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("bare text response")} },
-			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("bare text response")} },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("bare text response")} }, func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("bare text response")} }, func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("bare text response")} }, func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("bare text response")} })
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
@@ -770,18 +732,12 @@ func TestCommunicate_ClientSteeringBeforeResultProjectsValidNextRequest(t *testi
 	checkpointReached := false
 
 	var requestErr error
-	adapter := &fakeAdapter{
-		name: "anthropic",
-		steps: []func(req llm.Request) llm.Response{
-			func(llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(communicateCall(callID, "Initial work complete."))
-			},
-			func(req llm.Request) llm.Response {
-				requestErr = validateSteeredCommunicateHistory(req.Messages, callID, "commit them")
-				return agenttest.ToolCallResponse(communicateCall("communicate_after_steering", "Committed."))
-			},
-		},
-	}
+	adapter := newFakeAdapter("anthropic", func(llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(communicateCall(callID, "Initial work complete."))
+	}, func(req llm.Request) llm.Response {
+		requestErr = validateSteeredCommunicateHistory(req.Messages, callID, "commit them")
+		return agenttest.ToolCallResponse(communicateCall("communicate_after_steering", "Committed."))
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 
@@ -854,18 +810,12 @@ func TestCommunicate_TerminalClientSteeringRunsAfterTheTerminalResult(t *testing
 	var requestErr error
 	var once sync.Once
 
-	adapter := &fakeAdapter{
-		name: "anthropic",
-		steps: []func(req llm.Request) llm.Response{
-			func(llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(communicateCall(firstCallID, "Initial work complete."))
-			},
-			func(req llm.Request) llm.Response {
-				requestErr = validateSteeredCommunicateHistory(req.Messages, firstCallID, steerText)
-				return agenttest.ToolCallResponse(communicateCall(secondCallID, "Committed."))
-			},
-		},
-	}
+	adapter := newFakeAdapter("anthropic", func(llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(communicateCall(firstCallID, "Initial work complete."))
+	}, func(req llm.Request) llm.Response {
+		requestErr = validateSteeredCommunicateHistory(req.Messages, firstCallID, steerText)
+		return agenttest.ToolCallResponse(communicateCall(secondCallID, "Committed."))
+	})
 	client := llm.NewClient()
 	client.Register(adapter)
 
@@ -1190,12 +1140,7 @@ func TestCommunicate_EmitsEvent(t *testing.T) {
 
 	result := communicateCall("c1", "Final answer")
 
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(result) },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(result) })
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
@@ -1247,16 +1192,10 @@ func TestCommunicate_AvailableImmediately(t *testing.T) {
 	c := llm.NewClient()
 
 	result := communicateCall("c1", "immediate answer")
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(result) },
-			func(req llm.Request) llm.Response {
-				t.Fatalf("should not reach second step with MinResultRound=0")
-				return llm.Response{}
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(result) }, func(req llm.Request) llm.Response {
+		t.Fatalf("should not reach second step with MinResultRound=0")
+		return llm.Response{}
+	})
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})

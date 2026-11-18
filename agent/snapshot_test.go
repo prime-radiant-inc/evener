@@ -121,14 +121,9 @@ func TestSession_AutoSave_PersistsToolResults(t *testing.T) {
 
 	c := llm.NewClient()
 	comm := communicateCall("c1", "done")
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(comm)
-			},
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(comm)
+	}))
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxToolRoundsPerInput: 200,
@@ -205,17 +200,11 @@ func TestSession_AutoSave_DoesNotPersistMidToolRound(t *testing.T) {
 		Name:      "block_tool",
 		Arguments: json.RawMessage(`{}`),
 	}
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(blockCall)
-			},
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("done")
-			},
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(blockCall)
+	}, func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("done")
+	}))
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		MaxToolRoundsPerInput: 200,
@@ -444,59 +433,49 @@ func TestMetaTurnCount_CountsModelResponses(t *testing.T) {
 	c := llm.NewClient()
 	callNum := 0
 	var mu sync.Mutex
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			// Round 1: model returns a tool call
-			func(req llm.Request) llm.Response {
-				mu.Lock()
-				callNum++
-				mu.Unlock()
-				call := llm.ToolCallData{
-					ID:        "c1",
-					Name:      "read_file",
-					Arguments: json.RawMessage(`{"file_path":"a.txt"}`),
-					Type:      "function",
-				}
-				return llm.Response{
-					Message: llm.Message{
-						Role:    llm.RoleAssistant,
-						Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
-					},
-					Finish: llm.FinishReason{Reason: "tool_calls"},
-				}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		mu.Lock()
+		callNum++
+		mu.Unlock()
+		call := llm.ToolCallData{
+			ID:        "c1",
+			Name:      "read_file",
+			Arguments: json.RawMessage(`{"file_path":"a.txt"}`),
+			Type:      "function",
+		}
+		return llm.Response{
+			Message: llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
 			},
-			// Round 2: model returns another tool call
-			func(req llm.Request) llm.Response {
-				mu.Lock()
-				callNum++
-				mu.Unlock()
-				call := llm.ToolCallData{
-					ID:        "c2",
-					Name:      "read_file",
-					Arguments: json.RawMessage(`{"file_path":"b.txt"}`),
-					Type:      "function",
-				}
-				return llm.Response{
-					Message: llm.Message{
-						Role:    llm.RoleAssistant,
-						Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
-					},
-					Finish: llm.FinishReason{Reason: "tool_calls"},
-				}
+			Finish: llm.FinishReason{Reason: "tool_calls"},
+		}
+	}, func(req llm.Request) llm.Response {
+		mu.Lock()
+		callNum++
+		mu.Unlock()
+		call := llm.ToolCallData{
+			ID:        "c2",
+			Name:      "read_file",
+			Arguments: json.RawMessage(`{"file_path":"b.txt"}`),
+			Type:      "function",
+		}
+		return llm.Response{
+			Message: llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}},
 			},
-			// Round 3: model returns final text
-			func(req llm.Request) llm.Response {
-				mu.Lock()
-				callNum++
-				mu.Unlock()
-				return wrapCommunicateResponse(llm.Response{
-					Message: llm.Assistant("all done"),
-					Finish:  llm.FinishReason{Reason: "stop"},
-				})
-			},
-		},
-	}
+			Finish: llm.FinishReason{Reason: "tool_calls"},
+		}
+	}, func(req llm.Request) llm.Response {
+		mu.Lock()
+		callNum++
+		mu.Unlock()
+		return wrapCommunicateResponse(llm.Response{
+			Message: llm.Assistant("all done"),
+			Finish:  llm.FinishReason{Reason: "stop"},
+		})
+	})
 	c.Register(f)
 
 	dir := t.TempDir()

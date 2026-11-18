@@ -1011,14 +1011,9 @@ func TestSession_TranscriptRecordsTurns(t *testing.T) {
 	stateDir := t.TempDir()
 
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("hello back")
-			},
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("hello back")
+	}))
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
 		StateDir: stateDir,
@@ -1227,55 +1222,40 @@ func TestSession_TranscriptFullLifecycle(t *testing.T) {
 
 	// Adapter: first call returns a read_file tool call, second call returns "done".
 	// This pattern repeats for each ProcessInput.
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			// Round 1, input 1: read a big file.
-			func(req llm.Request) llm.Response {
-				return llm.Response{
-					Usage: llm.Usage{InputTokens: window * 91 / 100},
-					Message: llm.Message{
-						Role: llm.RoleAssistant,
-						Content: []llm.ContentPart{
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-								ID:        "c1",
-								Name:      "read_file",
-								Arguments: json.RawMessage(`{"file_path":"big.txt"}`),
-							}},
-						},
-					},
-				}
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return llm.Response{
+			Usage: llm.Usage{InputTokens: window * 91 / 100},
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+						ID:        "c1",
+						Name:      "read_file",
+						Arguments: json.RawMessage(`{"file_path":"big.txt"}`),
+					}},
+				},
 			},
-			// Round 1, after tool result: finish.
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("finished reading")
+		}
+	}, func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("finished reading")
+	}, func(req llm.Request) llm.Response {
+		return llm.Response{
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+						ID:        "c2",
+						Name:      "read_file",
+						Arguments: json.RawMessage(`{"file_path":"big.txt"}`),
+					}},
+				},
 			},
-			// Round 2, input 2: read again.
-			func(req llm.Request) llm.Response {
-				return llm.Response{
-					Message: llm.Message{
-						Role: llm.RoleAssistant,
-						Content: []llm.ContentPart{
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-								ID:        "c2",
-								Name:      "read_file",
-								Arguments: json.RawMessage(`{"file_path":"big.txt"}`),
-							}},
-						},
-					},
-				}
-			},
-			// Round 2, after tool result: finish.
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("done with second read")
-			},
-			// Some context-management paths can trigger one more completion round
-			// after compaction before returning the final answer.
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("done with second read")
-			},
-		},
-	})
+		}
+	}, func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("done with second read")
+	}, func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("done with second read")
+	}))
 
 	// Write a big file that will fill a small context window.
 	bigContent := strings.Repeat("line of content\n", 200)
@@ -1459,14 +1439,9 @@ func TestSession_StateDirSessionsPathConflictFailsClosedAtDelegateBootstrap(t *t
 	}
 
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.FinalResponse("first")
-			},
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("first")
+	}))
 
 	env := execenv.NewLocalExecutionEnvironment(t.TempDir())
 	cfg := SessionConfig{StateDir: stateDir}

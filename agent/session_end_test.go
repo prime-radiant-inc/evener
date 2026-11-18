@@ -29,7 +29,7 @@ func TestSessionEnd_EmitsOncePerInputOnEveryPath(t *testing.T) {
 		{
 			name: "clean settle",
 			setup: func(c *llm.Client) SessionConfig {
-				c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{final("done")}})
+				c.Register(newFakeAdapter("openai", final("done")))
 				return SessionConfig{}
 			},
 			drive: func(t *testing.T, s *Session) {
@@ -42,7 +42,7 @@ func TestSessionEnd_EmitsOncePerInputOnEveryPath(t *testing.T) {
 		{
 			name: "two sequential inputs",
 			setup: func(c *llm.Client) SessionConfig {
-				c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{final("one"), final("two")}})
+				c.Register(newFakeAdapter("openai", final("one"), final("two")))
 				return SessionConfig{}
 			},
 			drive: func(t *testing.T, s *Session) {
@@ -57,7 +57,7 @@ func TestSessionEnd_EmitsOncePerInputOnEveryPath(t *testing.T) {
 		{
 			name: "queued follow-up drained by the same call",
 			setup: func(c *llm.Client) SessionConfig {
-				c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{final("one"), final("two")}})
+				c.Register(newFakeAdapter("openai", final("one"), final("two")))
 				return SessionConfig{}
 			},
 			drive: func(t *testing.T, s *Session) {
@@ -86,7 +86,7 @@ func TestSessionEnd_EmitsOncePerInputOnEveryPath(t *testing.T) {
 		{
 			name: "empty notification then a queued user turn",
 			setup: func(c *llm.Client) SessionConfig {
-				c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{final("queued reply")}})
+				c.Register(newFakeAdapter("openai", final("queued reply")))
 				return SessionConfig{}
 			},
 			drive: func(t *testing.T, s *Session) {

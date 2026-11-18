@@ -346,9 +346,7 @@ func durableEnvironmentTurnIDs(t *testing.T, sess *Session) []string {
 
 func TestRestoreDeferredHookWaitsForEnvironmentDurability(t *testing.T) {
 	t.Parallel()
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
-	}}
+	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("ok") })
 	sess := restoredSessionWithResumeHook(t, adapter)
 	failure := errors.New("environment transcript durability failure")
 	attachEnvironmentSyncFailure(t, sess, failure, nil)

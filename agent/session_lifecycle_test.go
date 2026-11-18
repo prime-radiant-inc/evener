@@ -25,13 +25,7 @@ func TestSession_QueuedInput_ProcessesAfterCompletion(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("first") },
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("second") },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("first") }, func(req llm.Request) llm.Response { return agenttest.FinalResponse("second") })
 	c.Register(f)
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
@@ -67,15 +61,7 @@ func TestSession_LoopDetection_EmitsEventAndInjectsSteering(t *testing.T) {
 			},
 		}
 	}
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolMsg() },
-			func(req llm.Request) llm.Response { return toolMsg() },
-			func(req llm.Request) llm.Response { return toolMsg() },
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return toolMsg() }, func(req llm.Request) llm.Response { return toolMsg() }, func(req llm.Request) llm.Response { return toolMsg() }, func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") })
 	c.Register(f)
 
 	cfg := SessionConfig{LoopDetectionWindow: 3}
@@ -181,11 +167,9 @@ func TestSessionStateStringValues(t *testing.T) {
 func TestSession_SessionEnd_EmittedExactlyOnce(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
-	f := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response {
-			return agenttest.FinalResponse("done")
-		},
-	}}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("done")
+	})
 	c.Register(f)
 	dir := t.TempDir()
 	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test-model")), withDir(dir), withConfig(SessionConfig{}))
@@ -214,9 +198,7 @@ func TestSession_SessionEnd_EmittedExactlyOnce(t *testing.T) {
 func TestSession_CloseForShutdownAfterCompletedTurnEmitsOneClosedBoundary(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
-	}})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") }))
 	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test-model")), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	eventsPtr, mu, doneCh := collectEvents(sess)
 	if _, err := sess.ProcessInput(context.Background(), "hello", nil); err != nil {
@@ -1058,15 +1040,7 @@ func TestSession_LoopDetection_WarningWording(t *testing.T) {
 			},
 		}
 	}
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return toolMsg() },
-			func(req llm.Request) llm.Response { return toolMsg() },
-			func(req llm.Request) llm.Response { return toolMsg() },
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return toolMsg() }, func(req llm.Request) llm.Response { return toolMsg() }, func(req llm.Request) llm.Response { return toolMsg() }, func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") })
 	c.Register(f)
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -1139,12 +1113,7 @@ func TestSession_Meta_PopulatesOriginalPrompt(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") }))
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
@@ -1180,12 +1149,7 @@ func TestSession_ProcessInput_WithImage_BuildsMultiPartUserMessage(t *testing.T)
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") })
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
@@ -1249,12 +1213,7 @@ func TestSession_ProcessInput_ImageOnly_OmitsEmptyTextPart(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") })
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
@@ -1299,13 +1258,7 @@ func TestSession_Enqueue_DrainsAfterTurnCompletes(t *testing.T) {
 	// Two LLM responses: one for the first user input, one for the queued
 	// message. Each finalResponse satisfies the communicate result tool, so
 	// ProcessInput completes one user turn per LLM call.
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("first reply") },
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("second reply") },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("first reply") }, func(req llm.Request) llm.Response { return agenttest.FinalResponse("second reply") })
 	c.Register(f)
 
 	sess, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{})
@@ -1407,12 +1360,7 @@ func TestSession_DrainAsSteer_JoinsWithDoubleNewline(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") })
 	c.Register(f)
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
@@ -1616,9 +1564,7 @@ func TestSession_DoubleCloseCannotRecoverATerminalBoundary(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			c := llm.NewClient()
-			c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-				func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
-			}})
+			c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") }))
 			sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test-model")), withDir(t.TempDir()), withConfig(SessionConfig{}))
 			eventsPtr, mu, doneCh := collectEvents(sess)
 			if tc.runTurn {
@@ -1665,9 +1611,7 @@ func TestSession_DoubleCloseCannotRecoverATerminalBoundary(t *testing.T) {
 func TestSession_TerminalBoundaryReachesNoJobWatch(t *testing.T) {
 	t.Parallel()
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
-	}})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") }))
 	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test-model")), withDir(t.TempDir()), withConfig(SessionConfig{}))
 	jm := sess.jobManager
 	if jm == nil {

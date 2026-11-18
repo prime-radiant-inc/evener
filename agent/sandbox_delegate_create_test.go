@@ -17,7 +17,7 @@ import (
 
 func delegateTestClient(step func(llm.Request) llm.Response) *llm.Client {
 	client := llm.NewClient()
-	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{step}})
+	client.Register(newFakeAdapter("openai", step))
 	return client
 }
 
@@ -385,58 +385,52 @@ func TestReadOnlyDelegateDumbModelWritesOnlyToPromptNamedScratch(t *testing.T) {
 	var modelError string
 	childFinished := make(chan struct{}, 1)
 	childClient := llm.NewClient()
-	childAdapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				var prompt strings.Builder
-				for _, msg := range req.Messages {
-					prompt.WriteString(msg.Text())
-					prompt.WriteByte('\n')
+	childAdapter := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		var prompt strings.Builder
+		for _, msg := range req.Messages {
+			prompt.WriteString(msg.Text())
+			prompt.WriteByte('\n')
+		}
+		promptText := prompt.String()
+		sawGuidance = strings.Contains(promptText, guidance)
+		if !sawGuidance {
+			// This intentionally literal model has no recovery strategy: without
+			// the explicit rule, it tries the obvious relative path in the
+			// worktree and the real read-only file tool must reject it.
+			chosenPath = "dumb-report.md"
+		} else {
+			_, scratch, found := strings.Cut(promptText, scratchMarker)
+			if !found {
+				modelError = "prompt had the write-boundary sentence but no scratch path"
+				chosenPath = "dumb-report.md"
+			} else {
+				if before, _, found := strings.Cut(scratch, ". "+guidance); found {
+					scratch = before
 				}
-				promptText := prompt.String()
-				sawGuidance = strings.Contains(promptText, guidance)
-				if !sawGuidance {
-					// This intentionally literal model has no recovery strategy: without
-					// the explicit rule, it tries the obvious relative path in the
-					// worktree and the real read-only file tool must reject it.
+				scratch = strings.TrimSpace(strings.SplitN(scratch, "\n", 2)[0])
+				if scratch == "" {
+					modelError = "prompt named an empty scratch path"
 					chosenPath = "dumb-report.md"
 				} else {
-					_, scratch, found := strings.Cut(promptText, scratchMarker)
-					if !found {
-						modelError = "prompt had the write-boundary sentence but no scratch path"
-						chosenPath = "dumb-report.md"
-					} else {
-						if before, _, found := strings.Cut(scratch, ". "+guidance); found {
-							scratch = before
-						}
-						scratch = strings.TrimSpace(strings.SplitN(scratch, "\n", 2)[0])
-						if scratch == "" {
-							modelError = "prompt named an empty scratch path"
-							chosenPath = "dumb-report.md"
-						} else {
-							chosenPath = filepath.Join(scratch, "dumb-report.md")
-						}
-					}
+					chosenPath = filepath.Join(scratch, "dumb-report.md")
 				}
+			}
+		}
 
-				args, _ := json.Marshal(map[string]string{
-					"file_path": chosenPath,
-					"content":   "the literal delegate wrote this report\n",
-				})
-				return agenttest.ToolCallResponse(llm.ToolCallData{
-					ID:        "write_scratch_report",
-					Name:      "write_file",
-					Arguments: args,
-					Type:      "function",
-				})
-			},
-			func(req llm.Request) llm.Response {
-				childFinished <- struct{}{}
-				return communicateWithDefaultOutput("wrote the report")
-			},
-		},
-	}
+		args, _ := json.Marshal(map[string]string{
+			"file_path": chosenPath,
+			"content":   "the literal delegate wrote this report\n",
+		})
+		return agenttest.ToolCallResponse(llm.ToolCallData{
+			ID:        "write_scratch_report",
+			Name:      "write_file",
+			Arguments: args,
+			Type:      "function",
+		})
+	}, func(req llm.Request) llm.Response {
+		childFinished <- struct{}{}
+		return communicateWithDefaultOutput("wrote the report")
+	})
 	childClient.Register(childAdapter)
 	registerTestSessionNamer(childClient)
 

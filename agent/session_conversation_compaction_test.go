@@ -19,10 +19,10 @@ func TestConversationProvenance_RealFoldPreservesCoveredInputs(t *testing.T) {
 	s := newScriptedSummaryCompactSession(t, "conversation-fold-cheap", func(llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nOriginal request remains relevant.\n[END SUMMARY]")}
 	}, withConfig(minimalTestSessionConfig(t)), withStateDir(t.TempDir()))
-	s.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(llm.Request) llm.Response {
+	s.client.Register(newFakeAdapter("openai", func(llm.Request) llm.Response {
 		call := communicateCall("before-fold", "before fold")
 		return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}
-	}}})
+	}))
 	if _, err := s.ProcessInput(context.Background(), "original-fold-input-612", nil); err != nil {
 		t.Fatal(err)
 	}
@@ -65,7 +65,7 @@ func TestConversationProvenance_FoldThenRestorePreservesEligibility(t *testing.T
 		call := communicateCall("fold-result", "result")
 		return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}
 	}
-	s.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{response, response, response, response}})
+	s.client.Register(newFakeAdapter("openai", response, response, response, response))
 	for i := range 4 {
 		if _, err := s.ProcessInput(context.Background(), fmt.Sprintf("actual-fold-input-%d", i), nil); err != nil {
 			t.Fatal(err)
@@ -97,7 +97,7 @@ func TestConversationProvenance_FoldThenRestorePreservesEligibility(t *testing.T
 		t.Fatal(err)
 	}
 	client := llm.NewClient()
-	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{response}})
+	client.Register(newFakeAdapter("openai", response))
 	restored, err := RestoreSessionFromMetaWithConfig(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), meta, RestoreSessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatal(err)

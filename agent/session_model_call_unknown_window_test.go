@@ -26,36 +26,21 @@ func TestUnknownWindowSessionCompactsAndDiscloses(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "gw",
-		steps: []func(req llm.Request) llm.Response{
-			// First round: a tool call whose reported usage already fills the
-			// assumed window, the way a real gateway reports input tokens.
-			func(req llm.Request) llm.Response {
-				return llm.Response{
-					Usage: llm.Usage{InputTokens: 150_000},
-					Message: llm.Message{
-						Role: llm.RoleAssistant,
-						Content: []llm.ContentPart{
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-								ID:        "c1",
-								Name:      "read_file",
-								Arguments: json.RawMessage(`{"file_path":"big.txt"}`),
-							}},
-						},
-					},
-				}
+	c.Register(newFakeAdapter("gw", func(req llm.Request) llm.Response {
+		return llm.Response{
+			Usage: llm.Usage{InputTokens: 150_000},
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+						ID:        "c1",
+						Name:      "read_file",
+						Arguments: json.RawMessage(`{"file_path":"big.txt"}`),
+					}},
+				},
 			},
-			// A real fold launches auxiliary calls (session naming rides the
-			// cheap caller) and then the closing round; every remaining step
-			// ends the turn cleanly.
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") },
-		},
-	})
+		}
+	}, func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") }, func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") }, func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") }, func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") }, func(req llm.Request) llm.Response { return agenttest.FinalResponse("done") }))
 	env := execenv.NewLocalExecutionEnvironment(dir)
 	if _, err := env.WriteFile("big.txt", strings.Repeat("line of content\n", 200)); err != nil {
 		t.Fatalf("WriteFile: %v", err)

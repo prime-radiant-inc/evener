@@ -79,9 +79,7 @@ func TestDropsReplayedThinking(t *testing.T) {
 // stays.
 func TestSession_ChatTargetRequestCarriesNoReplayedThinking(t *testing.T) {
 	t.Parallel()
-	adapter := &fakeAdapter{name: "lunaroute", steps: []func(req llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(communicateCall("c1", "ok")) },
-	}}
+	adapter := newFakeAdapter("lunaroute", func(req llm.Request) llm.Response { return agenttest.ToolCallResponse(communicateCall("c1", "ok")) })
 	sess := newSession(t, withProfile(reasoningProfile("glm-5.3", registry.Caps{Reasoning: new(true)})), withAdapter(adapter))
 	sess.appendTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 		{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "old chain of thought"}},

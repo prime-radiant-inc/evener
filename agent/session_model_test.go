@@ -516,12 +516,7 @@ func TestSession_EmptyResponseExhaustedFlushesMeta(t *testing.T) {
 			Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{}},
 		}
 	}
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			emptyStep, emptyStep, emptyStep, emptyStep, emptyStep, emptyStep,
-		},
-	}
+	f := newFakeAdapter("openai", emptyStep, emptyStep, emptyStep, emptyStep, emptyStep, emptyStep)
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
@@ -558,12 +553,7 @@ func TestSession_BareTextWithoutResultToolFlushesMeta(t *testing.T) {
 	bareStep := func(req llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant("bare text without tool")}
 	}
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			bareStep, bareStep, bareStep, bareStep, bareStep,
-		},
-	}
+	f := newFakeAdapter("openai", bareStep, bareStep, bareStep, bareStep, bareStep)
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
@@ -613,12 +603,7 @@ func TestSession_MaxToolRoundsExitFlushesMeta(t *testing.T) {
 			},
 		}
 	}
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			toolStep, toolStep, toolStep,
-		},
-	}
+	f := newFakeAdapter("openai", toolStep, toolStep, toolStep)
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -663,12 +648,7 @@ func TestSession_CtxCancellationFlushesMeta(t *testing.T) {
 	// meta.json. Second turn: ctx is cancelled before the LLM call, exit via
 	// ctx.Done(). Without the deferred flush this exit path skips
 	// maybeAutoSave entirely.
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return agenttest.FinalResponse("hi back") },
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("hi back") })
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -726,26 +706,21 @@ func TestSession_PanicFlushesMeta(t *testing.T) {
 	// Model issues one tool call to a panicking tool. The panic propagates
 	// up through execTool → processOneInput, where our recover catches it,
 	// flushes meta.json, and re-panics.
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return llm.Response{
-					Message: llm.Message{
-						Role: llm.RoleAssistant,
-						Content: []llm.ContentPart{
-							{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
-								ID:        "p1",
-								Name:      "boom_tool",
-								Arguments: json.RawMessage(`{}`),
-								Type:      "function",
-							}},
-						},
-					},
-				}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return llm.Response{
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{
+						ID:        "p1",
+						Name:      "boom_tool",
+						Arguments: json.RawMessage(`{}`),
+						Type:      "function",
+					}},
+				},
 			},
-		},
-	}
+		}
+	})
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -840,21 +815,16 @@ func TestSession_WebSearch_FlagSetOnRequest(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return wrapCommunicateResponse(llm.Response{
-					Message: llm.Message{
-						Role:    llm.RoleAssistant,
-						Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "done"}},
-					},
-					Finish: llm.FinishReason{Reason: "stop"},
-					Usage:  llm.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
-				})
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return wrapCommunicateResponse(llm.Response{
+			Message: llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "done"}},
 			},
-		},
-	}
+			Finish: llm.FinishReason{Reason: "stop"},
+			Usage:  llm.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
+		})
+	})
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
@@ -902,21 +872,16 @@ func TestSession_WebSearch_FlagNotSetWhenBaseURLDiverges(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	f := &fakeAdapter{
-		name: "gw",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return wrapCommunicateResponse(llm.Response{
-					Message: llm.Message{
-						Role:    llm.RoleAssistant,
-						Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "done"}},
-					},
-					Finish: llm.FinishReason{Reason: "stop"},
-					Usage:  llm.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
-				})
+	f := newFakeAdapter("gw", func(req llm.Request) llm.Response {
+		return wrapCommunicateResponse(llm.Response{
+			Message: llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "done"}},
 			},
-		},
-	}
+			Finish: llm.FinishReason{Reason: "stop"},
+			Usage:  llm.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
+		})
+	})
 	c.Register(f)
 
 	profile := resolveTestProfile("gw", nil, "gpt-5.2")
@@ -950,33 +915,27 @@ func TestSession_PauseTurn_ContinuesLoop(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				// First call: return pause_turn (model needs more time for search)
-				return llm.Response{
-					Message: llm.Message{
-						Role:    llm.RoleAssistant,
-						Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "Searching..."}},
-					},
-					Finish: llm.FinishReason{Reason: llm.FinishReasonPauseTurn, Raw: "pause_turn"},
-					Usage:  llm.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
-				}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		// First call: return pause_turn (model needs more time for search)
+		return llm.Response{
+			Message: llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "Searching..."}},
 			},
-			func(req llm.Request) llm.Response {
-				// Second call: return final answer
-				return wrapCommunicateResponse(llm.Response{
-					Message: llm.Message{
-						Role:    llm.RoleAssistant,
-						Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "Here is the answer."}},
-					},
-					Finish: llm.FinishReason{Reason: "stop"},
-					Usage:  llm.Usage{InputTokens: 20, OutputTokens: 10, TotalTokens: 30},
-				})
+			Finish: llm.FinishReason{Reason: llm.FinishReasonPauseTurn, Raw: "pause_turn"},
+			Usage:  llm.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15},
+		}
+	}, func(req llm.Request) llm.Response {
+		// Second call: return final answer
+		return wrapCommunicateResponse(llm.Response{
+			Message: llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "Here is the answer."}},
 			},
-		},
-	}
+			Finish: llm.FinishReason{Reason: "stop"},
+			Usage:  llm.Usage{InputTokens: 20, OutputTokens: 10, TotalTokens: 30},
+		})
+	})
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
@@ -1005,43 +964,35 @@ func TestSession_PauseTurn_DoesNotCountAsToolRound(t *testing.T) {
 	// Return 3 pause_turns, then a final stop. With MaxToolRoundsPerInput=2,
 	// this should succeed because pause_turns are not counted.
 	callNum := 0
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				callNum++
-				return llm.Response{
-					Model:   "gpt-5.2",
-					Message: llm.Assistant("searching..."),
-					Finish:  llm.FinishReason{Reason: llm.FinishReasonPauseTurn, Raw: "pause_turn"},
-				}
-			},
-			func(req llm.Request) llm.Response {
-				callNum++
-				return llm.Response{
-					Model:   "gpt-5.2",
-					Message: llm.Assistant("still searching..."),
-					Finish:  llm.FinishReason{Reason: llm.FinishReasonPauseTurn, Raw: "pause_turn"},
-				}
-			},
-			func(req llm.Request) llm.Response {
-				callNum++
-				return llm.Response{
-					Model:   "gpt-5.2",
-					Message: llm.Assistant("more searching..."),
-					Finish:  llm.FinishReason{Reason: llm.FinishReasonPauseTurn, Raw: "pause_turn"},
-				}
-			},
-			func(req llm.Request) llm.Response {
-				callNum++
-				return wrapCommunicateResponse(llm.Response{
-					Model:   "gpt-5.2",
-					Message: llm.Assistant("here is the answer"),
-					Finish:  llm.FinishReason{Reason: "stop"},
-				})
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		callNum++
+		return llm.Response{
+			Model:   "gpt-5.2",
+			Message: llm.Assistant("searching..."),
+			Finish:  llm.FinishReason{Reason: llm.FinishReasonPauseTurn, Raw: "pause_turn"},
+		}
+	}, func(req llm.Request) llm.Response {
+		callNum++
+		return llm.Response{
+			Model:   "gpt-5.2",
+			Message: llm.Assistant("still searching..."),
+			Finish:  llm.FinishReason{Reason: llm.FinishReasonPauseTurn, Raw: "pause_turn"},
+		}
+	}, func(req llm.Request) llm.Response {
+		callNum++
+		return llm.Response{
+			Model:   "gpt-5.2",
+			Message: llm.Assistant("more searching..."),
+			Finish:  llm.FinishReason{Reason: llm.FinishReasonPauseTurn, Raw: "pause_turn"},
+		}
+	}, func(req llm.Request) llm.Response {
+		callNum++
+		return wrapCommunicateResponse(llm.Response{
+			Model:   "gpt-5.2",
+			Message: llm.Assistant("here is the answer"),
+			Finish:  llm.FinishReason{Reason: "stop"},
+		})
+	})
 	c.Register(f)
 
 	sess, err := NewSession(c, withTestSessionNamer(c, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
@@ -1235,32 +1186,26 @@ func TestSession_RecordInputTokens_SkipsWebSearchResponse(t *testing.T) {
 
 	// Response 1: contains ContentWebSearch — inflated tokens should NOT be recorded.
 	// Response 2: no web search — tokens should be recorded normally.
-	c.Register(&fakeAdapter{
-		name: "anthropic",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return wrapCommunicateResponse(llm.Response{
-					Message: llm.Message{
-						Role: llm.RoleAssistant,
-						Content: []llm.ContentPart{
-							{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{Query: "test query"}},
-							{Kind: llm.ContentText, Text: "Found results via web search."},
-						},
-					},
-					Usage: llm.Usage{InputTokens: 200_000}, // inflated ~2x
-				})
+	c.Register(newFakeAdapter("anthropic", func(req llm.Request) llm.Response {
+		return wrapCommunicateResponse(llm.Response{
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{Query: "test query"}},
+					{Kind: llm.ContentText, Text: "Found results via web search."},
+				},
 			},
-			func(req llm.Request) llm.Response {
-				return wrapCommunicateResponse(llm.Response{
-					Message: llm.Message{
-						Role:    llm.RoleAssistant,
-						Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "done"}},
-					},
-					Usage: llm.Usage{InputTokens: 100_000}, // real count
-				})
+			Usage: llm.Usage{InputTokens: 200_000}, // inflated ~2x
+		})
+	}, func(req llm.Request) llm.Response {
+		return wrapCommunicateResponse(llm.Response{
+			Message: llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "done"}},
 			},
-		},
-	})
+			Usage: llm.Usage{InputTokens: 100_000}, // real count
+		})
+	}))
 
 	sess := newSession(t, withClient(c), withProfile(newAnthropicProfile("claude-opus-4-6")), withDir(dir), withConfig(SessionConfig{}))
 	defer sess.Close()
@@ -2007,17 +1952,12 @@ func TestSession_AssistantTextStart_IncludesModel(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return wrapCommunicateResponse(llm.Response{
-					Model:   "test-model-42",
-					Message: llm.Assistant("hello"),
-				})
-			},
-		},
-	})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return wrapCommunicateResponse(llm.Response{
+			Model:   "test-model-42",
+			Message: llm.Assistant("hello"),
+		})
+	}))
 
 	sess := newSession(t, withClient(c), withProfile(NewOpenAIProfile("test-model-42")), withDir(dir), withConfig(SessionConfig{}))
 
@@ -2183,30 +2123,25 @@ func TestAssistantTextEnd_EnrichedData(t *testing.T) {
 
 	reasoningTokens := 42
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return wrapCommunicateResponse(llm.Response{
-					Model:  "gpt-5.2",
-					Finish: llm.FinishReason{Reason: "stop"},
-					Usage: llm.Usage{
-						InputTokens:     100,
-						OutputTokens:    50,
-						TotalTokens:     150,
-						ReasoningTokens: &reasoningTokens,
-					},
-					Message: llm.Message{
-						Role: llm.RoleAssistant,
-						Content: []llm.ContentPart{
-							{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "let me think about this"}},
-							{Kind: llm.ContentText, Text: "here is my answer"},
-						},
-					},
-				})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return wrapCommunicateResponse(llm.Response{
+			Model:  "gpt-5.2",
+			Finish: llm.FinishReason{Reason: "stop"},
+			Usage: llm.Usage{
+				InputTokens:     100,
+				OutputTokens:    50,
+				TotalTokens:     150,
+				ReasoningTokens: &reasoningTokens,
 			},
-		},
-	})
+			Message: llm.Message{
+				Role: llm.RoleAssistant,
+				Content: []llm.ContentPart{
+					{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "let me think about this"}},
+					{Kind: llm.ContentText, Text: "here is my answer"},
+				},
+			},
+		})
+	}))
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
 
@@ -2440,14 +2375,9 @@ func TestSession_AgentQuiescenceReturnsNilError(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	comm := communicateCall("c1", "done")
-	f := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(comm)
-			},
-		},
-	}
+	f := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.ToolCallResponse(comm)
+	})
 	c.Register(f)
 
 	sess := newSession(t, withClient(c), withDir(dir), withConfig(SessionConfig{}))
@@ -2515,19 +2445,14 @@ func TestSession_SingleAttemptMetadataRecorded(t *testing.T) {
 	dir := t.TempDir()
 	client := llm.NewClient()
 	comm := communicateCall("c1", "ok")
-	client.Register(&fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response {
-				resp := agenttest.ToolCallResponse(comm)
-				resp.ID = "resp_1"
-				resp.Provider = "openai"
-				resp.Model = req.Model
-				resp.Raw = map[string]any{"endpoint_url": "https://api.openai.com/v1/responses"}
-				return resp
-			},
-		},
-	})
+	client.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		resp := agenttest.ToolCallResponse(comm)
+		resp.ID = "resp_1"
+		resp.Provider = "openai"
+		resp.Model = req.Model
+		resp.Raw = map[string]any{"endpoint_url": "https://api.openai.com/v1/responses"}
+		return resp
+	}))
 	sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -2606,16 +2531,11 @@ func TestSession_SanitizesCustomAdapterEndpointMetadata(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			dir := t.TempDir()
 			client := llm.NewClient()
-			client.Register(&fakeAdapter{
-				name: "openai",
-				steps: []func(req llm.Request) llm.Response{
-					func(llm.Request) llm.Response {
-						resp := agenttest.ToolCallResponse(communicateCall("c1", "ok"))
-						resp.Raw = map[string]any{"endpoint_url": tt.endpoint}
-						return resp
-					},
-				},
-			})
+			client.Register(newFakeAdapter("openai", func(llm.Request) llm.Response {
+				resp := agenttest.ToolCallResponse(communicateCall("c1", "ok"))
+				resp.Raw = map[string]any{"endpoint_url": tt.endpoint}
+				return resp
+			}))
 			sess, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
 			if err != nil {
 				t.Fatalf("NewSession: %v", err)

@@ -225,9 +225,7 @@ func writeEvenerwideCommandFile(t *testing.T, workDir, name, content string) {
 func TestEvenerwideCommand_LoadsWithNoPluginDirs(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	client := llm.NewClient()
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
-	}}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") })
 	client.Register(adapter)
 	workDir := t.TempDir()
 	writeEvenerwideCommandFile(t, workDir, "review", "Review $ARGUMENTS")
@@ -261,9 +259,7 @@ func TestEvenerwideCommand_HermeticHidesOperatorGlobal(t *testing.T) {
 	writeEvenerwideCommandFile(t, workDir, "review", "project body")
 
 	client := llm.NewClient()
-	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
-	}})
+	client.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") }))
 	sess := newSession(t, withClient(client), withDir(workDir), withConfig(SessionConfig{}))
 	t.Cleanup(sess.Close)
 	if _, err := plugin.ResolveCommand(sess.pluginCommands, "operator-cmd"); err == nil {
@@ -280,9 +276,7 @@ func TestEvenerwideCommand_ShadowsPluginBareName(t *testing.T) {
 	writeEvenerwideCommandFile(t, workDir, "greet", "evener-wide body")
 	pluginDir := writePluginCommand(t, "greeter", "greet", "plugin body")
 	client := llm.NewClient()
-	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
-	}})
+	client.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") }))
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{
 		PluginDirs: []string{pluginDir},
 		testOnly:   testConfig{skipGitSnapshot: true},
@@ -306,9 +300,7 @@ func TestEvenerwideCommand_DiscoveryWarningsQueued(t *testing.T) {
 	workDir := t.TempDir()
 	writeEvenerwideCommandFile(t, workDir, "bad name", "body") // whitespace guard fires
 	client := llm.NewClient()
-	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
-	}})
+	client.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") }))
 	sess := newSession(t, withClient(client), withDir(workDir), withConfig(SessionConfig{}))
 	t.Cleanup(sess.Close)
 	if len(sess.pluginCommands) != 0 {
@@ -346,11 +338,9 @@ func writePluginCommand(t *testing.T, pluginName, cmdName, content string) strin
 func newTestSessionWithPlugins(t *testing.T, pluginDirs ...string) (*Session, *fakeAdapter) {
 	t.Helper()
 	client := llm.NewClient()
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response {
-			return agenttest.FinalResponse("captured: " + req.Messages[len(req.Messages)-1].Text())
-		},
-	}}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		return agenttest.FinalResponse("captured: " + req.Messages[len(req.Messages)-1].Text())
+	})
 	client.Register(adapter)
 	workDir := t.TempDir()
 	cfg := SessionConfig{PluginDirs: pluginDirs}
@@ -445,9 +435,7 @@ func (e *execRecordingEnv) ExecCommand(ctx context.Context, command string, time
 func TestExpandSlashCommand_EvenerwideDoesNotExecute(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 	client := llm.NewClient()
-	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") },
-	}})
+	client.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response { return agenttest.FinalResponse("ok") }))
 	workDir := t.TempDir()
 	writeEvenerwideCommandFile(t, workDir, "deploy", "Deploying !`touch SHOULD_NOT_EXIST` for $1")
 	env := &execRecordingEnv{ExecutionEnvironment: execenv.NewLocalExecutionEnvironment(workDir)}

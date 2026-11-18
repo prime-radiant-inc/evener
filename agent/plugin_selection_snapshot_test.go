@@ -121,9 +121,7 @@ func TestPluginSelectionExcludedContributionsDoNotInitialize(t *testing.T) {
 		t.Fatalf("selected dirs = %v, want [%q]", resolution.SelectedDirs, selectedDir)
 	}
 
-	adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
-		func(llm.Request) llm.Response { return agenttest.FinalResponse("done") },
-	}}
+	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response { return agenttest.FinalResponse("done") })
 	client := llm.NewClient()
 	client.Register(adapter)
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), SessionConfig{

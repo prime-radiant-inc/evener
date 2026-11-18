@@ -40,7 +40,7 @@ func runInterruptedConversationStart(t *testing.T, incorporated bool, recovery s
 		call := communicateCall("conversation-result", "opaque-result-817")
 		return llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}
 	}
-	s.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{response, response, response, response}})
+	s.client.Register(newFakeAdapter("openai", response, response, response, response))
 	// Real completed inputs provide both an older reply and enough history for
 	// the summary case, without constructing transcript or provenance state.
 	for i := range 4 {
@@ -160,13 +160,13 @@ func runInterruptedConversationStart(t *testing.T, incorporated bool, recovery s
 	}
 	const freshText = "opaque-fresh-928"
 	requests := 0
-	s.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+	s.client.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
 		requests++
 		if !conversationRequestContains(req, freshText) || (!incorporated && conversationRequestContains(req, stoppedText)) {
 			t.Error("fresh request lost its new input or replayed the never-incorporated stopped input")
 		}
 		return response(req)
-	}}})
+	}))
 	if _, err := s.AcceptClientMutationStart(appwire.TurnStartParams{ClientMutationID: "fresh-start", Input: []appwire.InputItem{{Type: "text", Text: freshText}}}); err != nil {
 		t.Fatal(err)
 	}

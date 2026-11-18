@@ -15,13 +15,7 @@ func TestVisionPromptContractIsUnconditional(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(req llm.Request) llm.Response{
-			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("vision")} },
-			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("vision")} },
-		},
-	}
+	adapter := newFakeAdapter("openai", func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("vision")} }, func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("vision")} })
 	client := llm.NewClient()
 	client.Register(adapter)
 	sess := newSession(t, withClient(client), withProfile(NewOpenAIProfile("m")), withDir(dir), withConfig(SessionConfig{}), withStateDir(dir))
@@ -74,7 +68,7 @@ func s3cov_visionSession(t *testing.T, cfg SessionConfig, step func(req llm.Requ
 		cfg.StateDir = dir
 	}
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{step}})
+	c.Register(newFakeAdapter("openai", step))
 	profile := NewOpenAIProfile("m")
 	sess, err := NewSession(c, profile, execenv.NewLocalExecutionEnvironment(dir), cfg)
 	if err != nil {

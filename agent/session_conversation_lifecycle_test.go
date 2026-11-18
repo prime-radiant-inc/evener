@@ -28,7 +28,7 @@ func newConversationLifecycleSession(t *testing.T) *Session {
 	s := newScriptedSummaryCompactSession(t, "lifecycle-summary", func(llm.Request) llm.Response {
 		return llm.Response{Message: llm.Assistant("[CONTEXT SUMMARY]\n## Progress\nRetain the input history.\n[END SUMMARY]")}
 	}, withConfig(cfg), withStateDir(t.TempDir()))
-	s.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{conversationLifecycleResponse, conversationLifecycleResponse, conversationLifecycleResponse, conversationLifecycleResponse}})
+	s.client.Register(newFakeAdapter("openai", conversationLifecycleResponse, conversationLifecycleResponse, conversationLifecycleResponse, conversationLifecycleResponse))
 	for i := range 4 {
 		if _, err := s.ProcessInput(context.Background(), fmt.Sprintf("opaque-seed-%d", i), nil); err != nil {
 			t.Fatal(err)
@@ -118,12 +118,12 @@ func TestConversationProvenance_FailedSelectionLifecycle(t *testing.T) {
 					s = restoreConversationLifecycleSession(t, s)
 					check()
 				}
-				s.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{func(req llm.Request) llm.Response {
+				s.client.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
 					if !conversationRequestContains(req, "opaque-fresh-382") || conversationRequestContains(req, "opaque-failed-729") {
 						t.Error("fresh request omitted its input or consumed failed selection")
 					}
 					return conversationLifecycleResponse(req)
-				}}})
+				}))
 				if _, err := s.ProcessInput(context.Background(), "opaque-fresh-382", nil); err != nil {
 					t.Fatal(err)
 				}
@@ -289,7 +289,7 @@ func TestConversationProvenance_FoldDuringDispatchedRequest(t *testing.T) {
 							s = restoreConversationLifecycleSession(t, s)
 							check()
 						}
-						s.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{conversationLifecycleResponse}})
+						s.client.Register(newFakeAdapter("openai", conversationLifecycleResponse))
 						if _, err := s.ProcessInput(context.Background(), "opaque-next-593-"+recovery, nil); err != nil {
 							t.Fatal(err)
 						}
@@ -369,7 +369,7 @@ func TestConversationProvenance_FailedIncorporatedInputRemainsRequired(t *testin
 				s = restoreConversationLifecycleSession(t, s)
 				check()
 			}
-			s.client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{conversationLifecycleResponse}})
+			s.client.Register(newFakeAdapter("openai", conversationLifecycleResponse))
 			if _, err := s.ProcessInput(context.Background(), "opaque-recovery-184", nil); err != nil {
 				t.Fatal(err)
 			}
