@@ -1090,6 +1090,12 @@ export function applyReadResponse<M extends ThreadModel>(
   if (historyFallback(resp) && !readNamesLiveDaemon(resp.bootGeneration) && savedReadKeepsHeldModelControl(model, next))
     return publicModel<M>(restoreHeldModelControl(next, model));
   const input = modelControlReadInputFromResponse(resp);
+  // A fallback's envelope always agrees with the reply it rode in on, so
+  // comparing only those two accepts a retired daemon: the saved view can
+  // answer after the client observed a newer boot's history. Judge it against
+  // the held model, as every other read is judged.
+  if (historyFallback(resp) && input.version === 1 && !readAuthoritySpeaksForHeldModel(model, input.authority))
+    return publicModel<M>(restoreHeldModelControl(next, model));
   const controlBase = input.version === 1 ? restoreHeldModelControl(next, model) : next;
   return publicModel<M>(reduceModelControl(controlBase, input).model);
 }
@@ -1269,9 +1275,16 @@ export function applyReadModel<M extends ThreadModel>(
   // Same split as applyReadResponse above: the saved view's rules govern the
   // items it merges, while model-control authority comes from this read's own
   // envelope whenever that envelope names a live daemon.
+  //
+  // A fallback's envelope agrees with the reply it rode in on, so comparing it
+  // only with those fields accepts a retired daemon: the saved view can answer
+  // after the client has observed a newer boot's history. Judge it against the
+  // held model the way every other read is judged.
   if (fallback && !readNamesLiveDaemon(freshHistory?.bootGeneration) && savedReadKeepsHeldModelControl(model, next))
     return publicModel<M>(restoreHeldModelControl(next, model));
   const input = modelControlReadInputFromHydrated(fresh);
+  if (fallback && input.version === 1 && !readAuthoritySpeaksForHeldModel(model, input.authority))
+    return publicModel<M>(restoreHeldModelControl(next, model));
   const controlBase = input.version === 1 ? restoreHeldModelControl(next, model) : next;
   return publicModel<M>(reduceModelControl(controlBase, input).model);
 }

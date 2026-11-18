@@ -1389,6 +1389,11 @@ export function createConversationService<ReadLease = unknown>(
 			// mutation was in flight, so the sheet confirmed the losing model.
 			if (!modelControlFenceCurrent(threadRef, expectedThreadId, fence)) {
 				if (response.disposition === "superseded") throw modelSetSupersededError(clientMutationId, response);
+				// The fence decides who may publish the snapshot, not what this
+				// caller is told. A reply can name this exact mutation as already
+				// rejected before the daemon refreshes its snapshot, so the
+				// disposition still reads accepted while the switch did not happen.
+				if (modelSetReplyRejected(response, clientMutationId)) throw modelSetRejectedError(clientMutationId, response);
 				return;
 			}
 			const snapshot = response.modelControl;

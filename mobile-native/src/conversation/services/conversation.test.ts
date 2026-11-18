@@ -1298,6 +1298,56 @@ describe("ConversationService", () => {
 			expect(controls.getSnapshot().notice).toBeNull();
 		});
 
+		it("rejects a pick whose reply settled it rejected even after a reread advanced the generation", async () => {
+			// The fence decides who may publish the snapshot, not what this caller
+			// is told. A reread can advance the generation while a pick is in
+			// flight, and the reply can still name this exact mutation as already
+			// rejected. Resolving there confirms a model the daemon gave up on.
+			const { client, service } = setup({ thread: controlledThread(modelControl(1)) });
+			await service.open("ref-1");
+			const canonical = modelControl(3, {
+				active: "claude-opus-4-6",
+				desired: "claude-sonnet-5",
+				lifecycle: "rejected",
+			});
+			let releaseReply!: () => void;
+			const held = new Promise<void>((resolve) => {
+				releaseReply = resolve;
+			});
+			let dispatched!: () => void;
+			const sent = new Promise<void>((resolve) => {
+				dispatched = resolve;
+			});
+			client.on("thread/model/set", async (params) => {
+				const asked = params as ThreadModelSetParams;
+				dispatched();
+				await held;
+				return {
+					modelControlVersion: 1,
+					disposition: "accepted",
+					modelControl: {
+						...canonical,
+						desired: {
+							requestSequence: 3,
+							clientMutationId: asked.clientMutationId,
+							modelProvider: asked.modelProvider,
+							model: asked.model,
+							lifecycle: "rejected",
+						},
+					},
+				};
+			});
+			const pick = service.changeModel("openai", "gpt-5.5");
+			await sent;
+
+			// A second open - the sheet rereading the conversation - advances the
+			// epoch the pick captured its read generation from.
+			await service.open("ref-1");
+			releaseReply();
+
+			await expect(pick).rejects.toMatchObject({ code: -32013 });
+		});
+
 		it("confirms a pick whose own reply still shows it pending", async () => {
 			// The same reply shape, still pending: the pick is queued for a safe
 			// application point and may yet apply, so it is not a failure. This is

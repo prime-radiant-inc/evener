@@ -193,7 +193,7 @@ Two different rules both end a request as superseded, and they key on different 
 
 **Application eligibility is decided at commit, by the committed watermark.** A newer request that has merely been issued does not disqualify an older one: both may still be validating, and either may fail. An older pick that commits first advances the watermark to its own issue, and because the newer pick's issue is higher it is *not* below the watermark — the newer pick may still commit afterwards if it passes its own validation and no higher-sequence request has committed in the meantime. Only a swap that has already committed passes a pick whose issue is below it, and that pick settles superseded at its own commit check without altering the snapshot. This is what preserves an already accepted desired intent when a newer invalid choice is refused: the older pick still lands because nothing newer committed.
 
-**A direct validation failure is a separate path, keyed on the issue counter.** When a request that was applying immediately fails direct validation while a newer request has already been issued, the call settles superseded instead of publishing a rejection — the newer request owns the outcome, and there is nothing for the older one to report. This changes only that call's result: the snapshot is unchanged, no shared transition is invented, and the rejection lifecycle is not written. It is not the commit rule; no swap has committed when it fires.
+**A validation failure is a separate path, keyed on the request sequence.** Every validation failure, whether it runs before admission or in a deferred queue preflight, settles through one handler. That handler returns superseded when a newer request has taken the sequence slot (`fence.pickSeq != modelControlRequestSequence`) or when the fence's authority no longer matches, and otherwise reports the failure as refused. A newer issuance is therefore sufficient to supersede the older call: it can already have committed its own swap, and this path does not require that it has. What the failure path never does is alter the snapshot — it settles only the originating call's result, so settling an older refusal leaves the current snapshot as it is even when a newer swap already committed. `TestModelControlSlowObsoleteRefusalReturnsSuperseded` covers exactly that shape, with the newer swap committing before the older validation fails.
 
 A direct admission failure cannot alter the snapshot either. All of these outcomes belong only to their originating calls.
 
@@ -210,7 +210,7 @@ stateDiagram-v2
     [*] --> Validating: bind authority and assign request sequence
     Validating --> Refused: validation fails, no newer request issued
     Validating --> Superseded: newer swap committed
-    Validating --> Superseded: validation fails after a newer request was issued
+    Validating --> Superseded: validation fails after a newer request took the sequence slot
     Validating --> Pending: accepted while a call is active
     Validating --> Applied: accepted and committed immediately
     Pending --> Applied: turn boundary or quota retry commits target

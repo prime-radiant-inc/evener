@@ -202,7 +202,12 @@ describe("the model chip (spec 8.5)", () => {
 			reasoningEffortLevels: ["low", "high"],
 			supportsReasoning: true,
 		};
-		expect(modelChipLabel(recovering, controlledCatalog, "Stale Board model")).toBe("GPT 5.5 · High");
+		const lastSafe = controlledCatalog.find((entry) => entry.model === "gpt-5.5");
+		const active = controlledCatalog.find((entry) => entry.model === "claude-sonnet-5");
+		if (!lastSafe || !active) throw new Error("the fixture catalog is missing the entry under test");
+		const label = modelChipLabel(recovering, controlledCatalog, "Stale Board model");
+		expect(label).toContain(lastSafe.displayName);
+		expect(label).not.toContain(active.displayName);
 	});
 	it("names the model the way the catalog does, with its effort", () => {
 		expect(

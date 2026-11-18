@@ -3192,6 +3192,50 @@ it("advances held model control without admitting a stale history read", async (
 // authority, which a self-consistent boot-N reply always matches. That
 // reinstalled boot N as `ready`: the pane showed the retired model and the
 // next pick was fenced against a daemon that could no longer accept it.
+// A saved-index fallback names a live daemon, but it can name an older one: the
+// live read failed and the answer was served from the saved view after the
+// phone had already observed a newer boot's history. Comparing that envelope
+// only with its own response fields lets it reinstall the retired boot and
+// enable the picker with an authority the daemon will refuse.
+it("does not reinstall a retired boot from a saved-index fallback's own envelope", () => {
+  const fixture = createEntryCacheFixture();
+  fixtures.push(fixture);
+  const owner = repository(fixture.cache);
+  const control = (boot: string, model: string): ModelControlSnapshot => ({
+    authority: { instanceId: threadId, bootGeneration: boot },
+    revision: 1,
+    active: {
+      modelProvider: "anthropic",
+      model,
+      reasoningEffortLevels: [],
+      supportsReasoning: false,
+    },
+  });
+  const current = read("current", 3);
+  current.bootGeneration = "2";
+  current.thread.evener.instanceId = threadId;
+  current.thread.evener.capabilities = { ...ALL_CAPABILITIES, modelControlVersion: 1 };
+  current.thread.evener.modelControl = control("2", "claude-opus-4-6");
+  expect(owner.acceptRead(current, { lifetime: 1, readId: "current", boundary: "current" })).toBe(true);
+
+  // The live read failed; the saved view answers, and it was written by boot 1.
+  const fallback = read("fallback", 3);
+  fallback.bootGeneration = "1";
+  fallback.thread.evener.instanceId = threadId;
+  fallback.thread.evener.capabilities = { ...ALL_CAPABILITIES, modelControlVersion: 1 };
+  fallback.thread.evener.modelControl = control("1", "claude-sonnet-4-5");
+  fallback.servedFrom = "saved-index";
+  fallback.fallbackReason = "live-read-failed";
+  fallback.snapshot = { incarnation: current.history?.incarnation ?? "", length: 3 };
+  fallback.requestGeneration = 4;
+  owner.acceptRead(fallback, { lifetime: 1, readId: "fallback", boundary: "fallback" });
+
+  const state = owner.getSnapshot()?.modelControlState;
+  expect(state?.kind === "ready" ? state.snapshot.authority.bootGeneration : "none").toBe("2");
+  expect(state?.kind === "ready" ? state.snapshot.active.model : "none").toBe("claude-opus-4-6");
+  owner.dispose();
+});
+
 it("does not reinstall a retired boot from a discarded read's own envelope", () => {
   const fixture = createEntryCacheFixture();
   fixtures.push(fixture);
