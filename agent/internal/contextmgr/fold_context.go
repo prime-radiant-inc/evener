@@ -104,3 +104,25 @@ func (cm *Manager) metaFor(ctx context.Context) *CompactionMeta {
 	}
 	return &cm.Meta
 }
+
+type summarizeRefusalKey struct{}
+
+// WithSummarizeRefusal returns a context on which the summarization layer must
+// not run. It is the auxiliary-provider admission the caller owns: a session
+// whose generation is fenced, or which has no generation to spend, still gets
+// every zero-call context-management layer (checkpointing, the session-log
+// fold, OODA's orientation refresh) and loses only the layer that calls a
+// provider.
+//
+// The refusal is per-layer rather than per-call because ManageContext decides
+// from pressure alone which layers run; a caller that skipped ManageContext to
+// avoid the summarizer also skipped the free refresh (LIFE-01, #2340 review F6).
+func WithSummarizeRefusal(ctx context.Context) context.Context {
+	return context.WithValue(ctx, summarizeRefusalKey{}, true)
+}
+
+// summarizeRefused reports whether this context refuses the summarization layer.
+func summarizeRefused(ctx context.Context) bool {
+	refused, _ := ctx.Value(summarizeRefusalKey{}).(bool)
+	return refused
+}

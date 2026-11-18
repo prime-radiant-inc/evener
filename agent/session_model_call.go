@@ -10,6 +10,7 @@ import (
 
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/internal/contextmgr"
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/plugin"
 	"primeradiant.com/evener/agent/provider"
@@ -346,7 +347,19 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		// of this function refuses a missing or stale lease before any phase runs,
 		// so only a root session (or a session with no controller) reaches the
 		// ordinary expansion.
-		history = expandHistory(historyTurns, scope)
+		//
+		// It IS reachable for the unleased turns this issue permits (a restored
+		// delegate's first task, an unserved framed entry, a completion drive).
+		// Those must not carry a watch notice: one can arrive after that turn
+		// started and before this snapshot, and its own leased wake is deferred by
+		// the drive guard, so the unleased request would hand it to the provider
+		// and the leased re-drive would present it again (#2340 review F3). Drop
+		// the unresolved watch turns from the projection and leave them pending.
+		projected := historyTurns
+		if s.stableChildTurnNeedsLease(ctx) {
+			projected, _ = s.dropUnresolvedWatchAttentionTurns(projected)
+		}
+		history = expandHistory(projected, scope)
 	}
 
 	t.HistoryExpand = time.Since(tPhaseStart)
@@ -492,13 +505,39 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	return profile, sys, history, req, fullHistory, reasoningEffort, nil
 }
 
-// admitCompactionLease reports whether this round may spend provider calls on
-// automatic compaction. A root session has no lease and always may; a stable
-// delegate child may only while its lease is still the live generation and no
-// stop is pending. The check is deliberately re-run inside the fold rather than
-// hoisted with the request's own admission, because a stop can be recorded
-// between the two (LIFE-01, #2340).
-func (s *Session) admitCompactionLease(ctx context.Context) bool {
+// admitCompactionInvocation reports whether this round may invoke the context
+// strategy, and admitCompactionProviderCall whether it may additionally spend a
+// PROVIDER call inside it.
+//
+// The two questions are separate, and conflating them was a defect (#2340
+// review F6). The strategy does more than summarize: on an ordinary completion
+// turn it refreshes the OODA orientation from the session log, which costs no
+// provider call at all and which a stable child's allowed unleased turn -- a
+// restored delegate's first task, an unserved session's framed entry -- is
+// entitled to keep. So:
+//
+//   - invocation is refused only for a lease that is PRESENT AND FENCED. A
+//     missing lease is the permitted unleased path, not a fence.
+//   - a provider call is refused unless a lease is present and still admits,
+//     because an unleased or fenced turn must not spend a request.
+//
+// Both are re-run inside the fold rather than hoisted with the request's own
+// admission, because a stop can be recorded between them (LIFE-01, #2340).
+func (s *Session) admitCompactionInvocation(ctx context.Context) bool {
+	if s.owningDelegateID == "" || s.delegateController == nil {
+		return true
+	}
+	lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
+	if !ok {
+		return true
+	}
+	return s.delegateController.admitModelRequestLease(lease) == nil
+}
+
+// admitCompactionProviderCall reports whether an auxiliary provider call inside
+// the context strategy is permitted. A root session has no lease and no
+// generation to fence, so it always may.
+func (s *Session) admitCompactionProviderCall(ctx context.Context) bool {
 	if s.owningDelegateID == "" || s.delegateController == nil {
 		return true
 	}
@@ -568,9 +607,9 @@ func (s *Session) foldHistoryBeforeRequest(ctx context.Context, round, sysLen in
 			// erosion-prone facts are re-stamped verbatim rather than
 			// decaying through successive summaries.
 			// The elicitor is a provider call of its own, so it takes its own
-			// admission at this edge.
-			elicitationAdmitted := s.admitCompactionLease(ctx)
-			if elicitationAdmitted {
+			// PROVIDER admission at this edge -- not the invocation one, which
+			// answers a different question (#2340 review F6).
+			if s.admitCompactionProviderCall(ctx) {
 				s.maybeElicitNoteBeforeCompaction(ctx, historyTurns, sysLen)
 			}
 
@@ -582,12 +621,19 @@ func (s *Session) foldHistoryBeforeRequest(ctx context.Context, round, sysLen in
 			// captured here; only its round-tail dispatch claims it.
 			compactionCtx, emitFn, commit, foldInjectedCount := s.stageCompactionEffects(ctx, &historyTurns, triggerAuto, "")
 			commit.captured = s.capturableAutomaticCompaction()
-			// The summarizer is a second provider call, so it takes a SECOND
-			// admission: a stop recorded while the elicitor ran lands after the
-			// check above and before this one, and reusing that result would let
-			// a fenced generation spend a summarizer request.
-			if s.admitCompactionLease(ctx) {
-				err := s.strategy.ManageContext(compactionCtx, &historyTurns, sysLen, emitFn)
+			// The strategy is INVOKED whenever this turn may manage context at
+			// all, so an allowed unleased turn keeps its zero-cost layers (the
+			// deterministic checkpoint, the session-log fold, OODA's orientation
+			// refresh). Only the layer that spends a provider call is refused, via
+			// the context flag, and the provider question is re-answered HERE
+			// rather than reusing the elicitor's answer: a stop recorded while the
+			// elicitor ran lands after that check and before this one.
+			if s.admitCompactionInvocation(ctx) {
+				strategyCtx := compactionCtx
+				if !s.admitCompactionProviderCall(ctx) {
+					strategyCtx = contextmgr.WithSummarizeRefusal(compactionCtx)
+				}
+				err := s.strategy.ManageContext(strategyCtx, &historyTurns, sysLen, emitFn)
 				if err != nil {
 					s.emit(bareWarningDataFromError("context strategy error", err))
 				}

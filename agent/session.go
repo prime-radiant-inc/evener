@@ -1666,6 +1666,36 @@ func (s *Session) hasPendingWatchAttention() bool {
 	return false
 }
 
+// hasPendingOrdinaryNotification reports whether the session's ordinary
+// notification rail holds anything that is NOT a watch notice: a terminal shell
+// completion, a forwarded nested report, steering owed to the model.
+//
+// It exists so the parent drain can tell the two kinds of queued work apart on a
+// stable child. Watch work is durable attention with its own leased drive; an
+// ordinary notification is drained only by an EntryNotification turn, which for
+// a stable child has no lease to inherit (#6797). Skipping BOTH kinds stranded
+// recovered completions whose immediate wake had declined on a full drive
+// budget (#2340 review F7), so the drain skips watch-only work and still retries
+// the ordinary kind.
+func (s *Session) hasPendingOrdinaryNotification() bool {
+	if s == nil {
+		return false
+	}
+	s.pendingJobNotifsMu.Lock()
+	defer s.pendingJobNotifsMu.Unlock()
+	for _, n := range s.pendingJobNotifs {
+		if !n.isWatch() {
+			return true
+		}
+	}
+	for _, a := range s.jobNotifsAwaitingRequest {
+		if !a.deliverable.notification.isWatch() {
+			return true
+		}
+	}
+	return false
+}
+
 // peekNotifications reports how many notifications are still owed to the model
 // WITHOUT draining them: those queued, and those whose reminder no dispatched
 // request has carried yet. The drain-loop tail uses it to decide whether to run

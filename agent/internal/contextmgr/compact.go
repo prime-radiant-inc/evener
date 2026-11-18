@@ -182,8 +182,12 @@ func (cm *Manager) compactWithCheckpoint(
 		th = cm.thresholdsFor(prof)
 	}
 
-	// Layer 2: LLM summarization at the backstop.
-	if p >= th.summarize && cm.client != nil {
+	// Layer 2: LLM summarization at the backstop. This is the only layer here
+	// that spends a provider call, so it is the only one a caller can refuse
+	// (see WithSummarizeRefusal): every layer above still runs, which is what
+	// keeps a zero-cost checkpoint or orientation refresh available to a turn
+	// that must not reach a provider.
+	if p >= th.summarize && cm.client != nil && !summarizeRefused(ctx) {
 		if cm.applyLayer(ctx, emitFn, history, prof, "summarize", schema.TurnSummary, func(h []schema.Turn) ([]schema.Turn, error) {
 			return cm.summarizeFold(ctx, h, cm.PreserveRecentTurns, "", checkpointed)
 		}, true) {
@@ -324,8 +328,9 @@ func (cm *Manager) forceCompact(
 		return h, nil
 	}, suppressSummaryFailureRepeats)
 
-	// Layer 2: LLM summarization (only if client is available).
-	if cm.client != nil {
+	// Layer 2: LLM summarization (only if client is available, and only when the
+	// caller has not refused auxiliary provider work; see WithSummarizeRefusal).
+	if cm.client != nil && !summarizeRefused(ctx) {
 		// The summarizer returns the input unchanged for short or unsafe history,
 		// which must not count a pre-existing summary as a newly generated one.
 		preserveRecent := preservePendingAskTail(*history, cm.PreserveRecentTurns, cm.metaFor(ctx))

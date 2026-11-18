@@ -82,10 +82,15 @@ func (s *Session) driveChildrenWithUndeliveredAttention() {
 			continue
 		}
 		if child.peekNotifications() > 0 || child.jobManager.hasPendingWatchSends() {
-			if stableDelegateChild(child) {
-				// LIFE-01 (#2340): same rule as the wake edge. A stable child's
-				// notices are durable attention, so there is no unleased turn to
-				// launch here.
+			// LIFE-01 (#2340): the skip is scoped to WATCH work, exactly as at the
+			// wake edge. A stable child's watch notice is durable attention and
+			// has its own leased drive, so skipping it here is right. But an
+			// ordinary notification -- a recovered shell completion whose
+			// immediate wake declined on a full drive budget -- is drained only by
+			// an EntryNotification turn, and skipping the retry strands it once a
+			// slot frees (#2340 review F7). That is the same over-scoping this
+			// branch already corrected one layer down.
+			if stableDelegateChild(child) && !child.hasPendingOrdinaryNotification() {
 				continue
 			}
 			if s.driveSubagentNotificationTurn(sub) {

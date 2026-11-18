@@ -209,10 +209,14 @@ func (s *Session) enqueueReceiverNotification(n jobNotification) {
 		if owner == nil {
 			owner = s
 		}
-		if _, err := persistStableWatchAttention(owner, controller, n); err != nil {
-			s.emit(warningDataFromError("persist forwarded watch attention", err))
-			return
-		}
+		// The SAME group ingress the local path uses, not a bare append: a failed
+		// first write must keep the notice, under its original occurrence
+		// identity, for the paced retry. Warning and dropping it here lost a
+		// once-only output match even after the writer recovered, because a
+		// forwarded notice has no producer left to fire it again (#2340 review
+		// F4). This is the documented second ingress, so it calls the first
+		// ingress's function rather than growing a third route.
+		persistStableWatchAttentionGroup(owner, controller, []jobNotification{n})
 		return
 	}
 	s.enqueueJobNotificationAndNotify(n)

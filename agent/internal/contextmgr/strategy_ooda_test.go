@@ -370,3 +370,71 @@ func TestOODAStrategy_AfterAction_InheritsFromSessionLogStrategy(t *testing.T) {
 		t.Errorf("expected action %q, got %q", "shell", entries[0].Action)
 	}
 }
+
+// TestSummarizeRefusalKeepsFreeLayers pins the split LIFE-01 (#2340 review F6)
+// needs: refusing the summarizer must not also refuse the zero-provider-call
+// layers. A stable child's allowed unleased turn is entitled to its orientation
+// refresh from the session log; only the layer that spends a provider request is
+// gated.
+//
+// The history here is the same shape TestMaybeCompact_SummarizeThreshold uses to
+// force the summarize layer, so "no summary" below is caused by the refusal and
+// not by a history too short to fold. Both directions are asserted: with the
+// refusal the layer must not run and the orientation turn must still be
+// appended, and without it the layer must run.
+func TestSummarizeRefusalKeepsFreeLayers(t *testing.T) {
+	build := func(t *testing.T) (*OODAStrategy, *[]schema.Turn) {
+		t.Helper()
+		adapter := newFakeAdapter("openai", []func(req llm.Request) llm.Response{
+			func(llm.Request) llm.Response {
+				return llm.Response{Message: llm.Assistant("## Progress\nSummary: tests were run and passed")}
+			},
+		})
+		client := llm.NewClient()
+		client.Register(adapter)
+		profile := testProfile("openai", "test", minSummarizingWindow)
+		cm := NewManager(profile, client, cheapmodel.New(client))
+		cm.PreserveRecentTurns = 1
+		cm.Meta.AvailableTranscriptTools = []string{"read_transcript", "find_session_transcripts"}
+		sls, sessionLog := newTestSessionLogStrategy(t, cm)
+		_ = sessionLog.Append(sessionlog.SessionLogEntry{Turn: 1, Action: "shell", Summary: "Ran git status to check repo state", Outcome: "success"})
+		history := &[]schema.Turn{
+			{Kind: schema.TurnUserInput, Message: llm.User(strings.Repeat("task ", 50))},
+			{Kind: schema.TurnAssistant, Message: llm.Assistant(strings.Repeat("work ", 30))},
+			{Kind: schema.TurnAssistant, Message: llm.Assistant(strings.Repeat("recent content ", 14_000))},
+		}
+		return &OODAStrategy{SessionLogStrategy: sls}, history
+	}
+	summarized := func(t *testing.T, history []schema.Turn) bool {
+		t.Helper()
+		for _, turn := range history {
+			if turn.Kind == schema.TurnSummary {
+				return true
+			}
+		}
+		return false
+	}
+
+	// Without the refusal the provider-spending layer runs: this is the control
+	// that makes the refusal case meaningful.
+	ooda, history := build(t)
+	if err := ooda.ManageContext(context.Background(), history, 0, func(events.EventKind, events.EventData) {}); err != nil {
+		t.Fatalf("ManageContext: %v", err)
+	}
+	if !summarized(t, *history) {
+		t.Fatal("the summarizer did not run without a refusal: this fixture cannot discriminate the refusal")
+	}
+
+	// With the refusal it must not, and the free layers must still run.
+	ooda, history = build(t)
+	if err := ooda.ManageContext(WithSummarizeRefusal(context.Background()), history, 0, func(events.EventKind, events.EventData) {}); err != nil {
+		t.Fatalf("ManageContext: %v", err)
+	}
+	if summarized(t, *history) {
+		t.Fatal("a refused context still summarized")
+	}
+	last := (*history)[len(*history)-1]
+	if last.Kind != schema.TurnSteering || !strings.Contains(last.Message.Text(), "[SESSION ORIENTATION]") {
+		t.Fatal("the refusal also dropped the zero-call orientation layer: only the summarizer may be refused")
+	}
+}

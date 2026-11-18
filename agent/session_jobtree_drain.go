@@ -1263,18 +1263,20 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		// and resume restores them; see
 		// TestRootDelegateAttention_PendingContentSurvivesCompactionRestart),
 		// so a request after a compaction or a failed turn still presents it.
-		// A watch notice for a stable child arrives as DURABLE ATTENTION, not on
-		// the queue, so peekNotifications cannot see it. Without the attention
-		// term a drain waiting on a background shell would hold the generation
-		// open while its own watch's progress tick sat unseen -- indefinitely when
-		// the shell is waiting on this delegate (LIFE-01, #2340 review). The drain
-		// runs under the run's lease, so the turn it opens here is a governed
-		// generation whose request stages the presented attention;
-		// coversPresentedAttention agrees with that, which is what makes the pass
-		// credit what it presents instead of spinning.
+		// Pending WATCH attention is deliberately NOT a term here. A watch notice
+		// for a stable child arrives as durable attention, and the turn this loop
+		// opens is EntryNotification -- which presents queued notifications,
+		// steering, root attention and delegate UPDATES, but not a watch attention
+		// row. Counting it made the drain call EntryNotification repeatedly while
+		// that row stayed pending and no request was ever built, so the loop
+		// retried without reaching its wait or stall checks (#2340 review F1).
+		//
+		// Presenting it here needs the attention entry under this run's lease, not
+		// a notification turn; that is the open finalization-drain defect, and it
+		// stays open rather than spinning. hasPendingWatchAttention remains the
+		// drain's visibility predicate for that work.
 		notificationTurnOwed := s.peekNotifications() > 0 ||
 			s.pendingRootDelegateAttention() ||
-			s.hasPendingWatchAttention() ||
 			s.hasUndrivenDelegateUpdate(drivenUpdates)
 		if s.hasPendingStableSteering() && !notificationTurnOwed {
 			return lastResult, nil

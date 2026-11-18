@@ -1290,6 +1290,7 @@ func (s *Session) automaticDelegateAttentionIDs() ([]string, error) {
 }
 
 // dropHeldDelegateAttentionTurns keeps a user-stopped run's held rows out of
+// dropHeldDelegateAttentionTurns keeps a user-stopped run's held rows out of
 // the history an automatic attention drive projects: the reopen retained each
 // held row's turn in the resident history, so without this filter the drive
 // would present the stopped report through it — the immediate restart the
@@ -1314,6 +1315,52 @@ func (s *Session) dropHeldDelegateAttentionTurns(turns []schema.Turn) (kept []sc
 	for i, turn := range turns {
 		if turn.AttentionID != "" {
 			if _, held := holds[turn.AttentionID]; held {
+				droppedAt = append(droppedAt, i)
+				continue
+			}
+		}
+		kept = append(kept, turn)
+	}
+	return kept, droppedAt
+}
+
+// dropUnresolvedWatchAttentionTurns removes turns that carry a watch attention
+// id still unresolved on the durable ledger.
+//
+// It exists for the ADMITTED unleased turn of a stable child (#2340 review F3).
+// A watch notice can land after such a turn's drive has started but before it
+// snapshots history: the notice is appended as a steering turn and its own
+// leased wake is deferred by the drive guard, so the unleased turn would carry
+// the notice to the provider and the leased re-drive would then present it a
+// second time. Dropping the unresolved watch turn from that projection leaves
+// the notice pending for the drive that can present it under a lease, which is
+// the same trade the held-attention drop above makes for a stopped run.
+//
+// The classification is by attention id (stableWatchAttentionIDPrefix), never by
+// message text, and a turn whose attention has already resolved is kept: the
+// model has not seen it yet, and resolution can only happen through a turn that
+// presented it.
+func (s *Session) dropUnresolvedWatchAttentionTurns(turns []schema.Turn) (kept []schema.Turn, droppedAt []int) {
+	if s == nil {
+		return turns, nil
+	}
+	pending, err := s.pendingDelegateAttentionIDs()
+	if err != nil || len(pending) == 0 {
+		return turns, nil
+	}
+	watch := make(map[string]struct{}, len(pending))
+	for _, id := range pending {
+		if strings.HasPrefix(id, stableWatchAttentionIDPrefix) {
+			watch[id] = struct{}{}
+		}
+	}
+	if len(watch) == 0 {
+		return turns, nil
+	}
+	kept = make([]schema.Turn, 0, len(turns))
+	for i, turn := range turns {
+		if turn.AttentionID != "" {
+			if _, held := watch[turn.AttentionID]; held {
 				droppedAt = append(droppedAt, i)
 				continue
 			}

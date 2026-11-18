@@ -1961,18 +1961,31 @@ func (jm *jobManager) persistStableWatchPendings(notifs []jobNotification) bool 
 	if len(notifs) == 0 {
 		return true
 	}
+	persistStableWatchAttentionGroup(owner, controller, notifs)
+	return true
+}
+
+// persistStableWatchAttentionGroup is the ONE durable-append ingress for a
+// group of watch notices bound for a stable delegate, shared by the local
+// enqueue branch above and the forwarded receiver callback
+// (enqueueReceiverNotification). Keeping one function is what stops the
+// forwarded route from quietly being a second, weaker ingress (#2340 review F4).
+//
+// A failed append is retained for a paced retry under its ORIGINAL occurrence
+// identity. That notice is the only firing it will ever have -- a one-shot has
+// already ended, and a forwarded match has no producer left -- so dropping it
+// loses the delivery for good. The occurrence identity makes the retry reuse the
+// same durable attention id, so a retry that finds the row the failed attempt
+// did append refolds instead of duplicating (LIFE-01, #2340 review).
+func persistStableWatchAttentionGroup(owner *Session, controller *delegateTreeController, notifs []jobNotification) {
+	if owner == nil || len(notifs) == 0 {
+		return
+	}
 	var failures error
 	var retry []jobNotification
 	for _, n := range notifs {
 		if _, err := persistStableWatchAttention(owner, controller, n); err != nil {
 			failures = errors.Join(failures, err)
-			// Keep the notice for a paced retry under its ORIGINAL identity. A
-			// failed append is the only firing this notice will ever have: a
-			// one-shot timer has already ended, so nothing will produce it again,
-			// and reporting it handled here drops the delivery for good. The
-			// producer-supplied Occurrence makes the retry reuse the same durable
-			// attention id, so a retry that finds a row the writer did append
-			// refolds instead of duplicating (LIFE-01, #2340 review).
 			retry = append(retry, n)
 		}
 	}
@@ -1981,9 +1994,7 @@ func (jm *jobManager) persistStableWatchPendings(notifs []jobNotification) bool 
 	}
 	if len(retry) > 0 {
 		owner.scheduleStableWatchAttentionRetry(retry)
-		return true
 	}
-	return true
 }
 
 // scheduleStableWatchAttentionRetry re-persists notices whose durable append
@@ -2003,6 +2014,19 @@ func (s *Session) scheduleStableWatchAttentionRetry(notifs []jobNotification) {
 	var attempt func([]jobNotification, time.Duration)
 	attempt = func(pending []jobNotification, delay time.Duration) {
 		s.sclock().AfterFunc(delay, func() {
+			// The retry is tied to the session that owes the row. A closed
+			// session's transcript rejects every write, so continuing to rearm
+			// would retain a dead runtime and retry forever -- one chain per
+			// timer tick under a persistent writer failure (#2340 review F5).
+			// The row is not lost by stopping here: close settles or discards
+			// everything pending, and the durable store, not this chain, is the
+			// record of what was owed.
+			s.mu.Lock()
+			closed := s.closingOrClosedLocked()
+			s.mu.Unlock()
+			if closed {
+				return
+			}
 			owner, controller := s.jobManager.stableWatchOwner()
 			if owner == nil || owner.owningDelegateID == "" {
 				return
