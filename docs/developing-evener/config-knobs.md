@@ -122,7 +122,7 @@ packages and test files do not count.
 | `GOGC` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `cmd/evener` |
 | `GOMODCACHE` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent`, `agent/execenv`, `agent/sandbox` |
 | `GOPATH` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox`, `scripts/lib/private-go-home.sh` |
-| `HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox`, `appwire-client/typescript/pathRows.ts` and 19 more |
+| `HOME` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox`, `appwire-client/typescript/pathRows.ts` and 20 more |
 | `LANG` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv` |
 | `NVM_DIR` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv` |
 | `PATH` | inherited | [developing-evener/environment.md](../developing-evener/environment.md) | `agent/execenv`, `agent/sandbox`, `scripts/gate/test-timing-budget.sh` and 1 more |
@@ -150,6 +150,7 @@ Dev tooling and test rigs declare these themselves.
 | `EVENER_HUB_LIVE_STACK_WARM` | none | `internal/devtool/shardrun` |
 | `EVENER_HUB_TEST_ENV_ROOT` | none | `cmd/evener-hub/internal/hubtestenv` |
 | `EVENER_LIVE_TESTS` | none | `agent/internal/liveeval` |
+| `EVENER_MERGEQ_GH_GROUP_FILE` | none | `internal/devtool/mergeq` |
 | `EVENER_SANDBOXTEST_KEPT_TMPDIR` | none | `agent/sandbox/sandboxtest` |
 | `EVENER_SANDBOXTEST_ROOT` | none | `agent/sandbox/sandboxtest` |
 | `EVENER_SHARD_JSON_DIR` | none | `cmd/evener-dev` |

@@ -43,6 +43,13 @@
 # within a couple of seconds has its tree stopped, the `gh` call it was waiting
 # on included.
 #
+# The helper is built in a private scratch directory under TMPDIR or, when
+# TMPDIR's entries can be replaced by another user and a safer root exists,
+# under $XDG_RUNTIME_DIR or $HOME/.cache/evener-scratch. Where none of those is
+# safe the run still proceeds under TMPDIR, and the scratch is verified unchanged
+# just before the helper starts: a scratch that changed is exit 2. An ordinary
+# host is unaffected -- 1777 /tmp and a per-user TMPDIR are used as before.
+#
 # The exit codes are the contract. 0 means merged or queued, 1 means the queue
 # ended the attempt (dropped or timed out), 2 means nothing was decided: bad
 # arguments, a failed GitHub call, or a launcher that could not run the helper.
@@ -59,12 +66,15 @@
 # harness around the fake.
 set -euo pipefail
 
-# The contract block above is lines 2-51; the rationale after it is for a
+# The contract block above is lines 2-58; the rationale after it is for a
 # reader of this file, not for --help. The range ends at the blank comment line
 # after the exit-code paragraph, so --help cannot stop mid-sentence: it used to
 # end at 50, one line before the sentence saying a started helper keeps its own
 # status, which is the half of the contract a caller relies on when it sees 1.
-usage() { sed -n '2,51p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
+# It moved to 58 when the scratch-isolation paragraph joined the contract, and
+# TestMergeEnqueueLauncherHelpPrintsTheWholeContract pins the last line so the
+# next addition cannot silently truncate it.
+usage() { sed -n '2,58p' "$0" | sed 's/^# \{0,1\}//'; exit 2; }
 
 # A value-taking option at the end of the line has no value: reading $2 there is
 # an "unbound variable" abort under set -u, which exits 1 -- the code that means
@@ -73,6 +83,14 @@ need_value() {
   [ "$#" -ge 2 ] || { echo "$1 requires a value" >&2; usage; }
 }
 
+# A bad --wait is a usage error and must be one before anything expensive
+# happens. It used to reach the helper, so a scratch mint and a full build stood
+# between the operator and "that is not a number", and on a cold or noexec host
+# a build failure reported itself instead of the typo. This test is not the
+# parser -- cmd/evener-dev's owns that, including the overflow bound and reading
+# leading zeros as decimal (#5304) -- it only refuses what is not a number at
+# all, the way the pre-port launcher did.
+#
 # wait stays a string all the way to the helper. Bash arithmetic would wrap a
 # value like 18446744073709551616 to 0 and hand the helper a valid no-wait
 # request for a number the operator never meant; the helper's own parser is the
@@ -92,6 +110,9 @@ done
 case "$repo" in
   */*) ;;
   *) echo "--repo takes OWNER/NAME, got: $repo" >&2; usage ;;
+esac
+case "$wait" in
+  '' | *[!0-9]*) echo "--wait takes whole seconds, got: $wait" >&2; usage ;;
 esac
 
 # The checkout root. CDPATH is cleared for the same reason build-runtime-pair.sh
@@ -130,6 +151,78 @@ if [ -n "${TMPDIR:-}" ]; then
   esac
 fi
 export TMPDIR
+
+# scratch_root_is_replaceable DIR -- succeed when another local user could rename
+# or replace DIR itself.
+#
+# A directory's mode protects what is inside it and says nothing about its entry
+# in its parent: the parent's owner can rename or delete a directory whatever its
+# mode is. That is the whole of the high finding on 7ef64c0d67. So the question
+# is asked about DIR's own bits, which are the parent's rule applied to it:
+#
+#   - group- or other-write lets someone else create, rename and delete entries;
+#   - the sticky bit (1777 /tmp) takes rename and delete away from everyone but
+#     the entry's owner and the directory's owner.
+#
+# Replaceable, then, means group- or other-writable AND not sticky. 0755 is safe;
+# 1777 is safe; macOS's per-user /var/folders/.../T and systemd's
+# $XDG_RUNTIME_DIR are safe; a hand-made 0777 scratch root is not.
+#
+# `find -perm` applies the mode the kernel does and reads the same on GNU and BSD
+# find, which is why it is used instead of stat: stat's format differs between
+# them.
+scratch_root_is_replaceable() {
+  local dir="$1" writable
+  [ -d "$dir" ] || return 1
+  writable=$(find "$dir" -maxdepth 0 \( -perm -0020 -o -perm -0002 \) -print 2>/dev/null) || writable=""
+  [ -n "$writable" ] || return 1
+  [ -k "$dir" ] && return 1
+  return 0
+}
+
+# The scratch root, chosen before anything is minted under it.
+#
+# The launcher builds the helper and then runs it from a scratch directory.
+# `mktemp -d` gives that directory 0700, which protects its contents and says
+# nothing about its entry: on a TMPDIR that is group- or other-writable and not
+# sticky, an attacker replaces the whole directory after the build, and the `-x`
+# test and the exec both resolve the attacker's file. The launcher then runs
+# another user's binary with the operator's credentials and its `gh` token.
+#
+# Moving TMPDIR itself, here and once, is what fixes that for every path at the
+# same time: the build scratch, the go build's own work directory and the
+# group-file directory all descend from it. Guarding one of them would have left
+# the others open.
+#
+# An ordinary host takes no branch: 1777 /tmp has the sticky bit and a per-user
+# TMPDIR is not other-writable, so nothing moves and nothing changes. Only a
+# genuinely shared, non-sticky TMPDIR moves, and only to a root that is not
+# replaceable either -- $XDG_RUNTIME_DIR first, then a private cache directory.
+#
+# When no safe root exists the run continues under the original TMPDIR. A merge
+# tool that refused to run on a host it could not prove isolated would be worse
+# for every caller than the window it leaves, and this is the launcher the whole
+# campaign merges through. The inode check before the exec is the second lock in
+# that shape, and --help names what remains.
+if scratch_root_is_replaceable "${TMPDIR:-/tmp}"; then
+  for scratch_candidate in "${XDG_RUNTIME_DIR:-}" "${HOME:+$HOME/.cache/evener-scratch}"; do
+    [ -n "$scratch_candidate" ] || continue
+    case "$scratch_candidate" in
+      /*) ;;
+      *) continue ;;
+    esac
+    if [ ! -d "$scratch_candidate" ]; then
+      # 0700, so only this user can enter it. An existing cache directory is used
+      # as its owner left it.
+      (umask 077 && mkdir -p "$scratch_candidate") 2>/dev/null || true
+    fi
+    [ -d "$scratch_candidate" ] && [ -w "$scratch_candidate" ] || continue
+    scratch_root_is_replaceable "$scratch_candidate" && continue
+    TMPDIR="$scratch_candidate"
+    export TMPDIR
+    break
+  done
+fi
 
 # Forward a signal to the child and reap it before this script exits, so a
 # SIGTERM at the script's PID stops the poll instead of leaving it running
@@ -186,6 +279,20 @@ gh_group_file=""
 # The private directory the handle lives in on the prebuilt path, removed with the
 # handle: it exists only for the duration of one launch.
 gh_private_dir=""
+# The scratch directory the helper was built in, or empty on the prebuilt path.
+#
+# Declared and assigned here, never read from the environment. scratch_dir writes
+# this variable in this process, so no export is needed -- and an inherited one
+# would be worse than useless: the prebuilt path would take a caller's directory
+# for scratch, truncate any gh-group file in it at launch and remove it at exit.
+# That is data loss in a directory this tool never created. The scratch the
+# handle lives in is passed to the mint explicitly instead, so no code path has
+# to trust a value it did not set.
+work=""
+# The inode of the scratch directory, read at mint time and checked again just
+# before the exec. Only meaningful on a host with no root whose entries other
+# users cannot replace; see the launch path.
+work_inode=""
 # The process group the launched helper leads, recorded while it is still the
 # launcher's child. A wrapper that starts the Go helper and exits is the tracked
 # child: waiting on that PID says nothing about the group, and by the time the
@@ -268,33 +375,85 @@ helper_call_groups() {
 # so the sweep below runs on the recorded group whether or not the child was
 # still there when this was called.
 stop_helper_tree() {
-  local pid="$1" call_group="$2" groups="" group deadline alive
+  local pid="$1" call_group="$2" groups="" group deadline alive own_group
+  own_group=$(ps -o pgid= -p "$$" 2>/dev/null | tr -d ' ')
+  # Freeze before taking the census. A helper that did not act on TERM is still
+  # free to fork, and free to start its GitHub call at any moment: an inventory
+  # taken while it runs is a census of a moving population, so a call forked
+  # after the read and before the kill appears in no list and keeps submitting
+  # after the launcher has returned 130.
+  #
+  # SIGSTOP cannot be ignored, deferred or handled, so the tree below cannot
+  # grow while it is read. Two targets, because the two shapes need different
+  # ones:
+  #
+  #   - the recorded helper group, which still holds the helper when an
+  #     EVENER_DEV_BIN wrapper started it and then exited on TERM. The tracked
+  #     pid is gone in that shape, so a freeze by pid would freeze nothing.
+  #   - the tracked pid itself, for a helper still running as a child whose group
+  #     ps could not name at launch.
+  #
+  # This script's own group is never frozen: it holds the launcher, and SIGSTOP
+  # there would hang the run it is trying to stop. The call groups are not frozen
+  # either -- stopping `gh` first would leave the helper waiting on a client that
+  # cannot finish, and the census is complete without it once the process that
+  # forks is stopped.
+  if [ -n "$call_group" ] && [ "$call_group" -gt 1 ] 2>/dev/null && [ "$call_group" != "$own_group" ]; then
+    kill -STOP -"$call_group" 2>/dev/null || :
+  fi
+  if [ "$pid" -gt 1 ] 2>/dev/null && [ "$pid" != "$$" ] && child_running "$pid"; then
+    kill -STOP "$pid" 2>/dev/null || :
+  fi
+  # The census, on a tree that cannot fork. helper_call_groups reads the published
+  # handle as well as walking descendants, so a call started between the stop and
+  # this read is still named.
   groups=$(helper_call_groups "$pid" "$call_group") || :
-  if [ -n "$call_group" ] && [ "$call_group" -gt 1 ] 2>/dev/null; then
+  if [ -n "$call_group" ] && [ "$call_group" -gt 1 ] 2>/dev/null && [ "$call_group" != "$own_group" ]; then
     groups=$(printf '%s\n%s\n' "$groups" "$call_group" | sed '/^$/d' | sort -u)
   fi
+  # TERM first, so a `gh` that can finish its request does. Nothing new can start
+  # while the helper is frozen, which is what makes this list final.
   for group in $groups; do
     kill -TERM -"$group" 2>/dev/null || :
   done
-  # The helper's own group is stopped only while the pid still names it: on a
-  # dead pid stop_command would be signalling a group it cannot identify.
-  if [ "$pid" -gt 1 ] 2>/dev/null && child_running "$pid"; then
-    stop_command "$pid"
-  fi
+  deadline=$((SECONDS + helper_term_grace_seconds))
+  while [ "$SECONDS" -lt "$deadline" ]; do
+    alive=false
+    for group in $groups; do
+      kill -0 -"$group" 2>/dev/null && alive=true
+    done
+    [ "$alive" = false ] && break
+    sleep 0.05
+  done
+  # Then KILL every group in the census, then the helper's own group. The helper
+  # stays frozen throughout: it is killed, not resumed, because a resumed helper
+  # is one that can fork again.
   for group in $groups; do
     kill -KILL -"$group" 2>/dev/null || :
   done
+  if [ -n "$call_group" ] && [ "$call_group" -gt 1 ] 2>/dev/null && [ "$call_group" != "$own_group" ]; then
+    kill -KILL -"$call_group" 2>/dev/null || :
+  fi
+  # The tracked pid last, through stop_command rather than `kill -KILL -pid`:
+  # a negative signal is a group id, and a pid names its own group only when it
+  # leads one. stop_command checks that before signalling a group and walks the
+  # tree otherwise, which is the only safe form for a pid whose group this script
+  # could not name at launch.
+  if [ "$pid" -gt 1 ] 2>/dev/null && [ "$pid" != "$$" ] && child_running "$pid"; then
+    stop_command "$pid"
+  fi
   # Nothing may still be submitting when this returns 130. KILL cannot be
   # ignored, so this is bounded by how long the kernel takes to deliver it; a
-  # wait rather than a bare assumption is what makes the claim in the help true.
+  # wait rather than a bare assumption is what makes the claim in --help true.
   deadline=$((SECONDS + helper_term_grace_seconds + 1))
   while [ "$SECONDS" -lt "$deadline" ]; do
     alive=false
     for group in $groups; do
-      if kill -0 -"$group" 2>/dev/null; then
-        alive=true
-      fi
+      kill -0 -"$group" 2>/dev/null && alive=true
     done
+    if [ -n "$call_group" ] && [ "$call_group" -gt 1 ] 2>/dev/null && kill -0 -"$call_group" 2>/dev/null; then
+      alive=true
+    fi
     [ "$alive" = false ] && break
     sleep 0.05
   done
@@ -384,10 +543,17 @@ finish() {
 # before anything can check what it is.
 #
 # The build path already has private scratch (scratch_dir's `mktemp -d`), so it
-# uses that. The prebuilt path has none, and minting scratch there would mean the
-# launcher owns a directory it must then reclaim for a run that may only start
-# and wait -- so it gets a private directory of its own, created by `mktemp -d`,
-# and named in gh_private_dir for the EXIT trap to remove.
+# uses that, passed in as this function's argument. The prebuilt path has none,
+# and minting scratch there would mean the launcher owns a directory it must then
+# reclaim for a run that may only start and wait -- so it gets a private
+# directory of its own, created by `mktemp -d` under the scratch root chosen
+# above, and named in gh_private_dir for the EXIT trap to remove.
+#
+# The scratch is an ARGUMENT, never read from the environment. An inherited
+# `work` used to make the prebuilt path treat a caller's directory as scratch: a
+# gh-group file already there was truncated at launch and removed at exit. That
+# is data loss in a directory this tool never created, and the fix is that no
+# code path trusts a variable it did not set.
 #
 # A private directory that cannot be created leaves the handle empty rather than
 # failing the run. The prebuilt path is the one an operator uses to point at a
@@ -395,9 +561,9 @@ finish() {
 # reach: the descendant walk still covers a helper with a call in its tree. A
 # hardening change must not become the reason that path cannot start.
 mint_gh_group_file() {
-  local dir
-  if [ -n "${work:-}" ]; then
-    gh_group_file="$work/gh-group"
+  local scratch="${1:-}" dir
+  if [ -n "$scratch" ]; then
+    gh_group_file="$scratch/gh-group"
     : > "$gh_group_file" 2>/dev/null || gh_group_file=""
     return 0
   fi
@@ -413,12 +579,14 @@ mint_gh_group_file() {
   gh_private_dir="$dir"
   gh_group_file="$dir/gh-group"
   : > "$gh_group_file" 2>/dev/null || gh_group_file=""
+  return 0
 }
 
 # start_helper BIN — run the helper as a child, record its PID for the signal
 # handlers, and wait for it. Returns the helper's own status, which is the
 # contract's whenever the helper started.
 start_helper() {
+  local helper_scratch="${2:-}"
   cd "$root" || return 2
   # Monitor mode gives the helper its own process group, following run_bounded
   # in scripts/lib/gate-bounded.sh. Two reasons, both #6730's review:
@@ -436,7 +604,7 @@ start_helper() {
   # trap can run between them. A signal there is recorded instead of acted on,
   # because acting would exit 130 with the helper unsignalled.
   #
-  mint_gh_group_file
+  mint_gh_group_file "$helper_scratch"
   launching=true
   set -m
   env GOFLAGS= EVENER_MERGEQ_GH_GROUP_FILE="${gh_group_file:-}" "$1" dev merge-enqueue \
@@ -576,9 +744,29 @@ fi
 # and the refusal 2. GOFLAGS= keeps an inherited GOFLAGS from changing how it
 # builds, the same reason timing-tsv-lib.sh pins it.
 scratch_dir work merge-enqueue
+# The inode of the directory scratch_dir minted, read once here and compared
+# again immediately before the exec. This is the second lock on the high finding
+# and it is only load-bearing on a host with no root whose entries another user
+# cannot replace: there the entry can be swapped between the build and the
+# launch. A swap then costs exit 2 instead of the operator's credentials.
+work_inode=$(ls -di "$work" 2>/dev/null | awk '{print $1}') || work_inode=""
 gate_scratch_root_executes "$work" ||
   launcher_failed "scratch $work cannot execute a program (a noexec mount?); point TMPDIR at an exec-capable directory"
 build_helper "$work/evener-dev" || launcher_failed "building the evener-dev helper failed"
+# The entry is checked here, after the build and immediately before the exec,
+# because the build is the window: it takes seconds, and an attacker watching
+# for it only has to win once. bash cannot exec by file descriptor, so this is
+# the closest the launcher can get to "the directory I checked is the directory
+# I run from".
+#
+# What remains, honestly: a few shell builtins between this test and the exec in
+# start_helper, and only on a host where no root protects its entries. On every
+# ordinary host -- 1777 /tmp, a per-user TMPDIR, a private HOME -- the root
+# chosen above already makes the swap impossible and this check cannot fail.
+work_now=$(ls -di "$work" 2>/dev/null | awk '{print $1}') || work_now=""
+if [ -n "$work_inode" ] && [ "$work_now" != "$work_inode" ]; then
+  launcher_failed "scratch $work was replaced by another user after the build; refusing to run a helper from it"
+fi
 [ -x "$work/evener-dev" ] || launcher_failed "the built helper is not executable: $work/evener-dev"
-start_helper "$work/evener-dev" || exit $?
+start_helper "$work/evener-dev" "$work" || exit $?
 exit 0
