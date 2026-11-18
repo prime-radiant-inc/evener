@@ -230,6 +230,7 @@ describe("conversation-owned session controls", () => {
 	it("refuses an owed resume before dispatch while its binding cannot send", async () => {
 		let sent = 0;
 		let ready = true;
+		let opened = true;
 		const controls = new SessionControls(
 			await boundary({
 				resume: async () => {
@@ -238,9 +239,10 @@ describe("conversation-owned session controls", () => {
 			}),
 			async () => {},
 			() => {},
-			// The binding answers: the session is this one, and the transport is
-			// what decides whether a write can go out.
-			(scope) => (scope === "session" ? true : ready),
+			// The binding answers: the session is this one, the transport is the
+			// client, and an open thread is what decides whether a write can go
+			// out. Reading needs only the first two.
+			(scope) => (scope === "session" ? true : scope === "send" ? ready && opened : ready),
 			() => null,
 			() => true,
 		);
@@ -249,6 +251,15 @@ describe("conversation-owned session controls", () => {
 		expect(sent).toBe(0);
 		// Nothing was left pending, so the restart's next attempt is free to go.
 		expect(controls.getSnapshot().pending).toBeNull();
+		// The reconnect has restored the client and the replacement service has
+		// not opened its thread yet. The resume is still owed, and sending into
+		// this gap would be recorded as a failed attempt and dropped.
+		ready = true;
+		opened = false;
+		expect(await controls.resume()).toBe(false);
+		expect(sent).toBe(0);
+		expect(controls.getSnapshot().pending).toBeNull();
+		opened = true;
 		ready = true;
 		expect(await controls.resume()).toBe(true);
 		expect(sent).toBe(1);
@@ -599,6 +610,51 @@ describe("conversation-owned session controls", () => {
 		);
 		await controls.loadModels();
 		expect(await controls.changeVisionModel("one", "vision")).toBe(false);
+		expect(attempts).toBe(1);
+		expect(refreshed).toBe(1);
+		expect(controls.getSnapshot().error).not.toBeNull();
+	});
+	// A covering route does not take the refusal away from the picker under it:
+	// the detail stack keeps its local focus, so the row is still there to press
+	// when the reader comes back. The binding can still read, so the read that
+	// catches the picker up runs even though this pane is not the one in front.
+	// The refusal itself is still what the reader is told, and nothing is sent
+	// twice.
+	it("reads a refused pick back when a covering route took the pane out of front", async () => {
+		let inFront = true;
+		let attempts = 0;
+		let refreshed = 0;
+		const sent = Promise.withResolvers<void>();
+		const ack = Promise.withResolvers<void>();
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => ({ data: [{ provider: "one", model: "vision" }] }),
+				vision: async () => {
+					attempts++;
+					sent.resolve();
+					await ack.promise;
+					throw new WireError("Vision is unavailable", -32000, {
+						evenerErrorInfo: "actionUnavailable",
+					});
+				},
+			}),
+			async () => {
+				refreshed++;
+			},
+			() => {},
+			// The session, its transport and its binding are live, so settlement
+			// and the readback both hold; the route is what the covering screen
+			// takes away, and it is what the announcement reads.
+			(scope) => (scope === undefined || scope === "route" ? inFront : true),
+			() => null,
+			() => true,
+		);
+		await controls.loadModels();
+		const pick = controls.changeVisionModel("one", "vision");
+		await sent.promise;
+		inFront = false;
+		ack.resolve();
+		expect(await pick).toBe(false);
 		expect(attempts).toBe(1);
 		expect(refreshed).toBe(1);
 		expect(controls.getSnapshot().error).not.toBeNull();
@@ -1072,6 +1128,31 @@ describe("conversation-owned session controls", () => {
 		expect(refreshed).toBe(settle === "applies" ? 1 : 0);
 		expect(controls.getSnapshot().pending).toBeNull();
 		expect(controls.getSnapshot().notice).toBeNull();
+	});
+	// The reply can arrive before the push that replaces these controls, and the
+	// readback outlives both. The hub took the name, so the sheet that asked has
+	// to learn that: reporting a refusal here would leave its editor open over a
+	// name the hub already has, and a cold session showing its old name.
+	it("settles an acknowledged rename whose readback outlives the controls", async () => {
+		const started = Promise.withResolvers<void>();
+		const reading = Promise.withResolvers<void>();
+		const controls = new SessionControls(
+			await boundary({ rename: async () => {} }),
+			async () => {
+				started.resolve();
+				await reading.promise;
+			},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+		);
+		const rename = controls.rename("New name");
+		await started.promise;
+		// The push lands while the readback is still out.
+		controls.dispose();
+		reading.resolve();
+		expect(await rename).toBe(true);
 	});
 	// The reader can leave while the pick's refresh is still out. Whoever left
 	// is owed no confirmation on the screen they left, so the pick reports no

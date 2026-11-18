@@ -81,8 +81,8 @@ describe("one step of a restart", () => {
 			async () => {},
 			() => {},
 			// Another screen is in front; the session, its transport and its
-			// binding are live, which is what the owed resume needs to send on.
-			(scope) => (scope === "session" || scope === "destination" ? true : inFront),
+			// open thread are live, which is what the owed resume needs to send on.
+			(scope) => (scope === undefined || scope === "route" ? inFront : true),
 			() => null,
 			() => true,
 		);

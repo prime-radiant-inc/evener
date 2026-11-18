@@ -924,6 +924,22 @@ function ConversationScreenView({
 						current.ref === route.params.ref
 					);
 				}
+				// Sending is a narrower question than reading. A transport that is
+				// back is not a thread that is open: a reconnect restores the client
+				// before the replacement service finishes its first read, and a write
+				// aimed at that gap throws without reaching the hub. An action that
+				// is owed has to wait for this rather than be recorded as failed.
+				if (scope === "send") {
+					return (
+						currentDestination.current.store === store &&
+						currentDestination.current.client === client &&
+						connectionReady.current &&
+						current.ref === route.params.ref &&
+						current.status === "open" &&
+						current.conversationGeneration === bindingGeneration &&
+						current.conversation?.instanceId === bindingInstance
+					);
+				}
 				// Starting an action is a reader's question, so it keeps the route
 				// fence: a covered pane offers nothing to press.
 				if (

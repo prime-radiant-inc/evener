@@ -29,11 +29,23 @@ const navigation = vi.hoisted(() => {
 	/** Whether another screen sits over the sheet: the one test that covers it
 	 * sets this, which is what a covering route does. */
 	const covered = { value: false };
+	/** Whether a stack this one is nested in has moved on: the Duo split keeps
+	 * the detail stack, and an alert opens another conversation on the root
+	 * stack over it. */
+	const outerCovered = { value: false };
+	const detail = {
+		index: 1,
+		routes: [
+			{ key: "conversation", name: "Conversation" },
+			{ key: "session-info", name: "SessionInfoSheet" },
+		],
+	};
 	return {
 		goBack: vi.fn(),
 		navigate: vi.fn(),
 		dispatch: vi.fn(),
 		covered,
+		outerCovered,
 		getState: () => ({
 			index: covered.value ? 2 : 1,
 			routes: [
@@ -45,6 +57,24 @@ const navigation = vi.hoisted(() => {
 						]
 					: [{ key: "session-info", name: "SessionInfoSheet" }]),
 			],
+		}),
+		getParent: () => ({
+			getState: () => ({
+				index: outerCovered.value ? 2 : 1,
+				routes: [
+					{ key: "sessions", name: "Sessions" },
+					{ key: "duo", name: "Duo", state: detail },
+					...(outerCovered.value
+						? [
+								{
+									key: "conversation-elsewhere",
+									name: "Conversation",
+									state: { index: 0, routes: [{ key: "elsewhere", name: "Conversation" }] },
+								},
+							]
+						: []),
+				],
+			}),
 		}),
 	};
 });
@@ -211,6 +241,8 @@ beforeEach(() => {
 	navigation.goBack.mockReset();
 	navigation.navigate.mockReset();
 	navigation.dispatch.mockReset();
+	navigation.covered.value = false;
+	navigation.outerCovered.value = false;
 	guard.onPrevent = null;
 	alertRequests.length = 0;
 });
@@ -583,6 +615,30 @@ describe("renaming", () => {
 		expect(markers(tree, "toast")).toEqual([]);
 		const stillEditing = tree.root.findAll((node) => String(node.type) === "TextInput");
 		expect(stillEditing).toEqual([]);
+	});
+	// The sheet is still the top of its own stack, and the stack that owns that
+	// one has opened another conversation over it. Nothing is left to announce
+	// to, but the hub took the name, so the editor still clears.
+	it("settles a rename under a covering outer stack and says nothing there", async () => {
+		const { controls } = provide(conversation({ capabilities: { ...NONE, rename: true } }));
+		const tree = sheet();
+		press(tree, "Fix the settle race, rename");
+		const field = tree.root.find((node) => String(node.type) === "TextInput");
+		act(() => field.props.onChangeText("Settle race"));
+		navigation.outerCovered.value = true;
+		await act(async () => field.props.onSubmitEditing());
+		expect(controls.rename).toHaveBeenCalledWith("Settle race");
+		expect(markers(tree, "toast")).toEqual([]);
+		expect(tree.root.findAll((node) => String(node.type) === "TextInput")).toEqual([]);
+	});
+	it("announces a rename to a sheet that is still the one in front", async () => {
+		provide(conversation({ capabilities: { ...NONE, rename: true } }));
+		const tree = sheet();
+		press(tree, "Fix the settle race, rename");
+		const field = tree.root.find((node) => String(node.type) === "TextInput");
+		act(() => field.props.onChangeText("Settle race"));
+		await act(async () => field.props.onSubmitEditing());
+		expect(markers(tree, "toast")).toEqual(["rename:done"]);
 	});
 });
 

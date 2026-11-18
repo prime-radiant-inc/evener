@@ -18,7 +18,7 @@ import type { Routes } from "../screens";
 import { type SessionControls, useControlsState } from "../sessionControls";
 import { Group, GroupFooter, GroupedPage, Row } from "../sheet/Grouped";
 import { Sheet } from "../sheet/Sheet";
-import { onTop, type StackState } from "../sheet/sheetRoutes";
+import { screenInFront } from "../sheet/useScreenInFront";
 import { useSheet } from "../sheet/useSheet";
 import { sheetHosts, sheetKey, useSheetHost } from "../sheet/sheetHosts";
 import { Toast, type ToastController, type ToastMessage, useToast } from "../Toast";
@@ -146,11 +146,12 @@ function SessionInfoBody({
 		if ((await host.controls.rename(editing.text)) === true) {
 			setEditing(null);
 			// The hub took the name, so the editor clears whichever screen is in
-			// front. The toast is the reader's question: another conversation may
-			// have opened over this sheet while the reply was out, and announcing
-			// there speaks to someone reading something else.
-			if (onTop(navigation.getState() as unknown as StackState, routeKey))
-				toast.show({ kind: "rename:done", text: "Session renamed" });
+			// front. The toast is the reader's question, and this sheet being on
+			// top of its own stack is not that question: an outer stack can open
+			// another conversation over the pane this sheet is nested in while the
+			// reply is out, and announcing there speaks to someone reading
+			// something else.
+			if (screenInFront(navigation, routeKey)) toast.show({ kind: "rename:done", text: "Session renamed" });
 		}
 	};
 	const error = state?.error && !(state.lastAction && MODEL_ACTIONS.has(state.lastAction)) ? state.error : null;
@@ -341,8 +342,9 @@ function SessionInfoBody({
 							void host.act("compact").then((message) => {
 								// The same rule as the rename: the action settles
 								// wherever it was asked from, and its toast belongs to
-								// whoever is still looking at this sheet.
-								if (message && onTop(navigation.getState() as unknown as StackState, routeKey)) toast.show(message);
+								// whoever is still looking at this sheet, which an outer
+								// stack can cover while this one keeps its own top.
+								if (message && screenInFront(navigation, routeKey)) toast.show(message);
 							})
 						}
 					/>

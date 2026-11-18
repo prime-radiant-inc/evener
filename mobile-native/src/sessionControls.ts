@@ -52,7 +52,7 @@ export class SessionControls {
 			ConversationModelCatalog,
 		private refresh: () => Promise<void>,
 		private stopped: () => void,
-		private isCurrent: (scope?: "destination" | "route" | "session") => boolean,
+		private isCurrent: (scope?: "destination" | "route" | "send" | "session") => boolean,
 		private getReasoning: () => Pick<
 			MobileConversation,
 			"supportsReasoning" | "reasoningEffort" | "reasoningEffortLevels"
@@ -203,20 +203,19 @@ export class SessionControls {
 		return this.run("setVisionModel", () => this.service.setVisionModel(`${provider}/${model}`));
 	}
 	private async run(kind: Operation, operation: () => Promise<void>): Promise<boolean> {
-		// A resume is the second half of a restart the reader already asked for:
-		// once the stop was acknowledged the resume is owed, so it is admitted on
-		// the session's binding even when another screen now covers the pane.
-		// Refusing it there would leave the daemon stopped with the restart
-		// unfinished and nothing left to retry it. Every other action is the
-		// reader's to start, so it keeps the route fence.
-		// Admission is the reader's question everywhere else, but the owed resume
-		// has already been asked for: refusing it under a covering route strands
-		// the daemon stopped with nothing left to retry it. What it does need is a
-		// binding that can actually send: the same session and a ready transport,
-		// not merely a store that still remembers the ref. A refusal here goes out
-		// as a pre-dispatch refusal, which the restart retries once the binding
-		// settles.
-		const owed = kind === "resume" ? this.isCurrent("destination") : this.isCurrent();
+		// A resume is the second half of a restart the reader already asked for,
+		// so it is admitted on its binding even when another screen covers the
+		// pane: refusing it there leaves the daemon stopped with nothing left to
+		// retry it. Every other action is the reader's to start, so it keeps the
+		// route fence.
+		//
+		// The resume needs a binding that can actually send. A ready transport is
+		// not enough: a reconnect restores the client before the replacement
+		// service has opened its thread, and a resume written into that gap throws
+		// without reaching the hub. Marking it pending there is what makes the
+		// restart call it a failure and stop for good. It refuses before dispatch
+		// instead, so the retry survives until the binding is ready.
+		const owed = kind === "resume" ? this.isCurrent("send") : this.isCurrent();
 		if (
 			this.disposed ||
 			!owed ||
@@ -300,12 +299,14 @@ export class SessionControls {
 				}
 				return true;
 			}
-			// The hub acknowledged the action. A controller that lost its binding
-			// while the reply was out has nothing left to publish, but the caller
-			// still learns the action was taken: settlement follows the
-			// acknowledgement, not this instance's survival.
+			// The hub acknowledged the action, and that acknowledgement is what
+			// settles it. Controls replaced while the reply was out still settle
+			// the screen's editor: the action is a fact about the session, and the
+			// replacement binding runs its own readback, which owns the service
+			// that is still open. Only a binding that moved to another
+			// conversation has nothing left to settle here.
 			if (this.disposed) return true;
-			if (this.ends()) return false;
+			if (!this.isCurrent("session")) return false;
 			// The hub's receipt is the acknowledgement, and it is what settles
 			// this action. The read that follows is catch-up: it brings the
 			// session's new state on screen, and a read that fails leaves the
@@ -320,7 +321,13 @@ export class SessionControls {
 					// The action was acknowledged; the read is catch-up.
 				}
 			}
-			if (this.ends()) return false;
+			// A push can dispose these controls while that read is out. The hub
+			// already took the action, so the caller still settles: reporting a
+			// refusal here leaves a retained editor open over a rename the hub
+			// accepted. A binding that moved to another conversation is the one
+			// case with nothing to report.
+			if (this.disposed) return true;
+			if (!this.isCurrent("session")) return false;
 			// The hub took the action, so this binding settles it here whichever
 			// screen is in front: a covered pane's editor must not stay dirty over
 			// a rename the hub accepted. The notice is the reader's question, and
@@ -345,11 +352,13 @@ export class SessionControls {
 				cause instanceof WireError
 					? `Could not confirm the action: ${cause.message}`
 					: "Could not confirm the action. Check the session before trying again; it may have been applied.";
-			if (this.ends(failure)) return false;
 			// A refused action leaves the picker offering it again only if nothing
 			// reads the session back. The read follows the binding that can still
 			// read, not the pane that happens to be in front, and it sends no
-			// second mutation: the original refusal is what the reader sees.
+			// second mutation: the original refusal is what the reader sees. It
+			// runs before this binding reports, because a covered pane ends here
+			// and a picker that never caught up keeps offering the refused action
+			// when the reader returns to it.
 			if (
 				cause instanceof WireError &&
 				cause.evenerErrorInfo === "actionUnavailable" &&
@@ -360,8 +369,8 @@ export class SessionControls {
 				} catch {
 					// Preserve the original server rejection; refresh is confirmation only.
 				}
-				if (this.ends(failure)) return false;
 			}
+			if (this.ends(failure)) return false;
 			this.publish({
 				pending: null,
 				notice: null,
