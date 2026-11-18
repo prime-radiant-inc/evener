@@ -279,7 +279,9 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 	if st.State == mergedState {
 		return Outcome{Kind: Merged, SHA: st.MergeSHA()}, nil
 	}
-	if out, merged := mergedOutcome(ctx, opts, c); merged {
+	if out, merged, exitErr := mergedOutcome(ctx, opts, c); exitErr != nil {
+		return Outcome{}, exitErr
+	} else if merged {
 		return out, nil
 	}
 	if st.Entry == nil {
@@ -323,7 +325,9 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 		if !clock.Sleep(ctx, min(left, pollInterval)) {
 			return Outcome{}, &ExitError{Kind: Interrupted, Detail: ctx.Err().Error()}
 		}
-		if out, merged := mergedOutcome(ctx, opts, c); merged {
+		if out, merged, exitErr := mergedOutcome(ctx, opts, c); exitErr != nil {
+			return Outcome{}, exitErr
+		} else if merged {
 			return out, nil
 		}
 		if st, exitErr = readStatus(ctx, opts, c); exitErr != nil {
@@ -339,7 +343,9 @@ func Execute(ctx context.Context, opts Options, c Client, clock Clock) (Outcome,
 	// The loop's last read lands on the deadline, and the queue can finish in
 	// the moment after it. A timeout verdict printed from that read reports a
 	// merge that already happened, so observe once more before calling it.
-	if out, merged := mergedOutcome(ctx, opts, c); merged {
+	if out, merged, exitErr := mergedOutcome(ctx, opts, c); exitErr != nil {
+		return Outcome{}, exitErr
+	} else if merged {
 		return out, nil
 	}
 	if st, exitErr = readStatus(ctx, opts, c); exitErr != nil {
@@ -381,12 +387,20 @@ func refusalFor(ctx context.Context, kind ErrorKind, err error) *ExitError {
 // mergedOutcome reports the merged outcome when the pull request's own state
 // says MERGED, and false when it does not (or cannot be read, which the queue
 // read that follows surfaces as a real failure).
-func mergedOutcome(ctx context.Context, opts Options, c Client) (Outcome, bool) {
+func mergedOutcome(ctx context.Context, opts Options, c Client) (Outcome, bool, *ExitError) {
 	sha, merged, err := c.MergedCommit(ctx, opts.Repo, opts.PR)
 	if err != nil || !merged {
-		return Outcome{}, false
+		// A cancelled probe must not fall through to a queue verdict: the run
+		// would report "queued position=N" (exit 0) for a PR whose state it
+		// never read.
+		if err != nil {
+			if exitErr := refusalFor(ctx, LookupFailed, err); exitErr.Kind == Interrupted {
+				return Outcome{}, false, exitErr
+			}
+		}
+		return Outcome{}, false, nil
 	}
-	return Outcome{Kind: Merged, SHA: sha}, true
+	return Outcome{Kind: Merged, SHA: sha}, true, nil
 }
 
 // queuePrefix is the prefix every merge-group run's branch for this PR carries.

@@ -199,7 +199,10 @@ func TestMergeEnqueueRejectsWaitBeyondTheLargestDuration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("--wait 9223372036 = %v, want the largest whole-second wait", err)
 	}
-	if wait != time.Duration(math.MaxInt64/time.Second)*time.Second {
-		t.Fatalf("--wait 9223372036 = %v, want %v", wait, time.Duration(math.MaxInt64/time.Second)*time.Second)
+	// Compared as whole seconds: unconvert rejects converting the constant and
+	// durationcheck rejects multiplying durations, and both are right, so the
+	// assertion is stated in the unit the flag takes.
+	if got := int64(wait / time.Second); got != math.MaxInt64/int64(time.Second) {
+		t.Fatalf("--wait 9223372036 = %d seconds, want %d", got, math.MaxInt64/int64(time.Second))
 	}
 }

@@ -28,6 +28,13 @@
 # Exit 130: the wait was interrupted (SIGINT, SIGTERM or SIGHUP); the launcher
 #           forwards the signal to the helper, which stops polling at once.
 #
+# Cancelling a background run: send SIGTERM to this script's PID. Bash cannot
+# install an INT trap, nor reset an inherited-ignored SIGINT, in a job started
+# with `&` from a non-interactive shell -- the kernel already had it ignored, so
+# a PID-directed SIGINT is ignored by the launcher and never reaches the
+# helper. SIGTERM always works, and so does Ctrl-C in a terminal, which the
+# tty's process group delivers to the helper directly.
+#
 # The exit codes are the contract. 0 means merged or queued, 1 means the queue
 # ended the attempt (dropped or timed out), 2 means nothing was decided: bad
 # arguments, a failed GitHub call, or a launcher that could not run the helper.
@@ -114,26 +121,19 @@ export TMPDIR
 child=""
 helper_started=false
 reap_child() {
-  local sig="$1"
   [ -n "$child" ] || return 0
-  kill -0 "$child" 2>/dev/null || return 0
-  kill -s "$sig" "$child" 2>/dev/null || true
-  # Bounded: a child that ignores the signal must not hang the launcher.
-  local waited=0
-  while kill -0 "$child" 2>/dev/null && [ "$waited" -lt 50 ]; do
-    sleep 0.1
-    waited=$((waited + 1))
-  done
-  kill -s KILL "$child" 2>/dev/null || true
+  # The whole tree, not the PID: `go build` forks a compiler and a linker, and
+  # signalling only the shell that started it leaves those children holding the
+  # caller's output pipes after this script has exited. stop_command sends one
+  # TERM then one KILL to the group when the child leads its own, and walks the
+  # tree when it does not; it never waits past its grace.
+  stop_command "$child"
   wait "$child" 2>/dev/null || true
 }
 interrupted() {
-  reap_child "$1"
+  reap_child
   exit 130
 }
-trap 'interrupted TERM' TERM
-trap 'interrupted INT' INT
-trap 'interrupted HUP' HUP
 
 # The exit-code table's backstop. scratch_dir and scratch_rm are shared
 # libraries that exit 1 on their own guard failures, and a shared library must
@@ -185,10 +185,18 @@ start_helper() {
 # build_helper DEST — build the helper into DEST, as a watched child so a
 # signal interrupts the build instead of waiting for it. Returns the build's
 # own status.
+#
+# The build runs under setsid so it leads its own process group: `go build`
+# forks the compiler and linker, and stop_command can then signal the group
+# rather than one PID. setsid is Linux and macOS both; when it is missing the
+# build still runs in this script's group, which stop_command's tree walk
+# handles instead.
 build_helper() {
+  local runner=()
+  command -v setsid >/dev/null 2>&1 && runner=(setsid)
   (
     cd "$root" || exit 1
-    GOFLAGS= go build -o "$1" ./cmd/evener-dev/bin
+    "${runner[@]+"${runner[@]}"}" env GOFLAGS= go build -o "$1" ./cmd/evener-dev/bin
   ) &
   child=$!
   local status=0
@@ -236,6 +244,14 @@ fi
 # builds, the same reason timing-tsv-lib.sh pins it.
 . "$root/scripts/lib/scratch-lib.sh"
 . "$root/scripts/lib/gate-scratch-root.sh"
+. "$root/scripts/lib/gate-bounded.sh"
+# The handlers are installed here, after the libraries they call are loaded: a
+# signal during argument parsing or sourcing must not reach an undefined
+# function, and installing a trap replaces the default action, so a handler
+# that cannot run would turn a TERM into a silent hang.
+trap 'interrupted TERM' TERM
+trap 'interrupted INT' INT
+trap 'interrupted HUP' HUP
 trap 'finish' EXIT
 scratch_dir work merge-enqueue
 gate_scratch_root_executes "$work" ||

@@ -85,13 +85,20 @@ func dropOutcome(ctx context.Context, opts Options, st Status, c Client, now fun
 	ref := mergeGroupRef(ctx, opts, st.Base, c)
 	event, err := c.QueueDrop(ctx, opts.Repo, opts.PR)
 	if err != nil {
+		// An interrupt during this read is not a verdict: reporting it as an
+		// unreadable reason would print a drop with re-enqueue advice for a
+		// PR the operator stopped asking about, and exit 1. The context is
+		// what separates the two.
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return Outcome{}, &ExitError{Kind: Interrupted, Detail: ctxErr.Error()}
+		}
 		return Outcome{
 			Kind:      Dropped,
 			PRState:   st.State,
 			DropClass: DropReasonUnreadable,
 			Reason:    "could not read the queue removal reason; see " + ref.String() + " before re-enqueueing",
 			Run:       ref,
-		}, nil
+		}, nil //nolint:nilerr // an unreadable reason is still a drop: the run the drop named is what the operator needs, and classifyDropReason's other classes would claim knowledge this read does not have
 	}
 	if event == nil {
 		return Outcome{
