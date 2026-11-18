@@ -747,7 +747,17 @@ func (acc *responsesOutputAccumulator) bindCallItem(issued *responsesOutputItem,
 func (acc *responsesOutputAccumulator) toolOutput(payload map[string]any, callID, itemID, name, alias string) *responsesOutputItem {
 	fallback := acc.callItem(callID)
 	if alias != "" {
-		fallback = cmp.Or(acc.byID[alias], acc.byCallID[alias])
+		called := acc.byCallID[alias]
+		fallback = acc.byID[alias]
+		if fallback == nil || fallback.tool == nil {
+			fallback = called
+		}
+		if fallback != nil {
+			callID = fallback.tool.callID
+			if callID != "" && called != nil && called != fallback {
+				return nil // This bare ID names two distinct issued calls.
+			}
+		}
 	}
 	// A conflicting item ID cannot make another call's index a match.
 	issued := acc.byCallID[callID]

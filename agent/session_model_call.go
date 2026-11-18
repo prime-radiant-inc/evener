@@ -252,7 +252,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		InFlightFrom:      inFlightFrom,
 		rejectedDocuments: documents,
 	}
-	scope.setReasoningTextTarget(profile)
+	scope.setDestination(profile)
 	// presentedTurns is the history this request projects: a leased delegate
 	// turn projects the controller's own later snapshot, which can hold turns
 	// appended after historyTurns was taken.
@@ -1729,9 +1729,8 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		// change from racing/leaking into this request's fallback, and lets a
 		// fallback that supports a higher level than the primary use it.
 		origEffort := requestedEffort
-		// All attempts see one interpretation of the round's stored history,
-		// even when a registry refresh moves an unstamped turn's issuer. Only
-		// reasoning needs to be projected again for a different destination.
+		// Resolve historical issuers once per round. Each destination projects
+		// the reasoning and native search items its protocol can accept.
 		commonScope := fallbackSource.scope
 		commonScope.protocolOf = roundReplayLookup(commonScope.protocolOf)
 		commonScope.canonicalModel = roundReplayLookup(commonScope.canonicalModel)
@@ -1746,8 +1745,8 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 				return fullHistory
 			}
 			scope := commonScope
-			scope.setReasoningTextTarget(fb)
-			target := scope.reasoningTextTarget
+			scope.setDestination(fb)
+			target := scope.destination
 			key := fallbackHistoryKey{protocol: target.Protocol, route: scope.reasoningRoute}
 			switch target.Protocol {
 			case registry.ProtocolOpenAIResponses:
@@ -1757,8 +1756,10 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			}
 			// Strict Chat fallbacks on a Chat primary share opaque history by
 			// endpoint and text presentation. A cross-protocol Chat fallback
-			// also checks the model.
-			shareable := !target.ReplaysRawReasoning() && (key.protocol == registry.ProtocolOpenAIResponses || key.protocol == commonScope.Protocol)
+			// also checks the model. Each Anthropic fallback projects signed
+			// history for its own instance and model.
+			shareable := !target.ReplaysRawReasoning() && (key.protocol == registry.ProtocolOpenAIResponses ||
+				(key.protocol == commonScope.Protocol && key.protocol != registry.ProtocolAnthropic))
 			if shareable && sharedHistory != nil && key == sharedKey {
 				return sharedHistory
 			}
@@ -2068,9 +2069,11 @@ func (s *Session) forceCompactForModelRecovery(ctx context.Context) {
 // replayScope carries the outgoing target and the history boundary used to
 // project provider-specific content. A zero scope passes messages through.
 type replayScope struct {
-	Instance string // outgoing instance (req.Provider)
-	Model    string // outgoing requested model (req.Model)
-	Protocol string // outgoing wire protocol; empty ⇒ no filtering
+	// The session profile establishes the round's provenance scope. A
+	// fallback keeps these facts while projecting for its own destination.
+	Instance string
+	Model    string
+	Protocol string // Empty disables provenance filtering.
 
 	// InFlightFrom is the history index of the first turn belonging to the
 	// in-flight turn. Provider-specific continuation state from those rounds
@@ -2085,10 +2088,10 @@ type replayScope struct {
 	// canonicalModel canonicalizes a model id for the ResponseModel fallback
 	// comparison. Nil ⇒ raw (trimmed) string comparison.
 	canonicalModel func(string) string
-	// reasoningTextTarget identifies the actual destination for raw text
-	// and for native continuations returned to their issuer on a fallback.
-	reasoningTextTarget *registry.Resolved
-	reasoningRoute      string
+	// The actual request destination determines which protocol-native items
+	// and signed or encrypted reasoning can return to the provider.
+	destination    *registry.Resolved
+	reasoningRoute string
 	// notesSelfEchoFiltered marks a delta slice whose self-echo TurnNotesContext
 	// turns were already filtered against the full history slice.
 	notesSelfEchoFiltered bool
@@ -2108,11 +2111,11 @@ type replayScope struct {
 	dropsToolResultMedia func(mediaType string) bool
 }
 
-func (rs *replayScope) setReasoningTextTarget(profile *provider.Profile) {
+func (rs *replayScope) setDestination(profile *provider.Profile) {
 	// Every wire protocol needs the actual destination. A fallback can share
 	// the primary's tool surface while speaking a different protocol.
 	res := profile.Resolved()
-	rs.reasoningTextTarget = &res
+	rs.destination = &res
 	rs.reasoningRoute = profile.ReasoningReplayRoute()
 }
 
@@ -2229,19 +2232,29 @@ func projectThinkingForTarget(profile *provider.Profile, messages []llm.Message)
 // can decrypt (a cross-deployment replay yields "Encrypted content is not
 // supported"). Raw chat and Responses reasoning follows the separate issuer
 // check in ProjectReasoningText for both completed and in-flight turns.
-func (rs replayScope) thinkingReplayEligible(t schema.Turn) bool {
+func (rs replayScope) thinkingReplayEligible(t schema.Turn, inFlight bool) bool {
 	if strings.TrimSpace(t.ResponseProvider) == "" {
 		return true
 	}
-	if target := rs.reasoningTextTarget; target != nil {
+	if inFlight {
+		target := rs.destination
+		if target == nil || target.Protocol != registry.ProtocolAnthropic {
+			return true
+		}
+		// A tool round without a recorded endpoint can use same-instance
+		// thinking on its primary profile. A fallback must verify its issuer.
+		if !t.HasRecordedEndpoint() && rs.Instance == target.Instance && rs.Model == target.ModelID && rs.Protocol == target.Protocol {
+			return true
+		}
+	}
+	if target := rs.destination; target != nil {
 		switch target.Protocol {
-		case registry.ProtocolAnthropic, registry.ProtocolGoogle:
+		case registry.ProtocolAnthropic:
+			if rs.Protocol != target.Protocol || rs.Instance != target.Instance || rs.Model != target.ModelID {
+				return t.MatchesReasoningTextTarget(target, rs.reasoningRoute)
+			}
+		case registry.ProtocolGoogle:
 			if rs.Protocol != target.Protocol {
-				// Native continuations on a cross-protocol fallback belong to
-				// its own issuer even after the in-flight tool round ends.
-				if target.Protocol == registry.ProtocolAnthropic {
-					return t.MatchesReasoningTextTarget(target, rs.reasoningRoute)
-				}
 				return t.ResponseProvider == target.Instance && !t.DropsReasoningForTarget(target, rs.reasoningRoute)
 			}
 		case registry.ProtocolOpenAIResponses:
@@ -2249,7 +2262,7 @@ func (rs replayScope) thinkingReplayEligible(t schema.Turn) bool {
 		case registry.ProtocolOpenAIChat:
 			// The issuing Chat fallback received these details with its
 			// tool result. Finishing the turn cannot change that message.
-			if rs.Protocol != target.Protocol && (t.ResponseReasoningRoute != "" || t.ResponseEndpoint != "") && t.MatchesReasoningTextTarget(target, rs.reasoningRoute) {
+			if rs.Protocol != target.Protocol && t.HasRecordedEndpoint() && t.MatchesReasoningTextTarget(target, rs.reasoningRoute) {
 				return true
 			}
 		}
@@ -2282,15 +2295,20 @@ func (rs replayScope) canonicalize(model string) string {
 	return strings.TrimSpace(model)
 }
 
-// webSearchReplayEligible reports whether a completed prior turn's web_search
-// raw blocks may replay verbatim. Empty provenance is eligible; otherwise the
-// producing protocol must match the target's — across protocols the raw
-// payload is foreign JSON and is dropped (G13).
-func (rs replayScope) webSearchReplayEligible(t schema.Turn) bool {
-	if strings.TrimSpace(t.ResponseProvider) == "" {
+// Native search items use their producing protocol's wire format, including
+// during a tool turn. A fallback can speak a different protocol from the primary.
+func (rs replayScope) webSearchReplayEligible(t schema.Turn, inFlight bool) bool {
+	if strings.TrimSpace(t.ResponseProvider) == "" && strings.TrimSpace(t.ResponseProtocol) == "" {
 		return true
 	}
-	return rs.producerProtocol(t) == rs.Protocol
+	producer := rs.producerProtocol(t)
+	if producer == "" {
+		return inFlight
+	}
+	if target := rs.destination; target != nil {
+		return producer == target.Protocol
+	}
+	return producer == rs.Protocol
 }
 
 // projectThinkingPart keeps eligible continuation state. Chat can also return
@@ -2309,7 +2327,7 @@ func (rs replayScope) projectThinkingPart(p llm.ContentPart, provenanceKeeps, ke
 		}
 		if encrypted := p.Thinking.EncryptedContent; encrypted != "" {
 			details := llm.OpenAICompatReasoningDetails(encrypted)
-			if rs.reasoningTextTarget.Protocol != registry.ProtocolOpenAIChat || len(details) == 0 {
+			if rs.destination.Protocol != registry.ProtocolOpenAIChat || len(details) == 0 {
 				return p, true
 			}
 			if llm.OpenAICompatSignedReasoningItem(details) != nil {
@@ -2332,20 +2350,16 @@ func (rs replayScope) projectThinkingPart(p llm.ContentPart, provenanceKeeps, ke
 // projectTurnMessage returns t.Message with provider/model-scoped content
 // filtered per the N4 rules for the scope, plus the target's own thinking
 // policy. An inactive scope passes through unchanged (identical to legacy
-// expansion) unless the target policy drops thinking. In-flight turns keep the
-// N4 exemption but still lose thinking the target does not want.
+// expansion) unless the target policy drops thinking. An Anthropic signature
+// stays with the issuing model and route even during a tool call.
 // tool_call/tool_result and text/image content is never touched.
 func (rs replayScope) projectTurnMessage(t schema.Turn, inFlight bool) llm.Message {
 	// N4 provenance and the target's thinking policy are independent gates: an
 	// inactive scope keeps the provenance rules off, while a target that does
 	// not want thinking still gets the drop.
-	provenanceKeepsThinking := true
-	keepWebSearch := true
-	if rs.active() && !inFlight {
-		provenanceKeepsThinking = rs.thinkingReplayEligible(t)
-		keepWebSearch = rs.webSearchReplayEligible(t)
-	}
-	target := rs.reasoningTextTarget
+	target := rs.destination
+	provenanceKeepsThinking := !rs.active() || rs.thinkingReplayEligible(t, inFlight)
+	keepWebSearch := !rs.active() || rs.webSearchReplayEligible(t, inFlight)
 	keepRaw := false
 	// A Chat fallback presents a known Chat producer's unsigned display as
 	// ordinary assistant text even when the primary excludes its native state.

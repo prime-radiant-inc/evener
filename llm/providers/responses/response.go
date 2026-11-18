@@ -383,9 +383,9 @@ func (item *responsesOutputItem) appendMessage(content []llm.ContentPart, messag
 		content = append(content, llm.ContentPart{Kind: llm.ContentText, Text: text, ResponsesMessageStart: len(content) == start, ResponsesRefusal: refusal})
 	}
 	var substantive, terminalValue, recovered bool
-	observedText := func(part *responsesOutputText) string {
+	observedText := func(part *responsesOutputText, completedSlot bool) string {
 		text := part.value()
-		finalized := part.finalType == "output_text"
+		finalized := part.finalType == "output_text" || completedSlot
 		substantive = substantive || finalized
 		recovered = recovered || finalized || text != ""
 		return text
@@ -414,14 +414,12 @@ func (item *responsesOutputItem) appendMessage(content []llm.ContentPart, messag
 		} else {
 			source := observed[int64(index)]
 			if len(parts) == 1 && (source == nil || source.finalType == "" && len(source.deltas) == 0) {
-				source = observed[-1]
+				source = cmp.Or(observed[-1], source)
 			}
 			if source != nil && source.finalType != "refusal" {
-				text, ok = observedText(source), true
-				if text != "" && !substantive && index < len(item.messageParts) {
-					completed, _ := item.messageParts[index].(map[string]any)
-					substantive = completed["type"] == kind
-				}
+				// A completed slot confirms its observed value, including an empty string.
+				completed := typedPartAt(item.messageParts, int64(index), kind) != nil
+				text, ok = observedText(source, completed), true
 			}
 		}
 		if ok {
@@ -439,7 +437,7 @@ func (item *responsesOutputItem) appendMessage(content []llm.ContentPart, messag
 				substantive, terminalValue = true, true
 				continue
 			}
-			appendText(observedText(part), false)
+			appendText(observedText(part, false), false)
 		}
 	}
 	// Explicit terminal and completed phases can clear an announcement. Only

@@ -616,14 +616,19 @@ func (t *Turn) ReplaysChatDisplayText(res *registry.Resolved) bool {
 }
 
 // DropsReasoningForTarget reports when the destination cannot receive even
-// opaque continuation state. Chat signatures and ciphertext are scoped to
-// their recorded endpoint. Responses also scopes them to the issuing instance.
+// opaque continuation state. Anthropic signatures belong to the issuing model
+// and endpoint, including while its tool call is in flight.
 func (t *Turn) DropsReasoningForTarget(res *registry.Resolved, route string) bool {
 	if t.Message.Role != llm.RoleAssistant {
 		return false
 	}
 	switch res.Protocol {
-	case registry.ProtocolAnthropic, registry.ProtocolGoogle:
+	case registry.ProtocolAnthropic:
+		return !t.matchesReasoningProtocol(res.Protocol) ||
+			(t.ResponseProvider != "" && t.ResponseProvider != res.Instance) ||
+			!t.MatchesRecordedModelRoute(res, route) ||
+			(t.HasRecordedEndpoint() && t.ResponseRequestModel != "" && t.ResponseRequestModel != res.ModelID)
+	case registry.ProtocolGoogle:
 		return !t.matchesReasoningProtocol(res.Protocol)
 	case registry.ProtocolOpenAIChat:
 		return !t.matchesReasoningRoute(res, route)
@@ -632,6 +637,11 @@ func (t *Turn) DropsReasoningForTarget(res *registry.Resolved, route string) boo
 	default:
 		return false
 	}
+}
+
+// HasRecordedEndpoint reports whether the turn identifies the serving route.
+func (t *Turn) HasRecordedEndpoint() bool {
+	return t.ResponseReasoningRoute != "" || t.ResponseEndpoint != ""
 }
 
 func (t *Turn) matchesReasoningRoute(res *registry.Resolved, route string) bool {

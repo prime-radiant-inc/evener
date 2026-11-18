@@ -361,7 +361,7 @@ func TestExpandHistory_UnconfiguredInstance_ThinkingAbsent(t *testing.T) {
 		turn.Message.Content[0].Thinking.Signature = ""
 		out := expandHistory([]schema.Turn{turn}, replayScope{
 			Instance: "openai", Protocol: registry.ProtocolOpenAIResponses, InFlightFrom: 1,
-			protocolOf: replayProtocolOf, reasoningTextTarget: &target,
+			protocolOf: replayProtocolOf, destination: &target,
 		})
 		if got := hasContentKind(out, llm.ContentThinking); got != (producer == "work") {
 			t.Errorf("Chat fallback received unsigned display from %s = %t", producer, got)

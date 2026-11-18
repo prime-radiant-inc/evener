@@ -36,7 +36,17 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 	const literalPath = `literal"><parameter name='content'>.txt`
 	literal := `{ "file_path": ` + mustJSON(t, literalPath) + `, "content": ` + mustJSON(t, note) + ` }`
 	const options = `[ { "label": "A", "detail": "first" }, { "label": "B", "detail": "second" } ]`
-	ask := `{ "question": "Choose a route", "options": ` + mustJSON(t, options) + ` }`
+	const literalQuestion = `Choose a route"><parameter name='options'>literal</parameter>`
+	ask := `{ "question": ` + mustJSON(t, literalQuestion) + `, "options": ` + mustJSON(t, options) + ` }`
+	const routeQuestion = "Which route should I use?"
+	const optionsTail = `"><parameter name='options'>` + options + `</parameter>`
+	xmlAsk := func(question string) string { return " \t{ \"question\" : " + mustJSON(t, question) + " }\n" }
+	shorthand := []struct{ id, arguments, question string }{
+		{"c8", xmlAsk(routeQuestion + optionsTail), routeQuestion},
+		{"c9", xmlAsk(routeQuestion + optionsTail + `<parameter name='options'>` + options + `</parameter>`), ""},
+		{"c10", xmlAsk(routeQuestion + `"><parameter name='options'>[]</parameter>`), ""},
+		{"c11", xmlAsk(routeQuestion + strings.Replace(optionsTail, `"B"`, `"A"`, 1)), ""},
+	}
 	record := llm.ToolDefinition{Name: "f", Description: "Record a payload and its note", Parameters: map[string]any{
 		"type": "object", "required": []string{"payload", "note"}, "additionalProperties": false,
 		"properties": map[string]any{"payload": map[string]any{"type": "object"}, "note": map[string]any{"type": "string"}},
@@ -53,6 +63,10 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 		{"type":"reasoning.text","format":"fmt-b","index":2,"text":` + mustJSON(t, second) + `}`
 	encrypted := `{"type":"reasoning.encrypted","id":"sealed","data":"opaque","serial":` + serial + `,"scale":` + scale + `}`
 	chat := func(details ...string) string {
+		var extraCalls []string
+		for _, q := range shorthand {
+			extraCalls = append(extraCalls, `{"id":`+mustJSON(t, q.id)+`,"type":"function","function":{"name":"ask_user","arguments":`+mustJSON(t, q.arguments)+`}}`)
+		}
 		return `{"choices":[{"message":{
 		"role":"assistant","reasoning":` + mustJSON(t, first+second) + `,
 		"reasoning_details":[` + strings.Join(details, ",") + `],
@@ -63,7 +77,7 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 			{"id":"c4","type":"function","function":{"name":"write_file","arguments":` + mustJSON(t, missingPath) + `}},
 			{"id":"c5","type":"function","function":{"name":"ask_user","arguments":` + mustJSON(t, ask) + `}},
 			{"id":"c6","type":"function","function":{"name":"write_file","arguments":` + mustJSON(t, hybrid) + `}},
-			{"id":"c7","type":"function","function":{"name":"write_file","arguments":` + mustJSON(t, literal) + `}}
+			{"id":"c7","type":"function","function":{"name":"write_file","arguments":` + mustJSON(t, literal) + `}},` + strings.Join(extraCalls, ",") + `
 		]},"finish_reason":"tool_calls"}]}`
 	}
 	for _, tc := range []struct {
@@ -100,7 +114,8 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 					`{"type":"response.output_text.delta","output_index":1,"item_id":"m1","content_index":1,"delta":"withdrawn"}`,
 					`{"type":"response.output_item.done","output_index":1,"item":{"id":"m1","type":"message","role":"assistant","content":[{"type":"output_text","text":""}]}}`,
 					`{"type":"response.output_item.added","output_index":2,"item":{"type":"function_call","id":"fc_first","call_id":"c1","name":"write_file"}}`,
-					`{"type":"response.function_call_arguments.done","item_id":"fc_first","arguments":` + good + `}`,
+					`{"type":"response.function_call_arguments.delta","item_id":"fc_first","delta":"{"}`,
+					`{"type":"response.function_call_arguments.done","id":"c1","output_index":4,"arguments":` + good + `}`,
 					mustJSON(t, map[string]any{"type": "response.completed", "response": json.RawMessage(tc.response)}),
 				}, "\n\ndata: ") + "\n\n"
 			}
@@ -207,8 +222,8 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 				var state schema.AskUserState
 				if answer.IsError || json.Unmarshal(answer.ToolState, &state) != nil || len(state.Questions) != 1 || session.askPendingCount() != 1 {
 					t.Errorf("the shorthand question did not become answerable: %s", answer.FullOutput)
-				} else if want := []schema.AskUserOption{{Label: "A", Detail: "first"}, {Label: "B", Detail: "second"}}; !slices.Equal(state.Questions[0].Options, want) {
-					t.Errorf("validated shorthand options = %v, want %v", state.Questions[0].Options, want)
+				} else if want := []schema.AskUserOption{{Label: "A", Detail: "first"}, {Label: "B", Detail: "second"}}; !slices.Equal(state.Questions[0].Options, want) || state.Questions[0].Question != literalQuestion {
+					t.Errorf("validated shorthand question = %+v, want literal question and options %v", state.Questions[0], want)
 				}
 				result.Content = append(result.Content, llm.ToolResult("c5", answer.FullOutput, answer.IsError).Content...)
 				for i, file := range []struct{ path, content string }{{"recovered.txt", "native text"}, {literalPath, note}} {
@@ -219,6 +234,21 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 						t.Errorf("%s wrote %q to %q, want %q (tool error %t, read error %v)", call.ID, got, file.path, file.content, write.IsError, err)
 					}
 					result.Content = append(result.Content, llm.ToolResult(call.ID, write.FullOutput, write.IsError).Content...)
+				}
+				dock := newSession(t, withDir(cwd))
+				for i, q := range shorthand {
+					prior, _ := dock.PendingAskSnapshot()
+					call := resp.ToolCalls()[7+i]
+					answer := dock.execTool(t.Context(), call, resp.Finish.Reason)
+					pending, _ := dock.PendingAskSnapshot()
+					if q.question == "" {
+						if !answer.IsError || !reflect.DeepEqual(prior, pending) {
+							t.Errorf("%s changed the answering dock from %+v to %+v (tool error %t)", q.id, prior, pending, answer.IsError)
+						}
+					} else if answer.IsError || pending == nil || pending.Question != q.question || !slices.Equal(pending.Options, []string{"A", "B"}) {
+						t.Errorf("%s answering dock = %+v (tool error %t), want %q with options A and B", q.id, pending, answer.IsError, q.question)
+					}
+					result.Content = append(result.Content, llm.ToolResult(call.ID, answer.FullOutput, answer.IsError).Content...)
 				}
 			}
 			turns := []schema.Turn{
@@ -250,7 +280,7 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 				turns = append(turns, assistant)
 			}
 			scope := replayScope{Instance: row.Instance, Model: row.ModelID, Protocol: row.Protocol}
-			scope.setReasoningTextTarget(provider.FromResolved(row, nil))
+			scope.setDestination(provider.FromResolved(row, nil))
 			_, warmBody := send(expandHistory(turns, scope), row)
 			dir := t.TempDir()
 			writeFindTranscript(t, dir, "argument-replay", time.Unix(1, 0), turns...)
@@ -292,6 +322,13 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 				}
 				if tc.field == "messages" && got["c5"] != ask {
 					t.Errorf("replayed shorthand arguments = %q, want %q", got["c5"], ask)
+				}
+				if tc.field == "messages" {
+					for _, q := range shorthand {
+						if got[q.id] != q.arguments {
+							t.Errorf("%s replayed %q, want original arguments %q", q.id, got[q.id], q.arguments)
+						}
+					}
 				}
 				if tc.field == "messages" && (got["c6"] != hybrid || got["c7"] != literal) {
 					t.Errorf("replayed XML arguments = %q, %q, want original bytes %q, %q", got["c6"], got["c7"], hybrid, literal)
@@ -349,7 +386,7 @@ func TestToolCallHistoryWirePrefixSurvivesTranscriptResume(t *testing.T) {
 					}
 					profile := provider.FromResolved(target, nil)
 					dst := replayScope{Instance: target.Instance, Model: target.ModelID, Protocol: target.Protocol, InFlightFrom: len(resumed), DropThinking: dropsReplayedThinking(profile)}
-					dst.setReasoningTextTarget(profile)
+					dst.setDestination(profile)
 					_, sent := send(expandHistory(resumed, dst), target)
 					calls, thoughts, details, _ := capturedToolTurn(t, historyField(sent))
 					if len(thoughts) != 0 || len(details) != 0 || calls["c1"] != valid {

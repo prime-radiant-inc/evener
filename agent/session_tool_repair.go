@@ -103,17 +103,36 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 		return res
 	}
 	argumentSchema := t.Schema
+	// Any provider proposal must pass the same tool-specific preparation as the
+	// original call. A failed proposal leaves the original validation error in place.
+	tryProviderRepair := func() (prepareResult, bool) {
+		candidate := call.RepairedArguments(argumentSchema)
+		if candidate == nil {
+			return prepareResult{}, false
+		}
+		retry := res.Call
+		retry.Arguments = candidate
+		retry.ArgumentRepair = nil
+		recovered := prepareToolCall(retry, t, visibleNames, requestedVisible, resultToolName, finishReason)
+		return recovered, recovered.PrevalErr == ""
+	}
 	if t.Definition.Name == "ask_user" {
 		normalized, err := tool.NormalizeAskUserArgs(args)
-		if err != nil {
-			res.PrevalErr = err.Error()
-			return res
-		}
 		// In the single-question form the provider sent the fields of one
 		// question. Its item schema owns their types before wrapping.
 		questions := t.Schema.Properties["questions"]
-		if _, single := args["question"]; single && questions != nil {
+		_, batch := args["questions"]
+		if _, single := args["question"]; single && !batch && questions != nil {
 			argumentSchema = questions.Items2020
+			if err != nil {
+				if recovered, ok := tryProviderRepair(); ok {
+					return recovered
+				}
+			}
+		}
+		if err != nil {
+			res.PrevalErr = err.Error()
+			return res
 		}
 		args = normalized
 	}
@@ -168,15 +187,8 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 	}
 
 	if err := t.Schema.Validate(args); err != nil {
-		// A provider can encode individual arguments using another syntax.
-		// Give its proposal the same tool-specific checks as the original.
-		if candidate := call.RepairedArguments(argumentSchema); candidate != nil {
-			retry := res.Call
-			retry.Arguments = candidate
-			retry.ArgumentRepair = nil
-			if recovered := prepareToolCall(retry, t, visibleNames, requestedVisible, resultToolName, finishReason); recovered.PrevalErr == "" {
-				return recovered
-			}
+		if recovered, ok := tryProviderRepair(); ok {
+			return recovered
 		}
 		// A length stop that cut the stream before any argument byte leaves
 		// empty args; on a tool with required parameters that reads as a

@@ -144,7 +144,7 @@ func TestEstimateTokens_WithThinking(t *testing.T) {
 	}
 	const issuerStream = "/stream/a"
 	t.Run("Anthropic fallback only prices its own native thinking", func(t *testing.T) {
-		target := registry.Resolved{Instance: "claude", ModelID: "fallback", Protocol: registry.ProtocolAnthropic}
+		target := registry.Resolved{Instance: "claude", ModelID: "fallback", Protocol: registry.ProtocolAnthropic, Transport: row.Transport}
 		cm := NewManager(provider.FromResolved(target, nil), nil, cheapmodel.New(nil))
 		for _, thought := range []struct {
 			protocol string
@@ -160,6 +160,23 @@ func TestEstimateTokens_WithThinking(t *testing.T) {
 			turn.Message.Content = append(turn.Message.Content, llm.ContentPart{Kind: llm.ContentThinking, Thinking: &thought.data})
 			if got := cm.estimateTokens([]schema.Turn{turn}); got != want {
 				t.Errorf("Anthropic priced %q at %d tokens, want only the answer's %d", thought.data.Text, got, want)
+			}
+		}
+		for _, issuer := range []struct{ instance, model, route string }{
+			{"other", target.ModelID, target.ReasoningReplayRoute()},
+			{target.Instance, "other", target.ReasoningReplayRoute()},
+			{target.Instance, target.ModelID, "elsewhere"},
+			{target.Instance, target.ModelID, target.ReasoningReplayRoute()},
+		} {
+			turn := replayable[0]
+			turn.ResponseProvider, turn.ResponseRequestModel, turn.ResponseReasoningRoute = issuer.instance, issuer.model, issuer.route
+			turn.ResponseProtocol = target.Protocol
+			want := len("answer") / 4
+			if issuer.instance == target.Instance && issuer.model == target.ModelID && issuer.route == target.ReasoningReplayRoute() {
+				want = totalChars / 4
+			}
+			if got := cm.estimateTokens([]schema.Turn{turn}); got != want {
+				t.Errorf("Anthropic signed history from %+v costs %d tokens, want %d", issuer, got, want)
 			}
 		}
 	})

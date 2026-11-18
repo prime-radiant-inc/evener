@@ -88,6 +88,7 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 		const emptyMessage = `{"type":"message","id":"msg1","content":[]}`
 		const answer = " \tanswer-31\n"
 		const selectedDraft = `{"type":"message","id":"msg1","content":[{"type":"output_text","text":""}]}`
+		const missingText = `{"type":"message","id":"msg1","content":[{"type":"output_text"}]}`
 		answered := part{"type": "output_text", "text": answer}
 		emptyAnswer := part{"type": "output_text", "text": ""}
 		completedAnswer := jsonOf(t, map[string]any{"type": "message", "id": "msg1", "role": "assistant", "content": []part{answered}})
@@ -105,11 +106,18 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 			parts                []part
 			completed            []string
 			frames               []string
+			noDraft              bool
 		}{
 			{name: "refusal", text: refusal, parts: []part{refused}},
 			{name: "empty selected refusal", parts: []part{{"type": "refusal", "refusal": ""}}},
 			{name: "text and refusal", text: "selected" + refusal, parts: []part{{"type": "output_text", "text": "selected"}, refused}},
 			{name: "selected completed answer withdraws omitted call", text: answer, terminal: selected, parts: []part{answered}, completed: []string{completedAnswer}},
+			{name: "selected completed blank withdraws the call", terminal: selected, frames: []string{callDone}, completed: []string{selectedDraft}, noDraft: true, parts: []part{emptyAnswer}},
+			{name: "a repeated slot can inherit a completed blank", terminal: `{"output":[` + missingText + `]}`, frames: []string{callDone}, completed: []string{selectedDraft, missingText}, noDraft: true, parts: []part{emptyAnswer}},
+			{name: "a null reference preserves a completed blank", terminal: `{"output":[` + nullReference + `]}`, frames: []string{callDone}, completed: []string{selectedDraft, nullReference}, noDraft: true, parts: []part{emptyAnswer}},
+			{name: "missing completed text has no value to select", terminal: selected, frames: []string{callDone}, completed: []string{missingText}, noDraft: true, wantCalls: 1},
+			{name: "cleared completed blank has no value to select", terminal: selected, frames: []string{callDone}, completed: []string{selectedDraft, emptyMessage, missingText}, noDraft: true, wantCalls: 1},
+			{name: "empty terminal recovers issued call beside completed blank", terminal: `{"output":[]}`, frames: []string{callDone}, completed: []string{selectedDraft}, noDraft: true, wantCalls: 1},
 			{name: "null reference after a repeated completion selects its answer", text: answer, terminal: `{"output":[` + nullReference + `]}`, parts: []part{answered}, completed: []string{completedAnswer, reference}},
 			{name: "selected indexed answer final withdraws omitted call", text: answer, terminal: selected, parts: []part{answered}, frames: []string{answerDone}},
 			{name: "selected empty answer final withdraws completed call", terminal: selected, parts: []part{emptyAnswer}, frames: []string{callDone, textFinal + `,"text":""}`}},
@@ -153,7 +161,9 @@ func TestExtractRecordedResponse_ResponsesSSE_TerminalWinsWhenNonEmpty(t *testin
 				events := []string{
 					`{"type":"response.output_item.added","output_index":0,"item":` + call + `}`,
 					`{"type":"response.function_call_arguments.delta","item_id":"fc1","delta":"{}"}`,
-					draft,
+				}
+				if !tc.noDraft {
+					events = append(events, draft)
 				}
 				events = append(events, tc.frames...)
 				for _, item := range tc.completed {

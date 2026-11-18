@@ -441,11 +441,16 @@ func testResponsesEmptyAnswerReplay(t *testing.T, enrolled bool) {
 		flush, _ := w.(http.Flusher)
 		if attempt < len(outputs) {
 			item := outputs[attempt].item
-			if attempt == 1 && !enrolled {
+			if attempt == 1 {
 				call := map[string]any{"type": "function_call", "id": "fc-write", "call_id": "c-write", "name": "write_file",
 					"arguments": mustJSON(t, map[string]string{"file_path": withdrawnFile, "content": "withdrawn"})}
 				writeSSE(t, w, flush, "response.output_item.done", map[string]any{"type": "response.output_item.done", "output_index": 0, "item": call})
-				writeSSE(t, w, flush, "response.output_text.done", map[string]any{"type": "response.output_text.done", "item_id": "m-blank", "output_index": 1, "content_index": 0, "text": ""})
+				if enrolled {
+					writeSSE(t, w, flush, "response.output_text.done", map[string]any{"type": "response.output_text.done", "item_id": "m-blank", "output_index": 1, "content_index": 0, "text": ""})
+				} else {
+					completed := map[string]any{"type": "message", "role": "assistant", "id": "m-blank", "content": item["content"]}
+					writeSSE(t, w, flush, "response.output_item.done", map[string]any{"type": "response.output_item.done", "output_index": 1, "item": completed})
+				}
 				item = map[string]any{"type": "message", "role": "assistant", "id": "m-blank"}
 			}
 			writeSSE(t, w, flush, "response.completed", map[string]any{
@@ -1035,6 +1040,7 @@ func TestFallbackContinuationKeepsThinkingForTheFallbackPolicy(t *testing.T) {
 		t.Run(protocol, func(t *testing.T) { testAnthropicFallbackThinking(t, protocol, true) })
 	}
 	t.Run("strict Chat", func(t *testing.T) { testAnthropicFallbackThinking(t, registry.ProtocolOpenAIChat, false) })
+	t.Run("Anthropic primary", func(t *testing.T) { testAnthropicFallbackThinking(t, registry.ProtocolAnthropic, false) })
 }
 
 func testAnthropicFallbackThinking(t *testing.T, protocol string, replay bool) {
@@ -1055,33 +1061,55 @@ func testAnthropicFallbackThinking(t *testing.T, protocol string, replay bool) {
 			return withReasoningMarker(llm.Response{Message: llm.Message{Role: llm.RoleAssistant}}, protocol, private)
 		},
 	}
-	const text, signature = "signed fallback thought", "sig-abc"
+	const text, signature, visible = "signed fallback thought", "sig-abc", "fallback answer-37"
 	tool := llm.ToolCallData{ID: "call_unknown", Name: "no_such_tool", Arguments: []byte(`{}`)}
 	var fallbackCalls int
+	var continued bool
 	fallbackAdapter := &agenttest.ScriptedAdapter{
 		Provider: "gwb",
+		FaultResponder: func(req llm.Request) error {
+			if req.Model == "other" {
+				return permErr
+			}
+			if fallbackCalls == 1 && !continued {
+				continued = true
+				return permErr
+			}
+			return nil
+		},
 		Responder: func(llm.Request) llm.Response {
 			fallbackCalls++
 			if fallbackCalls == 1 {
 				resp := agenttest.ToolCallResponse(tool)
-				resp.Message.Content = append([]llm.ContentPart{{
-					Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: text, Signature: signature},
-				}}, resp.Message.Content...)
+				resp.Message.Content = append([]llm.ContentPart{
+					{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: text, Signature: signature}},
+					{Kind: llm.ContentText, Text: visible},
+				}, resp.Message.Content...)
 				return resp
 			}
 			return agenttest.FinalResponse("done")
 		},
 	}
+	second := newFakeAdapter("gwc", fixedStep(agenttest.FinalResponse("other answer")))
 	client := registryClient(t, map[string]registry.Provider{
 		"gw": {Base: "openai", Protocol: protocol, Surface: registry.SurfaceOpenAI, APIKey: "test",
 			Models: map[string]registry.Model{"chat-primary": {Caps: registry.Caps{Reasoning: new(true), ReplayReasoningText: new(replay)}}}},
 		"gwb": {Base: "anthropic", Surface: registry.SurfaceOpenAI, APIKey: "test"},
-	}, primaryAdapter, fallbackAdapter)
+		"gwc": {Base: "anthropic", Surface: registry.SurfaceOpenAI, APIKey: "test", Transport: registry.Transport{BaseURL: "https://second.example.invalid"}},
+	}, primaryAdapter, fallbackAdapter, second)
 	primary := resolveClientProfile(t, client, "gw/chat-primary")
-	fallback := resolveClientProfile(t, client, "gwb/claude-fallback")
-	resolve := func(ref string) (*provider.Profile, error) { return provider.Resolve(client.Registry(), ref) }
+	var moved bool
+	resolve := func(ref string) (*provider.Profile, error) {
+		p, err := provider.Resolve(client.Registry(), ref)
+		if err == nil && moved && ref == "gwb/claude-fallback" {
+			row := p.Resolved()
+			row.Transport.BaseURL = "https://moved.example.invalid"
+			p = p.WithResolved(row)
+		}
+		return p, err
+	}
 	dir := t.TempDir()
-	fallbacks := []string{"gwb/claude-fallback"}
+	fallbacks := []string{"gwb/claude-fallback", "gwb/other", "gwc/claude-fallback"}
 	sess := newSession(t, withClient(client), withProfile(primary), withConfig(SessionConfig{StateDir: dir, ModelFallbacks: fallbacks, ResolveProfile: resolve}))
 	// TRIPWIRE: scripted in-process adapters; 30s only catches a genuine hang.
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -1108,20 +1136,32 @@ func testAnthropicFallbackThinking(t *testing.T, protocol string, replay bool) {
 	if _, err := cold.ProcessInput(ctx, "go again", nil); err != nil {
 		t.Fatal(err)
 	}
-	fallbackReqs := fallbackAdapter.Requests()
-	if len(fallbackReqs) != 3 {
-		t.Fatalf("fallback requests = %d, want a tool round, its continuation and the cold follow-up", len(fallbackReqs))
+	moved = true
+	if _, err := cold.ProcessInput(ctx, "after moving", nil); err != nil {
+		t.Fatal(err)
 	}
-	for i, req := range fallbackReqs {
-		row := fallback.Resolved()
+	issuer, other := fallbackAdapter.Requests(), second.Requests()
+	if len(issuer) != 5 || len(other) != 1 {
+		t.Fatalf("got %d issuing-instance and %d second-instance requests", len(issuer), len(other))
+	}
+	for i, req := range append(issuer, other...) {
+		row := resolveClientProfile(t, client, req.Provider+"/"+req.Model).Resolved()
 		body, err := anthropic.DefaultProtocol.BuildBody(llm.ShapeRequest(req, row), row)
 		if err != nil {
 			t.Fatal(err)
 		}
 		var signed int
+		var answer, call, result bool
 		for _, m := range body["messages"].([]map[string]any) {
 			for _, block := range m["content"].([]map[string]any) {
-				if block["type"] == "thinking" {
+				switch block["type"] {
+				case "text":
+					answer = answer || block["text"] == visible
+				case "tool_use":
+					call = call || block["id"] == tool.ID
+				case "tool_result":
+					result = result || block["tool_use_id"] == tool.ID
+				case "thinking":
 					if block["thinking"] != text || block["signature"] != signature {
 						t.Errorf("Anthropic request %d sent another provider's thinking: %v", i, block)
 					} else {
@@ -1130,8 +1170,13 @@ func testAnthropicFallbackThinking(t *testing.T, protocol string, replay bool) {
 				}
 			}
 		}
-		if (i == 0 && signed != 0) || (i > 0 && signed != 1) || !requestCarriesText(req, "go") {
-			t.Errorf("Anthropic request %d has %d signed blocks or lost the user input", i, signed)
+		// Only the original model's tool continuation and cold request use the issuing route.
+		wantSigned := 0
+		if i == 1 || i == 3 {
+			wantSigned = 1
+		}
+		if signed != wantSigned || !requestCarriesText(req, "go") || (i > 0 && !(answer && call && result)) {
+			t.Errorf("Anthropic request %d (%s/%s) sent %d signed blocks, want %d, visible answer/call/result %t/%t/%t", i, req.Provider, req.Model, signed, wantSigned, answer, call, result)
 		}
 	}
 	primaryReqs := primaryAdapter.Requests()

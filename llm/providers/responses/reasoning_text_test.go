@@ -112,6 +112,7 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 	const linkedCall = `{"type":"function_call","id":"fc_1","call_id":"call_1","arguments":""}`
 	const linkedFinalCall = `{"type":"function_call","id":"fc_1","call_id":"call_1","arguments":" \t{ \"k\": 1 }\n"}`
 	const callFinalArguments = `{"type":"response.function_call_arguments.done","call_id":"call_1","arguments":" \t{ \"k\": 1 }\n"}`
+	bareFinal := func(id string) string { return strings.Replace(finalArguments, `"item_id":"fc_1"`, `"id":"`+id+`"`, 1) }
 	const firstCall = `{"type":"function_call","call_id":"call_1"}`
 	const secondCall = `{"type":"function_call","call_id":"call_2"}`
 	indexedCalls := []string{
@@ -221,6 +222,14 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 		}, nil, []replayItem{finalTool, secondTool}},
 		{"indexed final arguments precede their terminal call ID", []string{at(0, indexedFinalArguments)}, []string{emptyToolByCall}, []replayItem{finalTool}},
 		{"issued call repeats finalized arguments at another index", []string{indexedCalls[0], at(1, callFinalArguments)}, nil, []replayItem{finalTool}},
+		{"bare call ID delivers final arguments from another index", []string{at(0, toolAdded), itemArguments, at(1, bareFinal("call_1"))}, []string{firstCall}, []replayItem{finalTool}},
+		{"bare item ID delivers final arguments from another index", []string{at(0, toolAdded), itemArguments, at(1, bareFinal("fc_1"))}, []string{firstCall}, []replayItem{finalTool}},
+		{"bare ID keeps its issued call at the first position", []string{at(0, toolAdded), itemArguments, at(1, done(secondLinked)), secondItemFinal, at(2, bareFinal("call_1"))}, nil, []replayItem{finalTool, secondTool}},
+		{"bare ID at another call's index isolates its anonymous final", []string{at(0, toolAdded), itemArguments, at(1, done(secondLinked)), secondItemFinal, at(1, bareFinal("fc_1")), at(1, indexedFinalArguments)}, nil, []replayItem{finalTool, secondTool}},
+		{"bare ID shared by distinct issued calls cannot overwrite either", []string{
+			at(0, toolAdded), itemArguments, at(0, done(strings.Replace(secondLinked, "fc_2", "call_1", 1))),
+			strings.Replace(secondItemFinal, `"item_id":"fc_2"`, `"call_id":"call_2"`, 1), at(2, bareFinal("call_1")),
+		}, []string{firstCall, secondCall}, []replayItem{tool, secondTool}},
 		{"issued call gains its item ID at another index", []string{indexedCalls[0], at(1, done(linkedCall)), finalArguments}, nil, []replayItem{finalTool}},
 		{"issued call links a provisional named item at another index", []string{indexedCalls[0], at(1, toolItemAdded), at(1, namedFinalArguments)}, nil, []replayItem{finalTool}},
 		{"issued call repeated at another call's index keeps the other call", []string{indexedCalls[0], at(1, done(secondLinked)), secondItemFinal, at(1, namedFinalArguments)}, nil, []replayItem{finalTool, secondTool}},

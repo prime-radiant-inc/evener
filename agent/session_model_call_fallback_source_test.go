@@ -83,6 +83,7 @@ func TestRequestMessagesLaysOutTheSystemPromptAndHistory(t *testing.T) {
 }
 
 func TestFallbackKeepsOpaqueAndWebSearchScopeAcrossProtocols(t *testing.T) {
+	t.Run("Responses search behind a Chat primary", testResponsesFallbackWebSearch)
 	const signed = `[{"type":"reasoning.text","signature":"sig-c13"}]`
 	const encrypted = `[{"type":"reasoning.encrypted","id":"id-b27","data":"enc-b27"}]`
 	const signedAnswer = `[{"type":"reasoning.text","text":"signed-b49","signature":"sig-b49"}]`
@@ -153,46 +154,48 @@ func TestFallbackKeepsOpaqueAndWebSearchScopeAcrossProtocols(t *testing.T) {
 			if len(requests) != 2 {
 				t.Fatalf("fallback requests = %d, want the tool continuation and a follow-up", len(requests))
 			}
-			type part struct{ text, details, query string }
-			want := [][]part{
-				{{query: "q-a08"}, {text: "c13", details: signed}, {query: "q-c13"}},
-				{{query: "q-a08"}},
-			}
+			type part struct{ text, details string }
+			want := [][]part{{{text: "c13", details: signed}}, nil}
 			if tc.raw {
-				want[0] = slices.Insert(want[0], 1, part{text: "mirror-b52"})
+				want[0] = slices.Insert(want[0], 0, part{text: "mirror-b52"})
 				want[1] = append(want[1], part{text: "mirror-b52"}, part{text: "b27", details: encrypted}, part{text: "signed-b49", details: signedAnswer})
 			} else {
 				want[1] = append(want[1], part{details: encrypted}, part{details: signedAnswer})
 			}
+			var scalars []string
 			for i, req := range requests {
 				var got []part
 				for _, m := range req.Messages {
 					for _, p := range m.Content {
-						switch p.Kind {
-						case llm.ContentThinking:
+						if p.Kind == llm.ContentThinking {
 							got = append(got, part{text: p.Thinking.Text, details: p.Thinking.EncryptedContent})
-						case llm.ContentWebSearch:
-							got = append(got, part{query: p.WebSearch.Query})
 						}
 					}
 				}
 				if !slices.Equal(got, want[i]) {
-					t.Errorf("fallback request %d reasoning and web search = %+v, want %+v", i, got, want[i])
+					t.Errorf("fallback request %d reasoning = %+v, want %+v", i, got, want[i])
+				}
+				body, err := chatcompletions.DefaultProtocol.BuildBody(req, row)
+				if err != nil {
+					t.Fatal(err)
+				}
+				// The Chat wire has no native search history field. This includes
+				// the scripted query-only part from the other Chat instance.
+				wire := mustJSON(t, body["messages"])
+				if strings.Contains(wire, "ws-a08") || strings.Contains(wire, "q-c13") {
+					t.Errorf("Chat request %d carried a native search or its query", i)
+				}
+				if i == len(requests)-1 {
+					for _, message := range body["messages"].([]map[string]any) {
+						if text, ok := message["reasoning"].(string); ok {
+							scalars = append(scalars, text)
+						}
+					}
 				}
 			}
 			followup := requests[1]
 			if wantTokens := llm.EstimateInputTokensForResolved(row, followup).Tokens; followup.FullHistoryInputTokensEstimate != wantTokens || followup.InputTokensEstimate != wantTokens {
 				t.Errorf("fallback estimates = %d full, %d input; projected request costs %d", followup.FullHistoryInputTokensEstimate, followup.InputTokensEstimate, wantTokens)
-			}
-			body, err := chatcompletions.DefaultProtocol.BuildBody(followup, row)
-			if err != nil {
-				t.Fatal(err)
-			}
-			var scalars []string
-			for _, message := range body["messages"].([]map[string]any) {
-				if text, ok := message["reasoning"].(string); ok {
-					scalars = append(scalars, text)
-				}
 			}
 			if (tc.raw && !slices.Equal(scalars, []string{"mirror-b52", "native-b27"})) || (!tc.raw && len(scalars) != 0) {
 				t.Errorf("fallback wire scalars = %q", scalars)
@@ -203,6 +206,132 @@ func TestFallbackKeepsOpaqueAndWebSearchScopeAcrossProtocols(t *testing.T) {
 				testChatToolContinuation(t, chatContinuationCase{raw: tc.raw, asText: true, viaFallback: true})
 			})
 		})
+	}
+}
+
+func testResponsesFallbackWebSearch(t *testing.T) {
+	t.Parallel()
+	const search = `{"type":"web_search_call","id":"ws-73","status":"completed","action":{"type":"search","query":"q-73"}}`
+	const foreign = `{"type":"server_tool_use","id":"srv-29","name":"web_search","input":{"query":"q-29"}}`
+	const legacy = `{"type":"web_search_call","id":"ws-11","action":{"type":"search","query":"q-11"}}`
+	const ordinaryCall = "call-29"
+	requests := make(chan json.RawMessage, 4)
+	var calls atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/responses") {
+			http.NotFound(w, r)
+			return
+		}
+		var req struct{ Input json.RawMessage }
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Error(err)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		select {
+		case requests <- req.Input:
+		default:
+			t.Error("unexpected extra Responses request")
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		if calls.Add(1) == 1 {
+			writeSSE(t, w, nil, "response.completed", map[string]any{
+				"type": "response.completed", "response": map[string]any{"status": "completed", "output": []any{
+					json.RawMessage(search), map[string]string{"type": "function_call", "call_id": "call-73", "name": "missing_tool", "arguments": "{}"},
+				}},
+			})
+			return
+		}
+		report := agenttest.CommunicateCall("done", "answer")
+		writeResponsesFunctionCall(t, w, nil, "final", report.ID, report.Name, string(report.Arguments))
+	}))
+	t.Cleanup(srv.Close)
+
+	unavailable := func(req llm.Request) error { return llm.ErrorFromHTTPStatus(req.Provider, 404, "", nil, nil) }
+	chat := &agenttest.ScriptedAdapter{Provider: "chat", FaultResponder: unavailable}
+	searchPart := func(raw string) llm.ContentPart {
+		return llm.ContentPart{Kind: llm.ContentWebSearch, WebSearch: &llm.WebSearchData{Raw: json.RawMessage(raw)}}
+	}
+	anthropic := &agenttest.ModelTrackingAdapter{Provider: "claude"}
+	issued := false
+	anthropic.Respond = func(req llm.Request) (llm.Response, error) {
+		if issued {
+			return llm.Response{}, unavailable(req)
+		}
+		issued = true
+		reply := agenttest.ToolCallResponse(llm.ToolCallData{ID: ordinaryCall, Name: "missing_tool", Arguments: []byte("{}")})
+		reply.Message.Content = append(reply.Message.Content, searchPart(foreign))
+		return reply, nil
+	}
+	dir := t.TempDir()
+	client := registryClientAt(t, dir, map[string]registry.Provider{
+		"chat":   {Base: "openai-compatible", Surface: registry.SurfaceOpenAI, APIKey: "test"},
+		"claude": {Base: "anthropic", Surface: registry.SurfaceOpenAI, APIKey: "test"},
+		"gw":     openaiInstance(srv.URL),
+	}, []string{"gw"}, chat, anthropic)
+	profile := resolveClientProfile(t, client, "chat/reasoner")
+	resolve := func(ref string) (*provider.Profile, error) { return provider.Resolve(client.Registry(), ref) }
+	fallbacks := []string{"claude/reasoner", "gw/gpt-5.2"}
+	s := newSession(t, withClient(client), withProfile(profile), withConfig(SessionConfig{
+		StateDir: dir, ModelFallbacks: fallbacks, ResolveProfile: resolve, OpenAIResponsesContinuation: "off",
+	}))
+	s.appendTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{searchPart(legacy)}})
+	// A recorded protocol identifies the format even without an instance name.
+	prior := llm.Response{Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		searchPart(`{"type":"web_search_tool_result","tool_use_id":"srv-old","content":[]}`),
+	}}}
+	if err := s.appendAssistantTurn(prior, ModelAttemptMetadata{Protocol: registry.ProtocolAnthropic}); err != nil {
+		t.Fatal(err)
+	}
+	sendOneUserInput(t, s, "first")
+	sendOneUserInput(t, s, "later")
+	s.Close()
+	resumed, err := RestoreSessionFromMetaWithConfig(client, profile, s.currentEnv(), loadMetaForTest(t, s), RestoreSessionConfig{
+		StateDir: dir, ModelFallbacks: fallbacks, ResolveProfile: resolve, testOnly: sharingHostProbe(testConfig{skipGitSnapshot: true}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(resumed.Close)
+	sendOneUserInput(t, resumed, "after restart")
+	if n := len(requests); n != 4 {
+		t.Fatalf("Responses fallback received %d requests, want two tool rounds, a later turn and a cold resume", n)
+	}
+	var previous json.RawMessage
+	for i := range 4 {
+		input := <-requests
+		if previous != nil && !bytes.HasPrefix(input, append(bytes.Clone(bytes.TrimSuffix(previous, []byte("]"))), ',')) {
+			t.Errorf("Responses fallback request %d rewrote its previous input prefix", i)
+		}
+		var searches []string
+		var calledTool, returnedTool bool
+		var wire []struct {
+			Type, ID string
+			CallID   string `json:"call_id"`
+		}
+		if err := json.Unmarshal(input, &wire); err != nil {
+			t.Fatal(err)
+		}
+		for _, item := range wire {
+			switch item.Type {
+			case "web_search_call", "server_tool_use", "web_search_tool_result":
+				searches = append(searches, item.ID)
+			case "function_call":
+				calledTool = calledTool || item.CallID == ordinaryCall
+			case "function_call_output":
+				returnedTool = returnedTool || item.CallID == ordinaryCall
+			}
+		}
+		want := []string{"ws-11"}
+		if i > 0 {
+			want = append(want, "ws-73")
+		}
+		if !slices.Equal(searches, want) || !calledTool || !returnedTool {
+			t.Errorf("Responses fallback request %d carried searches %q and ordinary tool call/result %t/%t, want %q and both tool items", i, searches, calledTool, returnedTool, want)
+		}
+		previous = input
 	}
 }
 
@@ -423,8 +552,10 @@ func TestFallbacksWithoutRawReplayShareTheRoundsHistory(t *testing.T) {
 		ResponseProvider: primary.ID(), ResponseProtocol: primary.Protocol(), ResponseReasoningRoute: primary.ReasoningReplayRoute(),
 	}
 	sealed.Message.Content = append(sealed.Message.Content, llm.ContentPart{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{EncryptedContent: cipher}})
+	archived := assistantWebSearchTurn("archive", "reasoner")
+	archived.Message.Content[0].WebSearch.Raw = json.RawMessage(`{"type":"web_search_call","id":"ws-archive"}`)
 	s.setRoundFallbackSource(roundFallbackSource{
-		turns: []schema.Turn{assistantWebSearchTurn("archive", "reasoner"), sealed},
+		turns: []schema.Turn{archived, sealed},
 		scope: replayScope{Instance: primary.ID(), Protocol: primary.Protocol(), InFlightFrom: 2, protocolOf: func(string) string { return producerProtocol }},
 	})
 	req := llm.Request{Provider: primary.ID(), Model: primary.Model(), Messages: []llm.Message{llm.User("r08")}}

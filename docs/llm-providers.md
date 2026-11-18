@@ -516,8 +516,13 @@ transcript. A saved endpoint still identifies the serving host and path
 even when the turn predates route digests. Moving that route keeps its
 reasoning at the original endpoint. The visible conversation carries over.
 An Anthropic fallback keeps its own signed thinking through tool calls and
-cold resumes. Reasoning recorded on Chat or Responses stays on its issuing
-protocol even when the fallback shares the same tools.
+cold resumes. If a tool continuation moves to a different instance, model,
+or endpoint, the visible answer, tool call, and result follow it. The
+signature and associated thinking stay with their issuer. An older tool
+round without a recorded endpoint can continue on the session’s primary
+profile using thinking from the same instance. Reasoning recorded on Chat
+or Responses stays on its issuing protocol even when the fallback shares
+the same tools.
 Replayed reasoning counts toward
 context pressure. A saved input-token count covers the history actually sent
 to that target under its replay rules. Evener estimates later additions,
@@ -527,6 +532,11 @@ On resume it also checks the saved target and measured prefix against the
 transcript. A committed compaction can replace that prefix before the session
 metadata catches up.
 
+Native web-search items replay on the protocol that produced them. A Responses
+fallback behind a Chat primary receives its earlier `web_search_call` on tool
+continuations, later turns, and cold resumes. Ordinary tool calls and their
+results carry over across protocols.
+
 On Chat and Responses, Evener preserves the original string of a valid
 function-call argument object, including its whitespace, key order and
 escapes. The first replay and a replay from a saved transcript therefore
@@ -535,7 +545,9 @@ saved the original spelling can replay only the bytes still on disk. During
 Chat tool execution, a field whose schema rejects a supplied string may
 recover an encoded object, array or XML parameter. When a required argument
 is missing, a string ending in an explicit XML parameter tail can supply it
-if exactly one split satisfies the complete tool schema. A valid `write_file`
+if exactly one split satisfies the complete tool schema. The `ask_user`
+single-question shorthand can recover a missing `options` array this way
+before the tool validates the question for display. A valid `write_file`
 call keeps its literal path and file contents, including XML.
 
 - On `openai-chat`, `reasoning_field` selects the assistant message field
@@ -589,9 +601,11 @@ call keeps its literal path and file contents, including XML.
   response selecting only a completed answer, a
   refusal or a provider-run file search withdraws earlier streamed tool calls.
   A message reference with omitted or null `content` inherits its completed
-  answer or refusal. An explicitly selected content array keeps only its own
-  slots. An empty array clears earlier text and refusal, including when the
-  final output is empty. A reselected slot can inherit only text received
+  answer or refusal, including an explicitly empty `output_text` slot. A
+  reference with only provisional text still allows recovery of an issued call.
+  An explicitly selected content array keeps only its own slots. An empty
+  array clears earlier text and refusal, including when the final output is
+  empty. A reselected slot can inherit only text received
   for that slot after its removal. A finalized `output_text` part can clear
   its draft with an empty string and keeps its place in the message. An
   empty final output can recover an issued call.
@@ -627,7 +641,9 @@ call keeps its literal path and file contents, including XML.
   executes it once. If a later frame changes the item ID of that call,
   Evener keeps the first confirmed item ID. An event naming an issued call
   delivers its arguments to that call even if its item ID or output index
-  points to another tool. Explicit terminal arguments take
+  points to another tool. The `id` on an argument event can identify an
+  issued call by its call ID or item ID. If it names two different issued calls,
+  both keep their own arguments. Explicit terminal arguments take
   precedence, and a terminal that omits them inherits the call's exact streamed
   arguments. Reasoning shown only as deltas remains
   visible in the transcript, including when the response ends with an
