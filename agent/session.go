@@ -1832,9 +1832,16 @@ func (s *Session) currentProfile() *provider.Profile {
 // s.mu). Callers that already hold s.mu must read s.env directly instead of
 // calling this — s.mu is not reentrant.
 func (s *Session) currentEnv() execenv.ExecutionEnvironment {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.env
+	env, _ := s.currentWorkspace()
+	return env
+}
+
+// currentWorkspace captures the environment and its installation revision
+// together. Sampling and publishing can acquire their own locks after return.
+func (s *Session) currentWorkspace() (execenv.ExecutionEnvironment, uint64) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.env, s.workspaceRevision
 }
 
 // Client returns the session's LLM client.
@@ -2735,9 +2742,7 @@ func (s *Session) appendEnvironmentContext(publishEvent bool) error {
 	if s.envCollector == nil {
 		return nil
 	}
-	s.mu.RLock()
-	env, revision := s.env, s.workspaceRevision
-	s.mu.RUnlock()
+	env, revision := s.currentWorkspace()
 	snap := s.envCollector.Collect(envctx.Inputs{
 		Cwd:     env.WorkingDirectory(),
 		Sandbox: s.cfg.Sandbox,
