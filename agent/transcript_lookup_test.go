@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/envvars/userdirs"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -46,6 +47,25 @@ func newBucketUnder(t *testing.T, stateHome string) string {
 func newBucket(t *testing.T) string {
 	t.Helper()
 	return newBucketUnder(t, newStateHome(t))
+}
+
+// newConfiguredBucket creates a project bucket under this process's configured
+// state root, which is the only thing that identifies a directory as part of
+// the state tree. It is for cases that exercise inference *inside* a project
+// bucket: a bucket under a bare temp directory merely spells the layout and is
+// deliberately not treated as one.
+func newConfiguredBucket(t *testing.T) string {
+	t.Helper()
+	root, err := userdirs.DefaultStateRoot()
+	if err != nil {
+		t.Fatalf("configured state root: %v", err)
+	}
+	projectID := "test-" + hexHash(t.TempDir())[:10]
+	dir := filepath.Join(root, "projects", projectID)
+	if err := os.MkdirAll(filepath.Join(dir, "sessions"), 0o755); err != nil {
+		t.Fatalf("newConfiguredBucket: %v", err)
+	}
+	return dir
 }
 
 // writeTranscript creates a minimal transcript file for sessionID in bucket dir.
@@ -1165,7 +1185,7 @@ func TestCollectCandidates_SkipsSymlinkedSessionsDir(t *testing.T) {
 
 	// collectCandidates should return 0 candidates — the symlinked sessions/
 	// points outside the state root.
-	candidates := collectCandidates([]string{bucket}, bucket)
+	candidates, _ := collectCandidates([]string{bucket}, bucket)
 	if len(candidates) != 0 {
 		t.Fatalf("collectCandidates returned %d candidates from symlinked sessions/; should skip", len(candidates))
 	}
