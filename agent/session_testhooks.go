@@ -253,6 +253,13 @@ type testConfig struct {
 	// a turn there to pin that the reload applies the same gate to what it
 	// appends. Nil in production.
 	afterDelegateAttentionProjection func()
+	// afterDelegateAttentionCapture runs immediately after the skill reload's
+	// coherent capture released attentionMu and before the rebuild decides
+	// which turns to append. A test admits a wake there to pin that the capture
+	// — not a later re-read — decided eligibility: an answer taken after this
+	// point describes a different moment than the holds captured beside the
+	// turns. Nil in production.
+	afterDelegateAttentionCapture func()
 	// delegateAttentionAfterReportDeposit runs in a delivery, after the child's
 	// report is durably recorded and before its acknowledgment is committed.
 	// Tests read resident history there to pin that the report is not yet
@@ -622,4 +629,16 @@ type testConfig struct {
 	// (hubWatchStateOutageBudget) for tests. Zero keeps the production
 	// budget.
 	hubWatchStateOutageBudget time.Duration
+}
+
+// afterAttentionCaptureSeam reads the skill reload's post-capture seam. The
+// seam is runtime-mutable through updateSessionTestConfig, so its read shares
+// the setter's session mutex.
+func (s *Session) afterAttentionCaptureSeam() func() {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cfg.testOnly.afterDelegateAttentionCapture
 }

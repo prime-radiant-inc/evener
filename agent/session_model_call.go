@@ -402,7 +402,37 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 			s.mu.Lock()
 			captured := append([]schema.Turn(nil), s.history...)
 			s.mu.Unlock()
+			// Eligibility is decided here, in the same hold that read the turns,
+			// the reconciled holds and the pending set. The admission predicate
+			// consults the controller's live wake and rider state, so asking it
+			// after the unlock lets a frame arm in between: the rebuild would
+			// then admit that frame against the new wake state while still
+			// excluding the report from the old hold snapshot the arm released,
+			// and the request would present the frame alone.
+			eligible := make([]bool, len(captured))
+			for i, turn := range captured {
+				eligible[i] = true
+				if turn.AttentionID == "" {
+					continue
+				}
+				if _, held := heldIDs[turn.AttentionID]; held {
+					eligible[i] = false
+					continue
+				}
+				if s.delegateAttentionAwaitingAdmissionLocked(turn.AttentionID, pendingIDs) {
+					eligible[i] = false
+				}
+			}
 			s.attentionMu.Unlock()
+			// afterAttentionCapture runs once the reload's coherent capture has
+			// released attentionMu, immediately before the appended turns are
+			// chosen. A test admits a wake there to pin that eligibility was
+			// already decided by the capture: asking the controller again here
+			// would answer a different moment than the holds beside it. Nil in
+			// production.
+			if afterCapture := s.afterAttentionCaptureSeam(); afterCapture != nil {
+				afterCapture()
+			}
 			// What this request already projects is subtracted by identity, not by
 			// position: a release can reorder history between the projection and
 			// this rebuild, so a turn's index says nothing about whether the
@@ -425,14 +455,9 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 				}
 			}
 			kept := make([]schema.Turn, 0, len(captured))
-			for _, turn := range captured {
-				if turn.AttentionID != "" {
-					if _, held := heldIDs[turn.AttentionID]; held {
-						continue
-					}
-					if s.delegateAttentionAwaitingAdmissionLocked(turn.AttentionID, pendingIDs) {
-						continue
-					}
+			for i, turn := range captured {
+				if !eligible[i] {
+					continue
 				}
 				if identity := delegateAttentionTurnIdentity(turn); identity != "" {
 					if _, already := presented[identity]; already {
