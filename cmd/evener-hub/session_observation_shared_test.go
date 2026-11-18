@@ -232,16 +232,77 @@ func testManagerWatchSharedRemoteSubscribersAndAliases(t *testing.T, malformed *
 			next(second, event, "root-thread")
 		}
 	}
-	// One more root-thread update, left unread on the first Manager's channel,
-	// puts a real update in flight when the watch is cancelled below. That is
-	// the state the original CI failure observed. Waiting for the value to
-	// reach the channel's buffer makes it deterministic instead of luck; a
-	// watch channel that stopped being buffered fails here rather than
-	// passing on a scenario it never set up.
-	entrySuffix = "-queued"
-	emit("root-thread", "communicate")
-	next(second, "communicate", "root-thread")
-	testwait.Until(t, "the first Manager's watch to buffer an in-flight update", func() bool {
+	// Stage one update, left unread on the first Manager's channel, so a real
+	// update is in flight when the watch is cancelled below: the state the
+	// original CI failure observed.
+	//
+	// The marker and the staged entry travel in ONE history notification, and
+	// Watch turns a notification into one update per item, consecutively. So
+	// once the marker has been consumed, the staged entry is the next send
+	// this watch can make: it is inside its own item loop, and a refresh
+	// snapshot is published only from the loop's readDone arm, which that loop
+	// cannot reach until the items are done. That is what makes the wait below
+	// load-bearing. A bare "buffer is nonempty" wait is satisfied by a delayed
+	// snapshot from the remote relay's startup resync, and cancellation then
+	// races a staged entry that was never produced, so the drain fails on a
+	// watch that behaved correctly.
+	const (
+		stagedMarkerEntry = "root-thread-stage-marker"
+		stagedEntry       = "root-thread-queued"
+	)
+	emitStaged := func() {
+		accepted := true
+		items := make([]appwire.ThreadItem, 0, 2)
+		for _, entry := range []string{stagedMarkerEntry, stagedEntry} {
+			items = append(items, appwire.ThreadItem{ID: entry, Observation: &appwire.SessionObservationMetadata{EntryID: entry, TurnID: "turn", CausalKnown: true, EndTurn: true, EndReason: "done", TerminalAccepted: &accepted}})
+		}
+		raw, err := json.Marshal(appwire.HistoryUpdatedParams{Ref: "local:root-thread", ThreadID: "root-thread", Items: items})
+		if err != nil {
+			t.Fatal(err)
+		}
+		pool.emit(t, appwire.Notification{Method: appwire.NotifyHistoryUpdated, Params: raw})
+	}
+	// ordinary reports whether an update is a delivered observation rather
+	// than a frame the watch re-sends on its own.
+	ordinary := func(u appwire.SessionWatchUpdate) bool {
+		return u.Snapshot == nil && (u.Notification == nil || u.Notification.Method != appwire.NotifyEvenerThreadResync)
+	}
+	// awaitStaged consumes updates until it has seen every wanted entry,
+	// skipping the frames the watch re-sends on its own. An ordinary update
+	// outside the wanted set fails: the staged notification is the only
+	// observation either Manager should receive here, and an entry arriving
+	// ahead of its marker breaks the ordering the wait below depends on.
+	awaitStaged := func(ch <-chan appwire.SessionWatchUpdate, want ...string) {
+		t.Helper()
+		remaining := make(map[string]bool, len(want))
+		for _, entry := range want {
+			remaining[entry] = true
+		}
+		for len(remaining) != 0 {
+			select {
+			case u, open := <-ch:
+				if !open {
+					t.Fatalf("watch closed before the staged entries %v arrived", want)
+				}
+				if !ordinary(u) {
+					continue
+				}
+				if !remaining[u.Metadata.EntryID] {
+					t.Fatalf("staged notification delivered an unrequested update: entry=%s event=%s", u.Metadata.EntryID, u.Event)
+				}
+				delete(remaining, u.Metadata.EntryID)
+			case <-ctx.Done():
+				t.Fatalf("staged entries %v never arrived", want)
+			}
+		}
+	}
+	emitStaged()
+	awaitStaged(second, stagedMarkerEntry, stagedEntry)
+	// Consuming the marker is the completion the wait below awaits: only then
+	// is the staged entry the next send, so a nonempty buffer holds it and not
+	// something the watch re-sent.
+	awaitStaged(first, stagedMarkerEntry)
+	testwait.Until(t, "the first Manager's watch to buffer the staged update", func() bool {
 		return len(first) >= 1
 	})
 	clearFirst()
@@ -254,11 +315,11 @@ func testManagerWatchSharedRemoteSubscribersAndAliases(t *testing.T, malformed *
 	// sent to it, so such an update stays readable afterwards; the send that
 	// hands one over races the context check and may win. So emit under a new
 	// entry identity, drain to the close, and require every delivered update to
-	// be the one buffered before the clear.
+	// be the staged one: a stray ordinary update is a failure, not a pass.
 	entrySuffix = "-after-clear"
 	emit("root-thread", "communicate")
 	next(second, "communicate", "root-thread")
-	sawQueued := false
+	sawStaged := false
 	for {
 		var u appwire.SessionWatchUpdate
 		var open bool
@@ -270,17 +331,19 @@ func testManagerWatchSharedRemoteSubscribersAndAliases(t *testing.T, malformed *
 		if !open {
 			break
 		}
-		if u.Snapshot != nil || u.Notification != nil && u.Notification.Method == appwire.NotifyEvenerThreadResync {
+		if !ordinary(u) {
 			continue
 		}
-		switch u.Metadata.EntryID {
-		case "root-thread-queued":
-			sawQueued = true
-		case "root-thread-after-clear":
+		switch {
+		case u.Metadata.EntryID == stagedEntry && u.Event == "communicate":
+			sawStaged = true
+		case u.Metadata.EntryID == "root-thread-after-clear":
 			t.Fatalf("cleared watch delivered an update produced after cancellation: entry=%s event=%s", u.Metadata.EntryID, u.Event)
+		default:
+			t.Fatalf("cleared watch delivered an update outside the staged observation: entry=%s event=%s", u.Metadata.EntryID, u.Event)
 		}
 	}
-	if !sawQueued {
+	if !sawStaged {
 		t.Fatal("cleared watch never delivered the update buffered before cancellation")
 	}
 	// The close is the await: Watch runs its cleanup before closing the
