@@ -111,6 +111,7 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 	const idArguments = `{"type":"response.function_call_arguments.delta","id":"fc_1","name":"f","delta":"{}"}`
 	const linkedCall = `{"type":"function_call","id":"fc_1","call_id":"call_1","arguments":""}`
 	const linkedFinalCall = `{"type":"function_call","id":"fc_1","call_id":"call_1","arguments":" \t{ \"k\": 1 }\n"}`
+	const itemOnlyFinalCall = `{"type":"function_call","id":"fc_1","name":"f","arguments":" \t{ \"k\": 1 }\n"}`
 	const callFinalArguments = `{"type":"response.function_call_arguments.done","call_id":"call_1","arguments":" \t{ \"k\": 1 }\n"}`
 	bareFinal := func(id string) string { return strings.Replace(finalArguments, `"item_id":"fc_1"`, `"id":"`+id+`"`, 1) }
 	const firstCall = `{"type":"function_call","call_id":"call_1"}`
@@ -268,6 +269,14 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 		{"terminal binds the first item ID before an item-only completion", []string{indexedCalls[0]}, []string{
 			`{"type":"function_call","id":"fc_late","call_id":"call_1"}`, `{"type":"function_call","id":"fc_late","arguments":"{}"}`,
 		}, []replayItem{tool}},
+		{"terminal issues a provisional item's call ID before its final arguments", []string{toolItemAdded, itemArguments},
+			[]string{linkedCall, answerItem, itemOnlyFinalCall}, []replayItem{finalTool, answer}},
+		{"repeated terminal item references keep their issued call without stream state", nil,
+			[]string{linkedCall, answerItem, itemOnlyFinalCall}, []replayItem{finalTool, answer}},
+		{"an item shared by two terminal calls cannot supply either call's missing name", nil, []string{
+			`{"type":"function_call","id":"fc_1","call_id":"call_1","arguments":"{}"}`,
+			`{"type":"function_call","id":"fc_1","call_id":"call_2","arguments":"{}"}`, itemOnlyFinalCall,
+		}, []replayItem{{Type: "function_call", CallID: "call_1", Arguments: "{}"}, {Type: "function_call", CallID: "call_2", Arguments: "{}"}}},
 		{"terminal names another issued item but selects calls by call ID", []string{at(0, toolAdded), finalArguments, at(0, done(secondLinked)), secondItemFinal},
 			[]string{`{"type":"function_call","id":"fc_2","call_id":"call_1"}`, secondCall}, []replayItem{finalTool, secondTool}},
 		{"repeated terminal call completes its fields under a different item ID", nil, []string{

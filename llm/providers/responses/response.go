@@ -23,6 +23,21 @@ type responsesTerminalCall struct {
 	terminalArguments bool
 }
 
+// An item-only repeat can complete a call after the terminal has issued
+// its call ID. An item shared by different issued calls identifies neither.
+func terminalCallIDForItem(calls map[string]*responsesTerminalCall, itemID string) string {
+	var issued string
+	for callID, call := range calls {
+		if call.ItemID == itemID {
+			if issued != "" {
+				return ""
+			}
+			issued = callID
+		}
+	}
+	return issued
+}
+
 // responseContentFromOutputItems converts a Responses API output-item array
 // into message content parts. It walks the same wire shape whether the items
 // come from a terminal response.completed payload or output_item.done events.
@@ -102,6 +117,9 @@ func responseContentFromOutputItems(out []any, body []byte, rawItems []json.RawM
 						args = prior.args.value()
 					}
 				}
+			}
+			if callID == "" && itemID != "" {
+				callID = terminalCallIDForItem(calls, itemID)
 			}
 			if callID == "" {
 				continue
