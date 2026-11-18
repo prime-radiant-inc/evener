@@ -22,6 +22,13 @@ func StrictifyJSONSchema(in map[string]any) map[string]any {
 	// This intentionally handles only the constructs we emit (object/array) and is safe to
 	// apply repeatedly (idempotent for our shapes).
 	cp := deepCopyAny(in).(map[string]any)
+	// A nil root is an absent schema rather than a JSON null to preserve: the
+	// projection of it is the empty schema, which is what this returns for it.
+	// Only a nil nested inside the schema is a value, and deepCopyAny keeps
+	// those so a null enum member survives the copy.
+	if cp == nil {
+		cp = map[string]any{}
+	}
 	strictifyJSONSchemaInPlace(cp)
 	return cp
 }
