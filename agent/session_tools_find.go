@@ -964,17 +964,19 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 	// ran. Records are written absolute; one that is not is no evidence here.
 	laneSeen := false
 	laneFallback := ""
+	laneProjectID := ""
 	for _, recorded := range recordPaths(m) {
 		if !filepath.IsAbs(recorded) {
 			continue
 		}
 		recorded = identifier.ResolveClean(recorded)
-		if _, laneRoot, _, _, isLane := r.stateWorktreeOwner(recorded, bucketDir); isLane {
+		if _, laneRoot, _, managedProjectID, isLane := r.stateWorktreeOwner(recorded, bucketDir); isLane {
 			if root := resolveMainRootWithin(recorded, laneRoot); root != "" {
 				return filepath.Base(root)
 			}
 			if !laneSeen {
 				laneSeen = true
+				laneProjectID = managedProjectID
 				laneFallback, _ = r.worktreePathFallback(recorded, bucketDir, m.ParentSessionID)
 			}
 			continue
@@ -989,6 +991,24 @@ func (r *projectNameResolver) projectName(m schema.SessionMeta, bucketDir string
 		}
 	}
 	if laneSeen {
+		if laneFallback != "" {
+			return laneFallback
+		}
+		// The lane answered nothing on disk, but the record also carries the root
+		// the session entered from. When that root is an ordinary directory whose
+		// recorded absolute path hashes to the same project ID the lane's own path
+		// carries, the recording identifies the lane's project and its basename is
+		// the label. This is the same claim the sibling and parent scans accept, so
+		// refusing it only here loses a label the rest of the resolver keeps.
+		//
+		// The lane's own leaf stays out of the result: it is a lane name, and only
+		// an ordinary restore root names a repository. A lane with no recorded
+		// project has nothing to match against, so it keeps the empty answer.
+		if laneProjectID != "" {
+			if gone, projectID := r.recordedOrdinaryProject(m, bucketDir); projectID != "" && projectID == laneProjectID {
+				return filepath.Base(gone)
+			}
+		}
 		return laneFallback
 	}
 
@@ -1310,10 +1330,21 @@ func (r *projectNameResolver) worktreePathFallback(wd, bucketDir, parentSessionI
 		// A managed lane verifies a candidate's project ID, so its sibling snapshot
 		// has to carry IDs. Every other row is asking for a name, and reading
 		// origins alone answers it.
+		//
+		// A candidate that states NO project is unverified: nothing in it names a
+		// repository, so the only thing that can tie it to this row's project is
+		// the bucket's own verified scope. A project bucket has one — its name is
+		// the project ID — and a legacy or flat bucket does not. Admitting an
+		// unverified label in a bucket without verified scope is how a pruned lane
+		// came to take a different repository's saved origin.
+		verifiedScope := r.classifyBucket(bound) == bucketProject
 		for _, cand := range r.siblingEvidenceFor(bound, managedProjectID != "") {
 			// The row's own eligibility, applied to evidence the bucket produced
 			// once. This is why the evidence is not a cached label: the same
 			// sibling is admissible for one row and not for another.
+			if cand.projectID == "" && managedProjectID != "" && !verifiedScope {
+				continue
+			}
 			if admissible(cand.projectID) {
 				found = append(found, cand)
 			}
@@ -1474,6 +1505,31 @@ func (r *projectNameResolver) siblingEvidenceFor(bucketDir string, needProjectID
 		return nil
 	}
 	var evidence []projectEvidence
+	// A name-only lookup is answered by the first usable origin in the bucket's
+	// metadata, and asking for that first is what keeps an originless sibling's
+	// checkout from being resolved before it. Resolving a recorded path is the
+	// only filesystem work in this scan, and on an unavailable network mount that
+	// work blocks the whole read-only search even though the metadata already
+	// held the answer. The origin is a saved string, so this pass touches
+	// nothing.
+	//
+	// Only the name-only form takes this shortcut. A caller that compares project
+	// IDs needs each sibling resolved to supply one, so there it is the ID that
+	// answers and the walk is the point.
+	if !needProjectID {
+		for _, sm := range metas {
+			origin := strings.TrimSpace(sm.EnvInfo.GitOriginURL)
+			if origin == "" {
+				continue
+			}
+			name := repoBasename(origin)
+			evidence = []projectEvidence{{name: name, rank: evidenceRankSiblingOrigin}}
+			if snapshot {
+				r.siblingEvidence[key] = evidence
+			}
+			return evidence
+		}
+	}
 	for _, sm := range metas {
 		// A saved origin is authoritative and needs nothing on disk, so it is read
 		// BEFORE the checkout is resolved. The other order is what made a single
@@ -1893,6 +1949,52 @@ func existingPrefix(path string) string {
 	}
 }
 
+// pathWithin reports whether path is root itself or sits beneath it, comparing
+// whole path components. A string prefix comparison would call /a/rooted a
+// child of /a/root; this does not.
+func pathWithin(path, root string) bool {
+	path = filepath.Clean(path)
+	root = filepath.Clean(root)
+	if path == root {
+		return true
+	}
+	if root == "" || root == string(filepath.Separator) {
+		return filepath.IsAbs(path)
+	}
+	return strings.HasPrefix(path, root+string(filepath.Separator))
+}
+
+// resolveExistingPrefix resolves every component of path that exists and keeps
+// the missing tail in its lexical spelling, so two paths that name the same
+// place get the same answer even when their last components are gone.
+//
+// existingPrefix alone cannot do this: EvalSymlinks fails for the whole path as
+// soon as one component is missing, so passing the joined result through
+// ResolveClean leaves even the ancestor in its original spelling. Splitting the
+// two gives the ancestor the resolution it deserves.
+func resolveExistingPrefix(path string) string {
+	clean := filepath.Clean(path)
+	var missing []string
+	for {
+		if _, err := os.Lstat(clean); err == nil {
+			resolved := identifier.ResolveClean(clean)
+			if len(missing) == 0 {
+				return resolved
+			}
+			return filepath.Join(append([]string{resolved}, missing...)...)
+		}
+		parent := filepath.Dir(clean)
+		if parent == clean {
+			if len(missing) == 0 {
+				return clean
+			}
+			return filepath.Join(append([]string{clean}, missing...)...)
+		}
+		missing = append([]string{filepath.Base(clean)}, missing...)
+		clean = parent
+	}
+}
+
 // isConfiguredStateHome reports whether home is the state home this process
 // computes from its own configuration. It is the one independent
 // identification of the state tree, so a path that merely spells the layout
@@ -1974,8 +2076,27 @@ func resolveMainRootWithin(dir, root string) string {
 	// unresolved path describes the link rather than the lane: the walk would
 	// compare an alias against a lane root it does not lexically contain, climb
 	// past the boundary, and leave the lane's identity to whatever encloses it.
-	clean := identifier.ResolveClean(dir)
-	root = identifier.ResolveClean(root)
+	//
+	// Each side is resolved through its EXISTING components only. Full path
+	// resolution fails once any component is missing, and a recorded directory
+	// that names a DELETED subdirectory of a surviving lane is exactly that: the
+	// missing tail keeps its original spelling while the lane root resolves to its
+	// physical one, the two stop comparing equal, and the walk climbs straight
+	// past the boundary into the checkout enclosing the state dir.
+	//
+	// Resolving the nearest existing ancestor and re-appending the missing
+	// components puts both sides in the same spelling. Doing it by passing the
+	// joined path to EvalSymlinks would not: that call fails for the whole path,
+	// so even the ancestor would come back unresolved.
+	clean := resolveExistingPrefix(dir)
+	root = resolveExistingPrefix(root)
+	if !pathWithin(clean, root) {
+		// Containment is the boundary's whole guarantee, so it is checked before
+		// the first step rather than trusted from the comparison above. A recorded
+		// path that does not sit at or under its lane root is not that lane's
+		// directory, and walking it would answer with whatever encloses it.
+		return ""
+	}
 	for {
 		if resolved, found := mainRootAt(clean); found {
 			return resolved

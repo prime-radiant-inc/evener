@@ -487,7 +487,8 @@ func TestFind_ProjectName_QueryModeUsesMainRepoRoot(t *testing.T) {
 }
 
 func TestFind_ProjectName_FallbacksAndOrdinaryDirectories(t *testing.T) {
-	t.Parallel()
+	// Serial: the configured-bucket fixtures below pin XDG_STATE_HOME, and
+	// t.Setenv cannot run under t.Parallel.
 
 	// 1. Hyphenated repo name in an in-repo worktree must not be truncated to the last hyphen
 	m1 := schema.SessionMeta{}
@@ -740,6 +741,7 @@ func TestFind_ProjectName_FallbacksAndOrdinaryDirectories(t *testing.T) {
 	// 14. A recognized project bucket keeps the sibling fallback even when its
 	// name fails identifier.ValidateProjectID: transcript search still enumerates
 	// legacy-named buckets, so their sessions must still get a project label.
+	pinStateHome(t)
 	legacyRoot, err := userdirs.DefaultStateRoot()
 	if err != nil {
 		t.Fatal(err)
@@ -2892,16 +2894,22 @@ func TestFind_ProjectName_SavedOriginOutranksCheckoutName(t *testing.T) {
 }
 
 // TestFind_ProjectName_LegacyBucketKeepsOriginOnlySiblingFallback covers the
-// three conditions of the legacy-bucket rule at once, because they are one
-// classification and a test for each would let two of them rot.
+// conditions of the legacy-bucket rule at once, because they are one
+// classification and a test for each would let some of them rot.
 //
 // A bucket under the configured state root whose basename is not a project ID
-// records no project. That is UNKNOWN, not conflicting: its sessions all describe
-// one repository, so a sibling's saved origin still answers for a deleted managed
-// lane stored there. Treating the unknown ID as a conflict marked every such lane
-// foreign and threw the fallback away.
+// records no project. That is UNKNOWN, not conflicting: treating the unknown ID
+// as a conflict marked every lane stored there foreign and threw away the
+// bucket-wide fallback a legacy bucket genuinely supports.
 //
-// The other two conditions stay in force and are asserted here rather than
+// An unverified label — a sibling's saved origin, which states no project the row
+// can check against — is licensed by verified per-project scope, and a legacy
+// bucket has none. So such a label answers a row that asks only for a name, where
+// there is no project to contradict, and does not answer a managed lane that
+// records its own project. Without that distinction a pruned lane inherited a
+// different repository's origin from a bucket that had merely been pointed at.
+//
+// The remaining conditions stay in force and are asserted here rather than
 // assumed: a sibling that positively names a DIFFERENT project is still rejected,
 // and a flat override outside the configured root is still ineligible even when
 // its basename happens to look like a project ID.
@@ -2926,13 +2934,23 @@ func TestFind_ProjectName_LegacyBucketKeepsOriginOnlySiblingFallback(t *testing.
 		t.Fatal(err)
 	}
 
-	// The lane records a project in its path; the bucket records none, so nothing
-	// conflicts and the origin answers.
+	// A managed lane records a project in its path, so it compares IDs. The
+	// sibling states none and the bucket has no verified scope, so nothing ties
+	// this origin to that project and the lane gets no label.
 	laneProject := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(newNamedCheckout(t, "legacy-repo")))
 	lane := schema.SessionMeta{}
 	lane.EnvInfo.WorkingDir = filepath.Join(legacy, "worktrees", laneProject.ID, "dlg_legacy")
-	if got, want := projectName(lane, legacy), "legacy-repo"; got != want {
-		t.Fatalf("projectName(managed lane in a legacy bucket with an origin-only sibling) = %q, want %q (an unknown bucket project is not a conflict)", got, want)
+	if got := projectName(lane, legacy); got != "" {
+		t.Fatalf("projectName(managed lane in a legacy bucket with an unverified origin sibling) = %q, want empty: an unverified label needs verified per-project scope", got)
+	}
+
+	// A session-owned lane records no project, so it asks only for a name and
+	// there is nothing to contradict. The legacy bucket's origin-only sibling is
+	// exactly the evidence such a row has, and it still answers.
+	sessionOwned := schema.SessionMeta{}
+	sessionOwned.EnvInfo.WorkingDir = filepath.Join(legacy, "sessions", identifier.MustNewSessionID(), "worktrees", "dlg_legacy_name_only")
+	if got, want := projectName(sessionOwned, legacy), "legacy-repo"; got != want {
+		t.Fatalf("projectName(session-owned lane in a legacy bucket with an origin-only sibling) = %q, want %q (an unknown bucket project is not a conflict for a name-only row)", got, want)
 	}
 
 	// Condition two: a sibling that POSITIVELY names a different project is still
@@ -2970,6 +2988,50 @@ func TestFind_ProjectName_LegacyBucketKeepsOriginOnlySiblingFallback(t *testing.
 	flatLane.EnvInfo.WorkingDir = filepath.Join(flat, "worktrees", laneProject.ID, "dlg_flat")
 	if got := projectName(flatLane, flat); got != "" {
 		t.Fatalf("projectName(lane in a flat override whose basename looks like a project ID) = %q, want empty (inference is ineligible outside the configured root)", got)
+	}
+}
+
+// TestFind_ProjectName_LegacyBucketOriginOnlyNeedsMatchingProjectID covers the
+// remaining hole in the flat-state guard. A bucket under the configured root
+// whose name fails ValidateProjectID is classified legacy, and legacy evidence
+// covers an UNVERIFIED origin: one whose sibling records no project the row can
+// check against. A pruned lane that records its own project would then take a
+// different repository's saved origin, because nothing tied that origin to this
+// project.
+//
+// Independently verified per-project scope is what has to license an unverified
+// label. A legacy bucket has none, so its origin-only sibling stays evidence only
+// for rows that do not compare project IDs. The bucket remains searchable: a bare
+// session ID in it is still found and still gets this label.
+func TestFind_ProjectName_LegacyBucketOriginOnlyNeedsMatchingProjectID(t *testing.T) {
+	stateHome := pinStateHome(t)
+
+	// A legacy bucket: under the configured root, basename is not a project ID.
+	legacy := filepath.Join(stateHome, "evener", "projects", "legacy-shared-scope")
+	if err := os.MkdirAll(filepath.Join(legacy, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir legacy bucket: %v", err)
+	}
+	if err := identifier.ValidateProjectID(filepath.Base(legacy)); err == nil {
+		t.Fatalf("fixture basename %q is a valid project ID, so it cannot exercise the legacy case", filepath.Base(legacy))
+	}
+
+	// The only sibling is another repository's saved origin, and its checkout is
+	// gone so nothing resolves to supply a project ID.
+	foreign := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	foreign.EnvInfo.GitOriginURL = "git@github.com:owner/other-repository.git"
+	foreign.EnvInfo.WorkingDir = filepath.Join(t.TempDir(), "gone-other-checkout")
+	if err := schema.SaveSessionMeta(legacy, foreign); err != nil {
+		t.Fatal(err)
+	}
+
+	// The lane records its own project in its path and no owner, so its record
+	// can be checked against a candidate's project ID — and this candidate states
+	// none.
+	laneProject := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(newNamedCheckout(t, "lane-own-repository")))
+	lane := schema.SessionMeta{}
+	lane.EnvInfo.WorkingDir = filepath.Join(legacy, "worktrees", laneProject.ID, "dlg_scoped")
+	if got := projectName(lane, legacy); got != "" {
+		t.Fatalf("projectName(pruned lane in a legacy bucket whose only sibling records another repository's origin) = %q, want empty: an unverified label needs verified per-project scope", got)
 	}
 }
 
@@ -3239,6 +3301,128 @@ func TestFind_ProjectName_SymlinkedLaneKeepsItsBoundedWalk(t *testing.T) {
 	row.EnvInfo.WorkingDir = alias
 	if got, want := projectName(row, bucket), "repo-b"; got != want {
 		t.Fatalf("projectName(row recording a symlink to a deleted-checkout lane) = %q, want its parent's %q (not the repository enclosing the state dir)", got, want)
+	}
+}
+
+// TestFind_ProjectName_MissingSubdirOfSymlinkedLaneKeepsItsBounds covers a
+// recorded working directory that names a DELETED subdirectory of a surviving
+// lane, with the state home reached through a symlink.
+//
+// Full symlink resolution leaves the missing path in its original spelling while
+// resolving the existing lane root to its physical spelling, so the two never
+// compare equal: the walk does not stop at the lane root. If the lane has also
+// lost its .git entry there is nothing to stop it, and it labels the transcript
+// with the checkout that encloses the state directory — a repository the session
+// never ran in.
+//
+// Resolving the existing prefix of both paths, the way sameBucket already does,
+// keeps them comparable, so containment holds and the answer comes from the
+// lane's verified parent instead.
+func TestFind_ProjectName_MissingSubdirOfSymlinkedLaneKeepsItsBounds(t *testing.T) {
+	// The enclosing checkout is what an escaped walk would answer with. Both the
+	// physical state home AND the link live inside it, so a walk that climbs the
+	// link's lexical parents reaches the checkout's own .git. A link placed
+	// outside any repository would let the same escape return nothing and prove
+	// nothing.
+	checkoutA := newNamedCheckout(t, "enclosing-repo")
+	physical := filepath.Join(checkoutA, "state")
+	if err := os.MkdirAll(physical, 0o755); err != nil {
+		t.Fatalf("mkdir physical state home: %v", err)
+	}
+	linkedHome := filepath.Join(checkoutA, "state-home-link")
+	if err := os.Symlink(physical, linkedHome); err != nil {
+		t.Fatalf("symlink state home: %v", err)
+	}
+	t.Setenv("XDG_STATE_HOME", linkedHome)
+
+	repoB := newNamedCheckout(t, "repo-b")
+	projectB := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repoB))
+	bucket := filepath.Join(physical, "evener", "projects", projectB.ID)
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	// The parent names project B, so it is the evidence that must answer.
+	parent := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	parent.EnvInfo.GitOriginURL = "git@github.com:owner/repo-b.git"
+	parent.EnvInfo.WorkingDir = repoB
+	if err := schema.SaveSessionMeta(bucket, parent); err != nil {
+		t.Fatal(err)
+	}
+
+	// The lane survives with no .git entry. The recorded working directory is a
+	// subdirectory of it that was deleted, reached through the symlinked home so
+	// the recorded spelling is the link's.
+	//
+	// The lane is written where a managed lane actually goes,
+	// <bucket>/worktrees/<projectID>/<lane>, so the recorded path's lane root is a
+	// directory that exists. A lane directory built without the project segment
+	// would make the lane root nonexistent, and a walk from a path with no
+	// existing ancestor inside the state tree proves nothing about containment.
+	laneDir := filepath.Join(bucket, "worktrees", projectB.ID, "dlg_escaped")
+	if err := os.MkdirAll(laneDir, 0o755); err != nil {
+		t.Fatalf("mkdir lane: %v", err)
+	}
+	recorded := filepath.Join(linkedHome, "evener", "projects", projectB.ID, "worktrees", projectB.ID, "dlg_escaped", "pkg")
+	row := schema.SessionMeta{ParentSessionID: parent.ID}
+	row.EnvInfo.WorkingDir = recorded
+	if got, want := projectName(row, bucket), "repo-b"; got != want {
+		t.Fatalf("projectName(row recording a deleted subdirectory of a surviving lane through a symlinked state home) = %q, want its parent's %q (not the checkout enclosing the state dir)", got, want)
+	}
+}
+
+// TestFind_ProjectName_MissingSubdirOfSymlinkedLiveLaneResolvesPointer is the
+// other half of the containment rule, and it is what keeps refusal from being the
+// only answer. The lane root is LIVE — it still holds a linked-worktree .git
+// pointer naming its main checkout — and the recorded directory is a subdirectory
+// of it that has been deleted, spelled through the symlinked state home.
+//
+// Refusing the walk whenever the two spellings disagree would lose this: the
+// lane's own pointer is what identifies the project, and it is reachable. The
+// prefix of each path has to be resolved consistently so containment holds and
+// the walk still reaches the pointer. Answering the parent's label instead would
+// pass a containment-only check by luck of the fixture, so the two labels are
+// made to differ.
+func TestFind_ProjectName_MissingSubdirOfSymlinkedLiveLaneResolvesPointer(t *testing.T) {
+	mainCheckout, liveLane := gittest.NewLinkedWorktree(t)
+
+	physical := t.TempDir()
+	linkedHome := filepath.Join(t.TempDir(), "state-home-link")
+	if err := os.Symlink(physical, linkedHome); err != nil {
+		t.Fatalf("symlink state home: %v", err)
+	}
+	t.Setenv("XDG_STATE_HOME", linkedHome)
+
+	projectB := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(mainCheckout))
+	bucket := filepath.Join(physical, "evener", "projects", projectB.ID)
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "worktrees", projectB.ID), 0o755); err != nil {
+		t.Fatalf("mkdir lane parent: %v", err)
+	}
+
+	// The lane root is the live linked worktree, so its .git pointer is what the
+	// bounded walk has to reach.
+	laneDir := filepath.Join(bucket, "worktrees", projectB.ID, "dlg_live")
+	if err := os.Symlink(liveLane, laneDir); err != nil {
+		t.Fatalf("symlink live lane into the bucket: %v", err)
+	}
+
+	// A parent names a DIFFERENT repository, so a walk that gives up and asks the
+	// parent is visible in the result.
+	parent := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	parent.EnvInfo.GitOriginURL = "git@github.com:owner/parent-decoy-repo.git"
+	parent.EnvInfo.WorkingDir = filepath.Join(t.TempDir(), "gone-parent-checkout")
+	if err := schema.SaveSessionMeta(bucket, parent); err != nil {
+		t.Fatal(err)
+	}
+
+	recorded := filepath.Join(linkedHome, "evener", "projects", projectB.ID, "worktrees", projectB.ID, "dlg_live", "pkg")
+	row := schema.SessionMeta{ParentSessionID: parent.ID}
+	row.EnvInfo.WorkingDir = recorded
+	if got, want := projectName(row, bucket), filepath.Base(mainCheckout); got != want {
+		t.Fatalf("projectName(deleted subdir of a live lane through a symlinked state home) = %q, want the lane's own main checkout %q (not the parent's %q)", got, want, "parent-decoy-repo")
 	}
 }
 
@@ -3618,6 +3802,57 @@ func TestFind_ProjectName_DeletedLaneUsesSurvivingRestoreRoot(t *testing.T) {
 	row.EnvInfo.WorkingDir = row.WorktreePath
 	if got, want := projectName(row, stateDir), "surviving-repo"; got != want {
 		t.Fatalf("projectName(originless row whose lane was pruned and whose restore root still exists) = %q, want %q", got, want)
+	}
+}
+
+// TestFind_ProjectName_PrunedLaneFallsBackToMovedRestoreRoot covers the case the
+// surviving-restore-root rule misses: the checkout MOVED as well, so nothing on
+// disk resolves. The record still holds an absolute restore root, and that path
+// hashes to the same project ID the pruned lane's own path carries, so the
+// recording identifies the lane's project without anything being walked.
+//
+// Landing on the empty lane fallback throws that away. The lane's own leaf is
+// still kept out of the result: a lane name is not a repository name, and only
+// the restore root supplies one.
+func TestFind_ProjectName_PrunedLaneFallsBackToMovedRestoreRoot(t *testing.T) {
+	stateDir := canonicalStateDir(t.TempDir())
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+
+	// The checkout is gone, and its recorded path is what the lane was cut under.
+	moved := filepath.Join(t.TempDir(), "moved-away-repo")
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(moved))
+
+	row := schema.SessionMeta{}
+	row.WorktreePath = filepath.Join(stateDir, "worktrees", project.ID, "dlg_pruned_moved")
+	row.WorktreeRestoreRoot = moved
+	row.EnvInfo.WorkingDir = row.WorktreePath
+	if got, want := projectName(row, stateDir), "moved-away-repo"; got != want {
+		t.Fatalf("projectName(pruned lane whose saved restore root moved but still hashes to the lane's project) = %q, want the restore root's basename %q, not the lane leaf", got, want)
+	}
+}
+
+// TestFind_ProjectName_PrunedLaneKeepsNoLeafWhenProjectIsUnrecorded is the
+// negative half of the rule above: the restore-root basename is licensed by the
+// restore root identifying the LANE'S project. An ownerless lane at
+// <stateDir>/worktrees/<lane> records no project of its own, so no restore root
+// can be shown to identify anything, and the label stays empty. Answering the
+// lane's leaf here is the phantom project name the guard exists to prevent.
+func TestFind_ProjectName_PrunedLaneKeepsNoLeafWhenProjectIsUnrecorded(t *testing.T) {
+	stateDir := canonicalStateDir(t.TempDir())
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir state dir: %v", err)
+	}
+
+	moved := filepath.Join(t.TempDir(), "unverified-moved-repo")
+	row := schema.SessionMeta{}
+	// An ownerless lane: <stateDir>/worktrees/<lane>, with no project segment.
+	row.WorktreePath = filepath.Join(stateDir, "worktrees", "dlg_no_project_segment")
+	row.WorktreeRestoreRoot = moved
+	row.EnvInfo.WorkingDir = row.WorktreePath
+	if got := projectName(row, stateDir); got != "" {
+		t.Fatalf("projectName(pruned ownerless lane whose restore root cannot be tied to a recorded project) = %q, want empty, never the lane leaf", got)
 	}
 }
 

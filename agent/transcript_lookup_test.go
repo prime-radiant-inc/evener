@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -49,13 +50,47 @@ func newBucket(t *testing.T) string {
 	return newBucketUnder(t, newStateHome(t))
 }
 
+// pinnedStateHomes remembers the state home each test pinned, so every fixture
+// in one test derives the SAME configured root. Two buckets created under two
+// different roots would not both be recognized as part of the state tree.
+var pinnedStateHomes sync.Map
+
+// pinStateHome points $XDG_STATE_HOME at a directory this test owns and returns
+// it. Any fixture that derives this process's configured state root must call
+// this first: userdirs.DefaultStateRoot honors an inherited $XDG_STATE_HOME,
+// which the agent test runner leaves intact, so an unpinned fixture creates
+// buckets in the developer's own state tree and leaves them there. A fixture
+// that also writes a fixed bucket name would then read whatever metadata that
+// tree already held, making the result depend on the ambient machine.
+//
+// The pin is per test and idempotent, because one test builds several buckets
+// and they all have to live under one configured root.
+//
+// t.Setenv forbids t.Parallel, so a test calling this must be serial.
+func pinStateHome(t *testing.T) string {
+	t.Helper()
+	name := t.Name()
+	if home, ok := pinnedStateHomes.Load(name); ok {
+		return home.(string)
+	}
+	home := realTempDirForTest(t)
+	t.Setenv("XDG_STATE_HOME", home)
+	pinnedStateHomes.Store(name, home)
+	t.Cleanup(func() { pinnedStateHomes.Delete(name) })
+	return home
+}
+
 // newConfiguredBucket creates a project bucket under this process's configured
 // state root, which is the only thing that identifies a directory as part of
 // the state tree. It is for cases that exercise inference *inside* a project
 // bucket: a bucket under a bare temp directory merely spells the layout and is
 // deliberately not treated as one.
+//
+// The state home is pinned first, so the bucket lands in a tree the test owns
+// rather than in whatever home this process inherited.
 func newConfiguredBucket(t *testing.T) string {
 	t.Helper()
+	pinStateHome(t)
 	root, err := userdirs.DefaultStateRoot()
 	if err != nil {
 		t.Fatalf("configured state root: %v", err)
@@ -66,6 +101,46 @@ func newConfiguredBucket(t *testing.T) string {
 		t.Fatalf("newConfiguredBucket: %v", err)
 	}
 	return dir
+}
+
+// TestNewConfiguredBucketIgnoresTheAmbientStateHome pins the rule that the
+// default suite must not depend on ambient developer machine state.
+//
+// userdirs.DefaultStateRoot honors an inherited $XDG_STATE_HOME, which the agent
+// test runner leaves intact. A fixture that read it directly would create
+// buckets in the developer's own state tree and leave them there, and a fixed
+// bucket name would then read whatever metadata that tree already held. The
+// fixture must pin the variable to a directory it owns before deriving the root.
+func TestNewConfiguredBucketIgnoresTheAmbientStateHome(t *testing.T) {
+	ambient := realTempDirForTest(t)
+	t.Setenv("XDG_STATE_HOME", ambient)
+
+	bucket := newConfiguredBucket(t)
+	if rel, err := filepath.Rel(ambient, bucket); err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		t.Fatalf("newConfiguredBucket built %q under the inherited state home %q; the default suite would write into the developer's own state tree", bucket, ambient)
+	}
+	entries, err := os.ReadDir(ambient)
+	if err != nil {
+		t.Fatalf("read ambient state home: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("the inherited state home %q now holds %d entries; the fixture wrote into it", ambient, len(entries))
+	}
+	// The sentinel stays byte-identical after a SECOND fixture call, which is
+	// what a test building several configured buckets looks like.
+	_ = newConfiguredBucket(t)
+	entries, err = os.ReadDir(ambient)
+	if err != nil {
+		t.Fatalf("read ambient state home after the second fixture: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("the inherited state home %q now holds %d entries after two fixture calls; the configured buckets were not authored in a test-owned tree", ambient, len(entries))
+	}
+	// And both buckets share ONE configured root, or the resolver would not
+	// recognize them as part of the same state tree.
+	if got := stateHomeFor(bucket); got == "" {
+		t.Fatalf("stateHomeFor(%q) = \"\": the pinned bucket is not under a recognized state home", bucket)
+	}
 }
 
 // writeTranscript creates a minimal transcript file for sessionID in bucket dir.

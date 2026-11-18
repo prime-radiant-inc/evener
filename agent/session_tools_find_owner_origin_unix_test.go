@@ -157,3 +157,69 @@ func TestFind_ProjectName_SiblingOriginDoesNotResolveTheCheckoutForANameOnlyRow(
 		t.Fatalf("sibling evidence for a name-only row carries project ID %q: the checkout was resolved for a row that needed no ID, so a historical checkout on a stalled mount would hold this search", evidence[0].projectID)
 	}
 }
+
+// TestFind_ProjectName_NameOnlyRowStopsAtTheFirstOrigin pins the cost the
+// previous scan paid: an ORIGINLESS sibling older than the origin-bearing one
+// was still resolved before the origin answered.
+//
+// A pruned session-owned lane needs only a project name, and a sibling's saved
+// origin settles that from metadata alone. Resolving the originless sibling's
+// recorded path is filesystem work the answer does not need, and on an
+// unavailable network mount it blocks the whole read-only search. The scan must
+// therefore read the metadata for a usable origin before resolving any sibling's
+// path.
+//
+// The originless sibling's checkout is LIVE, so a resolution positively succeeds
+// and is visible: a name-only snapshot that touches it carries the project ID
+// that resolving it produces. Its absence is the evidence that no path was
+// resolved, which a label assertion cannot show because both orders label the
+// row the same way.
+func TestFind_ProjectName_NameOnlyRowStopsAtTheFirstOrigin(t *testing.T) {
+	stateHome := pinStateHome(t)
+
+	repo := newNamedCheckout(t, "bucket-repo")
+	project := identifier.ProjectFromCanonicalPath(identifier.ResolveClean(repo))
+	bucket, err := RuntimeDirForProjectWithStateHome(project, stateHome)
+	if err != nil {
+		t.Fatalf("runtime layout helper: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(bucket, "sessions"), 0o755); err != nil {
+		t.Fatalf("mkdir bucket: %v", err)
+	}
+
+	// The originless sibling is written FIRST, so a scan that walks metadata in
+	// order reaches it before the origin that would have answered.
+	originless := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	originless.EnvInfo.WorkingDir = newNamedCheckout(t, "originless-checkout")
+	if err := schema.SaveSessionMeta(bucket, originless); err != nil {
+		t.Fatal(err)
+	}
+	withOrigin := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	withOrigin.EnvInfo.GitOriginURL = "git@github.com:bucket/bucket-repo.git"
+	withOrigin.EnvInfo.WorkingDir = filepath.Join(t.TempDir(), "gone-checkout")
+	if err := schema.SaveSessionMeta(bucket, withOrigin); err != nil {
+		t.Fatal(err)
+	}
+
+	metas, err := schema.ListSessionMetas(bucket)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resolver := newProjectNameResolver(map[string][]schema.SessionMeta{bucket: metas})
+
+	row := schema.SessionMeta{ID: identifier.MustNewSessionID()}
+	row.EnvInfo.WorkingDir = filepath.Join(bucket, "sessions", identifier.MustNewSessionID(), "worktrees", "dlg_name_only")
+	if got, want := resolver.projectName(row, bucket), "bucket-repo"; got != want {
+		t.Fatalf("projectName(name-only row beside an originless sibling) = %q, want %q", got, want)
+	}
+
+	evidence, ok := resolver.siblingEvidence[siblingEvidenceKey{bucketDir: bucket, needProjectID: false}]
+	if !ok {
+		t.Fatalf("the name-only row did not build the bucket's sibling evidence")
+	}
+	for _, cand := range evidence {
+		if cand.projectID != "" {
+			t.Fatalf("name-only sibling evidence = %#v carries project ID %q: the originless sibling's checkout was resolved even though a saved origin had already answered, which is the walk an unavailable mount stalls", evidence, cand.projectID)
+		}
+	}
+}
