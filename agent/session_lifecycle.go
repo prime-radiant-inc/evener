@@ -1136,14 +1136,22 @@ func (s *Session) watchOnlyAcknowledgmentTurn(ctx context.Context, kind EntryKin
 	if !s.hasAcceptedTerminalCommunicate() && !s.terminalSeenForLease(lease) {
 		return false
 	}
-	pending, err := s.pendingDelegateAttentionIDs()
-	if err != nil || len(pending) == 0 {
+	// The turn acknowledges what it actually PRESENTED, not everything still
+	// pending. A descendant's terminal report sitting in the same pending set
+	// was never shown to this model: requiring the whole set to be watch
+	// attention refused the acknowledgment, the bare-text retries exhausted,
+	// keepingReport suppressed the error, and the drain opened another turn for
+	// the same row forever while the accepted report never settled
+	// (#2340 review High).
+	presented := s.presentedWatchAttentionIDs()
+	if len(presented) == 0 {
 		return false
 	}
-	for _, attentionID := range pending {
-		if !isStableWatchAttentionID(attentionID) {
-			return false
-		}
+	// A non-watch item this turn did present is not acknowledged by plain text:
+	// an update or a descendant report the model was shown still wants its own
+	// handling, and finishing here would drop it.
+	if s.presentedNonWatchAttention() {
+		return false
 	}
 	return true
 }

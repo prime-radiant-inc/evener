@@ -1130,6 +1130,13 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 
 	lastResult := ""
 	var stallStart time.Time
+	// watchSetStarved names the pending watch set a turn ran without
+	// presenting. The drain must not open another turn for that same set: it
+	// would spend a provider call per pass and, with keepingReport suppressing
+	// the bare-text error, keep the accepted report from ever settling
+	// (#2340 review High). A set keyed differently (a row arrived since) is
+	// owed a turn again at once.
+	watchSetStarved := ""
 	// drivenUpdates holds the delegate updates the model has already seen, so
 	// an update that stays pending does not run another turn. It starts with
 	// what the turn before the drain showed: a delta turn credits nothing and
@@ -1228,6 +1235,12 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		wakePending = false
 		if woke {
 			quietPasses = 0
+			// Real news moved the tree: retry a watch set an earlier turn ran
+			// without presenting. Without this a starved set would only ever be
+			// retried by a row arriving, so a notice the projection kept
+			// missing would wait forever instead of getting paced recovery
+			// (#2340 review High).
+			watchSetStarved = ""
 		}
 		// Take this pass's abandonment verdict BEFORE the kick below, so a
 		// child this pass gives up on is not also driven by this same pass.
@@ -1325,7 +1338,15 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 		// start until this one finalizes: a delegate whose only pending work is
 		// a watch notice about the shell it is waiting on could wait forever for
 		// the notice that was meant to tell it what to do about that shell.
-		watchAttentionOwed := s.drainCanPresentWatchAttention(ctx)
+		// A watch set the last turn failed to PRESENT is not re-offered at once.
+		// The turn ran, but the model saw none of those rows: re-opening it would
+		// spend one provider call per pass on the same unresolved notice while the
+		// accepted report never settles (#2340 review High). Pacing keys on the SET,
+		// so a row arriving since is presented immediately instead of waiting out a
+		// delay that belonged to a different set.
+		watchSetKey := s.pendingWatchAttentionKey()
+		watchAttentionOwed := s.drainCanPresentWatchAttention(ctx) &&
+			(watchSetKey == "" || watchSetKey != watchSetStarved)
 		notificationTurnOwed := s.peekNotifications() > 0 ||
 			s.pendingRootDelegateAttention() ||
 			s.hasUndrivenDelegateUpdate(drivenUpdates) ||
@@ -1361,6 +1382,19 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 			}
 			s.settlePresentedDelegateUpdates(drivenUpdates)
 			s.restartDrainGraceSecondWindows(s.sclock().Now())
+			// A watch turn that presented nothing is not drain progress: the
+			// rows it was opened for are still unread, so the next pass must
+			// wait rather than open the same turn again.
+			watchSetStarved = ""
+			if entry == EntryDelegateAttention && len(s.presentedWatchAttentionIDs()) == 0 && watchSetKey != "" {
+				watchSetStarved = watchSetKey
+			}
+			if watchSetStarved != "" {
+				// Keep the stall clock and the kick rate as they were: this pass
+				// neither delivered anything nor cleared the work it ran for.
+				prevOutstanding = true
+				continue
+			}
 			// A delivered notification is real drain progress: reset the stall
 			// clock so the watchdog measures only continuous stall, never a stall
 			// episode punctuated by deliveries.

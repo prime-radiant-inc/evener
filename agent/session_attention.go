@@ -3107,3 +3107,109 @@ func (s *Session) drainCanPresentWatchAttention(ctx context.Context) bool {
 	}
 	return slices.ContainsFunc(pending, isStableWatchAttentionID)
 }
+
+// pendingWatchAttentionIDs lists the watch rows still unresolved on this
+// session, sorted so the same set always yields the same key.
+func (s *Session) pendingWatchAttentionIDs() []string {
+	pending, err := s.pendingDelegateAttentionIDs()
+	if err != nil {
+		return nil
+	}
+	var watch []string
+	for _, attentionID := range pending {
+		if isStableWatchAttentionID(attentionID) {
+			watch = append(watch, attentionID)
+		}
+	}
+	slices.Sort(watch)
+	return watch
+}
+
+// pendingWatchAttentionKey names the current pending watch set, so a caller can
+// tell "the same rows that failed to be presented" from "a row that arrived
+// since". Empty when no watch row is pending.
+func (s *Session) pendingWatchAttentionKey() string {
+	return strings.Join(s.pendingWatchAttentionIDs(), "\x00")
+}
+
+// presentedWatchAttentionIDs lists the watch rows THIS turn actually showed the
+// model: the ones its settled requests credited (attentionCoveredIDs), filtered
+// to the watch families.
+//
+// This is the drain's exit condition. A turn that RAN is not a turn that
+// PRESENTED anything: an EntryDelegateAttention turn whose request projected no
+// watch row stages nothing, settles nothing and leaves every row pending, so
+// re-opening it for the same row spends provider calls without resolving the
+// notice (#2340 review High).
+func (s *Session) presentedWatchAttentionIDs() []string {
+	if s == nil {
+		return nil
+	}
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	var watch []string
+	for attentionID := range s.attentionCoveredIDs {
+		if isStableWatchAttentionID(attentionID) {
+			watch = append(watch, attentionID)
+		}
+	}
+	slices.Sort(watch)
+	return watch
+}
+
+// presentedNonWatchAttention reports whether the running turn presented any
+// attention that is not a watch row.
+//
+// watchOnlyAcknowledgmentTurn pairs it with presentedWatchAttentionIDs: plain
+// text acknowledges watch rows the model was actually shown, and nothing else.
+// A descendant's report or an owed update in the same turn still wants its own
+// handling, so finishing idle there would drop it.
+func (s *Session) presentedNonWatchAttention() bool {
+	if s == nil {
+		return false
+	}
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	for attentionID := range s.attentionCoveredIDs {
+		if !isStableWatchAttentionID(attentionID) {
+			return true
+		}
+	}
+	return false
+}
+
+// discardedWatchAttentionIDs lists the watch rows this session's transcript
+// records as DISCARDED: a row a newer notice superseded, or a row a stop-drain
+// discarded. The fold keeps them out of pending, which is correct — resolved
+// attention is never owed again — but "not pending" is not "not in history".
+//
+// The live path removes the resident turn when it discards (see
+// discardSupersededStableWatchNotices). A RESTART rebuilds history from the
+// transcript, where the turn is still recorded, so without this the model read
+// a superseded or dropped watch row after every resume, and the unleased
+// projection admitted it too because the row was no longer pending
+// (#2340 review).
+//
+// A read failure degrades to "nothing known": the caller then keeps the turns
+// rather than hiding content it cannot prove was discarded.
+func (s *Session) discardedWatchAttentionIDs() map[string]struct{} {
+	if s == nil {
+		return nil
+	}
+	s.attentionMu.Lock()
+	fold, err := s.delegateAttentionFoldLocked()
+	s.attentionMu.Unlock()
+	if err != nil {
+		return nil
+	}
+	discarded := make(map[string]struct{})
+	for attentionID, disposition := range fold.resolutions {
+		if disposition == delegateAttentionDiscarded && isStableWatchAttentionID(attentionID) {
+			discarded[attentionID] = struct{}{}
+		}
+	}
+	if len(discarded) == 0 {
+		return nil
+	}
+	return discarded
+}

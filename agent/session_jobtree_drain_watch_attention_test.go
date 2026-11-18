@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -131,5 +132,105 @@ func TestFinalizationDrainPresentsPendingWatchAttention(t *testing.T) {
 		}
 	case <-time.After(2 * time.Second): // TRIPWIRE: same in-process fixture; a hang here means the drain spun after settling.
 		t.Fatal("the drain did not finish after presenting and settling its only pending work")
+	}
+}
+
+// TestFinalizationDrainDoesNotReopenATurnThatPresentedNothing pins the drain's
+// exit condition: a turn that RAN is not a turn that PRESENTED anything
+// (#2340 review High).
+//
+// The shape is a generation that already reported, holding a watch row its turn
+// cannot present. The bare-text retries exhaust, keepingReport suppresses the
+// error, and the row stays pending. Counting "a turn ran" as progress re-opened
+// the same turn per pass and reset the stall clock each time, so the accepted
+// report never settled and the drain spent provider calls forever. The
+// assertion is the CALL COUNT: one turn for the set, then pacing.
+func TestFinalizationDrainDoesNotReopenATurnThatPresentedNothing(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	client := llm.NewClient()
+	adapter := newFakeAdapter("openai", func(llm.Request) llm.Response {
+		return agenttest.FinalResponse("plain text the turn cannot use")
+	})
+	client.Register(adapter)
+	profile := WithCheapModel(NewOpenAIProfile("gpt-5.2"), "compact-cheap/model")
+	sess := newSession(t, withClient(client), withProfile(profile), withDir(dir), withConfig(SessionConfig{
+		StateDir:         dir,
+		MaxSubagentDepth: 1,
+	}))
+	drainSessionEvents(sess)
+
+	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, controller, "dlg_starved", "")
+	sess.mu.Lock()
+	ownController := sess.delegateController
+	ownOwner := sess.owningDelegateID
+	sess.delegateController = controller
+	sess.owningDelegateID = "dlg_starved"
+	sess.mu.Unlock()
+	t.Cleanup(func() {
+		sess.mu.Lock()
+		sess.delegateController = ownController
+		sess.owningDelegateID = ownOwner
+		sess.mu.Unlock()
+	})
+	controller.mu.Lock()
+	controller.live["dlg_starved"].runtime = sess
+	controller.live["dlg_starved"].binding.runtime = sess
+	controller.mu.Unlock()
+
+	watchID := stableWatchAttentionIDPrefix + "watch:starved:job:starved"
+	if _, err := sess.appendDelegateNotificationDurably(watchID, "watch notice the turn cannot present"); err != nil {
+		t.Fatalf("persist watch attention: %v", err)
+	}
+	sess.notePendingStableWatchNotice(jobNotification{WatchID: "starved", JobID: "starved"}, watchID)
+
+	leaseCtx := context.WithValue(context.Background(), delegateRunLeaseContextKey{}, delegateLease{delegateID: "dlg_starved", generation: 1})
+	ctx, cancel := context.WithCancel(leaseCtx)
+	defer cancel()
+
+	var turns int32
+	process := func(context.Context, string, []ImageAttachment, EntryKind) (string, error) {
+		// Run, present NOTHING, and leave the row pending: the exact shape the
+		// finding describes.
+		atomic.AddInt32(&turns, 1)
+		return "", nil
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := sess.drainJobTreeWith(ctx, nil, func(context.Context) error { return nil }, process)
+		done <- err
+	}()
+
+	// Give the drain ample passes to re-open the turn if it counted a
+	// presentation-less turn as progress.
+	deadline := time.Now().Add(2 * time.Second) // TRIPWIRE: in-process drain on a scripted adapter with no I/O.
+	var last int32
+	stableSince := time.Now()
+	for time.Now().Before(deadline) {
+		current := atomic.LoadInt32(&turns)
+		if current != last {
+			last = current
+			stableSince = time.Now()
+		} else if time.Since(stableSince) > 200*time.Millisecond && current > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	if got := atomic.LoadInt32(&turns); got > 1 {
+		t.Fatalf("the drain opened %d turns for one watch set a turn could not present: a presentation-less turn was counted as progress, so the accepted report never settles", got)
+	}
+	// Non-vacuity: the turn DID run once. Zero would mean this fixture never
+	// reached the gate and would pass with the fix removed.
+	if got := atomic.LoadInt32(&turns); got != 1 {
+		t.Fatalf("the drain opened %d turn(s) for the pending set, want exactly one: zero means the fixture never reached the gate", got)
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second): // TRIPWIRE: same in-process fixture.
+		t.Fatal("the drain did not finish after pacing a starved watch set")
 	}
 }
