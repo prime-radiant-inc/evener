@@ -14,21 +14,28 @@ import (
 
 // A publication bound is a deadline a caller hands in because it has a stall
 // budget to protect. An ORDINARY Notification hook has no such caller: its
-// dispatch context tracks the session, so when Session.Close cancels that context
-// it is not speaking about delivery at all.
+// dispatch context merely tracks the session.
 //
-// The defect: runNotificationHook reused its dispatch context as the output
-// publication bound. A hook finishing as Close canceled the session therefore
-// dropped its user message the instant the stream was full -- even though the
-// consumer frees a slot inside the close window the event is entitled to. The
-// message is gone, and nothing reports it.
+// The defect this pins: an ordinary hook starting before close captures the
+// session lifetime as its output context. If it produces a user message and
+// Close then cancels that lifetime before the message enters a full buffer, the
+// captured context drops the message immediately -- even though the consumer
+// frees a slot inside the close window the event is entitled to. The previous
+// shape of this test cancelled a separate dispatch context and left the captured
+// lifetime active, so it never reached the transition it claimed to cover.
 //
-// The discriminator is a send that must WAIT, with the dispatch context already
-// canceled: the ordinary path delivers once the consumer resumes, while a send
-// narrowed to the canceled dispatch context gives up immediately.
-func TestOrdinaryNotificationHookOutputOutlivesACanceledDispatchContext(t *testing.T) {
+// The transition IS the test: the hook captures the session lifetime, the buffer
+// fills, a close budget is published, and the lifetime is cancelled while the
+// send is parked. The message must still be delivered on the published close
+// window.
+func TestOrdinaryNotificationHookOutputOutlivesTheCanceledSessionLifetime(t *testing.T) {
 	r := newWorktreeRepo(t)
 	root := r.s
+
+	// The lifetime the hook captures at start, and cancels mid-flight.
+	lifetime, cancelLifetime := context.WithCancel(t.Context())
+	root.sessionCtx = lifetime
+	t.Cleanup(cancelLifetime)
 
 	runner := hooks.NewRunner(nil, "test-model")
 	runner.Add(plugin.HookNotification, plugin.RegisteredHook{
@@ -37,30 +44,13 @@ func TestOrdinaryNotificationHookOutputOutlivesACanceledDispatchContext(t *testi
 		Command: `printf '%s\n' '{"systemMessage":"hook output"}'`,
 		Timeout: 30,
 	})
-	// The dispatch context. It is canceled at the hook's completion, which is
-	// when Session.Close cancels the session on a hook already running: the hook
-	// has produced its output by then, and what remains is publishing it. The
-	// context is NOT marked as a publication bound -- no caller supplied a
-	// deadline here.
-	//
-	// The callback deliberately publishes NO lifecycle events. The output
-	// publication is the one send under test, and it must be the FIRST send to
-	// reach the blocked-send boundary: with lifecycle sends on the stream the
-	// hook's own start event occupies the slot, the helper observes that park
-	// instead, and the output then travels through a buffer the consumer has
-	// already freed -- which made an earlier version of this test pass with the
-	// defect intact.
-	dispatch, cancelDispatch := context.WithCancel(t.Context())
-	t.Cleanup(cancelDispatch)
-	runner.SetEventCallbackContext(func(_ context.Context, kind events.EventKind, _ events.EventData) {
-		if kind == events.EventHookEnd {
-			cancelDispatch()
-		}
-	})
+	// No lifecycle publication: the output send must be the FIRST send to park,
+	// or the helper observes a lifecycle park and the output then travels
+	// through a buffer the consumer has already freed.
+	runner.SetEventCallbackContext(func(_ context.Context, _ events.EventKind, _ events.EventData) {})
 	root.hookRunner = runner
 
-	// A full authoritative stream: the hook's output send parks until a slot
-	// frees.
+	// A full authoritative stream.
 	root.events = make(chan events.SessionEvent, 1)
 	root.events <- events.New(events.HookStartData{Event: "occupies the only slot"})
 	root.authoritativeConsumer = true
@@ -78,18 +68,33 @@ func TestOrdinaryNotificationHookOutputOutlivesACanceledDispatchContext(t *testi
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		root.runNotificationHook(dispatch, "the warning's message", "the warning's title")
+		root.runNotificationHook(lifetime, "the warning's message", "the warning's title")
 	}()
 
-	// The output send must reach the blocked-send boundary, or the canceled
-	// context never has to bite and the test proves nothing.
+	// The output send parks. An unmarked dispatch has no caller bound, so it is
+	// waiting on the session's publication path rather than on a captured
+	// context.
 	testwait.Until(t, "the hook's output publication to park on the full stream", func() bool {
 		parkedMu.Lock()
 		defer parkedMu.Unlock()
 		return parked
 	})
 
-	// The consumer resumes inside the window the event is entitled to.
+	// The transition: Close publishes its budget, then cancels the lifetime.
+	closeBudget, cancelClose := context.WithCancel(t.Context())
+	root.closeCtxMu.Lock()
+	root.closeCtx = closeBudget
+	root.closeCtxMu.Unlock()
+	t.Cleanup(func() {
+		root.closeCtxMu.Lock()
+		root.closeCtx = nil
+		root.closeCtxMu.Unlock()
+		cancelClose()
+	})
+	cancelLifetime()
+
+	// The consumer resumes inside the close window. The message is entitled to
+	// it: the lifetime's cancellation is not a delivery deadline.
 	delivered := make(chan struct{})
 	var once sync.Once
 	stopConsumer := make(chan struct{})
@@ -101,9 +106,6 @@ func TestOrdinaryNotificationHookOutputOutlivesACanceledDispatchContext(t *testi
 			case <-stopConsumer:
 				return
 			case ev := <-root.events:
-				// Match the diagnostic's SOURCE, not its wording: this test is
-				// about the hook's output being delivered at all, and the message
-				// text is the hook command's own copy rather than the behavior.
 				if w, ok := ev.Data.(events.WarningData); ok && w.Source == string(diagnostic.SourceHook) {
 					once.Do(func() { close(delivered) })
 				}

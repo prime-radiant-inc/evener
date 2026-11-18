@@ -657,6 +657,12 @@ type Session struct {
 	// failedClosed is set when a served session fails closed
 	// (session_fail_closed.go).
 	failedClosed failClosedState
+	// closeDrainWarnings holds the lost-result warnings a close drain settled
+	// whose bounded publication expired before they reached the stream
+	// (session_events.go). The receipts behind them are already abandoned, so
+	// these cannot be re-settled: the close gets one retry on the budget left
+	// after the worktree removals, and this is the only place they survive.
+	closeDrainWarnings atomic.Pointer[[]events.WarningData]
 	// transcriptCreateErr is why the session's transcript could not be
 	// created, nil when it was (or none was wanted). Set once at construction.
 	transcriptCreateErr error

@@ -26,23 +26,27 @@ import (
 // pass's spent bound gives up while the stream is still full and drops it.
 func TestPublicationBoundDoesNotReachAnUnrelatedSibling(t *testing.T) {
 	r := newWorktreeRepo(t)
-	delegateID, _, _ := r.seedIsolationLane(t)
+	// Two distinct delegates. An earlier version captured both plans for the
+	// SAME delegate, so a check for "a DelegateUpdatedData arrived" was satisfied
+	// by the other pass's publication even when the sibling's own was dropped.
+	siblingID, _, _ := r.seedIsolationLane(t)
+	otherID, _, _ := r.seedIsolationLane(t)
+	if siblingID == otherID {
+		t.Fatal("fixture seeded one delegate twice: the sibling assertion needs a distinct row")
+	}
 	root := r.s
 	controller := root.delegateController
 
-	// An unrelated pass holds a bound, and it is genuinely in use: a plan from
-	// that other pass publishes against the same controller's target while this
-	// one is under test. The spent result is checked below -- the point of
-	// running it is that the sibling's own send must be unaffected by a
-	// publication in flight, which a test that merely constructs a context and
-	// discards it never exercises.
+	// An unrelated pass holds a bound, and it is genuinely in use: its plan
+	// publishes against the same shared controller while the sibling's is under
+	// test.
 	spent, cancelSpent := context.WithCancel(t.Context())
 	cancelSpent()
-	otherPlan := controller.capturedPlanLocked(delegateID)
+	otherPlan := controller.capturedPlanLocked(otherID)
 	otherPlan.bound = spent
 
 	// The sibling's own plan, produced on the session's ordinary path.
-	plan := controller.capturedPlanLocked(delegateID)
+	plan := controller.capturedPlanLocked(siblingID)
 	if plan.bound != nil {
 		t.Fatal("a plan produced outside any pass carries a bound: the deadline would apply to a caller that supplied none")
 	}
@@ -100,17 +104,23 @@ func TestPublicationBoundDoesNotReachAnUnrelatedSibling(t *testing.T) {
 			case <-stopConsumer:
 				return
 			case ev := <-root.events:
-				if _, ok := ev.Data.(events.DelegateUpdatedData); ok {
-					mu.Lock()
-					sawUpdate = true
-					mu.Unlock()
-					// Acknowledge the receipt itself. The publisher returning is
-					// not the same event as this consumer having taken the
-					// update: the send can complete against the buffer while
-					// this goroutine is still to be scheduled, which made a
-					// correct run fail.
-					once.Do(func() { close(delivered) })
+				update, ok := ev.Data.(events.DelegateUpdatedData)
+				if !ok {
+					continue
 				}
+				// Require the SIBLING's own row: accepting any update lets the
+				// other pass's publication satisfy the check.
+				if update.DelegateID != siblingID {
+					continue
+				}
+				mu.Lock()
+				sawUpdate = true
+				mu.Unlock()
+				// Acknowledge the receipt itself. The publisher returning is not
+				// the same event as this consumer having taken the update: the
+				// send can complete against the buffer while this goroutine is
+				// still to be scheduled, which made a correct run fail.
+				once.Do(func() { close(delivered) })
 			}
 		}
 	}()
@@ -120,7 +130,7 @@ func TestPublicationBoundDoesNotReachAnUnrelatedSibling(t *testing.T) {
 	})
 
 	// Wait for the consumer's own acknowledgement, not for the publisher.
-	testwait.Until(t, "the consumer to receive the sibling's update", func() bool {
+	testwait.Until(t, "the consumer to receive the sibling delegate's own update", func() bool {
 		select {
 		case <-delivered:
 			return true
@@ -139,6 +149,6 @@ func TestPublicationBoundDoesNotReachAnUnrelatedSibling(t *testing.T) {
 	got := sawUpdate
 	mu.Unlock()
 	if !got {
-		t.Fatal("the sibling's update never reached the stream: a bound from an unrelated pass suppressed it")
+		t.Fatal("the sibling delegate's update never reached the stream: a bound from an unrelated pass suppressed it")
 	}
 }

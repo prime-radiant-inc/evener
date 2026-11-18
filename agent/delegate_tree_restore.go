@@ -815,11 +815,13 @@ func (c *delegateTreeController) wakeDeliveryReceiver(bound context.Context, rec
 		// drive is poked and its paced retry armed: a selection or start
 		// guard that refuses now (a finishing generation, a leftover
 		// binding) is retried with backoff while the receiver still owes
-		// attention, instead of stranding silently.
-		c.retryDelegateAttentionLater()
+		// attention, instead of stranding silently. It runs on the wake's
+		// bound: this wake came from a close drain, whose attentionMu
+		// acquisition is the wait the stop deadline exists to end.
+		c.retryDelegateAttentionLaterBounded(bound)
 		c.notifyDelegateAttention()
 	case coldDelegateDeliveryReceiver:
-		c.retryDelegateAttentionLater()
+		c.retryDelegateAttentionLaterBounded(bound)
 		c.notifyDelegateAttention()
 	}
 	return nil

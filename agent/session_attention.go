@@ -2362,10 +2362,28 @@ func (s *Session) resetDelegateAttentionArmRetryLocked() {
 }
 
 func (s *Session) scheduleDelegateAttentionRetry() {
+	s.scheduleDelegateAttentionRetryBounded(context.Background())
+}
+
+// scheduleDelegateAttentionRetryBounded is scheduleDelegateAttentionRetry on a
+// caller's bound. A close drain that reschedules the root's retry after a wake
+// is on the close-join critical path: if an in-flight environment append holds
+// attentionMu while publishing to a full authoritative stream, the unconditional
+// Lock above parks reconciliation until the whole cascade expires and leaves
+// collectible lanes on disk. The bound releases it instead.
+//
+// A refused acquisition simply does not arm a retry. That is safe and it is the
+// reason this needs no new recovery path: the acknowledgment is already
+// committed and the durable attention is already recorded, so the root's next
+// ordinary drive finds the row exactly as it would have. The retry is a pacing
+// hint for a wake that could not start yet, never the record of it.
+func (s *Session) scheduleDelegateAttentionRetryBounded(bound context.Context) {
 	if s == nil {
 		return
 	}
-	s.attentionMu.Lock()
+	if !lockWithin(bound, &s.attentionMu) {
+		return
+	}
 	if s.stableAttentionRetry.active {
 		s.attentionMu.Unlock()
 		return

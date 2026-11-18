@@ -122,7 +122,10 @@ func (s *Session) disposeDelegateLanesAtClose(ctx context.Context) {
 	// The bound is applied to THESE plans, not installed on the controller: the
 	// controller is shared with the live root, so installing it suppressed an
 	// unrelated sibling's publications for as long as this pass ran.
-	publishCtx, cancelPublish := closeStopJoinContext(budgetCtx)
+	// ONE cutoff per cascade, not one per pass: see
+	// closeCascadePublicationContext for why a per-pass reservation let the
+	// number of resident children spend the time the removals need.
+	publishCtx, cancelPublish := closeCascadePublicationContext(budgetCtx)
 	defer cancelPublish()
 	for _, plan := range closureUpdates {
 		plan.bound = publishCtx
@@ -286,6 +289,46 @@ func ensureCloseBudget(ctx context.Context) (context.Context, context.CancelFunc
 // budget.
 func laneCloseReleaseBudget(ctx context.Context) time.Duration {
 	return closePassBudget(ctx) / 2
+}
+
+// closeCascadePublicationKey carries the ONE publication cutoff a close cascade
+// mints, so successive passes reuse it instead of each reserving a fresh slice.
+type closeCascadePublicationKey struct{}
+
+// closeCascadePublicationContext returns the close cascade's single publication
+// cutoff, creating it on the first call and reusing it for every later pass in
+// the same cascade.
+//
+// closeStopJoinContext derives its budget from what is LEFT of the cascade, so
+// calling it once per pass charges the reservation repeatedly: each resident
+// child's disposal pass created a fresh cutoff before the root began its own,
+// and several children publishing to a full root stream halved the remainder
+// again and again. Eight such waits took the default 30-second cascade under 120
+// milliseconds before any Git work ran, and the root's collectible lanes were
+// left on disk for a later prune.
+//
+// One cutoff per cascade makes the reservation what it was meant to be: a single
+// slice, shared by every publisher in the pass, so the time the removals need
+// cannot be spent by the number of children that happen to exist. A nil
+// returned cancel is valid and means the cutoff was already minted upstream.
+func closeCascadePublicationContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	deadline, minted := ctx.Value(closeCascadePublicationKey{}).(time.Time)
+	if !minted {
+		// First pass in this cascade: reserve the slice once and record it on
+		// the context every later pass inherits.
+		cutoff, cancel := closeStopJoinContext(ctx)
+		if d, ok := cutoff.Deadline(); ok {
+			cutoff = context.WithValue(cutoff, closeCascadePublicationKey{}, d)
+		}
+		return cutoff, cancel
+	}
+	// A later pass: reuse the same cutoff. It ends when the cascade's slice
+	// ends, not when this pass's own share would have.
+	cutoff, cancel := context.WithDeadline(ctx, deadline)
+	return context.WithValue(cutoff, closeCascadePublicationKey{}, deadline), cancel
 }
 
 // closeStopJoinContext reserves half of the shared close budget for the

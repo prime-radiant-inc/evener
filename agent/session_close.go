@@ -329,6 +329,11 @@ func (s *Session) closeTerminal(ctx context.Context, options closeOptions) {
 	// was competing with have run. The claim is re-taken inside the retry, so
 	// this can deliver at most the one diagnostic the session gets.
 	s.retryCloseFailClosed(budgetCtx)
+	// A lost-result warning whose bounded publication expired is retried here,
+	// on the same remainder, for the same reason: its receipt is gone from the
+	// store, so this close is the last chance to report it and the budget it may
+	// spend is what the removals above did not need.
+	s.retryCloseDrainWarnings(budgetCtx)
 
 	if s.jobManager != nil {
 		jobManagerCloseErr = errors.Join(jobManagerCloseErr, s.jobManager.closeStoreOnly())

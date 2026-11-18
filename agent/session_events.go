@@ -826,11 +826,70 @@ func (s *Session) emitCloseDrainWarnings(ctx context.Context, warnings []events.
 	// same window keeps the shared close deadline and is still delivered to a
 	// consumer that resumes after the stop's half has expired.
 	for _, warning := range warnings {
-		data, ev, _ := s.sendEventContext(ctx, warning, s.activeCausalProvenance())
+		data, ev, delivered := s.sendEventContext(ctx, warning, s.activeCausalProvenance())
+		if !delivered {
+			// The bound expired before the warning reached the stream. The
+			// receipt that produced this warning is already abandoned and gone
+			// from the store, so no later reconciliation can settle it again:
+			// dropping it here is the loss this whole change exists to prevent.
+			// Retain it for one retry on the budget left after teardown.
+			s.retainUndeliveredCloseWarning(warning)
+			continue
+		}
 		if s.jobManager != nil {
 			s.jobManager.onSessionEvent(ev)
 		}
 		s.fireNotificationHookBounded(ctx, warningHookMessage(data), warningHookTitle(data))
+	}
+}
+
+// retainUndeliveredCloseWarning holds a lost-result warning whose publication
+// expired, so retryCloseDrainWarnings can deliver it once on what the cascade
+// has left after the worktree removals have run.
+//
+// It is deliberately NOT a durable record. The warning names a receipt that is
+// already gone, so there is nothing to reconcile against later: the only chance
+// to report it is this close, and the only budget that can carry it is the
+// remainder the removals did not spend.
+func (s *Session) retainUndeliveredCloseWarning(warning events.WarningData) {
+	for {
+		current := s.closeDrainWarnings.Load()
+		next := append([]events.WarningData(nil), warning)
+		if current != nil {
+			next = append(append([]events.WarningData(nil), (*current)...), warning)
+		}
+		if s.closeDrainWarnings.CompareAndSwap(current, &next) {
+			return
+		}
+	}
+}
+
+// retryCloseDrainWarnings publishes the warnings whose first attempt expired, on
+// what is left of the close cascade. It runs after the worktree removals, which
+// is the same placement as retryCloseFailClosed and for the same reason: the
+// budget it spends must be budget the teardown no longer needs.
+//
+// The retry does NOT redispatch the Notification hook. A hook is a side effect a
+// user configured for the first publication, and running it again from the
+// close's tail would let a warning's own dispatch fail the shutdown it was
+// reported during.
+func (s *Session) retryCloseDrainWarnings(ctx context.Context) {
+	held := s.closeDrainWarnings.Swap(nil)
+	if held == nil || len(*held) == 0 {
+		return
+	}
+	for _, warning := range *held {
+		_, ev, delivered := s.sendEventContext(ctx, warning, s.activeCausalProvenance())
+		if !delivered {
+			// Nothing is left to spend and no later pass can rebuild the receipt.
+			// This is the one case the close cannot report, and it is known and
+			// stated rather than silently assumed away: the cascade budget, not
+			// this warning, ran out. See the PR body's known-unfixed item.
+			continue
+		}
+		if s.jobManager != nil {
+			s.jobManager.onSessionEvent(ev)
+		}
 	}
 }
 
@@ -967,12 +1026,20 @@ func (s *Session) runNotificationHook(ctx context.Context, message, title string
 	// delivery deadline: an ordinary hook finishing as Close cancels the session
 	// dropped its user message off a full buffer at once, even though the
 	// consumer frees a slot inside the close window the event was entitled to.
-	// So an unmarked dispatch keeps the session's existing publication path
-	// exactly as before, and only a marked one narrows to the dispatcher's
-	// deadline.
-	output := s.publicationContext()
+	//
+	// An unmarked dispatch therefore publishes on NIL, which sendEventContext
+	// reads as "the session's own publication path": no caller deadline, so each
+	// send observes whatever close budget is current AT THE MOMENT IT SENDS. That
+	// is the difference the previous shape missed. Capturing the session lifetime
+	// here instead froze the answer at hook-start: a hook already running when
+	// Close canceled the lifetime carried that cancellation into a buffer the
+	// consumer could still drain inside the published window, and the message was
+	// dropped with the window wide open.
+	output := ctx
 	if bounded, ok := publicationBound(ctx); ok {
 		output = bounded
+	} else {
+		output = nil
 	}
 	input := s.hookInput(plugin.HookNotification)
 	input.Message = message
@@ -988,21 +1055,6 @@ func (s *Session) runNotificationHook(ctx context.Context, message, title string
 	for _, m := range result.UserMessages {
 		s.deliverHookUserMessageContext(output, m)
 	}
-}
-
-// publicationContext is the session's ordinary publication path as a context:
-// whatever close budget it has published, or its own lifetime. It is what an
-// unmarked publication has always run on inside sendEventContext, named here so
-// the hook-output path can keep that behavior while a caller-supplied bound
-// narrows it.
-func (s *Session) publicationContext() context.Context {
-	s.closeCtxMu.RLock()
-	closeCtx := s.closeCtx
-	s.closeCtxMu.RUnlock()
-	if closeCtx != nil {
-		return closeCtx
-	}
-	return s.sessionContext()
 }
 
 // hookInput creates a hooks.Input with the session's ID, working directory, and

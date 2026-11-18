@@ -815,6 +815,16 @@ func (c *delegateTreeController) hasRunnableDelegateAttention() bool {
 }
 
 func (c *delegateTreeController) retryDelegateAttentionLater() {
+	c.retryDelegateAttentionLaterBounded(context.Background())
+}
+
+// retryDelegateAttentionLaterBounded is retryDelegateAttentionLater on a
+// caller's bound, for a wake made from a bounded stop or close drain. The
+// scheduling below takes the receiver's attentionMu, which an in-flight
+// environment append can hold across its own blocked publish; without the bound
+// that wait runs to the full cascade deadline. See
+// scheduleDelegateAttentionRetryBounded.
+func (c *delegateTreeController) retryDelegateAttentionLaterBounded(bound context.Context) {
 	if c == nil {
 		return
 	}
@@ -822,7 +832,7 @@ func (c *delegateTreeController) retryDelegateAttentionLater() {
 	root := c.rootRuntime
 	c.mu.Unlock()
 	if root != nil {
-		root.scheduleDelegateAttentionRetry()
+		root.scheduleDelegateAttentionRetryBounded(bound)
 	}
 }
 
