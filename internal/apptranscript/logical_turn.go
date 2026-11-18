@@ -306,8 +306,6 @@ type turnExecution struct {
 	items        []appwire.ThreadItem
 	itemEntries  []int
 	itemAnnounce []bool
-	// runOfItem is the run each item came from, parallel to items.
-	runOfItem []int
 	// entriesByIndex maps each entry's global position to the entry, so the
 	// ordered walk over the execution can consult an entry by position.
 	entriesByIndex map[int]schema.Turn
@@ -321,7 +319,6 @@ type turnExecution struct {
 
 	settled   bool
 	merged    []appwire.ThreadItem
-	mergedRun []int
 	mergedGrp []int
 	// mergedEntry is, per merged item, the awaiting entry whose recorded parts
 	// announced its call. A completion resolves against THESE, never against a
@@ -341,7 +338,7 @@ func (ex *turnExecution) settle() {
 		return
 	}
 	ex.settled = true
-	ex.merged, ex.mergedRun, ex.mergedGrp, ex.mergedEntry = mergeExecutionItems(ex.items, ex.itemEntries, ex.itemAnnounce, ex.runOfItem, ex.groupOfItem)
+	ex.merged, ex.mergedGrp, ex.mergedEntry = mergeExecutionItems(ex.items, ex.itemEntries, ex.itemAnnounce, ex.groupOfItem)
 	ex.interruptAwaitedCalls()
 	seen := make(map[int]bool, len(ex.runs))
 	for _, group := range ex.mergedGrp {
@@ -521,7 +518,6 @@ func groupExecutions(groups []groupedTurn, controls map[string][]indexedTurn) ma
 			ex.items = append(ex.items, groups[i].items[j])
 			ex.itemEntries = append(ex.itemEntries, groups[i].itemEntries[j])
 			ex.itemAnnounce = append(ex.itemAnnounce, groups[i].itemAnnounce[j])
-			ex.runOfItem = append(ex.runOfItem, len(ex.runs)-1)
 			ex.groupOfItem = append(ex.groupOfItem, i)
 		}
 	}
@@ -980,9 +976,8 @@ func mergeGroupedItems(items []appwire.ThreadItem, itemEntries []int, itemAnnoun
 //     recorded, wherever in the execution that announcement sits, so a
 //     delivery that splits the turn cannot orphan the result;
 //   - a result whose call the execution never announced projects on its own.
-func mergeExecutionItems(items []appwire.ThreadItem, itemEntries []int, itemAnnounce []bool, runOfItem, groupOfItem []int) ([]appwire.ThreadItem, []int, []int, []int) {
+func mergeExecutionItems(items []appwire.ThreadItem, itemEntries []int, itemAnnounce []bool, groupOfItem []int) ([]appwire.ThreadItem, []int, []int) {
 	merged := make([]appwire.ThreadItem, 0, len(items))
-	mergedRun := make([]int, 0, len(items))
 	mergedGrp := make([]int, 0, len(items))
 	mergedEntry := make([]int, 0, len(items))
 	// callIndex keys an announcement by its awaiting entry and call id, which
@@ -995,10 +990,7 @@ func mergeExecutionItems(items []appwire.ThreadItem, itemEntries []int, itemAnno
 	}
 	callIndex := map[callKey]int{}
 	for at, item := range items {
-		run, group := 0, 0
-		if at < len(runOfItem) {
-			run = runOfItem[at]
-		}
+		group := 0
 		if at < len(groupOfItem) {
 			group = groupOfItem[at]
 		}
@@ -1013,7 +1005,6 @@ func mergeExecutionItems(items []appwire.ThreadItem, itemEntries []int, itemAnno
 					callIndex[key] = len(merged)
 				}
 				merged = append(merged, item)
-				mergedRun = append(mergedRun, run)
 				mergedGrp = append(mergedGrp, group)
 				mergedEntry = append(mergedEntry, entry)
 				continue
@@ -1033,11 +1024,10 @@ func mergeExecutionItems(items []appwire.ThreadItem, itemEntries []int, itemAnno
 			}
 		}
 		merged = append(merged, item)
-		mergedRun = append(mergedRun, run)
 		mergedGrp = append(mergedGrp, group)
 		mergedEntry = append(mergedEntry, entry)
 	}
-	return merged, mergedRun, mergedGrp, mergedEntry
+	return merged, mergedGrp, mergedEntry
 }
 
 // MergeThreadItems merges a later projected item into an earlier one of

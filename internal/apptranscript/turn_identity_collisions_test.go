@@ -467,7 +467,10 @@ func TestSplitExecutionRepeatsOneUsageTotal(t *testing.T) {
 	firstRound := schema.NewTurn(schema.TurnUserInput, llm.User("go"))
 	firstRound.Usage = llm.Usage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}
 	record(stamp(firstRound, "t_exec", schema.TurnSpanExecution))
-	record(stamp(schema.NewTurn(schema.TurnAttentionResolution, llm.System("resolved")), "turn_delivery", schema.TurnSpanDelivery))
+	// The delivery must PROJECT an item: an attention resolution projects none,
+	// so replay coalesced the execution around it into one turn and the test
+	// never saw two fragments to compare (#1166 review).
+	record(stamp(schema.NewTurn(schema.TurnSteering, llm.User("attention")), "turn_delivery", schema.TurnSpanDelivery))
 	secondRound := schema.NewTurn(schema.TurnAssistant, llm.Assistant("done"))
 	secondRound.Usage = llm.Usage{InputTokens: 100, OutputTokens: 40, TotalTokens: 140}
 	record(stamp(secondRound, "t_exec", schema.TurnSpanExecution))
@@ -501,6 +504,10 @@ func TestSplitExecutionRepeatsOneUsageTotal(t *testing.T) {
 	}
 	if fragments == 0 {
 		t.Fatalf("full read turns = %+v, want the split execution", shapesFromTurns(turns))
+	}
+	if fragments != 2 {
+		t.Errorf("execution fragments = %d, want 2: the delivery splits it into two visible runs",
+			fragments)
 	}
 }
 
