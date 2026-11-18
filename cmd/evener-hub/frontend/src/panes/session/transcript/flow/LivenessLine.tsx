@@ -94,8 +94,20 @@ export function LivenessLine({
     delayMs: retry.delayMs,
     errorClass: retry.errorClass,
     model: retry.model && retry.model !== primaryModel ? retry.model : undefined,
-    groupElapsedMs: retry.groupElapsedMs,
-    inProgress: lastFrameAt > retry.receivedAt || now - retry.receivedAt >= retry.delayMs,
+    // A quota wait's announcement is long-lived (hours), so its elapsed time
+    // advances with the pane's clock from the value it arrived with; an
+    // ordinary retry's is a fresh snapshot per announcement and renders as
+    // the daemon sampled it.
+    groupElapsedMs:
+      retry.errorClass === "quota_exceeded"
+        ? retry.groupElapsedMs + Math.max(0, now - retry.receivedAt)
+        : retry.groupElapsedMs,
+    inProgress:
+      // A zero-delay quota event is the wake: the request has gone out, and
+      // no render clock may say otherwise.
+      (retry.errorClass === "quota_exceeded" && retry.delayMs === 0) ||
+      lastFrameAt > retry.receivedAt ||
+      now - retry.receivedAt >= retry.delayMs,
   };
   // The snapshot's resume instant is the pane's own quota source; a live
   // quota-class retry carries its delay inside retryWait.

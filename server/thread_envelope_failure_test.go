@@ -140,3 +140,45 @@ func TestDescendantReadCarriesAQuotaWaitWhileWorking(t *testing.T) {
 		t.Fatalf("after the retry starts the delegate's read still carries the wait %+v", got)
 	}
 }
+
+// A stopped wait never sends the zero-delay announcement: the Stop ends the
+// turn as an ordinary cancellation, so the projection must drop the wait at
+// the execution's end itself, or the delegate's next read shows a canceled
+// wait during whatever runs next.
+func TestDescendantReadDropsAQuotaWaitWhenItsExecutionEnds(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_root")
+	srv.RecordDescendantAppEvent("th_root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "th_child"})
+	read := func() *appwire.ThreadFailure {
+		t.Helper()
+		response, err := srv.handleAppThreadRead(context.Background(), appwire.ThreadReadParams{ThreadID: "th_child"})
+		if err != nil {
+			t.Fatalf("thread/read: %v", err)
+		}
+		return response.Thread.Evener.Failure
+	}
+
+	srv.RecordDescendantAppEvent("th_root", events.SessionEvent{
+		Kind:      events.EventExecutionStarted,
+		SessionID: "th_child",
+		Data:      events.ExecutionStartedData{TurnID: "turn_1"},
+	})
+	srv.RecordDescendantAppEvent("th_root", events.SessionEvent{
+		Kind:      events.EventModelRetry,
+		SessionID: "th_child",
+		Data:      events.ModelRetryData{Attempt: 1, DelayMS: 7_200_000, ErrorClass: "quota_exceeded"},
+	})
+	if got := read(); got == nil || got.ResumesAt == 0 {
+		t.Fatalf("a waiting delegate's read carries %+v, want the usage limit and its resume time", got)
+	}
+
+	// The Stop: the execution ends with no zero-delay announcement at all.
+	srv.RecordDescendantAppEvent("th_root", events.SessionEvent{
+		Kind:      events.EventExecutionEnded,
+		SessionID: "th_child",
+		Data:      events.ExecutionEndedData{TurnID: "turn_1"},
+	})
+	if got := read(); got != nil {
+		t.Fatalf("after the execution ends the delegate's read still carries the wait %+v", got)
+	}
+}

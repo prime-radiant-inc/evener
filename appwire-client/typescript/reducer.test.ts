@@ -3237,6 +3237,54 @@ test("the quota wake restamps lastFrameAt; the wait's own announcement does not"
   expect(model.lastFrameAt).toBe(before + 2_000);
 });
 
+// The wait's chip belongs to the same turn as its deadline: a boundary that
+// clears the deadline must clear the quota retry too, or a stopped turn's
+// pane keeps saying "waiting for quota — in progress" over whatever runs
+// next. And a retry event for the OLD turn arriving after the boundary (a
+// queued delivery) must not restore the wait the boundary ended.
+test("a turn boundary clears the quota retry, and a stale retry for the old turn does not restore it", () => {
+  const quotaRetry = (turnId: string) =>
+    ({
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId,
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: 60 * 60_000,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 500,
+        attemptCap: 1,
+      },
+    }) as AnyNotification;
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "thread/status/changed",
+      params: { threadId: "thr_t", ref: "ref_t", status: { type: "active" }, activeTurnId: "turn_1" },
+    },
+    900_000,
+  );
+  model = applyNotification(model, quotaRetry("turn_1"), 1_000_000);
+  expect(model.modelRetry?.errorClass).toBe("quota_exceeded");
+
+  const ended = applyNotification(
+    model,
+    {
+      method: "thread/status/changed",
+      params: { threadId: "thr_t", ref: "ref_t", status: { type: "idle" } },
+    },
+    1_100_000,
+  );
+  expect(ended.modelRetry?.errorClass ?? "cleared").not.toBe("quota_exceeded");
+  expect(ended.quotaResumesAt).toBeUndefined();
+
+  const stale = applyNotification(ended, quotaRetry("turn_1"), 1_150_000);
+  expect(stale.quotaResumesAt).toBeUndefined();
+});
+
 // Component 1 (docs/superpowers/specs/2026-08-07-provider-failure-feedback-
 // design.md): the retry state answers "what is happening now, in this retry
 // group" and must survive ordinary mid-grind progress (deltas, a

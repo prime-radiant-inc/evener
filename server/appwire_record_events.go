@@ -420,6 +420,14 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 		// once appDescendants holds it, from this commit on), so every entry a
 		// subscriber's read does not cover is announced to it.
 		history := s.ensureDescendantHistory(ownerThreadID, threadID)
+		// A quota wait belongs to the execution whose call met the limit. A
+		// Stop or Close ends that execution with no zero-delay announcement
+		// at all, so the wait's summary must drop at the boundary itself — a
+		// new execution starting, or this one ending — or the delegate's next
+		// read shows the canceled wait during whatever runs next.
+		if event.Kind == events.EventExecutionStarted || event.Kind == events.EventExecutionEnded {
+			projection.thread.Evener.Failure = nil
+		}
 		// A descendant's motion is its root's too: the meter shows the whole tree.
 		s.appActivity.observe(event.Kind)
 		projected := projection.projector.Project(event)

@@ -361,9 +361,15 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
       // own zero-delay announcement already cleared a wait that ended inside
       // the same turn; this is the turn-boundary half.
       const turnEnded = status.type !== "active" || n.params.activeTurnId !== model.runningTurnId;
+      // The wait's chip belongs to the turn the deadline belonged to: clearing
+      // one without the other leaves "waiting for quota — in progress" over
+      // whatever runs next.
+      const quotaRetryEnded =
+        turnEnded && model.modelRetry !== undefined && model.modelRetry.errorClass === "quota_exceeded";
       return {
         ...(rest as M),
         ...(turnEnded ? { quotaResumesAt: undefined } : {}),
+        ...(quotaRetryEnded ? { modelRetry: undefined } : {}),
         ...(n.params.activeTurnId ? { runningTurnId: n.params.activeTurnId } : {}),
         status,
         // The work-clock anchor (activeTurnStartedAt) has no live push to
@@ -577,6 +583,19 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
     case "evener/thread/modelRetry": {
       if (!notificationTargetsThread(n, model)) return model;
       const params = n.params;
+      // A retry event for a turn the model already moved past (a queued
+      // delivery landing after the boundary) must not restore the wait the
+      // boundary ended. A notification that names a turn judges against the
+      // running turn outright - a model with no running turn has moved past
+      // every named one - while one that names none is an older daemon's and
+      // keeps its turn-agnostic meaning.
+      if (
+        params.errorClass === "quota_exceeded" &&
+        params.turnId !== undefined &&
+        params.turnId !== model.runningTurnId
+      ) {
+        return model;
+      }
       // No lastFrameAt restamp on purpose — see ThreadModel.modelRetry. The
       // quiet/stall clock is measuring a real silence; this explains it rather
       // than resetting it.
