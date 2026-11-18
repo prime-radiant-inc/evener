@@ -2,8 +2,10 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"testing"
 
+	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -41,9 +43,17 @@ func transcriptTurnKinds(t *testing.T, path string) []schema.TurnKind {
 func TestTurnRecordedBeforeTranscriptWriterExistsReachesTheFile(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
-	sess := newSession(t, withDir(dir), withConfig(SessionConfig{StateDir: dir, MaxSubagentDepth: 1}))
+	const lost, kept = "pre-attach-51", "pre-attach-68"
+	sess := newSession(t, withDir(dir), withStateDir(dir), withSteps(func(req llm.Request) llm.Response {
+		if !requestCarriesText(req, lost) || !requestCarriesText(req, kept) {
+			t.Error("provider did not receive both resident startup turns")
+		}
+		answer := agenttest.FinalResponse("answer-84")
+		answer.Usage = llm.Usage{InputTokens: 15_000}
+		return answer
+	}))
 	drainSessionEvents(sess)
-	tpath := sess.TranscriptPath()
+	fs := attachEnvironmentFailureFS(t, sess)
 
 	// Reproduce the construction window: the writer has not been attached yet.
 	w := sess.transcript
@@ -52,23 +62,27 @@ func TestTurnRecordedBeforeTranscriptWriterExistsReachesTheFile(t *testing.T) {
 	sess.transcriptReady = false
 	sess.mu.Unlock()
 
-	sess.recordTurn(
-		schema.NewTurn(schema.TurnSteering, llm.User("written before the writer existed")),
-		schema.NewTurn(schema.TurnSteering, llm.User("written before the writer existed")),
-	)
+	for _, text := range []string{lost, kept} {
+		turn := schema.NewTurn(schema.TurnSteering, llm.User(text))
+		sess.recordTurn(turn, turn)
+	}
 
 	// The writer arrives, exactly as session_init.go attaches it.
+	fs.mu.Lock()
+	fs.writeFailure = errors.New("first held write failed")
+	fs.mu.Unlock()
 	sess.attachTranscript(w, nil)
+	if _, err := sess.ProcessInput(tripwireCtx(t), "input-84", nil); err != nil {
+		t.Fatal(err)
+	}
+	if live, saved := sess.contextMgr.LastInputTokens(), sess.Meta().LastInputEntryCount; live != 15_000 || saved != 0 {
+		t.Errorf("measured both held turns with %d tokens and %d recorded entries, want 15000 live tokens and no durable measurement", live, saved)
+	}
 	sess.Close()
 
-	var found int
-	for _, k := range transcriptTurnKinds(t, tpath) {
-		if k == schema.TurnSteering {
-			found++
-		}
-	}
-	if found != 1 {
-		t.Fatalf("STEERING entries in transcript: got %d, want 1 — a turn recorded before the writer existed was dropped", found)
+	restored := ResumeHistory(readPersistedTranscriptEntries(t, dir, sess.ID()))
+	if countTurnText(restored, kept) != 1 || countTurnText(restored, lost) != 0 {
+		t.Fatal("restart must recover exactly the successfully flushed steering turn")
 	}
 }
 

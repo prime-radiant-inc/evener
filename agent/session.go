@@ -516,7 +516,7 @@ type Session struct {
 	turnHistoryBaseline           int       // history index of the first turn belonging to the in-flight turn (captured at round 0, adjusted for mid-turn compaction). Turns at or after it are exempt from N4 replay-provenance filtering (fallback rounds keep today's replay semantics). Guarded by mu.
 	history                       []schema.Turn
 	measuredTranscriptEntries     uint64        // Recorded transcript prefix behind the context manager's last input measurement. Guarded by mu.
-	sawLiveOnlyToolResult         bool          // This process has received a tool result projected differently on disk. Guarded by mu.
+	sawTranscriptMismatch         bool          // A resident turn has differed from its transcript representation in this process. Guarded by mu.
 	unrecordedFold                bool          // The live fold differs from the on-disk history. Guarded by attentionMu.
 	historyRevision               int           // bumped by every publishFoldedHistory publish and every other non-append history mutation (orphaned-tool-result repair, attention-turn replace/remove — see bumpHistoryRevisionLocked), never by an ordinary append. Lets a fold snapshot detect whether a competing publish OR mutation already happened since it started, distinct from the ordinary concurrent appends publishFoldedHistory's merge-back already tolerates. Guarded by mu.
 	persistedAppendLog            []schema.Turn // persisted transcript forms of the append/write pairs since the last fold publication, in append order — the exact forms publishFoldTransaction re-appends after its markers. Pruned wholesale by each successful publication. Guarded by mu.
@@ -2920,7 +2920,7 @@ func (s *Session) appendTurnAfterTranscriptWriteLocked(persisted schema.Turn, wr
 	s.mu.Lock()
 	appendLocked()
 	s.logPairPersistedLocked(persisted)
-	s.markLastPairOrdinalLocked()
+	s.settleLastPairLocked(&s.history[len(s.history)-1])
 	s.mu.Unlock()
 	return nil
 }
@@ -2938,9 +2938,37 @@ func (s *Session) logPairPersistedLocked(persisted schema.Turn) {
 		if !slices.EqualFunc(live.Message.Content, persisted.Message.Content, func(a, b llm.ContentPart) bool {
 			return a.ToolResult == b.ToolResult || reflect.DeepEqual(a.ToolResult, b.ToolResult)
 		}) {
-			live.LiveOnlyToolResult = true
-			s.sawLiveOnlyToolResult = true
+			live.DiffersFromTranscript = true
+			s.sawTranscriptMismatch = true
 		}
+	}
+}
+
+// settleLastPairLocked binds the live append to the writer's outcome. A
+// complete, unsynced line is recorded. A pre-attach turn is still pending.
+func (s *Session) settleLastPairLocked(live *schema.Turn) {
+	if s.lastRecorded.recorded {
+		s.markLastPairOrdinalLocked()
+	} else if s.transcriptReady && s.stateDir != "" {
+		s.tombstoneLastPairPersistedLocked()
+		s.markUnrecordedTurnLocked(live)
+	}
+}
+
+// A buffered append releases mu during I/O. A history repair can shift the
+// turn, and a fold may already have copied it as a recorded result.
+func (s *Session) markUnrecordedTurnLocked(turn *schema.Turn) {
+	for i := len(s.history) - 1; i >= 0; i-- {
+		resident := &s.history[i]
+		if resident.Kind != turn.Kind || !resident.Timestamp.Equal(turn.Timestamp) || !reflect.DeepEqual(resident.Message, turn.Message) {
+			continue
+		}
+		if !resident.DiffersFromTranscript {
+			resident.DiffersFromTranscript = true
+			s.sawTranscriptMismatch = true
+			s.bumpHistoryRevisionLocked()
+		}
+		return
 	}
 }
 
@@ -3014,21 +3042,9 @@ func (s *Session) recordTurn(live, persisted schema.Turn) transcript.Record {
 	s.lastRecorded = recordedOrdinal{}
 	s.mu.Unlock()
 	rec, err := s.recordTranscriptLocked(persisted, transcript.DoorBuffered, transcript.PlaceSession)
-	if err == nil {
-		s.mu.Lock()
-		s.markLastPairOrdinalLocked()
-		s.mu.Unlock()
-	} else {
-		// The write recorded nothing: the ordinary Append door returns an
-		// error only when no complete line was recorded (a whole line that
-		// landed but did not sync returns nil and is retained), so the pair
-		// just logged must not ride the fold rewrite tail back in after the
-		// markers as durable state the live side never settled. The live
-		// turn stays for the caller's own failure handling.
-		s.mu.Lock()
-		s.tombstoneLastPairPersistedLocked()
-		s.mu.Unlock()
-	}
+	s.mu.Lock()
+	s.settleLastPairLocked(&live)
+	s.mu.Unlock()
 	s.attentionMu.Unlock()
 	if err != nil {
 		s.emit(events.WarningData{Message: fmt.Sprintf("transcript write failed: %v", err)})
@@ -3250,6 +3266,9 @@ func (s *Session) attachTranscript(w *transcript.Writer, existing []transcript.E
 		rec, err := w.Record(t, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: transcript.PlaceSession})
 		s.mu.Lock()
 		s.noteRecordedLocked(rec)
+		if !rec.Recorded && s.stateDir != "" {
+			s.markUnrecordedTurnLocked(&t)
+		}
 		s.mu.Unlock()
 		if err != nil {
 			// Buffered, not emitted directly (kata et0x): attachTranscript always

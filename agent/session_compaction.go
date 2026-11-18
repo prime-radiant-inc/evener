@@ -135,14 +135,10 @@ func (s *Session) publishFoldedHistory(snapLen, snapRevision int, folded []schem
 // concurrent fold's revision check must see: any mutation other than a pure
 // append at the current end, which publishFoldedHistory's merge-back already
 // tolerates safely (an appended turn can never be part of the prefix a fold
-// snapshotted). Call this after replacing or removing an existing entry —
-// orphaned-tool-result repair (which can splice a synthetic turn into the
-// middle of history, not just the end) and attention-turn retain/remove (an
-// in-place replacement or a deletion) are the two non-append mutation
-// families in this codebase today. Without this, a fold snapshotted before
-// such a change sees an unchanged revision, its equality check in
-// publishFoldedHistory passes, and its publish either overwrites a same-length
-// replacement or resurrects a deletion. Callers must hold s.mu.
+// snapshotted). Orphan repair can splice a turn into the middle of history,
+// attention updates can replace or remove a turn, and a failed buffered write
+// marks a turn as live-only after a fold may have copied it. A revision change
+// makes that fold retry against the current entries. Callers must hold s.mu.
 func (s *Session) bumpHistoryRevisionLocked() {
 	s.historyRevision++
 }

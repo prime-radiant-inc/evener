@@ -235,7 +235,15 @@ func TestFoldTail_FailedPairTombstoneKeepsSnapshotPositions(t *testing.T) {
 	var resultsDone, compactDone chan struct{}
 	var summaryCalls atomic.Int32
 	c := llm.NewClient()
-	c.Register(&fakeAdapter{name: "openai"})
+	c.Register(newFakeAdapter("openai", func(req llm.Request) llm.Response {
+		result := findRequestToolResult(req.Messages, ask.ID)
+		if result == nil || result.IsError {
+			t.Error("the folded live request must carry the successful ask result")
+		}
+		answer := agenttest.FinalResponse("answer-28")
+		answer.Usage = llm.Usage{InputTokens: 48_000}
+		return answer
+	}))
 	c.Register(&agenttest.ScriptedAdapter{Provider: "fold-tail-cheap", Responder: func(llm.Request) llm.Response {
 		if summaryCalls.Add(1) == 1 {
 			close(entered)
@@ -338,9 +346,21 @@ func TestFoldTail_FailedPairTombstoneKeepsSnapshotPositions(t *testing.T) {
 		t.Fatal("ask_user's canceled ack rode the rewrite tail: the failed results pair re-entered the durable transcript after the fold markers")
 	}
 
+	if _, err := sess.ProcessInput(parentCtx, "input-28", nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := sess.contextMgr.LastInputTokens(); got != 48_000 {
+		t.Fatalf("folded live input measurement = %d, want 48000", got)
+	}
 	meta := sess.Meta()
+	if meta.LastInputEntryCount != 0 {
+		t.Errorf("fold published a resumable input measurement covering the unrecorded result (%d entries)", meta.LastInputEntryCount)
+	}
 	sess.Close()
 	restored := restoreAskSession(t, meta, dir)
+	if got := restored.contextMgr.LastInputTokens(); got != 0 {
+		t.Errorf("restored input measurement for unrecorded result = %d, want a fresh estimate", got)
+	}
 	if got := restored.askPendingCount(); got != 0 {
 		t.Fatalf("restored ask pending count after fold tail = %d, want 0", got)
 	}

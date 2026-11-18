@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -87,6 +88,21 @@ func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
 	if got.CumulativeUsage != meta.CumulativeUsage {
 		t.Fatalf("Meta().CumulativeUsage = %+v, want %+v", got.CumulativeUsage, meta.CumulativeUsage)
 	}
+	resume := func(t *testing.T, s *Session) *Session {
+		t.Helper()
+		s.Close()
+		meta, err := schema.LoadSessionMeta(s.StateDir(), s.ID())
+		if err != nil {
+			t.Fatal(err)
+		}
+		restored, err := RestoreSessionFromMetaWithConfig(s.Client(), s.Profile(), s.currentEnv(), meta,
+			RestoreSessionConfig{StateDir: s.StateDir(), testOnly: sharingHostProbe(testConfig{skipGitSnapshot: true})})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(restored.Close)
+		return restored
+	}
 
 	t.Run("private API result is only measured live", func(t *testing.T) {
 		const private = "q81-private-body-36"
@@ -119,21 +135,6 @@ func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
 			return execReadSessionTranscript(ctx, deps, args.(map[string]any))
 		})
 		writeTestAPILog(t, state, s.ID(), attempt)
-		resume := func(s *Session) *Session {
-			t.Helper()
-			s.Close()
-			meta, err := schema.LoadSessionMeta(state, s.ID())
-			if err != nil {
-				t.Fatal(err)
-			}
-			restored, err := RestoreSessionFromMetaWithConfig(client, s.Profile(), s.currentEnv(), meta,
-				RestoreSessionConfig{StateDir: state, testOnly: sharingHostProbe(testConfig{skipGitSnapshot: true})})
-			if err != nil {
-				t.Fatal(err)
-			}
-			t.Cleanup(restored.Close)
-			return restored
-		}
 		ctx := tripwireCtx(t)
 		if _, err := s.ProcessInput(ctx, "input-36", nil); err != nil {
 			t.Fatal(err)
@@ -147,17 +148,79 @@ func TestRestoreSeedsMetricsIntoMeta(t *testing.T) {
 		if !ok || strings.Contains(body, private) || json.Unmarshal([]byte(body), &handle) != nil || !handle.PrivateEvidenceOmitted || handle.ReRead.AttemptID != attempt.AttemptID {
 			t.Fatal("semantic transcript must persist only the matching API-log reread handle")
 		}
-		s = resume(s)
+		s = resume(t, s)
 		if used := s.contextMgr.LastInputTokens(); used != 0 {
 			t.Errorf("restored input measurement for the private result = %d, want a fresh estimate", used)
 		}
 		if _, err := s.ProcessInput(ctx, "input-97", nil); err != nil {
 			t.Fatal(err)
 		}
-		if used := resume(s).contextMgr.LastInputTokens(); used != 1_200 {
+		if used := resume(t, s).contextMgr.LastInputTokens(); used != 1_200 {
 			t.Fatalf("restored input measurement for the reread handle = %d, want 1200", used)
 		}
 	})
+
+	for _, tc := range []struct {
+		name     string
+		recorded bool
+		want     int
+	}{
+		{"buffered tool result lost before recording", false, 0},
+		{"buffered tool result retained after sync failure", true, 90_000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			body := strings.Repeat("q75-result-27", 450)
+			call := llm.ToolCallData{ID: "call-75", Name: "result_probe", Arguments: json.RawMessage(`{}`)}
+			s := newSession(t, withStateDir(t.TempDir()), withSteps(fixedStep(agenttest.ToolCallResponse(call)), func(req llm.Request) llm.Response {
+				if !messagesContainToolResultText(req.Messages, body) {
+					t.Error("live provider request lost the successful tool result")
+				}
+				answer := agenttest.FinalResponse("answer-63")
+				answer.Usage = llm.Usage{InputTokens: 90_000}
+				return answer
+			}, func(req llm.Request) llm.Response {
+				result := findRequestToolResult(req.Messages, call.ID)
+				if result == nil || result.IsError == tc.recorded || messagesContainToolResultText(req.Messages, body) != tc.recorded {
+					t.Error("resumed provider request must carry the recorded result or its orphan repair")
+				}
+				answer := agenttest.FinalResponse("answer-47")
+				answer.Usage = llm.Usage{InputTokens: 95_000}
+				return answer
+			}))
+			fs := attachEnvironmentFailureFS(t, s)
+			s.attachedTranscript().SyncInterval = 0
+			s.registerTool(call.Name, "Return the measured result", map[string]any{"type": "object"}, func(context.Context, any) (any, error) {
+				fs.mu.Lock()
+				defer fs.mu.Unlock()
+				if tc.recorded {
+					fs.failure = errors.New("sync fault")
+				} else {
+					fs.writeFailure = errors.New("write fault")
+				}
+				return body, nil
+			})
+			ctx := tripwireCtx(t)
+			if _, err := s.ProcessInput(ctx, "input-75", nil); err != nil {
+				t.Fatal(err)
+			}
+			if _, ok := findToolResultInEntries(readPersistedTranscriptEntries(t, s.StateDir(), s.ID()), call.ID); ok != tc.recorded {
+				t.Fatalf("tool result recorded = %t, want %t", ok, tc.recorded)
+			}
+			if got := s.contextMgr.LastInputTokens(); got != 90_000 {
+				t.Fatalf("live input measurement = %d, want 90000", got)
+			}
+			s = resume(t, s)
+			if got := s.contextMgr.LastInputTokens(); got != tc.want {
+				t.Errorf("restored input measurement = %d, want %d", got, tc.want)
+			}
+			if _, err := s.ProcessInput(ctx, "input-47", nil); err != nil {
+				t.Fatal(err)
+			}
+			if got := resume(t, s).contextMgr.LastInputTokens(); got != 95_000 {
+				t.Fatalf("new measurement after resume = %d, want 95000", got)
+			}
+		})
+	}
 
 	t.Run("input measurement follows the answering target", func(t *testing.T) {
 		const original = "https://measure-a.example.test/v1"
