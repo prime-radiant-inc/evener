@@ -176,7 +176,12 @@ function firstEnabledIndex(items: MenuEntry[]): number {
 function revealRow(popup: HTMLElement, row: HTMLElement): void {
   const rowTop = row.offsetTop;
   const rowBottom = rowTop + row.offsetHeight;
-  const portHeight = popup.offsetHeight;
+  // The box the reader can actually see INTO, not the border box. A classic
+  // scrollbar laid out on the inline axis is part of `offsetHeight` and none of
+  // `clientHeight`, so a row ending inside that strip is treated as whole by
+  // every measurement that reads the offset box - and a reveal that stops
+  // there leaves its bottom clipped under the scrollbar.
+  const portHeight = popup.clientHeight || popup.offsetHeight;
   if (rowTop < popup.scrollTop) popup.scrollTop = rowTop;
   else if (rowBottom > popup.scrollTop + portHeight) {
     // A row taller than the scrollport cannot be shown whole, and the least
@@ -236,15 +241,27 @@ interface RowObservation {
    * viewport, and judging the old frame at the new offset invents clipping
    * that no layout produced. */
   scrolledTo: number;
+  /** The popup's INLINE offset for the same reason, and one more: it is the
+   * reader's own horizontal drag when nothing else moved. The inline reveal
+   * asks whether the row's start is in view, and a reader who dragged the
+   * popup to the far end of an overflowing label has moved that start out of
+   * view themselves - reading that as layout clipping and pulling the offset
+   * back would make the rest of the glyph unreachable. */
+  scrolledAlong: number;
 }
 
 const observeRow = (popup: HTMLElement, row: HTMLElement): RowObservation => ({
   top: row.offsetTop,
   height: row.offsetHeight,
   width: row.offsetWidth,
-  portHeight: popup.offsetHeight,
+  // The scrollport the reader can see into, for the same reason `revealRow`
+  // reads `clientHeight`: a scrollbar laid out on the inline axis belongs to
+  // the offset box and not to the port, and counting it lets a row's last few
+  // pixels pass as visible.
+  portHeight: popup.clientHeight || popup.offsetHeight,
   portWidth: popup.offsetWidth,
   scrolledTo: popup.scrollTop,
+  scrolledAlong: popup.scrollLeft,
 });
 
 /** What one look at a scroller saw: how far it was scrolled, and where the
@@ -499,7 +516,14 @@ function classifyScrollerScroll(
   // of content movement - larger, same direction, and nothing to do with
   // anchoring. The difference has to be paid for by the row the browser
   // actually held, which is what the witness set below is for.
-  if (moved !== 0 && Math.abs(contentMoved - moved) <= CLAMP_ROUNDING) return "anchoring";
+  // The tolerance needs the content to have moved at all. A slow trackpad drag
+  // advances the rail a pixel per event and leaves the trigger exactly where it
+  // was in the content, so `contentMoved` is zero and the difference from
+  // `moved` is a whole pixel - inside the tolerance - which would let the menu
+  // follow the entire gesture instead of dismissing. A genuine fractional
+  // correction always moves the content by about the offset it gives back, so
+  // requiring a non-zero movement costs that case nothing.
+  if (moved !== 0 && contentMoved !== 0 && Math.abs(contentMoved - moved) <= CLAMP_ROUNDING) return "anchoring";
   // The trigger cannot always say so. A Live session moving from Idle to
   // Working crosses the row the browser anchored on: both bands stay populated,
   // the moved row keeps its height, and the trigger's own place in the content
@@ -650,14 +674,26 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     setIsOpen(true);
   }
 
+  // The pending "after layout" placement frame, declared here because DISMISSAL
+  // has to cancel it. A frame queued by a resize can outlive the scroll that
+  // dismisses the menu: the popup stays mounted through its exit (`usePresence`),
+  // so a frame that runs in between re-places a popup that is already fading
+  // out, moving it to wherever the trigger has scrolled to. Cancelling in an
+  // effect is too late - effects run after the paint that frame may precede.
+  const frameRef = useRef<number | null>(null);
+
   // useCallback (not a plain function like openMenu) so the outside-click
   // and scroll/resize effects below can depend on it honestly without
   // re-attaching their listeners on every render: closeMenu closes over
   // nothing but the setIsOpen setter, which React itself guarantees is
   // stable.
   const closeMenu = useCallback(() => {
+    if (frameRef.current !== null) {
+      (ownerDocument.defaultView ?? window).cancelAnimationFrame(frameRef.current);
+      frameRef.current = null;
+    }
     setIsOpen(false);
-  }, []);
+  }, [ownerDocument]);
 
   // Where the focused row sat the last time this widget looked, and in what
   // scrollport. The reveal runs on the answer to one question, so this is the
@@ -822,7 +858,13 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
           // it back. This is the same question on the other axis, asked of the
           // popup's own overflow: a glyph can run past the popup while the
           // row's border box still fits inside it.
-          revealRowInline(popup, row);
+          //
+          // The inline offset is the READER's when they moved it: a drag along
+          // an overflowing label takes the row's start out of view and leaves
+          // every other number alone, so no geometry changed and this pass has
+          // nothing to repair. Only an offset this widget has not accounted
+          // for - the reader's own drag - is preserved.
+          if (now.scrolledAlong === before.scrolledAlong) revealRowInline(popup, row);
           return;
         }
         // Three ways layout can take a row out of sight, and one for rows it
@@ -1024,7 +1066,6 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   // event. Coalesced through one pending frame, so a burst of notifications -
   // a resize, a visual-viewport change and an observation together -
   // re-measures once.
-  const frameRef = useRef<number | null>(null);
   const placeAfterLayout = useCallback(() => {
     if (frameRef.current !== null) return;
     const ownerWindow = ownerDocument.defaultView ?? window;
