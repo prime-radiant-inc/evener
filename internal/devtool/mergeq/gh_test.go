@@ -248,13 +248,13 @@ func localACLTools() aclTools {
 	ls := have("ls")
 	probe := aclTools{
 		listing: func(string) (string, error) {
-			return "", fmt.Errorf("ls is not installed")
+			return "", errors.New("ls is not installed")
 		},
 		listingWithACL: func(string) (string, error) {
-			return "", fmt.Errorf("ls cannot expand ACLs here")
+			return "", errors.New("ls cannot expand ACLs here")
 		},
 		getfacl: func(string) (string, error) {
-			return "", fmt.Errorf("getfacl is not installed")
+			return "", errors.New("getfacl is not installed")
 		},
 	}
 	if ls {
@@ -1625,8 +1625,8 @@ func TestMergEQFixtureBaseIsTrustedAndExecutable(t *testing.T) {
 		// construction rather than by timing: the link is planted before the walk
 		// runs, which is exactly the state the race produces.
 		base := fixtureExecDir(t)
-		real := filepath.Join(base, "resolved-target")
-		if err := os.Mkdir(real, 0o700); err != nil {
+		resolvedTarget := filepath.Join(base, "resolved-target")
+		if err := os.Mkdir(resolvedTarget, 0o700); err != nil {
 			t.Fatalf("make the trusted target: %v", err)
 		}
 		// The parent the fixture walks through: this user owns it, so the only
@@ -1636,7 +1636,7 @@ func TestMergEQFixtureBaseIsTrustedAndExecutable(t *testing.T) {
 			t.Fatalf("make the walked parent: %v", err)
 		}
 		link := filepath.Join(parent, "component")
-		if err := os.Symlink(real, link); err != nil {
+		if err := os.Symlink(resolvedTarget, link); err != nil {
 			t.Fatalf("plant the swapped component: %v", err)
 		}
 		// The premise: Stat, and therefore the pre-fix check, sees the target and
@@ -1687,7 +1687,7 @@ drwx------  2 501  staff  64 Nov 18 12:00 darwin-acl
 			},
 			listingWithACL: func(string) (string, error) { return foreignACL, nil },
 			getfacl: func(string) (string, error) {
-				return "", fmt.Errorf("exec: \"getfacl\": executable file not found in $PATH")
+				return "", errors.New("exec: \"getfacl\": executable file not found in $PATH")
 			},
 		}
 		if reason := fixtureComponentReplaceable(t, dir); reason == "" {
@@ -1729,7 +1729,7 @@ drwx------+ 2 501 staff 64 Nov 18 12:00 darwin-acl
 `, nil
 			},
 			getfacl: func(string) (string, error) {
-				return "", fmt.Errorf("getfacl is not installed")
+				return "", errors.New("getfacl is not installed")
 			},
 		}
 		if reason := fixtureComponentReplaceable(t, dir); reason != "" {
@@ -1743,10 +1743,10 @@ drwx------+ 2 501 staff 64 Nov 18 12:00 darwin-acl
 				return "drwx------+ 2 501 staff 64 Nov 18 12:00 darwin-acl\n", nil
 			},
 			listingWithACL: func(string) (string, error) {
-				return "", fmt.Errorf("ls does not take -e here")
+				return "", errors.New("ls does not take -e here")
 			},
 			getfacl: func(string) (string, error) {
-				return "", fmt.Errorf("getfacl is not installed")
+				return "", errors.New("getfacl is not installed")
 			},
 		}
 		if reason := fixtureComponentReplaceable(t, dir); reason == "" {
