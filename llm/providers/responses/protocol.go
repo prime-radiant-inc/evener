@@ -12,6 +12,7 @@ import (
 	"slices"
 
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/internal/openaichat"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -86,11 +87,13 @@ func (*Protocol) EmitToolSchemas(baseline []llm.ToolDefinition, res registry.Res
 		// what it serializes to: a catalog whose tools are already strictly
 		// shaped would then be re-measured on every dispatch even though the
 		// count it already holds is exact. What matters here is the emitted
-		// length, so the two schemas are measured instead of trusted to be
+		// length, so the schemas are compared for it instead of trusted to be
 		// equal, and only a schema whose projection really costs bytes is
-		// reported as changed.
-		if llm.ToolsJSONBytes([]llm.ToolDefinition{{Name: t.Name, Parameters: params}}) ==
-			llm.ToolsJSONBytes([]llm.ToolDefinition{{Name: t.Name, Parameters: t.Parameters}}) {
+		// reported as changed. The comparison is the projection's own answer
+		// (SameSerializedLength) rather than two marshals of the catalog, since
+		// admission and dispatch both ask this question and the answer for a
+		// reordered required list is the same every time.
+		if openaichat.SameSerializedLength(t.Parameters, params) {
 			continue
 		}
 		sent[i].Parameters = params

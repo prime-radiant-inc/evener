@@ -1726,20 +1726,10 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 					fmt.Sprintf("model_fallbacks entry %q could not be resolved; skipping it", fbModel), resolveErr))
 				continue
 			}
-			fbReq, ok := responsesContinuationModelFallbackRequest(fbProfile.Resolved(), req, fallbackHistory)
+			fbReq, ok := s.responsesContinuationFallbackRequest(fbProfile, req, fallbackHistory)
 			if !ok {
 				break
 			}
-			fbReq.Messages = projectThinkingForTarget(fbProfile, fbReq.Messages)
-			// A fallback reuses the primary's built messages, so it applies its
-			// own media decision here; the budget below then prices exactly what
-			// this target receives (#4217).
-			fbReq.Messages = projectToolResultMediaFor(fbProfile, fbReq.Messages)
-			// The continuation builder priced the unprojected messages; the
-			// projections above removed thinking and media this target does not
-			// replay or receive, so reprice both estimates before admission
-			// (#4563, #4217).
-			fbReq = responsesContinuationFullHistoryWithInputEstimate(fbProfile.Resolved(), fbReq)
 			// The same rule as the primary path, against the FALLBACK model's
 			// own facts: fbProfile is resolved from the fallback reference, so
 			// its ladder and stated default are the fallback model's, not the
@@ -1865,6 +1855,39 @@ func responsesContinuationFullHistoryFallbackRequest(res registry.Resolved, req 
 	fallbackReq.Continuation = nil
 	fallbackReq = responsesContinuationFullHistoryWithInputEstimate(res, fallbackReq)
 	return fallbackReq
+}
+
+// responsesContinuationFallbackRequest builds the request one fallback model
+// receives, priced for that model's own builder.
+//
+// The order is the point. A fallback reuses the primary's built messages, so it
+// applies its own thinking and media projections here, and both of its history
+// estimates are computed from the request's tool count. The request arrived
+// carrying the PRIMARY's count, which describes the schemas the primary's
+// builder emits; a fallback that leaves the catalog alone — a same-surface,
+// non-strict Chat route is the case that found this — emits a different list, so
+// pricing after the estimates leaves both of them describing a catalog this
+// route never sends. Admission takes the maximum of the local estimate, the
+// delta estimate and the full-history one, so an input cap between the primary's
+// price and this route's refuses a fallback that fits.
+//
+// An override route is left alone: it marshals the definitions it is handed, so
+// its own count is its wire count.
+func (s *Session) responsesContinuationFallbackRequest(profile *provider.Profile, req llm.Request, fullHistory []llm.Message) (llm.Request, bool) {
+	res := profile.Resolved()
+	fbReq, ok := responsesContinuationModelFallbackRequest(res, req, fullHistory)
+	if !ok {
+		return llm.Request{}, false
+	}
+	fbReq.Messages = projectThinkingForTarget(profile, fbReq.Messages)
+	fbReq.Messages = projectToolResultMediaFor(profile, fbReq.Messages)
+	if !s.servesAnOverride(profile) {
+		fbReq = llm.PriceToolSchemas(fbReq, res)
+	}
+	// The continuation builder priced the unprojected messages; the projections
+	// above removed thinking and media this target does not replay or receive, so
+	// reprice both estimates before admission (#4563, #4217).
+	return responsesContinuationFullHistoryWithInputEstimate(res, fbReq), true
 }
 
 // responsesContinuationModelFallbackRequest un-anchors a request for a

@@ -144,6 +144,18 @@ func priceEmittedToolSchemas(req Request, res registry.Resolved) Request {
 	if len(req.Tools) == 0 {
 		return req
 	}
+	// Retargeting starts from the list, not from the previous route's emission.
+	// The baseline is the count the serialized list measures on its own, so
+	// restoring it is exact rather than approximate.
+	//
+	// This runs before every branch that can return early, because each of them
+	// leaves the request priced by whatever answered last. A protocol with no
+	// deriver and an override adapter both marshal the definitions they are
+	// given: neither rewrites the list, so the list's own measurement is their
+	// price. Returning before the restore would keep a count produced for a
+	// different target — an inflated local reading, or a request that fits this
+	// route rejected by a cap that belonged to the other one.
+	req = restoreToolCountBaseline(req, res)
 	p, ok := ProtocolFor(res.Protocol)
 	if !ok {
 		return req
@@ -152,27 +164,84 @@ func priceEmittedToolSchemas(req Request, res registry.Resolved) Request {
 	if !ok {
 		return req
 	}
-	target := emittedToolTargetFor(res)
-	// Retargeting starts from the list, not from the previous route's emission.
-	// The baseline is the count the serialized list measures on its own, so
-	// restoring it is exact rather than approximate.
-	if req.emittedToolTarget != (emittedToolTargetKey{}) && req.emittedToolTarget != target {
-		req.ToolsJSONBytes = req.emittedToolBaseline
-		req.emittedToolTarget = emittedToolTargetKey{}
-		req.emittedToolBaseline = 0
-	}
 	emitted, changed := deriver.EmitToolSchemas(req.Tools, res, req.PreparedTools())
 	if !changed {
 		return req
 	}
+	// Read before the assignment below overwrites it: the baseline is the count
+	// that describes the list as this request carries it, and after the next
+	// line the field holds this target's emission instead.
+	baseline := req.toolCountBaseline()
 	req.ToolsJSONBytes = ToolsJSONBytes(emitted)
 	// The count now describes the emitted list, not the substituted form
 	// preparation measured, so the stamp that says "this count is the open-schema
 	// one" no longer holds and is cleared rather than left to authorize a reuse
 	// that would reprice from the wrong baseline.
 	req.preparedToolList = toolListIdentity{}
-	req.emittedToolTarget = target
-	req.emittedToolBaseline = ToolsJSONBytes(req.Tools)
+	req.emittedToolTarget = emittedToolTargetFor(res)
+	req.emittedToolBaseline = baseline
+	return req
+}
+
+// restoreToolCountBaseline returns req priced by the list it carries rather than
+// by another target's emission, and drops the record of that emission.
+//
+// It is the same restore for every caller that can be handed a pre-priced
+// request: the deriver path, the local reading, and admission. A route served by
+// a protocol that has no deriver, and one served by an override adapter, both
+// send the definitions they were handed, so for them the baseline is the price.
+func restoreToolCountBaseline(req Request, res registry.Resolved) Request {
+	if req.emittedToolTarget == (emittedToolTargetKey{}) {
+		return req
+	}
+	if req.emittedToolTarget == emittedToolTargetFor(res) {
+		return req
+	}
+	req.ToolsJSONBytes = req.emittedToolBaseline
+	req.emittedToolTarget = emittedToolTargetKey{}
+	req.emittedToolBaseline = 0
+	return req
+}
+
+// toolCountBaseline is the count req's tool list measures without the current
+// route's schema decision applied.
+//
+// The request's own count is that measurement whenever it has one: a caller may
+// have stamped it, and preparation stamps the form the adapters send, which is
+// the open empty schema for a parameterless definition. Measuring the list again
+// here would answer with the nil form instead and drop the bytes that form
+// occupies — the undercount a previous route's emission is recorded to avoid.
+// A request that arrived unmeasured is measured now.
+//
+// The recorded baseline wins over the incoming count on a repeat price of the
+// same target, because by then the incoming count is that target's emission
+// rather than the list's own measurement.
+func (req Request) toolCountBaseline() int {
+	if req.emittedToolBaseline > 0 {
+		return req.emittedToolBaseline
+	}
+	if req.ToolsJSONBytes > 0 {
+		return req.ToolsJSONBytes
+	}
+	return ToolsJSONBytes(req.Tools)
+}
+
+// dropRecordedToolEmission returns req priced by the list it carries, whatever
+// target the recorded emission names.
+//
+// It is for a route that makes no schema decision: an override adapter marshals
+// the definition it is handed, so no protocol's emission describes its wire
+// list. The target comparison cannot see that on its own — an override keeps the
+// resolved row it dispatches through, so a request priced for that row's
+// protocol still matches the recorded target and would keep a charge the
+// override never incurs.
+func dropRecordedToolEmission(req Request) Request {
+	if req.emittedToolTarget == (emittedToolTargetKey{}) {
+		return req
+	}
+	req.ToolsJSONBytes = req.emittedToolBaseline
+	req.emittedToolTarget = emittedToolTargetKey{}
+	req.emittedToolBaseline = 0
 	return req
 }
 
@@ -322,6 +391,18 @@ func (c *Client) CountInputTokens(ctx context.Context, req Request) (InputTokenC
 	if t.resolved {
 		req = ShapeRequest(req, t.res)
 	}
+	// A request may arrive priced for the route that built it — a caller
+	// preprices against a strict Responses row and then counts the same request
+	// on the route that will actually serve it. The restore happens here, before
+	// the branch below decides whether this target has a deriver and before the
+	// override rewrite, because both of those answers need a count that describes
+	// this request's own list rather than another route's emission. Doing it
+	// inside the deriver left a route with no deriver and an override-served
+	// route holding the previous target's charge, which is a count for a catalog
+	// neither of them sends. An unresolved override target is included: its row
+	// is the zero one, which can never be the target a pre-priced count was
+	// recorded under, so the restore is the correct answer for it too.
+	req = restoreToolCountBaseline(req, t.res)
 	// An override receives the open empty schema where a prepared request left a
 	// nil, because Complete and Stream restore it at that boundary before
 	// dispatching. Counting the request as it arrived would hand an override's
@@ -331,6 +412,7 @@ func (c *Client) CountInputTokens(ctx context.Context, req Request) (InputTokenC
 	// its own rule: a direct call never went through preparation and keeps its
 	// nil.
 	if t.override != nil {
+		req = dropRecordedToolEmission(req)
 		req = withOpenParameterlessSchemas(req)
 	}
 	localEstimate := func() InputTokenCount {

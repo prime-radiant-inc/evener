@@ -108,11 +108,11 @@ func (*Protocol) EmitToolSchemas(baseline []llm.ToolDefinition, res registry.Res
 		// projection sorts each object's required list, which reorders a schema
 		// without changing what it serializes to, so an already strictly shaped
 		// catalog differs structurally from its projection while emitting exactly
-		// the bytes the cached count already describes. Measuring both is what
-		// turns that into a reuse instead of a marshal of the whole catalog on
-		// every dispatch.
-		if llm.ToolsJSONBytes([]llm.ToolDefinition{{Name: baseline[i].Name, Parameters: params}}) ==
-			llm.ToolsJSONBytes([]llm.ToolDefinition{{Name: baseline[i].Name, Parameters: baseline[i].Parameters}}) {
+		// the bytes the cached count already describes. The projection answers
+		// that question itself (SameSerializedLength), which turns the reorder
+		// into a reuse rather than a second marshal of the catalog on every
+		// dispatch.
+		if openaichat.SameSerializedLength(baseline[i].Parameters, params) {
 			continue
 		}
 		sent[i].Parameters = params
