@@ -91,8 +91,14 @@ type logicalTurnAccumulator struct {
 }
 
 // TurnGrouper applies the logical-turn grouping rule to entries in file order.
-// Its zero value is the state before the first entry. Open and TurnID are the
-// whole state, so a caller that persists them can resume grouping later.
+// Its zero value is the state before the first entry.
+//
+// Resuming a scan needs Open, TurnID and Stamped: Stamped is what lets an
+// identity entry rejoin the group its id names, so a caller that restores only
+// Open and TurnID resumes LEGACY grouping, where the next stamped entry opens a
+// new run even under the same id. The transcript index persists exactly those
+// two fields (index.go's Open/OpenTurnID), which is sound there because its
+// legacy-only grouping never asks Stamped.
 type TurnGrouper struct {
 	// Open reports whether continuations join the latest group.
 	Open bool

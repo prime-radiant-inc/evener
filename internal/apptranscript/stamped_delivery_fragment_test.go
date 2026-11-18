@@ -1,6 +1,7 @@
 package apptranscript_test
 
 import (
+	"fmt"
 	"path/filepath"
 	"reflect"
 	"testing"
@@ -223,10 +224,12 @@ func TestDeliveryInsideExecutionKeepsItsOwnTurn(t *testing.T) {
 // reusedCallIDTranscript writes two assistant rounds on either side of a
 // standalone delivery that reuse one tool-call id — a provider that numbers
 // calls per round rather than per turn. The index keeps two calls there, each
-// settled by the result that answers it.
-func reusedCallIDTranscript(t *testing.T) string {
+// settled by the result that answers it. It returns the transcript and the two
+// result payloads it wrote, in file order, so a caller can compare each
+// projected row against the payload written for it rather than against copy.
+func reusedCallIDTranscript(t *testing.T) (path string, outputs []string) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	path = filepath.Join(t.TempDir(), "session.transcript.jsonl")
 	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "reused_call"})
 	if err != nil {
 		t.Fatal(err)
@@ -237,29 +240,33 @@ func reusedCallIDTranscript(t *testing.T) string {
 			t.Fatalf("record %s: %v", turn.Kind, err)
 		}
 	}
-	call := func(cmd, output string) []llm.ContentPart {
+	call := func(cmd string) []llm.ContentPart {
 		return []llm.ContentPart{
 			{Kind: llm.ContentText, Text: cmd},
-			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "d1", Name: "shell", Arguments: []byte(`{"cmd":"` + cmd + `"}`)}},
+			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "d1", Name: "shell", Arguments: []byte(fmt.Sprintf(`{"cmd":%q}`, cmd))}},
 		}
 	}
+	// The two results carry distinct payloads so a row settled by the wrong
+	// announcement is visible from the payload alone.
+	first, second := "payload-from-the-first-round", "payload-from-the-second-round"
+	outputs = []string{first, second}
 	w.BeginExecution("t_reuse", false)
 	record(schema.NewTurn(schema.TurnUserInput, llm.User("run twice")), transcript.PlaceSession)
-	record(schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: call("first command", "")}), transcript.PlaceSession)
+	record(schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: call("first command")}), transcript.PlaceSession)
 	record(schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
-		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "d1", Name: "shell", Content: "first output"}},
+		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "d1", Name: "shell", Content: first}},
 	}}}, transcript.PlaceSession)
 	// A standalone delivery between the two rounds.
 	record(schema.NewTurn(schema.TurnSteering, llm.User("a delivered note")), transcript.PlaceDelivery)
-	record(schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: call("second command", "")}), transcript.PlaceSession)
+	record(schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: call("second command")}), transcript.PlaceSession)
 	record(schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
-		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "d1", Name: "shell", Content: "second output"}},
+		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "d1", Name: "shell", Content: second}},
 	}}}, transcript.PlaceSession)
 	record(schema.Turn{Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnCompleted}}, transcript.PlaceCompletion)
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
-	return path
+	return path, outputs
 }
 
 // Two rounds that REUSE a call id are two calls, not one: the whole-file read
@@ -267,7 +274,7 @@ func reusedCallIDTranscript(t *testing.T) string {
 // must also not move the second round's output ahead of the delivery, which is
 // what folding the second call into the first row did (#1166 review).
 func TestReusedCallIDAcrossADeliveryKeepsBothCalls(t *testing.T) {
-	path := reusedCallIDTranscript(t)
+	path, wrote := reusedCallIDTranscript(t)
 	turns := fullTurns(t, path)
 
 	var outputs []string
@@ -281,8 +288,8 @@ func TestReusedCallIDAcrossADeliveryKeepsBothCalls(t *testing.T) {
 	if len(outputs) != 2 {
 		t.Fatalf("call d1 kept %d rows (%v), want 2: two announcements that reuse one call id are two calls", len(outputs), outputs)
 	}
-	if outputs[0] != "first output" || outputs[1] != "second output" {
-		t.Fatalf("call d1 outputs = %v, want [first output second output]: each result must settle the announcement it answers, in file order", outputs)
+	if !reflect.DeepEqual(outputs, wrote) {
+		t.Fatalf("call d1 outputs = %v, want %v: each result must settle the announcement it answers, in file order", outputs, wrote)
 	}
 
 	// The same transcript through the index: it is the oracle for how many
@@ -303,10 +310,12 @@ func TestReusedCallIDAcrossADeliveryKeepsBothCalls(t *testing.T) {
 // which projects no opener item — reusing the shell call's id, then that
 // communicate's rejection. The index resolves the rejection against the latest
 // assistant entry that announced a call, so it never folds a hidden call's
-// result into a visible row of another call.
-func hiddenCallTranscript(t *testing.T) string {
+// result into a visible row of another call. It returns the transcript and the
+// shell result payload it wrote, so a caller compares against that payload
+// rather than against copy.
+func hiddenCallTranscript(t *testing.T) (path, shellPayload string) {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	path = filepath.Join(t.TempDir(), "session.transcript.jsonl")
 	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "hidden_call"})
 	if err != nil {
 		t.Fatal(err)
@@ -317,13 +326,14 @@ func hiddenCallTranscript(t *testing.T) string {
 			t.Fatalf("record %s: %v", turn.Kind, err)
 		}
 	}
+	shellPayload = "payload-from-the-shell-call"
 	w.BeginExecution("t_hidden", false)
 	record(schema.NewTurn(schema.TurnUserInput, llm.User("run once")), transcript.PlaceSession)
 	record(schema.NewTurn(schema.TurnAssistant, llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 		{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "d1", Name: "shell", Arguments: []byte(`{"cmd":"ls"}`)}},
 	}}), transcript.PlaceSession)
 	record(schema.Turn{Kind: schema.TurnToolResults, Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
-		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "d1", Name: "shell", Content: "listing"}},
+		{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "d1", Name: "shell", Content: shellPayload}},
 	}}}, transcript.PlaceSession)
 	// A standalone delivery between the rounds.
 	record(schema.NewTurn(schema.TurnSteering, llm.User("a delivered note")), transcript.PlaceDelivery)
@@ -341,7 +351,7 @@ func hiddenCallTranscript(t *testing.T) string {
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
 	}
-	return path
+	return path, shellPayload
 }
 
 // A rejected communicate that reuses a settled shell call's id is its own
@@ -350,7 +360,7 @@ func hiddenCallTranscript(t *testing.T) string {
 // move the rejection ahead of the delivery. With no opener row to settle, the
 // rejection keeps its recorded position.
 func TestHiddenCommunicateReusingACallIDKeepsTheShellRow(t *testing.T) {
-	path := hiddenCallTranscript(t)
+	path, shellPayload := hiddenCallTranscript(t)
 	turns := fullTurns(t, path)
 
 	var shell []appwire.ThreadItem
@@ -371,8 +381,11 @@ func TestHiddenCommunicateReusingACallIDKeepsTheShellRow(t *testing.T) {
 	if len(shell) != 1 {
 		t.Fatalf("shell call kept %d rows, want 1: the rejection folded into it and deleted the command", len(shell))
 	}
-	if shell[0].Output != "listing" || shell[0].ToolName != "shell" {
-		t.Fatalf("shell row = {name %q output %q}, want the shell command's own settled row", shell[0].ToolName, shell[0].Output)
+	// The row must still carry the payload written for the SHELL call, not the
+	// rejection's: a row whose output is empty or belongs to another call has
+	// been settled by the wrong entry.
+	if shell[0].Output != shellPayload || shell[0].ToolName != "shell" {
+		t.Fatalf("shell row = {name %q output %q}, want the shell command's own settled row (%q)", shell[0].ToolName, shell[0].Output, shellPayload)
 	}
 	if len(rejected) != 1 {
 		t.Fatalf("rejected communicate kept %d rows, want 1: a call with no opener row keeps its recorded position", len(rejected))
