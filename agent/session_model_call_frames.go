@@ -30,7 +30,8 @@ import (
 // The turn is never modified: the caller gets a message whose changed text
 // parts are copies, so the transcript keeps exactly what the model wrote.
 func escapeModelAuthoredTurnFrames(msg llm.Message, protocol string) llm.Message {
-	return escapeModelAuthoredTurnFramesFor(msg, protocol, false)
+	out, _ := escapeModelAuthoredTurnFramesReporting(msg, protocol, false)
+	return out
 }
 
 // splitEscapedBlock splits escaped, the escape of strings.Join(originals, "\n"),
@@ -60,15 +61,32 @@ func splitEscapedBlock(escaped string, originals []string) (pieces []string, ok 
 }
 
 // escapeModelAuthoredTurnFramesFor is escapeModelAuthoredTurnFrames with the
-// target's reasoning policy. When the target renders replayed reasoning as
-// ordinary assistant text, its adapter prepends that reasoning to the message
-// body, so the reasoning is part of what the model reads: escaping only the
-// text parts would leave a frame the model wrote in its reasoning unescaped in
-// the body it receives (#6493 review). The stored reasoning is untouched; only
-// the projected copy is rewritten, exactly as for text parts.
+// target's reasoning policy, for callers that only need the resulting message.
 func escapeModelAuthoredTurnFramesFor(msg llm.Message, protocol string, promotesReasoning bool) llm.Message {
+	out, _ := escapeModelAuthoredTurnFramesReporting(msg, protocol, promotesReasoning)
+	return out
+}
+
+// escapeModelAuthoredTurnFramesReporting is the escape with the target's
+// reasoning policy, reporting whether it changed any part of the message.
+//
+// When the target renders replayed reasoning as ordinary assistant text, its
+// adapter prepends that reasoning to the message body, so the reasoning is part
+// of what the model reads: escaping only the text parts would leave a frame the
+// model wrote in its reasoning unescaped in the body it receives (#6493
+// review). The stored reasoning is untouched; only the projected copy is
+// rewritten, exactly as for text parts.
+//
+// changed is the whole answer to "was this message rewritten", and a caller
+// that decides whether to keep the result must use it. Comparing the escaped
+// message's Text() with the original's cannot see a rewrite confined to
+// reasoning — Message.Text() reads text parts only — so a fallback target that
+// promotes reasoning would discard an escape that only touched a thinking
+// block, and its adapter would prepend the original frame to the body (#6493
+// review).
+func escapeModelAuthoredTurnFramesReporting(msg llm.Message, protocol string, promotesReasoning bool) (llm.Message, bool) {
 	if msg.Role != llm.RoleAssistant {
-		return msg
+		return msg, false
 	}
 	// A machinery part is content this session manufactured, and escaping it
 	// would rewrite the harness's own note. Every genuine one is user-role: the
@@ -109,7 +127,7 @@ func escapeModelAuthoredTurnFramesFor(msg llm.Message, protocol string, promotes
 		body := reasoningBody + "\n\n" + strings.Join(texts, "\n")
 		escaped := sysmsg.EscapeModelAuthoredFrames(body)
 		if escaped == body {
-			return msg
+			return msg, false
 		}
 		lines := strings.Split(escaped, "\n")
 		at := strings.Count(reasoningBody, "\n") + 1
@@ -117,7 +135,7 @@ func escapeModelAuthoredTurnFramesFor(msg llm.Message, protocol string, promotes
 		// it was: the reasoning's lines, then the blank line the adapter
 		// inserts, then the text.
 		if at+1 > len(lines) || lines[at] != "" {
-			return msg
+			return msg, false
 		}
 		// Split the escaped body back the way it was joined: one piece per
 		// reasoning block and one per text part, by each one's own line count.
@@ -127,13 +145,14 @@ func escapeModelAuthoredTurnFramesFor(msg llm.Message, protocol string, promotes
 		// held in its original spelling (#6493 review).
 		reasoningPieces, ok := splitEscapedBlock(strings.Join(lines[:at], "\n"), reasoningTexts)
 		if !ok {
-			return msg
+			return msg, false
 		}
 		textPieces, ok := splitEscapedBlock(strings.Join(lines[at+1:], "\n"), texts)
 		if !ok {
-			return msg
+			return msg, false
 		}
 		parts := slices.Clone(msg.Content)
+		changed := false
 		for k, piece := range reasoningPieces {
 			if piece == reasoningTexts[k] {
 				continue
@@ -141,17 +160,19 @@ func escapeModelAuthoredTurnFramesFor(msg llm.Message, protocol string, promotes
 			thinking := *msg.Content[reasoningIndexes[k]].Thinking
 			thinking.Text = piece
 			parts[reasoningIndexes[k]].Thinking = &thinking
+			changed = true
 		}
 		for k, piece := range textPieces {
 			if piece != texts[k] {
 				parts[indexes[k]].Text = piece
+				changed = true
 			}
 		}
 		msg.Content = parts
-		return msg
+		return msg, changed
 	}
 	if len(indexes) == 0 {
-		return msg
+		return msg, false
 	}
 
 	// Scan the text as the target adapter will assemble it. The boundaries are
@@ -177,25 +198,25 @@ func escapeModelAuthoredTurnFramesFor(msg llm.Message, protocol string, promotes
 		// Escaping rewrites a frame's opening character and never adds or
 		// removes a line break, so the escaped text splits back into the same
 		// per-part line counts it was joined from.
-			pieces, ok := splitEscapedBlock(escaped, segmentTexts)
-			if !ok {
-				// The escape changed the line structure; leave the turn as
-				// stored rather than hand back text split somewhere it was not.
-				return msg
+		pieces, ok := splitEscapedBlock(escaped, segmentTexts)
+		if !ok {
+			// The escape changed the line structure; leave the turn as
+			// stored rather than hand back text split somewhere it was not.
+			return msg, false
+		}
+		for k, piece := range pieces {
+			if piece == segmentTexts[k] {
+				continue
 			}
-			for k, piece := range pieces {
-				if piece == segmentTexts[k] {
-					continue
-				}
-				if parts == nil {
-					parts = slices.Clone(msg.Content)
-				}
-				parts[indexes[span[0]+k]].Text = piece
+			if parts == nil {
+				parts = slices.Clone(msg.Content)
 			}
+			parts[indexes[span[0]+k]].Text = piece
+		}
 	}
 	if parts == nil {
-		return msg
+		return msg, false
 	}
 	msg.Content = parts
-	return msg
+	return msg, true
 }

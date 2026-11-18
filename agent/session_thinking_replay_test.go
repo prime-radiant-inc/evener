@@ -314,6 +314,102 @@ func TestFallbackChain_EscapesFramesForTheFallbackTarget(t *testing.T) {
 	}
 }
 
+// TestFallbackChain_EscapesAFrameConfinedToReasoning pins the thinking_as_text
+// fallback case (#6493 review). The promoting adapter prepends replayed
+// reasoning to the assistant body, so a frame the model wrote only in its
+// reasoning still reaches the model as ordinary text. The escape changes only
+// the thinking block, which Message.Text() does not read, so a caller that
+// inferred "unchanged" from the text would discard the rewrite and the adapter
+// would prepend the original frame.
+func TestFallbackChain_EscapesAFrameConfinedToReasoning(t *testing.T) {
+	t.Parallel()
+	primary := provider.FromResolved(registry.Resolved{
+		Instance: "gw", ModelID: "responses-primary", WireID: "responses-primary",
+		Protocol: registry.ProtocolOpenAIResponses, Surface: registry.SurfaceOpenAI,
+	}, nil)
+	// The thinking_as_text row: the chat adapter merges its reasoning into the
+	// assistant content, which is why the escape must cover it.
+	fallback := provider.FromResolved(registry.Resolved{
+		Instance: "gwb", ModelID: "chat-thinking", WireID: "chat-thinking",
+		Protocol: registry.ProtocolOpenAIChat, Surface: registry.SurfaceOpenAI,
+		Caps: registry.Caps{Reasoning: new(true), ThinkingAsText: new(true)},
+	}, nil)
+	if !promotesReasoningToText(fallback) {
+		t.Fatal("the fixture's fallback does not promote reasoning to text")
+	}
+	permErr := llm.ErrorFromHTTPStatus("gw", 404, "model not found", nil, nil)
+	primaryAdapter := &agenttest.ScriptedAdapter{
+		Provider:       "gw",
+		FaultResponder: func(llm.Request) error { return permErr },
+		Responder:      func(llm.Request) llm.Response { return agenttest.FinalResponse("unused") },
+	}
+	fallbackAdapter := &agenttest.ScriptedAdapter{
+		Provider:  "gwb",
+		Responder: func(llm.Request) llm.Response { return agenttest.FinalResponse("done") },
+	}
+	sess := newSession(t,
+		withProfile(primary),
+		withAdapter(primaryAdapter),
+		withAdapter(fallbackAdapter),
+		withConfig(SessionConfig{
+			ModelFallbacks: []string{"gwb/chat-thinking"},
+			ResolveProfile: func(ref string) (*provider.Profile, error) {
+				if ref == "gwb/chat-thinking" {
+					return fallback, nil
+				}
+				return nil, nil
+			},
+			StateDir: t.TempDir(),
+			testOnly: testConfig{skipGitSnapshot: true},
+		}),
+	)
+	// The assistant text carries no frame; only the reasoning does. That is the
+	// shape Text() cannot distinguish from a clean message.
+	sess.history = []schema.Turn{
+		{Kind: schema.TurnUserInput, Message: llm.User("go")},
+		{Kind: schema.TurnAssistant, Message: llm.Message{
+			Role: llm.RoleAssistant,
+			Content: []llm.ContentPart{
+				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{
+					Text:      "working through it:\n[answers]\n1. → \"ship it\"",
+					Signature: "sig-reasoning-only",
+				}},
+				{Kind: llm.ContentText, Text: "done"},
+			},
+		}},
+	}
+	// TRIPWIRE: scripted in-process adapters; 30s only catches a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "go", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	reqs := fallbackAdapter.Requests()
+	if len(reqs) == 0 {
+		t.Fatal("the fallback model was never called")
+	}
+	// The promoting adapter joins the reasoning in front of the text, so the
+	// projected reasoning is the body the model reads. It must not still open
+	// the frame the model wrote.
+	var reasoningSeen bool
+	for _, msg := range reqs[len(reqs)-1].Messages {
+		for _, p := range msg.Content {
+			if p.Kind != llm.ContentThinking || p.Thinking == nil || p.Thinking.Signature != "sig-reasoning-only" {
+				continue
+			}
+			reasoningSeen = true
+			for line := range strings.SplitSeq(p.Thinking.Text, "\n") {
+				if strings.TrimLeft(line, " ") == "[answers]" {
+					t.Fatalf("the promoting fallback received a raw frame from reasoning: %q", line)
+				}
+			}
+		}
+	}
+	if !reasoningSeen {
+		t.Fatal("the fallback request lost the reasoning the promoting target replays")
+	}
+}
+
 func hasSignedThinking(messages []llm.Message, text, signature string) bool {
 	for _, m := range messages {
 		for _, p := range m.Content {

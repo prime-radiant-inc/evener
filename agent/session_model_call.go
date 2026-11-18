@@ -1866,8 +1866,12 @@ func escapeModelAuthoredFramesForTarget(messages []llm.Message, protocol string,
 	out := messages
 	copied := false
 	for i, msg := range messages {
-		escaped := escapeModelAuthoredTurnFramesFor(msg, protocol, promotesReasoning)
-		if escaped.Text() == msg.Text() && len(escaped.Content) == len(msg.Content) {
+		// The escaper says whether it changed the message; do not infer it from
+		// the two messages' Text(), which reads text parts only and cannot see a
+		// rewrite confined to the reasoning a promoting target prepends (#6493
+		// review).
+		escaped, changed := escapeModelAuthoredTurnFramesReporting(msg, protocol, promotesReasoning)
+		if !changed {
 			continue
 		}
 		if !copied {

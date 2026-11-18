@@ -118,13 +118,13 @@ func selectResponsesContinuationAnchorCandidate(cfg SessionConfig, history []sch
 	}
 
 	return responsesContinuationAnchorCandidate{
-		TurnIndex: anchorIndex,
-		Turn:      anchor,
-		Delta:     delta,
-	}, llm.ResponsesContinuationDecision{
-		HistoryMode: llm.HistoryModeResponsesDelta,
-		Reason:      "continuation_anchor_candidate",
-	}
+			TurnIndex: anchorIndex,
+			Turn:      anchor,
+			Delta:     delta,
+		}, llm.ResponsesContinuationDecision{
+			HistoryMode: llm.HistoryModeResponsesDelta,
+			Reason:      "continuation_anchor_candidate",
+		}
 }
 
 func responsesContinuationDeltaTurns(history []schema.Turn, start int) []schema.Turn {
@@ -157,10 +157,13 @@ func responsesContinuationAnchorCarriesEscapableText(history []schema.Turn, from
 		if history[i].Kind != schema.TurnAssistant {
 			continue
 		}
-		before := history[i].Message.Text()
 		// The anchor decision is only made for an OpenAI Responses request, so
 		// the escape is asked against that adapter's message boundaries.
-		if escapeModelAuthoredTurnFrames(history[i].Message, registry.ProtocolOpenAIResponses).Text() != before {
+		//
+		// The escape reports whether it changed the message; a rewrite confined
+		// to a thinking block is invisible to Text() but still reaches the
+		// provider in the retained prefix (#6493 review).
+		if _, changed := escapeModelAuthoredTurnFramesReporting(history[i].Message, registry.ProtocolOpenAIResponses, false); changed {
 			return true
 		}
 	}
