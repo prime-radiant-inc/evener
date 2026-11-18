@@ -422,7 +422,7 @@ func TestDelegateControllerTransientRefusalDoesNotBlockAttentionStart(t *testing
 	if appended, err := owner.appendDelegateNotificationDurably(attentionID, "inspect started work"); err != nil || !appended {
 		t.Fatalf("append attention = appended:%t err:%v", appended, err)
 	}
-	if _, err := c.openDelegateAttention(fixture.delegateID, attentionID); err != nil {
+	if _, _, err := c.openDelegateAttention(fixture.delegateID, attentionID); err != nil {
 		t.Fatalf("open attention: %v", err)
 	}
 	reservation, err := c.ReserveAttention(owner, attentionID)

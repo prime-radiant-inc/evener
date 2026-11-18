@@ -271,6 +271,16 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		if claimErr != nil {
 			return nil, "", nil, llm.Request{}, nil, "", claimErr
 		}
+		attentionRun := ctx.Value(delegateAttentionRunContextKey{}) != nil
+		if attentionRun {
+			// The projection below is the request's one view of the resident
+			// history, and a hold the journal already released must be ended
+			// before that view is taken: ending a hold moves its row's turn to
+			// the tail, and a move applied after the snapshot would leave the
+			// request ending on the exchanges the hold stood through instead of
+			// on the report it owes.
+			s.reconcileAutomaticDriveHolds()
+		}
 		// The delegate projects its own snapshot, which can hold turns appended
 		// after historyTurns was taken, so its coverage and its in-flight
 		// boundary must come from that same snapshot rather than the earlier
@@ -283,7 +293,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		scope.InFlightFrom = projection.inFlightFrom
 		inFlightFrom = projection.inFlightFrom
 		presentedBoundary = len(snapshot)
-		if ctx.Value(delegateAttentionRunContextKey{}) != nil {
+		if attentionRun {
 			// An automatic attention drive projects the resident history,
 			// including the turns a reopen retained — a user-stopped run's
 			// held row would ride this drive's presentation, the immediate

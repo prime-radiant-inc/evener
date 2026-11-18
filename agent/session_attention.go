@@ -1104,7 +1104,19 @@ func delegateAttentionHoldStands(held, admitted uint64) bool {
 	return held > admitted
 }
 
-// reconcileAutomaticDriveHoldsLocked drops every hold the delegate journal's
+// reconcileAutomaticDriveHolds ends every hold the delegate journal's release
+// floor already superseded, taking attentionMu itself. It is the form for a
+// caller that reaches presentation without already holding the lock.
+func (s *Session) reconcileAutomaticDriveHolds() {
+	if s == nil {
+		return
+	}
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	s.reconcileAutomaticDriveHoldsLocked()
+}
+
+// reconcileAutomaticDriveHoldsLocked ends every hold the delegate journal's
 // release floor already superseded. Presentation is the one point that cannot
 // lose the race against a release: a wake journals its release before it
 // publishes anything, so a release that matters has always landed by the time
@@ -1112,7 +1124,17 @@ func delegateAttentionHoldStands(held, admitted uint64) bool {
 // release that may still be in flight. The reads therefore reconcile instead
 // of trusting what the settles and wakes left in the map. A hold this keeps is
 // one no admitted wake outranked, so the stop that installed it is still the
-// newest evidence and its row stays quiet. Callers must hold attentionMu.
+// newest evidence and its row stays quiet.
+//
+// Ending a hold here is the same event as ending it at the release, so it
+// performs the same history-tail move first: the wake journaled its release
+// before this read, and its release callback has not run yet — it will find
+// no hold left to move. Reconciling without the move would leave the report
+// buried under the exchanges of the generation the hold stood through, and
+// the request that first presents it would end on a later assistant turn
+// instead of on the report. Whichever path ends the quiet, the move happens
+// exactly once, before the hold's entry is deleted and before anything reads
+// the history it orders. Callers must hold attentionMu.
 func (s *Session) reconcileAutomaticDriveHoldsLocked() {
 	if len(s.attentionAutomaticDriveHolds) == 0 {
 		return
@@ -1122,15 +1144,24 @@ func (s *Session) reconcileAutomaticDriveHoldsLocked() {
 		return
 	}
 	controller.mu.Lock()
-	released := uint64(0)
+	floor := uint64(0)
 	if aggregate := controller.durable[s.owningDelegateID]; aggregate != nil {
-		released = aggregate.AttentionHoldReleasedGeneration
+		floor = aggregate.AttentionHoldReleasedGeneration
 	}
 	controller.mu.Unlock()
+	var ended []string
 	for id, held := range s.attentionAutomaticDriveHolds {
-		if !delegateAttentionHoldStands(held, released) {
-			delete(s.attentionAutomaticDriveHolds, id)
+		if !delegateAttentionHoldStands(held, floor) {
+			ended = append(ended, id)
 		}
+	}
+	if len(ended) == 0 {
+		return
+	}
+	sort.Strings(ended)
+	s.moveHeldDelegateAttentionTurnsToTail(ended)
+	for _, id := range ended {
+		delete(s.attentionAutomaticDriveHolds, id)
 	}
 }
 

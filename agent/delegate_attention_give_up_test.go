@@ -118,7 +118,7 @@ func TestUndeliverableDelegateAttentionParksUntilNewAttention(t *testing.T) {
 		t.Fatalf("the drive still selects parked delegate %s", delegateID)
 	}
 
-	if _, err := controller.openDelegateAttention(fenced.grandchildDelegateID, "delegate:fresh-attention"); err != nil {
+	if _, _, err := controller.openDelegateAttention(fenced.grandchildDelegateID, "delegate:fresh-attention"); err != nil {
 		t.Fatalf("open fresh attention: %v", err)
 	}
 	if delegateID, _, pending := controller.nextIdleDelegateAttention(); !pending || delegateID != fenced.grandchildDelegateID {

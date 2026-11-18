@@ -593,6 +593,77 @@ func TestAttentionWakeGenerationDuringOpenRun(t *testing.T) {
 	}
 }
 
+// A presentation read that ends a hold must move that row's turn to the
+// history tail exactly as the release does, because the release that granted
+// the end has already journaled and its own callback has not run yet: it will
+// find no hold to move. The exchanges of the generation the hold stood
+// through append after the reopened turn, so a projection that ends the hold
+// without the move ends the request on a later assistant message instead of
+// on the report the request owes.
+func TestReconcileMovesAHoldItEndsToTheHistoryTail(t *testing.T) {
+	t.Parallel()
+	sess, reopenedID, _ := deriveHeldFixtureWithJournal(t, delegatestore.OutcomeCancelled, "cancelled")
+	sess.holdDelegateAttentionFromAutomaticDriveAt(reopenedID, 1)
+	// The generation the hold stands through ran while the quiet stood, so
+	// its exchange sits after the reopened turn the settle appended.
+	sess.mu.Lock()
+	sess.history = append(sess.history, schema.NewTurn(schema.TurnAssistant, llm.Assistant("the generation that ran while the quiet stood")))
+	sess.mu.Unlock()
+	journalDeriveHeldRelease(t, sess, 1)
+
+	sess.mu.Lock()
+	projected := append([]schema.Turn(nil), sess.history...)
+	sess.mu.Unlock()
+	kept, droppedAt := sess.dropHeldDelegateAttentionTurns(projected)
+	if len(droppedAt) != 0 {
+		t.Fatalf("the projection still dropped the released row at %v: the reconcile did not end a hold the journal released", droppedAt)
+	}
+	if len(kept) != len(projected) {
+		t.Fatalf("the projection dropped %d turns, want none: %d of %d kept", len(projected)-len(kept), len(kept), len(projected))
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if len(sess.history) == 0 {
+		t.Fatal("the reconcile left no history")
+	}
+	tail := sess.history[len(sess.history)-1]
+	if tail.AttentionID != reopenedID || tail.Kind != schema.TurnSteering {
+		t.Fatalf("the released report is not the history's last turn (last attention %q kind %v): the reconcile ended the hold without the release's tail move, so the presenting request ends on a later exchange", tail.AttentionID, tail.Kind)
+	}
+}
+
+// A cold arm can reach a receiver an idle restore has just attached as a live
+// runtime, and that runtime holds its own in-memory quiets. The wake's release
+// exists only in the journal at that point, so the arm must apply the
+// generation it sampled to the runtime that attached: the quiet it superseded
+// ends there, the row presents on this wake, and a hold the runtime installs
+// for a generation settled later than the sample outlives it.
+func TestColdArmReleasesTheAttachedRuntimesSupersededHold(t *testing.T) {
+	t.Parallel()
+	sess, reopenedID, _ := deriveHeldFixtureWithJournal(t, delegatestore.OutcomeCancelled, "cancelled")
+	sess.holdDelegateAttentionFromAutomaticDriveAt(reopenedID, 1)
+	// A row a later stop owns: its hold names a generation settled after this
+	// wake's sample, so the wake is not newer evidence than it.
+	const laterRowID = "delegate:dlg_hold/delivery/2/reopened/2"
+	sess.holdDelegateAttentionFromAutomaticDriveAt(laterRowID, 2)
+
+	writeDelegateAttentionTranscript(t, transcriptPath(sess.delegateController.stateDir, "child-dlg_hold"), "child-dlg_hold", reopenedID)
+	if err := sess.delegateController.armColdDelegateAttention("dlg_hold", reopenedID); err != nil {
+		t.Fatalf("arm the cold receiver's row: %v", err)
+	}
+
+	sess.attentionMu.Lock()
+	released := sess.delegateAttentionHeldFromAutomaticDriveLocked(reopenedID)
+	later := sess.delegateAttentionHeldFromAutomaticDriveLocked(laterRowID)
+	sess.attentionMu.Unlock()
+	if released {
+		t.Fatal("the cold arm did not end the hold the wake superseded: the attached runtime kept an in-memory quiet the journal already released, and the reopened report waits for another generation")
+	}
+	if !later {
+		t.Fatal("the cold arm ended a hold a later stop installed: the wake is not newer evidence than that quiet")
+	}
+}
+
 // deriveHeldFixtureWithJournal is deriveHeldFixture plus the fixture's journal
 // path, for a case that restores a controller from it.
 func deriveHeldFixtureWithJournal(t *testing.T, outcome delegatestore.OutcomeStatus, reason string) (*Session, string, string) {
@@ -845,7 +916,7 @@ func TestDeriveHeldDelegateAttentionFromOutcome(t *testing.T) {
 		if _, err := sess.appendDelegateNotificationDurably(freshID, acceptedTriggerText); err != nil {
 			t.Fatalf("append the fresh row: %v", err)
 		}
-		if _, err := sess.delegateController.openDelegateAttention("dlg_hold", freshID); err != nil {
+		if _, _, err := sess.delegateController.openDelegateAttention("dlg_hold", freshID); err != nil {
 			t.Fatalf("admit the fresh wake: %v", err)
 		}
 		admittedGeneration := settledGeneration(t, sess)

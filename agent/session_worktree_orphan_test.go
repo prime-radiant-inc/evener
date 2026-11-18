@@ -3512,40 +3512,98 @@ func TestDelegateAttentionResidentDrivePassDoesNotRebuildReleasedStopHold(t *tes
 	}
 }
 
-// A committed child delivery is a wake from a new event in its own right:
-// the retained child's report may present a row a user's stop held out of the
-// automatic drives, so the delivery ends the holds exactly as a successful
-// arm does. Without the release on the delivery path the held report hides
-// behind an event that already arrived — a runtime whose notify edge is down
-// or whose arm the controller refuses sees no wake to end the quiet. The hold
-// is seeded through the production setter the settle tail writes with, and
-// the pinned announce release then delivers the child's real report through
-// the real delivery path. The delegate's own re-arm of the delivered row is
-// refused through the arm fault, and that refused arm's paced retry re-arms
-// past the fault as a real refusal's would — a retry that succeeds releases
-// the holds like any successful arm — so the hold's absence alone cannot name
-// the delivery as the lifter: the release must carry the delivery site's tag.
+// A committed child delivery is a wake from a new event in its own right: the
+// child's report may present a row a user's stop held out of the automatic
+// drives, so the delivery ends that quiet exactly as a successful arm does.
+// Without the release on the delivery path the held report hides behind an
+// event that already arrived — a runtime whose notify edge is down, or whose
+// arm the controller refuses, sees no wake to end the quiet.
+//
+// The quiet here is a real one: the delegate's own journal rests cancelled by
+// an attention stop at generation 1, and the hold names that generation. The
+// delivery's commit journals the release for that generation and fires the
+// delivery-site release, so the hold ends and the reopened row becomes
+// eligible in the same step. The arm is refused throughout through the arm
+// fault, so no arm release can stand in for the delivery's: the release site
+// the hook records is the proof of which path lifted the hold, and the
+// durable field's advance is the proof the cold restore would agree.
 func TestDelegateAttentionDeliveredReportReleasesUserStopHold(t *testing.T) {
 	t.Parallel()
-	r := newWorktreeRepo(t)
-	// Seed the loaded-runner interleave this test pins, the same shape the
-	// busy-commit test holds: the fixture's send returns while the delegate's
-	// finalization drain is still parked on the retained child, so the
-	// release lands the child's report delivery inside this test's window.
-	holdSharedDescendantAnnounce("delivered-release-hold")
-	lane := spawnSharedDescendantLane(t, r, "delivered-release-hold", "dlg_delivhold0001", "034delivhold00001")
-	// The hold a user's stop leaves on the very row the pinned release is
-	// about to deliver — the child's first report's delivery identity —
-	// written through the production setter the settle tail uses. The
-	// delegate's own re-arm of the delivered row is refused through the arm
-	// fault; the refused arm is retained for its paced retry, whose own
-	// release carries the arm's tag and must never satisfy the delivery
-	// assert below.
-	heldRowID := delegateAttentionID(lane.sharedSub.sess.owningDelegateID + "/delivery/1")
-	lane.delegateSess.holdDelegateAttentionFromAutomaticDriveAt(heldRowID, settledGeneration(t, lane.delegateSess))
+	sess, _ := newCompactableSession(t)
+	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
+	const holderDelegateID = "dlg_holder"
+	seedDelegateControllerIdle(t, controller, holderDelegateID, "")
+	controller.mu.Lock()
+	controller.live[holderDelegateID] = &delegateLiveState{runtime: sess}
+	controller.mu.Unlock()
+	sess.delegateController = controller
+	sess.owningDelegateID = holderDelegateID
+	t.Cleanup(func() {
+		sess.mu.Lock()
+		sess.delegateController = nil
+		sess.owningDelegateID = ""
+		sess.mu.Unlock()
+	})
+
+	// The delegate's own stopped generation: an attention-triggered run that
+	// settled cancelled, leaving the aggregate at generation 1 with that
+	// outcome. This is the durable evidence the release is ordered against.
+	stopped := delegatestore.TerminalPacket{Kind: delegatestore.PacketTerminalError, Message: json.RawMessage(`"stopped"`)}
+	controller.mu.Lock()
+	_, err := controller.appendLocked(
+		delegatestore.Event{
+			Kind:       delegatestore.EventDelegateRunStarted,
+			DelegateID: holderDelegateID,
+			RunStarted: &delegatestore.RunStarted{
+				Generation: 1,
+				Trigger:    delegatestore.TriggerAttention,
+				StartedAt:  time.Unix(10, 0).UTC(),
+			},
+		},
+		delegatestore.Event{
+			Kind:       delegatestore.EventDelegateRunFinished,
+			DelegateID: holderDelegateID,
+			RunFinished: &delegatestore.RunFinished{
+				Generation:  1,
+				Outcome:     delegatestore.Outcome{Status: delegatestore.OutcomeCancelled, Reason: "cancelled", EndedAt: time.Unix(20, 0).UTC()},
+				Disposition: delegatestore.DispositionTerminalError,
+				DeliveryID:  holderDelegateID + "/delivery/1",
+				Packet:      &stopped,
+			},
+		},
+		delegatestore.Event{
+			Kind:                 delegatestore.EventDelegateDeliveryAcknowledged,
+			DelegateID:           holderDelegateID,
+			DeliveryAcknowledged: &delegatestore.DeliveryAcknowledged{DeliveryID: holderDelegateID + "/delivery/1"},
+		},
+	)
+	settledGeneration := controller.durable[holderDelegateID].Generation
+	controller.mu.Unlock()
+	if err != nil {
+		t.Fatalf("journal the stopped generation: %v", err)
+	}
+	if settledGeneration != 1 {
+		t.Fatalf("the fixture's stop settled at generation %d, want 1", settledGeneration)
+	}
+
+	// The row the stop quiets: the report its generation could not present.
+	heldRowID := delegateAttentionReopenID(delegateAttentionID(holderDelegateID+"/delivery/1"), settledGeneration)
+	if _, err := sess.appendDelegateNotificationDurably(heldRowID, "the report the stop deferred"); err != nil {
+		t.Fatalf("pend the reopened row: %v", err)
+	}
+	sess.holdDelegateAttentionFromAutomaticDriveAt(heldRowID, settledGeneration)
+	sess.attentionMu.Lock()
+	installed := sess.delegateAttentionHeldFromAutomaticDriveLocked(heldRowID)
+	sess.attentionMu.Unlock()
+	if !installed {
+		t.Fatal("the fixture did not install the hold its delivery assert observes")
+	}
+
+	// The arm is refused for the whole scenario, so the only release that can
+	// lift this hold is the delivery's own.
 	var releaseMu sync.Mutex
 	var heldRowReleaseSites []delegateHoldReleaseSite
-	updateSessionTestConfig(lane.delegateSess, func(cfg *testConfig) {
+	updateSessionTestConfig(sess, func(cfg *testConfig) {
 		cfg.delegateAttentionArmFault = func() error {
 			return errors.New("test: arm refused")
 		}
@@ -3559,30 +3617,32 @@ func TestDelegateAttentionDeliveredReportReleasesUserStopHold(t *testing.T) {
 			}
 		}
 	})
-	lane.announceRelease()
-	// The seeded window's end is the delegate's own finalize tail closing its
-	// run, re-arm included (refused here): the retained child's report becomes
-	// a pending row inside this window through the real delivery path, and
-	// waiting the tail out keeps the assertion below from racing the row's
-	// landing.
-	lane.delegateSub.mu.Lock()
-	delegateDone := lane.delegateSub.done
-	lane.delegateSub.mu.Unlock()
-	select {
-	case <-delegateDone:
-	// TRIPWIRE: the tail finishes within a couple of drain passes of the
-	// release; 15s only fires on a genuine hang, absorbing a loaded shard's
-	// stretched finalize tails and git retries.
-	case <-time.After(15 * time.Second):
-		t.Fatalf("the delegate's finalize tail never finished after the seeded announce release")
+	// The paced retry the refused arm arms is not part of this scenario: the
+	// delivery's own release is synchronous, and leaving the timer armed would
+	// let a later tick release under the arm's tag and blur which path fired.
+	t.Cleanup(sess.resetDelegateAttentionRetry)
+
+	// A child's report is the new event. It is owned by the holder delegate,
+	// so its commit journals into the holder's own journal — the same journal
+	// the cancelled generation rests in.
+	seedDelegateControllerIdle(t, controller, "dlg_report", holderDelegateID)
+	seedDelegateControllerDelivery(t, controller, "dlg_report")
+	plans := controller.ReplayDeliveries()
+	if len(plans) != 1 {
+		t.Fatalf("the child's report produced %d delivery plans, want 1", len(plans))
 	}
-	if pending, pendErr := lane.delegateSess.pendingDelegateAttentionIDs(); pendErr != nil || len(pending) == 0 {
-		t.Fatalf("the retained child's report is not pending after the seeded window: pending=%v (%v)", pending, pendErr)
+	if _, err := deliverDelegatePacket(plans[0], sess); err != nil {
+		t.Fatalf("deliver the child's report: %v", err)
 	}
-	// The committed delivery is the new event: its release ended the hold
-	// under the delivery site's own tag. The paced retry's arm release
-	// carries the arm's tag instead, so it cannot satisfy this read — the
-	// hold's absence alone would pass under either lifter.
+
+	// The delivery advanced the durable release for the stopped generation,
+	// which is what a cold restore reads.
+	controller.mu.Lock()
+	durableRelease := controller.durable[holderDelegateID].AttentionHoldReleasedGeneration
+	controller.mu.Unlock()
+	if durableRelease != settledGeneration {
+		t.Fatalf("the delivery left the durable release at %d, want %d: a cold restore would rebuild a quiet this wake ended", durableRelease, settledGeneration)
+	}
 	releaseMu.Lock()
 	sites := append([]delegateHoldReleaseSite(nil), heldRowReleaseSites...)
 	releaseMu.Unlock()
@@ -3595,11 +3655,20 @@ func TestDelegateAttentionDeliveredReportReleasesUserStopHold(t *testing.T) {
 	if !deliveredRelease {
 		t.Fatalf("the child's delivered report did not end the hold at the delivery's release (release sites=%v)", sites)
 	}
-	lane.delegateSess.attentionMu.Lock()
-	held := lane.delegateSess.delegateAttentionHeldFromAutomaticDriveLocked(heldRowID)
-	lane.delegateSess.attentionMu.Unlock()
+	sess.attentionMu.Lock()
+	held := sess.delegateAttentionHeldFromAutomaticDriveLocked(heldRowID)
+	sess.attentionMu.Unlock()
 	if held {
 		t.Fatal("the child's delivered report did not release the hold: a committed delivery is a wake from a new event, and the held report hides behind an event that already arrived")
+	}
+	// The reopened row is eligible again: the delivery's release is what a
+	// presentation read sees, and the row it quieted now presents.
+	ids, err := sess.automaticDelegateAttentionIDs()
+	if err != nil {
+		t.Fatalf("read the drive-side rows: %v", err)
+	}
+	if !slices.Contains(ids, heldRowID) {
+		t.Fatalf("the reopened row is still not eligible after the delivery released its quiet: %v", ids)
 	}
 }
 
@@ -4632,7 +4701,7 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileWokenDescendantWorks(t *testing.T
 	if _, err := descendantSub.sess.appendDelegateNotificationDurably(wakeAttentionID, owedReply); err != nil {
 		t.Fatalf("pend the descendant's owed attention: %v", err)
 	}
-	if _, err := root.delegateController.openDelegateAttention(descendantID, wakeAttentionID); err != nil {
+	if _, _, err := root.delegateController.openDelegateAttention(descendantID, wakeAttentionID); err != nil {
 		t.Fatalf("arm the descendant's attention wake: %v", err)
 	}
 

@@ -244,16 +244,22 @@ func (c *delegateTreeController) reconcileDelegateAttentionFromTranscripts() err
 // openDelegateAttention serializes a transcript-derived open against accepted
 // answer consumption for the same child. Delivery opens use their larger
 // owner-open/source-ack batch; watch and quiet opens use this single-event path.
-func (c *delegateTreeController) openDelegateAttention(delegateID, attentionID string) (bool, error) {
+//
+// The generation the admitted wake superseded rides out with the result,
+// sampled once where the wake was journaled. A caller whose runtime attached
+// after that sample must release the quiet the journal released, not one it
+// re-reads later: a second sample can name a stop that settled after the
+// admission and would end a quiet this wake never superseded.
+func (c *delegateTreeController) openDelegateAttention(delegateID, attentionID string) (bool, uint64, error) {
 	release, err := c.beginRetirementMutation()
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 	defer release()
 	for {
-		added, blocker, plan, emit, _, err := c.tryOpenDelegateAttention(delegateID, attentionID)
+		added, blocker, plan, emit, generation, err := c.tryOpenDelegateAttention(delegateID, attentionID)
 		if err != nil {
-			return false, err
+			return false, 0, err
 		}
 		if blocker != nil {
 			<-blocker
@@ -262,7 +268,7 @@ func (c *delegateTreeController) openDelegateAttention(delegateID, attentionID s
 		if emit {
 			c.emitDelegateUpdate(plan)
 		}
-		return added, nil
+		return added, generation, nil
 	}
 }
 
@@ -1103,29 +1109,48 @@ func (c *delegateTreeController) attentionRestoreHeldLocked(delegateID string) b
 // receiver transcript. It publishes directly into the controller's one
 // unresolved-ID set; the caller retains responsibility for retrying a failed
 // transcript read.
+//
+// The watch that selects a cold receiver can arm after a paced retry restored
+// that receiver as a live runtime, so the arm may find a runtime the resident
+// arm never reached. That runtime holds its own in-memory quiets, and the
+// release for this wake exists only in the journal, so the sampled generation
+// is applied to it here, before the root is notified and can drive the runtime
+// synchronously: the hold this wake superseded ends and its row presents on
+// this generation. Attention mu is never held at this point, so the release
+// takes it in the same order every other release does.
 func (c *delegateTreeController) armColdDelegateAttention(delegateID, attentionID string) error {
 	release, err := c.beginRetirementMutation()
 	if err != nil {
 		return err
 	}
 	defer release()
-	armed, err := c.armColdDelegateAttentionOnce(delegateID, attentionID)
+	armed, generation, err := c.armColdDelegateAttentionOnce(delegateID, attentionID)
 	c.mu.Lock()
 	root := c.rootRuntime
+	var runtime *Session
+	if live := c.live[delegateID]; live != nil {
+		runtime = live.runtime
+	}
 	c.mu.Unlock()
+	// The release follows the same rule the resident arm's does: a hold the
+	// runtime installs for a generation settled after this admission outranks
+	// the sample, so it stands.
+	if err == nil && armed && runtime != nil {
+		runtime.releaseAutomaticDriveHolds(delegateHoldReleaseArm, generation)
+	}
 	if err == nil && armed && root != nil {
 		root.notify()
 	}
 	return err
 }
 
-func (c *delegateTreeController) armColdDelegateAttentionOnce(delegateID, attentionID string) (bool, error) {
+func (c *delegateTreeController) armColdDelegateAttentionOnce(delegateID, attentionID string) (bool, uint64, error) {
 	if c == nil || delegateID == "" || attentionID == "" {
-		return false, errors.New("cold delegate attention identity is incomplete")
+		return false, 0, errors.New("cold delegate attention identity is incomplete")
 	}
 	release, err := c.beginRetirementMutation()
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 	defer release()
 	c.mu.Lock()
@@ -1137,18 +1162,18 @@ func (c *delegateTreeController) armColdDelegateAttentionOnce(delegateID, attent
 	}
 	c.mu.Unlock()
 	if transcriptRef == "" {
-		return false, errDelegateNotControllable
+		return false, 0, errDelegateNotControllable
 	}
 	path, sessionID, err := delegateTranscriptPathFromRef(stateDir, transcriptRef)
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 	ids, err := readPendingDelegateAttention(path, sessionID)
 	if err != nil {
-		return false, err
+		return false, 0, err
 	}
 	if !slices.Contains(ids, attentionID) {
-		return false, nil
+		return false, 0, nil
 	}
 	return c.openDelegateAttention(delegateID, attentionID)
 }
