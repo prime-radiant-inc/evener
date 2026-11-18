@@ -345,8 +345,12 @@ test("a scroller that grows with the window unchanged clamps without closing the
   const user = userEvent.setup();
   const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
   Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  // The trigger's own row sits inside the list that clamps, so it moves UP by
+  // the correction: the content above it shrank, which is what un-stuck the
+  // offset in the first place.
+  let triggerTop = 400;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
-    if (this.tagName === "BUTTON") return box(100, 400, 40, 28);
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
     if (this.tagName === "UL") return box(0, 0, 160, 120);
     return box(0, 0, 0, 0);
   });
@@ -371,11 +375,78 @@ test("a scroller that grows with the window unchanged clamps without closing the
     // the same box, so 300 is past the end and the browser pulls it back to the
     // new maximum of 200. No window resize anywhere.
     Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 400 });
+    triggerTop = 390;
     scroller.scrollTop = 200;
     fireEvent.scroll(scroller);
     flush();
 
+    // Still open. The trigger really did move - a confirmed clamp carries the
+    // content, and therefore the trigger - so the popup follows it instead of
+    // the menu reading the movement as the reader leaving.
     expect(screen.getByRole("menu")).toBeTruthy();
+    expect(screen.getByRole("menu").style.top).toBe("422px"); // 390 + 28 + TRIGGER_GAP
+  } finally {
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// A shrinking scrollport does not hide more of a row that was never visible in
+// the first place. The reader focused the last row (132..176), then scrolled to
+// the top and left it below: all 44px of it were already hidden. Shortening the
+// scrollport from 120 to 100 leaves all 44px hidden - not one pixel of the row
+// came back into view, and the space between the row and the scrollport is not
+// the row's. Counting that gap makes 44px look like 56px and yanks the reader
+// down to a row they deliberately left.
+test("an equally hidden row is not revealed when the scrollport shrinks", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  let popupHeight = 120;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, 300, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, popupHeight);
+    return box(0, 0, 0, 0);
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "UL") return popupHeight;
+    return this.tagName === "LI" ? 44 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "UL" ? 160 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName !== "LI" || !this.parentElement) return 0;
+    return Array.prototype.indexOf.call(this.parentElement.children, this) * 44;
+  });
+  const { flush } = captureFrames();
+  const four: MenuItem[] = [
+    { id: "rename", label: "Rename", onSelect: vi.fn() },
+    { id: "duplicate", label: "Duplicate", onSelect: vi.fn() },
+    { id: "archive", label: "Archive", onSelect: vi.fn() },
+    { id: "delete", label: "Delete", onSelect: vi.fn() },
+  ];
+  try {
+    render(<Menu trigger="Actions" items={four} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    const last = screen.getByRole("menuitem", { name: "Delete" });
+    last.focus();
+    expect(document.activeElement).toBe(last);
+    const popup = screen.getByRole("menu");
+    // The reader goes to the top of the list. Delete spans 132..176, so all of
+    // it is below a 120px scrollport: 44 of 44 pixels hidden.
+    popup.scrollTop = 0;
+
+    // The window shrinks and the scrollport with it, to 100. Delete is still
+    // beyond the end, still entirely hidden.
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 700 });
+    popupHeight = 100;
+    fireEvent(window, new Event("resize"));
+    flush();
+
+    // Not revealed: no pixel of the row changed from visible to hidden.
+    expect(popup.scrollTop).toBe(0);
+    expect(document.activeElement).toBe(last);
   } finally {
     vi.restoreAllMocks();
     if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);

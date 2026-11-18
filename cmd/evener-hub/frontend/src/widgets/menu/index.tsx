@@ -425,11 +425,19 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         // scroll is entitled to what the new clip shows them, and pulling them
         // back is the bug this asks about. A row that was never visible and
         // stayed exactly as hidden as it was is not a row layout hid, either.
+        //
+        // Hidden pixels are counted INSIDE the row. The gap between the row and
+        // the scrollport is not the row's, and counting it makes a row that is
+        // entirely out of sight look worse whenever the scrollport shrinks -
+        // 44px hidden becomes 64px hidden without a single pixel of the row
+        // coming back into view. Clamped to the row's own height, an
+        // equally-hidden row stays equal and nothing moves the reader.
         const scrollTop = popup.scrollTop;
-        const hiddenBelow = (obs: RowObservation) => obs.top + obs.height - (scrollTop + obs.portHeight);
-        const hiddenAbove = (obs: RowObservation) => scrollTop - obs.top;
-        const worseBelow = hiddenBelow(now) > Math.max(0, hiddenBelow(before));
-        const worseAbove = hiddenAbove(now) > Math.max(0, hiddenAbove(before));
+        const hiddenBelow = (obs: RowObservation) =>
+          Math.min(obs.height, Math.max(0, obs.top + obs.height - (scrollTop + obs.portHeight)));
+        const hiddenAbove = (obs: RowObservation) => Math.min(obs.height, Math.max(0, scrollTop - obs.top));
+        const worseBelow = hiddenBelow(now) > hiddenBelow(before);
+        const worseAbove = hiddenAbove(now) > hiddenAbove(before);
         if (!worseBelow && !worseAbove) return;
       }
       // A row inserted BELOW the focused one moves nothing above it, and the
@@ -908,11 +916,15 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         // offset this listener last saw was beyond a maximum that then shrank,
         // and the offset left now IS that new maximum. That covers a window
         // that grew AND a container that grew with the window untouched - the
-        // rail's list getting taller when its Needs You chip goes away. The
-        // trigger must also still be where the last pass anchored it, because a
-        // scroll that moved the trigger is the reader leaving whatever the
-        // arithmetic says. Growth alone is not enough either: a scroll with no
-        // clamp behind it belongs to the reader.
+        // rail's list getting taller when its Needs You chip goes away.
+        //
+        // A confirmed clamp re-anchors even when the trigger's rect changed: the
+        // correction moves the content the trigger sits in, so the trigger
+        // really does move, and the popup has to follow it. What it must not do
+        // is move OFF SCREEN - a clamp never carries the trigger out of the
+        // viewport, so one that did is a reader's scroll however the numbers
+        // read. A scroll with no clamp behind it is the reader's as well, and
+        // growth alone is not a clamp.
         const anchored = anchoredTriggerRef.current;
         const rect = triggerRef.current?.getBoundingClientRect();
         const grew = grewBeforeScrollRef.current;
@@ -923,7 +935,14 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
           nodeType === 1 && target !== ownerWindow
             ? wasClampedBy(target as Element, scrollerOffsetsRef.current)
             : false;
-        if (stayed && (grew || clampedHere)) placeNowAndAfterLayout();
+        const stillOnScreen =
+          rect !== undefined &&
+          rect.top + rect.height > 0 &&
+          rect.top < ownerWindow.innerHeight &&
+          rect.left + rect.width > 0 &&
+          rect.left < ownerWindow.innerWidth;
+        if (clampedHere && stillOnScreen) placeNowAndAfterLayout();
+        else if (stayed && grew) placeNowAndAfterLayout();
         else closeMenu();
       }
     }
