@@ -65,6 +65,7 @@ import {
   pruneBackgroundHistoryBodies,
   resolvePendingEscalation,
   retireReplacedSourceHoldOnModel,
+  retireStableDelegateHolds,
   retireThreadSubscriptions,
   SHUT_DOWN_STATUSES,
   type ThreadSubscriptionLease,
@@ -4486,7 +4487,7 @@ async function readThreadHydration(
       // hold, and an unchanged hold emits no update of its own to restore it, so
       // the buffer folds in whole and the retired source's samples are cleared
       // by the hand-off above instead.
-      const published = replayHydrationNotifications(handedBase, pending.notifications).model;
+      const published = replayHydrationNotifications(handedBase, pending.notifications, failureOwner).model;
       const entry = tracked ? existingEntryRoute(ref) : undefined;
       if (!tracked) {
         putWatchedThreadModel(ref, published);
@@ -6137,6 +6138,32 @@ function beginWatchedHydration(
 // loses the live one ("expected undefined to be 1"). The separating fact is not
 // on the wire; attaching the publishing boot to evener/delegate/updated is
 // #6815, after which this delete becomes a filter on the frame's own publisher.
+// stripDelegateHold removes the HOLD from a buffered delegate sample while
+// keeping every durable field. A sample whose sequence belongs to a replaced
+// source must not outrank the incoming source's numbering, but its lifecycle,
+// outcome, and revision are not ordered by that sequence: a terminal outcome
+// buffered before the replacement's history frame is the only copy of the
+// completed row, and discarding the whole update left it showing "running".
+//
+// The field list is `retireStableDelegateHolds`'s, not a second copy of it, so
+// a fifth hold field cannot be added in one place and missed in the other.
+function stripDelegateHold(update: PendingTranscriptUpdate): PendingTranscriptUpdate {
+  // The row type comes from the shared rule's own signature, so this helper
+  // cannot drift from the fields that rule strips.
+  type DelegateRows = NonNullable<Parameters<typeof retireStableDelegateHolds>[0]>;
+  const params = update.notification.params as { delegate?: DelegateRows[number] };
+  const delegates = params.delegate ? retireStableDelegateHolds([params.delegate]) : undefined;
+  const stripped = delegates?.[0];
+  if (!stripped || stripped === params.delegate) return update;
+  return {
+    ...update,
+    notification: {
+      ...update.notification,
+      params: { ...update.notification.params, delegate: stripped },
+    } as AnyNotification,
+  };
+}
+
 function carriedHydrationUpdates(
   pending: PendingThreadHydration,
   resyncBootGeneration: string | undefined,
@@ -6152,8 +6179,15 @@ function carriedHydrationUpdates(
       if (boot && confirmedBootReplacement(owner, boot, "authoritative")) {
         owner = boot;
         // Samples buffered before this frame were numbered by the source it
-        // replaced; they lose to the incoming source's first sample.
-        carried = carried.filter((buffered) => buffered.notification.method !== "evener/delegate/updated");
+        // replaced, so their HOLD loses to the incoming source's first sample.
+        // Their durable fields are not indexed by that sequence and do not: a
+        // terminal outcome buffered before this frame is the only copy of the
+        // completed row, and dropping the whole update left the model showing
+        // "running" for a delegate that had already finished. Strip the hold
+        // fields and keep everything the projection still needs.
+        carried = carried.map((buffered) =>
+          buffered.notification.method === "evener/delegate/updated" ? stripDelegateHold(buffered) : buffered,
+        );
       }
     }
     carried.push(update);
@@ -6204,14 +6238,34 @@ function bufferPendingNotification(
   pending.notifications.push(update);
 }
 
+// A buffered frame can arrive BEFORE the failure that names the replacement, so
+// replaying it afterwards would let the source the failure just retired record
+// itself as the hold owner again: its qualified token compares as a takeover
+// against the incoming one, and the next frame from the replacement then reads
+// as a replacement and clears the live hold it published. The frame's CONTENT
+// is still the newest recorded form of what it changed, so only its source
+// identity is dropped - it folds as a bootless frame, which invalidates
+// nothing and records nothing.
+function withoutRetiredSourceToken(notification: AnyNotification, retiredBy: string): AnyNotification {
+  if (notification.method !== "history/updated") return notification;
+  const boot = notification.params.bootGeneration;
+  if (!boot || !confirmedBootReplacement(retiredBy, boot, "authoritative")) return notification;
+  return {
+    ...notification,
+    params: { ...notification.params, bootGeneration: "" },
+  } as AnyNotification;
+}
+
 function replayHydrationNotifications(
   model: ThreadModel,
   notifications: ReceivedTranscriptUpdate[],
+  retiredBy?: string,
 ): { model: ThreadModel; appliedAt: number[] } {
   let hydrated = model;
   const appliedAt: number[] = [];
   for (const update of notifications) {
-    const folded = foldCanonicalNotification(hydrated, update.notification, update.now);
+    const notification = retiredBy ? withoutRetiredSourceToken(update.notification, retiredBy) : update.notification;
+    const folded = foldCanonicalNotification(hydrated, notification, update.now);
     const updated = folded.model;
     if (updated === hydrated) continue;
     hydrated = updated;

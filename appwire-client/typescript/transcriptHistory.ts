@@ -14,6 +14,7 @@ export { frontierFromCursor, olderFrontierOf, olderHistoryExhausted, withOlderFr
 
 import {
   copyItemTextPresence,
+  handOffReplacedSource,
   holdOwnerOf,
   imageSessionRouteForSession,
   itemIsIdentityOnly,
@@ -1357,11 +1358,31 @@ function mergeVersionedPage<M extends ThreadModel>(
   resp: ThreadTurnsListResponse,
   takeCursor: boolean,
 ): M {
+  // Hold OWNERSHIP is a different question from whether this page's content can
+  // be applied. A page that is discarded or deferred still came from the source
+  // named on its own frame, and an authoritative frame naming a different boot
+  // is evidence that the source which numbered the held samples was replaced.
+  // Deciding that only on the branches that keep the content let a retired
+  // daemon's larger sequence outrank the replacement's updates while the
+  // latest-window reread is pending, and for good if that reread fails.
+  //
+  // So run the hand-off first, and let each branch keep its own history: the
+  // hold-only change is the model the branch would have returned, plus the
+  // retire and the recorded owner.
+  const handed = handOffReplacedSource(model, resp.bootGeneration, "authoritative");
+  // The hand-off may have recorded a new hold owner. Every branch that keeps
+  // the held history must spread THAT history, or the branch's own history
+  // literal silently drops the owner the hand-off just recorded - the same
+  // loss as not running the hand-off at all, one line later.
+  const owned = handed?.history ?? held;
   switch (pageDisposition(held, resp)) {
     case "discard":
-      return model;
+      return handed ?? model;
     case "defer":
-      return { ...model, history: { ...held, deferredPages: [...held.deferredPages, resp] } };
+      return {
+        ...(handed ?? model),
+        history: { ...owned, deferredPages: [...held.deferredPages, resp] },
+      };
     case "invalidate": {
       // A page of the incarnation it just announced waits for that
       // incarnation's latest window.
@@ -1412,7 +1433,7 @@ function mergeVersionedPage<M extends ThreadModel>(
       return withDisplay(
         next,
         {
-          ...held,
+          ...owned,
           ...(observed
             ? {
                 replacementScopes: observePageRange(

@@ -327,6 +327,36 @@ func rosterEstablishesAbsence(ctx context.Context, cfg hubcore.WebConfig, params
 	return true
 }
 
+// liveEnrichmentReadError stamps a failure that happened AFTER a live daemon
+// answered, in enriching that answer with saved history. The read did reach a
+// daemon, so the failure is not evidence that none is running: stamping it
+// `daemonless` tells the client a definite absence that is false, and a
+// client that trusts it retires a hold on a wait the live daemon is still
+// sampling. The answering daemon's own token is the truthful identity, so use
+// it. A response with no token at all still reached a daemon — the enrichment
+// ran BECAUSE a live answer came back — so it names no owner, not a definite
+// absence: `unknown-owner` is the honest stamp (appwire.UnknownOwnerBootGeneration),
+// and the client treats it as naming nothing.
+func liveEnrichmentReadError(err error, bootGeneration string) error {
+	if err == nil {
+		return nil
+	}
+	if bootGeneration == "" {
+		return unknownOwnerReadError(err)
+	}
+	wire := appserver.WireError(err)
+	// The past reader stamps its own failure `daemonless` before this branch
+	// sees it, and WithHistoryReadIdentity only rewrites a plain ErrorData - an
+	// already-stamped HistoryReadErrorData passes straight through, carrying
+	// the false absence claim the live identity exists to correct. Replace it,
+	// keeping the diagnostic.
+	if data, ok := wire.Data.(appwire.HistoryReadErrorData); ok {
+		wire.Data = appwire.HistoryReadErrorData{ErrorData: data.ErrorData, BootGeneration: bootGeneration, Epoch: nil}
+		return wire
+	}
+	return appwire.WithHistoryReadIdentity(wire, bootGeneration, 0)
+}
+
 func pastThreadReadResponse(ctx context.Context, cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {
 	return pastThreadItemReadResponse(ctx, cfg, params)
 }

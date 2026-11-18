@@ -1452,7 +1452,7 @@ func (o *sessionOperations) read(ctx context.Context, params appwire.ThreadReadP
 		})
 		if pastErr != nil {
 			read.finish(false)
-			return appwire.ThreadReadResponse{}, stampSavedHistoryReadError(pastErr, appwire.UnknownOwnerBootGeneration)
+			return appwire.ThreadReadResponse{}, liveEnrichmentReadError(pastErr, resp.BootGeneration)
 		}
 		if ok {
 			pastPage = &past

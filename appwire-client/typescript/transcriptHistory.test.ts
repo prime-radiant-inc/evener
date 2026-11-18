@@ -1949,3 +1949,61 @@ test("a standalone daemon's bare history update retires the root-served hold", (
   expect(model.delegates?.[0]?.delegateId).toBe("dlg_held");
   expect(model.history?.holdOwner).toBe("1");
 });
+
+test("a deferred page from a replacement still retires the retired source's hold", () => {
+  // Hold ownership is not decided by whether a page's CONTENT can be applied.
+  // Here the history is invalidated and the page belongs to a different
+  // incarnation, so its content is deferred until that incarnation's latest
+  // window lands. The page's own boot token still says the source that
+  // numbered the held samples was replaced, and deciding that only on the
+  // branches that keep content left the retired daemon's larger sequence able
+  // to outrank the replacement's updates - for good if the reread failed.
+  const pageTurn = (version: number): Turn => ({
+    id: "tool-turn",
+    status: "completed",
+    version,
+    itemsView: "fragment",
+    items: [
+      {
+        id: "tool",
+        turnId: "tool-turn",
+        type: "commandExecution",
+        callId: "call",
+        status: "completed",
+        output: `output-${version}`,
+        version,
+        position: { entry: 10, item: 0 },
+      },
+    ],
+  });
+  const held = mergeOlderItemPage(pageOrderingModel(), normalHistoryPage(120, [pageTurn(120)]));
+  const withHold = {
+    ...held,
+    history: {
+      ...held.history!,
+      // The bare resync already moved `awaited` to the descendant's own boot,
+      // so this page is at the awaited identity and its content is deferred.
+      // Ownership is still recorded against the daemon that numbered the hold.
+      awaited: { bootGeneration: "1", epoch: 1 },
+      invalidatedAtGeneration: 3,
+      pendingIncarnation: "inc-2",
+      holdOwner: "5@root",
+    },
+    delegates: [heldDelegate(900, 3)],
+  };
+  const deferredPage: ThreadHistoryTurnsListResponse = {
+    ...normalHistoryPage(130, [pageTurn(130)]),
+    bootGeneration: "1",
+    snapshot: { incarnation: "inc-2", length: 130 },
+  };
+
+  const merged = mergeOlderItemPage(withHold, deferredPage);
+
+  // The content is deferred, exactly as before.
+  expect(merged.history?.deferredPages).toHaveLength((withHold.history?.deferredPages ?? []).length + 1);
+  // The retired source's sample is gone and the replacement is the recorded
+  // owner, so its own later frames keep their hold.
+  expect(merged.delegates?.[0]?.holdSequence).toBeUndefined();
+  expect(merged.delegates?.[0]?.delegateId).toBe("dlg_held");
+  expect(holdOwnerOf(merged.history!)).toBe("1");
+});
