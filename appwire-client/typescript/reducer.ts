@@ -226,11 +226,24 @@ export function applyNotification<M extends ThreadModel>(
   // No read-model replacement exists for the old turn-boundary clearing rule
   // (a turn boundary carries no notification of its own any more), so only
   // the model-output-item-completed half survives.
+  // A quota wait survives commandExecution completions: on the wire a tool
+  // RESULT projects as a commandExecution, the same type as the model's own
+  // tool call, so no check can tell the earlier request's late result from
+  // this call's work. An agentMessage or reasoning completion can only be the
+  // model's own response, so those still clear the wait: the retry succeeded
+  // and produced output. The wake, the turn boundary, and a read whose thread
+  // no longer waits clear it on their own terms.
   const modelOutputCompleted =
     n.method === "history/updated" &&
     next.history?.turns !== model.history?.turns &&
     (n.params.items ?? []).some((item) => MODEL_OUTPUT_ITEM_TYPES.has(item.type));
-  if (!modelOutputCompleted) return publicModel<M>(next);
+  const quotaWaitHeld = next.quotaResumesAt !== undefined || next.modelRetry?.errorClass === "quota_exceeded";
+  const modelOwnTextCompleted =
+    n.method === "history/updated" &&
+    (n.params.items ?? []).some((item) => item.type === "agentMessage" || item.type === "reasoning");
+  if (!modelOutputCompleted || (quotaWaitHeld && !modelOwnTextCompleted)) {
+    return publicModel<M>(next);
+  }
   const cleared = { ...next };
   delete cleared.modelRetry;
   delete cleared.quotaResumesAt;
@@ -367,10 +380,12 @@ function applyNotificationToThread<M extends ThreadModel>(model: M, n: AnyNotifi
       const quotaRetryEnded =
         turnEnded && model.modelRetry !== undefined && model.modelRetry.errorClass === "quota_exceeded";
       // The ended turn's ID stays for as long as its queued deliveries can
-      // land: a late retry event naming it cannot restamp the wait the
-      // boundary ended, while a retry for a turn the model never moved past
-      // still records.
-      const retiredQuotaTurn = quotaRetryEnded ? model.runningTurnId : undefined;
+      // land: a late retry event naming it - one that was already in flight
+      // when the boundary landed, or still queued behind the bridge - cannot
+      // restamp a wait for a turn that has ended. Recorded on every boundary,
+      // not only one that ended a known wait: the Stop can reach the pane
+      // before the wait's own queued announcement does.
+      const retiredQuotaTurn = turnEnded ? model.runningTurnId : undefined;
       return {
         ...(rest as M),
         ...(turnEnded ? { quotaResumesAt: undefined } : {}),

@@ -317,6 +317,55 @@ test("describeLiveness: a live quota wait keeps its elapsed time beside the inst
   expect(snapshot.text).not.toContain(formatExactGap(0));
 });
 
+// The quota-wait label belongs to a pending countdown only. Once the wait is
+// over (the zero-delay wake went out, or the announced delay elapsed), the
+// line describes the resumed request as motion; a cause that says "waiting"
+// over a running call mislabels it twice over - and the wake may have been a
+// steer or a model switch, so the copy claims no reason for the wait ending.
+test("formatRetryWait: an in-progress quota retry reads as motion, never as the wait label", () => {
+  const waiting = formatRetryWait(
+    retryWait({ attempt: 1, attemptCap: 1, delayMs: 60 * 60_000, errorClass: "quota_exceeded" }),
+  );
+  const running = formatRetryWait(
+    retryWait({
+      attempt: 1,
+      attemptCap: 1,
+      delayMs: 0,
+      errorClass: "quota_exceeded",
+      groupElapsedMs: 60 * 60_000,
+      inProgress: true,
+    }),
+  );
+  expect(running).not.toBe(waiting);
+  // The wait label is reserved for the pending countdown: the running line
+  // names neither the wait nor a countdown to a reset.
+  expect(running).not.toContain("waiting for quota");
+  expect(running).not.toContain("resumes in");
+  // The running line still says what is running and how long the call has
+  // run, the way every in-progress retry line does.
+  expect(running).toContain("in progress");
+  expect(running).toContain(formatExactGap(60 * 60_000));
+});
+
+// The same rule for the other way a wait ends without a wake announcement:
+// the announced delay elapsing. The line must not count down a reset that
+// has already passed as if the call were still waiting for it.
+test("formatRetryWait: a quota retry whose announced delay elapsed reads as motion, not a stale countdown", () => {
+  const running = formatRetryWait(
+    retryWait({
+      attempt: 1,
+      attemptCap: 1,
+      delayMs: 60_000,
+      errorClass: "quota_exceeded",
+      groupElapsedMs: 61_000,
+      inProgress: true,
+    }),
+  );
+  expect(running).not.toContain("waiting for quota");
+  expect(running).not.toContain("resumes in");
+  expect(running).toContain("in progress");
+});
+
 test("describeLiveness: a retry is never stuck while a subagent runs", () => {
   const retry = retryWait({ attempt: 9, attemptCap: 11, delayMs: 60_000, errorClass: "rate_limit" });
   expect(describeLiveness(STUCK_AFTER_MS * 2, true, 1, retry).level).toBe("retrying");

@@ -103,11 +103,14 @@ export function LivenessLine({
         ? retry.groupElapsedMs + Math.max(0, now - retry.receivedAt)
         : retry.groupElapsedMs,
     inProgress:
-      // A zero-delay quota event is the wake: the request has gone out, and
-      // no render clock may say otherwise.
-      (retry.errorClass === "quota_exceeded" && retry.delayMs === 0) ||
-      lastFrameAt > retry.receivedAt ||
-      now - retry.receivedAt >= retry.delayMs,
+      // A quota wait ends only by its own announcement: the zero-delay wake
+      // (the request has gone out) or its delay elapsing - never by a frame
+      // landing, because a frame from unrelated activity (a background job
+      // finishing) is not the waiting call resuming. An ordinary retry
+      // measures motion as before: a frame landing or the delay elapsing.
+      retry.errorClass === "quota_exceeded"
+        ? retry.delayMs === 0 || now - retry.receivedAt >= retry.delayMs
+        : lastFrameAt > retry.receivedAt || now - retry.receivedAt >= retry.delayMs,
   };
   // The snapshot's resume instant is the pane's own quota source; a live
   // quota-class retry carries its delay inside retryWait.

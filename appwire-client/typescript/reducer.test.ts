@@ -3285,14 +3285,71 @@ test("a turn boundary clears the quota retry, and a stale retry for the old turn
   expect(stale.quotaResumesAt).toBeUndefined();
 });
 
+// The Stop can reach the pane before the wait's own announcement does: the
+// turn's first quota event is still queued behind the event bridge when the
+// status transition lands, so the boundary retires a turn whose retry the
+// model has not recorded yet. That queued announcement must not restore the
+// canceled wait - the retirement is a property of the turn, not of whether
+// a retry had already arrived when it ended.
+test("a turn boundary retires a turn whose quota announcement has not arrived yet, and the queued event cannot restore the wait", () => {
+  const quotaRetry = (turnId: string) =>
+    ({
+      method: "evener/thread/modelRetry",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId,
+        attempt: 1,
+        maxAttempts: 1,
+        delayMs: 60 * 60_000,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 500,
+        attemptCap: 1,
+      },
+    }) as AnyNotification;
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "thread/status/changed",
+      params: { threadId: "thr_t", ref: "ref_t", status: { type: "active" }, activeTurnId: "turn_1" },
+    },
+    900_000,
+  );
+  // No retry has arrived when the turn ends: the wait's announcement is still
+  // in flight. The boundary still retires the turn.
+  const ended = applyNotification(
+    model,
+    {
+      method: "thread/status/changed",
+      params: { threadId: "thr_t", ref: "ref_t", status: { type: "idle" } },
+    },
+    1_000_000,
+  );
+  const queued = applyNotification(ended, quotaRetry("turn_1"), 1_100_000);
+  expect(queued.quotaResumesAt).toBeUndefined();
+  expect(queued.modelRetry).toBeUndefined();
+  // A first announcement for a live turn the model never moved past still
+  // records: the retirement above names only the turn that ended.
+  const next = applyNotification(
+    queued,
+    {
+      method: "thread/status/changed",
+      params: { threadId: "thr_t", ref: "ref_t", status: { type: "active" }, activeTurnId: "turn_2" },
+    },
+    1_150_000,
+  );
+  const fresh = applyNotification(next, quotaRetry("turn_2"), 1_200_000);
+  expect(fresh.quotaResumesAt).toBe(1_200_000 + 60 * 60_000);
+  expect(fresh.modelRetry?.errorClass).toBe("quota_exceeded");
+});
+
 // A history update that completes a TOOL result belongs to an earlier
 // request, not the waiting call: the wait's announcement arrives after the
-// request that carried it failed, and the tool result for that earlier
-// Clearing the wait on it would spend the rest of a multi-hour pause
-// showing a stall. Only the model's own output items (an assistant message,
-// reasoning, a command execution) come from the waiting call, and only
-// those may clear it.
-test("a history update completing a tool result keeps the quota wait; a model output item clears it", () => {
+// request that carried it failed, and that earlier request's tool result can
+// land while the call waits. Clearing the wait on it would spend the rest of
+// a multi-hour pause showing a stall.
+test("a history update completing a tool result keeps the quota wait; the model's own output clears it", () => {
   let model = testHydrateV6({ turns: [{ id: "turn_1", status: "inProgress", itemsView: "", items: [] }] });
   model = applyNotification(
     model,
@@ -3314,13 +3371,22 @@ test("a history update completing a tool result keeps the quota wait; a model ou
   );
 
   // The tool call's result completes through the history worker while the
-  // next request waits for quota.
+  // next request waits for quota. On the wire a tool result projects as a
+  // commandExecution - the same type as the model's own tool call - so the
+  // output check cannot tell them apart and must not clear the wait.
   model = applyHistory(
     model,
     {
       items: [
         {
-          ...{ type: "toolResult", id: "item_tool", turnId: "turn_1", status: "completed", text: "done" },
+          ...{
+            type: "commandExecution",
+            id: "item_tool_result",
+            turnId: "turn_1",
+            status: "completed",
+            callId: "call_1",
+            toolName: "shell",
+          },
           turnId: "turn_1",
         },
       ],

@@ -125,15 +125,26 @@ export function formatRetryWait(retry: RetryWait | QuotaWait): string {
   // the phone Board's compactDuration), with the call's elapsed time beside
   // it so the reader can tell a fresh wait from one hours in.
   // A quota retry still waiting reads as the wait it is; once the request is
-  // in progress (the wake went out) it reads as motion like any other
-  // in-progress retry, never as a wait that has already ended.
-  if (retry.errorClass === "quota_exceeded" && !retry.inProgress) {
-    const wait = `resumes in ${compactDuration(retry.delayMs)}`;
-    // The snapshot's instant knows no elapsed time; inventing "0s on this
-    // call" would claim a fresh wait a reload cannot prove. Only a wait
-    // that actually reported one renders the elapsed suffix.
-    const elapsed = retry.groupElapsedMs > 0 ? ` — ${formatExactGap(retry.groupElapsedMs)} on this call` : "";
-    return `${formatRetryCause(retry.errorClass)} — ${wait}${elapsed}`;
+  // out (the wake went out, or the announced delay elapsed) it reads as
+  // motion - never as a wait that has already ended.
+  if (retry.errorClass === "quota_exceeded") {
+    if (!retry.inProgress) {
+      const wait = `resumes in ${compactDuration(retry.delayMs)}`;
+      // The snapshot's instant knows no elapsed time; inventing "0s on this
+      // call" would claim a fresh wait a reload cannot prove. Only a wait
+      // that actually reported one renders the elapsed suffix.
+      const elapsed = retry.groupElapsedMs > 0 ? ` — ${formatExactGap(retry.groupElapsedMs)} on this call` : "";
+      return `${formatRetryCause(retry.errorClass)} — ${wait}${elapsed}`;
+    }
+    // The wait is over and the request is out (the zero-delay wake, or the
+    // announced delay elapsing): the line describes the resumed request as
+    // motion, and the wait label above stays reserved for the pending
+    // countdown - a cause that says "waiting" over a running call is the
+    // mislabel this branch exists to avoid. The wait may have ended for a
+    // reset, a steer or a model switch, so the copy claims none of them; the
+    // model tag still names a switch when the announcement carries one.
+    const modelTag = "model" in retry && retry.model ? ` (${retry.model})` : "";
+    return `quota wait ended${modelTag} — in progress — ${formatExactGap(retry.groupElapsedMs)} on this call`;
   }
   const modelTag = "model" in retry && retry.model ? ` (${retry.model})` : "";
   const attempt =

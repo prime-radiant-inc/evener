@@ -207,6 +207,95 @@ test("a quota wait whose resume time has passed renders nothing and lets the ord
   expect(el.getAttribute("data-level")).toBe("quiet");
 });
 
+// A live quota wait keeps counting down while unrelated activity lands: a
+// background job finishing advances lastFrameAt, but that frame is not the
+// waiting call resuming, so the wait stays a wait and its elapsed time keeps
+// advancing with the pane's clock (the announcement's own elapsed value plus
+// the time since it landed).
+test("a live quota wait stays a wait when unrelated activity advances lastFrameAt, and its elapsed time keeps advancing", () => {
+  const retry = rawRetry({
+    attempt: 1,
+    attemptCap: 1,
+    delayMs: 90 * 60_000,
+    errorClass: "quota_exceeded",
+    groupElapsedMs: 5 * 60_000,
+    receivedAt: 10_000,
+  });
+  // An unrelated frame landed well after the wait was announced.
+  render(
+    <LivenessLine
+      lastFrameAt={120_000}
+      now={130_000}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      retry={retry}
+      quotaResumesAt={10_000 + 90 * 60_000}
+    />,
+  );
+  const el = screen.getByTestId("liveness-line");
+  expect(el.getAttribute("data-level")).toBe("retrying");
+  // Still the pending countdown, with the wait's own elapsed value (5m) plus
+  // the 120s since the announcement landed.
+  expect(el.textContent).toContain(formatExactGap(5 * 60_000 + 120_000));
+  expect(el.textContent).toContain("resumes in");
+});
+
+// The wake's zero-delay announcement is the request going out: the line
+// describes the resumed request as motion, and the quota-wait label stays
+// reserved for the pending countdown above.
+test("a zero-delay quota announcement (the wake) renders as in-progress motion, never as the wait", () => {
+  render(
+    <LivenessLine
+      lastFrameAt={0}
+      now={30_000}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      retry={rawRetry({
+        attempt: 1,
+        attemptCap: 1,
+        delayMs: 0,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 60 * 60_000,
+        receivedAt: 30_000,
+      })}
+    />,
+  );
+  const el = screen.getByTestId("liveness-line");
+  expect(el.textContent).not.toContain("waiting for quota");
+  expect(el.textContent).toContain("in progress");
+  expect(el.textContent).not.toContain("resumes in");
+});
+
+// The announced delay elapsing without a wake announcement is the other way
+// the wait ends: the line must not keep counting down a reset that has
+// already passed as if the call were still waiting for it.
+test("a live quota wait whose announced delay has elapsed renders as motion, not a stale countdown", () => {
+  render(
+    <LivenessLine
+      lastFrameAt={0}
+      now={90 * 60_000 + 30_000}
+      active={true}
+      sessionRef="s1"
+      turnId="turn_0"
+      retry={rawRetry({
+        attempt: 1,
+        attemptCap: 1,
+        delayMs: 90 * 60_000,
+        errorClass: "quota_exceeded",
+        groupElapsedMs: 5 * 60_000,
+        receivedAt: 0,
+      })}
+      quotaResumesAt={90 * 60_000}
+    />,
+  );
+  const el = screen.getByTestId("liveness-line");
+  expect(el.textContent).not.toContain("waiting for quota");
+  expect(el.textContent).toContain("in progress");
+  expect(el.textContent).not.toContain("resumes in");
+});
+
 test("renders the retry cause and wait instead of the quiet phrase", () => {
   render(
     <LivenessLine lastFrameAt={0} now={30_000} active={true} sessionRef="s1" turnId="turn_0" retry={rawRetry()} />,
