@@ -739,7 +739,17 @@ func (c *delegateTreeController) wakeDeliveryReceiver(receiver delegateDeliveryR
 		// receiver synchronously: a hold still in place at the drive's
 		// list read would present the delivered row alone and leave
 		// the stopped report for a later generation.
-		receiver.releaseAutomaticDriveHolds(delegateHoldReleaseDelivery)
+		//
+		// The generation is the same one the wake funnel samples when it
+		// journals a release: the delegate's newest settled generation, which
+		// is the newest quiet this wake supersedes.
+		receiver.mu.Lock()
+		owningDelegateID := receiver.owningDelegateID
+		receiver.mu.Unlock()
+		c.mu.Lock()
+		wakeGeneration := c.attentionWakeGenerationLocked(owningDelegateID)
+		c.mu.Unlock()
+		receiver.releaseAutomaticDriveHolds(delegateHoldReleaseDelivery, wakeGeneration)
 		// A non-root receiver gets the same durable arm the root gets
 		// (#6330): armDelegateAttentions opens the receiver's attention
 		// in the controller, waits out a racing attention start, and

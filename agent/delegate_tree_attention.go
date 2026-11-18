@@ -29,6 +29,13 @@ type delegateAttentionState struct {
 	// wakeIDs are the transcript attention IDs this delegate still owes, each
 	// delivered, escalated or forgotten on its own.
 	wakeIDs map[string]struct{}
+	// releasedGeneration is the newest settled generation an admitted wake has
+	// superseded, including admissions whose release the journal refused for the
+	// duration of an open run. Presentation reads it beside the journal's floor
+	// so a request captured between such an admission and its release callback
+	// still reads the quiet as ended instead of presenting the fresh row while
+	// filtering out the report that wake freed.
+	releasedGeneration uint64
 	// restoreFailures counts consecutive cold restores of this delegate's
 	// runtime that failed for a reason that is not transient
 	// (isTransientStartFailure); the drive gives up at
@@ -251,7 +258,7 @@ func (c *delegateTreeController) openDelegateAttention(delegateID, attentionID s
 	}
 	defer release()
 	for {
-		added, blocker, plan, emit, err := c.tryOpenDelegateAttention(delegateID, attentionID)
+		added, blocker, plan, emit, _, err := c.tryOpenDelegateAttention(delegateID, attentionID)
 		if err != nil {
 			return false, err
 		}
@@ -269,17 +276,27 @@ func (c *delegateTreeController) openDelegateAttention(delegateID, attentionID s
 // tryOpenDelegateAttention performs one nonblocking projection-open attempt.
 // A reservation blocker is returned to the caller without waiting so callers
 // that hold a Session attention claim can release it before waiting.
-func (c *delegateTreeController) tryOpenDelegateAttention(delegateID, attentionID string) (bool, <-chan struct{}, delegateUpdatePlan, bool, error) {
+// The admitted wake's superseded generation is returned with it, so a caller
+// that holds session state ordered against that wake uses the journaled
+// value rather than sampling one of its own.
+func (c *delegateTreeController) tryOpenDelegateAttention(delegateID, attentionID string) (bool, <-chan struct{}, delegateUpdatePlan, bool, uint64, error) {
 	if c == nil || delegateID == "" || attentionID == "" {
-		return false, nil, delegateUpdatePlan{}, false, errDelegateNotControllable
+		return false, nil, delegateUpdatePlan{}, false, 0, errDelegateNotControllable
 	}
 	release, err := c.beginRetirementMutation()
 	if err != nil {
-		return false, nil, delegateUpdatePlan{}, false, err
+		return false, nil, delegateUpdatePlan{}, false, 0, err
 	}
 	defer release()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	added, blocker, plan, emit, generation, err := c.openDelegateAttentionLocked(delegateID, attentionID)
+	return added, blocker, plan, emit, generation, err
+}
+
+// openDelegateAttentionLocked is one admission attempt with the controller lock
+// held. Callers must hold c.mu.
+func (c *delegateTreeController) openDelegateAttentionLocked(delegateID, attentionID string) (bool, <-chan struct{}, delegateUpdatePlan, bool, uint64, error) {
 	var blocker <-chan struct{}
 	for _, record := range c.reservations {
 		if record != nil && record.delegateID == delegateID && record.trigger == delegatestore.TriggerAttention && record.done != nil {
@@ -288,24 +305,27 @@ func (c *delegateTreeController) tryOpenDelegateAttention(delegateID, attentionI
 		}
 	}
 	if blocker != nil {
-		return false, blocker, delegateUpdatePlan{}, false, nil
+		return false, blocker, delegateUpdatePlan{}, false, 0, nil
 	}
 	if c.durable[delegateID] == nil {
-		return false, nil, delegateUpdatePlan{}, false, errDelegateNotControllable
+		return false, nil, delegateUpdatePlan{}, false, 0, errDelegateNotControllable
 	}
 	if state := c.attention[delegateID]; state != nil {
 		if _, exists := state.wakeIDs[attentionID]; exists {
-			return false, nil, delegateUpdatePlan{}, false, nil
+			return false, nil, delegateUpdatePlan{}, false, 0, nil
 		}
 	}
 	openEvent, err := c.delegateAttentionOpenEventLocked(delegateID)
 	if err != nil {
-		return false, nil, delegateUpdatePlan{}, false, err
+		return false, nil, delegateUpdatePlan{}, false, 0, err
 	}
+	var openEvents []delegatestore.Event
 	if openEvent != nil {
-		if _, err := c.appendLocked(*openEvent); err != nil {
-			return false, nil, delegateUpdatePlan{}, false, err
-		}
+		openEvents = append(openEvents, *openEvent)
+	}
+	wakeGeneration, err := c.appendAttentionWakeLocked(delegateID, openEvents...)
+	if err != nil {
+		return false, nil, delegateUpdatePlan{}, false, 0, err
 	}
 	added := c.noteDelegateAttentionLocked(delegateID, attentionID)
 	var plan delegateUpdatePlan
@@ -313,7 +333,7 @@ func (c *delegateTreeController) tryOpenDelegateAttention(delegateID, attentionI
 		plan = c.capturedPlanLocked(delegateID)
 	}
 	c.evidenceVersion++
-	return added, nil, plan, openEvent != nil, nil
+	return added, nil, plan, openEvent != nil, wakeGeneration, nil
 }
 
 // clearResolvedDelegateAttention lowers a delegate's lingering NeedsAttention
@@ -485,6 +505,30 @@ func (c *delegateTreeController) attentionStateLocked(delegateID string) *delega
 		c.attention[delegateID] = state
 	}
 	return state
+}
+
+// admittedAttentionRows returns the rows a starting generation may already
+// carry: every ID whose wake the controller has admitted. A row outside this
+// set is a frame the transcript holds but no admission has reached, so a
+// request must not present it as though its wake had passed the gate.
+//
+// This tree keeps no rider mark — a captured rider is admission-subject state —
+// so the wake set alone answers here.
+func (c *delegateTreeController) admittedAttentionRows(delegateID string) map[string]struct{} {
+	if c == nil || delegateID == "" {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	state := c.attention[delegateID]
+	if state == nil {
+		return nil
+	}
+	admitted := make(map[string]struct{}, len(state.wakeIDs))
+	for attentionID := range state.wakeIDs {
+		admitted[attentionID] = struct{}{}
+	}
+	return admitted
 }
 
 // resetDelegateAttentionAttemptsLocked starts delegateID's delivery attempts
@@ -1200,4 +1244,122 @@ func (installation *delegateIdleRuntimeInstallation) attach(runtime *Session) er
 	c.setResidentRuntimeLocked(live, runtime)
 	c.evidenceVersion++
 	return nil
+}
+
+// attentionWakeGenerationLocked is the newest settled generation delegateID
+// rests at: the generation a wake admitted now is newer evidence than, and so
+// the newest quiet such a wake can supersede. A run still open has not settled,
+// so a wake admitted during it supersedes only the generation before that run:
+// the stop that run's own settle records afterwards settles a later generation,
+// and its quiet must stand. Callers must hold c.mu.
+func (c *delegateTreeController) attentionWakeGenerationLocked(delegateID string) uint64 {
+	aggregate := c.durable[delegateID]
+	if aggregate == nil || aggregate.Generation == 0 {
+		return 0
+	}
+	if aggregate.CurrentRunOpen {
+		return aggregate.Generation - 1
+	}
+	return aggregate.Generation
+}
+
+// appendAttentionWakeLocked journals the events that publish delegateID's new
+// wake, together with the release that orders that wake against a settled
+// user-stop quiet. It returns the generation that wake supersedes, sampled
+// here under c.mu, for the caller to carry to every other order that has to
+// agree with the journal's.
+//
+// This is the one place a wake is published to the journal: the resident arm
+// (tryOpenDelegateAttention) and the committed delivery (completeDeliveryAck)
+// both reach it, so a cold arm or a stop's delivery retry inherits the release
+// instead of being a path that can omit it. The release rides the wake's own
+// batch, so an append that fails refuses the wake with it: a rejected arm can
+// never release a quiet it did not supersede.
+func (c *delegateTreeController) appendAttentionWakeLocked(delegateID string, events ...delegatestore.Event) (uint64, error) {
+	generation := c.attentionWakeGenerationLocked(delegateID)
+	if release, owed := c.attentionHoldReleaseEventLocked(delegateID); owed {
+		events = append(events, release)
+	}
+	// The release the journal records is refused for the whole of an open run,
+	// so the aggregate's floor alone understates what this wake already
+	// superseded. The sample is kept under the controller lock at the moment the
+	// wake commits, so a request captured before the release callback still
+	// reads the quiet as ended, and it only ever rises so a later wake cannot
+	// lower it. A refused append published no wake, so it records nothing; an
+	// admission that appends nothing at all still happened, and records.
+	record := func() {
+		if generation == 0 {
+			return
+		}
+		state := c.attentionStateLocked(delegateID)
+		if generation > state.releasedGeneration {
+			state.releasedGeneration = generation
+		}
+	}
+	if len(events) == 0 {
+		record()
+		return generation, nil
+	}
+	_, err := c.appendLocked(events...)
+	if err == nil {
+		record()
+	}
+	return generation, err
+}
+
+// attentionHoldReleaseEventLocked is the release owed when a wake is admitted
+// for delegateID. A wake is newer evidence than the quiet a settled user-stop
+// generation left, so that generation's quiet must not be rebuilt by a cold
+// restore. The generation is the one the aggregate rests at as the wake is
+// admitted, never one sampled later: a stop that settles after the wake settles
+// a later generation, and its quiet must stand.
+//
+// A release is owed whenever a settled generation quieted a row and no release
+// has reached it: the wake is newer evidence than that stop whatever the
+// delegate's newest run was. Asking the newest run instead loses the release
+// after a later explicit send settles cancelled — the send's own trigger says
+// nothing about the earlier attention stop — and then a restart has no durable
+// release, so the older report keeps its stale position ahead of the fresh
+// frame. Only the first wake at a generation records one, so a fleet's ordinary
+// arms and deliveries still append nothing. A wake admitted during an open run
+// is not newer than that run's own settle, so it records nothing either.
+func (c *delegateTreeController) attentionHoldReleaseEventLocked(delegateID string) (delegatestore.Event, bool) {
+	// A controller with no journal has no cold restore to order for.
+	if c.store == nil || delegateID == "" {
+		return delegatestore.Event{}, false
+	}
+	aggregate := c.durable[delegateID]
+	generation := c.attentionWakeGenerationLocked(delegateID)
+	if aggregate == nil || aggregate.CurrentRunOpen || generation == 0 ||
+		aggregate.AttentionHoldReleasedGeneration >= generation {
+		return delegatestore.Event{}, false
+	}
+	if !c.settledAttentionStopUnreleasedLocked(delegateID, generation, aggregate.AttentionHoldReleasedGeneration) {
+		return delegatestore.Event{}, false
+	}
+	return delegatestore.Event{
+		Kind:       delegatestore.EventDelegateAttentionHoldReleased,
+		DelegateID: delegateID,
+		AttentionHoldReleased: &delegatestore.AttentionHoldReleased{
+			Generation: generation,
+		},
+	}, true
+}
+
+// settledAttentionStopUnreleasedLocked reports whether a settled generation at
+// or below the wake's sample was an attention run a user stopped, and no release
+// has reached it yet. This is the condition the release exists for: the wake is
+// newer evidence than that stop, so the quiet it left must not be rebuilt by a
+// cold restore. A later run of any other trigger settles its own generation and
+// says nothing about the earlier stop, so it neither owes a release nor excuses
+// one. Callers hold c.mu.
+//
+// The question is answered from the newest-stop index rather than by scanning:
+// the floor stays zero on a delegate that was never stopped, so a scan of every
+// generation ran on every settled wake and grew quadratically with the
+// delegate's life. Only the newest stop can be the one still owed a release —
+// an older stop is superseded by it — so one comparison decides.
+func (c *delegateTreeController) settledAttentionStopUnreleasedLocked(delegateID string, through, released uint64) bool {
+	newest := c.latestAttentionStop[delegateID]
+	return newest > released && newest <= through
 }

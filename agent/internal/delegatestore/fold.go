@@ -280,6 +280,12 @@ var eventKindSpecs = []eventKindSpec{
 		clone:   func(dst, src *Event) { clonePointee(&dst.IntentStated, &src.IntentStated) },
 		apply:   applyIntentStated,
 	},
+	{
+		kind:    EventDelegateAttentionHoldReleased,
+		present: func(event *Event) bool { return event.AttentionHoldReleased != nil },
+		clone:   func(dst, src *Event) { clonePointee(&dst.AttentionHoldReleased, &src.AttentionHoldReleased) },
+		apply:   applyAttentionHoldReleased,
+	},
 }
 
 func eventKindSpecFor(kind EventKind) (eventKindSpec, bool) {
@@ -588,6 +594,31 @@ func applyAttentionChanged(state State, event Event) error {
 		return err
 	}
 	aggregate.NeedsAttention = event.AttentionChanged.NeedsAttention
+	return nil
+}
+
+// applyAttentionHoldReleased records that a newer event ended the quiet a
+// settled stop at payload.Generation held. The record only ever names the
+// generation the aggregate rests at: a release that arrived while a run was
+// open belongs to a generation the run itself will supersede, and refusing it
+// keeps the record comparable to the generation a cold restore derives
+// against. The field is monotonic so a stale release replayed after a newer
+// one cannot move it backwards.
+func applyAttentionHoldReleased(state State, event Event) error {
+	payload := event.AttentionHoldReleased
+	aggregate, err := requireAggregate(state, event.DelegateID)
+	if err != nil {
+		return err
+	}
+	if payload.Generation == 0 {
+		return fmt.Errorf("delegate %q attention hold release names no generation", event.DelegateID)
+	}
+	if aggregate.Generation != payload.Generation || aggregate.CurrentRunOpen {
+		return fmt.Errorf("delegate %q attention hold release names generation %d, which is not the settled generation", event.DelegateID, payload.Generation)
+	}
+	if payload.Generation > aggregate.AttentionHoldReleasedGeneration {
+		aggregate.AttentionHoldReleasedGeneration = payload.Generation
+	}
 	return nil
 }
 
