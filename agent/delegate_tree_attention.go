@@ -29,6 +29,13 @@ type delegateAttentionState struct {
 	// wakeIDs are the transcript attention IDs this delegate still owes, each
 	// delivered, escalated or forgotten on its own.
 	wakeIDs map[string]struct{}
+	// riderIDs are the wakeIDs a starting generation captured as its pending
+	// riders rather than admitted by a wake of their own. A rider was captured
+	// before any arm ran for it, so no user-stop quiet has been released on its
+	// behalf yet: the first arm that reaches it must still journal and apply
+	// its own release. Admission clears the mark, so a retry of an older wake
+	// is a duplicate again and cannot clear a newer stop's hold.
+	riderIDs map[string]struct{}
 	// restoreFailures counts consecutive cold restores of this delegate's
 	// runtime that failed for a reason that is not transient
 	// (isTransientStartFailure); the drive gives up at
@@ -304,8 +311,21 @@ func (c *delegateTreeController) tryOpenDelegateAttention(delegateID, attentionI
 	}
 	if state := c.attention[delegateID]; state != nil {
 		if _, exists := state.wakeIDs[attentionID]; exists {
-			return false, nil, delegateUpdatePlan{}, false, 0, nil
+			// A captured rider is not an admitted wake: it was folded into a
+			// starting generation before any arm reached it, so this arm is
+			// the first one and owes the release for the quiet it supersedes.
+			if _, rider := state.riderIDs[attentionID]; !rider {
+				return false, nil, delegateUpdatePlan{}, false, 0, nil
+			}
 		}
+	}
+	// Whether this arm is the row's first, which is not the same fact as
+	// whether the note below added the ID: a captured rider is already noted,
+	// yet nothing has been released for it, so this arm still reports having
+	// admitted a wake and its caller still applies the release.
+	capturedAsRider := false
+	if state := c.attention[delegateID]; state != nil {
+		_, capturedAsRider = state.riderIDs[attentionID]
 	}
 	openEvent, err := c.delegateAttentionOpenEventLocked(delegateID)
 	if err != nil {
@@ -320,6 +340,12 @@ func (c *delegateTreeController) tryOpenDelegateAttention(delegateID, attentionI
 		return false, nil, delegateUpdatePlan{}, false, 0, err
 	}
 	added := c.noteDelegateAttentionLocked(delegateID, attentionID)
+	if state := c.attention[delegateID]; state != nil {
+		// This ID is admitted now, so a later arm over it is a retry of an
+		// older wake and must not release a newer stop's quiet.
+		delete(state.riderIDs, attentionID)
+	}
+	added = added || capturedAsRider
 	var plan delegateUpdatePlan
 	if openEvent != nil {
 		plan = c.capturedPlanLocked(delegateID)
@@ -681,7 +707,17 @@ func (c *delegateTreeController) replaceDelegateAttentionLocked(delegateID strin
 		c.dropDelegateAttentionLocked(delegateID)
 		return
 	}
-	c.attentionStateLocked(delegateID).wakeIDs = ids
+	state := c.attentionStateLocked(delegateID)
+	state.wakeIDs = ids
+	// Every row here was captured as a pending rider by the starting
+	// generation, not admitted by a wake of its own: a fresh watch frame that
+	// landed in the capture window is owed its own release when an arm later
+	// reaches it, and marking it keeps that arm out of the duplicate branch.
+	riders := make(map[string]struct{}, len(ids))
+	for attentionID := range ids {
+		riders[attentionID] = struct{}{}
+	}
+	state.riderIDs = riders
 }
 
 // owesDelegateAttention reports whether delegateID still has attention the

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"maps"
 	"strings"
 	"time"
 
@@ -445,6 +446,31 @@ func (s *Session) delegateModelHistorySnapshotWithCoverage() delegateModelProjec
 		coverage:     s.snapshotConversationCoverageLocked(turns),
 		inFlightFrom: s.turnHistoryBaseline,
 	}
+}
+
+// delegateAttentionModelProjection copies the turns an automatic attention
+// drive projects together with the held attention IDs that projection filters
+// against, all under one attentionMu hold. A release that moves a held row's
+// turn to the tail and clears its hold must land either wholly before this
+// capture or wholly after it: a snapshot taken together with the IDs it is
+// filtered by answers one question about one moment, while a release between
+// the two would leave the filter keeping a turn at a position the move had
+// already abandoned, and the request would count the report as presented while
+// ending on a later message.
+func (s *Session) delegateAttentionModelProjection() (delegateModelProjection, map[string]uint64) {
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	s.reconcileAutomaticDriveHoldsLocked()
+	holds := maps.Clone(s.attentionAutomaticDriveHolds)
+	s.mu.Lock()
+	turns := append([]schema.Turn(nil), s.history...)
+	projection := delegateModelProjection{
+		turns:        turns,
+		coverage:     s.snapshotConversationCoverageLocked(turns),
+		inFlightFrom: s.turnHistoryBaseline,
+	}
+	s.mu.Unlock()
+	return projection, holds
 }
 
 // liveGenerationOwesSteering reports whether any admission belongs to a

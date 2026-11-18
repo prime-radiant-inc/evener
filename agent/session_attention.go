@@ -1439,6 +1439,18 @@ func (s *Session) dropHeldDelegateAttentionTurns(turns []schema.Turn) (kept []sc
 	s.reconcileAutomaticDriveHoldsLocked()
 	holds := maps.Clone(s.attentionAutomaticDriveHolds)
 	s.attentionMu.Unlock()
+	return filterHeldDelegateAttentionTurns(turns, holds)
+}
+
+// filterHeldDelegateAttentionTurns applies an already-captured hold map to an
+// already-captured turn list. Splitting the filter out lets a caller take the
+// turns and the holds under one lock and then answer from that pair alone: a
+// filter that re-read the holds map after the turns were copied would answer a
+// question about a different moment, and a release in between would leave it
+// keeping a report at a position the release's tail move had abandoned.
+// Presence decides the drop because the capture already reconciled every hold
+// the journal superseded.
+func filterHeldDelegateAttentionTurns(turns []schema.Turn, holds map[string]uint64) (kept []schema.Turn, droppedAt []int) {
 	if len(holds) == 0 {
 		return turns, nil
 	}
