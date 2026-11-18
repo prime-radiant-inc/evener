@@ -35,13 +35,21 @@
       "id": "320-8-cjk",
       "width": 320,
       "depth": 8,
-      "label": "\u8abf\u67fb"
+      "label": "調査"
     },
     {
       "id": "320-9",
       "width": 320,
       "depth": 9,
       "label": "inspect"
+    },
+    {
+      "id": "320-0-no-intent",
+      "width": 320,
+      "depth": 0,
+      "label": "inspect",
+      "noIntent": true,
+      "labelChars": 160
     },
     {
       "id": "360-0",
@@ -71,13 +79,13 @@
       "id": "390-8-cjk",
       "width": 390,
       "depth": 8,
-      "label": "\u8abf\u67fb"
+      "label": "調査"
     },
     {
       "id": "390-8-emoji",
       "width": 390,
       "depth": 8,
-      "label": "\ud83d\ude00\ud83d\ude80"
+      "label": "😀🚀"
     },
     {
       "id": "430-0",
@@ -107,7 +115,7 @@
       "id": "390-8-cjk-xl",
       "width": 390,
       "depth": 8,
-      "label": "\u8abf\u67fb",
+      "label": "調査",
       "fontScale": "xl"
     },
     {
@@ -119,27 +127,21 @@
     }
   ],
   "mutation": {
-    "declaration": "activitypanel.module.css: remove .denseMeta's flex-shrink: 100 (the width reclamation's companion, .indentGuide's min() step cap, is recorded separately below)",
+    "declaration": "activitypanel.module.css: remove the .denseRow:has(.denseMeta[data-intent=\"true\"]) .denseName rule (the name-priority rule that stops the name shrinking below its own text)",
     "verified": "2026-11-18",
     "expect": "fail",
-    "note": "Chrome exited 1 with flex-shrink: 100 removed and .denseMeta back to flex: 0 1 auto: 320px/depth 0 fell to 5.70px against its 12.58px glyph-plus-ellipsis prefix with 162px free, 320px/depth 1 to 5.17px against 12.58px, and 320px/depth 0 CJK to 3.61px against 22.80px. Proportional shrinking is what starves the name; the shrink weight is what makes the intent yield first. Stylesheet restored byte-for-byte before the passing run.",
-    "companion": {
-      "declaration": "activitypanel.module.css: revert .indentGuide's margin-left to the fixed calc(var(--space-3) + 6px)",
-      "verified": "2026-11-18",
-      "expect": "fail",
-      "note": "Chrome exited 1 with the indent step fixed at 18px again and flex-shrink: 100 kept: 320px/depth 8 CJK fell to 10.00px against its 22.80px prefix with 10px of room, 320px/depth 8 to 10.00px against 12.58px, and 320px/depth 9 to 0.00px against 12.58px with -9px, i.e. no room at all. A fixed step compounds 18px per level, so nine levels exceeded the 288px pane. Stylesheet restored byte-for-byte before the passing run.",
-      "previous": null
-    },
+    "note": "Chrome exited 1 with the name-priority rule deleted and the name back to the shrinkable flex: 0 1 auto: 320px/depth 0 fell to 5.70px against its 12.58px glyph-plus-ellipsis prefix with 162px free, 320px/depth 1 to 5.17px against 12.58px, and 320px/depth 0 CJK to 3.61px against 22.80px. This is the rule that actually sizes the name, so removing it reproduces the starvation the case exists to catch. An earlier recorded mutation removed .denseMeta's flex-shrink: 100, which changed nothing once the name could not shrink - the defect this replaces. Stylesheet restored byte-for-byte before the passing run.",
     "previous": {
-      "declaration": "activitypanel.module.css: remove only .denseName's min-width: 2ch",
+      "declaration": "activitypanel.module.css: remove .denseMeta's flex-shrink: 100",
       "verified": "2026-11-18",
       "expect": "fail",
-      "note": "Chrome exited 1 on the restored pre-floor baseline of this same case: 320px/depth 1 dropped the name to 5.03px, 320px/depth 0 to 5.70px, 360px/depth 3 to 5.11px, 390px/depth 8 to 2.81px and 430px/depth 8 to 4.23px - all under the guard's 16px readable floor. The 430px root and the 900px row kept their full names (45.23px) in both runs, which is the comfortable-width half of the contract. Stylesheet restored byte-for-byte before the passing run.",
+      "note": "Superseded: with the name's shrink factor at zero and the fixed controls at their minimums, that override could not change the outcome in the final fixture, so the recorded mutation did not reproduce the starvation it claimed.",
       "previous": {
-        "declaration": "activitypanel.module.css: remove only .denseMeta's max-width: 60%",
-        "verified": "2026-10-23",
+        "declaration": "activitypanel.module.css: remove .denseMeta's flex-shrink: 100 with the name still shrinkable",
+        "verified": "2026-11-18",
         "expect": "fail",
-        "note": "Chrome exited 1: all nine names fell below 16px (6.84-9.61px) and every meta exceeded 60% of row content width. The 430px root also lost its full name. Stylesheet restored byte-for-byte before the passing runs."
+        "note": "Chrome exited 1 at 320px/depth 0: name 5.70px against a 12.58px prefix, and CJK 320px/depth 0 at 3.61px against 22.80px.",
+        "previous": null
       }
     }
   }

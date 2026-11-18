@@ -25,20 +25,27 @@ const chevron = '<svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="tr
 // production's. Do not add a fixture min-width or remove the Sheet inset.
 // The name is a matrix parameter: the floor is a text-relative budget, so a
 // single Latin label would only ever exercise one glyph advance.
-function row(width, depth, label) {
+function row(width, depth, label, opts = {}) {
+  const meta = opts.noIntent
+    ? `<span class="denseMeta"><span data-status-word>running</span> · <span>↑41.2K ↓6.1K</span> · <span class="denseQuiet">12s</span></span>`
+    : `<span class="denseMeta" data-intent="true"><span data-intent-text>${intent}</span> · <span>↑41.2K ↓6.1K</span> · <span class="denseQuiet">12s</span></span>`;
   return `<div class="denseRow" role="treeitem" aria-label="${label}" aria-description="running" aria-level="${depth + 1}" aria-expanded="false" tabindex="${depth === 0 ? 0 : -1}" data-row="${width}-${depth}">
     <button type="button" class="rowToggle" tabindex="-1" aria-label="Show details for inspect" aria-expanded="false">${chevron}</button>
     <span class="denseKind"><span role="img" aria-label="Working" aria-hidden="true" data-state="fresh" data-shape="dot" data-status-dot></span></span>
     <span class="denseName denseNameLive">${label}</span>
     <span class="inline" data-open-shell><button type="button" class="button quiet squareSm" tabindex="-1" aria-label="Open conversation" title="Open"><span class="icon">${openIcon}</span></button></span>
-    <span class="denseMeta"><span data-intent>${intent}</span> · <span>↑41.2K ↓6.1K</span> · <span class="denseQuiet">12s</span></span>
+    ${meta}
   </div>`;
 }
 
 function frameDocument(spec) {
-  const label = spec.label ?? "inspect";
-  let rows = row(spec.width, 0, label);
-  for (let depth = 1; depth <= spec.depth; depth++) rows += `<div role="group" class="indentGuide">${row(spec.width, depth, label)}`;
+  // A long label is a matrix parameter too, so the fixture can put a name that
+  // wants the whole row beside a meta that is not an intent.
+  const label = spec.labelChars ? "n".repeat(spec.labelChars) : (spec.label ?? "inspect");
+  const opts = { noIntent: spec.noIntent === true };
+  let rows = row(spec.width, 0, label, opts);
+  for (let depth = 1; depth <= spec.depth; depth++)
+    rows += `<div role="group" class="indentGuide">${row(spec.width, depth, label, opts)}`;
   rows += "</div>".repeat(spec.depth);
   return `<!doctype html><html lang="en" data-theme="dark"><head>
     <meta charset="utf-8"><meta name="viewport" content="width=${spec.width}, initial-scale=1"><base href="${location.href}">
@@ -150,7 +157,12 @@ function measureFrame({ spec, frame }) {
         gap: parseFloat(rowStyle.columnGap || rowStyle.gap),
         toggleWidth: row.querySelector(".rowToggle").getBoundingClientRect().width,
         kindWidth: row.querySelector(".denseKind").getBoundingClientRect().width,
-        intentLength: row.querySelector("[data-intent]").textContent.length,
+        intentLength: row.querySelector("[data-intent-text]")?.textContent.length ?? 0,
+        // A row with no stated intent shows status and timing instead. It is
+        // governed by different rules on purpose (see the stylesheet), so the
+        // guard has to tell the two apart rather than assume every row here
+        // states work.
+        noIntent: !row.querySelector(".denseMeta[data-intent='true']"),
         statusDot: box(row.querySelector("[data-status-dot]")),
         name: box(name), nameTextWidth: nameRange.getBoundingClientRect().width, prefixEllipsisWidth,
         fontSize: parseFloat(nameStyle.fontSize),
@@ -168,13 +180,14 @@ function measureFrame({ spec, frame }) {
   // measurements cannot, so the "already readable rows do not move" contract
   // stays exact and any movement the FIX causes is still caught.
   const floorOff = doc.createElement("style");
-  // Undo THIS change, and nothing else, in the same document: the name goes
-  // back to shrinkable with no cap, the meta back to the default shrink
-  // share, and the indent back to its fixed step. Those are exactly what the
-  // fix moved, so this is the pre-fix row, measured with the same fonts and
-  // the same rounding as the fixed one.
+  // Undo only the name/meta rules, holding INDENTATION constant in both
+  // passes. The indent step is a separate change with separate proof (deep-row
+  // readability and Open containment); letting it differ here would compare
+  // two different layouts and call the width difference a regression. With it
+  // pinned, any movement this comparison reports is caused by the name/meta
+  // rules alone.
   floorOff.textContent =
-    ".denseName { flex: 0 1 auto !important; max-width: none !important; } .denseMeta { flex-shrink: 1 !important; } .indentGuide { margin-left: 18px !important; }";
+    ".denseName { flex: 0 1 auto !important; max-width: none !important; min-width: 0 !important; }";
   doc.head.appendChild(floorOff);
   const reference = rows.map((row) => {
     const name = row.querySelector(".denseName");

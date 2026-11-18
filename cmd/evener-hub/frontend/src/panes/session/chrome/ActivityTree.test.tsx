@@ -907,11 +907,13 @@ describe("ActivityTree", () => {
   });
 
   test("dense rows never grow the name over the open control: meta owns the right edge", () => {
-    expect(activityPanelCss).toMatch(/\.denseName\s*\{[^}]*flex:\s*0 1 auto/);
     expect(activityPanelCss).toMatch(/\.denseMeta\s*\{[^}]*margin-left:\s*auto/);
     // A long stated intent must not collapse the name to nothing: the meta
-    // shrinks and ellipsizes like the sidebar's rowMeta, so the name keeps
-    // first claim on its own space (the review's 200-rune intent scenario).
+    // shrinks and ellipsizes like the sidebar's rowMeta, and the cap below
+    // holds it to a share the name can survive. The name's own sizing is NOT
+    // asserted here - a match on a declaration passes when a later rule
+    // overrides it, so the browser guard checks the name box against its
+    // measured label width instead (activity-tree-intent-geometry).
     expect(activityPanelCss).toMatch(/\.denseMeta\s*\{[^}]*flex:\s*0 1 auto/);
     expect(activityPanelCss).toMatch(/\.denseMeta\s*\{[^}]*min-width:\s*0/);
     // Proportional shrink alone distributes by content width, so a long

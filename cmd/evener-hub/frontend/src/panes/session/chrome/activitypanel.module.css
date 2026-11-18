@@ -109,26 +109,32 @@
    * pressure, but it no longer GROWS - growing pushed the row's open
    * affordance a column of whitespace away from the name it opens. The meta
    * segments own the right edge via their own margin-left:auto. */
-  /* flex: 0 0 auto, NOT flex: 1: the name neither grows - growing pushed the
-   * row's open affordance a column of whitespace away from the name it opens -
-   * nor shrinks below its own text. Its text IS the floor. A min-width cannot
-   * express "one glyph plus the ellipsis" (the unit that measures a glyph is
-   * the glyph's own advance, which no stylesheet unit provides: `ch` measures
-   * the digit "0", and an `em` constant wide enough for the widest grapheme is
-   * wider than a short label, which pads the box and the guard rejects as
-   * such). Not shrinking needs no number at all: the name takes exactly the
-   * width its text needs, in whatever font the platform ships, and the intent
-   * yields around it. */
-  flex: 0 0 auto;
-  /* The cap is the row's own space, not a glyph budget. The row spends four
-   * 8px gaps, a 12px disclosure toggle, a 14px kind glyph and the Open
-   * control before the name gets anything, so a name may claim all of that
-   * remainder and no more - otherwise a long name would push the Open target
-   * past the pane edge. A short name never reaches this cap. */
-  max-width: calc(100% - 4 * var(--space-2) - 12px - 14px - var(--tap-min, 28px));
+  flex: 0 1 auto;
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+/* A row that states an intent gives its name priority over that intent: the
+ * name does not shrink below its own text, so its text IS the floor. That
+ * needs no glyph measurement and no stylesheet constant - the name takes
+ * exactly the width its text needs, in whatever font the platform ships, and
+ * the intent yields around it.
+ *
+ * Scoped to rows that DISPLAY an intent on purpose. A row with no stated
+ * intent shows ordinary status and timing there instead, and those must not be
+ * starved by a rule that arbitrates between a name and an intent that is not
+ * on the row: at a 320px sheet a long status alone would otherwise collapse to
+ * zero width. Those rows keep the shrinkable name above, exactly as before.
+ *
+ * The cap is the row's own space, not a glyph budget. The row spends four 8px
+ * gaps, a 12px disclosure toggle, a 14px kind glyph and the Open control
+ * before the name gets anything, so a name may claim all of that remainder and
+ * no more - otherwise a long name would push the Open target past the pane
+ * edge. A short name never reaches this cap. */
+.denseRow:has(.denseMeta[data-intent="true"]) .denseName {
+  flex: 0 0 auto;
+  max-width: calc(100% - 4 * var(--space-2) - 12px - 14px - var(--tap-min, 28px));
 }
 .denseNameLive {
   font-weight: var(--font-weight-medium);
@@ -166,13 +172,14 @@
    * recognizable beside its ellipsis. */
   max-width: 60%;
   /* The 60% above is the only cap, and it is also a floor: because the name
-   * never shrinks below its own text, this rule can take space from the intent
-   * on a narrow row and can never take it on a row where the name already had
-   * room. A row that showed its whole name before this change therefore keeps
-   * its exact meta width - the intent's cap is unchanged, and nothing new
-   * reserves space on its behalf. A row squeezed to a partial name gains the
-   * width the name was missing. */
-  flex-shrink: 100;
+   * on an intent-bearing row never shrinks below its own text, this rule can
+   * take space from the intent on a narrow row and can never take it on a row
+   * where the name already had room. A row that showed its whole name before
+   * this change therefore keeps its exact meta width - the intent's cap is
+   * unchanged, and nothing new reserves space on its behalf. A row squeezed to
+   * a partial name gains the width the name was missing. No shrink weight is
+   * set here: the name is the only child that cannot shrink, so this is the
+   * only child that can, and the deficit lands here without naming it. */
   overflow: hidden;
   text-overflow: ellipsis;
   margin-left: auto;
@@ -265,7 +272,8 @@
    * scarcer - so the tree stays legible to any depth by construction. Above
    * a 360px containing block the fixed step is the smaller of the two and
    * this changes nothing, so the 430px and 900px rows keep their exact
-   * geometry. */
+   * geometry. The guard verifies this step through deep-row readability and
+   * Open containment, not by comparing rows across two different indents. */
   margin-left: min(calc(var(--space-3) + 6px), 5%);
 }
 

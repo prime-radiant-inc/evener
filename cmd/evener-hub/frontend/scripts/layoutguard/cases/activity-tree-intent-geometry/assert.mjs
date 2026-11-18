@@ -19,6 +19,20 @@ const EXPECTED = [
   { id: "320-1", width: 320, contentWidth: 288, depth: 1, openWidth: 44, label: "inspect" },
   { id: "320-8-cjk", width: 320, contentWidth: 288, depth: 8, openWidth: 44, label: "\u8abf\u67fb" },
   { id: "320-9", width: 320, contentWidth: 288, depth: 9, openWidth: 44, label: "inspect" },
+  // No stated intent at all: this row shows status and timing in the meta, and
+  // a rule that gives the name priority over an intent must not apply to it.
+  // At the worst width in the issue, a long status beside a long name is the
+  // shape that collapses the status to zero when the name refuses to shrink.
+  {
+    id: "320-0-no-intent",
+    width: 320,
+    contentWidth: 288,
+    depth: 0,
+    openWidth: 44,
+    label: "inspect",
+    noIntent: true,
+    labelChars: 160,
+  },
   { id: "360-0", width: 360, contentWidth: 328, depth: 0, openWidth: 44, label: "inspect" },
   { id: "360-3", width: 360, contentWidth: 328, depth: 3, openWidth: 44, label: "inspect" },
   { id: "390-2", width: 390, contentWidth: 358, depth: 2, openWidth: 44, label: "inspect" },
@@ -182,7 +196,18 @@ export default function assert(fixtures) {
       rowsChecked++;
       if (row.depth !== depth || row.level !== depth + 1)
         failures.push(`${where}: lost nesting, groups=${row.depth}, aria-level=${row.level}`);
-      if (row.intentLength !== 200) failures.push(`${where}: intent has ${row.intentLength} characters, expected 200`);
+      if (expected.noIntent) {
+        // A row that states no intent shows status and timing instead, and the
+        // name must not be handed priority over them: a rule written for
+        // intent priority must not starve ordinary metadata on rows that have
+        // no intent to arbitrate with.
+        if (row.intentLength !== 0) failures.push(`${where}: no-intent row carries an intent`);
+        if (row.meta.clientWidth <= 0) {
+          failures.push(`${where}: status meta collapsed to ${row.meta.width.toFixed(2)}px on a row with no intent`);
+        }
+      } else if (row.intentLength !== 200) {
+        failures.push(`${where}: intent has ${row.intentLength} characters, expected 200`);
+      }
       if (
         !row.statusDot.visible ||
         Math.abs(row.statusDot.width - 8) > EPS ||

@@ -231,7 +231,11 @@ function TreeTickProvider({ live, children }: { live: boolean; children: ReactNo
 
 function RowSegments({ segments }: { segments: MetaSegment[] }): ReactNode {
   return (
-    <span className={CLASS.denseMeta}>
+    // data-intent says "this row displays a stated intent". The intent yields
+    // to the name only where it exists: a row with no stated intent shows
+    // ordinary status and timing, and those must not be starved by a rule
+    // meant to arbitrate between a name and an intent that is not there.
+    <span className={CLASS.denseMeta} data-intent={segments.some((s) => s.key === "intent") ? "true" : undefined}>
       {segments.map((segment, index) => (
         <Fragment key={segment.key}>
           {index > 0 ? " · " : null}
