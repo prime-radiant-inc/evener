@@ -114,6 +114,37 @@ export function compositionAnchorsForRevision(
 ): CompositionImageAnchor[] | undefined {
   const committed = rowCommittedAnchors(draft);
   if (committed !== undefined) return committed.anchors;
+  return sideRecordForRevision(clientMutationId, compositionRevision);
+}
+
+/** The same rule, for a row this pane holds as a raw record.
+ *
+ * The merge commits into an owner row it never decoded - it has the record, not
+ * a draft - so it could not use `compositionAnchorsForRevision` and read the
+ * side record directly instead. That is the site the rule exists to close: a
+ * row that committed an EMPTY list after the person replaced a missing
+ * reference with same-number prose, whose localStorage write then failed,
+ * carries its own answer and was ignored in favour of the stale record the
+ * failed write left behind. Reopening that revision blocked a Send on prose.
+ *
+ * Steps 1 and 2 are the same two steps, in the same order, as the draft form.
+ */
+export function compositionAnchorsForRecord(
+  record: { anchors?: CompositionImageAnchor[]; compositionRevision?: number },
+  clientMutationId: string,
+): CompositionImageAnchor[] | undefined {
+  const committed = record.anchors;
+  if (Array.isArray(committed)) return committed;
+  return sideRecordForRevision(clientMutationId, record.compositionRevision ?? 0);
+}
+
+/** Step 2 and 3 of the derivation rule: the side record, only when it names the
+ * revision being opened. Shared so the two entry points cannot rank the two
+ * sources differently. */
+function sideRecordForRevision(
+  clientMutationId: string,
+  compositionRevision: number | undefined,
+): CompositionImageAnchor[] | undefined {
   const side = readCompositionImageRecord(clientMutationId);
   if (side === undefined) return undefined;
   const describesThisRevision = side.revision === undefined || side.revision === (compositionRevision ?? 0);

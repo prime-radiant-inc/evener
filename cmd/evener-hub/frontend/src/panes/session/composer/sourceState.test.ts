@@ -2209,3 +2209,243 @@ test("a merge translates an incoming anchor's offset into the merged text", asyn
   expect(mergedText.slice(filed?.offset ?? 0, (filed?.offset ?? 0) + "[image 1]".length)).toBe("[image 1]");
   storage.close();
 });
+
+// Medium (sourceState.ts:532-550). A retirement entry describes a REFERENCE
+// that left the text. It was applied to every entry of the record, including
+// the staged half - and a NUMBER CAN BE REUSED. Delete an adopted missing
+// `[image 1]`, attach a replacement, and an emptied store hands the new tile
+// number 1 again; the old reference's retirement then dropped the new tile's
+// own entry. A reload lost the replacement's bytes while the text still spelled
+// its reference.
+test("a replacement tile reusing a retired number is recorded after reload", () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  try {
+    // A draft was persisted naming image 1, whose bytes are gone: the adopted
+    // anchor the mount reads back.
+    writeComposerDraft("root", { text: "missing [image 1] here", skillNames: [] }, [{ marker: 1 }]);
+    const source = createTestComposerSource("root");
+    try {
+      expect(source.getSnapshot().unbackedImageMarkers).toEqual([1]);
+      // The person deletes the reference. That retirement is real.
+      source.updateText("missing  here");
+      expect(source.getSnapshot().unbackedImageMarkers).toEqual([]);
+      // ...and attaches a replacement, which an empty store numbers 1 again.
+      const replacement = {
+        id: "replacement",
+        marker: 1,
+        name: "replacement.png",
+        mediaType: "image/png",
+        data: "BAUG",
+        pending: false,
+      };
+      source.attachments.setState({ items: [replacement] });
+      source.editor.write("missing [image 1] here", 19);
+
+      source.persistDraft("missing [image 1] here");
+      // The persisted draft must name the tile it actually holds. A retirement
+      // about the reference that USED to be here says nothing about it.
+      expect(readComposerDraftImageAnchors("root")).toEqual([{ marker: 1, offset: 8 }]);
+    } finally {
+      source.dispose();
+    }
+  } finally {
+    storage.close();
+  }
+});
+
+// Medium (sourceState.ts:529-532). Staging a tile splices its `[image N]` at the
+// cursor, and the record saved only the NUMBER. A reload therefore resolved the
+// number to the FIRST spelling - so staging image 1 and then typing a literal
+// `[image 1]` before it bound the warning to the prose. Deleting that prose
+// enabled Send while the real reference was still in the text.
+test("a staged reference is recorded at its own spelling, not the first one", () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  try {
+    const source = createTestComposerSource("root");
+    try {
+      const tile = {
+        id: "staged",
+        marker: 1,
+        name: "staged.png",
+        mediaType: "image/png",
+        data: "AQID",
+        pending: false,
+      };
+      source.attachments.setState({ items: [tile] });
+      // The tile's reference is spliced at the cursor, at the END.
+      source.editor.write("literal [image 1] then [image 1]", 30);
+      const own = "literal [image 1] then [image 1]".lastIndexOf("[image 1]");
+
+      source.persistDraft("literal [image 1] then [image 1]");
+
+      // The record names the occurrence the tile's bytes back, not the prose.
+      expect(readComposerDraftImageAnchors("root")).toEqual([{ marker: 1, offset: own }]);
+    } finally {
+      source.dispose();
+    }
+  } finally {
+    storage.close();
+  }
+});
+
+// Medium (sourceState.ts:1374-1389). When a local draft and an incoming row
+// each contain a genuine missing `[image 1]`, the incoming occurrence claimed
+// the NUMBER and the local side - a real reference, at a different spelling -
+// was filtered out. The merged text then spelled a reference nothing warned
+// about: deleting the incoming one enabled Send while the local missing
+// reference was still there.
+test("a merge keeps both sides' missing references when both spell the same marker", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  try {
+    const rowText = "incoming [image 1] gone";
+    const incoming = await storage.enqueueIntent({
+      targetRef: "root",
+      threadId: "thread-a",
+      method: "turn/queue",
+      payload: { ref: "root", input: [{ type: "text", text: rowText }] },
+      attachments: [],
+      optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text: rowText }] },
+    });
+    await storage.transferToRecovery(incoming.clientMutationId, "editing");
+    const incomingRow = await storage.getRecovery(incoming.clientMutationId);
+    if (!incomingRow) throw new Error("missing incoming fixture");
+    writeCompositionImageRecord(incoming.clientMutationId, {
+      anchors: [{ marker: 1, offset: rowText.indexOf("[image 1]") }],
+      tiles: [],
+    });
+    // THIS pane's own draft carries a missing reference of its own: the same
+    // number, a DIFFERENT spelling, and no row to hold its tag.
+    const localText = "mine [image 1] also missing";
+    writeComposerDraft("root", { text: localText, skillNames: [] }, [
+      { marker: 1, offset: localText.indexOf("[image 1]") },
+    ]);
+
+    const source = createTestComposerSource("root");
+    try {
+      expect(source.getSnapshot().unbackedImageMarkers).toEqual([1]);
+      await source.activateRecovery(incomingRow).catch(() => false);
+      expect(source.getSnapshot().text).toContain(localText);
+      expect(source.getSnapshot().text).toContain(rowText);
+      // TWO references, two spellings. One warning for one number is the
+      // defect: the local missing reference would ship as literal prose.
+      const durable = (await storage.getRecovery(incoming.clientMutationId)) as
+        | { anchors?: { marker: number; offset?: number }[] }
+        | undefined;
+      expect(durable?.anchors).toHaveLength(2);
+    } finally {
+      source.dispose();
+    }
+  } finally {
+    storage.close();
+  }
+});
+
+// Medium 4 is NOT covered by a test, and this comment records why rather than
+// leaving a green that proves nothing.
+//
+// The reviewer's sequence needs the owner row to have committed an EMPTY anchor
+// list whose localStorage write then FAILED, so the stale side record is still
+// readable when Explicit Edit merges into that row. I built the fixture three
+// ways - repair in a peer, repair in the row, staleness by revision stamp - and
+// probed the merge site each time: `readCompositionImageRecord(ownerId)` there
+// returns `[]` (or the record the current revision just wrote), never the stale
+// warning. Activating the repaired row runs its own reconciliation, which
+// rewrites the side record at the revision being opened, so the failed write is
+// gone by the time a merge can consult it. On the paths a test can drive, the
+// stale record this finding describes cannot be present at the merge.
+//
+// The fix is kept because it states the same derivation rule the reader already
+// uses and costs nothing when the record agrees: `compositionAnchorsForRecord`
+// prefers the row's committed copy and consults the side record only when it
+// names the revision being opened. If the reviewer's path exists outside this
+// fixture, that rule is what covers it.
+
+// Both directions of the one comparator, one fixture each: an identical
+// composition REUSES the peer's row, and different image bytes get their own.
+// A test that only proves "the two sides call the same function" passes without
+// the function being right, so these assert ROW IDENTITY and the BYTES each row
+// ends up owning.
+async function staleSaveFixture(tileData: string) {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  const text = "same [image 1]";
+  const original = await storage.enqueueIntent({
+    targetRef: "root",
+    threadId: "thread-a",
+    method: "turn/queue",
+    payload: { ref: "root", input: [{ type: "text", text }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/queue", input: [{ type: "text", text }] },
+  });
+  await storage.transferToRecovery(original.clientMutationId, "editing");
+  const recovery = await storage.getRecovery(original.clientMutationId);
+  if (!recovery) throw new Error("missing recovery fixture");
+  // Real base64: the durable write decodes these bytes, so a placeholder like
+  // "KEPT" throws before any row is minted and the test would be measuring the
+  // fixture rather than the comparator.
+  const tile = { id: "kept", marker: 1, name: "kept.png", mediaType: "image/png", data: "S0VQVA==", pending: false };
+  const source = createTestComposerSource("root");
+  const peer = new MutationOutboxIndexedDB();
+  await source.activateRecovery(recovery);
+  source.attachments.setState({ items: [tile] });
+  // The record is written by the AUTOSAVE, not hand-seeded: its digest is the
+  // real fingerprint of these bytes, and a hand-seeded one would only prove the
+  // comparator agrees with a number the test invented.
+  await source.queueRecoveryPersistence(original.clientMutationId, text, [], []);
+  await source.flushRecoveryWrites();
+  // The peer advances the row's revision WITHOUT changing its composition, so
+  // this pane's lease goes stale and its next save preserves instead of
+  // writing in place.
+  const row = await peer.getRecovery(original.clientMutationId);
+  if (!row) throw new Error("peer cannot see the row");
+  const advanced = await peer.updateRecoveryInput(
+    original.clientMutationId,
+    (row.payload as { input?: InputItem[] }).input ?? [],
+    row.attachments,
+    row.composerText,
+    undefined,
+    undefined,
+    undefined,
+    (row as { compositionRevision?: number }).compositionRevision ?? 0,
+  );
+  expect(advanced).toBeDefined();
+  source.attachments.setState({ items: [{ ...tile, data: tileData }] });
+  await source.queueRecoveryPersistence(original.clientMutationId, text, [], []);
+  await source.flushRecoveryWrites();
+  const rows = await storage.listRecovery("root");
+  source.dispose();
+  peer.close();
+  storage.close();
+  return rows;
+}
+
+test("a stale save reuses the peer's row when the composition is identical", async () => {
+  const rows = await staleSaveFixture("S0VQVA==");
+  // Same text, same bytes, same eligibility: the peer's row already says it.
+  expect(rows.map((row) => row.clientMutationId)).toEqual([rows[0]?.clientMutationId]);
+  expect(rows).toHaveLength(1);
+  expect(rows[0]?.attachments).toHaveLength(1);
+});
+
+test("a stale save with different image bytes gets its own row", async () => {
+  const rows = await staleSaveFixture("T1RIRVI=");
+  // Two images under one marker with one filename: only the bytes tell the
+  // compositions apart, and treating them as equal loses the stale pane's.
+  expect(rows).toHaveLength(2);
+  const peerRow = rows.find((row) => row.attachments[0]?.marker === 1 && row.attachments.length === 1);
+  expect(peerRow).toBeDefined();
+  // The fork keeps ITS OWN bytes and the peer keeps its own: the two rows
+  // describe different images, which is the whole reason they are two rows.
+  expect(peerRow).toBeDefined();
+  const forked = rows.find((row) => row.clientMutationId !== peerRow?.clientMutationId);
+  if (!forked) throw new Error("the different composition was not preserved");
+  const payloadBytes = (row: (typeof rows)[number]) =>
+    ((row.payload as { input?: InputItem[] }).input ?? []).flatMap((item) =>
+      item.type === "image" ? [item.data] : [],
+    );
+  expect(payloadBytes(peerRow as (typeof rows)[number])).toEqual(["S0VQVA=="]);
+  expect(payloadBytes(forked)).toEqual(["T1RIRVI="]);
+});
