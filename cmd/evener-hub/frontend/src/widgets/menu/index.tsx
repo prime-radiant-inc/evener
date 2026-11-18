@@ -697,8 +697,28 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         // the SAME amount - that is what makes it one - so it takes the other
         // branch and keeps each look at its own offset, which is what lets a
         // clamp cancel.
+        //
+        // A CLAMP is the other way the two deltas differ while nobody
+        // scrolled. A local session stops: Stop and Steer go above the reader
+        // and Delete arrives below them, so the content shrinks, the popup's
+        // maximum offset falls, and the browser pulls the offset back by LESS
+        // than the row moved up. Unequal deltas alone therefore cannot mean
+        // "the reader scrolled" - they also mean "the list shrank under an
+        // offset that was past its new end". A clamp is read from the popup's
+        // own range, the same way a scroller clamp is: the earlier offset was
+        // past the maximum this pass allows, and what is left is exactly that
+        // maximum. Then each look is judged at the offset it was taken at, so
+        // the part of the row on screen cancels and only layout's own movement
+        // counts.
+        // The scrollport's height here is the one the comparison above already
+        // uses, so the range and the interval cannot disagree about how tall
+        // the visible area is.
+        const maximum = popup.scrollHeight - now.portHeight;
+        const clamped = before.scrolledTo > maximum && Math.abs(now.scrolledTo - maximum) <= CLAMP_ROUNDING;
         const readerScrolled =
-          now.scrolledTo !== before.scrolledTo && now.top - before.top !== now.scrolledTo - before.scrolledTo;
+          !clamped &&
+          now.scrolledTo !== before.scrolledTo &&
+          now.top - before.top !== now.scrolledTo - before.scrolledTo;
         const was = readerScrolled ? { ...before, scrolledTo: now.scrolledTo } : before;
         // Each look is judged at the offset it was TAKEN at. A clamp moves the
         // whole list under a viewport that did not move, so reading the earlier
@@ -728,11 +748,16 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         //   hidden, so nothing about its hidden pixels says so;
         // - the part on show now starts further into the row than it did: the
         //   beginning went under the top edge;
-        // - the part on show now ends sooner than it did AND the row did not
-        //   shrink. A row that shrinks (an unwrapped label) pulls its own end up
-        //   without the scrollport cutting anything, and one that grows pushes
-        //   its end down into space that was never on screen - neither takes
-        //   away what the reader was looking at;
+        // - the part on show now ends sooner than the part the reader could
+        //   still read. A row that shrinks pulls its own end up without the
+        //   scrollport cutting anything, and one that grows pushes its end down
+        //   into space that was never on screen - neither takes away what the
+        //   reader was looking at. So the earlier interval is not compared
+        //   against the row's old height but against the height it now has:
+        //   the intersection of what was visible then with what the row still
+        //   contains. That surviving portion is the part a resize can cut
+        //   into - an unwrapped row with a shortened scrollport shows less of
+        //   itself than the reader could read, even though the row shrank;
         // - a row with NO pixels on show in the earlier look is a row the reader
         //   or the list had already taken away. It stays that way however it
         //   grows or however the scrollport shrinks, because no pixel of it was
@@ -740,7 +765,10 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         const becameClipped = fullyVisible(was);
         const wasOnScreen = showEnd(was) > showStart(was);
         const lostItsStart = showStart(now) > showStart(was);
-        const lostItsEnd = showEnd(now) < showEnd(was) && was.height <= now.height;
+        // What the reader could still read a moment ago that the row still
+        // contains: the earlier interval, cut to the row's present height.
+        const survivedEnd = Math.min(showEnd(was), now.height);
+        const lostItsEnd = showEnd(now) < survivedEnd;
         if (!becameClipped && !(wasOnScreen && (lostItsStart || lostItsEnd))) return;
       }
       // A row inserted BELOW the focused one moves nothing above it, and the

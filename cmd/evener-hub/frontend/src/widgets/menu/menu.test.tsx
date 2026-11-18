@@ -2701,16 +2701,25 @@ test("a focused row that wraps until it is clipped is revealed", async () => {
 });
 
 // A row that grows downward does not take anything away from the reader. They
-// scrolled back to the turn controls with Overview still holding focus, its top
-// 20px showing at the bottom of the scrollport. An activity count arrives, the
-// label wraps, and Overview is 60px: the same 20px are on screen, and 40 more
-// sit below the fold where nothing was visible before. Counting hidden pixels
-// calls that 60 against 20 and scrolls the reader away from Stop and Steer.
+// scrolled down to the turn controls with Overview still holding focus, and the
+// scrollport shows exactly its FIRST 20px at the bottom edge. An activity count
+// arrives, the label wraps, and Overview is 60px: the same first 20px are on
+// screen, and 40 more sit below the fold where nothing was visible before.
+// Counting hidden pixels calls that 60 against 20 and scrolls the reader away
+// from Stop and Steer.
+//
+// Overview sits AFTER the turn controls and is clipped at its BOTTOM, which is
+// what makes the reading discriminate. First in the list it would be clipped at
+// its top, and the wrap would increase the visible portion from 20px to 36px -
+// a regression that reveals a row merely for gaining hidden content below the
+// scrollport would pass a fixture built that way.
 test("a partly visible focused row that grows does not pull the reader away", async () => {
   const user = userEvent.setup();
   const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
   Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
   const PORT = 120;
+  // Three turn rows above Overview, which starts at 132.
+  const CONTROLS = 132;
   let overviewHeight = 44;
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
     if (this.tagName === "BUTTON") return box(100, 300, 40, 28);
@@ -2720,7 +2729,8 @@ test("a partly visible focused row that grows does not pull the reader away", as
   vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
     if (this.tagName === "UL") return PORT;
     if (this.tagName !== "LI" || !this.parentElement) return 0;
-    return Array.prototype.indexOf.call(this.parentElement.children, this) === 0 ? overviewHeight : 44;
+    const index = Array.prototype.indexOf.call(this.parentElement.children, this);
+    return index === 3 ? overviewHeight : 44;
   });
   vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
     return this.tagName === "UL" ? 160 : 0;
@@ -2728,13 +2738,14 @@ test("a partly visible focused row that grows does not pull the reader away", as
   vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
     if (this.tagName !== "LI" || !this.parentElement) return 0;
     const index = Array.prototype.indexOf.call(this.parentElement.children, this);
-    return index === 0 ? 0 : overviewHeight + (index - 1) * 44;
+    return index === 3 ? CONTROLS : index * 44;
   });
   const { flush } = captureFrames();
   const four: MenuItem[] = [
-    { id: "overview", label: "Overview", onSelect: vi.fn() },
     { id: "stop", label: "Stop", onSelect: vi.fn() },
     { id: "steer", label: "Steer", onSelect: vi.fn() },
+    { id: "delete", label: "Delete", onSelect: vi.fn() },
+    { id: "overview", label: "Overview", onSelect: vi.fn() },
     { id: "archive", label: "Archive", onSelect: vi.fn() },
   ];
   try {
@@ -2744,21 +2755,187 @@ test("a partly visible focused row that grows does not pull the reader away", as
     focused.focus();
     const popup = screen.getByRole("menu");
     expect(document.activeElement).toBe(focused);
-    // The reader scrolls back up to the turn controls: 24px, so Overview spans
-    // -24..20 and its last 20px show at the top of the scrollport.
-    popup.scrollTop = 24;
+    // 132 + 44 + 120 = 296 of content in a 120px scrollport, so the reader can
+    // reach 176. At 32 the scrollport runs 32..152 and Overview - 132..176 -
+    // shows its first 20px at the bottom edge.
+    Object.defineProperty(popup, "scrollHeight", { configurable: true, value: 296 });
+    popup.scrollTop = 32;
     fireEvent.scroll(popup);
-    expect(popup.scrollTop).toBe(24);
+    expect(popup.scrollTop).toBe(32);
 
-    // The activity count arrives and Overview is 60px: -24..36, still the same
-    // 20px on screen, with the new line below the fold.
+    // The activity count arrives and Overview is 60px: 132..192, still the same
+    // first 20px on screen, with the new line below the fold.
     overviewHeight = 60;
     Object.defineProperty(window, "innerHeight", { configurable: true, value: 801 });
     fireEvent(window, new Event("resize"));
     flush();
 
     // Stop and Steer are where the reader left them.
-    expect(popup.scrollTop).toBe(24);
+    expect(popup.scrollTop).toBe(32);
+    expect(document.activeElement).toBe(focused);
+  } finally {
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// A shrinking list does not move a reader. A local session stops: Stop and
+// Steer leave from ABOVE the reader, Delete arrives BELOW them, and the popup's
+// content shrinks by less than the rows above it took with them. The maximum
+// offset falls, so the browser pulls the offset back - but by LESS than the
+// focused row moved up. Unequal deltas are exactly what a reader's own swipe
+// looks like too, so a comparison that treats "the two did not move together"
+// as "the reader scrolled" judges the row against a view nobody chose and
+// scrolls back to it, taking the lower actions away.
+test("a list that shrinks under the offset does not pull the reader back to its row", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  const PORT = 120;
+  // The leading block is what a turn's end takes away: Stop and Steer. Delete
+  // goes with them - it is the turn's own action - so the content shrinks by
+  // more than the leading block and the maximum offset falls further still.
+  let leading = 112;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, 300, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, PORT);
+    return box(0, 0, 0, 0);
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "UL") return PORT;
+    return this.tagName === "LI" ? 44 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "UL" ? 160 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName !== "LI" || !this.parentElement) return 0;
+    const index = Array.prototype.indexOf.call(this.parentElement.children, this);
+    return leading + index * 44;
+  });
+  const { flush } = captureFrames();
+  const rename: MenuItem = { id: "rename", label: "Rename", onSelect: vi.fn() };
+  const duplicate: MenuItem = { id: "duplicate", label: "Duplicate", onSelect: vi.fn() };
+  const remove: MenuItem = { id: "delete", label: "Delete", onSelect: vi.fn() };
+  const archive: MenuItem = { id: "archive", label: "Archive", onSelect: vi.fn() };
+  const pin: MenuItem = { id: "pin", label: "Pin", onSelect: vi.fn() };
+  const turn: MenuItem[] = [
+    { id: "turn-stop", label: "Stop", onSelect: vi.fn() },
+    { id: "turn-steer", label: "Steer", onSelect: vi.fn() },
+  ];
+  // While the turn runs: the turn controls, Rename, and the actions under it.
+  // When it ends the controls and Delete both leave, so the content loses more
+  // than the leading block - and the clamp gives back more than the row moved.
+  function SessionMenu({ ended }: { ended: boolean }) {
+    const entries: MenuItem[] = ended
+      ? [rename, duplicate, archive, pin]
+      : [...turn, rename, duplicate, remove, archive, pin];
+    return <Menu trigger="Actions" items={entries} />;
+  }
+  try {
+    const view = render(<SessionMenu ended={false} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    const row = screen.getByRole("menuitem", { name: "Rename" });
+    row.focus();
+    const popup = screen.getByRole("menu");
+    expect(document.activeElement).toBe(row);
+    // 112 of leading content + six rows of 44 = 376 in a 120px port: the reader
+    // can reach 256, and is there. Rename spans 200..244, entirely ABOVE that
+    // view at 256..376 - they are looking at the actions below it.
+    Object.defineProperty(popup, "scrollHeight", { configurable: true, value: 376 });
+    popup.scrollTop = 256;
+    fireEvent.scroll(popup);
+    expect(popup.scrollTop).toBe(256);
+
+    // The turn ends: 88 of leading content and Delete's 44 leave, so the content
+    // is 244 and the maximum falls to 124. The browser pulls the offset back
+    // from 256 to exactly 124 - the whole 132 - while Rename moved up only 88,
+    // to 112. The two did NOT travel together, which is also what a swipe looks
+    // like, so the earlier look gets rebased onto 124: it then reads as 0..44 of
+    // the row - fully visible - and the 12..44 now on screen as a loss the
+    // update supposedly caused. At the offsets actually measured the row was
+    // hidden both times: 200..244 above 256, and 112..156 above 124.
+    leading = 24;
+    Object.defineProperty(popup, "scrollHeight", { configurable: true, value: 244 });
+    popup.scrollTop = 124;
+    view.rerender(<SessionMenu ended />);
+    flush();
+
+    // The reader keeps the place they were reading.
+    expect(popup.scrollTop).toBe(124);
+    expect(document.activeElement).toBe(row);
+  } finally {
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// A row that shrinks is not automatically a row the reader can still read. When
+// a resize widens a capped menu the focused label unwraps - it drops from 60px
+// to 44 - and if that same resize also shortens the scrollport, the reader is
+// left seeing less of the row than a moment ago even though the row itself got
+// smaller. A guard that suppresses the reveal on "the row did not shrink" misses
+// exactly this: the interval the reader could still read is what survived, not
+// the row's old height.
+test("an unwrapped row with a shortened scrollport is still revealed", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  let focusedHeight = 60;
+  let portHeight = 120;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, 300, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 160, portHeight);
+    return box(0, 0, 0, 0);
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "UL") return portHeight;
+    if (this.tagName !== "LI" || !this.parentElement) return 0;
+    return Array.prototype.indexOf.call(this.parentElement.children, this) === 0 ? focusedHeight : 44;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "UL" ? 160 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName !== "LI" || !this.parentElement) return 0;
+    const index = Array.prototype.indexOf.call(this.parentElement.children, this);
+    return index === 0 ? 100 : 100 + focusedHeight + (index - 1) * 44;
+  });
+  const { flush } = captureFrames();
+  const four: MenuItem[] = [
+    { id: "overview", label: "Overview", onSelect: vi.fn() },
+    { id: "archive", label: "Archive", onSelect: vi.fn() },
+    { id: "rename", label: "Rename", onSelect: vi.fn() },
+    { id: "delete", label: "Delete", onSelect: vi.fn() },
+  ];
+  try {
+    render(<Menu trigger="Actions" items={four} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    const focused = screen.getByRole("menuitem", { name: "Overview" });
+    focused.focus();
+    const popup = screen.getByRole("menu");
+    expect(document.activeElement).toBe(focused);
+    // Overview spans 100..160 in a 120px port scrolled to 110: its first 10px
+    // are above the view and the rest of it, 10..60, is on screen.
+    popup.scrollTop = 110;
+    fireEvent.scroll(popup);
+    expect(popup.scrollTop).toBe(110);
+
+    // One resize does both: the label unwraps (60 -> 44) AND the port tightens
+    // to 30. The scrollport now stops at content 140, so of the 10..44 the row
+    // still contains, the reader can read only 10..40 - 4px of what they could
+    // read a moment ago are gone, cut by the scrollport rather than by the
+    // unwrap.
+    focusedHeight = 44;
+    portHeight = 30;
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 801 });
+    fireEvent(window, new Event("resize"));
+    flush();
+
+    // Revealed to the row's own top, because 44px of row cannot fit in a 30px
+    // scrollport. A guard that suppresses the reveal whenever the row shrank
+    // leaves the reader at 110, looking at a row cut short.
+    expect(popup.scrollTop).toBe(100);
     expect(document.activeElement).toBe(focused);
   } finally {
     vi.restoreAllMocks();
