@@ -332,6 +332,11 @@ export interface HistoryState {
    * thread. The replacing read must be no older, and only a newer signal
    * re-arms the thread. */
   awaited?: { bootGeneration: string; epoch: number };
+  /** The source that owns the current stable-delegate hold samples. Recorded
+   * whenever a source replacement is accepted — even when there was no sample
+   * to clear — so the new owner's own later notifications are not mistaken for
+   * another replacement. Absent means the boot the history was read under. */
+  holdOwner?: string;
   /** The incarnation an update or page announced while invalidating: backfill
    * pages from it wait in `deferredPages` until its latest window applied. */
   pendingIncarnation?: string;

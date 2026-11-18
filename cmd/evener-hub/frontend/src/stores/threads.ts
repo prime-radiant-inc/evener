@@ -60,6 +60,7 @@ import {
   notificationRoutingKey,
   olderHistoryExhausted,
   pruneBackgroundHistoryBodies,
+  recordSourceOwnerOnModel,
   resolvePendingEscalation,
   retireReplacedSourceHold,
   retireThreadSubscriptions,
@@ -6831,13 +6832,35 @@ function acceptEntryNotification(
 // daemon's delegate controller is still sampling its own sequence.
 function retireReplacedSourceHoldBeforeResync(ref: string, bootGeneration: string | undefined): void {
   // The repository publishes its own retirement, which reaches the store model
-  // through the route's subscription. The store pass below then finds no hold
-  // sample left and publishes nothing; it is what covers a model with no route
-  // (a legacy or watched-only ref), which has no repository to retire.
+  // through the route's subscription. The store passes below then find no hold
+  // sample left and publish nothing; they are what cover a model with no route
+  // (a legacy or watched-only ref), which has no repository to retire. Both
+  // maps are covered in ONE write: a watched transcript is read from
+  // watchedThreads, not threads, so retiring only the latter leaves its hold
+  // standing for the whole of a failed read.
   entryTranscriptRoute(ref)?.repository?.retireHoldForReplacedSource(bootGeneration);
-  const current = threadsStore.getState().threads.get(ref);
-  const retired = current && retireReplacedSourceHold(current, bootGeneration);
-  if (retired) putThreadModel(ref, retired);
+  const { threads, watchedThreads } = threadsStore.getState();
+  const threadModel = threads.get(ref);
+  const watchedModel = watchedThreads.get(ref);
+  const retiredThread = threadModel && handOffSourceOwnership(threadModel, bootGeneration);
+  const retiredWatched = watchedModel && handOffSourceOwnership(watchedModel, bootGeneration);
+  if (retiredThread || retiredWatched) putThreadModels(ref, retiredThread || undefined, retiredWatched || undefined);
+}
+
+// handOffSourceOwnership completes BOTH halves of a replacement on a model this
+// store owns: it records the incoming source as the hold owner and retires the
+// retired source's samples. The record must happen even when there is nothing
+// to clear — otherwise the incoming source's own next notification compares
+// against the boot it replaced, reads as a fresh replacement, and clears the
+// live hold it just published, which emits no update to restore.
+function handOffSourceOwnership(model: ThreadModel, bootGeneration: string | undefined): ThreadModel | undefined {
+  // Retire FIRST, against the owner that is still recorded: once this call
+  // records the incoming source, the same token compares as an apply and
+  // nothing would be retired.
+  const retired = retireReplacedSourceHold(model, bootGeneration);
+  const base = retired ?? model;
+  const owned = recordSourceOwnerOnModel(base, bootGeneration);
+  return owned ?? retired;
 }
 
 function handleNotification(n: AnyNotification): void {

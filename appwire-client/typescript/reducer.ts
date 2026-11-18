@@ -4,8 +4,7 @@
 // on (re)subscribe). Every function here is pure: given the same inputs,
 // produces the same (possibly reference-equal, for no-op cases) output.
 
-import { compareBootGeneration } from "./bootGeneration";
-import type { HistoryState, ItemModel, ThreadModel, TurnModel } from "./model";
+import type { ItemModel, ThreadModel, TurnModel } from "./model";
 import {
   buildDisplayTurn,
   classifySignal,
@@ -24,7 +23,7 @@ import {
   withDisplay,
   withoutNewerPageOmissions,
 } from "./transcriptHistory";
-import { retireStableDelegateHolds, upsertStableDelegate } from "./transcriptItems";
+import { recordSourceOwnerOnModel, retireReplacedSourceHoldOnModel, upsertStableDelegate } from "./transcriptItems";
 import type {
   AnyNotification,
   HistoryUpdatedParams,
@@ -35,52 +34,15 @@ import type {
 } from "./types.gen";
 import { foldWarningParams } from "./warningFold";
 
-// holdOwnerBoot is the source that owns the model's current hold samples.
-//
-// While history is live that is the boot it was read under. Once a replacement
-// invalidated the thread, the boot that retired the old samples — recorded in
-// awaited at that moment — is the one that owns whatever samples arrive next;
-// history.bootGeneration keeps naming the retired boot until a read applies,
-// so reading it here would let a replacement's own second invalidation clear
-// the hold it had just supplied. A live read drops awaited and restores the
-// boot under which its rows were read.
-function holdOwnerBoot(held: HistoryState): string {
-  return held.awaited?.bootGeneration ?? held.bootGeneration;
-}
-
-// sourceReplaced reports whether a notification's boot generation names a
-// source other than the one owning the hold samples — the only question that
-// retires them. A token that reads as the same counter for the same owner is
-// the same source; a higher counter, another owner's token, a switch to or
-// from daemonless, and a token the client cannot parse all name a replacement.
-// An empty token names nothing: a hub-pushed resync carries it, and it must
-// not retire a hold the daemon it relays still owns.
-function sourceReplaced(held: HistoryState, bootGeneration: string | undefined): boolean {
-  if (!bootGeneration) return false;
-  return compareBootGeneration(holdOwnerBoot(held), bootGeneration) === "replace";
-}
-
-// retireReplacedSourceHold is THE hold-retirement rule, for every caller that
-// folds a boot-changing notification into a transcript model. History
-// validity and hold ownership are different questions: a notification that
-// only bumps the epoch or incarnation leaves the owning daemon's delegate
-// controller sampling, so its hold survives; only a notification naming a
-// different source (a different boot generation) retires the samples, because
-// that source numbers its sequences from its own start. Callers that hold the
-// model somewhere other than this fold — the web store's entry-backed
-// transcript model, which the resync branch publishes before its targeted read
-// — must run this same rule over that model, or the retired daemon's larger
-// sequence outranks the replacement's first unheld frame while the read is
-// pending, and a failed read leaves the finished wait standing.
+// retireReplacedSourceHold is the reducer's entry point to the one
+// hold-retirement rule (transcriptItems.retireReplacedSourceHoldOnModel), so
+// the browser store and this fold cannot drift. See that function for why
+// only a source change retires a hold.
 export function retireReplacedSourceHold<M extends ThreadModel>(
   model: M,
   bootGeneration: string | undefined,
 ): M | undefined {
-  const held = model.history;
-  if (!held || !sourceReplaced(held, bootGeneration)) return undefined;
-  const delegates = retireStableDelegateHolds(model.delegates);
-  if (delegates === undefined || delegates === model.delegates) return undefined;
-  return { ...model, delegates } as M;
+  return retireReplacedSourceHoldOnModel(model, bootGeneration);
 }
 
 // history/updated: the full current form of every recorded item and turn an
@@ -88,7 +50,19 @@ export function retireReplacedSourceHold<M extends ThreadModel>(
 function applyHistoryUpdated<M extends ThreadModel>(model: M, params: HistoryUpdatedParams, now: number): M {
   const held = model.history ?? EMPTY_HISTORY;
   const live = { ...model, lastFrameAt: now };
-  if (held.failed !== undefined) return live;
+  if (held.failed !== undefined) {
+    // A failed history stops merges, not the ownership question: while the
+    // diagnostic stands, no successful read has replaced the model yet, so a
+    // frame from a different source still carries sequences numbered from its
+    // own start. Retire the old samples and keep the diagnostic and the
+    // recovery behaviour exactly as they were — this is not an exemption.
+    const retired = retireReplacedSourceHold(live, params.bootGeneration);
+    const base = retired ?? live;
+    // Record the incoming owner: this branch runs no invalidation fold, so
+    // nothing else would record it.
+    const owned = recordSourceOwnerOnModel(base, params.bootGeneration);
+    return owned ?? retired ?? live;
+  }
   const signal: HistorySignal = {
     bootGeneration: params.bootGeneration,
     epoch: params.epoch,

@@ -20,6 +20,7 @@ import {
   markItemIdentityOnly,
   markItemTextOmitted,
   outputImagesToItemImages,
+  retireReplacedSourceHoldOnModel,
   threadFields,
   wireImageSessionId,
   wireItemToModel,
@@ -1285,8 +1286,14 @@ function mergeVersionedPage<M extends ThreadModel>(
       // incarnation's latest window.
       const history = invalidated(held, readIdentity(resp));
       const deferred = history.pendingIncarnation === resp.snapshot?.incarnation;
+      // Same hold-retirement rule as the reducer's folds: this branch is
+      // reached only when the page's identity is not the held one, and a
+      // different boot generation means a different source whose sequences
+      // start from their own beginning. A same-boot epoch or incarnation
+      // change here leaves the owning daemon's hold alone.
+      const retired = retireReplacedSourceHoldOnModel(model, resp.bootGeneration);
       return {
-        ...model,
+        ...(retired ?? model),
         history: deferred ? { ...history, deferredPages: [...history.deferredPages, resp] } : history,
       };
     }

@@ -24,6 +24,7 @@ import {
   olderHistoryExhausted,
   pruneBackgroundHistoryBodies,
   readDisposition,
+  recordSourceOwnerOnModel,
   resolvePendingEscalation,
   retireReplacedSourceHold,
   type SnapshotIdentity,
@@ -1181,9 +1182,15 @@ export class TranscriptRepository {
     if (this.#disposed || this.#sealed) return;
     const model = this.#model;
     if (!model) return;
+    // Both halves of the hand-off, retirement FIRST: once the incoming source
+    // is recorded as the owner, the same token compares as an apply and there
+    // would be nothing left to retire. The record must still happen when there
+    // was no sample to clear, or the incoming source's own next notification
+    // reads as another replacement and clears the hold it published.
     const retired = retireReplacedSourceHold(model, bootGeneration);
-    if (!retired) return;
-    this.#model = retired;
+    const owned = recordSourceOwnerOnModel(retired ?? model, bootGeneration);
+    if (owned === undefined && retired === undefined) return;
+    this.#model = owned ?? retired ?? model;
     this.#publish();
   }
 

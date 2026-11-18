@@ -154,6 +154,14 @@ func (s *Server) historyPublishers(threadID, ref, bootGeneration string) (func(a
 func (s *Server) bootGenerationFor(threadID string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
+	return s.bootGenerationForLocked(threadID)
+}
+
+// bootGenerationForLocked is bootGenerationFor for callers that already hold
+// s.mu. RecordAppEvent's commit callback holds the write lock, so it must not
+// call the locking form: Go's RWMutex is not reentrant and a self-deadlock
+// would hang the whole projection path.
+func (s *Server) bootGenerationForLocked(threadID string) string {
 	if threadID != s.appThreadID && s.appDescendants[threadID] != nil {
 		return s.descendantBootGenerationLocked()
 	}

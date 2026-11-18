@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os/exec"
 	"reflect"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
@@ -15,7 +16,15 @@ import (
 func TestDescendantWorkingDirectoryStartChangeReplayAndOwnerFence(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	t.Cleanup(srv.Close)
-	srv.SetAppIdentity("local", "root")
+	prepared, err := PrepareAppIdentity("local", "root", "")
+	if err != nil {
+		t.Fatalf("prepare identity: %v", err)
+	}
+	// A real boot counter, not the empty string: with no generation both the
+	// resync and the read carry "", so an equality check between them would
+	// pass while proving nothing about the qualified token this test exists
+	// to protect.
+	srv.ReplaceAppIdentity(prepared.WithBootGeneration("5"), nil)
 	srv.RecordAppEvent(threadEvent("root", events.EnvironmentChangedData{WorkingDir: "/root"}))
 	read := func(id, want string) {
 		t.Helper()
@@ -44,6 +53,20 @@ func TestDescendantWorkingDirectoryStartChangeReplayAndOwnerFence(t *testing.T) 
 			p := notificationParams[appwire.ThreadResyncParams](t, n)
 			if p.ThreadID != "child" || p.Ref != "local:child" {
 				t.Fatalf("resync targets wrong reader: %+v", p)
+			}
+			// The same controller must not be described two ways: a
+			// descendant's reads carry the root-qualified token, so its
+			// resyncs must too. A bare counter here compares as a different
+			// owner on the client and retires a hold the controller still owns.
+			read, err := srv.handleAppThreadRead(t.Context(), appwire.ThreadReadParams{Ref: "local:child"})
+			if err != nil {
+				t.Fatalf("child read: %v", err)
+			}
+			if p.BootGeneration != read.BootGeneration {
+				t.Fatalf("child resync boot generation = %q, read = %q: one controller described two ways", p.BootGeneration, read.BootGeneration)
+			}
+			if !strings.Contains(p.BootGeneration, "@") {
+				t.Fatalf("child resync boot generation = %q, want the root-qualified token a descendant read carries", p.BootGeneration)
 			}
 			resyncs++
 		}

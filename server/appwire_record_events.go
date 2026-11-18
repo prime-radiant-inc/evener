@@ -95,9 +95,14 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 			s.appEnvelope.WorkingDir = changed.WorkingDir
 			s.appEnvelope.cwdCarrierGeneration++
 			resync := appwire.ThreadResyncParams{
-				ThreadID:       threadID,
-				Ref:            ref,
-				BootGeneration: s.appBootGeneration,
+				ThreadID: threadID,
+				Ref:      ref,
+				// bootGenerationForLocked, never the raw counter: a descendant's
+				// reads and updates carry the root-qualified token
+				// ("<n>@<root>"), and a resync that spelled the same
+				// controller as a bare counter would compare as a different
+				// owner and retire a hold that controller still owns.
+				BootGeneration: s.bootGenerationForLocked(threadID),
 			}
 			if history != nil {
 				resync.Epoch = history.Epoch()
@@ -485,9 +490,15 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 		if changed, ok := event.Data.(events.EnvironmentChangedData); ok && event.Kind == events.EventEnvironmentChanged {
 			projection.thread.CWD = changed.WorkingDir
 			resync := appwire.ThreadResyncParams{
-				ThreadID:       threadID,
-				Ref:            ref,
-				BootGeneration: s.appBootGeneration,
+				ThreadID: threadID,
+				Ref:      ref,
+				// The same qualified token a descendant's reads carry
+				// (bootGenerationForLocked), never the bare counter: this
+				// block runs under s.mu.Lock. "5" and "5@root" name one
+				// controller, and a bare counter here would read as a
+				// different owner and retire a hold that controller still
+				// owns.
+				BootGeneration: s.bootGenerationForLocked(threadID),
 			}
 			if history != nil {
 				resync.Epoch = history.Epoch()

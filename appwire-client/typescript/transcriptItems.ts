@@ -2,6 +2,7 @@
 // stable-delegate helpers, and the wire-to-model item conversions. A leaf over
 // model types, identity validation and generated wire types.
 
+import { compareBootGeneration } from "./bootGeneration";
 import { pendingTextJoined } from "./chunkview";
 import { historyServingFacts } from "./historyServing";
 import type { ItemImage, ItemModel, ThreadModel, TurnModel } from "./model";
@@ -101,6 +102,61 @@ export function retireStableDelegateHolds(
     } = delegate;
     return { ...durable, holdSequence: undefined };
   });
+}
+
+// retireReplacedSourceHoldOnModel is THE hold-retirement rule, for every site
+// that folds a source-identity change into a transcript model.
+//
+// History validity and hold ownership are different questions. A notification
+// that only bumps the epoch or the incarnation leaves the owning daemon's
+// delegate controller sampling, so its hold survives; an unchanged hold emits
+// no update of its own, so dropping it there would lose the wait for good.
+// Only a different boot generation names a different source, and only that
+// source numbers its sequences from its own start — so only that retires the
+// samples, and a model that kept them would let the retired daemon's larger
+// sequence outrank the replacement's first unheld frame.
+//
+// The owning boot is read from `awaited` while the thread is invalid: a
+// replacement records itself there when it retires the old samples, while
+// history.bootGeneration keeps naming the retired boot until a read applies.
+// A bootless signal names no source and retires nothing.
+//
+// Returns undefined when nothing was retired, so a caller can publish only a
+// real change.
+export function retireReplacedSourceHoldOnModel<M extends ThreadModel>(
+  model: M,
+  bootGeneration: string | undefined,
+): M | undefined {
+  if (!bootGeneration) return undefined;
+  const held = model.history;
+  if (!held) return undefined;
+  const owner = held.holdOwner ?? held.awaited?.bootGeneration ?? held.bootGeneration;
+  if (compareBootGeneration(owner, bootGeneration) !== "replace") return undefined;
+  const delegates = retireStableDelegateHolds(model.delegates);
+  if (delegates === undefined || delegates === model.delegates) return undefined;
+  return { ...model, delegates };
+}
+
+// recordSourceOwnerOnModel is the OTHER HALF of the same hand-off, and the
+// rule is incomplete without it: a replacement must become the recorded owner
+// even when there was nothing to clear. Otherwise the next notification from
+// that same boot compares against the retired one, reads as another
+// replacement, and clears a hold the new source has since published — which
+// emits no update of its own to restore.
+//
+// The record is the `awaited` identity, the field the rule reads ownership
+// from. Callers that already invalidate history through `invalidated()` record
+// it there and need this only where no invalidation fold runs.
+export function recordSourceOwnerOnModel<M extends ThreadModel>(
+  model: M,
+  bootGeneration: string | undefined,
+): M | undefined {
+  if (!bootGeneration) return undefined;
+  const held = model.history;
+  if (!held) return undefined;
+  const owner = held.holdOwner ?? held.awaited?.bootGeneration ?? held.bootGeneration;
+  if (compareBootGeneration(owner, bootGeneration) !== "replace") return undefined;
+  return { ...model, history: { ...held, holdOwner: bootGeneration } };
 }
 
 export function epochMsToISO(ms: number | undefined): string | undefined {

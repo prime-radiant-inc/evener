@@ -24,6 +24,7 @@ import {
   testThread,
 } from "./testing/reducerTestKit";
 import {
+  applyHistoryReadFailure,
   applyReadModel,
   collectAuthoritativeMutationIds,
   hydrateThread,
@@ -4286,6 +4287,184 @@ test("a same-boot history/updated keeps the hold across an incarnation change", 
   expect(result.delegates?.[0]?.holdSequence).toBe(900);
   expect(result.delegates?.[0]?.drainHeldByJobs).toBe(true);
   expect(result.delegates?.[0]?.runningJobCount).toBe(2);
+});
+
+// A versioned backfill page can reach a replacement daemon before any
+// latest-window read does, and its invalidate branch is a source-identity
+// replacement like the reducer's own folds. It records the replacement in
+// history.awaited; if it kept the old samples, the ownership check would then
+// read that same boot as the hold's owner and let the retired sequence beat
+// the replacement's first unheld frame.
+test("a versioned page from a replaced source retires the hold sample", () => {
+  const model = testHydrateV6AtBoot("5");
+  let result = applyNotification(
+    model,
+    delegateNotification(
+      "ref_t",
+      delegateInfo({
+        delegateId: "dlg_1",
+        projectionRevision: 3,
+        drainHeldByJobs: true,
+        holdSequence: 900,
+        runningJobCount: 2,
+        oldestRunningJobStartedAt: "2026-01-03T00:00:00Z",
+      }),
+    ),
+    2000,
+  );
+  expect(result.delegates?.[0]?.holdSequence).toBe(900);
+
+  // A newer boot generation on an older page: the page cannot merge, and the
+  // source that owns the sequence has changed.
+  result = mergeOlderItemPage(result, {
+    data: [{ id: "turn_older", status: "completed", itemsView: "full", items: [] }],
+    bootGeneration: "6",
+    epoch: 1,
+    snapshot: { incarnation: "inc-1", length: 1 },
+    nextCursor: "older-page",
+  });
+  expect(result.history?.invalidatedAtGeneration).toBeDefined();
+  // The retire drops the hold sample alone: every durable field survives it.
+  expect(result.delegates?.[0]?.holdSequence).toBeUndefined();
+  expect(result.delegates?.[0]?.drainHeldByJobs).toBeUndefined();
+  expect(result.delegates?.[0]?.runningJobCount ?? 0).toBe(0);
+  expect(result.delegates?.[0]?.oldestRunningJobStartedAt).toBeUndefined();
+  expect(result.delegates?.[0]).toMatchObject({
+    delegateId: "dlg_1",
+    transcriptRef: "local:01dlg_1",
+    projectionRevision: 3,
+    lifecycle: "stable",
+    resumable: true,
+  });
+});
+
+test("a versioned page from the same source keeps the hold sample", () => {
+  const model = testHydrateV6AtBoot("5");
+  let result = applyNotification(
+    model,
+    delegateNotification(
+      "ref_t",
+      delegateInfo({
+        delegateId: "dlg_1",
+        projectionRevision: 3,
+        drainHeldByJobs: true,
+        holdSequence: 900,
+        runningJobCount: 2,
+        oldestRunningJobStartedAt: "2026-01-03T00:00:00Z",
+      }),
+    ),
+    2000,
+  );
+
+  // Same boot generation, newer epoch: the daemon rebuilt its index, and its
+  // delegate controller is still sampling its own sequence.
+  result = mergeOlderItemPage(result, {
+    data: [{ id: "turn_older", status: "completed", itemsView: "full", items: [] }],
+    bootGeneration: "5",
+    epoch: 2,
+    snapshot: { incarnation: "inc-1", length: 1 },
+    nextCursor: "older-page",
+  });
+  expect(result.history?.invalidatedAtGeneration).toBeDefined();
+  expect(result.delegates?.[0]?.holdSequence).toBe(900);
+  expect(result.delegates?.[0]?.drainHeldByJobs).toBe(true);
+  expect(result.delegates?.[0]?.runningJobCount).toBe(2);
+});
+
+// A failed history is not an exemption from ownership. No successful read has
+// replaced the model yet, so a frame from a different source still numbers its
+// sequences from its own start. The diagnostic and the recovery behaviour must
+// stay exactly as they were.
+test("a failed history still retires the hold for a replaced source", () => {
+  const model = testHydrateV6AtBoot("5");
+  let result = applyNotification(
+    model,
+    delegateNotification(
+      "ref_t",
+      delegateInfo({
+        delegateId: "dlg_1",
+        projectionRevision: 3,
+        drainHeldByJobs: true,
+        holdSequence: 900,
+        runningJobCount: 2,
+        oldestRunningJobStartedAt: "2026-01-03T00:00:00Z",
+      }),
+    ),
+    2000,
+  );
+  expect(result.delegates?.[0]?.holdSequence).toBe(900);
+
+  // Fail the history read the way a structured failure does.
+  result = applyHistoryReadFailure(result, "thread history failed at entry 7", 0);
+  expect(result.history?.failed).toBe("thread history failed at entry 7");
+  expect(result.delegates?.[0]?.holdSequence).toBe(900);
+
+  // The replacement's first frame, while the failure stands. Its sequence is
+  // its own, so the retired sample must not survive it.
+  result = applyNotification(
+    result,
+    {
+      method: "history/updated",
+      params: {
+        threadId: model.threadId,
+        ref: model.ref,
+        bootGeneration: "6",
+        epoch: 1,
+        snapshot: { incarnation: "inc-1", length: 1 },
+        turns: [],
+        items: [],
+      },
+    },
+    3000,
+  );
+  expect(result.delegates?.[0]?.holdSequence).toBeUndefined();
+  expect(result.delegates?.[0]?.drainHeldByJobs).toBeUndefined();
+  // The diagnostic survives: this is a hold fix, not a recovery change.
+  expect(result.history?.failed).toBe("thread history failed at entry 7");
+  expect(result.delegates?.[0]).toMatchObject({
+    delegateId: "dlg_1",
+    projectionRevision: 3,
+    lifecycle: "stable",
+  });
+});
+
+test("a failed history keeps the hold for a same-source frame", () => {
+  const model = testHydrateV6AtBoot("5");
+  let result = applyNotification(
+    model,
+    delegateNotification(
+      "ref_t",
+      delegateInfo({
+        delegateId: "dlg_1",
+        projectionRevision: 3,
+        drainHeldByJobs: true,
+        holdSequence: 900,
+        runningJobCount: 2,
+        oldestRunningJobStartedAt: "2026-01-03T00:00:00Z",
+      }),
+    ),
+    2000,
+  );
+  result = applyHistoryReadFailure(result, "thread history failed at entry 7", 0);
+  result = applyNotification(
+    result,
+    {
+      method: "history/updated",
+      params: {
+        threadId: model.threadId,
+        ref: model.ref,
+        bootGeneration: "5",
+        epoch: 1,
+        snapshot: { incarnation: "inc-2", length: 1 },
+        turns: [],
+        items: [],
+      },
+    },
+    3000,
+  );
+  expect(result.delegates?.[0]?.holdSequence).toBe(900);
+  expect(result.delegates?.[0]?.drainHeldByJobs).toBe(true);
+  expect(result.history?.failed).toBe("thread history failed at entry 7");
 });
 
 test("delegate/updated with same projectionRevision and later activity updates latestActivityAt", () => {

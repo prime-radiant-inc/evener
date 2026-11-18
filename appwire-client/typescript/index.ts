@@ -898,6 +898,7 @@ export {
   frontierFromCursor,
   hydrateThread,
   ITEM_OMISSION_TOLERANT_FIELDS,
+  invalidated,
   invalidateHistory,
   issueLatestWindowRead,
   mergeOlderItemPage,
@@ -924,6 +925,9 @@ export {
   joinedReasoningParagraphs,
   markItemIdentityOnly,
   markItemTextOmitted,
+  recordSourceOwnerOnModel,
+  retireReplacedSourceHoldOnModel,
+  retireStableDelegateHolds,
 } from "./transcriptItems";
 export type {
   ProjectedAnchor,

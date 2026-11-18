@@ -1354,6 +1354,55 @@ describe("useThreadsStore.ensureThread", () => {
     threadsStore.getState().releaseThread("ref_a");
   });
 
+  // M1: an empty clear still has to record the new owner. The resync retires
+  // nothing here because there is no sample yet, so unless it also records
+  // boot 2 as the hold's source, the next boot-2 notification compares against
+  // boot 1, reads as another replacement, and clears the live hold boot 2 just
+  // published — which emits no update of its own to restore.
+  test("a replacement records its ownership so its own later frames keep the hold", async () => {
+    const fake = connectReadyFakeClient();
+    const initial = versionedReadResponse("ref_a", {
+      status: { type: "active" },
+      evener: { ref: "ref_a", capabilities: CAPABILITIES, queue: { revision: 0 } },
+    });
+    const replacementRead: { resolve: ((response: ThreadReadResponse) => void) | null } = { resolve: null };
+    let readCount = 0;
+    fake.on("thread/read", (params) => {
+      readCount += 1;
+      if (readCount === 1) return echoRead(initial, params.requestGeneration);
+      return new Promise<ThreadReadResponse>((resolve) => {
+        replacementRead.resolve = (response) => resolve(echoRead(response, params.requestGeneration));
+      });
+    });
+    await threadsStore.getState().ensureThread("ref_a");
+
+    // Boot 2 takes over while no hold sample exists: nothing to retire.
+    fake.emitNotification({
+      method: "evener/thread/resync",
+      params: { threadId: "thr_ref_a", ref: "ref_a", bootGeneration: "2", epoch: 2 },
+    });
+    await flushUntil(() => replacementRead.resolve !== null);
+
+    // Boot 2 publishes a live wait. Nothing has read successfully yet.
+    fake.emitNotification({
+      method: "evener/delegate/updated",
+      params: { threadId: "thr_ref_a", ref: "ref_a", delegate: heldDelegateRow() },
+    });
+    await flushUntil(() => threadsStore.getState().threads.get("ref_a")?.delegates?.[0]?.holdSequence === 900);
+
+    // A second notification from the SAME boot must keep it: boot 2 owns the
+    // sequence now, so this is not a replacement.
+    fake.emitNotification({
+      method: "evener/thread/resync",
+      params: { threadId: "thr_ref_a", ref: "ref_a", bootGeneration: "2", epoch: 3 },
+    });
+    await flushUntil(() => readCount >= 3);
+    expect(threadsStore.getState().threads.get("ref_a")?.delegates?.[0]?.holdSequence).toBe(900);
+    expect(threadsStore.getState().threads.get("ref_a")?.delegates?.[0]?.drainHeldByJobs).toBe(true);
+
+    threadsStore.getState().releaseThread("ref_a");
+  });
+
   test("a same-boot resync preserves the held delegate row and its ordering", async () => {
     const fake = connectReadyFakeClient();
     const held = heldDelegateRow();
