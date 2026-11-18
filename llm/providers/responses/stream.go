@@ -530,7 +530,8 @@ func (acc *responsesOutputAccumulator) outputItem(index int64, kind, id string, 
 		indexed = nil
 	}
 	item := acc.join(named, indexed)
-	if fallback.accepts(kind, id, index) {
+	// A fallback can name the indexed record that the first join just consumed.
+	if fallback != indexed && fallback.accepts(kind, id, index) {
 		item = acc.join(item, fallback)
 	}
 	if item == nil {

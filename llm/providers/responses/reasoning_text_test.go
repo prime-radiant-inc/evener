@@ -217,6 +217,12 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 		{"an initially unqualified ID resolves to the completed item", []string{idArguments, done(linkedFinalCall)}, nil, []replayItem{finalTool}},
 		{"arguments completion identifies a previously completed provisional call", []string{toolItemAdded, done(emptyToolByItem), namedFinalArguments}, nil, []replayItem{finalTool}},
 		{"item completion links interleaved argument fragments", []string{toolItemAdded, toolStart, toolMiddle, toolEnd, done(linkedCall)}, nil, []replayItem{linkedTool}},
+		{"indexed bare call arguments link once with the separately announced item", []string{
+			at(0, `{"type":"response.function_call_arguments.delta","id":"call_1","delta":" \t{ \"k\": "}`),
+			at(1, done(answerItem)), toolItemAdded,
+			`{"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"1 }\n"}`,
+			at(0, done(linkedCall)),
+		}, nil, []replayItem{finalTool, answer}},
 		{"terminal call links interleaved argument fragments", []string{toolItemAdded, toolStart, toolMiddle, toolEnd}, []string{linkedCall}, []replayItem{linkedTool}},
 		{"indexed argument delta names a provisional call", []string{at(2, toolItemAdded), at(2, toolDelta)}, nil, []replayItem{tool}},
 		{"indexed final arguments name a provisional call", []string{at(2, toolItemAdded), itemArguments, at(2, callFinalArguments)}, nil, []replayItem{finalTool}},
