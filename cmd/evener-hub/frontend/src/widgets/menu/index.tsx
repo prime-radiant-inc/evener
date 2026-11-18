@@ -891,6 +891,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   const anchoredTriggerRef = useRef<{ left: number; top: number } | null>(null);
   const grewBeforeScrollRef = useRef(false);
   const lastViewportHeightRef = useRef(0);
+  const observedViewportHeightRef = useRef(0);
   // What each scroller that holds the trigger looked like at the last look: its
   // offset, and where the trigger sat inside its content. Two numbers, because
   // the offset alone cannot say who moved it. A clamp is the offset pulled back
@@ -1641,6 +1642,13 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
         // resize pass measured it, and an unchanged rect there is a trigger
         // held still behind the header, not one the correction preserved.
         else if (stayed && grew && stillOnScreen) placeNowAndAfterLayout();
+        // A correction that left the trigger off screen still dismisses, but it
+        // dismisses the way layout does: the browser moved the rail to hold the
+        // reader's place, and a plain restore would move it straight back to
+        // reveal a trigger they cannot see. A reader's own scroll keeps the
+        // ordinary close - they chose where to go, and the trigger coming back
+        // into view is the consequence of that choice.
+        else if (cause !== "scrolled") closeMenuRestoringFocusWithoutScroll();
         else closeMenu();
       }
     }
@@ -1675,7 +1683,7 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
       placeNowAndAfterLayout();
     };
     return watchViewport(rootRef.current, onScrollCapture, resizeToPlace);
-  }, [isOpen, closeMenu, ownerDocument, placeMenu, placeAfterLayout]);
+  }, [isOpen, closeMenu, closeMenuRestoringFocusWithoutScroll, ownerDocument, placeMenu, placeAfterLayout]);
 
   // A resize event is not the only thing that moves the trigger, and the
   // resize itself is not the moment the trigger has finished moving:
@@ -1701,6 +1709,11 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
   useEffect(() => {
     if (!isOpen) return;
     const ownerWindow = ownerDocument.defaultView ?? window;
+    // The height the FIRST observation is judged against: whatever the window
+    // was when this menu opened. Seeding it here rather than comparing against
+    // the ref's initial zero is what keeps a chip that arrives before any
+    // resize from reading as a resize.
+    observedViewportHeightRef.current = ownerWindow.innerHeight;
     const visualViewport = ownerWindow.visualViewport;
     // `resize` covers the viewport changing size; `scroll` covers it moving
     // without changing size. On iOS the visual viewport scrolls under a
@@ -1728,10 +1741,31 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     // that no longer intersects what the reader can see dismisses the menu, and
     // one that still does re-anchors. The dismissal is the non-scrolling one,
     // because layout hid the trigger and the reader did not ask to move.
+    // A box changing size is not always good news for the popup's anchor, and
+    // the question "is the trigger hidden" cannot say WHO hid it. Two different
+    // events produce the same observation:
+    //
+    // - the reader shrank the window, so the rail is shorter and the row it
+    //   held fell outside the rail's client area. That is the resize the menu
+    //   already accounts for - the same gesture as the Android keyboard leaving
+    //   - and the answer is to clamp the popup into view, never to dismiss.
+    // - a chip appeared above the rail and took height out of it. Nothing the
+    //   reader did, and nothing the resize handler saw, so the menu has no
+    //   business staying open with focus on a trigger nothing shows.
+    //
+    // The window's own height is what separates them, read rather than
+    // inferred: if it changed since the last observation, a viewport resize
+    // happened, and it owns what the observation shows. The reading is taken
+    // here and nowhere else, so one resize can excuse at most one observation -
+    // the frame after it records the new height, and a chip that arrives later
+    // is judged on its own.
     const onObservedSize = () => {
+      const viewportChanged = ownerWindow.innerHeight !== observedViewportHeightRef.current;
+      observedViewportHeightRef.current = ownerWindow.innerHeight;
       const el = triggerRef.current;
       if (el !== null && triggerMeasurablyHidden(el, ownerWindow)) {
-        closeMenuRestoringFocusWithoutScroll();
+        if (!viewportChanged) closeMenuRestoringFocusWithoutScroll();
+        else placeAfterLayout();
         return;
       }
       placeAfterLayout();

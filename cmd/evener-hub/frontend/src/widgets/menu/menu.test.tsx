@@ -214,6 +214,140 @@ test("a rail scrollport that shrinks past the trigger dismisses without moving t
   }
 });
 
+// The other half of that rule, and the one that keeps it from being a
+// dismiss-everything observer: the SAME observation, with the window having
+// changed height since the last look, is the reader's own resize. A rail that
+// gets shorter because the window did is the resize this menu already
+// accounts for - the software keyboard leaving is the same gesture in a
+// different window - so the popup clamps into view and the menu stays. Only a
+// layout change nothing announced dismisses.
+test("a window resize that shortens the rail keeps the menu and clamps it", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  const RAIL_TOP = 100;
+  let railHeight = 400;
+  // The trigger stays where it is in the rail's content. The rail's client area
+  // is what moves, closing upward past it - if the trigger slid up with the
+  // rail it would never leave the client area and this fixture would prove
+  // nothing.
+  const triggerTop = 100 + railHeight - 40;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.getAttribute("data-testid") === "rail-port") return box(0, RAIL_TOP, 300, railHeight);
+    if (this.getAttribute("data-testid") === "rail-row") return box(0, 120, 300, 40);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.getAttribute("data-testid") === "rail-port") return railHeight;
+    return this.tagName === "UL" ? 120 : 0;
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  class FiringResizeObserver {
+    static callback: ResizeObserverCallback | null = null;
+    constructor(callback: ResizeObserverCallback) {
+      FiringResizeObserver.callback = callback;
+    }
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  vi.stubGlobal("ResizeObserver", FiringResizeObserver);
+  const { flush } = captureFrames();
+  try {
+    render(
+      <div data-testid="rail-port" style={{ overflowY: "auto" }}>
+        <div data-testid="rail-row">Steady live session</div>
+        <Menu trigger="Actions" items={items()} />
+      </div>,
+    );
+    const scroller = screen.getByTestId("rail-port");
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 1200 });
+    scroller.scrollTop = 200;
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu")).toBeTruthy();
+
+    // The reader shortens the window. The rail loses the same 200px, so the row
+    // the trigger is on falls below the rail's client area - and the window's
+    // own height changed by that amount, which is the statement that the
+    // resize, not an arrival, is what did it.
+    Object.defineProperty(window, "innerHeight", { configurable: true, value: 600 });
+    railHeight = 200;
+    act(() => {
+      FiringResizeObserver.callback?.([], {} as ResizeObserver);
+    });
+    flush();
+
+    expect(screen.getByRole("menu")).toBeTruthy();
+    // Clamped inside the window rather than left where the trigger was: the
+    // popup has to be somewhere the reader can still act on it.
+    const popupTop = Number.parseFloat(screen.getByRole("menu").style.top);
+    expect(popupTop).toBeGreaterThanOrEqual(0);
+    expect(popupTop + 120).toBeLessThanOrEqual(600);
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// A correction that leaves the trigger off screen still dismisses, and how it
+// restores focus matters there for the same reason it does when layout hides
+// the trigger: the browser has just moved the rail to hold the reader's place,
+// and a plain focus() would move it straight back to reveal a row they cannot
+// see. The reader's own scroll is the other case, and keeps the ordinary close.
+test("a correction that clips the trigger dismisses without scrolling the rail back", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  let triggerTop = 300;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, triggerTop, 40, 28);
+    if (this.getAttribute("data-testid") === "rail-port") return box(0, 0, 300, 200);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  vi.spyOn(HTMLElement.prototype, "clientHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.getAttribute("data-testid") === "rail-port") return 200;
+    return this.tagName === "UL" ? 120 : 0;
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  const { flush } = captureFrames();
+  try {
+    render(
+      <div data-testid="rail-port" style={{ overflowY: "auto" }}>
+        <Menu trigger="Actions" items={items()} />
+      </div>,
+    );
+    const scroller = screen.getByTestId("rail-port");
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 600 });
+    scroller.scrollTop = 340;
+    const trigger = screen.getByRole("button", { name: "Actions" });
+    const focus = vi.spyOn(trigger, "focus");
+    await user.click(trigger);
+    expect(screen.getByRole("menu")).toBeTruthy();
+
+    // A live update removes content, so the rail's range contracts from 400 to
+    // 100 and the browser pulls the offset back to the endpoint it now allows.
+    // The trigger, held where it was on screen for a moment, ends above the
+    // rail's client area once the correction lands. Nothing the reader did.
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 300 });
+    scroller.scrollTop = 100;
+    triggerTop = -40;
+    fireEvent.scroll(scroller);
+    flush();
+
+    expect(screen.queryByRole("menu")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+    expect(focus).toHaveBeenCalledWith({ preventScroll: true });
+  } finally {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
