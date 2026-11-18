@@ -11,6 +11,7 @@ import (
 	"slices"
 
 	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providers/internal/openaichat"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -50,4 +51,44 @@ func (*Protocol) PrunablePaths() []string {
 // BuildBody implements llm.Protocol for a non-streaming request.
 func (*Protocol) BuildBody(req llm.Request, res registry.Resolved) (map[string]any, error) {
 	return buildBody(req, res, false)
+}
+
+// EmitToolSchemas implements llm.ToolSchemaDeriver.
+//
+// The builder reaches its per-tool decision through toolSchema; this maps the
+// same list through the same function, so the local estimate prices the request
+// the builder emits rather than the one it received. Two differences make that
+// matter near the input cap: a parameterless tool gains a synthesized schema,
+// and a strict tool is projected to close every object.
+//
+// The returned list is measured by the caller, so an unchanged list returns nil
+// and false and the count it already holds is reused rather than re-marshaling
+// the catalog.
+func (*Protocol) EmitToolSchemas(baseline []llm.ToolDefinition, res registry.Resolved) ([]llm.ToolDefinition, bool) {
+	if len(baseline) == 0 {
+		return nil, false
+	}
+	strict := registry.BoolValue(res.Caps.StrictTools)
+	sent := make([]llm.ToolDefinition, len(baseline))
+	copy(sent, baseline)
+	changed := false
+	for i, t := range baseline {
+		params, _ := toolSchema(t, strict)
+		// A byte count needs a byte oracle. The projection sorts each object's
+		// required list, which reorders a schema without changing what it
+		// serializes to: a catalog whose tools are already strictly shaped
+		// would then be re-measured on every dispatch even though the count it
+		// already holds is exact. SameSerializedLength answers that question
+		// without marshaling the catalog, and only a schema whose projection
+		// really costs bytes is reported as changed.
+		if openaichat.SameSerializedLength(t.Parameters, params) {
+			continue
+		}
+		sent[i].Parameters = params
+		changed = true
+	}
+	if !changed {
+		return nil, false
+	}
+	return sent, true
 }

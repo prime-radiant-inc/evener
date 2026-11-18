@@ -51,17 +51,7 @@ func buildBody(req llm.Request, res registry.Resolved, stream bool) (out map[str
 	}
 	body["messages"] = msgs
 	if len(req.Tools) > 0 {
-		tools := openaichat.ToChatTools(req.Tools)
-		if registry.BoolValue(caps.StrictTools) {
-			for _, t := range tools {
-				if fn, ok := t["function"].(map[string]any); ok {
-					fn["strict"] = true
-					if params, ok := fn["parameters"].(map[string]any); ok {
-						fn["parameters"] = openaichat.StrictifyJSONSchema(params)
-					}
-				}
-			}
-		}
+		tools := toChatTools(req.Tools, registry.BoolValue(caps.StrictTools))
 		body["tools"] = tools
 		if registry.BoolValue(caps.ToolStream) {
 			body["tool_stream"] = true

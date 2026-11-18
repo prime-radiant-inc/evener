@@ -343,7 +343,7 @@ func (c *Client) Complete(ctx context.Context, req Request) (Response, error) {
 	base := func(ctx context.Context, req Request) (Response, error) {
 		if t.resolved {
 			var err error
-			req, err = shapeAndApplyTokenBudget(req, t.res)
+			req, err = shapeAndApplyTokenBudget(req, t.res, t.override == nil)
 			if err != nil {
 				return Response{}, err
 			}
@@ -385,7 +385,7 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 	base := func(ctx context.Context, req Request) (Stream, error) {
 		if t.resolved {
 			var err error
-			req, err = shapeAndApplyTokenBudget(req, t.res)
+			req, err = shapeAndApplyTokenBudget(req, t.res, t.override == nil)
 			if err != nil {
 				return nil, err
 			}
@@ -418,8 +418,21 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 	return newProviderStampStream(st, t.name), nil
 }
 
-func shapeAndApplyTokenBudget(req Request, res registry.Resolved) (Request, error) {
+// shapeAndApplyTokenBudget shapes req and admits it against res's budget.
+//
+// priceEmitted says whether the route's own builder will replace a tool schema
+// before sending it. It does on a protocol route, and it does not on an
+// override, where the adapter marshals the definition it was handed — the
+// override boundary's list is its wire list.
+func shapeAndApplyTokenBudget(req Request, res registry.Resolved, priceEmitted bool) (Request, error) {
 	req = ShapeRequest(req, res)
+	// The price is taken over the list the route's builder emits, not the one
+	// the request arrived with. This runs here rather than at either call site
+	// because admission is where the count is consumed, and every route that
+	// reaches the budget passes through this function.
+	if priceEmitted {
+		req = priceEmittedToolSchemas(req, res)
+	}
 	budgeted, _, err := ApplyTokenBudget(req, res)
 	return budgeted, err
 }
@@ -536,6 +549,27 @@ func (c *Client) isOverride(name string) bool {
 	c.overridesMu.RLock()
 	defer c.overridesMu.RUnlock()
 	return c.overrides[name] != nil
+}
+
+// ServesOverride reports whether an adapter override serves requests for the
+// named provider, resolving an empty name through the default provider the way
+// a dispatch does.
+//
+// A caller that prices a request before dispatch needs this because the two
+// halves of a target do not bill the same list: a protocol route's builder
+// rewrites tool schemas before sending them, and an override marshals the
+// definition it was handed. A price taken over the protocol's emitted list and
+// then applied to a request an override serves bills schemas that never reach
+// the wire.
+func (c *Client) ServesOverride(provider string) bool {
+	if c == nil {
+		return false
+	}
+	name := normalizeProviderName(provider)
+	if name == "" {
+		name = c.DefaultProvider()
+	}
+	return c.isOverride(name)
 }
 
 // ListLive fetches one instance's raw live rows without touching the

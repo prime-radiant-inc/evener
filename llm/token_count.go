@@ -99,6 +99,169 @@ func estimateInputTokens(t targetInfo, req Request) InputTokenCount {
 	}
 }
 
+// priceEmittedToolSchemas replaces req's tool count with the price of the list
+// the route's own builder will emit.
+//
+// A builder changes a tool schema before sending it: a closed value set gains
+// the explicit type its provider requires, a parameterless tool gains a
+// synthesized schema, and a strict-capable route closes an empty one. Pricing
+// the definitions as they were received therefore prices a list other than the
+// one that dispatches, and near the input cap that difference decides admission
+// in both directions: a request can be admitted over budget, or refused while it
+// fits.
+//
+// The protocol owns the answer because the protocol owns the builder, so this
+// asks it rather than restating its rules (ToolSchemaDeriver). A count is reused
+// when the builder changes nothing, which is the common case: a catalog that
+// already carries every type and no parameterless tool prices identically before
+// and after, and re-measuring it every dispatch would repeat a marshal the
+// cached count exists to avoid.
+//
+// Assigning the measurement rather than adjusting the incoming count is what
+// makes this idempotent. A count measured over the substituted form is already
+// close to the emitted one, so adjusting it by the difference between the two
+// lists looks like it reuses work — but the adjustment describes the count it
+// started from, and a second call over the result starts from the emitted count
+// and adds the same difference again. Middleware may price a prepared request
+// and forward it, and admission then prices it once more; a second application
+// of a difference is a count larger than the list either of them sends, and an
+// input cap between the two refuses a request that fits. Measuring once and
+// assigning cannot compound.
+//
+// A count produced for one target is not a count for another. The same request
+// can be priced against a strict Responses row and then reused on a non-strict
+// Chat route, and the second route's decision may leave the definitions
+// unchanged — the case a deriver reports as "nothing to change" and which would
+// then leave the first route's charge standing for a schema this one never
+// emits. So the target and the unprojected baseline are recorded with the count,
+// and a price for a different target starts from the baseline rather than from
+// another target's answer.
+func priceEmittedToolSchemas(req Request, res registry.Resolved) Request {
+	if len(req.Tools) == 0 {
+		return req
+	}
+	// Retargeting starts from the list, not from the previous route's emission.
+	// The baseline is the count the serialized list measures on its own, so
+	// restoring it is exact rather than approximate.
+	//
+	// This runs before every branch that can return early, because each of them
+	// leaves the request priced by whatever answered last. A protocol with no
+	// deriver and an override adapter both marshal the definitions they are
+	// given: neither rewrites the list, so the list's own measurement is their
+	// price. Returning before the restore would keep a count produced for a
+	// different target — an inflated local reading, or a request that fits this
+	// route rejected by a cap that belonged to the other one.
+	req = restoreToolCountBaseline(req, res)
+	p, ok := ProtocolFor(res.Protocol)
+	if !ok {
+		return req
+	}
+	deriver, ok := p.(ToolSchemaDeriver)
+	if !ok {
+		return req
+	}
+	emitted, changed := deriver.EmitToolSchemas(req.Tools, res)
+	if !changed {
+		return req
+	}
+	// Read before the assignment below overwrites it: the baseline is the count
+	// that describes the list as this request carries it, and after the next
+	// line the field holds this target's emission instead.
+	baseline := req.toolCountBaseline()
+	req.ToolsJSONBytes = ToolsJSONBytes(emitted)
+	req.emittedToolTarget = emittedToolTargetFor(res)
+	req.emittedToolBaseline = baseline
+	return req
+}
+
+// restoreToolCountBaseline returns req priced by the list it carries rather than
+// by another target's emission, and drops the record of that emission.
+//
+// It is the same restore for every caller that can be handed a pre-priced
+// request: the deriver path, the local reading, and admission. A route served by
+// a protocol that has no deriver, and one served by an override adapter, both
+// send the definitions they were handed, so for them the baseline is the price.
+func restoreToolCountBaseline(req Request, res registry.Resolved) Request {
+	if req.emittedToolTarget == (emittedToolTargetKey{}) {
+		return req
+	}
+	if req.emittedToolTarget == emittedToolTargetFor(res) {
+		return req
+	}
+	req.ToolsJSONBytes = req.emittedToolBaseline
+	req.emittedToolTarget = emittedToolTargetKey{}
+	req.emittedToolBaseline = 0
+	return req
+}
+
+// toolCountBaseline is the count req's tool list measures without the current
+// route's schema decision applied.
+//
+// The recorded baseline wins over the incoming count on a repeat price of the
+// same target, because by then the incoming count is that target's emission
+// rather than the list's own measurement. A request that arrived unmeasured is
+// measured now.
+func (req Request) toolCountBaseline() int {
+	if req.emittedToolBaseline > 0 {
+		return req.emittedToolBaseline
+	}
+	if req.ToolsJSONBytes > 0 {
+		return req.ToolsJSONBytes
+	}
+	return ToolsJSONBytes(req.Tools)
+}
+
+// dropRecordedToolEmission returns req priced by the list it carries, whatever
+// target the recorded emission names.
+//
+// It is for a route that makes no schema decision: an override adapter marshals
+// the definition it is handed, so no protocol's emission describes its wire
+// list. The target comparison cannot see that on its own — an override keeps the
+// resolved row it dispatches through, so a request priced for that row's
+// protocol still matches the recorded target and would keep a charge the
+// override never incurs.
+func dropRecordedToolEmission(req Request) Request {
+	if req.emittedToolTarget == (emittedToolTargetKey{}) {
+		return req
+	}
+	req.ToolsJSONBytes = req.emittedToolBaseline
+	req.emittedToolTarget = emittedToolTargetKey{}
+	req.emittedToolBaseline = 0
+	return req
+}
+
+// emittedToolTargetKey names the target whose schema decision a count was
+// produced by. Only the parts a deriver reads belong here: the protocol that
+// owns the builder and the capability that decides whether it projects at all.
+// A row that differs only in fields no builder reads prices identically and is
+// the same target.
+type emittedToolTargetKey struct {
+	protocol    string
+	strictTools bool
+}
+
+// emittedToolTargetFor returns the key a count produced for res is recorded
+// under.
+func emittedToolTargetFor(res registry.Resolved) emittedToolTargetKey {
+	return emittedToolTargetKey{
+		protocol:    res.Protocol,
+		strictTools: registry.BoolValue(res.Caps.StrictTools),
+	}
+}
+
+// PriceToolSchemas returns req with its tool count describing the list res's
+// builder emits, so a caller that estimates before admission bills the same
+// list admission will.
+//
+// Every estimate taken over a request whose tools a builder rewrites needs this:
+// a full-history estimate computed over the advertised catalog and then carried
+// past a delta's admission is smaller than the list that dispatches, and the
+// larger of the two is the one the budget takes. A route whose builder rewrites
+// nothing, an override, or a request with no tools returns unchanged.
+func PriceToolSchemas(req Request, res registry.Resolved) Request {
+	return priceEmittedToolSchemas(req, res)
+}
+
 // ToolsJSONBytes returns the byte length of defs' serialized form: the length
 // the local estimate bills a tool list by. A caller that builds one tool list
 // and prices many requests over it can measure the list once and stamp
@@ -213,8 +376,38 @@ func (c *Client) CountInputTokens(ctx context.Context, req Request) (InputTokenC
 	if t.resolved {
 		req = ShapeRequest(req, t.res)
 	}
+	// A request may arrive priced for the route that built it — a caller
+	// preprices against a strict Responses row and then counts the same request
+	// on the route that will actually serve it. The restore happens here, before
+	// the branch below decides whether this target has a deriver, because that
+	// answer needs a count that describes this request's own list rather than
+	// another route's emission. Doing it inside the deriver left a route with no
+	// deriver and an override-served route holding the previous target's charge,
+	// which is a count for a catalog neither of them sends. An unresolved
+	// override target is included: its row is the zero one, which can never be
+	// the target a pre-priced count was recorded under, so the restore is the
+	// correct answer for it too.
+	req = restoreToolCountBaseline(req, t.res)
+	if t.override != nil {
+		// An override marshals the definition it is handed, so no protocol's
+		// emission describes its wire list and the recorded charge has to go.
+		req = dropRecordedToolEmission(req)
+	}
 	localEstimate := func() InputTokenCount {
-		return localInputEstimate(req, callerProvider, t)
+		// The local reading is the fallback for a route with no exact counter,
+		// which is exactly the caller who sizes a request from it and then
+		// dispatches. A protocol's builder rewrites the tool list before sending
+		// it, so measuring the advertised list here would answer with a number
+		// smaller than the request that dispatches, and a caller who fits its
+		// request to that number meets the shortfall as a context-budget
+		// rejection from Complete. The emitted list is the one to price, and
+		// only a protocol route has one: an override marshals the definition it
+		// was handed, so the list restored above is its wire list.
+		priced := req
+		if t.override == nil && t.resolved {
+			priced = priceEmittedToolSchemas(priced, t.res)
+		}
+		return localInputEstimate(priced, callerProvider, t)
 	}
 
 	// countExactly is the exact-count call of whichever half of the target

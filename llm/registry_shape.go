@@ -44,6 +44,29 @@ type RequestPreparer interface {
 	RequiresStreamingComplete() bool
 }
 
+// ToolSchemaDeriver is implemented by a wire protocol whose builder changes a
+// tool definition's parameter schema before sending it.
+//
+// The local estimate bills a request by its tool bytes, and a builder that
+// states an explicit type or closes a parameterless tool's schema changes those
+// bytes. Pricing the definitions as they were received therefore prices a list
+// other than the one that dispatches: near the input cap that difference admits
+// a request the budget would have rejected, or refuses one that fits. The
+// protocol owns the answer because the protocol owns the builder —
+// EmitToolSchemas must reach the same per-tool decision the builder reaches, so
+// the priced list and the emitted list are one list.
+type ToolSchemaDeriver interface {
+	// EmitToolSchemas returns baseline as this protocol's builder will send it,
+	// reporting whether any definition changed. baseline is the list the
+	// builder itself is handed, nil Parameters included: a parameterless tool
+	// and an explicitly open one are different inputs, and only the first gains
+	// the synthesized schema.
+	//
+	// An unchanged list returns nil and false, so a caller holding a count over
+	// baseline reuses it rather than re-measuring the catalog.
+	EmitToolSchemas(baseline []ToolDefinition, res registry.Resolved) ([]ToolDefinition, bool)
+}
+
 // samplingPaths names the prunable paths that carry the request-level
 // temperature, top-p, and stop values on each protocol (spec §8.2). An
 // empty stop path means the protocol has no stop parameter.

@@ -33,13 +33,41 @@ func toResponsesResponseFormat(rf llm.ResponseFormat, structured bool) any {
 	}
 }
 
+// toolSchema is the schema one tool is sent with, and whether that tool rides
+// the request under strict enforcement.
+//
+// This is the per-tool decision the builder makes, written once so the local
+// estimate can reach the same answer: a parameterless tool gains a synthesized
+// schema and a strict tool is projected, and both change the bytes the request
+// carries. A price computed from a second copy of these rules would drift from
+// them.
+func toolSchema(t llm.ToolDefinition, strict bool) (params map[string]any, toolStrict bool) {
+	toolStrict = strict
+	if toolStrict && t.Strict != nil {
+		toolStrict = *t.Strict
+	}
+	params = t.Parameters
+	if params == nil {
+		// A tool that declares no parameters takes the empty object. The
+		// advertised definition omits the key, so this substitution adds bytes
+		// the local estimate would otherwise miss.
+		params = map[string]any{"type": "object", "properties": map[string]any{}}
+	}
+	if toolStrict {
+		// OpenAI strict mode requires a fully-specified JSON Schema:
+		// - object schemas must set additionalProperties=false
+		// - required must include every key in properties (even for "optional" fields)
+		// See API validation errors like:
+		// "Invalid schema for function 'read_file': ... 'required' ... Missing 'limit'."
+		params = openaichat.StrictifyJSONSchema(params)
+	}
+	return params, toolStrict
+}
+
 func toResponsesTools(tools []llm.ToolDefinition, strict bool) []map[string]any {
 	out := make([]map[string]any, 0, len(tools))
 	for _, t := range tools {
-		params := t.Parameters
-		if params == nil {
-			params = map[string]any{"type": "object", "properties": map[string]any{}}
-		}
+		params, toolStrict := toolSchema(t, strict)
 		entry := map[string]any{
 			"type":        "function",
 			"name":        t.Name,
@@ -47,19 +75,6 @@ func toResponsesTools(tools []llm.ToolDefinition, strict bool) []map[string]any 
 			"parameters":  params,
 		}
 		if strict {
-			toolStrict := true
-			if t.Strict != nil {
-				toolStrict = *t.Strict
-			}
-			if toolStrict {
-				// OpenAI strict mode requires a fully-specified JSON Schema:
-				// - object schemas must set additionalProperties=false
-				// - required must include every key in properties (even for "optional" fields)
-				// See API validation errors like:
-				// "Invalid schema for function 'read_file': ... 'required' ... Missing 'limit'."
-				params = openaichat.StrictifyJSONSchema(params)
-				entry["parameters"] = params
-			}
 			entry["strict"] = toolStrict
 		}
 		out = append(out, entry)

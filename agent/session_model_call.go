@@ -329,7 +329,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	s.setRoundFallbackSource(sys, untrimmedHistory)
 	req = s.attachFullHistoryInputEstimate(req, historyTurns, len(sys))
 	var budget llm.TokenBudget
-	if req, budget, err = budgetModelDispatchRequestWithBudget(profile, req); err != nil {
+	if req, budget, err = s.budgetModelDispatchRequestForSession(profile, req); err != nil {
 		return profile, sys, history, req, nil, reasoningEffort, err
 	}
 	initialBudget := budget
@@ -345,7 +345,7 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	// the inline deliveries this call actually presents.
 	var deltaTurns []schema.Turn
 	req, fullHistory, deltaTurns = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, presentedTurns, true, heldDropped)
-	if req, budget, err = budgetModelDispatchRequestWithBudget(profile, req); err != nil {
+	if req, budget, err = s.budgetModelDispatchRequestForSession(profile, req); err != nil {
 		return profile, sys, history, req, fullHistory, reasoningEffort, err
 	}
 	// Admission runs before and after continuation planning because the latter
@@ -394,13 +394,13 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 		req = s.buildModelRequest(profile, sys, history, toolDefs, reasoningEffort, toolDefsJSONBytes)
 		s.setRoundFallbackSource(sys, untrimmedHistory)
 		req = s.attachFullHistoryInputEstimate(req, historyTurns, len(sys))
-		budgetedReq, budgeted, budgetErr := budgetModelDispatchRequestWithBudget(profile, req)
+		budgetedReq, budgeted, budgetErr := s.budgetModelDispatchRequestForSession(profile, req)
 		if budgetErr != nil {
 			return true, budgetErr
 		}
 		req, budget = budgetedReq, budgeted
 		req, fullHistory, deltaTurns = s.applyResponsesContinuationAnchorPlanning(ctx, profile, req, historyTurns, true, heldDropped)
-		budgetedReq, budgeted, budgetErr = budgetModelDispatchRequestWithBudget(profile, req)
+		budgetedReq, budgeted, budgetErr = s.budgetModelDispatchRequestForSession(profile, req)
 		if budgetErr != nil {
 			return true, budgetErr
 		}
@@ -738,6 +738,23 @@ func (s *Session) applyResponsesContinuationShadowEstimate(profile *provider.Pro
 	shadowReq.PreviousResponseID = ""
 	shadowReq.ConversationID = ""
 	shadowReq.Continuation = nil
+	// The shadow bills the whole conversation, so it has to bill the tool list
+	// the serving adapter will send with it. This runs before the delta is built,
+	// and the estimate it produces is carried past that build: pricing the
+	// advertised catalog here would leave the full-history figure describing
+	// schemas the builder has already replaced, and admission takes the larger of
+	// the two.
+	//
+	// Only a built-in route has a builder that rewrites schemas. An override
+	// marshals the definition it was handed, so pricing it through a protocol's
+	// deriver would bill an emitted list the override never sends, and an input
+	// cap between that figure and the override's own estimate would reject a
+	// request the override could dispatch. The inflated reading would also
+	// outlive the case that produced it: it is recorded on a request that falls
+	// back to full history when the override has no continuation planner.
+	if !s.servesAnOverride(profile) {
+		shadowReq = llm.PriceToolSchemas(shadowReq, resolvedTargetOf(profile))
+	}
 	tokens, ok := s.estimateResponsesContinuationShadow(profile, shadowReq)
 	if !ok {
 		req.HistoryMode = llm.HistoryModeFullHistory
@@ -748,6 +765,16 @@ func (s *Session) applyResponsesContinuationShadowEstimate(profile *provider.Pro
 		req.FullHistoryInputTokensEstimate = tokens
 	}
 	return responsesContinuationWithInputEstimate(resolvedTargetOf(profile), req)
+}
+
+// servesAnOverride reports whether an adapter override, rather than a built-in
+// protocol, serves this profile's requests. Such a route has no builder to price
+// through, and its own definition is what it sends.
+func (s *Session) servesAnOverride(profile *provider.Profile) bool {
+	if s == nil || s.client == nil || profile == nil {
+		return false
+	}
+	return s.client.ServesOverride(profile.ID())
 }
 
 func (s *Session) estimateResponsesContinuationShadow(profile *provider.Profile, req llm.Request) (int, bool) {
@@ -1630,7 +1657,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		s.disableResponsesContinuationForRequest(req, true)
 		retryReq := responsesContinuationFullHistoryFallbackRequest(profile.Resolved(), req, fullHistory)
 		var budget llm.TokenBudget
-		retryReq, budget, budgetErr := budgetModelDispatchRequestWithBudget(profile, retryReq)
+		retryReq, budget, budgetErr := s.budgetModelDispatchRequestForSession(profile, retryReq)
 		if budgetErr == nil {
 			s.warnOutputReduction(profile, budget)
 		}
@@ -1699,20 +1726,10 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 					fmt.Sprintf("model_fallbacks entry %q could not be resolved; skipping it", fbModel), resolveErr))
 				continue
 			}
-			fbReq, ok := responsesContinuationModelFallbackRequest(fbProfile.Resolved(), req, fallbackHistory)
+			fbReq, ok := s.responsesContinuationFallbackRequest(fbProfile, req, fallbackHistory)
 			if !ok {
 				break
 			}
-			fbReq.Messages = projectThinkingForTarget(fbProfile, fbReq.Messages)
-			// A fallback reuses the primary's built messages, so it applies its
-			// own media decision here; the budget below then prices exactly what
-			// this target receives (#4217).
-			fbReq.Messages = projectToolResultMediaFor(fbProfile, fbReq.Messages)
-			// The continuation builder priced the unprojected messages; the
-			// projections above removed thinking and media this target does not
-			// replay or receive, so reprice both estimates before admission
-			// (#4563, #4217).
-			fbReq = responsesContinuationFullHistoryWithInputEstimate(fbProfile.Resolved(), fbReq)
 			// The same rule as the primary path, against the FALLBACK model's
 			// own facts: fbProfile is resolved from the fallback reference, so
 			// its ladder and stated default are the fallback model's, not the
@@ -1722,7 +1739,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			fbReq.ProviderOptions = fbProfile.ProviderOptions()
 			s.applyModelRequestMetadata(&fbReq)
 			var budget llm.TokenBudget
-			fbReq, budget, budgetErr := budgetModelDispatchRequestWithBudget(fbProfile, fbReq)
+			fbReq, budget, budgetErr := s.budgetModelDispatchRequestForSession(fbProfile, fbReq)
 			if budgetErr == nil {
 				s.warnOutputReduction(fbProfile, budget)
 			}
@@ -1869,9 +1886,59 @@ func responsesContinuationModelFallbackRequest(res registry.Resolved, req llm.Re
 	return fallbackReq, true
 }
 
+// responsesContinuationFallbackRequest builds the request one fallback model
+// receives, priced for that model's own builder.
+//
+// The order is the point. A fallback reuses the primary's built messages, so it
+// applies its own thinking and media projections here, and both of its history
+// estimates are computed from the request's tool count. The request arrived
+// carrying the PRIMARY's count, which describes the schemas the primary's
+// builder emits; a fallback that leaves the catalog alone — a same-surface,
+// non-strict Chat route is the case that found this — emits a different list, so
+// pricing after the estimates leaves both of them describing a catalog this
+// route never sends. Admission takes the maximum of the local estimate, the
+// delta estimate and the full-history one, so an input cap between the primary's
+// price and this route's refuses a fallback that fits.
+//
+// An override route is left alone: it marshals the definitions it is handed, so
+// its own count is its wire count.
+func (s *Session) responsesContinuationFallbackRequest(profile *provider.Profile, req llm.Request, fullHistory []llm.Message) (llm.Request, bool) {
+	res := profile.Resolved()
+	fbReq, ok := responsesContinuationModelFallbackRequest(res, req, fullHistory)
+	if !ok {
+		return llm.Request{}, false
+	}
+	fbReq.Messages = projectThinkingForTarget(profile, fbReq.Messages)
+	fbReq.Messages = projectToolResultMediaFor(profile, fbReq.Messages)
+	if !s.servesAnOverride(profile) {
+		fbReq = llm.PriceToolSchemas(fbReq, res)
+	}
+	// The continuation builder priced the unprojected messages; the projections
+	// above removed thinking and media this target does not replay or receive, so
+	// reprice both estimates before admission (#4563, #4217).
+	return responsesContinuationFullHistoryWithInputEstimate(res, fbReq), true
+}
+
 func budgetModelDispatchRequest(profile *provider.Profile, req llm.Request) (llm.Request, error) {
 	budgeted, _, err := budgetModelDispatchRequestWithBudget(profile, req)
 	return budgeted, err
+}
+
+// budgetModelDispatchRequestForSession shapes and admits req for a session's
+// dispatch, pricing the tool list the serving route will actually emit.
+//
+// The session budgets the request to decide its output allocation, and that
+// allocation drives the warning a user sees. Budgeting the advertised catalog
+// answers with fewer input tokens than the dispatch carries whenever the
+// route's builder projects a schema, so the admitted output comes out larger
+// here than the client later admits, and the warning either never fires or
+// reports an allocation the wire never had. A route an override serves is left
+// alone: the override marshals the definition it was handed.
+func (s *Session) budgetModelDispatchRequestForSession(profile *provider.Profile, req llm.Request) (llm.Request, llm.TokenBudget, error) {
+	if profile != nil && !s.servesAnOverride(profile) {
+		req = llm.PriceToolSchemas(req, profile.Resolved())
+	}
+	return budgetModelDispatchRequestWithBudget(profile, req)
 }
 
 func budgetModelDispatchRequestWithBudget(profile *provider.Profile, req llm.Request) (llm.Request, llm.TokenBudget, error) {
