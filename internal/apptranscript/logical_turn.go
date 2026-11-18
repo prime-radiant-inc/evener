@@ -323,6 +323,11 @@ type turnExecution struct {
 	merged    []appwire.ThreadItem
 	mergedRun []int
 	mergedGrp []int
+	// mergedEntry is, per merged item, the awaiting entry whose recorded parts
+	// announced its call. A completion resolves against THESE, never against a
+	// bare call-id match: a retry that reuses an id is a different
+	// announcement, and the index settles per announcing entry (#1166 review).
+	mergedEntry []int
 	// visible are the groups that still have items after settlement, in order.
 	// Completeness counts these, not the raw runs: settlement can empty a run.
 	visible []int
@@ -336,7 +341,7 @@ func (ex *turnExecution) settle() {
 		return
 	}
 	ex.settled = true
-	ex.merged, ex.mergedRun, ex.mergedGrp = mergeExecutionItems(ex.items, ex.itemEntries, ex.itemAnnounce, ex.runOfItem, ex.groupOfItem)
+	ex.merged, ex.mergedRun, ex.mergedGrp, ex.mergedEntry = mergeExecutionItems(ex.items, ex.itemEntries, ex.itemAnnounce, ex.runOfItem, ex.groupOfItem)
 	ex.interruptAwaitedCalls()
 	seen := make(map[int]bool, len(ex.runs))
 	for _, group := range ex.mergedGrp {
@@ -370,13 +375,28 @@ func (ex *turnExecution) interruptAwaitedCalls() {
 	// EARLIER batch that a later assistant entry superseded is not part of
 	// what that completion ended, so it keeps its own status.
 	awaiting := map[string]bool{}
-	byCall := map[string][]int{}
+	// byCall is keyed by the announcing entry AND the call id, so a retry that
+	// reuses an id is a different call: interrupting the first attempt's call
+	// must not touch the second attempt's. A bare call-id match did exactly
+	// that, marking the running retry interrupted (#1166 review).
+	type awaitKey struct {
+		entry int
+		call  string
+	}
+	byCall := map[awaitKey][]int{}
 	for at := range ex.merged {
 		item := &ex.merged[at]
 		if MergesByCallID(*item) && item.CallID != "" {
-			byCall[item.CallID] = append(byCall[item.CallID], at)
+			entry := 0
+			if at < len(ex.mergedEntry) {
+				entry = ex.mergedEntry[at]
+			}
+			byCall[awaitKey{entry: entry, call: item.CallID}] = append(byCall[awaitKey{entry: entry, call: item.CallID}], at)
 		}
 	}
+	// awaiting holds the announcing entry and its recorded part ids, so a
+	// completion resolves only the announcements that batch made.
+	var awaitingEntry int
 	// Walk the entries in file order so each completion sees the batch that
 	// was awaiting AT THAT POINT. A reopen clears the batch: the execution is
 	// running again, so its next completion decides on the next attempt.
@@ -399,9 +419,10 @@ func (ex *turnExecution) interruptAwaitedCalls() {
 			switch controls[controlAt].turn.Kind {
 			case schema.TurnReopen:
 				awaiting = map[string]bool{}
+				awaitingEntry = 0
 			case schema.TurnCompletion:
 				for call := range awaiting {
-					for _, at := range byCall[call] {
+					for _, at := range byCall[awaitKey{entry: awaitingEntry, call: call}] {
 						if status := ex.merged[at].Status; status == "" || status == appwire.TurnStatusInProgress {
 							ex.merged[at].Status = appwire.TurnStatusInterrupted
 						}
@@ -414,6 +435,7 @@ func (ex *turnExecution) interruptAwaitedCalls() {
 		entry := ex.entriesByIndex[entries[entryAt]]
 		if hasRecordedToolCall(&entry) {
 			awaiting = map[string]bool{}
+			awaitingEntry = entries[entryAt]
 			for _, part := range entry.Message.Content {
 				if part.Kind == llm.ContentToolCall && part.ToolCall != nil {
 					awaiting[part.ToolCall.ID] = true
@@ -499,6 +521,19 @@ func (ex *turnExecution) sortedEntryIndexes() []int {
 	}
 	sort.Ints(out)
 	return out
+}
+
+// startsAnExecution reports whether this stamped turn began an EXECUTION — its
+// first recorded span kind says so. Only an execution defaults to in progress
+// when nothing has completed it; a delivery or prelude span is complete as
+// recorded.
+func (ex *turnExecution) startsAnExecution() bool {
+	for _, entry := range ex.entries {
+		if entry.TurnKind != "" {
+			return entry.TurnKind == schema.TurnSpanExecution
+		}
+	}
+	return false
 }
 
 // groupedAppTurnProjection flushes the accumulator into AppWire turns under
@@ -613,6 +648,15 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 			// Usage and terminal status are the execution's, folded once from
 			// every run's entries AND its completion and reopen records in file
 			// order, so neither fragment understates or misstates the turn.
+			//
+			// A stamped EXECUTION starts in progress: nothing has said it
+			// ended. The index opens one that way, so a process that exits
+			// before writing its completion reads in progress from both
+			// readers instead of completed from one of them. A non-execution
+			// span (a delivery) keeps the completed default (#1166 review).
+			if ex.startsAnExecution() {
+				turn.Status = appwire.TurnStatusInProgress
+			}
 			StampGroupedTurn(&turn, ex.entries)
 			stampExecutionControls(&turn, ex.controls)
 			// The diagnostic belongs to the attempt that ended the execution.
@@ -673,9 +717,12 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 	}
 	if prelude != nil && !preludeEmitted {
 		// No visible run claimed the prelude id: the header items are the turn.
-		// When stamped prelude items exist they follow a delivery, so the header
-		// is the FIRST visible fragment of that turn and says so.
-		if _, ok := execs[appwire.SystemPreludeTurnID]; ok {
+		// When stamped prelude items SURVIVE SETTLEMENT they follow a delivery,
+		// so the header is the FIRST visible fragment of that turn and says so.
+		// Asking whether the group exists is not enough — a stamped SYSTEM
+		// entry that projects nothing would advertise a continuation behind a
+		// prompt that is the whole turn (#1166 review).
+		if ex := execs[appwire.SystemPreludeTurnID]; ex != nil && len(ex.visible) > 0 {
 			prelude.ItemsView = appwire.TurnItemsViewFragment
 			prelude.HasLaterItems = true
 		}
@@ -770,6 +817,12 @@ func stampExecutionControls(turn *appwire.Turn, controls []indexedTurn) {
 				turn.Status = appwire.TurnStatusFailed
 			case schema.TurnInterrupted:
 				turn.Status = appwire.TurnStatusInterrupted
+				// Interrupted is not failed: the turn stopped, it did not
+				// report a diagnostic. The recorded TURN_FAILURE entry stays
+				// in the transcript as history, but a turn-level error beside
+				// an interrupted status makes the web transcript render a
+				// failure end cap the index does not (#1166 review).
+				turn.Error = nil
 			case schema.TurnCompleted:
 				turn.Status = appwire.TurnStatusCompleted
 				turn.Error = nil
@@ -778,10 +831,12 @@ func stampExecutionControls(turn *appwire.Turn, controls []indexedTurn) {
 				ms := info.CompletedAt.UnixMilli()
 				turn.CompletedAt = &ms
 			}
-			if info.DurationMS != 0 {
-				duration := info.DurationMS
-				turn.DurationMS = &duration
-			}
+			// A completion ALWAYS states its duration, including zero: a
+			// recovered interruption records 0, and omitting it here left the
+			// full read without a field the index reports. Only an execution
+			// with no completion record has no duration (#1166 review).
+			duration := info.DurationMS
+			turn.DurationMS = &duration
 		}
 	}
 }
@@ -896,10 +951,11 @@ func mergeGroupedItems(items []appwire.ThreadItem, itemEntries []int, itemAnnoun
 //     recorded, wherever in the execution that announcement sits, so a
 //     delivery that splits the turn cannot orphan the result;
 //   - a result whose call the execution never announced projects on its own.
-func mergeExecutionItems(items []appwire.ThreadItem, itemEntries []int, itemAnnounce []bool, runOfItem, groupOfItem []int) ([]appwire.ThreadItem, []int, []int) {
+func mergeExecutionItems(items []appwire.ThreadItem, itemEntries []int, itemAnnounce []bool, runOfItem, groupOfItem []int) ([]appwire.ThreadItem, []int, []int, []int) {
 	merged := make([]appwire.ThreadItem, 0, len(items))
 	mergedRun := make([]int, 0, len(items))
 	mergedGrp := make([]int, 0, len(items))
+	mergedEntry := make([]int, 0, len(items))
 	// callIndex keys an announcement by its awaiting entry and call id, which
 	// is how the index decides what a result settles. The FIRST announcement
 	// for a key owns it: a second part recording the same id is a distinct
@@ -930,6 +986,7 @@ func mergeExecutionItems(items []appwire.ThreadItem, itemEntries []int, itemAnno
 				merged = append(merged, item)
 				mergedRun = append(mergedRun, run)
 				mergedGrp = append(mergedGrp, group)
+				mergedEntry = append(mergedEntry, entry)
 				continue
 			}
 			key := callKey{entry: entry, call: item.CallID}
@@ -949,8 +1006,9 @@ func mergeExecutionItems(items []appwire.ThreadItem, itemEntries []int, itemAnno
 		merged = append(merged, item)
 		mergedRun = append(mergedRun, run)
 		mergedGrp = append(mergedGrp, group)
+		mergedEntry = append(mergedEntry, entry)
 	}
-	return merged, mergedRun, mergedGrp
+	return merged, mergedRun, mergedGrp, mergedEntry
 }
 
 // MergeThreadItems merges a later projected item into an earlier one of

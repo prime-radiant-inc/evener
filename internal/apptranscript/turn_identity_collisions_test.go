@@ -688,6 +688,7 @@ func TestLegacyGroupSharingAStampedIDKeepsItsOwnItems(t *testing.T) {
 	// the turns in order, and the item identity each source entry produced,
 	// counted rather than compared as prose. The userMessage items carry the
 	// two questions and the hook completion is the systemMessage between them.
+	hooks := 0
 	var shapes []string
 	for _, turn := range turns {
 		shapes = append(shapes, turn.ID)
@@ -697,18 +698,19 @@ func TestLegacyGroupSharingAStampedIDKeepsItsOwnItems(t *testing.T) {
 	if len(shapes) < 3 {
 		t.Fatalf("full read turn ids = %v, want the legacy group, the hook and the stamped execution", shapes)
 	}
-	var legacyUser, stampedUser, hooks int
-	for at, turn := range turns {
+	// Each source entry's item appears exactly ONCE, identified by the item ID
+	// its own entry allocated. The regression emitted the stamped question
+	// twice and dropped the legacy one, so the two failure modes are: fewer
+	// than two distinct user item IDs (a source entry's item lost) or a
+	// repeated ID (one entry's item emitted twice). Both are checked without
+	// reading the text and without deriving the expectation from the output.
+	userIDs := map[string]int{}
+	for _, turn := range turns {
 		for _, item := range turn.Items {
 			switch item.Type {
 			case "userMessage":
-				// The legacy group is the turn that precedes the hook, so it is
-				// the first turn carrying a userMessage; the stamped execution
-				// is the later one.
-				if at == 0 {
-					legacyUser++
-				} else {
-					stampedUser++
+				if item.ID != "" {
+					userIDs[item.ID]++
 				}
 			case "systemMessage":
 				if item.EventKind == appwire.ThreadItemEventKindHookCompleted {
@@ -717,14 +719,13 @@ func TestLegacyGroupSharingAStampedIDKeepsItsOwnItems(t *testing.T) {
 			}
 		}
 	}
-	// Each source entry's item appears exactly ONCE. The regression emitted the
-	// stamped question twice and dropped the legacy one, which this count sees
-	// without reading the text.
-	if legacyUser != 1 {
-		t.Errorf("legacy userMessage items = %d, want 1: the legacy group is not a run of the stamped execution", legacyUser)
+	if len(userIDs) != 2 {
+		t.Errorf("distinct user item ids = %d (%v), want 2: one per source entry", len(userIDs), userIDs)
 	}
-	if stampedUser != 1 {
-		t.Errorf("stamped userMessage items = %d, want 1: the stamped run is emitted once", stampedUser)
+	for id, count := range userIDs {
+		if count != 1 {
+			t.Errorf("user item %q appears %d times, want once", id, count)
+		}
 	}
 	if hooks != 1 {
 		t.Errorf("hook completion items = %d, want 1", hooks)
@@ -1170,8 +1171,10 @@ func TestRetryFailureKeepsItsOwnDiagnostic(t *testing.T) {
 			t.Fatalf("record %s: %v", turn.Kind, err)
 		}
 	}
-	failure := func(message string) schema.Turn {
-		return schema.Turn{Kind: schema.TurnFailure, Error: &schema.TurnFailureInfo{Message: message}}
+	// The two attempts carry distinct STRUCTURED causes: the assertion is about
+	// which attempt's diagnostic survives, not about its prose.
+	failure := func(causeKind string) schema.Turn {
+		return schema.Turn{Kind: schema.TurnFailure, Error: &schema.TurnFailureInfo{Cause: &schema.TurnFailureCause{Kind: causeKind}}}
 	}
 	open := schema.Turn{Kind: schema.TurnReopen}
 	open.Format = schema.TurnFormatIdentity
@@ -1180,13 +1183,13 @@ func TestRetryFailureKeepsItsOwnDiagnostic(t *testing.T) {
 
 	w.BeginExecution("t_retry", false)
 	record(schema.NewTurn(schema.TurnUserInput, llm.User("go")), transcript.PlaceSession)
-	record(failure("first attempt broke"), transcript.PlaceSession)
+	record(failure("first-attempt"), transcript.PlaceSession)
 	record(schema.Turn{Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnFailed}}, transcript.PlaceCompletion)
 	record(open, transcript.PlaceVerbatim)
 	// Recovery reclaims the turn and runs it again under the SAME turn id.
 	w.BeginExecution("t_retry", false)
 	record(schema.NewTurn(schema.TurnUserInput, llm.User("again")), transcript.PlaceSession)
-	record(failure("retry broke"), transcript.PlaceSession)
+	record(failure("retry-attempt"), transcript.PlaceSession)
 	record(schema.Turn{Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnFailed}}, transcript.PlaceCompletion)
 	if err := w.Close(); err != nil {
 		t.Fatal(err)
@@ -1217,8 +1220,180 @@ func TestRetryFailureKeepsItsOwnDiagnostic(t *testing.T) {
 	if last.Error == nil {
 		t.Fatalf("execution error = nil, want the retry's diagnostic beside a failed status")
 	}
-	if last.Error.Message != "retry broke" {
-		t.Errorf("execution error message = %q, want %q: the diagnostic belongs to the attempt that ended it",
-			last.Error.Message, "retry broke")
+	if last.Error.Cause == nil {
+		t.Fatalf("execution error cause = nil, want the retry's structured cause")
+	}
+	if last.Error.Cause.Kind != "retry-attempt" {
+		t.Errorf("execution error cause = %q, want %q: the diagnostic belongs to the attempt that ended it",
+			last.Error.Cause.Kind, "retry-attempt")
+	}
+}
+
+// TestRetryReusingACallIDStaysRunning covers an interrupted first attempt whose
+// retry reuses the provider call id and is STILL RUNNING. The first attempt's
+// completion ended the first call; the retry announced a new one. Resolving a
+// completion by call id alone marked the running retry interrupted too
+// (#1166 review).
+func TestRetryReusingACallIDStaysRunning(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "reuse_after_reopen"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := func(turn schema.Turn, place transcript.Placement) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: place}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	tc := llm.ToolCallData{ID: "call_reused", Name: "read_file", Arguments: json.RawMessage(`{"path":"a"}`)}
+	assistantCall := schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &tc}}}}
+	reopen := schema.Turn{Kind: schema.TurnReopen}
+	reopen.Format = schema.TurnFormatIdentity
+	reopen.TurnID = "t_retry"
+	reopen.TurnKind = schema.TurnSpanExecution
+
+	w.BeginExecution("t_retry", false)
+	record(schema.NewTurn(schema.TurnUserInput, llm.User("go")), transcript.PlaceSession)
+	record(assistantCall, transcript.PlaceSession)
+	record(schema.Turn{Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnInterrupted}}, transcript.PlaceCompletion)
+	record(reopen, transcript.PlaceVerbatim)
+	// The retry announces the SAME provider call id and has not finished: no
+	// result and no completion for it.
+	w.BeginExecution("t_retry", false)
+	record(schema.NewTurn(schema.TurnUserInput, llm.User("again")), transcript.PlaceSession)
+	record(assistantCall, transcript.PlaceSession)
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	var calls []appwire.ThreadItem
+	for _, turn := range turns {
+		if turn.ID != "t_retry" {
+			continue
+		}
+		for _, item := range turn.Items {
+			if item.CallID == "call_reused" && item.Type == "commandExecution" {
+				calls = append(calls, item)
+			}
+		}
+	}
+	if len(calls) != 2 {
+		t.Fatalf("execution call items = %d (%+v), want the first attempt's and the retry's", len(calls), calls)
+	}
+	// The first attempt's call ended interrupted; the retry's is still running.
+	if calls[0].Status != appwire.TurnStatusInterrupted {
+		t.Errorf("first call status = %q, want %q", calls[0].Status, appwire.TurnStatusInterrupted)
+	}
+	if calls[1].Status == appwire.TurnStatusInterrupted {
+		t.Errorf("retry call status = %q, want it left running: the first completion did not end it", calls[1].Status)
+	}
+}
+
+// TestOpenExecutionReadsInProgress covers an execution whose process exited
+// before writing a completion, with recovery leaving it open because pending
+// work still owns it. Nothing has said the execution ended, so the full read
+// must report it in progress — the index opens a stamped execution that way.
+// Defaulting to completed made the same transcript read differently from each
+// reader (#1166 review).
+func TestOpenExecutionReadsInProgress(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "exited_open"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := func(turn schema.Turn, place transcript.Placement) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: place}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	w.BeginExecution("t_open", false)
+	record(schema.NewTurn(schema.TurnUserInput, llm.User("go")), transcript.PlaceSession)
+	record(schema.NewTurn(schema.TurnAssistant, llm.Assistant("working")), transcript.PlaceSession)
+	// No completion: the process died here.
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	var open *appwire.Turn
+	for i := range turns {
+		if turns[i].ID == "t_open" {
+			open = &turns[i]
+		}
+	}
+	if open == nil {
+		t.Fatalf("full read turns = %+v, want the open execution", shapesFromTurns(turns))
+	}
+	if open.Status != appwire.TurnStatusInProgress {
+		t.Errorf("open execution status = %q, want %q: nothing recorded its end",
+			open.Status, appwire.TurnStatusInProgress)
+	}
+}
+
+// TestInterruptedExecutionCarriesNoTurnError covers a process that recorded
+// TURN_FAILURE and then had recovery close the execution as interrupted. The
+// failure stays in the transcript as history, but the TURN's status is
+// interrupted and it carries no turn-level error: the web transcript renders a
+// failure end cap from that error, which the index does not report (#1166
+// review).
+func TestInterruptedExecutionCarriesNoTurnError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.transcript.jsonl")
+	w, err := transcript.NewWriter(path, transcript.Header{SessionID: "failed_then_interrupted"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := func(turn schema.Turn, place transcript.Placement) {
+		t.Helper()
+		if _, err := w.Record(turn, transcript.RecordOptions{Door: transcript.DoorBuffered, Place: place}); err != nil {
+			t.Fatalf("record %s: %v", turn.Kind, err)
+		}
+	}
+	w.BeginExecution("t_interrupted", false)
+	record(schema.NewTurn(schema.TurnUserInput, llm.User("go")), transcript.PlaceSession)
+	record(schema.Turn{Kind: schema.TurnFailure, Error: &schema.TurnFailureInfo{Message: "crashed", Cause: &schema.TurnFailureCause{Kind: "crash"}}}, transcript.PlaceSession)
+	record(schema.Turn{Kind: schema.TurnCompletion, Completion: &schema.TurnCompletionInfo{Status: schema.TurnInterrupted}}, transcript.PlaceCompletion)
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	reg := apptranscript.NewToolCallRegistry()
+	turns, err := apptranscript.ItemTurnsFromFile(path, transcript.DefaultMaxLineBytes, func(turn schema.Turn, turnID string, entryIndex int) []appwire.ThreadItem {
+		items, _ := apptranscript.ProjectEntryParts(turnID, entryIndex, turn, reg, nil, apptranscript.ToolResultOutputImages)
+		return items
+	})
+	if err != nil {
+		t.Fatalf("ItemTurnsFromFile: %v", err)
+	}
+	var turn *appwire.Turn
+	for i := range turns {
+		if turns[i].ID == "t_interrupted" {
+			turn = &turns[i]
+		}
+	}
+	if turn == nil {
+		t.Fatalf("full read turns = %+v, want the interrupted execution", shapesFromTurns(turns))
+	}
+	if turn.Status != appwire.TurnStatusInterrupted {
+		t.Errorf("execution status = %q, want %q", turn.Status, appwire.TurnStatusInterrupted)
+	}
+	if turn.Error != nil {
+		t.Errorf("execution error = %+v, want none beside an interrupted status: the failure is history, not the turn's diagnostic", turn.Error)
 	}
 }
