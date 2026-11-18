@@ -177,6 +177,17 @@ it("reports the operation store's quarantine signal when the hub carries one", a
 	);
 	const shown = notice.map(textOf).join("\n");
 	expect(shown).toContain("/fixture/state/hub-ops.json.quarantined-20260101T000000.000000000Z");
+	// An operator copies these into a terminal, so the paths are the screen's
+	// ordinary detail rows: selectable Text, not a wall of prose inside one
+	// non-selectable line.
+	for (const path of [
+		"/fixture/state/hub-ops.json.quarantined-20260101T000000.000000000Z",
+		"/fixture/state/hub-ops.json.custody-20260101T000000.000000000Z.json",
+		"/fixture/state/hub-ops.json",
+	]) {
+		const text = tree.root.find((node) => String(node.type) === "Text" && textOf(node) === path);
+		expect(text.props.selectable).toBe(true);
+	}
 	act(() => tree.unmount());
 });
 

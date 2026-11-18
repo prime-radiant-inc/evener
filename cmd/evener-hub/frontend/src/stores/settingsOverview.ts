@@ -27,30 +27,48 @@ export const settingsOverviewStore = createHubOverviewStore({
   request: connectedClientPort("settingsOverview").request,
 });
 
-// missedReconnect records that a replaced or recovered connection may serve a
-// hub this tab has not read - a restart that quarantined the operation store
-// answers the next read with a signal the cached overview cannot carry. It is
-// module state, not a section's, because the reader is often on another
-// Settings section when the reconnect lands, and a section-scoped listener
-// would miss exactly that read. Nothing is requested here: a subscription that
-// read on every reconnect would fire on connections no section has asked
-// about. loadSettingsOverview is what spends it.
-let missedReconnect = false;
-onConnectionReplacedOrRecovered(() => {
-  missedReconnect = true;
-});
+// stale records that the cached overview may describe a hub this tab has left -
+// a restart that quarantined the operation store answers the next read with a
+// signal the cached overview cannot carry. It is module state, not a section's,
+// because the reader is often on another Settings section when the reconnect
+// lands, and a section-scoped listener would miss exactly that read. Nothing is
+// requested here: a subscription that read on every reconnect would fire on
+// connections no section has asked about. loadSettingsOverview is what spends
+// it.
+//
+// "Have data" is not "are current", so stale is cleared only by a refresh whose
+// request SUCCEEDED. A refresh that fails (an RPC timeout on a socket that
+// stayed ready) leaves the last successful overview on screen - refresh() keeps
+// it - and leaves the cache stale, so the next open or ready transition reads
+// again instead of serving a pre-restart response forever.
+let stale = false;
 
-/** loadSettingsOverview reads the overview, or re-reads it when a reconnect has
- * been missed since the last read. fetch() is fetch-once, so the re-read is the
- * only thing that can surface a change made while the tab was away. refresh()
- * leaves the last successful overview in place if the request fails. */
+/** markSettingsOverviewStale records that the cached overview may describe a hub
+ * this tab has left; the next loadSettingsOverview() re-reads it. */
+export function markSettingsOverviewStale(): void {
+  stale = true;
+}
+
+onConnectionReplacedOrRecovered(markSettingsOverviewStale);
+
+/** loadSettingsOverview reads the overview, or re-reads it when the cache is
+ * stale. fetch() is fetch-once, so the re-read is the only thing that can
+ * surface a change made while the tab was away. refresh() leaves the last
+ * successful overview in place if the request fails. */
 export function loadSettingsOverview(): void {
-  if (!missedReconnect) {
+  if (!stale) {
     void settingsOverviewStore.getState().fetch();
     return;
   }
-  missedReconnect = false;
-  void settingsOverviewStore.getState().refresh();
+  void reloadSettingsOverview();
+}
+
+// reloadSettingsOverview re-reads a stale cache and clears the staleness only if
+// the request answered: refresh() resolves whether or not its request succeeded,
+// and a failed refresh must not pass for a current cache.
+async function reloadSettingsOverview(): Promise<void> {
+  await settingsOverviewStore.getState().refresh();
+  if (settingsOverviewStore.getState().error === null) stale = false;
 }
 
 export function useSettingsOverviewStore(): SettingsOverviewStoreState;
@@ -72,6 +90,6 @@ export function useSettingsOverviewStore<T>(
 // this (mirrors threads.ts's resetThreadsStoreForTests / tree.ts's
 // resetTreeStoreForTests precedent).
 export function resetSettingsOverviewStoreForTests(): void {
-  missedReconnect = false;
+  stale = false;
   settingsOverviewStore.reset();
 }

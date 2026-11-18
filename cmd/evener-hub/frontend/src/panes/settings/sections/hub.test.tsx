@@ -237,3 +237,104 @@ test("shows no quarantine notice for a hub whose store carries no signal", async
   await waitFor(() => expect(fake.calls.length).toBeGreaterThan(0));
   expect(statusReasons()).not.toContain("operation-store-quarantined");
 });
+
+test("names no set-aside file for a quarantine whose aside is already gone", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("evener/settings/overview", () => ({
+    hub: {
+      ...SAMPLE_RESPONSE.hub,
+      daemonIdleTimeoutMillis: 3600000,
+      operationStoreQuarantine: {
+        quarantinedFile: "/fixture/state/hub-ops.json",
+        custodyFile: "/fixture/state/hub-ops.json.custody-20260101T000000.000000000Z.json",
+        quarantineEpoch: 3,
+      },
+    },
+  }));
+  fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
+
+  render(<HubSection />);
+
+  await waitFor(() => expect(statusReasons()).toContain("operation-store-quarantined"));
+  // A row for a path the hub does not have would send an operator to a file
+  // that is not there; the custody file is the only one left to name.
+  expect(settingsFieldIds()).not.toContain("aside-file");
+  expect(settingsFieldValue("custody-file").textContent).toBe(
+    "/fixture/state/hub-ops.json.custody-20260101T000000.000000000Z.json",
+  );
+});
+
+// The quarantine fixture every reconnect test below answers with: the store
+// path the replacement occupies, the aside file holding the corrupt bytes, the
+// custody file, and the epoch.
+const QUARANTINED: SettingsOverviewResponse = {
+  hub: {
+    ...SAMPLE_RESPONSE.hub,
+    daemonIdleTimeoutMillis: 3600000,
+    operationStoreQuarantine: {
+      quarantinedFile: "/fixture/state/hub-ops.json",
+      asideFile: "/fixture/state/hub-ops.json.quarantined-20260101T000000.000000000Z",
+      custodyFile: "/fixture/state/hub-ops.json.custody-20260101T000000.000000000Z.json",
+      quarantineEpoch: 3,
+    },
+  },
+};
+
+test("reveals a quarantine the hub performed during a reconnect this section opened into", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("evener/settings/overview", () => SAMPLE_RESPONSE);
+  fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
+
+  const first = render(<HubSection />);
+  await waitFor(() => expect(fake.calls.length).toBeGreaterThan(0));
+  first.unmount();
+
+  // The hub restarts and quarantines the store. This tab's socket notices the
+  // gap but is still reconnecting when the reader opens Hub settings, so the
+  // section mounts INTO the flap and its mount read reuses the healthy cache.
+  fake.emitStateChange("reconnecting");
+  fake.on("evener/settings/overview", () => QUARANTINED);
+  render(<HubSection />);
+  expect(statusReasons()).not.toContain("operation-store-quarantined");
+
+  // The same client recovers. Nothing else changes - no new client, no reopen -
+  // and the notice must appear as soon as the re-read answers, because an
+  // operator who opened the pane during the flap is exactly the one who was not
+  // looking when it happened.
+  await act(async () => {
+    fake.emitStateChange("ready");
+  });
+
+  await waitFor(() => expect(statusReasons()).toContain("operation-store-quarantined"));
+});
+
+test("re-reads on the next open after a reconnect whose refresh failed", async () => {
+  const fake = connectReadyFakeClient();
+  fake.on("evener/settings/overview", () => SAMPLE_RESPONSE);
+  fake.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
+
+  const first = render(<HubSection />);
+  await waitFor(() => expect(fake.calls.length).toBeGreaterThan(0));
+  first.unmount();
+
+  // A replacement connection whose first overview read times out, with the
+  // socket staying ready: the pane keeps the pre-restart overview on screen,
+  // and that failed read must not count as having caught up.
+  const fake2 = connectReadyFakeClient((replacement) => {
+    replacement.on("evener/settings/overview", () => {
+      throw new Error("overview request timed out");
+    });
+    replacement.on("evener/daemon/list", () => ({ defaultTimeoutMillis: 3600000, daemons: [] }));
+  });
+  const stale = render(<HubSection />);
+  await waitFor(() => expect(fake2.calls.length).toBeGreaterThan(0));
+  expect(statusReasons()).not.toContain("operation-store-quarantined");
+  stale.unmount();
+
+  // The RPC answers again. Reopening must retry rather than trust a cache the
+  // failed read never refreshed.
+  fake2.on("evener/settings/overview", () => QUARANTINED);
+  render(<HubSection />);
+
+  await waitFor(() => expect(statusReasons()).toContain("operation-store-quarantined"));
+});
