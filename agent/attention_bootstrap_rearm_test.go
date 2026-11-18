@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"maps"
+	"slices"
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/delegatestore"
@@ -57,16 +59,11 @@ func TestDeriveEndsItsOwnHoldWhenTheWakeIsAlreadyNoted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("automatic attention: %v", err)
 	}
-	for _, id := range automatic {
-		if id == reopenedID {
-			return
-		}
+	if slices.Contains(automatic, reopenedID) {
+		return
 	}
 	sess.attentionMu.Lock()
-	holds := map[string]uint64{}
-	for id, generation := range sess.attentionAutomaticDriveHolds {
-		holds[id] = generation
-	}
+	holds := maps.Clone(sess.attentionAutomaticDriveHolds)
 	sess.attentionMu.Unlock()
 	t.Fatalf("the re-armed report %q is still withheld after bootstrap noted its wake: the ancestor keeps suppressing the report the restart re-armed (hold=%d installed, holds now %v, automatic=%v)", reopenedID, heldGeneration, holds, automatic)
 }
