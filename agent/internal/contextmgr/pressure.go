@@ -235,6 +235,34 @@ func (cm *Manager) CheckpointThresholdFor(prof *provider.Profile) float64 {
 	return cm.thresholdsFor(prof).checkpoint
 }
 
+// CompactionThresholdTokens is the auto-compaction trigger for prof in input
+// tokens, computed exactly as EstimateStatusForHistory publishes it: zero when
+// the profile declares no threshold of its own, because the default layer
+// thresholds are not a per-model budget a client can show. It answers for a
+// profile the caller already holds, so a caller comparing the outgoing and
+// incoming budgets does not need to swap the manager to ask.
+func (cm *Manager) CompactionThresholdTokens(prof *provider.Profile) int {
+	if prof == nil || prof.CompactionThreshold() <= 0 {
+		return 0
+	}
+	window, _ := EffectiveWindow(prof)
+	return int(math.Round(cm.thresholdsFor(prof).checkpoint * float64(window)))
+}
+
+// EffectiveCompactionThreshold reports the auto-compaction threshold in input
+// tokens this manager currently budgets against, and whether a profile is
+// installed at all. A fallback replaces the manager's profile, so this can
+// differ from the session's configured model even when the fallback shares that
+// model's window and window source: it is the threshold the running model
+// actually compacts at.
+func (cm *Manager) EffectiveCompactionThreshold() (tokens int, ok bool) {
+	prof := cm.currentProfile()
+	if prof == nil {
+		return 0, false
+	}
+	return cm.CompactionThresholdTokens(prof), true
+}
+
 // AssumedContextWindow is the window the manager budgets against when the
 // model's real one is unknown — no user row declares it, the catalog has no
 // row, and no live listing supplied one (issue #4564). A zero window used to

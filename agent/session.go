@@ -2384,21 +2384,34 @@ func (s *Session) applyModelSwitchControl(model, primedInstance string, primedLi
 	// replaced, so it does not survive the swap (see
 	// forgetSessionNamerQuotaExhaustionLocked).
 	s.forgetSessionNamerQuotaExhaustionLocked()
-	// The window the context manager budgets against is the one the last
-	// answering model installed: a fallback replaces it with its own. Reselecting
-	// the configured model restores the configured window even when the two
+	// The context the manager budgets against is the one the last answering
+	// model installed: a fallback replaces it with its own. Reselecting the
+	// configured model restores the configured budget even when the two
 	// configured profiles are identical, and the switch event below is the only
-	// thing that refreshes the daemon's context facet. Capture the outgoing
-	// window so that case still announces the change; when the context is
-	// unchanged the switch stays as quiet as it was.
+	// thing that refreshes the daemon's context facet. Capture both halves of
+	// that budget — the window and the compaction threshold derived from it —
+	// so a fallback that shares the configured window and source but compacts at
+	// its own custom threshold still announces the restore. When the context is
+	// genuinely unchanged the switch stays as quiet as it was.
 	prevEffectiveWindow, prevEffectiveWindowSource, havePrevWindow := 0, "", false
+	prevEffectiveThreshold, havePrevThreshold := 0, false
 	if s.contextMgr != nil {
 		prevEffectiveWindow, prevEffectiveWindowSource, havePrevWindow = s.contextMgr.EffectiveWindow()
+		prevEffectiveThreshold, havePrevThreshold = s.contextMgr.EffectiveCompactionThreshold()
 		s.contextMgr.SetProfile(s.profile)
 	}
 	settledWindow, settledWindowSource := budgetingWindow(s.profile)
 	contextWindowMoved := havePrevWindow &&
 		(prevEffectiveWindow != settledWindow || prevEffectiveWindowSource != settledWindowSource)
+	// The threshold is read from the incoming profile, not from the manager, so
+	// the comparison is against what the switch installs. It is a derived
+	// quantity: a profile with no threshold of its own publishes zero.
+	settledThreshold := 0
+	if s.contextMgr != nil {
+		settledThreshold = s.contextMgr.CompactionThresholdTokens(s.profile)
+	}
+	contextThresholdMoved := havePrevThreshold && prevEffectiveThreshold != settledThreshold
+	contextMoved := contextWindowMoved || contextThresholdMoved
 	if s.reg != nil {
 		s.reapplyProviderSpecificTools(commitPrev, nextProfile)
 	}
@@ -2481,7 +2494,7 @@ func (s *Session) applyModelSwitchControl(model, primedInstance string, primedLi
 	}
 	marker.ModelSwitch.ContextWindow, marker.ModelSwitch.ContextWindowSource = budgetingWindow(nextProfile)
 	s.recordTurn(marker, marker)
-	if !sameModel || contextWindowMoved {
+	if !sameModel || contextMoved {
 		s.emit(events.ModelChangedData{
 			OldProvider:            commitPrev.ID(),
 			OldModel:               commitPrev.Model(),

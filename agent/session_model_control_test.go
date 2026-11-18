@@ -7,7 +7,9 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/registry"
 )
 
@@ -365,6 +367,163 @@ func TestModelControlSameModelReselectRepublishesContextWindow(t *testing.T) {
 	if got, _ := sess.ContextStatus(); got.Window != configuredWindow {
 		t.Fatalf("context window after reselect = %d, want %d", got.Window, configuredWindow)
 	}
+}
+
+// TestModelControlSameWindowDifferentThresholdReselectRepublishes covers the
+// fallback that leaves a subtler trace than a different window: it answered with
+// the configured model's own context window and window source, but compacts at
+// its own custom threshold. Reselecting the configured model restores that
+// model's budgeting profile, and the switch event is the only thing that
+// refreshes the daemon's context facet. Comparing only the window left every
+// read reporting the fallback's threshold until some later context update.
+func TestModelControlSameWindowDifferentThresholdReselectRepublishes(t *testing.T) {
+	t.Parallel()
+	sess, registry := newThresholdedModelControlSession(t, 120_000)
+	configured, err := provider.Resolve(registry, "work/model-shared")
+	if err != nil {
+		t.Fatalf("resolve configured model: %v", err)
+	}
+	wantThreshold := sess.contextMgr.CompactionThresholdTokens(configured)
+	if wantThreshold != 120_000 {
+		t.Fatalf("fixture: configured threshold = %d, want the row's 120000", wantThreshold)
+	}
+	// The fallback answered, so the manager budgets against its threshold even
+	// though it shares the configured model's window and window source.
+	fallback, err := provider.Resolve(registry, "work/model-fallback")
+	if err != nil {
+		t.Fatalf("resolve fallback model: %v", err)
+	}
+	sess.contextMgr.SetProfile(fallback)
+	before, ok := sess.contextMgr.EffectiveCompactionThreshold()
+	if !ok || before == 0 {
+		t.Fatalf("fixture: fallback threshold = %d (ok=%v), want a non-zero threshold", before, ok)
+	}
+	if before == wantThreshold {
+		t.Fatalf("fixture: fallback threshold %d equals the configured %d", before, wantThreshold)
+	}
+	if prevWindow, prevSource, _ := sess.contextMgr.EffectiveWindow(); prevWindow != configured.ContextWindowSize() || prevSource != configured.ContextWindowSource() {
+		t.Fatalf("fixture: fallback window = %d (%q), want the configured %d (%q)",
+			prevWindow, prevSource, configured.ContextWindowSize(), configured.ContextWindowSource())
+	}
+
+	if _, err := sess.SetModelControl(thresholdedModelControlRequest(sess, "cm_threshold_reselect")); err != nil {
+		t.Fatalf("reselect configured model: %v", err)
+	}
+	requireModelControlEvent(t, sess)
+	var found *events.ModelChangedData
+	for {
+		select {
+		case event := <-sess.Events():
+			if data, ok := event.Data.(events.ModelChangedData); ok {
+				found = &data
+			}
+			continue
+		default:
+		}
+		break
+	}
+	if found == nil {
+		t.Fatal("reselecting the configured model emitted no EventModelChanged, so the context facet keeps the fallback's compaction threshold")
+	}
+	if found.CompactionThreshold != wantThreshold {
+		t.Fatalf("published compaction threshold = %d, want the configured model's %d", found.CompactionThreshold, wantThreshold)
+	}
+	if got, _ := sess.ContextStatus(); got.CompactionThreshold != wantThreshold {
+		t.Fatalf("context facet threshold after reselect = %d, want %d", got.CompactionThreshold, wantThreshold)
+	}
+}
+
+// TestModelControlSameModelReselectStaysQuiet pins the other half: a reselect
+// that changes nothing the context facet reports emits no model-change event.
+func TestModelControlSameModelReselectStaysQuiet(t *testing.T) {
+	t.Parallel()
+	sess, _ := newThresholdedModelControlSession(t, 120_000)
+	if _, err := sess.SetModelControl(thresholdedModelControlRequest(sess, "cm_threshold_same")); err != nil {
+		t.Fatalf("reselect configured model: %v", err)
+	}
+	requireModelControlEvent(t, sess)
+	for {
+		select {
+		case event := <-sess.Events():
+			if data, ok := event.Data.(events.ModelChangedData); ok {
+				t.Fatalf("an unchanged reselect emitted EventModelChanged: %+v", data)
+			}
+			continue
+		default:
+		}
+		break
+	}
+}
+
+// thresholdedModelControlRequest names the fixture's own instance. The shared
+// modelControlRequest helper hardcodes "openai", which is a cross-provider
+// reference for this fixture and would make the reselect a model change in its
+// own right, hiding whether the threshold alone moved.
+func thresholdedModelControlRequest(sess *Session, mutationID string) ModelControlRequest {
+	return ModelControlRequest{
+		ModelProvider:          "work",
+		Model:                  "model-shared",
+		ClientMutationID:       mutationID,
+		ExpectedInstanceID:     sess.ID(),
+		ExpectedBootGeneration: "7",
+	}
+}
+
+// newThresholdedModelControlSession builds a session whose configured model and
+// fallback share one context window and window source but declare different
+// custom compaction thresholds. The caps live on the registry rows because a
+// model switch re-resolves its target through the profile's registry, which
+// discards any cap a test patches onto the profile afterwards.
+func newThresholdedModelControlSession(t *testing.T, configuredThreshold int) (*Session, *registry.Registry) {
+	t.Helper()
+	const sharedWindow = 200_000
+	const fallbackThreshold = 150_000
+	reg, err := registry.Load(
+		registry.WithOffline(true), registry.WithoutCache(), registry.WithNoUserLayer(),
+		registry.WithStateRoot(t.TempDir()),
+		registry.WithEnv(func(string) (string, bool) { return "", false }),
+		registry.WithInstances(map[string]registry.Provider{
+			"work": {
+				Base:     "openai-compatible",
+				Protocol: registry.ProtocolOpenAIChat,
+				Surface:  registry.SurfaceOpenAI,
+				APIKey:   "k",
+				Transport: registry.Transport{
+					BaseURL: "http://gw.invalid/v1",
+				},
+				Models: map[string]registry.Model{
+					"model-shared": {
+						Caps: registry.Caps{
+							ContextWindow:       new(sharedWindow),
+							CompactionThreshold: new(configuredThreshold),
+						},
+					},
+					"model-fallback": {
+						Caps: registry.Caps{
+							ContextWindow:       new(sharedWindow),
+							CompactionThreshold: new(fallbackThreshold),
+						},
+					},
+				},
+			},
+		}),
+	)
+	if err != nil {
+		t.Fatalf("registry.Load: %v", err)
+	}
+	configured, err := provider.Resolve(reg, "work/model-shared")
+	if err != nil {
+		t.Fatalf("provider.Resolve configured: %v", err)
+	}
+	client := llm.NewClient(llm.WithRegistry(reg))
+	client.Register(&fakeAdapter{name: "work"})
+	sess := newSession(t,
+		withProfile(configured),
+		withClient(client),
+		withConfig(SessionConfig{testOnly: testConfig{skipGitSnapshot: true}}),
+	)
+	sess.SetBootGeneration("7")
+	return sess, reg
 }
 
 func TestModelControlShutdownAfterSequenceAssignmentIsNotAccepted(t *testing.T) {
