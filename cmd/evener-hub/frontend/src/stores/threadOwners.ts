@@ -5,6 +5,11 @@
 // This module never imports threads.ts.
 
 const foregroundCounts = new Map<string, number>();
+// A foreground holder that also owns the live transcript bodies - a mounted
+// pane. Its own count, not foregroundCounts: a routing holder keeps the model
+// alive without becoming the reader a later pane finds and defers to, and
+// without attaching a repository reader of its own.
+const bodyOwnerCounts = new Map<string, number>();
 // Background claims keep canonical thread hydration/routing alive without
 // borrowing a pane's cache or ensure-generation lifetime.
 const backgroundCounts = new Map<string, number>();
@@ -42,6 +47,20 @@ export function holdForeground(ref: string): void {
 /** Drops one foreground hold and returns how many remain. */
 export function releaseForeground(ref: string): number {
   return release(foregroundCounts, ref);
+}
+
+/** Foreground holders that own the live transcript bodies. */
+export function bodyOwners(ref: string): number {
+  return bodyOwnerCounts.get(ref) ?? 0;
+}
+
+export function holdBodyOwnership(ref: string): void {
+  hold(bodyOwnerCounts, ref);
+}
+
+/** Drops one body-owning hold and returns how many remain. */
+export function releaseBodyOwnership(ref: string): number {
+  return release(bodyOwnerCounts, ref);
 }
 
 export function backgroundHolds(ref: string): number {
@@ -105,6 +124,14 @@ export function heldCountsAtStore(ref: string): boolean {
   return foregroundHolds(ref) > 0 || historyHolds(ref) > 0 || isMutationPinned(ref);
 }
 
+// A holder that owns the live transcript bodies: a mounted pane, a history
+// hold or a mutation pin. This is the question the open and recovery paths
+// ask - whether someone is already showing what a body read would restore -
+// and a routing hold is deliberately not one of them.
+export function bodyOwnersAtStore(ref: string): boolean {
+  return bodyOwners(ref) > 0 || historyHolds(ref) > 0 || isMutationPinned(ref);
+}
+
 export function ownerGeneration(ref: string): number {
   return ownerGenerations.get(ref) ?? 0;
 }
@@ -142,6 +169,7 @@ export function nextBackgroundLeaseSequence(ref: string): number {
 
 export function resetThreadOwnersForTests(): void {
   foregroundCounts.clear();
+  bodyOwnerCounts.clear();
   backgroundCounts.clear();
   historyHoldCounts.clear();
   mutationPins.clear();

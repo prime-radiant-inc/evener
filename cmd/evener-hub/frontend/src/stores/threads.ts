@@ -165,6 +165,8 @@ import {
   backgroundHeldRefs,
   backgroundHolds,
   backgroundLeaseSequence,
+  bodyOwners,
+  bodyOwnersAtStore,
   bumpOwnerGeneration,
   canonicalThreadOwnerActive,
   clearFinalReleaseOwner,
@@ -172,6 +174,7 @@ import {
   hasFinalReleaseOwner,
   heldCountsAtStore,
   holdBackground,
+  holdBodyOwnership,
   holdForeground,
   holdHistory,
   isFinalReleaseOwner,
@@ -182,6 +185,7 @@ import {
   ownerGeneration,
   pinMutation,
   releaseBackground,
+  releaseBodyOwnership,
   releaseForeground,
   releaseHistory,
   resetThreadOwnersForTests,
@@ -393,7 +397,12 @@ export interface ThreadsStoreState {
    * that arrived while the clear was in flight. undefined when no clear is
    * in flight. */
   clearInFlight: number | undefined;
-  ensureThread(ref: string): Promise<void>;
+  // routingOnly takes the keep-alive hold and returns on a resident
+  // authoritative model without claiming its transcript bodies or waiting for
+  // their restoration. A caller that routes - it reads the destination's
+  // identity, status and capabilities, not its bodies - must not become the
+  // reader a later pane defers to, and must not be held behind a body read.
+  ensureThread(ref: string, opts?: { routingOnly?: boolean }): Promise<void>;
   // beforePublish, when given, is evaluated synchronously immediately before
   // this refresh publishes its snapshot. A throw cancels the read's result so
   // a canceled action never republishes over newer authoritative state.
@@ -405,7 +414,9 @@ export interface ThreadsStoreState {
   // settles; a failure is published to resumeFailures rather than thrown, and
   // the identity-follow effect carries the draft and navigates.
   resumeSession(ref: string): Promise<void>;
-  releaseThread(ref: string): void;
+  // routingOnly names a release whose acquisition was routing-only: it drops
+  // the keep-alive hold without spending a body-ownership count it never took.
+  releaseThread(ref: string, opts?: { routingOnly?: boolean }): void;
   releaseThreadAndWait(ref: string): Promise<TranscriptRetirementOutcome | undefined>;
   // Additive, leaner subscription to a child thread for a delegate card's
   // row's live view (see this file's own doc comment). opts.includeTurns
@@ -666,7 +677,9 @@ async function endHistoryHold(ref: string): Promise<void> {
 }
 
 function hydrationIntentFor(ref: string): HydrationIntent {
-  return foregroundHolds(ref) > 0 || isMutationPinned(ref) ? "foreground" : "background";
+  // Body owners, not keep-alive holders: a routing hold never owns the bodies a
+  // foreground refresh restores.
+  return bodyOwners(ref) > 0 || isMutationPinned(ref) ? "foreground" : "background";
 }
 // A generation changes at every local human-note request and every accepted
 // notes authority (a matching evener/notes/updated or full hydration). Same
@@ -791,7 +804,7 @@ async function runEntryHistoryRequest<T>(
     await residency
       .scheduleHydration(
         fixture.ref,
-        heldCountsAtStore(fixture.ref) ? "foreground" : "background",
+        bodyOwnersAtStore(fixture.ref) ? "foreground" : "background",
         async (scheduledSignal) => {
           activated = true;
           if (!current() || scheduledSignal.aborted) throw new Error("entry history request was retired");
@@ -1070,7 +1083,7 @@ async function acceptEntryTranscriptHydration(
   const repository = fixture.repository;
   fixture.cachedUnverified = false;
   fixture.unsubscribeRepository ??= repository.subscribe(() => publishEntryTranscriptModel(ref));
-  if (productionRoute && heldCountsAtStore(ref) && !fixture.reader) fixture.reader = repository.attachReader();
+  if (productionRoute && bodyOwnersAtStore(ref) && !fixture.reader) fixture.reader = repository.attachReader();
   if (productionRoute && authorities && lifetime?.freshForegroundLifetime) settleCacheLifetimeAfterHydration(ref);
   const adoptedRead = repository.acceptRead(response, {
     lifetime: fixture.lifetime,
@@ -8193,9 +8206,13 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     });
   },
 
-  async ensureThread(ref) {
+  async ensureThread(ref, opts) {
     let client = requireClient();
+    const routingOnly = opts?.routingOnly === true;
     const count = foregroundHolds(ref);
+    // Read before this acquisition's own hold: another mounted reader owns the
+    // live bodies only if it held them before this call.
+    const bodyCount = bodyOwners(ref);
     if (count === 0) {
       ensureGenerations.set(ref, (ensureGenerations.get(ref) ?? 0) + 1);
       beginCanonicalThreadClaim(ref, true);
@@ -8204,14 +8221,22 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     }
     const generation = ensureGenerations.get(ref) ?? 0;
     holdForeground(ref);
+    if (!routingOnly) holdBodyOwnership(ref);
     syncTranscriptResidencyOwners(ref);
-    if (count === 0) acquireCacheLifetimeForeground(ref);
+    // Retention alone grants no write permission: only an explicit pane open
+    // begins the fresh foreground lifetime that lifts a Clear's suppression.
+    if (count === 0 && !routingOnly) acquireCacheLifetimeForeground(ref);
     syncThreadSubscription(ref, client);
     // Already hydrated: no re-read. The exception is a clear-suppressed ref
     // whose new explicit foreground lifetime owes an authoritative hydration
     // even while its stale display model is still resident.
     if (threadsStore.getState().threads.has(ref) && !needsClearLifetimeReconciliation(ref)) {
-      if (count > 0) return; // Another mounted reader already owns the live bodies.
+      if (bodyCount > 0) return; // Another mounted reader already owns the live bodies.
+      // A routing hold has the routing state it came for - the resident model
+      // carries identity, status and capabilities - and it owns no bodies, so
+      // it neither waits for a body read nor attaches a reader. A cached shell
+      // is unverified, so it is the exception: it hydrates like any pane.
+      if (routingOnly && threadsStore.getState().cacheLifetimes.get(ref)?.shell !== true) return;
       if (await openEntryTranscript(ref)) return;
       if (ensureGenerations.get(ref) !== generation || foregroundHolds(ref) <= 0) return;
       // Missing or unwritten backing rows cannot establish the captured view.
@@ -8419,9 +8444,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     return entryTranscriptRoute(ref)?.retirement;
   },
 
-  releaseThread(ref) {
+  releaseThread(ref, opts) {
     const count = foregroundHolds(ref);
     if (count <= 0) return; // never tracked, or already released
+    // One release drops exactly what its own acquisition took: a routing hold
+    // never took the bodies, so it must not spend a pane's body count.
+    if (opts?.routingOnly !== true) releaseBodyOwnership(ref);
     releaseForeground(ref);
     syncTranscriptResidencyOwners(ref);
     if (count > 1) return;
@@ -9674,7 +9702,7 @@ function syncTranscriptResidencyOwners(ref: string): void {
   if (!route?.repository) return;
   // A history or mutation hold owns repository retention, not the lifetime of
   // the already-published display. Pane release drops its display separately.
-  if (heldCountsAtStore(ref)) route.reader ??= route.repository.attachReader();
+  if (bodyOwnersAtStore(ref)) route.reader ??= route.repository.attachReader();
   else if (route.reader) releaseEntryTranscriptReader(ref);
 }
 

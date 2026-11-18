@@ -71,15 +71,23 @@ export interface ThreadClaimLease {
  * already rolled its own claim back inside ensureThread, so a caller that
  * released anyway would consume another foreground reader's claim and retire
  * its subscription or hydration lifecycle. There is no "no claim needed"
- * answer: a resolved acquisition always holds exactly one count. */
+ * answer: a resolved acquisition always holds exactly one count.
+ *
+ * The hold is routing-only. A resend routes on the destination's identity,
+ * status and capabilities, not its transcript bodies, so its hold keeps the
+ * model alive without becoming the body owner a pane open defers to and
+ * without waiting on a restoration read. A pane that opens later still finds
+ * no body owner and restores the bodies itself; a cached shell is unverified
+ * and falls through to the ordinary hydration, so the resend never routes on
+ * unverified state. */
 export async function acquireUnreadThreadClaim(ref: string): Promise<ThreadClaimLease> {
-  await threadsStore.getState().ensureThread(ref);
+  await threadsStore.getState().ensureThread(ref, { routingOnly: true });
   let released = false;
   return {
     release() {
       if (released) return;
       released = true;
-      threadsStore.getState().releaseThread(ref);
+      threadsStore.getState().releaseThread(ref, { routingOnly: true });
     },
   };
 }

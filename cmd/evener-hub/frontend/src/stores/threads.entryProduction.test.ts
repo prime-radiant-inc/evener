@@ -73,6 +73,7 @@ import {
   threadsStore,
 } from "./threads";
 import { TranscriptRepository } from "./transcriptRepository";
+import { acquireUnreadThreadClaim } from "./useThreadModel";
 
 let factory: IDBFactory;
 const caches: SessionEntryCache[] = [];
@@ -1124,6 +1125,163 @@ it.each(["evicted", "failed-write"] as const)(
     background.release();
   },
 );
+
+// A routing hold keeps the model alive without owning its bodies, so the pane
+// that opens afterwards still finds no body owner, spends its read and
+// restores the recorded bodies itself.
+it("a pane opening after a routing hold still restores its bodies", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  let now = 1_000;
+  const storage = new SessionEntryCache({
+    databaseName: SESSION_CACHE_DATABASE_NAME,
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    ttlMs: 100,
+    now: () => now,
+  });
+  caches.push(storage);
+  setProductionEntryCacheForTests(storage);
+  const client = connect();
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  await settleEntryTranscriptForTests("local:a");
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect(await storage.getLatest(key, 10)).toHaveLength(1);
+  now += 1_000;
+  await storage.commitBatch({
+    historyKey: "other-history",
+    clearEpoch: 0,
+    items: (await storage.getLatest(key, 10)).map((row) => ({ ...row, historyKey: "other-history" })),
+  });
+  expect(await storage.getLatest(key, 10)).toEqual([]);
+  // The routing hold takes keep-alive only: it must not become the reader that
+  // the open below defers to.
+  await threadsStore.getState().ensureThread("local:a", { routingOnly: true });
+  const before = client.calls.filter((call) => call.method === "thread/read").length;
+  await threadsStore.getState().ensureThread("local:a");
+  expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(before + 1);
+  expect(
+    threadsStore
+      .getState()
+      .threads.get("local:a")
+      ?.turns.flatMap((turn) => turn.items)
+      .map((item) => item.text),
+  ).toEqual(["recorded"]);
+  background.release();
+});
+
+// A routing hold asks for routing state, not transcript bodies. When another
+// background owner keeps the model resident but its cached bodies are gone, a
+// routing hold must resolve without the body read a pane open would wait on:
+// the resend's durable write does not wait behind a hydration it never needed.
+it("a routing hold does not wait on the body read a pane open owes", async () => {
+  let now = 1_000;
+  const storage = new SessionEntryCache({
+    databaseName: SESSION_CACHE_DATABASE_NAME,
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    ttlMs: 100,
+    now: () => now,
+  });
+  caches.push(storage);
+  setProductionEntryCacheForTests(storage);
+  const client = connect();
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  await settleEntryTranscriptForTests("local:a");
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  const rows = await storage.getLatest(key, 10);
+  expect(rows).toHaveLength(1);
+  now += 1_000;
+  await storage.commitBatch({
+    historyKey: "other-history",
+    clearEpoch: 0,
+    items: rows.map((row) => ({ ...row, historyKey: "other-history" })),
+  });
+  expect(await storage.getLatest(key, 10)).toEqual([]);
+  const stalled = deferred<ThreadReadResponse>();
+  let readEntered = false;
+  client.on("thread/read", () => {
+    readEntered = true;
+    return stalled.promise;
+  });
+  const reads = client.calls.filter((call) => call.method === "thread/read").length;
+  // The hold resolves with the read still unanswered.
+  await threadsStore.getState().ensureThread("local:a", { routingOnly: true });
+  expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads);
+  // The pane open that follows still owes the read, and waits on it.
+  const opening = threadsStore.getState().ensureThread("local:a");
+  await vi.waitFor(() => expect(readEntered).toBe(true));
+  stalled.resolve({ ...response(), requestGeneration: 0 });
+  await opening;
+  background.release();
+}, 20_000);
+
+// A routing hold is retention, not a pane open: it must not begin the fresh
+// foreground lifetime that lifts a Clear's write suppression, so the content
+// the user cleared does not come back to disk without anyone opening it.
+it("a routing hold after a Clear restores and rewrites nothing", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const client = connect();
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  await settleEntryTranscriptForTests("local:a");
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  expect(await storage.getLatest(key, 10)).toHaveLength(1);
+  expect(await clearCachedSessions()).toEqual({ committed: true });
+  expect(await storage.getLatest(key, 10)).toEqual([]);
+  const reads = client.calls.filter((call) => call.method === "thread/read").length;
+  await threadsStore.getState().ensureThread("local:a", { routingOnly: true });
+  await settleEntryTranscriptForTests("local:a");
+  expect(client.calls.filter((call) => call.method === "thread/read")).toHaveLength(reads);
+  expect(await storage.getLatest(key, 10)).toEqual([]);
+  background.release();
+}, 20_000);
+
+// The reviewer's scenario: the destination is usable routing state held only
+// in the background, and its cached bodies are evicted. The resend's claim is
+// the last gate before its durable outbox write, so the write lands as soon as
+// the claim resolves - with the restoration read still unanswered.
+it("a resend's claim on an evicted background destination does not wait on the body read", async () => {
+  let now = 1_000;
+  const storage = new SessionEntryCache({
+    databaseName: SESSION_CACHE_DATABASE_NAME,
+    indexedDB: factory,
+    keyRange: IDBKeyRange,
+    ttlMs: 100,
+    now: () => now,
+  });
+  caches.push(storage);
+  setProductionEntryCacheForTests(storage);
+  const client = connect();
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  await settleEntryTranscriptForTests("local:a");
+  const key = entryHistoryKey({ ...identity, clientId: location.origin });
+  const rows = await storage.getLatest(key, 10);
+  expect(rows).toHaveLength(1);
+  now += 1_000;
+  await storage.commitBatch({
+    historyKey: "other-history",
+    clearEpoch: 0,
+    items: rows.map((row) => ({ ...row, historyKey: "other-history" })),
+  });
+  expect(await storage.getLatest(key, 10)).toEqual([]);
+  let readEntered = false;
+  client.on("thread/read", () => {
+    readEntered = true;
+    return new Promise<ThreadReadResponse>(() => undefined);
+  });
+  const lease = await acquireUnreadThreadClaim("local:a");
+  expect(readEntered, "the resend's claim must not spend the restoration read a pane open owes").toBe(false);
+  lease.release();
+  background.release();
+}, 20_000);
 
 it.each([false, true])("opening verifies accepted bodies when the latest write was lost: %s", async (lost) => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
