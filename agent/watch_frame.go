@@ -3,6 +3,7 @@ package agent
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"strconv"
 	"strings"
 
@@ -527,9 +528,13 @@ func appendStableWatchAttention(owner *Session, controller *delegateTreeControll
 	// The survivor is durable, so the rows it folded are retired rather than
 	// presented: keeping them pending would show the model the older tick or
 	// snapshot beside the newer one that already replaced it. A failed
-	// discard keeps them pending -- the retry appends a row that already
-	// exists, folds onto it, and tries again (#2340 review M2).
-	owner.discardSupersededStableWatchNotices(controller, superseded)
+	// discard keeps them pending, so this notice is reported OWED rather than
+	// landed: the caller retries the whole notice, and the retry folds onto
+	// the row this attempt already appended and tries the discard again
+	// (#2340 review).
+	if err := owner.discardSupersededStableWatchNotices(controller, superseded); err != nil {
+		return attentionID, fmt.Errorf("discard superseded watch attention for %q: %w", attentionID, err)
+	}
 	return attentionID, nil
 }
 
@@ -709,12 +714,6 @@ func (s *Session) foldPendingStableWatchNotice(n jobNotification) (jobNotificati
 			if held.family != family || held.occurrence == occurrence {
 				continue
 			}
-			// A row a SETTLED request already presented is not unread, and folding
-			// it would say otherwise. The model has read that tick's count; adding
-			// it to this survivor counts the same fire twice, and retiring the row
-			// discards the coverage the reader acquired for it. Leave it alone: its
-			// own turn end settles it, and this notice stands for its own fire
-			// only (#2340 review).
 			// A row a SETTLED request already presented is not unread, and folding
 			// it would say otherwise. The model has read that tick's count; adding
 			// it to this survivor counts the same fire twice, and retiring the row

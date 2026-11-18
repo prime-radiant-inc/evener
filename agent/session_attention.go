@@ -2825,18 +2825,22 @@ func (s *Session) retireClearedStableWatchAttention() {
 //
 // The discard is the same one a stop-drain performs -- delegation:discarded,
 // the disposition the fold records for an item that was superseded rather than
-// read. Losing the discard keeps the rows pending, so the next ingress attempt
-// retries it; presenting a superseded row beside its replacement is the state
-// this exists to prevent, and a pending row that the model never reads is the
-// cheaper failure (#2340 review M2).
-func (s *Session) discardSupersededStableWatchNotices(controller *delegateTreeController, attentionIDs []string) {
+// read. Losing the discard keeps the rows pending, and presenting a superseded
+// row beside its replacement is the state this exists to prevent (#2340
+// review M2).
+//
+// A failed discard is RETURNED rather than warned about, because the caller has
+// already reported its survivor durable and armed it. A warning here would let
+// the append report success while the predecessor stays presentable, so the
+// model can read both rows and count the same fire twice; the caller turns this
+// error into a retry of the whole notice instead (#2340 review).
+func (s *Session) discardSupersededStableWatchNotices(controller *delegateTreeController, attentionIDs []string) error {
 	if s == nil || len(attentionIDs) == 0 {
-		return
+		return nil
 	}
 	ids := appendUniqueStrings(nil, attentionIDs...)
 	if err := s.resolveAttentionDurably(ids, delegateAttentionDiscarded); err != nil {
-		s.emit(warningDataFromError("retire superseded watch attention", err))
-		return
+		return err
 	}
 	for _, attentionID := range ids {
 		s.attentionMu.Lock()
@@ -2847,6 +2851,7 @@ func (s *Session) discardSupersededStableWatchNotices(controller *delegateTreeCo
 	if controller != nil {
 		controller.attentionCauses.forget(ids...)
 	}
+	return nil
 }
 
 // reopenAttentionTranscriptDurably reopens the writer from complete records

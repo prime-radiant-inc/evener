@@ -655,6 +655,94 @@ func TestDelegateResourceSupervision_FoldLeavesAPresentedTickAlone(t *testing.T)
 	}
 }
 
+// TestDelegateResourceSupervision_FailedSupersedeDiscardIsNotReportedLanded pins
+// that a failed discard of a superseded row makes the SURVIVOR's append report
+// OWED rather than durable (#2340 review).
+//
+// The survivor is appended and armed before the discard runs. If the discard
+// fails and only warns, the append still reports success, so nothing retries it:
+// the predecessor stays pending and the model can read both rows, counting one
+// fire twice. The discard's error must reach the caller's retry decision.
+//
+// The fault is a real one, not an injected flag: the predecessor is resolved as
+// CONSUMED before the discard asks to discard it, and discarding an
+// already-consumed row is the conflicting resolution the store refuses.
+func TestDelegateResourceSupervision_FailedSupersedeDiscardIsNotReportedLanded(t *testing.T) {
+	t.Parallel()
+	sess, _ := newCompactableSession(t)
+	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
+	seedDelegateControllerRunning(t, controller, "dlg_superseder", "")
+	sess.mu.Lock()
+	ownController := sess.delegateController
+	ownOwner := sess.owningDelegateID
+	sess.delegateController = controller
+	sess.owningDelegateID = "dlg_superseder"
+	sess.mu.Unlock()
+	t.Cleanup(func() {
+		sess.mu.Lock()
+		sess.delegateController = ownController
+		sess.owningDelegateID = ownOwner
+		sess.mu.Unlock()
+	})
+	jm := sess.jobManager
+	if jm == nil {
+		t.Fatal("the fixture session has no job manager")
+	}
+	jm.mu.Lock()
+	ownStableOwner := jm.stableOwner
+	ownStableController := jm.delegateController
+	jm.stableOwner = sess
+	jm.delegateController = controller
+	jm.mu.Unlock()
+	t.Cleanup(func() {
+		jm.mu.Lock()
+		jm.stableOwner = ownStableOwner
+		jm.delegateController = ownStableController
+		jm.mu.Unlock()
+	})
+	if !stableDelegateChild(sess) {
+		t.Fatal("setup: the fixture session is not a stable delegate child, so the ingress under test is not taken")
+	}
+
+	// One pending reminder. It is appended through the production ingress, so
+	// its row and its family are exactly what a later notice folds.
+	older := jobNotification{Kind: jobNotificationKindWatch, Occurrence: "reminder:first", Reason: longRunningJobsReason, Description: "first snapshot"}
+	if !jm.persistStableWatchPendings([]jobNotification{older}) {
+		t.Fatal("the production stable ingress declined the first snapshot")
+	}
+	olderID := stableWatchDiagnosticAttentionID(older)
+	if _, ok := sess.pendingStableWatchNotice(olderID); !ok {
+		t.Fatal("setup: the first snapshot was not retained, so it cannot be superseded")
+	}
+	// The predecessor is already CONSUMED. This is the state the discard must
+	// refuse: one row cannot be both consumed and discarded.
+	if err := sess.resolveAttentionDurably([]string{olderID}, delegateAttentionConsumed); err != nil {
+		t.Fatalf("setup: consume the predecessor: %v", err)
+	}
+	// The consumed row is no longer a fold candidate through the settled-coverage
+	// route, so retain it as unread again: the fold only supersedes rows it still
+	// holds as pending, and this fixture needs it superseded so the discard runs.
+	sess.attentionMu.Lock()
+	sess.attentionCoveredIDs = nil
+	sess.attentionMu.Unlock()
+	sess.notePendingStableWatchNotice(older, olderID)
+
+	newer := jobNotification{Kind: jobNotificationKindWatch, Occurrence: "reminder:second", Reason: longRunningJobsReason, Description: "second snapshot"}
+	attentionID, err := appendStableWatchAttention(sess, controller, newer)
+	if err == nil {
+		t.Fatalf("the survivor was reported durable (id %q) although its predecessor %q could not be discarded: nothing retries it, so the model can read both snapshots and count one fire twice", attentionID, olderID)
+	}
+	if attentionID == "" {
+		t.Fatal("the survivor appended no row, so this read did not exercise the discard: the fixture's fold found nothing to supersede")
+	}
+	// The survivor's own row is durable; only the discard is owed. A caller
+	// retrying the whole notice must find that row already there rather than be
+	// told the append failed for a reason it would append a second time for.
+	if _, ok := sess.pendingStableWatchNotice(attentionID); !ok {
+		t.Fatal("the survivor's row was not retained, so the reported failure would send the retry down the append path instead of the discard path")
+	}
+}
+
 // TestDelegateResourceSupervision_RecoveryDropOfAStableParentIsDurableAttention
 // pins that the unreachable-child recovery renderer hands its watch-drop
 // diagnostic to the durable ingress when the recovering parent is ITSELF a
@@ -946,7 +1034,9 @@ func TestDelegateResourceSupervision_StableWatchFoldSpansEnqueueBatches(t *testi
 	if len(created) == 0 {
 		t.Fatal("no watch rows survived to retire, so the arms above proved nothing")
 	}
-	sub.sess.discardSupersededStableWatchNotices(sub.sess.delegateController, created)
+	if err := sub.sess.discardSupersededStableWatchNotices(sub.sess.delegateController, created); err != nil {
+		t.Fatalf("retire the superseded watch rows: %v", err)
+	}
 
 	close(release)
 	waitForStableSupervisionRun(t, root, fixture.childID)
