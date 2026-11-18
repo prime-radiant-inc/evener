@@ -47,6 +47,7 @@ import {
   compareBootGeneration,
   errorText,
   frontierFromCursor,
+  handOffReplacedSource,
   historyFallback,
   hydrateThread,
   type InputAttachment,
@@ -60,9 +61,7 @@ import {
   notificationRoutingKey,
   olderHistoryExhausted,
   pruneBackgroundHistoryBodies,
-  recordSourceOwnerOnModel,
   resolvePendingEscalation,
-  retireReplacedSourceHold,
   retireThreadSubscriptions,
   SHUT_DOWN_STATUSES,
   type ThreadSubscriptionLease,
@@ -6838,7 +6837,11 @@ function retireReplacedSourceHoldBeforeResync(ref: string, bootGeneration: strin
   // maps are covered in ONE write: a watched transcript is read from
   // watchedThreads, not threads, so retiring only the latter leaves its hold
   // standing for the whole of a failed read.
-  entryTranscriptRoute(ref)?.repository?.retireHoldForReplacedSource(bootGeneration);
+  // existingEntryRoute, never entryTranscriptRoute: the latter CREATES and
+  // retains a route, and a resync for a ref this browser does not track would
+  // leave an empty one in the map for the life of the page. The resync only
+  // needs to update a repository that already exists.
+  existingEntryRoute(ref)?.repository?.retireHoldForReplacedSource(bootGeneration);
   const { threads, watchedThreads } = threadsStore.getState();
   const threadModel = threads.get(ref);
   const watchedModel = watchedThreads.get(ref);
@@ -6854,13 +6857,7 @@ function retireReplacedSourceHoldBeforeResync(ref: string, bootGeneration: strin
 // against the boot it replaced, reads as a fresh replacement, and clears the
 // live hold it just published, which emits no update to restore.
 function handOffSourceOwnership(model: ThreadModel, bootGeneration: string | undefined): ThreadModel | undefined {
-  // Retire FIRST, against the owner that is still recorded: once this call
-  // records the incoming source, the same token compares as an apply and
-  // nothing would be retired.
-  const retired = retireReplacedSourceHold(model, bootGeneration);
-  const base = retired ?? model;
-  const owned = recordSourceOwnerOnModel(base, bootGeneration);
-  return owned ?? retired;
+  return handOffReplacedSource(model, bootGeneration);
 }
 
 function handleNotification(n: AnyNotification): void {

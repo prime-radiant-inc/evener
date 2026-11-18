@@ -9,6 +9,7 @@ import {
   decodeTranscriptItem,
   encodeTranscriptItem,
   type HistoryState,
+  handOffReplacedSource,
   historyFallback,
   historyReplacesWindow,
   hydrateThread,
@@ -24,9 +25,7 @@ import {
   olderHistoryExhausted,
   pruneBackgroundHistoryBodies,
   readDisposition,
-  recordSourceOwnerOnModel,
   resolvePendingEscalation,
-  retireReplacedSourceHold,
   type SnapshotIdentity,
   type ThreadItem,
   type ThreadItemPosition,
@@ -1182,15 +1181,11 @@ export class TranscriptRepository {
     if (this.#disposed || this.#sealed) return;
     const model = this.#model;
     if (!model) return;
-    // Both halves of the hand-off, retirement FIRST: once the incoming source
-    // is recorded as the owner, the same token compares as an apply and there
-    // would be nothing left to retire. The record must still happen when there
-    // was no sample to clear, or the incoming source's own next notification
-    // reads as another replacement and clears the hold it published.
-    const retired = retireReplacedSourceHold(model, bootGeneration);
-    const owned = recordSourceOwnerOnModel(retired ?? model, bootGeneration);
-    if (owned === undefined && retired === undefined) return;
-    this.#model = owned ?? retired ?? model;
+    // The whole hand-off, unchanged from the reducer's folds: retirement FIRST
+    // and the incoming owner recorded even when there was nothing to clear.
+    const handed = handOffReplacedSource(model, bootGeneration);
+    if (handed === undefined) return;
+    this.#model = handed;
     this.#publish();
   }
 

@@ -567,7 +567,6 @@ export {
   notificationTargetsThread,
   notificationTouchesTranscript,
   resolvePendingEscalation,
-  retireReplacedSourceHold,
 } from "./reducer";
 export {
   type RetryEligibility,
@@ -917,6 +916,7 @@ export {
 } from "./transcriptHistory";
 export {
   copyItemTextPresence,
+  handOffReplacedSource,
   imageSessionRouteForSession,
   isToolCallItemId,
   isToolResultItemId,

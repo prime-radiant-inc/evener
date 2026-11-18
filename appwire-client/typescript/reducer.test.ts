@@ -4567,6 +4567,55 @@ test("a replacement with nothing to clear still becomes the hold owner", () => {
   expect(result.delegates?.[0]?.drainHeldByJobs).toBe(true);
 });
 
+// The shared resync path the mobile client runs is the third fold that advances
+// awaited. A boot 7 resync accepted before any read succeeds must record boot 7
+// as the hold owner; otherwise boot 7's second resync compares against boot 6
+// and erases the live hold boot 7 published in between.
+test("a resync from a new source records the owner before its second resync", () => {
+  const base = testHydrateV6AtBoot("5");
+  const recorded: ThreadModel = {
+    ...base,
+    history: base.history && { ...base.history, holdOwner: "6" },
+  };
+  // Boot 7's first resync: a replacement, with nothing of boot 6's to clear.
+  let result = applyNotification(
+    recorded,
+    {
+      method: "evener/thread/resync",
+      params: { threadId: base.threadId, ref: base.ref, bootGeneration: "7", epoch: 1 },
+    },
+    2000,
+  );
+  // Boot 7 publishes its own live hold.
+  result = applyNotification(
+    result,
+    delegateNotification(
+      "ref_t",
+      delegateInfo({
+        delegateId: "dlg_1",
+        projectionRevision: 4,
+        drainHeldByJobs: true,
+        holdSequence: 1,
+        runningJobCount: 1,
+        oldestRunningJobStartedAt: "2026-01-04T00:00:00Z",
+      }),
+    ),
+    2500,
+  );
+  expect(result.delegates?.[0]?.holdSequence).toBe(1);
+  // Boot 7's second resync, a newer epoch of the same source.
+  result = applyNotification(
+    result,
+    {
+      method: "evener/thread/resync",
+      params: { threadId: base.threadId, ref: base.ref, bootGeneration: "7", epoch: 2 },
+    },
+    3000,
+  );
+  expect(result.delegates?.[0]?.holdSequence).toBe(1);
+  expect(result.delegates?.[0]?.drainHeldByJobs).toBe(true);
+});
+
 test("a failed history keeps the hold for a same-source frame", () => {
   const model = testHydrateV6AtBoot("5");
   let result = applyNotification(

@@ -20,7 +20,6 @@ import {
   markItemIdentityOnly,
   markItemTextOmitted,
   outputImagesToItemImages,
-  recordSourceOwnerOnModel,
   retireReplacedSourceHoldOnModel,
   threadFields,
   wireImageSessionId,
@@ -844,10 +843,22 @@ export function invalidated(history: HistoryState, signal: HistorySignal = {}): 
   // Epochs count again from zero in each boot generation.
   const sameBoot = compareBootGeneration(awaited.bootGeneration, bootGeneration) === "apply";
   const newIncarnation = signal.incarnation !== undefined && signal.incarnation !== history.incarnation;
+  // The ownership record lives HERE, at the one place `awaited` is written, so
+  // no caller can advance the awaited identity without also recording who owns
+  // the hold samples. Recording it at each fold was tried twice and missed a
+  // site both times; a fourth caller must not be able to miss it.
+  //
+  // Only a replaced source takes ownership. A same-boot or bootless
+  // invalidation leaves the recorded owner alone: its daemon's delegate
+  // controller is still sampling, and an unchanged hold emits no update of its
+  // own to restore one dropped here.
+  const owner = history.holdOwner ?? history.awaited?.bootGeneration ?? history.bootGeneration;
+  const record = compareBootGeneration(owner, bootGeneration) === "replace" ? bootGeneration : undefined;
   return {
     ...history,
     invalidatedAtGeneration: history.issuedGeneration,
     awaited: { bootGeneration, epoch: signal.epoch ?? (sameBoot ? awaited.epoch : 0) },
+    ...(record ? { holdOwner: record } : {}),
     ...(newIncarnation ? { pendingIncarnation: signal.incarnation } : {}),
   };
 }
@@ -1283,25 +1294,16 @@ function mergeVersionedPage<M extends ThreadModel>(
     case "defer":
       return { ...model, history: { ...held, deferredPages: [...held.deferredPages, resp] } };
     case "invalidate": {
-      // The incoming source is recorded as the hold's owner even when this
-      // page had no sample of the old one to clear, exactly as the reducer's
-      // folds do. Decided before invalidating, which names the new boot in
-      // `awaited`: a comparison run after it would find no replacement.
-      const retired = retireReplacedSourceHoldOnModel(model, resp.bootGeneration);
-      const record = recordSourceOwnerOnModel(retired ?? model, resp.bootGeneration)?.history?.holdOwner;
       // A page of the incarnation it just announced waits for that
       // incarnation's latest window.
       const history = invalidated(held, readIdentity(resp));
       const deferred = history.pendingIncarnation === resp.snapshot?.incarnation;
-      // Same hold-retirement rule as the reducer's folds: this branch is
-      // reached only when the page's identity is not the held one, and a
-      // different boot generation means a different source whose sequences
-      // start from their own beginning. A same-boot epoch or incarnation
-      // change here leaves the owning daemon's hold alone.
-      const nextHistory = record ? { ...history, holdOwner: record } : history;
+      // `invalidated` recorded the incoming source as the hold owner; this is
+      // the retire, decided against the model that still names the old owner.
+      const retired = retireReplacedSourceHoldOnModel(model, resp.bootGeneration);
       return {
         ...(retired ?? model),
-        history: deferred ? { ...nextHistory, deferredPages: [...nextHistory.deferredPages, resp] } : nextHistory,
+        history: deferred ? { ...history, deferredPages: [...history.deferredPages, resp] } : history,
       };
     }
     case "merge": {

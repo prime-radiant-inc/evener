@@ -23,7 +23,7 @@ import {
   withDisplay,
   withoutNewerPageOmissions,
 } from "./transcriptHistory";
-import { recordSourceOwnerOnModel, retireReplacedSourceHoldOnModel, upsertStableDelegate } from "./transcriptItems";
+import { handOffReplacedSource, upsertStableDelegate } from "./transcriptItems";
 import type {
   AnyNotification,
   HistoryUpdatedParams,
@@ -33,17 +33,6 @@ import type {
   ThreadResyncParams,
 } from "./types.gen";
 import { foldWarningParams } from "./warningFold";
-
-// retireReplacedSourceHold is the reducer's entry point to the one
-// hold-retirement rule (transcriptItems.retireReplacedSourceHoldOnModel), so
-// the browser store and this fold cannot drift. See that function for why
-// only a source change retires a hold.
-export function retireReplacedSourceHold<M extends ThreadModel>(
-  model: M,
-  bootGeneration: string | undefined,
-): M | undefined {
-  return retireReplacedSourceHoldOnModel(model, bootGeneration);
-}
 
 // history/updated: the full current form of every recorded item and turn an
 // entry changed, merged by version under the one generation state machine.
@@ -56,12 +45,10 @@ function applyHistoryUpdated<M extends ThreadModel>(model: M, params: HistoryUpd
     // frame from a different source still carries sequences numbered from its
     // own start. Retire the old samples and keep the diagnostic and the
     // recovery behaviour exactly as they were — this is not an exemption.
-    const retired = retireReplacedSourceHold(live, params.bootGeneration);
-    const base = retired ?? live;
-    // Record the incoming owner: this branch runs no invalidation fold, so
-    // nothing else would record it.
-    const owned = recordSourceOwnerOnModel(base, params.bootGeneration);
-    return owned ?? retired ?? live;
+    // No invalidation fold runs here, so the hand-off supplies both halves: the
+    // retire of the replaced source's samples and the record of the incoming
+    // owner. The diagnostic and the recovery behaviour stay as they were.
+    return handOffReplacedSource(live, params.bootGeneration) ?? live;
   }
   const signal: HistorySignal = {
     bootGeneration: params.bootGeneration,
@@ -78,19 +65,12 @@ function applyHistoryUpdated<M extends ThreadModel>(model: M, params: HistoryUpd
   // alone — that daemon's delegate controller is still sampling, and an
   // unchanged hold emits no update of its own to restore what we dropped.
   if (action === "invalidate") {
-    const retired = retireReplacedSourceHold(live, params.bootGeneration);
-    const base = retired ?? live;
-    // Record the incoming boot as the owner of whatever samples arrive next,
-    // even when there was nothing to clear. Decided BEFORE invalidating: the
-    // invalidated history already names the new boot in `awaited`, so a
-    // comparison run after it would see the new owner and record nothing.
-    // `holdOwner` is the record a structured read failure cannot remove —
-    // `awaited` goes with it. Without this, boot 6 retires the old samples and
-    // the next history/updated from boot 7 advances `awaited` only, so boot
-    // 7's own resync still compares against boot 5 and erases boot 7's hold.
-    const record = recordSourceOwnerOnModel(base, params.bootGeneration)?.history?.holdOwner;
     const history = invalidated(held, signal);
-    return { ...base, history: record ? { ...history, holdOwner: record } : history };
+    // `invalidated` recorded the incoming owner at the one place awaited is
+    // written. What remains is the retire, decided against the pre-invalidation
+    // model so it still sees the owner that is being replaced.
+    const retired = handOffReplacedSource(live, params.bootGeneration);
+    return { ...(retired ?? live), history };
   }
   if (action === "ignore" || held.invalidatedAtGeneration !== undefined) return live;
   // A notification projected after the page that omitted one of its identities
@@ -115,11 +95,14 @@ function applyResync<M extends ThreadModel>(model: M, params: ThreadResyncParams
   if (!params.bootGeneration && params.epoch === undefined) return live;
   const signal: HistorySignal = { bootGeneration: params.bootGeneration || undefined, epoch: params.epoch };
   if (classifySignal(held, signal) !== "invalidate") return live;
-  // Same rule as applyHistoryUpdated: the resync that bumps an epoch to rebuild
-  // a daemon's own transcript index names that same daemon, so its live hold
-  // survives; only a different boot generation retires the sample.
   const history = invalidated(held, signal);
-  const retired = retireReplacedSourceHold(live, params.bootGeneration);
+  // This is the shared resync path the mobile client runs. `invalidated`
+  // recorded the incoming boot as the hold owner, so this call is the retire
+  // alone — and that record is what stops a second resync from the same boot
+  // from comparing against the boot it replaced and erasing its live hold.
+  // A same-boot epoch bump or a bootless resync records nothing and retires
+  // nothing: that daemon is still sampling its own sequence.
+  const retired = handOffReplacedSource(live, params.bootGeneration);
   return { ...(retired ?? live), history };
 }
 

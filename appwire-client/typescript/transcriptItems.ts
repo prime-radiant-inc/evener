@@ -159,6 +159,29 @@ export function recordSourceOwnerOnModel<M extends ThreadModel>(
   return { ...model, history: { ...held, holdOwner: bootGeneration } };
 }
 
+// handOffReplacedSource is the WHOLE rule on a model whose history is not being
+// invalidated in the same step: retire the replaced source's hold samples, then
+// record the incoming source as the owner of whatever arrives next.
+//
+// A fold that runs only the retire leaves the incoming boot unrecorded, so that
+// boot's own next notification compares against the boot it replaced, reads as a
+// fresh replacement, and erases the live hold it just published — with no update
+// of its own to restore it.
+//
+// Order matters: retire is decided against the owner still recorded, so recording
+// first would make the same token compare as an apply and retire nothing.
+//
+// A fold that DOES invalidate does not need this: `invalidated` records the owner
+// itself, at the single place `holdOwner` and `awaited` are written.
+export function handOffReplacedSource<M extends ThreadModel>(
+  model: M,
+  bootGeneration: string | undefined,
+): M | undefined {
+  const retired = retireReplacedSourceHoldOnModel(model, bootGeneration);
+  const owned = recordSourceOwnerOnModel(retired ?? model, bootGeneration);
+  return owned ?? retired;
+}
+
 export function epochMsToISO(ms: number | undefined): string | undefined {
   // Go's zero value leaks through the wire as 0: a non-positive (or NaN)
   // anchor means "absent", never the 1970 epoch - downstream duration math
