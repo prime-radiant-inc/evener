@@ -66,6 +66,15 @@ reclaim, and a stop that settles after a wake settles a later generation, whose
 quiet stands. The field is monotonic, so a replayed release cannot lower the
 floor and revive a quiet a newer release already ended.
 
+Daemon bootstrap is the exception, and it is deliberate. On restart every
+pending row is put into the controller's wake set by ID, including a row whose
+stop's quiet was never released, and idle reconstruction does not reinstall a
+hold for a row a wake already notes. So a restart can make a pending report
+eligible with the release floor still at zero. That is a different event from an
+idle reclaim: reclaim rebuilds the quiet from the settled stop, while a restart
+re-arms the row and lets the arm that presents it end the quiet by presenting
+it. The scheduler's S12 entry states the same distinction.
+
 ## Delegate report preservation
 
 A successfully reported generation's terminal packet `message` is the accepted

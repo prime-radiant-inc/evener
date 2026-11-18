@@ -619,30 +619,22 @@ func (c *delegateTreeController) attentionHoldReleaseEventLocked(delegateID stri
 	}, true
 }
 
-// settledAttentionStopUnreleasedLocked reports whether any settled generation at
-// or below the wake's sample was an attention run that a user stopped, and no
-// release has reached it yet. This is the condition the release exists for: the
-// wake is newer evidence than that stop, so the quiet it left must not be
-// rebuilt by a cold restore. A later run of any other trigger settles its own
-// generation and says nothing about the earlier stop, so it neither owes a
-// release nor excuses one. Callers hold c.mu.
+// settledAttentionStopUnreleasedLocked reports whether a settled generation at
+// or below the wake's sample was an attention run a user stopped, and no release
+// has reached it yet. This is the condition the release exists for: the wake is
+// newer evidence than that stop, so the quiet it left must not be rebuilt by a
+// cold restore. A later run of any other trigger settles its own generation and
+// says nothing about the earlier stop, so it neither owes a release nor excuses
+// one. Callers hold c.mu.
+//
+// The question is answered from the newest-stop index rather than by scanning:
+// the floor stays zero on a delegate that was never stopped, so a scan of every
+// generation ran on every settled wake and grew quadratically with the
+// delegate's life. Only the newest stop can be the one still owed a release —
+// an older stop is superseded by it — so one comparison decides.
 func (c *delegateTreeController) settledAttentionStopUnreleasedLocked(delegateID string, through, released uint64) bool {
-	// The scan stops at the durable release floor: a stop at or below it has
-	// already been superseded, so re-finding it would make the first wake at
-	// every later generation append a release for the same historical stop.
-	// Only a stop newer than the floor can still be owed a release.
-	for generation := through; generation > released; generation-- {
-		lease := delegateLease{delegateID: delegateID, generation: generation}
-		if c.runStarts[lease] != delegatestore.TriggerAttention {
-			continue
-		}
-		outcome, settled := c.runOutcomes[lease]
-		if !settled || outcome.Status != delegatestore.OutcomeCancelled {
-			continue
-		}
-		return true
-	}
-	return false
+	newest := c.latestAttentionStop[delegateID]
+	return newest > released && newest <= through
 }
 
 func (c *delegateTreeController) forgetDelegateAttentionLocked(delegateID, attentionID string) {

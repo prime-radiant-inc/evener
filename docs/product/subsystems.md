@@ -286,6 +286,19 @@ park-prefixed refusal, and the refusal text, tool descriptions and system prompt
 say to end the turn so the completion wakes the agent. The session keeps no
 wait primitive. See [job control](../job-control.md).
 
+S12 owns the durable side of a user's stop on a delegate's pending report: the
+stop appends the report as a reopened row and quietens it, and the delegate
+journal records that quiet's generation. A row stays quiet across an idle
+reclaim until a settled wake journals a release at or past the generation its
+own stop settled — that newer event, not the generation the delegate happens to
+be on, is what makes it eligible again, and presentation is where the decision
+is taken because a wake journals its release before it publishes anything. A
+daemon restart is the deliberate exception: bootstrap puts every pending row
+into the wake set by ID, so a restart can make a row eligible with the release
+floor still at zero, while an idle reclaim rebuilds the quiet from the settled
+stop. See [the delegate runtime contract](
+../subagent-runtime-contracts.md#read-a-delegate-result-correctly).
+
 S06 requires local `hub_state_root` storage with best-effort OS classification,
 not an exhaustive filesystem allowlist. Endpoint observation is non-owning,
 Linux owners retain flock plus an OFD marker, and hub/inspector upgrades must be

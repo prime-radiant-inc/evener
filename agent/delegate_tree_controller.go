@@ -126,9 +126,16 @@ type delegateTreeController struct {
 	// stop: several rows can be unreleased at once after successive stops, and a
 	// later generation's outcome says nothing about an earlier row. A restore
 	// therefore asks this index the row's own generation.
-	runOutcomes   map[delegateLease]delegatestore.Outcome
-	owedAdmission bool
-	emitUpdate    func(delegateUpdatePlan)
+	runOutcomes map[delegateLease]delegatestore.Outcome
+	// latestAttentionStop is the newest generation per delegate whose run was
+	// attention-triggered and settled cancelled. Wake admission asks whether a
+	// stop newer than the release floor still exists; scanning every generation
+	// under this lock made that question quadratic on a long-lived delegate,
+	// because the floor stays zero when nothing was ever stopped. The answer is
+	// a lookup into this index and a comparison with the floor.
+	latestAttentionStop map[string]uint64
+	owedAdmission       bool
+	emitUpdate          func(delegateUpdatePlan)
 	// appendFault, when set, fails appendLocked's durable append before it
 	// reaches the store. Tests inject a chosen append error; nil in
 	// production.
@@ -505,6 +512,7 @@ func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTree
 		reconcileOrder:      delegateOpenRunOrder(events, durable),
 		runStarts:           delegateRunStartIndex(events),
 		runOutcomes:         delegateRunOutcomeIndex(events),
+		latestAttentionStop: delegateLatestAttentionStopIndex(events),
 		owedAdmission:       true,
 	}
 	for _, event := range events {
@@ -544,6 +552,18 @@ func (c *delegateTreeController) appendLocked(events ...delegatestore.Event) ([]
 		}
 		if event.RunFinished != nil {
 			c.runOutcomes[delegateLease{delegateID: event.DelegateID, generation: event.RunFinished.Generation}] = event.RunFinished.Outcome
+			// A stop recorded here must be reachable by the index immediately:
+			// wake admission asks it before any replay, and an appended settle
+			// is the same evidence a replayed one is.
+			if c.runStarts[delegateLease{delegateID: event.DelegateID, generation: event.RunFinished.Generation}] == delegatestore.TriggerAttention &&
+				event.RunFinished.Outcome.Status == delegatestore.OutcomeCancelled {
+				if event.RunFinished.Generation > c.latestAttentionStop[event.DelegateID] {
+					if c.latestAttentionStop == nil {
+						c.latestAttentionStop = make(map[string]uint64)
+					}
+					c.latestAttentionStop[event.DelegateID] = event.RunFinished.Generation
+				}
+			}
 		}
 		if event.Created != nil {
 			c.noteActivityAdmissionLocked(event)

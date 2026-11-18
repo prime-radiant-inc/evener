@@ -1104,6 +1104,58 @@ func TestReconcileMovesAHoldItEndsToTheHistoryTail(t *testing.T) {
 //
 // The window is opened by the seam at the instant the request holds its turns:
 // the release lands there, exactly as a fresh arm's release would.
+//
+// A recovered successor whose start never committed is still the run whose
+// request presents the report: bootstrap commits the owed generation before it
+// rebuilds the runtime, so the aggregate reads as an open run. The release
+// floor still governs the earlier settled generation, and the move has to
+// happen on the first request — the one the recovered run sends — or that
+// request presents the released report at the position the quiet left it,
+// ahead of the fresh frame, which no resident release would ever produce.
+func TestDeriveReleasesAReportWhoseRecoveredSuccessorIsOpen(t *testing.T) {
+	t.Parallel()
+	sess, reopenedID, _ := deriveHeldFixtureWithJournal(t, delegatestore.OutcomeCancelled, "cancelled")
+	// Exchanges recorded after the reopen bury the report on any request that
+	// reads history in place. The quiet itself was in memory on the runtime the
+	// crash lost, so the rebuild is the only thing that can move the report: a
+	// derivation that returns early leaves this order for the recovered
+	// successor's first request.
+	sess.mu.Lock()
+	sess.history = append(sess.history, schema.NewTurn(schema.TurnAssistant, llm.Assistant("an exchange recorded after the reopened report")))
+	sess.mu.Unlock()
+	journalDeriveHeldRelease(t, sess, 1)
+	// The owed successor: the start the crash lost, committed by bootstrap
+	// before the runtime is rebuilt. Its request is the first to present
+	// anything, so it is the one the ordering has to be right for.
+	controller := sess.delegateController
+	controller.mu.Lock()
+	_, err := controller.appendLocked(delegatestore.Event{
+		Kind:       delegatestore.EventDelegateRunStarted,
+		DelegateID: "dlg_hold",
+		RunStarted: &delegatestore.RunStarted{Generation: 2, Trigger: delegatestore.TriggerAttention, StartedAt: time.Unix(30, 0).UTC()},
+	})
+	open := controller.durable["dlg_hold"].CurrentRunOpen
+	controller.mu.Unlock()
+	if err != nil {
+		t.Fatalf("commit the owed successor: %v", err)
+	}
+	if !open {
+		t.Fatal("premise broken: the recovered successor is not open, so the guard this case exists for never runs")
+	}
+
+	sess.deriveHeldDelegateAttentionFromOutcome()
+
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if len(sess.history) == 0 {
+		t.Fatal("the derivation left no history")
+	}
+	tail := sess.history[len(sess.history)-1]
+	if tail.AttentionID != reopenedID || tail.Kind != schema.TurnSteering {
+		t.Fatalf("the released report is not the history's last turn (last attention %q kind %v): the open-run guard skipped the release's tail move, so the recovered request presents it ahead of the fresh frame", tail.AttentionID, tail.Kind)
+	}
+}
+
 func TestAttentionProjectionCapturesTurnsAndHoldsTogether(t *testing.T) {
 	t.Parallel()
 	sess, _ := newCompactableSession(t)

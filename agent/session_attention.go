@@ -1191,9 +1191,51 @@ func (s *Session) reconcileAutomaticDriveHoldsLocked() {
 		return
 	}
 	sort.Strings(ended)
+	// The released rows move to the tail, so any admitted frame that is not in
+	// history yet is restored first: a frame appended afterwards would land
+	// behind the report and become the last message, reversing the order the same
+	// wake produces when its runtime is resident. Restoring here covers a cold
+	// arm that committed while no runtime existed to retain on.
+	s.retainAdmittedPendingTurnsLocked()
 	s.moveHeldDelegateAttentionTurnsToTail(ended)
 	for _, id := range ended {
 		delete(s.attentionAutomaticDriveHolds, id)
+	}
+}
+
+// retainAdmittedPendingTurnsLocked puts every admitted wake's pending turn into
+// the resident history. It runs before a release moves a free'd report to the
+// tail, because a frame that is not resident when the move happens lands behind
+// that report afterwards and the next request ends on the frame instead of the
+// report the release delivered. Rows a stop still holds are skipped: they are
+// not presentable yet, and their turn's position belongs to the release that
+// will eventually move it. The retain is ID-keyed, so a resident turn keeps the
+// position it already has. Callers hold attentionMu.
+func (s *Session) retainAdmittedPendingTurnsLocked() {
+	controller := s.delegateController
+	if controller == nil || s.owningDelegateID == "" {
+		return
+	}
+	admitted := controller.admittedAttentionRows(s.owningDelegateID)
+	if len(admitted) == 0 {
+		return
+	}
+	fold, err := s.delegateAttentionFoldLocked()
+	if err != nil {
+		return
+	}
+	for _, attentionID := range fold.order {
+		if _, known := admitted[attentionID]; !known {
+			continue
+		}
+		if _, resolved := fold.resolutions[attentionID]; resolved {
+			continue
+		}
+		if turn, ok := fold.turns[attentionID]; ok {
+			// A row already resident keeps its position; the retain only
+			// appends what history is missing.
+			_ = s.retainDelegateAttentionTurn(turn)
+		}
 	}
 }
 
@@ -1433,16 +1475,10 @@ func (s *Session) deriveHeldDelegateAttentionFromOutcome() {
 	controller := s.delegateController
 	controller.mu.Lock()
 	generation := uint64(0)
-	stopped := false
 	released := uint64(0)
 	if aggregate := controller.durable[s.owningDelegateID]; aggregate != nil {
 		generation = aggregate.Generation
 		released = aggregate.AttentionHoldReleasedGeneration
-		// The delegate is worth rebuilding a quiet for when any of its
-		// generations settled as an attention stop, not only the newest: an
-		// earlier stop's row can still be unreleased under a later generation
-		// that ran for another row.
-		stopped = !aggregate.CurrentRunOpen
 	}
 	// Each row's own generation decides its quiet, so the evidence is read per
 	// generation here, in the same locked snapshot as the aggregate.
@@ -1473,7 +1509,7 @@ func (s *Session) deriveHeldDelegateAttentionFromOutcome() {
 	// Only a stop's own rows are in question here. Every other restored session
 	// presents its pending rows exactly as the resident one would, and has no
 	// quiet to re-impose or end.
-	if !stopped || generation == 0 {
+	if generation == 0 {
 		s.attentionMu.Unlock()
 		return
 	}

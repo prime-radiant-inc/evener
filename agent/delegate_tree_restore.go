@@ -231,6 +231,37 @@ func delegateRunOutcomeIndex(events []delegatestore.Event) map[delegateLease]del
 	return index
 }
 
+// delegateLatestAttentionStopIndex is the newest generation per delegate whose
+// run was attention-triggered and settled cancelled. Wake admission asks
+// whether a stop newer than the release floor still exists, and scanning every
+// generation under the controller lock made that quadratic on a long-lived
+// delegate: the floor stays zero when nothing was ever stopped, so the scan
+// never shortened. This index answers the same question in constant time.
+func delegateLatestAttentionStopIndex(events []delegatestore.Event) map[string]uint64 {
+	starts := make(map[delegateLease]delegatestore.RunTrigger)
+	stops := make(map[string]uint64)
+	for _, event := range events {
+		if event.RunStarted != nil {
+			starts[delegateLease{delegateID: event.DelegateID, generation: event.RunStarted.Generation}] = event.RunStarted.Trigger
+			continue
+		}
+		if event.RunFinished == nil {
+			continue
+		}
+		lease := delegateLease{delegateID: event.DelegateID, generation: event.RunFinished.Generation}
+		if starts[lease] != delegatestore.TriggerAttention {
+			continue
+		}
+		if event.RunFinished.Outcome.Status != delegatestore.OutcomeCancelled {
+			continue
+		}
+		if event.RunFinished.Generation > stops[event.DelegateID] {
+			stops[event.DelegateID] = event.RunFinished.Generation
+		}
+	}
+	return stops
+}
+
 func (c *delegateTreeController) ReconcileRequirements() delegateReconcileRequirements {
 	c.mu.Lock()
 	defer c.mu.Unlock()
