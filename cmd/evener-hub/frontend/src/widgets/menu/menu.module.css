@@ -102,7 +102,7 @@
   margin: 0;
   /* Items sit inset from the popup's edge and round their own wash, so no
    * square hover corner meets the popup's rounded one. */
-  padding: var(--space-1);
+  padding: var(--space-1) var(--menu-inline-pad, var(--space-1));
   list-style: none;
   background: var(--surface-2);
   border-radius: var(--radius-pane);
@@ -110,7 +110,14 @@
 }
 
 .item {
-  padding: var(--space-2) var(--space-3);
+  /* A zoomed-in viewport can leave a cap narrower than the two insets put
+   * together - 52px of viewport caps the popup at 36, and the popup's own 4px
+   * and the row's 12px leave 4px for a glyph, which cannot wrap. The widget
+   * writes these two properties from the VISIBLE WIDTH alone, so the insets
+   * yield there without the popup's own measurement ever deciding what it
+   * measures - a class that changed the padding would make the width it is
+   * keyed on flip every pass. */
+  padding: var(--space-2) var(--menu-row-inline-pad, var(--space-3));
   border-radius: var(--radius-control);
   font-family: var(--font-sans);
   font-size: var(--font-size-ui);
@@ -129,16 +136,6 @@
 .popupNarrow .item {
   white-space: normal;
   overflow-wrap: anywhere;
-  /* A zoomed-in viewport can leave a cap narrower than the two insets put
-   * together - 52px of viewport caps the popup at 36, and the popup's own 4px
-   * and the row's 12px leave 4px for a glyph. Wrapping cannot break a glyph, so
-   * the room has to come from the insets instead: they are the widget's own
-   * breathing room, not the reader's content. */
-  padding-inline: var(--space-1);
-}
-
-.popupNarrow {
-  padding-inline: 0;
 }
 
 .item:hover {
@@ -184,9 +181,14 @@
 /* Group rule between item clusters (SessionMenu's panes/organize/
  * destructive groups). --edge matches .popup's own ring so the rule reads as
  * the popup's own hairline, not a new color; the negative inline margin
- * carries it across the popup's inset to both edges. */
+ * carries it across the popup's inset to both edges.
+ *
+ * The margin follows the popup's CURRENT inset rather than the roomy one, so a
+ * capped popup whose insets have yielded keeps the rule flush with its edges
+ * instead of hanging 4px past them - which is a horizontal scrollbar on a menu
+ * whose labels all fit. */
 .separator {
-  margin: var(--space-1) calc(-1 * var(--space-1));
+  margin: var(--space-1) calc(-1 * var(--menu-inline-pad, var(--space-1)));
   border-top: 1px solid var(--edge);
   list-style: none;
 }

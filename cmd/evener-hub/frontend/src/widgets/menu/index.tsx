@@ -185,21 +185,30 @@ function revealRow(popup: HTMLElement, row: HTMLElement): void {
     // them scroll the rest, which is the direction they would read it anyway.
     popup.scrollTop = row.offsetHeight > portHeight ? rowTop : rowBottom - portHeight;
   }
-  // The same question on the other axis. A zoomed-in viewport can cap the popup
-  // narrower than a glyph, so the row's own text runs past its right edge and
-  // the vertical scroll above cannot reach it. The popup's scroll space is the
-  // only thing moved, for the same reason it is on the vertical axis: this runs
-  // before placement writes the popup's new coordinates, and scrollIntoView
-  // would pan the page toward where it used to be.
-  const rowLeft = row.offsetLeft;
-  const rowRight = rowLeft + row.offsetWidth;
-  const portWidth = popup.offsetWidth;
-  // Start, not end, when the row is wider than the popup - the same choice the
-  // vertical branch makes, and for the same reason: the beginning of the
-  // action's label is what the reader is reading toward.
-  if (rowRight > popup.scrollLeft + portWidth) {
-    popup.scrollLeft = row.offsetWidth > portWidth ? rowLeft : rowRight - portWidth;
-  } else if (rowLeft < popup.scrollLeft) popup.scrollLeft = rowLeft;
+  revealRowInline(popup, row);
+}
+
+/** The same question on the other axis: is the focused row's inline START inside
+ * the box the popup shows?
+ *
+ * The overflow is read from the POPUP, not from the row's border box. A glyph
+ * wider than the row can run past the popup while the row's own box still fits
+ * it - the box was sized to the scrollport and the text was not - and comparing
+ * the two widths then finds nothing to reveal. The popup's own scrollable width
+ * is the statement that something is out of reach.
+ *
+ * Only the start is revealed, and only when it is out of view: a glyph that
+ * cannot fit whole leaves the rest to the reader, whose own horizontal scroll
+ * this must not undo. The popup's scroll space is the only thing moved, for the
+ * same reason as the vertical axis - this runs before placement writes the
+ * popup's new coordinates, and scrollIntoView would pan the page toward where
+ * it used to be. */
+function revealRowInline(popup: HTMLElement, row: HTMLElement): void {
+  const maximum = popup.scrollWidth - popup.clientWidth;
+  if (maximum <= 0) return;
+  const start = row.offsetLeft;
+  if (start >= popup.scrollLeft && start < popup.scrollLeft + popup.clientWidth) return;
+  popup.scrollLeft = Math.max(0, Math.min(start, maximum));
 }
 
 /** What the reveal question is asked of: the row's place in the popup's scroll
@@ -316,41 +325,50 @@ function witnessesIn(scroller: Element, triggerEl: HTMLElement, ownerWindow: Win
   const portTop = port.top;
   const portBottom = port.top + (scroller.clientHeight || port.height);
   const found: Element[] = [];
-  // Walked one ROW GROUP at a time, and a group whose box is outside the
-  // scrollport is skipped before any of its descendants is looked at. A rail
-  // scrolled to the bottom holds hundreds of rows the reader cannot see, and
-  // enumerating all of them to reject them one by one reads geometry for every
-  // row in the list on every placement. The group's own box answers the same
-  // question at the cost of one read per group.
-  const groups = Array.from(scroller.children);
-  for (const group of groups) {
-    if (found.length >= WITNESS_LIMIT) break;
-    if (triggerEl.contains(group)) continue;
-    const groupRect = group.getBoundingClientRect();
-    if (groupRect.height > 0 && (groupRect.bottom <= portTop || groupRect.top >= portBottom)) continue;
-    // The group ITSELF counts: in a flat list each row is a direct child of the
-    // scroller, and skipping down to its descendants would put no row in the
-    // set at all.
-    for (const node of [group, ...Array.from(group.querySelectorAll("*"))]) {
-      if (found.length >= WITNESS_LIMIT) break;
-      if (node.contains(triggerEl) || triggerEl.contains(node)) continue;
-      const rect = node.getBoundingClientRect();
-      if (rect.height <= 0) continue;
-      // Above the scrollport's top edge, or below its bottom: the reader cannot
-      // see it, so it is not what the browser anchored the view on.
-      if (rect.bottom <= portTop || rect.top >= portBottom) continue;
-      // A box with a boxed descendant is a container, and the movement this
-      // looks for happens BELOW it. Descending as far as the boxes go lands
-      // inside a row, where the movement is visible.
-      const inner = Array.from(node.querySelectorAll("*")).some(
-        (child) => !child.contains(triggerEl) && child.getBoundingClientRect().height > 0,
-      );
-      if (inner) continue;
-      const position = ownerWindow.getComputedStyle(node).position;
+  // Walked DOWN from the scroller, and a subtree whose own box is outside the
+  // scrollport is abandoned without looking inside it. A rail scrolled to the
+  // bottom holds hundreds of rows the reader cannot see; asking each of them
+  // is a geometry read per row on every placement, and the row's own box
+  // answers the same question for all of its descendants at once.
+  function collect(parent: Element): void {
+    for (const child of Array.from(parent.children)) {
+      if (found.length >= WITNESS_LIMIT) return;
+      // The trigger's own row moves with the trigger, so it can never explain
+      // where the browser's view sits - and neither can anything inside it.
+      if (triggerEl.contains(child)) continue;
+      const rect = child.getBoundingClientRect();
+      // A box with no height says nothing about where its contents are: a
+      // wrapper that resolves none (a plain div in jsdom without a stubbed
+      // rect) sits above the rows the browser anchors on. Pruning on its own
+      // box would abandon the whole section, so it is descended into and its
+      // rows answer for themselves.
+      const boxed = rect.height > 0;
+      if (boxed && (rect.bottom <= portTop || rect.top >= portBottom)) continue;
+      const position = ownerWindow.getComputedStyle(child).position;
       if (position === "fixed" || position === "sticky") continue;
-      found.push(node);
+      // A box that HOLDS the trigger is the trigger's own row, and a witness
+      // that always moves with the trigger explains nothing. Its siblings are
+      // the section's other rows and are exactly the rows the browser anchors
+      // on, so this descends instead of stopping - the rail's Live band wraps
+      // the trigger's row, and refusing to look inside it would leave every
+      // menu in the rail with no witness at all.
+      if (child.contains(triggerEl)) {
+        collect(child);
+        continue;
+      }
+      // Descend first: the movement this looks for happens BELOW a container,
+      // and only a box inside a row moves with that row.
+      const before = found.length;
+      collect(child);
+      // Nothing inside it is on screen - a row whose own bottom edge is the
+      // only part of it in view has all of its content above the scrollport -
+      // so the ROW is the only thing that can carry the movement. Without this
+      // it is neither a leaf (it has boxed children) nor a container with a
+      // visible child, and the browser can anchor on a row nothing records.
+      if (found.length === before && boxed) found.push(child);
     }
   }
+  collect(scroller);
   return found;
 }
 
@@ -801,11 +819,10 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
           // The popup can be capped narrower than a glyph - a zoomed-in
           // viewport leaves a few pixels of text room however the insets
           // yield - and the horizontal scroll is the only thing that can bring
-          // it back. This is the same question on the other axis: is the row
-          // inside the box the reader can see? It reads the row's own width
-          // against the popup's, so nothing here is measured in two coordinate
-          // systems.
-          if (now.width > now.portWidth) revealRow(popup, row);
+          // it back. This is the same question on the other axis, asked of the
+          // popup's own overflow: a glyph can run past the popup while the
+          // row's border box still fits inside it.
+          revealRowInline(popup, row);
           return;
         }
         // Three ways layout can take a row out of sight, and one for rows it
@@ -914,6 +931,22 @@ export function Menu({ trigger, icon, label, items, triggerTabIndex, variant = "
     if (popupEl.style.maxInlineSize !== maxInlineSize) popupEl.style.maxInlineSize = maxInlineSize;
     const minInlineSize = availableWidth < NARROW_POPUP_WIDTH ? "0" : "";
     if (popupEl.style.minWidth !== minInlineSize) popupEl.style.minWidth = minInlineSize;
+    // The inline insets yield when the visible width is too narrow to hold them
+    // and a glyph - 52px of viewport caps the popup at 36, which its own 4 and
+    // the row's 12 would leave 4px of. They are functions of the visible width
+    // ONLY, never of the popup's measured width: a class that changed the
+    // padding would drop the measurement 24px in the same pass the measurement
+    // decided the class, and the popup would alternate between the two sizes
+    // every frame it stayed open.
+    const narrowInsets = availableWidth < NARROW_POPUP_WIDTH;
+    const inlinePad = narrowInsets ? "0px" : "";
+    const rowInlinePad = narrowInsets ? "var(--space-1)" : "";
+    if (popupEl.style.getPropertyValue("--menu-inline-pad") !== inlinePad) {
+      popupEl.style.setProperty("--menu-inline-pad", inlinePad);
+    }
+    if (popupEl.style.getPropertyValue("--menu-row-inline-pad") !== rowInlinePad) {
+      popupEl.style.setProperty("--menu-row-inline-pad", rowInlinePad);
+    }
     // The stylesheet sizes the popup to `max-content`, so the width measured
     // here is the popup's own request capped by the visible width: below the
     // cap it is what the labels want, at the cap it is as much as the reader

@@ -4388,21 +4388,97 @@ test("declares a :focus-visible rule in its CSS module, using only tokens", () =
   expect(css).toContain(":focus-visible");
 });
 
+// A rail can hold hundreds of rows above the reader, and the witness set is
+// taken on every placement pass. Reading a box inside each of them to reject it
+// is a geometry read per descendant of a section the reader cannot see; the
+// row's OWN box answers the same question for everything it contains.
+test("the witness scan reads no geometry inside a row that is off the scrollport", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  // Every box read is recorded by class, so the assertion below sees a buried
+  // leaf being measured rather than only the row that contains it.
+  const measured: string[] = [];
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    measured.push(this.className);
+    if (this.tagName === "BUTTON") return box(100, 300, 40, 28);
+    // The buried row sits entirely above the 0..120 scrollport the popup's
+    // scroller describes, so nothing inside it can be what the browser holds.
+    if (this.getAttribute("data-testid") === "buried") return box(0, -400, 200, 400);
+    if (this.getAttribute("data-testid") === "live-heading") return box(0, 20, 200, 20);
+    if (this.tagName === "UL") return box(0, 0, 160, 120);
+    return box(0, 0, 0, 0);
+  });
+  stubPopupLayoutBox(window, 160, 120);
+  try {
+    render(
+      <div data-testid="owning-scroller" style={{ overflowY: "auto" }}>
+        <div data-testid="buried">
+          {Array.from({ length: 40 }, (_, i) => `buried ${i}`).map((label) => (
+            <div key={label} className="buried-leaf">
+              {label}
+            </div>
+          ))}
+        </div>
+        <div data-testid="live-heading">Live</div>
+        <Menu trigger="Actions" items={items()} />
+      </div>,
+    );
+    const scroller = screen.getByTestId("owning-scroller");
+    Object.defineProperty(scroller, "scrollHeight", { configurable: true, value: 600 });
+    Object.defineProperty(scroller, "clientHeight", { configurable: true, value: 200 });
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    expect(screen.getByRole("menu")).toBeTruthy();
+    // The offscreen row itself may be measured - that is the read that prunes
+    // it. Its forty descendants must not be.
+    expect(measured).not.toContain("buried-leaf");
+  } finally {
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
 // A zoomed-in viewport can cap the popup narrower than the space its own insets
 // take. At 52px of viewport the cap is 36, the popup's 4px inset and the row's
 // 12px leave 4px for a glyph - and a glyph does not wrap. The insets are the
 // widget's breathing room, so they yield first; only then does the popup take
 // the overflow onto its own horizontal scrollbar rather than painting the text
 // outside a box the vertical reveal can never reach.
-test("the popup and row insets yield when the visible width is narrower than them", () => {
-  const here = dirname(fileURLToPath(import.meta.url));
-  const css = readFileSync(join(here, "menu.module.css"), "utf8");
-  const narrow = /\.popupNarrow\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
-  expect(narrow).toMatch(/padding-inline:\s*0;/);
-  const narrowItem = /\.popupNarrow\s+\.item\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
-  expect(narrowItem).toMatch(/padding-inline:\s*var\(--space-1\);/);
-  const popup = /\.popup\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
-  expect(popup).toMatch(/overflow-x:\s*auto;/);
+//
+// The insets are read from custom properties the widget writes from the VISIBLE
+// WIDTH, not from a class. A class that changed the padding would drop the
+// popup's measured width by the same 24px in the pass that measured it, and the
+// popup would alternate between the two sizes on every ResizeObserver callback.
+test("the popup and row insets yield when the visible width is narrower than them", async () => {
+  const user = userEvent.setup();
+  const originalInnerWidth = Object.getOwnPropertyDescriptor(window, "innerWidth");
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  // 52px of viewport is the case: 36px of cap, 4 + 12 of inset, 4 for a glyph.
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 52 });
+  try {
+    render(<Menu trigger="Actions" items={items()} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    const popup = screen.getByRole("menu");
+    // The stylesheet has to READ both properties, or the widget writing them
+    // changes nothing on screen.
+    const here = dirname(fileURLToPath(import.meta.url));
+    const css = readFileSync(join(here, "menu.module.css"), "utf8");
+    const popupRule = /\.popup\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+    expect(popupRule).toMatch(/padding:[^;]*var\(--menu-inline-pad,/);
+    expect(popupRule).toMatch(/overflow-x:\s*auto;/);
+    const itemRule = /\.item\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
+    expect(itemRule).toMatch(/padding:[^;]*var\(--menu-row-inline-pad,/);
+    // And the widget yields them at this width - the popup's own inset to zero
+    // and the row's to the smallest token that still separates text from the
+    // popup's edge.
+    expect(popup.style.getPropertyValue("--menu-inline-pad")).toBe("0px");
+    expect(popup.style.getPropertyValue("--menu-row-inline-pad")).toBe("var(--space-1)");
+  } finally {
+    vi.restoreAllMocks();
+    if (originalInnerWidth) Object.defineProperty(window, "innerWidth", originalInnerWidth);
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
 });
 
 // The same rows, on the other axis. A label caught between a cap narrower than
@@ -4410,15 +4486,17 @@ test("the popup and row insets yield when the visible width is narrower than the
 // vertical reveal leaves it there because the row is vertically whole. Moving
 // only the popup's own scroll - never scrollIntoView - is what keeps a
 // pinch-zoomed page where the reader put it.
-test("a row wider than the popup is brought into view by the popup's own horizontal scroll", async () => {
+test("a row whose start is out of reach is brought back by the popup's own horizontal scroll", async () => {
   const user = userEvent.setup();
   const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
   Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
   const PORT_WIDTH = 36;
-  // The row sits inset 10px and is 40 wide: 6px of it live past the 36px popup,
-  // and its own start is 10px inside the popup's content.
+  // The row's own box FITS the 36px port - it is 30 wide - while its start sits
+  // 54 along content that runs to 96. A glyph wider than the row pushes the
+  // popup's scroll width past its client width without the row's border box
+  // ever being wider than the popup, and that pair is what reports the overflow.
   vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
-    if (this.tagName === "BUTTON") return box(100, 300, 40, 28);
+    if (this.tagName === "BUTTON") return box(100, 300, 30, 28);
     if (this.tagName === "UL") return box(0, 300, PORT_WIDTH, 120);
     return box(0, 0, 0, 0);
   });
@@ -4428,7 +4506,56 @@ test("a row wider than the popup is brought into view by the popup's own horizon
   });
   vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
     if (this.tagName === "UL") return PORT_WIDTH;
-    return this.tagName === "LI" ? 40 : 0;
+    return this.tagName === "LI" ? 30 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetLeft", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "LI" ? 54 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
+    return 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "scrollWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "UL" ? 96 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "UL" ? PORT_WIDTH : 0;
+  });
+  try {
+    render(<Menu trigger="Actions" items={items()} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    const popup = screen.getByRole("menu");
+    // Vertically whole, so only the horizontal branch can have moved it, and
+    // the start - not the far end - is what comes back.
+    expect(popup.scrollTop).toBe(0);
+    expect(popup.scrollLeft).toBe(54);
+  } finally {
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// The other direction, and the reason the reveal reads the POPUP's overflow
+// instead of comparing the row's width with the popup's: a row the reader can
+// already read from its start is left alone. The popup's content still runs
+// past it, and a reveal that hunted the far end would take the reader's own
+// horizontal scroll away every time a label grew.
+test("a row readable from its start keeps the reader's own horizontal scroll", async () => {
+  const user = userEvent.setup();
+  const originalInnerHeight = Object.getOwnPropertyDescriptor(window, "innerHeight");
+  Object.defineProperty(window, "innerHeight", { configurable: true, value: 800 });
+  const PORT_WIDTH = 36;
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(100, 300, 30, 28);
+    if (this.tagName === "UL") return box(0, 300, PORT_WIDTH, 120);
+    return box(0, 0, 0, 0);
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetHeight", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "UL") return 120;
+    return this.tagName === "LI" ? 44 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "offsetWidth", "get").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "UL") return PORT_WIDTH;
+    return this.tagName === "LI" ? 30 : 0;
   });
   vi.spyOn(HTMLElement.prototype, "offsetLeft", "get").mockImplementation(function (this: HTMLElement) {
     return this.tagName === "LI" ? 10 : 0;
@@ -4436,16 +4563,71 @@ test("a row wider than the popup is brought into view by the popup's own horizon
   vi.spyOn(HTMLElement.prototype, "offsetTop", "get").mockImplementation(function (this: HTMLElement) {
     return 0;
   });
+  vi.spyOn(HTMLElement.prototype, "scrollWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "UL" ? 96 : 0;
+  });
+  vi.spyOn(HTMLElement.prototype, "clientWidth", "get").mockImplementation(function (this: HTMLElement) {
+    return this.tagName === "UL" ? PORT_WIDTH : 0;
+  });
+  try {
+    render(<Menu trigger="Actions" items={items()} />);
+    await user.click(screen.getByRole("button", { name: "Actions" }));
+    // The row starts 10 in from the content's start with 26 to spare, so its
+    // opening words are on screen and the popup's scroll stays where the
+    // reader had it.
+    expect(screen.getByRole("menu").scrollLeft).toBe(0);
+  } finally {
+    vi.restoreAllMocks();
+    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+  }
+});
+
+// The popup's measured width decides whether its cap applied, and the insets
+// decide that measurement. If a class changed the insets, the same pass that
+// measured the popup would change what it measures: 240 of cap against 250 of
+// label gains the class, the class drops 24 of padding, the next measurement is
+// 226 and the class comes off - every ResizeObserver callback, forever. The
+// insets are a function of the VISIBLE WIDTH and of nothing else, so this
+// fixture holds the width fixed and moves only the measurement.
+test("a cap that lands between the two inset widths does not change the insets it measured", async () => {
+  const user = userEvent.setup();
+  const originalInnerWidth = Object.getOwnPropertyDescriptor(window, "innerWidth");
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: 800 });
+  const fakeViewport = new EventTarget() as EventTarget & {
+    width: number;
+    height: number;
+    offsetLeft: number;
+    offsetTop: number;
+  };
+  // 256 of visible width leaves 240 of cap: wider than the popup's reduced form
+  // (226) and narrower than its roomy one (250), which is exactly the window
+  // where a padding-driven class alternates.
+  fakeViewport.width = 256;
+  fakeViewport.height = 800;
+  fakeViewport.offsetLeft = 0;
+  fakeViewport.offsetTop = 0;
+  vi.stubGlobal("visualViewport", fakeViewport);
+  vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockImplementation(function (this: HTMLElement) {
+    if (this.tagName === "BUTTON") return box(20, 300, 40, 28);
+    if (this.tagName === "UL") return box(0, 0, 240, 120);
+    return box(0, 0, 0, 0);
+  });
+  // First pass: the roomy width, 250, against a 240 cap - capped, so the class
+  // goes on. Second pass would measure 226 if the class moved the insets.
+  stubPopupLayoutBox(window, 250, 120);
   try {
     render(<Menu trigger="Actions" items={items()} />);
     await user.click(screen.getByRole("button", { name: "Actions" }));
     const popup = screen.getByRole("menu");
-    // Vertically whole, so only the horizontal branch can have moved it.
-    expect(popup.scrollTop).toBe(0);
-    expect(popup.scrollLeft).toBe(10);
+    expect(popup.className).toContain("popupNarrow");
+    // The insets are the widget's, and they are still the ROOMY ones: the cap
+    // applied to a width that the padding had nothing to do with.
+    expect(popup.style.getPropertyValue("--menu-inline-pad")).toBe("");
+    expect(popup.style.getPropertyValue("--menu-row-inline-pad")).toBe("");
   } finally {
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
-    if (originalInnerHeight) Object.defineProperty(window, "innerHeight", originalInnerHeight);
+    if (originalInnerWidth) Object.defineProperty(window, "innerWidth", originalInnerWidth);
   }
 });
 
