@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -30,8 +31,11 @@ func startReportingRetirementRunWith(t *testing.T, ctrl *RetirementController, c
 	go func() {
 		defer close(done)
 		_ = ctrl.Run(ctx, consume, func(attempt RetirementAttempt) bool {
+			if !accept(attempt) {
+				return false
+			}
 			reports <- attempt
-			return accept(attempt)
+			return true
 		})
 	}()
 	return reports
@@ -185,14 +189,15 @@ func TestRetirementReportRefusedByTheSinkIsRetried(t *testing.T) {
 		if err := ctrl.Abort(claim, "prepare_failed"); err != nil {
 			t.Errorf("Abort: %v", err)
 		}
-		return errors.New("lane read failed")
+		return errors.New("injected: the claim could not be prepared")
 	}
-	// The first report is refused, the way the spool refuses a line that
-	// arrives while its worker is busy; the rest are accepted.
-	accepted := 0
+	// Every attempt fails the same way, so a controller that deduplicated on
+	// the attempt it made would report exactly once. The first offer is
+	// refused, the way the spool refuses a line that arrives while its worker
+	// is busy, and the rest are accepted.
+	var offered atomic.Int64
 	reports := startReportingRetirementRunWith(t, ctrl, consume, func(RetirementAttempt) bool {
-		accepted++
-		return accepted > 1
+		return offered.Add(1) > 1
 	})
 	root := newQueuePersistTestSession(t, t.TempDir())
 	defer root.Close()
@@ -202,20 +207,32 @@ func TestRetirementReportRefusedByTheSinkIsRetried(t *testing.T) {
 	clk.awaitArm(t)
 
 	clk.Advance(time.Hour)
+	firstAt := clk.Now()
 	clk.fire(t)
-	if report := awaitRetirementReport(t, reports); report.Error != "lane read failed" {
-		t.Fatalf("reported attempt = %+v, want the preparation error", report)
+	// The status snapshot records the attempt whether or not its line reached
+	// the reader: it describes what happened, not what was logged. Its
+	// timestamp is what identifies the attempt, with no reliance on the
+	// error's text.
+	if last := awaitLastAttemptAt(t, ctrl, firstAt); last.At.IsZero() {
+		t.Fatal("the snapshot's last attempt carries no timestamp")
 	}
-	// The status snapshot records the attempt regardless of whether its line
-	// reached the reader: it describes what happened, not what was logged.
-	if last := awaitLastAttemptAt(t, ctrl, clk.Now()); last.Error != "lane read failed" {
-		t.Fatalf("snapshot last attempt = %+v, want the preparation error", last)
+	if got := offered.Load(); got != 1 {
+		t.Fatalf("report offers after the first attempt = %d, want 1: the controller asked for a line for an attempt whose reason it had not yet reported", got)
 	}
+	// The refused offer never reached the reader.
+	assertNoRetirementReport(t, reports)
 
 	clk.Advance(time.Hour)
+	secondAt := clk.Now()
 	clk.fire(t)
-	if report := awaitRetirementReport(t, reports); report.Error != "lane read failed" {
-		t.Fatalf("reported attempt after the refused one = %+v, want the same reason said again", report)
+	awaitLastAttemptAt(t, ctrl, secondAt)
+	if got := offered.Load(); got != 2 {
+		t.Fatalf("report offers after a second identical failure = %d, want 2: the refused line was treated as one the reader saw, so this reason can no longer be reported", got)
+	}
+	// And the retry is the one the reader receives: one report, not zero and
+	// not two.
+	if report := awaitRetirementReport(t, reports); report.At.IsZero() {
+		t.Fatal("the reported attempt carries no timestamp")
 	}
 }
 

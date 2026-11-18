@@ -916,6 +916,14 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// that loop, so it takes the same nonblocking sink as the input loop.
 	retiring.diagnostics = diagnostics
 
+	// The address is announced before the loop below starts. Restored work is
+	// probed on that loop, and a failed restored steer reports a stand-down
+	// from it; offered afterwards, this line competes with those records for
+	// the buffer and can be the one refused. Offered here it goes into an
+	// empty spool with no producer running yet, so it cannot be lost, and
+	// nothing about when the daemon publishes its rendezvous entry moves.
+	reportServeStartup(diagnostics, live.session().ID(), "listening on %s", listener.Addr())
+
 	// Input processing loop. Each turn runs under a per-turn cancellable
 	// context that is wired into the server's interrupt handler so POST
 	// /interrupt actually cancels the in-flight turn. Clearing it after the
@@ -1058,9 +1066,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			}
 		}
 	}()
-
-	// Start HTTP server.
-	reportServeStartup(diagnostics, live.session().ID(), "listening on %s", listener.Addr())
 
 	spawnedBy := "user"
 	if envvars.EVENERHubSpawned.Getenv() == "1" {
