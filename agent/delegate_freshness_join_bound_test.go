@@ -9,6 +9,12 @@ import (
 	"primeradiant.com/evener/agent/mcpconfig"
 )
 
+// freshnessJoinBound is the waiter's own caller deadline, deliberately SHORT:
+// this test measures that a join ends when its caller does, so the bound must
+// expire while the joined check is still stalled. A generous bound would let a
+// join that ignored its context pass.
+const freshnessJoinBound = 100 * time.Millisecond
+
 // TestCeilingDerivationWaitsOnTheCallersContext pins that the JOIN path is bounded
 // by its own caller, not just the worker.
 //
@@ -56,7 +62,7 @@ func TestCeilingDerivationWaitsOnTheCallersContext(t *testing.T) {
 
 	// The waiter's own bound is short. A join through Background() ignores it and
 	// blocks here instead.
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), freshnessJoinBound)
 	defer cancel()
 
 	returned := make(chan struct{})

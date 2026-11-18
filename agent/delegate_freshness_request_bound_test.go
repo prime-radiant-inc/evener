@@ -9,6 +9,11 @@ import (
 	"primeradiant.com/evener/agent/mcpconfig"
 )
 
+// freshnessRequestBound is deliberately SHORT: this test measures that the
+// refresh ends when its caller's context does, against an environment that
+// never answers, so the bound must expire while the check is still stalled.
+const freshnessRequestBound = 100 * time.Millisecond
+
 // stalledGitEnv is an environment whose git invocation never answers until its
 // context ends, which is what a stalled workspace mount looks like to the
 // freshness check: the call is made and the filesystem or the process never
@@ -87,7 +92,7 @@ func TestRequestFreshnessRefreshIsBoundedByTheTurnContext(t *testing.T) {
 	// A short bound, so the test measures the BOUND rather than the suite's
 	// patience. Production uses exclusionFreshnessRequestBudget; what is under
 	// test is that the bound exists and comes from the caller's context.
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), freshnessRequestBound)
 	defer cancel()
 
 	returned := make(chan struct{})

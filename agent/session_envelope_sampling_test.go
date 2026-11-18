@@ -168,6 +168,9 @@ var envelopeSamplingPermittedLocks = map[string]string{
 	"Session.delegateExclusionsMu": "it guards the two name sets the delegate tool ceiling subtracts, " +
 		"which no envelope sample reads or derives from: the exclusion is applied when a ceiling is " +
 		"built, never while sampling an envelope",
+	"Session.freshnessCheckMu": "it guards only the single-flight pointer a delegate ceiling " +
+		"derivation joins, and every hold is a field read or write: the wait on the check's done " +
+		"channel happens AFTER the unlock (sampleExclusionFreshness), so no sample can block on it",
 }
 
 // TestEnvelopeSamplingNeverBlocksOnAnEmitHeldLock runs every method the daemon's
