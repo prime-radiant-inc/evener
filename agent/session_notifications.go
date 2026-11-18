@@ -40,21 +40,13 @@ func (s *Session) acceptNotificationInput(ctx context.Context, turnID string) (p
 	s.enqueueOwnCallerWatchSendTokens()
 	jobNotifs, retryJobNotifs, injectedJobNotifs := s.filterDeliverableJobNotifications(s.drainJobNotifications())
 	jobNotifs, injectedJobNotifs = s.withoutAwaitingRequest(jobNotifs), s.withoutAwaitingRequest(injectedJobNotifs)
-	// This turn must not write a watch reminder it is not allowed to carry. The
-	// gate in prepareModelRequestWithError reads the QUEUE, and everything below
-	// drains it: a watch notice has no terminal generation, so
-	// awaitRequestForJobNotifications settles it before the first request is
-	// prepared and the queue is empty by the time admission looks. The reminder
-	// would then ride the transcript into an unleased turn that admission had no
-	// evidence left to refuse (LIFE-01, #2340). So the refusal happens here,
-	// while the notice is still in hand, and the notice goes back to the queue
-	// untouched.
-	if s.refuseUnleasedWatchNotice(ctx, jobNotifs) {
-		s.requeueJobNotifications(append(jobNotifications(jobNotifs), retryJobNotifs...))
-		s.requeueJobNotifications(jobNotifications(injectedJobNotifs))
-		s.finishNotificationNoop()
-		return false
-	}
+	// THE RULE (LIFE-01, #2340) at the OPENING write. A watch notice this turn
+	// has no lease to carry is deferred to durable attention; the ordinary
+	// completions in the same batch stay and ride this turn. Deferring only the
+	// watch notices matters: a batch that holds a recovered shell completion
+	// beside one would otherwise requeue whole and retry forever, because every
+	// retry sees the same pair.
+	jobNotifs, _ = s.deferUnleasedWatchNotices(ctx, jobNotifs)
 	if sessionLifecycleFault(ctx, "inject_watch_notification") != nil {
 		jobNotifs = append(jobNotifs, deliverableJobNotification{
 			notification: jobNotification{Kind: jobNotificationKindWatch, JobID: "injected-watch", Status: jobNotificationEventWatch},
@@ -175,6 +167,14 @@ func (s *Session) injectLaterJobNotifications(ctx context.Context) {
 	jobNotifs, injectedJobNotifs = s.withoutAwaitingRequest(jobNotifs), s.withoutAwaitingRequest(injectedJobNotifs)
 	s.requeueJobNotifications(retryJobNotifs)
 	s.requeueJobNotifications(s.markJobNotificationsDelivered(injectedJobNotifs))
+	// THE RULE (LIFE-01, #2340), at the ROUND BOUNDARY. A watch notice can arrive
+	// after the opening drain and before this round's request is prepared. This
+	// write would put it into history and settle it, and the request-time
+	// admission check -- which reads the queue -- would then find nothing to
+	// refuse, so the provider would receive the notice outside a leased
+	// generation. It is deferred to durable attention here instead, and the
+	// ordinary completions in the same batch still ride this round.
+	jobNotifs, _ = s.deferUnleasedWatchNotices(ctx, jobNotifs)
 	if len(jobNotifs) == 0 {
 		return
 	}

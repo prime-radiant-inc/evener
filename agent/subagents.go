@@ -1685,6 +1685,15 @@ func (s *Session) redriveChildIfAttentionRemains(driveCtx context.Context, sub *
 		case <-driveCtx.Done():
 			return
 		}
+		// LIFE-01 (#2340): the same admission decision the wake edge makes. A
+		// watch notice that arrived after the drive's final queue check would
+		// otherwise be re-driven here and refused at acceptance, taking a drive
+		// slot every interval while draining nothing. Ordinary completions and
+		// settlement-only sends still re-drive -- that is what the check returns
+		// false for.
+		if s.driveWouldStrandOnAdmission(childSess) {
+			return
+		}
 		if s.driveSubagentNotificationTurn(sub) {
 			s.settleDrivenChildForwardedPendings(childSess.id)
 		}

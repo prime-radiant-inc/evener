@@ -106,6 +106,28 @@ func effectiveReasoningEffort(cfg, override string, escalated bool) string {
 // It also returns the full-history message list a planned continuation delta was
 // cut from. That list is the round's, not the request's: the retry after a
 // rejected anchor rebuilds from it, and nothing on the wire ever carries it.
+// admitCompactionAuxiliaryCall re-asks the controller for the lease this turn
+// holds, immediately before an auxiliary provider call (the compaction note
+// elicitor or the summarizer) dispatches (LIFE-01, #2340).
+//
+// The lease is validated once at the start of preparation, but a Stop can record
+// its durable fence at any point after. The main request is protected by
+// BeginModelRequest at dispatch; these auxiliary calls have no such claim, so the
+// same admission is applied here or a Stop recorded between preparation and
+// compaction would still let a summarizer request out.
+//
+// A session with no controller, or a turn with no lease, is not this gate's
+// business: it is the unleased-turn refusal's (see the top of
+// prepareModelRequestWithError), and duplicating it here would refuse
+// maintenance work that never reaches a provider.
+func (s *Session) admitCompactionAuxiliaryCall(ctx context.Context) error {
+	lease, ok := ctx.Value(delegateRunLeaseContextKey{}).(delegateLease)
+	if !ok || s.delegateController == nil {
+		return nil
+	}
+	return s.delegateController.admitModelRequestLease(lease)
+}
+
 func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t *events.RoundTimings) (profile *provider.Profile, sys string, history []llm.Message, req llm.Request, fullHistory []llm.Message, reasoningEffort string, err error) {
 	// Admission comes FIRST, before any phase that can reach a provider
 	// (LIFE-01, #2340). This function is not only a request builder: the
@@ -528,6 +550,24 @@ func (s *Session) foldHistoryBeforeRequest(ctx context.Context, round, sysLen in
 			snapRevision := s.historyRevision
 			snapAppends := s.persistedAppendLogBase + len(s.persistedAppendLog)
 			s.mu.Unlock()
+
+			// Auxiliary-call admission (LIFE-01, #2340). The lease was validated
+			// once at the top of preparation, but preparation is long: the
+			// elicitation below and the fold's summarizer are BOTH provider
+			// calls. A Stop that records its durable fence after that first check
+			// and before either of them would otherwise let an auxiliary request
+			// out, with BeginModelRequest rejecting only the main request
+			// afterwards. Re-asking here, at the dispatch boundary, is what makes
+			// a Stop between preparation and compaction actually prevent the
+			// auxiliary call. A live generation still compacts normally.
+			if err := s.admitCompactionAuxiliaryCall(ctx); err != nil {
+				// The fold is abandoned, not failed: no fold ran, so no boundary
+				// was published and the caller establishes its own from the
+				// current history exactly as it does when both attempts lose the
+				// race. The main request then meets the same fence at
+				// BeginModelRequest and refuses there.
+				return false
+			}
 
 			// Variant B (forced note): if a compaction is imminent, elicit +
 			// pin a must-keep note from the model BEFORE the fold, so

@@ -497,6 +497,129 @@ func TestDelegateResourceSupervision_StableChildRefusesOnlyUnleasedModelWork(t *
 	}
 }
 
+// TestDelegateResourceSupervision_LateWatchNoticeNeverReachesAnUnleasedRequest
+// pins the HIGH finding of the LIFE-01 (#2340) review: the round-boundary write.
+//
+// A watch notice can arrive AFTER a stable child's unleased turn has accepted its
+// opening batch and BEFORE the next request is prepared. injectLaterJobNotifications
+// writes and settles such a notice, so the request-time admission check -- which
+// reads the queue -- finds nothing left to refuse and the provider receives the
+// notice outside a leased generation. That defeats the whole gate.
+//
+// The assertion is the DURABLE ATTENTION ROW plus the emptied queue, not the
+// message text: the notice must be owed to a leased generation and absent from
+// the unleased turn's reminder.
+func TestDelegateResourceSupervision_LateWatchNoticeNeverReachesAnUnleasedRequest(t *testing.T) {
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
+	})
+	root := restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableSupervisionDelegate(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	late := watchSendDiagnosticNotification("watch:late", "job:late", "watch send failed: delivery_id=late")
+	if !sub.sess.stableChildTurnNeedsLease(context.Background()) {
+		t.Fatal("the child is not the unleased stable-turn case this test needs")
+	}
+	// The round boundary: this is exactly what the round loop calls before each
+	// request, and it is where the late notice would otherwise be written.
+	sub.sess.enqueueJobNotification(late)
+	sub.sess.injectLaterJobNotifications(context.Background())
+
+	// The notice is not on the queue (it cannot ride an unleased turn)...
+	if sub.sess.hasPendingWatchNotification() {
+		t.Fatal("the late watch notice is still on the ordinary queue after the round-boundary write")
+	}
+	// ...and it is DURABLE, so a leased generation still presents it.
+	fold, err := readDelegateAttentionFold(transcriptPath(sub.sess.stateDir, sub.sess.id), sub.sess.id)
+	if err != nil {
+		t.Fatalf("read the child's attention fold: %v", err)
+	}
+	wantID := deferredWatchAttentionID(late)
+	found := false
+	for _, id := range fold.order {
+		if id == wantID {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("child attention rows = %v, want the late notice under %q: it was neither carried nor deferred", fold.order, wantID)
+	}
+	// And the unleased request that follows carries no watch reminder. Admission
+	// reports the refusal structurally, which is the same fact from the other
+	// side: with nothing queued there is no unleased watch turn to admit.
+	if _, _, _, _, _, _, err := sub.sess.prepareModelRequestWithError(context.Background(), 0, new(events.RoundTimings)); errors.Is(err, errDelegateStableModelTurnUnleased) {
+		t.Fatal("the unleased request was refused for a queued watch notice: the boundary write left it on the queue")
+	}
+}
+
+// TestDelegateResourceSupervision_MixedBatchCarriesTheCompletionAndDefersTheWatch
+// pins the MIXED batch (LIFE-01, #2340). A recovered shell completion and a
+// deliverable watch notice can share a stable child's queue. The completion has no
+// lease to inherit but is perfectly deliverable, so the turn must carry it; the
+// watch notice must not ride along, and must not be dropped either.
+//
+// A gate that refuses the whole batch passes the watch half and fails here: every
+// retry sees the same pair, so the completion is never delivered until some
+// unrelated generation intervenes. That is the failure mode this test exists for.
+func TestDelegateResourceSupervision_MixedBatchCarriesTheCompletionAndDefersTheWatch(t *testing.T) {
+	fixture := newColdDelegateFixture(t, "")
+	fixture.adapter.setSteps([]func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("warm result") },
+	})
+	root := restoreSupervisionRoot(t, fixture, nil)
+	sub := warmStableSupervisionDelegate(t, root, fixture)
+	waitForStableSupervisionRun(t, root, fixture.childID)
+
+	// A deliverable ordinary completion beside a watch notice, both owed.
+	seedOwnedDurablePending(t, sub.sess.jobManager, "job_mixed_completion", jobstore.JobShell)
+	sub.sess.enqueueJobNotification(jobNotification{
+		JobID:   "job_mixed_completion",
+		JobType: "shell",
+		Status:  "completed",
+	})
+	sub.sess.enqueueJobNotification(watchSendDiagnosticNotification("watch:mixed", "job:mixed", "watch send failed: delivery_id=mixed"))
+	if !sub.sess.hasPendingWatchNotification() || !sub.sess.hasPendingOrdinaryNotification() {
+		t.Fatal("the mixed batch did not land as one watch notice plus one ordinary completion")
+	}
+	foldBefore, err := readDelegateAttentionFold(transcriptPath(sub.sess.stateDir, sub.sess.id), sub.sess.id)
+	if err != nil {
+		t.Fatalf("read the child's attention fold before the turn: %v", err)
+	}
+
+	// The unleased turn is ADMITTED: the completion is real work it owns.
+	markProcessing(sub.sess)
+	if !sub.sess.acceptNotificationInput(context.Background(), "unleased-mixed") {
+		t.Fatal("a mixed batch was refused whole: the ordinary completion can never be delivered on any retry")
+	}
+
+	// The watch notice left the ordinary queue: it can no longer ride an unleased
+	// turn.
+	if sub.sess.hasPendingWatchNotification() {
+		t.Fatal("the watch notice is still on the ordinary queue after the mixed turn")
+	}
+	// And it is DURABLE, not dropped: the child's own attention fold holds a row
+	// under the deferral identity this half owns. The fold is the model-visible
+	// surface, so a row there is what a leased generation presents.
+	foldAfter, err := readDelegateAttentionFold(transcriptPath(sub.sess.stateDir, sub.sess.id), sub.sess.id)
+	if err != nil {
+		t.Fatalf("read the child's attention fold after the turn: %v", err)
+	}
+	if len(foldAfter.order) <= len(foldBefore.order) {
+		t.Fatalf("child attention rows = %v, want the deferred watch notice appended (was %v)", foldAfter.order, foldBefore.order)
+	}
+	var deferredFound bool
+	for _, id := range foldAfter.order {
+		if strings.HasPrefix(id, "watchdefer:") {
+			deferredFound = true
+		}
+	}
+	if !deferredFound {
+		t.Fatalf("child attention rows = %v, want one under the deferral identity", foldAfter.order)
+	}
+}
+
 // TestDelegateResourceSupervision_CommittedSendStartRollbackRedrivesDroppedWake
 // pins the deferred-wake regression the id-keyed committed-send-start claim
 // introduced (#940). While the claim is held a wake-edge drive refuses, so a

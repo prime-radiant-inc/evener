@@ -82,14 +82,15 @@ func (s *Session) driveChildrenWithUndeliveredAttention() {
 			continue
 		}
 		if child.peekNotifications() > 0 || child.jobManager.hasPendingWatchSends() {
-			// LIFE-01 (#2340): the skip is scoped to WATCH work, exactly as at
-			// the wake edge. A stable child's watch notice is refused an
-			// unleased turn, so driving it here would launch a turn that stands
-			// straight back down. An ordinary notification -- a recovered shell
-			// completion whose immediate wake declined on a full drive budget --
-			// is drained only by an EntryNotification turn, and skipping it here
-			// would strand it once a slot frees, so it keeps the retry.
-			if stableDelegateChild(child) && !child.hasPendingOrdinaryNotification() {
+			// LIFE-01 (#2340): the same decision the wake edge and the paced
+			// re-drive make, from the same function, so a watch-only queue is
+			// skipped here while an ordinary completion keeps its retry.
+			if s.driveWouldStrandOnAdmission(child) {
+				// Skipping the drive is only half the answer. The notice must
+				// leave the queue or the one-shot drain counts it as live work
+				// forever and neither quiesces nor times out. Moving it to
+				// durable attention keeps the delivery and lets the drain finish.
+				child.deferQueuedWatchNoticesToAttention()
 				continue
 			}
 			if s.driveSubagentNotificationTurn(sub) {
@@ -152,6 +153,122 @@ func stableDelegateChild(sess *Session) bool {
 	return sess != nil && sess.owningDelegateID != "" && sess.delegateController != nil
 }
 
+// driveWouldStrandOnAdmission reports whether driving this child with an
+// EntryNotification turn would be refused by admission, so the drive would take a
+// slot, launch a turn that stands straight back down, and settle nothing
+// (LIFE-01, #2340).
+//
+// Every drive site asks THIS function -- the wake edge, the parent's child sweep,
+// and the paced re-drive after an ordinary turn -- so no site can bypass the
+// decision. The decision is the same structural predicate admission uses: a
+// stable child, a watch notice pending, and no ordinary notice for the drive to
+// carry.
+//
+// Two exemptions keep it from stranding legitimate work:
+//
+//   - An ordinary notice in the same queue (hasPendingOrdinaryNotification)
+//     makes the drive worth launching: acceptance now defers the watch notice
+//     and carries the completion (see deferUnleasedWatchNotices), so the turn
+//     does real work.
+//   - A TRANSCRIBED watch-send token settles without a model turn at all. Its
+//     frame is already in the child's transcript and only its delivered record
+//     is outstanding, so the drive reaches the existing settlement path and must
+//     not be skipped: skipping it would strand a settlement the journal is
+//     ready to record.
+func (s *Session) driveWouldStrandOnAdmission(child *Session) bool {
+	if !stableDelegateChild(child) {
+		return false
+	}
+	if !child.hasPendingWatchNotification() {
+		return false
+	}
+	if child.hasPendingOrdinaryNotification() {
+		return false
+	}
+	return !child.hasSettleableWatchSendOnly()
+}
+
+// hasSettleableWatchSendOnly reports whether the only thing this session owes is
+// a caller-targeted watch send whose frame is already transcribed, so the
+// delivery pass can settle it with no model turn (LIFE-01, #2340).
+//
+// The queue check above cannot see this case: a transcribed token is re-tokened
+// onto the rail and would otherwise read as a watch notice with nothing ordinary
+// beside it, which is exactly the shape the drive skip suppresses. Settling it
+// needs no lease because it presents nothing to the model.
+func (s *Session) hasSettleableWatchSendOnly() bool {
+	if s == nil || s.jobManager == nil {
+		return false
+	}
+	jm := s.jobManager
+	if !jm.hasPendingWatchSends() {
+		return false
+	}
+	pending := jm.pendingWatchSendDeliveries(nil)
+	if len(pending) == 0 {
+		return false
+	}
+	for _, delivery := range pending {
+		if delivery.state.DeliveryID == "" || !jm.watchSendTranscribed(delivery.state.DeliveryID) {
+			return false
+		}
+	}
+	return true
+}
+
+// deferQueuedWatchNoticesToAttention moves every WATCH notice off this session's
+// ordinary queue and into durable delegate attention, returning how many it
+// moved (LIFE-01, #2340).
+//
+// A drive for a stable child's watch-only queue is refused, and refusing it must
+// not leave the notice sitting on a queue that no turn may drain. Two things go
+// wrong if it does: the notice is never presented (no unleased turn may carry
+// it, and no leased run is ever triggered by a queue it cannot drain), and the
+// one-shot drain treats the raw queue as live work, so it neither quiesces nor
+// reaches its stall timeout -- the gate would hang the run it was meant to
+// protect.
+//
+// Moving the notice to durable attention fixes both: the queue empties, so the
+// drain sees no work it can make progress on and finishes, while the notice
+// survives as an item a leased generation presents.
+//
+// Tokens (WatchSend set) are left alone. A token's deliverable is its at-least-
+// once settle, which the delivery pass owns; a transcribed one settles with no
+// model turn, and an untranscribed one needs the frame presented, which is
+// durable attention's job at ingress, not this queue's.
+func (s *Session) deferQueuedWatchNoticesToAttention() int {
+	if s == nil {
+		return 0
+	}
+	s.pendingJobNotifsMu.Lock()
+	remaining := make([]jobNotification, 0, len(s.pendingJobNotifs))
+	var moved []jobNotification
+	for _, n := range s.pendingJobNotifs {
+		if n.isWatch() && n.WatchSend == nil {
+			moved = append(moved, n)
+			continue
+		}
+		remaining = append(remaining, n)
+	}
+	if len(moved) > 0 {
+		s.pendingJobNotifs = remaining
+	}
+	s.pendingJobNotifsMu.Unlock()
+	deferred := 0
+	for _, n := range moved {
+		if err := s.persistDeferredWatchNotice(n); err != nil {
+			// The persist failed, so this notice is NOT durable. Putting it back
+			// keeps it owed rather than losing a failure report; the drain's
+			// liveness accounting then still sees it, which is honest.
+			s.emit(warningDataFromError("persist queued watch notice", err))
+			s.requeueJobNotifications([]jobNotification{n})
+			continue
+		}
+		deferred++
+	}
+	return deferred
+}
+
 // driveChildIfNotStopGated is the wake-edge drive: it skips a stop-gated child so
 // a deliberately stopped child is not resurrected by its own pre-stop notify
 // (spec §3 stop-gating), and a child the one-shot drain has abandoned for the
@@ -181,8 +298,13 @@ func (s *Session) driveChildIfNotStopGated(sub *subagent) {
 	// forwarded report and the rest are ordinary queued notifications with no
 	// lease to inherit, and the queue is drained only by an EntryNotification
 	// turn -- so skipping the drive here would strand them forever instead of
-	// closing this issue.
-	if stableDelegateChild(sub.sess) && sub.sess.hasPendingWatchNotification() && !sub.sess.hasPendingOrdinaryNotification() {
+	// closing this issue. driveWouldStrandOnAdmission is the one place that
+	// decides this, so the paced re-drive cannot disagree with this edge.
+	if s.driveWouldStrandOnAdmission(sub.sess) {
+		// Same reason as the sweep: the notice leaves the ordinary queue for
+		// durable attention, so it is neither presented unleased nor counted as
+		// livelock work the drain waits on.
+		sub.sess.deferQueuedWatchNoticesToAttention()
 		return
 	}
 	if s.driveSubagentNotificationTurn(sub) {
