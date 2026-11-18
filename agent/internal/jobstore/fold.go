@@ -62,6 +62,12 @@ func foldOrderedEvents(sorted []Event) map[string]*JobRecord {
 // job, a start names the type it started, and a start's declared owner agrees
 // with the owner its job ID encodes.
 //
+// A finish must also STATE a terminal status. The fold copies a finish's status
+// onto the record, so a finish carrying "running" produces a row that reads as
+// a live job while the journal has already recorded its end. Nothing about that
+// row is a settled state, and a reader that ranked it above another branch's
+// observed finish would drop a known exit code and end time.
+//
 // An EMPTY owner is accepted: rows written before OwnerSessionID existed fold
 // with it unset, and rejecting them would make every pre-owner journal
 // unreadable rather than merely old.
@@ -89,6 +95,10 @@ func checkJobLifecycles(sorted []Event) error {
 		if !started[e.JobID] {
 			return fmt.Errorf("%w: job %q has a %s event (seq %d) with no preceding start",
 				ErrIncompleteLifecycle, e.JobID, e.Kind, e.Seq)
+		}
+		if e.Kind == EventJobFinished && !e.Status.IsTerminal() {
+			return fmt.Errorf("%w: job %q finishes (seq %d) with status %q, which is not terminal",
+				ErrIncompleteLifecycle, e.JobID, e.Seq, e.Status)
 		}
 	}
 	return nil

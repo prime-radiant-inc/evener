@@ -37,7 +37,7 @@ const READ_INTERVAL_MS = 1000;
  * Slower than the live rate on purpose: the row is not being followed, it is
  * being re-checked, and a torn append or an unconsultable owner takes far longer
  * to settle than a second. */
-const UNCONFIRMED_RECHECK_MS = 15000;
+export const UNCONFIRMED_RECHECK_MS = 15000;
 const messageOf = (error: unknown) => errorText(error);
 
 // livePollingStopped reports whether this reader has nothing left to wait for.
@@ -60,21 +60,16 @@ function livePollingStopped(job: JobActivityJob | null): boolean {
 
 // statusRecheckable reports whether a later read could still settle this row.
 //
-// Durable corruption is the one damage that cannot: the scan cannot get past the
-// bad line, so the finish is not going to be read no matter how long the reader
-// waits. A torn tail is an append that may complete, a statusless fragment is a
-// journal that may yet state the status, and a forwarded copy's owner may become
-// consultable — resuming the session is what repairs all three, and it can
-// happen while this reader is still connected. Stopping on "maybe" and never
-// looking again misses the moment it becomes "no".
-//
-// This reads the aggregate diagnostics, which is safe here and only here: it can
-// narrow a SLOW cadence, never promote an unconfirmed row to the live rate and
-// never slow a healthy one. The confidence decision itself stays with
-// statusUnconfirmed, which describes the selected record alone.
+// It comes from the server's `statusRecheckable`, which answers with the same
+// record-scoped evidence as `statusUnconfirmed`. Deriving it here from
+// `diagnostics` was the bug: those describe every journal the read consulted, so
+// an intact owner row with a torn tail inherited an ancestor's durable
+// corruption, the recheck was cancelled, and the finish the owner later wrote was
+// never read. Stopping on "maybe" and never looking again misses the moment it
+// becomes "no".
 function statusRecheckable(job: JobActivityJob | null): boolean {
   if (job === null) return false;
-  return !(job.diagnostics ?? []).includes("journal_scan_incomplete");
+  return job.statusRecheckable === true;
 }
 
 // metadataDeadlineAfter is when to read this row's metadata again. A healthy row
@@ -433,7 +428,16 @@ export class JobLogReader {
       })
       .catch((error: unknown) => {
         if (!current()) return;
-        this.metadataDueAt = Date.now() + READ_INTERVAL_MS;
+        // A failed BACKGROUND read backs off at the cadence it was
+        // scheduled on. Retrying an unconfirmed row's recheck once a
+        // second turns a server that is failing those reads into a load
+        // problem, and it cannot produce the status any sooner than the
+        // recheck that was already scheduled. Refresh and reconnect set
+        // their own deadline, so a person asking again is still immediate.
+        this.metadataDueAt =
+          this.snapshot.job !== null && this.snapshot.job.statusUnconfirmed === true
+            ? Date.now() + UNCONFIRMED_RECHECK_MS
+            : Date.now() + READ_INTERVAL_MS;
         this.publish({ metadataError: messageOf(error) });
       })
       .finally(() => {

@@ -131,6 +131,11 @@ export interface ActivityJob {
   // is still running. The server derives it from the selected record alone;
   // see jobStatusUnconfirmed. Absent on live rows and on terminal ones.
   statusUnconfirmed?: boolean;
+  // Whether a later read could still establish that status. Set only with
+  // statusUnconfirmed, and derived from the same record-scoped evidence, so a
+  // client that stops following the row can look again on a slow cadence
+  // instead of never. Absent whenever statusUnconfirmed is.
+  statusRecheckable?: boolean;
 }
 
 export interface ActivityShellEntry {
@@ -462,6 +467,8 @@ export function parseActivityJob(raw: unknown): ActivityJob | null {
   if (diagnostics === null) return null;
   const statusUnconfirmed = raw.statusUnconfirmed;
   if (typeof statusUnconfirmed !== "undefined" && typeof statusUnconfirmed !== "boolean") return null;
+  const statusRecheckable = raw.statusRecheckable;
+  if (typeof statusRecheckable !== "undefined" && typeof statusRecheckable !== "boolean") return null;
   if (typeof raw.outcome !== "undefined" && typeof raw.outcome !== "string") return null;
   if (typeof raw.transcriptRef !== "undefined" && typeof raw.transcriptRef !== "string") return null;
   if (typeof raw.parentDelegateId !== "undefined" && typeof raw.parentDelegateId !== "string") return null;
@@ -486,6 +493,7 @@ export function parseActivityJob(raw: unknown): ActivityJob | null {
   // polled a job that had already finished.
   if (diagnostics) job.diagnostics = diagnostics;
   if (statusUnconfirmed === true) job.statusUnconfirmed = true;
+  if (statusRecheckable === true) job.statusRecheckable = true;
   return job;
 }
 

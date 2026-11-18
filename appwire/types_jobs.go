@@ -112,6 +112,25 @@ type JobActivityJob struct {
 	// it: the first terminal write is a complete observation on its own. Live
 	// reads never set it either.
 	StatusUnconfirmed bool `json:"statusUnconfirmed,omitempty"`
+	// StatusRecheckable reports that a LATER read could still establish the
+	// status of an unconfirmed row, so a client that stops following it should
+	// look again on a slow cadence rather than never.
+	//
+	// It is set only alongside StatusUnconfirmed, and it answers the same
+	// record-scoped question. Almost every cause of doubt is a statement the
+	// journal can still amend while the client is connected: an append that
+	// landed without its newline may complete, a journal that named this job
+	// without stating its status may yet state it, a finish that declared no end
+	// may be followed by a terminal one, and a forwarded copy's owner may become
+	// consultable. Exactly one cause cannot: this record's own journal stopped at
+	// durable corruption, where the scan cannot get past the bad line and the
+	// finish will not be read no matter how long the client waits.
+	//
+	// This is deliberately NOT derived from Diagnostics. Those describe every
+	// journal the read consulted, so an intact owner record with a torn tail can
+	// inherit an ancestor's durable corruption; a client gating the recheck on
+	// that would never look again and would miss a finish that arrives.
+	StatusRecheckable bool `json:"statusRecheckable,omitempty"`
 }
 
 // JobActivityDelegate is one whole delegate in the activity tree. Activity

@@ -299,6 +299,19 @@ are how a person establishes what happened. A failed output read must settle the
 same way for such a row, or the error re-fires once a second for a question the
 journal cannot answer.
 
+> Because "cannot say yet" and "cannot ever say" are different answers, the same
+> response carries `statusRecheckable`, set only alongside `statusUnconfirmed`.
+> It is true when a later read could still establish the status, and false when
+> the evidence is already written: this record's own journal stopped at durable
+> corruption, so no append behind the bad line is reachable. A client that stops
+> following an unconfirmed row should keep looking at the slow cadence the field
+> asks for while it stays true — an append that landed without its newline
+> completes, a statusless fragment gains its status, and a forwarded copy's
+> owner becomes consultable, all while the pane is still open — and stop for good
+> when it goes false. A failed background recheck backs off at the cadence it was
+> scheduled on; retrying it once a second cannot produce the status any sooner
+> and turns a failing server into a load problem.
+
 `evener/jobs/get` answers `unavailable` rather than `job not found` when the
 requested journal ends in an unterminated append and its intact prefix does not
 mention the job: the torn line could be that job's own record, so absence is not

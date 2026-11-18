@@ -7,7 +7,12 @@ import { installLocalStorage, MemoryStorage } from "../../storageTestUtils";
 import { connectionStore, resetConnectionStoreForTests } from "../../stores/connection";
 import { resetThreadsStoreForTests } from "../../stores/threads";
 import { jobOutputMetadata } from "./JobLogTestUtils";
-import { type JobLogReader, type JobLogReaderSnapshot, retainedJobLogReader } from "./jobLogReader";
+import {
+  type JobLogReader,
+  type JobLogReaderSnapshot,
+  retainedJobLogReader,
+  UNCONFIRMED_RECHECK_MS,
+} from "./jobLogReader";
 
 const OUTPUT = "evener/jobs/output";
 const META = "evener/jobs/get";
@@ -655,6 +660,7 @@ test("a torn-tail unconfirmed row is re-checked and follows a later finish", asy
     ...metadata(false),
     diagnostics: ["journal_torn_tail"],
     statusUnconfirmed: true,
+    statusRecheckable: true,
   });
   peer.reply(first, page());
   await observed((snapshot) => snapshot.job?.statusUnconfirmed === true && snapshot.windows.live !== null);
@@ -692,6 +698,7 @@ test("a durable-corruption unconfirmed row is never re-checked", async () => {
     ...metadata(false),
     diagnostics: ["journal_scan_incomplete"],
     statusUnconfirmed: true,
+    statusRecheckable: false,
   });
   peer.reply(first, page());
   await observed((snapshot) => snapshot.job?.statusUnconfirmed === true && snapshot.windows.live !== null);
@@ -700,6 +707,88 @@ test("a durable-corruption unconfirmed row is never re-checked", async () => {
   await vi.advanceTimersByTimeAsync(60000);
   expect(peer.requests(META)).toHaveLength(settled.metadata);
   expect(peer.requests(OUTPUT)).toHaveLength(settled.output);
+});
+
+// The recheck is about THIS row's evidence, not about the aggregate. An ancestor
+// journal with a valid forwarded start followed by a malformed line leaves
+// `journal_scan_incomplete` on the response, while the row itself came from the
+// owner's torn tail — which completing the append repairs. Deriving the recheck
+// from the aggregate cancelled it, and the pane missed the finish until a manual
+// refresh.
+test("an ancestor's durable corruption does not cancel a torn-tail row's recheck", async () => {
+  const first = await peer.request(OUTPUT);
+  // Both codes travel: the aggregate damage AND this record's recheckable state.
+  peer.reply(await peer.request(META), {
+    ...metadata(false),
+    diagnostics: ["journal_scan_incomplete", "journal_torn_tail"],
+    statusUnconfirmed: true,
+    statusRecheckable: true,
+  });
+  peer.reply(first, page());
+  await observed((snapshot) => snapshot.job?.statusUnconfirmed === true && snapshot.windows.live !== null);
+  const settled = { metadata: peer.requests(META).length, output: peer.requests(OUTPUT).length };
+
+  await vi.advanceTimersByTimeAsync(UNCONFIRMED_RECHECK_MS);
+  const recheck = peer.requests(META)[settled.metadata];
+  if (!recheck)
+    throw new Error(
+      `no recheck request, meta=${peer.requests(META).length} want more than ${settled.metadata}: ` +
+        "the recheck follows the record's own evidence, not the aggregate diagnostics",
+    );
+  peer.reply(recheck, metadata(true));
+  const finished = await observed(
+    (snapshot) => snapshot.job?.terminal === true && snapshot.job.statusUnconfirmed !== true,
+  );
+  expect(finished.job?.status).toBe("completed");
+
+  // The finish is drained, so the record's own evidence really did reach the pane.
+  await vi.advanceTimersByTimeAsync(1000);
+  const drain = await peer.request(OUTPUT, settled.output);
+  peer.reply(drain, page(100, "DONE\n", 105));
+  const drained = await observed((snapshot) => snapshot.windows.totalBytes === 105);
+  expect(drained.windows.totalBytes).toBe(105);
+});
+
+// A background recheck that FAILS must stay on the cadence it was scheduled at.
+// Escalating to the live rate because the requests are failing turns a server
+// error into a load problem, and it cannot produce the status any sooner than
+// the recheck already scheduled. A person asking again is still immediate.
+test("a failed recheck on an unconfirmed row stays on the slow cadence", async () => {
+  const first = await peer.request(OUTPUT);
+  peer.reply(await peer.request(META), {
+    ...metadata(false),
+    diagnostics: ["journal_torn_tail"],
+    statusUnconfirmed: true,
+    statusRecheckable: true,
+  });
+  peer.reply(first, page());
+  await observed((snapshot) => snapshot.job?.statusUnconfirmed === true && snapshot.windows.live !== null);
+
+  await vi.advanceTimersByTimeAsync(UNCONFIRMED_RECHECK_MS);
+  const recheck = peer.requests(META).length;
+  peer.fail(await peer.request(META, recheck - 1), "metadata unavailable");
+  await observed((snapshot) => snapshot.metadataError !== null);
+
+  // The live rate would have asked twice by now.
+  await vi.advanceTimersByTimeAsync(2000);
+  expect(peer.requests(META)).toHaveLength(recheck);
+
+  // The slow cadence still asks, so the row is not abandoned either.
+  await vi.advanceTimersByTimeAsync(UNCONFIRMED_RECHECK_MS);
+  expect(peer.requests(META).length).toBeGreaterThan(recheck);
+  // Settle that attempt, so the metadata slot is free for the refresh below.
+  peer.reply(await peer.request(META, peer.requests(META).length - 1), {
+    ...metadata(false),
+    statusUnconfirmed: true,
+    statusRecheckable: true,
+  });
+  await observed((snapshot) => snapshot.metadataError === null && snapshot.job?.statusUnconfirmed === true);
+
+  // And a refresh is still immediate, because a person asked for it.
+  const beforeRefresh = peer.requests(META).length;
+  reader.refresh();
+  const requested = await peer.request(META, beforeRefresh);
+  expect(requested.method).toBe(META);
 });
 
 // A terminal row's tail is the read that captures its final bytes, so a

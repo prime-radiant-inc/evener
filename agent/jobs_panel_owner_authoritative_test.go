@@ -1541,6 +1541,9 @@ func TestLoadSessionJobGetMarksOnlyUnestablishedStatusesUnconfirmed(t *testing.T
 	if job.StatusUnconfirmed {
 		t.Fatal("StatusUnconfirmed = true: the selected record was decoded from an intact journal, so its status IS established")
 	}
+	if job.StatusRecheckable {
+		t.Fatal("StatusRecheckable = true on a confirmed row: only an unconfirmed status has anything to recheck")
+	}
 
 	// The owner's own journal is now the torn one. Its surviving running row
 	// cannot say whether the job finished, so the status is unconfirmed.
@@ -1558,6 +1561,9 @@ func TestLoadSessionJobGetMarksOnlyUnestablishedStatusesUnconfirmed(t *testing.T
 	if !job.StatusUnconfirmed {
 		t.Fatalf("StatusUnconfirmed = false (diagnostics %v): the supplying journal is torn, so this running row cannot state the job's state",
 			job.Diagnostics)
+	}
+	if !job.StatusRecheckable {
+		t.Fatal("StatusRecheckable = false: a torn append is exactly the evidence a later read can repair")
 	}
 }
 
@@ -1948,5 +1954,106 @@ func TestLoadSessionJobGetKeepsForwardedTerminalOverTypelessOwnerStart(t *testin
 	}
 	if job.EndedAt == "" {
 		t.Fatal("endedAt is empty, want the observed finish's end time")
+	}
+}
+
+// TestLoadSessionJobGetKeepsRecheckableWhenAncestorJournalIsCorrupt: both codes
+// travel, and they answer different questions. The ancestor's malformed line is
+// real damage about the history, and it says so; the row it did NOT supply came
+// from the owner's torn tail, which completing the append repairs. A client that
+// cancelled its recheck on the aggregate would never read the finish the owner
+// later writes, which is the defect the recheck exists to prevent.
+func TestLoadSessionJobGetKeepsRecheckableWhenAncestorJournalIsCorrupt(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
+
+	// The ancestor's journal: a valid forwarded start, then a malformed line that
+	// terminated — durable corruption its scan cannot read past.
+	writeJobJournalLines(t, jobsDir(stateDir, rootSession),
+		jobStartedLine(jobID, ownerSession, started)+"\n",
+		`{"kind":"job_finished","seq":2,"status":`+"\n",
+	)
+	// The owner's journal: its own start, then an unterminated in-flight append.
+	writeJobJournalLines(t, jobsDir(stateDir, ownerSession),
+		jobStartedLine(jobID, ownerSession, started)+"\n",
+		`{"kind":"job_finished","seq":2,"job_id":"`+jobID+`","status":"completed"`,
+	)
+
+	job, found, err := LoadSessionJobGet(stateDir, rootSession, jobID, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the owner's running prefix")
+	}
+	if !job.StatusUnconfirmed {
+		t.Fatalf("StatusUnconfirmed = false (diagnostics %v): a torn tail is not a settled state", job.Diagnostics)
+	}
+	if !job.StatusRecheckable {
+		t.Fatalf("StatusRecheckable = false (diagnostics %v): the ancestor's corruption is not this record's evidence, "+
+			"and completing the owner's append repairs it", job.Diagnostics)
+	}
+}
+
+// TestLoadSessionJobGetKeepsForwardedTerminalOverNonterminalOwnerFinish: the
+// owner's journal holds a valid start AND a decodable job_finished, but that
+// finish declares "running" instead of an end. The fold copies the status, so a
+// clean scan yields a row that reads as a live job for a job the journal says
+// has ended. Only a finish sets the terminal generation, so that field is what
+// identifies the case per record: the row cannot state the job's state, and it
+// may not displace the ancestor's observed finish.
+func TestLoadSessionJobGetKeepsForwardedTerminalOverNonterminalOwnerFinish(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootSession := identifier.MustNewSessionID()
+	ownerSession := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(ownerSession)
+	started := time.Date(2026, 11, 19, 18, 0, 0, 0, time.UTC)
+	ended := started.Add(time.Minute)
+	exit := 4
+
+	// The owner's journal: a whole start, then a finish that names no end.
+	writeJobJournalLines(t, jobsDir(stateDir, ownerSession),
+		jobStartedLine(jobID, ownerSession, started)+"\n",
+		`{"kind":"job_finished","seq":2,"ts":"`+ended.Format(time.RFC3339)+
+			`","job_id":"`+jobID+`","status":"running","terminal_generation":"gen_declared_no_end"}`+"\n",
+	)
+
+	rootStore := openJobJournal(t, jobsDir(stateDir, rootSession))
+	appendJobEvent(t, rootStore, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: jobID, Type: jobstore.JobShell,
+		Status: jobstore.StatusRunning, OwnerSessionID: ownerSession, VisibleToSession: rootSession,
+		StartedAt: &started,
+	})
+	appendJobEvent(t, rootStore, jobstore.Event{
+		Kind: jobstore.EventJobFinished, TS: ended, JobID: jobID,
+		Status: jobstore.StatusCommandExitedNonzero, Reason: "exit_nonzero", ExitCode: &exit,
+		EndedAt: &ended, TerminalGen: "gen_forwarded",
+	})
+	closeJobJournal(t, rootStore)
+
+	job, found, err := LoadSessionJobGet(stateDir, rootSession, jobID, nil)
+	if err != nil {
+		t.Fatalf("LoadSessionJobGet: %v", err)
+	}
+	if !found {
+		t.Fatal("found = false, want the observed finish")
+	}
+	if job.Status != string(jobstore.StatusCommandExitedNonzero) {
+		t.Fatalf("status = %q, want %q: a finish that declares no end cannot establish the job's state",
+			job.Status, jobstore.StatusCommandExitedNonzero)
+	}
+	if job.ExitCode == nil || *job.ExitCode != exit {
+		t.Fatalf("exitCode = %v, want %d from the observed finish", job.ExitCode, exit)
+	}
+	if job.EndedAt == "" {
+		t.Fatal("endedAt is empty, want the observed finish's end time")
+	}
+	if job.StatusUnconfirmed {
+		t.Fatal("StatusUnconfirmed = true on a terminal observation: the first terminal write is complete")
 	}
 }

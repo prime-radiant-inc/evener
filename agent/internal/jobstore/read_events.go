@@ -142,12 +142,19 @@ func ScanEventsWithDiagnostics(ctx context.Context, path string, limits ScanLimi
 // failed read ignores the slice, which stays correct: the read did fail, and
 // reusing toOffset would resume inside the damaged line.
 //
-// MaxLineBytes is different: exceeding it returns ErrLineTooLong with NO
-// partial result (nil events, toOffset 0) — a single line that long is
-// corruption serious enough that there is nothing safe to salvage from
-// this scan. That is the ONLY case that returns no events with an error, which
-// is what lets a caller tell "too damaged to trust any of it" from "the prefix
-// is sound, the read stopped at one bad line".
+// Which errors carry a decoded prefix is a property of the ERROR, not of the
+// slice: match ErrScanLimitExceeded and ErrLineTooLong explicitly rather than
+// inferring the case from a non-empty result.
+//
+//   - ErrScanLimitExceeded: the prefix. The limit fired after those events.
+//   - a malformed-JSON error: the prefix. The scan stopped at one bad line.
+//   - ErrLineTooLong: NOTHING (nil events, toOffset 0). A single line that long
+//     is corruption serious enough that there is nothing safe to salvage.
+//   - every other failure — open, seek, a read error, a cancelled context, and
+//     the missing-file case that returns no error at all — also carries NO
+//     prefix, but for an unrelated reason: the scan never got far enough to
+//     decode one. An empty slice is therefore NOT evidence that the journal is
+//     oversized or corrupt; only matching ErrLineTooLong says that.
 func ScanEventsFrom(ctx context.Context, path string, fromOffset int64, limits ScanLimits) ([]Event, int64, error) {
 	events, offset, _, err := ScanEventsFromWithDiagnostics(ctx, path, fromOffset, limits)
 	return events, offset, err

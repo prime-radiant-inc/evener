@@ -2451,6 +2451,7 @@ Underlying Go kind: `struct` (no struct fields).
 | `lastOutputAt` | string | yes |  |
 | `diagnostics` | []string | yes |  |
 | `statusUnconfirmed` | bool | yes |  |
+| `statusRecheckable` | bool | yes |  |
 
 
 ### `JobActivitySession`

@@ -169,6 +169,25 @@ func TestFoldChecked_RejectsJobEventWithNoJobID(t *testing.T) {
 	}
 }
 
+// TestFoldChecked_RejectsFinishWithNonterminalStatus: the fold copies a finish's
+// status onto the record, so a finish that declares "running" produces a row that
+// reads as a live job for a job whose end the journal has already recorded. The
+// lifecycle check is where that is detectable, and a reader ranking that row
+// against another branch's observed finish needs to know.
+func TestFoldChecked_RejectsFinishWithNonterminalStatus(t *testing.T) {
+	t.Parallel()
+	started := diagTime()
+	owner := identifier.MustNewSessionID()
+	jobID := identifier.MustNewJobID(owner)
+	events := []Event{
+		{Kind: EventJobStarted, Seq: 1, TS: started, JobID: jobID, Type: JobShell, OwnerSessionID: owner, StartedAt: &started},
+		{Kind: EventJobFinished, Seq: 2, TS: started, JobID: jobID, Status: StatusRunning, TerminalGen: "gen_no_end"},
+	}
+	if _, err := FoldChecked(events); !errors.Is(err, ErrIncompleteLifecycle) {
+		t.Fatalf("FoldChecked error = %v, want ErrIncompleteLifecycle for a finish declaring a nonterminal status", err)
+	}
+}
+
 // TestFoldChecked_IgnoresNonJobKinds keeps the empty-ID rule to job events: a
 // watch or send event carries no job ID legitimately, and reporting one would
 // make every journal that ever registered a watch look damaged.

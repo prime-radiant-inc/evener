@@ -662,6 +662,42 @@ func statusUnconfirmedOnWire(read sessionJobRecordRead) bool {
 	return read.statusUnconfirmed
 }
 
+// statusRecheckableOnWire reports whether a LATER read could still establish the
+// status of the row this read returns, for the clients that decide whether to
+// look again rather than never.
+//
+// It is the counterpart of statusUnconfirmed and rests on the same record-scoped
+// evidence; a client that only stopped would watch an unconfirmed row forever
+// while the append that would settle it lands.
+//
+// Exactly one kind of evidence cannot change: THIS record's own scan stopped at
+// durable corruption, so no later append is reachable behind the bad line. Every
+// other cause is a statement the journal can still amend — a torn append can
+// complete, a statusless fragment can gain its status, a finish that declared no
+// end can be followed by a terminal one (the fold only short-circuits once a
+// status is already terminal), and a forwarded copy's owner can become
+// consultable. Resuming the session repairs all of them, which can happen while
+// the client is still connected.
+//
+// Like statusUnconfirmed this deliberately ignores the merged aggregate: an
+// intact owner row that inherited an ANCESTOR's durable corruption still rests
+// on readable bytes, and a client that stopped rechecking it would miss the
+// finish the owner later records.
+func statusRecheckableOnWire(read sessionJobRecordRead) bool {
+	if !statusUnconfirmedOnWire(read) {
+		return false
+	}
+	if read.record == nil {
+		return false
+	}
+	// Branch-local, deliberately: this record's OWN scan failing is the durable
+	// corruption that no later read gets past. The merged aggregate's
+	// ScanIncomplete also counts an ANCESTOR's damage, and cancelling the recheck
+	// on that is the same mistake as reading the status confidence off the
+	// aggregate — the row rests on readable bytes that a resume can extend.
+	return read.scanErr == nil
+}
+
 // mergeIntegrity folds another read's damage report into d. Diagnostics are not
 // a verdict about which branch won: either branch being torn or incoherent is
 // something the caller must still know.
@@ -743,6 +779,11 @@ func readSessionJobJournal(stateDir, sessionID, jobID string) (sessionJobRecordR
 // makes THIS record a fragment is the gap's own shape: a record with a type and
 // a start time was folded from a start, and one without a type is a
 // notification or finish that never had one.
+//
+// A nonterminal status carrying a TERMINAL GENERATION is the other per-record
+// shape: only a job_finished sets that field, so the record's status was copied
+// from a finish that declared no end. The journal has already recorded the
+// job's end, and saying "running" from it is not a state the bytes support.
 func recordStatusUnconfirmed(rec *jobstore.JobRecord, scanErr error, d sessionJobRecordDiagnostics) bool {
 	if rec == nil || rec.Status == "" || rec.Status.IsTerminal() {
 		return false
@@ -755,6 +796,11 @@ func recordStatusUnconfirmed(rec *jobstore.JobRecord, scanErr error, d sessionJo
 	// folded from a start that never described this job, so its "running" is a
 	// statement about some other session's launch.
 	if ownerClaimContradicts(rec) {
+		return true
+	}
+	// A finish that declared no terminal status: the fold recorded the job's end
+	// and this record cannot say what that end was.
+	if rec.TerminalGen != "" {
 		return true
 	}
 	return d.IncompleteLifecycle && rec.Type == ""
@@ -956,5 +1002,6 @@ func LoadSessionJobGet(stateDir, sessionID, jobID string, fence OwnerDeletionFen
 	job := projectActivityJob(read.record, ownerRef)
 	job.Diagnostics = jobRecordDiagnosticCodes(read.diagnostics)
 	job.StatusUnconfirmed = statusUnconfirmedOnWire(read)
+	job.StatusRecheckable = statusRecheckableOnWire(read)
 	return job, true, nil
 }
