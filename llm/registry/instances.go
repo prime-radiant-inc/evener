@@ -1,6 +1,7 @@
 package registry
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -180,7 +181,7 @@ func (r *Registry) effectiveAPIKeyEnv(rec *record) []string {
 // rules, and alias imports all folded in - is its provider's own
 // first-party endpoint: a vendor's hosted tools run on the vendor's own
 // infrastructure, so a resolution reaching anywhere else does not get to
-// carry them (WebSearch's gate, resolve.go's gateWebSearch, applies this;
+// carry them (resolve.go's gateEndpointCaps applies this;
 // spec §10's credential endpoint stop is the analogous rule for the API
 // key).
 //
@@ -203,7 +204,7 @@ func (r *Registry) effectiveAPIKeyEnv(rec *record) []string {
 // unequal. A record with no curated provider at all (a from-scratch
 // [providers.X] with its own base_url) has no vendor data to prove
 // anything against, so it is gated the same way rather than trusted:
-// nothing non-explicit survives - gateWebSearch normalizes its nil to a
+// nothing non-explicit survives - the WebSearch gate normalizes its nil to a
 // silent false and strips a glob-granted true - and the instance's own
 // explicit web_search remains the grant.
 //
@@ -223,11 +224,13 @@ func (r *Registry) effectiveAPIKeyEnv(rec *record) []string {
 // imported its transport (resolveOn's canonicalRowID). All three empty is
 // ResolveInstance's model-less path, judged row-less on both sides.
 // TestResolve_WebSearchEndpointGate and TestResolve_WebSearchCanonicalGate
-// pin the case catalog this has to get right.
-func (r *Registry) firstPartyEndpoint(rec *record, transport Transport, proto, rowID, ref, altID string) bool {
+// pin the case catalog this has to get right. The second result is the
+// curated protocol for this row. A first-party host may serve several APIs
+// with different rules for the same model's history.
+func (r *Registry) firstPartyEndpoint(rec *record, transport Transport, proto, rowID, ref, altID string) (matches bool, curatedProtocol string) {
 	base, ok := r.curated[rec.providerID]
 	if !ok {
-		return false
+		return false, ""
 	}
 	var row Model
 	if rowID != "" || ref != "" {
@@ -242,10 +245,11 @@ func (r *Registry) firstPartyEndpoint(rec *record, transport Transport, proto, r
 		expanded, _ := expandTemplate(*field, lookup)
 		*field = expanded
 	}
-	return sameEndpointURL(transport.BaseURL, canonical.BaseURL) &&
+	matches = sameEndpointURL(transport.BaseURL, canonical.BaseURL) &&
 		transport.Endpoint == canonical.Endpoint &&
 		transport.StreamEndpoint == canonical.StreamEndpoint &&
 		transport.CountTokensEndpoint == canonical.CountTokensEndpoint
+	return matches, cmp.Or(row.Protocol, base.head.Protocol)
 }
 
 // canonicalRow replays the provider's curated layers alone into the row the

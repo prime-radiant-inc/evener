@@ -67,7 +67,8 @@
       "user": false
     },
     "reasoning_field": "reasoning_content",
-    "tool_choice_forcing": false
+    "tool_choice_forcing": false,
+    "replay_reasoning_text": true
   },
   "provenance": {
     "ContextWindow": "snapshot/row",
@@ -83,7 +84,8 @@
     "Protocol": "snapshot/provider",
     "Reasoning": "snapshot/row",
     "ReasoningControls": "snapshot/row",
-    "ReasoningField": "snapshot/row",
+    "ReasoningField": "overlay/provider",
+    "ReplayReasoningText": "overlay/provider",
     "Sampling": "snapshot/row",
     "StructuredOutput": "overlay/provider",
     "Surface": "snapshot/row",

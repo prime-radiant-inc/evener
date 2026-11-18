@@ -442,7 +442,7 @@ func (r *Registry) resolveInstanceMode(name string, presence bool) (Resolved, er
 	// launch's where a default row resolved, so the gate still follows
 	// the endpoint the bare launch signs with. The base_url and
 	// endpoint-path comparison applies in full either way.
-	if w := r.gateWebSearch(&caps, prov, rec, transport, proto, "", "", ""); w != "" {
+	if w := r.gateEndpointCaps(&caps, prov, rec, transport, proto, "", "", ""); w != "" {
 		warnings = append(warnings, w)
 	}
 	var cred Credential
@@ -675,8 +675,11 @@ func webSearchExplicit(prov map[string]string) bool {
 	return tag == LayerConfig+"/provider" || tag == LayerConfig+"/row"
 }
 
-// gateWebSearch enforces that WebSearch - a platform-side capability, not a
-// wire-protocol fact (spec §4.2) - survives only on a record reaching its
+// gateEndpointCaps limits curated reasoning replay to the endpoint and
+// protocol that accept it. A providers.toml declaration can opt in any
+// route whose operator has verified the input contract.
+//
+// WebSearch is a platform-side capability (spec §4.2). It survives only on a record reaching its
 // provider's first-party endpoint (firstPartyEndpoint), unless the
 // record's own config set it explicitly (webSearchExplicit), in which case
 // that value always wins.
@@ -703,8 +706,18 @@ func webSearchExplicit(prov map[string]string) bool {
 // Returns the warning naming why WebSearch was stripped; empty when
 // nothing fired, including when the value was already false or only ever
 // nil (the normalization is silent).
-func (r *Registry) gateWebSearch(caps *Caps, prov map[string]string, rec *record, transport Transport, proto, rowID, ref, altID string) string {
-	if webSearchExplicit(prov) || r.firstPartyEndpoint(rec, transport, proto, rowID, ref, altID) {
+func (r *Registry) gateEndpointCaps(caps *Caps, prov map[string]string, rec *record, transport Transport, proto, rowID, ref, altID string) string {
+	bundledReplay := BoolValue(caps.ReplayReasoningText) && strings.HasPrefix(prov["ReplayReasoningText"], LayerOverlay+"/")
+	explicitWebSearch := webSearchExplicit(prov)
+	if explicitWebSearch && !bundledReplay {
+		return ""
+	}
+	firstParty, curatedProtocol := r.firstPartyEndpoint(rec, transport, proto, rowID, ref, altID)
+	if bundledReplay && (!firstParty || proto != curatedProtocol) {
+		caps.ReplayReasoningText = new(false)
+		prov["ReplayReasoningText"] = "gate/first-party"
+	}
+	if explicitWebSearch || firstParty {
 		return ""
 	}
 	if caps.WebSearch == nil {
@@ -806,7 +819,7 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 
 	caps := Caps{}
 	altID := hit.altRowID(ref.Model)
-	// canonicalRowID names the row the endpoint gate (gateWebSearch,
+	// canonicalRowID names the row the endpoint gate (gateEndpointCaps,
 	// firstPartyEndpoint) compares transport against. It starts as the
 	// resolved row's own id, but a same-provider alias that imports its
 	// target's transport below is judged against the target's row instead
@@ -940,7 +953,7 @@ func (r *Registry) resolveLayersModeLive(rec *record, ref Ref, warnings []string
 		// judgment) is what keeps that answer from drifting.
 		return Resolved{Instance: rec.name, Protocol: rowProto, Transport: transport, HostDerivedByRule: hostDerived, Model: row, Warnings: warnings}, nil
 	}
-	if w := r.gateWebSearch(&caps, prov, rec, transport, rowProto, canonicalRowID, ref.Model, altID); w != "" {
+	if w := r.gateEndpointCaps(&caps, prov, rec, transport, rowProto, canonicalRowID, ref.Model, altID); w != "" {
 		warnings = append(warnings, w)
 	}
 	headers := r.buildHeaders(rec.head.Headers, row.Headers)

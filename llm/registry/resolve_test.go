@@ -1493,6 +1493,129 @@ func TestResolve_LiveWireFactsReachCaps(t *testing.T) {
 	}
 }
 
+func TestResolve_ConfiguredReasoningReplay(t *testing.T) {
+	t.Parallel()
+	const connection = `
+[providers.lunaroute]
+base = "openai-compatible"
+vars_env = { BASE_URL = "LUNAROUTE_BASE_URL" }
+api_key = "$LUNAROUTE_API_KEY"
+`
+	const modelRows = `
+[providers.lunaroute.models."deepseek-4.1-flash"]
+replay_reasoning_text = true
+reasoning_field = "reasoning_content"
+[providers.lunaroute.models."glm-5.3-flash"]
+replay_reasoning_text = true
+reasoning_field = "reasoning_content"
+[providers.lunaroute.models."inkling-2-small"]
+replay_reasoning_text = true
+reasoning_field = "reasoning_content"
+`
+	env := map[string]string{"LUNAROUTE_BASE_URL": "https://gateway.example/v1", "LUNAROUTE_API_KEY": "test-key"}
+	for _, protocol := range []string{ProtocolOpenAIChat, ProtocolOpenAIResponses} {
+		r := fixtureLoad(t, env, connection+`protocol = "`+protocol+`"`+modelRows)
+		for _, model := range []string{"deepseek-4.1-flash", "glm-5.3-flash", "inkling-2-small"} {
+			res := mustResolve(t, r, "lunaroute/"+model)
+			if res.Transport.BaseURL != env["LUNAROUTE_BASE_URL"] || res.Credential.Value != env["LUNAROUTE_API_KEY"] {
+				t.Fatalf("%s/%s did not resolve the configured gateway and credential", protocol, model)
+			}
+			if res.Protocol != protocol || !res.Caps.ReplaysReasoningText() || StringValue(res.Caps.ReasoningField) != "reasoning_content" {
+				t.Errorf("%s/%s: protocol %q, replay %v, field %q", protocol, model, res.Protocol, res.Caps.ReplaysReasoningText(), StringValue(res.Caps.ReasoningField))
+			}
+		}
+		if res := mustResolve(t, r, "lunaroute/glm-5.3-flash-background"); res.Caps.ReplaysReasoningText() {
+			t.Errorf("%s: an unverified model inherited a different model's replay policy", protocol)
+		}
+	}
+}
+
+func TestResolve_BundledReasoningReplay(t *testing.T) {
+	t.Parallel()
+	r := fixtureLoad(t, nil, `
+[providers.zhipuai]
+[providers.zhipuai-coding-plan]
+[providers.moonshotai-cn]
+[providers.deepseek.models."deepseek-v4-flash"]
+replay_reasoning_text = false
+[providers.zai.models."glm-5.3-flash"]
+reasoning = false
+`)
+	for _, tc := range []struct {
+		ref    string
+		replay bool
+	}{
+		{"deepseek/deepseek-v4-pro", true},
+		{"zai/glm-5.3", true},
+		{"zai-coding-plan/glm-5.3-flash", true},
+		{"zhipuai/glm-4.7", true},
+		{"zhipuai-coding-plan/glm-5.3", true},
+		{"moonshotai/kimi-k3", true},
+		{"moonshotai-cn/kimi-k3", true},
+		{"deepseek/deepseek-v4-flash", false},
+		{"zai/glm-5.3-flash", false},
+		{"moonshotai/kimi-k2-0711-preview", false},
+		{"openrouter/deepseek/deepseek-r1", false},
+		{"openai/gpt-5.6", false},
+	} {
+		res := mustResolve(t, r, tc.ref)
+		if got := res.Caps.ReplaysReasoningText(); got != tc.replay {
+			t.Errorf("%s replays reasoning text = %v, want %v", tc.ref, got, tc.replay)
+		}
+		if tc.replay && (res.Protocol != ProtocolOpenAIChat || StringValue(res.Caps.ReasoningField) != "reasoning_content") {
+			t.Errorf("%s: protocol %q, field %q", tc.ref, res.Protocol, StringValue(res.Caps.ReasoningField))
+		}
+	}
+}
+
+func TestResolve_ReasoningReplayFollowsTheEndpoint(t *testing.T) {
+	t.Parallel()
+	r := fixtureLoad(t, map[string]string{"ZAI_BASE_URL": "https://gateway.example/v4"}, `
+[providers.proxy]
+base = "deepseek"
+base_url = "https://gateway.example/v1"
+[providers.proxy.models."deepseek-v4-flash"]
+replay_reasoning_text = true
+
+[providers.responses]
+base = "deepseek"
+protocol = "openai-responses"
+[providers.responses.models."deepseek-v4-pro"]
+replay_reasoning_text = true
+
+[providers.moonshotai.models."kimi-k3"]
+endpoint = "/custom/completions"
+
+[providers.gateway]
+base = "openai-compatible"
+base_url = "https://gateway.example/v1"
+[providers.gateway.models."kimi-k3"]
+alias_of = "moonshotai/kimi-k2.6"
+reasoning_field = "reasoning_content"
+`)
+	for _, tc := range []struct {
+		ref    string
+		replay bool
+	}{
+		{"zai/glm-5.3", false},
+		{"proxy/deepseek-v4-pro", false},
+		{"proxy/deepseek-v4-flash", true},
+		{"responses/deepseek-v4-flash", false},
+		{"responses/deepseek-v4-pro", true},
+		{"moonshotai/kimi-k3", false},
+		{"moonshotai/kimi-k2.6", true},
+		{"gateway/kimi-k3", false},
+	} {
+		res := mustResolve(t, r, tc.ref)
+		if got := res.Caps.ReplaysReasoningText(); got != tc.replay {
+			t.Errorf("%s at %s%s (%s): replay = %v, want %v", tc.ref, res.Transport.BaseURL, res.Transport.Endpoint, res.Protocol, got, tc.replay)
+		}
+	}
+	if res, err := r.ResolveInstance("proxy"); err != nil || res.Caps.ReplaysReasoningText() {
+		t.Errorf("proxy instance replay = %v, err = %v", res.Caps.ReplaysReasoningText(), err)
+	}
+}
+
 // A live row the gateway marks toggle-only must not inherit a curated effort
 // ladder. The ladder reaches the row through the catalog layer, and derivation
 // re-adds the effort control whenever a non-empty ladder sits beside controls

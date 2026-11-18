@@ -448,6 +448,8 @@ vars_env = { "BASE_URL" = "DEEPSEEK_BASE_URL" }
 default_model = "deepseek-v4-pro"
 cheap_model = "deepseek-v4-flash"
 thinking_format = "deepseek"
+replay_reasoning_text = true
+reasoning_field = "reasoning_content"
 empty_reasoning_content = true
 
 [providers.openrouter]
@@ -479,6 +481,8 @@ vars_env = { "BASE_URL" = "ZAI_BASE_URL" }
 default_model = "glm-5.3"
 cheap_model = "glm-4.7-flash"
 thinking_format = "zai"
+replay_reasoning_text = true
+reasoning_field = "reasoning_content"
 strip_empty_content = true
 max_stop_sequences = 1
 finish_reason_map = { sensitive = "content_filter", network_error = "error" }
@@ -494,6 +498,8 @@ vars_env = { "BASE_URL" = "ZAI_CODING_PLAN_BASE_URL" }
 default_model = "glm-5.3"
 cheap_model = "glm-5.3-flash"
 thinking_format = "zai"
+replay_reasoning_text = true
+reasoning_field = "reasoning_content"
 strip_empty_content = true
 max_stop_sequences = 1
 finish_reason_map = { sensitive = "content_filter", network_error = "error" }
@@ -503,6 +509,8 @@ fields = { developer_role = false }
 
 [providers.zhipuai]
 thinking_format = "zai"
+replay_reasoning_text = true
+reasoning_field = "reasoning_content"
 strip_empty_content = true
 max_stop_sequences = 1
 finish_reason_map = { sensitive = "content_filter", network_error = "error" }
@@ -512,6 +520,8 @@ fields = { developer_role = false }
 
 [providers."zhipuai-coding-plan"]
 thinking_format = "zai"
+replay_reasoning_text = true
+reasoning_field = "reasoning_content"
 strip_empty_content = true
 max_stop_sequences = 1
 finish_reason_map = { sensitive = "content_filter", network_error = "error" }
@@ -530,11 +540,15 @@ vars = { "BASE_URL" = "https://api.moonshot.ai/v1" }
 vars_env = { "BASE_URL" = "MOONSHOTAI_BASE_URL" }
 default_model = "kimi-k3"
 cheap_model = "kimi-k2.6"
+replay_reasoning_text = true
+reasoning_field = "reasoning_content"
 structured_output = false
 tool_choice_forcing = false
 fields = { temperature = false, top_p = false, frequency_penalty = false, presence_penalty = false }
 
 [providers."moonshotai-cn"]
+replay_reasoning_text = true
+reasoning_field = "reasoning_content"
 structured_output = false
 tool_choice_forcing = false
 fields = { temperature = false, top_p = false, frequency_penalty = false, presence_penalty = false }

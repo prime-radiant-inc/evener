@@ -418,8 +418,8 @@ allowlist — an unknown id there is a resolve error, not a synthesized row.
 
 ## Reasoning and thinking dialects
 
-`Reasoning = false` empties `ReasoningControls`/`EffortValues`, sends no
-reasoning field on any protocol, and drops replayed thinking from history.
+`Reasoning = false` empties `ReasoningControls`/`EffortValues`, suppresses
+reasoning controls and disables `replay_reasoning_text`.
 Otherwise `ReasoningControls` says what the model accepts, `ThinkingShape`
 says how the anthropic and google protocols spell it, and `ThinkingFormat`
 says how the openai-chat protocol spells it.
@@ -500,18 +500,76 @@ no catalog entry). Either shape carries `includeThoughts: true`. Clearing
 `fields."generationConfig.thinkingConfig"` on a row prunes the object
 entirely, for a model that takes no thinking fields at all.
 
-**Replay.** An openai-chat target carries no reasoning as continuation state:
-`reasoning_content` is display output, so request assembly drops prior
-assistant thinking from every replayed message, including the current turn's
-earlier rounds, and the transcript keeps it (#4563). A row that declares
-`thinking_as_text` is the deliberate exception: its adapter merges the
-thinking into assistant text because that gateway wants it there. When
-thinking does reach the chat builder (a `thinking_as_text` row, or a caller
-that builds a request directly), it writes back to whichever field it arrived
-on — `reasoning_content`, `reasoning`, or `reasoning_text` as a plain string
-field, or `reasoning_details` as OpenRouter's array form. The value comes from
-models.dev's `interleaved.field` when the catalog states one, else the field
-the text actually arrived on, else `reasoning_content`.
+### Replaying reasoning in history
+
+A provider or model row with `replay_reasoning_text = true` accepts the
+assistant's prior reasoning in its request history. Evener returns all
+eligible reasoning still in context, including earlier tool calls in the
+current turn and earlier user turns. Raw text belongs to the instance,
+protocol and requested model that produced it. It counts toward context
+pressure when replayed. The transcript retains the reasoning independently
+of what the target accepts.
+
+- On `openai-chat`, `reasoning_field` selects the assistant message field
+  the gateway reads. A row can set it even when the gateway emits a different
+  field. Without a declared field, the adapter uses the recognized incoming
+  field or defaults to `reasoning_content`. An ordinary chat session omits
+  plain reasoning until its row opts in. The existing `thinking_as_text`
+  setting merges reasoning into assistant-visible text, and opaque
+  `reasoning_details` retain their separate continuation behavior.
+- On `openai-responses`, an encrypted reasoning item takes precedence. When
+  the row opts in and an item has raw `content`, Evener returns its
+  `reasoning_text` parts in order with the item's ID when supplied. A
+  display summary alone supplies no raw text. Neither
+  `fields.include` nor server-side continuation is needed for this path.
+
+The bundled Chat Completions providers `deepseek`, `zai`, `zai-coding-plan`,
+`zhipuai`, `zhipuai-coding-plan`, `moonshotai` and `moonshotai-cn` accept
+`reasoning_content` on their first-party endpoints. DeepSeek requires the
+complete history when tools are supplied. Z.ai's thinking dialect requests
+preserved thinking with `clear_thinking: false`, and Moonshot asks callers
+to keep the full assistant message. Bundled MiniMax and Kimi for Coding
+use Anthropic thinking blocks. [DeepSeek](https://api-docs.deepseek.com/guides/thinking_mode/),
+[Z.ai](https://docs.z.ai/guides/capabilities/thinking-mode),
+[Zhipu](https://docs.bigmodel.cn/cn/guide/capabilities/thinking-mode),
+[Moonshot](https://platform.kimi.ai/docs/guide/use-thinking-models),
+[MiniMax](https://platform.minimax.io/docs/guides/text-m3-function-call).
+
+Changing the endpoint or protocol requires a replay declaration for that
+route. For example, DeepSeek also documents plain reasoning input on its
+Responses API for `deepseek-flash` and `deepseek-v4-pro`. An instance with
+`base = "deepseek"` and `protocol = "openai-responses"` can set
+`replay_reasoning_text = true` in each of those model rows.
+[DeepSeek Responses input items](https://api-docs.deepseek.com/guides/responses_api/#input-items).
+
+For a **Lunaroute** connection, the three models below accept plain replay
+on both protocols. Its chat endpoint emits `reasoning`, while GLM and
+Inkling read `reasoning_content`. DeepSeek reads either field. Add these
+model tables to the existing connection in `providers.toml`, substituting
+its instance name for `lunaroute`. For a new connection, the full example
+reads the gateway's API base URL and key from the two named environment
+variables. Choose `protocol = "openai-responses"` for Responses, which
+ignores the chat field setting. [Gateway probes](https://github.com/prime-radiant-inc/evener/issues/6709).
+
+```toml
+[providers.lunaroute]
+base = "openai-compatible"
+vars_env = { BASE_URL = "LUNAROUTE_BASE_URL" }
+api_key = "$LUNAROUTE_API_KEY"
+protocol = "openai-chat"
+
+[providers.lunaroute.models."deepseek-4.1-flash"]
+replay_reasoning_text = true
+reasoning_field = "reasoning_content"
+
+[providers.lunaroute.models."glm-5.3-flash"]
+replay_reasoning_text = true
+reasoning_field = "reasoning_content"
+
+[providers.lunaroute.models."inkling-2-small"]
+replay_reasoning_text = true
+reasoning_field = "reasoning_content"
+```
 
 What changed structurally: `thinking_format` is now a `Caps` field set in
 `providers.toml`/the curated overlay (a provider- or model-level TOML key),

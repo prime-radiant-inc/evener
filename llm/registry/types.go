@@ -161,6 +161,7 @@ type Caps struct {
 	SessionAffinityHeaders   *bool `toml:"session_affinity_headers" json:"session_affinity_headers,omitempty"`
 
 	// Protocol features.
+	ReplayReasoningText   *bool `toml:"replay_reasoning_text" json:"replay_reasoning_text,omitempty"`
 	MultimodalToolResults *bool `toml:"multimodal_tool_results" json:"multimodal_tool_results,omitempty"`
 	WebSearch             *bool `toml:"web_search" json:"web_search,omitempty"`
 }
@@ -293,6 +294,12 @@ func StringValue(p *string) string {
 // row must send no reasoning control at all. nil means "unknown", which is
 // not disabled.
 func (c Caps) ReasoningDisabled() bool { return c.Reasoning != nil && !*c.Reasoning }
+
+// ReplaysReasoningText reports whether this endpoint accepts earlier assistant
+// reasoning as plain text in Chat Completions or Responses history.
+func (c Caps) ReplaysReasoningText() bool {
+	return BoolValue(c.ReplayReasoningText) && !c.ReasoningDisabled()
+}
 
 // InputCeiling returns the smaller positive input token limit from
 // MaxInputTokens and ContextWindow, or 0 when neither is positive.

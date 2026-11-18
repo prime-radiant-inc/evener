@@ -677,6 +677,7 @@ func cloneCaps(c Caps) Caps {
 	out.ToolResultName = clonePointer(c.ToolResultName)
 	out.ToolStream = clonePointer(c.ToolStream)
 	out.SessionAffinityHeaders = clonePointer(c.SessionAffinityHeaders)
+	out.ReplayReasoningText = clonePointer(c.ReplayReasoningText)
 	out.MultimodalToolResults = clonePointer(c.MultimodalToolResults)
 	out.WebSearch = clonePointer(c.WebSearch)
 	return out
