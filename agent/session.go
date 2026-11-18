@@ -198,16 +198,9 @@ type Session struct {
 	eventsMu                     sync.RWMutex // guards send-vs-close on events; all sends go through emit()
 	closeCtxMu                   sync.RWMutex
 	closeCtx                     context.Context // shared shutdown deadline for blocked authoritative sends
-	// closeDrainSendCtx caps sends made by the delegate close drain for as long
-	// as that drain is publishing. The drain's warning is one send, but the
-	// Notification hook it fires publishes its own lifecycle events and output
-	// through this same session, on goroutines that never see the drain's
-	// context; without an installed cap those sends fall back to the full close
-	// budget and the drain waits out the cascade it was given half of.
-	closeDrainSendCtx          atomic.Pointer[context.Context]
-	closeSignal                chan struct{}
-	testOnlyBlockedSendEntered func()
-	eventsClosed               bool // set under eventsMu.Lock immediately before close(events)
+	closeSignal                  chan struct{}
+	testOnlyBlockedSendEntered   func()
+	eventsClosed                 bool // set under eventsMu.Lock immediately before close(events)
 	// descendantEvent is inherited from the spawning root and remains immutable
 	// for this Session's lifetime. Children use it to expose their live event
 	// stream without acquiring an authoritative consumer for their own channel.

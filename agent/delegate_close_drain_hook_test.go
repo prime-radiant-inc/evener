@@ -59,15 +59,18 @@ func TestDelegateCloseDrainBoundsNotificationHookPublication(t *testing.T) {
 			t.Errorf("runner published %d lifecycle events %v, want at least HOOK_START and HOOK_END: the hook did not run", len(lifecycle), lifecycle)
 		}
 	}()
-	runner.SetEventCallback(func(kind events.EventKind, data events.EventData) {
+	// The context-aware callback is the production wiring: it publishes the
+	// hook's lifecycle events on the bound the dispatch runs under, which is how
+	// the drain's stop deadline reaches them.
+	runner.SetEventCallbackContext(func(ctx context.Context, kind events.EventKind, data events.EventData) {
 		lifecycleMu.Lock()
 		lifecycle = append(lifecycle, kind)
 		lifecycleMu.Unlock()
 		if end, ok := data.(events.HookEndData); ok && kind == events.EventHookEnd {
-			root.emitHookCompleted(end)
+			root.emitHookCompletedContext(ctx, end)
 			return
 		}
-		root.emit(data)
+		root.emitContext(ctx, data)
 	})
 	root.hookRunner = runner
 
@@ -282,5 +285,155 @@ func TestNotificationHookCompletionDoesNotDispatchAnotherHook(t *testing.T) {
 	// That failure must not launch the hook that would fail the same way.
 	if got := dispatched.Load(); got != 0 {
 		t.Fatalf("Notification hook re-dispatches from a hook completion's own transcript failure = %d, want 0: the warning path must not be reachable from a hook's completion", got)
+	}
+}
+
+// The stop deadline belongs to the warning and the Notification hook it fires,
+// not to the root's stream. While that hook is parked on a full authoritative
+// stream, an unrelated send from the root -- an in-flight tool finishing its
+// call -- must keep the shared close deadline. A consumer that resumes after the
+// stop's half has expired still receives it, because the stop deadline governs
+// one publication and not the session.
+//
+// Backpressure is ON here, and that is the whole point. Both disposal-budget
+// tests turn backpressure off before their assertions, which is exactly why they
+// cannot see a deadline leaking onto a send that is not theirs.
+func TestCloseDrainStopDeadlineDoesNotLeakOntoUnrelatedSends(t *testing.T) {
+	s := newTestSessionForEnvctx(t)
+	s.authoritativeConsumer = true
+	// One slot. The warning takes it, and everything behind the warning parks.
+	s.events = make(chan events.SessionEvent, 1)
+
+	cascade, cancelCascade := ensureCloseBudget(context.Background())
+	defer cancelCascade()
+	stopCtx, cancelStop := context.WithTimeout(cascade, closeDrainHookStopBudget)
+	defer cancelStop()
+	s.closeCtxMu.Lock()
+	s.closeCtx = cascade
+	s.closeCtxMu.Unlock()
+
+	hookParked := make(chan struct{})
+	var hookOnce sync.Once
+	s.testOnlyBlockedSendEntered = func() { hookOnce.Do(func() { close(hookParked) }) }
+	defer func() { s.testOnlyBlockedSendEntered = nil }()
+
+	// A hook that cannot finish keeps the drain inside its publication until the
+	// stop bound expires, which is what makes the two deadlines distinguishable.
+	runner := hooks.NewRunner(nil, "test-model")
+	runner.Add(plugin.HookNotification, plugin.RegisteredHook{
+		Matcher: "*",
+		Type:    "command",
+		Command: `printf '%s\n' '{"systemMessage":"hook output"}'`,
+		Timeout: 30,
+	})
+	// The lifecycle callback is what publishes HookStart on the session's stream.
+	// Without it nothing but the warning would ever be sent, and the tripwire
+	// below could not fire.
+	// The context-aware callback is the production wiring: it publishes the
+	// hook's lifecycle events on the bound the dispatch is running under, which is
+	// the drain's stop context here.
+	runner.SetEventCallbackContext(func(ctx context.Context, kind events.EventKind, data events.EventData) {
+		s.emitContext(ctx, data)
+	})
+	s.hookRunner = runner
+
+	drained := make(chan struct{})
+	go func() {
+		defer close(drained)
+		s.emitCloseDrainWarnings(stopCtx, []events.WarningData{{Message: "drain warning"}})
+	}()
+
+	select {
+	case <-hookParked:
+	case <-time.After(10 * time.Second):
+		t.Fatal("TRIPWIRE: the drain never reached a blocked send")
+	}
+
+	// An unrelated root send, made while the drain is parked on its own bound.
+	unrelatedDone := make(chan struct{})
+	go func() {
+		defer close(unrelatedDone)
+		s.emit(events.ToolCallEndData{CallID: "call-1", ToolName: "shell"})
+	}()
+
+	// The drain returns when its stop bound expires. Only then is the stream
+	// drained, so any send still parked at that moment has already had to survive
+	// the stop deadline -- which is the whole claim under test.
+	select {
+	case <-drained:
+	case <-time.After(10 * time.Second):
+		t.Fatal("TRIPWIRE: the drain never returned on its stop bound")
+	}
+	// Resume the consumer now: after the stop deadline, before the close
+	// deadline. A send that kept the close deadline is still waiting and arrives;
+	// a send that inherited the stop deadline is already gone.
+	delivered := false
+	limit := time.After(5 * time.Second)
+	for !delivered {
+		select {
+		case event := <-s.events:
+			if event.Kind == events.EventToolCallEnd {
+				delivered = true
+			}
+		case <-limit:
+			t.Fatal("the root's tool event was dropped at the stop deadline: the drain's bound reached a send that was not part of its publication")
+		}
+	}
+	<-unrelatedDone
+}
+
+// A durable record and the filesystem must agree. Disposal writes the resumability
+// closure to the journal, then removes the lane; if the announcement of that
+// closure is published before the removal, a stalled authoritative stream makes
+// the announcement a precondition for the removal. The pass then spends its
+// budget parked, and the lane stays on disk while its durable record says it was
+// closed -- a lane that claims it can be resumed but still exists.
+//
+// Backpressure stays ON for this whole test. The disposal-budget tests elsewhere
+// turn it off before their assertions, which is precisely why they cannot see
+// this interaction: with nothing parked, no ordering is under any pressure.
+func TestCloseDisposalRemovesLaneBeforeAnnouncingClosureUnderBackpressure(t *testing.T) {
+	r := newWorktreeRepo(t)
+	delegateID, lanePath, _ := r.seedIsolationLane(t)
+	root := r.s
+
+	// A stalled consumer with exactly the slots disposal needs and no more: two
+	// updates fit, so any third send -- a warning, say -- parks.
+	root.events = make(chan events.SessionEvent, 2)
+	root.authoritativeConsumer = true
+	defer func() {
+		root.authoritativeConsumer = false
+		// Drain whatever is queued so the session's own close can finish.
+		for {
+			select {
+			case <-root.events:
+				continue
+			default:
+			}
+			break
+		}
+	}()
+
+	restoreBudget := SetLaneClosePassBudget(closeDrainCascadeBudget)
+	defer restoreBudget()
+	cascade, cancelCascade := ensureCloseBudget(context.Background())
+	defer cancelCascade()
+	root.closeCtxMu.Lock()
+	root.closeCtx = cascade
+	root.closeCtxMu.Unlock()
+
+	// The warning the drain publishes occupies a slot. It is the thing that used
+	// to push disposal's updates past the buffer.
+	root.emitCloseDrainWarnings(t.Context(), []events.WarningData{{Message: "drain warning"}})
+
+	root.disposeDelegateLanesAtClose(cascade)
+
+	// The consumer is still attached and still stalled; nothing has read the
+	// stream. The durable closure and the filesystem must agree anyway.
+	if lanePresent(lanePath) {
+		t.Fatalf("isolation lane %s was left on disk with only %d queued events: disposal's announcement took the slot its removal needed", lanePath, len(root.events))
+	}
+	if !r.stableDisposalClosurePresent(t, delegateID) {
+		t.Fatal("the lane was removed without a durable disposed mark")
 	}
 }

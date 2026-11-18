@@ -182,8 +182,16 @@ func (s *Session) disposeOneDelegateLane(ctx context.Context, local *execenv.Loc
 		s.emit(events.WarningData{Message: fmt.Sprintf("delegate lane resumability closure failed for %s: %v", lane.delegateID, closeErr)})
 		return lane.delegateID + " at " + lanePath + " (resumability closure failed; retained intact)", true
 	}
-	s.delegateController.emitDelegateUpdates(plans)
 	outcome, cleanupNote := s.disposeUnchangedLaneMechanics(run, st, lane, metaDir, downgradeUnlockKeep, false)
+	// The closure above is already durable, so the updates that announce it are
+	// published only once the lane is off disk. Publishing them first made the
+	// announcement a prerequisite for the removal: on a stalled authoritative
+	// stream an update that could not be delivered spent the rest of the cascade
+	// and left a lane whose durable record said it had been closed -- state on
+	// disk contradicting a durable record, which is worse than a lane that was
+	// never closed at all. Removal first makes the worst case an announcement that
+	// arrives late, with the durable closure and the filesystem already agreeing.
+	s.delegateController.emitDelegateUpdates(plans)
 	if outcome == laneKeptDirty {
 		return cleanupNote + " (resumability closed; retained residue)", true
 	}

@@ -2184,6 +2184,18 @@ func (s *Session) initPlugins(sessionStartKind plugin.SessionStartKind, runSessi
 		}
 		s.emit(data)
 	})
+	// The bound a hook was dispatched under is the bound its lifecycle events are
+	// published on. An ordinary hook runs under the session's own lifetime, which
+	// is what emit already uses; a close drain launches its Notification hook on
+	// the stop context, and that narrower bound must reach the hook's start and
+	// end instead of falling back to the full close budget.
+	runner.SetEventCallbackContext(func(ctx context.Context, kind events.EventKind, data events.EventData) {
+		if end, ok := data.(events.HookEndData); ok && kind == events.EventHookEnd {
+			s.emitHookCompletedContext(ctx, end)
+			return
+		}
+		s.emitContext(ctx, data)
+	})
 	s.hookRunner = runner
 	// Merge plugin agents on top of built-in agents (plugin agents win on conflict).
 	maps.Copy(s.pluginAgents, allAgents)

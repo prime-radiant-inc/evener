@@ -383,10 +383,15 @@ func (s *Session) deliverHookContext(text string) error {
 // diagnostic-warning channel (CLI/TUI/hub), WITHOUT firing the Notification hook
 // (plain emit would re-enter it and recurse).
 func (s *Session) deliverHookUserMessage(text string) {
+	s.deliverHookUserMessageContext(nil, text)
+}
+
+// deliverHookUserMessageContext is deliverHookUserMessage on a caller's bound.
+func (s *Session) deliverHookUserMessageContext(ctx context.Context, text string) {
 	if strings.TrimSpace(text) == "" {
 		return
 	}
-	s.emitDiagnosticWarning(events.WarningData{Source: string(diagnostic.SourceHook), Message: text})
+	s.emitDiagnosticWarningContext(ctx, events.WarningData{Source: string(diagnostic.SourceHook), Message: text})
 }
 
 // hookStopText trims a hook's stop reason and supplies the event's fallback when

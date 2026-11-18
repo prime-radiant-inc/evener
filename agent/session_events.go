@@ -242,6 +242,15 @@ func (s *Session) currentWorkSeedData() *events.CurrentWorkSeedData {
 // the model is informed. Hook-CONFIGURATION diagnostics must NOT run the
 // Notification hook and instead go through emitDiagnosticWarning.
 func (s *Session) emit(data events.EventData) {
+	s.emitContext(nil, data)
+}
+
+// emitContext is emit on a caller's bound. A nil ctx means the ordinary path,
+// which is what every emitter without a bound of its own uses. A caller that
+// launched work under a narrower deadline -- the close drain's Notification hook
+// -- passes it so its publications share that deadline instead of the close
+// cascade's.
+func (s *Session) emitContext(ctx context.Context, data events.EventData) {
 	// Task mutations are emitted by transport-neutral tool handlers. Stamp the
 	// owning session at this Session boundary so shared descendants name the
 	// durable root store without leaking Session into the handler dependency.
@@ -249,7 +258,7 @@ func (s *Session) emit(data events.EventData) {
 		update.TaskStoreOwnerSessionID = s.taskStoreOwnerSessionID()
 		data = update
 	}
-	s.emitWithProvenance(data, s.activeCausalProvenance())
+	s.emitWithProvenanceContext(ctx, data, s.activeCausalProvenance())
 }
 
 // emitWithProvenance is emit with an explicit causal provenance stamp. emit
@@ -264,14 +273,23 @@ func (s *Session) emit(data events.EventData) {
 // sendEventContext for why adoption is the contract and what it costs to
 // copy the stamp a second time.
 func (s *Session) emitWithProvenance(data events.EventData, p *provenance.Causal) {
+	s.emitWithProvenanceContext(nil, data, p)
+}
+
+// emitWithProvenanceContext is emitWithProvenance on a caller's bound.
+func (s *Session) emitWithProvenanceContext(ctx context.Context, data events.EventData, p *provenance.Causal) {
 	if s == nil || s.events == nil {
 		return
 	}
-	data, ev := s.sendEvent(data, p)
+	data, ev := s.sendEventOnContext(ctx, data, p)
 	if s.jobManager != nil {
 		s.jobManager.onSessionEvent(ev)
 	}
 	if events.KindOf(data) == events.EventWarning {
+		if ctx != nil {
+			s.fireNotificationHookBounded(ctx, warningHookMessage(data), warningHookTitle(data))
+			return
+		}
 		s.fireNotificationHook(warningHookMessage(data), warningHookTitle(data))
 	}
 }
@@ -361,7 +379,14 @@ func (s *Session) recordTurnFailureWithAsk(data events.ErrorData, steeringCarrie
 // — turning it on would reveal only hooks that ran afterwards, which is the
 // same "switch that governs nothing" complaint this fixes (kata qm9y).
 func (s *Session) emitHookCompleted(data events.HookEndData) {
-	s.emit(data)
+	s.emitHookCompletedContext(nil, data)
+}
+
+// emitHookCompletedContext is emitHookCompleted on a caller's bound, so a hook a
+// close drain launched has its completion published on the drain's deadline
+// rather than the full close budget.
+func (s *Session) emitHookCompletedContext(ctx context.Context, data events.HookEndData) {
+	s.emitContext(ctx, data)
 	info := schema.HookInfo{
 		Event:      data.Event,
 		HookType:   data.HookType,
@@ -401,10 +426,17 @@ func (s *Session) emitHookCompleted(data events.HookEndData) {
 // (b) — for the invalid-matcher diagnostic — recurse, since the Notification
 // dispatch re-enters the matcher that produced the warning.
 func (s *Session) emitDiagnosticWarning(data events.WarningData) {
+	s.emitDiagnosticWarningContext(nil, data)
+}
+
+// emitDiagnosticWarningContext is emitDiagnosticWarning on a caller's bound, so a
+// hook the close drain launched publishes its own output on the drain's deadline
+// instead of the full close budget.
+func (s *Session) emitDiagnosticWarningContext(ctx context.Context, data events.WarningData) {
 	if s == nil || s.events == nil {
 		return
 	}
-	s.sendEvent(data, s.activeCausalProvenance())
+	s.sendEventOnContext(ctx, data, s.activeCausalProvenance())
 }
 
 // sendEvent enriches and delivers data on the event stream, stamping the given
@@ -417,7 +449,17 @@ func (s *Session) emitDiagnosticWarning(data events.WarningData) {
 // descriptor, a jobstore event, a transcript entry) pass provenance.Clone of
 // it. See sendEventContext for why adoption is the contract.
 func (s *Session) sendEvent(data events.EventData, p *provenance.Causal) (events.EventData, events.SessionEvent) {
-	data, ev, _ := s.sendEventContext(context.Background(), data, p)
+	return s.sendEventOnContext(nil, data, p)
+}
+
+// sendEventOnContext delivers on a caller's bound. A nil ctx keeps the ordinary
+// behaviour: background, so nothing but the session's own close budget bounds the
+// send.
+func (s *Session) sendEventOnContext(ctx context.Context, data events.EventData, p *provenance.Causal) (events.EventData, events.SessionEvent) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	data, ev, _ := s.sendEventContext(ctx, data, p)
 	return data, ev
 }
 
@@ -499,9 +541,6 @@ func (s *Session) sendEventContext(ctx context.Context, data events.EventData, p
 		// context.Background() had no deadline for a caller to shorten and any
 		// stop-scoped cap was discarded before this line -- the send then
 		// parked until the close cascade's own deadline.
-		if drainCtx := s.closeDrainSendCtx.Load(); drainCtx != nil && *drainCtx != nil {
-			ctx = earlierDeadlineContext(ctx, *drainCtx)
-		}
 		select {
 		case s.events <- ev:
 			delivered = true
@@ -629,21 +668,12 @@ func (s *Session) emitCloseDrainWarnings(ctx context.Context, warnings []events.
 	if s == nil || s.events == nil {
 		return
 	}
-	// Cap every send this publication causes, not just the warning itself. The
-	// warning runs the Notification hook, and the hook's own start and end events
-	// and output are published by the runner's goroutines, which carry no caller
-	// context. A warning that fills the authoritative stream's last slot parks
-	// its hook on that stream; capping only the warning would leave the hook
-	// waiting out the full close cascade with the stop deadline already gone.
-	capped := ctx
-	previous := s.closeDrainSendCtx.Swap(&capped)
-	defer func() {
-		if previous != nil {
-			s.closeDrainSendCtx.Store(previous)
-			return
-		}
-		s.closeDrainSendCtx.Store(nil)
-	}()
+	// The bound travels with the warning, not with the session. Every send this
+	// publication causes -- the warning itself, the Notification hook it fires,
+	// that hook's own lifecycle events and its output -- is made on the drain's
+	// context. Nothing else on the root is: an unrelated tool event landing in the
+	// same window keeps the shared close deadline and is still delivered to a
+	// consumer that resumes after the stop's half has expired.
 	for _, warning := range warnings {
 		data, ev, _ := s.sendEventContext(ctx, warning, s.activeCausalProvenance())
 		if s.jobManager != nil {
@@ -781,11 +811,11 @@ func (s *Session) runNotificationHook(ctx context.Context, message, title string
 	result := s.hookRunner.RunNotification(s.apiLogContext(ctx), input)
 	for _, m := range result.ModelContext {
 		if err := s.deliverHookContext(m); err != nil {
-			s.emitDiagnosticWarning(events.WarningData{Message: fmt.Sprintf("steering admission failed: %v", err)})
+			s.emitDiagnosticWarningContext(ctx, events.WarningData{Message: fmt.Sprintf("steering admission failed: %v", err)})
 		}
 	}
 	for _, m := range result.UserMessages {
-		s.deliverHookUserMessage(m)
+		s.deliverHookUserMessageContext(ctx, m)
 	}
 }
 
