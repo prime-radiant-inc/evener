@@ -234,12 +234,13 @@ describe("submitting a message to a session", () => {
 	});
 
 	// A settle that could not finish is not a settle that found nothing to
-	// send. Storage answering "retry", or a newer read superseding this one,
-	// leaves the admitted review parked - and because this screen holds the
-	// target, the flush's storage watcher deliberately leaves it alone. Without
-	// handing those two to the flush, the review sits queued on a healthy
-	// connection until something else happens to wake it.
-	it.each(["retry", "stale"] as const)("hands a %s settle to the flush's retry", async (outcome) => {
+	// send. Storage answering "retry", a newer read superseding this one, or a
+	// resume that started the daemon and then could not read it back all leave
+	// the admitted review parked - and because this screen holds the target,
+	// the flush's storage watcher deliberately leaves it alone. Without handing
+	// those to the flush, the review sits queued on a healthy connection until
+	// something else happens to wake it.
+	it.each(["retry", "stale", "resumed"] as const)("hands a %s settle to the flush's retry", async (outcome) => {
 		const retryTargetAfterScreenSettle = vi.fn();
 		const runtime = {
 			submit: async () => ({ clientMutationId: "mutation-1" }),
@@ -252,14 +253,16 @@ describe("submitting a message to a session", () => {
 		expect(retryTargetAfterScreenSettle).toHaveBeenCalledTimes(1);
 	});
 
-	// The resume path parks the row the same way and answers with the same two
-	// outcomes, so it owes the flush the same look.
-	it("hands a superseded resume settle to the flush's retry", async () => {
+	// The resume path parks the row the same way and answers with the same
+	// outcomes, so it owes the flush the same look. "resumed" is the one that
+	// matters most here: the daemon is started, so the fence the message waits
+	// behind is gone, and only a re-read of the target can release it.
+	it.each(["stale", "resumed"] as const)("hands a %s resume settle to the flush's retry", async (outcome) => {
 		const retryTargetAfterScreenSettle = vi.fn();
 		const runtime = {
 			submit: async () => ({ clientMutationId: "mutation-1" }),
 			messageWaiting: async () => true,
-			settleTarget: async () => "stale" as const,
+			settleTarget: async () => outcome,
 		};
 		await submitSessionMessage(runtime, new FakeClient("ready"), target, "send", "hi", true, {
 			retryTargetAfterScreenSettle,

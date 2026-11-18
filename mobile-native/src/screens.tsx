@@ -184,6 +184,7 @@ import { detailLevels } from "./session/nativeDetailLevels";
 import { outboxFlush } from "./outbox/nativeOutboxFlush";
 import { type OfflineTarget, offlineRequest } from "./outbox/offlineSend";
 import { composerPlaceholder, sendAction, sendLabel } from "./session/sendAction";
+import { settleUnfinished } from "./session/sessionMessage";
 import { NotesBar } from "./session/NotesBar";
 import { type NotesHost, notesHosts } from "./session/NotesSheet";
 import { SessionHeader, useHeaderHiding } from "./session/SessionHeader";
@@ -981,6 +982,12 @@ function ConversationScreenView({
 			() => store.getState().conversation,
 			() => !commandBusy.current && !document.getSnapshot().submitting && store.getState().pendingSubmission === null,
 			knownCatalog.current,
+			// A read the store discarded still returns normally, so "the refresh
+			// resolved" is not the same fact as "the projection these controls
+			// read from is the one that read published". The store says which it
+			// is; a discarded read leaves its last accepted projection in place and
+			// never marks a fresh one ready.
+			() => store.getState().latestReadState === "ready",
 		);
 	}, [
 		entry,
@@ -2764,14 +2771,13 @@ function ConversationScreenView({
 					mayResumeFenced: () => runtime.messageWaiting(hubId, ref),
 				})
 				.catch(() => undefined);
-			// Two outcomes mean the settle could not finish, not that nothing is
-			// owed: storage answered "retry", or a newer read superseded this one.
-			// This screen holds the target, so the storage watcher leaves it to the
-			// screen and nothing else comes back for it - the parked message would
-			// wait for the reader's next send, their next visit, or a reconnect.
-			// The flush looks again shortly and re-asks the durable row, so a
-			// message withdrawn in the meantime still declines.
-			if (answered === "retry" || answered === "stale") outboxFlush.retryTargetAfterScreenSettle();
+			// Outcomes that end the settle without finishing it. This screen holds
+			// the target, so the storage watcher leaves it to the screen and
+			// nothing else comes back for it - the parked message would wait for
+			// the reader's next send, their next visit, or a reconnect. The flush
+			// looks again shortly and re-asks the durable row, so a message
+			// withdrawn in the meantime still declines.
+			if (settleUnfinished(answered)) outboxFlush.retryTargetAfterScreenSettle();
 			if (answered === "reconciled" || answered === "open") {
 				// The store's conversation can still read resumeRequired: a
 				// reconnect's hydration may have landed before the resume's

@@ -1110,6 +1110,34 @@ describe("conversation-owned session controls", () => {
 		expect(await controls.changeModel("two", "next")).toBe(true);
 		expect(controls.getSnapshot().unreadModel).toBeNull();
 	});
+	// A read that resolves is not a read that published. The store discards a
+	// projection a newer read superseded without throwing, and the refresh
+	// callback sees only a store that is open with no error - so treating a
+	// resolved refresh as the readback clears the record while the projection
+	// still shows the value from before the set. The value the hub took has to
+	// stay recorded until a projection actually lands.
+	it("keeps the value an acknowledged set reached the hub with when the read published nothing", async () => {
+		let published = true;
+		const controls = new SessionControls(
+			await boundary({
+				models: async () => ({ data: [{ provider: "two", model: "next" }] }),
+				model: async () => {},
+			}),
+			async () => {},
+			() => {},
+			() => true,
+			() => null,
+			() => true,
+			null,
+			// The read returned normally and the store discarded it: no error,
+			// and no fresh projection either.
+			() => published,
+		);
+		await controls.loadModels();
+		published = false;
+		expect(await controls.changeModel("two", "next")).toBe(true);
+		expect(controls.getSnapshot().unreadModel).toEqual({ setting: "model", value: "two/next" });
+	});
 	// The hub's acknowledgement, not the read that follows it, is the record
 	// that the pick applied. A phone that reconnects while that read is still
 	// out has not left the session it is looking at, so the pick still reports

@@ -70,6 +70,14 @@ export class SessionControls {
 		// The catalog the screen already knows, from its last binding: the
 		// model's name needs no read to show.
 		catalog: ModelListResponse | null = null,
+		// Whether the session's own store has published an authoritative
+		// projection. `refresh` resolving does not answer that: a read a newer
+		// one supersedes is discarded without throwing, and a discarded read
+		// leaves the projection showing the value from before it. The screen
+		// that owns the store answers; a caller that cannot is treated as
+		// having published, which is what a read that returns normally always
+		// meant before this was asked.
+		private projectionPublished: () => boolean = () => true,
 	) {
 		this.state = { ...this.state, catalog };
 	}
@@ -283,7 +291,11 @@ export class SessionControls {
 					// reconnect read catches the screen up afterwards.
 					try {
 						await this.refresh();
-						readback = true;
+						// A read can finish without publishing: the store discards one
+						// a newer read superseded, and that leaves the projection
+						// showing the value from before this set. Only a published
+						// projection is the readback; the rest keeps the record below.
+						readback = this.projectionPublished();
 					} catch {
 						// The screen's own read catches up; the pick applied regardless.
 					}

@@ -16,8 +16,22 @@ import { reconcilePendingEntries } from "@evener/appwire-client/state/mutation";
 import { type ConversationClientLike, READ_ITEM_LIMIT } from "../conversation/services/conversation";
 import { type NativeMutationRuntime, nativeMutationTargetKey } from "../nativeMutationRuntime";
 import { outboxFlush } from "../outbox/nativeOutboxFlush";
-import type { OutboxFlush } from "../outbox/outboxFlush";
+import type { OutboxFlush, SettleResult } from "../outbox/outboxFlush";
 import { type SendAction, sendAction } from "./sendAction";
+
+/** Whether a settle ended without finishing what the admitted message needs.
+ *
+ * Three outcomes mean the row is still parked: storage answered "retry", a
+ * newer read superseded this one, or the resume started the daemon but the read
+ * that follows it could not run - so the fence this message is behind may
+ * already be gone with no read to say so. The screen that sent it holds the
+ * target, which is why the flush's storage watcher leaves it alone and the
+ * caller has to hand it over. The flush's own settle path already answers this
+ * way; a foreground caller that omitted "resumed" left the message queued on a
+ * healthy connection until another event woke the flush. */
+export function settleUnfinished(answer: SettleResult | undefined): boolean {
+	return answer === "retry" || answer === "stale" || answer === "resumed";
+}
 
 export interface SessionState {
 	threadId: string;
@@ -229,9 +243,9 @@ export async function submitSessionMessage(
 				mayResumeFenced: () => runtime.messageWaiting(target.hubId, target.ref),
 			})
 			.catch(() => undefined);
-		if (answered === "retry" || answered === "stale") retryOwner.retryTargetAfterScreenSettle();
+		if (settleUnfinished(answered)) retryOwner.retryTargetAfterScreenSettle();
 		return;
 	}
 	const answered = await runtime.settleTarget(target.hubId, target.ref, client).catch(() => "blocked" as const);
-	if (answered === "retry" || answered === "stale") retryOwner.retryTargetAfterScreenSettle();
+	if (settleUnfinished(answered)) retryOwner.retryTargetAfterScreenSettle();
 }
