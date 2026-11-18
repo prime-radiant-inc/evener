@@ -123,10 +123,13 @@ type delegateTreeController struct {
 	// for the close's single publisher instead of emitting them on a goroutine
 	// the close joins under a deadline. Guarded by mu.
 	closeOwnsPassWarnings bool
-	reconcileOrder  []delegateLease
-	runStarts       map[delegateLease]delegatestore.RunTrigger
-	owedAdmission   bool
-	emitUpdate      func(delegateUpdatePlan)
+	reconcileOrder        []delegateLease
+	runStarts             map[delegateLease]delegatestore.RunTrigger
+	owedAdmission         bool
+	emitUpdate            func(delegateUpdatePlan)
+	// emitUpdatesBatched emits a whole batch of update plans, sharing one
+	// activity invalidation across them. See Session.emitDelegateUpdatesBatched.
+	emitUpdatesBatched func(delegateMutationPlans)
 	// appendFault, when set, fails appendLocked's durable append before it
 	// reaches the store. Tests inject a chosen append error; nil in
 	// production.
@@ -461,6 +464,47 @@ func (c *delegateTreeController) takePassWarnings() []events.WarningData {
 	c.passWarnings = nil
 	c.mu.Unlock()
 	return warnings
+}
+
+// takePassWarningsForPass is the one decision a stop pass makes about
+// publication: it returns the warnings that pass may emit, and whether the pass
+// must leave everything it would publish to the close.
+//
+// deferAlways marks the close's own drains, which never publish from inside
+// their loop. Every other pass asks the controller. The claim is a property of
+// the controller, not of how the driver was started: a driver already running
+// when the close arrived must observe the claim on its very next pass, or it
+// keeps behaving as an ordinary stop for the rest of its life and publishes a
+// snapshot into a buffer the close now owns.
+//
+// Both answers come out of one critical section, and the dequeue happens in it
+// rather than after it. A pass that read the claim and then drained would leave
+// a window in which the close takes ownership while the pass still removes and
+// emits a warning the close believes it owns -- on the goroutine the close's
+// stop join waits for. Whoever takes ownership takes the queued work with it: a
+// deferring pass gets no warnings and leaves them in the sink.
+func (c *delegateTreeController) takePassWarningsForPass(deferAlways bool) (warnings []events.WarningData, deferred bool) {
+	if c == nil {
+		return nil, deferAlways
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if deferAlways || c.closeOwnsPassWarnings {
+		return nil, true
+	}
+	warnings = c.passWarnings
+	c.passWarnings = nil
+	return warnings, false
+}
+
+// emitPassWarnings publishes warnings a caller has already taken from the sink.
+func (c *delegateTreeController) emitPassWarnings(root *Session, warnings []events.WarningData) {
+	if root == nil {
+		return
+	}
+	for _, warning := range warnings {
+		root.emit(warning)
+	}
 }
 
 func openDelegateTreeController(cfg delegateTreeControllerConfig) (*delegateTreeController, error) {
@@ -1441,6 +1485,22 @@ func (c *delegateTreeController) emitDelegateUpdates(plans delegateMutationPlans
 	for _, plan := range plans.updates {
 		c.emitDelegateUpdate(plan)
 	}
+}
+
+// emitDelegateUpdatesBatched emits the same rows as emitDelegateUpdates, through
+// the batch seam that shares one activity invalidation across them.
+func (c *delegateTreeController) emitDelegateUpdatesBatched(plans delegateMutationPlans) {
+	if c == nil {
+		return
+	}
+	c.mu.Lock()
+	emitBatched := c.emitUpdatesBatched
+	c.mu.Unlock()
+	if emitBatched != nil {
+		emitBatched(plans)
+		return
+	}
+	c.emitDelegateUpdates(plans)
 }
 
 func (c *delegateTreeController) capturedPlanLocked(id string) delegateUpdatePlan {

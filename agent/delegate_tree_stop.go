@@ -797,7 +797,11 @@ func (c *delegateTreeController) publishCloseEvidence() {
 	for _, warning := range warnings {
 		root.emit(warning)
 	}
-	c.emitDelegateUpdates(plans)
+	// The terminal close republishes one snapshot per retained delegate, and
+	// each invalidation makes the daemon bridge rebuild the whole roster, so the
+	// batch shares one diagnostics refresh while every delegate still gets its
+	// own final update.
+	c.emitDelegateUpdatesBatched(plans)
 }
 
 // publishPassWarnings publishes and drains every warning the pass sink holds.
@@ -954,8 +958,14 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 		// the close before the remaining subtrees were stopped at all. Such a
 		// pass leaves its warning in the sink, which the close publishes once,
 		// after every subtree's durable stop is admitted.
-		if !closeDrain && !c.closeOwnsPassWarningsFor() {
-			c.publishPassWarnings(root)
+		//
+		// The claim is taken under the same lock that drains the sink. Reading
+		// the flag and then draining would let the close take the sink in
+		// between, so this pass would still remove and emit the warning on the
+		// joined goroutine -- the exact window the claim exists to close.
+		warnings, deferred := c.takePassWarningsForPass(closeDrain)
+		if !deferred && len(warnings) != 0 {
+			c.emitPassWarnings(root, warnings)
 		}
 		if err != nil {
 			if errors.Is(err, errDelegateTargetBusy) {
@@ -982,7 +992,7 @@ func (c *delegateTreeController) drainStopAbandonable(ctx context.Context, stop 
 		if root != nil {
 			rootPlans := plans
 			rootPlans.attention = nil
-			if closeDrain {
+			if deferred {
 				// Snapshot publication is the one part of this hand-off that
 				// can block on a wedged authoritative event consumer.
 				// closeRuntimeTree publishes the final snapshots after every

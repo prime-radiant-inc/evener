@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"testing"
 
 	"primeradiant.com/evener/agent/events"
@@ -113,7 +114,10 @@ func TestDelegateClosePublishesLostResultFromTerminalClose(t *testing.T) {
 	// The warning above survives because the close took the pass sink and the
 	// publisher that drained it is the close's own. Losing that claim would put
 	// publication back on whichever goroutine happened to find the warning.
-	if !controller.closeOwnsPassWarningsFor() {
+	controller.mu.Lock()
+	claimsSink := controller.closeOwnsPassWarnings
+	controller.mu.Unlock()
+	if !claimsSink {
 		t.Fatal("the terminal close never took ownership of the pass sink")
 	}
 }
@@ -194,10 +198,11 @@ func TestDelegateJoinedStopDriverLeavesLostResultForClosePublisher(t *testing.T)
 // the whole roster for each, so a retirement that published would do quadratic
 // work in the number of delegates the session still holds.
 //
-// A warning already in the pass sink is the observable that separates the two
-// policies: the store-only close must leave it queued, because publishing it is
-// the terminal close's job and the sink survives this call.
-func TestDelegateRetirementClosesStoreWithoutPublishingCloseEvidence(t *testing.T) {
+// The observable that separates the two policies is the store-only close
+// republishing nothing: it must emit no snapshot for the delegates it retains,
+// and it must leave a warning already in the pass sink queued for the terminal
+// close's publisher.
+func TestDelegateStoreOnlyClosePublishesNothing(t *testing.T) {
 	controller, _ := newDelegateControllerTestHarness(t, 2, 2)
 	seedDelegateControllerIdle(t, controller, "dlg_retained", "")
 	controller.mu.Lock()
@@ -208,15 +213,38 @@ func TestDelegateRetirementClosesStoreWithoutPublishingCloseEvidence(t *testing.
 		DelegateID: "dlg_retained",
 	})
 	queuedBefore := len(controller.passWarnings)
+	// Count the snapshots the close path emits, rather than sampling a buffer:
+	// an empty buffer reads the same before and after, so it cannot tell a
+	// publication from a missing one.
+	emitted := new(int32)
+	inner := controller.emitUpdate
+	controller.emitUpdate = func(plan delegateUpdatePlan) {
+		atomic.AddInt32(emitted, int32(len(plan.rows)))
+		if inner != nil {
+			inner(plan)
+		}
+	}
+	innerBatched := controller.emitUpdatesBatched
+	controller.emitUpdatesBatched = func(plans delegateMutationPlans) {
+		for _, plan := range plans.updates {
+			atomic.AddInt32(emitted, int32(len(plan.rows)))
+		}
+		if innerBatched != nil {
+			innerBatched(plans)
+		}
+	}
 	controller.mu.Unlock()
 	if queuedBefore == 0 {
 		t.Fatal("the pass sink did not hold the warning this test needs")
 	}
 
 	if err := controller.closeStoreAfterStopReconcileDriver(context.Background()); err != nil {
-		t.Fatalf("store-only close = %v, want the store to close cleanly", err)
+		t.Fatalf("store-only close = %v, want it to close the store", err)
 	}
 
+	if got := atomic.LoadInt32(emitted); got != 0 {
+		t.Fatalf("delegate snapshots emitted by the store-only close = %d, want 0: retirement must not republish the retained roster", got)
+	}
 	controller.mu.Lock()
 	queuedAfter := len(controller.passWarnings)
 	published := controller.closeEvidencePublished
@@ -225,7 +253,7 @@ func TestDelegateRetirementClosesStoreWithoutPublishingCloseEvidence(t *testing.
 		t.Fatalf("warnings left in the pass sink after retirement = %d, want %d: retirement must not publish them", queuedAfter, queuedBefore)
 	}
 	if published {
-		t.Fatal("retirement published close evidence: it republishes every unchanged snapshot, and the daemon bridge resamples the whole roster for each")
+		t.Fatal("retirement published close evidence")
 	}
 }
 
@@ -241,7 +269,7 @@ func seedStrandedInlineReceiptForClose(t *testing.T, controller *delegateTreeCon
 		// neither a live runtime nor a cold-capable idle row has nobody left
 		// who could complete it, which is the stranded shape: the reply's tool
 		// round is gone and no successor will ever acknowledge it.
-		ownerID    = "dlg_close_owner"
+		ownerID = "dlg_close_owner"
 	)
 	// An idle target has no active lease for the stop to wait on, so the drain
 	// reaches the delivery acknowledgment pass on its first iteration.

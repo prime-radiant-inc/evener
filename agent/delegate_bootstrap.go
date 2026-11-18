@@ -90,16 +90,63 @@ func (s *Session) bootstrapDelegateResources() error {
 	s.delegateRootSessionID = s.id
 	s.ownsDelegateController = true
 	controller.emitUpdate = s.emitDelegateUpdate
+	controller.emitUpdatesBatched = s.emitDelegateUpdatesBatched
 	s.pendingDelegateDeliveries = append(s.pendingDelegateDeliveries, pendingDeliveries...)
 	return nil
 }
 
+// delegateActivityInvalidation names one owner and ancestry whose activity a
+// batch of emitted snapshots changed. It exists so a batch can publish the
+// invalidation once instead of once per delegate.
+type delegateActivityInvalidation struct {
+	owner    string
+	ancestry []string
+}
+
 func (s *Session) emitDelegateUpdate(plan delegateUpdatePlan) {
+	for _, invalidation := range s.emitDelegateUpdateRows(plan) {
+		s.publishSessionActivityChanged(invalidation.owner, invalidation.ancestry, appwire.SessionActivityResourceDelegates)
+	}
+}
+
+// emitDelegateUpdatesBatched emits every row of plans as its own delegate
+// update, then publishes one activity invalidation per distinct owner and
+// ancestry.
+//
+// The terminal close republishes one snapshot per retained delegate. Each
+// invalidation makes the daemon bridge rebuild DetailedStatus, which carries the
+// whole roster, so invalidating per snapshot made shutting down a large fleet
+// quadratic in roster size. Every delegate still gets its own final update; only
+// the diagnostics refresh is shared.
+func (s *Session) emitDelegateUpdatesBatched(plans delegateMutationPlans) {
 	if s == nil || s.delegateController == nil {
 		return
 	}
+	invalidations := make([]delegateActivityInvalidation, 0, len(plans.updates))
+	for _, plan := range plans.updates {
+		invalidations = append(invalidations, s.emitDelegateUpdateRows(plan)...)
+	}
+	seen := make(map[string]struct{}, len(invalidations))
+	for _, invalidation := range invalidations {
+		key := invalidation.owner + "\x00" + strings.Join(invalidation.ancestry, "\x00")
+		if _, duplicate := seen[key]; duplicate {
+			continue
+		}
+		seen[key] = struct{}{}
+		s.publishSessionActivityChanged(invalidation.owner, invalidation.ancestry, appwire.SessionActivityResourceDelegates)
+	}
+}
+
+// emitDelegateUpdateRows emits one plan's snapshots and reports the activity
+// invalidations they need. The caller publishes them, which is what lets a batch
+// collapse repeats.
+func (s *Session) emitDelegateUpdateRows(plan delegateUpdatePlan) []delegateActivityInvalidation {
+	if s == nil || s.delegateController == nil {
+		return nil
+	}
 	now := s.sclock().Now().UTC()
 	rootID := s.delegateController.rootSessionID
+	invalidations := make([]delegateActivityInvalidation, 0, len(plan.rows))
 	for _, row := range plan.rows {
 		ownerID := row.descriptor.OwnerSessionID
 		s.delegateController.mu.Lock()
@@ -111,7 +158,7 @@ func (s *Session) emitDelegateUpdate(plan delegateUpdatePlan) {
 		ancestors, ancestorRuntimes := s.delegateController.ancestorSubagentRuntimesLocked(ancestry)
 		ownerRuntime := s.delegateController.runtimeForDelegateOwnerLocked(row)
 		s.delegateController.mu.Unlock()
-		s.publishSessionActivityChanged(logicalOwner, ancestry, appwire.SessionActivityResourceDelegates)
+		invalidations = append(invalidations, delegateActivityInvalidation{owner: logicalOwner, ancestry: ancestry})
 		data := delegateUpdatedDataFromStatus(delegateFrameStatusInfo(now, rootID, row))
 		data.AncestorSessionIDs = ancestors
 		// A subagent's own thread lists its subtree, so each live ancestor
@@ -141,6 +188,7 @@ func (s *Session) emitDelegateUpdate(plan delegateUpdatePlan) {
 		event.Provenance = provenance.Clone(row.descriptor.Provenance)
 		forward(event)
 	}
+	return invalidations
 }
 
 // ancestorSubagentRuntimesLocked lists the subagent sessions of ancestry (a

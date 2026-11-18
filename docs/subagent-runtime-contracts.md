@@ -248,6 +248,20 @@ are parsed-but-inert. See `hooks.md` for the full caveat list and
   warnings (built in `agent/session_init.go`, emitted via `emitDiagnosticWarning`) and
   delegate task-seed failures (`agent/subagents.go`). A warning with no display surface
   is treated as a bug.
+- **Who publishes a delegate's lost-result warning.** A stop reconciliation pass
+  records a lost delivery result in the controller's pass sink, and the pass that
+  discovered it publishes it when it finds the sink unclaimed. The terminal close
+  takes the sink at its fence (`delegateTreeController.closeOwnsPassWarnings`), and
+  from that moment every pass -- including a driver the close is already joined
+  with -- leaves its warnings queued for the close's single publication, which runs
+  after every subtree's durable stop is admitted (`publishCloseEvidence`). The claim
+  and the dequeue happen in one critical section, so no pass can remove a warning
+  the close believes it owns. Publication never runs on a goroutine the close's stop
+  join waits for, because `root.emit` can park on a full authoritative buffer and
+  spend the join deadline. Retirement and constructor cleanup close the delegate
+  store without publishing at all: they are not terminal closes, and republishing
+  every retained snapshot would make the daemon bridge resample the whole roster per
+  delegate.
 - **Policy denials name the action and the boundary**, not just "not allowed" — e.g. the
   `grant_tools` rejections above and the delegation-allowance and ownership
   errors in the stable delegate controller. A role's tool policy and the child's

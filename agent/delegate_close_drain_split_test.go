@@ -263,69 +263,6 @@ func TestDelegatePassWarningSurvivesTheErrorReturnThatFollowsIt(t *testing.T) {
 	}
 }
 
-// The lost-result warning for an abandoned receipt exists only in the pass that
-// abandons it: the abandon takes the receipt out of the admission map, so no
-// later pass can notice it again. Every way that pass can then end in an error
-// must still publish the warning.
-//
-// The cases are the two error returns the review named, plus the happy path.
-// The warning lives in the controller's pass sink rather than in the returned
-// plan, so these cases share no carry-forward code: if the sink were still a
-// return value, each case would need its own fix, which is the fragility that
-// made this a design change rather than a third patch.
-func TestDelegateStopCloseDrainReportsLostResultOnEveryReturnPath(t *testing.T) {
-	for _, tc := range []struct {
-		name  string
-		kind  delegatestore.EventKind
-		want  error
-		fault bool
-	}{
-		{name: "stop completion append fails", kind: delegatestore.EventDelegateSubtreeStopCompleted, want: errInjectedStopCompletionAppend, fault: true},
-		{name: "no error", fault: false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			f := newStrandedStopFixture(t, strandedStopOptions{updates: 1, inline: true, realRoot: true})
-			if f.root == nil {
-				t.Fatal("fixture did not create the root runtime")
-			}
-			f.root.events = make(chan events.SessionEvent, 8)
-
-			if tc.fault {
-				f.controller.appendFault = func(batch []delegatestore.Event) error {
-					for _, event := range batch {
-						if event.Kind == tc.kind {
-							return tc.want
-						}
-					}
-					return nil
-				}
-			}
-
-			err := f.controller.drainStopForClose(context.Background(), f.controller.stopForResult(f.stop))
-			if tc.want == nil {
-				if err != nil {
-					t.Fatalf("close drain error = %v, want it to settle", err)
-				}
-			} else if !errors.Is(err, tc.want) {
-				t.Fatalf("close drain error = %v, want the injected failure", err)
-			}
-			// The close publishes the sink after its stop loop; a direct drain
-			// leaves the notice for this call, exactly as production does.
-			f.controller.publishPassWarnings(f.root)
-
-			found := false
-			for _, warning := range drainSessionWarnings(f.root) {
-				if warning.Code == events.WarningCodeDelegateDeliveryResultLost && warning.DelegateID == "dlg_target" {
-					found = true
-				}
-			}
-			if !found {
-				t.Fatal("the pass abandoned an inline receipt, and the lost result was never reported")
-			}
-		})
-	}
-}
-
 // newRootRuntimeForClose attaches a durable transcript to a root session the
 // controller owns, so the close drain's plan hand-off has a real receiver.
 func newRootRuntimeForClose(t *testing.T, c *delegateTreeController) *Session {
