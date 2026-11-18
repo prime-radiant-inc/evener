@@ -308,6 +308,9 @@ type turnExecution struct {
 	itemAnnounce []bool
 	// runOfItem is the run each item came from, parallel to items.
 	runOfItem []int
+	// entriesByIndex maps each entry's global position to the entry, so the
+	// ordered walk over the execution can consult an entry by position.
+	entriesByIndex map[int]schema.Turn
 	// groupOfItem is the GROUP each item came from, parallel to items. It is
 	// the membership key: a legacy group that happens to share this id is not
 	// part of the execution, and a run index of zero must not be confused with
@@ -358,34 +361,67 @@ func (ex *turnExecution) settle() {
 // status its result gave it, because a completion never retracts a recorded
 // outcome.
 func (ex *turnExecution) interruptAwaitedCalls() {
-	if !ex.hasCompletionControl() {
+	if len(ex.controls) == 0 {
 		return
 	}
+	// awaiting holds the call ids of the latest announcing entry — the batch
+	// the index interrupts at a completion (builder.interruptAwaitedCalls).
+	// A call awaiting when a completion arrives did not finish; a call from an
+	// EARLIER batch that a later assistant entry superseded is not part of
+	// what that completion ended, so it keeps its own status.
+	awaiting := map[string]bool{}
+	byCall := map[string][]int{}
 	for at := range ex.merged {
 		item := &ex.merged[at]
-		if !MergesByCallID(*item) || item.CallID == "" {
+		if MergesByCallID(*item) && item.CallID != "" {
+			byCall[item.CallID] = append(byCall[item.CallID], at)
+		}
+	}
+	// Walk the entries in file order so each completion sees the batch that
+	// was awaiting AT THAT POINT. A reopen clears the batch: the execution is
+	// running again, so its next completion decides on the next attempt.
+	//
+	// Control records are transcript-only, so they are NOT in entriesByIndex:
+	// the two ordered sequences are merged here, which is the only place both
+	// are visible.
+	entries := ex.sortedEntryIndexes()
+	controls := make([]indexedTurn, len(ex.controls))
+	copy(controls, ex.controls)
+	sort.SliceStable(controls, func(i, j int) bool { return controls[i].index < controls[j].index })
+	controlAt, entryAt := 0, 0
+	for controlAt < len(controls) || entryAt < len(entries) {
+		controlNext := controlAt < len(controls)
+		entryNext := entryAt < len(entries)
+		// Take whichever position comes first; entries win a tie so an entry's
+		// calls are awaiting before a completion at the same position changes
+		// them.
+		if controlNext && (!entryNext || controls[controlAt].index < entries[entryAt]) {
+			switch controls[controlAt].turn.Kind {
+			case schema.TurnReopen:
+				awaiting = map[string]bool{}
+			case schema.TurnCompletion:
+				for call := range awaiting {
+					for _, at := range byCall[call] {
+						if status := ex.merged[at].Status; status == "" || status == appwire.TurnStatusInProgress {
+							ex.merged[at].Status = appwire.TurnStatusInterrupted
+						}
+					}
+				}
+			}
+			controlAt++
 			continue
 		}
-		if item.Status == "" || item.Status == appwire.TurnStatusInProgress {
-			item.Status = appwire.TurnStatusInterrupted
+		entry := ex.entriesByIndex[entries[entryAt]]
+		if hasRecordedToolCall(&entry) {
+			awaiting = map[string]bool{}
+			for _, part := range entry.Message.Content {
+				if part.Kind == llm.ContentToolCall && part.ToolCall != nil {
+					awaiting[part.ToolCall.ID] = true
+				}
+			}
 		}
+		entryAt++
 	}
-}
-
-// hasCompletionControl reports whether a completion record closed this
-// execution. A reopen alone reopens it, so it must not interrupt the calls of
-// a turn that is running again.
-func (ex *turnExecution) hasCompletionControl() bool {
-	completed := false
-	for _, control := range ex.controls {
-		switch control.turn.Kind {
-		case schema.TurnCompletion:
-			completed = true
-		case schema.TurnReopen:
-			completed = false
-		}
-	}
-	return completed
 }
 
 // itemsOfGroup returns the execution's settled items that belong to one group.
@@ -435,6 +471,14 @@ func groupExecutions(groups []groupedTurn, controls map[string][]indexedTurn) ma
 		}
 		ex.runs = append(ex.runs, i)
 		ex.entries = append(ex.entries, groups[i].entries...)
+		if ex.entriesByIndex == nil {
+			ex.entriesByIndex = map[int]schema.Turn{}
+		}
+		for k, entryIndex := range groups[i].entryIndexes {
+			if k < len(groups[i].entries) {
+				ex.entriesByIndex[entryIndex] = groups[i].entries[k]
+			}
+		}
 		for j := range groups[i].items {
 			ex.items = append(ex.items, groups[i].items[j])
 			ex.itemEntries = append(ex.itemEntries, groups[i].itemEntries[j])
@@ -446,15 +490,17 @@ func groupExecutions(groups []groupedTurn, controls map[string][]indexedTurn) ma
 	return execs
 }
 
-// groupedAppTurnProjection flushes the accumulator into AppWire turns under
-// the logical-turn ordinals: with no prelude the first group is entry ordinal
-// 0; a prelude turn occupies ordinal 0 and shifts every group by one. Every
-// group consumes an ordinal even when it emits no visible turn, matching the
-// live snapshot's turn-start allocation.
-//
-// Items get their Position/TranscriptKey here — the full item read, the
-// bounded readers, and the item-window path must all agree on these keys (PR
-// #822 F3).
+// sortedEntryIndexes lists the execution's entry positions in file order, so a
+// fold that depends on what had arrived by a given point can walk them.
+func (ex *turnExecution) sortedEntryIndexes() []int {
+	out := make([]int, 0, len(ex.entriesByIndex))
+	for entryIndex := range ex.entriesByIndex {
+		out = append(out, entryIndex)
+	}
+	sort.Ints(out)
+	return out
+}
+
 // groupedAppTurnProjection flushes the accumulator into AppWire turns under
 // the logical-turn ordinals: with no prelude the first group is entry ordinal
 // 0; a prelude turn occupies ordinal 0 and shifts every group by one. Every
@@ -498,8 +544,16 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 	// complete turn it claimed the prelude ended, so a client keyed by turn id
 	// saw two "turn_system" turns where the index keeps one (#1166 review).
 	preludeRunFollows := func(from int) bool {
-		for i := from; i < len(acc.turns); i++ {
-			if acc.turns[i].turnID == appwire.SystemPreludeTurnID && acc.turns[i].stamped {
+		ex := execs[appwire.SystemPreludeTurnID]
+		if ex == nil {
+			return false
+		}
+		// A group that EXISTS is not enough: settlement can empty a run, and a
+		// header claiming later items nothing will deliver is the paging bug
+		// this flag exists to prevent. The question is whether any run at or
+		// after `from` still has items AFTER settlement (#1166 review).
+		for _, run := range ex.visible {
+			if run >= from {
 				return true
 			}
 		}
@@ -561,6 +615,16 @@ func groupedAppTurnProjection(acc *logicalTurnAccumulator, header transcript.Hea
 			// order, so neither fragment understates or misstates the turn.
 			StampGroupedTurn(&turn, ex.entries)
 			stampExecutionControls(&turn, ex.controls)
+			// The diagnostic belongs to the attempt that ended the execution.
+			// A reopen clears the one StampGroupedTurn stamped, so when the
+			// fold's final state is failed it must be re-derived from the LAST
+			// failure entry in the execution — the retry's own diagnostic, not
+			// the attempt it recovered from (#1166 review).
+			if turn.Status == appwire.TurnStatusFailed {
+				for _, entry := range ex.entries {
+					StampTurnFailure(&turn, entry)
+				}
+			}
 		} else {
 			StampGroupedTurn(&turn, group.entries)
 		}
@@ -698,9 +762,11 @@ func stampExecutionControls(turn *appwire.Turn, controls []indexedTurn) {
 			switch info.Status {
 			case schema.TurnFailed:
 				// A completion record carries no message of its own; the
-				// diagnostic comes from the TURN_FAILURE entry, which
-				// StampGroupedTurn already applied from this execution's
-				// entries. Only the current state changes here.
+				// diagnostic comes from the TURN_FAILURE entry of the attempt
+				// that failed, which the caller re-derives AFTER this fold.
+				// StampGroupedTurn cannot supply it: a reopen clears the
+				// diagnostic it stamped, so a retry that failed again would
+				// report the status with the earlier attempt's message gone.
 				turn.Status = appwire.TurnStatusFailed
 			case schema.TurnInterrupted:
 				turn.Status = appwire.TurnStatusInterrupted
