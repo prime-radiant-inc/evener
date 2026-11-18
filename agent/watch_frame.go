@@ -565,6 +565,13 @@ func appendCallerWatchSendAttention(owner *Session, controller *delegateTreeCont
 		return "", nil
 	}
 	attentionID := stableWatchAttentionID(state)
+	// Latest-frame-wins, applied to DURABLE rows: a caller frame is one watch
+	// key's output at one update sequence, and a newer frame replaces the older
+	// one for that key. The send rail re-resolves a token against the current
+	// state, but that only refuses a STALE token — the older frame's row was
+	// appended and acknowledged before this one arrived, so both were pending
+	// and the next leased request presented both (#2340 review M2).
+	superseded := owner.supersedeStaleSenderFrames(state)
 	if jm.watchSendTranscribed(state.DeliveryID) {
 		// The frame is already durable in this receiver's transcript and only
 		// its acknowledgement is outstanding. The row is returned, not "":
@@ -612,7 +619,45 @@ func appendCallerWatchSendAttention(owner *Session, controller *delegateTreeCont
 	if err := jm.settleWatchSendDelivered(cfg, state); err != nil {
 		return "", err
 	}
+	// The frame is durable, so the rows for this key's older sequences are
+	// retired rather than presented beside it. A failed discard reports the
+	// notice owed, exactly as the diagnostic path does, so the retry runs it
+	// again rather than leaving the model to read a superseded frame.
+	if err := owner.discardSupersededStableWatchNotices(controller, superseded); err != nil {
+		return attentionID, fmt.Errorf("discard superseded watch frames for %q: %w", attentionID, err)
+	}
 	return attentionID, nil
+}
+
+// supersedeStaleSenderFrames returns the pending caller-frame rows of state's
+// watch key whose update sequence is older.
+//
+// The family is the watch key (stableWatchSenderFamily) and the age is the
+// update sequence: this is the send rail's latest-frame-wins rule applied to
+// the durable rows rather than to the token that named them.
+func (s *Session) supersedeStaleSenderFrames(state jobstore.WatchSendState) []string {
+	if s == nil {
+		return nil
+	}
+	family := stableWatchSenderFamily(state.Key)
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	// The rows this call supersedes are the ones OLDER than the newest row the
+	// family already holds, not merely older than the caller's own sequence: a
+	// retried frame carries the sequence it was minted at, and asking with that
+	// number would retire rows newer than it. oldest is seeded from the state
+	// under test, so a first frame supersedes nothing.
+	var stale []string
+	for attentionID, held := range s.stableWatchPending {
+		if held.family != family || held.senderSeq >= state.UpdateSeq {
+			continue
+		}
+		if s.attentionIDCoveredLocked(attentionID) {
+			continue
+		}
+		stale = append(stale, attentionID)
+	}
+	return stale
 }
 
 // stableWatchPendingNotice retains one pending stable-watch row's NOTICE FACTS
@@ -651,6 +696,10 @@ type stableWatchPendingNotice struct {
 	// recheck must skip these rows or it discards the firing it was written to
 	// protect (#2340 review).
 	terminal bool
+	// senderSeq is the update sequence of a caller-frame row: a newer frame for
+	// one watch key replaces the older one, which is the send rail's
+	// latest-frame-wins rule applied to the durable side.
+	senderSeq uint64
 	// snapshotAt is the instant a SNAPSHOT row describes the world at. Arrival
 	// order cannot order snapshots: a retried older listing arrives after the
 	// newer one that replaced it, so the fold compares this instead.
@@ -668,8 +717,23 @@ type stableWatchPendingNotice struct {
 // long-running-jobs reminder is a SNAPSHOT that a newer one replaces. A
 // terminal notice, a one-shot fire and a failure diagnostic are separate facts
 // and are never folded away (#2340 review M2).
+// stableWatchSenderFamily is the fold group one WATCH KEY's caller frames share.
+//
+// A caller frame is a statement of the watched job's output at one update
+// sequence, and the send rail's own rule is latest-frame-wins: a newer frame
+// replaces the older one for its key. Durable attention had no such rule, so two
+// frames that arrived for one key — the first already appended and acknowledged,
+// the second while the receiver was blocked in a provider call — were both
+// pending, and the next leased request presented both even though the queue
+// would have kept only the second (#2340 review M2).
+func stableWatchSenderFamily(key jobstore.WatchSendKey) string {
+	return "send:" + key.VisibleSessionID + ":" + key.WatchID + ":" + key.WatchTarget + ":" + key.ResolvedWatchedIdentity + ":" + key.WatchGeneration
+}
+
 func stableWatchPendingFamily(n jobNotification) string {
 	switch {
+	case n.WatchSend != nil:
+		return stableWatchSenderFamily(n.WatchSend.Key)
 	case n.isLongRunningJobsReminder():
 		return "snapshot"
 	case n.WatchID != "" && !n.Terminal:
@@ -768,6 +832,12 @@ func (s *Session) notePendingStableWatchNotice(n jobNotification, attentionID st
 		return
 	}
 	family := stableWatchPendingFamily(n)
+	// A caller frame's age is its own update sequence, so latest-frame-wins can
+	// be applied to the durable rows and not only to the token that named them.
+	var senderSeq uint64
+	if n.WatchSend != nil {
+		senderSeq = n.WatchSend.UpdateSeq
+	}
 	record := stableWatchPendingNotice{
 		attentionID: attentionID,
 		occurrence:  stableWatchNoticeOccurrence(n),
@@ -777,6 +847,7 @@ func (s *Session) notePendingStableWatchNotice(n jobNotification, attentionID st
 		watchID:     n.WatchID,
 		terminal:    n.Terminal,
 		snapshotAt:  n.SnapshotAt,
+		senderSeq:   senderSeq,
 		order:       0,
 	}
 	s.attentionMu.Lock()

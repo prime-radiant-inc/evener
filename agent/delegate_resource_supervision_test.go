@@ -655,6 +655,60 @@ func TestDelegateResourceSupervision_FoldLeavesAPresentedTickAlone(t *testing.T)
 	}
 }
 
+// TestDelegateResourceSupervision_ANewerCallerFrameSupersedesAnOlderOne pins
+// latest-frame-wins on the DURABLE rows (#2340 review M2).
+//
+// Two caller frames for one watch key can arrive while a stable delegate is
+// blocked in a provider call: the first was appended and acknowledged before
+// the second arrived. Re-resolving the token refuses only a STALE token, so both
+// rows stayed pending and the next leased request presented both frames for one
+// key, where the send rail's own rule keeps only the second.
+func TestDelegateResourceSupervision_ANewerCallerFrameSupersedesAnOlderOne(t *testing.T) {
+	t.Parallel()
+	sess, _ := newCompactableSession(t)
+	key := jobstore.WatchSendKey{
+		VisibleSessionID:        "sess_sender",
+		WatchID:                 "watch:caller-frames",
+		WatchTarget:             "job_frame",
+		ResolvedWatchedIdentity: "job_frame",
+		ResolvedSendTo:          runtimeMessageAliasCaller,
+		WatchGeneration:         "gen-1",
+	}
+	stateAt := func(seq uint64) jobstore.WatchSendState {
+		return jobstore.WatchSendState{Key: key, DeliveryID: "dlv_frames", UpdateSeq: seq, Frame: "frame at sequence"}
+	}
+	// The older frame landed first and is what this receiver still holds.
+	older := watchSendTokenNotification("", stateAt(1))
+	if _, err := sess.appendDelegateNotificationDurably(stableWatchAttentionID(stateAt(1)), "older frame body"); err != nil {
+		t.Fatalf("persist the older frame: %v", err)
+	}
+	sess.notePendingStableWatchNotice(older, stableWatchAttentionID(stateAt(1)))
+
+	stale := sess.supersedeStaleSenderFrames(stateAt(2))
+	if !slices.Contains(stale, stableWatchAttentionID(stateAt(1))) {
+		t.Fatal("a newer caller frame did not supersede the older frame of its own watch key: both rows stay pending, so the next leased request presents two frames for one key where the send rail keeps only the latest")
+	}
+
+	// Non-vacuity: an OLDER frame does not supersede a newer one, so this cannot
+	// pass by superseding everything in the family.
+	newer := watchSendTokenNotification("", stateAt(3))
+	if _, err := sess.appendDelegateNotificationDurably(stableWatchAttentionID(stateAt(3)), "newer frame body"); err != nil {
+		t.Fatalf("persist the newer frame: %v", err)
+	}
+	sess.notePendingStableWatchNotice(newer, stableWatchAttentionID(stateAt(3)))
+	if stale := sess.supersedeStaleSenderFrames(stateAt(2)); slices.Contains(stale, stableWatchAttentionID(stateAt(3))) {
+		t.Fatalf("an older frame superseded %v: latest-frame-wins runs backwards, so a stale frame would replace the current one", stale)
+	}
+	// A DIFFERENT watch is a different family and is never superseded.
+	other := stateAt(1)
+	other.Key.WatchID = "watch:some-other"
+	other.Key.WatchTarget = "job_other"
+	other.Key.ResolvedWatchedIdentity = "job_other"
+	if stale := sess.supersedeStaleSenderFrames(other); len(stale) != 0 {
+		t.Fatalf("a frame from another watch superseded %v: one watch's frame would retire an unrelated watch's row", stale)
+	}
+}
+
 // TestDelegateResourceSupervision_ARetriedOlderSnapshotKeepsTheNewerListing pins
 // that a snapshot's age decides the fold, not its arrival (#2340 review).
 //
