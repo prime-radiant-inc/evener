@@ -725,9 +725,9 @@ func TestQueuedInputWakeKeepsAnEmptyClaimQuietWhenTheSaveFails(t *testing.T) {
 	}
 }
 
-// TestQueuedInputWakeReportsTheQueueRefusalOverAnUnreportedPark is low 3's
-// scenario: a steer parked by an earlier failed attempt, and a queued message
-// whose claim write fails in this wake.
+// TestQueuedInputWakeReportsTheQueueRefusalOverAnUnreportedPark covers a steer
+// parked by an earlier failed attempt together with a queued message whose
+// claim write fails in this wake.
 //
 // The park is reported once, and a wake that has a refusal of its own to
 // report must not spend that one report: the reader would be told about the

@@ -1565,22 +1565,20 @@ func TestBufferedAcceptanceWakeDoesNotRetryAFailedInlineCarrier(t *testing.T) {
 	if runs == 0 {
 		t.Fatal("the failed inline carrier armed no wake at all; this test would then measure nothing about what a wake reports")
 	}
-	// The park outlives the wake that first sees it, so every wake that lands
-	// while it holds names it. Keeping that to one line is the daemon's job:
-	// only the sink knows whether a report landed, so the flag clears when the
-	// line is accepted rather than when it is offered. Nothing here consumes
-	// it, which is what lets the next wake retry a refused offer instead of
-	// losing it.
-	for _, outcome := range outcomes {
-		if outcome != PendingInputSteeringParked {
-			t.Fatalf("buffered acceptance wake over a parked steer = %v, want steering-parked: the park still stands and is unreported until the sink takes it", outcome)
-		}
-	}
-	if !s.steeringParkReportPending() {
-		t.Fatal("a wake consumed the park's report without the daemon's sink accepting it; a refused line would then silence the park for good")
-	}
+	// The park outlives the wake that first sees it, so it is reported once and
+	// then stands down quietly: every wake that lands while it holds would
+	// otherwise put the same line in the log. One line per failed attempt is
+	// the useful count, and a wake that reports it consumes the report.
 	if outcomes[0] != PendingInputSteeringParked {
 		t.Fatalf("first buffered wake = %v, want steering-parked: the failure happened before it was answered", outcomes[0])
+	}
+	for _, outcome := range outcomes[1:] {
+		if outcome != PendingInputNothingRunnable {
+			t.Fatalf("buffered acceptance wake after the first = %v, want nothing-runnable: the park was reported once and the rest stand down quietly", outcome)
+		}
+	}
+	if got := s.steeringParkOutcome(); got != PendingInputNothingRunnable {
+		t.Fatalf("steeringParkOutcome after the park was reported = %v, want nothing-runnable: the report was not consumed", got)
 	}
 	if !PendingInputSteeringParked.RefusedRunnableInput() {
 		t.Fatal("a parked accepted steer is not reported as runnable input standing still")

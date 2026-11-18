@@ -545,8 +545,9 @@ const (
 	queueClaimWriteFailed
 )
 
-// claimSaveRefusedNothing reports whether a failed claim save refused anything:
-// true only when the claim had selected an entry and was trying to persist it.
+// claimSaveRefusedNothing reports whether a failed claim save refused nothing:
+// true when the claim selected no entry, so the save it failed was persisting a
+// snapshot the claim had not changed.
 //
 // A save that failed with nothing selected was writing a snapshot the claim had
 // not changed, so its error is about the store, not about the head. Both claims
@@ -926,41 +927,16 @@ func (s *Session) unparkSteering() {
 // the same parked steer, and every one of them reporting it would put the same
 // line in the log once per wake -- the durable probe, the buffered acceptance
 // wake that follows the failure, and the next probe all included. One line per
-// failed attempt is the useful count.
-//
-// This reports; it does not consume. Consuming happens only once the daemon's
-// sink has actually taken the line (MarkSteeringParkReported), because a report
-// offered to a spool that refused it was never made, and clearing the flag here
-// would leave the park permanently unreported.
+// failed attempt is the useful count. A later failed attempt parks again and
+// reports again.
 func (s *Session) steeringParkOutcome() PendingInputOutcome {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if !s.steeringParked || !s.hasPendingUserSteeringLocked() || !s.steeringParkUnreported {
 		return PendingInputNothingRunnable
 	}
-	return PendingInputSteeringParked
-}
-
-// MarkSteeringParkReported records that the daemon's sink took the park's line,
-// so no later wake repeats it. A later failed attempt parks again and reports
-// again.
-//
-// It is called by whoever made the report, and only when the sink accepted it:
-// a refused offer was never a report, and marking it would silence the park for
-// the rest of the session's life.
-func (s *Session) MarkSteeringParkReported() {
-	s.mu.Lock()
 	s.steeringParkUnreported = false
-	s.mu.Unlock()
-}
-
-// steeringParkReportPending reports whether the current park still owes the
-// daemon a line. It reads the flag without consuming it, so a caller can assert
-// what a wake did without changing it.
-func (s *Session) steeringParkReportPending() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.steeringParked && s.hasPendingUserSteeringLocked() && s.steeringParkUnreported
+	return PendingInputSteeringParked
 }
 
 // steeringParkedNow reports whether user steering is parked: a failed attempt

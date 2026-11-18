@@ -906,24 +906,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		})
 	}
 
-	// diagnostics is the best-effort sink for lines the input loop emits. The
-	// loop is the only thing that runs turns and shutdown joins it, so a
-	// diagnostic it writes must not be able to wait on a reader that stopped
-	// draining the daemon's output.
-	diagnostics := newServeDiagnosticSpool(logOut)
-	defer diagnostics.Close()
-	// The retirement loop reports its teardown failures too, and shutdown joins
-	// that loop, so it takes the same nonblocking sink as the input loop.
-	retiring.diagnostics = diagnostics
-
-	// The address is announced before the loop below starts. Restored work is
-	// probed on that loop, and a failed restored steer reports a stand-down
-	// from it; offered afterwards, this line competes with those records for
-	// the buffer and can be the one refused. Offered here it goes into an
-	// empty spool with no producer running yet, so it cannot be lost, and
-	// nothing about when the daemon publishes its rendezvous entry moves.
-	reportServeStartup(diagnostics, live.session().ID(), "listening on %s", listener.Addr())
-
 	// Input processing loop. Each turn runs under a per-turn cancellable
 	// context that is wired into the server's interrupt handler so POST
 	// /interrupt actually cancels the in-flight turn. Clearing it after the
@@ -1051,7 +1033,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			bridge.clearMutationRunner(runnerDone)
 			// After runnerDone closes, never before: a Stop that captured the
 			// runner waits on that channel to finalize its fence.
-			reportTurnOutcome(diagnostics, sess.ID(), processErr, msg.QueuedInput, pendingInput, sess.MarkSteeringParkReported)
+			reportTurnOutcome(logOut, sess.ID(), processErr, msg.QueuedInput, pendingInput)
 			_ = result
 			return processed
 		}
@@ -1066,6 +1048,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			}
 		}
 	}()
+
+	// Start HTTP server.
+	serveLogf(logOut, live.session().ID(), "listening on %s", listener.Addr())
 
 	spawnedBy := "user"
 	if envvars.EVENERHubSpawned.Getenv() == "1" {
@@ -1095,16 +1080,11 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	// loop was started, so the shutdown path has nothing to join.
 	var retirementLoopDone chan struct{}
 	if err := deps.register(rvRegistration, runDir, rvEntry); err != nil {
-		reportServeStartup(diagnostics, live.session().ID(), "rendezvous write failed: %v", err)
+		serveLogf(logOut, live.session().ID(), "rendezvous write failed: %v", err)
 	} else {
 		defer func() {
 			removeRendezvousAtShutdown(rvRegistration.Remove, deps.rendezvousRetryPause, func(err error) {
-				// Through the spool, not the pipe. This runs on the way out
-				// after both loops have exited, so a line written here is the
-				// last thing between the daemon and its exit; the pipe it would
-				// block on is the pipe a stand-down record may already have
-				// filled.
-				diagnostics.Logf(live.session().ID(), "rendezvous removal failed after %d attempts, entry may be stale: %v", rendezvousRemovalAttempts, err)
+				serveLogf(logOut, live.session().ID(), "rendezvous removal failed after %d attempts, entry may be stale: %v", rendezvousRemovalAttempts, err)
 			})
 		}()
 		// The idle clock may only start once the daemon has published its
@@ -1118,17 +1098,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		retirementLoopDone = make(chan struct{})
 		go func() {
 			defer close(retirementLoopDone)
-			_ = retiring.retirement.Run(ctx, retiring.consumeClaim, func(attempt agent.RetirementAttempt) bool {
-				// Through the spool for the same reason the input loop's records
-				// are: shutdown joins this loop after the input loop, so a report
-				// that waited on a reader which stopped draining the daemon's
-				// output would hold the exit open after the turns were done.
-				//
-				// The result travels back so a refused offer does not silence
-				// the reason: the controller compares against the last reason it
-				// actually reported, not the last one it attempted.
-				return diagnostics.Logf(live.session().ID(), "%s", retirementAttemptSummary(attempt))
-			})
+			_ = retiring.retirement.Run(ctx, retiring.consumeClaim, nil)
 		}()
 	}
 
@@ -1204,21 +1174,6 @@ func closeSupersededSession(sess *agent.Session, shutdownClaimed bool) {
 	sess.CloseWithReason("clear")
 }
 
-// reportServeStartup announces a startup outcome that an operator needs to see:
-// the address the daemon is listening on, or why publishing its rendezvous
-// entry failed.
-//
-// It goes through the spool rather than the pipe, and the input loop is already
-// running when it is called. Restored work is probed on that loop, so a
-// stand-down record can fill an undrained pipe before this line is written; a
-// synchronous write here would then block the goroutine that has not yet
-// started the HTTP server or the shutdown path, and the SIGTERM that follows
-// would cancel a context nothing is waiting on. The announcement is still made,
-// and the spool stamps it with the moment it was emitted.
-func reportServeStartup(diagnostics *serveDiagnosticSpool, sessionID, format string, args ...any) {
-	diagnostics.LogStartupf(sessionID, format, args...)
-}
-
 // pendingInputStoodDown reports whether a queued-input wake found runnable work
 // and left it standing. That is accepted input the client already holds an
 // Applied receipt for, refused by a gate that the serve loop's next act --
@@ -1237,31 +1192,15 @@ func pendingInputStoodDown(processErr error, outcome agent.PendingInputOutcome) 
 // reportTurnOutcome writes the records the input loop owes for one turn: the
 // error that failed it and the stand-down of runnable input a gate refused.
 //
-// Both go through the spool rather than the sink directly. The loop is the only
-// goroutine that runs turns and shutdown joins it, so a write that waited on a
-// reader which stopped draining the daemon's output would stop both. A turn
-// error written straight to the sink can consume the last room in a stalled
-// pipe, and the next turn's error then blocks the loop -- the same stall this
-// path exists to remove, arriving one turn later.
-//
-// The spool refuses a line that arrives while its buffer is full, which is the
-// price of never waiting: a lost line is cheaper than a daemon that cannot
-// finish a turn or stop.
-func reportTurnOutcome(diagnostics *serveDiagnosticSpool, sessionID string, processErr error, queuedInput bool, outcome agent.PendingInputOutcome, markParkReported func()) {
+// It runs after runnerDone closes, never before: a Stop that captured the
+// runner waits on that channel to finalize its fence.
+func reportTurnOutcome(out io.Writer, sessionID string, processErr error, queuedInput bool, outcome agent.PendingInputOutcome) {
 	if processErr != nil {
-		diagnostics.Logf(sessionID, "error: %s", turnFailureSummary(processErr))
+		serveLogf(out, sessionID, "error: %s", turnFailureSummary(processErr))
 		return
 	}
 	if queuedInput && pendingInputStoodDown(processErr, outcome) {
-		// A park is reported once per failed attempt, and only the sink knows
-		// whether this line landed. Consuming the report on a refused offer
-		// would leave the park silent while the steer is still standing.
-		if !diagnostics.Logf(sessionID, "queued input stood down: %s", outcome) {
-			return
-		}
-		if outcome == agent.PendingInputSteeringParked && markParkReported != nil {
-			markParkReported()
-		}
+		serveLogf(out, sessionID, "queued input stood down: %s", outcome)
 	}
 }
 

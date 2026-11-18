@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"errors"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -11,15 +10,6 @@ import (
 // startReportingRetirementRun drives Run with a consumer and collects every
 // attempt Run reports, so a test can see which outcomes reached the log.
 func startReportingRetirementRun(t *testing.T, ctrl *RetirementController, consume func(context.Context, *RetirementClaim) error) chan RetirementAttempt {
-	t.Helper()
-	return startReportingRetirementRunWith(t, ctrl, consume, func(RetirementAttempt) bool { return true })
-}
-
-// startReportingRetirementRunWith is startReportingRetirementRun with the
-// caller deciding whether each report reached its reader. It exists to drive
-// the case where the sink refuses a line: the controller must not treat a
-// refused report as one the reader saw.
-func startReportingRetirementRunWith(t *testing.T, ctrl *RetirementController, consume func(context.Context, *RetirementClaim) error, accept func(RetirementAttempt) bool) chan RetirementAttempt {
 	t.Helper()
 	reports := make(chan RetirementAttempt, 8)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -30,13 +20,7 @@ func startReportingRetirementRunWith(t *testing.T, ctrl *RetirementController, c
 	})
 	go func() {
 		defer close(done)
-		_ = ctrl.Run(ctx, consume, func(attempt RetirementAttempt) bool {
-			if !accept(attempt) {
-				return false
-			}
-			reports <- attempt
-			return true
-		})
+		_ = ctrl.Run(ctx, consume, func(attempt RetirementAttempt) { reports <- attempt })
 	}()
 	return reports
 }
@@ -170,69 +154,6 @@ func TestRetirementTimerRecordsPreparationError(t *testing.T) {
 	clk.fire(t)
 	if report := awaitRetirementReport(t, reports); report.Error != "job store closed" {
 		t.Fatalf("reported attempt = %+v, want the changed preparation error", report)
-	}
-}
-
-// TestRetirementReportRefusedByTheSinkIsRetried pins that a report the sink
-// refused is not treated as one the reader saw: the next attempt that fails the
-// same way says it again, while the status snapshot keeps recording the attempt
-// itself. Without this, a line dropped during a burst would silence that reason
-// for the rest of the daemon's life.
-func TestRetirementReportRefusedByTheSinkIsRetried(t *testing.T) {
-	t.Parallel()
-	clk := newRetirementAckClock()
-	ctrl, err := NewRetirementController(time.Hour, clk)
-	if err != nil {
-		t.Fatalf("NewRetirementController: %v", err)
-	}
-	consume := func(_ context.Context, claim *RetirementClaim) error {
-		if err := ctrl.Abort(claim, "prepare_failed"); err != nil {
-			t.Errorf("Abort: %v", err)
-		}
-		return errors.New("injected: the claim could not be prepared")
-	}
-	// Every attempt fails the same way, so a controller that deduplicated on
-	// the attempt it made would report exactly once. The first offer is
-	// refused, the way the spool refuses a line that arrives while its worker
-	// is busy, and the rest are accepted.
-	var offered atomic.Int64
-	reports := startReportingRetirementRunWith(t, ctrl, consume, func(RetirementAttempt) bool {
-		return offered.Add(1) > 1
-	})
-	root := newQueuePersistTestSession(t, t.TempDir())
-	defer root.Close()
-	if err := ctrl.AttachRoot(root); err != nil {
-		t.Fatalf("AttachRoot: %v", err)
-	}
-	clk.awaitArm(t)
-
-	clk.Advance(time.Hour)
-	firstAt := clk.Now()
-	clk.fire(t)
-	// The status snapshot records the attempt whether or not its line reached
-	// the reader: it describes what happened, not what was logged. Its
-	// timestamp is what identifies the attempt, with no reliance on the
-	// error's text.
-	if last := awaitLastAttemptAt(t, ctrl, firstAt); last.At.IsZero() {
-		t.Fatal("the snapshot's last attempt carries no timestamp")
-	}
-	if got := offered.Load(); got != 1 {
-		t.Fatalf("report offers after the first attempt = %d, want 1: the controller asked for a line for an attempt whose reason it had not yet reported", got)
-	}
-	// The refused offer never reached the reader.
-	assertNoRetirementReport(t, reports)
-
-	clk.Advance(time.Hour)
-	secondAt := clk.Now()
-	clk.fire(t)
-	awaitLastAttemptAt(t, ctrl, secondAt)
-	if got := offered.Load(); got != 2 {
-		t.Fatalf("report offers after a second identical failure = %d, want 2: the refused line was treated as one the reader saw, so this reason can no longer be reported", got)
-	}
-	// And the retry is the one the reader receives: one report, not zero and
-	// not two.
-	if report := awaitRetirementReport(t, reports); report.At.IsZero() {
-		t.Fatal("the reported attempt carries no timestamp")
 	}
 }
 
