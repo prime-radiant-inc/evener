@@ -925,19 +925,20 @@ function ConversationScreenView({
 					);
 				}
 				// Sending is a narrower question than reading. A transport that is
-				// back is not a thread that is open: a reconnect restores the client
-				// before the replacement service finishes its first read, and a write
-				// aimed at that gap throws without reaching the hub. An action that
-				// is owed has to wait for this rather than be recorded as failed.
+				// back is not a thread that is open, and the store's own status is a
+				// report about the last read rather than a claim about the service:
+				// a read that has just started has already cleared the service's
+				// binding while the store still says open. The service is the
+				// authority that throws, so it is the one asked. A write aimed at
+				// that gap never reaches the hub, and an action that is owed has to
+				// wait for this rather than be recorded as failed.
 				if (scope === "send") {
 					return (
 						currentDestination.current.store === store &&
 						currentDestination.current.client === client &&
 						connectionReady.current &&
 						current.ref === route.params.ref &&
-						current.status === "open" &&
-						current.conversationGeneration === bindingGeneration &&
-						current.conversation?.instanceId === bindingInstance
+						service.openThread() === route.params.ref
 					);
 				}
 				// Starting an action is a reader's question, so it keeps the route
@@ -2439,7 +2440,16 @@ function ConversationScreenView({
 	// yet (ruling 20). A recovery-fenced session keeps the composer: Send is
 	// how it resumes, so it shows no Resume notice of its own.
 	const notice = conversation?.status.type === "restartRequired" ? "restartNeeded" : null;
-	const restart = useSessionRestart(controls, snapshot.status);
+	// A refused resume waits for something to change before it is tried again.
+	// The question is whether the service has a thread open to send on, since a
+	// read clears that without touching the store's status. The store's read
+	// state is what re-renders when such a read settles, and the binding itself
+	// is honest even if a render arrives for another reason, so both are in the
+	// key. Asking the store's status alone would leave the restart owed forever.
+	const restart = useSessionRestart(
+		controls,
+		`${snapshot.status}:${snapshot.latestReadState}:${service?.openThread() ?? "none"}`,
+	);
 	const notesPreview = conversation ? notesBarPreview(conversation) : null;
 	const [stopping, setStopping] = useState(false);
 	const stopBusy = useRef(false);

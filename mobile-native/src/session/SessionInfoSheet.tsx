@@ -4,6 +4,7 @@
 // and actions through sessionInfoHosts (ruling 37); the sheet shows only
 // facts the thread carries (ruling 21, with S15's access).
 import { useNavigation } from "@react-navigation/native";
+import type { Dispatch, SetStateAction } from "react";
 import type { NativeStackNavigationProp, NativeStackScreenProps } from "@react-navigation/native-stack";
 import { SymbolView } from "expo-symbols";
 import { useState } from "react";
@@ -112,7 +113,7 @@ function SessionInfoBody({
 	 * to the reader when a result comes back. */
 	routeKey: string;
 	editing: { text: string; from: string } | null;
-	setEditing(editing: { text: string; from: string } | null): void;
+	setEditing: Dispatch<SetStateAction<{ text: string; from: string } | null>>;
 	finish(then?: () => void): void;
 	toast: ToastController;
 }) {
@@ -143,8 +144,13 @@ function SessionInfoBody({
 		}
 		// The new name waits in the field until the hub can take it.
 		if (!host.controls || !ready) return;
-		if ((await host.controls.rename(editing.text)) === true) {
-			setEditing(null);
+		// The draft this request sent. A rename can outlive the controls that
+		// asked, so by the time it answers the field may hold a newer name the
+		// reader typed while waiting. Settling this request must not clear a
+		// draft it does not own: only the one it submitted goes.
+		const submitted = editing.text;
+		if ((await host.controls.rename(submitted)) === true) {
+			setEditing((current) => (current !== null && current.text === submitted ? null : current));
 			// The hub took the name, so the editor clears whichever screen is in
 			// front. The toast is the reader's question, and this sheet being on
 			// top of its own stack is not that question: an outer stack can open

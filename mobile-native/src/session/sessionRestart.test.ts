@@ -91,6 +91,49 @@ describe("one step of a restart", () => {
 		expect(await attemptControl(made, "resume")).toBe("done");
 		expect(sent).toBe(1);
 	});
+	// The stop's own read starts before the resume is tried, and that read has
+	// already cleared the service's thread binding while the store still says
+	// the session is open. Asking the store would send the resume into a gap
+	// where the service throws, and the restart would keep a failed attempt
+	// instead of a sent one. The resume waits for the read, then goes.
+	it("sends the owed resume once the stop's read has restored the binding", async () => {
+		let sent = 0;
+		// The stop's read is already out when the resume is first tried, so the
+		// service has no thread open even though the session is the same one.
+		let canSend = false;
+		let settled = "open:reading";
+		const made = new SessionControls(
+			{
+				forceStop: async () => {},
+				resume: async () => {
+					sent += 1;
+				},
+			} as unknown as ConstructorParameters<typeof SessionControls>[0],
+			async () => {},
+			() => {},
+			// The binding answers about the session; sending asks whether the
+			// service has a thread open, which the stop's read takes away.
+			(scope) => (scope === "send" ? canSend : true),
+			() => null,
+			() => true,
+		);
+		const hook = renderHook(() => useSessionRestart(made, settled));
+		await act(async () => {
+			await hook.result.current.restart();
+		});
+		// No thread is open on the service, so the resume is refused before it
+		// is marked pending rather than failing: the restart still owes it.
+		expect(sent).toBe(0);
+		expect(made.getSnapshot().pending).toBeNull();
+		// The read lands and the binding is back: the resume the stop owed goes
+		// out, without anything else having to happen.
+		canSend = true;
+		settled = "open:ready";
+		hook.rerender();
+		await settle();
+		expect(sent).toBe(1);
+	});
+
 	it("sends the resume the covering screen took the controls away from", async () => {
 		let sent = 0;
 		let forceStops = 0;

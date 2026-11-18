@@ -305,7 +305,6 @@ export class SessionControls {
 			// replacement binding runs its own readback, which owns the service
 			// that is still open. Only a binding that moved to another
 			// conversation has nothing left to settle here.
-			if (this.disposed) return true;
 			if (!this.isCurrent("session")) return false;
 			// The hub's receipt is the acknowledgement, and it is what settles
 			// this action. The read that follows is catch-up: it brings the
@@ -314,7 +313,14 @@ export class SessionControls {
 			// compaction or effort change into an unconfirmed one. The session's
 			// own read recovery surfaces anything the read would have said. A
 			// refusal arrives as a rejection below, where it stays visible.
-			if (kind !== "resume") {
+			//
+			// This runs whichever controller sent the action, including one the
+			// push disposed: the read is for the session's shared binding, and a
+			// cold rename lands in the hub's past index, so a session whose read
+			// is still considered current never fetches the new title on return.
+			// The read is best effort, so a binding that cannot read is skipped
+			// rather than reported.
+			if (kind !== "resume" && this.isCurrent("destination")) {
 				try {
 					await this.refresh();
 				} catch {
@@ -326,26 +332,28 @@ export class SessionControls {
 			// refusal here leaves a retained editor open over a rename the hub
 			// accepted. A binding that moved to another conversation is the one
 			// case with nothing to report.
-			if (this.disposed) return true;
 			if (!this.isCurrent("session")) return false;
 			// The hub took the action, so this binding settles it here whichever
 			// screen is in front: a covered pane's editor must not stay dirty over
 			// a rename the hub accepted. The notice is the reader's question, and
 			// only a view still in front has one to tell.
 			const stayed = this.isCurrent("route");
-			this.publish({
-				pending: null,
-				error: null,
-				notice: !stayed
-					? null
-					: kind === "resume"
-						? "Runtime resumed."
-						: kind === "compact"
-							? "Compaction requested. Progress appears in the conversation."
-							: kind === "setReasoningEffort"
-								? "Reasoning effort updated."
-								: "Session renamed.",
-			});
+			// A disposed controller has no listeners left, so it publishes
+			// nothing: the replacement binding owns that state now.
+			if (!this.disposed)
+				this.publish({
+					pending: null,
+					error: null,
+					notice: !stayed
+						? null
+						: kind === "resume"
+							? "Runtime resumed."
+							: kind === "compact"
+								? "Compaction requested. Progress appears in the conversation."
+								: kind === "setReasoningEffort"
+									? "Reasoning effort updated."
+									: "Session renamed.",
+				});
 			return true;
 		} catch (cause) {
 			const failure =

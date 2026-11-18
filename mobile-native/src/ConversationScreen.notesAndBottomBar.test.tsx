@@ -254,6 +254,10 @@ const coordinatorHub: {
 	readFails: null,
 };
 
+// Reads a test holds open, oldest first: each entry is the promise that read
+// waits on, so a case can observe what happens while the catch-up is out.
+const heldReads: Promise<void>[] = [];
+
 // Whether thread/read answers with a history identity, as a v6 hub does:
 // only then does the store take live pushes (overlay streams among them).
 const readHistory = { live: false };
@@ -269,6 +273,7 @@ const catalogHub = { fails: false };
 
 // Keep diagnostics visible and check the entire case, including afterEach teardown.
 beforeEach(({ onTestFinished }) => {
+	heldReads.length = 0;
 	const errors = vi.spyOn(console, "error");
 	const warnings = vi.spyOn(console, "warn");
 	onTestFinished(() => {
@@ -336,6 +341,11 @@ function hubClient(
 		request: async (method: string, params: Record<string, unknown>) => {
 			requests.push({ method, params });
 			if (method === "thread/read") {
+				// A test can hold the next read open, so the window between a
+				// mutation being acknowledged and its catch-up read landing is
+				// observable instead of instant.
+				const held = heldReads.shift();
+				if (held) await held;
 				if (readLatencyMs > 0) await new Promise((resolve) => setTimeout(resolve, readLatencyMs));
 				if (readsToFail > 0) {
 					readsToFail -= 1;
@@ -402,6 +412,20 @@ function hubClient(
 				if (method === "evener/thread/jobs/list") return { context: f.context, scope: f.scope, jobs: f.jobs, page };
 			}
 			if (method === "evener/delegate/stop") return coordinatorHub.stop(params);
+			// A decided escalation stops waiting: the hub takes it out of what
+			// every later read returns, as the daemon does once it resolves one.
+			// A test that wants the next approval on screen therefore has to let
+			// the read run, rather than inject a frame standing in for it.
+			if (method === "evener/sandbox/escalation/resolve") {
+				const waiting = (served as unknown as { evener: { pendingEscalations?: Record<string, unknown>[] } }).evener
+					.pendingEscalations;
+				if (waiting) {
+					(served as unknown as { evener: Record<string, unknown> }).evener.pendingEscalations = waiting.filter(
+						(entry) => entry.escalationId !== params.escalationId,
+					);
+				}
+				return {};
+			}
 			if (method === "evener/session/seen/set")
 				return { ok: true, changed: true, navigation: { generation_id: "generation-test", targets: [] } };
 			return answerFleetRead(fleet, method, params) ?? {};
@@ -627,6 +651,32 @@ describe("a session that can't take a message yet (ruling 20)", () => {
 				.map((request) => request.method),
 		).toEqual(["forceStop", "resumeThread"]);
 		expect(pressable(tree, "Restart session")?.props.accessibilityState).toMatchObject({ busy: false });
+	});
+
+	// The stop's own read starts as soon as the hub acknowledges it, and that
+	// read clears the service's thread binding while the store still reports
+	// the session open. A resume tried in that gap throws at the service
+	// without reaching the hub, and the restart keeps a failed attempt instead
+	// of a sent one. It waits for the read and then goes.
+	it("resumes once the read the stop started has restored the binding", async () => {
+		const { tree, hub } = await mount(restartNeeded("ref-restart-read"));
+		const reading = Promise.withResolvers<void>();
+		// Whatever read comes next waits on this one: that is the catch-up the
+		// stop's own callback starts.
+		heldReads.push(reading.promise);
+		await press(tree, "Restart session");
+		await settle();
+		// The read is out and no resume has been sent into the gap.
+		expect(hub.requests.filter((request) => request.method === "resumeThread")).toEqual([]);
+		// The read lands and the resume goes, with nothing else asked for.
+		reading.resolve();
+		await settle();
+		await settle();
+		expect(
+			hub.requests
+				.filter((request) => request.method === "forceStop" || request.method === "resumeThread")
+				.map((request) => request.method),
+		).toEqual(["forceStop", "resumeThread"]);
 	});
 
 	it("says so in the notice when the session stopped but couldn't start again", async () => {
@@ -1765,14 +1815,11 @@ describe("an approval waiting for a decision (spec 8.4, ruling 38)", () => {
 
 		// Returning, the next approval takes the dock from the session's own read,
 		// with no error left over from the decision that settled behind the
-		// covering screen and nothing injected to stand in for that read.
+		// covering screen. The hub stopped serving the settled one when it took
+		// the decision, and nothing is injected to stand in for a read: a
+		// controller that clears pending without reading leaves the settled
+		// approval on screen, and the assertions below fail.
 		rootStack.pushed = null;
-		act(() =>
-			hub.notify({
-				method: "evener/sandbox/escalation/resolved",
-				params: { threadId: served.id, ref, escalationId: "esc-1" },
-			} as unknown as AnyNotification),
-		);
 		await settle();
 		const shown = renderedText(tree).replaceAll("\u200b", "");
 		expect(shown).toContain("read_file");

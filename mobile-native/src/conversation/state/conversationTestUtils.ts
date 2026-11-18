@@ -543,6 +543,9 @@ export class FakeConversationService implements LiveConversationService {
 		this.closed = true;
 		this.notificationHandler = null;
 	}
+	openThread(): string | null {
+		return this.closed ? null : this.ref;
+	}
 }
 
 export async function openedStore(

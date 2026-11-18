@@ -774,6 +774,7 @@ describe("conversation-owned session controls", () => {
 	});
 	it("invalidates old confirmation callbacks and late completions when leaving a conversation", async () => {
 		let resolve!: () => void;
+		let left = false;
 		let callbacks = 0,
 			stops = 0;
 		const controls = new SessionControls(
@@ -793,11 +794,14 @@ describe("conversation-owned session controls", () => {
 			() => {
 				callbacks++;
 			},
-			() => true,
+			// The reader has left the conversation, so no scope is current any
+			// more: the session binding moved away from this reader.
+			() => !left,
 			() => null,
 			() => true,
 		);
 		const request = controls.compact();
+		left = true;
 		controls.dispose();
 		resolve();
 		await request;
@@ -1113,9 +1117,10 @@ describe("conversation-owned session controls", () => {
 				refreshed++;
 			},
 			() => {},
-			// The screen's own fence: the route is still the same session, and
-			// an outer screen covering it is what `current` is not.
-			(scope) => (scope === "session" ? true : !covered),
+			// The screen's own fence: the session and its transport are live and
+			// can read, and an outer screen covering the pane is what only the
+			// route answer loses.
+			(scope) => (scope === undefined || scope === "route" ? !covered : true),
 			() => null,
 			() => true,
 		);
@@ -1154,6 +1159,29 @@ describe("conversation-owned session controls", () => {
 		reading.resolve();
 		expect(await rename).toBe(true);
 	});
+	// A rename acknowledged after a push replaced the controls still has to
+	// read the session back: a cold rename lands in the hub's past index, so a
+	// session whose read is still considered current never fetches the new
+	// title, and the sheet shows the old name on return.
+	it("reads an acknowledged rename back after its controls were replaced", async () => {
+		let refreshed = 0;
+		const controls = new SessionControls(
+			await boundary({ rename: async () => {} }),
+			async () => {
+				refreshed++;
+			},
+			() => {},
+			// The session and its transport outlive the push; the controls do not.
+			() => true,
+			() => null,
+			() => true,
+		);
+		const rename = controls.rename("New name");
+		controls.dispose();
+		expect(await rename).toBe(true);
+		expect(refreshed).toBe(1);
+	});
+
 	// The reader can leave while the pick's refresh is still out. Whoever left
 	// is owed no confirmation on the screen they left, so the pick reports no
 	// change there — including when that refresh itself fails.

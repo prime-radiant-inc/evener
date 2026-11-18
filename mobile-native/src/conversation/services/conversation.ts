@@ -160,6 +160,12 @@ export interface ConversationService {
 	setReasoningEffort(effort: string): Promise<void>;
 	rename(name: string): Promise<void>;
 	cancelQueued(index: number, expectedEntryId: string, expectedInstanceId: string): Promise<TurnCancelQueuedResponse>;
+	/** The thread this service can write to right now, or null while it has
+	 * no open binding. `beginOpen` clears the binding before its read starts
+	 * and installs it only on success, so this is the authority on whether a
+	 * mutation would reach the wire: asking the store instead admits a write
+	 * into the gap between a read starting and the store hearing about it. */
+	openThread(): string | null;
 	close(): void;
 }
 
@@ -1044,6 +1050,10 @@ export function createConversationService<ReadLease = unknown>(
 			instanceId = null;
 			threadId = null;
 			capabilities = null;
+		},
+
+		openThread() {
+			return ref;
 		},
 	};
 }

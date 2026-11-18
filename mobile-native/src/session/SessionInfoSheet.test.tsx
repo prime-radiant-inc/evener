@@ -631,6 +631,28 @@ describe("renaming", () => {
 		expect(markers(tree, "toast")).toEqual([]);
 		expect(tree.root.findAll((node) => String(node.type) === "TextInput")).toEqual([]);
 	});
+	// The rename can outlive the controls that asked, and the field stays
+	// editable while it is out. A name typed after the request must survive
+	// the acknowledgement: the reply settles the request it sent, not whatever
+	// the reader has typed since.
+	it("keeps a name typed after the request went out", async () => {
+		const reply = Promise.withResolvers<boolean>();
+		const { controls } = provide(conversation({ capabilities: { ...NONE, rename: true } }));
+		controls.rename.mockImplementation(() => reply.promise);
+		const tree = sheet();
+		press(tree, "Fix the settle race, rename");
+		const field = tree.root.find((node) => String(node.type) === "TextInput");
+		act(() => field.props.onChangeText("First name"));
+		act(() => void field.props.onSubmitEditing());
+		// The reader keeps typing while the hub's reply is still out.
+		const retyped = tree.root.find((node) => String(node.type) === "TextInput");
+		act(() => retyped.props.onChangeText("A later name"));
+		act(() => reply.resolve(true));
+		await settle();
+		const shown = tree.root.find((node) => String(node.type) === "TextInput");
+		expect(shown.props.value).toBe("A later name");
+	});
+
 	it("announces a rename to a sheet that is still the one in front", async () => {
 		provide(conversation({ capabilities: { ...NONE, rename: true } }));
 		const tree = sheet();
