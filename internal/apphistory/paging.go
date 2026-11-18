@@ -174,9 +174,46 @@ func Read(ctx context.Context, params appwire.ThreadReadParams, read ReadFunc, l
 				}
 			}
 		}
-		response.Changes = &changes
+		// These correction rows ride the same response as the window but sit
+		// outside it, so fill never measured them. Their call lists are the
+		// same optional metadata: omit them when the completed response would
+		// otherwise exceed the page budget, keeping every row, its body, its
+		// turn links and its legacy count (#6323).
+		response.Changes = fitChanges(response, changes)
 	}
 	return response, nil
+}
+
+// fitChanges omits per-call resolution stamps from out-of-window correction
+// rows when the completed response carrying them would exceed the page budget,
+// and keeps them otherwise (#6323).
+//
+// The window's own fit already ran inside fill; these rows are appended after
+// it, which is the only reason they need a bound of their own.
+func fitChanges(response appwire.ThreadReadResponse, changes appwire.HistoryChanges) *appwire.HistoryChanges {
+	if len(changes.Items) == 0 {
+		return &changes
+	}
+	withRows := response
+	withRows.Changes = &changes
+	encoded, err := json.Marshal(withRows)
+	if err != nil || len(encoded) <= pageContentBytes {
+		return &changes
+	}
+	bounded := make([]appwire.ThreadItem, len(changes.Items))
+	copy(bounded, changes.Items)
+	changed := false
+	for i := range bounded {
+		if item, omitted := appitempaging.OmitResolvedAskCalls(bounded[i], 0); omitted {
+			bounded[i] = item
+			changed = true
+		}
+	}
+	if !changed {
+		return &changes
+	}
+	changes.Items = bounded
+	return &changes
 }
 
 func List(ctx context.Context, params appwire.ThreadTurnsListParams, list ListFunc) (appwire.ThreadTurnsListResponse, error) {

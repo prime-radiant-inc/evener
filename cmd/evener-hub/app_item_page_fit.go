@@ -1407,6 +1407,8 @@ func packItemCandidates[T any](
 		// the per-item bound had already removed the lists, repeating the
 		// enrichment - which can reread and hash file-backed thumbnails on a
 		// local page - for no change at all.
+		var stripped T
+		strippedBuilt := false
 		if retainedLists {
 			omitted, omittedSize, _, omittedErr := buildPage(window, 0)
 			if omittedErr != nil {
@@ -1415,9 +1417,20 @@ func packItemCandidates[T any](
 			if omittedSize <= transcriptRPCResultSoftLimit {
 				return omitted, nil
 			}
+			// The stripped page is still over the target, but it is strictly
+			// smaller than the stamped one. Keep it for the retain-the-nearest
+			// branch below, which must serve something (#6323).
+			stripped, strippedBuilt = omitted, true
 		}
-		// The nearest item is always retained, even alone over the target.
+		// The nearest item is always retained, even alone over the target. Serve
+		// the stripped copy when it exists: it keeps the body, the turn links
+		// and the paging cursor while dropping only optional metadata, so
+		// returning the stamped response here would ship the larger page and
+		// throw away the build that was already paid for.
 		if len(window) == 1 {
+			if strippedBuilt {
+				return stripped, nil
+			}
 			return response, nil
 		}
 		selectedStart++

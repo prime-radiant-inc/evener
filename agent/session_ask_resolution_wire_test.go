@@ -14,8 +14,10 @@ import (
 
 // An admitted answer that resolves several ask_user calls of one execution
 // carries admission's per-call evidence on the wire: the exact (turn, call)
-// pairs it consumed, which the turn-granular answer link cannot express. A
-// client orders answer recaps by these calls (#6323).
+// pairs it consumed, which the turn-granular answer link cannot express. The
+// test proves the wire-side join: every pair the stamp names is a pair the
+// projected ask rows carry. Ordering answer recaps by these calls is the
+// client follow-up, not something this test establishes (#6323).
 func TestAskResolutionProjectsCallLevelEvidence(t *testing.T) {
 	t.Parallel()
 	s, adapter := newDurableAdmissionAskSessionWithAdapter(t, SessionConfig{})

@@ -618,3 +618,85 @@ func TestSelectedHistoryOmitsCallListsBeforeDroppingAnItem(t *testing.T) {
 		t.Fatalf("canonical item lost its call list: %+v", canonical)
 	}
 }
+
+// TestSelectedHistoryOmitsCallListsOnCorrectionRows pins the other half of the
+// fit: correction rows ride the same response as the window but are appended
+// after fill measured it, so their call lists are the one place optional
+// metadata could still push a response past the budget (#6323). The rows, their
+// bodies, turn links and legacy counts all survive; only the lists go.
+func TestSelectedHistoryOmitsCallListsOnCorrectionRows(t *testing.T) {
+	t.Parallel()
+	f := fixtureHistory()
+	// Small bodies everywhere: Read also appends out-of-window rows, so if the
+	// bodies were large the response would overflow for reasons omission cannot
+	// address, and the test would not exercise the call list at all.
+	for i := range f.candidates {
+		f.candidates[i].Item.Type = "agentMessage"
+		f.candidates[i].Item.Text = strings.Repeat("x", 64)
+	}
+	const replies = 2
+	// The list alone exceeds the budget, so the response overflows only while
+	// it is present.
+	calls := make([]appwire.PendingAskCall, 0, 16000)
+	for i := range 16000 {
+		calls = append(calls, appwire.PendingAskCall{TurnID: "turn", CallID: fmt.Sprintf("call-%0*d", 80, i)})
+	}
+	// A correction row outside the selected window, carrying that call list.
+	correction := f.candidates[0].Item
+	correction.Observation = &appwire.SessionObservationMetadata{
+		ResolvedAskCalls:       calls,
+		ResolvedAskLegacyCount: 4,
+		AnswerToTurnIDs:        []string{"turn"},
+	}
+	read := func(ctx context.Context, p appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		r, err := f.read(ctx, p)
+		r.Changes = &appwire.HistoryChanges{Items: []appwire.ThreadItem{correction}}
+		return r, err
+	}
+	params := appwire.ThreadReadParams{ThreadContentParams: conversationParams(), Ref: "local:thread", IncludeTurns: true, ItemLimit: replies}
+	r, err := Read(t.Context(), params, read, f.list)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Changes == nil {
+		t.Fatal("response dropped its changes")
+	}
+	// Read also appends selected rows that fell outside the served window, so
+	// locate the injected row by identity rather than by position.
+	row := -1
+	for i := range r.Changes.Items {
+		if r.Changes.Items[i].ID == correction.ID {
+			row = i
+			break
+		}
+	}
+	if row < 0 {
+		t.Fatalf("correction row %q was dropped from changes: %d rows kept", correction.ID, len(r.Changes.Items))
+	}
+	observation := r.Changes.Items[row].Observation
+	if observation == nil {
+		t.Fatal("correction row lost its observation, which carries the turn links")
+	}
+	if len(observation.ResolvedAskCalls) != 0 {
+		t.Fatalf("correction row kept %d call-list entries: the over-budget response should have omitted them", len(observation.ResolvedAskCalls))
+	}
+	if observation.ResolvedAskLegacyCount != 4 {
+		t.Fatalf("correction legacy count=%d, want 4", observation.ResolvedAskLegacyCount)
+	}
+	if got, want := observation.AnswerToTurnIDs, []string{"turn"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("correction turn links=%v, want %v", got, want)
+	}
+	if r.Changes.Items[row].Text == "" {
+		t.Fatal("correction row lost its body")
+	}
+	encoded, err := json.Marshal(r)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(encoded) > pageContentBytes {
+		t.Fatalf("completed response=%d bytes, over the %d-byte budget", len(encoded), pageContentBytes)
+	}
+	if got := len(correction.Observation.ResolvedAskCalls); got != len(calls) {
+		t.Fatalf("canonical correction row lost its call list: %d of %d", got, len(calls))
+	}
+}

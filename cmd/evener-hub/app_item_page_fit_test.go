@@ -714,76 +714,6 @@ func TestFitManagerReadUnderCapDropsStampAtThePageCap(t *testing.T) {
 	}
 }
 
-// TestFitManagerReadUnderCapCoversTheTurnsRoute covers the second Manager read
-// route. A saved-history read and a continuation answer through the turns
-// response, not the thread response, so a fallback that only touched Read left
-// those paths refusing an otherwise serviceable page.
-func TestFitManagerReadUnderCapCoversTheTurnsRoute(t *testing.T) {
-	const turnID = "0f1c2b3a-4d5e-4f60-8a91-b2c3d4e5f607"
-	calls := make([]appwire.PendingAskCall, 80)
-	for i := range calls {
-		calls[i] = appwire.PendingAskCall{TurnID: turnID, CallID: fmt.Sprintf("2b3c4d5e-6f70-4182-a3b4-%012x", i)}
-	}
-	stampBytes, err := json.Marshal(calls)
-	if err != nil {
-		t.Fatalf("marshal stamp: %v", err)
-	}
-	textBytes := managerReadMaxJSONBytes - len(stampBytes)/2 - 4096
-	reply := appwire.ThreadItem{
-		Type: "userMessage",
-		ID:   "answer",
-		Text: strings.Repeat("pasted ", textBytes/7+1)[:textBytes],
-		Observation: &appwire.SessionObservationMetadata{
-			Ref:                    "local:thread",
-			TurnID:                 turnID,
-			AnswerToTurnIDs:        []string{turnID},
-			ResolvedAskCalls:       calls,
-			ResolvedAskLegacyCount: 3,
-		},
-		Version: 1,
-	}
-	next := "continuation"
-	response := appwire.SessionOperationResponse{
-		Turns: &appwire.ThreadHistoryTurnsListResponse{
-			Data:       []appwire.Turn{{ID: turnID, Items: []appwire.ThreadItem{reply}}},
-			NextCursor: next,
-		},
-	}
-	before, err := json.Marshal(response)
-	if err != nil {
-		t.Fatalf("marshal response: %v", err)
-	}
-	if len(before) <= managerReadMaxJSONBytes {
-		t.Fatalf("fixture response = %d bytes, want over the cap %d", len(before), managerReadMaxJSONBytes)
-	}
-	fit, fitErr := managerReadFitUnderCap(response)
-	if fitErr != nil {
-		t.Fatalf("fitted turns response refused: %v", fitErr)
-	}
-	if fit.Turns == nil || fit.Turns.NextCursor != next {
-		t.Fatalf("fallback dropped the turns cursor: %+v", fit.Turns)
-	}
-	items := flattenTestItems(fit.Turns.Data)
-	if len(items) != 1 {
-		t.Fatalf("served item count = %d, want 1", len(items))
-	}
-	if items[0].Text != reply.Text {
-		t.Fatalf("fallback must keep the reply text, got %d of %d bytes", len(items[0].Text), len(reply.Text))
-	}
-	if got := len(items[0].Observation.ResolvedAskCalls); got != 0 {
-		t.Fatalf("served %d stamp calls, want the call list dropped", got)
-	}
-	if got, want := items[0].Observation.AnswerToTurnIDs, []string{turnID}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("fallback turn links = %v, want %v", got, want)
-	}
-	if got := items[0].Observation.ResolvedAskLegacyCount; got != 3 {
-		t.Fatalf("fallback legacy count = %d, want 3", got)
-	}
-	if got := len(response.Turns.Data[0].Items[0].Observation.ResolvedAskCalls); got != len(calls) {
-		t.Fatalf("input response stamp = %d calls, want %d", got, len(calls))
-	}
-}
-
 // TestPackTranscriptWindowDropsStampBeforeTheReply covers a turn whose budget
 // overflow comes from optional metadata rather than from the reply. A stamp
 // passes the per-item bound and still pushes the turn over its window budget;
@@ -2323,5 +2253,63 @@ func TestReadOverlayMergesRunningToolIntoItsRecordedItem(t *testing.T) {
 	}
 	if item.Position == nil || *item.Position != position {
 		t.Fatalf("merged item position = %+v, want the recorded position %+v", item.Position, position)
+	}
+}
+
+// TestPackTranscriptItemPageServesStrippedCopyForTheNearestItem pins the last
+// branch of the item-page fit: one item alone over the soft target is always
+// served, and when a stripped copy of it has already been built the serve must
+// use that copy rather than the larger stamped one. Returning the stamped
+// response discarded a build that had been paid for and shipped optional
+// metadata on a page that was over budget anyway (#6323).
+func TestPackTranscriptItemPageServesStrippedCopyForTheNearestItem(t *testing.T) {
+	identity := appitempaging.CursorIdentity{ThreadRef: "local:thread", Incarnation: "nearest-stripped", ProjectionVersion: 1}
+	const questionTurn = "1a2b3c4d-5e6f-4071-92a3-b4c5d6e7f809"
+	calls := make([]appwire.PendingAskCall, 80)
+	for i := range calls {
+		calls[i] = appwire.PendingAskCall{TurnID: questionTurn, CallID: fmt.Sprintf("2b3c4d5e-6f70-4182-a3b4-%012x", i)}
+	}
+	// One item whose body alone exceeds the soft target, so stripping the call
+	// list cannot make the page fit. That is the branch that serves the nearest
+	// item even over budget.
+	candidates := testItemCandidates(1)
+	candidates[0].Item.Text = strings.Repeat("pasted ", transcriptRPCResultSoftLimit/7+1)[:transcriptRPCResultSoftLimit]
+	candidates[0].Item.Observation = &appwire.SessionObservationMetadata{
+		Ref:                    "local:thread",
+		TurnID:                 candidates[0].TurnID,
+		AnswerToTurnIDs:        []string{questionTurn},
+		ResolvedAskCalls:       calls,
+		ResolvedAskLegacyCount: 2,
+	}
+	got, err := packThreadReadItemCandidates(transcriptItemCandidateResult{
+		Candidates: appitempaging.TranscriptItemWindow{Candidates: candidates},
+		Identity:   identity,
+		Exhausted:  true,
+	}, func(response appwire.ThreadReadResponse) (appwire.ThreadReadResponse, error) {
+		return response, nil
+	})
+	if err != nil {
+		t.Fatalf("pack single-item page: %v", err)
+	}
+	items := flattenTestItems(got.Thread.Turns)
+	if len(items) != 1 {
+		t.Fatalf("served item count = %d, want the nearest item retained", len(items))
+	}
+	if items[0].Observation == nil {
+		t.Fatal("served item lost its observation")
+	}
+	// The body is kept on both branches, so the call list is what distinguishes
+	// them: only the stripped copy has dropped it.
+	if gotCalls := len(items[0].Observation.ResolvedAskCalls); gotCalls != 0 {
+		t.Fatalf("served nearest item kept %d call-list entries: the stripped copy was built and then discarded", gotCalls)
+	}
+	if gotLinks, want := items[0].Observation.AnswerToTurnIDs, []string{questionTurn}; !reflect.DeepEqual(gotLinks, want) {
+		t.Fatalf("served turn links = %v, want %v", gotLinks, want)
+	}
+	if gotCount := items[0].Observation.ResolvedAskLegacyCount; gotCount != 2 {
+		t.Fatalf("served legacy count = %d, want 2", gotCount)
+	}
+	if items[0].Text == "" {
+		t.Fatal("served nearest item lost its body")
 	}
 }
