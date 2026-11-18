@@ -161,6 +161,25 @@ func jobstorePackageMetadataEdges(t *testing.T) {
 	}
 }
 
+// jobstorePackageStoreWithHandle builds the store these edges exercise, with the
+// handle it appends through already open.
+//
+// The handle is not decoration: trailing recovery asks the HELD file which file
+// it is before it probes or repairs anything, so a store carrying only a path
+// and a filesystem reaches a state production never does — and panics instead of
+// exercising the recovery arm the edge names. When the filesystem cannot open
+// the path, the store keeps the nil handle and the read exercises the arm where
+// nothing is held, which is the fault that fixture injects.
+func jobstorePackageStoreWithHandle(t *testing.T, fs afero.Fs, path string) *Store {
+	t.Helper()
+	s := &Store{fs: fs, path: path, disableSync: true}
+	if f, err := fs.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0o644); err == nil {
+		s.f = f
+		t.Cleanup(func() { _ = f.Close() })
+	}
+	return s
+}
+
 func jobstorePackageStoreEdges(t *testing.T) {
 	t.Helper()
 	const path = "/jobs.jsonl"
@@ -169,14 +188,21 @@ func jobstorePackageStoreEdges(t *testing.T) {
 		if setup != nil {
 			setup(base)
 		}
-		s := &Store{fs: base, path: path, disableSync: true}
+		// A store recovery can examine needs the handle it appends through, not
+		// just a path: trailing recovery stats the HELD file to find out which
+		// file it is looking at, and a fixture with no handle exercises a state
+		// production cannot reach. The fixture had to grow with the code.
+		s := jobstorePackageStoreWithHandle(t, base, path)
 		_, _ = s.readAll()
 	}
 	for _, fs := range []afero.Fs{
 		&jcpHookFS{Fs: afero.NewMemMapFs(), openErr: jcpInjectedErr},
 		&jcpHookFS{Fs: afero.NewMemMapFs(), statErr: jcpInjectedErr},
 	} {
-		s := &Store{fs: fs, path: path, disableSync: true}
+		// These exercise the arms where the path cannot be reached at all, so
+		// there is nothing to hold; the handle is opened through the same
+		// injected filesystem and the open fails, which is the fault under test.
+		s := jobstorePackageStoreWithHandle(t, fs, path)
 		_, _ = s.readAll()
 	}
 	base := afero.NewMemMapFs()
@@ -193,7 +219,7 @@ func jobstorePackageStoreEdges(t *testing.T) {
 			}
 			return &jcpHookFile{File: f, readErr: jcpInjectedErr}
 		}}
-		s := &Store{fs: fs, path: path, disableSync: true}
+		s := jobstorePackageStoreWithHandle(t, fs, path)
 		_, _ = s.readAll()
 	}
 	for _, wrap := range []func(afero.File) afero.File{
@@ -201,7 +227,7 @@ func jobstorePackageStoreEdges(t *testing.T) {
 		func(f afero.File) afero.File { return &jcpHookFile{File: f, seekErr: jcpInjectedErr} },
 	} {
 		fs := &jcpHookFS{Fs: base, wrap: wrap}
-		s := &Store{fs: fs, path: path, disableSync: true}
+		s := jobstorePackageStoreWithHandle(t, fs, path)
 		_, _ = s.readAll()
 	}
 	_ = afero.WriteFile(base, path, []byte("{}"), 0o644)
@@ -213,8 +239,8 @@ func jobstorePackageStoreEdges(t *testing.T) {
 		}
 		return f
 	}}
-	s := &Store{fs: fs, path: path, disableSync: true}
-	_, _ = s.readAll()
+	tail := jobstorePackageStoreWithHandle(t, fs, path)
+	_, _ = tail.readAll()
 	_ = os.ErrNotExist
 }
 

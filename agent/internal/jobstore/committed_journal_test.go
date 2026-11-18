@@ -2321,6 +2321,101 @@ func TestStoreCursorDoesNotTrustAReplacementOfTheSameLength(t *testing.T) {
 	}
 }
 
+// fragAfterSyncFs appends a torn fragment to the journal the first time the
+// store syncs, so the fragment lands after this append's own bytes are durable
+// and before the post-sync sample is taken.
+//
+// That window is what makes the sample the store resolves longer than the end
+// it just wrote. The identity is correct — the name still reaches the file the
+// store appended through — so nothing about the file's identity says anything is
+// wrong; the only evidence is that the length is PAST the store's own write.
+type fragAfterSyncFs struct {
+	afero.Fs
+	path string
+	once sync.Once
+	arm  atomic.Bool
+}
+
+func (f *fragAfterSyncFs) armFragment() { f.arm.Store(true) }
+
+func (f *fragAfterSyncFs) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	file, err := f.Fs.OpenFile(name, flag, perm)
+	if err != nil {
+		return nil, err
+	}
+	return &fragAfterSyncFile{File: file, fs: f}, nil
+}
+
+type fragAfterSyncFile struct {
+	afero.File
+	fs *fragAfterSyncFs
+}
+
+func (f *fragAfterSyncFile) Sync() error {
+	err := f.File.Sync()
+	if f.fs.arm.CompareAndSwap(true, false) {
+		f.fs.once.Do(func() {
+			body, readErr := afero.ReadFile(f.fs.Fs, f.fs.path)
+			if readErr != nil {
+				panic(readErr)
+			}
+			if writeErr := afero.WriteFile(f.fs.Fs, f.fs.path, append(body, `{"kind":"job_started","seq":`...), 0o644); writeErr != nil {
+				panic(writeErr)
+			}
+		})
+	}
+	return err
+}
+
+// TestStoreAppendDoesNotBookAGrowthItDidNotWrite pins High 5.
+//
+// A foreign writer appends a torn fragment after this append's fsync and before
+// the post-sync sample. The sample has the right file identity and a length past
+// the append's own end. Recording that length as the append's baseline makes the
+// NEXT append see an unchanged file: it compares, finds nothing changed, skips
+// the tail inspection, and writes its event onto the fragment — one malformed
+// line, reported as success, and the journal no longer reopens.
+//
+// Bytes past the store's own confirmed end are not its write, so they are not a
+// baseline it may book.
+func TestStoreAppendDoesNotBookAGrowthItDidNotWrite(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "jobs.jsonl")
+	fs := &fragAfterSyncFs{Fs: afero.NewOsFs(), path: path}
+	s, err := openFs(fs, path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	fs.armFragment()
+	if err := s.Append(Event{Kind: EventJobStarted, JobID: "job_first", Type: JobShell}); err != nil {
+		t.Fatalf("append with a fragment arriving after its fsync: %v", err)
+	}
+
+	// The next append must inspect the tail it did not write before adding to it.
+	if err := s.Append(Event{Kind: EventJobStarted, JobID: "job_second", Type: JobShell}); err != nil {
+		t.Fatalf("append after foreign growth: %v", err)
+	}
+
+	// The corruption is the assertion: a baseline booked over the fragment leaves
+	// a journal that cannot be reopened.
+	reopened, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen the journal: %v (an append booked a length it never wrote, so the fragment was joined rather than repaired)", err)
+	}
+	t.Cleanup(func() { _ = reopened.Close() })
+	records, err := reopened.Load()
+	if err != nil {
+		t.Fatalf("fold the reopened journal: %v", err)
+	}
+	for _, want := range []string{"job_first", "job_second"} {
+		if records[want] == nil {
+			t.Fatalf("%s is missing from the reopened journal", want)
+		}
+	}
+}
+
 // TestStoreAppendBooksTheBaselineItVerified pins M4.
 //
 // The append verifies, after its sync, that the name still reaches the journal it
