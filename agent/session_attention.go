@@ -1660,6 +1660,26 @@ func (s *Session) moveHeldDelegateAttentionTurnsToTail(released []string) {
 	for _, id := range released {
 		releasable[id] = struct{}{}
 	}
+	// A row whose release is still owed its position is not always pending: a
+	// crash after the consumed marker and before RunStarted leaves the reopen
+	// resolved, and the restart still owes the order the release produced. Such
+	// a row is included here; every other resolved row keeps the position it was
+	// presented at.
+	for _, id := range fold.order {
+		if _, ok := releasable[id]; !ok {
+			continue
+		}
+		if _, resolved := fold.resolutions[id]; !resolved {
+			continue
+		}
+		if fold.resolutions[id] != delegateAttentionConsumed {
+			continue
+		}
+		if _, _, ok := cutDelegateAttentionReopenSegment(id); !ok {
+			continue
+		}
+		pending = append(pending, id)
+	}
 	for _, attentionID := range pending {
 		if _, ok := releasable[attentionID]; !ok {
 			continue
@@ -1837,7 +1857,29 @@ type delegateQuietedRow struct {
 // under the controller lock with the aggregate.
 func (s *Session) stopQuietedDelegateAttentionRowsLocked(fold delegateAttentionFold, generation uint64, runStarts map[delegateLease]delegatestore.RunTrigger, runOutcomes map[delegateLease]delegatestore.Outcome, delegateID string) []delegateQuietedRow {
 	var rows []delegateQuietedRow
-	for _, id := range fold.pendingIDs() {
+	// A row this pass must consider is one whose quiet it can still decide AND
+	// one whose order the release owes. The second is not always pending: a
+	// fresh wake can release an older reopen and the drive select it, and a
+	// crash after the consumed marker lands but before RunStarted commits
+	// leaves that row resolved. The restart still owes the released order — the
+	// request that presents the frame that freed the report must end on the
+	// report, not ahead of the frame — so a consumed reopen of an
+	// attention-triggered cancelled generation is included here. Other resolved
+	// turns keep the positions they were presented at.
+	candidates := fold.pendingIDs()
+	for _, id := range fold.order {
+		if _, resolved := fold.resolutions[id]; !resolved {
+			continue
+		}
+		if fold.resolutions[id] != delegateAttentionConsumed {
+			continue
+		}
+		if _, _, ok := cutDelegateAttentionReopenSegment(id); !ok {
+			continue
+		}
+		candidates = append(candidates, id)
+	}
+	for _, id := range candidates {
 		source, _, ok := cutDelegateAttentionReopenSegment(id)
 		if !ok {
 			continue
