@@ -333,9 +333,10 @@ func TestTranscriptAuthorshipNestedParent(t *testing.T) {
 	}
 	releaseNamer()
 	// The namer's own completion signal is what proves the parked goroutine is
-	// gone, and the production close budget plays no part in it: a budget is
-	// exactly what this join exists to be independent of. Both namers must drain
-	// for the test to pass, so the wait itself is unbudgeted.
+	// gone, and the production close budget plays no part in it: this joins the
+	// detached emitters directly, not through closeEventStream's budget. Both
+	// delegate runs were settled above, so the only emitter these two sessions
+	// still hold is the namer this test parked.
 	//
 	// TRIPWIRE: a wait group cannot report a namer that exits without calling
 	// Done, and there is no channel to select on, so this ceiling is the only
@@ -345,8 +346,8 @@ func TestTranscriptAuthorshipNestedParent(t *testing.T) {
 	// this normally returns in well under a second; 30s only fires on a missing
 	// Done.
 	awaitWithin(t, 30*time.Second, "the middle and leaf children's namers to finish", func() {
-		middle.namerWG.Wait()
-		leaf.namerWG.Wait()
+		joinRetirementTreeEmitters(middle)
+		joinRetirementTreeEmitters(leaf)
 	})
 	middle.mu.Lock()
 	stillNaming := middle.naming.pending

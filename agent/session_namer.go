@@ -321,7 +321,6 @@ func (s *Session) launchInitialPromptNamer(ctx context.Context, input string) {
 	s.naming.promptPending = true
 	s.naming.pending++
 	s.sendersWG.Add(1)
-	s.namerWG.Add(1)
 	s.mu.Unlock()
 	go func() {
 		defer s.finishSessionNamer(release)
@@ -339,7 +338,6 @@ func (s *Session) finishSessionNamer(release func()) {
 	s.mu.Unlock()
 	release()
 	s.sendersWG.Done()
-	s.namerWG.Done()
 }
 
 // suppressSessionNamerIfQuotaExhausted disables naming for the rest of this
@@ -429,7 +427,6 @@ func (s *Session) launchCompactionNamerGated(ctx context.Context, turn schema.Tu
 	}
 	s.naming.pending++
 	s.sendersWG.Add(1)
-	s.namerWG.Add(1)
 	s.mu.Unlock()
 	go func() {
 		defer s.finishSessionNamer(release)
