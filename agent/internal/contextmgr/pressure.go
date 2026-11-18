@@ -414,7 +414,7 @@ func estimateTokenPartsFor(prof *provider.Profile, turns []schema.Turn) llm.Toke
 			continue
 		}
 		pricer := estimator
-		if t.DropsResponsesReasoning(&res, route) {
+		if t.DropsReasoningForTarget(&res, route) {
 			pricer = withoutThinking
 		} else if dropPlainThinking || (rawReplay && t.Message.Role == llm.RoleAssistant && !t.MatchesReasoningTextTarget(&res, route)) {
 			pricer = withoutPlain

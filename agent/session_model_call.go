@@ -1742,25 +1742,30 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		commonScope.protocolOf = roundReplayLookup(commonScope.protocolOf)
 		commonScope.canonicalModel = roundReplayLookup(commonScope.canonicalModel)
 		var sharedHistory []llm.Message
-		var sharedIssuer, sharedRoute string
+		var sharedProtocol, sharedIssuer, sharedRoute string
 		historyForFallback := func(fb *provider.Profile) []llm.Message {
 			if !hasFallbackSource {
 				return fullHistory
 			}
 			scope := commonScope
 			scope.setReasoningTextTarget(fb)
-			var issuer string
-			if fb.Protocol() == registry.ProtocolOpenAIResponses {
-				issuer = fb.ID()
-			}
 			target := scope.reasoningTextTarget
-			shareable := target == nil || (target.Protocol == registry.ProtocolOpenAIResponses && !target.ReplaysRawReasoning())
-			if shareable && sharedHistory != nil && issuer == sharedIssuer && scope.reasoningRoute == sharedRoute {
+			var protocol, issuer string
+			if target != nil {
+				protocol = target.Protocol
+				if protocol == registry.ProtocolOpenAIResponses {
+					issuer = target.Instance
+				}
+			}
+			// Strict Chat fallbacks on a Chat primary share opaque history by
+			// endpoint. A cross-protocol Chat fallback also checks the model.
+			shareable := target == nil || (!target.ReplaysRawReasoning() && (protocol == registry.ProtocolOpenAIResponses || protocol == commonScope.Protocol))
+			if shareable && sharedHistory != nil && protocol == sharedProtocol && issuer == sharedIssuer && scope.reasoningRoute == sharedRoute {
 				return sharedHistory
 			}
 			messages := s.requestMessages(fallbackSource.system, expandHistory(fallbackSource.turns, scope))
 			if shareable {
-				sharedHistory, sharedIssuer, sharedRoute = messages, issuer, scope.reasoningRoute
+				sharedHistory, sharedProtocol, sharedIssuer, sharedRoute = messages, protocol, issuer, scope.reasoningRoute
 			}
 			return messages
 		}
@@ -2110,10 +2115,9 @@ func (rs *replayScope) setReasoningTextTarget(profile *provider.Profile) {
 	rs.reasoningRoute = ""
 	res := profile.Resolved()
 	route := profile.ReasoningReplayRoute()
-	// A cross-protocol Chat fallback can receive its own opaque details
-	// even when the row omits raw text.
-	if res.ReplaysRawReasoning() || res.Protocol == registry.ProtocolOpenAIResponses ||
-		(res.Protocol == registry.ProtocolOpenAIChat && rs.Protocol != res.Protocol && route != "") {
+	// Both protocols can return opaque history to its serving endpoint even
+	// when the row omits raw text.
+	if res.Protocol == registry.ProtocolOpenAIResponses || res.Protocol == registry.ProtocolOpenAIChat {
 		rs.reasoningTextTarget = &res
 		rs.reasoningRoute = route
 	}
@@ -2239,7 +2243,7 @@ func (rs replayScope) thinkingReplayEligible(t schema.Turn) bool {
 	if target := rs.reasoningTextTarget; target != nil {
 		switch target.Protocol {
 		case registry.ProtocolOpenAIResponses:
-			return !t.DropsResponsesReasoning(target, rs.reasoningRoute)
+			return !t.DropsReasoningForTarget(target, rs.reasoningRoute)
 		case registry.ProtocolOpenAIChat:
 			// The issuing Chat fallback received these details with its
 			// tool result. Finishing the turn cannot change that message.

@@ -197,29 +197,39 @@ func TestFallbackKeepsOpaqueAndWebSearchScopeAcrossProtocols(t *testing.T) {
 			if (tc.raw && !slices.Equal(scalars, []string{"mirror-b52", "native-b27"})) || (!tc.raw && len(scalars) != 0) {
 				t.Errorf("fallback wire scalars = %q", scalars)
 			}
-			t.Run("own tool continuation", func(t *testing.T) { testChatFallbackToolContinuation(t, tc.raw) })
+			t.Run("own tool continuation", func(t *testing.T) { testChatToolContinuation(t, tc.raw, true) })
+			t.Run("direct Chat tool continuation", func(t *testing.T) { testChatToolContinuation(t, tc.raw, false) })
 		})
 	}
 }
 
-func testChatFallbackToolContinuation(t *testing.T, raw bool) {
+func testChatToolContinuation(t *testing.T, raw, viaFallback bool) {
 	const scalar = " \tλ-83\n"
+	const answer = "answer-417"
 	details := []any{
 		map[string]any{"type": "reasoning.text", "index": 7, "signature": "sig-17", "text": " signed-17 "},
 		map[string]any{"type": "reasoning.encrypted", "id": "r-23", "data": "cipher-29"},
 	}
 	call := map[string]any{"id": "call-9", "type": "function", "function": map[string]any{"name": "missing_tool", "arguments": " { } "}}
-	history := make(chan []json.RawMessage, 6)
+	history := make(chan []json.RawMessage, 8)
 	var calls atomic.Int32
+	var rejectIssuer atomic.Bool
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || !strings.HasSuffix(r.URL.Path, "/chat/completions") {
 			http.NotFound(w, r)
 			return
 		}
-		var req struct{ Messages []json.RawMessage }
+		var req struct {
+			Model    string
+			Messages []json.RawMessage
+		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Error(err)
 			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		if rejectIssuer.Load() && req.Model == "reasoner" {
+			http.NotFound(w, r)
 			return
 		}
 		select {
@@ -230,6 +240,7 @@ func testChatFallbackToolContinuation(t *testing.T, raw bool) {
 		delta := map[string]any{}
 		n := int(calls.Add(1))
 		if n == 1 {
+			delta["content"] = answer
 			delta["tool_calls"] = []any{call}
 			delta["reasoning"] = scalar
 			delta["reasoning_details"] = details
@@ -250,8 +261,16 @@ func testChatFallbackToolContinuation(t *testing.T, raw bool) {
 		return registryClientAt(t, dir, map[string]registry.Provider{"work": openaiInstance(srv.URL), "gw": inst}, []string{"work", "gw"})
 	}
 	client := clientAt(srv.URL)
-	profile := resolveClientProfile(t, client, "work/gpt-5.2")
-	fallbacks := []string{"gw/reasoner"}
+	target := func(model string) (*provider.Profile, []string) {
+		if viaFallback {
+			return resolveClientProfile(t, client, "work/gpt-5.2"), []string{"gw/" + model}
+		}
+		if model == "reasoner" {
+			return resolveClientProfile(t, client, "gw/reasoner"), []string{"other"}
+		}
+		return resolveClientProfile(t, client, "gw/"+model), nil
+	}
+	profile, fallbacks := target("reasoner")
 	resolve := func(ref string) (*provider.Profile, error) { return provider.Resolve(client.Registry(), ref) }
 	s := newSession(t, withClient(client), withProfile(profile), withConfig(SessionConfig{
 		StateDir: dir, ModelFallbacks: fallbacks, ResolveProfile: resolve, OpenAIResponsesContinuation: "off",
@@ -259,12 +278,13 @@ func testChatFallbackToolContinuation(t *testing.T, raw bool) {
 	for _, input := range []string{"begin", "another turn"} {
 		sendOneUserInput(t, s, input)
 	}
-	for _, dest := range []struct{ base, model string }{{srv.URL, "reasoner"}, {srv.URL, "other"}, {srv.URL + "/other", "reasoner"}} {
+	for _, dest := range []struct{ base, model string }{{srv.URL, "reasoner"}, {srv.URL, "other"}, {srv.URL + "/other", "reasoner"}, {srv.URL, "reasoner"}} {
 		s.Close()
 		client = clientAt(dest.base)
+		profile, fallbacks = target(dest.model)
 		var err error
-		s, err = RestoreSessionFromMetaWithConfig(client, resolveClientProfile(t, client, "work/gpt-5.2"), s.currentEnv(), loadMetaForTest(t, s), RestoreSessionConfig{
-			StateDir: dir, ModelFallbacks: []string{"gw/" + dest.model}, ResolveProfile: resolve, testOnly: sharingHostProbe(testConfig{skipGitSnapshot: true}),
+		s, err = RestoreSessionFromMetaWithConfig(client, profile, s.currentEnv(), loadMetaForTest(t, s), RestoreSessionConfig{
+			StateDir: dir, ModelFallbacks: fallbacks, ResolveProfile: resolve, testOnly: sharingHostProbe(testConfig{skipGitSnapshot: true}),
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -272,20 +292,27 @@ func testChatFallbackToolContinuation(t *testing.T, raw bool) {
 		t.Cleanup(s.Close)
 		sendOneUserInput(t, s, "after restart")
 	}
-	if n := calls.Load(); n != 6 {
-		t.Fatalf("got %d Chat requests, want the initial call, tool continuation, follow-up, and three restores", n)
+	type destination struct{ sameRoute, sameModel bool }
+	// Tool continuation, next turn, cold resume, another model, redirected
+	// endpoint, and a return to the original endpoint.
+	targets := []destination{{true, true}, {true, true}, {true, true}, {true, false}, {false, true}, {true, true}}
+	if !viaFallback {
+		rejectIssuer.Store(true)
+		sendOneUserInput(t, s, "use the alternate model")
+		targets = append(targets, destination{true, false})
+	}
+	if n := int(calls.Load()); n != 1+len(targets) {
+		t.Fatalf("got %d Chat requests, want %d", n, 1+len(targets))
 	}
 	<-history // the first request predates the tool call
-	want := map[string]any{"role": "assistant", "tool_calls": []any{call}, "reasoning_details": details}
-	if raw {
-		want["reasoning"] = scalar
-	}
-	var warm []byte
-	for n := 1; n < 6; n++ {
-		var got json.RawMessage
+	var warm, toolResult json.RawMessage
+	for i, dest := range targets {
+		n := i + 1
+		var got, result json.RawMessage
 		for _, item := range <-history {
 			var msg struct {
-				ToolCalls []struct{ ID string } `json:"tool_calls"`
+				ToolCallID string                `json:"tool_call_id"`
+				ToolCalls  []struct{ ID string } `json:"tool_calls"`
 			}
 			if err := json.Unmarshal(item, &msg); err != nil {
 				t.Fatal(err)
@@ -293,18 +320,27 @@ func testChatFallbackToolContinuation(t *testing.T, raw bool) {
 			if len(msg.ToolCalls) > 0 && msg.ToolCalls[0].ID == "call-9" {
 				got = item
 			}
+			if msg.ToolCallID == "call-9" {
+				result = item
+			}
 		}
-		if n == 4 {
-			delete(want, "reasoning_details")
-			delete(want, "reasoning")
+		want := map[string]any{"role": "assistant", "content": answer, "tool_calls": []any{call}}
+		if dest.sameRoute && (dest.sameModel || !viaFallback) {
+			want["reasoning_details"] = details
+		}
+		if raw && dest.sameRoute && dest.sameModel {
+			want["reasoning"] = scalar
 		}
 		if string(got) != mustJSON(t, want) {
 			t.Errorf("Chat request %d replayed %s, want %s", n+1, got, mustJSON(t, want))
 		}
 		if n == 1 {
-			warm = got
-		} else if n < 4 && !bytes.Equal(got, warm) {
+			warm, toolResult = got, result
+		} else if dest.sameRoute && dest.sameModel && !bytes.Equal(got, warm) {
 			t.Errorf("Chat request %d rewrote the assistant message sent with its tool result", n+1)
+		}
+		if len(result) == 0 || !bytes.Equal(result, toolResult) {
+			t.Errorf("Chat request %d lost or changed the ordinary tool result", n+1)
 		}
 	}
 }

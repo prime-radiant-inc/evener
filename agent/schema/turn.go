@@ -561,24 +561,24 @@ type Turn struct {
 }
 
 // ProjectReasoningText keeps raw reasoning for the chat or Responses model
-// that issued it. Responses ciphertext belongs to its issuing deployment.
+// that issued it. Native continuations belong to the serving deployment.
 // A request projection never edits the stored message.
 func (t *Turn) ProjectReasoningText(res *registry.Resolved, route string) llm.Message {
 	msg := t.Message
 	if res == nil || msg.Role != llm.RoleAssistant {
 		return msg
 	}
-	foreignResponses := t.DropsResponsesReasoning(res, route)
-	if !foreignResponses && (!res.ReplaysRawReasoning() || t.MatchesReasoningTextTarget(res, route)) {
+	foreignDeployment := t.DropsReasoningForTarget(res, route)
+	if !foreignDeployment && (!res.ReplaysRawReasoning() || t.MatchesReasoningTextTarget(res, route)) {
 		return msg
 	}
-	if res.Protocol == registry.ProtocolOpenAIChat {
+	if res.Protocol == registry.ProtocolOpenAIChat && !foreignDeployment {
 		return llm.TrimThinkingForReplayMessage(msg, true)
 	}
 	// Within one Responses deployment, a different model can receive opaque
 	// items even when the issuing model's plain reasoning is omitted.
 	omit := func(p llm.ContentPart) bool {
-		return p.Kind == llm.ContentThinking && p.Thinking != nil && (foreignResponses || p.Thinking.EncryptedContent == "")
+		return p.Kind == llm.ContentThinking && p.Thinking != nil && (foreignDeployment || p.Thinking.EncryptedContent == "")
 	}
 	if slices.ContainsFunc(msg.Content, omit) {
 		msg.Content = slices.DeleteFunc(slices.Clone(msg.Content), omit)
@@ -586,13 +586,22 @@ func (t *Turn) ProjectReasoningText(res *registry.Resolved, route string) llm.Me
 	return msg
 }
 
-// DropsResponsesReasoning reports a known issuer or route mismatch. A Responses
-// deployment can receive its own ciphertext across models on the same route.
-func (t *Turn) DropsResponsesReasoning(res *registry.Resolved, route string) bool {
-	return res.Protocol == registry.ProtocolOpenAIResponses && t.Message.Role == llm.RoleAssistant &&
-		((t.ResponseProvider != "" && t.ResponseProvider != res.Instance) ||
-			!t.matchesReasoningProtocol(res.Protocol) ||
-			(t.ResponseReasoningRoute != "" && t.ResponseReasoningRoute != route))
+// DropsReasoningForTarget reports when the destination cannot receive even
+// opaque continuation state. Chat signatures and ciphertext are scoped to
+// their recorded endpoint. Responses also scopes them to the issuing instance.
+func (t *Turn) DropsReasoningForTarget(res *registry.Resolved, route string) bool {
+	if t.Message.Role != llm.RoleAssistant {
+		return false
+	}
+	differentRoute := t.ResponseReasoningRoute != "" && t.ResponseReasoningRoute != route
+	switch res.Protocol {
+	case registry.ProtocolOpenAIChat:
+		return differentRoute
+	case registry.ProtocolOpenAIResponses:
+		return differentRoute || (t.ResponseProvider != "" && t.ResponseProvider != res.Instance) || !t.matchesReasoningProtocol(res.Protocol)
+	default:
+		return false
+	}
 }
 
 // MatchesRecordedModelRoute checks the serving route and outbound model when
