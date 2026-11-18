@@ -81,16 +81,13 @@ func TestDelegateActivityRowWithNoRunningJobReportsNoWait(t *testing.T) {
 	var enteredOnce sync.Once
 	var releaseOnce sync.Once
 	release := func() { releaseOnce.Do(func() { close(hold) }) }
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response {
-				enteredOnce.Do(func() { close(entered) })
-				<-hold
-				return agenttest.FinalResponse("thought with no job")
-			},
+	adapter := newFakeAdapter("openai", []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			enteredOnce.Do(func() { close(entered) })
+			<-hold
+			return agenttest.FinalResponse("thought with no job")
 		},
-	}
+	}...)
 	client := llm.NewClient()
 	client.Register(adapter)
 	root, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
@@ -161,27 +158,24 @@ func newDrainHoldFixture(t *testing.T) *drainHoldFixture {
 	stepHeld := make(chan struct{})
 	releaseStep := make(chan struct{})
 	drainClock := newOwnedJobDrainClock()
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(llm.ToolCallData{
-					ID:        "held-shell",
-					Name:      "shell",
-					Arguments: json.RawMessage(`{"command":"held shell","mode":"background"}`),
-					Type:      "function",
-				})
-			},
-			func(llm.Request) llm.Response {
-				close(stepHeld)
-				<-releaseStep
-				return agenttest.FinalResponse("waiting for the held shell")
-			},
-			func(llm.Request) llm.Response {
-				return agenttest.FinalResponse("held shell handled")
-			},
+	adapter := newFakeAdapter("openai", []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(llm.ToolCallData{
+				ID:        "held-shell",
+				Name:      "shell",
+				Arguments: json.RawMessage(`{"command":"held shell","mode":"background"}`),
+				Type:      "function",
+			})
 		},
-	}
+		func(llm.Request) llm.Response {
+			close(stepHeld)
+			<-releaseStep
+			return agenttest.FinalResponse("waiting for the held shell")
+		},
+		func(llm.Request) llm.Response {
+			return agenttest.FinalResponse("held shell handled")
+		},
+	}...)
 	client := llm.NewClient()
 	client.Register(adapter)
 	env := newHeldJobEnvironment(t.TempDir())
@@ -528,33 +522,30 @@ func TestOwnedShellLeavingTheRunningMapPublishesTheHold(t *testing.T) {
 	env := newTwoShellDrainEnvironment(t.TempDir())
 	stepHeld := make(chan struct{})
 	releaseStep := make(chan struct{})
-	adapter := &fakeAdapter{
-		name: "openai",
-		steps: []func(llm.Request) llm.Response{
-			func(llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(llm.ToolCallData{
-					ID:        "first-shell",
-					Name:      "shell",
-					Arguments: json.RawMessage(`{"command":"first shell","mode":"background"}`),
-					Type:      "function",
-				})
-			},
-			func(llm.Request) llm.Response {
-				return agenttest.ToolCallResponse(llm.ToolCallData{
-					ID:        "second-shell",
-					Name:      "shell",
-					Arguments: json.RawMessage(`{"command":"second shell","mode":"background"}`),
-					Type:      "function",
-				})
-			},
-			func(llm.Request) llm.Response {
-				close(stepHeld)
-				<-releaseStep
-				return agenttest.FinalResponse("both shells started")
-			},
-			func(llm.Request) llm.Response { return agenttest.FinalResponse("owned shells handled") },
+	adapter := newFakeAdapter("openai", []func(llm.Request) llm.Response{
+		func(llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(llm.ToolCallData{
+				ID:        "first-shell",
+				Name:      "shell",
+				Arguments: json.RawMessage(`{"command":"first shell","mode":"background"}`),
+				Type:      "function",
+			})
 		},
-	}
+		func(llm.Request) llm.Response {
+			return agenttest.ToolCallResponse(llm.ToolCallData{
+				ID:        "second-shell",
+				Name:      "shell",
+				Arguments: json.RawMessage(`{"command":"second shell","mode":"background"}`),
+				Type:      "function",
+			})
+		},
+		func(llm.Request) llm.Response {
+			close(stepHeld)
+			<-releaseStep
+			return agenttest.FinalResponse("both shells started")
+		},
+		func(llm.Request) llm.Response { return agenttest.FinalResponse("owned shells handled") },
+	}...)
 	client := llm.NewClient()
 	client.Register(adapter)
 	parent, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), env, SessionConfig{
@@ -677,9 +668,9 @@ func TestDrainTurnSuspendsTheRowHoldAndRestoresIt(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
 	client := llm.NewClient()
-	client.Register(&fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+	client.Register(newFakeAdapter("openai", []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return agenttest.FinalResponse("idle") },
-	}})
+	}...))
 	session, err := NewSession(client, withTestSessionNamer(client, NewOpenAIProfile("gpt-5.2")), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
 		StateDir: stateDir,
 		testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
