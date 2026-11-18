@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"errors"
+	"os"
 	"sync"
 	"testing"
 
@@ -10,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
 
@@ -109,15 +112,42 @@ func TestSession_ContextStrategy_SpyHooks(t *testing.T) {
 func TestSession_ContextStrategy_UnknownStrategyError(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
+	stateDir := t.TempDir()
 	c := llm.NewClient()
 	c.Register(&fakeAdapter{name: "openai"})
+	profile := NewOpenAIProfile("gpt-5.2")
+	previous, err := NewSession(c, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: stateDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	previous.Close()
 
-	_, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+	id := identifier.MustNewSessionID()
+	_, err = NewSession(c, profile, execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		SessionID: id, StateDir: stateDir,
 		ContextStrategy: "nonexistent",
 	})
 	if err == nil {
 		t.Fatal("expected error for unknown context strategy, got nil")
 	}
+	if _, err := os.Stat(schema.SessionTranscriptPath(stateDir, id)); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("failed launch published a transcript: %v", err)
+	}
+	sessions, err := schema.ListSessionMetas(stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("discovery returned %d sessions, want only the earlier usable session", len(sessions))
+	}
+	if sessions[0].ID != previous.ID() {
+		t.Fatalf("latest session = %q, want %q", sessions[0].ID, previous.ID())
+	}
+	resumed, err := RestoreSessionFromMeta(c, profile, execenv.NewLocalExecutionEnvironment(dir), sessions[0], stateDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resumed.Close()
 }
 
 func TestCompactionThresholdScale(t *testing.T) {

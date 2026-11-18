@@ -1368,11 +1368,14 @@ func TestRestoreSessionFromMeta_NoTranscript_StartsClean(t *testing.T) {
 		}
 	})
 	for _, tc := range []struct {
-		name  string
-		fresh bool
+		name                    string
+		fresh, repeated, reopen bool
 	}{
 		{name: "fresh header directory sync", fresh: true},
 		{name: "replacement header directory sync"},
+		{name: "fresh header directory sync unavailable at admission", fresh: true, repeated: true},
+		{name: "replacement header directory sync unavailable at admission", repeated: true},
+		{name: "directory sync still unavailable after reopening", fresh: true, repeated: true, reopen: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cfg := RestoreSessionConfig{StateDir: t.TempDir(), ForceRealIO: true, testOnly: testConfig{skipGitSnapshot: true, noSyncJobStore: true}}
@@ -1384,17 +1387,20 @@ func TestRestoreSessionFromMeta_NoTranscript_StartsClean(t *testing.T) {
 			path := schema.SessionTranscriptPath(cfg.StateDir, meta.ID)
 			var publishedHeader []byte
 			syncs := 0
+			unavailable := tc.repeated
 			cfg.testOnly.sessionInitFault = func(point string) error {
 				if point != "sync_transcript_publication" {
 					return nil
 				}
 				syncs++
-				var err error
-				publishedHeader, err = os.ReadFile(path)
-				if err != nil {
-					t.Fatalf("read published transcript at directory sync: %v", err)
-				}
 				if syncs == 1 {
+					var err error
+					publishedHeader, err = os.ReadFile(path)
+					if err != nil {
+						t.Fatalf("read published transcript at directory sync: %v", err)
+					}
+				}
+				if syncs == 1 || unavailable {
 					return syscall.EIO
 				}
 				return nil
@@ -1408,6 +1414,52 @@ func TestRestoreSessionFromMeta_NoTranscript_StartsClean(t *testing.T) {
 				t.Errorf("startup made %d directory sync attempts, want 2", syncs)
 			}
 			served := serveFailClosedSession(s)
+			var startupEvents []events.SessionEvent
+			if tc.repeated {
+				if err := s.transcript.EstablishDurability(); !errors.Is(err, syscall.EIO) {
+					t.Errorf("an explicit durability barrier returned %v during the directory failure", err)
+				}
+				otherWriter, _, err := transcript.OpenWriterForSession(path, meta.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if err := otherWriter.AppendSynced(schema.NewTurn(schema.TurnUserInput, llm.User("refused from another writer"))); !errors.Is(err, syscall.EIO) {
+					t.Errorf("a second writer returned %v during the directory failure", err)
+				}
+				if err := otherWriter.Close(); err != nil {
+					t.Fatal(err)
+				}
+				before := len(adapter.Requests())
+				if _, err := s.ProcessInput(t.Context(), "refused during sync failure", nil); !errors.Is(err, syscall.EIO) {
+					t.Errorf("served input during the directory failure: %v", err)
+				}
+				if len(adapter.Requests()) != before {
+					t.Error("input reached the provider with its transcript directory unsynced")
+				}
+				_, entries, _, err := readTranscript(t.Context(), path, "")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if slices.ContainsFunc(entries, func(e transcript.Entry) bool { return e.Turn.Kind == schema.TurnUserInput }) {
+					t.Error("input was recorded before its transcript pathname was durable")
+				}
+				if tc.reopen {
+					startupEvents = served.settle(s)
+					s, err = restore(loadMetaForTest(t, s), cfg)
+					if err != nil {
+						t.Fatalf("reopen while directory sync is unavailable: %v", err)
+					}
+					defer s.Close()
+					served = serveFailClosedSession(s)
+					if _, err := s.ProcessInput(t.Context(), "refused after reopening", nil); !errors.Is(err, syscall.EIO) {
+						t.Errorf("reopened session admitted input without establishing directory durability: %v", err)
+					}
+					if len(adapter.Requests()) != before {
+						t.Error("reopened session sent a provider request before its directory was synced")
+					}
+				}
+				unavailable = false
+			}
 			if _, err := s.ProcessInput(t.Context(), "continue after the sync failure", nil); err != nil {
 				t.Fatalf("served input after published header: %v", err)
 			}
@@ -1415,7 +1467,7 @@ func TestRestoreSessionFromMeta_NoTranscript_StartsClean(t *testing.T) {
 				t.Error("request did not use the published header's system prompt")
 			}
 			systemPrompt := s.transcript.Header().SystemPrompt
-			evs := served.settle(s)
+			evs := append(startupEvents, served.settle(s)...)
 			if !slices.ContainsFunc(evs, func(ev events.SessionEvent) bool {
 				warning, ok := ev.Data.(events.WarningData)
 				return ok && ev.Kind == events.EventWarning && warning.Code == "transcript_publication_sync"

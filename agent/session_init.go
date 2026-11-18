@@ -383,12 +383,15 @@ func (s *Session) publishTranscript(meta schema.SessionMeta, hdr transcript.Head
 		}
 		var err error
 		writer, err = s.createTranscript(path, faultPoint, hdr)
+		if err == nil {
+			writer.TrackPublication(transcriptPublicationSync(s.cfg))
+		}
 		return err
-	}, s.syncTranscriptPublication)
+	}, func(string) error { return writer.EstablishPublication() })
 	if errors.Is(err, fsatomic.ErrPublished) {
 		// The header and launch facts already belong to this writer.
 		// Retry the directory barrier without republishing the session.
-		if retryErr := s.syncTranscriptPublication(schema.SessionsDir(s.stateDir)); retryErr != nil {
+		if retryErr := writer.EstablishPublication(); retryErr != nil {
 			err = errors.Join(err, fmt.Errorf("retry transcript directory sync: %w", retryErr))
 		}
 		s.pendingTranscriptWarnings = append(s.pendingTranscriptWarnings, events.WarningData{
@@ -404,11 +407,17 @@ func (s *Session) publishTranscript(meta schema.SessionMeta, hdr transcript.Head
 	return writer, nil
 }
 
-func (s *Session) syncTranscriptPublication(dir string) error {
-	if fault := s.sessionInitFault("sync_transcript_publication"); fault != nil {
-		return fault
+func transcriptPublicationSync(cfg SessionConfig) func() error {
+	dir := schema.SessionsDir(cfg.StateDir)
+	inject := cfg.testOnly.sessionInitFault
+	return func() error {
+		if inject != nil {
+			if err := inject("sync_transcript_publication"); err != nil {
+				return err
+			}
+		}
+		return fsatomic.SyncDir(dir)
 	}
-	return fsatomic.SyncDir(dir)
 }
 
 // installContextStrategy selects the configured context strategy and registers
@@ -694,6 +703,10 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		}
 	}
 
+	if err := s.installContextStrategy(); err != nil {
+		return nil, err
+	}
+
 	// Create the transcript writer if state persistence is enabled. Its header
 	// carries s.cachedSystemPrompt and the starting task list, so it cannot be
 	// opened any earlier than this — the SessionStart hooks that initSessionState
@@ -751,10 +764,6 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	}
 	if err := s.rearmRootDelegateAttentionFromTranscript(nil); err != nil {
 		return nil, fmt.Errorf("rearm root delegate attention: %w", err)
-	}
-
-	if err := s.installContextStrategy(); err != nil {
-		return nil, err
 	}
 
 	s.emitSessionStartEnvelope(events.SessionStartData{
@@ -1114,6 +1123,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 			return nil, fmt.Errorf("open transcript for resume: %w", openErr)
 		}
 		if resumeTranscript != nil {
+			if !testSpeedIO(cfg) {
+				// A previous process may have exited while its renamed
+				// header was visible but the directory sync was still owed.
+				resumeTranscript.TrackPublication(transcriptPublicationSync(cfg))
+			}
 			restoredTranscriptHeader = resumeTranscript.Header()
 			// A public recovery can publish after the caller's snapshot or
 			// ownership reload. Only launch facts follow the opened header.
@@ -1514,6 +1528,10 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		})
 	}
 
+	if err := s.installContextStrategy(); err != nil {
+		return nil, err
+	}
+
 	// Open or create transcript for appending. Resume defers its SessionStart
 	// hooks to the first user turn, so nothing has been recorded yet — but
 	// attachTranscript still runs on both branches so the readiness gate that
@@ -1632,10 +1650,6 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		if err := s.restoreSideEffect("recover_notifications", jm.recoverForwardedPendingNotifications); err != nil {
 			return nil, fmt.Errorf("nested job notifications: %w", err)
 		}
-	}
-
-	if err := s.installContextStrategy(); err != nil {
-		return nil, err
 	}
 
 	// Re-derive the at-rest state from the restored history's tail: an

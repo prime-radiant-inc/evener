@@ -198,6 +198,10 @@ publish the transcript keeps its header, launch facts, and subsequent turns.
 An interrupted header write leaves the session ID available for a retry.
 If the complete header is visible and its directory sync fails, startup
 keeps that writer, retries the sync, and reports the failure as a warning.
+Input waits for a successful directory sync. The same session accepts work
+again as soon as the filesystem can confirm the published transcript.
+The context strategy is installed before publishing a new transcript, so an
+invalid strategy leaves the last usable session discoverable.
 Reopening a header uses its recorded launch facts even when an embedding
 application holds session ownership and supplies an older snapshot. If the
 metadata cannot be reread after the header opens, the restore uses the launch

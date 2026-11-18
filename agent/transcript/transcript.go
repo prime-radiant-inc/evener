@@ -44,6 +44,10 @@ const FormatVersion = 2
 // ErrUnsupportedFormat marks transcripts that are not semantic-only format v2.
 var ErrUnsupportedFormat = errors.New("unsupported transcript format")
 
+// ErrPublicationUnsynced reports that a visible transcript's directory
+// entry still needs a durability barrier. No input is accepted on that error.
+var ErrPublicationUnsynced = errors.New("transcript directory sync pending")
+
 // ErrInvalidRecordBoundary marks a transcript line that is not one complete
 // JSON object from which a record kind can be determined.
 var ErrInvalidRecordBoundary = errors.New("invalid transcript record boundary")
@@ -796,6 +800,11 @@ func (w *Writer) appendBatchLocked(turns []schema.Turn, place Placement, rollbac
 	if len(turns) == 0 {
 		return nil, nil, nil
 	}
+	if forceSync {
+		if err := w.tail.establishPublicationLocked(); err != nil {
+			return nil, nil, err
+		}
+	}
 	// Place every turn against a copy of the tail's turn state; the copy
 	// becomes the tail's state only if the batch is recorded.
 	placed := w.tail.turns
@@ -972,6 +981,41 @@ func (w *Writer) commitBatchLocked(batch []Record, placed turnPlacement) {
 	}
 }
 
+// TrackPublication assigns the directory barrier before publishing a newly
+// staged transcript or admitting work on a reopened one. The inode's first
+// writer owns that obligation, including when another handle opens it.
+func (w *Writer) TrackPublication(syncDirectory func() error) {
+	w.tail.mu.Lock()
+	defer w.tail.mu.Unlock()
+	if !w.tail.publicationTracked {
+		w.tail.publicationTracked = true
+		w.tail.syncPublication = syncDirectory
+	}
+}
+
+// EstablishPublication confirms that the transcript name will survive a
+// crash. A failed barrier stays pending for the next admission or durable
+// write. A session without a transcript has no directory entry to sync.
+func (w *Writer) EstablishPublication() error {
+	if w == nil || w.tail == nil {
+		return nil
+	}
+	w.tail.mu.Lock()
+	defer w.tail.mu.Unlock()
+	return w.tail.establishPublicationLocked()
+}
+
+func (t *appendTail) establishPublicationLocked() error {
+	if t.syncPublication == nil {
+		return nil
+	}
+	if err := t.syncPublication(); err != nil {
+		return fmt.Errorf("%w: %w", ErrPublicationUnsynced, err)
+	}
+	t.syncPublication = nil
+	return nil
+}
+
 // EstablishDurability fsyncs the transcript's current complete contents
 // without appending another entry. Recovery callers use it before treating a
 // readable record from an earlier ambiguous write as authoritative.
@@ -983,6 +1027,9 @@ func (w *Writer) EstablishDurability() error {
 	defer w.mu.Unlock()
 	if w.closed.Load() {
 		return errors.New("transcript writer is closed")
+	}
+	if err := w.EstablishPublication(); err != nil {
+		return err
 	}
 	if err := w.file.Sync(); err != nil {
 		return fmt.Errorf("sync transcript durability barrier: %w", err)

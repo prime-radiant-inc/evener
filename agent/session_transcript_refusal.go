@@ -30,6 +30,9 @@ func (s *Session) refuseOnCurrentUnhealthyTranscript() error {
 		}
 		refusal := s.refuseOnUnhealthyTranscript(writer)
 		if refusal == nil {
+			refusal = writer.EstablishPublication()
+		}
+		if refusal == nil {
 			return nil
 		}
 		current := s.attachedTranscript()
@@ -63,7 +66,11 @@ func (s *Session) refuseOnCurrentUnhealthyTranscript() error {
 // stands down quietly.
 func (s *Session) refuseBeforeClaimingOnUnhealthyTranscript() error {
 	s.failClosedOnUnhealthyTranscript()
-	refusal := s.refuseOnUnhealthyTranscript(s.attachedTranscript())
+	writer := s.attachedTranscript()
+	refusal := s.refuseOnUnhealthyTranscript(writer)
+	if refusal == nil {
+		refusal = writer.EstablishPublication()
+	}
 	s.announceFailClosed()
 	return refusal
 }
@@ -130,6 +137,9 @@ func transcriptRefusal(cause error) error {
 		return nil
 	}
 	if errors.Is(cause, ErrTranscriptFailedClosed) {
+		return cause
+	}
+	if errors.Is(cause, transcript.ErrPublicationUnsynced) {
 		return cause
 	}
 	if errors.Is(cause, transcript.ErrWriterPoisoned) {

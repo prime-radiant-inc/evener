@@ -29,6 +29,10 @@ import (
 // to the same file is not coordinated.
 type appendTail struct {
 	mu sync.Mutex
+	// Publication belongs to the inode shared by every open writer. A
+	// replacement handle must honor any directory sync the first writer owes.
+	publicationTracked bool
+	syncPublication    func() error
 	// nextSeq is the sequence number the next appended entry takes.
 	nextSeq int
 	// nextOrdinal is the entry ordinal the next recorded entry takes, and
