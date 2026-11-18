@@ -255,37 +255,6 @@ func (c *delegateTreeController) reconcileDelegateAttentionFromTranscripts() err
 	return nil
 }
 
-// openDelegateAttention serializes a transcript-derived open against accepted
-// answer consumption for the same child. Delivery opens use their larger
-// owner-open/source-ack batch; watch and quiet opens use this single-event path.
-//
-// The generation the admitted wake superseded rides out with the result,
-// sampled once where the wake was journaled. A caller whose runtime attached
-// after that sample must release the quiet the journal released, not one it
-// re-reads later: a second sample can name a stop that settled after the
-// admission and would end a quiet this wake never superseded.
-func (c *delegateTreeController) openDelegateAttention(delegateID, attentionID string) (bool, uint64, error) {
-	release, err := c.beginRetirementMutation()
-	if err != nil {
-		return false, 0, err
-	}
-	defer release()
-	for {
-		added, blocker, plan, emit, generation, err := c.tryOpenDelegateAttention(delegateID, attentionID)
-		if err != nil {
-			return false, 0, err
-		}
-		if blocker != nil {
-			<-blocker
-			continue
-		}
-		if emit {
-			c.emitDelegateUpdate(plan)
-		}
-		return added, generation, nil
-	}
-}
-
 // tryOpenDelegateAttention performs one nonblocking projection-open attempt.
 // A reservation blocker is returned to the caller without waiting so callers
 // that hold a Session attention claim can release it before waiting.
@@ -303,6 +272,47 @@ func (c *delegateTreeController) tryOpenDelegateAttention(delegateID, attentionI
 	defer release()
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	added, blocker, plan, emit, generation, err := c.openDelegateAttentionLocked(delegateID, attentionID)
+	return added, blocker, plan, emit, generation, err
+}
+
+// tryOpenColdDelegateAttentionLocked is the cold arm's admission. It is
+// openDelegateAttentionLocked plus the revalidation the cold arm needs before
+// committing: the arm folded the transcript outside the controller lock, so
+// admission is the last point that can see a run attach or a generation settle
+// in that window. observedGeneration is the generation the cold read sampled.
+// stale reports that state moved under the read, and the caller re-reads or
+// hands the row to the attached runtime.
+//
+// The revalidation lives under the same lock that admits, which is what makes
+// it meaningful: a check taken outside the lock would leave the same window
+// open between the check and the admission.
+func (c *delegateTreeController) tryOpenColdDelegateAttentionLocked(delegateID, attentionID string, observedGeneration uint64) (bool, <-chan struct{}, delegateUpdatePlan, bool, uint64, bool, error) {
+	if c == nil || delegateID == "" || attentionID == "" {
+		return false, nil, delegateUpdatePlan{}, false, 0, false, errDelegateNotControllable
+	}
+	release, err := c.beginRetirementMutation()
+	if err != nil {
+		return false, nil, delegateUpdatePlan{}, false, 0, false, err
+	}
+	defer release()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	// A run that attached, or a generation that moved, owns whatever this read
+	// saw: the row may be consumed and a stop may have settled since.
+	if c.residentDelegateRuntimeLocked(delegateID) != nil {
+		return false, nil, delegateUpdatePlan{}, false, 0, true, nil
+	}
+	if aggregate := c.durable[delegateID]; aggregate == nil || aggregate.Generation != observedGeneration {
+		return false, nil, delegateUpdatePlan{}, false, 0, true, nil
+	}
+	added, blocker, plan, emit, generation, err := c.openDelegateAttentionLocked(delegateID, attentionID)
+	return added, blocker, plan, emit, generation, false, err
+}
+
+// openDelegateAttentionLocked is one admission attempt with the controller lock
+// held. Callers must hold c.mu.
+func (c *delegateTreeController) openDelegateAttentionLocked(delegateID, attentionID string) (bool, <-chan struct{}, delegateUpdatePlan, bool, uint64, error) {
 	var blocker <-chan struct{}
 	for _, record := range c.reservations {
 		if record != nil && record.delegateID == delegateID && record.trigger == delegatestore.TriggerAttention && record.done != nil {
@@ -1242,8 +1252,10 @@ func (c *delegateTreeController) armColdDelegateAttentionOnce(delegateID, attent
 		aggregate := c.durable[delegateID]
 		stateDir := c.stateDir
 		transcriptRef := ""
+		observedGeneration := uint64(0)
 		if aggregate != nil {
 			transcriptRef = aggregate.Descriptor.TranscriptRef
+			observedGeneration = aggregate.Generation
 		}
 		runtime := c.residentDelegateRuntimeLocked(delegateID)
 		c.mu.Unlock()
@@ -1274,12 +1286,27 @@ func (c *delegateTreeController) armColdDelegateAttentionOnce(delegateID, attent
 		if !slices.Contains(ids, attentionID) {
 			return false, 0, false, nil
 		}
-		added, blocker, plan, emit, generation, err := c.tryOpenDelegateAttention(delegateID, attentionID)
+		// The commit revalidation: the fold above ran outside the controller
+		// lock, and nothing in that read can see a run attach, accept this row,
+		// and settle a user stop. Admitting then would journal a release against
+		// the generation that stop just settled and make its reopened report
+		// runnable again — a stopped generation resurrected by a stale arm. The
+		// admission therefore repeats the residency check and the generation
+		// check under the same lock that admits, and a run that attached in the
+		// window takes the arm through its pending-row check instead.
+		added, blocker, plan, emit, generation, stale, err := c.tryOpenColdDelegateAttentionLocked(delegateID, attentionID, observedGeneration)
 		if err != nil {
 			return false, 0, false, err
 		}
 		if blocker != nil {
 			<-blocker
+			continue
+		}
+		if stale {
+			// The state moved under the read. A runtime that attached owns the
+			// row now, so hand it over; a still-cold delegate with a new
+			// generation re-reads the transcript, because its pending set is no
+			// longer the one this attempt folded.
 			continue
 		}
 		if emit {

@@ -4701,7 +4701,7 @@ func TestWorktreePrune_OrphanArmSparesLaneWhileWokenDescendantWorks(t *testing.T
 	if _, err := descendantSub.sess.appendDelegateNotificationDurably(wakeAttentionID, owedReply); err != nil {
 		t.Fatalf("pend the descendant's owed attention: %v", err)
 	}
-	if _, _, err := root.delegateController.openDelegateAttention(descendantID, wakeAttentionID); err != nil {
+	if _, _, err := openDelegateAttentionForTest(root.delegateController, descendantID, wakeAttentionID); err != nil {
 		t.Fatalf("arm the descendant's attention wake: %v", err)
 	}
 

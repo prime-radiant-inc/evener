@@ -4236,7 +4236,7 @@ func TestDelegateAttentionDriveClearsResolvedProjection(t *testing.T) {
 	if appended, err := sub.sess.appendDelegateNotificationDurably(attentionID, "already handled"); err != nil || !appended {
 		t.Fatalf("append stable attention = appended:%t err:%v", appended, err)
 	}
-	if _, _, err := controller.openDelegateAttention(fixture.delegateID, attentionID); err != nil {
+	if _, _, err := openDelegateAttentionForTest(controller, fixture.delegateID, attentionID); err != nil {
 		t.Fatalf("open stable attention: %v", err)
 	}
 	controller.mu.Lock()
@@ -4274,7 +4274,7 @@ func TestDelegateAttentionDriveClearsResolvedProjection(t *testing.T) {
 	compute := readExistingDelegateAttentionFoldCompute
 	readExistingDelegateAttentionFoldCompute = func(path, sessionID string) (delegateAttentionFold, int64, error) {
 		fold, consumed, err := compute(path, sessionID)
-		if _, _, openErr := controller.openDelegateAttention(fixture.delegateID, racedID); openErr != nil {
+		if _, _, openErr := openDelegateAttentionForTest(controller, fixture.delegateID, racedID); openErr != nil {
 			t.Errorf("open raced attention: %v", openErr)
 		}
 		return fold, consumed, err
@@ -4328,7 +4328,7 @@ func TestClearResolvedDelegateAttentionDefersWhenTranscriptMissing(t *testing.T)
 	if appended, err := sub.sess.appendDelegateNotificationDurably(attentionID, "still pending"); err != nil || !appended {
 		t.Fatalf("append stable attention = appended:%t err:%v", appended, err)
 	}
-	if _, _, err := controller.openDelegateAttention(fixture.delegateID, attentionID); err != nil {
+	if _, _, err := openDelegateAttentionForTest(controller, fixture.delegateID, attentionID); err != nil {
 		t.Fatalf("open stable attention: %v", err)
 	}
 	if err := os.Remove(sub.sess.TranscriptPath()); err != nil {
@@ -4364,7 +4364,7 @@ func resolvedDelegateAttention(t *testing.T, attentionID string, disposition del
 	if appended, err := sub.sess.appendDelegateNotificationDurably(attentionID, "already handled"); err != nil || !appended {
 		t.Fatalf("append stable attention = appended:%t err:%v", appended, err)
 	}
-	if _, _, err := controller.openDelegateAttention(fixture.delegateID, attentionID); err != nil {
+	if _, _, err := openDelegateAttentionForTest(controller, fixture.delegateID, attentionID); err != nil {
 		t.Fatalf("open stable attention: %v", err)
 	}
 	if err := sub.sess.resolveAttentionDurably([]string{attentionID}, disposition); err != nil {

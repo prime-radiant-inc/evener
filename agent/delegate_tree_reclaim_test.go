@@ -1722,7 +1722,7 @@ func TestDelegateAttentionRestore_HoldsOffIdleReleaseMidWake(t *testing.T) {
 		t.Fatal("fixture: idle release refused; setup broken")
 	}
 	tree := sess.delegateController
-	if _, _, err := tree.openDelegateAttention(res.DelegateID, "delegate:mid-wake-sentinel"); err != nil {
+	if _, _, err := openDelegateAttentionForTest(tree, res.DelegateID, "delegate:mid-wake-sentinel"); err != nil {
 		t.Fatalf("open delegate attention: %v", err)
 	}
 

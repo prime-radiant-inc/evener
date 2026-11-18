@@ -611,10 +611,11 @@ func TestReconcileMovesAHoldItEndsToTheHistoryTail(t *testing.T) {
 	sess.mu.Unlock()
 	journalDeriveHeldRelease(t, sess, 1)
 
-	sess.mu.Lock()
-	projected := append([]schema.Turn(nil), sess.history...)
-	sess.mu.Unlock()
-	kept, droppedAt := sess.dropHeldDelegateAttentionTurns(projected)
+	// The projection production performs: one capture of the turns and the holds
+	// they are filtered by, so this asserts what a request would carry.
+	projection, holds := sess.delegateAttentionModelProjection()
+	projected := projection.turns
+	kept, droppedAt := filterHeldDelegateAttentionTurns(projected, holds)
 	if len(droppedAt) != 0 {
 		t.Fatalf("the projection still dropped the released row at %v: the reconcile did not end a hold the journal released", droppedAt)
 	}
@@ -756,6 +757,27 @@ func TestAttentionProjectionCapturesTurnsAndHoldsTogether(t *testing.T) {
 	check("after the release")
 }
 
+// openDelegateAttentionForTest is the test form of the admission the resident
+// arm and the cold arm both reach. Production has no bare convenience wrapper —
+// its callers hold session state ordered against the wake — so this drives the
+// same nonblocking attempt to completion for a fixture.
+func openDelegateAttentionForTest(c *delegateTreeController, delegateID, attentionID string) (bool, uint64, error) {
+	for {
+		added, blocker, plan, emit, generation, err := c.tryOpenDelegateAttention(delegateID, attentionID)
+		if err != nil {
+			return false, 0, err
+		}
+		if blocker != nil {
+			<-blocker
+			continue
+		}
+		if emit {
+			c.emitDelegateUpdate(plan)
+		}
+		return added, generation, nil
+	}
+}
+
 // appendCompactionMarkerAfterReopenedRow writes, after the reopened row's turn,
 // the compaction marker every later request resumes from — the shape in which a
 // pending row's turn falls behind the anchor while the fold still lists the row
@@ -781,6 +803,57 @@ func (s *Session) appendCompactionMarkerAfterReopenedRow(t *testing.T, reopenedI
 	if err := writer.Close(); err != nil {
 		t.Fatalf("close the marker writer: %v", err)
 	}
+}
+
+// A watch frame can land after a cold restore folded the pending rows, so the
+// resident handoff arms it by ID without its turn ever entering history. If the
+// drive then selects that frame as its trigger, acceptance writes the consumed
+// marker and a successful run settles without the model seeing the frame — a
+// report marked delivered and never delivered. Acceptance restores the selected
+// turn from the transcript before the marker can land, so the first request
+// that consumes the frame carries it.
+func TestAcceptedAttentionTurnIsInHistoryBeforeItsMarker(t *testing.T) {
+	t.Parallel()
+	sess, reopenedID, _ := deriveHeldFixtureWithJournal(t, delegatestore.OutcomeCancelled, "cancelled")
+	controller := sess.delegateController
+	// The state a cold restore is in when a frame arrives after its fold: a
+	// runtime attached to the transcript whose history holds none of the pending
+	// rows yet.
+	sess.mu.Lock()
+	sess.history = nil
+	sess.mu.Unlock()
+	// The frame appended after that fold: pending in the transcript, present in
+	// no request's history.
+	const lateID = "delegate:dlg_hold/delivery/2"
+	appendDelegateAttentionTurn(t, sess.TranscriptPath(), sess.id, lateID)
+	if got := indexOfAttentionTurn(attentionTurns(sess.history), lateID); got >= 0 {
+		t.Fatal("premise broken: the late frame was already in history before acceptance")
+	}
+	// The drive selects it: the reservation is the per-child claim acceptance
+	// resolves against.
+	reservation, err := controller.ReserveAttention(sess, lateID)
+	if err != nil {
+		t.Fatalf("reserve the late frame: %v", err)
+	}
+	if err := sess.acceptDelegateAttention(reservation); err != nil {
+		t.Fatalf("accept the late frame: %v", err)
+	}
+
+	sess.mu.Lock()
+	history := append([]schema.Turn(nil), sess.history...)
+	sess.mu.Unlock()
+	if indexOfAttentionTurn(history, lateID) < 0 {
+		t.Fatal("acceptance wrote the consumed marker without the frame's turn in history: the request that settles this generation cannot carry the report")
+	}
+	// And the marker did land, so the row is not left pending forever.
+	fold, err := sess.readDelegateAttentionFold(sess.TranscriptPath(), sess.id)
+	if err != nil {
+		t.Fatalf("re-read the transcript fold: %v", err)
+	}
+	if _, consumed := fold.resolutions[lateID]; !consumed {
+		t.Fatal("the row is in history but not consumed: acceptance did not record the marker")
+	}
+	_ = reopenedID
 }
 
 // indexOfAttentionTurn reports the position of attentionID's steering turn, or
@@ -913,6 +986,136 @@ func TestColdArmReleasesARiderCapturedFramesHold(t *testing.T) {
 	if !newerStands {
 		t.Fatal("a retry over an already-admitted row cleared a newer stop's hold: the duplicate branch must still refuse that release")
 	}
+}
+
+// A cold arm reads residency and the aggregate's generation outside the
+// controller lock, then admits. A run that attaches, or a stop that settles, in
+// that window owns the row: the sample the arm carries is no longer the newest
+// evidence, and admitting it journals a release for a generation the arm never
+// saw — which makes the stopped generation's reopened report runnable again.
+// The admission revalidates both facts under the lock that admits.
+func TestColdArmAdmissionRejectsAStateThatMovedUnderItsRead(t *testing.T) {
+	t.Parallel()
+
+	// The state a cold read can see move: a second attention stop settles
+	// generation 2 and the delegate rests cold at it, its reopened row pending.
+	coldStop := func(t *testing.T) (*Session, *delegateTreeController) {
+		t.Helper()
+		sess, _, _ := deriveHeldFixtureWithJournal(t, delegatestore.OutcomeCancelled, "cancelled")
+		controller := sess.delegateController
+		stopped := delegatestore.TerminalPacket{Kind: delegatestore.PacketTerminalError, Message: json.RawMessage(`"stopped"`)}
+		controller.mu.Lock()
+		// The fixture attaches the settling session; a cold read sees no runtime.
+		controller.live["dlg_hold"] = nil
+		_, err := controller.appendLocked(
+			delegatestore.Event{
+				Kind:       delegatestore.EventDelegateRunStarted,
+				DelegateID: "dlg_hold",
+				RunStarted: &delegatestore.RunStarted{
+					Generation: 2,
+					Trigger:    delegatestore.TriggerAttention,
+					StartedAt:  time.Unix(30, 0).UTC(),
+				},
+			},
+			delegatestore.Event{
+				Kind:       delegatestore.EventDelegateRunFinished,
+				DelegateID: "dlg_hold",
+				RunFinished: &delegatestore.RunFinished{
+					Generation:  2,
+					Outcome:     delegatestore.Outcome{Status: delegatestore.OutcomeCancelled, Reason: "stopped again", EndedAt: time.Unix(40, 0).UTC()},
+					Disposition: delegatestore.DispositionTerminalError,
+					DeliveryID:  "dlg_hold/delivery/2",
+					Packet:      &stopped,
+				},
+			},
+			delegatestore.Event{
+				Kind:                 delegatestore.EventDelegateDeliveryAcknowledged,
+				DelegateID:           "dlg_hold",
+				DeliveryAcknowledged: &delegatestore.DeliveryAcknowledged{DeliveryID: "dlg_hold/delivery/2"},
+			},
+		)
+		controller.mu.Unlock()
+		if err != nil {
+			t.Fatalf("journal the stop that settled under the cold read: %v", err)
+		}
+		return sess, controller
+	}
+	const freshID = "delegate:dlg_hold/delivery/3"
+	releasedFloor := func(controller *delegateTreeController) uint64 {
+		controller.mu.Lock()
+		defer controller.mu.Unlock()
+		return controller.durable["dlg_hold"].AttentionHoldReleasedGeneration
+	}
+
+	// The generation branch: the arm sampled generation 1, and the delegate
+	// rested at 1 when it folded the transcript. A stop settled 2 before the
+	// admission.
+	t.Run("a generation that settled under the cold read is not admitted", func(t *testing.T) {
+		t.Parallel()
+		sess, controller := coldStop(t)
+		if _, err := sess.appendDelegateNotificationDurably(freshID, acceptedTriggerText); err != nil {
+			t.Fatalf("append the frame the cold read folded: %v", err)
+		}
+		added, _, _, _, _, stale, err := controller.tryOpenColdDelegateAttentionLocked("dlg_hold", freshID, 1)
+		if err != nil {
+			t.Fatalf("admit the frame the cold read folded: %v", err)
+		}
+		if floor := releasedFloor(controller); floor != 0 {
+			t.Fatalf("the stale admission journaled a release at generation %d: it restarted the report the later stop quieted", floor)
+		}
+		if !stale {
+			t.Fatal("the admission committed a sample older than the generation the delegate now rests at")
+		}
+		if added {
+			t.Fatal("the stale admission noted the frame as a wake")
+		}
+	})
+
+	// The residency branch: the generation is the one the arm sampled, and only
+	// a runtime attaching can refuse it.
+	t.Run("a runtime that attached under the cold read is not admitted", func(t *testing.T) {
+		t.Parallel()
+		sess, controller := coldStop(t)
+		if _, err := sess.appendDelegateNotificationDurably(freshID, acceptedTriggerText); err != nil {
+			t.Fatalf("append the frame the cold read folded: %v", err)
+		}
+		controller.mu.Lock()
+		controller.live["dlg_hold"] = &delegateLiveState{runtime: sess}
+		controller.mu.Unlock()
+		added, _, _, _, _, stale, err := controller.tryOpenColdDelegateAttentionLocked("dlg_hold", freshID, 2)
+		if err != nil {
+			t.Fatalf("admit the frame an attached runtime owns: %v", err)
+		}
+		if !stale || added {
+			t.Fatalf("the admission kept a frame an attached runtime owns (stale=%t added=%t): the resident path checks that row's pending status under the claim that accepts it", stale, added)
+		}
+		if floor := releasedFloor(controller); floor != 0 {
+			t.Fatalf("the admission released generation %d for a row it did not own", floor)
+		}
+	})
+
+	// The other direction: a delegate that stayed cold at the sampled generation
+	// is genuinely fresh, so its wake is admitted and its release recorded.
+	t.Run("a still-cold delegate at the sampled generation is admitted", func(t *testing.T) {
+		t.Parallel()
+		sess, controller := coldStop(t)
+		if _, err := sess.appendDelegateNotificationDurably(freshID, acceptedTriggerText); err != nil {
+			t.Fatalf("append the frame the cold read folded: %v", err)
+		}
+		added, _, _, _, generation, stale, err := controller.tryOpenColdDelegateAttentionLocked("dlg_hold", freshID, 2)
+		if err != nil {
+			t.Fatalf("admit a fresh cold frame: %v", err)
+		}
+		if stale || !added {
+			t.Fatalf("a fresh cold frame was refused (stale=%t added=%t)", stale, added)
+		}
+		if generation != 2 {
+			t.Fatalf("the admission sampled generation %d, want the settled 2", generation)
+		}
+		if floor := releasedFloor(controller); floor != 2 {
+			t.Fatalf("the fresh wake journaled its release at generation %d, want 2: the premise of the stale case is that a release at 2 is recordable", floor)
+		}
+	})
 }
 
 // Replacing the pending set is the transcript fold's word on what is owed, and
@@ -1213,7 +1416,7 @@ func TestDeriveHeldDelegateAttentionFromOutcome(t *testing.T) {
 		if _, err := sess.appendDelegateNotificationDurably(freshID, acceptedTriggerText); err != nil {
 			t.Fatalf("append the fresh row: %v", err)
 		}
-		if _, _, err := sess.delegateController.openDelegateAttention("dlg_hold", freshID); err != nil {
+		if _, _, err := openDelegateAttentionForTest(sess.delegateController, "dlg_hold", freshID); err != nil {
 			t.Fatalf("admit the fresh wake: %v", err)
 		}
 		admittedGeneration := settledGeneration(t, sess)
@@ -1432,7 +1635,8 @@ func TestDeriveHeldDelegateAttentionFromOutcome(t *testing.T) {
 		}
 		heldTurn := schema.NewTurn(schema.TurnSteering, llm.User("held report"))
 		heldTurn.AttentionID = reopenedID
-		_, droppedAt := sess.dropHeldDelegateAttentionTurns([]schema.Turn{heldTurn})
+		_, holds := sess.delegateAttentionModelProjection()
+		_, droppedAt := filterHeldDelegateAttentionTurns([]schema.Turn{heldTurn}, holds)
 		if len(droppedAt) != 1 {
 			t.Fatalf("the projection kept a row a newer stop still quiets: droppedAt=%v", droppedAt)
 		}
@@ -1474,7 +1678,7 @@ func TestDeriveHeldDelegateAttentionFromOutcome(t *testing.T) {
 		if _, err := sess.appendDelegateNotificationDurably(freshID, acceptedTriggerText); err != nil {
 			t.Fatalf("append the fresh row: %v", err)
 		}
-		added, generation, err := controller.openDelegateAttention("dlg_hold", freshID)
+		added, generation, err := openDelegateAttentionForTest(controller, "dlg_hold", freshID)
 		if err != nil {
 			t.Fatalf("admit the fresh wake: %v", err)
 		}

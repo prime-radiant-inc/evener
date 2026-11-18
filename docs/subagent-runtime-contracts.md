@@ -50,7 +50,16 @@ does not survive an idle reclaim, so the delegate journal owns its ordering
 `delegate_attention_hold_released`). An admitted wake — a successful arm, or a
 committed child delivery, resident or cold — is newer evidence than a settled
 stop, and journals the generation it supersedes in the same batch that
-publishes the wake (`delegateTreeController.appendAttentionWakeLocked`). A
+publishes the wake (`delegateTreeController.appendAttentionWakeLocked`).
+A wake admitted while a generation is still open supersedes only the generation
+before that run, and the journal refuses a release naming a generation that is
+not settled. The admission still ended that quiet, so the controller records the
+same sample in memory at the moment the wake commits
+(`delegateAttentionState.releasedGeneration`) and presentation takes the higher
+of the two floors. That in-memory record orders presentation within the resident
+runtime; the durable floor orders a later cold restore, which therefore sees the
+stop's quiet still standing until a wake at a settled generation journals its
+release. A
 reopened row therefore stays quiet only while no release at or past its
 generation is journaled: the release makes it eligible again after an idle
 reclaim, and a stop that settles after a wake settles a later generation, whose

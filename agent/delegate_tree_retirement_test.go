@@ -347,7 +347,7 @@ func TestRetirementDelegateIdleEntrypointsClaimFirst(t *testing.T) {
 	t.Parallel()
 	for name, enter := range map[string]func(*Session, *delegateTreeController, delegateResult) error{
 		"attention open": func(_ *Session, tree *delegateTreeController, d delegateResult) error {
-			_, _, err := tree.openDelegateAttention(d.DelegateID, "original-attention-sentinel")
+			_, _, err := openDelegateAttentionForTest(tree, d.DelegateID, "original-attention-sentinel")
 			return err
 		},
 		"idle attach": func(root *Session, tree *delegateTreeController, d delegateResult) error {
@@ -1286,7 +1286,7 @@ func closedRetirementDelegateWithAttention(t *testing.T, attentionID string, res
 	if _, err := sub.sess.appendDelegateNotificationDurably(attentionID, attentionID+"-content"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := tree.openDelegateAttention(d.DelegateID, attentionID); err != nil {
+	if _, _, err := openDelegateAttentionForTest(tree, d.DelegateID, attentionID); err != nil {
 		t.Fatal(err)
 	}
 	if resolve {
@@ -1654,7 +1654,7 @@ func TestRetirementDelegateAttentionSourceRefusal(t *testing.T) {
 	if _, err := sub.sess.appendDelegateNotificationDurably(attentionID, "attention-content-sentinel"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := tree.openDelegateAttention(d.DelegateID, attentionID); err != nil {
+	if _, _, err := openDelegateAttentionForTest(tree, d.DelegateID, attentionID); err != nil {
 		t.Fatal(err)
 	}
 	before, err := tree.store.Load()
@@ -1729,7 +1729,7 @@ func TestRetirementDelegateAttentionPendingBlocks(t *testing.T) {
 	if _, err := sub.sess.appendDelegateNotificationDurably(attentionID, "attention-pending-content"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := tree.openDelegateAttention(d.DelegateID, attentionID); err != nil {
+	if _, _, err := openDelegateAttentionForTest(tree, d.DelegateID, attentionID); err != nil {
 		t.Fatal(err)
 	}
 	tree.mu.Lock()

@@ -57,7 +57,7 @@ func TestDelegateAttentionDriveStaleSelectionPreservesNextOwnerRun(t *testing.T)
 	if appended, err := sub.sess.appendDelegateNotificationDurably(attentionID, "inspect before follow-up"); err != nil || !appended {
 		t.Fatalf("append attention = appended:%t err:%v", appended, err)
 	}
-	if _, _, err := root.delegateController.openDelegateAttention(fixture.delegateID, attentionID); err != nil {
+	if _, _, err := openDelegateAttentionForTest(root.delegateController, fixture.delegateID, attentionID); err != nil {
 		t.Fatalf("open attention: %v", err)
 	}
 	// Pin the first drive after its real transcript read. The second drive
@@ -126,7 +126,7 @@ func TestDelegateAttentionDriveRetriesAcceptedMarkerGeneration(t *testing.T) {
 		t.Fatalf("append attention = appended:%t err:%v", appended, err)
 	}
 	controller := root.delegateController
-	if _, _, err := controller.openDelegateAttention(fixture.delegateID, attentionID); err != nil {
+	if _, _, err := openDelegateAttentionForTest(controller, fixture.delegateID, attentionID); err != nil {
 		t.Fatalf("open attention: %v", err)
 	}
 	// Close the real journal to fail commit after the real transcript has

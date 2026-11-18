@@ -1463,28 +1463,6 @@ func (s *Session) automaticDelegateAttentionIDs() ([]string, error) {
 	return kept, nil
 }
 
-// dropHeldDelegateAttentionTurns keeps a user-stopped run's held rows out of
-// the history an automatic attention drive projects: the reopen retained each
-// held row's turn in the resident history, so without this filter the drive
-// would present the stopped report through it — the immediate restart the
-// stop exists to prevent. The resident history keeps the turn: an explicit
-// send presents it, and so does the fresh arm that releases the hold. Turns
-// without an attention identity, and turns whose row is not held, project
-// unchanged. The positions of the dropped turns are returned in the input's
-// coordinates: a drop shifts every later turn one position left, so the
-// caller's in-flight boundary — an index into the projection — moves with
-// each drop strictly before it.
-func (s *Session) dropHeldDelegateAttentionTurns(turns []schema.Turn) (kept []schema.Turn, droppedAt []int) {
-	s.attentionMu.Lock()
-	// The holds map can be written on a live runtime while this projection
-	// iterates outside the lock, so the iteration walks a clone taken under
-	// the lock: the snapshot is race-free by construction.
-	s.reconcileAutomaticDriveHoldsLocked()
-	holds := maps.Clone(s.attentionAutomaticDriveHolds)
-	s.attentionMu.Unlock()
-	return filterHeldDelegateAttentionTurns(turns, holds)
-}
-
 // filterHeldDelegateAttentionTurns applies an already-captured hold map to an
 // already-captured turn list. Splitting the filter out lets a caller take the
 // turns and the holds under one lock and then answer from that pair alone: a
@@ -1616,6 +1594,15 @@ func (s *Session) acceptDelegateAttention(reservation *delegateStartReservation)
 	// resolution fails, since a failed verification read can follow a marker
 	// that did land, and the retry needs the trigger's turn.
 	s.holdAcceptedTrigger(attentionID)
+	// The turn goes into history before the marker can land. A cold restore
+	// folds the pending rows once, and a watch frame appended after that fold is
+	// armed by ID alone, so the drive can select a row whose turn no request
+	// will carry: the marker lands, the row reads delivered, and the model never
+	// saw it. Restoring first orders the two, so a crash between them leaves the
+	// row pending with its turn present rather than consumed with no trace.
+	if err := s.retainSelectedDelegateAttentionTurn(attentionID); err != nil {
+		return err
+	}
 	if err := s.resolveAttentionDurablyForGeneration([]string{attentionID}, delegateAttentionConsumed, generation); err != nil {
 		return err
 	}
@@ -1627,6 +1614,32 @@ func (s *Session) acceptDelegateAttention(reservation *delegateStartReservation)
 		return err
 	}
 	return nil
+}
+
+// retainSelectedDelegateAttentionTurn puts attentionID's turn into history from
+// the fold that validates it, before anything can mark it consumed. A row can
+// reach automatic selection without ever passing the restore that puts pending
+// turns into the resumed history: a watch frame appended after a cold restore
+// folded the pending set is armed by ID alone, and its turn stays out of
+// history. Selecting that row would consume it durably against a request that
+// omits it, which is a report marked delivered and never delivered. The retain
+// is ID-keyed, so a turn already resident keeps its position and a missing one
+// is appended. A row the fold does not know is left alone: nothing holds its
+// turn, and the marker still orders against whatever the transcript has.
+func (s *Session) retainSelectedDelegateAttentionTurn(attentionID string) error {
+	s.attentionMu.Lock()
+	fold, err := s.delegateAttentionFoldLocked()
+	s.attentionMu.Unlock()
+	if err != nil {
+		return err
+	}
+	turn, ok := fold.turns[attentionID]
+	if !ok {
+		return nil
+	}
+	s.attentionMu.Lock()
+	defer s.attentionMu.Unlock()
+	return s.retainDelegateAttentionTurn(turn)
 }
 
 // isRootDelegateAttentionReceiver reports whether this Session is the stable
