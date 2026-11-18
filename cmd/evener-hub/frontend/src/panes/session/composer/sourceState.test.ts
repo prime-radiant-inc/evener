@@ -1539,6 +1539,14 @@ test("a merged missing reference keeps its own occurrence when local prose spell
     expect(merged.startsWith("my prose [image 1] here")).toBe(true);
     // The warning is live for the row's real reference.
     expect(source.getSnapshot().unbackedImageMarkers).toEqual([1]);
+    // Save while BOTH spellings are still in the text. Only the offset can say
+    // the warning is about the row's spelling (the second), so a record that
+    // collapsed it back to a bare number would be read on reopen as the first
+    // spelling - the local prose - and deleting that prose would enable Send
+    // while the row's real missing reference was still there.
+    await source.queueRecoveryPersistence(row.clientMutationId, merged, [], []);
+    await source.flushRecoveryWrites();
+    expect(readCompositionImageRecord(row.clientMutationId)?.anchors).toEqual([{ marker: 1, offset: 34 }]);
 
     // Deleting the LOCAL PROSE spelling must not clear the warning about the
     // row's reference - that one is still there.
@@ -1667,4 +1675,34 @@ test("a merge keeps a released tile's bytes without writing them into the reques
   const carried = (durable.payload.input as InputItem[]).filter((item) => item.type === "image").length;
   expect(carried).toBe(0);
   storage.close();
+});
+
+// High (sourceState.ts:764-781). Pasting an image whose marker shares a
+// PREFIX with a missing reference - `[image 2]` before `[image 1]` - used to
+// look like an edit that overlapped the anchor, because the shared prefix and
+// suffix bound a region spanning it. The warning was dropped while the
+// person's reference was still in the text, so once the new image decoded Send
+// enabled and shipped the old marker as literal prose.
+test("an insertion beside a missing reference moves its warning instead of clearing it", async () => {
+  const storage = new MutationOutboxIndexedDB();
+  setMutationStorageForTests(storage);
+  // A draft on disk whose record names marker 1 as having had bytes, with the
+  // bytes now gone - the shape a reload of an image-bearing draft leaves.
+  writeComposerDraft("root", { text: "[image 1]", skillNames: [] }, [1]);
+
+  const source = createTestComposerSource("root");
+  try {
+    // The mount read adopts the anchor: marker 1 was an image, and no bytes
+    // are behind it here.
+    expect(source.getSnapshot().unbackedImageMarkers).toEqual([1]);
+    // A new image is pasted at the START. Its marker shares the "[image "
+    // PREFIX with the anchor, so the inferred splice ran its changed region
+    // straight through the anchor and dropped it.
+    source.updateText("[image 2][image 1]");
+    // The missing reference is untouched, so its warning must still be live.
+    expect(source.getSnapshot().unbackedImageMarkers).toEqual([1]);
+  } finally {
+    source.dispose();
+    storage.close();
+  }
 });

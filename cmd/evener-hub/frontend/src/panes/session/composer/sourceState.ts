@@ -753,16 +753,75 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     return [...new Set(adoptedAnchors.map((anchor) => anchor.marker))].sort((left, right) => left - right);
   }
 
+  /** Where a pure insertion turned `shorter` into `longer`, if it did.
+   *
+   * `longer` is `shorter` with `delta` characters spliced in at one point.
+   * Testing that hypothesis - by removing those characters and comparing - is
+   * what distinguishes "text was added beside the anchor" from "the anchor's
+   * own characters changed". A shared prefix and suffix cannot tell them
+   * apart when the inserted text and the anchor begin with the same words,
+   * which is exactly the `[image 1]` / `[image 2]` case.
+   *
+   * Returns `undefined` when no single insertion explains the difference, so
+   * the caller falls back to the prefix/suffix bound.
+   */
+  function insertionPoint(shorter: string, longer: string, delta: number): number | undefined {
+    if (longer.length - shorter.length !== delta || delta <= 0) return undefined;
+    // Several positions can explain one difference, and the choice among them
+    // decides whether an anchor survives. `[image 1]` becoming
+    // `[image 2][image 1]` reads either as nine characters inserted at 0 or at
+    // 7 - and 7 is the split that cuts the anchor's own marker apart, leaving
+    // an offset that no longer spells it. The earliest reconstruction is the
+    // one that keeps every anchor's characters contiguous, so it is the one
+    // taken.
+    for (let at = 0; at <= shorter.length; at += 1) {
+      if (longer.slice(0, at) === shorter.slice(0, at) && longer.slice(at + delta) === shorter.slice(at)) return at;
+    }
+    return undefined;
+  }
+
   /** Carry the adopted anchors across an edit to the text.
    *
-   * The same splice rule the mention anchors use: a shared prefix and suffix
-   * bound the region the edit touched, an anchor entirely before or after it
-   * survives (shifted when it is after), and one the edit overlapped is gone.
-   * That is what lets a deletion retire its own anchor while an identical
-   * spelling elsewhere in the text stays ordinary prose.
+   * An anchor dies only when the edit DESTROYS its characters. A shared prefix
+   * and suffix cannot tell that from an insertion, and the difference is not
+   * academic: pasting `[image 2]` before a missing `[image 1]` shares the
+   * `[image ` prefix with the anchor, so the changed region looks like it
+   * spans the anchor and the warning was dropped while the person's reference
+   * was still in the text. Send then went out with the old marker as literal
+   * prose.
+   *
+   * An insertion cannot destroy anything, so its hypothesis is tested rather
+   * than assumed: if removing the length delta from `after` reproduces
+   * `before`, nothing was removed and every anchor survives, the ones at or
+   * after the insertion point shifted. A deletion is the mirror, and there the
+   * anchors inside the removed range are exactly the ones that die. Only when
+   * neither reconstruction holds (a replacement, or several edits at once) is
+   * the shared prefix and suffix the best available bound.
    */
   function reconcileAdoptedAnchors(before: string, after: string): void {
     if (before === after || adoptedAnchors.length === 0) return;
+    const delta = after.length - before.length;
+    if (delta > 0) {
+      const at = insertionPoint(before, after, delta);
+      if (at !== undefined) {
+        adoptedAnchors = adoptedAnchors.map((anchor) =>
+          anchor.offset >= at ? { ...anchor, offset: anchor.offset + delta } : anchor,
+        );
+        return;
+      }
+    } else if (delta < 0) {
+      const at = insertionPoint(after, before, -delta);
+      if (at !== undefined) {
+        const removedThrough = at - delta;
+        adoptedAnchors = adoptedAnchors.flatMap((anchor) => {
+          const length = markerText(anchor.marker).length;
+          if (anchor.offset + length <= at) return [anchor];
+          if (anchor.offset >= removedThrough) return [{ ...anchor, offset: anchor.offset + delta }];
+          return [];
+        });
+        return;
+      }
+    }
     let prefix = 0;
     const limit = Math.min(before.length, after.length);
     while (prefix < limit && before.charCodeAt(prefix) === after.charCodeAt(prefix)) prefix += 1;
@@ -773,7 +832,6 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     )
       suffix += 1;
     const oldEnd = before.length - suffix;
-    const delta = after.length - before.length;
     adoptedAnchors = adoptedAnchors.flatMap((anchor) => {
       const length = markerText(anchor.marker).length;
       if (anchor.offset + length <= prefix) return [anchor];
@@ -1130,7 +1188,21 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
     // finally lands would stamp the retired tag onto the new revision, and a
     // reopen would block a Send the person had already repaired. An EMPTY set is
     // the answer here and is written as such - "nothing is reserved".
-    const committedAnchorsForRecord: CompositionImageAnchor[] = liveAdoptedMarkers().map((marker) => ({ marker }));
+    //
+    // The OCCURRENCE travels too. Collapsing each anchor back to its number
+    // discarded the one fact that says which spelling the warning was about:
+    // the live editor can hold the right occurrence while the record keeps a
+    // bare number, and the next reopen attaches the warning to the first
+    // spelling instead. Deleting that literal spelling then enabled Send while
+    // the real missing reference was still in the text. An offset is kept only
+    // while it still spells its marker in the text being committed; otherwise
+    // the anchor falls back to its number, which is the reading every older
+    // record gets.
+    const committedAnchorsForRecord: CompositionImageAnchor[] = adoptedAnchors.map(({ marker, offset }) =>
+      nextText.slice(offset, offset + markerText(marker).length) === markerText(marker)
+        ? { marker, offset }
+        : { marker },
+    );
     const isEmptyCleanup = compositionIsEmpty({
       text: nextText,
       attachments: nextAttachments,
@@ -1273,23 +1345,25 @@ export function createComposerSourceState(ref: string, ownerId?: string): Compos
           // Ownership, not eligibility, decides what goes in: the released
           // bytes are part of the composition the person can see.
           //
-          // The facts are stamped with the revision this write just created.
-          // The record and the row are two stores: stamping lets a reader tell
-          // "these facts describe the row I am opening" from "these facts
-          // describe an older composition of it", which is the difference
-          // between honouring a deleted reference and restoring the exemption
-          // the person's edit revoked.
-          writeCompositionImageRecord(
-            clientMutationId,
-            compositionImageRecord(
-              nextText,
-              committedTilesForRecord,
-              committedAnchorsForRecord,
-              undefined,
-              recoveryCompositionRevision(updated),
-            ),
-          );
         }
+        // The facts are stamped with the revision this write just created, and
+        // they are written OUTSIDE the pane-lifetime gate above. The row and
+        // the record are two stores: a commit that reached IndexedDB is durable
+        // whether or not this pane is still mounted, and skipping the record
+        // because the pane closed left a committed payload whose exemption no
+        // reader could find. A reopen then withheld the image's eligibility
+        // while still restoring its bytes, so Send silently omitted an image
+        // the person kept. Both stores name the same revision: the row's.
+        writeCompositionImageRecord(
+          clientMutationId,
+          compositionImageRecord(
+            nextText,
+            committedTilesForRecord,
+            committedAnchorsForRecord,
+            undefined,
+            recoveryCompositionRevision(updated),
+          ),
+        );
         if (
           !disposed &&
           recoveryOwnsLocalDraftRef.current &&

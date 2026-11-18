@@ -13,7 +13,13 @@ import {
 import { useToasts } from "../../../widgets";
 import { createAttachmentOperations, useAttachments } from "./attachments/useAttachments";
 import { STEER_RECOVERY_FENCED_REASON } from "./controlTooltips";
-import { clearDraft, clearPersistedDraft, moveCompositionImageRecord, readDraftRevision } from "./draft";
+import {
+  clearDraft,
+  clearPersistedDraftIfRevisionMatches,
+  moveCompositionImageRecord,
+  readComposerDraftRevisionId,
+  readDraftRevision,
+} from "./draft";
 import { pendingTurnEntries, submitWithPendingTracking, usePendingTurnEntries } from "./queue";
 import {
   resendRecoveryPendingTurn,
@@ -283,7 +289,7 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
     // A restored image's exclusion facts are read from the same durable record
     // and the same revision its bytes came from - so both arrive in one call
     // below, and the decoder never consults a different row for them.
-    const restore = (excluded: readonly RecoveredExcludedImage[]) => {
+    const restore = (excluded: readonly RecoveredExcludedImage[], persistedRevision: string | undefined) => {
       const recovered = recoveryComposerDraft(chosen, excluded);
       const visible = materializeSelectionReferences({ ...recovered, skillNames: restoredSkillNames(recovered) });
       Object.assign(recovered, visible);
@@ -302,10 +308,16 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
       // which of those still carry bytes. Skipping it is what let a row's image
       // be dropped from the request that consumed the row.
       source.adoptRecoveredImageFacts(recovered, chosen.clientMutationId);
-      clearPersistedDraft(ref);
+      // Only the snapshot this restore incorporated. The persisted draft is
+      // SHARED: another pane on the same session can save a new draft while
+      // this one awaits a Blob, and clearing unconditionally erased that
+      // pane's saved text. This pane's own edit revision cannot see a peer's
+      // write, so the shared draft's revision is the only witness to it, and
+      // it is captured before the read for exactly that reason.
+      if (persistedRevision !== undefined) clearPersistedDraftIfRevisionMatches(ref, persistedRevision);
     };
     if ((excludedRefs.get(chosen.clientMutationId)?.length ?? 0) === 0) {
-      restore([]);
+      restore([], undefined);
       return;
     }
     let cancelled = false;
@@ -322,15 +334,23 @@ export function useComposerActions(source: ComposerSourceState, externalBusy = f
       // fact that says "a draft started"; the row stays available for explicit
       // Edit, which is a decision they make rather than one made for them.
       const revisionBeforeRead = draftEditRevisionRef.current;
+      // The SHARED draft's revision ID, which a save in another pane replaces
+      // and this pane's own edit revision does not see. Both are needed: one
+      // says "the person working here started something", the other says
+      // "somebody saved something newer that this restore would erase". This
+      // is the localStorage snapshot's id, not the in-memory per-pane edit
+      // counter - only the former moves when another pane writes.
+      const persistedBeforeRead = readComposerDraftRevisionId(ref);
       const excluded = await excludedRecoveryImages(chosen);
       if (cancelled) return;
       if (
         draftEditRevisionRef.current !== revisionBeforeRead ||
         textRef.current.trim() !== "" ||
-        attachments.items.length > 0
+        attachments.items.length > 0 ||
+        readComposerDraftRevisionId(ref) !== persistedBeforeRead
       )
         return;
-      restore(excluded);
+      restore(excluded, persistedBeforeRead);
     })();
     return () => {
       cancelled = true;
