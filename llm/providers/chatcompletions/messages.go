@@ -3,7 +3,6 @@ package chatcompletions
 import (
 	"encoding/json"
 	"fmt"
-	"slices"
 	"strings"
 
 	"primeradiant.com/evener/llm"
@@ -23,6 +22,17 @@ func isReasoningControlKey(k string) bool {
 		return true
 	}
 	return false
+}
+
+// Routing can remove every part of a reasoning-only turn. An explicitly
+// authored empty answer still has a text part.
+func reasoningOnly(content []llm.ContentPart) bool {
+	for _, p := range content {
+		if p.Kind != llm.ContentThinking && p.Kind != llm.ContentRedThinking {
+			return false
+		}
+	}
+	return true
 }
 
 // toChatMessages converts messages to the Chat Completions wire array (spec
@@ -141,9 +151,7 @@ func toChatMessages(messages []llm.Message, caps registry.Caps, useReasoningDeta
 				// A reasoning-only reply can lose every part during routing or
 				// encoding. Keep an explicitly authored empty text or a required
 				// reasoning field, both of which carry a wire representation.
-				if text == "" && len(msg) == 0 && !slices.ContainsFunc(m.Content, func(p llm.ContentPart) bool {
-					return p.Kind != llm.ContentThinking && p.Kind != llm.ContentRedThinking
-				}) {
+				if text == "" && len(msg) == 0 && reasoningOnly(m.Content) {
 					continue
 				}
 				msg["content"] = text

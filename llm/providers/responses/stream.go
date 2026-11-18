@@ -691,6 +691,8 @@ func (item *responsesOutputItem) applyMessageUpdate(update responsesMessageUpdat
 		return
 	}
 	item.messageParts, item.messagePartsOrder = parts, update.order
+	// A completed array owns its slots. An unindexed draft can belong to
+	// its sole matching part, and a removed or retyped slot loses its value.
 	single := len(parts) == 1 && len(item.text) == 1
 	maps.DeleteFunc(item.text, func(index int64, p *responsesOutputText) bool {
 		if index < 0 && single {
@@ -753,12 +755,13 @@ func (acc *responsesOutputAccumulator) toolOutput(payload map[string]any, callID
 			index = -1 // Only the explicit identities can select a call at this position.
 		}
 	}
+	// An issued call ID identifies one operation across changes in position.
 	if issued := acc.byCallID[callID]; issued != nil {
 		if !acc.bindCallItem(issued, itemID) {
 			return nil
 		}
 		if issued.index >= 0 && index != issued.index {
-			index = -1 // A shifted index cannot issue the same call twice.
+			index = -1
 		}
 	}
 	if callID == "" && itemID == "" && alias == "" && index < 0 {

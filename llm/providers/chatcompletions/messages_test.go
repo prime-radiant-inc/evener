@@ -111,6 +111,21 @@ func TestToChatMessages_ReasoningReplay(t *testing.T) {
 		t.Fatalf("Reasoning=false drops replayed thinking: %v", out[0])
 	}
 
+	// A reasoning-only turn saved for a destination that requires its
+	// reasoning becomes a blank assistant turn once projection strips that
+	// reasoning. It must not reach the wire at all.
+	only := []llm.Message{{Role: llm.RoleAssistant, Content: []llm.ContentPart{
+		{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: "thought", Signature: "reasoning_content"}},
+	}}}
+	out, _ = toChatMessages(only, off, false)
+	if len(out) != 0 {
+		t.Fatalf("a projection that leaves no eligible payload must omit the turn, got %#v", out)
+	}
+	// The same turn keeps its reasoning for a destination that accepts it.
+	out, _ = toChatMessages(only, asText, false)
+	if len(out) != 1 || out[0]["content"] != "thought" {
+		t.Fatalf("an eligible destination keeps the reasoning-only turn: %#v", out)
+	}
 	empty := base
 	empty.EmptyReasoningContent = new(true)
 	out, _ = toChatMessages([]llm.Message{{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "plain"}}}}, empty, false)

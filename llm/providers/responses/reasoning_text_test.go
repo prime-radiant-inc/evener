@@ -257,6 +257,22 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 		{"empty terminal keeps display beside another native reasoning item", []string{done(otherItem), done(answerItem)}, nil, []replayItem{otherRaw, answer}},
 		{"empty terminal keeps display beside ciphertext", []string{done(encryptedItem), done(answerItem)}, nil, []replayItem{encrypted, answer}},
 		{"anonymous terminal call leaves the explicitly matched call available", []string{at(0, toolAdded), finalArguments}, []string{emptyToolByIndex, emptyToolByCall}, []replayItem{finalTool}},
+		// An explicit completed array owns the message's parts. Text a clear
+		// removed must not be recovered from the part cache when the terminal
+		// selects that slot without supplying a value.
+		{"explicit empty completion retires the draft its slot held", []string{
+			done(`{"type":"message","id":"msg_2","content":[{"type":"output_text","text":"draft"}]}`),
+			done(`{"type":"message","id":"msg_2","content":[]}`),
+		}, []string{`{"type":"message","id":"msg_2","content":[{"type":"output_text"}]}`}, nil},
+		// One issued call ID is one dispatchable operation. A repeated
+		// positional frame must not mint a second record for it, or an empty
+		// terminal hands the agent the same mutating call twice.
+		{"one issued call ID stays one record across repeated indexes", []string{
+			at(1, `{"type":"response.output_item.added","item":{"type":"function_call","name":"write_file"}}`),
+			at(1, `{"type":"response.function_call_arguments.done","call_id":"call_dup","arguments":"{\"a\":1}"}`),
+			at(2, `{"type":"response.function_call_arguments.done","call_id":"call_dup","arguments":"{\"a\":1}"}`),
+		}, nil, []replayItem{{Type: "function_call", CallID: "call_dup", Name: "write_file", Arguments: `{"a":1}`}}},
+
 		{"reasoning deltas alone stay on display", nil, nil, nil},
 		{"indexed answer and final arguments without completed items", []string{at(2, toolAdded), toolDelta, finalArguments, at(0, messageAdded), laterPart, blankPart, at(1, answerDelta)}, nil, []replayItem{indexedParts, answer, finalTool}},
 		{"final arguments identify the call", []string{itemArguments, namedFinalArguments}, nil, []replayItem{finalTool}},
@@ -394,6 +410,46 @@ func TestStreamEmitsReasoningTextDeltas(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// Two genuinely distinct issued call IDs that reuse one output index are two
+// operations, and settlement must hand the agent both. The call ID owns
+// identity, so sharing a position cannot collapse them into one record.
+func TestResponsesSparseTerminalKeepsDistinctCallsAtOneIndex(t *testing.T) {
+	t.Parallel()
+	frames := []string{
+		`{"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_one","call_id":"call_one","name":"write_file"}}`,
+		`{"type":"response.function_call_arguments.done","output_index":1,"call_id":"call_one","arguments":"{\"a\":1}"}`,
+		`{"type":"response.output_item.added","output_index":1,"item":{"type":"function_call","id":"fc_two","call_id":"call_two","name":"write_file"}}`,
+		`{"type":"response.function_call_arguments.done","output_index":1,"call_id":"call_two","arguments":"{\"b\":2}"}`,
+	}
+	const completed = `{"type":"response.completed","response":{"status":"completed","output":[]}}`
+	all := append(slices.Clone(frames), completed)
+	for _, source := range []string{"live", "recorded"} {
+		var resp *llm.Response
+		if source == "live" {
+			_, resp = responsesEvents(t, all...)
+		} else {
+			recorded, err := ExtractRecordedResponse([]byte("data: "+strings.Join(all, "\n\ndata: ")+"\n\n"), "m")
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp = &recorded
+		}
+		calls := resp.ToolCalls()
+		got := make(map[string]string, len(calls))
+		for _, call := range calls {
+			got[call.ID] = string(call.Arguments)
+		}
+		if len(calls) != 2 {
+			t.Fatalf("%s dispatchable calls = %d, want one per issued call ID: %+v", source, len(calls), calls)
+		}
+		for id, want := range map[string]string{"call_one": `{"a":1}`, "call_two": `{"b":2}`} {
+			if got[id] != want {
+				t.Errorf("%s call %q arguments = %q, want %q", source, id, got[id], want)
+			}
+		}
 	}
 }
 
