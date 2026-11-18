@@ -45,12 +45,14 @@
 #
 # The helper is built in a private scratch directory. A directory's mode
 # protects what is inside it and nothing about its own entry in its parent, so
-# the root is only usable when its resolved path and every ancestor either are
-# not writable by another user or carry the sticky bit. TMPDIR is used when its
-# chain passes that test, otherwise $XDG_RUNTIME_DIR or
-# $HOME/.cache/evener-scratch; with no usable root nothing is built (exit 2) and
-# an EVENER_DEV_BIN helper you built yourself still runs. An ordinary host is
-# unaffected -- 1777 /tmp and a per-user TMPDIR pass, and nothing moves.
+# the root is only usable when its resolved path and every ancestor protect their
+# entries from other users: owned by you or root, and either not writable by
+# others or sticky. A directory somebody else owns is no good however it is
+# modelled, because its owner can replace entries in it. TMPDIR is used when its
+# chain passes, otherwise $XDG_RUNTIME_DIR or $HOME/.cache/evener-scratch; with
+# no usable root nothing is built (exit 2) and an EVENER_DEV_BIN helper you built
+# yourself still runs. An ordinary host is unaffected -- 1777 /tmp and a per-user
+# TMPDIR pass, and nothing moves.
 #
 # The exit codes are the contract. 0 means merged or queued, 1 means the queue
 # ended the attempt (dropped or timed out), 2 means nothing was decided: bad
@@ -180,26 +182,74 @@ export TMPDIR
 # `find -perm` applies the mode the kernel does and reads the same on GNU and BSD
 # find, which is why it is used instead of stat: stat's format differs between
 # them.
+#
+# OWNERSHIP IS PART OF THE QUESTION, not an optimisation of it. The sticky bit
+# takes rename and delete away from other users, and leaves them with the
+# directory's OWNER. So a 1777 directory owned by a third party -- someone
+# else's shared drop box -- passes a modes-only check while that owner stays free
+# to replace this script's entry in it, which is the whole escalation again with
+# an extra step. Sticky is therefore trusted only when the owner is this user or
+# root: root can already do anything to the operator, and this user is the
+# operator. That is what keeps /tmp (1777, root) and a per-user runtime
+# directory working.
+#
+# `ls -ldn` prints the numeric owner in field 3 on GNU and on BSD, which is what
+# makes this portable: `find -user` takes a name on BSD and a name or a number on
+# GNU, so a uid passed to it is not the same query on the two.
+dir_is_owned_by_trusted() {
+  local owner
+  owner=$(ls -ldn "$1" 2>/dev/null | awk '{print $3}') || owner=""
+  [ -n "$owner" ] || return 1
+  [ "$owner" = "$(id -u)" ] && return 0
+  [ "$owner" = 0 ] && return 0
+  return 1
+}
+
+# dir_entry_is_replaceable DIR -- true when another user can replace an entry
+# inside DIR, so DIR is not a place this script may put anything it will later
+# trust.
+#
+# Ownership is asked FIRST and asked always. A directory whose mode bit for us is
+# `r-x` still lets its OWNER add, rename and delete entries in it: the mode says
+# what everyone else may do, never what the owner may do. So a world-readable
+# 0755 directory owned by a third party is exactly as replaceable as a 0777 one
+# from this script's point of view, and a modes-only check misses it.
+#
+# Then the write bits. Group- or other-writable means those users can replace
+# entries; the sticky bit takes rename and delete back from them.
 dir_entry_is_replaceable() {
   local dir="$1" writable
   [ -d "$dir" ] || return 1
+  dir_is_owned_by_trusted "$dir" || return 0
   writable=$(find "$dir" -maxdepth 0 \( -perm -0020 -o -perm -0002 \) -print 2>/dev/null) || writable=""
   [ -n "$writable" ] || return 1
   [ -k "$dir" ] && return 1
   return 0
 }
 
+# scratch_resolve DIR -- print DIR with every symlink and relative component
+# resolved, or fail.
+#
+# Resolution happens once and the result is what every later step uses. A path
+# that is validated in one spelling and then used in another is validated
+# nowhere: the two spellings can be made to name different directories between
+# the check and the use.
+scratch_resolve() {
+  local dir
+  [ -d "$1" ] || return 1
+  dir=$(cd "$1" 2>/dev/null && pwd -P) || return 1
+  [ -n "$dir" ] || return 1
+  printf '%s\n' "$dir"
+}
+
 # scratch_path_is_trusted DIR -- the invariant above, applied to DIR.
 #
-# DIR is resolved first (`cd`/`pwd -P`), because a symlink anywhere in the given
-# path makes the caller's spelling irrelevant: what gets checked has to be the
-# path the kernel will use. Then every component from DIR up to and including /
-# is tested, nearest first, so a failure names the closest problem.
+# Callers pass the resolved path, because that is what they must go on to use;
+# resolving here and handing back only a yes-or-no would leave them holding the
+# spelling that was never checked.
 scratch_path_is_trusted() {
-  local dir resolved probe
-  [ -d "$1" ] || return 1
-  resolved=$(cd "$1" 2>/dev/null && pwd -P) || return 1
-  probe="$resolved"
+  local probe="$1"
+  [ -d "$probe" ] || return 1
   while :; do
     dir_entry_is_replaceable "$probe" && return 1
     [ "$probe" = "/" ] && break
@@ -233,29 +283,41 @@ scratch_path_is_trusted() {
 #      prebuilt path still runs, without a group file. A tool every lane merges
 #      through must not stop working on a host it cannot prove isolated, and the
 #      group file only widens what a forced stop can reach.
+# Resolved once, checked, and then used for everything: scratch creation, the
+# TMPDIR the build and the helper inherit, and the group-file directory. A
+# symlink whose resolved destination is trusted is accepted -- resolution is
+# asked for, not forbidden -- but from here on only the destination is named, so
+# there is no spelling left that could be swapped between the check and the use.
 scratch_root=""
-if scratch_path_is_trusted "${TMPDIR:-/tmp}"; then
-  scratch_root="${TMPDIR:-/tmp}"
-else
-  for scratch_candidate in "${XDG_RUNTIME_DIR:-}" "${HOME:+$HOME/.cache/evener-scratch}"; do
-    [ -n "$scratch_candidate" ] || continue
-    case "$scratch_candidate" in
-      /*) ;;
-      *) continue ;;
-    esac
-    if [ ! -d "$scratch_candidate" ]; then
-      # 0700 throughout, so only this user can enter it or the directories
-      # between it and $HOME. An existing cache directory is used as its owner
-      # left it, and still has to pass the chain check below.
-      (umask 077 && mkdir -p "$scratch_candidate") 2>/dev/null || true
-    fi
-    [ -d "$scratch_candidate" ] && [ -w "$scratch_candidate" ] || continue
-    scratch_path_is_trusted "$scratch_candidate" || continue
-    scratch_root="$scratch_candidate"
-    TMPDIR="$scratch_candidate"
-    export TMPDIR
-    break
-  done
+for scratch_candidate in "${TMPDIR:-/tmp}" "${XDG_RUNTIME_DIR:-}" "${HOME:+$HOME/.cache/evener-scratch}"; do
+  [ -n "$scratch_candidate" ] || continue
+  case "$scratch_candidate" in
+    /*) ;;
+    *) continue ;;
+  esac
+  if [ ! -d "$scratch_candidate" ]; then
+    # Only $HOME/.cache/evener-scratch is ever absent, and it is created 0700
+    # throughout, so only this user can enter it or the directories between it
+    # and $HOME. An existing cache directory is used as its owner left it, and
+    # still has to pass the chain check.
+    (umask 077 && mkdir -p "$scratch_candidate") 2>/dev/null || continue
+  fi
+  [ -w "$scratch_candidate" ] || continue
+  # Resolved before the check, and the resolved value is what gets kept. The
+  # candidate was named by the caller or by $HOME and may be a symlink; the
+  # destination is what every later step must use, so it is resolved here rather
+  # than trusted in one spelling and used in another.
+  scratch_resolved=$(scratch_resolve "$scratch_candidate" 2>/dev/null) || continue
+  [ -n "$scratch_resolved" ] || continue
+  scratch_path_is_trusted "$scratch_resolved" || continue
+  scratch_root="$scratch_resolved"
+  break
+done
+# The canonical root, not the caller's spelling of it, is what TMPDIR says from
+# now on: scratch_dir, the build, the helper and the group file all read this.
+if [ -n "$scratch_root" ] && [ "$scratch_root" != "${TMPDIR:-/tmp}" ]; then
+  TMPDIR="$scratch_root"
+  export TMPDIR
 fi
 
 # Forward a signal to the child and reap it before this script exits, so a
@@ -623,12 +685,10 @@ mint_gh_group_file() {
   # established, and the handle only widens what a forced stop can reach.
   [ -n "${scratch_root:-}" ] || { gh_group_file=""; return 0; }
   dir=$(mktemp -d "$scratch_root/merge-enqueue.XXXXXX" 2>/dev/null) || dir=""
-  case "$dir" in
-    /*) ;;
-    *) dir="" ;;
-  esac
-  # The mint is only as good as the chain it happened in, so the chain is checked
-  # again over the directory that actually came back.
+  # Resolved through the same function the root was, so the directory this
+  # function goes on to write in is the one it just checked. A raw `mktemp -d`
+  # result can still carry a symlinked component above it.
+  [ -n "$dir" ] && dir=$(scratch_resolve "$dir" 2>/dev/null) || dir=""
   if [ -n "$dir" ] && ! scratch_path_is_trusted "$dir"; then
     rmdir "$dir" 2>/dev/null || true
     dir=""
@@ -721,11 +781,21 @@ start_helper() {
 # the one that runs the build, so the group holds the build's whole tree and one
 # TERM reaches all of it. `wait` then reaps the tracked child.
 build_helper() {
+  local out="$1"
   launching=true
   set -m
   (
     cd "$root" || exit 1
-    env GOFLAGS= go build -o "$1" ./cmd/evener-dev/bin
+    # GOTMPDIR is set to the scratch directory, because an inherited one is
+    # not covered by anything above: GOTMPDIR overrides TMPDIR for the go
+    # command's own work directory, so a value pointing at a shared non-sticky
+    # directory would put the compiler's intermediates somewhere whose parent
+    # entries another user can replace -- while the output directory this
+    # script validated was never the one at risk. The build's temporary files
+    # belong in the scratch that was chosen and checked, not in a variable the
+    # caller happens to have set. The caller's Go configuration is otherwise
+    # left alone.
+    env GOFLAGS= GOTMPDIR="$work" go build -o "$out" ./cmd/evener-dev/bin
   ) &
   set +m
   child=$!

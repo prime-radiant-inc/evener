@@ -43,6 +43,22 @@ func resolvePath(t *testing.T, path string) string {
 	return absolute
 }
 
+// resolvePathAfterCreate creates path, then returns its canonical spelling.
+//
+// The fixture has to give the launcher the path the launcher will use. The
+// launcher resolves TMPDIR and the roots it is handed, so a case that keeps the
+// pre-resolution spelling scans for a string the build's argv never contains:
+// readiness never fires, cleanup sweeps the wrong path, and a FIFO-blocked build
+// outlives the test in a group of its own. Both sides go through this so they
+// agree on one spelling.
+func resolvePathAfterCreate(t *testing.T, path string) string {
+	t.Helper()
+	if err := os.MkdirAll(path, 0o700); err != nil {
+		t.Fatalf("create %s: %v", path, err)
+	}
+	return resolvePath(t, path)
+}
+
 // mergeEnqueueLauncher is the script under test. These cases drive it as an
 // operator does -- a real process, a real signal at its PID or at its process
 // group, its real exit status -- because the defects they pin are about process
@@ -285,6 +301,42 @@ func (c fixtureCheckout) requireIsolated(t *testing.T) {
 			t.Fatalf("the fixture package holds %s: the fixture must contain only its stub, or the build could produce something other than it", entry.Name())
 		}
 	}
+}
+
+// foreignOwnedDirectory returns a directory on this machine owned by a uid that
+// is neither this user's nor root, or "" when there is none.
+//
+// Ownership cannot be manufactured without root, so a test that needs a foreign
+// owner either finds one or says it has none. Searching the top two levels is
+// enough on any normal machine -- every home directory and every system service
+// account sits there -- and it keeps the case from walking a filesystem.
+func foreignOwnedDirectory() string {
+	me := strconv.Itoa(os.Getuid())
+	for _, root := range []string{"/home", "/var", "/srv", "/opt", "/run"} {
+		entries, err := os.ReadDir(root)
+		if err != nil {
+			continue
+		}
+		for _, entry := range entries {
+			path := filepath.Join(root, entry.Name())
+			info, err := os.Stat(path)
+			if err != nil || !info.IsDir() {
+				continue
+			}
+			// Stat gives the owner as a name; ask ls for the number, which is what
+			// the rule compares.
+			out, err := exec.Command("ls", "-ldn", path).Output()
+			if err != nil {
+				continue
+			}
+			fields := strings.Fields(string(out))
+			if len(fields) < 3 || fields[2] == me || fields[2] == "0" {
+				continue
+			}
+			return path
+		}
+	}
+	return ""
 }
 
 // requirePrivateChain creates dir and makes every directory from root down to it
@@ -1152,8 +1204,8 @@ func TestMergeEnqueueLauncherDoesNotBuildUnderAReplaceableRoot(t *testing.T) {
 		if err := os.Chmod(c.tmp, 0o777); err != nil {
 			t.Fatalf("make the fixture TMPDIR replaceable: %v", err)
 		}
-		safeRoot := t.TempDir()
-		safe := filepath.Join(safeRoot, "runtime")
+		safeRoot := resolvePath(t, t.TempDir())
+		safe := resolvePathAfterCreate(t, filepath.Join(safeRoot, "runtime"))
 		requirePrivateChain(t, safeRoot, safe)
 		f := newLauncherFixture(t, "#!/usr/bin/env bash\nexit 0\n")
 		cmd := f.launcherCmdAt(t, c.script, "--pr", "6499", "--repo", "example.invalid/none")
@@ -1225,20 +1277,21 @@ func TestMergeEnqueueLauncherDoesNotBuildUnderAReplaceableRoot(t *testing.T) {
 		// still replace the shared directory above it and move where every path
 		// below resolves -- including the freshly built helper the launcher is
 		// about to execute.
-		shared := filepath.Join(t.TempDir(), "shared")
+		shared := filepath.Join(resolvePath(t, t.TempDir()), "shared")
 		if err := os.MkdirAll(shared, 0o755); err != nil {
 			t.Fatalf("create the shared ancestor: %v", err)
 		}
 		if err := os.Chmod(shared, 0o777); err != nil {
 			t.Fatalf("make the ancestor replaceable: %v", err)
 		}
+		shared = resolvePathAfterCreate(t, shared)
 		c := newFixtureCheckoutNamed(t, filepath.Join(shared, "tmp"), "checkout")
 		c.requireIsolated(t)
 		if err := os.Chmod(c.tmp, 0o700); err != nil {
 			t.Fatalf("make the fixture TMPDIR private: %v", err)
 		}
-		safeRoot := t.TempDir()
-		safe := filepath.Join(safeRoot, "runtime")
+		safeRoot := resolvePath(t, t.TempDir())
+		safe := resolvePathAfterCreate(t, filepath.Join(safeRoot, "runtime"))
 		requirePrivateChain(t, safeRoot, safe)
 		f := newLauncherFixture(t, "#!/usr/bin/env bash\nexit 0\n")
 		cmd := f.launcherCmdAt(t, c.script, "--pr", "6499", "--repo", "example.invalid/none")
@@ -1276,6 +1329,58 @@ func TestMergeEnqueueLauncherDoesNotBuildUnderAReplaceableRoot(t *testing.T) {
 		testwait.Until(t, fmt.Sprintf("build pid %d to terminate", buildPID), func() bool {
 			return pidGone(buildPID)
 		})
+	})
+	t.Run("ownership is part of the question", func(t *testing.T) {
+		// The high this pins: mode bits say what everyone else may do and never
+		// what the owner may do, so a directory owned by a third party is
+		// replaceable from this script's point of view whatever its mode. A 0755
+		// directory somebody else owns is exactly as bad as a 0777 one, and a
+		// modes-only check calls it safe.
+		//
+		// The rule is exercised directly, through the launcher's own function, over
+		// directories whose owners really differ: this user's, and -- when one
+		// exists on the machine -- a third uid's. A machine with no third uid has no
+		// such directory, so that half is skipped rather than simulated: ownership
+		// cannot be manufactured without root, and a case that pretended would be
+		// testing its own fixture.
+		probe := func(dir string) error {
+			return exec.Command("bash", "-c",
+				`eval "$(sed -n '/^dir_entry_is_replaceable()/,/^}/p;/^dir_is_owned_by_trusted()/,/^}/p' "$1")"; dir_entry_is_replaceable "$2"`,
+				"bash", mergeEnqueueLauncher, dir).Run()
+		}
+		own := filepath.Join(t.TempDir(), "owned-by-us")
+		if err := os.MkdirAll(own, 0o700); err != nil {
+			t.Fatalf("create %s: %v", own, err)
+		}
+		if err := os.Chmod(own, 0o700); err != nil {
+			t.Fatalf("make %s private: %v", own, err)
+		}
+		if err := probe(own); err == nil {
+			t.Fatalf("a 0700 directory owned by this user was reported replaceable")
+		}
+		stickyOwn := filepath.Join(t.TempDir(), "sticky-owned-by-us")
+		if err := os.MkdirAll(stickyOwn, 0o700); err != nil {
+			t.Fatalf("create %s: %v", stickyOwn, err)
+		}
+		// ModeSticky, not 0o1777: Go's FileMode puts the special bits in high
+		// flags, so a literal 0o1777 is masked down to 0777 and the sticky bit
+		// silently would not be set -- which is the very property under test.
+		if err := os.Chmod(stickyOwn, os.FileMode(0o777)|os.ModeSticky); err != nil {
+			t.Fatalf("make %s sticky: %v", stickyOwn, err)
+		}
+		if err := probe(stickyOwn); err == nil {
+			t.Fatalf("a 1777 directory owned by this user was reported replaceable")
+		}
+		foreign := foreignOwnedDirectory()
+		if foreign == "" {
+			t.Skip("no directory owned by a third user on this machine: ownership cannot be manufactured without root")
+		}
+		if err := probe(foreign); err != nil {
+			t.Fatalf("%s is owned by another user, so its owner can replace entries in it; the rule called it safe (%v)", foreign, err)
+		}
+		if err := probe("/tmp"); err == nil {
+			t.Fatalf("/tmp (1777, owned by root) was reported replaceable: ordinary hosts must be unaffected")
+		}
 	})
 	t.Run("no safe root still runs", func(t *testing.T) {
 		f := newLauncherFixture(t, `#!/usr/bin/env bash
@@ -1818,6 +1923,14 @@ func TestMergeEnqueueLauncherRefusesANonNumericWaitBeforeBuilding(t *testing.T) 
 	c := newFixtureCheckoutNamed(t, filepath.Join(t.TempDir(), "tmp"), "checkout")
 	c.requireIsolated(t)
 	f := newLauncherFixture(t, "#!/usr/bin/env bash\nprintf 'helper-ran\\n' >> \"$EVENER_FIXTURE_LOG\"\n")
+	// Registered before the launcher starts, so a regression that gets as far as
+	// the build still leaves nothing behind. `mustExit` has a deadline, and a
+	// build blocked on the fixture's FIFO has a process group of its own that no
+	// other cleanup here names: without these sweeps a regression would fail this
+	// case and leave a `go build` running forever. The checkout and its scratch
+	// path are the two strings its argv can carry.
+	t.Cleanup(func() { assertNoSurvivors(t, c.root) })
+	t.Cleanup(func() { assertNoSurvivors(t, c.tmp) })
 	cmd := f.launcherCmdAt(t, c.script, "--pr", "6499", "--wait", "nope", "--repo", "example.invalid/none")
 	cmd.Env = envOverride(cmd.Env, "TMPDIR="+c.tmp, "GOWORK=off", "GOENV=off")
 	cmd.Env = slices.DeleteFunc(cmd.Env, func(kv string) bool {
