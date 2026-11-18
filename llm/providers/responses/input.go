@@ -38,7 +38,15 @@ func toResponsesTools(tools []llm.ToolDefinition, strict bool) []map[string]any 
 	for _, t := range tools {
 		params := t.Parameters
 		if params == nil {
+			// A tool that declares no parameters takes the empty object. On the
+			// strict path the root has to be explicitly closed, because strict
+			// mode accepts that and only that: an open root is not certifiable,
+			// and sending it non-strict would accept any keys the tool rejects.
+			// With strict mode off the advertised shape is unchanged.
 			params = map[string]any{"type": "object", "properties": map[string]any{}}
+			if strict {
+				params["additionalProperties"] = false
+			}
 		}
 		entry := map[string]any{
 			"type":        "function",

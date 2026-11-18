@@ -218,3 +218,37 @@ func TestStrictToolProjectionStillStrictifiesFullyRequiredSchemas(t *testing.T) 
 		t.Fatalf("projected required = %v, want %v", got, want)
 	}
 }
+
+// A tool declaring no parameters at all is the empty object, which strict mode
+// accepts once it is explicitly closed. Synthesizing the open
+// {"type":"object","properties":{}} instead leaves the root uncertifiable, so a
+// parameterless tool would drop to non-strict and go out accepting any keys —
+// looser than the closed empty object it advertised. It must stay strict, and
+// the schema on the wire must be that closed empty object.
+func TestStrictToolProjectionKeepsParameterlessToolsClosed(t *testing.T) {
+	t.Parallel()
+	req := userReq("hi")
+	req.Tools = []llm.ToolDefinition{{Name: "current_time"}}
+
+	body := build(t, req, resolved(strictCaps))
+	tool := body["tools"].([]map[string]any)[0]
+	if tool["strict"] != true {
+		t.Fatalf("strict = %#v, want true: a parameterless tool has nothing to force", tool["strict"])
+	}
+	params, ok := tool["parameters"].(map[string]any)
+	if !ok {
+		t.Fatalf("parameters = %#v, want an object schema", tool["parameters"])
+	}
+	if params["type"] != "object" {
+		t.Fatalf("type = %#v, want object", params["type"])
+	}
+	if params["additionalProperties"] != false {
+		t.Fatalf("additionalProperties = %#v, want false: an open root is not a strict-expressible schema", params["additionalProperties"])
+	}
+	if props, ok := params["properties"].(map[string]any); !ok || len(props) != 0 {
+		t.Fatalf("properties = %#v, want an empty object", params["properties"])
+	}
+	if got := requiredNames(t, params); len(got) != 0 {
+		t.Fatalf("required = %v, want empty", got)
+	}
+}
