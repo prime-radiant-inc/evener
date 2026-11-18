@@ -1727,6 +1727,158 @@ it("a resend's claim on an evicted background destination does not wait on the b
   background.release();
 }, 20_000);
 
+// A terminal history diagnostic is terminal on its own, and every read that
+// meets one must be answered the same way: one visible diagnostic and no
+// automatic re-read. A read with no model to apply that diagnostic to - which
+// is what a destination nobody currently displays gives a verification read -
+// must not be routed to the transport retry, because that retry asks the hub to
+// read again a history it has just refused.
+it("a terminal history failure with no base model arms no retry", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const client = connect();
+  // Nothing has published a model for this ref, so the read below begins with
+  // no base model. The hub answers it terminally.
+  client.on("thread/read", () => {
+    throw new WireError("thread history failed at entry 7", -32603, {
+      evenerErrorInfo: ErrorTranscriptHistoryFailed,
+    });
+  });
+  let retryArmed = false;
+  const restoreScheduler = installHydrationRetrySchedulerForTests(() => {
+    retryArmed = true;
+    return () => undefined;
+  });
+  try {
+    await expect(
+      threadsStore.getState().ensureThread("local:a"),
+      "the terminal read must reject rather than park the caller",
+    ).rejects.toBeDefined();
+  } finally {
+    restoreScheduler();
+  }
+  expect(retryArmed, "a terminal diagnostic must arm no retry, whether or not a base model exists").toBe(false);
+  expect(foregroundHolds("local:a"), "the rejected claim must roll back").toBe(0);
+}, 20_000);
+
+// The deletion fence aborts the read in flight. An aborted read is not an
+// answered one, so nothing in the read's own failure path can settle the wait:
+// the deletion itself has to, or the press parks with no timer and no
+// replacement read to join.
+it("a deletion during a resend settles the wait instead of stranding it", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const outboxStorage = new MutationOutboxIndexedDB({ indexedDB: factory });
+  setMutationStorageForTests(outboxStorage);
+  const client = connect();
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  await settleEntryTranscriptForTests("local:a");
+  const route = entryTranscriptRoute("local:a");
+  if (!route) throw new Error("expected an entry route");
+  route.cachedUnverified = true;
+  const outbox = await outboxStorage.enqueueIntent({
+    targetRef: "local:a",
+    threadId: "thread-a",
+    method: "turn/start",
+    payload: { ref: "local:a", input: [{ type: "text", text: "retry me" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "retry me" }] },
+  });
+  const row = await outboxStorage.transferToRecovery(outbox.clientMutationId, "rejected");
+  if (!row) throw new Error("expected the recovery row to be durable");
+  let failNext = true;
+  client.on("thread/read", (params) => {
+    if (failNext) {
+      failNext = false;
+      throw new Error("transport died");
+    }
+    return { ...response(), requestGeneration: params.requestGeneration };
+  });
+  let fireRetry: (() => void) | undefined;
+  const restoreScheduler = installHydrationRetrySchedulerForTests((_attempt, retry) => {
+    fireRetry = retry;
+    return () => undefined;
+  });
+  let outcome: { ok: boolean } | undefined;
+  try {
+    const resent = withRecoveryDestinationClaim("local:a", () =>
+      resendRecoveryMutation(row.clientMutationId, "local:a", "send", "retry me", []),
+    );
+    await vi.waitFor(() => expect(fireRetry, "the failed read must schedule the retry").toBeDefined());
+    // The destination is deleted while the retry is the only thing that could
+    // have answered this wait.
+    markCacheSessionsDeleted(["local:a"]);
+    outcome = await resent.then(
+      () => ({ ok: true as const }),
+      () => ({ ok: false as const }),
+    );
+  } finally {
+    restoreScheduler();
+    background.release();
+  }
+  expect(outcome, "a deletion must end the press instead of parking it").toBeDefined();
+  expect(foregroundHolds("local:a"), "the deleted ref must release the routing hold").toBe(0);
+}, 20_000);
+
+// A closed client can never become ready, and with no replacement wired nothing
+// will retire the lifecycle on its way past. A wait parked on one has no timer,
+// no ready event, and no replacement read: it has to settle on the closure.
+it("a permanently closed client settles a parked resend", async () => {
+  const storage = cache();
+  setProductionEntryCacheForTests(storage);
+  const outboxStorage = new MutationOutboxIndexedDB({ indexedDB: factory });
+  setMutationStorageForTests(outboxStorage);
+  const client = connect();
+  client.on("thread/read", (params) => ({ ...response(), requestGeneration: params.requestGeneration }));
+  const background = acquireBackgroundThread("local:a");
+  await background.ready;
+  await settleEntryTranscriptForTests("local:a");
+  const route = entryTranscriptRoute("local:a");
+  if (!route) throw new Error("expected an entry route");
+  route.cachedUnverified = true;
+  const outbox = await outboxStorage.enqueueIntent({
+    targetRef: "local:a",
+    threadId: "thread-a",
+    method: "turn/start",
+    payload: { ref: "local:a", input: [{ type: "text", text: "retry me" }] },
+    attachments: [],
+    optimisticDisplay: { method: "turn/start", input: [{ type: "text", text: "retry me" }] },
+  });
+  const row = await outboxStorage.transferToRecovery(outbox.clientMutationId, "rejected");
+  if (!row) throw new Error("expected the recovery row to be durable");
+  client.on("thread/read", () => {
+    throw new Error("transport died");
+  });
+  let fireRetry: (() => void) | undefined;
+  const restoreScheduler = installHydrationRetrySchedulerForTests((_attempt, retry) => {
+    fireRetry = retry;
+    return () => undefined;
+  });
+  let outcome: { ok: boolean } | undefined;
+  try {
+    const resent = withRecoveryDestinationClaim("local:a", () =>
+      resendRecoveryMutation(row.clientMutationId, "local:a", "send", "retry me", []),
+    );
+    await vi.waitFor(() => expect(fireRetry, "the failed read must schedule the retry").toBeDefined());
+    // The client closes for good and no replacement is wired in its place.
+    client.emitStateChange("closed");
+    expect(client.state).toBe("closed");
+    fireRetry?.();
+    outcome = await resent.then(
+      () => ({ ok: true as const }),
+      () => ({ ok: false as const }),
+    );
+  } finally {
+    restoreScheduler();
+    background.release();
+  }
+  expect(outcome?.ok, "a closed client must end the press instead of parking it").toBe(false);
+  expect(foregroundHolds("local:a"), "the closed-client path must release the routing hold").toBe(0);
+  expect(await outboxStorage.listOutbox("local:a"), "a closed client writes no row").toEqual([]);
+}, 20_000);
+
 it.each([false, true])("opening verifies accepted bodies when the latest write was lost: %s", async (lost) => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
   const storage = cache();

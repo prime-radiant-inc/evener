@@ -1694,13 +1694,21 @@ type HydrationIntent = "foreground" | "background" | "final";
 // waiter that cannot distinguish these either hangs or loops forever.
 type OwnedHydrationOutcome =
   | { kind: "published"; model: ThreadModel }
-  | { kind: "retired" }
+  // Why the generation is gone decides what a waiter may do next: a superseded
+  // generation re-arms against the current one, while a deleted ref has none and
+  // must not read again.
+  | { kind: "retired"; cause: "superseded" | "deleted" }
   | { kind: "terminal"; error: unknown };
 
 interface OwnedHydration {
   generation: number;
   retryAttempt: number;
   cancelRetry: (() => void) | null;
+  // Detaches the client-closed watch armed with this record. A closed client is
+  // the one end no read can report: nothing will answer the read, no retry can
+  // fire, and no ready event will come, so the transition itself has to settle
+  // the wait. See closeOwnedHydration.
+  cancelClosedWatch: (() => void) | null;
   // Settles with the model this lifecycle publishes, or null once the
   // lifecycle is retired (release, client swap, new ready generation) so a
   // waiting owner re-arms against the current generation instead of hanging.
@@ -4447,31 +4455,39 @@ async function readThreadHydration(
     }
     // A structured "history failed" response is not a transport hiccup: the
     // spec says the client shows one visible diagnostic and waits for a later
-    // read to succeed, never auto-retrying in a loop. Applied only against
-    // this hydration's own base model (superseded generations are ignored by
-    // applyHistoryReadFailure itself).
-    if (isTranscriptHistoryFailedError(err) && pending.baseModel) {
-      const failedModel = applyHistoryReadFailure(pending.baseModel, errorText(err), pending.requestGeneration ?? 0);
-      const entry = tracked ? existingEntryRoute(ref) : undefined;
-      if (!tracked) {
-        putWatchedThreadModel(ref, failedModel);
-      } else if (entry?.repository) {
-        if (
-          pending.client === getWiredClient() &&
-          pending.epoch === getReadyEpoch() &&
-          pendingThreadHydrations.get(ref) === pending
-        ) {
-          entry.repository.acceptReadFailure(errorText(err), pending.requestGeneration ?? 0, {
-            lifetime: entry.lifetime,
-          });
+    // read to succeed, never auto-retrying in a loop. The diagnostic is
+    // terminal whether or not this attempt had a base model to apply it to:
+    // a routing hold on a cached destination routinely reads with none, and
+    // that read must not fall through to the transport retry, which would
+    // re-read a history the hub has already refused.
+    //
+    // Publishing the diagnostic is still conditional. Only an attempt with a
+    // base model can render one, and applyHistoryReadFailure itself ignores a
+    // superseded generation.
+    if (isTranscriptHistoryFailedError(err)) {
+      if (pending.baseModel) {
+        const failedModel = applyHistoryReadFailure(pending.baseModel, errorText(err), pending.requestGeneration ?? 0);
+        const entry = tracked ? existingEntryRoute(ref) : undefined;
+        if (!tracked) {
+          putWatchedThreadModel(ref, failedModel);
+        } else if (entry?.repository) {
+          if (
+            pending.client === getWiredClient() &&
+            pending.epoch === getReadyEpoch() &&
+            pendingThreadHydrations.get(ref) === pending
+          ) {
+            entry.repository.acceptReadFailure(errorText(err), pending.requestGeneration ?? 0, {
+              lifetime: entry.lifetime,
+            });
+          }
+        } else {
+          putThreadModel(ref, failedModel);
         }
-      } else {
-        putThreadModel(ref, failedModel);
       }
-      // The diagnostic is terminal: no retry is armed, so the wait every
-      // concurrent owner shares has to settle with it. Left pending, the
-      // waiters hang with the composer busy and the press never writes.
-      failOwnedHydration(read.kind, ref, err);
+      // No retry is armed for this end, so the wait every concurrent owner
+      // shares has to settle with it. Left pending, the waiters hang with the
+      // composer busy and the press never writes.
+      settleHydrationReadEnd(read.kind, ref, { kind: "historyFailed", error: err });
     } else {
       scheduleOwnedHydrationRetry(read.kind, ref, pending);
     }
@@ -7266,8 +7282,27 @@ function openOwnedHydration(kind: HydrationOwnerKind, ref: string): OwnedHydrati
   const firstHydration = new Promise<OwnedHydrationOutcome>((resolve) => {
     settle = resolve;
   });
-  const owned: OwnedHydration = { generation, retryAttempt: 0, cancelRetry: null, firstHydration, settle };
+  const owned: OwnedHydration = {
+    generation,
+    retryAttempt: 0,
+    cancelRetry: null,
+    cancelClosedWatch: null,
+    firstHydration,
+    settle,
+  };
   lifecycles.set(ref, owned);
+  // A client that closes for good is an end of this read that no read reports:
+  // the reply never arrives, no retry can be paced against it, and no ready
+  // event follows. Watch the transition itself so the wait ends with it
+  // instead of parking a composer on a connection that will never answer.
+  const watched = getWiredClient();
+  owned.cancelClosedWatch = watched
+    ? watched.onStateChange((state) => {
+        if (state !== "closed") return;
+        if (lifecycles.get(ref) !== owned) return;
+        settleHydrationReadEnd(kind, ref, { kind: "clientClosed" });
+      })
+    : null;
   return owned;
 }
 
@@ -7286,6 +7321,8 @@ function closeOwnedHydration(kind: HydrationOwnerKind, ref: string, outcome: Own
   lifecycles.delete(ref);
   owned.cancelRetry?.();
   owned.cancelRetry = null;
+  owned.cancelClosedWatch?.();
+  owned.cancelClosedWatch = null;
   owned.settle(outcome);
 }
 
@@ -7298,8 +7335,12 @@ function settleOwnedHydration(kind: HydrationOwnerKind, ref: string, model: Thre
   closeOwnedHydration(kind, ref, { kind: "published", model });
 }
 
-function retireOwnedHydration(kind: HydrationOwnerKind, ref: string): void {
-  closeOwnedHydration(kind, ref, { kind: "retired" });
+function retireOwnedHydration(
+  kind: HydrationOwnerKind,
+  ref: string,
+  cause: "superseded" | "deleted" = "superseded",
+): void {
+  closeOwnedHydration(kind, ref, { kind: "retired", cause });
 }
 
 // The one failure that ends a shared wait instead of retrying: a history
@@ -7307,6 +7348,76 @@ function retireOwnedHydration(kind: HydrationOwnerKind, ref: string): void {
 // read, so a waiter that kept waiting would hold the composer busy forever.
 function failOwnedHydration(kind: HydrationOwnerKind, ref: string, error: unknown): void {
   closeOwnedHydration(kind, ref, { kind: "terminal", error });
+}
+
+// Every way an attempt at a ref's authoritative read can end. This is the
+// enumeration itself, kept in one place because a shared wait that settles on
+// only some of these hangs on the others: a waiter whose read ended without a
+// settlement never wakes, and the composer it is holding stays busy. A new way
+// for a read to end belongs in this union and in settleHydrationReadEnd, not in
+// the handler that discovered it.
+//
+//   published      - the read landed authoritative state, so the lifecycle is
+//                    satisfied and every waiter gets the model.
+//   historyFailed  - the hub answered with its structured history diagnostic.
+//                    Terminal by spec: one visible error, no automatic re-read.
+//   transportDropped - the read rejected for a reason that is not the
+//                    connection's fault. Retryable: it arms this lifecycle's
+//                    one scheduled retry, and the wait stays pending for it.
+//   reconnectSuperseded - the client or ready epoch the read was issued under
+//                    is gone. The replacement generation owns convergence, so
+//                    the wait settles as superseded and its waiter rejoins the
+//                    current read instead of judging the old one.
+//   ownerReleased  - no owner is left for the ref. Nothing will read again, so
+//                    the wait settles as superseded and its waiter returns.
+//   deleted        - a durable deletion fence covers the ref. Terminal for the
+//                    ref: no replacement read is possible or wanted.
+//   clientClosed   - the client the read was issued on has closed for good and
+//                    no replacement is wired. Nothing can ever make it ready,
+//                    so the wait must settle rather than park on it.
+//
+// One more end exists and is deliberately not in this union: an attempt aborted
+// by a release, a client swap, or a newer attempt. Whoever aborts it retires the
+// lifecycle in the same step (closeOwnedHydration), which settles the wait as
+// superseded before the aborted read even throws. Adding it here would mean two
+// settlements racing for one record.
+type HydrationReadEnd =
+  | { kind: "published"; model: ThreadModel }
+  | { kind: "historyFailed"; error: unknown }
+  | { kind: "transportDropped" }
+  | { kind: "reconnectSuperseded" }
+  | { kind: "ownerReleased" }
+  | { kind: "deleted" }
+  | { kind: "clientClosed" };
+
+// settleHydrationReadEnd is the ONE place a read's end is turned into a
+// settlement of the shared wait. Callers classify the end; they do not decide
+// whether it settles. Two ends settle differently and are encoded here rather
+// than at their call sites: `historyFailed` is the only failure that ends the
+// wait with an error (the spec's one-diagnostic rule), and `deleted` retires
+// with the deletion cause so its waiter knows no replacement read exists.
+// Everything else either satisfies the wait or retires it as superseded.
+function settleHydrationReadEnd(kind: HydrationOwnerKind, ref: string, end: HydrationReadEnd): "settled" | "pending" {
+  switch (end.kind) {
+    case "published":
+      settleOwnedHydration(kind, ref, end.model);
+      return "settled";
+    case "historyFailed":
+      failOwnedHydration(kind, ref, end.error);
+      return "settled";
+    case "deleted":
+      retireOwnedHydration(kind, ref, "deleted");
+      return "settled";
+    case "reconnectSuperseded":
+    case "ownerReleased":
+    case "clientClosed":
+      retireOwnedHydration(kind, ref);
+      return "settled";
+    case "transportDropped":
+      // The one end that does not settle: the wait stays pending for the retry
+      // its caller arms, which is why the caller needs this answer back.
+      return "pending";
+  }
 }
 
 // A new client or a new ready epoch owns convergence for every ref: cancel the
@@ -7324,9 +7435,11 @@ function retireAllOwnedHydrations(): void {
 // epoch. A newer client, a newer ready generation, and a released claim each
 // own convergence themselves, so none of them gets a retry from here.
 //
-// Every check below decides whether a retry is worth ARMING. Nothing re-checks
-// them when it fires, because arming is guarded by a lifecycle record and
-// retiring that record cancels the retry with it (closeOwnedHydration).
+// The distinctions this function draws are exactly the enumeration: which end
+// of the read this is. Only `transportDropped` arms a retry and leaves the wait
+// pending; every other end goes to settleHydrationReadEnd, because an owner
+// parked on this lifecycle has no other way to learn the read is over. An
+// early `return` that settles nothing is the bug this shape exists to prevent.
 function scheduleOwnedHydrationRetry(kind: HydrationOwnerKind, ref: string, pending: PendingThreadHydration): void {
   const pendingHydrations = kind === "watched" ? pendingWatchedHydrations : pendingThreadHydrations;
   // A rejection removes only this attempt's own response-cut buffer, and it
@@ -7335,22 +7448,49 @@ function scheduleOwnedHydrationRetry(kind: HydrationOwnerKind, ref: string, pend
   // attempt already owns the entry, so leave that one — and its retry — alone.
   if (pendingHydrations.get(ref) !== pending) return;
   retirePendingHydration(ref, pending, pendingHydrations);
-  // A durably deleted target is terminal (see the `deletedRefs` field doc):
-  // retire the lifecycle — cancelling its retry and settling any owner — and
-  // arm nothing. markThreadDeletedIfFenced recorded the flag on the way here.
-  if (threadsStore.getState().deletedRefs.has(ref)) {
-    retireOwnedHydration(kind, ref);
-    return;
-  }
   const client = pending.client;
   const epoch = pending.epoch;
-  if (getWiredClient() !== client || getReadyEpoch() !== epoch) return;
-  if (!hydrationOwnerActive(kind, ref)) return;
-  const owned = openOwnedHydration(kind, ref);
-  if (owned.cancelRetry) return;
-  // Not ready is not this lifecycle's to pace: that client generation's next
-  // ready trigger re-reads what it tracks and retires this record either way.
-  if (client.state !== "ready") return;
+  // Classify how this read ended. Every branch answers the same question, and
+  // the answer goes to one settler below — no branch settles the wait itself.
+  let end: HydrationReadEnd;
+  let owned: OwnedHydration | undefined;
+  if (threadsStore.getState().deletedRefs.has(ref)) {
+    // A durably deleted target is terminal (see the `deletedRefs` field doc).
+    // markThreadDeletedIfFenced recorded the flag on the way here.
+    end = { kind: "deleted" };
+  } else if (getWiredClient() !== client || getReadyEpoch() !== epoch) {
+    // A newer connection generation owns convergence for every ref it tracks,
+    // so this attempt's failure says nothing about it: superseded, and the
+    // waiter rejoins whatever the current generation is doing.
+    end = { kind: "reconnectSuperseded" };
+  } else if (!hydrationOwnerActive(kind, ref)) {
+    // No owner is left to read again. Without a settlement here the wait that
+    // owner left behind parks forever — and a routing hold's release runs
+    // through exactly this path.
+    end = { kind: "ownerReleased" };
+  } else {
+    owned = openOwnedHydration(kind, ref);
+    // Another attempt is in flight for this lifecycle and already has a retry
+    // armed; it owns the next outcome, including this wait's settlement.
+    // Arming a second retry here would double-read the ref.
+    if (owned.cancelRetry) return;
+    if (client.state === "closed" || client.terminalReason !== null) {
+      // A closed client can never become ready and nothing will rewire in its
+      // place, so a retry armed here could never fire. That is the permanent
+      // end of this read, not a pause: settle it.
+      end = { kind: "clientClosed" };
+    } else if (client.state !== "ready") {
+      // Not ready is not this lifecycle's to pace: that client generation's
+      // next ready trigger re-reads what it tracks and retires this record
+      // either way, so this stays pending with no retry of its own.
+      return;
+    } else {
+      end = { kind: "transportDropped" };
+    }
+  }
+  if (settleHydrationReadEnd(kind, ref, end) === "settled") return;
+  // Transport-dropped on a ready client: arm this lifecycle's one retry.
+  if (!owned) return;
   owned.retryAttempt += 1;
   owned.cancelRetry = hydrationRetryScheduler(owned.retryAttempt, () => {
     // The whole fire-time fence: this callback belongs to one lifecycle record,
@@ -8469,6 +8609,12 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
           // arms no retry. Handing it back releases the claim so the composer
           // is usable again and the draft plus cached display survive.
           if (settled.kind === "terminal") throw settled.error;
+          // A durable deletion has no replacement read to rejoin: the ref is
+          // gone, and the routing hold returns like any other released owner
+          // rather than reading again. This check is why the enumeration
+          // carries the retirement cause instead of leaving every retired
+          // generation to look the same.
+          if (settled.kind === "retired" && settled.cause === "deleted") return;
           // The wait can span a reconnect: the ready handler retires the old
           // retry and starts a fresh read, so this waiter wakes with the
           // generation it was waiting on already gone. Rejoining from the top
@@ -8483,6 +8629,20 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
             if (ensureGenerations.get(ref) !== generation || foregroundHolds(ref) <= 0) return;
             inflight = inflightHydrates.get(ref) ?? startHydration(client, getReadyEpoch());
             continue;
+          }
+          // Same client and epoch, and the lifecycle retired rather than
+          // publishing: the generation that owned the wait is gone (its owner
+          // released, or a newer lifecycle replaced it) while this call still
+          // holds the ref. Rejoining is the whole point of retiring instead of
+          // hanging, so take the current read — or start one — and continue.
+          // Without this the waiter falls through to the re-arm, which finds
+          // no published model and judges the unverified shell.
+          {
+            const replacement = inflightHydrates.get(ref);
+            if (replacement) {
+              inflight = replacement;
+              continue;
+            }
           }
           // Fall through to the shared re-arm below: it returns when the claim
           // is gone or a model published, and otherwise rejoins the newest
@@ -9589,6 +9749,16 @@ export function markCacheSessionsDeleted(refs: string[]): void {
     for (const ref of refs) deletedRefs.add(ref);
     return { deletedRefs };
   });
+  // The deletion also revokes each ref's transcript residency below, which
+  // aborts any read still in flight for it. An aborted read throws without
+  // reaching the settlement path — it was not answered, so it has no end to
+  // classify — and a waiter parked on its lifecycle would then have no timer,
+  // no ready event, and no replacement. Settle the deletion here, where it is
+  // decided, so the wait ends whatever the aborting read does afterwards.
+  for (const ref of refs) {
+    settleHydrationReadEnd("thread", ref, { kind: "deleted" });
+    settleHydrationReadEnd("watched", ref, { kind: "deleted" });
+  }
   for (const ref of refs) {
     residencyIfCreated?.revoke(ref, "deleted");
     noteEntryRouteRetirement(ref);
